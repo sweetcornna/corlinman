@@ -4,6 +4,23 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Breaking
+
+- **Removed the embedded new-api onboard/admin surface.** Existing
+  `[providers.<name>]` config blocks with `kind = "newapi"` are silently
+  migrated to `kind = "openai_compatible"` on load with a
+  `provider.newapi.deprecated` warning. Operators should manage
+  providers via the `/admin/credentials`, `/admin/providers`, and
+  `/admin/oauth` surfaces (hermes-style). The
+  `corlinman-newapi-client` workspace package, the `/admin/newapi*`
+  router, the `/admin/onboard/newapi/probe` + `/admin/onboard/newapi/channels`
+  endpoints, and the `corlinman config migrate-sub2api` CLI helper are
+  all gone. `POST /admin/onboard/finalize` now takes a generic
+  `{provider_name, kind, base_url?, api_key?, model, embedding_model?}`
+  payload writing a kind-agnostic `[providers.<name>]` block.
+
 ## [0.7.1] — 2026-05-17 — warm pool
 
 Adds the warm-pool surface that v0.7.0 deferred. Architectural note:

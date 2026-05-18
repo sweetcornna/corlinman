@@ -21,7 +21,7 @@ user-facing story is "configure one model, everything works", with three credent
 | Capability | hermes | corlinman current | gap |
 |------------|--------|-------------------|------|
 | API-key entry (per provider, masked, eye-toggle) | `EnvPage.tsx` | `/admin/credentials` + `(admin)/credentials/page.tsx` | **none** |
-| Built-in provider catalogue | 27 plugins under `plugins/model-providers/` | `_KIND_TO_CLASS` (anthropic / openai / google / qwen / glm / deepseek / openai_compatible / newapi / mistral / cohere / together / groq / replicate / bedrock / azure / mock) | small — no plugin-self-registration UI |
+| Built-in provider catalogue | 27 plugins under `plugins/model-providers/` | `_KIND_TO_CLASS` (anthropic / openai / google / qwen / glm / deepseek / openai_compatible / mistral / cohere / together / groq / replicate / bedrock / azure / mock) | small — no plugin-self-registration UI |
 | Add custom provider + pick protocol via UI | manual `config.yaml::custom_providers[]` editing | none (operator hand-edits TOML) | **medium** — needs UI + endpoint |
 | OAuth subscription login (PKCE / device-code) | `OAuthLoginModal.tsx` + `_anthropic_oauth_status` + `~/.hermes/.anthropic_oauth.json` + `~/.claude/.credentials.json` auto-import + token refresh loop | **zero** | **large** |
 | Per-agent model binding | profile-scoped, `auxiliary.{vision,web_extract,compression}` blocks | agent yamls have no `model:` field; routing is request-body-driven | **medium** |

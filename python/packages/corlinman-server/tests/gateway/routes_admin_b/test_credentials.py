@@ -321,25 +321,30 @@ def test_writes_preserve_unrelated_sections(
     snapshot: dict[str, Any] = admin_state.extras["snapshot"]
     snapshot["admin"] = {"username": "ops", "password_hash": "argon2id$..."}
     snapshot["models"] = {
-        "default": "newapi",
-        "aliases": {"newapi": {"model": "gpt-4", "provider": "newapi"}},
+        "default": "house",
+        "aliases": {"house": {"model": "gpt-4", "provider": "house"}},
     }
     snapshot["providers"] = {
-        "newapi": {"kind": "newapi", "enabled": True, "api_key": "existing"},
+        "house": {
+            "kind": "openai_compatible",
+            "enabled": True,
+            "api_key": "existing",
+            "base_url": "https://house.example/v1",
+        },
     }
 
-    # First write: openai api_key should land alongside newapi.
+    # First write: openai api_key should land alongside the custom slot.
     resp = client.put(
         "/admin/credentials/openai/api_key",
-        json={"value": "sk-coexist-with-newapi"},
+        json={"value": "sk-coexist-with-house"},
     )
     assert resp.status_code == 200
 
     on_disk = _on_disk(admin_state)
     assert on_disk["admin"]["username"] == "ops"
-    assert on_disk["models"]["default"] == "newapi"
-    assert on_disk["providers"]["newapi"]["api_key"] == "existing"
-    assert on_disk["providers"]["openai"]["api_key"] == "sk-coexist-with-newapi"
+    assert on_disk["models"]["default"] == "house"
+    assert on_disk["providers"]["house"]["api_key"] == "existing"
+    assert on_disk["providers"]["openai"]["api_key"] == "sk-coexist-with-house"
 
     # Delete shouldn't touch siblings either.
     _reload(admin_state)
@@ -348,8 +353,8 @@ def test_writes_preserve_unrelated_sections(
 
     on_disk = _on_disk(admin_state)
     assert on_disk["admin"]["username"] == "ops"
-    assert on_disk["models"]["default"] == "newapi"
-    assert on_disk["providers"]["newapi"]["api_key"] == "existing"
+    assert on_disk["models"]["default"] == "house"
+    assert on_disk["providers"]["house"]["api_key"] == "existing"
 
 
 def test_env_ref_passthrough_from_existing_block(

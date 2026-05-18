@@ -2,8 +2,7 @@
 ``rust/crates/corlinman-memory-host/src/remote_http.rs``.
 
 Uses :mod:`respx` (the Python equivalent of ``wiremock``) to mock the
-remote endpoints — matches the convention used by
-``corlinman-newapi-client``."""
+remote endpoints."""
 
 from __future__ import annotations
 

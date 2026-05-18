@@ -96,9 +96,11 @@ Visit `/onboard`. The wizard is four steps:
 
 1. **Account** — auto-skipped when the seed has already created `admin`,
    with a "Customize admin account" escape hatch if you want to rename.
-2. **Connect LLM** — point at a [newapi][newapi] gateway (recommended),
-   a raw OpenAI-compatible endpoint, or any of the built-in providers
-   (Anthropic, OpenAI, Google, DeepSeek, Qwen, GLM).
+2. **Connect LLM** — paste credentials on **Settings → Credentials**
+   (`/admin/credentials`) for any built-in provider (Anthropic, OpenAI,
+   Google, DeepSeek, Qwen, GLM), or add an OpenAI-compatible upstream
+   (vLLM, channel-pool sidecar, local gateway, etc.) via
+   **Settings → Providers** (`/admin/providers`).
 3. **Models** — pick the LLM, embedding, and (optional) TTS channels.
    The picker is two-stage (provider → model), with a search box for
    long channel lists.
@@ -224,4 +226,3 @@ each file.
 
 [admin-seed]: ../python/packages/corlinman-server/src/corlinman_server/gateway/lifecycle/admin_seed.py
 [mock-provider]: ../python/packages/corlinman-providers/src/corlinman_providers/mock.py
-[newapi]: https://github.com/QuantumNous/new-api

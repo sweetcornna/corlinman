@@ -105,50 +105,13 @@ export const en = {
     onboardPasswordMismatch: "Passwords do not match",
     onboardAlreadyConfigured:
       "Admin already configured. Redirecting to login...",
-    // 4-step onboard wizard (T19-T21)
+    // 2-step onboard wizard (2026-05 reshape)
     onboardStepAccount: "Admin account",
-    onboardStepNewapi: "newapi connection",
-    onboardStepModels: "Pick default models",
-    onboardStepConfirm: "Confirm & finish",
+    onboardStepHandoff: "Configure providers",
     onboardNext: "Next",
     onboardBack: "Back",
     onboardFinish: "Finish",
-    onboardNewapiTitle: "Connect your newapi gateway",
-    onboardNewapiSubtitle:
-      "corlinman manages LLM, embedding, and TTS models through QuantumNous/new-api. Fill in your newapi connection.",
-    onboardNewapiBaseUrl: "newapi URL",
-    onboardNewapiToken: "User token (sk-…)",
-    onboardNewapiAdminToken: "System access token (optional, used to list channels)",
-    onboardNewapiAdminTokenHint:
-      "Generate in newapi → Settings → System access tokens. Without one the wizard cannot pre-list channels; you can fill it in later at /admin/newapi.",
-    onboardModelsTitle: "Choose default models",
-    onboardModelsSubtitle:
-      "These channels come from your newapi. Pick a default for each capability — you can change them later in the admin console.",
-    onboardModelsLlm: "LLM model",
-    onboardModelsEmbedding: "Embedding model",
-    onboardModelsTts: "TTS model (optional)",
-    onboardModelsNoLlm: "No enabled LLM channels in newapi. Add one before continuing.",
-    onboardModelsNoEmbedding:
-      "No enabled embedding channels — you can skip and configure later.",
-    onboardModelsNoTts: "No TTS channels. This step is optional.",
-    onboardConfirmTitle: "Confirm and write config",
-    onboardConfirmBody:
-      "On Finish, corlinman atomically writes [providers.newapi], [models], and [embedding] and redirects you to the login page.",
-    onboardFinalizeError: "Could not write config: {{detail}}",
-    // newapi error codes (route → i18n map)
-    errorNewapiUnreachable:
-      "Cannot reach newapi. Check the URL, port, and firewall.",
-    errorNewapiTokenInvalid:
-      "newapi token rejected. Generate a new one in newapi → Tokens.",
-    errorNewapiAdminRequired:
-      "newapi system access token required. Create one in newapi → Settings → System access tokens.",
-    errorNewapiVersionTooOld:
-      "newapi version is too old. Upgrade to the latest release.",
-    errorNewapiBadUrl: "newapi URL is malformed.",
-    errorNewapiUpstreamError: "newapi returned an error. Try again shortly.",
-    errorNewapiChannelListEmpty:
-      "newapi has no channels configured. Add channels in newapi first, then continue.",
-    errorInvalidChannelType: "Invalid channel type.",
+    onboardFinalizeError: "Could not bootstrap mock provider: {{detail}}",
     changePasswordTitle: "Change password",
     changePasswordDescription:
       "Rotate the admin password. You'll stay signed in on this device.",
@@ -171,35 +134,26 @@ export const en = {
       "You're using the default password (admin/root). Change it now.",
     changeItNow: "Change it now",
     continueDashboard: "Continue to dashboard",
-    // Wave 2.1 — onboard skip path + post-finish CTA + two-stage model picker
+    // 2026-05 onboard reshape — Step 2 (handoff) copy
+    onboardHandoffTitle: "You're set up",
+    onboardHandoffSubtitle:
+      "Connect a real LLM provider in one of three ways, or bootstrap the built-in mock provider to look around first.",
+    onboardHandoffCredentialsTitle: "API keys",
+    onboardHandoffCredentialsBody:
+      "Paste an API key for a mainstream provider (OpenAI, Anthropic, Google, …).",
+    onboardHandoffProvidersTitle: "Custom providers",
+    onboardHandoffProvidersBody:
+      "Register a custom endpoint and pin per-agent models.",
+    onboardHandoffOAuthTitle: "Subscription login",
+    onboardHandoffOAuthBody:
+      "Sign in with your Claude, Codex, or other subscription account.",
+    onboardHandoffGo: "Open",
     onboardSkipLlm: "Skip — use mock provider",
     onboardSkipHint:
-      "You can connect a real LLM later in Credentials.",
-    onboardSkippedTitle: "Setup complete — using mock provider",
-    onboardSkippedBody:
-      "Corlinman is now bootstrapped with the built-in mock provider so you can explore the console. Wire up a real LLM under Credentials when you're ready.",
+      "Bootstraps the built-in mock provider so you can explore the console. Wire up a real LLM under Credentials when you're ready.",
     onboardCustomizeAdmin: "Customize admin account",
     onboardUsingDefaultAdmin:
       "Using default admin/root — change later in Account & Security.",
-    onboardCompleteTitle: "Setup complete",
-    onboardCompleteMockProvider: "Using mock provider",
-    onboardCompleteRealProvider: "Connected to {{provider}}",
-    onboardChangeDefaultPassword: "Change default password",
-    onboardGoToDashboard: "Go to dashboard",
-    onboardPickerSearchProviders: "Filter providers…",
-    onboardPickerSearchModels: "Filter models…",
-    onboardPickerNoProviders: "No providers available",
-    onboardPickerNoModels: "No models match",
-    onboardPickerStageProvider: "Choose a provider",
-    onboardPickerStageModel: "Choose a model",
-    onboardPickerBack: "Back to providers",
-    onboardModelsCurrentlyPicked: "Currently picked: {{model}}",
-    onboardModelsEdit: "Edit",
-    onboardModelsChoose: "Choose {{kind}} model",
-    onboardModelsSkip: "Skip",
-    onboardModelsKindLlm: "LLM",
-    onboardModelsKindEmbedding: "embedding",
-    onboardModelsKindTts: "TTS",
   },
 
   account: {
@@ -381,7 +335,6 @@ export const en = {
     models: "Models",
     providers: "Providers",
     credentials: "Credentials",
-    newapi: "newapi",
     embedding: "Embedding",
     tagmemo: "Tag Memo",
     config: "Config",

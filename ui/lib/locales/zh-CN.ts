@@ -99,46 +99,13 @@ export const zhCN = {
     onboardWeakPassword: "密码至少需要 {{min}} 位",
     onboardPasswordMismatch: "两次密码不一致",
     onboardAlreadyConfigured: "管理员已配置，正在跳转到登录页...",
-    // 4-step onboard wizard (T19-T21)
+    // 2-step onboard wizard (2026-05 reshape)
     onboardStepAccount: "管理员账号",
-    onboardStepNewapi: "newapi 连接",
-    onboardStepModels: "选择默认模型",
-    onboardStepConfirm: "确认 & 完成",
+    onboardStepHandoff: "配置 Provider",
     onboardNext: "下一步",
     onboardBack: "上一步",
     onboardFinish: "完成",
-    onboardNewapiTitle: "连接 newapi 网关",
-    onboardNewapiSubtitle:
-      "corlinman 通过 QuantumNous/new-api 集中管理 LLM、嵌入与 TTS 模型。请填写 newapi 的访问信息。",
-    onboardNewapiBaseUrl: "newapi 地址",
-    onboardNewapiToken: "用户令牌 (sk-…)",
-    onboardNewapiAdminToken: "系统访问令牌（可选，用于拉取频道列表）",
-    onboardNewapiAdminTokenHint:
-      "在 newapi 后台 → 设置 → 系统访问令牌中生成。无此令牌时，向导无法预拉频道清单，但可在登录后到 /admin/newapi 补全。",
-    onboardModelsTitle: "选择默认模型",
-    onboardModelsSubtitle:
-      "下面来自 newapi 的频道列表。请为每种能力选一个默认型号；后续可在控制台修改。",
-    onboardModelsLlm: "LLM 模型",
-    onboardModelsEmbedding: "嵌入模型",
-    onboardModelsTts: "TTS 模型（可选）",
-    onboardModelsNoLlm: "没有可用的 LLM 频道，请到 newapi 后台添加。",
-    onboardModelsNoEmbedding: "没有可用的嵌入频道。可跳过 —— 后续可在控制台配置。",
-    onboardModelsNoTts: "没有可用的 TTS 频道。这一步可跳过。",
-    onboardConfirmTitle: "确认并写入配置",
-    onboardConfirmBody:
-      "点击完成后，corlinman 会原子写入 [providers.newapi]、[models]、[embedding] 等配置段，并跳转到登录页。",
-    onboardFinalizeError: "写入配置失败：{{detail}}",
-    // newapi error codes (route → i18n map)
-    errorNewapiUnreachable: "无法连接到 newapi。请检查地址、端口和防火墙。",
-    errorNewapiTokenInvalid: "newapi 令牌无效。请到 newapi 后台 → 令牌 → 重新生成。",
-    errorNewapiAdminRequired:
-      "需要 newapi 系统访问令牌。请到 newapi 后台 → 设置 → 系统访问令牌 → 创建。",
-    errorNewapiVersionTooOld: "newapi 版本过老，请升级到最新版本。",
-    errorNewapiBadUrl: "newapi 地址格式不正确。",
-    errorNewapiUpstreamError: "newapi 返回错误。请稍后重试。",
-    errorNewapiChannelListEmpty:
-      "newapi 还未配置任何频道。请先到 newapi 后台添加渠道再继续。",
-    errorInvalidChannelType: "无效的频道类型。",
+    onboardFinalizeError: "初始化 mock provider 失败：{{detail}}",
     changePasswordTitle: "修改密码",
     changePasswordDescription: "更新管理员密码，本设备会保持登录状态。",
     changePasswordOldLabel: "当前密码",
@@ -159,34 +126,24 @@ export const zhCN = {
     defaultPasswordWarning: "你正在使用默认密码（admin/root），请立即修改。",
     changeItNow: "立即修改",
     continueDashboard: "进入控制台",
-    // Wave 2.1 — 跳过路径 + 完成 CTA + 两段式模型选择器
+    // 2026-05 onboard reshape — Step 2（handoff）文案
+    onboardHandoffTitle: "初始化完成",
+    onboardHandoffSubtitle:
+      "请通过下面三种方式之一接入真实 Provider；或先用内置的 mock provider 进入控制台体验。",
+    onboardHandoffCredentialsTitle: "API Key",
+    onboardHandoffCredentialsBody:
+      "粘贴主流 Provider 的 API key（OpenAI、Anthropic、Google …）。",
+    onboardHandoffProvidersTitle: "自定义 Provider",
+    onboardHandoffProvidersBody: "注册自定义端点，并为每个 Agent 绑定模型。",
+    onboardHandoffOAuthTitle: "订阅账号登录",
+    onboardHandoffOAuthBody: "使用 Claude、Codex 等订阅账号 OAuth 登录。",
+    onboardHandoffGo: "前往",
     onboardSkipLlm: "跳过 — 使用 mock provider",
-    onboardSkipHint: "稍后可在 凭证 中连接真实 LLM。",
-    onboardSkippedTitle: "完成 — 当前使用 mock provider",
-    onboardSkippedBody:
-      "corlinman 已使用内置的 mock provider 完成初始化，可以先进入控制台体验。准备好后可在 凭证 中接入真实 LLM。",
+    onboardSkipHint:
+      "使用内置 mock provider 初始化，可先进入控制台体验。准备好后可在 凭证 中接入真实 LLM。",
     onboardCustomizeAdmin: "自定义管理员账户",
     onboardUsingDefaultAdmin:
       "正在使用默认 admin/root —— 稍后可在 账户与安全 中修改。",
-    onboardCompleteTitle: "初始化完成",
-    onboardCompleteMockProvider: "当前使用 mock provider",
-    onboardCompleteRealProvider: "已连接 {{provider}}",
-    onboardChangeDefaultPassword: "修改默认密码",
-    onboardGoToDashboard: "进入控制台",
-    onboardPickerSearchProviders: "搜索 provider…",
-    onboardPickerSearchModels: "搜索模型…",
-    onboardPickerNoProviders: "没有可用的 provider",
-    onboardPickerNoModels: "无匹配模型",
-    onboardPickerStageProvider: "选择 provider",
-    onboardPickerStageModel: "选择模型",
-    onboardPickerBack: "返回 provider 列表",
-    onboardModelsCurrentlyPicked: "当前选择：{{model}}",
-    onboardModelsEdit: "修改",
-    onboardModelsChoose: "选择{{kind}}模型",
-    onboardModelsSkip: "跳过",
-    onboardModelsKindLlm: "LLM",
-    onboardModelsKindEmbedding: "嵌入",
-    onboardModelsKindTts: "TTS",
   },
 
   account: {
@@ -365,7 +322,6 @@ export const zhCN = {
     models: "模型",
     providers: "Providers",
     credentials: "凭证",
-    newapi: "newapi",
     embedding: "Embedding",
     tagmemo: "Tag Memo",
     config: "配置",

@@ -7,9 +7,8 @@ struct with redaction, validation, and dotted-key get/set). There is no
 typed Python config sibling yet — the AI plane reads the same TOML file
 the Rust gateway writes, so the Python port treats the file as opaque
 TOML and gives operators the basics: ``show``, ``get``, ``set``,
-``init``, ``migrate-sub2api``. ``validate`` and ``diff`` are intentional
-stubs that exit 2 (``not yet ported``) since the structural validators
-live in Rust.
+``init``. ``validate`` and ``diff`` are intentional stubs that exit 2
+(``not yet ported``) since the structural validators live in Rust.
 
 Secret redaction (``api_key`` values) is reimplemented locally so
 ``show`` / ``get`` never echo plaintext keys to stdout — the Rust
@@ -144,34 +143,6 @@ def _get_dotted(data: dict[str, object], key: str) -> object:
     return cur
 
 
-# --- migrate-sub2api helpers --------------------------------------------
-
-
-def _rewrite_sub2api(input_text: str) -> str:
-    """Line-level rewrite of ``kind = "sub2api"`` → ``kind = "newapi"``.
-
-    1:1 port of the Rust helper. Whitespace, comments, and trailing
-    newline state are preserved verbatim.
-    """
-    out: list[str] = []
-    for line in input_text.splitlines(keepends=True):
-        trim = line.lstrip()
-        if trim.startswith("kind") and '"sub2api"' in trim:
-            out.append(line.replace('"sub2api"', '"newapi"', 1))
-        else:
-            out.append(line)
-    return "".join(out)
-
-
-def _print_diff(before: str, after: str) -> None:
-    for b, a in zip(before.splitlines(), after.splitlines()):
-        if b != a:
-            click.echo(f"- {b}")
-            click.echo(f"+ {a}")
-        else:
-            click.echo(f"  {a}")
-
-
 # --- click commands ------------------------------------------------------
 
 
@@ -251,40 +222,6 @@ def init_cmd(path: Path | None, force: bool) -> None:
 def diff_cmd(path: Path | None) -> None:
     """Diff current config against defaults. STUB — depends on typed config."""
     todo_stub("config diff")
-
-
-@config.command("migrate-sub2api")
-@click.option("--path", type=click.Path(path_type=Path), default=None)
-@click.option("--apply", "apply_", is_flag=True, help="Rewrite the file in place.")
-@click.option("--dry-run", is_flag=True, help="Default — print the diff without writing.")
-def migrate_sub2api_cmd(path: Path | None, apply_: bool, dry_run: bool) -> None:
-    """Rewrite legacy ``kind = "sub2api"`` provider entries to ``kind = "newapi"``."""
-    if apply_ and dry_run:
-        click.echo("error: --apply and --dry-run are mutually exclusive", err=True)
-        sys.exit(1)
-
-    p = _resolve_path(path)
-    try:
-        original = p.read_text(encoding="utf-8")
-    except OSError as exc:
-        click.echo(f"error: read config from {p}: {exc}", err=True)
-        sys.exit(1)
-    rewritten = _rewrite_sub2api(original)
-    if rewritten == original:
-        click.echo(f"no_sub2api_entries_found at {p}")
-        return
-    _print_diff(original, rewritten)
-    if apply_:
-        backup = p.with_suffix(".toml.sub2api.bak")
-        try:
-            backup.write_text(original, encoding="utf-8")
-            p.write_text(rewritten, encoding="utf-8")
-        except OSError as exc:
-            click.echo(f"error: write rewritten config: {exc}", err=True)
-            sys.exit(1)
-        click.echo(f"rewrote {p} (backup: {backup})")
-    else:
-        click.echo("--dry-run: no changes written (pass --apply to write)")
 
 
 __all__ = ["config"]

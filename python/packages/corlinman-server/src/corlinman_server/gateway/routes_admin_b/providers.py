@@ -106,7 +106,6 @@ _KNOWN_KINDS = (
     "deepseek",
     "glm",
     "qwen",
-    "newapi",
     "declarative",
 )
 
@@ -240,7 +239,7 @@ _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 # endpoint — they must use ``/admin/credentials`` to configure them so
 # the well-known UX (env-ref hints, masked previews) keeps working.
 _BUILTIN_SLOTS: frozenset[str] = frozenset(
-    {"anthropic", "openai", "google", "mock", "newapi"}
+    {"anthropic", "openai", "google", "mock"}
 )
 
 
@@ -441,8 +440,8 @@ def router() -> APIRouter:
     # ``[providers.<slug>]`` block tagged ``params.custom = true`` — that
     # marker is the load-bearing distinction between user-added entries
     # (manageable through this surface) and built-in slots
-    # (anthropic / openai / google / mock / newapi — owned by the
-    # credentials surface). See ``docs/PLAN_PROVIDER_AUTH.md`` §1.2.
+    # (anthropic / openai / google / mock — owned by the credentials
+    # surface). See ``docs/PLAN_PROVIDER_AUTH.md`` §1.2.
     # -----------------------------------------------------------------
 
     @r.get("/admin/providers/kinds", response_model=CustomKindsOut)

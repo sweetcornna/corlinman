@@ -95,20 +95,3 @@ def test_config_init_refuses_to_overwrite_without_force(tmp_path: Path) -> None:
     result = runner.invoke(cli, ["config", "init", "--path", str(cfg_path)])
     assert result.exit_code == 1, result.output
     assert "already exists" in result.output
-
-
-def test_config_migrate_sub2api_dry_run_prints_diff(tmp_path: Path) -> None:
-    cfg_path = tmp_path / "config.toml"
-    cfg_path.write_text(
-        '[providers.subhub]\nkind = "sub2api"\nbase_url = "http://x"\n',
-        encoding="utf-8",
-    )
-    runner = CliRunner()
-    result = runner.invoke(
-        cli,
-        ["config", "migrate-sub2api", "--path", str(cfg_path)],
-    )
-    assert result.exit_code == 0, result.output
-    assert 'kind = "newapi"' in result.output
-    # Dry-run leaves the file untouched.
-    assert 'kind = "sub2api"' in cfg_path.read_text(encoding="utf-8")

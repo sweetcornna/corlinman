@@ -11,8 +11,8 @@ See ``docs/PLAN_PROVIDER_AUTH.md`` §2 W-B1. The endpoints under test:
 The hard contract is that ``params.custom = true`` is the load-bearing
 marker that separates user-added providers from built-in slots; the
 endpoint writes it on POST and refuses to PATCH/DELETE blocks that lack
-it. Built-in slugs (``anthropic``, ``openai``, ``google``, ``mock``,
-``newapi``) are reserved and collide with 409.
+it. Built-in slugs (``anthropic``, ``openai``, ``google``, ``mock``)
+are reserved and collide with 409.
 
 Fixture pattern mirrors ``test_credentials.py`` — mount the router with a
 temp config file and refresh the in-process snapshot between writes.
@@ -249,7 +249,7 @@ def test_slug_regex_accepts_valid_inputs(
 
 
 @pytest.mark.parametrize(
-    "builtin", ["anthropic", "openai", "google", "mock", "newapi"]
+    "builtin", ["anthropic", "openai", "google", "mock"]
 )
 def test_create_rejects_builtin_slug_with_409(
     client: TestClient, builtin: str

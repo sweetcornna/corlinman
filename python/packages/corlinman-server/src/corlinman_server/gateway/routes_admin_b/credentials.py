@@ -277,9 +277,9 @@ def router() -> APIRouter:
 
         # Walk every well-known provider in the canonical order so the
         # UI always shows the same skeleton — even for providers the
-        # operator hasn't touched yet. Operator-added providers (e.g.
-        # "newapi" from the onboard wizard) get rendered at the end
-        # under the "custom" whitelist so they remain manageable.
+        # operator hasn't touched yet. Operator-added providers go
+        # through /admin/providers/custom and surface under the
+        # "custom" whitelist so they remain manageable from the UI.
         seen: set[str] = set()
         out: list[CredentialProvider] = []
         for name in _WELL_KNOWN_ORDER:

@@ -38,8 +38,7 @@ class RemoteHttpHost(MemoryHost):
 
     Cheap to construct; reuse one instance per endpoint to amortise the
     connection pool. Either close explicitly with :meth:`aclose` or use
-    as an async context manager (matches the ``corlinman-newapi-client``
-    convention).
+    as an async context manager.
     """
 
     def __init__(

@@ -107,7 +107,7 @@ def _redact(cfg: Any) -> Any:
         for k, v in cfg.items():
             if k == "api_key" and isinstance(v, dict) and "value" in v:
                 out[k] = {**v, "value": REDACTED_SENTINEL}
-            elif k in {"password_hash", "secret_key", "newapi_admin_key"} and v:
+            elif k in {"password_hash", "secret_key"} and v:
                 out[k] = REDACTED_SENTINEL
             elif isinstance(v, dict):
                 out[k] = _redact(v)

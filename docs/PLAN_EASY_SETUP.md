@@ -55,7 +55,7 @@ admin_seed.ensure_admin_credentials() 写入 username="admin", password_hash=has
 正常进入 /admin（dashboard）
 ```
 
-> **现有 `/onboard` 多步向导保留**，但变成"可选附加配置"入口（连 newapi、选默认模型、配 LLM provider），不再是强制路径。
+> **现有 `/onboard` 多步向导保留**，但变成"可选附加配置"入口（选默认模型、配 LLM provider），不再是强制路径。
 
 ### 1.2 自我进化目标态（hermes 模式移植）
 

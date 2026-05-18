@@ -25,7 +25,6 @@ members = [
     "corlinman-identity",
     "corlinman-mcp-server",
     "corlinman-memory-host",
-    "corlinman-newapi-client",
     "corlinman-nodebridge",
     "corlinman-persona",
     "corlinman-providers",
@@ -611,21 +610,6 @@ dependencies = [
 requires-dist = [
     { name = "aiosqlite", specifier = ">=0.20" },
     { name = "httpx", specifier = ">=0.27" },
-]
-
-[[package]]
-name = "corlinman-newapi-client"
-version = "0.1.0"
-source = { editable = "python/packages/corlinman-newapi-client" }
-dependencies = [
-    { name = "httpx" },
-    { name = "pydantic" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "httpx", specifier = ">=0.27" },
-    { name = "pydantic", specifier = ">=2.10" },
 ]
 
 [[package]]

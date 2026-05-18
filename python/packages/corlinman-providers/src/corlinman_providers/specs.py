@@ -14,7 +14,15 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+import structlog
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+_logger = structlog.get_logger(__name__)
+
+# Per-process set of provider slot names that have already emitted the
+# ``provider.newapi.deprecated`` warning, so each unique slot warns at
+# most once even though the registry rebuilds on config reload.
+_NEWAPI_WARNED: set[str] = set()
 
 
 class ProviderKind(StrEnum):
@@ -50,11 +58,6 @@ class ProviderKind(StrEnum):
     REPLICATE = "replicate"
     BEDROCK = "bedrock"
     AZURE = "azure"
-    # new-api (QuantumNous/new-api) sidecar — OpenAI-wire channel pooling
-    # manager. corlinman dispatches via the shared OpenAICompatibleProvider;
-    # the named kind exists so the admin UI / inspection commands can
-    # document operator intent. See ``docs/design/newapi-integration.md``.
-    NEWAPI = "newapi"
     # Built-in echo provider — zero-config OpenAI-shape adapter that
     # reverses the last user message. Used by the easy-setup "skip LLM
     # connection" path (Wave 2.2) so new users can land on a working
@@ -87,6 +90,43 @@ class ProviderSpec(BaseModel):
 
     params: dict[str, Any] = Field(default_factory=dict)
     """Provider-level defaults merged below alias-level overrides."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_kind(cls, data: Any) -> Any:
+        """Silently rewrite ``kind = "newapi"`` to ``kind = "openai_compatible"``.
+
+        The newapi-specific admin surface was removed (see ``CHANGELOG.md``
+        entry: "removed the embedded newapi onboard/admin surface").
+        Existing deployments may still carry ``[providers.<name>]`` blocks
+        with ``kind = "newapi"`` on disk; pydantic would otherwise reject
+        the now-unknown enum value and brick the boot. Rewriting here
+        before validation lets new-api channel-pool sidecars keep serving
+        via the generic OpenAI-compatible adapter — same wire format,
+        same Bearer-token auth — with a one-shot deprecation warning per
+        slot logged as ``provider.newapi.deprecated``.
+        """
+        if not isinstance(data, dict):
+            return data
+        kind = data.get("kind")
+        if kind == "newapi":
+            slot = str(data.get("name") or "<unnamed>")
+            if slot not in _NEWAPI_WARNED:
+                _NEWAPI_WARNED.add(slot)
+                _logger.warning(
+                    "provider.newapi.deprecated",
+                    name=slot,
+                    base_url=data.get("base_url"),
+                    migrated_to="openai_compatible",
+                    note=(
+                        "kind='newapi' is deprecated; manage providers via "
+                        "/admin/credentials + /admin/providers"
+                    ),
+                )
+            # Copy so we never mutate the caller's input dict.
+            data = dict(data)
+            data["kind"] = ProviderKind.OPENAI_COMPATIBLE.value
+        return data
 
 
 class AliasEntry(BaseModel):

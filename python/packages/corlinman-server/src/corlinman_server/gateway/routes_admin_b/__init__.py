@@ -10,7 +10,6 @@ Mirrors these Rust modules from
 * :mod:`memory`      — operator escape hatches (``/admin/memory/*``)
 * :mod:`models`      — model alias / provider snapshot (``/admin/models*``)
 * :mod:`napcat`      — QQ scan-login proxy (``/admin/channels/qq/*``)
-* :mod:`newapi`      — QuantumNous bridge admin (``/admin/newapi*``)
 * :mod:`onboard`     — onboarding wizard backend (``/admin/onboard/*``)
 * :mod:`plugins`     — plugin registry inspector (``/admin/plugins*``)
 * :mod:`providers`   — LLM provider CRUD (``/admin/providers*``)
@@ -50,7 +49,6 @@ from corlinman_server.gateway.routes_admin_b import (
     memory as _memory,
     models as _models,
     napcat as _napcat,
-    newapi as _newapi,
     oauth as _oauth,
     onboard as _onboard,
     plugins as _plugins,
@@ -86,7 +84,6 @@ def build_router() -> APIRouter:
         _memory,
         _models,
         _napcat,
-        _newapi,
         _oauth,
         _onboard,
         _plugins,

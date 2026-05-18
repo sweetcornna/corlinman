@@ -56,10 +56,6 @@ def _spec(
         (ProviderKind.QWEN, QwenProvider, None),
         (ProviderKind.GLM, GLMProvider, None),
         (ProviderKind.OPENAI_COMPATIBLE, OpenAICompatibleProvider, "http://localhost:8000/v1"),
-        # newapi is a named OpenAI-compat upstream (QuantumNous/new-api).
-        # The kind exists for admin-UI labelling; runtime dispatches via
-        # OpenAICompatibleProvider, same as openai_compatible.
-        (ProviderKind.NEWAPI, OpenAICompatibleProvider, "http://localhost:3000/v1"),
     ],
 )
 def test_registry_builds_each_kind(
@@ -275,3 +271,76 @@ def test_resolve_provider_hint_default_is_back_compat() -> None:
     assert provider is reg.get("openai-main")
     assert model == "gpt-5.5"
     assert merged["timeout_ms"] == 30_000
+
+
+# --------------------------------------------------------------------- #
+# Legacy ``kind = "newapi"`` silent migration                            #
+# --------------------------------------------------------------------- #
+
+
+def test_legacy_newapi_kind_migrates_to_openai_compatible(capsys) -> None:
+    """A deployed VPS that still carries ``[providers.<x>] kind = "newapi"``
+    must keep booting after the newapi adapter is removed. The model
+    validator rewrites the kind to ``openai_compatible`` BEFORE pydantic
+    parses the enum, and a structlog WARNING fires per migrated slot.
+
+    The named kind no longer exists on :class:`ProviderKind` — this is
+    the contract that lets the deprecation be silent at the wire level
+    while still loud in the logs.
+    """
+    # Clear the per-process dedupe so this test is order-independent.
+    from corlinman_providers import specs as _specs_mod
+
+    _specs_mod._NEWAPI_WARNED.clear()
+
+    raw_entry = {
+        "name": "legacy-pool",
+        "kind": "newapi",
+        "api_key": "sk-legacy",
+        "base_url": "http://localhost:3000/v1",
+        "enabled": True,
+        "params": {},
+    }
+
+    spec = ProviderSpec.model_validate(raw_entry)
+
+    # The kind was rewritten on the way in.
+    assert spec.kind is ProviderKind.OPENAI_COMPATIBLE
+    assert spec.name == "legacy-pool"
+    assert spec.base_url == "http://localhost:3000/v1"
+
+    # And the deprecation event was logged at least once for this slot.
+    # structlog ships configured with the dev ConsoleRenderer in this
+    # codebase, which writes through ``sys.stdout`` — capsys is the
+    # surface that surfaces it deterministically.
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "provider.newapi.deprecated" in combined, combined
+    assert "legacy-pool" in combined
+
+    # Registry must build the migrated spec via OpenAICompatibleProvider.
+    reg = ProviderRegistry([spec])
+    provider = reg.get("legacy-pool")
+    assert provider is not None
+    assert isinstance(provider, OpenAICompatibleProvider)
+
+
+def test_legacy_newapi_kind_dedupes_warning_per_slot() -> None:
+    """The deprecation warning fires once per unique slot name, not per
+    spec reload — config snapshots rebuild the registry on every change
+    and we don't want log spam during normal operation."""
+    from corlinman_providers import specs as _specs_mod
+
+    _specs_mod._NEWAPI_WARNED.clear()
+
+    entry = {
+        "name": "pool-a",
+        "kind": "newapi",
+        "base_url": "http://x/v1",
+    }
+    ProviderSpec.model_validate(entry)
+    ProviderSpec.model_validate(entry)
+    # Distinct slot — should warn separately.
+    ProviderSpec.model_validate({**entry, "name": "pool-b"})
+
+    assert _specs_mod._NEWAPI_WARNED == {"pool-a", "pool-b"}

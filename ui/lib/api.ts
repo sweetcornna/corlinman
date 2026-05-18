@@ -1010,113 +1010,11 @@ export function setProviderEnabled(
 }
 
 // ---------------------------------------------------------------------------
-// newapi connector — both /admin/newapi (post-onboard) and the
-// /admin/onboard/newapi/* stateless wizard endpoints.
+// Onboard finalize-skip — bootstrap with the mock provider.
+// (The newapi-specific endpoints + per-channel probe/list/finalize calls
+// were removed in the 2026-05 provider-auth reshape; provider setup now
+// lives under /admin/credentials, /admin/providers, /admin/oauth.)
 // ---------------------------------------------------------------------------
-
-export interface NewapiChannel {
-  id: number;
-  name: string;
-  type: number;
-  status: number;
-  models: string;
-  group?: string;
-  priority?: number;
-  used_quota?: number;
-  remain_quota?: number;
-  test_time?: number;
-  response_time?: number;
-}
-
-export interface NewapiSummary {
-  connection: {
-    base_url: string;
-    token_masked: string;
-    admin_key_present: boolean;
-    enabled: boolean;
-  };
-  status: "ok" | "degraded";
-}
-
-export interface NewapiConnectionInput {
-  base_url: string;
-  token: string;
-  admin_token?: string;
-}
-
-export interface NewapiProbeResult {
-  next?: string;
-  base_url: string;
-  user: { id: number; username: string; role: number; status: number };
-  server_version?: string;
-  channels_available?: number;
-}
-
-export interface NewapiTestResult {
-  status: number;
-  latency_ms: number;
-  model: string | null;
-}
-
-export function fetchNewapiSummary(): Promise<NewapiSummary> {
-  return apiFetch<NewapiSummary>("/admin/newapi");
-}
-
-export function fetchNewapiChannels(
-  type: "llm" | "embedding" | "tts",
-): Promise<{ channels: NewapiChannel[] }> {
-  return apiFetch(`/admin/newapi/channels?type=${type}`);
-}
-
-export function testNewapi(model: string): Promise<NewapiTestResult> {
-  return apiFetch<NewapiTestResult>("/admin/newapi/test", {
-    method: "POST",
-    body: { model },
-  });
-}
-
-export function patchNewapi(body: Partial<NewapiConnectionInput>): Promise<{
-  ok: boolean;
-}> {
-  return apiFetch("/admin/newapi", { method: "PATCH", body });
-}
-
-// onboard wizard
-export function probeNewapi(input: NewapiConnectionInput): Promise<NewapiProbeResult> {
-  return apiFetch<NewapiProbeResult>("/admin/onboard/newapi/probe", {
-    method: "POST",
-    body: input,
-  });
-}
-
-export function listOnboardChannels(
-  input: NewapiConnectionInput,
-  type: "llm" | "embedding" | "tts",
-): Promise<{ channels: NewapiChannel[] }> {
-  return apiFetch("/admin/onboard/newapi/channels", {
-    method: "POST",
-    body: { ...input, type },
-  });
-}
-
-export interface OnboardFinalizeBody {
-  base_url: string;
-  token: string;
-  admin_token?: string;
-  llm: { channel_id?: number; model: string };
-  embedding: { channel_id?: number; model: string; dimension?: number };
-  tts?: { channel_id?: number; model: string; voice?: string };
-}
-
-export function finalizeOnboard(body: OnboardFinalizeBody): Promise<{
-  ok: boolean;
-  redirect: string;
-}> {
-  return apiFetch("/admin/onboard/finalize", {
-    method: "POST",
-    body,
-  });
-}
 
 /**
  * `POST /admin/onboard/finalize-skip` (Wave 2.1 + 2.2).

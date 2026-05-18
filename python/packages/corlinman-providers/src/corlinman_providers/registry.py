@@ -69,10 +69,6 @@ _KIND_TO_CLASS: dict[ProviderKind, type[Any]] = {
     # runtime fails loudly until proper SigV4 / deployment-routing lands.
     ProviderKind.BEDROCK: BedrockProvider,
     ProviderKind.AZURE: AzureProvider,
-    # new-api speaks pure OpenAI wire format — same shared adapter as
-    # ``openai_compatible``. The kind exists to document operator intent
-    # and let the admin UI light up new-api-specific health columns.
-    ProviderKind.NEWAPI: OpenAICompatibleProvider,
     # Built-in echo provider for the easy-setup skip path (Wave 2.2).
     # Zero-config; always builds successfully even without credentials.
     ProviderKind.MOCK: MockProvider,
