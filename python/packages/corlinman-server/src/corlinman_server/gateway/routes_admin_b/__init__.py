@@ -40,6 +40,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from corlinman_server.gateway.routes_admin_b import (
+    agents as _agents,
     config as _config,
     credentials as _credentials,
     curator as _curator,
@@ -50,6 +51,7 @@ from corlinman_server.gateway.routes_admin_b import (
     models as _models,
     napcat as _napcat,
     newapi as _newapi,
+    oauth as _oauth,
     onboard as _onboard,
     plugins as _plugins,
     providers as _providers,
@@ -74,6 +76,7 @@ def build_router() -> APIRouter:
     """
     root = APIRouter()
     for mod in (
+        _agents,
         _config,
         _credentials,
         _curator,
@@ -84,6 +87,7 @@ def build_router() -> APIRouter:
         _models,
         _napcat,
         _newapi,
+        _oauth,
         _onboard,
         _plugins,
         _providers,

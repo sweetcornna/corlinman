@@ -256,6 +256,112 @@ export const en = {
     deleteFailed: "Delete failed: {{msg}}",
   },
 
+  oauth: {
+    // Umbrella panel
+    panelTitle: "OAuth",
+    panelDescription:
+      "Sign in with your provider account instead of pasting an API key. Tokens are stored server-side and refreshed automatically.",
+    statusUnavailable: "status unavailable",
+
+    // Provider display names
+    providerAnthropic: "Anthropic",
+    providerClaudeCode: "Claude Code",
+    providerCodex: "Codex",
+    providerGemini: "Gemini",
+    providerXai: "xAI",
+
+    // Status badges (umbrella + per-tile)
+    sourcePkce: "Logged in (PKCE)",
+    sourceClaudeCode: "Imported from Claude Code",
+    sourceExternalCli: "Detected via external CLI",
+    sourceEnv: "Using env var",
+    sourceApiKey: "Using API key",
+    sourceNone: "Not configured",
+    badgeDetected: "Detected",
+    badgeNotDetected: "Not detected",
+
+    // Action buttons
+    actionLogin: "Login",
+    actionRefresh: "Refresh",
+    actionDisconnect: "Disconnect",
+    actionImport: "Import",
+    actionImported: "Imported Claude Code credentials",
+
+    // Toasts
+    refreshSuccess: "{{provider}} token refreshed",
+    refreshFailed: "Refresh failed: {{msg}}",
+    disconnectSuccess: "{{provider}} disconnected",
+    disconnectFailed: "Disconnect failed: {{msg}}",
+    importSuccess: "Imported Claude Code credentials",
+    importFailed: "Import failed: {{msg}}",
+    importNotFound: "~/.claude/.credentials.json not found",
+
+    // "expires in" formatter — `n` is a number
+    expiresInSeconds: "expires in {{n}}s",
+    expiresInMinutes: "expires in {{n}}m",
+    expiresInHours: "expires in {{n}}h",
+    expiresInDays: "expires in {{n}}d",
+    expired: "expired",
+
+    // Claude Code import tile
+    claudeCodeHint: "One-shot import from ~/.claude/.credentials.json",
+
+    // External-CLI tiles (Codex / Gemini)
+    detectedVia: "Detected via {{cli}} CLI",
+    notDetectedPrefix: "Not detected — run",
+    notDetectedSuffix: "to enable",
+
+    // Modal — titles
+    modalTitleAnthropic: "Connect Anthropic",
+    modalTitleXai: "Connect xAI",
+    modalDescriptionAnthropic:
+      "Use your Anthropic console account to authorise corlinman. No password leaves your browser — the code-exchange runs server-side.",
+    modalDescriptionXai:
+      "Use your xAI account to authorise corlinman. No password leaves your browser — the code-exchange runs server-side.",
+
+    // Modal — phase copy
+    introAnthropic:
+      "You will be redirected to the Anthropic console in a new tab. After signing in, copy the displayed code (and state token) and paste them back here.",
+    introXai:
+      "You will be redirected to xAI in a new tab. After signing in, copy the displayed code (and state token) and paste them back here.",
+    loginButtonAnthropic: "Login with Anthropic",
+    loginButtonXai: "Login with xAI",
+    openingBrowserAnthropic: "Opening Anthropic in a new tab…",
+    openingBrowserXai: "Opening xAI in a new tab…",
+    awaitingCodeAnthropic:
+      "Sign in on Anthropic, then paste the returned code and state token here.",
+    awaitingCodeXai:
+      "Sign in on xAI, then paste the returned code and state token here.",
+    openManually: "Open manually",
+    codeLabel: "Code",
+    codePlaceholder: "Paste the code from the provider",
+    codeSplitHint:
+      "If the provider gave you a single string like {{example}}, paste it here and we will split it for you.",
+    stateLabel: "State",
+    statePlaceholder:
+      "State token (auto-filled if you pasted CODE#STATE)",
+    exchanging: "Exchanging code for token…",
+    done: "Connected. Closing…",
+
+    // Modal — error / actions
+    errorBothRequired: "Both code and state are required",
+    errorStartFailed: "Failed to start login",
+    errorStartFailedStatus: "Failed to start login (HTTP {{status}})",
+    errorExchangeFailed: "Token exchange failed",
+    errorExchangeFailedStatus: "Token exchange failed (HTTP {{status}})",
+    errorLoginFailed: "Login failed",
+    submit: "Submit",
+    cancel: "Cancel",
+    close: "Close",
+    tryAgain: "Try again",
+
+    // Disconnect confirm dialog
+    disconnectTitle: "Disconnect {{provider}}?",
+    disconnectBody:
+      "This wipes the stored OAuth token. corlinman will fall back to env vars or an API key (if configured). You can sign in again at any time.",
+    disconnectConfirm: "Disconnect",
+  },
+
   nav: {
     dashboard: "Dashboard",
     plugins: "Plugins",

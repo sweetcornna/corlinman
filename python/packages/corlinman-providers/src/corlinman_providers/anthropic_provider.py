@@ -21,7 +21,8 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncIterator, Sequence
-from typing import Any, ClassVar
+from pathlib import Path
+from typing import Any, ClassVar, Literal
 
 import structlog
 
@@ -43,23 +44,179 @@ from corlinman_providers.specs import ProviderKind, ProviderSpec
 logger = structlog.get_logger(__name__)
 
 
+# Header style for the resolved credential. ``bearer`` is used for OAuth
+# tokens (PKCE file or ``ANTHROPIC_TOKEN`` env); ``api_key`` is used for
+# the legacy ``x-api-key`` header path.
+CredentialStyle = Literal["bearer", "api_key"]
+
+
 class AnthropicProvider:
     """Anthropic adapter.
 
     Instantiate with ``AnthropicProvider()`` (default) or
     ``AnthropicProvider(api_key="...")``. Calls lazily construct
     ``anthropic.AsyncAnthropic`` so import-time failures stay benign.
+
+    Credential resolution at construction time follows this order
+    (highest priority first):
+
+    1. ``<data_dir>/.oauth/anthropic.json`` — a PKCE-issued OAuth bundle
+       persisted by the gateway's OAuth router. When the access token is
+       expired (or within 120 s of expiry) and a refresh token is
+       present, we attempt a same-thread refresh via
+       :mod:`corlinman_server.gateway.oauth.anthropic_pkce`.
+    2. ``ANTHROPIC_TOKEN`` env var — manual OAuth override (matches the
+       hermes-agent contract for users who exported a bearer token from
+       another tool).
+    3. ``spec.api_key`` — the existing TOML-config path.
+    4. ``ANTHROPIC_API_KEY`` env var — legacy fallback.
+
+    Sources (1)/(2) bind to the ``Authorization: Bearer <token>`` header
+    (the Anthropic SDK accepts this via the ``auth_token`` kwarg).
+    Sources (3)/(4) bind to the historic ``x-api-key`` header path (the
+    SDK's ``api_key`` kwarg).
+
+    The ``data_dir`` is optional — when absent (e.g. test environments
+    without a gateway-bootstrapped path), the OAuth lookup is skipped
+    and resolution proceeds at step (2).
     """
 
     name: ClassVar[str] = "anthropic"
     kind: ClassVar[ProviderKind] = ProviderKind.ANTHROPIC
 
-    def __init__(self, api_key: str | None = None) -> None:
-        self._api_key = api_key or os.environ.get("ANTHROPIC_API_KEY") or None
+    def __init__(
+        self,
+        api_key: str | None = None,
+        *,
+        data_dir: Path | None = None,
+    ) -> None:
+        self._spec_api_key = api_key
+        self._data_dir = data_dir
 
     @classmethod
-    def build(cls, spec: ProviderSpec) -> AnthropicProvider:
-        return cls(api_key=spec.api_key)
+    def build(
+        cls,
+        spec: ProviderSpec,
+        *,
+        data_dir: Path | None = None,
+    ) -> AnthropicProvider:
+        # ``data_dir`` is forwarded by :class:`ProviderRegistry` so the
+        # OAuth-file resolution path (source 1 in the docstring above)
+        # actually fires in production. Adapters that don't take the
+        # kwarg are called through the legacy 1-arg shim in
+        # :meth:`ProviderRegistry._build_adapter`; either signature is
+        # accepted forever.
+        return cls(api_key=spec.api_key, data_dir=data_dir)
+
+    def _credential_resolution(self) -> tuple[str | None, CredentialStyle]:
+        """Resolve the active credential and the header style to use.
+
+        Returns ``(token, style)``. ``token`` is ``None`` when no source
+        yields one — the caller raises ``RuntimeError`` so the operator
+        sees a clear "API key missing" message at the first stream
+        attempt instead of a confusing 401 from Anthropic.
+
+        This method is intentionally synchronous: the OAuth file is a
+        small JSON read and the refresh path is rare (token TTL is 1h
+        and refresh runs at <120s remaining). When a refresh is
+        attempted we run it via ``asyncio.run`` only when no loop is
+        active — when we're already inside one (the common case for a
+        live request), we skip the refresh and return the still-valid
+        access token, letting the caller hit Anthropic with a stale
+        token at most once before the next pass refreshes. This avoids
+        deadlocks from spawning a sync-driven loop inside an existing
+        one.
+        """
+        # 1. OAuth file under data_dir/.oauth/anthropic.json
+        oauth_token = self._resolve_oauth_token()
+        if oauth_token:
+            return oauth_token, "bearer"
+
+        # 2. ANTHROPIC_TOKEN env (manual OAuth override)
+        env_token = (os.environ.get("ANTHROPIC_TOKEN") or "").strip()
+        if env_token:
+            return env_token, "bearer"
+
+        # 3. spec.api_key
+        if self._spec_api_key:
+            return self._spec_api_key, "api_key"
+
+        # 4. ANTHROPIC_API_KEY env (legacy)
+        env_key = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
+        if env_key:
+            return env_key, "api_key"
+
+        return None, "api_key"
+
+    def _resolve_oauth_token(self) -> str | None:
+        """Read the OAuth file (if any) and refresh if near-expiry."""
+        if self._data_dir is None:
+            return None
+        # Lazy import — the OAuth module lives in corlinman-server which
+        # is *not* a dependency of corlinman-providers. We tolerate the
+        # import miss so providers can be used standalone (CLI, tests).
+        try:
+            from corlinman_server.gateway.oauth import (  # type: ignore[import-not-found]  # noqa: PLC0415
+                load_credential,
+                save_credential,
+            )
+            from corlinman_server.gateway.oauth import anthropic_pkce  # type: ignore[import-not-found]  # noqa: PLC0415
+        except ImportError:
+            return None
+
+        cred = load_credential(self._data_dir, "anthropic")
+        if cred is None:
+            return None
+
+        # Refresh on-use when <120s remaining and a refresh token is
+        # present. Skipped silently when we're already inside an event
+        # loop — see method docstring for the rationale.
+        if cred.is_expired(skew_seconds=120) and cred.refresh_token:
+            try:
+                refreshed = self._refresh_sync(anthropic_pkce, cred.refresh_token)
+            except Exception as exc:  # noqa: BLE001 — best-effort refresh
+                logger.warning("anthropic.oauth_refresh_failed", error=str(exc))
+                refreshed = None
+            if refreshed is not None:
+                new_cred = cred.with_refreshed(
+                    access_token=refreshed["access_token"],
+                    refresh_token=refreshed.get("refresh_token"),
+                    expires_at_ms=refreshed.get("expires_at_ms"),
+                )
+                try:
+                    save_credential(self._data_dir, new_cred)
+                except OSError as exc:
+                    logger.warning("anthropic.oauth_save_failed", error=str(exc))
+                cred = new_cred
+        return cred.access_token
+
+    @staticmethod
+    def _refresh_sync(pkce_mod: Any, refresh_token: str) -> dict[str, Any] | None:
+        """Refresh wrapper that bridges async refresh into sync caller.
+
+        When called from inside a running event loop we return ``None``
+        to avoid a nested-loop deadlock; the access token is returned
+        unchanged and the next pass through ``_resolve_oauth_token`` (a
+        few seconds later when the token finally expires) will refresh
+        from outside the loop or, more commonly, from the
+        ``/admin/oauth/anthropic/refresh`` endpoint the operator
+        triggers manually.
+        """
+        import asyncio  # noqa: PLC0415
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(pkce_mod.refresh_token(refresh_token=refresh_token))
+        return None
+
+    # Compatibility shim: existing tests/call-sites read ``_api_key`` to
+    # gate the "is anything configured?" check. We compute it on the fly
+    # from the resolution chain so the property reflects the live state.
+    @property
+    def _api_key(self) -> str | None:
+        token, _style = self._credential_resolution()
+        return token
 
     @classmethod
     def params_schema(cls) -> dict[str, Any]:
@@ -81,14 +238,21 @@ class AnthropicProvider:
         Raises :class:`RuntimeError` when no API key is configured —
         surfacing config gaps early instead of silent failure.
         """
-        if not self._api_key:
+        token, style = self._credential_resolution()
+        if not token:
             raise RuntimeError("API key missing: set ANTHROPIC_API_KEY")
 
         # Imported lazily so test environments without the SDK still import this
         # module (and so importing the module doesn't require network).
         from anthropic import AsyncAnthropic  # type: ignore[import-not-found]
 
-        client = AsyncAnthropic(api_key=self._api_key)
+        if style == "bearer":
+            # OAuth path: the Anthropic SDK supports ``auth_token=`` which
+            # sets ``Authorization: Bearer <token>`` and suppresses the
+            # default ``x-api-key`` header.
+            client = AsyncAnthropic(auth_token=token)
+        else:
+            client = AsyncAnthropic(api_key=token)
         system, anthropic_messages = _split_system(messages)
         kwargs: dict[str, Any] = {
             "model": model,

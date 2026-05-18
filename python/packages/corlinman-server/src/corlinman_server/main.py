@@ -29,7 +29,7 @@ from corlinman_grpc import agent_pb2_grpc
 from corlinman_providers import AliasEntry, ProviderRegistry, ProviderSpec
 
 from corlinman_server.admin_sidecar import start_admin_sidecar
-from corlinman_server.agent_servicer import CorlinmanAgentServicer
+from corlinman_server.agent_servicer import CorlinmanAgentServicer, _resolve_data_dir
 from corlinman_server.middleware import install_tracecontext_interceptor
 from corlinman_server.shutdown import GracefulShutdown
 from corlinman_server.telemetry import init_telemetry, shutdown_telemetry
@@ -60,7 +60,14 @@ class _ReloadingProviderResolver:
     def __init__(self, path: str | None) -> None:
         self._path = path
         self._mtime: float | None = None
-        self._registry = ProviderRegistry([])
+        # Resolve the data dir once at construction so OAuth-aware
+        # adapters (AnthropicProvider today) can locate their token
+        # files under ``<data_dir>/.oauth/``. Held on the resolver so
+        # every rebuild after a config-file write picks the same dir
+        # up — env changes mid-run would be picked up only on next
+        # restart, which is the same model as the rest of the gateway.
+        self._data_dir = _resolve_data_dir()
+        self._registry = ProviderRegistry([], data_dir=self._data_dir)
         self._aliases: dict[str, AliasEntry] = {}
         if path:
             self._reload_if_changed()
@@ -81,7 +88,7 @@ class _ReloadingProviderResolver:
             return
         is_first_load = self._mtime is None
         specs, aliases = _load_config()
-        self._registry = ProviderRegistry(specs)
+        self._registry = ProviderRegistry(specs, data_dir=self._data_dir)
         self._aliases = aliases
         self._mtime = mtime
         event = "providers.registered" if is_first_load else "providers.reloaded"

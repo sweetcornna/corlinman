@@ -243,6 +243,109 @@ export const zhCN = {
     deleteFailed: "删除失败：{{msg}}",
   },
 
+  oauth: {
+    // Umbrella panel
+    panelTitle: "OAuth",
+    panelDescription:
+      "使用 provider 账户登录，无需粘贴 API key。令牌存储在服务端并自动刷新。",
+    statusUnavailable: "状态不可用",
+
+    // Provider display names
+    providerAnthropic: "Anthropic",
+    providerClaudeCode: "Claude Code",
+    providerCodex: "Codex",
+    providerGemini: "Gemini",
+    providerXai: "xAI",
+
+    // Status badges (umbrella + per-tile)
+    sourcePkce: "已登录（PKCE）",
+    sourceClaudeCode: "已从 Claude Code 导入",
+    sourceExternalCli: "已通过外部 CLI 检测",
+    sourceEnv: "使用环境变量",
+    sourceApiKey: "使用 API key",
+    sourceNone: "未配置",
+    badgeDetected: "已检测",
+    badgeNotDetected: "未检测",
+
+    // Action buttons
+    actionLogin: "登录",
+    actionRefresh: "刷新",
+    actionDisconnect: "断开连接",
+    actionImport: "导入",
+    actionImported: "已从 Claude Code 导入凭证",
+
+    // Toasts
+    refreshSuccess: "{{provider}} 令牌已刷新",
+    refreshFailed: "刷新失败：{{msg}}",
+    disconnectSuccess: "{{provider}} 已断开",
+    disconnectFailed: "断开失败：{{msg}}",
+    importSuccess: "已从 Claude Code 导入凭证",
+    importFailed: "导入失败：{{msg}}",
+    importNotFound: "未找到 ~/.claude/.credentials.json",
+
+    // "expires in" formatter — `n` is a number
+    expiresInSeconds: "{{n}} 秒后过期",
+    expiresInMinutes: "{{n}} 分钟后过期",
+    expiresInHours: "{{n}} 小时后过期",
+    expiresInDays: "{{n}} 天后过期",
+    expired: "已过期",
+
+    // Claude Code import tile
+    claudeCodeHint: "从 ~/.claude/.credentials.json 一次性导入",
+
+    // External-CLI tiles (Codex / Gemini)
+    detectedVia: "通过 {{cli}} CLI 检测",
+    notDetectedPrefix: "未检测 — 运行",
+    notDetectedSuffix: "启用",
+
+    // Modal — titles
+    modalTitleAnthropic: "连接 Anthropic",
+    modalTitleXai: "连接 xAI",
+    modalDescriptionAnthropic:
+      "使用 Anthropic console 账户授权 corlinman。密码不会离开浏览器 —— 兑换 code 在服务端进行。",
+    modalDescriptionXai:
+      "使用 xAI 账户授权 corlinman。密码不会离开浏览器 —— 兑换 code 在服务端进行。",
+
+    // Modal — phase copy
+    introAnthropic:
+      "将在新标签页打开 Anthropic console。登录后请将返回的 code（与 state token）粘贴回此处。",
+    introXai:
+      "将在新标签页打开 xAI 登录页。登录后请将返回的 code（与 state token）粘贴回此处。",
+    loginButtonAnthropic: "使用 Anthropic 登录",
+    loginButtonXai: "使用 xAI 登录",
+    openingBrowserAnthropic: "正在新标签页打开 Anthropic…",
+    openingBrowserXai: "正在新标签页打开 xAI…",
+    awaitingCodeAnthropic: "请在 Anthropic 登录后将返回的 code 与 state 粘贴到此处。",
+    awaitingCodeXai: "请在 xAI 登录后将返回的 code 与 state 粘贴到此处。",
+    openManually: "手动打开",
+    codeLabel: "Code",
+    codePlaceholder: "粘贴 provider 返回的 code",
+    codeSplitHint:
+      "若 provider 给出形如 {{example}} 的单字符串，请直接粘贴，我们会自动拆分。",
+    stateLabel: "State",
+    statePlaceholder: "State token（若粘贴 CODE#STATE 会自动填充）",
+    exchanging: "正在兑换 code 为令牌…",
+    done: "已连接，正在关闭…",
+
+    // Modal — error / actions
+    errorBothRequired: "code 与 state 均为必填",
+    errorStartFailed: "启动登录失败",
+    errorStartFailedStatus: "启动登录失败（HTTP {{status}}）",
+    errorExchangeFailed: "兑换 code 失败",
+    errorExchangeFailedStatus: "兑换 code 失败（HTTP {{status}}）",
+    errorLoginFailed: "登录失败",
+    submit: "提交",
+    cancel: "取消",
+    close: "关闭",
+    tryAgain: "重试",
+
+    // Disconnect confirm dialog
+    disconnectTitle: "断开 {{provider}} 连接？",
+    disconnectBody:
+      "将清除已存储的 OAuth 令牌。corlinman 会回退至环境变量或 API key（若已配置）。可随时重新登录。",
+    disconnectConfirm: "断开",
+  },
+
   nav: {
     dashboard: "仪表盘",
     plugins: "插件",

@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * /credentials — provider-credential manager (Wave 2.3).
+ * /credentials — provider-credential manager (Wave 2.3, extended W-A2 → W-A3).
  *
  * Builds on top of `/admin/credentials*` (see
  * `gateway/routes_admin_b/credentials.py`). Borrows hermes-agent's
@@ -15,13 +15,27 @@
  * Plaintext values never leave the gateway; the page only ever asks the
  * server to redact + return previews. Reveal toggles the masked display
  * between "••••••••" and "…xyz9", never the full literal.
+ *
+ * The OAuth panel near the top renders five tiles:
+ *   - Anthropic (PKCE) + Claude Code (one-shot import)  — W-A2
+ *   - Codex + Gemini (external CLI detection, read-only) — W-A3
+ *   - xAI (PKCE)                                         — W-A3
  */
 
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { KeyRound, Plug, Search } from "lucide-react";
+import {
+  Download,
+  KeyRound,
+  LogIn,
+  Plug,
+  RefreshCw,
+  Search,
+  ShieldCheck,
+  Unplug,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -45,12 +59,27 @@ import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { EnvVarRow } from "@/components/credentials/env-var-row";
 import {
+  OAuthLoginModal,
+  type OAuthLoginProvider,
+} from "@/components/admin/oauth-login-modal";
+import {
   CorlinmanApiError,
   deleteCredential,
+  disconnectAnthropicOAuth,
+  disconnectXaiOAuth,
+  getCodexStatus,
+  getGeminiStatus,
+  getOAuthStatus,
+  importClaudeCodeCredentials,
   listCredentials,
+  refreshAnthropicOAuth,
+  refreshXaiOAuth,
   setCredential,
   setProviderEnabled,
   type CredentialProvider,
+  type OAuthDetectStatus,
+  type OAuthProviderStatus,
+  type OAuthSource,
 } from "@/lib/api";
 
 const FIELD_LABEL_KEYS: Record<string, string> = {
@@ -62,6 +91,64 @@ const FIELD_LABEL_KEYS: Record<string, string> = {
 
 function isProviderConfigured(p: CredentialProvider): boolean {
   return p.fields.some((f) => f.set);
+}
+
+// --- OAuth section helpers --------------------------------------------------
+
+const OAUTH_POLL_INTERVAL_MS = 30_000;
+
+/** Translation hook for the i18n `oauth.expiresIn*` keys. Pure — the
+ * `t` instance is passed in so this stays unit-testable. */
+function formatExpiresIn(
+  t: (key: string, vars?: Record<string, unknown>) => string,
+  seconds: number | null,
+): string | null {
+  if (seconds === null || seconds === undefined) return null;
+  if (seconds <= 0) return t("oauth.expired");
+  if (seconds < 60) return t("oauth.expiresInSeconds", { n: seconds });
+  const mins = Math.floor(seconds / 60);
+  if (mins < 60) return t("oauth.expiresInMinutes", { n: mins });
+  const hours = Math.floor(mins / 60);
+  if (hours < 48) return t("oauth.expiresInHours", { n: hours });
+  const days = Math.floor(hours / 24);
+  return t("oauth.expiresInDays", { n: days });
+}
+
+/** Derive the umbrella `expires_in_seconds` from the detection-only
+ * endpoints' `expires_at_ms`. Returns null when the source omits it. */
+function expiresAtMsToSeconds(expiresAtMs: number | null): number | null {
+  if (expiresAtMs == null) return null;
+  const diff = expiresAtMs - Date.now();
+  return Math.floor(diff / 1000);
+}
+
+function describeSource(
+  t: (key: string) => string,
+  source: OAuthSource | "external-cli",
+): { label: string; tone: "ok" | "muted" | "warn" } {
+  switch (source) {
+    case "pkce":
+      return { label: t("oauth.sourcePkce"), tone: "ok" };
+    case "claude-code":
+      return { label: t("oauth.sourceClaudeCode"), tone: "ok" };
+    case "external-cli":
+      return { label: t("oauth.sourceExternalCli"), tone: "ok" };
+    case "env":
+      return { label: t("oauth.sourceEnv"), tone: "muted" };
+    case "api-key":
+      return { label: t("oauth.sourceApiKey"), tone: "muted" };
+    case "none":
+    default:
+      return { label: t("oauth.sourceNone"), tone: "warn" };
+  }
+}
+
+function findProvider(
+  status: { providers: OAuthProviderStatus[] } | undefined,
+  id: string,
+): OAuthProviderStatus | null {
+  if (!status) return null;
+  return status.providers.find((p) => p.id === id) ?? null;
 }
 
 export default function CredentialsPage() {
@@ -143,6 +230,136 @@ export default function CredentialsPage() {
     },
   });
 
+  // --- OAuth panel state ---------------------------------------------------
+  /** Which provider's modal is open. `null` means closed. */
+  const [oauthModalProvider, setOauthModalProvider] =
+    React.useState<OAuthLoginProvider | null>(null);
+  /** Disconnect dialog is keyed by provider id so we can re-use one
+   * <Dialog> for both anthropic and xai. */
+  const [pendingDisconnect, setPendingDisconnect] = React.useState<
+    null | "anthropic" | "xai"
+  >(null);
+
+  const oauthStatus = useQuery({
+    queryKey: ["admin", "oauth", "status"],
+    queryFn: ({ signal }) => getOAuthStatus({ signal }),
+    retry: false,
+    refetchInterval: OAUTH_POLL_INTERVAL_MS,
+    refetchOnWindowFocus: false,
+  });
+
+  const codexStatus = useQuery({
+    queryKey: ["admin", "oauth", "codex", "status"],
+    queryFn: ({ signal }) => getCodexStatus({ signal }),
+    retry: false,
+    refetchInterval: OAUTH_POLL_INTERVAL_MS,
+    refetchOnWindowFocus: false,
+  });
+
+  const geminiStatus = useQuery({
+    queryKey: ["admin", "oauth", "gemini", "status"],
+    queryFn: ({ signal }) => getGeminiStatus({ signal }),
+    retry: false,
+    refetchInterval: OAUTH_POLL_INTERVAL_MS,
+    refetchOnWindowFocus: false,
+  });
+
+  const importClaudeCode = useMutation({
+    mutationFn: () => importClaudeCodeCredentials(),
+    onSuccess: () => {
+      toast.success(t("oauth.importSuccess"));
+      qc.invalidateQueries({ queryKey: ["admin", "oauth", "status"] });
+    },
+    onError: (err) => {
+      if (err instanceof CorlinmanApiError && err.status === 404) {
+        toast.error(t("oauth.importNotFound"));
+        return;
+      }
+      toast.error(
+        t("oauth.importFailed", {
+          msg: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    },
+  });
+
+  const refreshAnthropic = useMutation({
+    mutationFn: () => refreshAnthropicOAuth(),
+    onSuccess: () => {
+      toast.success(
+        t("oauth.refreshSuccess", { provider: t("oauth.providerAnthropic") }),
+      );
+      qc.invalidateQueries({ queryKey: ["admin", "oauth", "status"] });
+    },
+    onError: (err) => {
+      toast.error(
+        t("oauth.refreshFailed", {
+          msg: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    },
+  });
+
+  const disconnectAnthropic = useMutation({
+    mutationFn: () => disconnectAnthropicOAuth(),
+    onSuccess: () => {
+      toast.success(
+        t("oauth.disconnectSuccess", {
+          provider: t("oauth.providerAnthropic"),
+        }),
+      );
+      setPendingDisconnect(null);
+      qc.invalidateQueries({ queryKey: ["admin", "oauth", "status"] });
+    },
+    onError: (err) => {
+      toast.error(
+        t("oauth.disconnectFailed", {
+          msg: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    },
+  });
+
+  const refreshXai = useMutation({
+    mutationFn: () => refreshXaiOAuth(),
+    onSuccess: () => {
+      toast.success(
+        t("oauth.refreshSuccess", { provider: t("oauth.providerXai") }),
+      );
+      qc.invalidateQueries({ queryKey: ["admin", "oauth", "status"] });
+    },
+    onError: (err) => {
+      toast.error(
+        t("oauth.refreshFailed", {
+          msg: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    },
+  });
+
+  const disconnectXai = useMutation({
+    mutationFn: () => disconnectXaiOAuth(),
+    onSuccess: () => {
+      toast.success(
+        t("oauth.disconnectSuccess", { provider: t("oauth.providerXai") }),
+      );
+      setPendingDisconnect(null);
+      qc.invalidateQueries({ queryKey: ["admin", "oauth", "status"] });
+    },
+    onError: (err) => {
+      toast.error(
+        t("oauth.disconnectFailed", {
+          msg: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    },
+  });
+
+  const anthropic = findProvider(oauthStatus.data, "anthropic");
+  const xai = findProvider(oauthStatus.data, "xai");
+  const anthropicLoggedIn = anthropic?.source === "pkce";
+  const xaiLoggedIn = xai?.source === "pkce";
+
   const providers = credentials.data?.providers ?? [];
 
   const filtered = React.useMemo(() => {
@@ -158,6 +375,19 @@ export default function CredentialsPage() {
 
   const total = providers.length;
   const configured = providers.filter(isProviderConfigured).length;
+
+  const disconnectActive =
+    pendingDisconnect === "anthropic"
+      ? disconnectAnthropic
+      : pendingDisconnect === "xai"
+        ? disconnectXai
+        : null;
+  const disconnectProviderLabel =
+    pendingDisconnect === "anthropic"
+      ? t("oauth.providerAnthropic")
+      : pendingDisconnect === "xai"
+        ? t("oauth.providerXai")
+        : "";
 
   return (
     <div className="flex flex-col gap-6">
@@ -176,6 +406,103 @@ export default function CredentialsPage() {
           {t("credentials.countSummary", { total, configured })}
         </p>
       </header>
+
+      <Card data-testid="oauth-panel">
+        <CardHeader className="border-b border-tp-glass-edge">
+          <div className="flex items-center gap-2">
+            <ShieldCheck className="h-4 w-4 text-tp-ink-3" aria-hidden />
+            <CardTitle className="text-base">{t("oauth.panelTitle")}</CardTitle>
+          </div>
+          <CardDescription>{t("oauth.panelDescription")}</CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-3 pt-4 md:grid-cols-2">
+          {/* --- Anthropic tile --- */}
+          <OAuthPkceTile
+            testId="oauth-tile-anthropic"
+            providerLabel={t("oauth.providerAnthropic")}
+            loading={oauthStatus.isPending}
+            errored={oauthStatus.isError}
+            status={anthropic}
+            loggedIn={anthropicLoggedIn}
+            t={t}
+            onLogin={() => setOauthModalProvider("anthropic")}
+            onRefresh={() => refreshAnthropic.mutate()}
+            refreshing={refreshAnthropic.isPending}
+            onDisconnect={() => setPendingDisconnect("anthropic")}
+          />
+
+          {/* --- Claude Code import tile --- */}
+          <div
+            className="flex flex-col gap-3 rounded-md border border-tp-glass-edge p-3"
+            data-testid="oauth-tile-claude-code"
+          >
+            <div className="flex flex-col gap-1">
+              <span className="font-medium">
+                {t("oauth.providerClaudeCode")}
+              </span>
+              <span className="text-[11px] text-tp-ink-3">
+                {t("oauth.claudeCodeHint")}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={importClaudeCode.isPending}
+                onClick={() => importClaudeCode.mutate()}
+                data-testid="oauth-tile-claude-code-import"
+              >
+                <Download className="h-4 w-4" aria-hidden />
+                {t("oauth.actionImport")}
+              </Button>
+              {anthropic?.source === "claude-code" && (
+                <Badge className="border-transparent bg-ok/15 text-ok">
+                  {t("oauth.badgeDetected")}
+                </Badge>
+              )}
+            </div>
+          </div>
+
+          {/* --- Codex (external CLI, read-only) --- */}
+          <OAuthDetectTile
+            testId="oauth-tile-codex"
+            providerLabel={t("oauth.providerCodex")}
+            cliName="codex"
+            cliCommand="codex login"
+            status={codexStatus.data}
+            loading={codexStatus.isPending}
+            errored={codexStatus.isError}
+            t={t}
+          />
+
+          {/* --- Gemini (external CLI, read-only) --- */}
+          <OAuthDetectTile
+            testId="oauth-tile-gemini"
+            providerLabel={t("oauth.providerGemini")}
+            cliName="gemini"
+            cliCommand="gemini auth login"
+            status={geminiStatus.data}
+            loading={geminiStatus.isPending}
+            errored={geminiStatus.isError}
+            t={t}
+          />
+
+          {/* --- xAI (PKCE) --- */}
+          <OAuthPkceTile
+            testId="oauth-tile-xai"
+            providerLabel={t("oauth.providerXai")}
+            loading={oauthStatus.isPending}
+            errored={oauthStatus.isError}
+            status={xai}
+            loggedIn={xaiLoggedIn}
+            t={t}
+            onLogin={() => setOauthModalProvider("xai")}
+            onRefresh={() => refreshXai.mutate()}
+            refreshing={refreshXai.isPending}
+            onDisconnect={() => setPendingDisconnect("xai")}
+          />
+        </CardContent>
+      </Card>
 
       <div className="flex flex-wrap items-center gap-3">
         <div className="relative flex-1 min-w-[200px] max-w-md">
@@ -324,6 +651,50 @@ export default function CredentialsPage() {
         </div>
       )}
 
+      <OAuthLoginModal
+        open={oauthModalProvider !== null}
+        provider={oauthModalProvider ?? "anthropic"}
+        onOpenChange={(open) => {
+          if (!open) setOauthModalProvider(null);
+        }}
+        onSuccess={() =>
+          qc.invalidateQueries({ queryKey: ["admin", "oauth", "status"] })
+        }
+      />
+
+      <Dialog
+        open={pendingDisconnect !== null}
+        onOpenChange={(o) => {
+          if (!o && !disconnectActive?.isPending) setPendingDisconnect(null);
+        }}
+      >
+        <DialogContent data-testid="oauth-disconnect-dialog">
+          <DialogHeader>
+            <DialogTitle>
+              {t("oauth.disconnectTitle", { provider: disconnectProviderLabel })}
+            </DialogTitle>
+            <DialogDescription>{t("oauth.disconnectBody")}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setPendingDisconnect(null)}
+              data-testid="oauth-disconnect-cancel"
+            >
+              {t("common.cancel")}
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={disconnectActive?.isPending}
+              onClick={() => disconnectActive?.mutate()}
+              data-testid="oauth-disconnect-confirm"
+            >
+              {t("oauth.disconnectConfirm")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog
         open={!!pendingDelete}
         onOpenChange={(o) => {
@@ -370,6 +741,209 @@ export default function CredentialsPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Tile sub-components.
+//
+// Lifted inline so the main render stays scannable; both tile shapes are
+// stateless presentation — every mutation is driven by the parent's
+// useMutation hooks. PkceTile drives the Anthropic + xAI rows; DetectTile
+// drives Codex + Gemini (read-only).
+// ---------------------------------------------------------------------------
+
+interface PkceTileProps {
+  testId: string;
+  providerLabel: string;
+  loading: boolean;
+  errored: boolean;
+  status: OAuthProviderStatus | null;
+  loggedIn: boolean;
+  refreshing: boolean;
+  t: (key: string, vars?: Record<string, unknown>) => string;
+  onLogin: () => void;
+  onRefresh: () => void;
+  onDisconnect: () => void;
+}
+
+function OAuthPkceTile({
+  testId,
+  providerLabel,
+  loading,
+  errored,
+  status,
+  loggedIn,
+  refreshing,
+  t,
+  onLogin,
+  onRefresh,
+  onDisconnect,
+}: PkceTileProps) {
+  return (
+    <div
+      className="flex flex-col gap-3 rounded-md border border-tp-glass-edge p-3"
+      data-testid={testId}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex flex-col gap-1">
+          <span className="font-medium">{providerLabel}</span>
+          {loading ? (
+            <Skeleton className="h-4 w-32" />
+          ) : errored ? (
+            <Badge variant="secondary" className="self-start">
+              {t("oauth.statusUnavailable")}
+            </Badge>
+          ) : (
+            <div className="flex flex-wrap items-center gap-2">
+              {(() => {
+                const desc = describeSource(t, status?.source ?? "none");
+                return (
+                  <Badge
+                    className={
+                      desc.tone === "ok"
+                        ? "border-transparent bg-ok/15 text-ok"
+                        : desc.tone === "warn"
+                          ? "border-transparent bg-destructive/15 text-destructive"
+                          : "bg-secondary text-secondary-foreground"
+                    }
+                    data-testid={`${testId}-status`}
+                  >
+                    {desc.label}
+                  </Badge>
+                );
+              })()}
+              {status?.expires_in_seconds != null && (
+                <span className="text-[11px] text-tp-ink-3">
+                  {formatExpiresIn(t, status.expires_in_seconds)}
+                </span>
+              )}
+              {status?.username && (
+                <span className="text-[11px] text-tp-ink-3">
+                  {status.username}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        {!loggedIn && (
+          <Button
+            size="sm"
+            onClick={onLogin}
+            data-testid={`${testId}-login`}
+          >
+            <LogIn className="h-4 w-4" aria-hidden />
+            {t("oauth.actionLogin")}
+          </Button>
+        )}
+        {loggedIn && (
+          <>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={refreshing}
+              onClick={onRefresh}
+              data-testid={`${testId}-refresh`}
+            >
+              <RefreshCw
+                className={refreshing ? "h-4 w-4 animate-spin" : "h-4 w-4"}
+                aria-hidden
+              />
+              {t("oauth.actionRefresh")}
+            </Button>
+            <Button
+              size="sm"
+              variant="destructive"
+              onClick={onDisconnect}
+              data-testid={`${testId}-disconnect`}
+            >
+              <Unplug className="h-4 w-4" aria-hidden />
+              {t("oauth.actionDisconnect")}
+            </Button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+interface DetectTileProps {
+  testId: string;
+  providerLabel: string;
+  /** Short CLI name surfaced in "Detected via {{cli}} CLI". */
+  cliName: string;
+  /** Full shell command, rendered in a monospace span. */
+  cliCommand: string;
+  status: OAuthDetectStatus | undefined;
+  loading: boolean;
+  errored: boolean;
+  t: (key: string, vars?: Record<string, unknown>) => string;
+}
+
+function OAuthDetectTile({
+  testId,
+  providerLabel,
+  cliName,
+  cliCommand,
+  status,
+  loading,
+  errored,
+  t,
+}: DetectTileProps) {
+  const detected = !!status?.detected;
+  const expiresInSeconds = expiresAtMsToSeconds(status?.expires_at_ms ?? null);
+  return (
+    <div
+      className="flex flex-col gap-3 rounded-md border border-tp-glass-edge p-3"
+      data-testid={testId}
+    >
+      <div className="flex flex-col gap-1">
+        <span className="font-medium">{providerLabel}</span>
+        {loading ? (
+          <Skeleton className="h-4 w-32" />
+        ) : errored ? (
+          <Badge variant="secondary" className="self-start">
+            {t("oauth.statusUnavailable")}
+          </Badge>
+        ) : detected ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge
+              className="border-transparent bg-ok/15 text-ok"
+              data-testid={`${testId}-status`}
+            >
+              {t("oauth.detectedVia", { cli: cliName })}
+            </Badge>
+            {expiresInSeconds != null && (
+              <span className="text-[11px] text-tp-ink-3">
+                {formatExpiresIn(t, expiresInSeconds)}
+              </span>
+            )}
+            {status?.account_id && (
+              <span className="text-[11px] text-tp-ink-3">
+                {status.account_id}
+              </span>
+            )}
+          </div>
+        ) : (
+          <div className="flex flex-col gap-1">
+            <Badge
+              variant="secondary"
+              className="self-start"
+              data-testid={`${testId}-status`}
+            >
+              {t("oauth.badgeNotDetected")}
+            </Badge>
+            <span className="text-[11px] text-tp-ink-3">
+              {t("oauth.notDetectedPrefix")}{" "}
+              <code className="font-mono">{cliCommand}</code>{" "}
+              {t("oauth.notDetectedSuffix")}
+            </span>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
