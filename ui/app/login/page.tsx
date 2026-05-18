@@ -36,7 +36,7 @@ import { Label } from "@/components/ui/label";
 
 export default function LoginPage() {
   return (
-    <div className="relative grid min-h-dvh grid-cols-1 bg-background md:grid-cols-[40%_60%]">
+    <div className="relative grid min-h-dvh grid-cols-1 md:grid-cols-[40%_60%]">
       {/* theme + language toggles in top-right regardless of column */}
       <div className="absolute right-4 top-4 z-10 flex items-center gap-2">
         <LanguageToggle />

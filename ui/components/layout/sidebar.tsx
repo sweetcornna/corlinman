@@ -366,12 +366,11 @@ function SidebarItem({
       onKeyDown={onKeyDown}
       className={cn(
         "group relative flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-[13px] transition-colors",
-        // Tidepool: hover = text lift + a dim amber left hint (consistent
-        // with the animated active indicator). No filled bg — a plain
-        // rgba(255,255,255,0.04–0.08) rectangle reads as a stray layer on
-        // top of the already-glass sidebar.
+        // Active: carved-out highlight box with the sun-moon mandala
+        // pattern as its background (see .pattern-active in globals.css).
+        // Inactive: text lift on hover only.
         active
-          ? "text-tp-ink"
+          ? "pattern-active text-tp-ink"
           : "text-tp-ink-2 hover:text-tp-ink",
         collapsed && "justify-center px-0",
         nested && !collapsed && "pl-8",
