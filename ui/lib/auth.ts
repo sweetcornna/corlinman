@@ -133,3 +133,35 @@ export function changeUsername(
     body: req,
   });
 }
+
+// ---------------------------------------------------------------------------
+// Host-token password reset (unauthenticated; mints a file the operator
+// must read via SSH to prove host access).
+// ---------------------------------------------------------------------------
+
+export interface PasswordResetRequestResponse {
+  token_path: string;
+  ttl_seconds: number;
+  hint: string;
+}
+
+export interface PasswordResetCompleteRequest {
+  token: string;
+  new_password: string;
+}
+
+export function requestPasswordReset(): Promise<PasswordResetRequestResponse> {
+  return apiFetch<PasswordResetRequestResponse>(
+    "/admin/password-reset/request",
+    { method: "POST" },
+  );
+}
+
+export function completePasswordReset(
+  req: PasswordResetCompleteRequest,
+): Promise<{ status: string }> {
+  return apiFetch<{ status: string }>("/admin/password-reset/complete", {
+    method: "POST",
+    body: req,
+  });
+}

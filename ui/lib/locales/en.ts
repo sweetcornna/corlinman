@@ -63,6 +63,29 @@ export const en = {
     forgotPassword: "Forgot password?",
     forgotPasswordBody:
       "No in-app reset yet. SSH into the gateway host and replace the argon2 hash in ~/.corlinman/config.toml [admin] password_hash, then restart the container. Generate a new hash with `python -c \"from argon2 import PasswordHasher; print(PasswordHasher().hash('NEW_PASS'))\"`.",
+    resetIntro:
+      "Self-service reset uses a one-time token written to the gateway host. Clicking below mints the token; you'll SSH in to read it, then paste it back here with a new password.",
+    resetMint: "Generate reset token",
+    resetStep1Title: "Step 1 · SSH in and read the token",
+    resetStep1Body:
+      "On the gateway host (you need shell access — same operator-proves-ownership model as editing config.toml), copy the value printed by:",
+    resetCountdown: "Token expires in {{m}}:{{s}}",
+    resetTokenLabel: "Reset token",
+    resetSubmit: "Reset password",
+    resetCancel: "Cancel",
+    resetSuccessTitle: "Password reset complete",
+    resetSuccessBody:
+      "Your new password is active. Close this panel and sign in with the new credentials.",
+    resetRateLimited:
+      "Another reset token was minted recently — retry in {{seconds}}s.",
+    resetUnavailable:
+      "Reset is unavailable on this deployment (no data_dir wired).",
+    resetInvalidToken: "Token does not match the on-disk value.",
+    resetTokenExpired:
+      "The reset token expired — generate a new one and try again.",
+    resetNoToken:
+      "No active reset token — click 'Generate reset token' to issue a fresh one.",
+    resetFailed: "Reset failed — check the logs and try again.",
     heroTitle: "Run agents, route tools, keep the edge boring.",
     heroBody:
       "Rust gateway, Python AI layer, static admin UI. All in one control plane.",

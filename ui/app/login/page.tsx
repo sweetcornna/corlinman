@@ -13,11 +13,16 @@
  *   4. On failure, render the error inline with a shake animation.
  */
 
-import { Suspense, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useTranslation } from "react-i18next";
 
-import { getSession, login } from "@/lib/auth";
+import {
+  completePasswordReset,
+  getSession,
+  login,
+  requestPasswordReset,
+} from "@/lib/auth";
 import { CorlinmanApiError } from "@/lib/api";
 import { BrandMark } from "@/components/layout/brand-mark";
 import { LanguageToggle } from "@/components/layout/language-toggle";
@@ -235,14 +240,8 @@ function LoginForm() {
           {submitting ? t("auth.submitting") : t("auth.submit")}
         </Button>
       </form>
-      <details className="text-xs text-tp-ink-3">
-        <summary className="cursor-pointer select-none hover:text-tp-ink-2">
-          {t("auth.forgotPassword")}
-        </summary>
-        <p className="mt-2 whitespace-pre-line rounded border border-tp-glass-edge bg-tp-glass-inner p-3 leading-relaxed">
-          {t("auth.forgotPasswordBody")}
-        </p>
-      </details>
+      <ForgotPasswordPanel />
+
       <p className="text-center text-xs text-tp-ink-3">
         {t("auth.sessionHint")}
       </p>
@@ -274,5 +273,255 @@ function LoginFormShell({ disabled }: { disabled?: boolean }) {
         </Button>
       </div>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Forgot-password panel — host-token challenge flow.
+// ---------------------------------------------------------------------------
+
+type ResetPhase = "idle" | "minted" | "submitting" | "done";
+
+function ForgotPasswordPanel() {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+  const [phase, setPhase] = useState<ResetPhase>("idle");
+  const [tokenPath, setTokenPath] = useState<string>("");
+  const [secondsLeft, setSecondsLeft] = useState(0);
+  const [token, setToken] = useState("");
+  const [newPw, setNewPw] = useState("");
+  const [confirmPw, setConfirmPw] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [minting, setMinting] = useState(false);
+
+  // TTL countdown
+  useEffect(() => {
+    if (phase !== "minted" || secondsLeft <= 0) return;
+    const id = setInterval(() => {
+      setSecondsLeft((s) => (s > 0 ? s - 1 : 0));
+    }, 1000);
+    return () => clearInterval(id);
+  }, [phase, secondsLeft]);
+
+  // Reset transient state when the operator closes the panel.
+  useEffect(() => {
+    if (!open) {
+      setPhase("idle");
+      setTokenPath("");
+      setSecondsLeft(0);
+      setToken("");
+      setNewPw("");
+      setConfirmPw("");
+      setError(null);
+    }
+  }, [open]);
+
+  async function onMint() {
+    setError(null);
+    setMinting(true);
+    try {
+      const { token_path, ttl_seconds } = await requestPasswordReset();
+      setTokenPath(token_path);
+      setSecondsLeft(ttl_seconds);
+      setPhase("minted");
+    } catch (err) {
+      if (err instanceof CorlinmanApiError) {
+        if (err.status === 429) {
+          // CorlinmanApiError only carries status/message; the
+          // retry_after_seconds payload would need a richer surface to
+          // bubble up. 60s matches REQUEST_THROTTLE_SECONDS on the
+          // server.
+          setError(t("auth.resetRateLimited", { seconds: 60 }));
+        } else if (err.status === 503) {
+          setError(t("auth.resetUnavailable"));
+        } else {
+          setError(err.message || t("auth.resetFailed"));
+        }
+      } else {
+        setError(String(err));
+      }
+    } finally {
+      setMinting(false);
+    }
+  }
+
+  async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setError(null);
+    if (newPw.length < 8) {
+      setError(t("auth.weakPassword", { min: 8 }));
+      return;
+    }
+    if (newPw !== confirmPw) {
+      setError(t("account.security.passwordMismatch"));
+      return;
+    }
+    setPhase("submitting");
+    try {
+      await completePasswordReset({ token: token.trim(), new_password: newPw });
+      setPhase("done");
+    } catch (err) {
+      setPhase("minted");
+      if (err instanceof CorlinmanApiError) {
+        if (err.status === 401) {
+          setError(t("auth.resetInvalidToken"));
+        } else if (err.status === 410) {
+          setError(t("auth.resetTokenExpired"));
+        } else if (err.status === 404) {
+          setError(t("auth.resetNoToken"));
+        } else if (err.status === 422) {
+          setError(t("auth.weakPassword", { min: 8 }));
+        } else {
+          setError(err.message || t("auth.resetFailed"));
+        }
+      } else {
+        setError(String(err));
+      }
+    }
+  }
+
+  return (
+    <details
+      className="text-xs text-tp-ink-3"
+      open={open}
+      onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}
+    >
+      <summary className="cursor-pointer select-none hover:text-tp-ink-2">
+        {t("auth.forgotPassword")}
+      </summary>
+
+      {phase === "idle" && (
+        <div className="mt-2 space-y-3 rounded border border-tp-glass-edge bg-tp-glass-inner p-3 leading-relaxed">
+          <p>{t("auth.resetIntro")}</p>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="w-full"
+            disabled={minting}
+            onClick={onMint}
+          >
+            {minting ? t("auth.submitting") : t("auth.resetMint")}
+          </Button>
+          {error ? (
+            <p role="alert" className="text-destructive">
+              {error}
+            </p>
+          ) : null}
+        </div>
+      )}
+
+      {(phase === "minted" || phase === "submitting") && (
+        <form
+          onSubmit={onSubmit}
+          className="mt-2 space-y-3 rounded border border-tp-glass-edge bg-tp-glass-inner p-3 leading-relaxed"
+        >
+          <div className="space-y-1.5">
+            <p className="font-medium text-tp-ink-2">
+              {t("auth.resetStep1Title")}
+            </p>
+            <p>{t("auth.resetStep1Body")}</p>
+            <pre className="overflow-x-auto rounded bg-black/40 p-2 font-mono text-[11px] text-tp-ink-2">
+              cat {tokenPath}
+            </pre>
+            <p className="text-tp-ink-3">
+              {t("auth.resetCountdown", {
+                m: Math.floor(secondsLeft / 60),
+                s: String(secondsLeft % 60).padStart(2, "0"),
+              })}
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="reset-token" className="text-tp-ink-2">
+              {t("auth.resetTokenLabel")}
+            </Label>
+            <Input
+              id="reset-token"
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+              placeholder="paste here"
+              required
+              disabled={phase === "submitting" || secondsLeft <= 0}
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="reset-new" className="text-tp-ink-2">
+              {t("account.security.newPassword")}
+            </Label>
+            <Input
+              id="reset-new"
+              type="password"
+              value={newPw}
+              onChange={(e) => setNewPw(e.target.value)}
+              required
+              minLength={8}
+              disabled={phase === "submitting"}
+              autoComplete="new-password"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="reset-confirm" className="text-tp-ink-2">
+              {t("account.security.confirmNewPassword")}
+            </Label>
+            <Input
+              id="reset-confirm"
+              type="password"
+              value={confirmPw}
+              onChange={(e) => setConfirmPw(e.target.value)}
+              required
+              minLength={8}
+              disabled={phase === "submitting"}
+              autoComplete="new-password"
+            />
+          </div>
+
+          {error ? (
+            <p role="alert" className="text-destructive">
+              {error}
+            </p>
+          ) : null}
+
+          <div className="flex gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setPhase("idle")}
+              disabled={phase === "submitting"}
+            >
+              {t("auth.resetCancel")}
+            </Button>
+            <Button
+              type="submit"
+              size="sm"
+              className="flex-1"
+              disabled={phase === "submitting" || secondsLeft <= 0}
+            >
+              {phase === "submitting"
+                ? t("auth.submitting")
+                : t("auth.resetSubmit")}
+            </Button>
+          </div>
+          {secondsLeft <= 0 && (
+            <p className="text-amber-500">{t("auth.resetTokenExpired")}</p>
+          )}
+        </form>
+      )}
+
+      {phase === "done" && (
+        <div
+          role="status"
+          className="mt-2 space-y-2 rounded border border-emerald-500/40 bg-emerald-500/10 p-3 leading-relaxed"
+        >
+          <p className="font-medium text-emerald-400">
+            {t("auth.resetSuccessTitle")}
+          </p>
+          <p>{t("auth.resetSuccessBody")}</p>
+        </div>
+      )}
+    </details>
   );
 }

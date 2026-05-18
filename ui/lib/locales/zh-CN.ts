@@ -65,6 +65,24 @@ export const zhCN = {
     forgotPassword: "忘记密码？",
     forgotPasswordBody:
       "暂无站内重置流程。请 SSH 登录网关主机，编辑 ~/.corlinman/config.toml 的 [admin].password_hash 字段，替换为新的 argon2 哈希，然后重启容器。生成新哈希：`python -c \"from argon2 import PasswordHasher; print(PasswordHasher().hash('新密码'))\"`。",
+    resetIntro:
+      "通过网关主机文件挑战自助重置：点击下方按钮生成一次性令牌，SSH 上主机读出来粘回这里，配新密码即可。",
+    resetMint: "生成重置令牌",
+    resetStep1Title: "步骤 1 · SSH 上主机读取令牌",
+    resetStep1Body:
+      "在网关主机上执行以下命令（需要 root SSH，跟手改 config.toml 是同一道关），把输出复制下来：",
+    resetCountdown: "令牌将在 {{m}}:{{s}} 后过期",
+    resetTokenLabel: "粘贴令牌",
+    resetSubmit: "重置密码",
+    resetCancel: "取消",
+    resetSuccessTitle: "密码已重置",
+    resetSuccessBody: "新密码已生效，关闭此面板，用新密码登录即可。",
+    resetRateLimited: "刚刚已生成过令牌，请 {{seconds}} 秒后再试。",
+    resetUnavailable: "当前部署不支持自助重置（data_dir 未配置）。",
+    resetInvalidToken: "令牌不匹配，请重新复制磁盘上的值。",
+    resetTokenExpired: "令牌已过期，请重新生成。",
+    resetNoToken: "暂无有效令牌，请先点击「生成重置令牌」。",
+    resetFailed: "重置失败，请查看服务日志后重试。",
     heroTitle: "Run agents, route tools, keep the edge boring.",
     heroBody:
       "Rust gateway, Python AI layer, static admin UI. All in one control plane.",
