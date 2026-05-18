@@ -129,11 +129,55 @@ Two ways in. **Humans pick the one-liner;** **AI agents read [`deploy/AI_DEPLOY.
 | --- | --- | --- |
 | **Docker (recommended)** | `curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh \| bash -s -- --mode docker` | Builds locally, brings up via `docker compose`. Needs Docker Engine 24+. |
 | **Native (uv + systemd)** | `curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh \| bash -s -- --mode native` | Installs `uv`, clones the repo to `/opt/corlinman/repo`, syncs the workspace, registers a systemd unit. No container runtime needed. |
-| **🇨🇳 China network** | append ` --china` to either command above | Switches PyPI → 清华, Docker Hub → 1Panel mirror, github.com raw → ghproxy. Auto-enabled when `pypi.org` is slow. |
+| **🇨🇳 China network** | append ` --china` to either command above | Switches PyPI → Tsinghua, Docker Hub → DaoCloud, github.com → gh-proxy.com, npm → npmmirror. Auto-enabled when `pypi.org` TTFB > 3s. See [China-region deployment](#-china-region-deployment) below. |
 
 Both paths converge on `http://localhost:6005/onboard` — the 4-step wizard
 that writes a complete `config.toml`. After onboarding the admin UI lives
 at `http://localhost:6005/admin`.
+
+### 🇨🇳 China-region deployment
+
+中国大陆部署的瓶颈是 PyPI / Docker Hub / raw.githubusercontent.com 的跨境
+延迟。`--china` 自动切换到一组 2026-04 实测仍稳定的镜像：
+
+| 用途 | 镜像 | 实测 TTFB (Tencent Cloud Tianjin) |
+| --- | --- | --- |
+| PyPI | `https://pypi.tuna.tsinghua.edu.cn/simple` (清华 TUNA) | 0.24s |
+| PyPI 备 | `https://mirrors.aliyun.com/pypi/simple/` (阿里云) | 0.08s TTFB / 5s 全量 |
+| GitHub clone | `https://gh-proxy.com/https://github.com/...` | 0.53s |
+| GitHub raw | `https://gh-proxy.com/https://raw.githubusercontent.com/...` | 0.53s |
+| Docker Hub | `https://docker.m.daocloud.io` (DaoCloud) | 0.12s |
+| Docker Hub 备 | `https://docker.1ms.run` | 0.17s |
+| npm | `https://registry.npmmirror.com` (前 taobao) | 0.91s |
+| Debian apt | `mirrors.tuna.tsinghua.edu.cn` | < 0.1s |
+
+**部分 BGP 网络（如腾讯云 Tianjin）反而能直连 `github.com`**——`--china`
+模式会先尝试代理 URL，失败时自动回落到直连，二选一不需要操作员判断。
+
+**已停用 / 移除（曾被推荐但 2026 已死或限速严重）**：`ghproxy.com` /
+`mirror.ghproxy.com` / `github.moeyy.xyz` / `dockerhub.icu` /
+`docker.kubesphere.io` / jsdelivr CDN 对 raw.github 的代理。
+
+**手动覆盖单项镜像**（不需要重写整个 `--china`）：
+
+```bash
+# 例：用阿里云 PyPI + 自己自建的 docker registry mirror
+CN_PIP_INDEX=https://mirrors.aliyun.com/pypi/simple/ \
+CN_DOCKER_MIRROR=https://your.mirror/ \
+  curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh \
+    | bash -s -- --mode docker --china
+```
+
+可覆盖的变量：`CN_PIP_INDEX` / `CN_GH_PROXY`（设为空字符串关闭 GitHub
+代理） / `CN_DOCKER_MIRROR`。
+
+**已经装好之后想换镜像？** PyPI 在 `~/.config/uv/uv.toml`（或环境变量
+`UV_INDEX_URL`），Docker 在 `/etc/docker/daemon.json` 的 `registry-mirrors`
+数组。改完 `systemctl restart corlinman` / `systemctl restart docker` 即可。
+
+**真离线场景**（VPS 没有外网）：先在能联网的机器上 `docker save` 镜像 +
+`uv pip download` 全部 wheel 到本地仓库，scp 过去再装。`docker save
+ghcr.io/ymylive/corlinman:dev | ssh vps "docker load"` 是最快的搬运姿势。
 
 ### For AI agents — prompt-driven deploy
 

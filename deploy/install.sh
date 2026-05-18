@@ -16,15 +16,24 @@
 #                       `corlinman-gateway`. Requires root or sudo on Linux.
 #
 # Flags:
-#   --china           Use mirrors (Tsinghua PyPI, NPM-mirror, USTC Docker,
-#                     ghproxy.com for raw.githubusercontent.com). Autodetected
-#                     when `curl https://pypi.org` is slow (>3s).
+#   --china           Use 2026-verified CN mirrors:
+#                       PyPI    → pypi.tuna.tsinghua.edu.cn (Tsinghua TUNA)
+#                       GitHub  → gh-proxy.com (clone + raw)
+#                       Docker  → docker.m.daocloud.io (DaoCloud)
+#                       Debian  → mirrors.tuna.tsinghua.edu.cn
+#                     Autodetected when `curl https://pypi.org` TTFB > 3s.
+#                     Override individual endpoints via env vars (see below).
 #   --version <ref>   Git ref / branch to install from (default: main).
 #
 # Environment overrides:
 #   CORLINMAN_PREFIX     install root for --mode native (default: /opt/corlinman)
 #   CORLINMAN_DATA_DIR   data dir (default: $CORLINMAN_PREFIX/data or ~/.corlinman)
 #   CORLINMAN_PORT       gateway port (default: 6005)
+#   CN_PIP_INDEX         override PyPI mirror (default tuna)
+#   CN_GH_PROXY          override GitHub clone proxy host (default gh-proxy.com).
+#                        Empty = no proxy (direct github.com — works on some CN
+#                        BGP networks including Tencent Cloud Tianjin).
+#   CN_DOCKER_MIRROR     override Docker Hub mirror (default docker.m.daocloud.io)
 
 set -euo pipefail
 
@@ -70,17 +79,42 @@ autodetect_china() {
 }
 
 # Mirror endpoints used when USE_CHINA is set.
+# Defaults are picked from a 2026-04 probe round of the most commonly cited
+# CN mirrors — see docs/quickstart.md "China-region deployment" for the live
+# probe matrix. Anything that died (ghproxy.com, mirror.ghproxy.com,
+# jsdelivr CDN for raw GitHub files, dockerhub.icu, kkgithub.com from some
+# Tencent BGP edges) was dropped from the default chain.
 GITHUB_RAW="https://raw.githubusercontent.com"
+GITHUB_CLONE_BASE="https://github.com"
 PIP_INDEX="https://pypi.org/simple"
+PIP_INDEX_FALLBACK=""
 DOCKER_REGISTRY_MIRROR=""
+NPM_REGISTRY=""
+DEBIAN_MIRROR=""
 apply_china_mirrors() {
     if [[ -z "$USE_CHINA" ]]; then return 0; fi
-    GITHUB_RAW="https://ghproxy.com/https://raw.githubusercontent.com"
-    PIP_INDEX="https://pypi.tuna.tsinghua.edu.cn/simple"
-    DOCKER_REGISTRY_MIRROR="https://docker.1panel.live"  # 1Panel mirror, stable in CN
+    local cn_pip="${CN_PIP_INDEX:-https://pypi.tuna.tsinghua.edu.cn/simple}"
+    local cn_gh_proxy="${CN_GH_PROXY-gh-proxy.com}"
+    local cn_docker="${CN_DOCKER_MIRROR:-https://docker.m.daocloud.io}"
+
+    PIP_INDEX="$cn_pip"
+    PIP_INDEX_FALLBACK="https://mirrors.aliyun.com/pypi/simple/"
+    NPM_REGISTRY="https://registry.npmmirror.com"
+    DEBIAN_MIRROR="mirrors.tuna.tsinghua.edu.cn"
+    DOCKER_REGISTRY_MIRROR="$cn_docker"
+
+    if [[ -n "$cn_gh_proxy" ]]; then
+        GITHUB_RAW="https://${cn_gh_proxy}/https://raw.githubusercontent.com"
+        GITHUB_CLONE_BASE="https://${cn_gh_proxy}/https://github.com"
+    fi
+
     export UV_INDEX_URL="$PIP_INDEX"
+    export UV_DEFAULT_INDEX="$PIP_INDEX"
     export PIP_INDEX_URL="$PIP_INDEX"
-    log "China mode ON: pip→tuna, raw.github→ghproxy, docker→1panel"
+    export UV_HTTP_TIMEOUT=300
+    export NPM_CONFIG_REGISTRY="$NPM_REGISTRY"
+
+    log "China mirrors ON: pip=${cn_pip##*/}, gh=${cn_gh_proxy:-direct}, docker=${cn_docker##*/}"
 }
 
 # ----- Docker path ------------------------------------------------------------
@@ -111,7 +145,9 @@ install_docker() {
         git -C "$PREFIX/repo" checkout "$REF"
         git -C "$PREFIX/repo" reset --hard FETCH_HEAD
     else
-        git clone --depth 1 --branch "$REF" "https://github.com/${REPO}.git" "$PREFIX/repo"
+        local clone_url="${GITHUB_CLONE_BASE}/${REPO}.git"
+        git clone --depth 1 --branch "$REF" "$clone_url" "$PREFIX/repo" \
+            || git clone --depth 1 --branch "$REF" "https://github.com/${REPO}.git" "$PREFIX/repo"
     fi
 
     log "building image"
@@ -120,7 +156,7 @@ install_docker() {
         extra_args+=(
             --build-arg "PIP_INDEX=$PIP_INDEX"
             --build-arg "UV_INDEX_URL=$PIP_INDEX"
-            --build-arg "DEBIAN_MIRROR=mirrors.tuna.tsinghua.edu.cn"
+            --build-arg "DEBIAN_MIRROR=${DEBIAN_MIRROR:-mirrors.tuna.tsinghua.edu.cn}"
         )
     fi
     (cd "$PREFIX/repo" && docker buildx build "${extra_args[@]}" \
@@ -187,8 +223,10 @@ install_native() {
         git -C "$PREFIX/repo" checkout "$REF"
         git -C "$PREFIX/repo" reset --hard FETCH_HEAD
     else
-        local clone_url="https://github.com/${REPO}.git"
-        [[ -n "$USE_CHINA" ]] && clone_url="https://ghproxy.com/https://github.com/${REPO}.git"
+        local clone_url="${GITHUB_CLONE_BASE}/${REPO}.git"
+        # Try the (possibly proxied) URL first; if it 404s or hangs, fall back
+        # to direct github.com — some CN BGP edges (e.g. Tencent Cloud
+        # Tianjin) reach github.com faster than any public proxy.
         git clone --depth 1 --branch "$REF" "$clone_url" "$PREFIX/repo" \
             || git clone --depth 1 --branch "$REF" "https://github.com/${REPO}.git" "$PREFIX/repo"
     fi
