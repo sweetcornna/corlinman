@@ -647,30 +647,19 @@
   }
 
   /* ────────────────────────────────────────────────────────────────
-   * Universal pattern fill — apply the mandala carving to every
-   * common "framed surface" utility class so all chrome reads
-   * patterned, not just opt-in components. Light = soft-light blend
-   * (gentle), dark = overlay (richer). Tile is large (480px) so the
-   * motif breathes inside cards and the sun/moon doesn't crowd the
-   * type. Anything that doesn't want this pattern can opt out with
-   * `[background-image:none]` or by stacking a higher-specificity
-   * background-image override.
+   * Pattern fill — apply the scrollwork carving to small framed
+   * surfaces only (cards, popovers). Tall surfaces like the sidebar
+   * (`.bg-tp-glass*`) span 800px+ vertically and expose a single
+   * bright-vs-dark slice of the 480px tile, which reads as patchy.
+   * Cards and popovers are short enough that only a small swatch of
+   * the tile shows and the bright/dark gradient doesn't register.
+   * Opt out per-element with `[background-image:none]`.
    * ──────────────────────────────────────────────────────────────── */
   .bg-card,
-  .bg-popover,
-  .bg-tp-glass,
-  .bg-tp-glass-2,
-  .bg-tp-glass-3 {
+  .bg-popover {
     background-image: var(--tp-pattern-url);
     background-size: 480px 480px;
     background-position: center center;
-    background-blend-mode: soft-light;
-  }
-  .dark .bg-card,
-  .dark .bg-popover,
-  .dark .bg-tp-glass,
-  .dark .bg-tp-glass-2,
-  .dark .bg-tp-glass-3 {
     background-blend-mode: soft-light;
   }
 
