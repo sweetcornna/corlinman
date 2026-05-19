@@ -63,6 +63,7 @@ import {
   type OAuthLoginProvider,
 } from "@/components/admin/oauth-login-modal";
 import {
+  cancelClaudeCodeLogin,
   CorlinmanApiError,
   deleteCredential,
   disconnectAnthropicOAuth,
@@ -71,9 +72,11 @@ import {
   getGeminiStatus,
   getOAuthStatus,
   importClaudeCodeCredentials,
+  launchClaudeCodeLogin,
   listCredentials,
   refreshAnthropicOAuth,
   refreshXaiOAuth,
+  submitClaudeCodeLogin,
   setCredential,
   setProviderEnabled,
   type CredentialProvider,
@@ -283,6 +286,55 @@ export default function CredentialsPage() {
     },
   });
 
+  // Claude Code subprocess-login modal state.
+  const [claudeLogin, setClaudeLogin] = React.useState<{
+    session_id: string;
+    auth_url: string;
+  } | null>(null);
+  const [claudeLoginCode, setClaudeLoginCode] = React.useState("");
+
+  const launchClaudeCode = useMutation({
+    mutationFn: () => launchClaudeCodeLogin(),
+    onSuccess: (res) => {
+      setClaudeLogin(res);
+      setClaudeLoginCode("");
+    },
+    onError: (err) => {
+      toast.error(
+        err instanceof Error ? err.message : String(err),
+      );
+    },
+  });
+
+  const submitClaudeCode = useMutation({
+    mutationFn: (code: string) => {
+      if (!claudeLogin) throw new Error("no_session");
+      return submitClaudeCodeLogin({
+        session_id: claudeLogin.session_id,
+        code,
+      });
+    },
+    onSuccess: () => {
+      toast.success(t("oauth.importSuccess"));
+      setClaudeLogin(null);
+      setClaudeLoginCode("");
+      qc.invalidateQueries({ queryKey: ["admin", "oauth", "status"] });
+    },
+    onError: (err) => {
+      toast.error(
+        err instanceof Error ? err.message : String(err),
+      );
+    },
+  });
+
+  const dismissClaudeLogin = React.useCallback(() => {
+    if (claudeLogin) {
+      void cancelClaudeCodeLogin({ session_id: claudeLogin.session_id });
+    }
+    setClaudeLogin(null);
+    setClaudeLoginCode("");
+  }, [claudeLogin]);
+
   const refreshAnthropic = useMutation({
     mutationFn: () => refreshAnthropicOAuth(),
     onSuccess: () => {
@@ -444,7 +496,16 @@ export default function CredentialsPage() {
                 {t("oauth.claudeCodeHint")}
               </span>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                size="sm"
+                disabled={launchClaudeCode.isPending || submitClaudeCode.isPending}
+                onClick={() => launchClaudeCode.mutate()}
+                data-testid="oauth-tile-claude-code-login"
+              >
+                <LogIn className="h-4 w-4" aria-hidden />
+                {t("oauth.actionLogin")}
+              </Button>
               <Button
                 size="sm"
                 variant="outline"
@@ -661,6 +722,97 @@ export default function CredentialsPage() {
           qc.invalidateQueries({ queryKey: ["admin", "oauth", "status"] })
         }
       />
+
+      {/* Claude Code subprocess-login modal. Open after the launch
+          mutation returns; user opens the URL on their own device,
+          completes OAuth, pastes the code back here. */}
+      <Dialog
+        open={claudeLogin !== null}
+        onOpenChange={(open) => {
+          if (!open) dismissClaudeLogin();
+        }}
+      >
+        <DialogContent data-testid="claude-code-login-dialog">
+          <DialogHeader>
+            <DialogTitle>{t("oauth.claudeLoginTitle")}</DialogTitle>
+            <DialogDescription>
+              {t("oauth.claudeLoginBody")}
+            </DialogDescription>
+          </DialogHeader>
+          {claudeLogin && (
+            <div className="flex flex-col gap-3">
+              <div className="flex flex-col gap-1">
+                <span className="text-xs text-tp-ink-3">
+                  {t("oauth.claudeLoginUrlLabel")}
+                </span>
+                <div className="flex items-center gap-2">
+                  <Input
+                    readOnly
+                    value={claudeLogin.auth_url}
+                    onFocus={(e) => e.target.select()}
+                    className="font-mono text-xs"
+                    data-testid="claude-code-login-url"
+                  />
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      void navigator.clipboard.writeText(claudeLogin.auth_url);
+                      toast.success(t("oauth.claudeLoginCopied"));
+                    }}
+                  >
+                    {t("oauth.actionCopy")}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      window.open(
+                        claudeLogin.auth_url,
+                        "_blank",
+                        "noopener,noreferrer",
+                      )
+                    }
+                  >
+                    {t("oauth.actionOpen")}
+                  </Button>
+                </div>
+              </div>
+              <div className="flex flex-col gap-1">
+                <span className="text-xs text-tp-ink-3">
+                  {t("oauth.claudeLoginCodeLabel")}
+                </span>
+                <Input
+                  placeholder={t("oauth.claudeLoginCodePlaceholder")}
+                  value={claudeLoginCode}
+                  onChange={(e) => setClaudeLoginCode(e.target.value)}
+                  data-testid="claude-code-login-code"
+                />
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={dismissClaudeLogin}
+              disabled={submitClaudeCode.isPending}
+            >
+              {t("common.cancel")}
+            </Button>
+            <Button
+              disabled={
+                submitClaudeCode.isPending || claudeLoginCode.trim() === ""
+              }
+              onClick={() => submitClaudeCode.mutate(claudeLoginCode)}
+              data-testid="claude-code-login-submit"
+            >
+              {submitClaudeCode.isPending
+                ? t("oauth.claudeLoginSubmitting")
+                : t("oauth.claudeLoginSubmit")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={pendingDisconnect !== null}

@@ -250,6 +250,19 @@ export const zhCN = {
     // Claude Code import tile
     claudeCodeHint: "从 ~/.claude/.credentials.json 一次性导入",
 
+    // Claude Code subprocess-login modal
+    actionCopy: "复制",
+    actionOpen: "打开",
+    claudeLoginTitle: "登录 Claude Code",
+    claudeLoginBody:
+      "在新标签页打开下方 URL，使用 Anthropic 订阅账号完成登录，再把页面返回的 code 粘到下面。",
+    claudeLoginUrlLabel: "授权 URL",
+    claudeLoginCodeLabel: "回填 code",
+    claudeLoginCodePlaceholder: "把浏览器返回的 code 粘贴到这里",
+    claudeLoginCopied: "已复制 URL",
+    claudeLoginSubmit: "提交 code",
+    claudeLoginSubmitting: "处理中…",
+
     // External-CLI tiles (Codex / Gemini)
     detectedVia: "通过 {{cli}} CLI 检测",
     notDetectedPrefix: "未检测 — 运行",

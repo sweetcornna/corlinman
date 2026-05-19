@@ -260,6 +260,19 @@ export const en = {
     // Claude Code import tile
     claudeCodeHint: "One-shot import from ~/.claude/.credentials.json",
 
+    // Claude Code subprocess-login modal
+    actionCopy: "Copy",
+    actionOpen: "Open",
+    claudeLoginTitle: "Sign in to Claude Code",
+    claudeLoginBody:
+      "Open the URL below in a new tab, sign in with your Anthropic subscription, then paste the returned code here.",
+    claudeLoginUrlLabel: "Authorization URL",
+    claudeLoginCodeLabel: "Paste code",
+    claudeLoginCodePlaceholder: "Paste the code from the callback page",
+    claudeLoginCopied: "URL copied",
+    claudeLoginSubmit: "Submit code",
+    claudeLoginSubmitting: "Submitting…",
+
     // External-CLI tiles (Codex / Gemini)
     detectedVia: "Detected via {{cli}} CLI",
     notDetectedPrefix: "Not detected — run",

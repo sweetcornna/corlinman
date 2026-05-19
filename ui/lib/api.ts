@@ -1449,6 +1449,56 @@ export function importClaudeCodeCredentials(
     { method: "POST", body: {}, signal: opts.signal },
   );
 }
+
+/**
+ * POST /admin/oauth/claude-code/launch — spawn `claude auth login` on
+ * the gateway host, return its OAuth URL + a session id. The CLI
+ * remains parked on stdin until either `submitClaudeCodeLogin` pushes a
+ * code or `cancelClaudeCodeLogin` kills it.
+ */
+export interface ClaudeCodeLoginLaunchResponse {
+  session_id: string;
+  auth_url: string;
+}
+
+export function launchClaudeCodeLogin(
+  opts: { signal?: AbortSignal } = {},
+): Promise<ClaudeCodeLoginLaunchResponse> {
+  return apiFetch<ClaudeCodeLoginLaunchResponse>(
+    "/admin/oauth/claude-code/launch",
+    { method: "POST", body: {}, signal: opts.signal },
+  );
+}
+
+/**
+ * POST /admin/oauth/claude-code/submit — paste the code back to the
+ * parked subprocess. On clean exit the gateway re-imports the freshly
+ * written ~/.claude/.credentials.json into the anthropic slot.
+ */
+export function submitClaudeCodeLogin(
+  body: { session_id: string; code: string },
+  opts: { signal?: AbortSignal } = {},
+): Promise<ClaudeCodeImportResponse> {
+  return apiFetch<ClaudeCodeImportResponse>(
+    "/admin/oauth/claude-code/submit",
+    { method: "POST", body, signal: opts.signal },
+  );
+}
+
+/**
+ * POST /admin/oauth/claude-code/cancel — kill an abandoned login
+ * subprocess. Idempotent; 204 even if the session was already gone.
+ */
+export function cancelClaudeCodeLogin(
+  body: { session_id: string },
+  opts: { signal?: AbortSignal } = {},
+): Promise<void> {
+  return apiFetch<void>("/admin/oauth/claude-code/cancel", {
+    method: "POST",
+    body,
+    signal: opts.signal,
+  });
+}
 // === end W-A2 ===
 
 // === W-B2 custom provider (do not edit other blocks) ===

@@ -52,6 +52,7 @@ from corlinman_server.gateway.oauth import (
 from corlinman_server.gateway.oauth import (
     anthropic_pkce,
     claude_code_import,
+    claude_code_login,
     codex_external,
     gemini_external,
     sessions,
@@ -122,6 +123,22 @@ class RefreshResponse(BaseModel):
 class ImportClaudeCodeResponse(BaseModel):
     imported: bool = True
     expires_at_ms: int | None = None
+
+
+class ClaudeLoginLaunchResponse(BaseModel):
+    """Returned by POST /admin/oauth/claude-code/launch."""
+
+    session_id: str
+    auth_url: str
+
+
+class ClaudeLoginSubmitBody(BaseModel):
+    session_id: str
+    code: str
+
+
+class ClaudeLoginCancelBody(BaseModel):
+    session_id: str
 
 
 # ---------------------------------------------------------------------------
@@ -568,6 +585,101 @@ def router() -> APIRouter:
             imported=True,
             expires_at_ms=persisted.expires_at_ms,
         )
+
+    # -- Claude Code: drive `claude auth login` from the UI --------------
+    #
+    # Three endpoints, mirroring the xAI PKCE pattern but going through
+    # an external CLI subprocess:
+    #
+    #   launch  — spawn `claude auth login`, return its OAuth URL + a
+    #             session_id (subprocess remains parked on stdin).
+    #   submit  — paste the code back to subprocess stdin, wait for
+    #             clean exit, then re-import ~/.claude/.credentials.json
+    #             into the gateway's anthropic credential slot.
+    #   cancel  — kill an abandoned subprocess.
+
+    @r.post(
+        "/admin/oauth/claude-code/launch",
+        response_model=ClaudeLoginLaunchResponse,
+    )
+    async def claude_login_launch() -> (
+        ClaudeLoginLaunchResponse | JSONResponse
+    ):
+        try:
+            result = await claude_code_login.launch_claude_login()
+        except claude_code_login.ClaudeLoginError as exc:
+            status = 503 if exc.code == "claude_cli_not_installed" else 502
+            return _bad(exc.code, status=status, message=exc.message)
+        return ClaudeLoginLaunchResponse(
+            session_id=result.session_id, auth_url=result.url
+        )
+
+    @r.post(
+        "/admin/oauth/claude-code/submit",
+        response_model=ImportClaudeCodeResponse,
+    )
+    async def claude_login_submit(
+        body: ClaudeLoginSubmitBody,
+    ) -> ImportClaudeCodeResponse | JSONResponse:
+        state = get_admin_state()
+        data_dir = _require_data_dir(state)
+        if isinstance(data_dir, JSONResponse):
+            return data_dir
+
+        try:
+            await claude_code_login.submit_code(body.session_id, body.code)
+        except claude_code_login.ClaudeLoginError as exc:
+            status_map = {
+                "unknown_session": 404,
+                "empty_code": 400,
+                "subprocess_exited": 410,
+                "write_failed": 502,
+                "submit_timeout": 504,
+                "subprocess_nonzero": 502,
+            }
+            return _bad(
+                exc.code,
+                status=status_map.get(exc.code, 500),
+                message=exc.message,
+            )
+
+        # CLI exited cleanly → ~/.claude/.credentials.json should now
+        # exist. Re-use the import path so we persist into the same slot
+        # the existing "Import" button uses.
+        try:
+            cred = claude_code_import.read_claude_code_credentials()
+        except claude_code_import.ClaudeCodeCredentialsMalformed as exc:
+            return _bad("malformed", status=400, message=str(exc))
+        if cred is None:
+            return _bad(
+                "not_found",
+                status=404,
+                message=(
+                    "Login finished but ~/.claude/.credentials.json was "
+                    "not written — check the gateway HOME env var."
+                ),
+            )
+        persisted = OAuthCredential.new(
+            provider="anthropic",
+            access_token=cred.access_token,
+            refresh_token=cred.refresh_token,
+            expires_at_ms=cred.expires_at_ms,
+            scope=cred.scope,
+        )
+        try:
+            save_credential(data_dir, persisted)
+        except OSError as exc:
+            return _bad("save_failed", status=500, message=str(exc))
+        return ImportClaudeCodeResponse(
+            imported=True, expires_at_ms=persisted.expires_at_ms
+        )
+
+    @r.post("/admin/oauth/claude-code/cancel")
+    async def claude_login_cancel(
+        body: ClaudeLoginCancelBody,
+    ) -> Response:
+        claude_code_login.cancel(body.session_id)
+        return Response(status_code=204)
 
     return r
 
