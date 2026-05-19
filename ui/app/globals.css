@@ -671,7 +671,7 @@
   .dark .bg-tp-glass,
   .dark .bg-tp-glass-2,
   .dark .bg-tp-glass-3 {
-    background-blend-mode: overlay;
+    background-blend-mode: soft-light;
   }
 
   /* Primary buttons get the pattern too — at smaller tile so the
