@@ -281,24 +281,42 @@ export const en = {
     // Modal — titles
     modalTitleAnthropic: "Connect Anthropic",
     modalTitleXai: "Connect xAI",
+    modalTitleCodex: "Connect Codex (ChatGPT)",
+    modalTitleGemini: "Connect Gemini (Google)",
     modalDescriptionAnthropic:
       "Use your Anthropic console account to authorise corlinman. No password leaves your browser — the code-exchange runs server-side.",
     modalDescriptionXai:
       "Use your xAI account to authorise corlinman. No password leaves your browser — the code-exchange runs server-side.",
+    modalDescriptionCodex:
+      "Use your ChatGPT subscription to authorise corlinman. OpenAI redirects to localhost:1455 (which won't load), but the URL bar shows ?code=…&state=… — copy the URL or just the code back here.",
+    modalDescriptionGemini:
+      "Use your Google account to authorise corlinman. The redirect lands on localhost:8085 (which won't load); copy the URL or just the code from the address bar back here.",
 
     // Modal — phase copy
     introAnthropic:
       "You will be redirected to the Anthropic console in a new tab. After signing in, copy the displayed code (and state token) and paste them back here.",
     introXai:
       "You will be redirected to xAI in a new tab. After signing in, copy the displayed code (and state token) and paste them back here.",
+    introCodex:
+      "You will be redirected to ChatGPT in a new tab. The post-auth redirect to localhost:1455 will fail — but the URL bar's ?code=… is exactly what to paste here.",
+    introGemini:
+      "You will be redirected to Google in a new tab. The redirect to localhost:8085 will fail — copy the ?code=… value from the address bar back here.",
     loginButtonAnthropic: "Login with Anthropic",
     loginButtonXai: "Login with xAI",
+    loginButtonCodex: "Login with ChatGPT",
+    loginButtonGemini: "Login with Google",
     openingBrowserAnthropic: "Opening Anthropic in a new tab…",
     openingBrowserXai: "Opening xAI in a new tab…",
+    openingBrowserCodex: "Opening ChatGPT in a new tab…",
+    openingBrowserGemini: "Opening Google in a new tab…",
     awaitingCodeAnthropic:
       "Sign in on Anthropic, then paste the returned code and state token here.",
     awaitingCodeXai:
       "Sign in on xAI, then paste the returned code and state token here.",
+    awaitingCodeCodex:
+      "Sign in to ChatGPT, then copy the ?code= value from the address bar here.",
+    awaitingCodeGemini:
+      "Sign in with Google, then copy the ?code= value from the address bar here.",
     openManually: "Open manually",
     codeLabel: "Code",
     codePlaceholder: "Paste the code from the provider",

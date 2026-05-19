@@ -1333,7 +1333,13 @@ export function pinSkill(
  *   - "api-key"     — plain api_key in providers TOML / credentials store
  *   - "none"        — nothing configured
  */
-export type OAuthSource = "pkce" | "claude-code" | "env" | "api-key" | "none";
+export type OAuthSource =
+  | "pkce"
+  | "claude-code"
+  | "env"
+  | "api-key"
+  | "external-cli"
+  | "none";
 
 export interface OAuthProviderStatus {
   id: string;
@@ -1758,3 +1764,88 @@ export function disconnectXaiOAuth(
   });
 }
 // === end W-A3 ===
+
+// === W-A4 codex + gemini PKCE ===
+// Mirror xAI/anthropic PKCE shape so OAuthLoginModal can pick these up
+// by adding "codex" / "gemini" to its provider table.
+
+export function startCodexOAuth(
+  opts: { signal?: AbortSignal } = {},
+): Promise<OAuthStartResponse> {
+  return apiFetch<OAuthStartResponse>("/admin/oauth/codex/start", {
+    method: "POST",
+    body: {},
+    signal: opts.signal,
+  });
+}
+
+export function submitCodexOAuthCode(
+  req: OAuthSubmitRequest,
+  opts: { signal?: AbortSignal } = {},
+): Promise<OAuthSubmitResponse> {
+  return apiFetch<OAuthSubmitResponse>("/admin/oauth/codex/submit", {
+    method: "POST",
+    body: req,
+    signal: opts.signal,
+  });
+}
+
+export function refreshCodexOAuth(
+  opts: { signal?: AbortSignal } = {},
+): Promise<OAuthRefreshResponse> {
+  return apiFetch<OAuthRefreshResponse>("/admin/oauth/codex/refresh", {
+    method: "POST",
+    body: {},
+    signal: opts.signal,
+  });
+}
+
+export function disconnectCodexOAuth(
+  opts: { signal?: AbortSignal } = {},
+): Promise<void> {
+  return apiFetch<void>("/admin/oauth/codex", {
+    method: "DELETE",
+    signal: opts.signal,
+  });
+}
+
+export function startGeminiOAuth(
+  opts: { signal?: AbortSignal } = {},
+): Promise<OAuthStartResponse> {
+  return apiFetch<OAuthStartResponse>("/admin/oauth/gemini/start", {
+    method: "POST",
+    body: {},
+    signal: opts.signal,
+  });
+}
+
+export function submitGeminiOAuthCode(
+  req: OAuthSubmitRequest,
+  opts: { signal?: AbortSignal } = {},
+): Promise<OAuthSubmitResponse> {
+  return apiFetch<OAuthSubmitResponse>("/admin/oauth/gemini/submit", {
+    method: "POST",
+    body: req,
+    signal: opts.signal,
+  });
+}
+
+export function refreshGeminiOAuth(
+  opts: { signal?: AbortSignal } = {},
+): Promise<OAuthRefreshResponse> {
+  return apiFetch<OAuthRefreshResponse>("/admin/oauth/gemini/refresh", {
+    method: "POST",
+    body: {},
+    signal: opts.signal,
+  });
+}
+
+export function disconnectGeminiOAuth(
+  opts: { signal?: AbortSignal } = {},
+): Promise<void> {
+  return apiFetch<void>("/admin/oauth/gemini", {
+    method: "DELETE",
+    signal: opts.signal,
+  });
+}
+// === end W-A4 ===

@@ -42,8 +42,12 @@ import { Label } from "@/components/ui/label";
 import {
   CorlinmanApiError,
   startAnthropicOAuth,
+  startCodexOAuth,
+  startGeminiOAuth,
   startXaiOAuth,
   submitAnthropicOAuthCode,
+  submitCodexOAuthCode,
+  submitGeminiOAuthCode,
   submitXaiOAuthCode,
   type OAuthStartResponse,
   type OAuthSubmitRequest,
@@ -58,7 +62,7 @@ export type OAuthLoginPhase =
   | "done"
   | "error";
 
-export type OAuthLoginProvider = "anthropic" | "xai";
+export type OAuthLoginProvider = "anthropic" | "xai" | "codex" | "gemini";
 
 /**
  * Provider-specific bag fed into the modal at render time. Keeping the
@@ -85,6 +89,14 @@ const FLOWS: Record<OAuthLoginProvider, OAuthFlow> = {
   xai: {
     start: (opts) => startXaiOAuth(opts),
     submit: (req, opts) => submitXaiOAuthCode(req, opts),
+  },
+  codex: {
+    start: (opts) => startCodexOAuth(opts),
+    submit: (req, opts) => submitCodexOAuthCode(req, opts),
+  },
+  gemini: {
+    start: (opts) => startGeminiOAuth(opts),
+    submit: (req, opts) => submitGeminiOAuthCode(req, opts),
   },
 };
 
@@ -118,6 +130,22 @@ const COPY_KEYS: Record<OAuthLoginProvider, ProviderCopy> = {
     loginButton: "oauth.loginButtonXai",
     openingBrowser: "oauth.openingBrowserXai",
     awaitingCode: "oauth.awaitingCodeXai",
+  },
+  codex: {
+    title: "oauth.modalTitleCodex",
+    description: "oauth.modalDescriptionCodex",
+    intro: "oauth.introCodex",
+    loginButton: "oauth.loginButtonCodex",
+    openingBrowser: "oauth.openingBrowserCodex",
+    awaitingCode: "oauth.awaitingCodeCodex",
+  },
+  gemini: {
+    title: "oauth.modalTitleGemini",
+    description: "oauth.modalDescriptionGemini",
+    intro: "oauth.introGemini",
+    loginButton: "oauth.loginButtonGemini",
+    openingBrowser: "oauth.openingBrowserGemini",
+    awaitingCode: "oauth.awaitingCodeGemini",
   },
 };
 

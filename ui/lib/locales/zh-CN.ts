@@ -271,22 +271,38 @@ export const zhCN = {
     // Modal — titles
     modalTitleAnthropic: "连接 Anthropic",
     modalTitleXai: "连接 xAI",
+    modalTitleCodex: "连接 Codex (ChatGPT)",
+    modalTitleGemini: "连接 Gemini (Google)",
     modalDescriptionAnthropic:
       "使用 Anthropic console 账户授权 corlinman。密码不会离开浏览器 —— 兑换 code 在服务端进行。",
     modalDescriptionXai:
       "使用 xAI 账户授权 corlinman。密码不会离开浏览器 —— 兑换 code 在服务端进行。",
+    modalDescriptionCodex:
+      "用 ChatGPT 订阅账号授权 corlinman。OpenAI 回调会指向 localhost:1455（连不通），但 URL 栏会出现 ?code=…&state=…；把整段 URL 或 code 拷贝回这里。",
+    modalDescriptionGemini:
+      "用 Google 账号授权 corlinman。回调指向 localhost:8085（连不通），URL 栏会带 code=…；把整段 URL 或 code 拷贝回这里。",
 
     // Modal — phase copy
     introAnthropic:
       "将在新标签页打开 Anthropic console。登录后请将返回的 code（与 state token）粘贴回此处。",
     introXai:
       "将在新标签页打开 xAI 登录页。登录后请将返回的 code（与 state token）粘贴回此处。",
+    introCodex:
+      "将在新标签页打开 ChatGPT 登录页。OpenAI 回跳到 localhost:1455 会失败，但浏览器 URL 栏的 ?code=… 就是要回填的内容。",
+    introGemini:
+      "将在新标签页打开 Google 登录页。回跳到 localhost:8085 会失败，URL 栏的 ?code=… 就是要回填的内容。",
     loginButtonAnthropic: "使用 Anthropic 登录",
     loginButtonXai: "使用 xAI 登录",
+    loginButtonCodex: "使用 ChatGPT 登录",
+    loginButtonGemini: "使用 Google 登录",
     openingBrowserAnthropic: "正在新标签页打开 Anthropic…",
     openingBrowserXai: "正在新标签页打开 xAI…",
+    openingBrowserCodex: "正在新标签页打开 ChatGPT…",
+    openingBrowserGemini: "正在新标签页打开 Google…",
     awaitingCodeAnthropic: "请在 Anthropic 登录后将返回的 code 与 state 粘贴到此处。",
     awaitingCodeXai: "请在 xAI 登录后将返回的 code 与 state 粘贴到此处。",
+    awaitingCodeCodex: "请在 ChatGPT 登录后从 URL 栏拷回 code（state 可选）。",
+    awaitingCodeGemini: "请在 Google 登录后从 URL 栏拷回 code（state 可选）。",
     openManually: "手动打开",
     codeLabel: "Code",
     codePlaceholder: "粘贴 provider 返回的 code",

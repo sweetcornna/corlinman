@@ -35,6 +35,7 @@ Tokens are never echoed back to the client and never logged.
 from __future__ import annotations
 
 import os
+import json
 import time
 from pathlib import Path
 from typing import Any
@@ -54,7 +55,9 @@ from corlinman_server.gateway.oauth import (
     claude_code_import,
     claude_code_login,
     codex_external,
+    codex_pkce,
     gemini_external,
+    gemini_pkce,
     sessions,
     xai_pkce,
 )
@@ -447,6 +450,195 @@ def router() -> APIRouter:
         if isinstance(data_dir, JSONResponse):
             return data_dir
         delete_credential(data_dir, "xai")
+        return Response(status_code=204)
+
+    # -- Codex PKCE: start / submit / refresh / disconnect ----------------
+    # Mirrors hermes hermes_cli/auth.py codex flow. Tokens persist to
+    # ~/.codex/auth.json (the codex CLI's canonical path) so the existing
+    # read-only detector immediately surfaces "connected".
+
+    @r.post("/admin/oauth/codex/start", response_model=StartPkceResponse)
+    async def codex_start() -> StartPkceResponse | JSONResponse:
+        verifier, challenge = codex_pkce.generate_pkce_pair()
+        state_value = codex_pkce.generate_state()
+        sid, record = sessions.create_session(
+            "codex",
+            flow="pkce",
+            code_verifier=verifier,
+            state=state_value,
+        )
+        auth_url = codex_pkce.build_authorize_url(
+            code_challenge=challenge, state=state_value
+        )
+        return StartPkceResponse(
+            session_id=sid,
+            auth_url=auth_url,
+            expires_at_ms=record["expires_at_ms"],
+        )
+
+    @r.post("/admin/oauth/codex/submit", response_model=SubmitPkceResponse)
+    async def codex_submit(
+        body: SubmitPkceBody,
+    ) -> SubmitPkceResponse | JSONResponse:
+        record = sessions.get_session(body.session_id)
+        if (
+            record is None
+            or record.get("provider") != "codex"
+            or record.get("flow") != "pkce"
+        ):
+            return _bad("unknown_session", status=404)
+        if (
+            body.state is not None
+            and body.state
+            and body.state != record.get("state", "")
+        ):
+            return _bad("state_mismatch", status=400)
+        try:
+            tokens = await codex_pkce.exchange_code(
+                code=body.code,
+                code_verifier=record.get("code_verifier", ""),
+            )
+        except codex_pkce.CodexOAuthError as exc:
+            sessions.update_session(
+                body.session_id, status="error", error_message=str(exc)
+            )
+            return _bad("exchange_failed", status=400, message=str(exc))
+
+        try:
+            codex_pkce.write_auth_json(tokens)
+        except OSError as exc:
+            return _bad("save_failed", status=500, message=str(exc))
+
+        sessions.update_session(body.session_id, status="approved")
+        return SubmitPkceResponse(
+            ok=True,
+            expires_at_ms=tokens.get("expires_at_ms")
+            or int(time.time() * 1000),
+        )
+
+    @r.post("/admin/oauth/codex/refresh", response_model=RefreshResponse)
+    async def codex_refresh() -> RefreshResponse | JSONResponse:
+        # Reach into the on-disk auth.json directly — the codex format
+        # is what we just wrote in codex_pkce.write_auth_json().
+        path = codex_pkce._codex_auth_path()  # noqa: SLF001
+        if not path.is_file():
+            return _bad("no_credential", status=404)
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            return _bad("malformed", status=500, message=str(exc))
+        rt = ((raw or {}).get("tokens") or {}).get("refresh_token")
+        if not isinstance(rt, str) or not rt:
+            return _bad("no_refresh_token", status=400)
+        try:
+            refreshed = await codex_pkce.refresh_token(refresh_token=rt)
+        except codex_pkce.CodexOAuthError as exc:
+            return _bad("refresh_failed", status=502, message=str(exc))
+        try:
+            codex_pkce.write_auth_json(refreshed)
+        except OSError as exc:
+            return _bad("save_failed", status=500, message=str(exc))
+        return RefreshResponse(
+            expires_at_ms=refreshed.get("expires_at_ms")
+            or int(time.time() * 1000)
+        )
+
+    @r.delete("/admin/oauth/codex", response_model=None)
+    async def codex_disconnect() -> Response:
+        codex_pkce.delete_auth_json()
+        return Response(status_code=204)
+
+    # -- Gemini PKCE: start / submit / refresh / disconnect ----------------
+    # Tokens persist to ~/.gemini/oauth_creds.json (canonical Google CLI
+    # path) so gemini_external.read_gemini_status surfaces the result.
+
+    @r.post("/admin/oauth/gemini/start", response_model=StartPkceResponse)
+    async def gemini_start() -> StartPkceResponse | JSONResponse:
+        verifier, challenge = gemini_pkce.generate_pkce_pair()
+        state_value = gemini_pkce.generate_state()
+        sid, record = sessions.create_session(
+            "gemini",
+            flow="pkce",
+            code_verifier=verifier,
+            state=state_value,
+        )
+        auth_url = gemini_pkce.build_authorize_url(
+            code_challenge=challenge, state=state_value
+        )
+        return StartPkceResponse(
+            session_id=sid,
+            auth_url=auth_url,
+            expires_at_ms=record["expires_at_ms"],
+        )
+
+    @r.post("/admin/oauth/gemini/submit", response_model=SubmitPkceResponse)
+    async def gemini_submit(
+        body: SubmitPkceBody,
+    ) -> SubmitPkceResponse | JSONResponse:
+        record = sessions.get_session(body.session_id)
+        if (
+            record is None
+            or record.get("provider") != "gemini"
+            or record.get("flow") != "pkce"
+        ):
+            return _bad("unknown_session", status=404)
+        if (
+            body.state is not None
+            and body.state
+            and body.state != record.get("state", "")
+        ):
+            return _bad("state_mismatch", status=400)
+        try:
+            tokens = await gemini_pkce.exchange_code(
+                code=body.code,
+                code_verifier=record.get("code_verifier", ""),
+            )
+        except gemini_pkce.GeminiOAuthError as exc:
+            sessions.update_session(
+                body.session_id, status="error", error_message=str(exc)
+            )
+            return _bad("exchange_failed", status=400, message=str(exc))
+
+        try:
+            gemini_pkce.write_creds_json(tokens)
+        except OSError as exc:
+            return _bad("save_failed", status=500, message=str(exc))
+
+        sessions.update_session(body.session_id, status="approved")
+        return SubmitPkceResponse(
+            ok=True,
+            expires_at_ms=tokens.get("expires_at_ms")
+            or int(time.time() * 1000),
+        )
+
+    @r.post("/admin/oauth/gemini/refresh", response_model=RefreshResponse)
+    async def gemini_refresh() -> RefreshResponse | JSONResponse:
+        path = gemini_pkce._gemini_creds_path()  # noqa: SLF001
+        if not path.is_file():
+            return _bad("no_credential", status=404)
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            return _bad("malformed", status=500, message=str(exc))
+        rt = (raw or {}).get("refresh_token")
+        if not isinstance(rt, str) or not rt:
+            return _bad("no_refresh_token", status=400)
+        try:
+            refreshed = await gemini_pkce.refresh_token(refresh_token=rt)
+        except gemini_pkce.GeminiOAuthError as exc:
+            return _bad("refresh_failed", status=502, message=str(exc))
+        try:
+            gemini_pkce.write_creds_json(refreshed)
+        except OSError as exc:
+            return _bad("save_failed", status=500, message=str(exc))
+        return RefreshResponse(
+            expires_at_ms=refreshed.get("expires_at_ms")
+            or int(time.time() * 1000)
+        )
+
+    @r.delete("/admin/oauth/gemini", response_model=None)
+    async def gemini_disconnect() -> Response:
+        gemini_pkce.delete_creds_json()
         return Response(status_code=204)
 
     @r.post("/admin/oauth/anthropic/start", response_model=StartPkceResponse)

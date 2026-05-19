@@ -67,6 +67,8 @@ import {
   CorlinmanApiError,
   deleteCredential,
   disconnectAnthropicOAuth,
+  disconnectCodexOAuth,
+  disconnectGeminiOAuth,
   disconnectXaiOAuth,
   getCodexStatus,
   getGeminiStatus,
@@ -75,6 +77,8 @@ import {
   launchClaudeCodeLogin,
   listCredentials,
   refreshAnthropicOAuth,
+  refreshCodexOAuth,
+  refreshGeminiOAuth,
   refreshXaiOAuth,
   submitClaudeCodeLogin,
   setCredential,
@@ -240,7 +244,7 @@ export default function CredentialsPage() {
   /** Disconnect dialog is keyed by provider id so we can re-use one
    * <Dialog> for both anthropic and xai. */
   const [pendingDisconnect, setPendingDisconnect] = React.useState<
-    null | "anthropic" | "xai"
+    null | "anthropic" | "xai" | "codex" | "gemini"
   >(null);
 
   const oauthStatus = useQuery({
@@ -407,10 +411,87 @@ export default function CredentialsPage() {
     },
   });
 
+  // Codex / Gemini PKCE — same shape as xAI/Anthropic. The CLI-status
+  // queries (codexStatus / geminiStatus) flip "detected" on once the
+  // disk file is written, so we just invalidate both on success.
+  const oauthInvalidate = () => {
+    qc.invalidateQueries({ queryKey: ["admin", "oauth", "status"] });
+    qc.invalidateQueries({ queryKey: ["admin", "oauth", "codex"] });
+    qc.invalidateQueries({ queryKey: ["admin", "oauth", "gemini"] });
+  };
+  const refreshCodex = useMutation({
+    mutationFn: () => refreshCodexOAuth(),
+    onSuccess: () => {
+      toast.success(
+        t("oauth.refreshSuccess", { provider: t("oauth.providerCodex") }),
+      );
+      oauthInvalidate();
+    },
+    onError: (err) =>
+      toast.error(
+        t("oauth.refreshFailed", {
+          msg: err instanceof Error ? err.message : String(err),
+        }),
+      ),
+  });
+  const disconnectCodex = useMutation({
+    mutationFn: () => disconnectCodexOAuth(),
+    onSuccess: () => {
+      toast.success(
+        t("oauth.disconnectSuccess", { provider: t("oauth.providerCodex") }),
+      );
+      setPendingDisconnect(null);
+      oauthInvalidate();
+    },
+    onError: (err) =>
+      toast.error(
+        t("oauth.disconnectFailed", {
+          msg: err instanceof Error ? err.message : String(err),
+        }),
+      ),
+  });
+  const refreshGemini = useMutation({
+    mutationFn: () => refreshGeminiOAuth(),
+    onSuccess: () => {
+      toast.success(
+        t("oauth.refreshSuccess", { provider: t("oauth.providerGemini") }),
+      );
+      oauthInvalidate();
+    },
+    onError: (err) =>
+      toast.error(
+        t("oauth.refreshFailed", {
+          msg: err instanceof Error ? err.message : String(err),
+        }),
+      ),
+  });
+  const disconnectGemini = useMutation({
+    mutationFn: () => disconnectGeminiOAuth(),
+    onSuccess: () => {
+      toast.success(
+        t("oauth.disconnectSuccess", { provider: t("oauth.providerGemini") }),
+      );
+      setPendingDisconnect(null);
+      oauthInvalidate();
+    },
+    onError: (err) =>
+      toast.error(
+        t("oauth.disconnectFailed", {
+          msg: err instanceof Error ? err.message : String(err),
+        }),
+      ),
+  });
+
   const anthropic = findProvider(oauthStatus.data, "anthropic");
   const xai = findProvider(oauthStatus.data, "xai");
+  const codex = findProvider(oauthStatus.data, "codex");
+  const gemini = findProvider(oauthStatus.data, "gemini");
   const anthropicLoggedIn = anthropic?.source === "pkce";
   const xaiLoggedIn = xai?.source === "pkce";
+  // Codex / Gemini surface as `external-cli` once their auth files exist
+  // on disk — regardless of whether `codex login` or our PKCE wrote them.
+  const codexLoggedIn = codex?.source === "external-cli";
+  const geminiLoggedIn = gemini?.source === "external-cli";
 
   const providers = credentials.data?.providers ?? [];
 
@@ -433,13 +514,21 @@ export default function CredentialsPage() {
       ? disconnectAnthropic
       : pendingDisconnect === "xai"
         ? disconnectXai
-        : null;
+        : pendingDisconnect === "codex"
+          ? disconnectCodex
+          : pendingDisconnect === "gemini"
+            ? disconnectGemini
+            : null;
   const disconnectProviderLabel =
     pendingDisconnect === "anthropic"
       ? t("oauth.providerAnthropic")
       : pendingDisconnect === "xai"
         ? t("oauth.providerXai")
-        : "";
+        : pendingDisconnect === "codex"
+          ? t("oauth.providerCodex")
+          : pendingDisconnect === "gemini"
+            ? t("oauth.providerGemini")
+            : "";
 
   return (
     <div className="flex flex-col gap-6">
@@ -524,28 +613,34 @@ export default function CredentialsPage() {
             </div>
           </div>
 
-          {/* --- Codex (external CLI, read-only) --- */}
-          <OAuthDetectTile
+          {/* --- Codex (PKCE port of `codex login`) --- */}
+          <OAuthPkceTile
             testId="oauth-tile-codex"
             providerLabel={t("oauth.providerCodex")}
-            cliName="codex"
-            cliCommand="codex login"
-            status={codexStatus.data}
-            loading={codexStatus.isPending}
-            errored={codexStatus.isError}
+            loading={oauthStatus.isPending}
+            errored={oauthStatus.isError}
+            status={codex}
+            loggedIn={codexLoggedIn}
             t={t}
+            onLogin={() => setOauthModalProvider("codex")}
+            onRefresh={() => refreshCodex.mutate()}
+            refreshing={refreshCodex.isPending}
+            onDisconnect={() => setPendingDisconnect("codex")}
           />
 
-          {/* --- Gemini (external CLI, read-only) --- */}
-          <OAuthDetectTile
+          {/* --- Gemini (PKCE port of `gemini auth login`) --- */}
+          <OAuthPkceTile
             testId="oauth-tile-gemini"
             providerLabel={t("oauth.providerGemini")}
-            cliName="gemini"
-            cliCommand="gemini auth login"
-            status={geminiStatus.data}
-            loading={geminiStatus.isPending}
-            errored={geminiStatus.isError}
+            loading={oauthStatus.isPending}
+            errored={oauthStatus.isError}
+            status={gemini}
+            loggedIn={geminiLoggedIn}
             t={t}
+            onLogin={() => setOauthModalProvider("gemini")}
+            onRefresh={() => refreshGemini.mutate()}
+            refreshing={refreshGemini.isPending}
+            onDisconnect={() => setPendingDisconnect("gemini")}
           />
 
           {/* --- xAI (PKCE) --- */}
