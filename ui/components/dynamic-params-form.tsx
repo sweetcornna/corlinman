@@ -406,13 +406,15 @@ function ControlForKind({
           onBlur={onBlur}
           onClick={() => onChange(!checked)}
           className={cn(
-            "inline-flex h-6 w-11 shrink-0 items-center rounded-full border border-input transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-            checked ? "bg-primary" : "bg-muted",
+            "inline-flex h-6 w-11 shrink-0 items-center rounded-full border border-input backdrop-blur-glass backdrop-saturate-glass transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            checked
+              ? "bg-[color-mix(in_oklch,var(--tp-amber)_34%,transparent)]"
+              : "bg-tp-glass-inner",
           )}
         >
           <span
             className={cn(
-              "inline-block h-4 w-4 transform rounded-full bg-background shadow transition-transform",
+              "inline-block h-4 w-4 transform rounded-full border border-tp-glass-edge-strong bg-[color-mix(in_oklch,var(--tp-ink)_18%,transparent)] shadow-tp-panel transition-transform",
               checked ? "translate-x-[22px]" : "translate-x-[3px]",
             )}
           />

@@ -13,27 +13,27 @@
      * ────────────────────────────────────────────────────────────── */
     --background: 36 32% 92%;
     --foreground: 0 0% 0%;
-    --card: 36 40% 96%;
+    --card: 0 0% 100% / 0.16;
     --card-foreground: 0 0% 0%;
-    --popover: 36 40% 96%;
+    --popover: 0 0% 100% / 0.18;
     --popover-foreground: 0 0% 0%;
     --primary: 218 78% 38%;
     --primary-foreground: 36 40% 98%;
-    --secondary: 36 25% 86%;
+    --secondary: 0 0% 100% / 0.16;
     --secondary-foreground: 0 0% 0%;
-    --muted: 36 22% 88%;
+    --muted: 0 0% 100% / 0.12;
     --muted-foreground: 0 0% 28%;
-    --accent: 218 50% 90%;
+    --accent: 0 0% 100% / 0.18;
     --accent-foreground: 0 0% 0%;
     --destructive: 0 72% 48%;
     --destructive-foreground: 0 0% 98%;
     --border: 32 22% 78%;
-    --input: 32 22% 82%;
+    --input: 0 0% 100% / 0.20;
     --ring: 218 78% 50%;
     --radius: 0.5rem;
 
-    --panel: 36 40% 96%;
-    --surface: 36 30% 90%;
+    --panel: 0 0% 100% / 0.16;
+    --surface: 0 0% 100% / 0.12;
 
     --ok: 160 60% 35%;
     --warn: 32 88% 45%;
@@ -58,12 +58,12 @@
       0 18px 40px -14px hsl(30 30% 20% / 0.18);
     --glow-primary: 0 0 22px hsl(218 78% 60% / 0.25);
 
-    --state-hover: 36 28% 88%;
+    --state-hover: 0 0% 100% / 0.20;
     --state-focus: 218 60% 88%;
     --state-press: 36 25% 82%;
-    --state-loading: 36 22% 90%;
-    --state-skeleton: 36 20% 86%;
-    --state-empty: 36 30% 94%;
+    --state-loading: 0 0% 100% / 0.14;
+    --state-skeleton: 0 0% 100% / 0.18;
+    --state-empty: 0 0% 100% / 0.12;
     --state-error: 0 60% 92%;
 
     /* Tidepool ivory tokens. */
@@ -74,18 +74,16 @@
     --tp-aurora-2: oklch(0.82 0.05 60 / 0.16);
     --tp-aurora-3: oklch(0.88 0.04 40 / 0.12);
 
-    /* Glass surfaces are fully transparent — chrome floats on the
-       oil-paint sky bg, no frosted overlay. Inner hover states keep a
-       hint of ink so rows/items still register on hover. */
-    --tp-glass: transparent;
-    --tp-glass-2: transparent;
-    --tp-glass-3: transparent;
+    /* Glass surfaces stay visibly translucent rather than opaque slabs. */
+    --tp-glass: oklch(1 0 0 / 0.18);
+    --tp-glass-2: oklch(1 0 0 / 0.14);
+    --tp-glass-3: oklch(1 0 0 / 0.10);
     --tp-glass-edge: oklch(0.40 0.04 80 / 0.18);
     --tp-glass-edge-strong: oklch(0.30 0.05 80 / 0.30);
-    --tp-glass-hl: oklch(1 0 0 / 0);
-    --tp-glass-inner: oklch(0.20 0.04 240 / 0);
-    --tp-glass-inner-hover: oklch(0.20 0.04 240 / 0.08);
-    --tp-glass-inner-strong: oklch(0.20 0.04 240 / 0.05);
+    --tp-glass-hl: oklch(1 0 0 / 0.46);
+    --tp-glass-inner: oklch(1 0 0 / 0.10);
+    --tp-glass-inner-hover: oklch(1 0 0 / 0.22);
+    --tp-glass-inner-strong: oklch(1 0 0 / 0.16);
     --tp-row-alt: rgba(255, 248, 230, 0.55);
 
     --tp-ink: #000000;
@@ -144,27 +142,27 @@
      * ────────────────────────────────────────────────────────────── */
     --background: 226 60% 5%;
     --foreground: 0 0% 100%;
-    --card: 226 50% 8%;
+    --card: 226 50% 8% / 0.34;
     --card-foreground: 0 0% 100%;
-    --popover: 226 55% 7%;
+    --popover: 226 55% 7% / 0.38;
     --popover-foreground: 0 0% 100%;
     /* Primary = sapphire highlight — like moonlight catching stone. */
     --primary: 218 70% 70%;
     --primary-foreground: 226 60% 8%;
-    --secondary: 226 35% 14%;
+    --secondary: 226 35% 14% / 0.42;
     --secondary-foreground: 0 0% 100%;
-    --muted: 226 30% 11%;
+    --muted: 226 30% 11% / 0.36;
     --muted-foreground: 0 0% 72%;
-    --accent: 222 50% 22%;
+    --accent: 222 50% 22% / 0.42;
     --accent-foreground: 0 0% 100%;
     --destructive: 0 62% 45%;
     --destructive-foreground: 0 0% 98%;
     --border: 222 30% 18%;
-    --input: 222 35% 14%;
+    --input: 222 35% 14% / 0.44;
     --ring: 218 80% 65%;
 
-    --panel: 226 50% 8%;
-    --surface: 226 40% 10%;
+    --panel: 226 50% 8% / 0.34;
+    --surface: 226 40% 10% / 0.28;
 
     --ok: 168 65% 50%;
     --warn: 38 88% 60%;
@@ -190,12 +188,12 @@
     --glow-primary: 0 0 24px hsl(218 80% 65% / 0.35);
 
     /* State tokens — sapphire-shifted. */
-    --state-hover: 222 40% 14%;
+    --state-hover: 222 40% 14% / 0.44;
     --state-focus: 218 60% 22%;
     --state-press: 222 40% 17%;
-    --state-loading: 226 30% 11%;
-    --state-skeleton: 226 28% 13%;
-    --state-empty: 226 35% 9%;
+    --state-loading: 226 30% 11% / 0.36;
+    --state-skeleton: 226 28% 13% / 0.44;
+    --state-empty: 226 35% 9% / 0.28;
     --state-error: 0 45% 18%;
 
     /* Tidepool — Bas-relief Navy retint. Panel glass is cool slate
@@ -211,18 +209,16 @@
     --tp-aurora-2: oklch(0.40 0.12 230 / 0.08);
     --tp-aurora-3: oklch(0.35 0.08 220 / 0.06);
 
-    /* Dark glass surfaces are fully transparent — chrome floats over
-       the oil-paint navy bg, no frosted overlay. Hover keeps a faint
-       light wash so rows still register. */
-    --tp-glass: transparent;
-    --tp-glass-2: transparent;
-    --tp-glass-3: transparent;
+    /* Dark glass keeps a faint navy tint so panels are readable but not solid. */
+    --tp-glass: oklch(0.14 0.04 240 / 0.38);
+    --tp-glass-2: oklch(0.12 0.04 240 / 0.30);
+    --tp-glass-3: oklch(0.10 0.04 240 / 0.24);
     --tp-glass-edge: oklch(0.85 0.05 230 / 0.10);
     --tp-glass-edge-strong: oklch(0.85 0.05 230 / 0.18);
-    --tp-glass-hl: oklch(0.95 0.04 230 / 0);
-    --tp-glass-inner: oklch(0.85 0.05 230 / 0);
-    --tp-glass-inner-hover: oklch(0.85 0.05 230 / 0.10);
-    --tp-glass-inner-strong: oklch(0.85 0.05 230 / 0.07);
+    --tp-glass-hl: oklch(0.95 0.04 230 / 0.18);
+    --tp-glass-inner: oklch(0.85 0.05 230 / 0.08);
+    --tp-glass-inner-hover: oklch(0.85 0.05 230 / 0.16);
+    --tp-glass-inner-strong: oklch(0.85 0.05 230 / 0.12);
     --tp-row-alt: rgba(150, 180, 230, 0.018);
 
     --tp-ink: #ffffff;
@@ -490,7 +486,7 @@
 
   /* All `.emboss` surfaces carry the sun-moon mandala as a subtle
      pattern tile — same `--tp-pattern-url` token that drives
-     `.pattern-active`. The panel itself stays transparent glass so
+     `.pattern-active`. The panel itself stays translucent glass so
      large surfaces do not become opaque white slabs in day mode. */
   .emboss {
     background-color: var(--tp-glass);
@@ -502,7 +498,7 @@
     box-shadow:
       inset 0 1px 0 rgb(255 255 255 / 0.28),
       0 10px 28px -18px rgb(0 0 0 / 0.28);
-    backdrop-filter: blur(0) saturate(1);
+    backdrop-filter: blur(18px) saturate(1.35);
   }
   .dark .emboss {
     background-color: var(--tp-glass);
@@ -623,11 +619,11 @@
    * Opt out per-element with `[background-image:none]`.
    * ──────────────────────────────────────────────────────────────── */
   .bg-card,
-  .bg-popover {
-    background-image: var(--tp-pattern-url);
-    background-size: 480px 480px;
-    background-position: center center;
-    background-blend-mode: soft-light;
+  .bg-popover,
+  .bg-panel {
+    background-color: var(--tp-glass) !important;
+    background-image: none;
+    backdrop-filter: blur(18px) saturate(1.28);
   }
 
   /* Monaco ships its own opaque `vs-light` / `vs-dark` surfaces. Keep the

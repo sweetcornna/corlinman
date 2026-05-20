@@ -233,13 +233,15 @@ export default function EmbeddingPage() {
                   setDraft({ ...draft, enabled: !draft.enabled })
                 }
                 className={cn(
-                  "inline-flex h-6 w-11 items-center rounded-full border border-input transition-colors",
-                  draft.enabled ? "bg-primary" : "bg-tp-glass-inner",
+                  "inline-flex h-6 w-11 items-center rounded-full border border-input backdrop-blur-glass backdrop-saturate-glass transition-colors",
+                  draft.enabled
+                    ? "bg-[color-mix(in_oklch,var(--tp-amber)_34%,transparent)]"
+                    : "bg-tp-glass-inner",
                 )}
               >
                 <span
                   className={cn(
-                    "inline-block h-4 w-4 transform rounded-full bg-background shadow transition-transform",
+                    "inline-block h-4 w-4 transform rounded-full border border-tp-glass-edge-strong bg-[color-mix(in_oklch,var(--tp-ink)_18%,transparent)] shadow-tp-panel transition-transform",
                     draft.enabled
                       ? "translate-x-[22px]"
                       : "translate-x-[3px]",

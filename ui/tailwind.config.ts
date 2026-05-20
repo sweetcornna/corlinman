@@ -128,14 +128,14 @@ const config: Config = {
           "radial-gradient(600px 400px at 50% 95%, var(--tp-aurora-3), transparent 60%), " +
           "linear-gradient(135deg, var(--tp-bg-a), var(--tp-bg-b) 60%, var(--tp-bg-c))",
       },
-      // Glass retired: bg-tp-glass surfaces are transparent, blur/saturate neutralised.
+      // Glass surfaces stay translucent and frosted so background art reads through.
       backdropBlur: {
-        glass: "0",
-        "glass-strong": "0",
+        glass: "18px",
+        "glass-strong": "26px",
       },
       backdropSaturate: {
-        glass: "1",
-        "glass-strong": "1",
+        glass: "1.35",
+        "glass-strong": "1.5",
       },
       transitionTimingFunction: {
         spring: "cubic-bezier(0.34, 1.56, 0.64, 1)",
