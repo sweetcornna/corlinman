@@ -252,7 +252,7 @@ export default function HooksPage() {
       ? "paused"
       : "live";
   const streamRate = eps >= 1 ? `${eps.toFixed(1)}/s` : `${Math.round(eps * 60)} ev/min`;
-  const onToggleStream = React.useCallback((_current?: StreamState) => {
+  const onToggleStream = React.useCallback(() => {
     setPaused((p) => !p);
   }, []);
 

@@ -22,6 +22,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from fastapi import HTTPException, Request
+
 
 @dataclass
 class AdminState:
@@ -70,6 +72,12 @@ class AdminState:
 
     # Data dir (per-tenant SQLite roots live under here).
     data_dir: Path | None = None
+
+    # Admin credentials/session state. Kept in the same shape as
+    # routes_admin_a.AdminState so both bundles can share one auth guard.
+    admin_username: str | None = None
+    admin_password_hash: str | None = None
+    session_store: Any | None = None
 
     # Allowed-tenants set for federation middleware.
     allowed_tenants: frozenset[str] = frozenset()
@@ -157,7 +165,7 @@ def config_snapshot(state: AdminState | None = None) -> Mapping[str, Any]:
         snap = st.config_loader()
         if isinstance(snap, Mapping):
             return snap
-    except Exception:  # noqa: BLE001 — best-effort snapshot
+    except Exception:
         return {}
     return {}
 
@@ -168,24 +176,18 @@ def config_snapshot(state: AdminState | None = None) -> Mapping[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-async def require_admin() -> None:
-    """FastAPI dependency that enforces admin credentials.
+async def require_admin(request: Request) -> None:
+    """FastAPI dependency that enforces admin credentials."""
+    from corlinman_server.gateway.routes_admin_a._auth_shim import (
+        authenticate_admin_request,
+        require_admin_dependency,
+    )
 
-    Lazy-imports ``corlinman_server.gateway.middleware.require_admin``
-    (a sibling agent is responsible for that module). When the sibling
-    isn't installed yet the dependency is a no-op — tests and lone
-    imports stay green; production deployments must ensure the
-    middleware is present.
-    """
     try:
-        from corlinman_server.gateway import middleware  # type: ignore  # noqa: PLC0415
-    except ImportError:
-        return None
-    fn = getattr(middleware, "require_admin", None)
-    if fn is None:
-        return None
-    # Caller may be async or sync — accept either.
-    result = fn()
-    if asyncio.iscoroutine(result):
-        await result
+        authenticate_admin_request(request, get_admin_state())
+    except HTTPException as exc:
+        if isinstance(exc.detail, dict) and exc.detail.get("reason") == "admin_not_configured":
+            require_admin_dependency(request)
+            return None
+        raise
     return None

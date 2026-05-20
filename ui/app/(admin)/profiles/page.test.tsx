@@ -67,7 +67,6 @@ function installLocalStorageShim() {
 }
 
 import {
-  CorlinmanApiError,
   deleteProfile,
   getProfileSoul,
   listProfiles,

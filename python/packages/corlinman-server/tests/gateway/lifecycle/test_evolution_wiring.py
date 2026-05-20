@@ -21,17 +21,22 @@ Asserts that :func:`build_app` plus its ``_lifespan`` context manager:
 from __future__ import annotations
 
 import asyncio
+import base64
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
-
 from corlinman_evolution_store import (
     EVENT_USER_CORRECTION,
     EvolutionStore,
     SignalsRepo,
 )
 from corlinman_server.gateway.lifecycle.entrypoint import build_app
+from fastapi.testclient import TestClient
+
+
+def _admin_headers() -> dict[str, str]:
+    token = base64.b64encode(b"admin:root").decode("ascii")
+    return {"Authorization": f"Basic {token}"}
 
 
 # ---------------------------------------------------------------------------
@@ -76,7 +81,7 @@ def test_curator_profiles_route_no_longer_returns_503(tmp_path: Path) -> None:
     wiring in place it returns 200 and includes the default profile."""
     app = build_app(config_path=None, data_dir=tmp_path)
     with TestClient(app) as client:
-        resp = client.get("/admin/curator/profiles")
+        resp = client.get("/admin/curator/profiles", headers=_admin_headers())
         assert resp.status_code == 200, resp.text
         body = resp.json()
         assert "profiles" in body
@@ -173,7 +178,7 @@ def test_bad_data_dir_does_not_crash_gateway(
     lifespan logs a WARN and the gateway still boots — health probe
     still answers, and ``_evolution_store`` is ``None``."""
 
-    async def _boom(path):  # noqa: ANN001
+    async def _boom(path):
         raise RuntimeError("induced open failure")
 
     monkeypatch.setattr(
@@ -190,7 +195,7 @@ def test_bad_data_dir_does_not_crash_gateway(
         # Store handle is absent → curator routes return their typed
         # 503 envelope rather than crashing the request.
         assert getattr(app.state, "_evolution_store", None) is None
-        resp = client.get("/admin/curator/profiles")
+        resp = client.get("/admin/curator/profiles", headers=_admin_headers())
         assert resp.status_code == 503
         assert resp.json()["detail"]["error"] == "curator_state_repo_missing"
 
@@ -209,7 +214,7 @@ class _async_lifespan:  # noqa: N801 — context-manager helper
     coroutine keeps everything on one loop.
     """
 
-    def __init__(self, app):  # noqa: ANN001
+    def __init__(self, app):
         self._app = app
         self._ctx = None
 

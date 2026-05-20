@@ -1532,6 +1532,8 @@ export const zhCN = {
     tenants: "租户",
     profiles: "Profile",
     sessions: "会话",
+    account: "账户",
+    security: "安全",
   },
 
   health: {
@@ -1913,6 +1915,7 @@ export const zhCN = {
     },
     preview: {
       title: "管家预览",
+      description: "查看管家将要执行的技能状态变更，再决定是否应用。",
       summary:
         "检查 {{checked}} 项 · → stale {{stale}} · → 归档 {{archived}} · 重新激活 {{reactivated}}",
       empty: "无需变更。每个有资格的技能都已处于正确状态。",

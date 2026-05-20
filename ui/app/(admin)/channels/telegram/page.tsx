@@ -12,7 +12,6 @@ import {
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { Button } from "@/components/ui/button";
 import { GlassPanel } from "@/components/ui/glass-panel";
 import { StatChip } from "@/components/ui/stat-chip";
 import { StreamPill, type StreamState } from "@/components/ui/stream-pill";
@@ -55,8 +54,9 @@ import { SendTestDrawer } from "./SendTestDrawer";
  * `page.test.tsx` against English regex regardless of locale.
  */
 
-const UPDATE_FILTERS = ["all", "text", "photo", "voice", "doc"] as const;
-type UpdateFilter = (typeof UPDATE_FILTERS)[number];
+type UpdateFilter = "all" | "text" | "photo" | "voice" | "doc";
+
+const EMPTY_TELEGRAM_MESSAGES: TelegramMessage[] = [];
 
 const UPDATES_SPARK =
   "M0 22 L30 20 L60 16 L90 22 L120 14 L150 20 L180 18 L210 22 L240 16 L270 20 L300 14 L300 36 L0 36 Z";
@@ -130,7 +130,7 @@ export default function TelegramChannelPage() {
   const connected = status?.connected ?? false;
   const lastError = status?.last_error ?? null;
   const offline = statusQuery.isError;
-  const messages = messagesQuery.data ?? [];
+  const messages = messagesQuery.data ?? EMPTY_TELEGRAM_MESSAGES;
 
   const streamState = deriveStreamState(connected, Boolean(lastError));
 

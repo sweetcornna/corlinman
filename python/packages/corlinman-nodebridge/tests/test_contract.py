@@ -33,7 +33,7 @@ from corlinman_nodebridge.protocol import (
 from corlinman_nodebridge.types import NodeBridgeNoCapableNode
 from websockets.asyncio.client import connect
 
-from tests.conftest import Harness
+from .conftest import Harness
 
 # Type alias for the harness factory fixture.
 HarnessFactory = Callable[[bool, int], Awaitable[Harness]]

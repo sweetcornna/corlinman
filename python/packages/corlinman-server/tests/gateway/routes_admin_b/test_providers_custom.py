@@ -26,16 +26,16 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
-
 from corlinman_providers.specs import ProviderKind, list_supported_kinds
 from corlinman_server.gateway.routes_admin_b import providers as providers_routes
 from corlinman_server.gateway.routes_admin_b.state import (
     AdminState,
     set_admin_state,
 )
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
+from ._admin_auth import authenticated_test_client, configure_admin_auth
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -60,6 +60,7 @@ def admin_state(temp_config_path: Path) -> Iterator[AdminState]:
         config_loader=_loader,
         config_path=temp_config_path,
     )
+    configure_admin_auth(state)
     state.extras["snapshot"] = snapshot
     set_admin_state(state)
     try:
@@ -72,7 +73,7 @@ def admin_state(temp_config_path: Path) -> Iterator[AdminState]:
 def client(admin_state: AdminState) -> TestClient:
     app = FastAPI()
     app.include_router(providers_routes.router())
-    return TestClient(app)
+    return authenticated_test_client(app)
 
 
 def _reload(state: AdminState) -> None:

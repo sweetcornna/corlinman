@@ -23,7 +23,11 @@ const SEGMENT_KEY: Record<string, string> = {
   logs: "breadcrumbs.logs",
   tenants: "breadcrumbs.tenants",
   sessions: "breadcrumbs.sessions",
+  account: "breadcrumbs.account",
+  security: "breadcrumbs.security",
 };
+
+const NON_LINKABLE_HREFS = new Set(["/account"]);
 
 /** Auto-derived breadcrumb from `usePathname`. */
 export function Breadcrumbs() {
@@ -60,6 +64,8 @@ export function Breadcrumbs() {
           <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/60" />
           {i === crumbs.length - 1 ? (
             <span className="font-medium text-foreground">{c.label}</span>
+          ) : NON_LINKABLE_HREFS.has(c.href) ? (
+            <span className="text-muted-foreground">{c.label}</span>
           ) : (
             <Link
               href={c.href as never}

@@ -33,6 +33,13 @@ docker compose -f docker/compose/docker-compose.yml up -d
 
 The container exposes the gateway on `http://localhost:6005`. The first
 boot writes a fresh `config.toml` into the mounted data volume.
+Docker-backed plugin sandboxing is opt-in because it mounts the host Docker
+socket:
+
+```bash
+docker compose -f docker/compose/docker-compose.yml \
+  -f docker/compose/docker-compose.sandbox.yml up -d
+```
 
 ### Native (from source)
 

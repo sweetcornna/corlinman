@@ -1,4 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 /**
  * Playwright config — Wave 5.1.
@@ -6,7 +9,7 @@ import { defineConfig, devices } from "@playwright/test";
  * Two `webServer` entries are conditionally enabled when
  * `CORLINMAN_E2E=1` is set. They start:
  *
- *   1. The Python gateway (`corlinman-gateway`) on port 6005. Specs
+ *   1. The Python gateway (`uv run corlinman-gateway`) on port 6005. Specs
  *      that mutate state (onboarding, profile lifecycle, curator) need
  *      a real backend — mocking these flows would defeat the purpose
  *      of W5.1 (which is to exercise the whole stack).
@@ -31,6 +34,10 @@ const baseURL =
   process.env.PLAYWRIGHT_BASE_URL ?? "http://localhost:3000";
 const gatewayURL =
   process.env.PLAYWRIGHT_GATEWAY_URL ?? "http://localhost:6005";
+const uiOrigin = new URL(baseURL).origin;
+const e2eDataDir =
+  process.env.CORLINMAN_DATA_DIR ??
+  mkdtempSync(join(tmpdir(), "corlinman-e2e-"));
 
 export default defineConfig({
   testDir: "./tests/e2e",
@@ -57,25 +64,26 @@ export default defineConfig({
         {
           // Gateway first — the UI dev server expects /admin/* to
           // proxy through Next's rewrites once the gateway is alive.
-          command: "corlinman-gateway",
+          command: "uv run corlinman-gateway",
           url: `${gatewayURL}/health`,
-          reuseExistingServer: !process.env.CI,
+          reuseExistingServer: false,
           timeout: 60_000,
           env: {
             // Use a throwaway data dir per run so admin/root seed is
-            // re-installed cleanly. The path is interpreted by the
-            // gateway entrypoint relative to the user's data dir
-            // override; without this each run inherits the previous
-            // run's rotated password.
-            CORLINMAN_DATA_DIR:
-              process.env.CORLINMAN_DATA_DIR ?? "/tmp/corlinman-e2e",
+            // re-installed cleanly. A fixed /tmp path lets failed runs
+            // leak rotated credentials into the next run.
+            CORLINMAN_DATA_DIR: e2eDataDir,
+            CORLINMAN_CORS_ORIGINS: uiOrigin,
           },
         },
         {
           command: "pnpm dev",
           url: baseURL,
-          reuseExistingServer: !process.env.CI,
+          reuseExistingServer: false,
           timeout: 120_000,
+          env: {
+            NEXT_PUBLIC_GATEWAY_URL: gatewayURL,
+          },
         },
       ]
     : undefined,

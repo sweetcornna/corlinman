@@ -14,19 +14,28 @@ parallel test execution doesn't cross-pollinate state.
 
 from __future__ import annotations
 
+import base64
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
-
 from corlinman_server.gateway.routes_admin_a import (
     AdminState,
     build_router,
     set_admin_state,
 )
+from corlinman_server.gateway.routes_admin_a._session_store import (
+    AdminSessionStore,
+)
+from corlinman_server.gateway.routes_admin_a.auth import hash_password
 from corlinman_server.profiles import ProfileStore
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+
+def _basic_auth_header(username: str = "admin", password: str = "rootroot") -> str:
+    token = base64.b64encode(f"{username}:{password}".encode()).decode("ascii")
+    return f"Basic {token}"
 
 
 @pytest.fixture()
@@ -45,13 +54,16 @@ def client(tmp_path: Path) -> Iterator[TestClient]:
     state = AdminState(
         data_dir=tmp_path,
         profile_store=store,
+        admin_username="admin",
+        admin_password_hash=hash_password("rootroot"),
+        session_store=AdminSessionStore(86_400),
     )
     set_admin_state(state)
 
     app = FastAPI()
     app.include_router(build_router())
 
-    with TestClient(app) as c:
+    with TestClient(app, headers={"Authorization": _basic_auth_header()}) as c:
         yield c
 
     set_admin_state(None)
@@ -61,6 +73,31 @@ def client(tmp_path: Path) -> Iterator[TestClient]:
 # ---------------------------------------------------------------------------
 # GET /admin/profiles
 # ---------------------------------------------------------------------------
+
+
+def test_profiles_require_admin_auth(tmp_path: Path) -> None:
+    profiles_dir = tmp_path / "profiles"
+    store = ProfileStore(profiles_dir)
+    store.create(slug="default", display_name="Default")
+
+    state = AdminState(
+        data_dir=tmp_path,
+        profile_store=store,
+        admin_username="admin",
+        admin_password_hash=hash_password("rootroot"),
+        session_store=AdminSessionStore(86_400),
+    )
+    set_admin_state(state)
+    app = FastAPI()
+    app.include_router(build_router())
+
+    try:
+        with TestClient(app) as c:
+            resp = c.get("/admin/profiles")
+            assert resp.status_code == 401
+    finally:
+        set_admin_state(None)
+        store.close()
 
 
 def test_list_starts_with_default(client: TestClient) -> None:
@@ -237,12 +274,17 @@ def test_delete_missing_404(client: TestClient) -> None:
 
 def test_profile_store_missing_returns_503(tmp_path: Path) -> None:
     """If the bootstrapper didn't wire ``profile_store`` the routes 503."""
-    state = AdminState(data_dir=tmp_path)
+    state = AdminState(
+        data_dir=tmp_path,
+        admin_username="admin",
+        admin_password_hash=hash_password("rootroot"),
+        session_store=AdminSessionStore(86_400),
+    )
     set_admin_state(state)
     app = FastAPI()
     app.include_router(build_router())
     try:
-        with TestClient(app) as c:
+        with TestClient(app, headers={"Authorization": _basic_auth_header()}) as c:
             resp = c.get("/admin/profiles")
             assert resp.status_code == 503
             assert resp.json()["detail"]["error"] == "profile_store_missing"
@@ -255,9 +297,7 @@ def test_profile_store_missing_returns_503(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_get_soul_empty_when_file_missing(
-    client: TestClient, tmp_path: Path
-) -> None:
+def test_get_soul_empty_when_file_missing(client: TestClient, tmp_path: Path) -> None:
     """Fresh profile with no SOUL content → 200 + ``{content: ""}``.
 
     The ``client`` fixture preseeds ``default`` via ``store.create`` which
@@ -295,16 +335,12 @@ def test_get_soul_404_for_missing_profile(client: TestClient) -> None:
 
 
 def test_put_soul_404_for_missing_profile(client: TestClient) -> None:
-    resp = client.put(
-        "/admin/profiles/ghost/soul", json={"content": "anything"}
-    )
+    resp = client.put("/admin/profiles/ghost/soul", json={"content": "anything"})
     assert resp.status_code == 404
     assert resp.json()["detail"]["error"] == "profile_not_found"
 
 
-def test_put_soul_atomic_replaces_previous_content(
-    client: TestClient, tmp_path: Path
-) -> None:
+def test_put_soul_atomic_replaces_previous_content(client: TestClient, tmp_path: Path) -> None:
     """Repeated PUTs overwrite cleanly with no stale tempfiles left over."""
     client.post("/admin/profiles", json={"slug": "research"})
     client.put("/admin/profiles/research/soul", json={"content": "v1"})
@@ -320,12 +356,17 @@ def test_put_soul_atomic_replaces_previous_content(
 
 
 def test_get_soul_404_when_store_missing(tmp_path: Path) -> None:
-    state = AdminState(data_dir=tmp_path)
+    state = AdminState(
+        data_dir=tmp_path,
+        admin_username="admin",
+        admin_password_hash=hash_password("rootroot"),
+        session_store=AdminSessionStore(86_400),
+    )
     set_admin_state(state)
     app = FastAPI()
     app.include_router(build_router())
     try:
-        with TestClient(app) as c:
+        with TestClient(app, headers={"Authorization": _basic_auth_header()}) as c:
             resp = c.get("/admin/profiles/default/soul")
             assert resp.status_code == 503
             assert resp.json()["detail"]["error"] == "profile_store_missing"

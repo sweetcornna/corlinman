@@ -33,6 +33,7 @@ import {
   type AdminSession,
 } from "@/lib/auth";
 import { CorlinmanApiError } from "@/lib/api";
+import { useMustChangePassword } from "@/components/admin/must-change-password-context";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -55,8 +56,9 @@ const USERNAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 export default function AccountSecurityPage() {
   const { t } = useTranslation();
   const router = useRouter();
+  const { setMustChange: setShellMustChange } = useMustChangePassword();
   const [session, setSession] = useState<AdminSession | null>(null);
-  const [mustChange, setMustChange] = useState<boolean | null>(null);
+  const [mustChange, setPageMustChange] = useState<boolean | null>(null);
   // Tracks the "you just rotated, you can leave now" callout. Distinct
   // from `mustChange` because the guard reads `mustChange` directly off
   // /admin/me; the success state needs its own ack so we don't flash it
@@ -74,7 +76,7 @@ export default function AccountSecurityPage() {
         const s = await getSession();
         if (cancelled) return;
         setSession(s);
-        setMustChange(s?.must_change_password ?? false);
+        setPageMustChange(s?.must_change_password ?? false);
       } catch {
         // surface nothing; the layout guard owns auth failure UX.
       }
@@ -88,7 +90,8 @@ export default function AccountSecurityPage() {
     const s = await getSession();
     setSession(s);
     const next = s?.must_change_password ?? false;
-    setMustChange(next);
+    setPageMustChange(next);
+    setShellMustChange(next);
     if (!next) setJustResolved(true);
   }
 

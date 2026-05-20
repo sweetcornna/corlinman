@@ -25,6 +25,7 @@ export function streamBlockProtocol(
   _prompt: string,
   _opts: StreamOptions = {},
 ): AsyncGenerator<string, void, unknown> {
+  void _opts;
   return emptyStream();
 }
 
@@ -32,5 +33,6 @@ export function streamFunctionCall(
   _prompt: string,
   _opts: StreamOptions = {},
 ): AsyncGenerator<string, void, unknown> {
+  void _opts;
   return emptyStream();
 }

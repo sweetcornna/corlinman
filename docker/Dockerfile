@@ -2,7 +2,8 @@
 #
 # Stages:
 #   1. py-builder  → install workspace + deps into a venv with uv.
-#   2. runtime     → slim Python 3.12 image, copies the prebuilt venv,
+#   2. ui-builder  → build the Next.js static admin export.
+#   3. runtime     → slim Python 3.12 image, copies the prebuilt venv,
 #                    bakes the UI static export at /app/ui-static.
 #
 # Build (no China mirror):
@@ -61,7 +62,31 @@ RUN uv sync --all-packages --frozen --no-dev
 RUN bash scripts/gen-proto.sh
 
 # ---------------------------------------------------------------------------
-# Stage 2: runtime — slim image with just the venv + sources + UI static
+# Stage 2: UI builder — produce a static Next.js export in /build/ui/out
+# ---------------------------------------------------------------------------
+FROM node:22-bookworm-slim AS ui-builder
+
+ARG NPM_REGISTRY=
+
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+
+WORKDIR /build
+
+# Copy manifests first so dependency resolution remains cache-friendly.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY ui/package.json ./ui/package.json
+
+RUN corepack enable \
+    && corepack prepare pnpm@10.33.0 --activate \
+    && if [ -n "$NPM_REGISTRY" ]; then pnpm config set registry "$NPM_REGISTRY"; fi \
+    && pnpm install --frozen-lockfile
+
+COPY ui ./ui
+
+RUN pnpm -C ui build
+
+# ---------------------------------------------------------------------------
+# Stage 3: runtime — slim image with just the venv + sources + UI static
 # ---------------------------------------------------------------------------
 FROM python:3.12-slim-bookworm AS runtime
 
@@ -76,6 +101,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
         tini \
     && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd --system corlinman \
+    && useradd --system --gid corlinman --home-dir /app \
+        --no-create-home --shell /usr/sbin/nologin corlinman
 
 # Bring across the prebuilt venv and only the source the venv needs.
 # uv's editable .pth files reference absolute paths like
@@ -93,13 +122,14 @@ RUN mkdir -p /build && ln -s /app/python /build/python && ln -s /app/proto /buil
 ENV PATH=/opt/venv/bin:$PATH
 ENV PYTHONUNBUFFERED=1
 
-# Optional UI static export. Build context must contain ui/out/ for this
-# to land; if missing, the layer is a no-op (cp -r failure swallowed).
-COPY ui/out* /app/ui-static/
+# UI static export built from this exact source tree.
+COPY --from=ui-builder /build/ui/out /app/ui-static
 
 # Default supervisor: launch agent sidecar + gateway in parallel.
 COPY docker/start.sh /app/start.sh
-RUN chmod +x /app/start.sh
+RUN mkdir -p /data \
+    && chmod +x /app/start.sh \
+    && chown -R corlinman:corlinman /app /data
 
 EXPOSE 6005
 WORKDIR /app
@@ -111,6 +141,8 @@ ENV PORT=6005
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD curl -fsS http://localhost:6005/health || exit 1
+
+USER corlinman
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["/app/start.sh"]

@@ -115,8 +115,9 @@ cat <<INFO
   • Health         : curl http://${PUB_IP}:6005/health
   • Admin UI       : http://${PUB_IP}:6005/admin
                      bootstrap token = value of ADMIN_BOOTSTRAP_TOKEN in $REPO_ROOT/.env
-  • NapCat WebUI   : http://${PUB_IP}:6099  (scan QR there to log in)
-  • OneBot WS      : ws://${PUB_IP}:3001    (corlinman dials it internally)
+  • NapCat WebUI   : bound to 127.0.0.1:6099; use an SSH tunnel if needed:
+                     ssh -L 6099:127.0.0.1:6099 root@${PUB_IP}
+  • OneBot WS      : internal compose network only; corlinman dials napcat:3001
 
   Tail logs:
     docker logs -f corlinman

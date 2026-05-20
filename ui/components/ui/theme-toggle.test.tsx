@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, fireEvent } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+} from "@testing-library/react";
 import { ThemeToggle, THEME_STORAGE_KEY } from "./theme-toggle";
 
 // The jsdom environment used by vitest has an incomplete localStorage shim
@@ -42,44 +49,47 @@ describe("ThemeToggle", () => {
   it("defaults to dark when no theme attribute is set", () => {
     render(<ThemeToggle />);
     const dark = screen.getByLabelText("Night mode");
-    expect(dark).toHaveAttribute("aria-pressed", "true");
+    expect(dark).toHaveAttribute("aria-selected", "true");
   });
 
   it("respects `initial` prop", () => {
     render(<ThemeToggle initial="light" />);
     expect(screen.getByLabelText("Day mode")).toHaveAttribute(
-      "aria-pressed",
+      "aria-selected",
       "true",
     );
   });
 
-  it("flips to light, writes data-theme, removes .dark, persists", () => {
+  it("flips to light, writes data-theme, removes .dark, persists", async () => {
     render(<ThemeToggle initial="dark" />);
     fireEvent.click(screen.getByLabelText("Day mode"));
 
     expect(document.documentElement.dataset.theme).toBe("light");
     expect(document.documentElement.classList.contains("dark")).toBe(false);
     expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBe("light");
-    expect(screen.getByLabelText("Day mode")).toHaveAttribute(
-      "aria-pressed",
-      "true",
+    await waitFor(() =>
+      expect(screen.getByLabelText("Day mode")).toHaveAttribute(
+        "aria-selected",
+        "true",
+      ),
     );
   });
 
-  it("fires onThemeChange callback", () => {
+  it("fires onThemeChange callback", async () => {
     const onThemeChange = vi.fn();
     render(<ThemeToggle initial="dark" onThemeChange={onThemeChange} />);
     fireEvent.click(screen.getByLabelText("Day mode"));
-    expect(onThemeChange).toHaveBeenCalledWith("light");
+    await waitFor(() => expect(onThemeChange).toHaveBeenCalledWith("light"));
   });
 
   it("reflects external data-theme attribute changes via MutationObserver", async () => {
     render(<ThemeToggle initial="dark" />);
-    document.documentElement.dataset.theme = "light";
-    // Let the MutationObserver microtask fire.
-    await new Promise((r) => setTimeout(r, 0));
+    await act(async () => {
+      document.documentElement.dataset.theme = "light";
+      await Promise.resolve();
+    });
     expect(screen.getByLabelText("Day mode")).toHaveAttribute(
-      "aria-pressed",
+      "aria-selected",
       "true",
     );
   });

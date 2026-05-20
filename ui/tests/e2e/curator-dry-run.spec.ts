@@ -30,10 +30,14 @@
  * Gated behind `CORLINMAN_E2E=1`.
  */
 
-import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+import {
+  expect,
+  test,
+  type APIRequestContext,
+  type Page,
+} from "@playwright/test";
 
 import {
-  DEFAULT_ADMIN_PASSWORD,
   DEFAULT_ADMIN_USER,
   loginAsAdmin,
   pinLocaleEn,
@@ -44,26 +48,16 @@ import {
   apiLogin,
   apiLogout,
   apiPurgeTestProfiles,
+  ensureAdminPasswordRotated,
   GATEWAY_URL,
 } from "./helpers/test-data";
 
 const FULL_STACK = process.env.CORLINMAN_E2E === "1";
 const SEEDED_SLUG = "curator-test";
-
-async function discoverPassword(
-  request: APIRequestContext,
-): Promise<string> {
-  for (const candidate of [DEFAULT_ADMIN_PASSWORD, "newpassword123"]) {
-    try {
-      await apiLogin(request, DEFAULT_ADMIN_USER, candidate);
-      await apiLogout(request);
-      return candidate;
-    } catch {
-      /* try the next */
-    }
-  }
-  throw new Error("Default admin/root seed not present.");
-}
+const PREVIEW_LABEL = /preview|预览/i;
+const PAUSE_LABEL = /^(pause|暂停)$/i;
+const CANCEL_LABEL = /^(cancel|取消)$/i;
+const APPLY_NOW_LABEL = /apply now|立即应用/i;
 
 /**
  * Best-effort: ensure the seeded profile exists and has at least one
@@ -81,13 +75,62 @@ async function seedProfile(request: APIRequestContext): Promise<void> {
   });
 }
 
+async function clickProfileAction(
+  page: Page,
+  slug: string,
+  name: RegExp,
+): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const button = page
+      .getByTestId(`profile-card-${slug}`)
+      .getByRole("button", { name });
+    try {
+      await expect(button).toBeVisible({ timeout: 5_000 });
+      await expect(button).toBeEnabled({ timeout: 5_000 });
+      await button.click({ timeout: 5_000 });
+      return;
+    } catch (err) {
+      lastError = err;
+      await page.waitForTimeout(250);
+    }
+  }
+  throw lastError;
+}
+
+async function closePreviewDialog(page: Page): Promise<void> {
+  const previewBody = page.getByTestId("preview-body");
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (!(await previewBody.isVisible().catch(() => false))) {
+      return;
+    }
+
+    const button = page.getByRole("button", { name: CANCEL_LABEL });
+    try {
+      await expect(button).toBeVisible({ timeout: 2_000 });
+      await expect(button).toBeEnabled({ timeout: 2_000 });
+      await button.click({ timeout: 2_000 });
+      await expect(previewBody).toBeHidden({ timeout: 5_000 });
+      return;
+    } catch (err) {
+      lastError = err;
+      if (!(await previewBody.isVisible().catch(() => false))) {
+        return;
+      }
+      await page.waitForTimeout(250);
+    }
+  }
+  throw lastError;
+}
+
 (FULL_STACK ? test.describe.serial : test.describe.skip)(
   "Wave 5.1 — curator dry-run",
   () => {
-    let adminPassword: string;
+    let adminPassword = "";
 
     test.beforeAll(async ({ request }) => {
-      adminPassword = await discoverPassword(request);
+      adminPassword = await ensureAdminPasswordRotated(request);
       await apiLogin(request, DEFAULT_ADMIN_USER, adminPassword);
       try {
         await seedProfile(request);
@@ -97,7 +140,13 @@ async function seedProfile(request: APIRequestContext): Promise<void> {
     });
 
     test.afterAll(async ({ request }) => {
-      await apiPurgeTestProfiles(request, [SEEDED_SLUG]);
+      if (!adminPassword) return;
+      await apiLogin(request, DEFAULT_ADMIN_USER, adminPassword);
+      try {
+        await apiPurgeTestProfiles(request, [SEEDED_SLUG]);
+      } finally {
+        await apiLogout(request);
+      }
     });
 
     test.beforeEach(async ({ page }) => {
@@ -121,7 +170,7 @@ async function seedProfile(request: APIRequestContext): Promise<void> {
       await expect(seededCard).toBeVisible({ timeout: 10_000 });
 
       // ── 4. Preview → dialog opens with transitions or empty state ──
-      await seededCard.getByRole("button", { name: /preview/i }).click();
+      await clickProfileAction(page, SEEDED_SLUG, PREVIEW_LABEL);
       const previewBody = page.getByTestId("preview-body");
       await expect(previewBody).toBeVisible({ timeout: 10_000 });
 
@@ -149,7 +198,7 @@ async function seedProfile(request: APIRequestContext): Promise<void> {
       }
 
       // ── 7. Apply now — only enabled when transitions > 0 ──
-      const applyBtn = page.getByRole("button", { name: /apply now/i });
+      const applyBtn = page.getByRole("button", { name: APPLY_NOW_LABEL });
       const applyEnabled = await applyBtn
         .isEnabled()
         .catch(() => false);
@@ -159,8 +208,7 @@ async function seedProfile(request: APIRequestContext): Promise<void> {
         await expect(previewBody).toBeHidden({ timeout: 10_000 });
       } else {
         // Close manually so subsequent steps can drive the page.
-        await page.getByRole("button", { name: /^cancel$/i }).click();
-        await expect(previewBody).toBeHidden({ timeout: 5_000 });
+        await closePreviewDialog(page);
       }
 
       // ── 8. Reload + verify skill list renders for the profile ──
@@ -185,9 +233,9 @@ async function seedProfile(request: APIRequestContext): Promise<void> {
       // ── 9. Pause — status flips to "Paused" ──
       const pauseBtn = page
         .getByTestId(`profile-card-${SEEDED_SLUG}`)
-        .getByRole("button", { name: /^pause$/i });
+        .getByRole("button", { name: PAUSE_LABEL });
       if (await pauseBtn.count()) {
-        await pauseBtn.click();
+        await clickProfileAction(page, SEEDED_SLUG, PAUSE_LABEL);
         await expect(
           page
             .getByTestId(`profile-card-${SEEDED_SLUG}`)
@@ -200,14 +248,11 @@ async function seedProfile(request: APIRequestContext): Promise<void> {
       // it". The W4.6 implementation runs the deterministic pass
       // regardless of `paused` (pause only stops scheduled triggers),
       // so we just verify the dialog opens and renders.
-      await page
-        .getByTestId(`profile-card-${SEEDED_SLUG}`)
-        .getByRole("button", { name: /preview/i })
-        .click();
+      await clickProfileAction(page, SEEDED_SLUG, PREVIEW_LABEL);
       await expect(page.getByTestId("preview-body")).toBeVisible({
         timeout: 10_000,
       });
-      await page.getByRole("button", { name: /^cancel$/i }).click();
+      await closePreviewDialog(page);
 
       // ── 11. Filter origin = agent-created ──
       const originFilter = page.getByTestId("skill-filter-origin");

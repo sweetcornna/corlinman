@@ -23,7 +23,7 @@
  */
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render } from "@testing-library/react";
+import { act, cleanup, render } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nextProvider } from "react-i18next";
 import * as React from "react";
@@ -31,6 +31,7 @@ import axe, { type Result } from "axe-core";
 
 import { i18next, initI18n } from "@/lib/i18n";
 import { CommandPaletteProvider } from "@/components/cmdk-palette";
+import { ActiveProfileProvider } from "@/lib/context/active-profile";
 
 // ---------------------------------------------------------------------------
 // Mocks — install *before* page modules are imported.
@@ -256,7 +257,9 @@ function Harness({ children }: { children: React.ReactNode }) {
   return (
     <QueryClientProvider client={client}>
       <I18nextProvider i18n={i18next}>
-        <CommandPaletteProvider>{children}</CommandPaletteProvider>
+        <ActiveProfileProvider>
+          <CommandPaletteProvider>{children}</CommandPaletteProvider>
+        </ActiveProfileProvider>
       </I18nextProvider>
     </QueryClientProvider>
   );
@@ -380,16 +383,21 @@ describe("admin a11y audit (axe-core)", () => {
       const mod = await c.loader();
       const Page = mod.default;
 
-      const { container } = render(
-        <Harness>
-          <Page />
-        </Harness>,
-      );
+      let container!: HTMLElement;
+      await act(async () => {
+        ({ container } = render(
+          <Harness>
+            <Page />
+          </Harness>,
+        ));
+      });
 
       // Let a couple of microtasks drain — framer-motion / react-query commit
       // state after the initial render pass, and that can add elements that
       // axe should also see.
-      await new Promise((r) => setTimeout(r, 0));
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 0));
+      });
 
       const violations = await runAxe(container);
       const severe = violations.filter(

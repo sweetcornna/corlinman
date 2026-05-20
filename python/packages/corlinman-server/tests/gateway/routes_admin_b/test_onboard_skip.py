@@ -9,11 +9,9 @@ complete without real LLM credentials. Coverage:
 * returns the documented ``{"status": "ok", "mode": "mock"}`` payload;
 * gracefully 503s when no config path is wired (no implicit /tmp write).
 
-The endpoint sits behind :func:`require_admin`; tests reach for it
-through :class:`fastapi.testclient.TestClient` after installing an
-:class:`AdminState` with a temp ``config_path``. The middleware module
-is intentionally absent in the test env, so ``require_admin`` falls
-through as a no-op (documented in ``state.require_admin``).
+The endpoint sits behind :func:`require_admin`; tests reach for it with
+real Basic auth after installing an :class:`AdminState` with a temp
+``config_path``.
 """
 
 from __future__ import annotations
@@ -24,15 +22,15 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
-
 from corlinman_server.gateway.routes_admin_b import onboard
 from corlinman_server.gateway.routes_admin_b.state import (
     AdminState,
     set_admin_state,
 )
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
+from ._admin_auth import authenticated_test_client, configure_admin_auth
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -66,6 +64,7 @@ def admin_state(temp_config_path: Path) -> Iterator[AdminState]:
         config_loader=_loader,
         config_path=temp_config_path,
     )
+    configure_admin_auth(state)
     # Stash the snapshot ref on the state so tests can refresh between
     # POSTs (the endpoint reads via config_snapshot before each write).
     state.extras["snapshot"] = snapshot
@@ -85,7 +84,7 @@ def client(admin_state: AdminState) -> TestClient:
     """
     app = FastAPI()
     app.include_router(onboard.router())
-    return TestClient(app)
+    return authenticated_test_client(app)
 
 
 # ---------------------------------------------------------------------------
@@ -187,11 +186,12 @@ def test_finalize_skip_is_idempotent(
 def test_finalize_skip_returns_503_when_config_path_unset() -> None:
     """No config path → 503 with the documented ``config_path_unset`` error."""
     state = AdminState(config_loader=lambda: {}, config_path=None)
+    configure_admin_auth(state)
     set_admin_state(state)
     try:
         app = FastAPI()
         app.include_router(onboard.router())
-        with TestClient(app) as c:
+        with authenticated_test_client(app) as c:
             resp = c.post("/admin/onboard/finalize-skip", json={})
         assert resp.status_code == 503
         assert resp.json() == {"error": "config_path_unset"}
@@ -260,5 +260,4 @@ def test_mock_provider_kind_resolvable_from_written_config(
     reg = ProviderRegistry([spec])
     provider = reg.get("mock")
     assert isinstance(provider, MockProvider)
-
 

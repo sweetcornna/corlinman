@@ -34,6 +34,7 @@ import { listProfiles, type Profile } from "@/lib/api";
 
 export const STORAGE_KEY = "corlinman_active_profile";
 export const DEFAULT_SLUG = "default";
+const EMPTY_PROFILES: Profile[] = [];
 
 interface ActiveProfileContextValue {
   /** The currently active profile slug. */
@@ -109,7 +110,7 @@ export function ActiveProfileProvider({
     retry: false,
   });
 
-  const profiles = profilesQuery.data?.profiles ?? [];
+  const profiles = profilesQuery.data?.profiles ?? EMPTY_PROFILES;
   const loading = profilesQuery.isPending;
   const fetching = profilesQuery.isFetching;
   // ``dataUpdatedAt`` ticks when the query resolves; we only re-evaluate

@@ -40,6 +40,7 @@ slug validation lives in :func:`corlinman_server.profiles.paths.validate_slug`.
 
 from __future__ import annotations
 
+import contextlib
 import datetime as _dt
 import shutil
 import sqlite3
@@ -101,21 +102,21 @@ class ProfileError(Exception):
     """
 
 
-class ProfileExists(ProfileError):
+class ProfileExists(ProfileError):  # noqa: N818 - public API uses domain names.
     """Raised when :meth:`ProfileStore.create` is called with a slug that
     is already registered. Maps to HTTP 409."""
 
 
-class ProfileNotFound(ProfileError):
+class ProfileNotFound(ProfileError):  # noqa: N818 - public API uses domain names.
     """Raised when an operation references a non-existent slug. Maps to
     HTTP 404."""
 
 
-class ProfileSlugInvalid(ProfileError):
+class ProfileSlugInvalid(ProfileError):  # noqa: N818 - public API uses domain names.
     """Raised when a slug fails :func:`validate_slug`. Maps to HTTP 422."""
 
 
-class ProfileProtected(ProfileError):
+class ProfileProtected(ProfileError):  # noqa: N818 - public API uses domain names.
     """Raised when an operation would mutate the reserved ``default``
     profile in a forbidden way (e.g., delete). Maps to HTTP 409."""
 
@@ -150,7 +151,7 @@ class Profile:
 def _utc_now() -> _dt.datetime:
     """Wall-clock UTC. Pulled out so tests can freeze time via monkeypatch
     of ``corlinman_server.profiles.store._utc_now``."""
-    return _dt.datetime.now(_dt.timezone.utc)
+    return _dt.datetime.now(_dt.UTC)
 
 
 def _iso(dt: _dt.datetime) -> str:
@@ -159,7 +160,7 @@ def _iso(dt: _dt.datetime) -> str:
     Matches the format used by :mod:`corlinman_server.gateway.routes_admin_a.auth`
     so the wire vocabulary is consistent across admin routes.
     """
-    return dt.astimezone(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
+    return dt.astimezone(_dt.UTC).isoformat().replace("+00:00", "Z")
 
 
 def _parse_iso(value: str) -> _dt.datetime:
@@ -212,11 +213,8 @@ class ProfileStore:
 
     def close(self) -> None:
         """Close the underlying connection. Idempotent."""
-        with self._lock:
-            try:
-                self._conn.close()
-            except sqlite3.Error:  # pragma: no cover — best-effort drain
-                pass
+        with self._lock, contextlib.suppress(sqlite3.Error):
+            self._conn.close()
 
     @property
     def profiles_dir(self) -> Path:
@@ -442,6 +440,7 @@ class ProfileStore:
             row = self._get_row(slug)
             if row is None:
                 raise ProfileNotFound(f"profile {slug!r} does not exist")
+            # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- SET clauses come from fixed field names; profile values and slug are parameter-bound.
             self._conn.execute(
                 f"UPDATE profiles SET {', '.join(sets)} WHERE slug = ?",
                 params,

@@ -234,6 +234,7 @@ def read_episodes_as_context(
             where_parts.append("started_at < ?")
             params.append(int(window_end_ms))
         where_sql = " AND ".join(where_parts)
+        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- WHERE fragments are fixed literals above; all values use sqlite parameters.
         cur = conn.execute(
             f"""SELECT id, kind, summary_text, started_at, ended_at,
                        importance_score
@@ -282,6 +283,7 @@ def _fetch_messages(
         agent_col = "agent_id" if "agent_id" in cols else "''"
         tool_call_col = "tool_call_id" if "tool_call_id" in cols else "NULL"
         tool_name_col = "tool_name" if "tool_name" in cols else "NULL"
+        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- private helper is only called with fixed WHERE literals; values remain parameter-bound.
         cur = conn.execute(
             f"""SELECT session_key, seq, role, content, ts,
                      {tenant_col}, {agent_col},
@@ -351,6 +353,7 @@ def _fetch_messages_ranged(
 
         where_sql = " AND ".join(where_parts) if where_parts else "1=1"
 
+        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- SELECT/WHERE fragments are fixed schema fallbacks; user values stay parameterized.
         cur = conn.execute(
             f"""SELECT session_key, seq, role, content, ts,
               {tenant_col}, {agent_col},
@@ -458,4 +461,3 @@ __all__ = [
     "read_sessions_by_range",
     "sanitize_content",
 ]
-

@@ -23,12 +23,18 @@
 #                       Debian  → mirrors.tuna.tsinghua.edu.cn
 #                     Autodetected when `curl https://pypi.org` TTFB > 3s.
 #                     Override individual endpoints via env vars (see below).
+#   --enable-docker-sandbox
+#                     Mount /var/run/docker.sock so Docker-backed plugin
+#                     sandboxing can spawn child containers. High-trust hosts
+#                     only; disabled by default.
 #   --version <ref>   Git ref / branch to install from (default: main).
 #
 # Environment overrides:
 #   CORLINMAN_PREFIX     install root for --mode native (default: /opt/corlinman)
 #   CORLINMAN_DATA_DIR   data dir (default: $CORLINMAN_PREFIX/data or ~/.corlinman)
 #   CORLINMAN_PORT       gateway port (default: 6005)
+#   CORLINMAN_ENABLE_DOCKER_SANDBOX=1
+#                       Same effect as --enable-docker-sandbox.
 #   CN_PIP_INDEX         override PyPI mirror (default tuna)
 #   CN_GH_PROXY          override GitHub clone proxy host (default gh-proxy.com).
 #                        Empty = no proxy (direct github.com — works on some CN
@@ -44,6 +50,7 @@ DATA_DIR="${CORLINMAN_DATA_DIR:-${PREFIX}/data}"
 PORT="${CORLINMAN_PORT:-6005}"
 REPO="ymylive/corlinman"
 USE_CHINA=""
+ENABLE_DOCKER_SANDBOX="${CORLINMAN_ENABLE_DOCKER_SANDBOX:-}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -52,8 +59,9 @@ while [[ $# -gt 0 ]]; do
         --version) REF="$2"; shift 2 ;;
         --version=*) REF="${1#--version=}"; shift ;;
         --china) USE_CHINA="1"; shift ;;
+        --enable-docker-sandbox) ENABLE_DOCKER_SANDBOX="1"; shift ;;
         -h|--help)
-            head -28 "$0" | sed -n '2,$p' | sed 's/^# \{0,1\}//'
+            head -42 "$0" | sed -n '2,$p' | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *) echo "unknown argument: $1" >&2; exit 1 ;;
@@ -157,6 +165,7 @@ install_docker() {
             --build-arg "PIP_INDEX=$PIP_INDEX"
             --build-arg "UV_INDEX_URL=$PIP_INDEX"
             --build-arg "DEBIAN_MIRROR=${DEBIAN_MIRROR:-mirrors.tuna.tsinghua.edu.cn}"
+            --build-arg "NPM_REGISTRY=$NPM_REGISTRY"
         )
     fi
     (cd "$PREFIX/repo" && docker buildx build "${extra_args[@]}" \
@@ -174,7 +183,14 @@ services:
       - "${PORT}:6005"
     volumes:
       - "${DATA_DIR}:/data"
+EOF
+    if [[ "$ENABLE_DOCKER_SANDBOX" == "1" ]]; then
+        warn "mounting /var/run/docker.sock for Docker-backed plugin sandboxing"
+        cat >> "$PREFIX/corlinman.yml" <<EOF
       - /var/run/docker.sock:/var/run/docker.sock:ro
+EOF
+    fi
+    cat >> "$PREFIX/corlinman.yml" <<EOF
     environment:
       BIND: 0.0.0.0
       CORLINMAN_DATA_DIR: /data

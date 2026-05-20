@@ -2,6 +2,8 @@
 # Usage:
 #   cd docker/compose
 #   docker compose up -d                          # main only
+#   docker compose -f docker-compose.yml -f docker-compose.sandbox.yml up -d
+#                                                   # enable Docker-backed plugin sandboxing
 #   docker compose -f docker-compose.yml -f docker-compose.qq.yml --profile qq up -d
 #   docker compose -f docker-compose.yml -f docker-compose.obs.yml --profile obs up -d
 
@@ -17,7 +19,8 @@ services:
     ports:
       - "6005:6005"
     env_file:
-      - ../../.env
+      - path: ../../.env
+        required: false
     environment:
       BIND: 0.0.0.0
       CORLINMAN_PY_ADDR: 127.0.0.1:50051
@@ -29,8 +32,6 @@ services:
     volumes:
       # Data directory (config.toml / plugins/ / agents/ / knowledge/ / vector/ / logs/)
       - ~/.corlinman:/data
-      # Docker socket for plugin sandbox (read-only; docker-py uses it to spawn children)
-      - /var/run/docker.sock:/var/run/docker.sock:ro
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:6005/health"]
       interval: 30s

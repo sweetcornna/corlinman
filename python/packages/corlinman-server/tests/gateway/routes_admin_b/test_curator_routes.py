@@ -28,14 +28,11 @@ async-fixture pattern from ``tests/gateway/evolution/test_curator.py``.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 import pytest_asyncio
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
-
 from corlinman_evolution_store import (
     CuratorStateRepo,
     EvolutionStore,
@@ -50,9 +47,12 @@ from corlinman_server.profiles import ProfileStore
 from corlinman_skills_registry import SkillRegistry
 from corlinman_skills_registry.parse import parse_skill
 from corlinman_skills_registry.usage import SkillUsage, write_usage
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
+from ._admin_auth import authenticated_test_client, configure_admin_auth
 
-UTC = timezone.utc
+UTC = UTC
 FIXED_NOW = datetime(2026, 5, 17, 12, 0, 0, tzinfo=UTC)
 
 
@@ -179,11 +179,12 @@ async def client(
         signals_repo=SignalsRepo(store.conn),
         skill_registry_factory=skill_registry_factory,
     )
+    configure_admin_auth(state)
     set_admin_state(state)
     try:
         app = FastAPI()
         app.include_router(curator_routes.router())
-        yield TestClient(app)
+        yield authenticated_test_client(app)
     finally:
         set_admin_state(None)
 
@@ -570,11 +571,12 @@ def test_curator_state_repo_missing_returns_503(tmp_path: Path) -> None:
         skill_registry_factory=_factory,
         # curator_state_repo intentionally absent.
     )
+    configure_admin_auth(state)
     set_admin_state(state)
     try:
         app = FastAPI()
         app.include_router(curator_routes.router())
-        with TestClient(app) as c:
+        with authenticated_test_client(app) as c:
             resp = c.get("/admin/curator/profiles")
             assert resp.status_code == 503
             assert (
@@ -590,11 +592,12 @@ def test_profile_store_missing_returns_503(tmp_path: Path) -> None:
     """Without ``profile_store`` we 503 before even checking the slug —
     same envelope shape the W3.1 profiles route uses."""
     state = AdminState(data_dir=tmp_path)
+    configure_admin_auth(state)
     set_admin_state(state)
     try:
         app = FastAPI()
         app.include_router(curator_routes.router())
-        with TestClient(app) as c:
+        with authenticated_test_client(app) as c:
             resp = c.get("/admin/curator/profiles")
             assert resp.status_code == 503
             assert resp.json()["detail"]["error"] == "profile_store_missing"

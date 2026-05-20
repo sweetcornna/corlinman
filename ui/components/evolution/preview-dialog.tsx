@@ -44,22 +44,26 @@ export function PreviewDialog({
   applyDisabled = false,
 }: PreviewDialogProps) {
   const { t } = useTranslation();
+  const previewDescription =
+    report && !loading
+      ? t("evolution.preview.summary", {
+          checked: report.checked,
+          stale: report.marked_stale,
+          archived: report.archived,
+          reactivated: report.reactivated,
+        })
+      : t("evolution.preview.description");
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle>{t("evolution.preview.title")}</DialogTitle>
-          {report && !loading ? (
-            <DialogDescription>
-              {t("evolution.preview.summary", {
-                checked: report.checked,
-                stale: report.marked_stale,
-                archived: report.archived,
-                reactivated: report.reactivated,
-              })}
-            </DialogDescription>
-          ) : null}
+          <DialogDescription
+            className={report && !loading ? undefined : "sr-only"}
+          >
+            {previewDescription}
+          </DialogDescription>
         </DialogHeader>
 
         <div

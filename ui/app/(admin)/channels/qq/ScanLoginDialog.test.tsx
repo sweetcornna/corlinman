@@ -1,5 +1,12 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import * as React from "react";
 
@@ -10,6 +17,12 @@ vi.mock("@/lib/api", () => ({
   fetchQqQrcodeStatus: vi.fn(),
   fetchQqAccounts: vi.fn(),
   qqQuickLogin: vi.fn(),
+}));
+
+vi.mock("@/components/ui/countdown-ring", () => ({
+  CountdownRing: ({ label }: { label?: string }) => (
+    <span data-testid="mock-countdown-ring" aria-label={label} />
+  ),
 }));
 
 import {
@@ -35,6 +48,11 @@ function renderWithClient(ui: React.ReactElement) {
 describe("ScanLoginDialog", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.useRealTimers();
+  });
+
+  afterEach(() => {
+    cleanup();
     vi.useRealTimers();
   });
 
@@ -89,11 +107,18 @@ describe("ScanLoginDialog", () => {
     renderWithClient(<ScanLoginDialog open onOpenChange={onOpenChange} />);
 
     // Wait for the QR + first poll to resolve.
-    await vi.waitFor(() => expect(mockedRequestQrcode).toHaveBeenCalled());
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(mockedRequestQrcode).toHaveBeenCalled();
     // Advance past the 2s poll interval.
-    await vi.advanceTimersByTimeAsync(2_100);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_100);
+    });
     // Now flush the confirmed-close delay (1.5s).
-    await vi.advanceTimersByTimeAsync(1_600);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_600);
+    });
 
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });

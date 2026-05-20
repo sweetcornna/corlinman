@@ -56,7 +56,7 @@ import os
 import signal
 import sys
 from collections.abc import Awaitable, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any
 
@@ -140,6 +140,12 @@ def _resolve_data_dir(cli_value: str | None) -> Path:
         return Path.home() / ".corlinman"
     except (RuntimeError, OSError):
         return Path(".corlinman")
+
+
+def _resolve_cors_origins() -> list[str]:
+    """Parse the opt-in browser UI CORS allowlist."""
+    raw = os.environ.get("CORLINMAN_CORS_ORIGINS", "")
+    return [origin.strip() for origin in raw.split(",") if origin.strip()]
 
 
 def _load_config(path: Path | None) -> Any | None:
@@ -289,15 +295,11 @@ def _build_state(cfg: Any | None, data_dir: Path) -> Any:
                 # set attributes dynamically. This is the contract
                 # ``_mount_routes`` reads via ``getattr(state,
                 # "data_dir", None)`` to wire the profile store.
-                try:
-                    setattr(built, "data_dir", data_dir)
-                except (AttributeError, TypeError):  # pragma: no cover
-                    pass
+                with suppress(AttributeError, TypeError):
+                    built.data_dir = data_dir
                 if getattr(built, "config", None) is None and cfg is not None:
-                    try:
-                        setattr(built, "config", cfg)
-                    except (AttributeError, TypeError):  # pragma: no cover
-                        pass
+                    with suppress(AttributeError, TypeError):
+                        built.config = cfg
                 return built
     return _DegradedAppState(config=cfg, data_dir=data_dir)
 
@@ -420,10 +422,10 @@ def _mount_routes(
                         # Best-effort — any failure logs a warning but
                         # does not block boot.
                         try:
-                            from corlinman_server.gateway.lifecycle.starter_skills import (  # noqa: PLC0415
+                            from corlinman_server.gateway.lifecycle.starter_skills import (
                                 seed_starter_skills,
                             )
-                            from corlinman_server.profiles import (  # noqa: PLC0415
+                            from corlinman_server.profiles import (
                                 profile_skills_dir,
                             )
 
@@ -484,7 +486,7 @@ def _mount_routes(
                     the write-back collapses to ``{providers: {...}}``
                     and quietly wipes the operator's credentials.
                     """
-                    import tomllib  # noqa: PLC0415 — stdlib
+                    import tomllib
 
                     if (
                         _admin_a_config_path is None
@@ -531,7 +533,7 @@ def _mount_routes(
                 data_dir_for_skills = getattr(state, "data_dir", None)
                 if data_dir_for_skills is not None:
                     try:
-                        from corlinman_skills_registry import (  # noqa: PLC0415
+                        from corlinman_skills_registry import (
                             SkillRegistry,
                         )
 
@@ -656,7 +658,7 @@ def build_app(
         curator_state_repo: Any | None = None
         evolution_db_path = resolved_data_dir / "evolution.sqlite"
         try:
-            from corlinman_evolution_store import (  # noqa: PLC0415
+            from corlinman_evolution_store import (
                 CuratorStateRepo,
                 EvolutionStore,
                 SignalsRepo,
@@ -695,7 +697,7 @@ def build_app(
                     # _mount_routes — covers cases where admin_b isn't
                     # mounted but admin_a still wants to spawn reviews.
                     try:
-                        from corlinman_skills_registry import (  # noqa: PLC0415
+                        from corlinman_skills_registry import (
                             SkillRegistry,
                         )
 
@@ -781,7 +783,7 @@ def build_app(
         user_correction_applier: Any | None = None
         if signals_repo is not None:
             try:
-                from corlinman_hooks import HookBus  # noqa: PLC0415
+                from corlinman_hooks import HookBus
 
                 bus = getattr(app.state, "hook_bus", None)
                 if bus is None:
@@ -791,7 +793,7 @@ def build_app(
                     bus = HookBus(capacity=256)
                     app.state.hook_bus = bus
 
-                from corlinman_server.gateway.evolution import (  # noqa: PLC0415
+                from corlinman_server.gateway.evolution import (
                     UserCorrectionApplier,
                     register_user_correction_listener,
                 )
@@ -867,10 +869,8 @@ def build_app(
             for task in background:
                 task.cancel()
             for task in background:
-                try:
+                with suppress(asyncio.CancelledError, Exception):
                     await task
-                except (asyncio.CancelledError, Exception):
-                    pass
             # W5.0 teardown: close the evolution sqlite cleanly so the
             # WAL file is checkpointed and tests don't leave stale
             # file handles open on Windows.
@@ -889,6 +889,32 @@ def build_app(
     app.state.corlinman_state = state
     app.state.corlinman_config = cfg
     app.state.corlinman_data_dir = resolved_data_dir
+
+    cors_origins = _resolve_cors_origins()
+    if cors_origins:
+        try:
+            from fastapi.middleware.cors import CORSMiddleware
+
+            app.add_middleware(
+                CORSMiddleware,
+                allow_origins=cors_origins,
+                allow_credentials=True,
+                allow_methods=[
+                    "GET",
+                    "POST",
+                    "PUT",
+                    "PATCH",
+                    "DELETE",
+                    "OPTIONS",
+                ],
+                allow_headers=[
+                    "authorization",
+                    "content-type",
+                    "x-corlinman-source",
+                ],
+            )
+        except ImportError as exc:  # pragma: no cover
+            logger.warning("gateway.cors.middleware_missing", error=str(exc))
 
     # Middleware before routes — order matters for ASGI stack walks.
     middleware = _lazy_import("corlinman_server.gateway.middleware")
@@ -940,13 +966,44 @@ def build_app(
         ui_path = Path(ui_dir_env)
         if ui_path.is_dir():
             try:
-                from fastapi.staticfiles import StaticFiles  # noqa: PLC0415
+                from fastapi.staticfiles import StaticFiles
+                from starlette.exceptions import (
+                    HTTPException as StarletteHTTPException,
+                )
+
+                class _NextStaticFiles(StaticFiles):
+                    async def get_response(self, path: str, scope: dict[str, object]):
+                        leaf = path.rsplit("/", 1)[-1]
+                        if path and not path.endswith("/") and "." not in leaf:
+                            try:
+                                response = await super().get_response(
+                                    f"{path}.html",
+                                    scope,
+                                )
+                            except StarletteHTTPException as fallback_exc:
+                                if fallback_exc.status_code != 404:
+                                    raise
+                            else:
+                                if response.status_code != 404:
+                                    return response
+
+                        try:
+                            return await super().get_response(path, scope)
+                        except StarletteHTTPException as exc:
+                            if exc.status_code != 404:
+                                raise
+                            try:
+                                return await super().get_response("404.html", scope)
+                            except StarletteHTTPException as fallback_exc:
+                                if fallback_exc.status_code == 404:
+                                    raise exc from fallback_exc
+                                raise
 
                 # Mount last so all explicit API routes (incl. /health,
                 # /admin/*, /v1/*, /onboard) win in route resolution.
                 app.mount(
                     "/",
-                    StaticFiles(directory=str(ui_path), html=True),
+                    _NextStaticFiles(directory=str(ui_path), html=True),
                     name="ui",
                 )
                 logger.info(
@@ -1075,13 +1132,11 @@ async def _serve(args: argparse.Namespace) -> int:
         server.should_exit = True
 
     for sig in (signal.SIGTERM, signal.SIGINT):
-        try:
-            loop.add_signal_handler(sig, _on_signal, sig.name)
-        except NotImplementedError:
+        with suppress(NotImplementedError):
             # Windows / restricted envs — uvicorn's own signal hooks
             # will still trip; we just won't relay the name. Tests on
             # those platforms are not in scope.
-            pass
+            loop.add_signal_handler(sig, _on_signal, sig.name)
 
     logger.info("gateway.serve.start", host=host, port=port)
     await server.serve()

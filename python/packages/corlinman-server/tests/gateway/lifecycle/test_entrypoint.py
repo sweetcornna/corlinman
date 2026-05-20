@@ -11,15 +11,12 @@ added (or these will be promoted) to cover the full wired app.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
 
 fastapi = pytest.importorskip("fastapi")
-from fastapi.testclient import TestClient  # noqa: E402
-
-from corlinman_server.gateway.lifecycle.entrypoint import (
+from corlinman_server.gateway.lifecycle.entrypoint import (  # noqa: E402
     DEFAULT_HOST,
     DEFAULT_PORT,
     SIGTERM_EXIT_CODE,
@@ -30,6 +27,7 @@ from corlinman_server.gateway.lifecycle.entrypoint import (
     _should_run_legacy_migration,
     build_app,
 )
+from fastapi.testclient import TestClient  # noqa: E402
 
 
 def test_parser_accepts_documented_flags() -> None:
@@ -97,9 +95,7 @@ def test_should_run_legacy_migration_gates() -> None:
     )
     assert _should_run_legacy_migration(only_enabled) is False
 
-    both = SimpleNamespace(
-        tenants=SimpleNamespace(enabled=True, migrate_legacy_paths=True)
-    )
+    both = SimpleNamespace(tenants=SimpleNamespace(enabled=True, migrate_legacy_paths=True))
     assert _should_run_legacy_migration(both) is True
 
     # Dict-shaped config also works.
@@ -127,6 +123,62 @@ def test_build_app_degraded_mode_serves_health(tmp_path: Path) -> None:
         assert body["mode"] in {"degraded", "ok"}
 
 
+def test_build_app_serves_next_export_extensionless_routes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ui_dir = tmp_path / "ui-static"
+    (ui_dir / "account").mkdir(parents=True)
+    (ui_dir / "_next" / "static").mkdir(parents=True)
+    (ui_dir / "login.html").write_text("<main>login shell</main>", encoding="utf-8")
+    (ui_dir / "404.html").write_text("<main>not found shell</main>", encoding="utf-8")
+    (ui_dir / "account" / "security.html").write_text(
+        "<main>security shell</main>",
+        encoding="utf-8",
+    )
+    (ui_dir / "_next" / "static" / "app.js").write_text(
+        "console.log('ok');",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CORLINMAN_UI_DIR", str(ui_dir))
+
+    app = build_app(config_path=None, data_dir=tmp_path / "data")
+
+    with TestClient(app) as client:
+        login = client.get("/login")
+        security = client.get("/account/security")
+        asset = client.get("/_next/static/app.js")
+        missing = client.get("/does-not-exist")
+
+    assert login.status_code == 200
+    assert "login shell" in login.text
+    assert security.status_code == 200
+    assert "security shell" in security.text
+    assert asset.status_code == 200
+    assert "console.log" in asset.text
+    assert missing.status_code == 404
+
+
+def test_gateway_cors_preflight_allows_configured_origin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CORLINMAN_CORS_ORIGINS", "http://localhost:3000")
+    app = build_app(config_path=None, data_dir=tmp_path)
+
+    with TestClient(app) as client:
+        resp = client.options(
+            "/admin/login",
+            headers={
+                "Origin": "http://localhost:3000",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type",
+            },
+        )
+
+    assert resp.status_code in {200, 204}
+    assert resp.headers["access-control-allow-origin"] == "http://localhost:3000"
+
+
 def test_build_app_runs_legacy_migration_when_gated(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -141,9 +193,7 @@ def test_build_app_runs_legacy_migration_when_gated(
     # Stub a config loader by injecting via the lazy-import path: monkey
     # patch the entrypoint module's ``_load_config`` to return our cfg
     # without writing a real TOML.
-    cfg = SimpleNamespace(
-        tenants=SimpleNamespace(enabled=True, migrate_legacy_paths=True)
-    )
+    cfg = SimpleNamespace(tenants=SimpleNamespace(enabled=True, migrate_legacy_paths=True))
     monkeypatch.setattr(
         "corlinman_server.gateway.lifecycle.entrypoint._load_config",
         lambda path: cfg,

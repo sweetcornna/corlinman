@@ -49,10 +49,11 @@ export function MustChangePasswordProvider({
 
   // Re-sync whenever the parent passes a new session row. We DON'T want
   // to overwrite a user-driven `false` (rotate succeeded → false → guard
-  // releases) with a stale `true`, so we only push forward.
+  // releases) with a stale `true`, but a fresh server-side `false` must
+  // clear the warning.
   React.useEffect(() => {
     const next = session?.must_change_password === true;
-    setMustChange((prev) => (prev && !next ? prev : next));
+    setMustChange((prev) => (!prev && next ? prev : next));
   }, [session]);
 
   const value = React.useMemo<MustChangePasswordContextValue>(

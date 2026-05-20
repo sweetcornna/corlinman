@@ -34,7 +34,6 @@ import {
   Bot,
   Boxes,
   ClipboardCheck,
-  Command as CommandIcon,
   Database,
   FileTerminal,
   FilterX,
@@ -60,7 +59,6 @@ import {
 import { logout } from "@/lib/auth";
 import { GATEWAY_BASE_URL } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { useMotion } from "@/components/ui/motion-safe";
 import { useRecentRoutes } from "@/lib/hooks/use-recent-routes";
 
 // --- context ----------------------------------------------------------------

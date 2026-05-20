@@ -26,6 +26,11 @@ from typing import Any, ClassVar, Literal
 
 import structlog
 
+from corlinman_providers._anthropic_oauth import (
+    load_anthropic_credential,
+    refresh_anthropic_token,
+    save_anthropic_credential,
+)
 from corlinman_providers.base import ProviderChunk
 from corlinman_providers.failover import (
     AuthError,
@@ -63,8 +68,8 @@ class AnthropicProvider:
     1. ``<data_dir>/.oauth/anthropic.json`` — a PKCE-issued OAuth bundle
        persisted by the gateway's OAuth router. When the access token is
        expired (or within 120 s of expiry) and a refresh token is
-       present, we attempt a same-thread refresh via
-       :mod:`corlinman_server.gateway.oauth.anthropic_pkce`.
+       present, we attempt a same-thread refresh via provider-local
+       OAuth helpers.
     2. ``ANTHROPIC_TOKEN`` env var — manual OAuth override (matches the
        hermes-agent contract for users who exported a bearer token from
        another tool).
@@ -152,19 +157,8 @@ class AnthropicProvider:
         """Read the OAuth file (if any) and refresh if near-expiry."""
         if self._data_dir is None:
             return None
-        # Lazy import — the OAuth module lives in corlinman-server which
-        # is *not* a dependency of corlinman-providers. We tolerate the
-        # import miss so providers can be used standalone (CLI, tests).
-        try:
-            from corlinman_server.gateway.oauth import (  # type: ignore[import-not-found]  # noqa: PLC0415
-                load_credential,
-                save_credential,
-            )
-            from corlinman_server.gateway.oauth import anthropic_pkce  # type: ignore[import-not-found]  # noqa: PLC0415
-        except ImportError:
-            return None
 
-        cred = load_credential(self._data_dir, "anthropic")
+        cred = load_anthropic_credential(self._data_dir)
         if cred is None:
             return None
 
@@ -173,8 +167,8 @@ class AnthropicProvider:
         # loop — see method docstring for the rationale.
         if cred.is_expired(skew_seconds=120) and cred.refresh_token:
             try:
-                refreshed = self._refresh_sync(anthropic_pkce, cred.refresh_token)
-            except Exception as exc:  # noqa: BLE001 — best-effort refresh
+                refreshed = self._refresh_sync(cred.refresh_token)
+            except Exception as exc:
                 logger.warning("anthropic.oauth_refresh_failed", error=str(exc))
                 refreshed = None
             if refreshed is not None:
@@ -184,14 +178,14 @@ class AnthropicProvider:
                     expires_at_ms=refreshed.get("expires_at_ms"),
                 )
                 try:
-                    save_credential(self._data_dir, new_cred)
+                    save_anthropic_credential(self._data_dir, new_cred)
                 except OSError as exc:
                     logger.warning("anthropic.oauth_save_failed", error=str(exc))
                 cred = new_cred
         return cred.access_token
 
     @staticmethod
-    def _refresh_sync(pkce_mod: Any, refresh_token: str) -> dict[str, Any] | None:
+    def _refresh_sync(refresh_token: str) -> dict[str, Any] | None:
         """Refresh wrapper that bridges async refresh into sync caller.
 
         When called from inside a running event loop we return ``None``
@@ -202,12 +196,12 @@ class AnthropicProvider:
         ``/admin/oauth/anthropic/refresh`` endpoint the operator
         triggers manually.
         """
-        import asyncio  # noqa: PLC0415
+        import asyncio
 
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            return asyncio.run(pkce_mod.refresh_token(refresh_token=refresh_token))
+            return asyncio.run(refresh_anthropic_token(refresh_token=refresh_token))
         return None
 
     # Compatibility shim: existing tests/call-sites read ``_api_key`` to

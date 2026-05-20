@@ -45,15 +45,12 @@ import {
   type TelegramMessage,
   type TelegramStatusResponse,
 } from "@/lib/api/telegram";
-import { apiFetch, CorlinmanApiError } from "@/lib/api";
 import TelegramChannelPage from "./page";
 
 const mockedStatus = vi.mocked(fetchTelegramStatus);
 const mockedMessages = vi.mocked(fetchTelegramMessages);
 const mockedSend = vi.mocked(sendTelegramTestMessage);
-const mockedApiFetch = vi.mocked(apiFetch);
-
-const TOKEN = "7834561230:AAEhBP9aFxZqLk3n2mQrStUvWx0YzAbCdEf";
+const TOKEN = "__INVALID_TEST_TELEGRAM_BOT_TOKEN_SENTINEL__";
 
 const STATUS: TelegramStatusResponse = {
   config: {

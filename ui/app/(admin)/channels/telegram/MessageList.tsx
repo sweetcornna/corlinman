@@ -149,8 +149,6 @@ export function MessageList({
 /*                          Routing badge                              */
 /* ------------------------------------------------------------------ */
 
-type BadgeKind = "mention" | "reply" | "ignored" | "private";
-
 interface BadgeSpec {
   Icon: React.ComponentType<{ className?: string }>;
   labelKey: string;

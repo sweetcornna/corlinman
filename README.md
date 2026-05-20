@@ -203,6 +203,10 @@ docker buildx build --platform linux/amd64 \
   -f docker/Dockerfile -t corlinman:latest --target runtime --load .
 docker compose -f docker/compose/docker-compose.yml up -d
 
+# Optional: enable Docker-backed plugin sandboxing on trusted hosts.
+docker compose -f docker/compose/docker-compose.yml \
+  -f docker/compose/docker-compose.sandbox.yml up -d
+
 # Visit http://127.0.0.1:6005/health then http://127.0.0.1:6005/onboard.
 # Or run the CLI wizard inside the container:
 docker exec -it corlinman corlinman onboard

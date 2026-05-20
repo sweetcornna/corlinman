@@ -6,8 +6,8 @@
 #       --profile qq up -d
 #
 # Services:
-#   napcat   — NapCat QQ client: OneBot v11 forward-WS on :3001, webui +
-#              scan-login HTTP API on :6099.
+#   napcat   — NapCat QQ client: OneBot v11 forward-WS on the compose
+#              network, webui + scan-login HTTP API on localhost:6099.
 #   corlinman — (override) points at the in-network NapCat so the admin
 #              scan-login flow + channel message bus both work without
 #              any host-machine config.
@@ -21,12 +21,12 @@ services:
     profiles: ["qq"]
     restart: unless-stopped
     ports:
-      # 6099: NapCat webui + HTTP login API
+      # 6099: NapCat webui + HTTP login API bound to localhost only.
       #       (consumed by POST /admin/channels/qq/qrcode and friends).
-      - "6099:6099"
-      # 3001: OneBot v11 forward-WS
-      #       (consumed by corlinman-channels' dispatcher).
-      - "3001:3001"
+      - "127.0.0.1:6099:6099"
+    expose:
+      # 3001: OneBot v11 forward-WS, consumed inside corlinman-net only.
+      - "3001"
     environment:
       NAPCAT_UID: "1000"
       NAPCAT_GID: "1000"
@@ -45,6 +45,7 @@ services:
       # Admin REST scan-login flow dials NapCat webui here.
       CORLINMAN_NAPCAT_URL: http://napcat:6099
       # OneBot v11 forward-WS bridge for the channel dispatcher.
+      # nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket -- internal compose-only OneBot bridge on corlinman-net; use wss:// when crossing hosts.
       QQ_WS_URL: ws://napcat:3001
     depends_on:
       - napcat

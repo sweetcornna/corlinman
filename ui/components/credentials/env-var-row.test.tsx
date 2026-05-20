@@ -17,8 +17,14 @@
  * (matches the rest of the suite, see `vitest.setup.ts`).
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 
 const { toastMessage } = vi.hoisted(() => ({
   toastMessage: vi.fn(),
@@ -95,10 +101,17 @@ describe("EnvVarRow", () => {
     fireEvent.change(input, { target: { value: "sk-typed-value-1234" } });
     fireEvent.click(screen.getByTestId("cred-openai-api_key-save"));
 
-    expect(onSave).toHaveBeenCalledWith("sk-typed-value-1234");
+    await waitFor(() =>
+      expect(onSave).toHaveBeenCalledWith("sk-typed-value-1234"),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("cred-openai-api_key-input"),
+      ).not.toBeInTheDocument(),
+    );
   });
 
-  it("paste event trims and uses the pasted value over keystrokes", () => {
+  it("paste event trims and uses the pasted value over keystrokes", async () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     const onDelete = vi.fn();
     render(
@@ -123,7 +136,14 @@ describe("EnvVarRow", () => {
       clipboardData: { getData: () => "  sk-pasted-value  " },
     });
     fireEvent.click(screen.getByTestId("cred-openai-api_key-save"));
-    expect(onSave).toHaveBeenCalledWith("sk-pasted-value");
+    await waitFor(() =>
+      expect(onSave).toHaveBeenCalledWith("sk-pasted-value"),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("cred-openai-api_key-input"),
+      ).not.toBeInTheDocument(),
+    );
     // The paste path shouldn't have triggered the type-only nudge.
     expect(toastMessage).not.toHaveBeenCalled();
   });

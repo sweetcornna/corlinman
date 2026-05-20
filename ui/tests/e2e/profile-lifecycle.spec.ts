@@ -12,17 +12,16 @@
  *
  * The spec ASSUMES the admin/root seed has been rotated to a known
  * password — but to keep specs independent we don't share state with
- * `onboard-to-admin.spec.ts`. Instead we accept either password (try
+ * `00-onboard-to-admin.spec.ts`. Instead we accept either password (try
  * default first, then the rotated one used by the onboard spec) so
  * the suite is order-independent in the CI matrix.
  *
  * Like spec 1, this is gated behind `CORLINMAN_E2E=1`.
  */
 
-import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
 import {
-  DEFAULT_ADMIN_PASSWORD,
   DEFAULT_ADMIN_USER,
   loginAsAdmin,
   pinLocaleEn,
@@ -31,43 +30,37 @@ import {
   apiLogin,
   apiLogout,
   apiPurgeTestProfiles,
+  ensureAdminPasswordRotated,
 } from "./helpers/test-data";
 
 const FULL_STACK = process.env.CORLINMAN_E2E === "1";
 const TEST_PREFIX = "research-bot";
 const ALT_PREFIX = "bad-slug-check";
 
-/** Try every credential we know about and return the one that worked. */
-async function discoverPassword(
-  request: APIRequestContext,
-): Promise<string> {
-  for (const candidate of [DEFAULT_ADMIN_PASSWORD, "newpassword123"]) {
-    try {
-      await apiLogin(request, DEFAULT_ADMIN_USER, candidate);
-      await apiLogout(request);
-      return candidate;
-    } catch {
-      /* try the next */
-    }
-  }
-  throw new Error(
-    "No known admin password matches. Wipe config.toml [admin] and rerun.",
-  );
-}
-
 (FULL_STACK ? test.describe.serial : test.describe.skip)(
   "Wave 5.1 — profile lifecycle",
   () => {
-    let adminPassword: string;
+    let adminPassword = "";
 
     test.beforeAll(async ({ request }) => {
-      adminPassword = await discoverPassword(request);
+      adminPassword = await ensureAdminPasswordRotated(request);
       // Clean any leftovers from a prior failed run.
-      await apiPurgeTestProfiles(request, [TEST_PREFIX, ALT_PREFIX]);
+      await apiLogin(request, DEFAULT_ADMIN_USER, adminPassword);
+      try {
+        await apiPurgeTestProfiles(request, [TEST_PREFIX, ALT_PREFIX]);
+      } finally {
+        await apiLogout(request);
+      }
     });
 
     test.afterAll(async ({ request }) => {
-      await apiPurgeTestProfiles(request, [TEST_PREFIX, ALT_PREFIX]);
+      if (!adminPassword) return;
+      await apiLogin(request, DEFAULT_ADMIN_USER, adminPassword);
+      try {
+        await apiPurgeTestProfiles(request, [TEST_PREFIX, ALT_PREFIX]);
+      } finally {
+        await apiLogout(request);
+      }
     });
 
     test.beforeEach(async ({ page }) => {

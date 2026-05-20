@@ -57,6 +57,8 @@ function isSandboxed(p: PluginSummary): boolean {
   return p.plugin_type === "asynchronous";
 }
 
+const EMPTY_PLUGINS: PluginSummary[] = [];
+
 export default function PluginsPage() {
   const { t } = useTranslation();
   const variants = useMotionVariants();
@@ -69,7 +71,7 @@ export default function PluginsPage() {
     retry: false,
   });
 
-  const plugins = query.data ?? [];
+  const plugins = query.data ?? EMPTY_PLUGINS;
   const offline = query.isError;
 
   const counts = React.useMemo(() => {

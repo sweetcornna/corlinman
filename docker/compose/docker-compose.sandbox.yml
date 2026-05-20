@@ -1,0 +1,10 @@
+# Optional Docker-backed plugin sandbox overlay.
+#
+# Mounting the host Docker socket lets corlinman spawn sandbox containers,
+# but it also gives the container high control over the host daemon. Use this
+# overlay only on trusted single-tenant hosts where plugin sandboxing is needed.
+
+services:
+  corlinman:
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro

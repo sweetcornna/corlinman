@@ -102,6 +102,7 @@ asyncio_mode = "auto"
 # Use importlib so duplicate module names (e.g. ``tests/``) across uv workspace
 # members don't collide in ``sys.modules``.
 addopts = "--import-mode=importlib"
+consider_namespace_packages = true
 markers = [
     "live_llm: tests that hit real LLM APIs (cost money)",
     "live_transport: tests that need real channel endpoints",

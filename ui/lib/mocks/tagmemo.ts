@@ -36,6 +36,7 @@ export const MOCK_CHUNK_COUNT = 0;
 export function generateMockChunks(
   _count: number = MOCK_CHUNK_COUNT,
 ): TagMemoChunk[] {
+  void _count;
   return [];
 }
 

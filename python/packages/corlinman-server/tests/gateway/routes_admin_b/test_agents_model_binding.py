@@ -17,19 +17,18 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
 
 import pytest
 import yaml
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
-
 from corlinman_server.gateway.routes_admin_b import agents as agents_routes
 from corlinman_server.gateway.routes_admin_b.state import (
     AdminState,
     set_admin_state,
 )
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
+from ._admin_auth import authenticated_test_client, configure_admin_auth
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -85,6 +84,7 @@ def admin_state(data_dir: Path) -> Iterator[AdminState]:
         config_loader=lambda: {},
         data_dir=data_dir,
     )
+    configure_admin_auth(state)
     set_admin_state(state)
     try:
         yield state
@@ -96,7 +96,7 @@ def admin_state(data_dir: Path) -> Iterator[AdminState]:
 def client(admin_state: AdminState) -> TestClient:
     app = FastAPI()
     app.include_router(agents_routes.router())
-    return TestClient(app)
+    return authenticated_test_client(app)
 
 
 # ---------------------------------------------------------------------------
@@ -126,11 +126,12 @@ def test_get_lists_every_agent_with_binding_fields(client: TestClient) -> None:
 def test_get_returns_empty_list_when_dir_missing(tmp_path: Path) -> None:
     """No agents/ dir under data_dir → 200 with an empty list, not 500."""
     state = AdminState(config_loader=lambda: {}, data_dir=tmp_path)
+    configure_admin_auth(state)
     set_admin_state(state)
     try:
         app = FastAPI()
         app.include_router(agents_routes.router())
-        with TestClient(app) as c:
+        with authenticated_test_client(app) as c:
             resp = c.get("/admin/agent-bindings")
         assert resp.status_code == 200
         assert resp.json() == {"agents": []}

@@ -14,7 +14,7 @@ from corlinman_nodebridge import (
     NodeBridgeRegisterRejected,
 )
 
-from tests.conftest import Harness
+from .conftest import Harness
 
 
 async def test_client_connect_succeeds_when_unsigned_allowed(harness) -> None:

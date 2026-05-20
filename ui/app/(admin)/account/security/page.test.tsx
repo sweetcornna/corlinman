@@ -38,6 +38,8 @@ vi.mock("sonner", () => ({
 }));
 
 import AccountSecurityPage from "./page";
+import { DefaultPasswordBanner } from "@/components/admin/default-password-banner";
+import { MustChangePasswordProvider } from "@/components/admin/must-change-password-context";
 
 describe("AccountSecurityPage", () => {
   beforeEach(() => {
@@ -205,6 +207,64 @@ describe("AccountSecurityPage", () => {
     // Success notice + "continue to dashboard" CTA render after refetch.
     await waitFor(() => {
       expect(screen.getByTestId("account-security-resolved")).toBeInTheDocument();
+    });
+  });
+
+  it("clears the shell default-password banner after password rotation", async () => {
+    let meCalls = 0;
+    stubFetch((url) => {
+      if (url.includes("/admin/me")) {
+        meCalls++;
+        return new Response(
+          JSON.stringify({
+            user: "admin",
+            created_at: "2026-05-17T00:00:00Z",
+            expires_at: "2026-05-24T00:00:00Z",
+            must_change_password: meCalls === 1,
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (url.includes("/admin/password")) {
+        return new Response(JSON.stringify({ status: "ok" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response("", { status: 404 });
+    });
+
+    render(
+      <MustChangePasswordProvider
+        session={{
+          user: "admin",
+          created_at: "2026-05-17T00:00:00Z",
+          expires_at: "2026-05-24T00:00:00Z",
+          must_change_password: true,
+        }}
+      >
+        <DefaultPasswordBanner />
+        <AccountSecurityPage />
+      </MustChangePasswordProvider>,
+    );
+
+    await screen.findByTestId("default-password-banner");
+    await screen.findByTestId("card-change-password");
+
+    fireEvent.change(screen.getByTestId("cpw-old"), {
+      target: { value: "root" },
+    });
+    fireEvent.change(screen.getByTestId("cpw-new"), {
+      target: { value: "brand_new_pass" },
+    });
+    fireEvent.change(screen.getByTestId("cpw-confirm"), {
+      target: { value: "brand_new_pass" },
+    });
+    fireEvent.click(screen.getByTestId("password-submit"));
+
+    await screen.findByTestId("account-security-resolved");
+    await waitFor(() => {
+      expect(screen.queryByTestId("default-password-banner")).not.toBeInTheDocument();
     });
   });
 });

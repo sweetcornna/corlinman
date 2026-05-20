@@ -57,11 +57,13 @@ def test_connect_channel_rejects_empty() -> None:
         connect_channel("")
 
 
-def test_connect_channel_strips_http_scheme() -> None:
+@pytest.mark.asyncio
+async def test_connect_channel_strips_http_scheme() -> None:
     # Just confirm we can construct a channel object; lazy connect means
     # no real socket activity until the first call.
     ch = connect_channel("http://127.0.0.1:65535")
     assert ch is not None
+    await ch.close()
 
 
 # ---------------------------------------------------------------------------

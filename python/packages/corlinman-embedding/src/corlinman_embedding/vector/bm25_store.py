@@ -28,24 +28,25 @@ the RAG path.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import struct
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
 
 import aiosqlite
 
 __all__ = [
     "SCHEMA_SQL",
     "SCHEMA_VERSION",
-    "ChunkRow",
     "ChunkEpaRow",
+    "ChunkRow",
     "FileRow",
-    "TagNodeRow",
     "SqliteStore",
-    "f32_slice_to_blob",
+    "TagNodeRow",
     "blob_to_f32_vec",
+    "f32_slice_to_blob",
 ]
 
 
@@ -244,11 +245,12 @@ class SqliteStore:
     setup and avoids surprises around WAL/shm under high concurrency.
     """
 
-    __slots__ = ("_conn", "_path", "_lock")
+    __slots__ = ("_closed", "_conn", "_lock", "_path")
 
     def __init__(self, conn: aiosqlite.Connection, path: Path) -> None:
         self._conn = conn
         self._path = path
+        self._closed = False
         # Serialise writes — aiosqlite's connection is already single-thread
         # but interleaving partial transactions across coroutines breaks
         # FTS5 triggers in subtle ways.
@@ -259,7 +261,7 @@ class SqliteStore:
     # ------------------------------------------------------------------
 
     @classmethod
-    async def open(cls, path: str | os.PathLike[str]) -> "SqliteStore":
+    async def open(cls, path: str | os.PathLike[str]) -> SqliteStore:
         """Open (or create) a SQLite file at ``path`` with the v6 schema applied."""
 
         p = Path(path)
@@ -280,10 +282,11 @@ class SqliteStore:
     async def close(self) -> None:
         """Close the underlying connection. Idempotent."""
 
-        try:
+        if self._closed:
+            return
+        self._closed = True
+        with contextlib.suppress(Exception):
             await self._conn.close()
-        except Exception:  # pragma: no cover - defensive
-            pass
 
     @property
     def path(self) -> Path:

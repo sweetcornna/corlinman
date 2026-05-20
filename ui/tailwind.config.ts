@@ -1,4 +1,5 @@
 import type { Config } from "tailwindcss";
+import animate from "tailwindcss-animate";
 
 // Linear-style redesign. Neutral base + indigo accent. Geist sans/mono fonts
 // are injected via `app/layout.tsx` as CSS variables consumed here.
@@ -206,7 +207,7 @@ const config: Config = {
       },
     },
   },
-  plugins: [require("tailwindcss-animate")],
+  plugins: [animate],
 };
 
 export default config;

@@ -24,9 +24,7 @@ const nextConfig: NextConfig = {
     // Static export cannot use the Next image optimizer.
     unoptimized: true,
   },
-  experimental: {
-    typedRoutes: true,
-  },
+  typedRoutes: true,
 };
 
 export default nextConfig;

@@ -40,7 +40,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
-  CorlinmanApiError,
   deleteProfile,
   getProfileSoul,
   listProfiles,

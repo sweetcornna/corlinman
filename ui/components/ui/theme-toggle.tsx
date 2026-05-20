@@ -13,7 +13,7 @@ import { cn } from "@/lib/utils";
  * before React hydrates, avoiding a day/night flash on reload.
  *
  * Accessibility:
- *   - Each option is a real <button> with `aria-pressed` reflecting state.
+ *   - Each option is a real <button> tab with `aria-selected` reflecting state.
  *   - The focused option is visually distinguishable in both themes.
  *
  * Phase 1 lands the component. Phase 2 will mount a single instance in the
@@ -127,7 +127,7 @@ function Option({
     <button
       type="button"
       role="tab"
-      aria-pressed={active}
+      aria-selected={active}
       aria-label={label}
       data-mode={mode}
       onClick={onClick}

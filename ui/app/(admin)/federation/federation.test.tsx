@@ -40,17 +40,17 @@ const fetchPeersMock: ReturnType<typeof vi.fn> = vi.fn(
   },
 );
 const addPeerMock: ReturnType<typeof vi.fn> = vi.fn(
-  async (_slug: string): Promise<AddFederationResult> => {
+  async (): Promise<AddFederationResult> => {
     throw new Error("addPeerMock not configured");
   },
 );
 const removePeerMock: ReturnType<typeof vi.fn> = vi.fn(
-  async (_slug: string): Promise<RemoveFederationResult> => {
+  async (): Promise<RemoveFederationResult> => {
     throw new Error("removePeerMock not configured");
   },
 );
 const recentMock: ReturnType<typeof vi.fn> = vi.fn(
-  async (_slug: string): Promise<RecentProposalsResult> => {
+  async (): Promise<RecentProposalsResult> => {
     throw new Error("recentMock not configured");
   },
 );

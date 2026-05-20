@@ -70,8 +70,6 @@ import {
   disconnectCodexOAuth,
   disconnectGeminiOAuth,
   disconnectXaiOAuth,
-  getCodexStatus,
-  getGeminiStatus,
   getOAuthStatus,
   importClaudeCodeCredentials,
   launchClaudeCodeLogin,
@@ -84,7 +82,6 @@ import {
   setCredential,
   setProviderEnabled,
   type CredentialProvider,
-  type OAuthDetectStatus,
   type OAuthProviderStatus,
   type OAuthSource,
 } from "@/lib/api";
@@ -103,6 +100,7 @@ function isProviderConfigured(p: CredentialProvider): boolean {
 // --- OAuth section helpers --------------------------------------------------
 
 const OAUTH_POLL_INTERVAL_MS = 30_000;
+const EMPTY_CREDENTIAL_PROVIDERS: CredentialProvider[] = [];
 
 /** Translation hook for the i18n `oauth.expiresIn*` keys. Pure — the
  * `t` instance is passed in so this stays unit-testable. */
@@ -119,14 +117,6 @@ function formatExpiresIn(
   if (hours < 48) return t("oauth.expiresInHours", { n: hours });
   const days = Math.floor(hours / 24);
   return t("oauth.expiresInDays", { n: days });
-}
-
-/** Derive the umbrella `expires_in_seconds` from the detection-only
- * endpoints' `expires_at_ms`. Returns null when the source omits it. */
-function expiresAtMsToSeconds(expiresAtMs: number | null): number | null {
-  if (expiresAtMs == null) return null;
-  const diff = expiresAtMs - Date.now();
-  return Math.floor(diff / 1000);
 }
 
 function describeSource(
@@ -250,22 +240,6 @@ export default function CredentialsPage() {
   const oauthStatus = useQuery({
     queryKey: ["admin", "oauth", "status"],
     queryFn: ({ signal }) => getOAuthStatus({ signal }),
-    retry: false,
-    refetchInterval: OAUTH_POLL_INTERVAL_MS,
-    refetchOnWindowFocus: false,
-  });
-
-  const codexStatus = useQuery({
-    queryKey: ["admin", "oauth", "codex", "status"],
-    queryFn: ({ signal }) => getCodexStatus({ signal }),
-    retry: false,
-    refetchInterval: OAUTH_POLL_INTERVAL_MS,
-    refetchOnWindowFocus: false,
-  });
-
-  const geminiStatus = useQuery({
-    queryKey: ["admin", "oauth", "gemini", "status"],
-    queryFn: ({ signal }) => getGeminiStatus({ signal }),
     retry: false,
     refetchInterval: OAUTH_POLL_INTERVAL_MS,
     refetchOnWindowFocus: false,
@@ -411,9 +385,7 @@ export default function CredentialsPage() {
     },
   });
 
-  // Codex / Gemini PKCE — same shape as xAI/Anthropic. The CLI-status
-  // queries (codexStatus / geminiStatus) flip "detected" on once the
-  // disk file is written, so we just invalidate both on success.
+  // Codex / Gemini PKCE — same shape as xAI/Anthropic.
   const oauthInvalidate = () => {
     qc.invalidateQueries({ queryKey: ["admin", "oauth", "status"] });
     qc.invalidateQueries({ queryKey: ["admin", "oauth", "codex"] });
@@ -493,7 +465,7 @@ export default function CredentialsPage() {
   const codexLoggedIn = codex?.source === "external-cli";
   const geminiLoggedIn = gemini?.source === "external-cli";
 
-  const providers = credentials.data?.providers ?? [];
+  const providers = credentials.data?.providers ?? EMPTY_CREDENTIAL_PROVIDERS;
 
   const filtered = React.useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -997,8 +969,7 @@ export default function CredentialsPage() {
 //
 // Lifted inline so the main render stays scannable; both tile shapes are
 // stateless presentation — every mutation is driven by the parent's
-// useMutation hooks. PkceTile drives the Anthropic + xAI rows; DetectTile
-// drives Codex + Gemini (read-only).
+// useMutation hooks. PkceTile drives the Anthropic, Codex, Gemini, and xAI rows.
 // ---------------------------------------------------------------------------
 
 interface PkceTileProps {
@@ -1111,84 +1082,6 @@ function OAuthPkceTile({
               {t("oauth.actionDisconnect")}
             </Button>
           </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-interface DetectTileProps {
-  testId: string;
-  providerLabel: string;
-  /** Short CLI name surfaced in "Detected via {{cli}} CLI". */
-  cliName: string;
-  /** Full shell command, rendered in a monospace span. */
-  cliCommand: string;
-  status: OAuthDetectStatus | undefined;
-  loading: boolean;
-  errored: boolean;
-  t: (key: string, vars?: Record<string, unknown>) => string;
-}
-
-function OAuthDetectTile({
-  testId,
-  providerLabel,
-  cliName,
-  cliCommand,
-  status,
-  loading,
-  errored,
-  t,
-}: DetectTileProps) {
-  const detected = !!status?.detected;
-  const expiresInSeconds = expiresAtMsToSeconds(status?.expires_at_ms ?? null);
-  return (
-    <div
-      className="flex flex-col gap-3 rounded-md border border-tp-glass-edge p-3"
-      data-testid={testId}
-    >
-      <div className="flex flex-col gap-1">
-        <span className="font-medium">{providerLabel}</span>
-        {loading ? (
-          <Skeleton className="h-4 w-32" />
-        ) : errored ? (
-          <Badge variant="secondary" className="self-start">
-            {t("oauth.statusUnavailable")}
-          </Badge>
-        ) : detected ? (
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge
-              className="border-transparent bg-ok/15 text-ok"
-              data-testid={`${testId}-status`}
-            >
-              {t("oauth.detectedVia", { cli: cliName })}
-            </Badge>
-            {expiresInSeconds != null && (
-              <span className="text-[11px] text-tp-ink-3">
-                {formatExpiresIn(t, expiresInSeconds)}
-              </span>
-            )}
-            {status?.account_id && (
-              <span className="text-[11px] text-tp-ink-3">
-                {status.account_id}
-              </span>
-            )}
-          </div>
-        ) : (
-          <div className="flex flex-col gap-1">
-            <Badge
-              variant="secondary"
-              className="self-start"
-              data-testid={`${testId}-status`}
-            >
-              {t("oauth.badgeNotDetected")}
-            </Badge>
-            <span className="text-[11px] text-tp-ink-3">
-              {t("oauth.notDetectedPrefix")}{" "}
-              <code className="font-mono">{cliCommand}</code>{" "}
-              {t("oauth.notDetectedSuffix")}
-            </span>
-          </div>
         )}
       </div>
     </div>

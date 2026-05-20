@@ -61,6 +61,7 @@ type FilterValue = "all" | "enabled" | "paused" | "errored";
 
 // Consider a failed history entry "recent" if it's within this window.
 const RECENT_ERROR_WINDOW_MS = 60 * 60 * 1000; // 1h
+const EMPTY_SCHEDULER_JOBS: SchedulerJob[] = [];
 
 export default function SchedulerPage() {
   const { t } = useTranslation();
@@ -106,7 +107,7 @@ export default function SchedulerPage() {
     },
   });
 
-  const jobs = jobsQuery.data ?? [];
+  const jobs = jobsQuery.data ?? EMPTY_SCHEDULER_JOBS;
   const offline = jobsQuery.isError;
 
   // ─── derived ─────────────────────────────────────────────────────────
@@ -356,4 +357,3 @@ export default function SchedulerPage() {
     </motion.div>
   );
 }
-

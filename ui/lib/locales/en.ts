@@ -1568,6 +1568,8 @@ export const en = {
     tenants: "Tenants",
     profiles: "Profiles",
     sessions: "Sessions",
+    account: "Account",
+    security: "Security",
   },
 
   health: {
@@ -1954,6 +1956,8 @@ export const en = {
     },
     preview: {
       title: "Curator preview",
+      description:
+        "Review proposed curator skill state changes before applying them.",
       summary:
         "{{checked}} checked · {{stale}} → stale · {{archived}} → archived · {{reactivated}} reactivated",
       empty: "Nothing would change. Every eligible skill is already at the right state.",

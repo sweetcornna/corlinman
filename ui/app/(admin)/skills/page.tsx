@@ -50,6 +50,7 @@ const SPARK_TOOLS =
   "M0 28 L30 26 L60 24 L90 22 L120 20 L150 16 L180 14 L210 10 L240 8 L270 6 L300 4 L300 36 L0 36 Z";
 
 type FilterValue = "all" | "ready" | "requires" | "tagged";
+const EMPTY_SKILLS: Skill[] = [];
 
 /**
  * Map the curator summary shape onto the richer Skill shape this page
@@ -106,7 +107,7 @@ export default function SkillsPage() {
     retry: false,
   });
 
-  const skills = query.data ?? [];
+  const skills = query.data ?? EMPTY_SKILLS;
   // Real backend now — treat the query as "offline" when it raises.
   const offline = query.isError;
 

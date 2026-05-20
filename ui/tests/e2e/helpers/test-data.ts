@@ -62,6 +62,39 @@ export async function apiLogout(request: APIRequestContext): Promise<void> {
   });
 }
 
+/**
+ * Ensure specs that need normal admin pages are past the first-login
+ * password-rotation guard. Returns the password that should be used
+ * for browser login.
+ */
+export async function ensureAdminPasswordRotated(
+  request: APIRequestContext,
+  rotatedPassword = "newpassword123",
+): Promise<string> {
+  try {
+    await apiLogin(request, DEFAULT_ADMIN_USER, DEFAULT_ADMIN_PASSWORD);
+    const res = await request.post(`${GATEWAY_URL}/admin/password`, {
+      data: {
+        old_password: DEFAULT_ADMIN_PASSWORD,
+        new_password: rotatedPassword,
+      },
+    });
+    if (!res.ok()) {
+      throw new Error(
+        `password rotate failed (${res.status()}): ${
+          await res.text().catch(() => "")
+        }`,
+      );
+    }
+    return rotatedPassword;
+  } catch {
+    await apiLogin(request, DEFAULT_ADMIN_USER, rotatedPassword);
+    return rotatedPassword;
+  } finally {
+    await apiLogout(request);
+  }
+}
+
 export async function apiListProfiles(
   request: APIRequestContext,
 ): Promise<ProfileWire[]> {

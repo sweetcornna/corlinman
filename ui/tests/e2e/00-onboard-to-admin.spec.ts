@@ -8,11 +8,11 @@
  *     cd ui && pnpm playwright install chromium
  *
  *     # Boot gateway + UI yourself, then:
- *     cd ui && pnpm playwright test tests/e2e/onboard-to-admin.spec.ts
+ *     cd ui && pnpm playwright test tests/e2e/00-onboard-to-admin.spec.ts
  *
  *     # OR let Playwright manage both processes (clean data dir):
  *     CORLINMAN_E2E=1 cd ui && pnpm playwright test \
- *         tests/e2e/onboard-to-admin.spec.ts
+ *         tests/e2e/00-onboard-to-admin.spec.ts
  *
  * The suite is gated behind `CORLINMAN_E2E=1`. Without it the specs
  * `.skip` so contributors who only have the Vitest unit test runner

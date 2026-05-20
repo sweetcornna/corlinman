@@ -32,6 +32,8 @@ docs/
 # Node modules (if any frontend tooling lands)
 node_modules/
 **/node_modules/
+ui/.next/
+ui/out/
 
 # Logs and tmp
 *.log

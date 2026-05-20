@@ -369,7 +369,7 @@ UI 新增 /admin/evolution/curator：dry-run toggle、按 origin 过滤、状态
 #### W5.1 Playwright E2E 全链路测试
 - **Subagent**: API Tester + Frontend Developer
 - **Files**:
-  - `ui/tests/e2e/onboard-to-admin.spec.ts`（新）— 冷启动 → admin/root 登录 → must_change_password 强制 → 改密 → 进 dashboard
+  - `ui/tests/e2e/00-onboard-to-admin.spec.ts`（新）— 冷启动 → admin/root 登录 → must_change_password 强制 → 改密 → 进 dashboard
   - `ui/tests/e2e/profile-lifecycle.spec.ts`（新）— 创建 profile → 切换 → SOUL 编辑 → 删除
   - `ui/tests/e2e/curator-dry-run.spec.ts`（新）— 触发 curator → 看 preview → 应用 → 看 signal 出现
 - **Deps**: 所有前面波
