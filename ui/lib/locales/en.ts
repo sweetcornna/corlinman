@@ -1575,6 +1575,7 @@ export const en = {
     approvals: "Approvals",
     models: "Models",
     providers: "Providers",
+    credentials: "Credentials",
     embedding: "Embedding",
     config: "Config",
     logs: "Logs",

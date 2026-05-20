@@ -1539,6 +1539,7 @@ export const zhCN = {
     approvals: "审批",
     models: "模型",
     providers: "Providers",
+    credentials: "凭证",
     embedding: "Embedding",
     config: "配置",
     logs: "日志",

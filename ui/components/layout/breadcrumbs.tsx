@@ -18,6 +18,7 @@ const SEGMENT_KEY: Record<string, string> = {
   approvals: "breadcrumbs.approvals",
   models: "breadcrumbs.models",
   providers: "breadcrumbs.providers",
+  credentials: "breadcrumbs.credentials",
   embedding: "breadcrumbs.embedding",
   config: "breadcrumbs.config",
   logs: "breadcrumbs.logs",
@@ -52,20 +53,31 @@ export function Breadcrumbs() {
   }
 
   return (
-    <nav aria-label="breadcrumb" className="flex items-center gap-1 text-sm">
+    <nav
+      aria-label="breadcrumb"
+      className="flex min-w-0 items-center gap-1 text-sm"
+    >
       <Link
         href="/"
-        className="inline-flex min-h-8 items-center rounded-md px-1.5 text-muted-foreground transition-colors hover:bg-tp-glass-inner hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40"
+        className="hidden min-h-8 items-center rounded-md px-1.5 text-muted-foreground transition-colors hover:bg-tp-glass-inner hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40 sm:inline-flex"
       >
         {t("breadcrumbs.dashboard")}
       </Link>
       {crumbs.map((c, i) => (
         <React.Fragment key={c.href}>
-          <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/60" />
+          <ChevronRight
+            className={
+              i === 0
+                ? "hidden h-3.5 w-3.5 text-muted-foreground/60 sm:block"
+                : "h-3.5 w-3.5 shrink-0 text-muted-foreground/60"
+            }
+          />
           {i === crumbs.length - 1 ? (
-            <span className="font-medium text-foreground">{c.label}</span>
+            <span className="min-w-0 truncate font-medium text-foreground">
+              {c.label}
+            </span>
           ) : NON_LINKABLE_HREFS.has(c.href) ? (
-            <span className="text-muted-foreground">{c.label}</span>
+            <span className="truncate text-muted-foreground">{c.label}</span>
           ) : (
             <Link
               href={c.href as never}
