@@ -95,7 +95,7 @@ export const StreamPill = React.forwardRef<HTMLDivElement, StreamPillProps>(
             aria-label={actionLabel}
             onClick={() => onToggle(state)}
             className={cn(
-              "-mr-1 ml-1 inline-flex h-4 w-4 items-center justify-center rounded-sm",
+              "-mr-1.5 ml-0.5 inline-flex h-6 w-6 items-center justify-center rounded-full",
               "text-current/70 hover:text-current focus-visible:outline-none",
               "focus-visible:ring-2 focus-visible:ring-current/40",
             )}

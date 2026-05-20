@@ -84,6 +84,18 @@ describe("AccountSecurityPage", () => {
     expect(screen.getByTestId("card-change-password")).toBeInTheDocument();
     // Both cards have a "current password" field — both labels render.
     expect(screen.getAllByText("当前密码").length).toBeGreaterThanOrEqual(2);
+    expect(
+      screen.getByLabelText("用于修改用户名的当前密码"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByLabelText("用于修改密码的当前密码"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByLabelText("显示用于修改用户名的密码"),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("显示当前密码")).toBeInTheDocument();
+    expect(screen.getByLabelText("显示新密码")).toBeInTheDocument();
+    expect(screen.getByLabelText("显示确认密码")).toBeInTheDocument();
   });
 
   it("blocks an empty new-password submission with an inline error", async () => {

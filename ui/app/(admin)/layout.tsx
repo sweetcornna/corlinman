@@ -130,6 +130,9 @@ function AdminShell({
         type="button"
         aria-label="Close navigation"
         onClick={() => setDrawerOpen(false)}
+        disabled={!drawerOpen}
+        tabIndex={drawerOpen ? 0 : -1}
+        aria-hidden={drawerOpen ? undefined : true}
         className={cn(
           "fixed inset-0 z-40 bg-black/50 backdrop-blur-sm md:hidden",
           "transition-opacity duration-200",

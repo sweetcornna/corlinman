@@ -28,7 +28,7 @@ export function LanguageToggle({ className }: { className?: string }) {
       aria-label={mounted ? aria : t("nav.switchLanguage")}
       onClick={() => i18n.changeLanguage(next)}
       className={cn(
-        "inline-flex h-8 min-w-[32px] items-center justify-center rounded-md border border-transparent px-1.5 font-mono text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
+        "inline-flex h-10 min-w-10 items-center justify-center rounded-md border border-transparent px-1.5 font-mono text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:h-8 md:min-w-[32px]",
         className,
       )}
     >

@@ -232,10 +232,16 @@ function ChangeUsernameCard({
             </Label>
             <PasswordField
               id="username-current-password"
+              ariaLabel={t("account.security.currentPasswordForUsername")}
               value={oldPassword}
               onChange={setOldPassword}
               show={showPass}
               onToggle={() => setShowPass((s) => !s)}
+              revealLabel={
+                showPass
+                  ? t("account.security.hideUsernamePassword")
+                  : t("account.security.revealUsernamePassword")
+              }
               autoComplete="current-password"
               disabled={submitting}
               testId="username-current-password"
@@ -365,10 +371,16 @@ function ChangePasswordCard({
             </Label>
             <PasswordField
               id="cpw-old"
+              ariaLabel={t("account.security.currentPasswordForPassword")}
               value={oldPassword}
               onChange={setOldPassword}
               show={showPass}
               onToggle={() => setShowPass((s) => !s)}
+              revealLabel={
+                showPass
+                  ? t("account.security.hideCurrentPassword")
+                  : t("account.security.revealCurrentPassword")
+              }
               autoComplete="current-password"
               disabled={submitting}
               testId="cpw-old"
@@ -384,6 +396,11 @@ function ChangePasswordCard({
               onChange={setNewPassword}
               show={showPass}
               onToggle={() => setShowPass((s) => !s)}
+              revealLabel={
+                showPass
+                  ? t("account.security.hideNewPassword")
+                  : t("account.security.revealNewPassword")
+              }
               autoComplete="new-password"
               disabled={submitting}
               testId="cpw-new"
@@ -402,6 +419,11 @@ function ChangePasswordCard({
               onChange={setConfirm}
               show={showPass}
               onToggle={() => setShowPass((s) => !s)}
+              revealLabel={
+                showPass
+                  ? t("account.security.hideConfirmPassword")
+                  : t("account.security.revealConfirmPassword")
+              }
               autoComplete="new-password"
               disabled={submitting}
               testId="cpw-confirm"
@@ -437,19 +459,23 @@ function ChangePasswordCard({
 
 function PasswordField({
   id,
+  ariaLabel,
   value,
   onChange,
   show,
   onToggle,
+  revealLabel,
   autoComplete,
   disabled,
   testId,
 }: {
   id: string;
+  ariaLabel?: string;
   value: string;
   onChange: (v: string) => void;
   show: boolean;
   onToggle: () => void;
+  revealLabel?: string;
   autoComplete: string;
   disabled?: boolean;
   testId?: string;
@@ -459,6 +485,7 @@ function PasswordField({
     <div className="relative">
       <Input
         id={id}
+        aria-label={ariaLabel}
         data-testid={testId}
         type={show ? "text" : "password"}
         autoComplete={autoComplete}
@@ -471,7 +498,10 @@ function PasswordField({
       <button
         type="button"
         onClick={onToggle}
-        aria-label={show ? t("account.security.hide") : t("account.security.reveal")}
+        aria-label={
+          revealLabel ??
+          (show ? t("account.security.hide") : t("account.security.reveal"))
+        }
         aria-pressed={show}
         data-testid={`${testId ?? id}-reveal`}
         tabIndex={-1}

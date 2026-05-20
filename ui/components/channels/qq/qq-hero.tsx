@@ -85,9 +85,9 @@ export function QqHero({
           })}
         </div>
 
-        <h1 className="text-balance font-sans text-[28px] font-semibold leading-[1.15] tracking-[-0.025em] text-tp-ink sm:text-[32px]">
+        <h2 className="text-balance font-sans text-[28px] font-semibold leading-[1.15] tracking-[-0.025em] text-tp-ink sm:text-[32px]">
           {t("channels.qq.tp.title")}
-        </h1>
+        </h2>
 
         <p className="max-w-[72ch] text-[14.5px] leading-[1.6] text-tp-ink-2">
           {connection === "connected" ? (
@@ -125,7 +125,7 @@ export function QqHero({
             onClick={onReconnect}
             disabled={!canReconnect || reconnecting}
             data-testid="qq-reconnect-btn"
-            aria-label={t("channels.reconnect")}
+            aria-label={t("channels.qq.tp.heroReconnectAria")}
             className={cn(
               "inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-[13px] font-medium",
               "border-tp-amber/35 bg-tp-amber-soft text-tp-amber",

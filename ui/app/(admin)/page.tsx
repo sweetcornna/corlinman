@@ -492,7 +492,7 @@ function ActivityPane({
         </div>
         <Link
           href="/logs"
-          className="text-[12.5px] text-tp-ink-3 transition-colors hover:text-tp-ink"
+          className="inline-flex min-h-8 items-center rounded-md px-2 text-[12.5px] text-tp-ink-3 transition-colors hover:bg-tp-glass-inner hover:text-tp-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40"
         >
           {t("dashboard.viewAll")}
         </Link>

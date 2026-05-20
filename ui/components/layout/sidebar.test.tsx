@@ -18,7 +18,13 @@ import {
   it,
   vi,
 } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import React from "react";
 
 let mockPathname = "/";
@@ -30,9 +36,9 @@ vi.mock("next/navigation", () => ({
 
 import { Sidebar } from "./sidebar";
 
-function installMatchMedia() {
+function installMatchMedia(matches = false) {
   const mm = vi.fn().mockImplementation((query: string) => ({
-    matches: false,
+    matches,
     media: query,
     onchange: null,
     addListener: vi.fn(),
@@ -131,5 +137,17 @@ describe("Sidebar", () => {
     // test runner's locale — the wrapper has one of them.
     const aria = wrapper.getAttribute("aria-label");
     expect(aria === "Channels" || aria === "通道").toBe(true);
+  });
+
+  it("removes the closed mobile drawer from keyboard navigation", async () => {
+    installMatchMedia(true);
+    const { container } = render(<Sidebar user="admin" />);
+    const aside = container.querySelector("#admin-sidebar");
+    expect(aside).not.toBeNull();
+
+    await waitFor(() => {
+      expect(aside).toHaveAttribute("aria-hidden", "true");
+    });
+    expect(aside).toHaveAttribute("inert");
   });
 });

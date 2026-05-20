@@ -120,7 +120,7 @@ export function FilterChipGroup(props: FilterChipGroupProps) {
             data-active={active || undefined}
             onClick={() => pick(opt.value)}
             className={cn(
-              "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-[3px]",
+              "inline-flex min-h-8 items-center gap-1.5 rounded-full border px-3 py-1",
               "font-mono text-[10.5px] tracking-wide",
               "transition-colors",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/50",

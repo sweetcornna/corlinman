@@ -137,6 +137,20 @@ function writeCollapsed(v: boolean): void {
   }
 }
 
+function useIsMobileSidebar(): boolean {
+  const [isMobile, setIsMobile] = React.useState(false);
+
+  React.useEffect(() => {
+    const query = window.matchMedia("(max-width: 767px)");
+    const update = () => setIsMobile(query.matches);
+    update();
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
+
+  return isMobile;
+}
+
 interface SidebarProps {
   user?: string;
 }
@@ -150,6 +164,7 @@ export function Sidebar({ user }: SidebarProps) {
   const [loggingOut, setLoggingOut] = React.useState(false);
   const [changePasswordOpen, setChangePasswordOpen] = React.useState(false);
   const { open: drawerOpen } = useMobileDrawer();
+  const mobileDrawerHidden = useIsMobileSidebar() && !drawerOpen;
 
   React.useEffect(() => {
     setCollapsed(readCollapsed());
@@ -199,19 +214,13 @@ export function Sidebar({ user }: SidebarProps) {
         "fixed inset-y-2 left-2 z-50 w-[240px] max-h-[calc(100dvh-16px)]",
         "transition-transform duration-200 ease-out",
         drawerOpen ? "translate-x-0" : "-translate-x-[calc(100%+12px)]",
+        mobileDrawerHidden && "pointer-events-none",
         width,
       )}
       id="admin-sidebar"
       aria-label={t("nav.dashboard")}
-      aria-hidden={
-        // On mobile when the drawer is closed, take the aside out of the
-        // accessibility tree so screen readers don't land on hidden nav.
-        typeof window !== "undefined" &&
-        window.matchMedia?.("(max-width: 767px)").matches &&
-        !drawerOpen
-          ? true
-          : undefined
-      }
+      aria-hidden={mobileDrawerHidden ? true : undefined}
+      inert={mobileDrawerHidden ? true : undefined}
     >
       {/* brand + collapse */}
       <div className="flex items-center justify-between gap-2 border-b border-tp-glass-edge px-3.5 py-3.5">
@@ -266,7 +275,7 @@ export function Sidebar({ user }: SidebarProps) {
             <button
               type="button"
               onClick={() => setChangePasswordOpen(true)}
-              aria-label={t("auth.changePasswordMenuItem")}
+              aria-label={t("auth.openChangePasswordDialog")}
               className="flex h-8 w-full items-center justify-center rounded-md text-tp-ink-3 transition-colors hover:bg-tp-glass-inner hover:text-tp-ink"
               data-testid="change-password-button"
             >
@@ -308,8 +317,8 @@ export function Sidebar({ user }: SidebarProps) {
             <button
               type="button"
               onClick={() => setChangePasswordOpen(true)}
-              aria-label={t("auth.changePasswordMenuItem")}
-              title={t("auth.changePasswordMenuItem")}
+              aria-label={t("auth.openChangePasswordDialog")}
+              title={t("auth.openChangePasswordDialog")}
               className="inline-flex h-7 w-7 items-center justify-center rounded-md text-tp-ink-3 transition-colors hover:bg-tp-glass-inner hover:text-tp-ink"
               data-testid="change-password-button"
             >

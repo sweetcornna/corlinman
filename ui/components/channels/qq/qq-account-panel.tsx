@@ -88,7 +88,7 @@ export function QqAccountPanel({
         type="button"
         onClick={onReconnect}
         disabled={!canReconnect || reconnecting}
-        aria-label={t("channels.reconnect")}
+        aria-label={t("channels.qq.tp.accountReconnectAria")}
         className={cn(
           "inline-flex w-fit items-center gap-2 rounded-lg border px-3 py-2 text-[13px] font-medium",
           "border-tp-amber/35 bg-tp-amber-soft text-tp-amber",

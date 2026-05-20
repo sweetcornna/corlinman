@@ -55,7 +55,7 @@ export function Breadcrumbs() {
     <nav aria-label="breadcrumb" className="flex items-center gap-1 text-sm">
       <Link
         href="/"
-        className="text-muted-foreground transition-colors hover:text-foreground"
+        className="inline-flex min-h-8 items-center rounded-md px-1.5 text-muted-foreground transition-colors hover:bg-tp-glass-inner hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40"
       >
         {t("breadcrumbs.dashboard")}
       </Link>
@@ -69,7 +69,7 @@ export function Breadcrumbs() {
           ) : (
             <Link
               href={c.href as never}
-              className="text-muted-foreground transition-colors hover:text-foreground"
+              className="inline-flex min-h-8 items-center rounded-md px-1.5 text-muted-foreground transition-colors hover:bg-tp-glass-inner hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40"
             >
               {c.label}
             </Link>

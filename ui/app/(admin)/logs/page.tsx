@@ -359,6 +359,15 @@ export default function LogsPage() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
+      <header className="space-y-1">
+        <h1 className="text-2xl font-semibold tracking-tight">
+          {t("logs.title")}
+        </h1>
+        <p className="text-sm text-tp-ink-3">
+          {t("logs.subtitle", { max: RING_MAX })}
+        </p>
+      </header>
+
       {/* ─── Control bar ────────────────────────────── */}
       <LogsControlBar
         streamState={streamState}

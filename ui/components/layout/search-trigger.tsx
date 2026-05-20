@@ -13,7 +13,7 @@ export function SearchTrigger() {
       type="button"
       onClick={toggle}
       aria-label={t("nav.openPalette")}
-      className="group flex h-8 items-center gap-2 rounded-lg border border-tp-glass-edge bg-tp-glass-inner px-2.5 text-[12.5px] text-tp-ink-3 transition-colors hover:border-tp-glass-edge-strong hover:bg-tp-glass-inner-hover hover:text-tp-ink-2 md:w-64 md:justify-between"
+      className="group flex h-10 min-w-10 items-center justify-center gap-2 rounded-lg border border-tp-glass-edge bg-tp-glass-inner px-2.5 text-[12.5px] text-tp-ink-3 transition-colors hover:border-tp-glass-edge-strong hover:bg-tp-glass-inner-hover hover:text-tp-ink-2 md:h-8 md:w-64 md:justify-between"
     >
       <span className="inline-flex items-center gap-2">
         <Search className="h-3.5 w-3.5" />
