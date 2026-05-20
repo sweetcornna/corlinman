@@ -38,7 +38,7 @@ export const EmptyState = React.forwardRef<HTMLDivElement, EmptyStateProps>(
         variants={fadeUp}
         role="status"
         className={cn(
-          "mx-auto flex w-full max-w-md flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-border bg-card/30 px-6 py-10 text-center",
+          "mx-auto flex w-full max-w-md flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-tp-glass-edge bg-tp-glass px-6 py-10 text-center shadow-tp-panel",
           className,
         )}
         {...rest}

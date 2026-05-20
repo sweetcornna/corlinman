@@ -125,7 +125,7 @@ export function FilterChipGroup(props: FilterChipGroupProps) {
               "transition-colors",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/50",
               active
-                ? "bg-tp-ink text-tp-glass-hl border-tp-ink data-[active]:[color:var(--tp-glass)] dark:data-[active]:[color:var(--tp-ink)]"
+                ? "bg-tp-ink text-background border-tp-ink"
                 : "bg-tp-glass-inner text-tp-ink-3 border-tp-glass-edge hover:bg-tp-glass-inner-hover hover:text-tp-ink-2",
               opt.disabled && "cursor-not-allowed opacity-50",
             )}

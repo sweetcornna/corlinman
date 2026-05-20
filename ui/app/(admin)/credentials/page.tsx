@@ -686,8 +686,8 @@ export default function CredentialsPage() {
                 data-testid={`credentials-provider-${p.name}`}
               >
                 <CardHeader className="border-b border-tp-glass-edge">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-2">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex min-w-0 flex-wrap items-center gap-2">
                       <CardTitle className="text-base capitalize">
                         {p.name}
                       </CardTitle>
@@ -702,7 +702,7 @@ export default function CredentialsPage() {
                         <Badge variant="secondary">{t("common.disabled")}</Badge>
                       )}
                     </div>
-                    <div className="flex items-center gap-3">
+                    <div className="flex w-full items-center justify-between gap-3 sm:w-auto sm:justify-end">
                       <CardDescription
                         data-testid={`credentials-provider-${p.name}-count`}
                       >

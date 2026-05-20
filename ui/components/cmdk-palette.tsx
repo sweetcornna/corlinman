@@ -462,7 +462,7 @@ function TestChatDrawer({ onClose }: { onClose: () => void }) {
       />
       <div
         className={cn(
-          "relative z-10 flex w-full max-w-2xl flex-col gap-3 rounded-lg border border-border bg-popover p-4 shadow-2xl",
+          "relative z-10 flex w-full max-w-2xl flex-col gap-3 rounded-lg border border-tp-glass-edge bg-tp-glass-2 p-4 shadow-tp-hero backdrop-blur-glass-strong backdrop-saturate-glass-strong",
           "animate-in fade-in-0 zoom-in-95 duration-150",
         )}
       >
@@ -474,7 +474,7 @@ function TestChatDrawer({ onClose }: { onClose: () => void }) {
         </div>
         <form onSubmit={submit} className="space-y-2">
           <textarea
-            className="w-full rounded-md border border-input bg-background p-2 font-mono text-xs outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="w-full rounded-md border border-tp-glass-edge bg-tp-glass-inner p-2 font-mono text-xs outline-none focus-visible:ring-1 focus-visible:ring-ring"
             rows={3}
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}

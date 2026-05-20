@@ -681,7 +681,7 @@ function ConfigHero({
               disabled={saveDisabled}
               data-testid="config-save-btn"
               className={cn(
-                "relative inline-flex items-center gap-2 rounded-lg border border-tp-amber/40 bg-tp-amber px-3.5 py-2 text-[13px] font-medium text-tp-glass-hl shadow-[0_10px_30px_-12px_var(--tp-amber-glow)]",
+                "relative inline-flex items-center gap-2 rounded-lg border border-tp-amber/40 bg-tp-amber px-3.5 py-2 text-[13px] font-medium text-background shadow-[0_10px_30px_-12px_var(--tp-amber-glow)]",
                 "transition-all hover:brightness-[1.04] hover:-translate-y-[0.5px]",
                 "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/60",
                 "disabled:cursor-not-allowed disabled:opacity-70 disabled:hover:translate-y-0",
@@ -948,7 +948,7 @@ function PendingBar({
           onClick={onSave}
           disabled={saving}
           className={cn(
-            "inline-flex items-center gap-1.5 rounded-lg border border-tp-amber/40 bg-tp-amber px-3.5 py-1.5 text-[12px] font-medium text-tp-glass-hl",
+            "inline-flex items-center gap-1.5 rounded-lg border border-tp-amber/40 bg-tp-amber px-3.5 py-1.5 text-[12px] font-medium text-background",
             "transition-all hover:brightness-[1.04]",
             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/60",
             "disabled:cursor-not-allowed disabled:opacity-70",

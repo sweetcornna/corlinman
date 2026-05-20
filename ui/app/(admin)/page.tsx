@@ -229,11 +229,11 @@ export default function DashboardPage() {
               <button
                 type="button"
                 onClick={onRunPalette}
-                className="inline-flex items-center gap-2 rounded-lg bg-white/95 px-3 py-2 text-[13px] font-medium text-[#1a120d] shadow-[inset_0_1px_0_rgba(255,255,255,0.8),0_8px_16px_-8px_rgba(0,0,0,0.4)] transition-transform duration-200 hover:-translate-y-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40 data-[dark=false]:bg-tp-ink data-[dark=false]:text-white"
+                className="inline-flex items-center gap-2 rounded-lg border border-tp-glass-edge bg-tp-glass-inner px-3 py-2 text-[13px] font-medium text-tp-ink-2 shadow-tp-panel transition-transform duration-200 hover:-translate-y-px hover:bg-tp-glass-inner-hover hover:text-tp-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40"
               >
                 <Search className="h-3.5 w-3.5" />
                 {t("dashboard.tp.ctaPalette")}
-                <span className="ml-1 rounded bg-black/5 px-1.5 py-0.5 font-mono text-[10px] text-black/60">
+                <span className="ml-1 rounded border border-tp-glass-edge bg-tp-glass-inner px-1.5 py-0.5 font-mono text-[10px] text-tp-ink-3">
                   ⌘K
                 </span>
               </button>

@@ -90,12 +90,12 @@ export function EnvVarRow({
   if (editing) {
     return (
       <div
-        className="flex items-center gap-2 rounded-md border border-tp-glass-edge bg-tp-glass-inner/40 px-3 py-2"
+        className="flex min-w-0 flex-wrap items-center gap-2 rounded-md border border-tp-glass-edge bg-tp-glass-inner/40 px-3 py-2"
         data-testid={`${prefix}-row`}
       >
         <Label
           htmlFor={`${prefix}-input`}
-          className="w-32 shrink-0 font-mono text-[11px] text-tp-ink-3"
+          className="w-full shrink-0 font-mono text-[11px] text-tp-ink-3 sm:w-32"
         >
           {displayLabel}
         </Label>
@@ -137,7 +137,7 @@ export function EnvVarRow({
               handleCancel();
             }
           }}
-          className="h-8 flex-1 font-mono text-xs"
+          className="h-9 min-w-0 flex-1 font-mono text-xs"
           disabled={saving}
         />
         <Button
@@ -167,13 +167,13 @@ export function EnvVarRow({
   if (!field.set) {
     return (
       <div
-        className="flex items-center gap-3 rounded-md border border-dashed border-tp-glass-edge px-3 py-2 opacity-75 transition-opacity hover:opacity-100"
+        className="flex min-w-0 flex-wrap items-center gap-2 rounded-md border border-dashed border-tp-glass-edge px-3 py-2 opacity-75 transition-opacity hover:opacity-100"
         data-testid={`${prefix}-row`}
       >
-        <Label className="w-32 shrink-0 font-mono text-[11px] text-tp-ink-3">
+        <Label className="w-full shrink-0 font-mono text-[11px] text-tp-ink-3 sm:w-32">
           {displayLabel}
         </Label>
-        <div className="flex-1 truncate text-[11px] text-tp-ink-3">
+        <div className="min-w-0 flex-1 truncate text-[11px] text-tp-ink-3">
           {field.env_ref ? (
             <span className="font-mono">
               {t("credentials.envHint", { env: field.env_ref })}
@@ -198,16 +198,16 @@ export function EnvVarRow({
   // -- set --
   return (
     <div
-      className="flex items-center gap-2 rounded-md border border-tp-glass-edge px-3 py-2"
+      className="flex min-w-0 flex-wrap items-center gap-2 rounded-md border border-tp-glass-edge px-3 py-2"
       data-testid={`${prefix}-row`}
     >
-      <Label className="w-32 shrink-0 font-mono text-[11px] text-tp-ink-2">
+      <Label className="w-full shrink-0 font-mono text-[11px] text-tp-ink-2 sm:w-32">
         {displayLabel}
       </Label>
       <div
         data-testid={`${prefix}-preview`}
         className={cn(
-          "flex-1 truncate rounded border border-tp-glass-edge bg-tp-glass-inner/40 px-2 py-1 font-mono text-[11px]",
+          "min-w-0 flex-1 truncate rounded border border-tp-glass-edge bg-tp-glass-inner/40 px-2 py-1 font-mono text-[11px]",
           revealed ? "text-tp-ink" : "text-tp-ink-3",
         )}
       >

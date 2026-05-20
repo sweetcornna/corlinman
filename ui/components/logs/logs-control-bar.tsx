@@ -155,7 +155,7 @@ export function LogsControlBar({
             data-active={timeRange === r || undefined}
             onClick={() => onTimeRangeChange(r)}
             className={cn(
-              "rounded-md px-2.5 py-1 font-mono text-[11.5px] transition-colors",
+              "min-h-8 rounded-md px-2.5 py-1 font-mono text-[11.5px] transition-colors",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/50",
               timeRange === r
                 ? "bg-tp-glass-inner-hover text-tp-ink"
@@ -171,7 +171,7 @@ export function LogsControlBar({
           data-active={timeRange === "custom" || undefined}
           onClick={() => onTimeRangeChange("custom")}
           className={cn(
-            "inline-flex items-center gap-1 rounded-md px-2.5 py-1 font-mono text-[11.5px] transition-colors",
+            "inline-flex min-h-8 items-center gap-1 rounded-md px-2.5 py-1 font-mono text-[11.5px] transition-colors",
             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/50",
             timeRange === "custom"
               ? "bg-tp-glass-inner-hover text-tp-ink"
@@ -191,7 +191,7 @@ export function LogsControlBar({
           aria-expanded={severityOpen}
           onClick={() => setSeverityOpen((v) => !v)}
           className={cn(
-            "inline-flex items-center gap-2 rounded-lg border px-3 py-[5px]",
+            "inline-flex min-h-8 items-center gap-2 rounded-lg border px-3 py-[5px]",
             "bg-tp-glass-inner border-tp-glass-edge text-tp-ink-2 text-[12.5px]",
             "hover:bg-tp-glass-inner-hover hover:text-tp-ink",
             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
@@ -272,7 +272,7 @@ export function LogsControlBar({
           aria-expanded={subsysOpen}
           onClick={() => setSubsysOpen((v) => !v)}
           className={cn(
-            "inline-flex items-center gap-2 rounded-lg border px-3 py-[5px]",
+            "inline-flex min-h-8 items-center gap-2 rounded-lg border px-3 py-[5px]",
             "bg-tp-glass-inner border-tp-glass-edge text-tp-ink-2 text-[12.5px]",
             "hover:bg-tp-glass-inner-hover hover:text-tp-ink",
             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
@@ -374,7 +374,7 @@ export function LogsControlBar({
       {/* Search input */}
       <div
         className={cn(
-          "inline-flex flex-1 min-w-[220px] items-center gap-2 rounded-lg border px-2.5 py-[5px]",
+          "inline-flex min-h-8 flex-1 min-w-[220px] items-center gap-2 rounded-lg border px-2.5 py-[5px]",
           "bg-tp-glass-inner border-tp-glass-edge",
           "focus-within:border-tp-amber/40",
         )}
@@ -388,7 +388,7 @@ export function LogsControlBar({
           placeholder={t("logs.tp.searchPlaceholder")}
           aria-label={t("logs.tp.searchAria")}
           className={cn(
-            "flex-1 border-0 bg-transparent text-[12.5px] text-tp-ink outline-none",
+            "h-8 flex-1 border-0 bg-transparent text-[12.5px] text-tp-ink outline-none",
             "placeholder:text-tp-ink-4",
           )}
         />
@@ -449,7 +449,7 @@ function IconButton({
     <button
       type="button"
       className={cn(
-        "inline-flex h-[30px] w-[30px] items-center justify-center rounded-lg border",
+        "inline-flex h-8 w-8 items-center justify-center rounded-lg border",
         "bg-tp-glass-inner border-tp-glass-edge text-tp-ink-3",
         "hover:bg-tp-glass-inner-hover hover:text-tp-ink-2",
         "disabled:cursor-not-allowed disabled:opacity-40",

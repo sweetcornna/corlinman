@@ -12,19 +12,19 @@
      * mode (.dark) below — same hue family, inverted luminance.
      * ────────────────────────────────────────────────────────────── */
     --background: 36 32% 92%;
-    --foreground: 222 45% 12%;
+    --foreground: 0 0% 0%;
     --card: 36 40% 96%;
-    --card-foreground: 222 45% 12%;
+    --card-foreground: 0 0% 0%;
     --popover: 36 40% 96%;
-    --popover-foreground: 222 45% 12%;
+    --popover-foreground: 0 0% 0%;
     --primary: 218 78% 38%;
     --primary-foreground: 36 40% 98%;
     --secondary: 36 25% 86%;
-    --secondary-foreground: 222 45% 14%;
+    --secondary-foreground: 0 0% 0%;
     --muted: 36 22% 88%;
-    --muted-foreground: 30 14% 42%;
+    --muted-foreground: 0 0% 28%;
     --accent: 218 50% 90%;
-    --accent-foreground: 218 78% 28%;
+    --accent-foreground: 0 0% 0%;
     --destructive: 0 72% 48%;
     --destructive-foreground: 0 0% 98%;
     --border: 32 22% 78%;
@@ -88,11 +88,11 @@
     --tp-glass-inner-strong: oklch(0.20 0.04 240 / 0.05);
     --tp-row-alt: rgba(255, 248, 230, 0.55);
 
-    --tp-ink: #1a2238;
-    --tp-ink-2: #2f3a55;
-    --tp-ink-3: #5b6680;
-    --tp-ink-4: #8e94a8;
-    --tp-ink-5: #b8bccc;
+    --tp-ink: #000000;
+    --tp-ink-2: #111111;
+    --tp-ink-3: #333333;
+    --tp-ink-4: #5f5f5f;
+    --tp-ink-5: #8a8a8a;
 
     /* tp-amber retained name; retinted to sapphire so consumers stay valid. */
     --tp-amber: oklch(0.50 0.20 250);
@@ -143,20 +143,20 @@
      * translucent so the carving texture reads through.
      * ────────────────────────────────────────────────────────────── */
     --background: 226 60% 5%;
-    --foreground: 220 30% 92%;
+    --foreground: 0 0% 100%;
     --card: 226 50% 8%;
-    --card-foreground: 220 30% 94%;
+    --card-foreground: 0 0% 100%;
     --popover: 226 55% 7%;
-    --popover-foreground: 220 30% 94%;
+    --popover-foreground: 0 0% 100%;
     /* Primary = sapphire highlight — like moonlight catching stone. */
     --primary: 218 70% 70%;
     --primary-foreground: 226 60% 8%;
     --secondary: 226 35% 14%;
-    --secondary-foreground: 220 25% 90%;
+    --secondary-foreground: 0 0% 100%;
     --muted: 226 30% 11%;
-    --muted-foreground: 220 18% 65%;
+    --muted-foreground: 0 0% 72%;
     --accent: 222 50% 22%;
-    --accent-foreground: 218 80% 88%;
+    --accent-foreground: 0 0% 100%;
     --destructive: 0 62% 45%;
     --destructive-foreground: 0 0% 98%;
     --border: 222 30% 18%;
@@ -225,11 +225,11 @@
     --tp-glass-inner-strong: oklch(0.85 0.05 230 / 0.07);
     --tp-row-alt: rgba(150, 180, 230, 0.018);
 
-    --tp-ink: #e9eefb;
-    --tp-ink-2: #b6c1de;
-    --tp-ink-3: #7e8aae;
-    --tp-ink-4: #545d7c;
-    --tp-ink-5: #383f55;
+    --tp-ink: #ffffff;
+    --tp-ink-2: #e8e8e8;
+    --tp-ink-3: #bdbdbd;
+    --tp-ink-4: #8a8a8a;
+    --tp-ink-5: #626262;
 
     /* Re-mapped tp-amber → sapphire so existing consumers stay valid
        but read as cool blue accents instead of warm amber. */
@@ -490,54 +490,48 @@
 
   /* All `.emboss` surfaces carry the sun-moon mandala as a subtle
      pattern tile — same `--tp-pattern-url` token that drives
-     `.pattern-active`, just blended softer so it reads as carved
-     wallpaper inside the panel, not a competing layer. Light mode
-     uses `soft-light` (gentle add), dark uses `overlay` (richer
-     contrast). All panels keep their tinted glass over the pattern
-     so type stays legible. */
+     `.pattern-active`. The panel itself stays transparent glass so
+     large surfaces do not become opaque white slabs in day mode. */
   .emboss {
-    background-color: hsl(var(--card) / 0.78);
+    background-color: var(--tp-glass);
     background-image: var(--tp-pattern-url);
     background-size: 480px 480px;
     background-position: center center;
     background-blend-mode: soft-light;
-    border: 1px solid hsl(var(--border) / 0.7);
+    border: 1px solid var(--tp-glass-edge);
     box-shadow:
-      inset 0 1px 0 rgb(255 255 255 / 0.5),
-      0 1px 0 rgb(0 0 0 / 0.06),
-      0 8px 24px -10px rgb(0 0 0 / 0.15);
-    backdrop-filter: blur(8px) saturate(1.1);
+      inset 0 1px 0 rgb(255 255 255 / 0.28),
+      0 10px 28px -18px rgb(0 0 0 / 0.28);
+    backdrop-filter: blur(0) saturate(1);
   }
   .dark .emboss {
-    background-color: hsl(226 50% 10% / 0.7);
+    background-color: var(--tp-glass);
     background-blend-mode: overlay;
-    border-color: hsl(220 40% 28% / 0.55);
+    border-color: var(--tp-glass-edge);
     box-shadow:
-      inset 0 1px 0 hsl(220 70% 80% / 0.12),
-      inset 0 -1px 0 hsl(226 80% 3% / 0.7),
-      0 1px 0 hsl(226 80% 3% / 0.55),
-      0 14px 36px -14px rgb(0 0 0 / 0.7);
+      inset 0 1px 0 hsl(220 70% 80% / 0.10),
+      inset 0 -1px 0 hsl(226 80% 3% / 0.34),
+      0 14px 36px -18px rgb(0 0 0 / 0.65);
   }
 
   .emboss-inset {
-    background-color: hsl(var(--surface) / 0.55);
+    background-color: var(--tp-glass-inner);
     background-image: var(--tp-pattern-url);
     background-size: 360px 360px;
     background-position: center center;
     background-blend-mode: soft-light;
-    border: 1px solid hsl(var(--border) / 0.7);
+    border: 1px solid var(--tp-glass-edge);
     box-shadow:
-      inset 0 2px 4px rgb(0 0 0 / 0.06),
-      inset 0 -1px 0 rgb(255 255 255 / 0.5);
+      inset 0 1px 3px rgb(0 0 0 / 0.08),
+      inset 0 -1px 0 rgb(255 255 255 / 0.22);
   }
   .dark .emboss-inset {
-    background-color: hsl(226 60% 5% / 0.6);
+    background-color: var(--tp-glass-inner);
     background-blend-mode: overlay;
-    border-color: hsl(220 40% 22% / 0.6);
+    border-color: var(--tp-glass-edge);
     box-shadow:
-      inset 0 2px 6px hsl(226 80% 2% / 0.65),
-      inset 0 -1px 0 hsl(220 60% 30% / 0.10),
-      0 1px 0 hsl(220 60% 30% / 0.06);
+      inset 0 1px 4px hsl(226 80% 2% / 0.45),
+      inset 0 -1px 0 hsl(220 60% 30% / 0.08);
   }
 
   .ridge-divider {
@@ -556,7 +550,7 @@
     text-shadow: 0 1px 0 rgb(0 0 0 / 0.04);
   }
   .dark .relief-text {
-    color: hsl(220 30% 90%);
+    color: hsl(var(--foreground));
     text-shadow:
       0 1px 0 hsl(226 80% 2% / 0.9),
       0 -1px 0 hsl(220 60% 30% / 0.10);
@@ -634,6 +628,20 @@
     background-size: 480px 480px;
     background-position: center center;
     background-blend-mode: soft-light;
+  }
+
+  /* Monaco ships its own opaque `vs-light` / `vs-dark` surfaces. Keep the
+     editor chrome aligned with the app's glass panels instead of letting a
+     full white rectangle sit inside the config page. */
+  .monaco-editor,
+  .monaco-editor .margin,
+  .monaco-editor .monaco-editor-background,
+  .monaco-editor .overflow-guard,
+  .monaco-editor .lines-content {
+    background: transparent !important;
+  }
+  .monaco-editor .native-edit-context {
+    min-height: 32px !important;
   }
 
   /* Primary buttons get the pattern too — at smaller tile so the

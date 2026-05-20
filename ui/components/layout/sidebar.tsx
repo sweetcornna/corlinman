@@ -224,7 +224,7 @@ export function Sidebar({ user }: SidebarProps) {
     >
       {/* brand + collapse */}
       <div className="flex items-center justify-between gap-2 border-b border-tp-glass-edge px-3.5 py-3.5">
-        <Link href="/" className="flex items-center gap-2 overflow-hidden">
+        <Link href="/" className="flex min-h-10 items-center gap-2 overflow-hidden">
           <BrandMarkNudge>
             <BrandMark compact={collapsed && hydrated} />
           </BrandMarkNudge>
@@ -235,7 +235,7 @@ export function Sidebar({ user }: SidebarProps) {
           aria-label={
             collapsed ? t("nav.expandSidebar") : t("nav.collapseSidebar")
           }
-          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-tp-ink-3 transition-colors hover:bg-tp-glass-inner hover:text-tp-ink"
+          className="inline-flex h-9 w-9 items-center justify-center rounded-md text-tp-ink-3 transition-colors hover:bg-tp-glass-inner hover:text-tp-ink"
         >
           {collapsed ? (
             <ChevronsRight className="h-4 w-4" />
@@ -276,7 +276,7 @@ export function Sidebar({ user }: SidebarProps) {
               type="button"
               onClick={() => setChangePasswordOpen(true)}
               aria-label={t("auth.openChangePasswordDialog")}
-              className="flex h-8 w-full items-center justify-center rounded-md text-tp-ink-3 transition-colors hover:bg-tp-glass-inner hover:text-tp-ink"
+              className="flex h-9 w-full items-center justify-center rounded-md text-tp-ink-3 transition-colors hover:bg-tp-glass-inner hover:text-tp-ink"
               data-testid="change-password-button"
             >
               <KeyRound className="h-4 w-4" />
@@ -286,7 +286,7 @@ export function Sidebar({ user }: SidebarProps) {
               onClick={onLogout}
               aria-label={t("auth.logoutLabel")}
               disabled={loggingOut}
-              className="flex h-8 w-full items-center justify-center rounded-md text-tp-ink-3 transition-colors hover:bg-tp-glass-inner hover:text-tp-ink disabled:opacity-50"
+              className="flex h-9 w-full items-center justify-center rounded-md text-tp-ink-3 transition-colors hover:bg-tp-glass-inner hover:text-tp-ink disabled:opacity-50"
               data-testid="logout-button"
             >
               <LogOut className="h-4 w-4" />
@@ -319,7 +319,7 @@ export function Sidebar({ user }: SidebarProps) {
               onClick={() => setChangePasswordOpen(true)}
               aria-label={t("auth.openChangePasswordDialog")}
               title={t("auth.openChangePasswordDialog")}
-              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-tp-ink-3 transition-colors hover:bg-tp-glass-inner hover:text-tp-ink"
+              className="inline-flex h-9 w-9 items-center justify-center rounded-md text-tp-ink-3 transition-colors hover:bg-tp-glass-inner hover:text-tp-ink"
               data-testid="change-password-button"
             >
               <KeyRound className="h-3.5 w-3.5" />
@@ -329,7 +329,7 @@ export function Sidebar({ user }: SidebarProps) {
               onClick={onLogout}
               disabled={loggingOut}
               aria-label={t("auth.logoutLabel")}
-              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-tp-ink-3 transition-colors hover:bg-tp-glass-inner hover:text-tp-ink disabled:opacity-50"
+              className="inline-flex h-9 w-9 items-center justify-center rounded-md text-tp-ink-3 transition-colors hover:bg-tp-glass-inner hover:text-tp-ink disabled:opacity-50"
               data-testid="logout-button"
             >
               <LogOut className="h-3.5 w-3.5" />
@@ -374,7 +374,7 @@ function SidebarItem({
       href={item.href as never}
       onKeyDown={onKeyDown}
       className={cn(
-        "group relative flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-[13px] transition-colors",
+        "group relative flex min-h-9 items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-[13px] transition-colors",
         // Active: carved-out highlight box with the sun-moon mandala
         // pattern as its background (see .pattern-active in globals.css).
         // Inactive: text lift on hover only.
@@ -522,7 +522,7 @@ function SidebarGroup({
         aria-label={label}
         data-testid={`sidebar-group-toggle-${group.id}`}
         className={cn(
-          "relative flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-[13px] transition-colors",
+          "relative flex min-h-9 w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-[13px] transition-colors",
           // Same "no filled-bg hover" rule as SidebarItem — full-width
           // rectangles on glass read as a stray layer.
           hasActiveChild

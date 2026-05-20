@@ -37,7 +37,7 @@ export function TopNav() {
           aria-expanded={open}
           aria-controls="admin-sidebar"
           data-testid="mobile-nav-trigger"
-          className="-ml-1 inline-flex h-10 w-10 items-center justify-center rounded-md text-tp-ink-2 transition-colors hover:bg-tp-glass-inner hover:text-tp-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40 md:hidden"
+          className="-ml-1 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-tp-ink-2 transition-colors hover:bg-tp-glass-inner hover:text-tp-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40 md:hidden"
         >
           <Menu className="h-5 w-5" aria-hidden />
         </button>

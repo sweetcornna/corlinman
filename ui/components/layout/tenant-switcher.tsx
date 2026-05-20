@@ -89,7 +89,7 @@ export function TenantSwitcher({
   return (
     <label
       className={cn(
-        "group relative flex h-8 items-center gap-1.5 rounded-lg border border-tp-glass-edge bg-tp-glass-inner px-2 text-[12px] text-tp-ink-2 transition-colors",
+        "group relative flex h-9 items-center gap-1.5 rounded-lg border border-tp-glass-edge bg-tp-glass-inner px-2 text-[12px] text-tp-ink-2 transition-colors",
         disabled
           ? "cursor-not-allowed opacity-60"
           : "hover:border-tp-glass-edge-strong hover:bg-tp-glass-inner-hover hover:text-tp-ink",
@@ -108,7 +108,7 @@ export function TenantSwitcher({
         disabled={disabled}
         onChange={handleChange}
         data-testid="tenant-switcher-select"
-        className="cursor-pointer appearance-none bg-transparent pr-1 font-mono text-[12px] focus:outline-none disabled:cursor-not-allowed"
+        className="h-full min-h-8 cursor-pointer appearance-none bg-transparent pr-1 font-mono text-[12px] focus:outline-none disabled:cursor-not-allowed"
       >
         {disabled ? (
           <option value={DEFAULT_SLUG}>
