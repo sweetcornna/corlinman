@@ -28,6 +28,11 @@
 #                     sandboxing can spawn child containers. High-trust hosts
 #                     only; disabled by default.
 #   --version <ref>   Git ref / branch to install from (default: main).
+#   --with-qq         Also deploy NapCat (QQ OneBot client) as a Docker
+#                     container and wire corlinman's `[channels.qq]` block to
+#                     it (OneBot WS :3001, WebUI/scan-login :6099, both bound
+#                     to 127.0.0.1). Native mode only. Finish the QQ login
+#                     from the admin UI scan flow. CORLINMAN_WITH_QQ=1 also works.
 #
 # Environment overrides:
 #   CORLINMAN_PREFIX     install root for --mode native (default: /opt/corlinman)
@@ -51,6 +56,7 @@ PORT="${CORLINMAN_PORT:-6005}"
 REPO="ymylive/corlinman"
 USE_CHINA=""
 ENABLE_DOCKER_SANDBOX="${CORLINMAN_ENABLE_DOCKER_SANDBOX:-}"
+WITH_QQ="${CORLINMAN_WITH_QQ:-}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -59,9 +65,10 @@ while [[ $# -gt 0 ]]; do
         --version) REF="$2"; shift 2 ;;
         --version=*) REF="${1#--version=}"; shift ;;
         --china) USE_CHINA="1"; shift ;;
+        --with-qq) WITH_QQ="1"; shift ;;
         --enable-docker-sandbox) ENABLE_DOCKER_SANDBOX="1"; shift ;;
         -h|--help)
-            head -42 "$0" | sed -n '2,$p' | sed 's/^# \{0,1\}//'
+            head -48 "$0" | sed -n '2,$p' | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *) echo "unknown argument: $1" >&2; exit 1 ;;
@@ -289,6 +296,84 @@ EOF
 EOF
 }
 
+# ----- NapCat / QQ channel (--with-qq) ---------------------------------------
+# Deploys the NapCat QQ client as a Docker container and wires corlinman's
+# `[channels.qq]` block to it. NapCat's OneBot v11 WS server is pinned to
+# :3001 via the image's built-in `MODE=ws` template; the WebUI + scan-login
+# API sit on :6099. Both are published to 127.0.0.1 only — the corlinman
+# admin UI drives the QR scan-login over them. `self_ids` stays empty until
+# the operator completes that scan (corlinman fills it in afterwards).
+install_napcat() {
+    require docker
+    if [[ "$MODE" != "native" ]]; then
+        warn "--with-qq targets --mode native; with --mode docker, join NapCat to"
+        warn "the corlinman container network by hand. Skipping QQ auto-wiring."
+        return 0
+    fi
+    local napcat_dir="${PREFIX}/napcat"
+    log "deploying NapCat container (QQ OneBot client)"
+    mkdir -p "$napcat_dir/app" "$napcat_dir/config" "$napcat_dir/ntqq"
+    docker rm -f corlinman-napcat >/dev/null 2>&1 || true
+    docker run -d --name corlinman-napcat --restart unless-stopped \
+        -p 127.0.0.1:6099:6099 \
+        -p 127.0.0.1:3001:3001 \
+        -e NAPCAT_UID=1000 -e NAPCAT_GID=1000 -e TZ="${TZ:-Asia/Shanghai}" \
+        -e MODE=ws \
+        -v "$napcat_dir/app:/app/napcat" \
+        -v "$napcat_dir/config:/app/napcat/config" \
+        -v "$napcat_dir/ntqq:/app/.config/QQ" \
+        mlikiowa/napcat-docker:latest \
+        || die "NapCat container failed to start"
+
+    # NapCat writes its WebUI token to config/webui.json on first boot;
+    # corlinman needs it to drive the scan-login API.
+    log "waiting for NapCat to write its WebUI token"
+    local token="" i
+    for i in $(seq 1 25); do
+        sleep 2
+        token=$(docker exec corlinman-napcat sh -c 'cat /app/napcat/config/webui.json 2>/dev/null' \
+            | grep -oE '"token"[[:space:]]*:[[:space:]]*"[^"]+"' | head -1 \
+            | sed -E 's/.*"([^"]+)"[[:space:]]*$/\1/')
+        [[ -n "$token" ]] && break
+    done
+    [[ -n "$token" ]] || warn "could not read NapCat WebUI token — set [channels.qq].napcat_access_token by hand"
+
+    # Wire corlinman's QQ channel. Append only if absent so re-runs stay idempotent.
+    local cfg="${DATA_DIR}/config.toml"
+    mkdir -p "$DATA_DIR"
+    touch "$cfg"
+    if grep -qE '^\[channels\.qq\]' "$cfg" 2>/dev/null; then
+        log "[channels.qq] already in $cfg — leaving as-is"
+    else
+        log "writing [channels.qq] -> $cfg"
+        cat >> "$cfg" <<EOF
+
+[channels.qq]
+enabled = true
+# self_ids is auto-filled by corlinman once the QQ scan-login completes.
+self_ids = []
+ws_url = "ws://127.0.0.1:3001"
+napcat_url = "http://127.0.0.1:6099"
+napcat_access_token = "${token}"
+
+[channels.qq.reply]
+on_at_mention = true
+on_direct_message = true
+EOF
+    fi
+
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl restart corlinman 2>/dev/null || true
+    fi
+
+    cat <<EOF
+
+✅ NapCat deployed (container: corlinman-napcat — OneBot WS :3001, WebUI :6099)
+   Finish QQ login from the corlinman admin UI -> Channels -> QQ -> scan-login.
+   NapCat state persists under ${napcat_dir}.
+EOF
+}
+
 # ----- entry -----------------------------------------------------------------
 main() {
     autodetect_china
@@ -298,6 +383,9 @@ main() {
         native) install_native ;;
         *) die "unknown --mode: $MODE (expected: docker | native)" ;;
     esac
+    if [[ -n "$WITH_QQ" ]]; then
+        install_napcat
+    fi
 }
 
 main "$@"
