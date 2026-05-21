@@ -75,15 +75,15 @@
     --tp-aurora-3: oklch(0.88 0.04 40 / 0.12);
 
     /* Glass surfaces stay visibly translucent rather than opaque slabs. */
-    --tp-glass: oklch(1 0 0 / 0.035);
-    --tp-glass-2: oklch(1 0 0 / 0.05);
-    --tp-glass-3: oklch(1 0 0 / 0.025);
+    --tp-glass: oklch(1 0 0 / 0.1);
+    --tp-glass-2: oklch(1 0 0 / 0.12);
+    --tp-glass-3: oklch(1 0 0 / 0.08);
     --tp-glass-edge: oklch(0.40 0.04 80 / 0.18);
     --tp-glass-edge-strong: oklch(0.30 0.05 80 / 0.30);
     --tp-glass-hl: oklch(1 0 0 / 0.18);
-    --tp-glass-inner: oklch(1 0 0 / 0.035);
-    --tp-glass-inner-hover: oklch(1 0 0 / 0.09);
-    --tp-glass-inner-strong: oklch(1 0 0 / 0.055);
+    --tp-glass-inner: oklch(1 0 0 / 0.08);
+    --tp-glass-inner-hover: oklch(1 0 0 / 0.14);
+    --tp-glass-inner-strong: oklch(1 0 0 / 0.1);
     --tp-glass-blur: 6px;
     --tp-glass-saturate: 1.12;
     --tp-glass-filter: blur(var(--tp-glass-blur)) saturate(var(--tp-glass-saturate));
@@ -612,6 +612,7 @@
     background-image: none !important;
     backdrop-filter: var(--tp-glass-filter) !important;
     -webkit-backdrop-filter: var(--tp-glass-filter) !important;
+    will-change: backdrop-filter;
   }
 
   .bg-card,
