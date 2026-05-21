@@ -615,6 +615,26 @@
     will-change: backdrop-filter;
   }
 
+  .bg-tp-glass-inner,
+  .bg-tp-glass-inner-hover,
+  .bg-tp-glass-inner-strong,
+  .bg-tp-glass-inner\/40,
+  .bg-tp-glass-inner\/50,
+  .bg-tp-glass-inner\/60,
+  .bg-tp-glass-inner\/70 {
+    background-image: none !important;
+    backdrop-filter: var(--tp-glass-filter) !important;
+    -webkit-backdrop-filter: var(--tp-glass-filter) !important;
+    will-change: backdrop-filter;
+  }
+
+  .bg-tp-glass-inner\/40,
+  .bg-tp-glass-inner\/50,
+  .bg-tp-glass-inner\/60,
+  .bg-tp-glass-inner\/70 {
+    background-color: var(--tp-glass-inner) !important;
+  }
+
   .bg-card,
   .bg-popover,
   .bg-panel {

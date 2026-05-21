@@ -30,4 +30,19 @@ describe("Tidepool light glass fallback", () => {
     );
     expect(glassRuleMatch?.[1]).toContain("will-change: backdrop-filter");
   });
+
+  it("covers inner glass utilities used by compact cards and controls", () => {
+    const innerRuleMatch = css.match(
+      /\.bg-tp-glass-inner,[\s\S]*?\.bg-tp-glass-inner\\\/70\s*\{([\s\S]*?)\n\s*\}/,
+    );
+
+    expect(innerRuleMatch).not.toBeNull();
+    const selectors = innerRuleMatch?.[0] ?? "";
+    const body = innerRuleMatch?.[1] ?? "";
+    expect(selectors).toContain(".bg-tp-glass-inner-strong");
+    expect(selectors).toContain(".bg-tp-glass-inner-hover");
+    expect(selectors).toContain(".bg-tp-glass-inner\\/40");
+    expect(body).toContain("backdrop-filter: var(--tp-glass-filter)");
+    expect(body).toContain("will-change: backdrop-filter");
+  });
 });
