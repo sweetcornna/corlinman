@@ -546,7 +546,7 @@ export default function CredentialsPage() {
 
           {/* --- Claude Code import tile --- */}
           <div
-            className="flex flex-col gap-3 rounded-md border border-tp-glass-edge p-3"
+            className="flex flex-col gap-3 rounded-md border border-tp-glass-edge bg-tp-glass p-3 shadow-tp-panel backdrop-blur-glass backdrop-saturate-glass"
             data-testid="oauth-tile-claude-code"
           >
             <div className="flex flex-col gap-1">
@@ -1001,7 +1001,7 @@ function OAuthPkceTile({
 }: PkceTileProps) {
   return (
     <div
-      className="flex flex-col gap-3 rounded-md border border-tp-glass-edge p-3"
+      className="flex flex-col gap-3 rounded-md border border-tp-glass-edge bg-tp-glass p-3 shadow-tp-panel backdrop-blur-glass backdrop-saturate-glass"
       data-testid={testId}
     >
       <div className="flex items-start justify-between gap-2">

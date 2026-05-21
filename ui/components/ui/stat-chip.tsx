@@ -90,10 +90,9 @@ export const StatChip = React.forwardRef<HTMLDivElement, StatChipProps>(
     return (
       <GlassPanel
         ref={ref}
-        // Primary chips earn the blur (draw the eye first); secondary
-        // chips go subtle — same glass aesthetic via tp-glass-inner, no
-        // backdrop-filter. Keeps a Dashboard row at 4+1 blur layers
-        // instead of 1+4, under the ≤ 5 / viewport budget.
+        // Primary chips get the glow treatment; secondary chips use the same
+        // glass filter with a quieter shadow so page-to-page glass does not
+        // visibly switch between blurred and solid surfaces.
         variant={isPrimary ? "primary" : "subtle"}
         className={cn(
           "flex flex-col gap-2 overflow-hidden px-[18px] pb-[14px] pt-4",

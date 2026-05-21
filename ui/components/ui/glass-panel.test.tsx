@@ -15,7 +15,7 @@ describe("GlassPanel", () => {
     expect(el).toHaveClass("backdrop-blur-glass");
   });
 
-  it("renders subtle variant without backdrop-filter classes", () => {
+  it("renders subtle variant with the same glass blur budget", () => {
     render(
       <GlassPanel variant="subtle" data-testid="panel">
         content
@@ -23,9 +23,8 @@ describe("GlassPanel", () => {
     );
     const el = screen.getByTestId("panel");
     expect(el).toHaveAttribute("data-glass-variant", "subtle");
-    // subtle avoids blur on purpose (perf budget)
-    expect(el.className).not.toContain("backdrop-blur-glass");
-    expect(el.className).toContain("bg-tp-glass-inner");
+    expect(el).toHaveClass("bg-tp-glass");
+    expect(el).toHaveClass("backdrop-blur-glass");
   });
 
   it("renders the primary ring/glow when variant=primary", () => {

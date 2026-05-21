@@ -7,14 +7,13 @@ import { cn } from "@/lib/utils";
  * Glass surface primitive — the core container of the Tidepool theme.
  *
  * Three variants trade visual weight against performance:
- *   - `soft` (default) — 8px blur + 1.14x saturation, subtle inset highlight.
+ *   - `soft` (default) — 6px blur + 1.12x saturation, subtle inset highlight.
  *     Used for lists, sidebars, plain panels.
- *   - `strong` — same blur budget, deeper shadow. Hero-class surfaces
+ *   - `strong` — same blur/filter budget, deeper shadow. Hero-class surfaces
  *     (dashboard hero, palette modal card).
- *   - `subtle` — NO `backdrop-filter`; solid panel with --tp-glass-inner
- *     background + soft shadow. Use inside a scroll container with many
- *     stacked panels to preserve scroll perf — 9 blur layers per viewport
- *     is the budget ceiling.
+ *   - `subtle` — same blur/filter budget, lower visual weight via shadow.
+ *     This keeps route-to-route panels from flashing between transparent,
+ *     blurred, and solid states.
  *   - `primary` — same as strong, plus the ring/glow outline that marks a
  *     stat chip as the "most active" metric.
  *
@@ -47,18 +46,17 @@ const variantClasses: Record<GlassPanelVariant, string> = {
     "shadow-tp-panel",
   ),
   strong: cn(
-    "bg-tp-glass-2 border-tp-glass-edge",
+    "bg-tp-glass border-tp-glass-edge",
     "backdrop-blur-glass-strong backdrop-saturate-glass-strong",
     "shadow-tp-hero",
   ),
   subtle: cn(
-    // Intentionally no backdrop-filter — solid + inner highlight only.
-    // Use inside viewports where ≥6 glass panels would otherwise degrade LCP.
-    "bg-tp-glass-inner border-tp-glass-edge",
+    "bg-tp-glass border-tp-glass-edge",
+    "backdrop-blur-glass backdrop-saturate-glass",
     "shadow-tp-panel",
   ),
   primary: cn(
-    "bg-tp-glass-2 border-tp-glass-edge",
+    "bg-tp-glass border-tp-glass-edge",
     "backdrop-blur-glass backdrop-saturate-glass",
     "shadow-tp-primary",
   ),

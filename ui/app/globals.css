@@ -84,6 +84,9 @@
     --tp-glass-inner: oklch(1 0 0 / 0.035);
     --tp-glass-inner-hover: oklch(1 0 0 / 0.09);
     --tp-glass-inner-strong: oklch(1 0 0 / 0.055);
+    --tp-glass-blur: 6px;
+    --tp-glass-saturate: 1.12;
+    --tp-glass-filter: blur(var(--tp-glass-blur)) saturate(var(--tp-glass-saturate));
     --tp-row-alt: rgba(255, 255, 255, 0.04);
 
     --tp-ink: #000000;
@@ -494,7 +497,8 @@
     box-shadow:
       inset 0 1px 0 rgb(255 255 255 / 0.16),
       0 10px 28px -18px rgb(0 0 0 / 0.22);
-    backdrop-filter: blur(8px) saturate(1.14);
+    backdrop-filter: var(--tp-glass-filter);
+    -webkit-backdrop-filter: var(--tp-glass-filter);
   }
   .dark .emboss {
     background-color: var(--tp-glass);
@@ -567,7 +571,8 @@
     position: relative;
     background-color: var(--tp-pattern-tint);
     background-image: none;
-    backdrop-filter: blur(8px) saturate(1.12);
+    backdrop-filter: var(--tp-glass-filter);
+    -webkit-backdrop-filter: var(--tp-glass-filter);
     box-shadow:
       inset 0 1px 1px hsl(var(--background) / 0.18),
       inset 0 -1px 0 hsl(var(--background) / 0.12),
@@ -598,12 +603,21 @@
    * the tile shows and the bright/dark gradient doesn't register.
    * Opt out per-element with `[background-image:none]`.
    * ──────────────────────────────────────────────────────────────── */
+  .bg-tp-glass,
+  .bg-tp-glass-2,
+  .bg-tp-glass-3,
+  .bg-card,
+  .bg-popover,
+  .bg-panel {
+    background-image: none !important;
+    backdrop-filter: var(--tp-glass-filter) !important;
+    -webkit-backdrop-filter: var(--tp-glass-filter) !important;
+  }
+
   .bg-card,
   .bg-popover,
   .bg-panel {
     background-color: var(--tp-glass-3) !important;
-    background-image: none !important;
-    backdrop-filter: blur(8px) saturate(1.14);
   }
 
   /* Monaco ships its own opaque `vs-light` / `vs-dark` surfaces. Keep the

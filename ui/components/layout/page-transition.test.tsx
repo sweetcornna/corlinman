@@ -4,8 +4,7 @@
  * The component is mostly a framer-motion wrapper, so the tests focus on the
  * contract we expose to Batches 2-5:
  *   1. Children actually mount.
- *   2. Baseline route animation keeps opacity pinned at 1 so glass cards do
- *      not briefly render transparent before backdrop-filter settles.
+ *   2. Baseline route wrapper is static: no opacity fade and no transform.
  *   3. A custom `variants` prop overrides the baseline.
  *   4. `prefers-reduced-motion: reduce` collapses translate/duration.
  *
@@ -63,11 +62,11 @@ describe("PageTransition", () => {
     expect(screen.getByTestId("child")).toHaveTextContent("hello");
   });
 
-  it("exposes a glass-safe baseline variant without opacity fade", () => {
-    expect(baselinePageVariants.initial).toMatchObject({ opacity: 1, y: 4 });
+  it("exposes a static glass-safe baseline variant", () => {
+    expect(baselinePageVariants.initial).toMatchObject({ opacity: 1, y: 0 });
     expect(baselinePageVariants.animate).toMatchObject({ opacity: 1, y: 0 });
-    expect(baselinePageVariants.exit).toMatchObject({ opacity: 1, y: -4 });
-    expect(baselinePageVariants.transition).toMatchObject({ duration: 0.14 });
+    expect(baselinePageVariants.exit).toMatchObject({ opacity: 1, y: 0 });
+    expect(baselinePageVariants.transition).toMatchObject({ duration: 0 });
   });
 
   it("applies the baseline animation to the motion wrapper", () => {
@@ -83,8 +82,10 @@ describe("PageTransition", () => {
       "[data-testid='page-transition']",
     );
     expect(motionDiv).not.toBeNull();
-    // opacity lands at 1 for the baseline `animate` state.
+    // The route wrapper must not move during page swaps; even a small y
+    // transform is visible as a twitch against the fixed relief background.
     expect(motionDiv?.style.opacity).toBe("1");
+    expect(motionDiv?.style.transform ?? "").not.toMatch(/matrix|translate/i);
   });
 
   it("honors a custom variants override", () => {

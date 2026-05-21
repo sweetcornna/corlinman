@@ -41,15 +41,13 @@ describe("StatChip", () => {
     expect(path?.getAttribute("d")).toContain("M0 28");
   });
 
-  it("wraps in a GlassPanel with the subtle variant by default", () => {
-    // Phase 6 perf: non-primary stat chips use the `subtle` GlassPanel
-    // variant (no backdrop-filter) so a Dashboard row stays under the
-    // ≤5 blur-layer budget. Primary chips still earn the blur (below).
+  it("wraps in a GlassPanel with the subtle glass variant by default", () => {
     const { container } = render(
       <StatChip label="foo" value="1" data-testid="chip" />,
     );
     const panel = container.querySelector("[data-glass-variant]");
     expect(panel).toHaveAttribute("data-glass-variant", "subtle");
+    expect(panel).toHaveClass("backdrop-blur-glass");
   });
 
   it("wraps in a GlassPanel with the primary variant when variant=primary", () => {

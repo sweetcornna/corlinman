@@ -25,16 +25,15 @@ export interface PageTransitionVariants {
 }
 
 /**
- * Baseline entry/exit animation: a short 4px y-translate with opacity pinned
- * at 1. Glass-heavy pages must not fade their wrapper through opacity 0:
- * Chromium can show the translucent cards before their backdrop-filter has
- * settled, which reads as "transparent first, blurred later" on route changes.
+ * Baseline route wrapper: completely static. Glass-heavy pages sit over a
+ * fixed relief background, so even a tiny y-translate reads as a twitch during
+ * navigation.
  */
 export const baselinePageVariants: PageTransitionVariants = {
-  initial: { opacity: 1, y: 4 },
+  initial: { opacity: 1, y: 0 },
   animate: { opacity: 1, y: 0 },
-  exit: { opacity: 1, y: -4 },
-  transition: { duration: 0.14, ease: [0.22, 0.61, 0.36, 1] },
+  exit: { opacity: 1, y: 0 },
+  transition: { duration: 0 },
 };
 
 /**
