@@ -128,14 +128,15 @@ const config: Config = {
           "radial-gradient(600px 400px at 50% 95%, var(--tp-aurora-3), transparent 60%), " +
           "linear-gradient(135deg, var(--tp-bg-a), var(--tp-bg-b) 60%, var(--tp-bg-c))",
       },
-      // Glass surfaces stay translucent and lightly frosted so background art reads through.
+      // Legacy glass utility names remain available, but they no longer blur
+      // the page behind card surfaces. Cards now paint their own oil texture.
       backdropBlur: {
-        glass: "6px",
-        "glass-strong": "6px",
+        glass: "0px",
+        "glass-strong": "0px",
       },
       backdropSaturate: {
-        glass: "1.12",
-        "glass-strong": "1.12",
+        glass: "1",
+        "glass-strong": "1",
       },
       transitionTimingFunction: {
         spring: "cubic-bezier(0.34, 1.56, 0.64, 1)",

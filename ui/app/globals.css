@@ -84,9 +84,15 @@
     --tp-glass-inner: oklch(1 0 0 / 0.08);
     --tp-glass-inner-hover: oklch(1 0 0 / 0.14);
     --tp-glass-inner-strong: oklch(1 0 0 / 0.1);
-    --tp-glass-blur: 6px;
-    --tp-glass-saturate: 1.12;
-    --tp-glass-filter: blur(var(--tp-glass-blur)) saturate(var(--tp-glass-saturate));
+    --tp-glass-blur: 0px;
+    --tp-glass-saturate: 1;
+    --tp-glass-filter: none;
+    --tp-card-texture-url: url("/bg/oil-sky.jpg?v=1");
+    --tp-card-texture-overlay: linear-gradient(
+      135deg,
+      oklch(1 0 0 / 0.56),
+      oklch(0.98 0.01 230 / 0.38)
+    );
     --tp-row-alt: rgba(255, 255, 255, 0.04);
 
     --tp-ink: #000000;
@@ -222,6 +228,12 @@
     --tp-glass-inner: oklch(0.85 0.05 230 / 0.08);
     --tp-glass-inner-hover: oklch(0.85 0.05 230 / 0.16);
     --tp-glass-inner-strong: oklch(0.85 0.05 230 / 0.12);
+    --tp-card-texture-url: url("/bg/oil-navy.jpg?v=1");
+    --tp-card-texture-overlay: linear-gradient(
+      135deg,
+      oklch(0.12 0.04 240 / 0.56),
+      oklch(0.06 0.03 240 / 0.36)
+    );
     --tp-row-alt: rgba(150, 180, 230, 0.018);
 
     --tp-ink: #ffffff;
@@ -487,22 +499,23 @@
    * for users on the warm tidepool theme.
    * ──────────────────────────────────────────────────────────────── */
 
-  /* `.emboss` surfaces are translucent glass over the scenic relief.
-     Pattern tiles are reserved for small intentional accents; using them
-     on cards/inputs makes light mode read like an opaque white slab. */
+  /* `.emboss` surfaces paint their own day/night oil texture instead of
+     blurring the page behind them. */
   .emboss {
     background-color: var(--tp-glass);
-    background-image: none;
+    background-image: var(--tp-card-texture-overlay), var(--tp-card-texture-url);
+    background-size: cover;
+    background-position: center center;
+    background-repeat: no-repeat;
     border: 1px solid var(--tp-glass-edge);
     box-shadow:
       inset 0 1px 0 rgb(255 255 255 / 0.16),
       0 10px 28px -18px rgb(0 0 0 / 0.22);
-    backdrop-filter: var(--tp-glass-filter);
-    -webkit-backdrop-filter: var(--tp-glass-filter);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
   }
   .dark .emboss {
     background-color: var(--tp-glass);
-    background-blend-mode: overlay;
     border-color: var(--tp-glass-edge);
     box-shadow:
       inset 0 1px 0 hsl(220 70% 80% / 0.10),
@@ -571,8 +584,8 @@
     position: relative;
     background-color: var(--tp-pattern-tint);
     background-image: none;
-    backdrop-filter: var(--tp-glass-filter);
-    -webkit-backdrop-filter: var(--tp-glass-filter);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
     box-shadow:
       inset 0 1px 1px hsl(var(--background) / 0.18),
       inset 0 -1px 0 hsl(var(--background) / 0.12),
@@ -595,13 +608,9 @@
   }
 
   /* ────────────────────────────────────────────────────────────────
-   * Pattern fill — apply the scrollwork carving to small framed
-   * surfaces only (cards, popovers). Tall surfaces like the sidebar
-   * (`.bg-tp-glass*`) span 800px+ vertically and expose a single
-   * bright-vs-dark slice of the 480px tile, which reads as patchy.
-   * Cards and popovers are short enough that only a small swatch of
-   * the tile shows and the bright/dark gradient doesn't register.
-   * Opt out per-element with `[background-image:none]`.
+   * Textured surfaces — cards and panels use the oil-paint artwork
+   * requested for each theme. They deliberately do not use backdrop
+   * blur, so route changes cannot show a transparent-then-blurred flash.
    * ──────────────────────────────────────────────────────────────── */
   .bg-tp-glass,
   .bg-tp-glass-2,
@@ -609,10 +618,12 @@
   .bg-card,
   .bg-popover,
   .bg-panel {
-    background-image: none !important;
-    backdrop-filter: var(--tp-glass-filter) !important;
-    -webkit-backdrop-filter: var(--tp-glass-filter) !important;
-    will-change: backdrop-filter;
+    background-image: var(--tp-card-texture-overlay), var(--tp-card-texture-url) !important;
+    background-size: cover !important;
+    background-position: center center !important;
+    background-repeat: no-repeat !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
   }
 
   .bg-tp-glass-inner,
@@ -623,9 +634,8 @@
   .bg-tp-glass-inner\/60,
   .bg-tp-glass-inner\/70 {
     background-image: none !important;
-    backdrop-filter: var(--tp-glass-filter) !important;
-    -webkit-backdrop-filter: var(--tp-glass-filter) !important;
-    will-change: backdrop-filter;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
   }
 
   .bg-tp-glass-inner\/40,

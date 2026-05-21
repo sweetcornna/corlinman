@@ -41,13 +41,13 @@ describe("StatChip", () => {
     expect(path?.getAttribute("d")).toContain("M0 28");
   });
 
-  it("wraps in a GlassPanel with the subtle glass variant by default", () => {
+  it("wraps in a textured GlassPanel with the subtle variant by default", () => {
     const { container } = render(
       <StatChip label="foo" value="1" data-testid="chip" />,
     );
     const panel = container.querySelector("[data-glass-variant]");
     expect(panel).toHaveAttribute("data-glass-variant", "subtle");
-    expect(panel).toHaveClass("backdrop-blur-glass");
+    expect(panel).not.toHaveClass("backdrop-blur-glass");
   });
 
   it("wraps in a GlassPanel with the primary variant when variant=primary", () => {

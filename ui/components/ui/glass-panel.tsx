@@ -4,16 +4,14 @@ import * as React from "react";
 import { cn } from "@/lib/utils";
 
 /**
- * Glass surface primitive — the core container of the Tidepool theme.
+ * Textured surface primitive — the core container of the Tidepool theme.
  *
  * Three variants trade visual weight against performance:
- *   - `soft` (default) — 6px blur + 1.12x saturation, subtle inset highlight.
+ *   - `soft` (default) — oil texture + subtle inset highlight.
  *     Used for lists, sidebars, plain panels.
- *   - `strong` — same blur/filter budget, deeper shadow. Hero-class surfaces
+ *   - `strong` — same texture treatment, deeper shadow. Hero-class surfaces
  *     (dashboard hero, palette modal card).
- *   - `subtle` — same blur/filter budget, lower visual weight via shadow.
- *     This keeps route-to-route panels from flashing between transparent,
- *     blurred, and solid states.
+ *   - `subtle` — same texture treatment, lower visual weight via shadow.
  *   - `primary` — same as strong, plus the ring/glow outline that marks a
  *     stat chip as the "most active" metric.
  *
@@ -42,22 +40,18 @@ export interface GlassPanelProps extends DivProps {
 const variantClasses: Record<GlassPanelVariant, string> = {
   soft: cn(
     "bg-tp-glass border-tp-glass-edge",
-    "backdrop-blur-glass backdrop-saturate-glass",
     "shadow-tp-panel",
   ),
   strong: cn(
     "bg-tp-glass border-tp-glass-edge",
-    "backdrop-blur-glass-strong backdrop-saturate-glass-strong",
     "shadow-tp-hero",
   ),
   subtle: cn(
     "bg-tp-glass border-tp-glass-edge",
-    "backdrop-blur-glass backdrop-saturate-glass",
     "shadow-tp-panel",
   ),
   primary: cn(
     "bg-tp-glass border-tp-glass-edge",
-    "backdrop-blur-glass backdrop-saturate-glass",
     "shadow-tp-primary",
   ),
 };

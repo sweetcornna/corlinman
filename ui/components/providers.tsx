@@ -59,7 +59,7 @@ export function Providers({ children }: ProvidersProps) {
               toastOptions={{
                 classNames: {
                   toast:
-                    "!border !border-tp-glass-edge !bg-tp-glass-2 !text-popover-foreground !font-sans !shadow-tp-panel !backdrop-blur-glass !backdrop-saturate-glass",
+                    "!border !border-tp-glass-edge !bg-tp-glass-2 !text-popover-foreground !font-sans !shadow-tp-panel",
                   title: "!text-sm !font-medium",
                   description: "!text-xs !text-muted-foreground",
                 },
