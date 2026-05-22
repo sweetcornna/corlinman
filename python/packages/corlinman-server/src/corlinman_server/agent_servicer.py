@@ -60,6 +60,22 @@ from corlinman_agent.subagent.blackboard import (
     dispatch_blackboard_read,
     dispatch_blackboard_write,
 )
+from corlinman_agent.coding import (
+    CODING_TOOLS,
+    EDIT_FILE_TOOL,
+    LIST_FILES_TOOL,
+    READ_FILE_TOOL,
+    RUN_SHELL_TOOL,
+    SEARCH_FILES_TOOL,
+    WRITE_FILE_TOOL,
+    coding_tool_schemas,
+    dispatch_edit_file,
+    dispatch_list_files,
+    dispatch_read_file,
+    dispatch_run_shell,
+    dispatch_search_files,
+    dispatch_write_file,
+)
 from corlinman_agent.variables import VariableCascade
 from corlinman_agent.web import (
     CALCULATOR_TOOL,
@@ -97,7 +113,7 @@ BUILTIN_TOOLS: frozenset[str] = frozenset(
         WEB_SEARCH_TOOL,
         CALCULATOR_TOOL,
     }
-)
+) | CODING_TOOLS
 
 #: Builtin tools advertised to the model on every chat turn so it can
 #: actually *call* them. ``BUILTIN_TOOLS`` (above) is the dispatch gate;
@@ -106,11 +122,16 @@ BUILTIN_TOOLS: frozenset[str] = frozenset(
 #: until a deployment opts into them. Each entry is an OpenAI-shaped
 #: ``{"type": "function", "function": {...}}`` descriptor.
 def _builtin_tool_schemas() -> list[dict[str, Any]]:
-    """Return the OpenAI tool descriptors for the advertised builtins."""
+    """Return the OpenAI tool descriptors for the advertised builtins.
+
+    The web/calculator tools plus the coding surface (file ops, search,
+    shell) — the agent's "operate a codebase" capability.
+    """
     return [
         calculator_tool_schema(),
         web_search_tool_schema(),
         web_fetch_tool_schema(),
+        *coding_tool_schemas(),
     ]
 
 
@@ -484,6 +505,19 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 return await dispatch_web_search(args_json=event.args_json)
             if event.tool == CALCULATOR_TOOL:
                 return dispatch_calculator(args_json=event.args_json)
+            # Coding tools — workspace-confined file ops + shell.
+            if event.tool == READ_FILE_TOOL:
+                return dispatch_read_file(args_json=event.args_json)
+            if event.tool == WRITE_FILE_TOOL:
+                return dispatch_write_file(args_json=event.args_json)
+            if event.tool == EDIT_FILE_TOOL:
+                return dispatch_edit_file(args_json=event.args_json)
+            if event.tool == LIST_FILES_TOOL:
+                return dispatch_list_files(args_json=event.args_json)
+            if event.tool == SEARCH_FILES_TOOL:
+                return dispatch_search_files(args_json=event.args_json)
+            if event.tool == RUN_SHELL_TOOL:
+                return await dispatch_run_shell(args_json=event.args_json)
         except Exception as exc:
             logger.exception(
                 "agent.chat.builtin_tool_failed",
