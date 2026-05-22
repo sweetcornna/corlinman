@@ -36,11 +36,14 @@ loops stay structurally symmetric with the Rust crate.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 import httpx
+
+_log = logging.getLogger(__name__)
 
 from corlinman_channels.common import InboundEvent
 from corlinman_channels.discord import (
@@ -253,7 +256,9 @@ async def _qq_dispatch_loop(
                 continue
             req = router.dispatch(payload)
             if req is None:
+                _log.debug("qq message filtered by router user=%s text=%r", payload.user_id, payload.raw_message[:80])
                 continue
+            _log.info("qq message accepted user=%s text=%r model=%s", payload.user_id, payload.raw_message[:80], params.model)
             if params.chat_service is None:
                 # No backend wired — drop silently (matches Rust when
                 # the gateway opts not to provide one).
@@ -291,6 +296,7 @@ async def handle_one_qq(
     something failed (matches Rust ``M5`` UX).
     """
     request = _build_internal_request(req, event, model)
+    _log.info("qq handle_one start user=%s model=%s", event.user_id, model)
     stream = chat_service.run(request, cancel)
     text_parts: list[str] = []
     error_message: str | None = None
@@ -309,10 +315,13 @@ async def handle_one_qq(
 
     if error_message is not None:
         body = f"[corlinman error] {error_message}"
+        _log.error("qq handle_one error user=%s error=%r", event.user_id, error_message)
     else:
         body = "".join(text_parts)
         if not body.strip():
+            _log.warning("qq handle_one empty reply user=%s", event.user_id)
             return  # Empty assistant reply → silent drop.
+        _log.info("qq handle_one reply user=%s len=%d", event.user_id, len(body))
 
     action = _build_reply_action(event, body)
     await adapter.send_action(action)
