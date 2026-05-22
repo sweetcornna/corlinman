@@ -2,6 +2,7 @@
 ``rust/crates/corlinman-gateway/src``.
 
 Submodules:
+    * :mod:`config` — ``config.toml`` loader + ``{env=...}`` resolution.
     * :mod:`state` — :class:`AppState` dataclass + FastAPI dependency.
     * :mod:`server` — FastAPI app factory + uvicorn boot helpers.
     * :mod:`telemetry` — OTLP exporter init + structlog binding (gateway
@@ -18,6 +19,11 @@ Submodules:
 
 from __future__ import annotations
 
+from corlinman_server.gateway.core.config import (
+    load_from_path,
+    parse_config,
+    resolve_env_refs,
+)
 from corlinman_server.gateway.core.config_watcher import (
     DEFAULT_DEBOUNCE_SECONDS,
     ConfigWatcher,
@@ -73,6 +79,10 @@ from corlinman_server.gateway.core.telemetry import (
 )
 
 __all__ = [
+    # config
+    "load_from_path",
+    "parse_config",
+    "resolve_env_refs",
     # config_watcher
     "ConfigWatcher",
     "DEFAULT_DEBOUNCE_SECONDS",

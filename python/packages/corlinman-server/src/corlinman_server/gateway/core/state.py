@@ -65,6 +65,23 @@ class AppState:
     admin_db: Any = None
     tenant_pool: Any = None
 
+    # ---- runtime-wiring attach points (Wave 1, see -------------------------
+    # docs/contracts/runtime-wiring.md) -------------------------------------
+    #
+    # Both default to ``None``; a sibling ``bootstrap(state)`` hook fills
+    # them at gateway start. Routes/channels gate on presence and return
+    # the typed 501/503 envelope when a slot is still ``None`` (degraded
+    # mode). Typed as ``Any`` to avoid a heavy cross-package import here.
+
+    # P1 — corlinman_providers.registry.ProviderRegistry, built from
+    # ``config["providers"]``. ``/v1/models`` enumerates it.
+    provider_registry: Any = None
+
+    # P2 — corlinman_server.gateway.services.ChatService, wrapping a
+    # ChatBackend (DirectProviderBackend or GrpcAgentChatBackend).
+    # ``/v1/chat/completions`` and the channel adapters drive it.
+    chat: Any = None
+
     # Logging fan-out. Populated by gateway boot once the broadcaster
     # task is spawned; routes/middleware pull a subscription off it.
     log_broadcaster: "LogBroadcaster | None" = None
