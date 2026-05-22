@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -139,8 +140,16 @@ Event = TokenEvent | ToolCallEvent | DoneEvent | ErrorEvent
 
 
 # Maximum provider rounds allowed before we short-circuit to avoid runaway
-# tool-call loops. Tuned generously; real products usually cap at 3-5.
-_MAX_ROUNDS = 8
+# tool-call loops. A real coding task interleaves many tool calls
+# (todo_write updates, file ops, run_shell verification) — 8 was far too
+# low and left the agent out of rounds before its final answer. Codex /
+# Claude Code style agents need a high ceiling; the doom-loop guard
+# (``_is_awaiting_placeholder``) is the real runaway protection.
+# Override with ``$CORLINMAN_AGENT_MAX_ROUNDS``.
+try:
+    _MAX_ROUNDS = max(8, int(os.environ.get("CORLINMAN_AGENT_MAX_ROUNDS", "60")))
+except ValueError:
+    _MAX_ROUNDS = 60
 
 
 class ReasoningLoop:
