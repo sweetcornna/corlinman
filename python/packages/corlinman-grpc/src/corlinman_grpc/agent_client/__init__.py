@@ -6,6 +6,10 @@
   (:class:`AgentClient`, :class:`ChatStream`,
   :class:`PlaceholderExecutor`, :func:`resolve_endpoint`,
   :func:`connect_channel`, :func:`inject_trace_context`).
+* :mod:`tool_executor` — the real :class:`ToolExecutor`
+  (:class:`RegistryToolExecutor`) that runs plugin tool calls via an
+  injected :data:`PluginInvoker`, replacing the M2
+  :class:`PlaceholderExecutor`.
 * :mod:`retry` — backoff orchestration
   (:func:`with_retry`, :func:`classify_grpc_error`,
   :func:`next_retry_delay`, :func:`status_to_error`,
@@ -39,6 +43,12 @@ from corlinman_grpc.agent_client.retry import (
     status_to_error,
     with_retry,
 )
+from corlinman_grpc.agent_client.tool_executor import (
+    PluginInvoker,
+    RegistryToolExecutor,
+    ToolInvocation,
+    error_result,
+)
 from corlinman_grpc.agent_client.types import (
     AgentClientError,
     ConfigError,
@@ -56,10 +66,14 @@ __all__ = [
     "ConfigError",
     "FailoverReason",
     "PlaceholderExecutor",
+    "PluginInvoker",
+    "RegistryToolExecutor",
     "ToolExecutor",
+    "ToolInvocation",
     "UpstreamError",
     "classify_grpc_error",
     "connect_channel",
+    "error_result",
     "inject_trace_context",
     "next_retry_delay",
     "resolve_endpoint",

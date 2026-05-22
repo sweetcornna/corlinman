@@ -60,14 +60,22 @@ from corlinman_server.gateway.grpc.placeholder import (
 from corlinman_server.gateway.grpc.placeholder import (
     serve as serve_placeholder,
 )
+from corlinman_server.gateway.grpc.plugin_invoker import (
+    DEFAULT_TOOL_TIMEOUT_MS,
+    build_registry_invoker,
+    invoke_sync_plugin,
+)
 
 _log = structlog.get_logger(__name__)
 
 __all__ = [
     "DEFAULT_RUST_SOCKET",
+    "DEFAULT_TOOL_TIMEOUT_MS",
     "ENV_RUST_SOCKET",
     "PlaceholderService",
     "agent_inproc_enabled",
+    "build_registry_invoker",
+    "invoke_sync_plugin",
     "resolve_agent_bind",
     "serve_agent",
     "serve_agent_in_background",

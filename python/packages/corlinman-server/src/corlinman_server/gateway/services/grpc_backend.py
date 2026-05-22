@@ -70,6 +70,7 @@ __all__ = [
     "DEFAULT_AGENT_ENDPOINT",
     "build_chat_service",
     "build_grpc_chat_service",
+    "build_tool_executor",
     "chat_backend_mode",
     "resolve_agent_target",
 ]
@@ -231,12 +232,77 @@ def build_grpc_chat_service(state: Any) -> Any | None:
 
     client = AgentClient(channel)
     backend = GrpcAgentChatBackend(client)
+    tool_executor = build_tool_executor(state)
     log.info(
         "grpc_backend.chat_service_built backend=GrpcAgentChatBackend "
-        "target=%s",
+        "target=%s tool_executor_wired=%s",
         target,
+        getattr(tool_executor, "is_wired", False),
     )
-    return ChatService(backend)
+    return ChatService(backend, tool_executor=tool_executor)
+
+
+def build_tool_executor(state: Any) -> Any:
+    """Build the real :class:`ToolExecutor` for the chat pipeline.
+
+    Resolves ``AppState.plugin_registry`` (set by the plugins sibling
+    ``bootstrap``) and wraps it in a
+    :class:`~corlinman_grpc.agent_client.RegistryToolExecutor` so a
+    ``tool_call`` frame from the agent is dispatched against a real
+    plugin instead of echoing the M2 ``awaiting_plugin_runtime``
+    placeholder.
+
+    Follows the contract's "gate, never crash" rule:
+
+    * a missing ``corlinman-grpc`` import → falls back to the
+      :class:`PlaceholderExecutor` (the loop still drains, just without
+      real tool execution);
+    * a ``None`` plugin registry → a wired :class:`RegistryToolExecutor`
+      whose invoker degrades every call to a clear
+      ``plugin_registry_unavailable`` error result.
+
+    Never raises.
+    """
+    try:
+        from corlinman_grpc.agent_client import RegistryToolExecutor
+
+        from corlinman_server.gateway.grpc.plugin_invoker import (
+            build_registry_invoker,
+        )
+    except Exception as exc:
+        log.warning(
+            "grpc_backend.tool_executor_import_failed err=%s; "
+            "falling back to PlaceholderExecutor",
+            exc,
+        )
+        try:
+            from corlinman_grpc.agent_client import PlaceholderExecutor
+
+            return PlaceholderExecutor()
+        except Exception:  # pragma: no cover — corlinman-grpc is a hard dep
+            return None
+
+    registry = getattr(state, "plugin_registry", None)
+    invoker = build_registry_invoker(registry)
+    if registry is None:
+        log.info(
+            "grpc_backend.tool_executor_built registry=absent "
+            "(calls degrade to plugin_registry_unavailable)"
+        )
+    else:
+        log.info(
+            "grpc_backend.tool_executor_built registry=present plugins=%d",
+            _registry_len(registry),
+        )
+    return RegistryToolExecutor(invoker)
+
+
+def _registry_len(registry: Any) -> int:
+    """Best-effort plugin count for the boot log line."""
+    try:
+        return len(registry)
+    except Exception:  # pragma: no cover — defensive
+        return -1
 
 
 def build_chat_service(state: Any) -> Any | None:

@@ -89,15 +89,22 @@ def test_target_env_socket(monkeypatch: pytest.MonkeyPatch) -> None:
 # ─── build_grpc_chat_service ─────────────────────────────────────────
 
 
-def test_build_grpc_chat_service_returns_service() -> None:
+async def test_build_grpc_chat_service_returns_service() -> None:
     """A lazily-connecting channel means the builder succeeds even with
-    no agent running — the failure surfaces later, per the contract."""
+    no agent running — the failure surfaces later, per the contract.
+
+    Async so a running event loop is present: ``build_grpc_chat_service``
+    opens a ``grpc.aio`` channel, which binds to the running loop — the
+    same condition as the production async lifespan. A sync test would
+    instead depend on the polluter-prone global loop."""
     service = grpc_backend.build_grpc_chat_service(_State())
     assert service is not None
     assert hasattr(service, "run")
 
 
-def test_build_chat_service_grpc_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_build_chat_service_grpc_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("CORLINMAN_CHAT_BACKEND", "grpc_agent")
     service = grpc_backend.build_chat_service(_State())
     assert service is not None

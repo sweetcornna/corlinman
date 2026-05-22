@@ -105,8 +105,17 @@ class ChatService(ChatServiceBase):
 
     Mirrors :rust:`corlinman_gateway::services::chat_service::ChatService`:
     holds an :class:`Arc<dyn ChatBackend>` (Python: a shared backend
-    reference) plus a default :class:`ToolExecutor` that ack's tool
-    calls so the reasoning loop keeps progressing.
+    reference) plus a :class:`ToolExecutor` that runs ``tool_call``
+    frames and feeds the result back so the reasoning loop keeps
+    progressing.
+
+    Production wiring (:func:`corlinman_server.gateway.services.\
+grpc_backend.build_grpc_chat_service`) injects a
+    :class:`~corlinman_grpc.agent_client.RegistryToolExecutor` bound to
+    the gateway's plugin registry — i.e. tool calls are *really*
+    executed. The :class:`~corlinman_grpc.agent_client.PlaceholderExecutor`
+    remains the constructor default only as a degraded fallback for
+    callers (and tests) that have no executor to inject.
     """
 
     def __init__(
@@ -119,10 +128,11 @@ class ChatService(ChatServiceBase):
         self._tool_executor: ToolExecutor = tool_executor or PlaceholderExecutor()
 
     def with_tool_executor(self, executor: ToolExecutor) -> ChatService:
-        """Customise the tool executor — used by tests; production
-        bundles the placeholder exec (same as the HTTP route) so
-        ``tool_calls`` keep the Python loop progressing. Returns
-        ``self`` so callers can chain (mirrors the Rust builder shape)."""
+        """Customise the tool executor — used by tests and by the
+        gateway assembly layer to inject the real
+        :class:`~corlinman_grpc.agent_client.RegistryToolExecutor`.
+        Returns ``self`` so callers can chain (mirrors the Rust builder
+        shape)."""
         self._tool_executor = executor
         return self
 
@@ -209,8 +219,12 @@ async def _run_chat(
 
             if kind == "tool_call":
                 tc = frame.tool_call
-                # Echo the placeholder result so the Python reasoning
-                # loop advances — matches what the HTTP handler does.
+                # Execute the tool via the injected executor and feed the
+                # genuine result back into the reasoning loop so it makes
+                # real multi-round progress. The production executor
+                # (RegistryToolExecutor) never raises — but a custom
+                # executor might, and a failed feedback send must not
+                # tear the stream down, so this stays guarded.
                 try:
                     result = await executor.execute(tc)
                     await tx.put(agent_pb2.ClientFrame(tool_result=result))
