@@ -28,6 +28,7 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import click
 
@@ -141,6 +142,176 @@ def _check_packages() -> CheckReport:
     )
 
 
+def _check_runtime_config(data_dir: Path) -> CheckReport:
+    """Try to load and parse the gateway ``config.toml`` via the same loader
+    the gateway uses at boot (``gateway.core.config.load_from_path``).
+
+    * ``ok`` — config file was found, parsed, and env-refs resolved without
+      error. Reports section names discovered.
+    * ``warn`` — config file is absent (not created yet); matches the same
+      ``warn`` signal :func:`_check_config` emits.
+    * ``fail`` — file exists but the loader raised (TOML parse error, or the
+      ``gateway.core.config`` module itself failed to import).
+
+    Degrades gracefully: any unexpected error is caught and reported as
+    ``fail`` so a broken module never crashes ``corlinman doctor``.
+    """
+    config_path = data_dir / "config.toml"
+    if not config_path.exists():
+        return CheckReport(
+            name="runtime_config",
+            status="warn",
+            message=f"{config_path} not present — gateway will boot degraded",
+            hint="run `corlinman onboard` or `corlinman config init`",
+        )
+    try:
+        from corlinman_server.gateway.core.config import load_from_path
+
+        cfg: Any = load_from_path(config_path)
+    except Exception as exc:  # noqa: BLE001 — report, never crash
+        return CheckReport(
+            name="runtime_config",
+            status="fail",
+            message=f"failed to load {config_path}: {exc}",
+            hint="check TOML syntax with `python -m tomllib <config.toml>`",
+        )
+    sections = sorted(cfg.keys()) if isinstance(cfg, dict) else []
+    return CheckReport(
+        name="runtime_config",
+        status="ok",
+        message=f"{config_path} — sections: {', '.join(sections) or '(empty)'}",
+    )
+
+
+def _check_provider_registry(data_dir: Path) -> CheckReport:
+    """Try to build a :class:`ProviderRegistry` from the gateway config.
+
+    This exercises the same P1 code path the gateway lifespan uses:
+    ``gateway.providers.build_registry(cfg)``.
+
+    * ``ok`` — registry built; reports number of provider specs registered.
+    * ``warn`` — config absent or ``[providers]`` section missing / empty
+      (degraded but not broken — bare ``OPENAI_API_KEY`` deployments are ok).
+    * ``fail`` — registry construction raised unexpectedly.
+
+    Degrades gracefully: any unexpected error is caught and reported as
+    ``fail`` rather than crashing the doctor command.
+    """
+    config_path = data_dir / "config.toml"
+    if not config_path.exists():
+        return CheckReport(
+            name="provider_registry",
+            status="warn",
+            message="config.toml absent — cannot build provider registry",
+            hint="run `corlinman onboard` or `corlinman config init`",
+        )
+    try:
+        from corlinman_server.gateway.core.config import load_from_path
+        from corlinman_server.gateway.providers import build_registry
+
+        cfg = load_from_path(config_path)
+        registry = build_registry(cfg)
+        specs = registry.list_specs() if registry is not None else []
+        count = len(specs)
+    except Exception as exc:  # noqa: BLE001 — report, never crash
+        return CheckReport(
+            name="provider_registry",
+            status="fail",
+            message=f"provider registry build failed: {exc}",
+            hint="verify [providers] section in config.toml",
+        )
+
+    if count == 0:
+        return CheckReport(
+            name="provider_registry",
+            status="warn",
+            message=(
+                "provider registry built with 0 specs — gateway wired but no"
+                " configured providers (bare env-var auth still works)"
+            ),
+            hint="add a [providers.<name>] section to config.toml",
+        )
+    return CheckReport(
+        name="provider_registry",
+        status="ok",
+        message=f"provider registry: {count} spec(s) registered",
+    )
+
+
+def _check_runtime_wiring(data_dir: Path) -> CheckReport:
+    """Synthetic check mirroring ``GET /health`` ``mode`` field.
+
+    Reports ``ok`` when both ``provider_registry`` and ``chat`` service
+    can be constructed from the on-disk config, ``degraded`` when either
+    slot would remain ``None`` at runtime (matching the ``/health`` endpoint
+    convention), or ``fail`` when an unexpected error prevents the check.
+
+    This is an *offline* check — it does not start the gateway or contact a
+    running process. It just simulates the boot-time wiring steps and reports
+    what the gateway's ``mode`` would be.
+    """
+    config_path = data_dir / "config.toml"
+    if not config_path.exists():
+        return CheckReport(
+            name="runtime_wiring",
+            status="warn",
+            message="config.toml absent — gateway would boot degraded",
+            hint="run `corlinman onboard` or `corlinman config init`",
+        )
+    try:
+        from corlinman_server.gateway.core.config import load_from_path
+        from corlinman_server.gateway.providers import build_registry
+        from corlinman_server.gateway.services.chat_bootstrap import build_chat_service
+
+        cfg = load_from_path(config_path)
+
+        # Simulate P1 wiring
+        registry = build_registry(cfg)
+
+        # Simulate P2 wiring via a minimal state-like namespace
+        class _MockState:
+            pass
+
+        mock_state = _MockState()
+        mock_state.provider_registry = registry  # type: ignore[attr-defined]
+        mock_state.config = cfg  # type: ignore[attr-defined]
+        mock_state.chat = None  # type: ignore[attr-defined]
+
+        chat_service = build_chat_service(mock_state)
+
+    except Exception as exc:  # noqa: BLE001 — report, never crash
+        return CheckReport(
+            name="runtime_wiring",
+            status="fail",
+            message=f"runtime wiring simulation failed: {exc}",
+            hint="check gateway logs for details after a boot attempt",
+        )
+
+    registry_ok = registry is not None and len(registry.list_specs()) > 0
+    chat_ok = chat_service is not None
+
+    if registry_ok and chat_ok:
+        return CheckReport(
+            name="runtime_wiring",
+            status="ok",
+            message="mode=ok — provider_registry and chat wired",
+        )
+
+    missing = []
+    if not registry_ok:
+        missing.append("provider_registry (no providers configured)")
+    if not chat_ok:
+        missing.append("chat (no provider registry → no ChatService)")
+    return CheckReport(
+        name="runtime_wiring",
+        status="warn",
+        message=f"mode=degraded — not wired: {', '.join(missing)}",
+        hint=(
+            "add providers to config.toml; see docs/contracts/runtime-wiring.md"
+        ),
+    )
+
+
 # Registered checks; keep the names stable so ``--module`` filtering is
 # scriptable. Insertion order is the display order.
 _CHECK_FNS = {
@@ -148,6 +319,9 @@ _CHECK_FNS = {
     "config": lambda dd: _check_config(dd),
     "python": lambda _dd: _check_python(),
     "packages": lambda _dd: _check_packages(),
+    "runtime_config": lambda dd: _check_runtime_config(dd),
+    "provider_registry": lambda dd: _check_provider_registry(dd),
+    "runtime_wiring": lambda dd: _check_runtime_wiring(dd),
 }
 
 
