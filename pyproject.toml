@@ -1,7 +1,7 @@
 [project]
 name = "corlinman"
 version = "0.1.0"
-description = "Python AI plane for corlinman (LLM providers, agent reasoning, embedding)"
+description = "Python AI plane for corlinman (LLM providers, agent reasoning)"
 requires-python = ">=3.12"
 readme = "README.md"
 license = { text = "MIT" }
@@ -13,7 +13,6 @@ authors = [{ name = "corlinman contributors" }]
 dependencies = [
     "corlinman-grpc",
     "corlinman-providers",
-    "corlinman-embedding",
     "corlinman-agent",
     "corlinman-server",
     "corlinman-tagmemo",
@@ -28,7 +27,6 @@ dependencies = [
 [tool.uv.sources]
 corlinman-grpc = { workspace = true }
 corlinman-providers = { workspace = true }
-corlinman-embedding = { workspace = true }
 corlinman-agent = { workspace = true }
 corlinman-server = { workspace = true }
 corlinman-tagmemo = { workspace = true }

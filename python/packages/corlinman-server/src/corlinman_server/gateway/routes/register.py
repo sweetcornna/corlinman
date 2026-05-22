@@ -44,7 +44,6 @@ from corlinman_server.gateway.routes import (
     channels,
     chat,
     chat_approve,
-    embeddings,
     health,
     memory,
     metrics,
@@ -77,7 +76,6 @@ class GatewayState:
     health: health.HealthState | None = None
     plugin_async_tasks: object | None = None  # AsyncTaskRegistry (lazy import)
     models_source: models.ModelSource | None = None
-    embedder: embeddings.EmbedderFn | None = None
     metrics_registry: object | None = None  # prometheus CollectorRegistry
 
 
@@ -101,7 +99,6 @@ def build_app_router(state: GatewayState) -> APIRouter:
     parent.include_router(chat_approve.router(state.chat_approve))
 
     # /v1 ancillary
-    parent.include_router(embeddings.router(state.embedder))
     parent.include_router(models.router(state.models_source))
 
     # Memory + canvas only when explicitly wired (they require real

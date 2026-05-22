@@ -48,7 +48,7 @@ class AdminState:
     # Memory host (corlinman_memory_host.MemoryHost) for /admin/memory.
     memory_host: Any | None = None
 
-    # RAG vector store (corlinman_embedding.vector.SqliteStore).
+    # RAG vector store handle (structural; populated by the deployment).
     rag_store: Any | None = None
 
     # Multi-tenant admin DB

@@ -28,7 +28,6 @@ import structlog
 from corlinman_grpc import agent_pb2_grpc
 from corlinman_providers import AliasEntry, ProviderRegistry, ProviderSpec
 
-from corlinman_server.admin_sidecar import start_admin_sidecar
 from corlinman_server.agent_servicer import CorlinmanAgentServicer, _resolve_data_dir
 from corlinman_server.middleware import install_tracecontext_interceptor
 from corlinman_server.shutdown import GracefulShutdown
@@ -246,11 +245,6 @@ async def _serve() -> int:
         )
     agent_pb2_grpc.add_AgentServicer_to_server(agent_servicer, server)
 
-    # Feature C last-mile: localhost HTTP sidecar backs
-    # ``POST /admin/embedding/benchmark`` on the Rust gateway. Failure
-    # to bind is warn-and-continue — the rest of the process keeps working.
-    sidecar = start_admin_sidecar(asyncio.get_running_loop())
-
     bind = _bind_address()
     server.add_insecure_port(bind)
     logger.info("grpc.server.start", bind=bind)
@@ -263,9 +257,6 @@ async def _serve() -> int:
     # 5s grace for in-flight RPCs, then force close.
     await server.stop(grace=5.0)
     logger.info("grpc.server.stopped")
-
-    if sidecar is not None:
-        sidecar.shutdown()
 
     shutdown_telemetry()
 

@@ -9,9 +9,8 @@ force a chunk's ``decay_score`` back to 1.0 + write a synthetic
 
 Backed by:
 
-* ``corlinman_embedding.vector.SqliteStore`` (a.k.a. the RAG store) on
-  :attr:`AdminState.rag_store` — exposes ``reset_chunk_decay`` /
-  ``get_chunk_decay_state``.
+* the RAG store on :attr:`AdminState.rag_store` — exposes
+  ``reset_chunk_decay`` / ``get_chunk_decay_state``.
 * ``corlinman_evolution_store`` repos on :attr:`AdminState.evolution_store`
   for ``ProposalsRepo`` + ``HistoryRepo``.
 

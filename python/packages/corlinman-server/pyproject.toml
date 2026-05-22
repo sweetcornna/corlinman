@@ -27,7 +27,6 @@ dependencies = [
     "watchdog>=5.0",
     "anyio>=4",
     "corlinman-agent",
-    "corlinman-embedding",
     "corlinman-providers",
     "corlinman-grpc",
     "corlinman-hooks",
@@ -44,12 +43,19 @@ dependencies = [
     # LocalSqliteHost for per-session recall/store, and routes/memory.py
     # exposes it over HTTP.
     "corlinman-memory-host",
+    # Imported by the gateway runtime but previously undeclared — the
+    # evolution applier (corlinman_auto_rollback / corlinman_evolution_store),
+    # the canvas + MCP routes, and the skills admin surface.
+    "corlinman-auto-rollback",
+    "corlinman-evolution-store",
+    "corlinman-canvas",
+    "corlinman-mcp-server",
+    "corlinman-skills-registry",
     "tomli-w>=1.2.0",
 ]
 
 [tool.uv.sources]
 corlinman-agent = { workspace = true }
-corlinman-embedding = { workspace = true }
 corlinman-providers = { workspace = true }
 corlinman-grpc = { workspace = true }
 corlinman-hooks = { workspace = true }
@@ -57,6 +63,11 @@ corlinman-replay = { workspace = true }
 corlinman-channels = { workspace = true }
 corlinman-identity = { workspace = true }
 corlinman-memory-host = { workspace = true }
+corlinman-auto-rollback = { workspace = true }
+corlinman-evolution-store = { workspace = true }
+corlinman-canvas = { workspace = true }
+corlinman-mcp-server = { workspace = true }
+corlinman-skills-registry = { workspace = true }
 
 [project.scripts]
 corlinman-python-server = "corlinman_server.main:main"

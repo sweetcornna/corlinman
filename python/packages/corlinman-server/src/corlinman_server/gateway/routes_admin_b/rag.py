@@ -8,8 +8,8 @@ routes:
 * ``POST /admin/rag/rebuild``     — rebuild the ``chunks_fts`` FTS5
   virtual table.
 
-Backed by ``corlinman_embedding.vector.SqliteStore`` (a.k.a. the local
-RAG corpus). 503 ``rag_disabled`` when no store is attached.
+Backed by a local FTS5 RAG corpus store. 503 ``rag_disabled`` when no
+store is attached.
 """
 
 from __future__ import annotations
