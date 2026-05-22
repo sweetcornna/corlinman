@@ -40,6 +40,10 @@ dependencies = [
     # channels orchestration helpers (Parcel P3), so corlinman-server
     # carries the transitive dependency here.
     "corlinman-identity",
+    # Automatic conversation memory: the agent servicer opens a
+    # LocalSqliteHost for per-session recall/store, and routes/memory.py
+    # exposes it over HTTP.
+    "corlinman-memory-host",
     "tomli-w>=1.2.0",
 ]
 
@@ -52,6 +56,7 @@ corlinman-hooks = { workspace = true }
 corlinman-replay = { workspace = true }
 corlinman-channels = { workspace = true }
 corlinman-identity = { workspace = true }
+corlinman-memory-host = { workspace = true }
 
 [project.scripts]
 corlinman-python-server = "corlinman_server.main:main"

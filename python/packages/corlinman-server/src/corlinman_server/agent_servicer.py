@@ -21,7 +21,7 @@ import asyncio
 import contextlib
 import json
 import os
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -215,6 +215,12 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             max_warm_per_key=int(os.environ.get("CORLINMAN_RUNNER_POOL_WARM", "2")),
             max_active_total=int(os.environ.get("CORLINMAN_RUNNER_POOL_MAX", "8")),
         )
+        # Automatic conversation memory. Lazily opened on first chat turn;
+        # ``False`` once an init failure has been logged so we don't retry
+        # every request. Backed by LocalSqliteHost (FTS5 BM25 — no
+        # embedding model needed).
+        self._memory_host: Any = None
+        self._memory_init_done = False
 
     async def Chat(  # noqa: N802 — gRPC method name
         self,
@@ -272,6 +278,12 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # dispatchable but invisible.
         _inject_builtin_tools(start)
 
+        # Automatic conversation memory: recall before answering. Captured
+        # before the recall note is injected so we store the *user's*
+        # words, not our own augmentation.
+        user_text = _last_user_text(start.messages)
+        await self._recall_memory(start, user_text)
+
         # Bump the tool-result timeout above the M2 default (0.05s) so the
         # loop actually waits long enough for the gateway to round-trip a
         # ToolResult frame back. The servicer is now the real feedback
@@ -285,9 +297,12 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         )
 
         seq = 0
+        reply_parts: list[str] = []
         try:
             async for event in loop.run(start):
                 if isinstance(event, TokenEvent):
+                    if not event.is_reasoning:
+                        reply_parts.append(event.text)
                     yield agent_pb2.ServerFrame(
                         token=agent_pb2.TokenDelta(
                             text=event.text,
@@ -340,6 +355,11 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     yield _error_frame(event.reason, event.message)
                     return
                 elif isinstance(event, DoneEvent):
+                    # Store the completed turn so a later conversation can
+                    # recall it. Best-effort — never blocks the Done frame.
+                    await self._store_memory(
+                        start.session_key, user_text, "".join(reply_parts)
+                    )
                     yield agent_pb2.ServerFrame(
                         done=agent_pb2.Done(finish_reason=event.finish_reason)
                     )
@@ -569,6 +589,88 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             self._context_assembler = _build_default_context_assembler()
         return self._context_assembler
 
+    # ------------------------------------------------------------------
+    # Automatic conversation memory
+    # ------------------------------------------------------------------
+
+    async def _get_memory_host(self) -> Any | None:
+        """Lazily open the LocalSqlite memory host (FTS5 BM25, no
+        embeddings). Returns ``None`` if the host cannot be opened — the
+        chat path then runs memory-free."""
+        if self._memory_init_done:
+            return self._memory_host
+        self._memory_init_done = True
+        try:
+            from corlinman_memory_host import LocalSqliteHost
+
+            path = _resolve_data_dir() / "memory.sqlite"
+            self._memory_host = await LocalSqliteHost.open("local", str(path))
+            logger.info("agent.memory.opened", path=str(path))
+        except Exception as exc:  # noqa: BLE001 — degrade, never crash chat
+            logger.warning("agent.memory.init_failed", error=str(exc))
+            self._memory_host = None
+        return self._memory_host
+
+    async def _recall_memory(self, start: AgentChatStart, user_text: str) -> None:
+        """Query memory for context relevant to ``user_text`` and inject a
+        recall note into the system prompt. No-op without a session key
+        (one-shot HTTP callers) or a usable host."""
+        if not start.session_key or not user_text.strip():
+            return
+        host = await self._get_memory_host()
+        if host is None:
+            return
+        try:
+            from corlinman_memory_host import MemoryQuery
+
+            hits = await host.query(
+                MemoryQuery(
+                    text=user_text,
+                    top_k=5,
+                    namespace=start.session_key,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("agent.memory.recall_failed", error=str(exc))
+            return
+        if not hits:
+            return
+        recalled = "\n".join(f"- {h.content}" for h in hits)
+        note = (
+            "## Memory from earlier conversations with this user\n"
+            f"{recalled}\n"
+            "Use this context when relevant. Do not mention that you are "
+            "recalling stored memory."
+        )
+        start.messages = _inject_memory_note(list(start.messages), note)
+        logger.info(
+            "agent.memory.recalled", session=start.session_key, hits=len(hits)
+        )
+
+    async def _store_memory(
+        self, session_key: str, user_text: str, reply_text: str
+    ) -> None:
+        """Persist the completed turn so a later conversation can recall
+        it. Best-effort — a failure is logged and swallowed."""
+        if not session_key or not user_text.strip():
+            return
+        host = await self._get_memory_host()
+        if host is None:
+            return
+        try:
+            from corlinman_memory_host import MemoryDoc
+
+            content = (
+                f"User said: {user_text.strip()[:1000]}\n"
+                f"Assistant replied: {reply_text.strip()[:1000]}"
+            )
+            await host.upsert(
+                MemoryDoc(content=content, namespace=session_key)
+            )
+            logger.info("agent.memory.stored", session=session_key)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("agent.memory.store_failed", error=str(exc))
+
 
 def _build_default_context_assembler() -> ContextAssembler | None:
     try:
@@ -597,6 +699,57 @@ def _resolve_data_dir() -> Path:
     if raw:
         return Path(raw)
     return Path.home() / ".corlinman"
+
+
+def _last_user_text(messages: Sequence[Any]) -> str:
+    """Extract the trailing user turn's text from a message list.
+
+    Handles both plain-string content and the OpenAI multimodal
+    content-parts list. Returns ``""`` when there is no user turn.
+    """
+    for msg in reversed(list(messages)):
+        role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", None)
+        if role != "user":
+            continue
+        content = (
+            msg.get("content") if isinstance(msg, dict)
+            else getattr(msg, "content", None)
+        )
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = [
+                str(p.get("text", ""))
+                for p in content
+                if isinstance(p, dict) and p.get("type") in ("text", "input_text")
+            ]
+            return " ".join(parts).strip()
+        return ""
+    return ""
+
+
+def _inject_memory_note(messages: list[Any], note: str) -> list[dict[str, Any]]:
+    """Fold a memory recall ``note`` into the system prompt.
+
+    Appends to the leading system message when present; otherwise
+    prepends a fresh system message. Returns a new list (the input is
+    not mutated). Non-dict messages are coerced through ``role`` /
+    ``content`` attribute reads so object-shaped messages still work.
+    """
+    out: list[dict[str, Any]] = []
+    for m in messages:
+        if isinstance(m, dict):
+            out.append(dict(m))
+        else:
+            out.append({
+                "role": getattr(m, "role", ""),
+                "content": getattr(m, "content", ""),
+            })
+    if out and out[0].get("role") == "system" and isinstance(out[0].get("content"), str):
+        out[0]["content"] = f"{out[0]['content']}\n\n{note}"
+    else:
+        out.insert(0, {"role": "system", "content": note})
+    return out
 
 
 def _resolve_skill_dir(data_dir: Path, name: str) -> Path:
