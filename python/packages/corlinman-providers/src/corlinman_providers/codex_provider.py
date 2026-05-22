@@ -32,21 +32,57 @@ _CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 _DEFAULT_MODEL = "gpt-5.5"
 
 
+def _msg_attr(msg: Any, name: str) -> Any:
+    """Read ``name`` off a dict-or-object chat message."""
+    if isinstance(msg, dict):
+        return msg.get(name)
+    return getattr(msg, name, None)
+
+
 def _messages_to_responses_input(messages: Sequence[Any]) -> list[dict]:
-    """Convert OpenAI chat messages to Responses API input items."""
-    result = []
+    """Convert OpenAI chat messages to Responses API input items.
+
+    Handles plain user/assistant text plus the tool-calling round-trip
+    the reasoning loop drives:
+
+    * an ``assistant`` message carrying ``tool_calls`` becomes one
+      ``function_call`` item per call;
+    * a ``role="tool"`` message becomes a ``function_call_output`` item
+      keyed by ``tool_call_id``.
+
+    System messages are skipped — the caller lifts them into the
+    Responses API ``instructions`` field.
+    """
+    result: list[dict] = []
     for msg in messages:
-        role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", None)
-        content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None)
+        role = _msg_attr(msg, "role")
+        content = _msg_attr(msg, "content")
         if role == "user":
             result.append({
                 "role": "user",
                 "content": [{"type": "input_text", "text": str(content or "")}],
             })
         elif role == "assistant":
+            tool_calls = _msg_attr(msg, "tool_calls")
+            if tool_calls:
+                for tc in tool_calls:
+                    fn = tc.get("function", {}) if isinstance(tc, dict) else {}
+                    result.append({
+                        "type": "function_call",
+                        "call_id": str(tc.get("id", "") if isinstance(tc, dict) else ""),
+                        "name": str(fn.get("name", "")),
+                        "arguments": str(fn.get("arguments", "") or "{}"),
+                    })
+            if content:
+                result.append({
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": str(content)}],
+                })
+        elif role == "tool":
             result.append({
-                "role": "assistant",
-                "content": [{"type": "output_text", "text": str(content or "")}],
+                "type": "function_call_output",
+                "call_id": str(_msg_attr(msg, "tool_call_id") or ""),
+                "output": str(content or ""),
             })
     return result
 
@@ -151,6 +187,16 @@ class CodexProvider:
             ]
             kwargs["tool_choice"] = "auto"
 
+        # item_id (fc_…) → call_id (call_…). Arg-delta events carry only
+        # item_id; the call_id needed for the function_call_output
+        # round-trip lives on the output_item.added event.
+        call_ids: dict[str, str] = {}
+        # call_id → whether any argument delta was streamed for it. Lets
+        # us fall back to the full arguments on output_item.done when the
+        # backend ships args in one shot instead of streaming fragments.
+        args_streamed: dict[str, bool] = {}
+        saw_tool_call = False
+
         try:
             async with client.responses.stream(**kwargs) as stream:
                 async for event in stream:
@@ -159,6 +205,50 @@ class CodexProvider:
                         delta = getattr(event, "delta", "")
                         if delta:
                             yield ProviderChunk(kind="token", text=delta)
+                    elif event_type == "response.output_item.added":
+                        item = getattr(event, "item", None)
+                        if item is not None and getattr(item, "type", "") == "function_call":
+                            item_id = getattr(item, "id", "") or ""
+                            call_id = getattr(item, "call_id", "") or item_id
+                            name = getattr(item, "name", "") or ""
+                            call_ids[item_id] = call_id
+                            args_streamed[call_id] = False
+                            saw_tool_call = True
+                            yield ProviderChunk(
+                                kind="tool_call_start",
+                                tool_call_id=call_id,
+                                tool_name=name,
+                            )
+                    elif event_type == "response.function_call_arguments.delta":
+                        item_id = getattr(event, "item_id", "") or ""
+                        call_id = call_ids.get(item_id, item_id)
+                        delta = getattr(event, "delta", "") or ""
+                        if delta:
+                            args_streamed[call_id] = True
+                            yield ProviderChunk(
+                                kind="tool_call_delta",
+                                tool_call_id=call_id,
+                                arguments_delta=delta,
+                            )
+                    elif event_type == "response.output_item.done":
+                        item = getattr(event, "item", None)
+                        if item is not None and getattr(item, "type", "") == "function_call":
+                            item_id = getattr(item, "id", "") or ""
+                            call_id = call_ids.get(item_id, item_id)
+                            # Backend shipped args in one shot — replay them
+                            # as a single delta so the loop can aggregate.
+                            if not args_streamed.get(call_id):
+                                full_args = getattr(item, "arguments", "") or ""
+                                if full_args:
+                                    yield ProviderChunk(
+                                        kind="tool_call_delta",
+                                        tool_call_id=call_id,
+                                        arguments_delta=str(full_args),
+                                    )
+                            yield ProviderChunk(
+                                kind="tool_call_end",
+                                tool_call_id=call_id,
+                            )
                     elif event_type in {"response.incomplete", "response.failed"}:
                         resp_obj = getattr(event, "response", None)
                         status = getattr(resp_obj, "status", None) if resp_obj else None
@@ -174,7 +264,10 @@ class CodexProvider:
             yield ProviderChunk(kind="done", finish_reason="error")
             return
 
-        yield ProviderChunk(kind="done", finish_reason="stop")
+        yield ProviderChunk(
+            kind="done",
+            finish_reason="tool_calls" if saw_tool_call else "stop",
+        )
 
     # ------------------------------------------------------------------
     # Internal

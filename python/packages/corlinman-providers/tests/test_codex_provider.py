@@ -240,6 +240,197 @@ class TestMessagesToResponsesInput:
         result = _messages_to_responses_input([{"role": "user", "content": None}])
         assert result[0]["content"][0]["text"] == ""
 
+    def test_assistant_tool_calls_become_function_call_items(self) -> None:
+        """An assistant message with tool_calls → one function_call item per call."""
+        msg = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_abc",
+                    "type": "function",
+                    "function": {"name": "calculator", "arguments": '{"expr": "2+2"}'},
+                }
+            ],
+        }
+        result = _messages_to_responses_input([msg])
+        assert result == [
+            {
+                "type": "function_call",
+                "call_id": "call_abc",
+                "name": "calculator",
+                "arguments": '{"expr": "2+2"}',
+            }
+        ]
+
+    def test_tool_message_becomes_function_call_output(self) -> None:
+        """A role=tool message → function_call_output keyed by tool_call_id."""
+        msg = {"role": "tool", "tool_call_id": "call_abc", "content": "4"}
+        result = _messages_to_responses_input([msg])
+        assert result == [
+            {"type": "function_call_output", "call_id": "call_abc", "output": "4"}
+        ]
+
+    def test_tool_round_trip_conversion(self) -> None:
+        """A full tool round (user → assistant tool_calls → tool result) converts."""
+        msgs = [
+            {"role": "user", "content": "what is 2+2"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "calculator", "arguments": '{"expr":"2+2"}'},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "4"},
+        ]
+        result = _messages_to_responses_input(msgs)
+        assert result[0]["role"] == "user"
+        assert result[1]["type"] == "function_call"
+        assert result[1]["call_id"] == "call_1"
+        assert result[2]["type"] == "function_call_output"
+        assert result[2]["call_id"] == "call_1"
+
+
+# ---------------------------------------------------------------------------
+# CodexProvider.chat_stream — tool-call streaming
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_emits_tool_call_chunks() -> None:
+    """Responses API function-call events become tool_call_* chunks."""
+    from types import SimpleNamespace
+
+    future_ms = int(time.time() * 1000) + 3_600_000
+    cred = CodexOAuthCredential(
+        access_token="good-token", refresh_token=None, expires_at_ms=future_ms
+    )
+    prov = CodexProvider(credential=cred)
+
+    fn_item = SimpleNamespace(
+        type="function_call", id="fc_1", call_id="call_1", name="calculator",
+        arguments="",
+    )
+    events = [
+        SimpleNamespace(type="response.output_item.added", item=fn_item),
+        SimpleNamespace(
+            type="response.function_call_arguments.delta",
+            item_id="fc_1", delta='{"expr":',
+        ),
+        SimpleNamespace(
+            type="response.function_call_arguments.delta",
+            item_id="fc_1", delta='"2+2"}',
+        ),
+        SimpleNamespace(type="response.output_item.done", item=fn_item),
+    ]
+
+    class _FakeStream:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return False
+
+        def __aiter__(self):
+            return self._gen()
+
+        async def _gen(self):
+            for e in events:
+                yield e
+
+    class _FakeResponses:
+        def stream(self, **_kwargs):
+            return _FakeStream()
+
+    class _FakeClient:
+        responses = _FakeResponses()
+
+    with patch.object(prov, "_make_client", return_value=_FakeClient()):
+        chunks = []
+        async for chunk in prov.chat_stream(
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "what is 2+2"}],
+            tools=[{"function": {"name": "calculator", "parameters": {}}}],
+        ):
+            chunks.append(chunk)
+
+    starts = [c for c in chunks if c.kind == "tool_call_start"]
+    deltas = [c for c in chunks if c.kind == "tool_call_delta"]
+    ends = [c for c in chunks if c.kind == "tool_call_end"]
+    assert len(starts) == 1
+    assert starts[0].tool_call_id == "call_1"
+    assert starts[0].tool_name == "calculator"
+    assert "".join(d.arguments_delta for d in deltas) == '{"expr":"2+2"}'
+    assert all(d.tool_call_id == "call_1" for d in deltas)
+    assert len(ends) == 1
+    assert ends[0].tool_call_id == "call_1"
+    assert chunks[-1].kind == "done"
+    assert chunks[-1].finish_reason == "tool_calls"
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_tool_call_oneshot_args() -> None:
+    """When the backend ships args only on output_item.done, replay as a delta."""
+    from types import SimpleNamespace
+
+    future_ms = int(time.time() * 1000) + 3_600_000
+    cred = CodexOAuthCredential(
+        access_token="good-token", refresh_token=None, expires_at_ms=future_ms
+    )
+    prov = CodexProvider(credential=cred)
+
+    added_item = SimpleNamespace(
+        type="function_call", id="fc_9", call_id="call_9", name="web_search",
+        arguments="",
+    )
+    done_item = SimpleNamespace(
+        type="function_call", id="fc_9", call_id="call_9", name="web_search",
+        arguments='{"query":"weather"}',
+    )
+    events = [
+        SimpleNamespace(type="response.output_item.added", item=added_item),
+        SimpleNamespace(type="response.output_item.done", item=done_item),
+    ]
+
+    class _FakeStream:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return False
+
+        def __aiter__(self):
+            return self._gen()
+
+        async def _gen(self):
+            for e in events:
+                yield e
+
+    class _FakeResponses:
+        def stream(self, **_kwargs):
+            return _FakeStream()
+
+    class _FakeClient:
+        responses = _FakeResponses()
+
+    with patch.object(prov, "_make_client", return_value=_FakeClient()):
+        chunks = []
+        async for chunk in prov.chat_stream(
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "weather?"}],
+            tools=[{"function": {"name": "web_search", "parameters": {}}}],
+        ):
+            chunks.append(chunk)
+
+    deltas = [c for c in chunks if c.kind == "tool_call_delta"]
+    assert "".join(d.arguments_delta for d in deltas) == '{"query":"weather"}'
+    assert chunks[-1].finish_reason == "tool_calls"
+
 
 # ---------------------------------------------------------------------------
 # CodexProvider.chat_stream — auto-refresh on expired token

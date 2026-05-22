@@ -65,9 +65,12 @@ from corlinman_agent.web import (
     CALCULATOR_TOOL,
     WEB_FETCH_TOOL,
     WEB_SEARCH_TOOL,
+    calculator_tool_schema,
     dispatch_calculator,
     dispatch_web_fetch,
     dispatch_web_search,
+    web_fetch_tool_schema,
+    web_search_tool_schema,
 )
 from corlinman_grpc import agent_pb2, agent_pb2_grpc, common_pb2
 from corlinman_providers import registry as provider_registry
@@ -95,6 +98,44 @@ BUILTIN_TOOLS: frozenset[str] = frozenset(
         CALCULATOR_TOOL,
     }
 )
+
+#: Builtin tools advertised to the model on every chat turn so it can
+#: actually *call* them. ``BUILTIN_TOOLS`` (above) is the dispatch gate;
+#: this is the *discovery* surface. Kept to the keyless, low-risk tools
+#: (calculator + web) — subagent fan-out / blackboard stay dispatch-only
+#: until a deployment opts into them. Each entry is an OpenAI-shaped
+#: ``{"type": "function", "function": {...}}`` descriptor.
+def _builtin_tool_schemas() -> list[dict[str, Any]]:
+    """Return the OpenAI tool descriptors for the advertised builtins."""
+    return [
+        calculator_tool_schema(),
+        web_search_tool_schema(),
+        web_fetch_tool_schema(),
+    ]
+
+
+def _inject_builtin_tools(start: AgentChatStart) -> None:
+    """Merge the advertised builtin tool schemas into ``start.tools``.
+
+    Gateway-supplied tools (plugins / MCP, carried in ``tools_json``)
+    win on a name clash — the builtin is only added when no tool of the
+    same name is already present. Mutates ``start`` in place.
+    """
+    existing = start.tools or []
+    have: set[str] = set()
+    for t in existing:
+        if isinstance(t, dict):
+            fn = t.get("function")
+            name = fn.get("name") if isinstance(fn, dict) else t.get("name")
+            if name:
+                have.add(str(name))
+    merged = list(existing)
+    for schema in _builtin_tool_schemas():
+        name = schema.get("function", {}).get("name")
+        if name and name not in have:
+            merged.append(schema)
+            have.add(str(name))
+    start.tools = merged
 
 
 class _MockProvider:
@@ -224,6 +265,12 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         start.model = upstream_model
         _apply_merged_params(start, merged_params)
         start = await self._assemble_context(start)
+
+        # Advertise the builtin tools to the model so it can call them.
+        # Without this the loop only ever sees gateway-supplied tools
+        # (plugins / MCP) — the calculator + web tools would be
+        # dispatchable but invisible.
+        _inject_builtin_tools(start)
 
         # Bump the tool-result timeout above the M2 default (0.05s) so the
         # loop actually waits long enough for the gateway to round-trip a

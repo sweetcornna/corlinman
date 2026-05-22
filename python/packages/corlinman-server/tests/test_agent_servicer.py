@@ -288,7 +288,16 @@ async def test_servicer_forwards_openai_tools_json_to_provider() -> None:
     finally:
         await server.stop(grace=None)
 
-    assert fake.last_kwargs["tools"] == tools
+    # The gateway-supplied tool must reach the provider. The servicer
+    # also advertises the builtin tools (calculator + web), so the
+    # provider sees the client tool *plus* the builtins — assert the
+    # client tool is forwarded and the builtins were appended.
+    forwarded = fake.last_kwargs["tools"]
+    assert tools[0] in forwarded
+    forwarded_names = {
+        t.get("function", {}).get("name") for t in forwarded
+    }
+    assert {"search", "calculator", "web_search", "web_fetch"} <= forwarded_names
 
 
 @pytest.mark.asyncio
