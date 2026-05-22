@@ -303,8 +303,20 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                         # proto frame for them; the loop is fed the result
                         # directly. Failure here is folded into the loop's
                         # ToolResult envelope so the model can keep going.
+                        logger.info(
+                            "agent.tool.dispatch",
+                            tool=event.tool,
+                            call_id=event.call_id,
+                            args=event.args_json.decode("utf-8", "replace")[:200],
+                        )
                         result_json = await self._dispatch_builtin(
                             event, start, provider
+                        )
+                        logger.info(
+                            "agent.tool.result",
+                            tool=event.tool,
+                            call_id=event.call_id,
+                            result=result_json[:200],
                         )
                         loop.feed_tool_result(
                             ToolResult(
