@@ -28,6 +28,14 @@ Module layout mirrors the Rust crate:
 
 from __future__ import annotations
 
+from corlinman_auto_rollback.applier import (
+    ApplyError,
+    EvolutionApplier,
+    InternalApplyError,
+    NotApprovedApplyError,
+    NotFoundApplyError,
+    UnsupportedKindApplyError,
+)
 from corlinman_auto_rollback.config import (
     AutoRollbackThresholds,
     EvolutionAutoRollbackConfig,
@@ -60,18 +68,24 @@ from corlinman_auto_rollback.revert import (
 __all__ = [
     "DEFAULT_MAX_PROPOSALS_PER_RUN",
     "Applier",
+    "ApplyError",
     "AutoRollbackMonitor",
     "AutoRollbackThresholds",
+    "EvolutionApplier",
     "EvolutionAutoRollbackConfig",
     "HistoryMissingRevertError",
+    "InternalApplyError",
     "InternalRevertError",
     "KindDelta",
     "MetricDelta",
     "MetricSnapshot",
     "NotAppliedRevertError",
+    "NotApprovedApplyError",
+    "NotFoundApplyError",
     "NotFoundRevertError",
     "RevertError",
     "RunSummary",
+    "UnsupportedKindApplyError",
     "UnsupportedKindRevertError",
     "breaches_threshold",
     "capture_snapshot",

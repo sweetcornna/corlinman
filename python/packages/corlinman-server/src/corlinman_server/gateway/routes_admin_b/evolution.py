@@ -2,9 +2,9 @@
 
 Python port of ``rust/crates/corlinman-gateway/src/routes/admin/evolution.rs``.
 
-Five routes (the Rust source carries seven — the two ``EvolutionApplier``
-forward paths, ``/apply`` + ``/rollback``, surface a 501 ``applier_not_wired``
-on the Python side until the typed applier lands as part of Wave 2-A):
+Seven routes — including the two ``EvolutionApplier`` paths, ``/apply``
+and ``/rollback``, now wired to the real
+:class:`corlinman_auto_rollback.EvolutionApplier`:
 
 * ``GET  /admin/evolution``                — list proposals filtered by
   ``?status=pending&limit=50`` (defaults: ``pending``, 50, max 200).
@@ -20,13 +20,21 @@ on the Python side until the typed applier lands as part of Wave 2-A):
 * ``POST /admin/evolution/{id}/deny``      — body ``{"decided_by", "reason"}``.
   Transitions ``pending|shadow_done → denied``; deny reason is appended
   to ``reasoning`` with a ``[DENIED: ...]`` prefix.
-* ``POST /admin/evolution/{id}/apply``     — 501 stub until the
-  Python-side ``EvolutionApplier`` lands. Same response envelope shape
-  the Rust route emits when the applier handle is missing
-  (``evolution_disabled`` 503 vs. ``applier_not_wired`` 501 mirrors the
-  two error funnels the UI keys off).
-* ``POST /admin/evolution/{id}/rollback``  — 501 stub for the same
-  reason as ``/apply``.
+* ``POST /admin/evolution/{id}/apply``     — drive
+  :meth:`EvolutionApplier.apply`. Transitions an ``approved`` proposal
+  to ``applied``, writes the ``evolution_history`` audit row, and opens
+  / closes an ``apply_intent_log`` ticket. Typed ``ApplyError`` variants
+  map onto 404 / 409 ``invalid_state_transition`` / 400
+  ``unsupported_kind`` / 500 ``apply_failed`` envelopes.
+* ``POST /admin/evolution/{id}/rollback``  — drive
+  :meth:`EvolutionApplier.revert`. Transitions an ``applied`` proposal
+  back to its captured pre-apply status and stamps the rollback audit
+  fields. Maps onto 404 / 409 / 410 ``history_missing`` / 400
+  ``unsupported_revert_kind`` / 500 ``rollback_failed`` envelopes.
+
+When the evolution store is wired but the applier package cannot be
+imported, both routes 503 with ``applier_unavailable`` (distinct from
+the global ``evolution_disabled``) so the UI can tell the two apart.
 
 ### State machine
 
@@ -202,19 +210,71 @@ def _evolution_disabled() -> JSONResponse:
     )
 
 
-def _applier_not_wired() -> JSONResponse:
-    """The Python-side EvolutionApplier (forward + revert path) has not
-    landed yet. Distinguished from ``evolution_disabled`` so the UI can
-    tell "store + applier both off" from "store on, applier mid-port"."""
+def _applier_unavailable() -> JSONResponse:
+    """The :class:`EvolutionApplier` could not be constructed even though
+    the evolution store is wired — the ``corlinman_auto_rollback``
+    package is not importable in this environment. Distinguished from
+    ``evolution_disabled`` (store missing) so the UI can tell the two
+    apart; degrades gracefully instead of crashing the route."""
     return JSONResponse(
-        status_code=501,
+        status_code=503,
         content={
-            "error": "applier_not_wired",
+            "error": "applier_unavailable",
             "message": (
-                "evolution applier is not wired on this Python gateway yet; "
-                "apply/rollback are read-only stubs until Wave 2-A lands"
+                "evolution applier could not be loaded on this gateway; "
+                "the corlinman-auto-rollback package is not installed"
             ),
         },
+    )
+
+
+def _unsupported_kind(kind: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=400,
+        content={
+            "error": "unsupported_kind",
+            "kind": kind,
+            "message": "no forward handler for this kind yet",
+        },
+    )
+
+
+def _unsupported_revert_kind(kind: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=400,
+        content={
+            "error": "unsupported_revert_kind",
+            "kind": kind,
+            "message": "no inverse handler for this kind yet",
+        },
+    )
+
+
+def _history_missing(proposal_id: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=410,
+        content={
+            "error": "history_missing",
+            "proposal_id": proposal_id,
+            "message": (
+                "evolution_history row missing for this proposal; "
+                "cannot revert without an inverse_diff"
+            ),
+        },
+    )
+
+
+def _apply_failed(message: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=500,
+        content={"error": "apply_failed", "message": message},
+    )
+
+
+def _rollback_failed(message: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=500,
+        content={"error": "rollback_failed", "message": message},
     )
 
 
@@ -707,29 +767,125 @@ def router() -> APIRouter:  # noqa: C901 — single APIRouter factory, mirrors R
         return DecisionResponse(id=id, status="denied")
 
     @r.post("/admin/evolution/{id}/apply")
-    async def apply_proposal(id: str):  # noqa: ARG001 — id mirrors Rust route signature
+    async def apply_proposal(id: str):
+        """Drive :meth:`EvolutionApplier.apply`. Transitions an
+        ``approved`` proposal to ``applied``, writes the audit row, and
+        opens / closes an ``apply_intent_log`` ticket.
+
+        Maps the typed :class:`ApplyError` set onto the same 4xx / 5xx
+        envelopes the Rust route emits — clients already depend on the
+        ``invalid_state_transition`` shape for the not-approved case."""
         state = get_admin_state()
-        if state.evolution_store is None:
+        store = state.evolution_store
+        if store is None:
             return _evolution_disabled()
-        # TODO(wave-2a-python): wire `corlinman_evolution_engine.EvolutionApplier`
-        # once it lands on the Python side. The Rust path issues
-        # `applier.apply(&pid)` and maps `ApplyError` variants onto
-        # 4xx/5xx envelopes (unsupported_kind / invalid_target / drift
-        # mismatch / meta_approver_required / etc). Until then this is
-        # a 501 stub so the UI's banner ("apply not wired") differs
-        # from the global subsystem-off case.
-        return _applier_not_wired()
+
+        try:
+            from corlinman_auto_rollback import (  # noqa: PLC0415
+                EvolutionApplier,
+                NotApprovedApplyError,
+                NotFoundApplyError,
+                UnsupportedKindApplyError,
+            )
+        except ImportError:
+            return _applier_unavailable()
+
+        try:
+            from corlinman_evolution_store import (  # noqa: PLC0415
+                EvolutionStatus,
+                ProposalId,
+            )
+        except ImportError:
+            return _evolution_disabled()
+
+        applier = EvolutionApplier(_resolve_connection(store))
+        try:
+            history = await applier.apply(ProposalId(id))
+        except NotFoundApplyError:
+            return _not_found(id)
+        except NotApprovedApplyError as exc:
+            # Mirror the approve / deny 409 contract — the not-approved
+            # status is the "from" of an illegal apply transition.
+            return _invalid_state_transition(
+                exc.status, EvolutionStatus.APPLIED.as_str()
+            )
+        except UnsupportedKindApplyError as exc:
+            return _unsupported_kind(exc.kind)
+        except Exception as exc:  # InternalApplyError + stragglers
+            return _apply_failed(str(exc))
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "id": id,
+                "status": "applied",
+                "history_id": history.id,
+            },
+        )
 
     @r.post("/admin/evolution/{id}/rollback")
     async def rollback_proposal(
-        id: str,  # noqa: ARG001 — id mirrors Rust route signature
-        body: RollbackBody | None = None,  # noqa: ARG001 — kept for wire parity
+        id: str,
+        body: RollbackBody | None = None,
     ):
+        """Drive :meth:`EvolutionApplier.revert`. The AutoRollback
+        monitor calls the same code path programmatically on a metrics
+        breach; this route is the operator's manual-action surface.
+
+        Maps the shared :class:`RevertError` set onto 4xx / 5xx
+        envelopes mirroring the Rust route."""
         state = get_admin_state()
-        if state.evolution_store is None:
+        store = state.evolution_store
+        if store is None:
             return _evolution_disabled()
-        # TODO(wave-2a-python): wire `EvolutionApplier.revert` once the
-        # Python applier lands. Same envelope plan as `/apply` above.
-        return _applier_not_wired()
+
+        try:
+            from corlinman_auto_rollback import (  # noqa: PLC0415
+                EvolutionApplier,
+                HistoryMissingRevertError,
+                NotAppliedRevertError,
+                NotFoundRevertError,
+                UnsupportedKindRevertError,
+            )
+        except ImportError:
+            return _applier_unavailable()
+
+        try:
+            from corlinman_evolution_store import (  # noqa: PLC0415
+                EvolutionStatus,
+                ProposalId,
+            )
+        except ImportError:
+            return _evolution_disabled()
+
+        reason = (body.reason if body is not None else None) or "operator: unknown"
+
+        applier = EvolutionApplier(_resolve_connection(store))
+        try:
+            await applier.revert(ProposalId(id), reason)
+        except NotFoundRevertError:
+            return _not_found(id)
+        except NotAppliedRevertError as exc:
+            # Distinct from the apply path's 409 because the forward
+            # state machine is ``applied → rolled_back``; the UI should
+            # tell "never applied" from "already rolled back".
+            return _invalid_state_transition(
+                exc.status, EvolutionStatus.ROLLED_BACK.as_str()
+            )
+        except UnsupportedKindRevertError as exc:
+            return _unsupported_revert_kind(exc.kind)
+        except HistoryMissingRevertError:
+            return _history_missing(id)
+        except Exception as exc:  # InternalRevertError + stragglers
+            return _rollback_failed(str(exc))
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "id": id,
+                "status": "rolled_back",
+                "reason": reason,
+            },
+        )
 
     return r
