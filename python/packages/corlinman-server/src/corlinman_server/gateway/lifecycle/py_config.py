@@ -71,6 +71,7 @@ KNOWN_PROVIDER_KINDS: frozenset[str] = frozenset(
         "openai_compatible",
         "gemini",
         "ollama",
+        "codex",
     }
 )
 
