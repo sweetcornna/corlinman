@@ -31,17 +31,18 @@ class ProviderKind(StrEnum):
     First-party kinds (``anthropic`` / ``openai`` / ``google`` / ``deepseek``
     / ``qwen`` / ``glm``) have bespoke adapters.
 
-    ``openai_compatible`` plus the seven market kinds added in the
-    free-form-providers refactor (``mistral`` / ``cohere`` / ``together`` /
-    ``groq`` / ``replicate`` / ``bedrock`` / ``azure``) all speak the OpenAI
-    wire format and route through :class:`OpenAICompatibleProvider`. They
-    are surfaced as named kinds so admin UIs / configs can document operator
+    ``openai_compatible`` plus the five market kinds that speak the OpenAI
+    wire format (``mistral`` / ``cohere`` / ``together`` / ``groq`` /
+    ``replicate``) route through :class:`OpenAICompatibleProvider`. They are
+    surfaced as named kinds so admin UIs / configs can document operator
     intent without inventing per-kind adapter classes.
 
-    ``bedrock`` and ``azure`` are declared but the runtime currently raises
-    ``NotImplementedError`` when one is used — proper SigV4 / deployment-id
-    support lands in a follow-up. Operators who need them today should use
-    ``kind = "openai_compatible"`` with an explicit ``base_url``.
+    ``bedrock`` and ``azure`` have bespoke adapters:
+    :class:`~corlinman_providers.bedrock_provider.BedrockProvider` signs
+    ``InvokeModelWithResponseStream`` with hand-rolled AWS SigV4 over httpx,
+    and :class:`~corlinman_providers.azure_provider.AzureProvider` reuses
+    the OpenAI wire shape with Azure's deployment-id routing + ``api-key``
+    auth.
     """
 
     ANTHROPIC = "anthropic"

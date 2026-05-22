@@ -1,4 +1,4 @@
-"""Market-LLM adapter stubs added with the free-form-providers refactor.
+"""Market-LLM adapters added with the free-form-providers refactor.
 
 Most market LLM vendors (Mistral, Cohere, Together, Groq, Replicate, …) speak
 the OpenAI wire format under their own base URLs. Rather than ask operators
@@ -9,17 +9,21 @@ variants. Each adapter here is a thin wrapper that delegates to
 the only thing that differs is a documented default ``base_url`` and the
 class-level ``kind`` discriminator.
 
-Bedrock and Azure are declared (so configs can carry them through schema
-validation) but raise ``NotImplementedError`` at build time. Real SigV4 /
-deployment-routing support lands in a follow-up; operators needing them
-today should fall back to ``kind = "openai_compatible"`` against a
-compatible proxy.
+Bedrock and Azure are *no longer* stubs: the real adapters live in
+:mod:`corlinman_providers.bedrock_provider` (SigV4-signed
+``InvokeModelWithResponseStream``) and
+:mod:`corlinman_providers.azure_provider` (OpenAI wire shape with Azure's
+deployment-id routing + ``api-key`` auth). They are re-exported here so the
+historic ``from corlinman_providers.market_providers import
+AzureProvider`` / ``BedrockProvider`` import path keeps working.
 """
 
 from __future__ import annotations
 
 from typing import ClassVar
 
+from corlinman_providers.azure_provider import AzureProvider
+from corlinman_providers.bedrock_provider import BedrockProvider
 from corlinman_providers.openai_compatible import OpenAICompatibleProvider
 from corlinman_providers.specs import ProviderKind, ProviderSpec
 
@@ -103,47 +107,6 @@ class ReplicateProvider(OpenAICompatibleProvider):
     @classmethod
     def build(cls, spec: ProviderSpec) -> OpenAICompatibleProvider:
         return _build_compat(spec, default_base_url=cls.DEFAULT_BASE_URL, kind=cls.kind)
-
-
-class BedrockProvider:
-    """AWS Bedrock — placeholder until SigV4 auth lands.
-
-    Configs may declare ``kind = "bedrock"`` (the schema accepts it) but the
-    runtime raises ``NotImplementedError`` at build time so the failure is
-    loud and immediate. Use ``kind = "openai_compatible"`` with a SigV4-
-    capable proxy as a workaround until a real adapter ships.
-    """
-
-    name: ClassVar[str] = "bedrock"
-    kind: ClassVar[ProviderKind] = ProviderKind.BEDROCK
-
-    @classmethod
-    def build(cls, spec: ProviderSpec) -> BedrockProvider:
-        raise NotImplementedError(
-            f"Bedrock adapter is not yet implemented (provider {spec.name!r}). "
-            "Use kind = 'openai_compatible' with a SigV4 proxy as a workaround."
-        )
-
-
-class AzureProvider:
-    """Azure OpenAI Service — placeholder until deployment routing lands.
-
-    Configs may declare ``kind = "azure"`` (the schema accepts it) but the
-    runtime raises ``NotImplementedError`` at build time so the failure is
-    loud and immediate. Use ``kind = "openai_compatible"`` with the explicit
-    Azure deployment URL as a workaround until a real adapter ships.
-    """
-
-    name: ClassVar[str] = "azure"
-    kind: ClassVar[ProviderKind] = ProviderKind.AZURE
-
-    @classmethod
-    def build(cls, spec: ProviderSpec) -> AzureProvider:
-        raise NotImplementedError(
-            f"Azure OpenAI adapter is not yet implemented (provider {spec.name!r}). "
-            "Use kind = 'openai_compatible' with the full Azure deployment URL "
-            "as base_url as a workaround."
-        )
 
 
 __all__ = [

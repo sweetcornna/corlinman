@@ -84,6 +84,22 @@ class OpenAIProvider:
         """
         return _OPENAI_PARAMS_SCHEMA
 
+    def _make_client(self) -> Any:
+        """Construct the async OpenAI-wire client used by :meth:`chat_stream`.
+
+        Factored into a hook so wire-compatible siblings (Azure OpenAI —
+        see :class:`corlinman_providers.market_providers.AzureProvider`)
+        can swap in a differently-shaped client (``AsyncAzureOpenAI`` with
+        deployment-id routing and ``api-key`` auth) while reusing the
+        stream-parsing + tool-call-aggregation logic verbatim.
+        """
+        from openai import AsyncOpenAI  # type: ignore[import-not-found]
+
+        client_kwargs: dict[str, Any] = {"api_key": self._api_key}
+        if self._base_url:
+            client_kwargs["base_url"] = self._base_url
+        return AsyncOpenAI(**client_kwargs)
+
     async def chat_stream(
         self,
         *,
@@ -97,12 +113,7 @@ class OpenAIProvider:
         if not self._api_key:
             raise RuntimeError(f"API key missing for provider {self.name}")
 
-        from openai import AsyncOpenAI  # type: ignore[import-not-found]
-
-        client_kwargs: dict[str, Any] = {"api_key": self._api_key}
-        if self._base_url:
-            client_kwargs["base_url"] = self._base_url
-        client = AsyncOpenAI(**client_kwargs)
+        client = self._make_client()
 
         kwargs: dict[str, Any] = {
             "model": model,

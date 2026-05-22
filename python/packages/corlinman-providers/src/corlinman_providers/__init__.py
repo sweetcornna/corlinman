@@ -11,7 +11,9 @@ tool_calls are the one true protocol).
 from __future__ import annotations
 
 from corlinman_providers.anthropic_provider import AnthropicProvider
+from corlinman_providers.azure_provider import AzureProvider
 from corlinman_providers.base import CorlinmanProvider, ProviderChunk
+from corlinman_providers.bedrock_provider import BedrockProvider
 from corlinman_providers.china import DeepSeekProvider, GLMProvider, QwenProvider
 from corlinman_providers.declarative import (
     DeclarativeProvider,
@@ -45,6 +47,8 @@ __all__ = [
     "AnthropicProvider",
     "AuthError",
     "AuthPermanentError",
+    "AzureProvider",
+    "BedrockProvider",
     "BillingError",
     "ContextOverflowError",
     "CorlinmanError",

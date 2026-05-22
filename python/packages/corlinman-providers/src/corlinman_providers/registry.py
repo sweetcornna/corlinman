@@ -64,9 +64,10 @@ _KIND_TO_CLASS: dict[ProviderKind, type[Any]] = {
     ProviderKind.TOGETHER: TogetherProvider,
     ProviderKind.GROQ: GroqProvider,
     ProviderKind.REPLICATE: ReplicateProvider,
-    # Bedrock + Azure raise NotImplementedError at build time — config
-    # validation accepts them so operators can declare intent, but the
-    # runtime fails loudly until proper SigV4 / deployment-routing lands.
+    # Bedrock + Azure are real adapters: Bedrock signs
+    # ``InvokeModelWithResponseStream`` with hand-rolled SigV4 over httpx;
+    # Azure reuses the OpenAI wire shape with deployment-id routing and
+    # ``api-key`` auth. See bedrock_provider.py / azure_provider.py.
     ProviderKind.BEDROCK: BedrockProvider,
     ProviderKind.AZURE: AzureProvider,
     # Built-in echo provider for the easy-setup skip path (Wave 2.2).
