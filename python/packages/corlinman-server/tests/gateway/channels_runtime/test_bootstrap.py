@@ -192,6 +192,153 @@ async def test_bootstrap_both_channels() -> None:
 
 
 # ---------------------------------------------------------------------------
+# bootstrap — Discord / Slack / Feishu
+# ---------------------------------------------------------------------------
+
+
+async def test_bootstrap_enabled_discord_spawns_task() -> None:
+    state = _FakeState(
+        config={
+            "models": {"default": "gpt-x"},
+            "channels": {
+                "discord": {"enabled": True, "bot_token": "fake-discord-token"},
+            },
+        },
+        chat=object(),
+    )
+    tasks = channels_runtime.bootstrap(state)
+    try:
+        assert len(tasks) == 1
+    finally:
+        await _drain(tasks)
+
+
+async def test_bootstrap_discord_token_env_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No inline ``bot_token`` → falls back to ``DISCORD_BOT_TOKEN`` env."""
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "env-discord-token")
+    state = _FakeState(
+        config={"channels": {"discord": {"enabled": True}}},
+    )
+    tasks = channels_runtime.bootstrap(state)
+    try:
+        assert len(tasks) == 1
+    finally:
+        await _drain(tasks)
+
+
+async def test_bootstrap_discord_missing_token_is_skipped_not_crash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No token anywhere → ``run_discord_channel`` raises inside the task;
+    bootstrap itself still returns cleanly."""
+    monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
+    state = _FakeState(
+        config={"channels": {"discord": {"enabled": True}}},
+    )
+    tasks = channels_runtime.bootstrap(state)
+    try:
+        assert len(tasks) == 1
+        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 2.0)
+    finally:
+        await _drain(tasks)
+
+
+async def test_bootstrap_enabled_slack_spawns_task() -> None:
+    state = _FakeState(
+        config={
+            "channels": {
+                "slack": {
+                    "enabled": True,
+                    "app_token": "xapp-1",
+                    "bot_token": "xoxb-1",
+                },
+            },
+        },
+        chat=object(),
+    )
+    tasks = channels_runtime.bootstrap(state)
+    try:
+        assert len(tasks) == 1
+    finally:
+        await _drain(tasks)
+
+
+async def test_bootstrap_enabled_feishu_spawns_task() -> None:
+    state = _FakeState(
+        config={
+            "channels": {
+                "feishu": {
+                    "enabled": True,
+                    "app_id": "cli_1",
+                    "app_secret": "secret-1",
+                },
+            },
+        },
+        chat=object(),
+    )
+    tasks = channels_runtime.bootstrap(state)
+    try:
+        assert len(tasks) == 1
+    finally:
+        await _drain(tasks)
+
+
+async def test_bootstrap_all_five_channels() -> None:
+    """qq + telegram + discord + slack + feishu all enabled → 5 tasks."""
+    state = _FakeState(
+        config={
+            "channels": {
+                "qq": {
+                    "enabled": True,
+                    "ws_url": "ws://127.0.0.1:59990",
+                    "self_ids": [1],
+                },
+                "telegram": {"enabled": True, "bot_token": "t"},
+                "discord": {"enabled": True, "bot_token": "d"},
+                "slack": {
+                    "enabled": True,
+                    "app_token": "xapp",
+                    "bot_token": "xoxb",
+                },
+                "feishu": {"enabled": True, "app_id": "a", "app_secret": "s"},
+            }
+        },
+    )
+    tasks = channels_runtime.bootstrap(state)
+    try:
+        assert len(tasks) == 5
+    finally:
+        await _drain(tasks)
+
+
+async def test_bootstrap_slack_missing_tokens_skipped_not_crash() -> None:
+    """A Slack section enabled with no tokens → task is created, the
+    ValueError surfaces inside the loop and the task self-terminates.
+    The other channels are unaffected (degrade, never crash)."""
+    state = _FakeState(
+        config={
+            "channels": {
+                "slack": {"enabled": True},
+                "telegram": {"enabled": True, "bot_token": "t"},
+            }
+        },
+    )
+    tasks = channels_runtime.bootstrap(state)
+    try:
+        # Both tasks created — slack self-terminates with a logged error.
+        assert len(tasks) == 2
+        await asyncio.wait_for(
+            asyncio.gather(*tasks, return_exceptions=True), 0.5
+        )
+    except TimeoutError:
+        pass  # telegram task long-lives; that's fine.
+    finally:
+        await _drain(tasks)
+
+
+# ---------------------------------------------------------------------------
 # bootstrap — degraded mode (no chat service)
 # ---------------------------------------------------------------------------
 
