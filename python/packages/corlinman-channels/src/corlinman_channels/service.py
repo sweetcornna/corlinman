@@ -331,24 +331,30 @@ def _build_internal_request(
     req: RoutedRequest,
     event: MessageEvent,
     model: str,
-) -> dict[str, Any]:
-    """Build the dict payload handed to ``chat_service.run``. We keep
-    it dict-shaped to avoid a hard dep on a Python ``InternalChatRequest``
-    type; the corlinman-server tests use a TypedDict-friendly shape so
-    this round-trips cleanly."""
+) -> Any:
+    """Build the request object handed to ``chat_service.run``.
+
+    Returns a :class:`~types.SimpleNamespace` with attribute-style access
+    matching the ``InternalChatRequest`` contract. Avoids a hard import
+    dependency on ``corlinman-server`` so the channels package stays
+    importable in isolation (unit tests, standalone deploys).
+    """
+    from types import SimpleNamespace
+
     from corlinman_channels.onebot import segments_to_attachments
 
     attachments = segments_to_attachments(event.message)
-    return {
-        "model": model,
-        "messages": [{"role": "user", "content": req.content}],
-        "session_key": req.session_key,
-        "stream": True,
-        "max_tokens": None,
-        "temperature": None,
-        "attachments": attachments,
-        "binding": req.binding,
-    }
+    message = SimpleNamespace(role="user", content=req.content)
+    return SimpleNamespace(
+        model=model,
+        messages=[message],
+        session_key=req.session_key,
+        stream=True,
+        max_tokens=None,
+        temperature=None,
+        attachments=attachments,
+        binding=req.binding,
+    )
 
 
 def _build_reply_action(event: MessageEvent, body: str) -> Action:
