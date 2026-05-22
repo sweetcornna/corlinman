@@ -24,9 +24,14 @@ The provider speaks in semantic events (``AudioOut``,
 ``TranscriptPartial``, ``ToolCall``, …) rather than provider-shaped
 JSON.
 
-The real OpenAI adapter (``provider_openai.rs``, ~29 KB) is not ported
-in this iter — only the trait surface + a mock. The mock is sufficient
-to drive the framing / cost / approval / persistence integration tests.
+The real OpenAI Realtime adapter lives alongside this module in
+:mod:`.provider_openai` (:class:`~corlinman_server.gateway.routes_voice.provider_openai.OpenAIRealtimeProvider`).
+It implements the exact same :class:`VoiceProvider` /
+:class:`VoiceProviderSession` Protocols defined here, so the WebSocket
+session driver in :mod:`.mod` never knows which is on the wire. The
+mock stays — it is what drives the framing / cost / approval /
+persistence tests, and is the fallback when no OpenAI key is
+configured.
 """
 
 from __future__ import annotations

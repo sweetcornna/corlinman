@@ -14,9 +14,10 @@ This subpackage mirrors the Rust file layout one-for-one:
   ``corlinman_providers.plugins``.
 * :mod:`.persistence` — :class:`VoiceSessionStore` trait (with an
   in-memory impl), audio-path helpers, transcript sink.
-* :mod:`.provider`— async provider protocol + a mock provider; the
-  real OpenAI Realtime adapter lives behind this seam and is not
-  ported in this iter.
+* :mod:`.provider`— async provider protocol + a mock provider.
+* :mod:`.provider_openai` — the real OpenAI Realtime adapter
+  (:class:`OpenAIRealtimeProvider`), selected by :mod:`.mod` whenever an
+  OpenAI API key is configured; the mock is the fallback.
 * :mod:`.mod`     — FastAPI ``APIRouter`` factory + WebSocket session
   driver (``run_voice_session``). The router is the public-facing
   entry point; everything else is wiring.
@@ -102,6 +103,12 @@ from corlinman_server.gateway.routes_voice.provider import (
     VoiceProviderSession,
     VoiceSessionStartParams,
 )
+from corlinman_server.gateway.routes_voice.provider_openai import (
+    DEFAULT_REALTIME_MODEL,
+    OPENAI_REALTIME_URL,
+    OpenAIRealtimeProvider,
+    OpenAIRealtimeSession,
+)
 from corlinman_server.gateway.routes_voice.mod import (
     CLOSE_CODE_NORMAL,
     CLOSE_CODE_PROTOCOL_ERROR,
@@ -111,6 +118,8 @@ from corlinman_server.gateway.routes_voice.mod import (
     DEFAULT_TICK_INTERVAL_SECONDS,
     VoiceRouterConfig,
     VoiceState,
+    build_voice_state_from_app,
+    resolve_voice_provider,
     router,
     run_voice_session,
 )
@@ -181,6 +190,11 @@ __all__ = [
     "VoiceProvider",
     "VoiceProviderSession",
     "VoiceSessionStartParams",
+    # provider_openai (real OpenAI Realtime adapter)
+    "DEFAULT_REALTIME_MODEL",
+    "OPENAI_REALTIME_URL",
+    "OpenAIRealtimeProvider",
+    "OpenAIRealtimeSession",
     # mod (FastAPI router + session driver)
     "CLOSE_CODE_NORMAL",
     "CLOSE_CODE_PROTOCOL_ERROR",
@@ -190,6 +204,8 @@ __all__ = [
     "DEFAULT_TICK_INTERVAL_SECONDS",
     "VoiceRouterConfig",
     "VoiceState",
+    "build_voice_state_from_app",
+    "resolve_voice_provider",
     "router",
     "run_voice_session",
 ]

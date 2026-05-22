@@ -36,6 +36,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -93,6 +94,7 @@ from corlinman_server.gateway.routes_voice.persistence import (
     audio_path_for,
 )
 from corlinman_server.gateway.routes_voice.provider import (
+    MockVoiceProvider,
     ProviderCommand,
     ProviderEndReason,
     VoiceEvent,
@@ -110,6 +112,8 @@ __all__ = [
     "DEFAULT_TICK_INTERVAL_SECONDS",
     "VoiceRouterConfig",
     "VoiceState",
+    "build_voice_state_from_app",
+    "resolve_voice_provider",
     "router",
     "run_voice_session",
 ]
@@ -238,6 +242,156 @@ class VoiceState:
 
 
 # ---------------------------------------------------------------------------
+# Runtime resolution — real provider vs mock
+# ---------------------------------------------------------------------------
+
+
+def _config_section(config: Any, key: str) -> Any:
+    """Pull ``config[key]`` from a config object that may be a mapping,
+    a pydantic model, or any duck-typed ``getattr`` shape. Mirrors the
+    duck-typed access used by :mod:`.lifecycle.py_config`."""
+    if config is None:
+        return None
+    if isinstance(config, dict):
+        return config.get(key)
+    getter = getattr(config, "get", None)
+    if callable(getter):
+        try:
+            return getter(key)
+        except Exception:  # noqa: BLE001 — fall through to attribute access
+            pass
+    return getattr(config, key, None)
+
+
+def _resolve_openai_api_key(app_state: Any) -> str | None:
+    """Resolve an OpenAI API key from the live runtime.
+
+    Resolution order (first hit wins), mirroring how the provider plane
+    resolves credentials elsewhere:
+
+    1. A built ``openai``-kind :class:`ProviderSpec` on
+       ``app_state.provider_registry`` (the Wave-1 registry).
+    2. The ``[providers]`` section of ``app_state.config`` — any entry
+       with ``kind == "openai"`` and a non-empty ``api_key``.
+    3. The ``OPENAI_API_KEY`` environment variable (the historic
+       bare-env deployment path).
+
+    Returns ``None`` when no key can be found — the caller then falls
+    back to the mock provider.
+    """
+    # 1. provider registry specs
+    registry = getattr(app_state, "provider_registry", None)
+    if registry is not None:
+        list_specs = getattr(registry, "list_specs", None)
+        if callable(list_specs):
+            try:
+                for spec in list_specs():
+                    kind = getattr(spec, "kind", None)
+                    kind_str = getattr(kind, "value", kind)
+                    if kind_str == "openai":
+                        key = getattr(spec, "api_key", None)
+                        if key and str(key).strip():
+                            return str(key).strip()
+            except Exception:  # noqa: BLE001 — degrade to the next source
+                logger.debug(
+                    "voice: provider registry spec scan failed", exc_info=True
+                )
+
+    # 2. raw config [providers] section
+    providers = _config_section(getattr(app_state, "config", None), "providers")
+    entries: list[Any] = []
+    if isinstance(providers, dict):
+        entries = list(providers.values())
+    elif isinstance(providers, (list, tuple)):
+        entries = list(providers)
+    for entry in entries:
+        kind = (
+            entry.get("kind")
+            if isinstance(entry, dict)
+            else getattr(entry, "kind", None)
+        )
+        kind_str = getattr(kind, "value", kind)
+        if kind_str != "openai":
+            continue
+        key = (
+            entry.get("api_key")
+            if isinstance(entry, dict)
+            else getattr(entry, "api_key", None)
+        )
+        if key and str(key).strip():
+            return str(key).strip()
+
+    # 3. bare environment variable
+    env_key = os.environ.get("OPENAI_API_KEY")
+    if env_key and env_key.strip():
+        return env_key.strip()
+    return None
+
+
+def resolve_voice_provider(app_state: Any) -> VoiceProvider:
+    """Pick the voice provider for the live runtime.
+
+    Returns the **real** :class:`OpenAIRealtimeProvider` when an OpenAI
+    API key is resolvable (see :func:`_resolve_openai_api_key`), and the
+    :class:`MockVoiceProvider` otherwise. The mock is what every voice
+    test drives against; production gets the real adapter as soon as a
+    key is configured — no gateway-mount change required.
+
+    A missing ``websockets`` dependency degrades to the mock too: the
+    real provider is constructed lazily, and an import failure here
+    surfaces as the mock rather than a boot crash.
+    """
+    api_key = _resolve_openai_api_key(app_state)
+    if api_key is None:
+        logger.debug("voice: no OpenAI key resolved; using mock provider")
+        return MockVoiceProvider()
+    try:
+        from corlinman_server.gateway.routes_voice.provider_openai import (
+            OpenAIRealtimeProvider,
+        )
+    except Exception:  # noqa: BLE001 — websockets missing etc.
+        logger.warning(
+            "voice: OpenAI realtime adapter unavailable; using mock provider"
+        )
+        return MockVoiceProvider()
+    logger.info("voice: OpenAI key resolved; using OpenAI Realtime provider")
+    return OpenAIRealtimeProvider(api_key=api_key)
+
+
+def build_voice_state_from_app(app_state: Any) -> VoiceState | None:
+    """Build a :class:`VoiceState` from the live gateway ``AppState``.
+
+    Called once per ``/voice`` connection when :func:`router` was mounted
+    without an explicit state (the gateway mount path). Reads the
+    ``[voice]`` config section, selects the provider via
+    :func:`resolve_voice_provider`, and threads the gateway ``data_dir``.
+
+    Returns ``None`` when the runtime carries no usable config — the
+    route then falls back to the ``voice_disabled`` stub close, exactly
+    as it did before this wiring existed.
+    """
+    voice_cfg = _config_section(getattr(app_state, "config", None), "voice")
+    if voice_cfg is None:
+        # No [voice] section at all — keep the historic stub behaviour.
+        return None
+    if isinstance(voice_cfg, dict):
+        cfg_model = VoiceRouterConfig.model_validate(voice_cfg)
+    elif isinstance(voice_cfg, VoiceRouterConfig):
+        cfg_model = voice_cfg
+    else:
+        # Duck-typed config object — let pydantic coerce from attributes.
+        cfg_model = VoiceRouterConfig.model_validate(voice_cfg, from_attributes=True)
+
+    data_dir = getattr(app_state, "data_dir", None)
+    provider = resolve_voice_provider(app_state)
+    return VoiceState(
+        config_loader=lambda: cfg_model,
+        provider=provider,
+        data_dir=Path(data_dir) if data_dir is not None else Path("."),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Router factory
 # ---------------------------------------------------------------------------
 
@@ -246,16 +400,46 @@ def router(state: VoiceState | None = None) -> APIRouter:
     """Build the FastAPI sub-router exposing
     ``websocket("/v1/voice")``.
 
-    When ``state`` is ``None`` the route accepts the upgrade then
-    immediately closes with :data:`CLOSE_CODE_VOICE_DISABLED` — matching
-    the Rust stub behaviour for compositions that never wire live state.
+    Two wiring modes:
+
+    * **explicit state** — the caller passes a fully-built
+      :class:`VoiceState` (tests do this, and so could a future boot
+      path). It is used verbatim.
+    * **state resolved per-connect** — the caller passes ``None`` (the
+      gateway mount does, since :func:`router` takes no provider
+      argument). On each connection the route resolves the live runtime
+      off ``websocket.app.state.corlinman`` — mirroring how the Wave-1
+      ``/v1/models`` route resolves its :class:`ProviderRegistry`. This
+      is where the real OpenAI Realtime provider gets selected: see
+      :func:`build_voice_state_from_app`.
+
+    When no runtime can be resolved at all the route falls back to the
+    historic stub behaviour (accept then close
+    :data:`CLOSE_CODE_VOICE_DISABLED`).
     """
 
     api = APIRouter()
 
     @api.websocket("/v1/voice")
     async def voice_endpoint(websocket: WebSocket) -> None:
-        await run_voice_session(websocket, state)
+        live_state = state
+        if live_state is None:
+            # No build-time state — resolve the runtime per-connection so
+            # the real provider is selected without changing the gateway
+            # mount call (which passes no arguments).
+            app_state = getattr(
+                getattr(websocket, "app", None), "state", None
+            )
+            corlinman = getattr(app_state, "corlinman", None)
+            if corlinman is not None:
+                try:
+                    live_state = build_voice_state_from_app(corlinman)
+                except Exception:  # noqa: BLE001 — degrade to the stub
+                    logger.exception(
+                        "voice: failed to resolve VoiceState from AppState"
+                    )
+                    live_state = None
+        await run_voice_session(websocket, live_state)
 
     return api
 
