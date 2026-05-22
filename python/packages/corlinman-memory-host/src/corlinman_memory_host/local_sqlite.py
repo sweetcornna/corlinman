@@ -598,6 +598,51 @@ class LocalSqliteHost(MemoryHost):
             )
         return out
 
+    async def recent(self, namespace: str, limit: int) -> list[MemoryHit]:
+        """Return the most recently upserted docs in ``namespace``.
+
+        Recency-ordered (newest first), independent of any BM25 query —
+        the right primitive for conversational memory, where the agent
+        wants the recent history with a user rather than a keyword-
+        matched subset. ``score`` decays by rank so the caller can still
+        treat the list as ranked. Not part of the :class:`MemoryHost`
+        ABC; callers reach it via ``getattr``/``hasattr``.
+        """
+        if limit <= 0 or not namespace.strip():
+            return []
+        try:
+            ids = await self._store.filter_chunk_ids_by_namespace([namespace])
+        except aiosqlite.Error as exc:
+            raise MemoryHostError(
+                f"LocalSqliteHost: recent namespace scan: {exc}"
+            ) from exc
+        if not ids:
+            return []
+        # ids come back ASC — the tail is the newest. Hydrate newest-first.
+        recent_ids = list(reversed(ids[-limit:]))
+        try:
+            chunks = await self._store.query_chunks_by_ids(recent_ids)
+        except aiosqlite.Error as exc:
+            raise MemoryHostError(
+                f"LocalSqliteHost: recent hydrate: {exc}"
+            ) from exc
+        by_id: dict[int, _ChunkRow] = {c.id: c for c in chunks}
+        out: list[MemoryHit] = []
+        for rank, cid in enumerate(recent_ids):
+            c = by_id.get(cid)
+            if c is None:
+                continue
+            out.append(
+                MemoryHit(
+                    id=str(cid),
+                    content=c.content,
+                    score=1.0 - (rank / max(limit, 1)),
+                    source=self._name,
+                    metadata={"namespace": c.namespace},
+                )
+            )
+        return out
+
     async def upsert(self, doc: MemoryDoc) -> str:
         counter = self._upsert_counter
         self._upsert_counter += 1

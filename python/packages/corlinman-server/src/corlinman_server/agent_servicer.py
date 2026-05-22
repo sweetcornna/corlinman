@@ -278,11 +278,12 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # dispatchable but invisible.
         _inject_builtin_tools(start)
 
-        # Automatic conversation memory: recall before answering. Captured
-        # before the recall note is injected so we store the *user's*
-        # words, not our own augmentation.
+        # Automatic conversation memory: recall before answering. The
+        # user's text is captured first — both for the post-turn store
+        # and so it reflects the user's words, not the recall note we
+        # are about to inject.
         user_text = _last_user_text(start.messages)
-        await self._recall_memory(start, user_text)
+        await self._recall_memory(start)
 
         # Bump the tool-result timeout above the M2 default (0.05s) so the
         # loop actually waits long enough for the gateway to round-trip a
@@ -611,31 +612,34 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             self._memory_host = None
         return self._memory_host
 
-    async def _recall_memory(self, start: AgentChatStart, user_text: str) -> None:
-        """Query memory for context relevant to ``user_text`` and inject a
-        recall note into the system prompt. No-op without a session key
-        (one-shot HTTP callers) or a usable host."""
-        if not start.session_key or not user_text.strip():
+    async def _recall_memory(self, start: AgentChatStart) -> None:
+        """Recall recent conversation memory for this session and fold it
+        into the system prompt.
+
+        Conversational memory wants *recency*, not keyword relevance — the
+        agent should see the recent history with this user, so we pull the
+        most recent stored turns for the ``session_key`` namespace rather
+        than running a BM25 match. No-op without a session key (one-shot
+        HTTP callers) or a usable host.
+        """
+        if not start.session_key:
             return
         host = await self._get_memory_host()
         if host is None:
             return
+        recent_fn = getattr(host, "recent", None)
+        if recent_fn is None:
+            return
         try:
-            from corlinman_memory_host import MemoryQuery
-
-            hits = await host.query(
-                MemoryQuery(
-                    text=user_text,
-                    top_k=5,
-                    namespace=start.session_key,
-                )
-            )
+            hits = await recent_fn(start.session_key, 8)
         except Exception as exc:  # noqa: BLE001
             logger.warning("agent.memory.recall_failed", error=str(exc))
             return
         if not hits:
             return
-        recalled = "\n".join(f"- {h.content}" for h in hits)
+        # ``recent`` returns newest-first; present oldest-first so the
+        # injected block reads chronologically.
+        recalled = "\n".join(f"- {h.content}" for h in reversed(hits))
         note = (
             "## Memory from earlier conversations with this user\n"
             f"{recalled}\n"

@@ -45,6 +45,25 @@ async def test_upsert_then_query_roundtrip(host: LocalSqliteHost) -> None:
     assert "lazy fox" in hits[0].content
 
 
+async def test_recent_returns_newest_first_scoped_by_namespace(
+    host: LocalSqliteHost,
+) -> None:
+    """recent() pulls the latest docs for a namespace, newest first,
+    independent of any BM25 query text."""
+    await host.upsert(MemoryDoc(content="turn one", namespace="sess-a"))
+    await host.upsert(MemoryDoc(content="turn two", namespace="sess-a"))
+    await host.upsert(MemoryDoc(content="turn three", namespace="sess-a"))
+    await host.upsert(MemoryDoc(content="other session", namespace="sess-b"))
+
+    hits = await host.recent("sess-a", 2)
+    assert [h.content for h in hits] == ["turn three", "turn two"]
+    assert all(h.metadata["namespace"] == "sess-a" for h in hits)
+
+    # Empty / unknown namespace → no hits, no error.
+    assert await host.recent("sess-unknown", 5) == []
+    assert await host.recent("sess-a", 0) == []
+
+
 async def test_namespace_filter_scopes_results(host: LocalSqliteHost) -> None:
     id_a = await host.upsert(
         MemoryDoc(content="alpha document body", namespace="diary")
