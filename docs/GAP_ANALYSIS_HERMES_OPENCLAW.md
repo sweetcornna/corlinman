@@ -1,6 +1,7 @@
 # corlinman 功能广度差距分析 —— 对标 hermes-agent / openclaw
 
-> **状态**: 审计完成 2026-05-22(ap1.0.0 之后)。
+> **状态**: ✅ 审计 + Tier A + Tier B 已执行落地(2026-05-22,ap1.0.0 之后)。
+> Tier C(RAG 深化)推迟 —— 审计确认 embedding/RAG 已接线,深化属低优先。
 > **方法**: 2 个调研 agent 独立抓取 `NousResearch/hermes-agent`、`openclaw/openclaw`
 > 的真实特性面;corlinman 现状由主线**逐项实测代码**(grep 501 / NotImplementedError /
 > Mock / 实际调用链),不信任"文件存在即完成"。
@@ -64,12 +65,17 @@
 
 > 受 harness 限制:并行**写代码** agent 上限 2–3,文件域必须不重叠。
 
-| 波 | parcel | 并行 | 备注 |
-| --- | --- | --- | --- |
-| A1 | P6(evolution)+ P8(Bedrock/Azure) | 2 | 文件域不重叠:evolution 路由 ↔ providers 包 |
-| A2 | P11(热重载)+ P7(语音 provider) | 2 | entrypoint 接线 ↔ routes_voice |
-| B1 | P14(MCP)+ P16(执行器补全) | 2 | MCP 桥 ↔ tool executor |
-| B2 | P10(频道广度)+ P15(内置工具) | 2 | channels 包 ↔ 工具集 |
-| C | P17(OTel)+ RAG 深化 | 2 | 收尾 |
+| 波 | parcel | 状态 |
+| --- | --- | --- |
+| A1 | P6(evolution apply/rollback)+ P8(Bedrock/Azure provider) | ✅ |
+| A2 | P11(配置热重载)+ P7(OpenAI Realtime 语音) | ✅ |
+| B1 | P14+P16(MCP 接入 + 执行器补全)+ P10(Discord/Slack/Feishu)+ MCP 启动装配 | ✅ |
+| B2 | P15(web_fetch/web_search/calculator 内置工具)+ P17(OTel span 埋点) | ✅ |
+| C | RAG 深化(session 检索 / dreaming 整理) | ⏳ 推迟 |
 
-目标版本:Tier A 落地 = `ap1.1.0`;Tier B = `ap1.2.0`;Tier C = `ap1.3.0`。
+实际执行:全部 Tier A + Tier B 用多 agent 并行派发(每波 2 个 agent,文件域不
+重叠,主线集成 + 逐波跑全套件)。全套件 **2810 passed**。
+
+遗留收尾(已知,非阻断):P6 applier 是"状态机 + 审计",真实内容变更(引擎
+提示 / 技能文件)需把 kb/fs 句柄穿过 `AdminState`;P15 新内置工具需在 agent
+card 的 `tools_allowed` 里登记后 persona 才会发起调用。
