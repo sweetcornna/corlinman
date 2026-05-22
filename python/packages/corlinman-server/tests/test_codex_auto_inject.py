@@ -3,6 +3,11 @@
 Verifies that ``_auto_inject_codex`` mutates ``state.config`` correctly
 when ``~/.codex/auth.json`` is detected, and that it is a no-op when
 the provider is already configured or the file is absent.
+
+The model detection path (``_detect_best_codex_model``) is patched out in
+most tests — we use the fallback path (``load_codex_credential`` returns
+``None``) so every test remains network-free and the injected model is
+always ``_CODEX_MODEL_FALLBACK = "chatgpt-4o-latest"``.
 """
 
 from __future__ import annotations
@@ -13,7 +18,9 @@ from unittest.mock import patch
 
 import pytest
 
-from corlinman_server.gateway.providers import _auto_inject_codex
+from corlinman_server.gateway.providers import _auto_inject_codex, _detect_best_codex_model
+
+_FALLBACK = "chatgpt-4o-latest"
 
 
 def _state(config: dict[str, Any] | None = None) -> Any:
@@ -28,24 +35,40 @@ def _not_detected_status() -> Any:
     return SimpleNamespace(detected=False, account_id=None)
 
 
+# Patch load_codex_credential in the source module that _auto_inject_codex
+# imports from locally (via `from corlinman_providers._codex_oauth import ...`).
+# This prevents the /v1/models probe and makes best_model fall back to
+# _CODEX_MODEL_FALLBACK = "chatgpt-4o-latest".
+_PATCH_NO_CRED = patch(
+    "corlinman_providers._codex_oauth.load_codex_credential",
+    return_value=None,
+)
+
+
 class TestAutoInjectCodex:
     def test_injects_when_detected_and_not_configured(self) -> None:
         state = _state({"providers": {}})
-        with patch(
-            "corlinman_server.gateway.oauth.codex_external.read_codex_status",
-            return_value=_detected_status(),
+        with (
+            patch(
+                "corlinman_server.gateway.oauth.codex_external.read_codex_status",
+                return_value=_detected_status(),
+            ),
+            _PATCH_NO_CRED,
         ):
             _auto_inject_codex(state)
 
         assert "codex" in state.config["providers"]
         assert state.config["providers"]["codex"]["kind"] == "codex"
-        assert state.config["models"]["default"] == "o4-mini"
+        assert state.config["models"]["default"] == _FALLBACK
 
     def test_no_op_when_codex_already_configured(self) -> None:
         state = _state({"providers": {"codex": {"kind": "codex", "api_key": "manual"}}})
-        with patch(
-            "corlinman_server.gateway.oauth.codex_external.read_codex_status",
-            return_value=_detected_status(),
+        with (
+            patch(
+                "corlinman_server.gateway.oauth.codex_external.read_codex_status",
+                return_value=_detected_status(),
+            ),
+            _PATCH_NO_CRED,
         ):
             _auto_inject_codex(state)
 
@@ -79,9 +102,12 @@ class TestAutoInjectCodex:
             "providers": {},
             "models": {"default": "claude-sonnet-4-5"},
         })
-        with patch(
-            "corlinman_server.gateway.oauth.codex_external.read_codex_status",
-            return_value=_detected_status(),
+        with (
+            patch(
+                "corlinman_server.gateway.oauth.codex_external.read_codex_status",
+                return_value=_detected_status(),
+            ),
+            _PATCH_NO_CRED,
         ):
             _auto_inject_codex(state)
 
@@ -89,9 +115,12 @@ class TestAutoInjectCodex:
 
     def test_creates_providers_dict_when_absent(self) -> None:
         state = _state({})  # No "providers" key
-        with patch(
-            "corlinman_server.gateway.oauth.codex_external.read_codex_status",
-            return_value=_detected_status(),
+        with (
+            patch(
+                "corlinman_server.gateway.oauth.codex_external.read_codex_status",
+                return_value=_detected_status(),
+            ),
+            _PATCH_NO_CRED,
         ):
             _auto_inject_codex(state)
 
@@ -115,15 +144,48 @@ class TestAutoInjectCodex:
         ):
             _auto_inject_codex(state)  # must not raise
 
-    def test_alias_added_for_o4_mini(self) -> None:
+    def test_alias_added_for_fallback_model(self) -> None:
+        """When no credential is available the fallback model alias is injected."""
         state = _state({"providers": {}})
-        with patch(
-            "corlinman_server.gateway.oauth.codex_external.read_codex_status",
-            return_value=_detected_status(),
+        with (
+            patch(
+                "corlinman_server.gateway.oauth.codex_external.read_codex_status",
+                return_value=_detected_status(),
+            ),
+            _PATCH_NO_CRED,
         ):
             _auto_inject_codex(state)
 
         aliases = state.config["models"]["aliases"]
-        assert "o4-mini" in aliases
-        assert aliases["o4-mini"]["provider"] == "codex"
-        assert aliases["o4-mini"]["model"] == "o4-mini"
+        assert _FALLBACK in aliases
+        assert aliases[_FALLBACK]["provider"] == "codex"
+        assert aliases[_FALLBACK]["model"] == _FALLBACK
+
+    def test_uses_detected_model_from_probe(self) -> None:
+        """When _detect_best_codex_model is patched to 'gpt-5', that model is used."""
+        from corlinman_providers._codex_oauth import CodexOAuthCredential
+
+        fake_cred = CodexOAuthCredential(
+            access_token="tok-test", refresh_token=None, expires_at_ms=None
+        )
+        state = _state({"providers": {}})
+        with (
+            patch(
+                "corlinman_server.gateway.oauth.codex_external.read_codex_status",
+                return_value=_detected_status(),
+            ),
+            patch(
+                "corlinman_providers._codex_oauth.load_codex_credential",
+                return_value=fake_cred,
+            ),
+            patch(
+                "corlinman_server.gateway.providers._detect_best_codex_model",
+                return_value="gpt-5",
+            ),
+        ):
+            _auto_inject_codex(state)
+
+        assert state.config["models"]["default"] == "gpt-5"
+        aliases = state.config["models"]["aliases"]
+        assert "gpt-5" in aliases
+        assert aliases["gpt-5"]["provider"] == "codex"

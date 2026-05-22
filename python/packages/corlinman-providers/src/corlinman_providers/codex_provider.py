@@ -12,9 +12,11 @@ Credentials are read from ``~/.codex/auth.json`` (or ``$CODEX_HOME/auth.json``)
 on every ``build()`` call, and auto-refreshed in ``chat_stream`` when the
 JWT ``exp`` claim is within 5 minutes.
 
-Default model is ``o4-mini``, which is the model the upstream Codex CLI
-uses by default. Any model supported by the OpenAI API (``gpt-*``,
-``o1-*``, ``o3-*``, ``o4-*``, ``codex-*``) is accepted.
+Default model is ``chatgpt-4o-latest``. At auto-injection time the gateway
+probes ``/v1/models`` and picks the best available model from a preference
+list; ``chatgpt-4o-latest`` is the fallback when the probe fails. Any model
+supported by the OpenAI API (``gpt-*``, ``o1-*``, ``o3-*``, ``o4-*``,
+``codex-*``, ``chatgpt-*``) is accepted.
 """
 
 from __future__ import annotations
@@ -36,7 +38,7 @@ from corlinman_providers.specs import ProviderKind, ProviderSpec
 
 logger = structlog.get_logger(__name__)
 
-_DEFAULT_MODEL = "o4-mini"
+_DEFAULT_MODEL = "chatgpt-4o-latest"
 
 
 class CodexProvider(OpenAIProvider):
@@ -80,9 +82,10 @@ class CodexProvider(OpenAIProvider):
     @classmethod
     def supports(cls, model: str) -> bool:
         """Claim OpenAI / Codex model families."""
-        return model.startswith(
-            ("gpt-", "o1-", "o3-", "o4-", "codex-")
-        ) or model == "gpt-3.5-turbo"
+        return (
+            model.startswith(("gpt-", "o1-", "o3-", "o4-", "codex-", "chatgpt-"))
+            or model == "gpt-3.5-turbo"
+        )
 
     async def chat_stream(
         self,

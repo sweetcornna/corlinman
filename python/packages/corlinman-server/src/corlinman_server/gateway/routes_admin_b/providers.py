@@ -314,6 +314,125 @@ def _custom_view_from_entry(slug: str, entry: dict[str, Any]) -> CustomProviderV
 
 
 # ---------------------------------------------------------------------------
+# Provider model-discovery helpers (module-level so tests can import them)
+# ---------------------------------------------------------------------------
+
+_OPENAI_COMPATIBLE_KINDS: frozenset[str] = frozenset(
+    {
+        "openai",
+        "openai_compatible",
+        "openai-compatible",
+        "codex",
+        "groq",
+        "qwen",
+        "glm",
+        "deepseek",
+    }
+)
+
+
+async def _query_provider_models(
+    name: str, cfg: dict[str, Any]
+) -> dict[str, Any]:
+    """Query ``/v1/models`` for a provider and return a result dict.
+
+    Returns ``{"ok": bool, "models": list[str], "latency_ms": int, "error": str|null}``.
+    For OpenAI-compatible providers, calls ``<base_url>/v1/models`` with the
+    configured API key. For the ``codex`` provider, reads the token from
+    ``~/.codex/auth.json`` and queries ``https://api.openai.com/v1/models``.
+    """
+    import os
+    import time as _time
+
+    import httpx as _httpx
+
+    providers_cfg = cfg.get("providers") or {}
+    entry = providers_cfg.get(name)
+
+    # Special handling for the auto-injected codex provider (no entry in config).
+    is_codex = name == "codex"
+    if entry is None and not is_codex:
+        return {"ok": False, "models": [], "latency_ms": 0, "error": "provider_not_found"}
+
+    if is_codex:
+        # Read token from ~/.codex/auth.json
+        try:
+            from corlinman_providers._codex_oauth import (  # noqa: PLC0415
+                load_codex_credential,
+            )
+
+            cred = load_codex_credential()
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "models": [], "latency_ms": 0, "error": str(exc)}
+        if cred is None:
+            return {
+                "ok": False,
+                "models": [],
+                "latency_ms": 0,
+                "error": "codex_auth_not_found",
+            }
+        api_key = cred.access_token
+        base_url = "https://api.openai.com"
+    else:
+        entry_dict = dict(entry) if isinstance(entry, dict) else {}
+        kind = str(entry_dict.get("kind") or "openai_compatible").lower().replace("-", "_")
+        if kind not in _OPENAI_COMPATIBLE_KINDS:
+            return {
+                "ok": False,
+                "models": [],
+                "latency_ms": 0,
+                "error": f"kind '{kind}' does not support /v1/models probe",
+            }
+        raw_key = entry_dict.get("api_key")
+        if isinstance(raw_key, dict):
+            if "value" in raw_key:
+                api_key = str(raw_key["value"])
+            elif "env" in raw_key:
+                api_key = os.environ.get(str(raw_key["env"]), "")
+            else:
+                api_key = ""
+        elif isinstance(raw_key, str):
+            api_key = raw_key
+        else:
+            api_key = ""
+        raw_base = entry_dict.get("base_url") or "https://api.openai.com"
+        base_url = str(raw_base).rstrip("/")
+
+    url = base_url.rstrip("/") + "/v1/models"
+    headers: dict[str, str] = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    t0 = _time.monotonic()
+    try:
+        async with _httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url, headers=headers)
+        latency_ms = int((_time.monotonic() - t0) * 1000)
+        if resp.status_code >= 400:
+            return {
+                "ok": False,
+                "models": [],
+                "latency_ms": latency_ms,
+                "error": f"HTTP {resp.status_code}",
+            }
+        data = resp.json()
+        model_ids = [
+            str(item["id"])
+            for item in (data.get("data") or [])
+            if isinstance(item, dict) and isinstance(item.get("id"), str)
+        ]
+        return {
+            "ok": True,
+            "models": sorted(model_ids),
+            "latency_ms": latency_ms,
+            "error": None,
+        }
+    except Exception as exc:  # noqa: BLE001
+        latency_ms = int((_time.monotonic() - t0) * 1000)
+        return {"ok": False, "models": [], "latency_ms": latency_ms, "error": str(exc)}
+
+
+# ---------------------------------------------------------------------------
 # Router
 # ---------------------------------------------------------------------------
 
@@ -607,5 +726,17 @@ def router() -> APIRouter:
                 return err
 
         return Response(status_code=204)
+
+    @r.post("/admin/providers/{name}/test")
+    async def test_provider(name: str):
+        cfg = dict(config_snapshot())
+        result = await _query_provider_models(name, cfg)
+        return result
+
+    @r.get("/admin/providers/{name}/models")
+    async def list_provider_models(name: str):
+        cfg = dict(config_snapshot())
+        result = await _query_provider_models(name, cfg)
+        return {"models": result["models"], "error": result["error"]}
 
     return r

@@ -146,7 +146,18 @@ class TestCodexProviderBuild:
 
 
 class TestCodexProviderSupports:
-    @pytest.mark.parametrize("model", ["gpt-4o", "o1-mini", "o3-pro", "o4-mini", "codex-mini"])
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "gpt-4o",
+            "o1-mini",
+            "o3-pro",
+            "o4-mini",
+            "codex-mini",
+            "chatgpt-4o-latest",
+            "chatgpt-4o",
+        ],
+    )
     def test_supported_models(self, model: str) -> None:
         assert CodexProvider.supports(model)
 

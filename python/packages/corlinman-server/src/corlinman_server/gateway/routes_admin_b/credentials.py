@@ -451,4 +451,30 @@ def router() -> APIRouter:
 
         return StatusOk()
 
+    @r.get("/admin/credentials/codex/status")
+    async def codex_credential_status():
+        import time  # noqa: PLC0415
+
+        from corlinman_server.gateway.oauth.codex_external import (  # noqa: PLC0415
+            read_codex_status,
+        )
+
+        status = read_codex_status()
+        if status is None:
+            return {
+                "detected": False,
+                "account": None,
+                "expires_at_ms": None,
+                "expired": None,
+            }
+        expired: bool | None = False
+        if status.expires_at_ms:
+            expired = int(time.time() * 1000) >= status.expires_at_ms
+        return {
+            "detected": status.detected,
+            "account": status.account_id,
+            "expires_at_ms": status.expires_at_ms,
+            "expired": expired,
+        }
+
     return r

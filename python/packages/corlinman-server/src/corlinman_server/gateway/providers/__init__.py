@@ -62,6 +62,8 @@ __all__ = [
     "bootstrap",
     "build_registry",
     "model_source_for",
+    "_detect_best_codex_model",
+    "_auto_inject_codex",
 ]
 
 
@@ -262,6 +264,87 @@ def model_source_for(state: Any) -> RegistryModelSource | None:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Codex best-model detection (sync — runs at startup)
+# ---------------------------------------------------------------------------
+
+_MODEL_PREFERENCE: list[str] = [
+    "gpt-5.5",
+    "gpt-5",
+    "gpt-4.5-turbo",
+    "gpt-4.5",
+    "chatgpt-4o-latest",
+    "gpt-4o",
+    "gpt-4o-mini",
+    "o4-mini",
+]
+_CODEX_MODEL_FALLBACK: str = "chatgpt-4o-latest"
+
+
+def _detect_best_codex_model(access_token: str) -> str:
+    """Query ``/v1/models`` with the Codex OAuth token and pick the best model.
+
+    Uses synchronous ``httpx.get`` (timeout 5 s) because this runs at
+    startup (sync bootstrap context).  Returns :data:`_CODEX_MODEL_FALLBACK`
+    on any failure — network error, timeout, unexpected shape.
+    """
+    import re
+
+    try:
+        import httpx
+
+        resp = httpx.get(
+            "https://api.openai.com/v1/models",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=5.0,
+        )
+        if resp.status_code >= 400:
+            logger.warning(
+                "gateway.providers.codex_model_probe_failed",
+                status=resp.status_code,
+            )
+            return _CODEX_MODEL_FALLBACK
+        data = resp.json()
+        available: set[str] = set()
+        for item in data.get("data") or []:
+            mid = item.get("id") if isinstance(item, dict) else None
+            if isinstance(mid, str) and mid:
+                available.add(mid)
+
+        # Check preference list first (highest-priority wins).
+        for model in _MODEL_PREFERENCE:
+            if model in available:
+                return model
+
+        # Fallback: scan for highest gpt-N.M version (N >= 4).
+        best_version: tuple[int, float] | None = None
+        best_name: str | None = None
+        _pat = re.compile(r"^gpt-(\d+)(?:\.(\d+))?")
+        for mid in available:
+            m = _pat.match(mid)
+            if not m:
+                continue
+            major = int(m.group(1))
+            if major < 4:
+                continue
+            minor = float(m.group(2) or "0")
+            v = (major, minor)
+            if best_version is None or v > best_version:
+                best_version = v
+                best_name = mid
+
+        if best_name is not None:
+            return best_name
+
+    except Exception as exc:  # noqa: BLE001 — startup probe must never crash
+        logger.warning(
+            "gateway.providers.codex_model_probe_error",
+            error=str(exc),
+        )
+
+    return _CODEX_MODEL_FALLBACK
+
+
 def _auto_inject_codex(state: Any) -> None:
     """Inject a synthetic Codex provider + ``models.default`` into ``state.config``.
 
@@ -274,11 +357,13 @@ def _auto_inject_codex(state: Any) -> None:
     * Only runs when ``state.config`` is a mutable ``dict``.
     * No-op when a ``"codex"`` key already exists in
       ``config["providers"]`` (manual config wins).
-    * Injects ``models.default = "o4-mini"`` (and a matching alias)
-      only when no default model is configured.
+    * Injects ``models.default`` (and a matching alias) only when no
+      default model is configured; the model is detected by probing
+      ``/v1/models`` via :func:`_detect_best_codex_model`.
     * Never raises — any failure is logged + silently skipped.
     """
     try:
+        from corlinman_providers._codex_oauth import load_codex_credential
         from corlinman_server.gateway.oauth.codex_external import read_codex_status
 
         config = getattr(state, "config", None)
@@ -297,6 +382,13 @@ def _auto_inject_codex(state: Any) -> None:
         if status is None or not status.detected:
             return
 
+        # Detect the best available model by probing /v1/models.
+        cred = load_codex_credential()
+        if cred is not None:
+            best_model = _detect_best_codex_model(cred.access_token)
+        else:
+            best_model = _CODEX_MODEL_FALLBACK
+
         # Inject the provider spec.
         providers["codex"] = {"kind": "codex", "enabled": True}
 
@@ -310,15 +402,15 @@ def _auto_inject_codex(state: Any) -> None:
             if not isinstance(aliases, dict):
                 aliases = {}
                 models["aliases"] = aliases
-            if "o4-mini" not in aliases:
-                aliases["o4-mini"] = {"provider": "codex", "model": "o4-mini"}
-            models["default"] = "o4-mini"
+            if best_model not in aliases:
+                aliases[best_model] = {"provider": "codex", "model": best_model}
+            models["default"] = best_model
 
         logger.info(
             "gateway.providers.codex_auto_detected",
             account=status.account_id,
-            default_model="o4-mini",
-            note="injected codex provider; set models.default=o4-mini",
+            default_model=best_model,
+            note=f"injected codex provider; set models.default={best_model}",
         )
     except Exception as exc:  # noqa: BLE001 — never block boot
         logger.warning("gateway.providers.codex_inject_failed", error=str(exc))
