@@ -56,6 +56,7 @@ from corlinman_server.gateway_api import (
     ToolCallEvent,
 )
 from corlinman_server.gateway_api.types import InternalChatEvent
+from corlinman_server import telemetry
 
 __all__ = [
     "ChatMessage",
@@ -408,77 +409,96 @@ def router(state: ChatState | None = None) -> APIRouter:
         request: Request,
         x_session_key: str | None = Header(default=None),
     ) -> JSONResponse | StreamingResponse:
-        # Resolve the ChatService. Tests pass ``state`` directly; in the
-        # gateway the router is composed before the lifespan runs, so
-        # pull the live service the ``services.bootstrap`` sibling hook
-        # attached to ``AppState.chat`` (docs/contracts/runtime-wiring.md).
-        chat_state = state
-        if chat_state is None:
-            app_state = getattr(request.app.state, "corlinman", None)
-            svc = (
-                getattr(app_state, "chat", None)
-                if app_state is not None
-                else None
+        with telemetry.span(
+            "chat.completions",
+            attributes={
+                "chat.model": req.model or "",
+                "chat.stream": req.stream,
+                "chat.messages": len(req.messages),
+            },
+        ) as _span:
+            # Resolve the ChatService. Tests pass ``state`` directly; in the
+            # gateway the router is composed before the lifespan runs, so
+            # pull the live service the ``services.bootstrap`` sibling hook
+            # attached to ``AppState.chat`` (docs/contracts/runtime-wiring.md).
+            chat_state = state
+            if chat_state is None:
+                app_state = getattr(request.app.state, "corlinman", None)
+                svc = (
+                    getattr(app_state, "chat", None)
+                    if app_state is not None
+                    else None
+                )
+                if svc is not None:
+                    chat_state = ChatState(service=svc)
+            if chat_state is None:
+                _span.set_attribute("http.status_code", 501)
+                return _error_response(
+                    status.HTTP_501_NOT_IMPLEMENTED,
+                    "not_implemented",
+                    "no ChatService wired; build router(state=...)",
+                )
+
+            if not req.model:
+                _span.set_attribute("http.status_code", 400)
+                return _error_response(
+                    status.HTTP_400_BAD_REQUEST,
+                    "invalid_request",
+                    "`model` is required",
+                )
+            if not req.messages:
+                _span.set_attribute("http.status_code", 400)
+                return _error_response(
+                    status.HTTP_400_BAD_REQUEST,
+                    "invalid_request",
+                    "`messages` must be non-empty",
+                )
+
+            # Model alias / unknown-model fallback. Pure function so the
+            # logging tier sits in the handler.
+            original_model = req.model
+            resolution = apply_model_aliases(req.model, chat_state.model_redirect)
+            if resolution.kind == "aliased":
+                req.model = resolution.resolved or req.model
+            elif resolution.kind == "fallback_default":
+                req.model = resolution.resolved or req.model
+            elif resolution.kind == "unknown_no_default":
+                _span.set_attribute("http.status_code", 400)
+                return _error_response(
+                    status.HTTP_400_BAD_REQUEST,
+                    "unknown_model",
+                    f"model `{original_model}` is not a known alias or provider "
+                    f"model, and no `models.default` fallback is configured",
+                )
+
+            _span.set_attribute("chat.resolved_model", req.model)
+            _span.set_attribute("chat.model_resolution", resolution.kind)
+
+            session_key = _resolve_session_key(req, x_session_key)
+            internal_req = _build_internal_request(req, session_key)
+            cancel = asyncio.Event()
+
+            if req.stream:
+                _span.set_attribute("http.status_code", 200)
+
+                async def _agen() -> AsyncIterator[bytes]:
+                    try:
+                        async for chunk in _sse_iter(
+                            chat_state.service, internal_req, req.model, cancel
+                        ):
+                            if await request.is_disconnected():
+                                cancel.set()
+                                break
+                            yield chunk
+                    finally:
+                        cancel.set()
+
+                return StreamingResponse(_agen(), media_type="text/event-stream")
+
+            result = await _run_nonstream(
+                chat_state.service, internal_req, req.model, cancel
             )
-            if svc is not None:
-                chat_state = ChatState(service=svc)
-        if chat_state is None:
-            return _error_response(
-                status.HTTP_501_NOT_IMPLEMENTED,
-                "not_implemented",
-                "no ChatService wired; build router(state=...)",
-            )
-
-        if not req.model:
-            return _error_response(
-                status.HTTP_400_BAD_REQUEST,
-                "invalid_request",
-                "`model` is required",
-            )
-        if not req.messages:
-            return _error_response(
-                status.HTTP_400_BAD_REQUEST,
-                "invalid_request",
-                "`messages` must be non-empty",
-            )
-
-        # Model alias / unknown-model fallback. Pure function so the
-        # logging tier sits in the handler.
-        original_model = req.model
-        resolution = apply_model_aliases(req.model, chat_state.model_redirect)
-        if resolution.kind == "aliased":
-            req.model = resolution.resolved or req.model
-        elif resolution.kind == "fallback_default":
-            req.model = resolution.resolved or req.model
-        elif resolution.kind == "unknown_no_default":
-            return _error_response(
-                status.HTTP_400_BAD_REQUEST,
-                "unknown_model",
-                f"model `{original_model}` is not a known alias or provider "
-                f"model, and no `models.default` fallback is configured",
-            )
-
-        session_key = _resolve_session_key(req, x_session_key)
-        internal_req = _build_internal_request(req, session_key)
-        cancel = asyncio.Event()
-
-        if req.stream:
-            async def _agen() -> AsyncIterator[bytes]:
-                try:
-                    async for chunk in _sse_iter(
-                        chat_state.service, internal_req, req.model, cancel
-                    ):
-                        if await request.is_disconnected():
-                            cancel.set()
-                            break
-                        yield chunk
-                finally:
-                    cancel.set()
-
-            return StreamingResponse(_agen(), media_type="text/event-stream")
-
-        return await _run_nonstream(
-            chat_state.service, internal_req, req.model, cancel
-        )
+            _span.set_attribute("http.status_code", result.status_code)
+            return result
 
     return api

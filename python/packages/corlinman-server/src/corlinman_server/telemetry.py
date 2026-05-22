@@ -9,17 +9,20 @@ Contract (mirrors the Rust gateway's ``corlinman_gateway::telemetry``):
   overrides).
 * Once :func:`init_telemetry` runs, ``structlog`` adds ``trace_id`` /
   ``span_id`` to every record via :func:`_bind_trace_ids_processor`.
+* :func:`span` is a zero-overhead context manager when telemetry is off —
+  it never raises and is safe to use unconditionally throughout the call path.
 """
 
 from __future__ import annotations
 
 import contextlib
 import os
+from collections.abc import Generator
 from typing import Any
 
 import structlog
 
-__all__ = ["init_telemetry", "shutdown_telemetry"]
+__all__ = ["init_telemetry", "shutdown_telemetry", "span"]
 
 _PROVIDER: Any = None  # opentelemetry_sdk.trace.TracerProvider when wired
 
@@ -111,6 +114,77 @@ def init_telemetry() -> bool:
 
     structlog.get_logger(__name__).info("otel.init.ok", endpoint=endpoint)
     return True
+
+
+@contextlib.contextmanager
+def span(
+    name: str,
+    *,
+    attributes: dict[str, str | int | float | bool] | None = None,
+) -> Generator[Any, None, None]:
+    """Open an OTel span when telemetry is initialised; be a cheap no-op otherwise.
+
+    Usage::
+
+        with telemetry.span("chat.handler", attributes={"model": req.model}) as s:
+            ...
+            s.set_attribute("http.status_code", 200)
+
+    The yielded value is either a live :class:`opentelemetry.trace.Span` (when
+    a tracer provider is installed) or a :class:`opentelemetry.trace.NonRecordingSpan`
+    proxy — callers may call ``.set_attribute`` / ``.record_exception`` on it
+    safely in both cases. The context manager itself never raises.
+
+    Exceptions propagate normally; they are recorded on the span via
+    ``record_exception`` and the span status is set to ``ERROR`` before
+    re-raising.
+    """
+    if _PROVIDER is None:
+        # No tracer installed — yield a guaranteed no-op proxy.
+        try:
+            from opentelemetry import trace
+
+            yield trace.NonRecordingSpan(trace.INVALID_SPAN_CONTEXT)
+        except Exception:  # pragma: no cover — OTel not importable
+            yield _NullSpan()
+        return
+
+    try:
+        from opentelemetry.trace import StatusCode
+    except Exception:  # pragma: no cover — should not happen after init
+        yield _NullSpan()
+        return
+
+    # Use _PROVIDER.get_tracer() directly so tests can swap _PROVIDER freely
+    # without fighting OTel's once-only global-provider guard.
+    tracer = _PROVIDER.get_tracer(__name__)
+    with tracer.start_as_current_span(name) as current_span:
+        if attributes:
+            for key, value in attributes.items():
+                try:
+                    current_span.set_attribute(key, value)
+                except Exception:  # pragma: no cover — defensive
+                    pass
+        try:
+            yield current_span
+        except Exception as exc:
+            with contextlib.suppress(Exception):
+                current_span.record_exception(exc)
+                current_span.set_status(StatusCode.ERROR, str(exc))
+            raise
+
+
+class _NullSpan:
+    """Minimal no-op span for the extreme edge case where OTel is not importable."""
+
+    def set_attribute(self, _key: str, _value: object) -> None:
+        pass
+
+    def record_exception(self, _exc: BaseException) -> None:
+        pass
+
+    def set_status(self, *_args: object) -> None:
+        pass
 
 
 def shutdown_telemetry() -> None:
