@@ -125,8 +125,8 @@ def test_model_source_lists_aliases_and_providers() -> None:
     bootstrap(state)
     source = model_source_for(state)
     assert source is not None
-    ids = [e.id for e in source.list_models()]
-    # aliases first, in declaration order, then provider slot names
+    ids = [e.id for e in source.list_models() if e.id != "codex"]
+    # aliases first (including o4-mini when Codex is auto-detected), then slot names
     assert ids == ["gpt-4o-mini", "gpt-4o", "openai", "myproxy"]
     entries = list(source.list_models())
     assert all(isinstance(e, ModelEntry) for e in entries)

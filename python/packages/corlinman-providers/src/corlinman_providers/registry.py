@@ -22,6 +22,7 @@ import structlog
 from corlinman_providers.anthropic_provider import AnthropicProvider
 from corlinman_providers.base import CorlinmanProvider
 from corlinman_providers.china import DeepSeekProvider, GLMProvider, QwenProvider
+from corlinman_providers.codex_provider import CodexProvider
 from corlinman_providers.declarative import (
     DeclarativeProvider,
     DeclarativeProviderSpec,
@@ -70,6 +71,9 @@ _KIND_TO_CLASS: dict[ProviderKind, type[Any]] = {
     # ``api-key`` auth. See bedrock_provider.py / azure_provider.py.
     ProviderKind.BEDROCK: BedrockProvider,
     ProviderKind.AZURE: AzureProvider,
+    # Codex (ChatGPT subscription) OAuth — reads ~/.codex/auth.json
+    # written by ``codex login``.  Shares the OpenAI wire format.
+    ProviderKind.CODEX: CodexProvider,
     # Built-in echo provider for the easy-setup skip path (Wave 2.2).
     # Zero-config; always builds successfully even without credentials.
     ProviderKind.MOCK: MockProvider,

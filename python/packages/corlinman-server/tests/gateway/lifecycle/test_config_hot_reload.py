@@ -104,8 +104,9 @@ def test_adding_provider_rebuilds_registry(tmp_path: Path) -> None:
         client.get("/health")
         state = app.state.corlinman
 
-        # Boot-time registry: just the one provider.
-        assert _provider_names(state) == {"openai"}
+        # Boot-time registry: just the one provider (strip Codex if
+        # ~/.codex/auth.json exists on the dev machine).
+        assert _provider_names(state) - {"codex"} == {"openai"}
         first_registry = state.provider_registry
 
         # Add a second provider to the file, then reload.
@@ -114,7 +115,7 @@ def test_adding_provider_rebuilds_registry(tmp_path: Path) -> None:
 
         assert "providers" in report.changed_sections
         # The registry was rebuilt and the new provider is live.
-        assert _provider_names(state) == {"openai", "myproxy"}
+        assert _provider_names(state) - {"codex"} == {"openai", "myproxy"}
         # bootstrap replaced the handle, not mutated it in place.
         assert state.provider_registry is not first_registry
 
@@ -128,7 +129,7 @@ def test_malformed_reload_keeps_previous_snapshot(tmp_path: Path) -> None:
     with TestClient(app) as client:
         client.get("/health")
         state = app.state.corlinman
-        assert _provider_names(state) == {"openai", "myproxy"}
+        assert _provider_names(state) - {"codex"} == {"openai", "myproxy"}
         good_registry = state.provider_registry
 
         # Corrupt the file, then reload.
@@ -140,7 +141,7 @@ def test_malformed_reload_keeps_previous_snapshot(tmp_path: Path) -> None:
         # Previous good snapshot + registry retained — gateway stays up.
         assert state.config["providers"]["myproxy"]["kind"] == "openai_compatible"
         assert state.provider_registry is good_registry
-        assert _provider_names(state) == {"openai", "myproxy"}
+        assert _provider_names(state) - {"codex"} == {"openai", "myproxy"}
 
         # Gateway still serves requests after a failed reload.
         assert client.get("/health").status_code == 200

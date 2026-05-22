@@ -262,6 +262,68 @@ def model_source_for(state: Any) -> RegistryModelSource | None:
 # ---------------------------------------------------------------------------
 
 
+def _auto_inject_codex(state: Any) -> None:
+    """Inject a synthetic Codex provider + ``models.default`` into ``state.config``.
+
+    Runs in :func:`bootstrap` before the registry is built.  Mirrors the
+    hermes ``_import_codex_cli_tokens`` auto-wiring: if the operator has
+    already run ``codex login`` (``~/.codex/auth.json`` present + valid),
+    we inject the provider without requiring any ``config.toml`` edit.
+
+    Rules:
+    * Only runs when ``state.config`` is a mutable ``dict``.
+    * No-op when a ``"codex"`` key already exists in
+      ``config["providers"]`` (manual config wins).
+    * Injects ``models.default = "o4-mini"`` (and a matching alias)
+      only when no default model is configured.
+    * Never raises — any failure is logged + silently skipped.
+    """
+    try:
+        from corlinman_server.gateway.oauth.codex_external import read_codex_status
+
+        config = getattr(state, "config", None)
+        if not isinstance(config, dict):
+            return
+
+        providers = config.get("providers")
+        if not isinstance(providers, dict):
+            providers = {}
+            config["providers"] = providers
+
+        if "codex" in providers:
+            return  # operator already configured it manually
+
+        status = read_codex_status()
+        if status is None or not status.detected:
+            return
+
+        # Inject the provider spec.
+        providers["codex"] = {"kind": "codex", "enabled": True}
+
+        # Inject a default model if none is set.
+        models = config.get("models")
+        if not isinstance(models, dict):
+            models = {}
+            config["models"] = models
+        if not models.get("default"):
+            aliases = models.get("aliases")
+            if not isinstance(aliases, dict):
+                aliases = {}
+                models["aliases"] = aliases
+            if "o4-mini" not in aliases:
+                aliases["o4-mini"] = {"provider": "codex", "model": "o4-mini"}
+            models["default"] = "o4-mini"
+
+        logger.info(
+            "gateway.providers.codex_auto_detected",
+            account=status.account_id,
+            default_model="o4-mini",
+            note="injected codex provider; set models.default=o4-mini",
+        )
+    except Exception as exc:  # noqa: BLE001 — never block boot
+        logger.warning("gateway.providers.codex_inject_failed", error=str(exc))
+
+
 def bootstrap(state: Any) -> None:
     """Startup wiring — build the provider registry, attach it to ``state``.
 
@@ -278,10 +340,20 @@ def bootstrap(state: Any) -> None:
     * ``state.extras["models_source"]`` — a :class:`RegistryModelSource`
       ready for the ``/v1/models`` route.
 
+    Codex auto-detection: if ``~/.codex/auth.json`` is present and no
+    ``"codex"`` provider is manually configured, a synthetic provider
+    spec + ``models.default = "o4-mini"`` are injected into
+    ``state.config`` before the registry is built, so the operator
+    doesn't need to edit ``config.toml`` after ``codex login``.
+
     Returns ``None`` (no background tasks). On any failure the
     ``provider_registry`` slot is left ``None`` and ``/v1/models``
     returns 501 ``no ProviderRegistry wired`` — degraded, not crashed.
     """
+    # Auto-inject Codex before building the registry so the channels
+    # runtime (which runs after this bootstrap) sees models.default.
+    _auto_inject_codex(state)
+
     config = getattr(state, "config", None)
     data_dir = getattr(state, "data_dir", None)
     try:

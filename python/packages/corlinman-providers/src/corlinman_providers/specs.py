@@ -59,6 +59,10 @@ class ProviderKind(StrEnum):
     REPLICATE = "replicate"
     BEDROCK = "bedrock"
     AZURE = "azure"
+    # Codex (ChatGPT subscription) OAuth provider — reads tokens from
+    # ``~/.codex/auth.json`` written by ``codex login``.  Shares the
+    # OpenAI wire format; the OAuth JWT is passed as the bearer token.
+    CODEX = "codex"
     # Built-in echo provider — zero-config OpenAI-shape adapter that
     # reverses the last user message. Used by the easy-setup "skip LLM
     # connection" path (Wave 2.2) so new users can land on a working
