@@ -1,6 +1,12 @@
 # PLAN — Agent Capability Fusion (opencode + Claude Code)
 
-Status: **in progress** · Owner: agent · Created 2026-05-22
+Status: **Tier 1 + Tier 2 done, verified on VPS** · Owner: agent · Created 2026-05-22
+
+> Tier 1 (todo_write, apply_patch, system prompt) and Tier 2 (shell
+> hardening) are implemented, tested, deployed, and verified end-to-end:
+> the agent plans with todos, reads before editing, applies patches, and
+> verifies with run_shell. Reasoning-loop round cap raised 8 → 60 so
+> multi-step tasks finish. See the closing "Parity assessment" section.
 
 Goal: bring the corlinman QQ-bot agent up to opencode / Claude Code
 parity as a coding agent. Driven by a 3-agent source study of
@@ -112,8 +118,33 @@ appears.
 
 ## Execution order
 
-1. coding-agent system prompt (highest leverage / lowest effort)
-2. `todo_write` tool + context re-injection
-3. `apply_patch` tool
-4. shell hardening
-5. tests for each; deploy; verify end-to-end on the VPS
+1. coding-agent system prompt (highest leverage / lowest effort) — done
+2. `todo_write` tool + context re-injection — done
+3. `apply_patch` tool — done
+4. shell hardening — done
+5. tests for each; deploy; verify end-to-end on the VPS — done
+
+## Parity assessment (post-Tier-1/2)
+
+The agent now runs the **core Claude Code / opencode coding loop**:
+plan with `todo_write` → `read_file` → `apply_patch` / `edit_file` /
+`write_file` → verify with `run_shell` → report. Tool surface:
+`read_file`, `write_file`, `edit_file`, `apply_patch`, `list_files`,
+`search_files` (grep+glob), `run_shell`, `todo_write`, `web_search`,
+`web_fetch`, `calculator`, `subagent_spawn`, `blackboard`, plus
+automatic per-session memory and a coding system prompt.
+
+What is **deliberately not ported** from Claude Code's ~44-tool surface,
+and why — these are terminal-CLI / desktop features with no meaning for
+a QQ chat bot, or large subsystems with poor effort/value:
+
+- LSP code intelligence — large; `search_files` + `run_shell` cover the
+  practical need.
+- plan mode / worktree / REPL / Vim / voice — terminal-UX features.
+- PowerShell / NotebookEdit — niche.
+- team / remote-session / cron tools — corlinman already has its own
+  scheduler + evolution subsystems; not part of the coding loop.
+- AST-grade shell sandboxing — needs containerisation, not a tool.
+
+Future candidates if a concrete need appears: parallel read-only tool
+execution in the reasoning loop, an on-demand `skill` tool.
