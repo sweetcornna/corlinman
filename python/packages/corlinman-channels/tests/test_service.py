@@ -67,7 +67,7 @@ class _ScriptedChatService:
         self.events = events
         self.calls: list[Any] = []
 
-    async def run(self, request: Any, cancel: Any) -> Any:
+    def run(self, request: Any, cancel: Any) -> Any:
         self.calls.append(request)
         async def _gen():
             for ev in self.events:

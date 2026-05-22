@@ -291,7 +291,7 @@ async def handle_one_qq(
     something failed (matches Rust ``M5`` UX).
     """
     request = _build_internal_request(req, event, model)
-    stream = await chat_service.run(request, cancel)
+    stream = chat_service.run(request, cancel)
     text_parts: list[str] = []
     error_message: str | None = None
     async for chat_ev in stream:
@@ -456,7 +456,7 @@ async def handle_one_telegram(
         "attachments": list(inbound.attachments),
         "binding": inbound.binding,
     }
-    stream = await chat_service.run(request, cancel)
+    stream = chat_service.run(request, cancel)
     text_parts: list[str] = []
     error_message: str | None = None
     async for ev in stream:
@@ -806,7 +806,7 @@ async def _collect_reply(
         "attachments": list(inbound.attachments),
         "binding": inbound.binding,
     }
-    stream = await chat_service.run(request, cancel)
+    stream = chat_service.run(request, cancel)
     text_parts: list[str] = []
     error_message: str | None = None
     async for ev in stream:
