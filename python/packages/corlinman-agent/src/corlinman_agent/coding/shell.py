@@ -41,11 +41,24 @@ _MAX_TIMEOUT = 120
 _MAX_OUTPUT_CHARS = 30_000
 
 #: Obvious destructive / privilege patterns refused outright. This is a
-#: guard-rail against accidents, not a security boundary.
+#: guard-rail against accidents, not a security boundary — a determined
+#: caller can still do damage; run the agent as a low-privilege user.
 _DENY = re.compile(
-    r"\brm\s+-rf?\s+(/|~|\$HOME)|\b(shutdown|reboot|mkfs|:\(\)\s*\{)",
-    re.IGNORECASE,
+    r"""(?ix)
+    \brm\s+-[a-z]*r[a-z]*\s+(/|~|\$HOME|\*)   # rm -rf of root / home / *
+    | \b(shutdown|reboot|halt|poweroff|init\s+0)\b
+    | \bmkfs\b | \bdd\s+if=                    # filesystem wipe / raw dd
+    | :\(\)\s*\{.*\};                          # fork bomb
+    | \b(sudo|doas|su)\b                       # privilege escalation
+    | \bLD_PRELOAD=                            # loader hijack
+    | >\s*/dev/(sd|nvme|disk|hd)               # raw-device redirect
+    | \bchmod\s+-[a-z]*\s*777\s+/              # chmod 777 /
+    """,
 )
+
+#: Splits a command line into top-level segments on shell operators so a
+#: denied pattern hidden after ``;`` / ``|`` / ``&&`` is still caught.
+_SEGMENT_SPLIT = re.compile(r"[;&|]+|\bthen\b|\bdo\b")
 
 
 def run_shell_tool_schema() -> dict[str, Any]:
@@ -93,10 +106,17 @@ async def dispatch_run_shell(
     if not isinstance(command, str) or not command.strip():
         return json.dumps({"error": "args_invalid: missing or empty 'command'"})
     command = command.strip()
-    if _DENY.search(command):
-        return json.dumps(
-            {"command": command, "error": "command_refused: destructive pattern"}
-        )
+    # Screen the whole line *and* every operator-split segment, so a
+    # denied pattern smuggled after ';' / '|' / '&&' is still caught.
+    for segment in [command, *_SEGMENT_SPLIT.split(command)]:
+        if _DENY.search(segment):
+            logger.warning("run_shell.refused", command=command[:200])
+            return json.dumps(
+                {
+                    "command": command,
+                    "error": "command_refused: destructive pattern",
+                }
+            )
 
     timeout = raw.get("timeout", _DEFAULT_TIMEOUT)
     try:
@@ -139,6 +159,12 @@ async def dispatch_run_shell(
     truncated = len(output) > _MAX_OUTPUT_CHARS
     if truncated:
         output = output[:_MAX_OUTPUT_CHARS] + "\n…(output truncated)"
+    # Audit line — every shell command + its exit code is logged.
+    logger.info(
+        "run_shell.executed",
+        command=command[:200],
+        exit_code=proc.returncode,
+    )
     return json.dumps(
         {
             "command": command,

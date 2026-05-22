@@ -61,20 +61,26 @@ from corlinman_agent.subagent.blackboard import (
     dispatch_blackboard_write,
 )
 from corlinman_agent.coding import (
+    APPLY_PATCH_TOOL,
     CODING_TOOLS,
     EDIT_FILE_TOOL,
     LIST_FILES_TOOL,
     READ_FILE_TOOL,
     RUN_SHELL_TOOL,
     SEARCH_FILES_TOOL,
+    TODO_WRITE_TOOL,
     WRITE_FILE_TOOL,
+    TodoStore,
     coding_tool_schemas,
+    dispatch_apply_patch,
     dispatch_edit_file,
     dispatch_list_files,
     dispatch_read_file,
     dispatch_run_shell,
     dispatch_search_files,
+    dispatch_todo_write,
     dispatch_write_file,
+    render_todo_block,
 )
 from corlinman_agent.variables import VariableCascade
 from corlinman_agent.web import (
@@ -157,6 +163,59 @@ def _inject_builtin_tools(start: AgentChatStart) -> None:
             merged.append(schema)
             have.add(str(name))
     start.tools = merged
+
+
+#: Baseline coding-agent system prompt. Injected only when the assembled
+#: context carries no system message of its own (no agent card matched).
+#: Distilled from the opencode + Claude Code system prompts, adapted for
+#: an agent that answers chat messages and operates a workspace.
+_CODING_SYSTEM_PROMPT: str = """\
+You are corlinman, a capable AI assistant that answers chat messages and \
+can operate a real workspace — read, write and edit files, search code, \
+run shell commands, search the web, and track multi-step work.
+
+Tone: be concise and direct. Answer the question asked; skip preamble and \
+filler. No emoji unless asked. Use plain text suitable for a chat client.
+
+Task discipline:
+- For any task of 3+ steps, call `todo_write` first to lay out the plan, \
+then keep it updated — mark a step in_progress when you start it and \
+completed the moment it is verified done. Keep exactly one step \
+in_progress. Skip todos for trivial single-step requests.
+- Do not claim something works unless you verified it. If you ran a \
+command or test, report the real outcome.
+
+Tool discipline:
+- Prefer the dedicated tools (`read_file`, `write_file`, `edit_file`, \
+`apply_patch`, `search_files`) over `run_shell` for file work.
+- Read a file before you edit it. After a code change, verify it with \
+`run_shell` (run it, run the tests) when feasible.
+- File tools are confined to your workspace directory; paths are \
+workspace-relative.
+- When you reference code, cite it as `path:line`.
+
+Be honest about limits: if a task cannot be completed, say so plainly \
+rather than pretending."""
+
+
+def _ensure_system_prompt(start: AgentChatStart) -> None:
+    """Prepend the baseline coding-agent system prompt when the assembled
+    messages carry none.
+
+    A matched agent card (or any caller-supplied system message) already
+    owns the system slot — we never override it. Mutates ``start`` in
+    place. The CodexProvider lifts the leading system message into the
+    Responses API ``instructions`` field.
+    """
+    msgs = list(start.messages)
+    for m in msgs:
+        role = m.get("role") if isinstance(m, dict) else getattr(m, "role", None)
+        if role == "system":
+            return
+    start.messages = [
+        {"role": "system", "content": _CODING_SYSTEM_PROMPT},
+        *msgs,
+    ]
 
 
 class _MockProvider:
@@ -242,6 +301,8 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # embedding model needed).
         self._memory_host: Any = None
         self._memory_init_done = False
+        # Per-session task lists for the ``todo_write`` tool.
+        self._todo_store = TodoStore()
 
     async def Chat(  # noqa: N802 — gRPC method name
         self,
@@ -299,12 +360,24 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # dispatchable but invisible.
         _inject_builtin_tools(start)
 
+        # Give the model a coding-agent system prompt when no agent card
+        # supplied one — otherwise it operates the tools blind.
+        _ensure_system_prompt(start)
+
         # Automatic conversation memory: recall before answering. The
         # user's text is captured first — both for the post-turn store
         # and so it reflects the user's words, not the recall note we
         # are about to inject.
         user_text = _last_user_text(start.messages)
         await self._recall_memory(start)
+
+        # Re-show the session's task list so the model keeps sight of its
+        # plan across turns (the todo_write tool persists it in-process).
+        todo_block = render_todo_block(self._todo_store, start.session_key)
+        if todo_block:
+            start.messages = _inject_memory_note(
+                list(start.messages), todo_block
+            )
 
         # Bump the tool-result timeout above the M2 default (0.05s) so the
         # loop actually waits long enough for the gateway to round-trip a
@@ -518,6 +591,14 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 return dispatch_search_files(args_json=event.args_json)
             if event.tool == RUN_SHELL_TOOL:
                 return await dispatch_run_shell(args_json=event.args_json)
+            if event.tool == APPLY_PATCH_TOOL:
+                return dispatch_apply_patch(args_json=event.args_json)
+            if event.tool == TODO_WRITE_TOOL:
+                return dispatch_todo_write(
+                    args_json=event.args_json,
+                    store=self._todo_store,
+                    session_key=start.session_key,
+                )
         except Exception as exc:
             logger.exception(
                 "agent.chat.builtin_tool_failed",

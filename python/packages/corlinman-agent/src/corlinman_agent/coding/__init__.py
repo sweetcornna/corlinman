@@ -30,6 +30,11 @@ from corlinman_agent.coding.files import (
     read_file_tool_schema,
     write_file_tool_schema,
 )
+from corlinman_agent.coding.patch import (
+    APPLY_PATCH_TOOL,
+    apply_patch_tool_schema,
+    dispatch_apply_patch,
+)
 from corlinman_agent.coding.search import (
     SEARCH_FILES_TOOL,
     dispatch_search_files,
@@ -39,6 +44,14 @@ from corlinman_agent.coding.shell import (
     RUN_SHELL_TOOL,
     dispatch_run_shell,
     run_shell_tool_schema,
+)
+from corlinman_agent.coding.todo import (
+    TODO_WRITE_TOOL,
+    TodoItem,
+    TodoStore,
+    dispatch_todo_write,
+    render_todo_block,
+    todo_write_tool_schema,
 )
 
 #: Every coding tool name — the agent servicer folds this into
@@ -51,6 +64,8 @@ CODING_TOOLS: frozenset[str] = frozenset(
         LIST_FILES_TOOL,
         SEARCH_FILES_TOOL,
         RUN_SHELL_TOOL,
+        APPLY_PATCH_TOOL,
+        TODO_WRITE_TOOL,
     }
 )
 
@@ -64,30 +79,41 @@ def coding_tool_schemas() -> list[dict]:
         list_files_tool_schema(),
         search_files_tool_schema(),
         run_shell_tool_schema(),
+        apply_patch_tool_schema(),
+        todo_write_tool_schema(),
     ]
 
 
 __all__ = [
+    "APPLY_PATCH_TOOL",
     "CODING_TOOLS",
     "EDIT_FILE_TOOL",
     "LIST_FILES_TOOL",
     "READ_FILE_TOOL",
     "RUN_SHELL_TOOL",
     "SEARCH_FILES_TOOL",
+    "TODO_WRITE_TOOL",
+    "TodoItem",
+    "TodoStore",
     "WRITE_FILE_TOOL",
+    "apply_patch_tool_schema",
     "coding_tool_schemas",
+    "dispatch_apply_patch",
     "dispatch_edit_file",
     "dispatch_list_files",
     "dispatch_read_file",
     "dispatch_run_shell",
     "dispatch_search_files",
+    "dispatch_todo_write",
     "dispatch_write_file",
     "edit_file_tool_schema",
     "list_files_tool_schema",
     "read_file_tool_schema",
+    "render_todo_block",
     "resolve_in_workspace",
     "resolve_workspace",
     "run_shell_tool_schema",
     "search_files_tool_schema",
+    "todo_write_tool_schema",
     "write_file_tool_schema",
 ]
