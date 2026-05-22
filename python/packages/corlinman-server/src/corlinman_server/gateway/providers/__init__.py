@@ -282,20 +282,28 @@ _CODEX_MODEL_FALLBACK: str = "chatgpt-4o-latest"
 
 
 def _detect_best_codex_model(access_token: str) -> str:
-    """Query ``/v1/models`` with the Codex OAuth token and pick the best model.
+    """Query ``chatgpt.com/backend-api/codex/models`` and pick the best model.
 
     Uses synchronous ``httpx.get`` (timeout 5 s) because this runs at
     startup (sync bootstrap context).  Returns :data:`_CODEX_MODEL_FALLBACK`
     on any failure — network error, timeout, unexpected shape.
+
+    The model-list endpoint is the Codex-specific one — NOT ``api.openai.com/v1/models``.
+    Cloudflare bypass headers (User-Agent, originator) are required to avoid a 403.
     """
     import re
 
     try:
         import httpx
+        from corlinman_providers._codex_oauth import codex_cloudflare_headers
 
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            **codex_cloudflare_headers(access_token),
+        }
         resp = httpx.get(
-            "https://api.openai.com/v1/models",
-            headers={"Authorization": f"Bearer {access_token}"},
+            "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
+            headers=headers,
             timeout=5.0,
         )
         if resp.status_code >= 400:
@@ -306,14 +314,18 @@ def _detect_best_codex_model(access_token: str) -> str:
             return _CODEX_MODEL_FALLBACK
         data = resp.json()
         available: set[str] = set()
-        for item in data.get("data") or []:
-            mid = item.get("id") if isinstance(item, dict) else None
-            if isinstance(mid, str) and mid:
-                available.add(mid)
+        for item in data.get("models") or []:
+            slug = item.get("slug") if isinstance(item, dict) else None
+            if isinstance(slug, str) and slug:
+                available.add(slug)
 
         # Check preference list first (highest-priority wins).
         for model in _MODEL_PREFERENCE:
             if model in available:
+                logger.info(
+                    "gateway.providers.codex_model_selected",
+                    model=model,
+                )
                 return model
 
         # Fallback: scan for highest gpt-N.M version (N >= 4).

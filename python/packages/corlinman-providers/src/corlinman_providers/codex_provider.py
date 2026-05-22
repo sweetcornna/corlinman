@@ -1,22 +1,12 @@
 """Codex (ChatGPT subscription) OAuth provider.
 
-Uses the OAuth tokens written by ``codex login`` (the official Codex CLI)
-to call the OpenAI API on behalf of the operator's ChatGPT subscription.
+Calls https://chatgpt.com/backend-api/codex using the OpenAI Responses API
+with Cloudflare bypass headers. This is NOT the standard api.openai.com/v1/
+endpoint — using that endpoint with a Codex OAuth token returns 429 quota
+errors because ChatGPT subscriptions don't grant OpenAI API credits.
 
-Why this works: OpenAI's API at ``api.openai.com/v1/`` accepts both
-``sk-…`` API keys and ChatGPT OAuth access tokens (JWT) in the
-``Authorization: Bearer <token>`` header.  The ``openai`` Python SDK
-sends them identically — we pass the OAuth token as ``api_key``.
-
-Credentials are read from ``~/.codex/auth.json`` (or ``$CODEX_HOME/auth.json``)
-on every ``build()`` call, and auto-refreshed in ``chat_stream`` when the
-JWT ``exp`` claim is within 5 minutes.
-
-Default model is ``chatgpt-4o-latest``. At auto-injection time the gateway
-probes ``/v1/models`` and picks the best available model from a preference
-list; ``chatgpt-4o-latest`` is the fallback when the probe fails. Any model
-supported by the OpenAI API (``gpt-*``, ``o1-*``, ``o3-*``, ``o4-*``,
-``codex-*``, ``chatgpt-*``) is accepted.
+The Codex backend uses the Responses API (/responses), not chat/completions,
+and rejects temperature and max_output_tokens parameters.
 """
 
 from __future__ import annotations
@@ -29,25 +19,44 @@ import structlog
 from corlinman_providers._codex_oauth import (
     CodexOAuthCredential,
     CodexOAuthRefreshError,
+    codex_cloudflare_headers,
     load_codex_credential,
     refresh_codex_token,
 )
 from corlinman_providers.base import ProviderChunk
-from corlinman_providers.openai_provider import OpenAIProvider
 from corlinman_providers.specs import ProviderKind, ProviderSpec
 
 logger = structlog.get_logger(__name__)
 
-_DEFAULT_MODEL = "chatgpt-4o-latest"
+_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
+_DEFAULT_MODEL = "gpt-5.5"
 
 
-class CodexProvider(OpenAIProvider):
+def _messages_to_responses_input(messages: Sequence[Any]) -> list[dict]:
+    """Convert OpenAI chat messages to Responses API input items."""
+    result = []
+    for msg in messages:
+        role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", None)
+        content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None)
+        if role == "user":
+            result.append({
+                "role": "user",
+                "content": [{"type": "input_text", "text": str(content or "")}],
+            })
+        elif role == "assistant":
+            result.append({
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": str(content or "")}],
+            })
+    return result
+
+
+class CodexProvider:
     """Codex (ChatGPT subscription) OAuth provider.
 
-    Extends :class:`OpenAIProvider` with OAuth-token sourcing from
-    ``~/.codex/auth.json`` and auto-refresh before stale tokens cause a
-    ``401``.  The upstream API endpoint and wire format are identical to
-    the standard OpenAI provider.
+    Calls chatgpt.com/backend-api/codex with the Responses API and
+    Cloudflare bypass headers sourced from ~/.codex/auth.json.
+    Tokens are auto-refreshed when close to expiry.
     """
 
     name: ClassVar[str] = "codex"
@@ -58,10 +67,6 @@ class CodexProvider(OpenAIProvider):
     DEFAULT_MODEL: ClassVar[str] = _DEFAULT_MODEL
 
     def __init__(self, *, credential: CodexOAuthCredential) -> None:
-        # Pass access_token as api_key — the OpenAI SDK sends
-        # ``Authorization: Bearer <api_key>`` which accepts both API keys
-        # and OAuth JWTs on the same endpoint.
-        super().__init__(api_key=credential.access_token)
         self._credential = credential
 
     @classmethod
@@ -82,9 +87,15 @@ class CodexProvider(OpenAIProvider):
     @classmethod
     def supports(cls, model: str) -> bool:
         """Claim OpenAI / Codex model families."""
-        return (
-            model.startswith(("gpt-", "o1-", "o3-", "o4-", "codex-", "chatgpt-"))
-            or model == "gpt-3.5-turbo"
+        return model.startswith(("gpt-5", "gpt-4", "o1-", "o3-", "o4-", "codex-", "chatgpt-"))
+
+    def _make_client(self) -> Any:
+        from openai import AsyncOpenAI
+
+        return AsyncOpenAI(
+            api_key=self._credential.access_token,
+            base_url=_CODEX_BASE_URL,
+            default_headers=codex_cloudflare_headers(self._credential.access_token),
         )
 
     async def chat_stream(
@@ -98,18 +109,72 @@ class CodexProvider(OpenAIProvider):
         extra: dict[str, Any] | None = None,
     ) -> AsyncIterator[ProviderChunk]:
         await self._ensure_fresh()
-        # Delegate to the parent's generator via explicit class dispatch
-        # so Python's super()-in-async-generator restriction is avoided.
-        async for chunk in OpenAIProvider.chat_stream(
-            self,
-            model=model,
-            messages=messages,
-            tools=tools,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            extra=extra,
-        ):
-            yield chunk
+        client = self._make_client()
+
+        # Extract system prompt as instructions (Responses API uses "instructions"
+        # instead of a system role message).
+        instructions = ""
+        payload_messages: list[Any] = list(messages)
+        if payload_messages:
+            first = payload_messages[0]
+            first_role = (
+                first.get("role") if isinstance(first, dict)
+                else getattr(first, "role", None)
+            )
+            if first_role == "system":
+                instructions = (
+                    first.get("content") if isinstance(first, dict)
+                    else getattr(first, "content", "")
+                ) or ""
+                payload_messages = payload_messages[1:]
+
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "instructions": instructions,
+            "input": _messages_to_responses_input(payload_messages),
+            "store": False,
+            "reasoning": {"effort": "medium", "summary": "auto"},
+            "include": ["reasoning.encrypted_content"],
+        }
+        # NOTE: Codex backend rejects temperature and max_output_tokens — omit.
+
+        if tools:
+            kwargs["tools"] = [
+                {
+                    "type": "function",
+                    "name": t["function"]["name"],
+                    "description": t["function"].get("description", ""),
+                    "parameters": t["function"].get("parameters", {}),
+                }
+                for t in tools
+                if isinstance(t, dict) and "function" in t
+            ]
+            kwargs["tool_choice"] = "auto"
+
+        try:
+            async with client.responses.stream(**kwargs) as stream:
+                async for event in stream:
+                    event_type = getattr(event, "type", "")
+                    if "output_text.delta" in event_type:
+                        delta = getattr(event, "delta", "")
+                        if delta:
+                            yield ProviderChunk(kind="token", text=delta)
+                    elif event_type in {"response.incomplete", "response.failed"}:
+                        resp_obj = getattr(event, "response", None)
+                        status = getattr(resp_obj, "status", None) if resp_obj else None
+                        logger.warning(
+                            "codex.stream_terminated",
+                            event_type=event_type,
+                            status=status,
+                        )
+                        yield ProviderChunk(kind="done", finish_reason="error")
+                        return
+        except Exception as exc:
+            logger.warning("codex.stream_error", error=str(exc))
+            yield ProviderChunk(kind="done", finish_reason="error")
+            return
+
+        yield ProviderChunk(kind="done", finish_reason="stop")
 
     # ------------------------------------------------------------------
     # Internal
@@ -126,7 +191,6 @@ class CodexProvider(OpenAIProvider):
                 refresh_token=self._credential.refresh_token,
             )
             self._credential = refreshed
-            self._api_key = refreshed.access_token
             logger.debug("codex.token_refreshed")
         except CodexOAuthRefreshError as exc:
             logger.warning("codex.token_refresh_failed", error=str(exc))
@@ -134,4 +198,4 @@ class CodexProvider(OpenAIProvider):
             # the upstream will return a 401 if it's truly dead.
 
 
-__all__ = ["CodexProvider"]
+__all__ = ["CodexProvider", "_messages_to_responses_input"]

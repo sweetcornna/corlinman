@@ -203,9 +203,35 @@ async def refresh_codex_token(
     )
 
 
+def _extract_chatgpt_account_id(access_token: str) -> str | None:
+    """Extract chatgpt_account_id from the Codex OAuth JWT claims."""
+    try:
+        parts = access_token.split(".")
+        if len(parts) < 2:
+            return None
+        pad = parts[1] + "=" * (-len(parts[1]) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(pad))
+        return claims.get("https://api.openai.com/auth", {}).get("chatgpt_account_id")
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def codex_cloudflare_headers(access_token: str) -> dict[str, str]:
+    """Headers required to bypass Cloudflare on chatgpt.com/backend-api/codex."""
+    headers: dict[str, str] = {
+        "User-Agent": "codex_cli_rs/0.0.0",
+        "originator": "codex_cli_rs",
+    }
+    acct_id = _extract_chatgpt_account_id(access_token)
+    if acct_id:
+        headers["ChatGPT-Account-ID"] = acct_id
+    return headers
+
+
 __all__ = [
     "CodexOAuthCredential",
     "CodexOAuthRefreshError",
+    "codex_cloudflare_headers",
     "load_codex_credential",
     "refresh_codex_token",
 ]

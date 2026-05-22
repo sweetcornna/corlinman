@@ -3,6 +3,7 @@
 Covers:
 * :mod:`corlinman_providers._codex_oauth` — credential loading + refresh
 * :class:`corlinman_providers.codex_provider.CodexProvider` — build + auto-refresh
+* :func:`corlinman_providers.codex_provider._messages_to_responses_input` — conversion
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ import json
 import time
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -19,9 +20,10 @@ from corlinman_providers._codex_oauth import (
     CodexOAuthCredential,
     CodexOAuthRefreshError,
     _decode_jwt_exp,
+    codex_cloudflare_headers,
     load_codex_credential,
 )
-from corlinman_providers.codex_provider import CodexProvider
+from corlinman_providers.codex_provider import CodexProvider, _messages_to_responses_input
 from corlinman_providers.specs import ProviderKind, ProviderSpec
 
 
@@ -119,6 +121,31 @@ class TestCodexOAuthCredentialIsExpired:
 
 
 # ---------------------------------------------------------------------------
+# codex_cloudflare_headers
+# ---------------------------------------------------------------------------
+
+
+class TestCodexCloudflareHeaders:
+    def test_basic_headers_always_present(self) -> None:
+        headers = codex_cloudflare_headers("plain-not-a-jwt")
+        assert headers["User-Agent"] == "codex_cli_rs/0.0.0"
+        assert headers["originator"] == "codex_cli_rs"
+        assert "ChatGPT-Account-ID" not in headers  # no valid JWT claims
+
+    def test_account_id_extracted_from_jwt(self) -> None:
+        import base64
+        claims = {
+            "https://api.openai.com/auth": {"chatgpt_account_id": "acct-abc123"}
+        }
+        payload = base64.urlsafe_b64encode(
+            json.dumps(claims).encode()
+        ).rstrip(b"=").decode()
+        fake_jwt = f"header.{payload}.sig"
+        headers = codex_cloudflare_headers(fake_jwt)
+        assert headers["ChatGPT-Account-ID"] == "acct-abc123"
+
+
+# ---------------------------------------------------------------------------
 # CodexProvider.build
 # ---------------------------------------------------------------------------
 
@@ -137,7 +164,12 @@ class TestCodexProviderBuild:
         monkeypatch.setenv("CODEX_HOME", str(tmp_path))
         spec = ProviderSpec(name="codex", kind=ProviderKind.CODEX)
         prov = CodexProvider.build(spec)
-        assert prov._api_key == "at-ok"
+        assert prov._credential.access_token == "at-ok"
+
+    def test_provider_not_openai_subclass(self) -> None:
+        """CodexProvider must NOT extend OpenAIProvider — it uses a different API."""
+        from corlinman_providers.openai_provider import OpenAIProvider
+        assert not issubclass(CodexProvider, OpenAIProvider)
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +181,7 @@ class TestCodexProviderSupports:
     @pytest.mark.parametrize(
         "model",
         [
+            "gpt-5.5",
             "gpt-4o",
             "o1-mini",
             "o3-pro",
@@ -167,38 +200,56 @@ class TestCodexProviderSupports:
 
 
 # ---------------------------------------------------------------------------
+# _messages_to_responses_input
+# ---------------------------------------------------------------------------
+
+
+class TestMessagesToResponsesInput:
+    def test_user_message_dict(self) -> None:
+        result = _messages_to_responses_input([{"role": "user", "content": "hello"}])
+        assert result == [{"role": "user", "content": [{"type": "input_text", "text": "hello"}]}]
+
+    def test_assistant_message_dict(self) -> None:
+        result = _messages_to_responses_input([{"role": "assistant", "content": "hi there"}])
+        assert result == [{"role": "assistant", "content": [{"type": "output_text", "text": "hi there"}]}]
+
+    def test_system_messages_skipped(self) -> None:
+        """System messages are handled as instructions — not passed to input."""
+        result = _messages_to_responses_input([{"role": "system", "content": "be helpful"}])
+        assert result == []
+
+    def test_mixed_conversation(self) -> None:
+        msgs = [
+            {"role": "user", "content": "ping"},
+            {"role": "assistant", "content": "pong"},
+            {"role": "user", "content": "again"},
+        ]
+        result = _messages_to_responses_input(msgs)
+        assert len(result) == 3
+        assert result[0]["role"] == "user"
+        assert result[1]["role"] == "assistant"
+        assert result[2]["role"] == "user"
+
+    def test_object_message_with_attributes(self) -> None:
+        from types import SimpleNamespace
+        msg = SimpleNamespace(role="user", content="hi")
+        result = _messages_to_responses_input([msg])
+        assert result == [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}]
+
+    def test_none_content_becomes_empty_string(self) -> None:
+        result = _messages_to_responses_input([{"role": "user", "content": None}])
+        assert result[0]["content"][0]["text"] == ""
+
+
+# ---------------------------------------------------------------------------
 # CodexProvider.chat_stream — auto-refresh on expired token
 # ---------------------------------------------------------------------------
 
 
-class _FakeOpenAIChunk:
-    def __init__(self, text: str) -> None:
-        self.choices = [_FakeChoice(text)]
-
-
-class _FakeChoice:
-    def __init__(self, text: str) -> None:
-        self.delta = _FakeDelta(text)
-        self.finish_reason = None
-
-
-class _FakeDelta:
-    def __init__(self, text: str) -> None:
-        self.content = text
-        self.tool_calls = None
-
-
-class _FakeDoneChoice:
-    delta = _FakeDelta(None)
-    finish_reason = "stop"
-
-
 @pytest.mark.asyncio
-async def test_chat_stream_refreshes_expired_token(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_chat_stream_refreshes_expired_token() -> None:
     """When the token is expired, _ensure_fresh calls refresh_codex_token."""
-    expired_ms = int(time.time() * 1000) - 1  # already past skew
+    expired_ms = int(time.time() * 1000) - 1
     cred = CodexOAuthCredential(
         access_token="old-token",
         refresh_token="rt-xyz",
@@ -211,48 +262,48 @@ async def test_chat_stream_refreshes_expired_token(
         refresh_token="rt-xyz",
         expires_at_ms=int(time.time() * 1000) + 3_600_000,
     )
-
     mock_refresh = AsyncMock(return_value=new_cred)
 
-    # Minimal fake stream so chat_stream can iterate without real network
-    async def _fake_stream(**_kwargs: Any):
-        yield _FakeOpenAIChunk("hi")
-        yield type("C", (), {"choices": [_FakeDoneChoice()]})()
+    # Fake stream context manager that yields nothing then exits cleanly.
+    class _FakeStream:
+        async def __aenter__(self):
+            return self
 
-    class _FakeCompletions:
-        async def create(self, **_kwargs: Any):
-            async def _gen():
-                async for chunk in _fake_stream():
-                    yield chunk
-            return _gen()
+        async def __aexit__(self, *_):
+            return False
 
-    class _FakeMessages:
-        completions = _FakeCompletions()
+        def __aiter__(self):
+            return self
 
-    class _FakeOpenAI:
-        def __init__(self, **_kwargs: Any) -> None:
-            self.chat = _FakeMessages()
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+    class _FakeResponses:
+        def stream(self, **_kwargs):
+            return _FakeStream()
+
+    class _FakeClient:
+        responses = _FakeResponses()
 
     with (
         patch("corlinman_providers.codex_provider.refresh_codex_token", mock_refresh),
-        patch("corlinman_providers.openai_provider.OpenAIProvider._make_client",
-              return_value=_FakeOpenAI()),
+        patch.object(prov, "_make_client", return_value=_FakeClient()),
     ):
         chunks = []
         async for chunk in prov.chat_stream(
-            model="o4-mini",
+            model="gpt-5.5",
             messages=[{"role": "user", "content": "ping"}],
         ):
             chunks.append(chunk)
 
     mock_refresh.assert_awaited_once()
-    assert prov._api_key == "new-token"
+    assert prov._credential.access_token == "new-token"
+    # Should end with a done chunk.
+    assert chunks[-1].kind == "done"
 
 
 @pytest.mark.asyncio
-async def test_chat_stream_no_refresh_when_fresh(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_chat_stream_no_refresh_when_fresh() -> None:
     """When the token is not expired, refresh is not called."""
     future_ms = int(time.time() * 1000) + 3_600_000
     cred = CodexOAuthCredential(
@@ -263,32 +314,146 @@ async def test_chat_stream_no_refresh_when_fresh(
     prov = CodexProvider(credential=cred)
     mock_refresh = AsyncMock()
 
-    async def _fake_stream(**_kwargs: Any):
-        yield type("C", (), {"choices": [_FakeDoneChoice()]})()
+    class _FakeStream:
+        async def __aenter__(self):
+            return self
 
-    class _FakeCompletions:
-        async def create(self, **_kwargs: Any):
-            async def _gen():
-                async for chunk in _fake_stream():
-                    yield chunk
-            return _gen()
+        async def __aexit__(self, *_):
+            return False
 
-    class _FakeMessages:
-        completions = _FakeCompletions()
+        def __aiter__(self):
+            return self
 
-    class _FakeOpenAI:
-        def __init__(self, **_kwargs: Any) -> None:
-            self.chat = _FakeMessages()
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+    class _FakeResponses:
+        def stream(self, **_kwargs):
+            return _FakeStream()
+
+    class _FakeClient:
+        responses = _FakeResponses()
 
     with (
         patch("corlinman_providers.codex_provider.refresh_codex_token", mock_refresh),
-        patch("corlinman_providers.openai_provider.OpenAIProvider._make_client",
-              return_value=_FakeOpenAI()),
+        patch.object(prov, "_make_client", return_value=_FakeClient()),
     ):
         async for _ in prov.chat_stream(
-            model="o4-mini",
+            model="gpt-5.5",
             messages=[{"role": "user", "content": "ping"}],
         ):
             pass
 
     mock_refresh.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_emits_token_deltas() -> None:
+    """Text deltas from output_text.delta events become token chunks."""
+    future_ms = int(time.time() * 1000) + 3_600_000
+    cred = CodexOAuthCredential(
+        access_token="good-token",
+        refresh_token=None,
+        expires_at_ms=future_ms,
+    )
+    prov = CodexProvider(credential=cred)
+
+    from types import SimpleNamespace
+
+    events = [
+        SimpleNamespace(type="response.output_text.delta", delta="Hello"),
+        SimpleNamespace(type="response.output_text.delta", delta=" world"),
+    ]
+
+    class _FakeStream:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return False
+
+        def __aiter__(self):
+            return iter(events).__aiter__()
+
+    async def _fake_aiter():
+        for e in events:
+            yield e
+
+    class _FakeStreamIter:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return False
+
+        def __aiter__(self):
+            return self._gen()
+
+        async def _gen(self):
+            for e in events:
+                yield e
+
+    class _FakeResponses:
+        def stream(self, **_kwargs):
+            return _FakeStreamIter()
+
+    class _FakeClient:
+        responses = _FakeResponses()
+
+    with patch.object(prov, "_make_client", return_value=_FakeClient()):
+        chunks = []
+        async for chunk in prov.chat_stream(
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "hi"}],
+        ):
+            chunks.append(chunk)
+
+    token_chunks = [c for c in chunks if c.kind == "token"]
+    assert len(token_chunks) == 2
+    assert token_chunks[0].text == "Hello"
+    assert token_chunks[1].text == " world"
+    done_chunks = [c for c in chunks if c.kind == "done"]
+    assert done_chunks[-1].finish_reason == "stop"
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_handles_stream_error() -> None:
+    """Exceptions during streaming result in a done/error chunk, not a crash."""
+    future_ms = int(time.time() * 1000) + 3_600_000
+    cred = CodexOAuthCredential(
+        access_token="good-token",
+        refresh_token=None,
+        expires_at_ms=future_ms,
+    )
+    prov = CodexProvider(credential=cred)
+
+    class _ErrorStream:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return False
+
+        def __aiter__(self):
+            return self._gen()
+
+        async def _gen(self):
+            raise RuntimeError("network error")
+            yield  # noqa: unreachable — makes this a generator
+
+    class _FakeResponses:
+        def stream(self, **_kwargs):
+            return _ErrorStream()
+
+    class _FakeClient:
+        responses = _FakeResponses()
+
+    with patch.object(prov, "_make_client", return_value=_FakeClient()):
+        chunks = []
+        async for chunk in prov.chat_stream(
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "hi"}],
+        ):
+            chunks.append(chunk)
+
+    assert any(c.kind == "done" and c.finish_reason == "error" for c in chunks)
