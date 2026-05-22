@@ -515,7 +515,7 @@ def _build_default_context_assembler() -> ContextAssembler | None:
     try:
         data_dir = _resolve_data_dir()
         return ContextAssembler(
-            agents=AgentCardRegistry.load_from_dir(data_dir / "agents"),
+            agents=AgentCardRegistry.load_from_dir(_resolve_skill_dir(data_dir, "agents")),
             variables=VariableCascade(
                 data_dir / "TVStxt" / "tar",
                 data_dir / "TVStxt" / "var",
@@ -523,7 +523,7 @@ def _build_default_context_assembler() -> ContextAssembler | None:
                 data_dir / "TVStxt" / "fixed",
                 hot_reload=False,
             ),
-            skills=SkillRegistry.load_from_dir(data_dir / "skills"),
+            skills=SkillRegistry.load_from_dir(_resolve_skill_dir(data_dir, "skills")),
             placeholder_client=PlaceholderClient(),
             hook_emitter=LoggingHookEmitter(),
             config_lookup=lambda key: os.environ.get(key),
@@ -538,6 +538,22 @@ def _resolve_data_dir() -> Path:
     if raw:
         return Path(raw)
     return Path.home() / ".corlinman"
+
+
+def _resolve_skill_dir(data_dir: Path, name: str) -> Path:
+    """Resolve a context-asset dir (``skills`` / ``agents``).
+
+    Bundled skills are seeded by the gateway into
+    ``<data_dir>/profiles/default/<name>/`` (see
+    :mod:`corlinman_server.gateway.lifecycle.starter_skills`). The bare
+    ``<data_dir>/<name>/`` form is the legacy/test layout. Prefer the
+    profile dir when it exists so the agent picks up the 16 starter
+    skills; fall back to the flat dir otherwise.
+    """
+    profile_dir = data_dir / "profiles" / "default" / name
+    if profile_dir.is_dir():
+        return profile_dir
+    return data_dir / name
 
 
 def _context_metadata(start: AgentChatStart) -> dict[str, str]:
