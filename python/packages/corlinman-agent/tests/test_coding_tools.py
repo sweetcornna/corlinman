@@ -797,3 +797,131 @@ def test_dispatch_read_file_no_state_works_as_before(tmp_path: Path) -> None:
         args_json=_args(path="f.txt"), workspace=tmp_path
     )
     assert json.loads(with_state_json) == json.loads(without_state_json)
+
+
+# ---------------------------------------------------------------------------
+# T2.2 — fuzzy edit matcher + staleness guard
+# ---------------------------------------------------------------------------
+
+
+def test_edit_file_rstrip_tier_matches_trailing_whitespace_drift(tmp_path: Path) -> None:
+    """Model's old_string lacks trailing spaces present in the file."""
+    body = "def greet(name):  \n    return f'hi {name}'  \n"
+    (tmp_path / "g.py").write_text(body)
+    # The model omitted the trailing spaces — exact match fails, rstrip wins.
+    res = json.loads(
+        dispatch_edit_file(
+            args_json=_args(
+                path="g.py",
+                old_string="def greet(name):\n    return f'hi {name}'",
+                new_string="def greet(name):\n    return f'hello {name}'",
+            ),
+            workspace=tmp_path,
+        )
+    )
+    assert res["replacements"] == 1
+    assert res["match_tier"] == "rstrip"
+    assert "hello" in (tmp_path / "g.py").read_text()
+
+
+def test_edit_file_strip_tier_matches_indent_drift(tmp_path: Path) -> None:
+    """Model's old_string is dedented relative to the file content."""
+    body = "class A:\n    def m(self):\n        return 1\n"
+    (tmp_path / "a.py").write_text(body)
+    res = json.loads(
+        dispatch_edit_file(
+            args_json=_args(
+                path="a.py",
+                # Dedented + no leading spaces — exact + rstrip both fail.
+                old_string="def m(self):\nreturn 1",
+                new_string="def m(self):\n    return 2",
+            ),
+            workspace=tmp_path,
+        )
+    )
+    assert res["replacements"] == 1
+    assert res["match_tier"] == "strip"
+    assert "return 2" in (tmp_path / "a.py").read_text()
+
+
+def test_edit_file_exact_still_wins_over_fuzzy(tmp_path: Path) -> None:
+    """When the exact string is present, the exact tier is used (no fuzzy noise)."""
+    (tmp_path / "f.py").write_text("alpha\nbeta\ngamma\n")
+    res = json.loads(
+        dispatch_edit_file(
+            args_json=_args(
+                path="f.py", old_string="beta", new_string="BETA"
+            ),
+            workspace=tmp_path,
+        )
+    )
+    assert res["replacements"] == 1
+    assert res.get("match_tier") in (None, "exact")  # exact tier elides the field
+
+
+def test_edit_file_rejects_multiple_fuzzy_matches(tmp_path: Path) -> None:
+    """Multiple fuzzy spans without replace_all → not_unique error."""
+    body = (
+        "def f(x):  \n"
+        "    return x\n"
+        "\n"
+        "def f(x):  \n"
+        "    return x\n"
+    )
+    (tmp_path / "dup.py").write_text(body)
+    res = json.loads(
+        dispatch_edit_file(
+            args_json=_args(
+                path="dup.py",
+                old_string="def f(x):\n    return x",
+                new_string="def f(x):\n    return -x",
+            ),
+            workspace=tmp_path,
+        )
+    )
+    assert "old_string_not_unique" in res["error"]
+    assert "fuzzy" in res["error"]
+    # File untouched.
+    assert (tmp_path / "dup.py").read_text() == body
+
+
+def test_edit_file_staleness_guard(tmp_path: Path) -> None:
+    """When state says the file changed since the recorded read, edit is refused."""
+    import os
+
+    from corlinman_agent.coding import FileState
+
+    path = tmp_path / "stale.py"
+    path.write_text("x = 1\n")
+    state = FileState()
+    # Record a read so the state has a mtime to compare against.
+    dispatch_read_file(args_json=_args(path="stale.py"), workspace=tmp_path, state=state)
+    # External mtime bump.
+    bumped = path.stat().st_mtime + 100
+    os.utime(path, (bumped, bumped))
+    res = json.loads(
+        dispatch_edit_file(
+            args_json=_args(
+                path="stale.py", old_string="x = 1", new_string="x = 2"
+            ),
+            workspace=tmp_path,
+            state=state,
+        )
+    )
+    assert res["error"] == "file_changed_since_read"
+    # File untouched.
+    assert path.read_text() == "x = 1\n"
+
+
+def test_edit_file_no_state_no_staleness_check(tmp_path: Path) -> None:
+    """Without state, the staleness guard does not fire."""
+    path = tmp_path / "f.py"
+    path.write_text("x = 1\n")
+    res = json.loads(
+        dispatch_edit_file(
+            args_json=_args(path="f.py", old_string="x = 1", new_string="x = 2"),
+            workspace=tmp_path,
+        )
+    )
+    assert res["replacements"] == 1
+    assert path.read_text() == "x = 2\n"

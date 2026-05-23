@@ -294,6 +294,63 @@ def dispatch_write_file(
     )
 
 
+def _line_span_offsets(text: str) -> list[tuple[int, int]]:
+    """Return ``[(line_start, line_end_exclusive_of_newline)]`` per line.
+
+    ``text[start:end]`` is the line content without its trailing newline;
+    ``text[end:end+1]`` is the newline (or empty at EOF). Used by the
+    multi-line fuzzy matcher to map line-aligned matches back to character
+    offsets so the surrounding bytes (newlines, indentation outside the
+    matched block) are preserved verbatim.
+    """
+    spans: list[tuple[int, int]] = []
+    start = 0
+    n = len(text)
+    while start <= n:
+        nl = text.find("\n", start)
+        if nl == -1:
+            spans.append((start, n))
+            break
+        spans.append((start, nl))
+        start = nl + 1
+    return spans
+
+
+def _fuzzy_line_matches(
+    text: str, old: str, transform
+) -> list[tuple[int, int]]:
+    """Find line-aligned matches of ``old`` in ``text`` under ``transform``.
+
+    ``transform`` is applied per-line on both sides before comparing.
+    Returns a list of ``(char_start, char_end)`` spans in the ORIGINAL
+    ``text`` whose included lines, after ``transform``, match ``old``'s
+    lines after ``transform``. Multi-line ``old`` only; the caller falls
+    back to substring matching for single-line edits.
+
+    The end offset is the last matched line's end (exclusive of any
+    trailing newline), so ``text[start:end]`` is the bytes we replace
+    and the model's ``new_string`` is substituted in their place.
+    """
+    text_lines = text.split("\n")
+    old_lines = old.split("\n")
+    if len(old_lines) < 2:
+        return []
+    t_xform = [transform(ln) for ln in text_lines]
+    o_xform = [transform(ln) for ln in old_lines]
+    if not o_xform or not t_xform:
+        return []
+
+    line_spans = _line_span_offsets(text)
+    out: list[tuple[int, int]] = []
+    end_idx = len(t_xform) - len(o_xform) + 1
+    for i in range(end_idx):
+        if t_xform[i : i + len(o_xform)] == o_xform:
+            start_char = line_spans[i][0]
+            end_char = line_spans[i + len(o_xform) - 1][1]
+            out.append((start_char, end_char))
+    return out
+
+
 def dispatch_edit_file(
     *,
     args_json: bytes | str,
@@ -302,9 +359,21 @@ def dispatch_edit_file(
 ) -> str:
     """Replace an exact string in a workspace file. JSON envelope.
 
-    A successful edit invalidates any cached read for the path in
-    ``state`` so subsequent reads see the new content + mtime. T2.2
-    will extend this with a pre-edit staleness check.
+    Match cascade (T2.2):
+    1. exact substring match (today's behaviour);
+    2. line-aligned ``rstrip`` match — recovers from trailing-whitespace
+       drift in the model's ``old_string``;
+    3. line-aligned ``strip`` match — recovers from indentation drift.
+
+    Each tier is consulted in order; the first tier with **any** matches
+    wins. The uniqueness rule still applies: >1 match without
+    ``replace_all`` is rejected. Fuzzy tiers only run for multi-line
+    ``old_string`` — single-line edits stay on the exact path.
+
+    When ``state`` is supplied and the file changed under the agent
+    since its last recorded read, the edit is refused with
+    ``file_changed_since_read``. A successful edit invalidates the
+    cache so the next read re-pins the new mtime.
     """
     try:
         raw = decode_args(args_json)
@@ -326,40 +395,85 @@ def dispatch_edit_file(
     if not path.is_file():
         return _err({"path": raw.get("path"), "error": "file_not_found"})
 
+    if state is not None and state.is_stale(path):
+        return _err(
+            {"path": raw.get("path"), "error": "file_changed_since_read"}
+        )
+
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
         return _err({"path": raw.get("path"), "error": f"read_failed: {exc}"})
 
-    count = text.count(old)
-    if count == 0:
-        return _err({"path": raw.get("path"), "error": "old_string_not_found"})
     replace_all = bool(raw.get("replace_all", False))
-    if count > 1 and not replace_all:
-        return _err(
-            {
-                "path": raw.get("path"),
-                "error": (
-                    f"old_string_not_unique: {count} matches — add context "
-                    "or set replace_all=true"
-                ),
-            }
-        )
 
-    updated = text.replace(old, new) if replace_all else text.replace(old, new, 1)
+    # --- Tier 1: exact substring -----------------------------------------
+    exact_count = text.count(old)
+    if exact_count > 0:
+        if exact_count > 1 and not replace_all:
+            return _err(
+                {
+                    "path": raw.get("path"),
+                    "error": (
+                        f"old_string_not_unique: {exact_count} matches — add "
+                        "context or set replace_all=true"
+                    ),
+                }
+            )
+        updated = text.replace(old, new) if replace_all else text.replace(old, new, 1)
+        replacements = exact_count if replace_all else 1
+        tier = "exact"
+    else:
+        # --- Tier 2/3: line-aligned fuzzy for multi-line old_string -----
+        updated = None
+        tier = None
+        replacements = 0
+        for tier_name, transform in (
+            ("rstrip", str.rstrip),
+            ("strip", str.strip),
+        ):
+            spans = _fuzzy_line_matches(text, old, transform)
+            if not spans:
+                continue
+            if len(spans) > 1 and not replace_all:
+                return _err(
+                    {
+                        "path": raw.get("path"),
+                        "error": (
+                            f"old_string_not_unique: {len(spans)} fuzzy "
+                            f"({tier_name}) matches — add context or set "
+                            "replace_all=true"
+                        ),
+                    }
+                )
+            # Apply right-to-left so earlier spans' offsets stay valid.
+            updated = text
+            for start, end in sorted(spans, reverse=True):
+                updated = updated[:start] + new + updated[end:]
+            replacements = len(spans) if replace_all else 1
+            if not replace_all:
+                # We only consumed the first span — recompute as a
+                # single-shot replace using the first matched range.
+                start, end = spans[0]
+                updated = text[:start] + new + text[end:]
+            tier = tier_name
+            break
+        if updated is None:
+            return _err({"path": raw.get("path"), "error": "old_string_not_found"})
+
     try:
         path.write_text(updated, encoding="utf-8")
     except OSError as exc:
         return _err({"path": raw.get("path"), "error": f"write_failed: {exc}"})
     if state is not None:
         state.forget(path)
-    return json.dumps(
-        {
-            "path": workspace_rel(ws, path),
-            "replacements": count if replace_all else 1,
-        },
-        ensure_ascii=False,
-    )
+    payload: dict[str, Any] = {
+        "path": workspace_rel(ws, path),
+        "replacements": replacements,
+    }
+    if tier and tier != "exact":
+        payload["match_tier"] = tier  # surface fuzzy matches for transparency
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def dispatch_list_files(
