@@ -653,6 +653,14 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         await session_lock.acquire()
         lock_acquired = True
 
+        # Per-turn boundary: reconcile the skill registry against the
+        # skill dir on disk. Lets operators drop new ``*.md`` files into
+        # ``~/.corlinman/skills/`` (or the active profile's skill dir)
+        # without restarting the gateway. Cost is one ``stat()`` per
+        # tracked file plus an ``rglob`` on the root — single-digit ms
+        # for the ~16 bundled skills. Fail-soft: refresh() never raises.
+        self._refresh_skill_registry()
+
         # T4.1: open the journal lazily and look for a resumable turn
         # (same session_key + same user text within the resume window).
         # When found, prepend the prior turn's messages so the model
@@ -1403,6 +1411,41 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         if self._context_assembler is None:
             self._context_assembler = _build_default_context_assembler()
         return self._context_assembler
+
+    def _refresh_skill_registry(self) -> None:
+        """Re-walk the skill dir and reconcile the registry against
+        on-disk state.
+
+        Called once per turn at the start of :meth:`Chat`. The registry
+        lives inside the lazy-built :class:`ContextAssembler`; if the
+        assembler hasn't been constructed yet (first turn after boot)
+        we deliberately skip — the next turn will pick up any changes
+        the assembler's own constructor missed.
+
+        Fail-soft: every error path here logs and returns silently so a
+        bad SKILL.md cannot brick the chat path.
+        """
+        assembler = self._context_assembler
+        if assembler is None:
+            return
+        registry = getattr(assembler, "_skills", None)
+        if registry is None:
+            return
+        refresh = getattr(registry, "refresh", None)
+        if not callable(refresh):
+            return
+        try:
+            delta = refresh()
+        except Exception as exc:  # noqa: BLE001 — degrade
+            logger.warning("agent.skills.refresh_failed", error=str(exc))
+            return
+        if delta:
+            logger.info(
+                "agent.skills.refreshed",
+                added=list(delta.added),
+                updated=list(delta.updated),
+                removed=list(delta.removed),
+            )
 
     # ------------------------------------------------------------------
     # Automatic conversation memory

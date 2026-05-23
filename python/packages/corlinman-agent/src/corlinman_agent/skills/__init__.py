@@ -24,11 +24,13 @@ from __future__ import annotations
 
 from corlinman_agent.skills.card import Skill, SkillRequirements
 from corlinman_agent.skills.registry import (
+    RefreshDelta,
     SkillLoadError,
     SkillRegistry,
 )
 
 __all__ = [
+    "RefreshDelta",
     "Skill",
     "SkillLoadError",
     "SkillRegistry",

@@ -16,13 +16,40 @@ from __future__ import annotations
 
 import os
 import shutil
+import time
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import structlog
 import yaml  # type: ignore[import-untyped]
 
 from corlinman_agent.skills.card import Skill, SkillRequirements
+
+_log = structlog.get_logger(__name__)
+
+
+@dataclass(frozen=True)
+class RefreshDelta:
+    """Diff returned by :meth:`SkillRegistry.refresh`.
+
+    Each list holds skill **names** (not file paths). The three lists are
+    disjoint by construction: a file whose mtime bumped and whose
+    contents now declare a brand-new ``name`` shows up as ``added`` for
+    the new name and ``removed`` for the old, never ``updated``.
+
+    Empty deltas (the steady-state case on a hot path) are cheap to
+    construct — callers can ``if delta:`` because :meth:`__bool__`
+    reports the union of the three lists.
+    """
+
+    added: list[str] = field(default_factory=list)
+    updated: list[str] = field(default_factory=list)
+    removed: list[str] = field(default_factory=list)
+
+    def __bool__(self) -> bool:  # pragma: no cover — trivial
+        return bool(self.added or self.updated or self.removed)
 
 
 class SkillLoadError(RuntimeError):
@@ -169,6 +196,22 @@ class SkillRegistry:
 
     def __init__(self, skills: dict[str, Skill] | None = None) -> None:
         self._skills: dict[str, Skill] = skills or {}
+        # ``refresh()`` resolves changes by stat()ing the same root the
+        # initial load walked. ``None`` means "never loaded from disk" —
+        # in that mode :meth:`refresh` is a no-op so unit tests that hand
+        # in a fixed dict don't get surprising disk traffic.
+        self._root: Path | None = None
+        # Per-file mtime cache, keyed by resolved source path. Populated
+        # by :meth:`load_from_dir` and kept in sync by :meth:`refresh`.
+        self._mtimes: dict[Path, float] = {}
+        # Reverse index so a deleted file can be mapped back to the
+        # skill name we need to drop. Skills can share neither name nor
+        # source path, so this is a true bijection over the live set.
+        self._path_to_name: dict[Path, str] = {}
+        # ms-since-epoch of the most recent successful refresh (or the
+        # initial load when no refresh has run). ``None`` only for
+        # registries built from an in-memory dict via ``__init__``.
+        self._last_refreshed_at_ms: int | None = None
 
     @classmethod
     def load_from_dir(cls, root: Path) -> SkillRegistry:
@@ -177,29 +220,49 @@ class SkillRegistry:
         Non-existent roots yield an empty registry (lets operators start
         with no skills configured). A path that exists but isn't a
         directory is a configuration error and raises.
+
+        The registry retains ``root`` so :meth:`refresh` can re-walk it
+        on demand without forcing callers to pass the path again.
         """
         skills: dict[str, Skill] = {}
-        if not root.exists():
-            return cls(skills)
-        if not root.is_dir():
-            raise SkillLoadError(root, "skills root must be a directory")
+        mtimes: dict[Path, float] = {}
+        path_to_name: dict[Path, str] = {}
+        if root.exists():
+            if not root.is_dir():
+                raise SkillLoadError(root, "skills root must be a directory")
 
-        # Deterministic traversal so duplicate errors are reproducible
-        # across platforms.
-        for path in sorted(root.rglob("*.md")):
-            if not path.is_file():
-                continue
-            text = path.read_text(encoding="utf-8")
-            skill = _parse_skill(path, text)
-            existing = skills.get(skill.name)
-            if existing is not None:
-                raise SkillLoadError(
-                    path,
-                    f"duplicate skill name {skill.name!r} "
-                    f"(also defined in {existing.source_path})",
-                )
-            skills[skill.name] = skill
-        return cls(skills)
+            # Deterministic traversal so duplicate errors are reproducible
+            # across platforms.
+            for path in sorted(root.rglob("*.md")):
+                if not path.is_file():
+                    continue
+                text = path.read_text(encoding="utf-8")
+                skill = _parse_skill(path, text)
+                existing = skills.get(skill.name)
+                if existing is not None:
+                    raise SkillLoadError(
+                        path,
+                        f"duplicate skill name {skill.name!r} "
+                        f"(also defined in {existing.source_path})",
+                    )
+                skills[skill.name] = skill
+                try:
+                    mtimes[path] = path.stat().st_mtime
+                except OSError:
+                    # Lost the race to a concurrent delete; pretend the
+                    # file was never there for refresh-tracking purposes.
+                    # The Skill is still in the registry — this only
+                    # affects whether :meth:`refresh` will later see it
+                    # as "unchanged" or "added/removed".
+                    pass
+                path_to_name[path] = skill.name
+
+        inst = cls(skills)
+        inst._root = root
+        inst._mtimes = mtimes
+        inst._path_to_name = path_to_name
+        inst._last_refreshed_at_ms = int(time.time() * 1000)
+        return inst
 
     def get(self, name: str) -> Skill | None:
         """Return the skill for ``name`` or ``None`` if not registered."""
@@ -208,6 +271,196 @@ class SkillRegistry:
     def names(self) -> list[str]:
         """Sorted list of all registered skill names."""
         return sorted(self._skills.keys())
+
+    @property
+    def last_refreshed_at_ms(self) -> int | None:
+        """ms-since-epoch of the most recent successful disk scan.
+
+        ``None`` only for in-memory registries built via ``__init__``
+        without going through :meth:`load_from_dir` (test fixtures).
+        Surfaced for diagnostics; do not use as a cache key.
+        """
+        return self._last_refreshed_at_ms
+
+    def status_summary(self) -> dict[str, Any]:
+        """Diagnostic snapshot of the registry suitable for an admin
+        page or a log line.
+
+        Keys:
+
+        * ``skill_count`` — number of registered skills right now.
+        * ``last_refreshed_at_ms`` — see :attr:`last_refreshed_at_ms`.
+        * ``root`` — string path the registry watches (``None`` for an
+          in-memory registry).
+        * ``names`` — sorted list of registered skill names.
+
+        Read-only by design; mutating the returned dict will not affect
+        the registry.
+        """
+        return {
+            "skill_count": len(self._skills),
+            "last_refreshed_at_ms": self._last_refreshed_at_ms,
+            "root": str(self._root) if self._root is not None else None,
+            "names": self.names(),
+        }
+
+    def refresh(self) -> RefreshDelta:
+        """Re-walk the registry's root directory and reconcile against
+        the cached state.
+
+        Returns a :class:`RefreshDelta` so the caller can log only when
+        something actually changed. The hot-path cost is one ``stat()``
+        per known file plus one ``rglob`` on the root — single-digit ms
+        for a directory of ~16 SKILL.md files on a warm filesystem.
+
+        Failure modes are all fail-soft (the registry stays usable):
+
+        * The root no longer exists → drop every tracked skill and
+          return them all as ``removed``. Lets operators delete the
+          skills dir at runtime without crashing prompt assembly.
+        * A specific file fails to parse / load → log a warning and
+          leave the prior version (if any) in place. A broken edit
+          should never blow away the working copy of a skill.
+        * Two surviving files now declare the same ``name`` →
+          deterministic last-loses (sorted traversal): keep the first,
+          warn for the duplicate. Hard-erroring on a per-turn refresh
+          would brick the chat path.
+
+        For registries built from an in-memory dict (no ``_root``) this
+        is a no-op and returns an empty delta — tests that hand-craft a
+        registry never get surprise disk traffic.
+        """
+        if self._root is None:
+            return RefreshDelta()
+
+        root = self._root
+        added: list[str] = []
+        updated: list[str] = []
+        removed: list[str] = []
+
+        # Snapshot what we currently know so we can diff the post-scan
+        # state without mutating the live dicts mid-walk.
+        prev_paths: set[Path] = set(self._mtimes.keys()) | set(self._path_to_name.keys())
+
+        if not root.exists():
+            # Whole directory vanished — drop everything we were tracking.
+            for path in sorted(prev_paths):
+                name = self._path_to_name.get(path)
+                if name is not None and name in self._skills:
+                    del self._skills[name]
+                    removed.append(name)
+            self._mtimes.clear()
+            self._path_to_name.clear()
+            self._last_refreshed_at_ms = int(time.time() * 1000)
+            return RefreshDelta(added=added, updated=updated, removed=removed)
+
+        if not root.is_dir():
+            # A file appeared where a directory should be. Treat the
+            # same as "no skills dir" for refresh purposes; the original
+            # load_from_dir would have raised, but that's a boot-time
+            # contract — we don't want to crash a chat turn over it.
+            _log.warning("agent.skills.refresh.root_not_dir", root=str(root))
+            self._last_refreshed_at_ms = int(time.time() * 1000)
+            return RefreshDelta()
+
+        # Track per-name resolutions so a duplicate within one refresh
+        # cycle is handled deterministically (sorted-traversal wins).
+        live_paths: set[Path] = set()
+        seen_names: dict[str, Path] = {}
+
+        for path in sorted(root.rglob("*.md")):
+            if not path.is_file():
+                continue
+            live_paths.add(path)
+            try:
+                mtime = path.stat().st_mtime
+            except OSError as exc:
+                _log.warning(
+                    "agent.skills.refresh.stat_failed",
+                    path=str(path),
+                    error=str(exc),
+                )
+                continue
+
+            prev_mtime = self._mtimes.get(path)
+            prev_name = self._path_to_name.get(path)
+
+            if prev_mtime is not None and prev_mtime == mtime:
+                # Unchanged — but still record the name we resolved for
+                # this path so the duplicate-detection pass below sees
+                # it.
+                if prev_name is not None:
+                    seen_names[prev_name] = path
+                continue
+
+            # Either new (prev_mtime is None) or modified.
+            try:
+                text = path.read_text(encoding="utf-8")
+                skill = _parse_skill(path, text)
+            except (OSError, SkillLoadError) as exc:
+                _log.warning(
+                    "agent.skills.refresh.parse_failed",
+                    path=str(path),
+                    error=str(exc),
+                )
+                # Leave the prior version (if any) intact — a half-edit
+                # to a SKILL.md must not knock the working copy out of
+                # the registry mid-conversation.
+                continue
+
+            # Duplicate check against other files in this same refresh
+            # pass. Sorted-traversal makes "first wins" deterministic.
+            other_path = seen_names.get(skill.name)
+            if other_path is not None and other_path != path:
+                _log.warning(
+                    "agent.skills.refresh.duplicate_name",
+                    name=skill.name,
+                    first=str(other_path),
+                    second=str(path),
+                )
+                continue
+
+            # The previous skill name at this path may differ (someone
+            # renamed the ``name:`` field). Treat that as remove+add so
+            # the delta is accurate.
+            renamed = False
+            if prev_name is not None and prev_name != skill.name:
+                renamed = True
+                if prev_name in self._skills:
+                    del self._skills[prev_name]
+                    removed.append(prev_name)
+
+            # If a different file currently owns this skill name in the
+            # live set, the sorted-first-wins rule above handled it
+            # already (we'd have continued); so it's safe to assign.
+            self._skills[skill.name] = skill
+            self._mtimes[path] = mtime
+            self._path_to_name[path] = skill.name
+            seen_names[skill.name] = path
+            if prev_mtime is None or renamed:
+                # Brand-new path, or same path now exposing a fresh
+                # skill identity — either way the *name* is new.
+                added.append(skill.name)
+            else:
+                updated.append(skill.name)
+
+        # Any path we knew about but didn't see this scan was deleted.
+        for path in sorted(prev_paths - live_paths):
+            name = self._path_to_name.pop(path, None)
+            self._mtimes.pop(path, None)
+            if name is not None and name in self._skills:
+                # Guard against the rename case above already having
+                # removed it.
+                # Also guard against another file in this pass having
+                # taken over the name — in that case don't drop the
+                # name from the registry, only the dead path mapping.
+                live_owner = seen_names.get(name)
+                if live_owner is None:
+                    del self._skills[name]
+                    removed.append(name)
+
+        self._last_refreshed_at_ms = int(time.time() * 1000)
+        return RefreshDelta(added=added, updated=updated, removed=removed)
 
     def __contains__(self, name: object) -> bool:
         return isinstance(name, str) and name in self._skills
@@ -278,4 +531,4 @@ class SkillRegistry:
         return problems if problems else None
 
 
-__all__ = ["SkillLoadError", "SkillRegistry"]
+__all__ = ["RefreshDelta", "SkillLoadError", "SkillRegistry"]
