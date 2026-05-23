@@ -37,7 +37,19 @@ SEARCH_FILES_TOOL: str = "search_files"
 _MAX_MATCHES = 200
 _MAX_FILES_SCANNED = 5_000
 #: Skip these dir names + binary-ish suffixes when scanning content.
-_SKIP_DIRS = {".git", "__pycache__", "node_modules", ".venv", ".mypy_cache"}
+#: VCS metadata (`.git/.svn/.hg/.bzr`) is always skipped in BOTH content and
+#: name modes — applied via ``_iter_files`` (content) and a ``parts`` check
+#: in the ``name`` branch below.
+_SKIP_DIRS = {
+    ".git",
+    ".svn",
+    ".hg",
+    ".bzr",
+    "__pycache__",
+    "node_modules",
+    ".venv",
+    ".mypy_cache",
+}
 _SKIP_SUFFIXES = {
     ".pyc", ".so", ".o", ".bin", ".png", ".jpg", ".jpeg", ".gif",
     ".pdf", ".zip", ".gz", ".tar", ".wav", ".mp3", ".mp4", ".ico",
@@ -72,6 +84,15 @@ def search_files_tool_schema() -> dict[str, Any]:
                     "path": {
                         "type": "string",
                         "description": "Workspace-relative subdir to scope to.",
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": (
+                            "Content-mode paging: skip the first N matches "
+                            "(after mtime-sorting files newest-first). "
+                            "Default 0."
+                        ),
                     },
                 },
                 "required": ["pattern"],
@@ -120,6 +141,10 @@ def dispatch_search_files(
     mode = raw.get("mode") or "content"
     if mode not in ("content", "name"):
         return _err({"error": "args_invalid: mode must be 'content' or 'name'"})
+    offset_raw = raw.get("offset", 0)
+    if not isinstance(offset_raw, int) or isinstance(offset_raw, bool) or offset_raw < 0:
+        return _err({"error": "args_invalid: offset must be a non-negative int"})
+    offset = offset_raw
     if not scope.is_dir():
         return _err({"path": raw.get("path") or ".", "error": "not_a_directory"})
 
@@ -142,31 +167,56 @@ def dispatch_search_files(
         regex = re.compile(pattern)
     except re.error as exc:
         return _err({"error": f"args_invalid: bad regex: {exc}"})
-    hits: list[dict[str, Any]] = []
+
+    # Collect (mtime, path_str, line, text) per file, grouped by file.
+    # We gather ALL matches first (bounded by ``_iter_files``'s scan cap)
+    # so we can deterministically sort files by mtime descending before
+    # paging — otherwise ``offset`` would page through arbitrary scan
+    # order and pagination would be non-deterministic.
+    per_file: dict[Path, list[dict[str, Any]]] = {}
     for path in _iter_files(scope):
-        if len(hits) >= _MAX_MATCHES:
-            break
         try:
             text = path.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
+        file_hits: list[dict[str, Any]] = []
         for lineno, line in enumerate(text.splitlines(), start=1):
             if regex.search(line):
-                hits.append(
+                file_hits.append(
                     {
                         "path": workspace_rel(ws, path),
                         "line": lineno,
                         "text": line.strip()[:300],
                     }
                 )
-                if len(hits) >= _MAX_MATCHES:
-                    break
+        if file_hits:
+            per_file[path] = file_hits
+
+    # Sort files by mtime DESC (newest first); within a file keep
+    # line-number ascending (insertion order from above is already ascending).
+    def _mtime(p: Path) -> float:
+        try:
+            return p.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    sorted_files = sorted(per_file.keys(), key=_mtime, reverse=True)
+    ordered: list[dict[str, Any]] = []
+    for path in sorted_files:
+        ordered.extend(per_file[path])
+
+    total = len(ordered)
+    limit = _MAX_MATCHES
+    page = ordered[offset : offset + limit]
+    end = offset + len(page)
+    next_offset: int | None = end if end < total else None
     return json.dumps(
         {
             "mode": "content",
             "pattern": pattern,
-            "matches": hits,
-            "truncated": len(hits) >= _MAX_MATCHES,
+            "matches": page,
+            "truncated": next_offset is not None,
+            "next_offset": next_offset,
         },
         ensure_ascii=False,
     )

@@ -386,3 +386,93 @@ def test_apply_patch_hunk_not_found(tmp_path: Path) -> None:
     assert "patch_apply_error" in res["error"]
     # File untouched — staging failed before any write.
     assert (tmp_path / "f.py").read_text() == "real content\n"
+
+
+# ---------------------------------------------------------------------------
+# search — T1.5 polish: mtime sort, offset paging, VCS exclusion
+# ---------------------------------------------------------------------------
+
+
+def test_search_content_mtime_sorts_files(tmp_path: Path) -> None:
+    """Files with newer mtime must appear before older ones in matches."""
+    import os
+
+    old = tmp_path / "old.py"
+    new = tmp_path / "new.py"
+    old.write_text("HIT in old\n")
+    new.write_text("HIT in new\n")
+    # Force ``old`` to have a clearly older mtime, ``new`` clearly newer,
+    # regardless of fs granularity.
+    os.utime(old, (1_000_000, 1_000_000))
+    os.utime(new, (2_000_000, 2_000_000))
+
+    res = json.loads(
+        dispatch_search_files(
+            args_json=_args(pattern="HIT", mode="content"),
+            workspace=tmp_path,
+        )
+    )
+    paths = [m["path"] for m in res["matches"]]
+    # Newer file's match must appear before the older file's match.
+    assert paths.index("new.py") < paths.index("old.py")
+
+
+def test_search_content_offset_pages(tmp_path: Path) -> None:
+    """``offset`` skips earlier results; remaining count is consistent."""
+    for name in ("a.py", "b.py", "c.py"):
+        (tmp_path / name).write_text("MARK here\n")
+
+    # First, get the full ordered list (offset=0) for comparison.
+    full = json.loads(
+        dispatch_search_files(
+            args_json=_args(pattern="MARK", mode="content"),
+            workspace=tmp_path,
+        )
+    )
+    assert len(full["matches"]) == 3
+    assert full["next_offset"] is None
+    assert full["truncated"] is False
+
+    paged = json.loads(
+        dispatch_search_files(
+            args_json=_args(pattern="MARK", mode="content", offset=1),
+            workspace=tmp_path,
+        )
+    )
+    # Exactly the tail of the full list (2 results, in the same order).
+    assert len(paged["matches"]) == 2
+    assert paged["matches"] == full["matches"][1:]
+    # No more results past offset=1 + 2 returned.
+    assert paged["next_offset"] is None
+    assert paged["truncated"] is False
+
+
+def test_search_excludes_git_dir_in_both_modes(tmp_path: Path) -> None:
+    """``.git`` (and other VCS dirs) must never appear in either mode."""
+    git_dir = tmp_path / ".git"
+    git_dir.mkdir()
+    (git_dir / "foo.py").write_text("NEEDLE inside git\n")
+    (tmp_path / "real.py").write_text("NEEDLE in real\n")
+
+    # content mode: only the real file's match shows up.
+    content_res = json.loads(
+        dispatch_search_files(
+            args_json=_args(pattern="NEEDLE", mode="content"),
+            workspace=tmp_path,
+        )
+    )
+    paths = {m["path"] for m in content_res["matches"]}
+    assert "real.py" in paths
+    assert not any(p.startswith(".git") or "/.git/" in p for p in paths)
+
+    # name mode: same — globbing for *.py must not surface .git/foo.py.
+    name_res = json.loads(
+        dispatch_search_files(
+            args_json=_args(pattern="**/*.py", mode="name"),
+            workspace=tmp_path,
+        )
+    )
+    assert "real.py" in name_res["matches"]
+    assert not any(
+        p.startswith(".git") or "/.git/" in p for p in name_res["matches"]
+    )
