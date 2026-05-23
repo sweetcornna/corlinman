@@ -799,3 +799,136 @@ async def test_chat_stream_does_not_retry_on_insufficient_quota(
     # the reasoning loop can decide what to do with the turn.
     assert chunks[-1].kind == "done"
     assert chunks[-1].finish_reason == "error"
+
+
+# ---------------------------------------------------------------------------
+# CodexProvider.chat_stream — usage / cost tracking (T1.4)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_emits_usage_on_done() -> None:
+    """A ``response.completed`` event's usage rides the terminal done chunk.
+
+    The Responses API streams a ``response.completed`` event at the
+    very end carrying ``event.response.usage`` with vendor token
+    accounting. T1.4 captures the documented integer fields
+    (``input_tokens``, ``output_tokens``, plus optional
+    ``cached_input_tokens`` / ``cached_output_tokens`` /
+    ``reasoning_tokens``) and attaches them as a plain ``dict`` on the
+    terminal ``done`` :class:`ProviderChunk`, where the reasoning loop
+    forwards them onto the outer :class:`DoneEvent`.
+    """
+    from types import SimpleNamespace
+
+    future_ms = int(time.time() * 1000) + 3_600_000
+    cred = CodexOAuthCredential(
+        access_token="good-token", refresh_token=None, expires_at_ms=future_ms
+    )
+    prov = CodexProvider(credential=cred)
+
+    usage_obj = SimpleNamespace(
+        input_tokens=10,
+        output_tokens=20,
+        cached_input_tokens=3,
+        # output_tokens_details etc. omitted — the extractor ignores
+        # everything outside the documented integer keys.
+    )
+    response_obj = SimpleNamespace(usage=usage_obj, status="completed")
+    events = [
+        SimpleNamespace(type="response.output_text.delta", delta="hi"),
+        SimpleNamespace(type="response.completed", response=response_obj),
+    ]
+
+    class _FakeStream:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return False
+
+        def __aiter__(self):
+            return self._gen()
+
+        async def _gen(self):
+            for e in events:
+                yield e
+
+    class _FakeResponses:
+        def stream(self, **_kwargs):
+            return _FakeStream()
+
+    class _FakeClient:
+        responses = _FakeResponses()
+
+    with patch.object(prov, "_make_client", return_value=_FakeClient()):
+        chunks = []
+        async for chunk in prov.chat_stream(
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "hi"}],
+        ):
+            chunks.append(chunk)
+
+    done = chunks[-1]
+    assert done.kind == "done"
+    assert done.finish_reason == "stop"
+    assert done.usage == {
+        "input_tokens": 10,
+        "output_tokens": 20,
+        "cached_input_tokens": 3,
+    }
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_done_usage_none_when_upstream_omits() -> None:
+    """Without a ``response.completed`` event, the done chunk's usage is None.
+
+    Older Codex backends and the legacy / pre-Responses test fakes
+    don't emit ``response.completed``. The provider must keep the
+    ``usage`` attribute at its default ``None`` in that case so the
+    cost meter cleanly skips the turn instead of recording zeros.
+    """
+    from types import SimpleNamespace
+
+    future_ms = int(time.time() * 1000) + 3_600_000
+    cred = CodexOAuthCredential(
+        access_token="good-token", refresh_token=None, expires_at_ms=future_ms
+    )
+    prov = CodexProvider(credential=cred)
+
+    events = [
+        SimpleNamespace(type="response.output_text.delta", delta="ok"),
+    ]
+
+    class _FakeStream:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return False
+
+        def __aiter__(self):
+            return self._gen()
+
+        async def _gen(self):
+            for e in events:
+                yield e
+
+    class _FakeResponses:
+        def stream(self, **_kwargs):
+            return _FakeStream()
+
+    class _FakeClient:
+        responses = _FakeResponses()
+
+    with patch.object(prov, "_make_client", return_value=_FakeClient()):
+        chunks = []
+        async for chunk in prov.chat_stream(
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "hi"}],
+        ):
+            chunks.append(chunk)
+
+    done = chunks[-1]
+    assert done.kind == "done"
+    assert done.usage is None

@@ -349,6 +349,66 @@ _ResolvedTriple = tuple[CorlinmanProvider, str, dict[str, Any]]
 _ResolverCallable = Callable[..., Any]
 
 
+# T1.4: keys aggregated by ``_CostMeter``. The first two are the durable
+# cross-vendor pair; the rest are tracked when the provider reports them
+# (Codex Responses API surfaces ``cached_input_tokens`` and
+# ``reasoning_tokens``; Anthropic surfaces ``cache_read_input_tokens``).
+# Unknown keys flow through unchanged so future providers don't need a
+# meter-side change to be observed.
+_COST_METER_BASE_KEYS = ("input_tokens", "output_tokens")
+
+
+class _CostMeter:
+    """Per-session token accumulator.
+
+    One instance lives on the servicer for the process lifetime. Each
+    turn's :class:`DoneEvent.usage` is folded into the running totals
+    keyed by ``session_key``; an additional ``requests`` counter tracks
+    the number of completed turns. No pricing math — model prices drift
+    and the meter is the durable, vendor-neutral record. Cost dashboards
+    consume :meth:`snapshot` and apply prices at read time.
+
+    The meter is in-memory only. The servicer holds it like
+    ``_todo_store`` — when the process dies the totals die with it. A
+    future iteration may persist these to sqlite alongside the memory
+    backend, but pricing tasks at request granularity also flow through
+    the ``agent.cost.turn`` log line which is durable.
+    """
+
+    def __init__(self) -> None:
+        # session_key → {token_key: int, …, "requests": int}.
+        self._sessions: dict[str, dict[str, int]] = {}
+
+    def add(self, session_key: str, usage: dict[str, int] | None) -> None:
+        """Fold one turn's usage into the running totals.
+
+        ``usage=None`` and ``session_key=""`` are tolerated as no-ops
+        (legacy non-session callers, mid-stream errors). All integer
+        values in ``usage`` are summed; the ``requests`` counter only
+        bumps when usage was non-empty so it reflects observed cost
+        events, not just any DoneEvent.
+        """
+        if not session_key or not usage:
+            return
+        bucket = self._sessions.setdefault(session_key, {})
+        for key, value in usage.items():
+            try:
+                bucket[key] = bucket.get(key, 0) + int(value)
+            except (TypeError, ValueError):
+                # Defensive against weird upstream shapes; preserve the
+                # rest of the usage dict.
+                continue
+        bucket["requests"] = bucket.get("requests", 0) + 1
+
+    def snapshot(self, session_key: str) -> dict[str, int]:
+        """Return a *copy* of the current totals for ``session_key``.
+
+        Empty dict when the session has never recorded usage. Always a
+        copy so admin callers can't mutate the meter's interior.
+        """
+        return dict(self._sessions.get(session_key, {}))
+
+
 class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
     """Concrete implementation — replaces the default UNIMPLEMENTED stub."""
 
@@ -405,6 +465,11 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         self._memory_init_done = False
         # Per-session task lists for the ``todo_write`` tool.
         self._todo_store = TodoStore()
+        # T1.4: per-session token / cost accumulator. Updated from the
+        # ``Chat`` DoneEvent branch when the provider reported usage;
+        # ``cost_snapshot(session_key)`` exposes totals for a future
+        # admin route.
+        self._cost_meter = _CostMeter()
 
     async def Chat(  # noqa: N802 — gRPC method name
         self,
@@ -557,6 +622,20 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     await self._store_memory(
                         start.session_key, user_text, "".join(reply_parts)
                     )
+                    # T1.4: fold the turn's reported token usage into the
+                    # per-session meter and log a structured per-turn
+                    # record. ``usage`` is ``None`` when the provider did
+                    # not report it (mid-stream errors, retries that
+                    # bailed pre-completion) — silently skip in that case.
+                    if event.usage:
+                        self._cost_meter.add(start.session_key, event.usage)
+                        logger.info(
+                            "agent.cost.turn",
+                            session=start.session_key,
+                            model=start.model,
+                            finish_reason=event.finish_reason,
+                            **event.usage,
+                        )
                     yield agent_pb2.ServerFrame(
                         done=agent_pb2.Done(finish_reason=event.finish_reason)
                     )
@@ -605,6 +684,17 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         """Snapshot of the provider pool counters. Surfaced for
         operator tooling (admin UI, ``corlinman doctor``)."""
         return self._provider_pool.stats()
+
+    def cost_snapshot(self, session_key: str) -> dict[str, int]:
+        """Return the per-session token totals tracked by the cost meter.
+
+        Shape: ``{"input_tokens": int, "output_tokens": int, …,
+        "requests": int}``. Empty dict when the session has not yet
+        produced a usage-bearing turn. T1.4 wires this into the
+        ``Chat`` DoneEvent path; a future admin route can surface it
+        to operators without poking at the meter directly.
+        """
+        return self._cost_meter.snapshot(session_key)
 
     async def _dispatch_builtin(
         self,

@@ -95,6 +95,52 @@ def _is_terminal_event(event: Any) -> bool:
     return event_type in {"response.incomplete", "response.failed"}
 
 
+# Responses-API usage keys we forward onto the ``done`` ProviderChunk.
+# ``input_tokens`` / ``output_tokens`` are the durable cross-vendor pair
+# the cost meter aggregates on; the cached / reasoning fields are
+# best-effort extras included only when the upstream reported them.
+_USAGE_INT_KEYS = (
+    "input_tokens",
+    "output_tokens",
+    "cached_input_tokens",
+    "cached_output_tokens",
+    "reasoning_tokens",
+)
+
+
+def _extract_usage(event: Any) -> dict[str, int] | None:
+    """Pull a plain ``dict[str, int]`` off a ``response.completed`` event.
+
+    The Responses-API ``response.completed`` event carries the final
+    response object on ``event.response``; its ``usage`` attribute is
+    the vendor's token accounting (a pydantic model on the live SDK, a
+    ``SimpleNamespace`` in tests). We read only the documented integer
+    fields, coerce defensively, and skip anything missing or
+    non-coercible. Returns ``None`` if no usable fields were present
+    so callers can leave the ``done`` chunk's ``usage`` attribute at
+    its default ``None``.
+    """
+    response = getattr(event, "response", None)
+    if response is None:
+        return None
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return None
+    out: dict[str, int] = {}
+    for key in _USAGE_INT_KEYS:
+        raw = getattr(usage, key, None)
+        if raw is None and isinstance(usage, dict):
+            raw = usage.get(key)
+        if raw is None:
+            continue
+        try:
+            out[key] = int(raw)
+        except (TypeError, ValueError):
+            # Tolerate weird upstream shapes — drop the field, keep the rest.
+            continue
+    return out or None
+
+
 def _log_terminal(event: Any) -> None:
     resp_obj = getattr(event, "response", None)
     status = getattr(resp_obj, "status", None) if resp_obj else None
@@ -316,6 +362,12 @@ class CodexProvider:
         # backend ships args in one shot instead of streaming fragments.
         args_streamed: dict[str, bool] = {}
         saw_tool_call = False
+        # T1.4: capture token accounting from the ``response.completed``
+        # event so the terminal ``done`` chunk can carry it back to the
+        # reasoning loop → DoneEvent → server-side cost meter. Stays
+        # ``None`` when the upstream omits usage (e.g. mid-stream
+        # errors, retry that bailed pre-completion).
+        captured_usage: dict[str, int] | None = None
 
         async def _process_event(event: Any) -> AsyncIterator[ProviderChunk]:
             """Translate one Responses-API event into ProviderChunks.
@@ -386,6 +438,8 @@ class CodexProvider:
                 yield ProviderChunk(kind="done", finish_reason="error")
                 terminated_early = True
             else:
+                if getattr(first_event, "type", "") == "response.completed":
+                    captured_usage = _extract_usage(first_event) or captured_usage
                 async for chunk in _process_event(first_event):
                     if chunk.kind == "tool_call_start":
                         saw_tool_call = True
@@ -399,6 +453,10 @@ class CodexProvider:
                             yield ProviderChunk(kind="done", finish_reason="error")
                             terminated_early = True
                             break
+                        if getattr(event, "type", "") == "response.completed":
+                            # Last-writer-wins: a streamed response only
+                            # carries one completed event, but be defensive.
+                            captured_usage = _extract_usage(event) or captured_usage
                         async for chunk in _process_event(event):
                             if chunk.kind == "tool_call_start":
                                 saw_tool_call = True
@@ -421,6 +479,7 @@ class CodexProvider:
         yield ProviderChunk(
             kind="done",
             finish_reason="tool_calls" if saw_tool_call else "stop",
+            usage=captured_usage,
         )
 
     # ------------------------------------------------------------------

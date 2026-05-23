@@ -808,3 +808,102 @@ def test_env_block_contains_workspace_and_platform() -> None:
     assert "platform" in block
     # Heading shape too.
     assert block.startswith("# Environment")
+
+
+# ---------------------------------------------------------------------------
+# T1.4 — _CostMeter accumulates per-session token totals
+# ---------------------------------------------------------------------------
+
+
+def test_cost_meter_accumulates_per_session() -> None:
+    """Two turns on the same session sum input/output tokens + bump requests.
+
+    Shape contract: ``snapshot(session_key)`` returns a dict containing
+    each summed usage key plus ``requests``. Future provider fields
+    (cached_*, reasoning_tokens) flow through unchanged so the meter
+    survives a new vendor without a code edit.
+    """
+    servicer = CorlinmanAgentServicer(provider_resolver=lambda _m: _FakeProvider([]))
+
+    servicer._cost_meter.add("s1", {"input_tokens": 10, "output_tokens": 20})
+    servicer._cost_meter.add("s1", {"input_tokens": 5, "output_tokens": 7})
+
+    snap = servicer.cost_snapshot("s1")
+    assert snap == {"input_tokens": 15, "output_tokens": 27, "requests": 2}
+
+
+def test_cost_meter_keeps_sessions_isolated() -> None:
+    """Two distinct session_keys don't bleed into each other."""
+    servicer = CorlinmanAgentServicer(provider_resolver=lambda _m: _FakeProvider([]))
+
+    servicer._cost_meter.add("s1", {"input_tokens": 10, "output_tokens": 20})
+    servicer._cost_meter.add("s2", {"input_tokens": 3, "output_tokens": 4})
+
+    assert servicer.cost_snapshot("s1") == {
+        "input_tokens": 10, "output_tokens": 20, "requests": 1,
+    }
+    assert servicer.cost_snapshot("s2") == {
+        "input_tokens": 3, "output_tokens": 4, "requests": 1,
+    }
+    # Unknown session returns an empty snapshot, not a KeyError.
+    assert servicer.cost_snapshot("s-missing") == {}
+
+
+def test_cost_meter_tolerates_none_and_empty_usage() -> None:
+    """``usage=None`` / empty dict / empty session_key are no-ops.
+
+    Prevents the DoneEvent branch from accidentally inflating
+    ``requests`` when the provider didn't actually report cost (mid-
+    stream errors, retries that bailed pre-completion).
+    """
+    servicer = CorlinmanAgentServicer(provider_resolver=lambda _m: _FakeProvider([]))
+
+    servicer._cost_meter.add("s1", None)
+    servicer._cost_meter.add("s1", {})
+    servicer._cost_meter.add("", {"input_tokens": 5})
+
+    assert servicer.cost_snapshot("s1") == {}
+    assert servicer.cost_snapshot("") == {}
+
+
+def test_cost_meter_preserves_optional_provider_fields() -> None:
+    """``cached_input_tokens`` / ``reasoning_tokens`` flow through unchanged."""
+    servicer = CorlinmanAgentServicer(provider_resolver=lambda _m: _FakeProvider([]))
+
+    servicer._cost_meter.add(
+        "s1",
+        {
+            "input_tokens": 10,
+            "output_tokens": 20,
+            "cached_input_tokens": 4,
+            "reasoning_tokens": 6,
+        },
+    )
+    servicer._cost_meter.add(
+        "s1",
+        {
+            "input_tokens": 2,
+            "output_tokens": 3,
+            "cached_input_tokens": 1,
+        },
+    )
+
+    snap = servicer.cost_snapshot("s1")
+    assert snap == {
+        "input_tokens": 12,
+        "output_tokens": 23,
+        "cached_input_tokens": 5,
+        "reasoning_tokens": 6,
+        "requests": 2,
+    }
+
+
+def test_cost_snapshot_returns_a_copy() -> None:
+    """Mutating the snapshot must not corrupt the meter's interior."""
+    servicer = CorlinmanAgentServicer(provider_resolver=lambda _m: _FakeProvider([]))
+
+    servicer._cost_meter.add("s1", {"input_tokens": 10, "output_tokens": 20})
+    snap = servicer.cost_snapshot("s1")
+    snap["input_tokens"] = 99_999  # try to poison the meter
+
+    assert servicer.cost_snapshot("s1")["input_tokens"] == 10

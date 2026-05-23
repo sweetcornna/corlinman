@@ -59,6 +59,12 @@ class ProviderChunk:
     ``done``
         :attr:`finish_reason` is the normalised terminal reason:
         ``"stop"``, ``"length"``, ``"tool_calls"``, or ``"error"``.
+        :attr:`usage` carries vendor token-accounting integers when the
+        upstream reports them — ``input_tokens`` and ``output_tokens``
+        are the durable cross-vendor keys; ``cached_input_tokens``,
+        ``cached_output_tokens``, and ``reasoning_tokens`` are included
+        when present. ``None`` when the provider did not report usage
+        (e.g. mid-stream errors, retries that bailed pre-completion).
     """
 
     kind: ChunkKind
@@ -67,6 +73,7 @@ class ProviderChunk:
     tool_name: str | None = None
     arguments_delta: str | None = None
     finish_reason: str | None = None
+    usage: dict[str, int] | None = None
 
 
 class ChatMessage(Protocol):
