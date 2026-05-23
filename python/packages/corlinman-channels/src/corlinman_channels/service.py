@@ -45,6 +45,40 @@ import httpx
 
 _log = logging.getLogger(__name__)
 
+
+async def _try_open_inbox() -> Any:
+    """T4.3 — best-effort lazy open of the durable inbox.
+
+    Tolerates corlinman-server not being importable (standalone
+    channel tests) — returns None and the dispatch loop runs without
+    inbox recording, exactly as before T4.3 landed.
+    """
+    try:
+        from corlinman_server.inbox import Inbox  # type: ignore[import-not-found]
+    except Exception:  # noqa: BLE001 — module isn't required
+        return None
+    import os
+    from pathlib import Path
+
+    raw = os.environ.get("CORLINMAN_DATA_DIR")
+    data_dir = Path(raw) if raw else Path.home() / ".corlinman"
+    try:
+        inbox = await Inbox.open(data_dir / "inbox.sqlite")
+    except Exception as exc:  # noqa: BLE001 — degrade silently
+        _log.warning("qq inbox open failed: %s", exc)
+        return None
+    # Boot-time housekeeping — only runs once per channel start.
+    try:
+        stale = await inbox.reset_stale_dispatched()
+        pending = await inbox.list_pending(channel="qq", limit=20)
+        if stale or pending:
+            _log.info(
+                "qq inbox boot: stale_reset=%d pending=%d", stale, len(pending)
+            )
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("qq inbox boot sweep failed: %s", exc)
+    return inbox
+
 from corlinman_channels.common import InboundEvent
 from corlinman_channels.discord import (
     DEFAULT_GATEWAY_URL,
@@ -167,6 +201,11 @@ class QqChannelParams:
     chat_service: ChatServiceLike | None = None
     rate_limit_hook: Any = None
     hook_bus: Any = None
+    inbox: Any = None
+    """T4.3 — optional ``corlinman_server.inbox.Inbox``. When set, every
+    accepted QQ message is durably recorded (pending → dispatched →
+    done/dead) so a gateway crash mid-turn leaves a breadcrumb. When
+    ``None``, the channel runs exactly as before — purely additive."""
 
 
 async def run_qq_channel(
@@ -244,6 +283,11 @@ async def _qq_dispatch_loop(
     tasks. Equivalent of the Rust ``tokio::select! { cancelled() / recv() }``
     in ``run_qq_channel``."""
     inbound_iter = adapter.inbound()
+    # T4.3: lazily open the durable inbox on first use. Resolved via
+    # corlinman_server.inbox if available; tests that import the
+    # channels package standalone keep ``params.inbox = None``.
+    if params.inbox is None:
+        params.inbox = await _try_open_inbox()
     pending: set[asyncio.Task[None]] = set()
     try:
         while not cancel.is_set():
@@ -263,6 +307,22 @@ async def _qq_dispatch_loop(
                 # No backend wired — drop silently (matches Rust when
                 # the gateway opts not to provide one).
                 continue
+            # T4.3: enqueue the inbound message into the durable inbox
+            # BEFORE spawning the chat task, so a crash between accept
+            # and reply leaves a breadcrumb. Best-effort; a failure here
+            # never blocks the chat path.
+            inbox_id: int | None = None
+            if params.inbox is not None:
+                try:
+                    inbox_id = await params.inbox.enqueue(
+                        channel="qq",
+                        session_key=req.session_key,
+                        message_id=str(payload.message_id),
+                        user_text=req.content[:1000],
+                    )
+                except Exception as exc:  # noqa: BLE001 — never block chat
+                    _log.warning("qq inbox enqueue failed: %s", exc)
+                    inbox_id = None
             t = asyncio.create_task(
                 handle_one_qq(
                     params.chat_service,
@@ -271,6 +331,8 @@ async def _qq_dispatch_loop(
                     params.model,
                     adapter,
                     cancel,
+                    inbox=params.inbox,
+                    inbox_id=inbox_id,
                 )
             )
             pending.add(t)
@@ -288,30 +350,54 @@ async def handle_one_qq(
     model: str,
     adapter: OneBotAdapter,
     cancel: asyncio.Event,
+    *,
+    inbox: Any = None,
+    inbox_id: int | None = None,
 ) -> None:
     """Run one chat turn and post the reply back through the adapter.
 
     Mirrors Rust ``handle_one`` in ``service.rs``. On error, sends a
     short ``[corlinman error] <msg>`` reply so the user knows
-    something failed (matches Rust ``M5`` UX).
+    something failed.
+
+    T4.3: when ``inbox``/``inbox_id`` are supplied, the inbox row is
+    transitioned ``pending`` → ``dispatched`` (at start) → ``done``
+    (on successful reply) or ``dead`` (after fatal error). A crash
+    leaves the row stuck — the boot drainer can find it on next
+    gateway start.
     """
     request = _build_internal_request(req, event, model)
     _log.info("qq handle_one start user=%s model=%s", event.user_id, model)
-    stream = chat_service.run(request, cancel)
+    if inbox is not None and inbox_id is not None:
+        try:
+            await inbox.mark_dispatched(inbox_id)
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("qq inbox mark_dispatched failed: %s", exc)
+
     text_parts: list[str] = []
     error_message: str | None = None
-    async for chat_ev in stream:
-        kind = _event_kind(chat_ev)
-        if kind == "token_delta":
-            text_parts.append(getattr(chat_ev, "text", "") or "")
-        elif kind == "done":
-            break
-        elif kind == "error":
-            error_message = getattr(chat_ev, "error", "") or getattr(
-                chat_ev, "message", ""
-            )
-            break
-        # tool_call → informational; gateway handles execution.
+    try:
+        stream = chat_service.run(request, cancel)
+        async for chat_ev in stream:
+            kind = _event_kind(chat_ev)
+            if kind == "token_delta":
+                text_parts.append(getattr(chat_ev, "text", "") or "")
+            elif kind == "done":
+                break
+            elif kind == "error":
+                error_message = getattr(chat_ev, "error", "") or getattr(
+                    chat_ev, "message", ""
+                )
+                break
+            # tool_call → informational; gateway handles execution.
+    except Exception as exc:  # noqa: BLE001 — never let a crash kill the row
+        _log.exception("qq handle_one crashed: %s", exc)
+        if inbox is not None and inbox_id is not None:
+            try:
+                await inbox.mark_dead(inbox_id, error=f"crash: {exc!r}")
+            except Exception:  # noqa: BLE001
+                pass
+        raise
 
     if error_message is not None:
         body = f"[corlinman error] {error_message}"
@@ -320,11 +406,21 @@ async def handle_one_qq(
         body = "".join(text_parts)
         if not body.strip():
             _log.warning("qq handle_one empty reply user=%s", event.user_id)
+            if inbox is not None and inbox_id is not None:
+                try:
+                    await inbox.mark_done(inbox_id)
+                except Exception:  # noqa: BLE001
+                    pass
             return  # Empty assistant reply → silent drop.
         _log.info("qq handle_one reply user=%s len=%d", event.user_id, len(body))
 
     action = _build_reply_action(event, body)
     await adapter.send_action(action)
+    if inbox is not None and inbox_id is not None:
+        try:
+            await inbox.mark_done(inbox_id)
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("qq inbox mark_done failed: %s", exc)
 
 
 def _build_internal_request(

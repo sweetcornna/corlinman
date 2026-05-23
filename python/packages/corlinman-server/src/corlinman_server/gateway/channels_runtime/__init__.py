@@ -96,7 +96,9 @@ def _is_enabled(section: Mapping[str, Any]) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _build_qq_params(qq_cfg: Mapping[str, Any], model: str, chat_service: Any) -> Any:
+def _build_qq_params(
+    qq_cfg: Mapping[str, Any], model: str, chat_service: Any, inbox: Any = None
+) -> Any:
     """Build :class:`corlinman_channels.QqChannelParams` from the
     ``[channels.qq]`` config table.
 
@@ -124,6 +126,7 @@ def _build_qq_params(qq_cfg: Mapping[str, Any], model: str, chat_service: Any) -
         config=cfg,
         model=model,
         chat_service=chat_service,
+        inbox=inbox,
     )
 
 
@@ -287,6 +290,7 @@ def build_channel_tasks(
     model: str,
     chat_service: Any,
     cancel: asyncio.Event,
+    inbox: Any = None,
 ) -> list[asyncio.Task[Any]]:
     """Build (but the caller owns scheduling) the channel background
     tasks for every enabled channel in ``channels_cfg``.
@@ -307,7 +311,7 @@ def build_channel_tasks(
         try:
             from corlinman_channels import run_qq_channel
 
-            params = _build_qq_params(qq_cfg, model, chat_service)
+            params = _build_qq_params(qq_cfg, model, chat_service, inbox=inbox)
             task = asyncio.create_task(
                 _run_channel(
                     "qq",
@@ -533,3 +537,9 @@ def bootstrap(state: Any) -> list[asyncio.Task[Any]]:
         pass
 
     return tasks
+
+
+# Inbox lifecycle lives inside the channel runtime — it is opened
+# lazily inside the channel task on the first inbound message
+# (see corlinman_channels.service._qq_dispatch_loop) so the boot path
+# stays synchronous and tests don't need to await an extra step.

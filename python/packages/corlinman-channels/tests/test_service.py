@@ -160,9 +160,12 @@ class TestInternalRequest:
         binding = ChannelBinding.qq_group(ev.self_id, ev.group_id or 0, ev.user_id)
         req = RoutedRequest(binding=binding, content=ev.raw_message)
         internal = _build_internal_request(req, ev, "claude-sonnet-4-5")
-        assert internal["attachments"] == []
-        assert internal["model"] == "claude-sonnet-4-5"
-        assert internal["messages"][0]["content"] == "格兰早"
+        # _build_internal_request returns a SimpleNamespace (attribute
+        # access — chat_service.run expects .model/.messages/...) since
+        # the earlier QQ fix; assert via getattr.
+        assert internal.attachments == []
+        assert internal.model == "claude-sonnet-4-5"
+        assert internal.messages[0].content == "格兰早"
 
 
 # ---------------------------------------------------------------------------
