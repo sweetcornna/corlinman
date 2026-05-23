@@ -38,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -103,6 +104,7 @@ from corlinman_channels.onebot import (
     OneBotConfig,
     SendGroupMsg,
     SendPrivateMsg,
+    SetInputStatus,
     TextSegment,
 )
 from corlinman_channels.rate_limit import TokenBucket
@@ -451,6 +453,41 @@ async def _qq_dispatch_loop(
             t.cancel()
 
 
+async def _qq_input_status_pulse(
+    adapter: OneBotAdapter,
+    user_id: int,
+    cancel: asyncio.Event,
+    *,
+    interval_s: float = 5.0,
+) -> None:
+    """Re-fire ``set_input_status`` (NapCat extension) until cancelled.
+
+    Shows "对方正在输入..." in the QQ client while a reply is being
+    generated. NapCat clears the indicator after ~5s, so the loop
+    period matches. Non-NapCat OneBot backends return an "unsupported"
+    envelope; the adapter logs and moves on.
+
+    Best-effort: ``adapter.send_action`` may raise ``TransportError`` if
+    the WS just disconnected — we swallow it so the pulse failure never
+    blocks the surrounding reply path.
+    """
+    try:
+        while not cancel.is_set():
+            try:
+                await adapter.send_action(
+                    SetInputStatus(user_id=user_id, event_type=1)
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                await asyncio.wait_for(cancel.wait(), timeout=interval_s)
+                return
+            except asyncio.TimeoutError:
+                continue
+    except asyncio.CancelledError:
+        return
+
+
 async def handle_one_qq(
     chat_service: ChatServiceLike,
     req: RoutedRequest,
@@ -473,6 +510,10 @@ async def handle_one_qq(
     (on successful reply) or ``dead`` (after fatal error). A crash
     leaves the row stuck — the boot drainer can find it on next
     gateway start.
+
+    Surfaces a NapCat "正在输入..." indicator in private chats for the
+    duration of the turn (QQ groups don't render typing indicators —
+    skipped there).
     """
     request = _build_internal_request(req, event, model)
     _log.info("qq handle_one start user=%s model=%s", event.user_id, model)
@@ -481,6 +522,13 @@ async def handle_one_qq(
             await inbox.mark_dispatched(inbox_id)
         except Exception as exc:  # noqa: BLE001
             _log.warning("qq inbox mark_dispatched failed: %s", exc)
+
+    # NapCat-only input-status indicator in private chats.
+    typing_task: asyncio.Task[None] | None = None
+    if event.message_type == MessageType.PRIVATE:
+        typing_task = asyncio.create_task(
+            _qq_input_status_pulse(adapter, event.user_id, cancel)
+        )
 
     text_parts: list[str] = []
     error_message: str | None = None
@@ -506,6 +554,11 @@ async def handle_one_qq(
             except Exception:  # noqa: BLE001
                 pass
         raise
+    finally:
+        if typing_task is not None:
+            typing_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await typing_task
 
     if error_message is not None:
         body = f"[corlinman error] {error_message}"
@@ -655,6 +708,55 @@ async def run_telegram_channel(
         await send_client.aclose()
 
 
+#: Status text shown in the placeholder message before any token / tool
+#: events land. Mirrors hermes-agent's "🧠 Thinking..." spinner state.
+_TG_STATUS_THINKING = "🧠 思考中..."
+
+#: Shown the first time a token_delta arrives — signals the agent has
+#: started producing the final answer.
+_TG_STATUS_GENERATING = "✍️ 生成回复中..."
+
+
+async def _telegram_typing_pulse(
+    sender: TelegramSender,
+    chat_id: int,
+    cancel: asyncio.Event,
+    *,
+    interval_s: float = 4.0,
+) -> None:
+    """Re-fire ``sendChatAction(typing)`` until cancelled.
+
+    Telegram clears the "is typing…" indicator after about 5 seconds, so
+    the loop period must be < 5s. Designed to be cancelled from outside
+    (``Task.cancel()``) when the reply lands or the surrounding
+    ``cancel`` event fires.
+
+    Best-effort: a transport failure is swallowed by
+    :meth:`TelegramSender.send_chat_action`, so the pulse keeps trying.
+    """
+    try:
+        while not cancel.is_set():
+            await sender.send_chat_action(chat_id, "typing")
+            try:
+                await asyncio.wait_for(cancel.wait(), timeout=interval_s)
+                return
+            except asyncio.TimeoutError:
+                continue
+    except asyncio.CancelledError:
+        return
+
+
+def _format_tool_status(ev: Any) -> str:
+    """Render a :class:`ToolCallEvent` as the next mutable-line status.
+
+    Mirrors hermes-agent's ``_last_activity_desc`` style ("emoji + label").
+    """
+    tool = getattr(ev, "tool", "") or "?"
+    plugin = getattr(ev, "plugin", "") or ""
+    label = f"{plugin}.{tool}" if plugin and plugin != tool else tool
+    return f"🔧 调用工具: {label}"
+
+
 async def handle_one_telegram(
     chat_service: ChatServiceLike,
     inbound: InboundEvent[Any],
@@ -664,29 +766,13 @@ async def handle_one_telegram(
 ) -> None:
     """Run one Telegram chat turn and post the reply via
     :class:`TelegramSender`. Parallel structure to :func:`handle_one_qq`.
+
+    Surfaces real-time work status to the user:
+      * a background pulse keeps "is typing…" visible in the chat client;
+      * a placeholder message is edited in place as ``ToolCallEvent`` /
+        token-delta events land — mirroring hermes-agent's mutable
+        spinner line — and finally rewritten with the assistant's reply.
     """
-    request = _build_text_channel_request(inbound, model)
-    stream = chat_service.run(request, cancel)
-    text_parts: list[str] = []
-    error_message: str | None = None
-    async for ev in stream:
-        kind = _event_kind(ev)
-        if kind == "token_delta":
-            text_parts.append(getattr(ev, "text", "") or "")
-        elif kind == "done":
-            break
-        elif kind == "error":
-            error_message = getattr(ev, "error", "") or getattr(ev, "message", "")
-            break
-
-    if error_message is not None:
-        body = f"[corlinman error] {error_message}"
-    else:
-        body = "".join(text_parts)
-        if not body.strip():
-            return
-
-    # ``inbound.binding.thread`` is the chat_id (Telegram thread = chat).
     chat_id = int(inbound.binding.thread)
     reply_to: int | None = None
     if inbound.message_id is not None:
@@ -694,7 +780,76 @@ async def handle_one_telegram(
             reply_to = int(inbound.message_id)
         except ValueError:
             reply_to = None
-    await sender.send_message(chat_id, body, reply_to_message_id=reply_to)
+
+    # Kick off the typing-indicator pulse + send the initial spinner
+    # placeholder so the user sees activity within ~1s.
+    typing_task = asyncio.create_task(
+        _telegram_typing_pulse(sender, chat_id, cancel)
+    )
+    placeholder_id: int | None = None
+    try:
+        placeholder_id = await sender.send_message(
+            chat_id, _TG_STATUS_THINKING, reply_to_message_id=reply_to
+        )
+    except Exception as exc:  # noqa: BLE001
+        # The placeholder is decorative — if Telegram rejected it (rate
+        # limit, blocked, etc.) we fall back to sending a final message
+        # at the end.
+        _log.warning("telegram placeholder send failed: %s", exc)
+
+    request = _build_text_channel_request(inbound, model)
+    stream = chat_service.run(request, cancel)
+    text_parts: list[str] = []
+    last_status: str = _TG_STATUS_THINKING
+    error_message: str | None = None
+
+    async def _maybe_edit(text: str) -> None:
+        nonlocal last_status
+        if placeholder_id is None or text == last_status:
+            return
+        last_status = text
+        await sender.edit_message_text(chat_id, placeholder_id, text)
+
+    try:
+        async for ev in stream:
+            kind = _event_kind(ev)
+            if kind == "token_delta":
+                text_parts.append(getattr(ev, "text", "") or "")
+                if last_status != _TG_STATUS_GENERATING:
+                    await _maybe_edit(_TG_STATUS_GENERATING)
+            elif kind == "tool_call":
+                await _maybe_edit(_format_tool_status(ev))
+            elif kind == "done":
+                break
+            elif kind == "error":
+                error_message = getattr(ev, "error", "") or getattr(
+                    ev, "message", ""
+                )
+                break
+    finally:
+        typing_task.cancel()
+        with suppress(asyncio.CancelledError, Exception):
+            await typing_task
+
+    if error_message is not None:
+        body = f"[corlinman error] {error_message}"
+    else:
+        body = "".join(text_parts).strip()
+        if not body:
+            # Empty reply — tidy the placeholder so the user knows the
+            # turn ended rather than leaving "✍️ 生成回复中..." stuck.
+            if placeholder_id is not None:
+                await sender.edit_message_text(
+                    chat_id, placeholder_id, "（无回复）"
+                )
+            return
+
+    if placeholder_id is not None:
+        # Mutate the placeholder into the final reply — keeps a single
+        # message that the user has been watching update in place.
+        await sender.edit_message_text(chat_id, placeholder_id, body)
+    else:
+        await sender.send_message(chat_id, body, reply_to_message_id=reply_to)
 
 
 # ---------------------------------------------------------------------------

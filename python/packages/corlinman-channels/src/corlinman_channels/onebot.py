@@ -408,8 +408,28 @@ class SendGroupForwardMsg:
     messages: list[ForwardNode]
 
 
-#: Tagged-union of the three actions corlinman emits.
-Action = SendPrivateMsg | SendGroupMsg | SendGroupForwardMsg
+@dataclass(slots=True)
+class SetInputStatus:
+    """``action = "set_input_status"`` — NapCat OneBot v11 extension.
+
+    Surfaces "对方正在输入..." (NapCat treats this as a private-chat
+    feature). ``event_type`` is 0 (cancel) or 1 ("正在输入..."). The
+    indicator auto-clears after ~5s, so the channel handler re-fires
+    while a turn is in flight.
+
+    Not part of the upstream OneBot spec — non-NapCat backends will
+    return an "unsupported action" envelope. The QQ channel handler
+    treats any failure as a no-op so the reply path still completes.
+    """
+
+    user_id: int
+    event_type: int = 1
+
+
+#: Tagged-union of every action corlinman emits.
+Action = (
+    SendPrivateMsg | SendGroupMsg | SendGroupForwardMsg | SetInputStatus
+)
 
 
 def _segment_to_wire(seg: MessageSegment) -> dict[str, Any]:
@@ -455,6 +475,14 @@ def action_to_wire(action: Action) -> dict[str, Any]:
             "params": {
                 "group_id": action.group_id,
                 "message": [_segment_to_wire(s) for s in action.message],
+            },
+        }
+    if isinstance(action, SetInputStatus):
+        return {
+            "action": "set_input_status",
+            "params": {
+                "user_id": action.user_id,
+                "event_type": action.event_type,
             },
         }
     # SendGroupForwardMsg
@@ -769,6 +797,7 @@ __all__ = [
     "SendGroupForwardMsg",
     "SendGroupMsg",
     "SendPrivateMsg",
+    "SetInputStatus",
     "Sender",
     "TextSegment",
     "UnknownEvent",

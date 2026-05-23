@@ -186,6 +186,16 @@ class TestActionToWire:
         assert s["params"]["message"][0]["data"]["id"] == "42"
         assert s["params"]["message"][1]["type"] == "text"
 
+    def test_set_input_status_envelope(self) -> None:
+        """NapCat extension — must serialize with the right action name
+        and event_type so the QQ client renders '正在输入...'."""
+        from corlinman_channels.onebot import SetInputStatus
+
+        s = action_to_wire(SetInputStatus(user_id=9876, event_type=1))
+        assert s["action"] == "set_input_status"
+        assert s["params"]["user_id"] == 9876
+        assert s["params"]["event_type"] == 1
+
 
 # ---------------------------------------------------------------------------
 # Adapter-level tests

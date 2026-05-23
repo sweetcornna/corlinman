@@ -57,6 +57,8 @@ class _Ev:
     kind: str
     text: str = ""
     error: str = ""
+    plugin: str = ""
+    tool: str = ""
 
 
 class _ScriptedChatService:
@@ -94,6 +96,9 @@ class _FakeOneBotAdapter:
 class _FakeTelegramSender:
     def __init__(self) -> None:
         self.sent: list[tuple[int, str, int | None]] = []
+        self.edits: list[tuple[int, int, str]] = []
+        self.chat_actions: list[tuple[int, str]] = []
+        self._next_message_id = 0
 
     async def send_message(
         self,
@@ -101,8 +106,19 @@ class _FakeTelegramSender:
         text: str,
         reply_to_message_id: int | None = None,
     ) -> int:
+        self._next_message_id += 1
         self.sent.append((chat_id, text, reply_to_message_id))
-        return 1
+        return self._next_message_id
+
+    async def edit_message_text(
+        self, chat_id: int, message_id: int, text: str
+    ) -> None:
+        self.edits.append((chat_id, message_id, text))
+
+    async def send_chat_action(
+        self, chat_id: int, action: str = "typing"
+    ) -> None:
+        self.chat_actions.append((chat_id, action))
 
 
 # ---------------------------------------------------------------------------
@@ -259,6 +275,41 @@ class TestHandleOneQq:
         await handle_one_qq(svc, req, ev, "m", adapter, asyncio.Event())  # type: ignore[arg-type]
         assert adapter.sent == []
 
+    @pytest.mark.asyncio
+    async def test_input_status_pulse_fires_until_cancelled(self) -> None:
+        """NapCat-only ``set_input_status`` pulse must re-fire on its
+        interval and stop on cancel.set(). Private chats only."""
+        import asyncio
+
+        from corlinman_channels.onebot import SetInputStatus
+        from corlinman_channels.service import _qq_input_status_pulse
+
+        adapter = _FakeOneBotAdapter()
+        cancel = asyncio.Event()
+
+        async def stop() -> None:
+            await asyncio.sleep(0.15)
+            cancel.set()
+
+        await asyncio.gather(
+            _qq_input_status_pulse(
+                adapter,  # type: ignore[arg-type]
+                user_id=12345,
+                cancel=cancel,
+                interval_s=0.05,
+            ),
+            stop(),
+        )
+        assert adapter.sent, "expected at least one set_input_status action"
+        for act in adapter.sent:
+            assert isinstance(act, SetInputStatus)
+            assert act.user_id == 12345
+            assert act.event_type == 1
+        # Pulse must not keep firing past cancel.
+        count_at_stop = len(adapter.sent)
+        await asyncio.sleep(0.1)
+        assert len(adapter.sent) == count_at_stop
+
 
 # ---------------------------------------------------------------------------
 # handle_one_telegram
@@ -289,11 +340,22 @@ class TestHandleOneTelegram:
         import asyncio
 
         await handle_one_telegram(svc, inbound, "m", sender, asyncio.Event())  # type: ignore[arg-type]
+        # New behavior: placeholder sent up-front, edited as events land,
+        # final edit overwrites it with the assistant reply.
         assert len(sender.sent) == 1
-        chat_id, text, reply_to = sender.sent[0]
-        assert chat_id == 42
-        assert text == "hi there"
-        assert reply_to == 7
+        ph_chat, ph_text, ph_reply_to = sender.sent[0]
+        assert ph_chat == 42
+        assert "思考中" in ph_text or "Thinking" in ph_text
+        assert ph_reply_to == 7
+        # The final edited text must be the joined reply.
+        assert sender.edits, "expected at least one edit_message_text call"
+        last_edit = sender.edits[-1]
+        assert last_edit[0] == 42
+        assert last_edit[2] == "hi there"
+        # The status spinner must have switched to the "generating" state
+        # at some point during the run (we emitted token_delta events).
+        edit_texts = [e[2] for e in sender.edits]
+        assert any("生成回复中" in t or "Generating" in t for t in edit_texts)
         # Regression: handle_one_telegram used to pass a plain dict to
         # chat_service.run, which crashed downstream with
         # ``AttributeError: 'dict' object has no attribute 'model'``.
@@ -322,10 +384,73 @@ class TestHandleOneTelegram:
         import asyncio
 
         await handle_one_telegram(svc, inbound, "m", sender, asyncio.Event())  # type: ignore[arg-type]
+        # Placeholder went out as the single sent message.
         assert len(sender.sent) == 1
-        _, text, _ = sender.sent[0]
-        assert "[corlinman error]" in text
-        assert "nope" in text
+        # The final edited text is the error rendering.
+        assert sender.edits, "expected an edit with the error reply"
+        _, _, final_text = sender.edits[-1]
+        assert "[corlinman error]" in final_text
+        assert "nope" in final_text
+
+    @pytest.mark.asyncio
+    async def test_tool_call_event_updates_status(self) -> None:
+        """ToolCallEvent must be rendered as a mutable-spinner line that
+        edits the placeholder message in place. Mirrors hermes-agent's
+        ``_last_activity_desc``."""
+        svc = _ScriptedChatService([
+            _Ev(kind="tool_call", plugin="builtin", tool="read_file"),
+            _Ev(kind="token_delta", text="ok"),
+            _Ev(kind="done"),
+        ])
+        binding = ChannelBinding.telegram(bot_id=999, chat_id=7, user_id=7)
+        inbound: InboundEvent[Any] = InboundEvent(
+            channel="telegram",
+            binding=binding,
+            text="hi",
+            message_id="1",
+            timestamp=0,
+            mentioned=True,
+        )
+        sender = _FakeTelegramSender()
+
+        import asyncio
+
+        await handle_one_telegram(svc, inbound, "m", sender, asyncio.Event())  # type: ignore[arg-type]
+        edit_texts = [e[2] for e in sender.edits]
+        assert any("read_file" in t for t in edit_texts)
+        # Final edit is the assistant reply, not a status line.
+        assert sender.edits[-1][2] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_typing_pulse_fires_until_cancelled(self) -> None:
+        """The sendChatAction pulse helper must fire at least once per
+        interval and stop on cancel.set()."""
+        import asyncio
+
+        from corlinman_channels.service import _telegram_typing_pulse
+
+        sender = _FakeTelegramSender()
+        cancel = asyncio.Event()
+
+        async def stop_after_two_pulses() -> None:
+            await asyncio.sleep(0.15)
+            cancel.set()
+
+        await asyncio.gather(
+            _telegram_typing_pulse(
+                sender,  # type: ignore[arg-type]
+                chat_id=42,
+                cancel=cancel,
+                interval_s=0.05,
+            ),
+            stop_after_two_pulses(),
+        )
+        assert sender.chat_actions, "expected at least one sendChatAction"
+        assert all(a == "typing" for _, a in sender.chat_actions)
+        # Pulse must stop cleanly after cancel — no runaway loop.
+        actions_at_stop = len(sender.chat_actions)
+        await asyncio.sleep(0.1)
+        assert len(sender.chat_actions) == actions_at_stop
 
 
 # ---------------------------------------------------------------------------

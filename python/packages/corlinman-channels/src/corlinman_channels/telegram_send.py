@@ -243,6 +243,48 @@ class TelegramSender:
         mp = build_multipart(chat_id, "voice", filename, content, caption, "audio/ogg")
         return await self._post_multipart("sendVoice", mp)
 
+    async def send_chat_action(
+        self, chat_id: int, action: str = "typing"
+    ) -> None:
+        """POST ``/sendChatAction``. Shows "Bot is typing…" in the
+        Telegram client. The indicator auto-clears after ~5s, so callers
+        re-fire periodically while a turn is in flight.
+
+        Best-effort: a failure here never blocks the reply path. We log
+        and swallow transport / API errors instead of raising.
+        """
+        body = {"chat_id": chat_id, "action": action}
+        try:
+            resp = await self.client.post(
+                self._endpoint("sendChatAction"), json=body
+            )
+            if resp.status_code >= 400:
+                # Don't raise — the indicator is decorative.
+                return
+        except httpx.HTTPError:
+            return
+
+    async def edit_message_text(
+        self, chat_id: int, message_id: int, text: str
+    ) -> None:
+        """POST ``/editMessageText``. Mutates an earlier message in place
+        — used as the "mutable spinner line" while tool calls land.
+
+        Best-effort: Telegram rejects edits that produce identical text
+        (``message is not modified``); we treat any non-2xx as a no-op
+        so a status renderer that re-fires the same content never breaks
+        the turn.
+        """
+        body = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text,
+        }
+        try:
+            await self.client.post(self._endpoint("editMessageText"), json=body)
+        except httpx.HTTPError:
+            return
+
     async def _post_multipart(self, method: str, mp: _Multipart) -> int:
         try:
             resp = await self.client.post(
