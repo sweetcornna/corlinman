@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,7 @@ from corlinman_agent.coding._common import (
     CodingArgsInvalidError,
     decode_args,
     resolve_workspace,
+    workspace_rel,
 )
 
 logger = structlog.get_logger(__name__)
@@ -37,8 +39,15 @@ RUN_SHELL_TOOL: str = "run_shell"
 #: Default / hard-max command timeout (seconds).
 _DEFAULT_TIMEOUT = 30
 _MAX_TIMEOUT = 120
-#: Cap on combined stdout+stderr returned to the model (chars).
-_MAX_OUTPUT_CHARS = 30_000
+#: Cap on combined stdout+stderr returned to the model (chars). Lowered
+#: from 30_000 to 16_000 because the reasoning loop now applies its own
+#: 8k per-tool-result cap (T1.1); 16k gives the model a useful window
+#: while keeping the log spill the source of truth for full output.
+_MAX_OUTPUT_CHARS = 16_000
+#: Subdirectory inside the workspace where truncated shell output is
+#: spilled. Keeps the workspace root uncluttered and gives the model a
+#: stable prefix it can ``read_file`` for the full content.
+_SHELL_LOG_DIR = ".corlinman"
 
 #: Obvious destructive / privilege patterns refused outright. This is a
 #: guard-rail against accidents, not a security boundary — a determined
@@ -157,23 +166,43 @@ async def dispatch_run_shell(
 
     output = (stdout or b"").decode("utf-8", errors="replace")
     truncated = len(output) > _MAX_OUTPUT_CHARS
+    log_path: str | None = None
     if truncated:
-        output = output[:_MAX_OUTPUT_CHARS] + "\n…(output truncated)"
+        # T1.1: spill the full output to a workspace log file so the
+        # model can ``read_file`` it later if it needs the head/middle,
+        # then keep the **tail** of the output in the inline payload.
+        # Shell errors and pytest failure summaries live at the bottom —
+        # the head is mostly noise we don't want to feed back.
+        log_dir = ws / _SHELL_LOG_DIR
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_file = log_dir / f"run_shell_{int(time.time() * 1000)}.log"
+            log_file.write_text(output, encoding="utf-8", errors="replace")
+            log_path = workspace_rel(ws, log_file)
+        except OSError as exc:  # pragma: no cover — disk-full / readonly
+            logger.warning(
+                "run_shell.spill_failed", error=str(exc), command=command[:200]
+            )
+        tail = output[-_MAX_OUTPUT_CHARS:]
+        prefix_path = log_path or "<spill failed>"
+        output = f"…(output truncated, full log at {prefix_path})\n{tail}"
     # Audit line — every shell command + its exit code is logged.
     logger.info(
         "run_shell.executed",
         command=command[:200],
         exit_code=proc.returncode,
+        truncated=truncated,
+        log_path=log_path,
     )
-    return json.dumps(
-        {
-            "command": command,
-            "exit_code": proc.returncode,
-            "output": output,
-            "truncated": truncated,
-        },
-        ensure_ascii=False,
-    )
+    envelope: dict[str, Any] = {
+        "command": command,
+        "exit_code": proc.returncode,
+        "output": output,
+        "truncated": truncated,
+    }
+    if log_path is not None:
+        envelope["log_path"] = log_path
+    return json.dumps(envelope, ensure_ascii=False)
 
 
 __all__ = [

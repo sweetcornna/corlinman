@@ -152,6 +152,56 @@ except ValueError:
     _MAX_ROUNDS = 60
 
 
+# Per-tool-result character cap for messages re-fed to the provider on
+# the next round. A few unbounded ``run_shell`` / ``read_file`` results
+# can blow the model's context window mid-task; the loop keeps every
+# result for all subsequent rounds, so the damage is permanent. Cap and
+# **freeze**: once truncated, a result is never re-expanded.
+#
+# We keep a head slice (the prompt / first error / file header) and a
+# heavier tail slice (stack traces and the latest exit status live at
+# the tail). Override with ``$CORLINMAN_TOOL_RESULT_CAP``.
+try:
+    _TOOL_RESULT_CAP = max(1_000, int(os.environ.get("CORLINMAN_TOOL_RESULT_CAP", "8000")))
+except ValueError:
+    _TOOL_RESULT_CAP = 8_000
+
+# Head/tail split for the head+tail truncation strategy. The tail is
+# weighted heavier because shell errors and `pytest` failure summaries
+# appear at the bottom of the output.
+_TOOL_RESULT_HEAD_CHARS = 2_000
+_TOOL_RESULT_TAIL_CHARS = 5_000
+
+
+def _truncate_tool_result(content: str) -> str:
+    """Cap a tool result at ``_TOOL_RESULT_CAP`` chars, keeping head + tail.
+
+    Strings at or below the cap pass through unchanged. Otherwise the
+    return value is ``head + notice + tail`` where ``head`` is the first
+    ``_TOOL_RESULT_HEAD_CHARS``, ``tail`` is the last
+    ``_TOOL_RESULT_TAIL_CHARS``, and ``notice`` is
+    ``\\n…[N chars elided]…\\n``. The final length is therefore strictly
+    less than the original ``len(content)`` and bounded by
+    ``_TOOL_RESULT_HEAD_CHARS + _TOOL_RESULT_TAIL_CHARS + len(notice)``,
+    which sits under ``_TOOL_RESULT_CAP`` for the default config.
+
+    This helper is intentionally pure and idempotent — apply it once at
+    history-extension time and freeze the result there.
+    """
+    if not isinstance(content, str):
+        # Defensive: the message builder upstream may hand us a list
+        # (multimodal content parts). Don't munge those — only string
+        # tool results are at risk of blowing the budget.
+        return content  # type: ignore[return-value]
+    n = len(content)
+    if n <= _TOOL_RESULT_CAP:
+        return content
+    head = content[:_TOOL_RESULT_HEAD_CHARS]
+    tail = content[-_TOOL_RESULT_TAIL_CHARS:]
+    elided = n - len(head) - len(tail)
+    return f"{head}\n…[{elided} chars elided]…\n{tail}"
+
+
 class ReasoningLoop:
     """Drives one chat turn (or a chain of turns if tool results flow in).
 
@@ -440,11 +490,14 @@ def _extend_with_tool_round(
         }
     )
     for r in results:
+        # T1.1: cap each tool result before it lands in history. The
+        # truncation is permanent — on the next round we re-send this
+        # exact (already-capped) content, so this "freezes" the result.
         extended.append(
             {
                 "role": "tool",
                 "tool_call_id": r.call_id,
-                "content": r.content,
+                "content": _truncate_tool_result(r.content),
             }
         )
     return extended

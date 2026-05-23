@@ -476,3 +476,53 @@ def test_search_excludes_git_dir_in_both_modes(tmp_path: Path) -> None:
     assert not any(
         p.startswith(".git") or "/.git/" in p for p in name_res["matches"]
     )
+
+
+# ---------------------------------------------------------------------------
+# T1.1 — run_shell tail truncation + log spill
+# ---------------------------------------------------------------------------
+
+
+async def test_run_shell_tail_truncates_and_spills_to_log(tmp_path: Path) -> None:
+    """Output above the cap is tail-biased and the full output lands on disk."""
+    from corlinman_agent.coding.shell import _MAX_OUTPUT_CHARS
+
+    # Emit 50_000 chars (5000 lines of 10 chars). Each line is unique so
+    # we can confirm tail-bias (last lines present, first lines absent).
+    cmd = (
+        "python3 -c \"\n"
+        "import sys\n"
+        "for i in range(5000):\n"
+        "    sys.stdout.write(f'{i:09d}\\n')\n"
+        "\""
+    )
+    res = json.loads(
+        await dispatch_run_shell(args_json=_args(command=cmd), workspace=tmp_path)
+    )
+
+    assert res["exit_code"] == 0
+    assert res["truncated"] is True
+    assert "log_path" in res
+    log_rel = res["log_path"]
+    assert log_rel.startswith(".corlinman/run_shell_")
+    assert log_rel.endswith(".log")
+
+    # Inline payload is tail-biased: the truncation notice references
+    # the log path and the LAST line (4999) is present, the FIRST line
+    # (0000000000) is gone.
+    out = res["output"]
+    assert "output truncated" in out
+    assert log_rel in out
+    # Inline output is bounded by the cap + the notice prefix.
+    assert len(out) <= _MAX_OUTPUT_CHARS + 200
+    assert "000004999" in out
+    assert "000000000" not in out
+
+    # The on-disk log holds the *complete* untruncated output.
+    log_file = tmp_path / log_rel
+    assert log_file.exists()
+    full = log_file.read_text()
+    assert "000000000" in full
+    assert "000004999" in full
+    # 5000 lines × 10 chars/line ("000000000\n") = 50_000 chars exactly.
+    assert len(full) >= 50_000
