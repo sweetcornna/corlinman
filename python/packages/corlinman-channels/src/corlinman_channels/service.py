@@ -906,35 +906,38 @@ async def handle_one_telegram(
             reply_to = None
 
     # Kick off the typing-indicator pulse + send the initial spinner
-    # placeholder so the user sees activity within ~1s.
-    typing_task = asyncio.create_task(
-        _telegram_typing_pulse(sender, chat_id, cancel)
-    )
+    # placeholder so the user sees activity within ~1s. The pulse task
+    # must live inside the same try/finally that cancels it, so an
+    # exception from the placeholder send or stream construction can
+    # never strand it firing sendChatAction forever.
     placeholder_id: int | None = None
-    try:
-        placeholder_id = await sender.send_message(
-            chat_id, _TG_STATUS_THINKING, reply_to_message_id=reply_to
-        )
-    except Exception as exc:  # noqa: BLE001
-        # The placeholder is decorative — if Telegram rejected it (rate
-        # limit, blocked, etc.) we fall back to sending a final message
-        # at the end.
-        _log.warning("telegram placeholder send failed: %s", exc)
-
-    request = _build_text_channel_request(inbound, model)
-    stream = chat_service.run(request, cancel)
     text_parts: list[str] = []
     last_status: str = _TG_STATUS_THINKING
     error_message: str | None = None
-
-    async def _maybe_edit(text: str) -> None:
-        nonlocal last_status
-        if placeholder_id is None or text == last_status:
-            return
-        last_status = text
-        await sender.edit_message_text(chat_id, placeholder_id, text)
-
+    typing_task = asyncio.create_task(
+        _telegram_typing_pulse(sender, chat_id, cancel)
+    )
     try:
+        try:
+            placeholder_id = await sender.send_message(
+                chat_id, _TG_STATUS_THINKING, reply_to_message_id=reply_to
+            )
+        except Exception as exc:  # noqa: BLE001
+            # The placeholder is decorative — if Telegram rejected it (rate
+            # limit, blocked, etc.) we fall back to sending a final message
+            # at the end.
+            _log.warning("telegram placeholder send failed: %s", exc)
+
+        request = _build_text_channel_request(inbound, model)
+        stream = chat_service.run(request, cancel)
+
+        async def _maybe_edit(text: str) -> None:
+            nonlocal last_status
+            if placeholder_id is None or text == last_status:
+                return
+            last_status = text
+            await sender.edit_message_text(chat_id, placeholder_id, text)
+
         async for ev in stream:
             kind = _event_kind(ev)
             if kind == "token_delta":
@@ -972,18 +975,29 @@ async def handle_one_telegram(
         if not body:
             # Empty reply — tidy the placeholder so the user knows the
             # turn ended rather than leaving "✍️ 生成回复中..." stuck.
+            # Telegram may refuse the edit (rate limit, blocked user); a
+            # failure here must not crash the turn.
             if placeholder_id is not None:
-                await sender.edit_message_text(
-                    chat_id, placeholder_id, "（无回复）"
-                )
+                try:
+                    await sender.edit_message_text(
+                        chat_id, placeholder_id, "（无回复）"
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    _log.warning("telegram final emit failed: %s", exc)
             return
 
-    if placeholder_id is not None:
-        # Mutate the placeholder into the final reply — keeps a single
-        # message that the user has been watching update in place.
-        await sender.edit_message_text(chat_id, placeholder_id, body)
-    else:
-        await sender.send_message(chat_id, body, reply_to_message_id=reply_to)
+    # Final emit is best-effort: surface transport / API failures via
+    # the logger instead of propagating, so a 429 or "blocked by user"
+    # at the very end never crashes the channel loop.
+    try:
+        if placeholder_id is not None:
+            await sender.edit_message_text(chat_id, placeholder_id, body)
+        else:
+            await sender.send_message(
+                chat_id, body, reply_to_message_id=reply_to
+            )
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("telegram final emit failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------

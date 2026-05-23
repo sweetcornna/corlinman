@@ -15,6 +15,7 @@ multipart payload.
 from __future__ import annotations
 
 import secrets
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -170,7 +171,7 @@ class TelegramSender:
     is the actual cost.
     """
 
-    __slots__ = ("base", "client", "token")
+    __slots__ = ("_edit_rate_limit_until", "base", "client", "token")
 
     def __init__(
         self,
@@ -181,6 +182,12 @@ class TelegramSender:
         self.client = client
         self.token = token
         self.base = base
+        # Shared back-off budget for the two "decorative" endpoints
+        # (``editMessageText`` + ``sendChatAction``). Telegram returns
+        # HTTP 429 with ``parameters.retry_after`` when the bot is being
+        # too chatty; further calls during the window deepen the ban,
+        # so we silently skip them until the deadline passes.
+        self._edit_rate_limit_until: float = 0.0
 
     def _endpoint(self, method: str) -> str:
         return f"{self.base}/bot{self.token}/{method}"
@@ -275,11 +282,16 @@ class TelegramSender:
         Best-effort: a failure here never blocks the reply path. We log
         and swallow transport / API errors instead of raising.
         """
+        if time.time() < self._edit_rate_limit_until:
+            return
         body = {"chat_id": chat_id, "action": action}
         try:
             resp = await self.client.post(
                 self._endpoint("sendChatAction"), json=body
             )
+            if resp.status_code == 429:
+                self._note_retry_after(resp)
+                return
             if resp.status_code >= 400:
                 # Don't raise — the indicator is decorative.
                 return
@@ -295,17 +307,44 @@ class TelegramSender:
         Best-effort: Telegram rejects edits that produce identical text
         (``message is not modified``); we treat any non-2xx as a no-op
         so a status renderer that re-fires the same content never breaks
-        the turn.
+        the turn. HTTP 429 updates a shared back-off so subsequent edits
+        / chat-actions silently skip until the window expires.
         """
+        if time.time() < self._edit_rate_limit_until:
+            return
         body = {
             "chat_id": chat_id,
             "message_id": message_id,
             "text": text,
         }
         try:
-            await self.client.post(self._endpoint("editMessageText"), json=body)
+            resp = await self.client.post(
+                self._endpoint("editMessageText"), json=body
+            )
         except httpx.HTTPError:
             return
+        if resp.status_code == 429:
+            self._note_retry_after(resp)
+
+    def _note_retry_after(self, resp: httpx.Response) -> None:
+        """Extend the shared 429 back-off using ``parameters.retry_after``.
+
+        Falls back to a one-second penalty when the body can't be parsed
+        — Telegram always sets the field on a real rate-limit response,
+        but the parse is best-effort so a malformed reply never raises.
+        """
+        retry_after: float = 1.0
+        try:
+            env = resp.json()
+            if isinstance(env, dict):
+                params = env.get("parameters")
+                if isinstance(params, dict):
+                    ra = params.get("retry_after")
+                    if isinstance(ra, (int, float)):
+                        retry_after = float(ra)
+        except Exception:  # noqa: BLE001
+            pass
+        self._edit_rate_limit_until = time.time() + retry_after
 
     async def _post_multipart(self, method: str, mp: _Multipart) -> int:
         try:

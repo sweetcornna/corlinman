@@ -100,6 +100,9 @@ class _FakeTelegramSender:
         self.edits: list[tuple[int, int, str]] = []
         self.chat_actions: list[tuple[int, str]] = []
         self._next_message_id = 0
+        # Test knobs: flip to make the corresponding sender call raise.
+        self.send_message_should_raise = False
+        self.edit_message_text_should_raise = False
 
     async def send_message(
         self,
@@ -107,6 +110,8 @@ class _FakeTelegramSender:
         text: str,
         reply_to_message_id: int | None = None,
     ) -> int:
+        if self.send_message_should_raise:
+            raise RuntimeError("simulated send_message failure")
         self._next_message_id += 1
         self.sent.append((chat_id, text, reply_to_message_id))
         return self._next_message_id
@@ -114,6 +119,8 @@ class _FakeTelegramSender:
     async def edit_message_text(
         self, chat_id: int, message_id: int, text: str
     ) -> None:
+        if self.edit_message_text_should_raise:
+            raise RuntimeError("simulated edit_message_text failure")
         self.edits.append((chat_id, message_id, text))
 
     async def send_chat_action(
@@ -537,6 +544,71 @@ class TestHandleOneTelegram:
         assert any("read_file" in t for t in edit_texts)
         # Final edit is the assistant reply, not a status line.
         assert sender.edits[-1][2] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_placeholder_send_raises_cancels_typing_pulse(self) -> None:
+        """If the initial placeholder send raises, the background
+        typing-pulse task must still be cancelled — otherwise it would
+        keep firing ``sendChatAction`` forever after the turn ended."""
+        import asyncio
+
+        svc = _ScriptedChatService([_Ev(kind="done")])
+        binding = ChannelBinding.telegram(bot_id=999, chat_id=42, user_id=42)
+        inbound: InboundEvent[Any] = InboundEvent(
+            channel="telegram",
+            binding=binding,
+            text="ping",
+            message_id="7",
+            timestamp=0,
+            mentioned=True,
+        )
+        sender = _FakeTelegramSender()
+        sender.send_message_should_raise = True
+
+        all_tasks_before = set(asyncio.all_tasks())
+        await handle_one_telegram(svc, inbound, "m", sender, asyncio.Event())  # type: ignore[arg-type]
+        # Give any leaked pulse one tick to misbehave.
+        await asyncio.sleep(0.05)
+        new_tasks = set(asyncio.all_tasks()) - all_tasks_before
+        # The typing-pulse task must NOT be among the live tasks.
+        live = [t for t in new_tasks if not t.done()]
+        assert not live, f"typing pulse leaked: {live}"
+
+    @pytest.mark.asyncio
+    async def test_final_edit_failure_does_not_crash(self) -> None:
+        """If the final ``edit_message_text`` raises (rate limit /
+        blocked user), the function must still return cleanly instead
+        of propagating the exception out of the channel loop."""
+        import asyncio
+
+        svc = _ScriptedChatService([
+            _Ev(kind="token_delta", text="hi"),
+            _Ev(kind="done"),
+        ])
+        binding = ChannelBinding.telegram(bot_id=999, chat_id=42, user_id=42)
+        inbound: InboundEvent[Any] = InboundEvent(
+            channel="telegram",
+            binding=binding,
+            text="ping",
+            message_id="7",
+            timestamp=0,
+            mentioned=True,
+        )
+        sender = _FakeTelegramSender()
+
+        # Let in-stream edits succeed; flip the flag just before the
+        # final emit by wrapping ``edit_message_text`` and triggering
+        # the failure on the last call (text == reply body "hi").
+        original_edit = sender.edit_message_text
+
+        async def _edit(chat_id: int, message_id: int, text: str) -> None:
+            if text == "hi":
+                raise RuntimeError("simulated final edit failure")
+            await original_edit(chat_id, message_id, text)
+
+        sender.edit_message_text = _edit  # type: ignore[assignment]
+        # Must NOT raise — the channel loop must keep going.
+        await handle_one_telegram(svc, inbound, "m", sender, asyncio.Event())  # type: ignore[arg-type]
 
     @pytest.mark.asyncio
     async def test_typing_pulse_fires_until_cancelled(self) -> None:

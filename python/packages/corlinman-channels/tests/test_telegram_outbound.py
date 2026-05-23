@@ -298,6 +298,42 @@ class TestSender:
         await client.aclose()
         assert message_id == 13
 
+    @pytest.mark.asyncio
+    async def test_edit_message_text_429_short_circuits_next_call(self) -> None:
+        """A 429 on ``editMessageText`` must seed the shared back-off so
+        the very next ``edit_message_text`` / ``send_chat_action`` call
+        is silently skipped (no further HTTP traffic during the window).
+        """
+        calls: list[str] = []
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            calls.append(req.url.path)
+            return httpx.Response(
+                429,
+                json={
+                    "ok": False,
+                    "error_code": 429,
+                    "description": "Too Many Requests",
+                    "parameters": {"retry_after": 30},
+                },
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        sender = TelegramSender(client, "TEST")
+
+        # First edit hits the wire and parses the 429.
+        await sender.edit_message_text(42, 1, "hi")
+        assert len(calls) == 1
+        assert sender._edit_rate_limit_until > 0
+
+        # Subsequent edit and chat-action must short-circuit — no new
+        # HTTP traffic during the back-off window.
+        await sender.edit_message_text(42, 1, "hi2")
+        await sender.send_chat_action(42, "typing")
+        assert len(calls) == 1, f"expected no further HTTP calls, saw {calls}"
+
+        await client.aclose()
+
 
 # ---------------------------------------------------------------------------
 # Webhook signature
