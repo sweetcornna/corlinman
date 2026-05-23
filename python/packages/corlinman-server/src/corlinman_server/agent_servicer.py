@@ -646,6 +646,29 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # store *and* the snapshot label below).
         user_text = _last_user_text(start.messages)
 
+        # Monotonic clock anchor for the turn — used by the ``TurnComplete``
+        # / ``TurnErrored`` hook events to report wall-clock duration.
+        turn_started_at = time.monotonic()
+
+        # Hook bus lifecycle event: ``UserPromptSubmit``. Fires the moment
+        # we have the user's text in hand, before journal / context
+        # assembly / memory recall — subscribers see the raw prompt.
+        # Skips the emit when there is no text (pure resume / tool-only
+        # turns), matching the "non-empty user message" contract.
+        if user_text:
+            try:
+                from corlinman_hooks import HookEvent  # lazy: optional dep
+
+                await self._emit_hook_event(
+                    HookEvent.UserPromptSubmit(
+                        session_key_=start.session_key or "",
+                        user_text=user_text,
+                        model=start.model or "",
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 — never block the chat
+                logger.warning("agent.chat.user_prompt_emit_failed", error=str(exc))
+
         # T4.2: per-session async lock — same-session RPCs serialize so
         # the todo store / cost meter / workspace snapshot can't race.
         # Different sessions get distinct locks → real parallelism across
@@ -880,6 +903,24 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                             logger.warning(
                                 "agent.journal.error_failed", error=str(exc)
                             )
+                    # Hook bus: ``TurnErrored`` fires before the ErrorEvent
+                    # gRPC frame so subscribers see the failure with the
+                    # same reason / message the client will receive.
+                    try:
+                        from corlinman_hooks import HookEvent
+
+                        await self._emit_hook_event(
+                            HookEvent.TurnErrored(
+                                session_key_=start.session_key or "",
+                                turn_id=journal_turn_id,
+                                reason=event.reason,
+                                message=event.message,
+                            )
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "agent.chat.turn_errored_emit_failed", error=str(exc)
+                        )
                     yield _error_frame(event.reason, event.message)
                     return
                 elif isinstance(event, DoneEvent):
@@ -920,6 +961,28 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                             finish_reason=event.finish_reason,
                             **event.usage,
                         )
+                    # Hook bus: ``TurnComplete`` fires before the Done
+                    # gRPC frame so subscribers can correlate the
+                    # finish_reason / usage with the same turn id used
+                    # by the journal + the prompt emit at the top.
+                    try:
+                        from corlinman_hooks import HookEvent
+
+                        await self._emit_hook_event(
+                            HookEvent.TurnComplete(
+                                session_key_=start.session_key or "",
+                                turn_id=journal_turn_id,
+                                finish_reason=event.finish_reason or "",
+                                usage=dict(event.usage) if event.usage else None,
+                                duration_ms=int(
+                                    (time.monotonic() - turn_started_at) * 1000
+                                ),
+                            )
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "agent.chat.turn_complete_emit_failed", error=str(exc)
+                        )
                     yield agent_pb2.ServerFrame(
                         done=agent_pb2.Done(finish_reason=event.finish_reason)
                     )
@@ -937,6 +1000,24 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 except Exception:  # noqa: BLE001
                     pass
             logger.exception("agent.chat.fatal", error=str(exc))
+            # Hook bus: ``TurnErrored`` for the catch-all path too, so
+            # subscribers see *every* turn-terminating failure (not just
+            # the ones the reasoning loop surfaces via ErrorEvent).
+            try:
+                from corlinman_hooks import HookEvent
+
+                await self._emit_hook_event(
+                    HookEvent.TurnErrored(
+                        session_key_=start.session_key or "",
+                        turn_id=journal_turn_id,
+                        reason="unknown",
+                        message=str(exc),
+                    )
+                )
+            except Exception as inner_exc:  # noqa: BLE001
+                logger.warning(
+                    "agent.chat.turn_errored_emit_failed", error=str(inner_exc)
+                )
             yield _error_frame("unknown", str(exc))
         finally:
             inbound_task.cancel()
@@ -1118,6 +1199,30 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("agent.tool.post_emit_failed", error=str(exc))
+
+    async def _emit_hook_event(self, event: Any) -> None:
+        """Push a hook event onto :attr:`_hook_bus` if one is configured.
+
+        Used for the chat-handler lifecycle events (``UserPromptSubmit``,
+        ``TurnComplete``, ``TurnErrored``). Tool-dispatch events stay on
+        the synchronous :meth:`_emit_pre_tool_dispatch` /
+        :meth:`_emit_tool_called` helpers because they fire from inside
+        the in-process tool runner (no awaitable context to yield).
+
+        A failure on the bus (subscriber raising, cancel token tripped,
+        anything else) is logged and suppressed — the chat stream must
+        never be torn down by a misbehaving hook.
+        """
+        if self._hook_bus is None:
+            return
+        try:
+            await self._hook_bus.emit(event)
+        except Exception as exc:  # noqa: BLE001 — never let a hook break a chat
+            logger.warning(
+                "agent.chat.hook_emit_failed",
+                kind=getattr(event, "kind", lambda: "<unknown>")(),
+                error=str(exc),
+            )
 
     async def _dispatch_builtin(
         self,

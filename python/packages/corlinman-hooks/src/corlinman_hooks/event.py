@@ -19,6 +19,7 @@ global events.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
 from typing import Any, ClassVar
 
@@ -411,6 +412,86 @@ class _SubagentDepthCapped(_HookEventBase):
         return self.parent_session_key
 
 
+@dataclass(frozen=True)
+class _UserPromptSubmit(_HookEventBase):
+    """Fired the moment a Chat RPC arrives carrying a non-empty user message.
+
+    Emitted *before* journal lookup / context assembly so subscribers (admin
+    UI live feed, audit log, classifier prefilter, etc.) see the raw text
+    the user submitted, untouched by any server-side rewrite.
+    """
+
+    session_key_: str
+    user_text: str
+    model: str
+
+    KIND: ClassVar[str] = "user_prompt_submit"
+
+    def session_key(self) -> str | None:
+        return self.session_key_ or None
+
+    def to_dict(self) -> dict[str, Any]:
+        d = super().to_dict()
+        d["session_key"] = d.pop("session_key_")
+        return d
+
+
+@dataclass(frozen=True)
+class _TurnComplete(_HookEventBase):
+    """Fired right before the ``DoneEvent`` gRPC frame is yielded.
+
+    ``usage`` is whatever the provider reported (token / cost counters);
+    it is ``None`` when the provider streamed completion without a usage
+    block (e.g. mid-stream retry that bailed pre-completion).
+    """
+
+    session_key_: str
+    turn_id: int | None
+    finish_reason: str
+    usage: Mapping[str, int] | None
+    duration_ms: int
+
+    KIND: ClassVar[str] = "turn_complete"
+    OPTIONAL_FIELDS: ClassVar[tuple[str, ...]] = ("turn_id", "usage")
+
+    def session_key(self) -> str | None:
+        return self.session_key_ or None
+
+    def to_dict(self) -> dict[str, Any]:
+        d = super().to_dict()
+        d["session_key"] = d.pop("session_key_")
+        # ``usage`` is a Mapping; JSON only handles plain dicts, so coerce.
+        if "usage" in d and d["usage"] is not None:
+            d["usage"] = dict(d["usage"])
+        return d
+
+
+@dataclass(frozen=True)
+class _TurnErrored(_HookEventBase):
+    """Fired right before an ``ErrorEvent`` gRPC frame is yielded.
+
+    ``reason`` mirrors the gRPC ``ErrorEvent.reason`` short code
+    (``"model_not_found"``, ``"unknown"``, etc.); ``message`` is the
+    human-readable detail.
+    """
+
+    session_key_: str
+    turn_id: int | None
+    reason: str
+    message: str
+
+    KIND: ClassVar[str] = "turn_errored"
+    OPTIONAL_FIELDS: ClassVar[tuple[str, ...]] = ("turn_id",)
+
+    def session_key(self) -> str | None:
+        return self.session_key_ or None
+
+    def to_dict(self) -> dict[str, Any]:
+        d = super().to_dict()
+        d["session_key"] = d.pop("session_key_")
+        return d
+
+
 # ---------------------------------------------------------------------------
 # Public umbrella class: exposes variants as attributes mirroring Rust's
 # ``HookEvent::Variant`` syntax in the source crate.
@@ -448,6 +529,9 @@ class HookEvent(_HookEventBase):
     SubagentCompleted = _SubagentCompleted
     SubagentTimedOut = _SubagentTimedOut
     SubagentDepthCapped = _SubagentDepthCapped
+    UserPromptSubmit = _UserPromptSubmit
+    TurnComplete = _TurnComplete
+    TurnErrored = _TurnErrored
 
     # Registry of PascalCase variant name -> concrete dataclass. Keys
     # mirror the Rust ``#[serde(tag = "kind")]`` discriminant values
@@ -474,6 +558,9 @@ class HookEvent(_HookEventBase):
         "SubagentCompleted": _SubagentCompleted,
         "SubagentTimedOut": _SubagentTimedOut,
         "SubagentDepthCapped": _SubagentDepthCapped,
+        "UserPromptSubmit": _UserPromptSubmit,
+        "TurnComplete": _TurnComplete,
+        "TurnErrored": _TurnErrored,
     }
 
     # Set of variants that store the JSON ``session_key`` field under
@@ -491,6 +578,9 @@ class HookEvent(_HookEventBase):
             "ApprovalRequested",
             "PreToolDispatch",
             "RateLimitTriggered",
+            "UserPromptSubmit",
+            "TurnComplete",
+            "TurnErrored",
         }
     )
 

@@ -22,9 +22,14 @@ The next :meth:`HookSubscription.recv` call surfaces the counter as a
 from __future__ import annotations
 
 import asyncio
+import inspect
+import itertools
+import logging
 import weakref
 from collections import deque
-from typing import TYPE_CHECKING
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Union
 
 from corlinman_hooks.error import Closed, HookCancelledError, Lagged
 from corlinman_hooks.priority import CancelToken, HookPriority
@@ -32,7 +37,56 @@ from corlinman_hooks.priority import CancelToken, HookPriority
 if TYPE_CHECKING:
     from corlinman_hooks.event import _HookEventBase
 
-__all__ = ["HookBus", "HookSubscription"]
+__all__ = [
+    "HookBus",
+    "HookSubscription",
+    "SubscriptionToken",
+    "match_kind",
+]
+
+_log = logging.getLogger("corlinman.hooks.bus")
+
+# Type aliases for the push-based callable-subscriber surface.
+HookPredicate = Callable[["_HookEventBase"], bool]
+HookSubscriber = Callable[["_HookEventBase"], Union[Awaitable[None], None]]
+
+
+@dataclass(frozen=True)
+class SubscriptionToken:
+    """Opaque handle returned by :meth:`HookBus.subscribe` (push-based form).
+
+    Pass it back to :meth:`HookBus.unsubscribe` to detach the subscriber.
+    Holding the token does not keep the subscriber alive — the bus
+    retains the subscriber directly; the token is only an id.
+    """
+
+    id: int
+
+
+def match_kind(*kinds: str) -> HookPredicate:
+    """Build a predicate matching ``HookEvent.kind()`` against ``kinds``.
+
+    Convenience for the common case::
+
+        bus.subscribe(match_kind("ToolCalled", "PreToolDispatch"), my_subscriber)
+
+    ``kinds`` is matched against the snake_case discriminant returned by
+    :meth:`HookEvent.kind` (e.g. ``"tool_called"``) *and* the PascalCase
+    variant name (e.g. ``"ToolCalled"``) so callers can use either form.
+    Empty ``kinds`` returns a predicate that matches everything — useful
+    for a wildcard subscriber that wants every event on the bus.
+    """
+    if not kinds:
+        return lambda _ev: True
+    accepted = frozenset(kinds)
+
+    def _predicate(ev: _HookEventBase) -> bool:
+        if ev.kind() in accepted:
+            return True
+        variant = getattr(ev, "VARIANT_NAME", "")
+        return bool(variant) and variant in accepted
+
+    return _predicate
 
 
 class HookSubscription:
@@ -138,13 +192,20 @@ class HookBus:
     sharing the same instance by reference plays the same role.
     """
 
+    # Default capacity when ``HookBus()`` is called with no args. Sized
+    # generously so the typical "one subscriber per cross-cutting consumer"
+    # workload (admin live feed, classifier, audit log) doesn't lag.
+    DEFAULT_CAPACITY: int = 256
+
     __slots__ = (
+        "_callable_subs",
         "_cancel",
         "_capacity",
+        "_next_token_id",
         "_subscribers",
     )
 
-    def __init__(self, capacity: int) -> None:
+    def __init__(self, capacity: int = DEFAULT_CAPACITY) -> None:
         if capacity <= 0:
             raise ValueError("capacity must be > 0")
         self._capacity = capacity
@@ -157,6 +218,12 @@ class HookBus:
             HookPriority.LOW: [],
         }
         self._cancel = CancelToken()
+        # Push-based callable subscribers: token id -> (predicate, subscriber).
+        # Separate from the tokio-broadcast-style per-tier pull queues above
+        # so the two delivery surfaces don't interfere. Both are fed by a
+        # single :meth:`emit` call.
+        self._callable_subs: dict[int, tuple[HookPredicate, HookSubscriber]] = {}
+        self._next_token_id = itertools.count(1)
 
     @property
     def capacity(self) -> int:
@@ -181,17 +248,77 @@ class HookBus:
         live = [ref for ref in self._subscribers[priority] if ref() is not None]
         self._subscribers[priority] = live
 
-    def subscribe(self, priority: HookPriority) -> HookSubscription:
-        """Subscribe to a priority tier.
+    def subscribe(
+        self,
+        priority_or_predicate: HookPriority | HookPredicate,
+        subscriber: HookSubscriber | None = None,
+    ) -> HookSubscription | SubscriptionToken:
+        """Subscribe to the bus.
 
-        The subscription only sees events published to its tier, but
-        tiers are fed in strict order by :meth:`emit`, so a Critical
-        subscriber is guaranteed to observe the event before any
-        Normal/Low subscriber on a single-threaded asyncio runtime.
+        Two call shapes are supported:
+
+        * ``subscribe(priority)`` — legacy tokio-broadcast-style pull
+          surface. Returns a :class:`HookSubscription` whose ``recv()``
+          coroutine yields the next matching event. Subscribers see
+          *every* event published on their priority tier.
+        * ``subscribe(predicate, subscriber)`` — push surface. The
+          ``predicate`` is invoked synchronously on every emitted event;
+          when it returns truthy, ``subscriber`` is invoked with the
+          event. ``subscriber`` may be sync (returns ``None``) or async
+          (returns an :class:`Awaitable`). Returns a
+          :class:`SubscriptionToken` to pass back to
+          :meth:`unsubscribe`.
+
+        The two paths are independent: events emitted via :meth:`emit`
+        are fanned out to *both* the per-tier pull queues *and* every
+        matching callable subscriber.
         """
+        # Push-based: ``(predicate, subscriber)``.
+        if callable(priority_or_predicate) and not isinstance(
+            priority_or_predicate, HookPriority
+        ):
+            if subscriber is None:
+                raise TypeError(
+                    "subscribe(predicate, subscriber) requires a subscriber callable"
+                )
+            if not callable(subscriber):
+                raise TypeError("subscriber must be callable")
+            token_id = next(self._next_token_id)
+            self._callable_subs[token_id] = (priority_or_predicate, subscriber)
+            return SubscriptionToken(id=token_id)
+
+        # Pull-based legacy path.
+        if not isinstance(priority_or_predicate, HookPriority):
+            raise TypeError(
+                "subscribe expects either a HookPriority or (predicate, subscriber)"
+            )
+        if subscriber is not None:
+            raise TypeError(
+                "subscribe(priority) does not accept a second positional argument"
+            )
+        priority = priority_or_predicate
         sub = HookSubscription(priority, self._capacity, self)
         self._subscribers[priority].append(weakref.ref(sub))
         return sub
+
+    def unsubscribe(self, token: SubscriptionToken) -> None:
+        """Detach a push-based callable subscriber.
+
+        Idempotent — calling with a token that was never registered (or
+        already unsubscribed) is a no-op rather than an error so shutdown
+        paths can ``unsubscribe`` unconditionally without bookkeeping.
+        """
+        if not isinstance(token, SubscriptionToken):
+            return
+        self._callable_subs.pop(token.id, None)
+
+    def subscriber_count(self) -> int:
+        """Number of live push-based callable subscribers.
+
+        Useful for tests + admin introspection. The tier-pull subscriber
+        count is reported per-tier by :meth:`receiver_count`.
+        """
+        return len(self._callable_subs)
 
     def _fanout_tier(self, priority: HookPriority, event: _HookEventBase) -> None:
         """Push ``event`` into every live subscriber on ``priority``.
@@ -211,7 +338,7 @@ class HookBus:
         self._subscribers[priority] = survivors
 
     async def emit(self, event: _HookEventBase) -> None:
-        """Emit in strict priority order.
+        """Emit in strict priority order, then fan out to callable subscribers.
 
         Raises :class:`HookCancelledError` if the cancel token has been
         flipped by the time we start (or between any two tiers). Having
@@ -221,6 +348,11 @@ class HookBus:
         the just-published tier can drain before we publish to the next
         tier. This is what enforces the ordering guarantee on a
         single-threaded asyncio runtime.
+
+        After the tiered pull-fanout completes, every matching
+        :meth:`subscribe` callable also observes the event. A subscriber
+        that raises is logged and isolated — neither the producer nor
+        the other subscribers see the failure.
         """
         if self._cancel.is_cancelled():
             raise HookCancelledError()
@@ -231,6 +363,7 @@ class HookBus:
             # Yield so subscribers on this tier can drain before we
             # publish to the next tier.
             await asyncio.sleep(0)
+        await self._fanout_callables(event)
 
     def emit_nonblocking(self, event: _HookEventBase) -> None:
         """Fire-and-forget variant. Never awaits.
@@ -241,11 +374,101 @@ class HookBus:
         immediately, so the strict per-tier observation ordering is
         not guaranteed from this entry point. Mirrors the Rust
         ``emit_nonblocking`` semantics.
+
+        Push-based callable subscribers are also invoked, but async
+        subscribers are scheduled as fire-and-forget tasks on the
+        running loop (or skipped with a log line when no loop is
+        available, since we can't ``await`` from a sync caller).
         """
         if self._cancel.is_cancelled():
             return
         for tier in HookPriority.ordered():
             self._fanout_tier(tier, event)
+        self._fanout_callables_sync(event)
+
+    # ------------------------------------------------------------------
+    # Push-based callable-subscriber fan-out.
+    # ------------------------------------------------------------------
+
+    async def _fanout_callables(self, event: _HookEventBase) -> None:
+        """Invoke every matching callable subscriber, awaiting async ones.
+
+        Each subscriber is isolated: a raise (or a returned awaitable
+        that raises) is logged and dropped — the next subscriber still
+        runs. We snapshot the subscriber map up front so an
+        ``unsubscribe`` from inside a callback doesn't perturb the
+        in-flight iteration.
+        """
+        for predicate, subscriber in list(self._callable_subs.values()):
+            try:
+                if not predicate(event):
+                    continue
+            except Exception:  # noqa: BLE001 — never let a predicate kill emit
+                _log.exception("hook subscriber predicate raised; dropping event for this sub")
+                continue
+            try:
+                result = subscriber(event)
+            except Exception:  # noqa: BLE001 — isolate sync subscriber failure
+                _log.exception("hook subscriber raised; isolated")
+                continue
+            if result is None:
+                continue
+            if inspect.isawaitable(result):
+                try:
+                    await result
+                except Exception:  # noqa: BLE001 — isolate async subscriber failure
+                    _log.exception("hook subscriber coroutine raised; isolated")
+
+    def _fanout_callables_sync(self, event: _HookEventBase) -> None:
+        """Sync-context variant of :meth:`_fanout_callables`.
+
+        Async subscribers are scheduled with :func:`asyncio.ensure_future`
+        when a running loop is available; otherwise they are skipped
+        with a warning. Sync subscribers run inline with the same
+        per-subscriber exception isolation as the async path.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        for predicate, subscriber in list(self._callable_subs.values()):
+            try:
+                if not predicate(event):
+                    continue
+            except Exception:  # noqa: BLE001
+                _log.exception("hook subscriber predicate raised; dropping event for this sub")
+                continue
+            try:
+                result = subscriber(event)
+            except Exception:  # noqa: BLE001
+                _log.exception("hook subscriber raised; isolated")
+                continue
+            if result is None:
+                continue
+            if inspect.isawaitable(result):
+                if loop is None:
+                    _log.warning(
+                        "emit_nonblocking: async subscriber returned awaitable but "
+                        "no running event loop is available; dropping"
+                    )
+                    # Close the coroutine to avoid the "coroutine was never
+                    # awaited" runtime warning.
+                    close = getattr(result, "close", None)
+                    if callable(close):
+                        try:
+                            close()
+                        except Exception:  # noqa: BLE001
+                            pass
+                    continue
+                loop.create_task(self._await_isolated(result))
+
+    @staticmethod
+    async def _await_isolated(awaitable: Awaitable[Any]) -> None:
+        """Await ``awaitable`` and swallow any exception (logged)."""
+        try:
+            await awaitable
+        except Exception:  # noqa: BLE001
+            _log.exception("hook subscriber coroutine raised (scheduled); isolated")
 
     def __repr__(self) -> str:  # pragma: no cover — debug aid
         counts = {p.value: self.receiver_count(p) for p in HookPriority.ordered()}
@@ -268,4 +491,10 @@ def register_hook(bus: HookBus, priority: HookPriority = HookPriority.NORMAL) ->
     return bus.subscribe(priority)
 
 
-__all__ = ["HookBus", "HookSubscription", "register_hook"]
+__all__ = [
+    "HookBus",
+    "HookSubscription",
+    "SubscriptionToken",
+    "match_kind",
+    "register_hook",
+]

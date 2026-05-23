@@ -28,7 +28,13 @@ Design highlights (matching the Rust crate):
 
 from __future__ import annotations
 
-from corlinman_hooks.bus import HookBus, HookSubscription, register_hook
+from corlinman_hooks.bus import (
+    HookBus,
+    HookSubscription,
+    SubscriptionToken,
+    match_kind,
+    register_hook,
+)
 from corlinman_hooks.error import (
     Closed,
     HookCancelledError,
@@ -50,5 +56,7 @@ __all__ = [
     "HookSubscription",
     "Lagged",
     "RecvError",
+    "SubscriptionToken",
+    "match_kind",
     "register_hook",
 ]

@@ -33,6 +33,34 @@ from corlinman_server.middleware import install_tracecontext_interceptor
 from corlinman_server.shutdown import GracefulShutdown
 from corlinman_server.telemetry import init_telemetry, shutdown_telemetry
 
+# Process-wide hook bus. Constructed lazily on first :func:`_build_hook_bus`
+# call so unit-test imports of this module don't drag in the hooks package
+# when there is no live server. The Agent servicer holds a reference, and
+# downstream plugins (admin live feed, audit log, classifier prefilter)
+# attach push-based subscribers via ``hook_bus.subscribe(predicate, fn)``.
+_HOOK_BUS: Any | None = None
+
+
+def _build_hook_bus() -> Any:
+    """Return the process-wide :class:`HookBus`.
+
+    The import is lazy so ``corlinman-hooks`` stays a soft dependency
+    (a stripped-down test build can still boot the servicer with
+    ``hook_bus=None``).
+    """
+    global _HOOK_BUS
+    if _HOOK_BUS is not None:
+        return _HOOK_BUS
+    try:
+        from corlinman_hooks import HookBus
+
+        _HOOK_BUS = HookBus()
+        logger.info("hooks.bus.ready")
+    except Exception as exc:  # noqa: BLE001 — degrade silently
+        logger.warning("hooks.bus.init_failed", error=str(exc))
+        _HOOK_BUS = None
+    return _HOOK_BUS
+
 logger = structlog.get_logger(__name__)
 
 _DEFAULT_SOCKET: Final[str] = "/tmp/corlinman-py.sock"
@@ -237,12 +265,17 @@ async def _serve() -> int:
     # The resolver is a file-mtime-aware wrapper so admin writes on the
     # Rust side (which rewrite py-config.json atomically) propagate here
     # without a process restart.
+    # Process-wide hook bus, shared across servicers. ``None`` is allowed
+    # (the servicer treats it as "no hook fan-out") so a stripped-down
+    # build without ``corlinman-hooks`` still boots.
+    hook_bus = _build_hook_bus()
+
     if os.environ.get("CORLINMAN_TEST_MOCK_PROVIDER") is not None:
         # Test smoke path: leave provider_resolver unset so the Agent
         # servicer activates its offline mock provider instead of falling
         # through to legacy real-provider prefix matching.
         logger.info("providers.registered", count=0, enabled=0, aliases=0)
-        agent_servicer = CorlinmanAgentServicer()
+        agent_servicer = CorlinmanAgentServicer(hook_bus=hook_bus)
     else:
         py_config_path = os.environ.get("CORLINMAN_PY_CONFIG")
         resolver = _ReloadingProviderResolver(py_config_path)
@@ -253,6 +286,7 @@ async def _serve() -> int:
         agent_servicer = CorlinmanAgentServicer(
             provider_resolver=resolver,
             aliases=resolver.aliases,
+            hook_bus=hook_bus,
         )
     agent_pb2_grpc.add_AgentServicer_to_server(agent_servicer, server)
 
