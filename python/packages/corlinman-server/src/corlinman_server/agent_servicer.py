@@ -113,6 +113,11 @@ from corlinman_providers import registry as provider_registry
 from corlinman_providers.base import CorlinmanProvider, ProviderChunk
 from corlinman_providers.specs import AliasEntry
 
+from corlinman_server.agent_journal import (
+    AgentJournal,
+    ResumeData,
+    TURN_IN_PROGRESS,
+)
 from corlinman_server.runner_pool import PoolStats, RunnerPool
 
 logger = structlog.get_logger(__name__)
@@ -497,6 +502,16 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             if permission_gate is not None
             else PermissionGate.from_env()
         )
+        # T4.1 per-turn journal — opens lazily on first chat turn so a
+        # smoke-test agent boot is unaffected. ``False`` once an init
+        # failure has been logged so we don't retry every request.
+        self._journal: AgentJournal | None = None
+        self._journal_init_done = False
+        self._journal_swept_stale = False
+        # T4.2 per-session async lock — same-session RPCs serialize so
+        # the todo store / cost meter / workspace snapshot can't race;
+        # different sessions run concurrently as today.
+        self._session_locks: dict[str, asyncio.Lock] = {}
 
     async def Chat(  # noqa: N802 — gRPC method name
         self,
@@ -569,6 +584,72 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # so it reflects the user's words (used for the post-turn memory
         # store *and* the snapshot label below).
         user_text = _last_user_text(start.messages)
+
+        # T4.2: per-session async lock — same-session RPCs serialize so
+        # the todo store / cost meter / workspace snapshot can't race.
+        # Different sessions get distinct locks → real parallelism across
+        # sessions. Held for the rest of the handler.
+        session_lock = self._lock_for(start.session_key)
+        await session_lock.acquire()
+        lock_acquired = True
+
+        # T4.1: open the journal lazily and look for a resumable turn
+        # (same session_key + same user text within the resume window).
+        # When found, prepend the prior turn's messages so the model
+        # picks up where it left off; the tool results that already
+        # landed are re-fed verbatim, so completed tools are not redone.
+        journal = await self._get_journal()
+        resume_data: ResumeData | None = None
+        journal_turn_id: int | None = None
+        if journal is not None and start.session_key and user_text:
+            try:
+                resume_data = await journal.find_resumable_turn(
+                    start.session_key, user_text
+                )
+            except Exception as exc:  # noqa: BLE001 — degrade
+                logger.warning("agent.journal.find_resumable_failed", error=str(exc))
+        if resume_data is not None:
+            # Use the resumed turn's id so post-dispatch appends + the
+            # final complete/error stamp land on the same row.
+            journal_turn_id = resume_data.turn_id
+            logger.info(
+                "agent.turn.resumed",
+                session=start.session_key,
+                turn_id=journal_turn_id,
+                replayed_messages=len(resume_data.messages),
+                started_at_ms=resume_data.started_at_ms,
+            )
+            # Splice the replay history BEFORE the freshly-built start
+            # messages, dropping the first user message of start (it's
+            # the duplicate the resume already covers).
+            replay = list(resume_data.messages)
+            tail_messages = list(start.messages)
+            # Strip the leading duplicate user turn — the replay already
+            # contains a user message with the same text.
+            for idx, msg in enumerate(tail_messages):
+                role = (
+                    msg.get("role") if isinstance(msg, dict)
+                    else getattr(msg, "role", None)
+                )
+                if role == "user":
+                    tail_messages.pop(idx)
+                    break
+            start.messages = replay + tail_messages
+        elif journal is not None:
+            try:
+                journal_turn_id = await journal.begin_turn(
+                    start.session_key, user_text
+                )
+                # Record the user message that started this turn so
+                # resume can replay it.
+                await journal.append_message(
+                    journal_turn_id,
+                    role="user",
+                    content=user_text,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("agent.journal.begin_failed", error=str(exc))
+                journal_turn_id = None
 
         # T2.4: snapshot the workspace so the agent (or the user) can
         # revert this turn's edits via ``revert_changes``. Best-effort —
@@ -651,6 +732,39 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                                 is_error=False,
                             )
                         )
+                        # T4.1: journal the (assistant tool_call, tool result)
+                        # pair so a future resume can replay completed tools
+                        # instead of redoing them.
+                        if journal is not None and journal_turn_id is not None:
+                            try:
+                                await journal.append_message(
+                                    journal_turn_id,
+                                    role="assistant",
+                                    content="",
+                                    tool_calls=[
+                                        {
+                                            "id": event.call_id,
+                                            "type": "function",
+                                            "function": {
+                                                "name": event.tool,
+                                                "arguments": event.args_json.decode(
+                                                    "utf-8", "replace"
+                                                ),
+                                            },
+                                        }
+                                    ],
+                                )
+                                await journal.append_message(
+                                    journal_turn_id,
+                                    role="tool",
+                                    content=result_json,
+                                    tool_call_id=event.call_id,
+                                )
+                            except Exception as exc:  # noqa: BLE001
+                                logger.warning(
+                                    "agent.journal.append_tool_failed",
+                                    error=str(exc),
+                                )
                         continue
                     yield agent_pb2.ServerFrame(
                         tool_call=agent_pb2.ToolCall(
@@ -663,6 +777,18 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     )
                     seq += 1
                 elif isinstance(event, ErrorEvent):
+                    # T4.4: stamp the turn errored so the breadcrumb sticks.
+                    if journal is not None and journal_turn_id is not None:
+                        try:
+                            await journal.error_turn(
+                                journal_turn_id,
+                                f"{event.reason}: {event.message}",
+                            )
+                            journal_turn_id = None  # consumed
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning(
+                                "agent.journal.error_failed", error=str(exc)
+                            )
                     yield _error_frame(event.reason, event.message)
                     return
                 elif isinstance(event, DoneEvent):
@@ -671,6 +797,24 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     await self._store_memory(
                         start.session_key, user_text, "".join(reply_parts)
                     )
+                    # T4.1: journal the assistant's final reply + flip
+                    # the turn to completed. Skip the assistant append
+                    # when there is no text (pure tool-call turns).
+                    if journal is not None and journal_turn_id is not None:
+                        try:
+                            final_text = "".join(reply_parts)
+                            if final_text.strip():
+                                await journal.append_message(
+                                    journal_turn_id,
+                                    role="assistant",
+                                    content=final_text,
+                                )
+                            await journal.complete_turn(journal_turn_id)
+                            journal_turn_id = None  # consumed
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning(
+                                "agent.journal.complete_failed", error=str(exc)
+                            )
                     # T1.4: fold the turn's reported token usage into the
                     # per-session meter and log a structured per-turn
                     # record. ``usage`` is ``None`` when the provider did
@@ -690,12 +834,34 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     )
                     return
         except Exception as exc:
+            # T4.4: stamp the turn errored so a follow-up Chat RPC can
+            # find the breakage instead of seeing a phantom in_progress
+            # row. Best-effort.
+            if journal is not None and journal_turn_id is not None:
+                try:
+                    await journal.error_turn(
+                        journal_turn_id, f"fatal: {exc!r}"[:1000]
+                    )
+                    journal_turn_id = None
+                except Exception:  # noqa: BLE001
+                    pass
             logger.exception("agent.chat.fatal", error=str(exc))
             yield _error_frame("unknown", str(exc))
         finally:
             inbound_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await inbound_task
+            # T4.1: if the handler exited without a terminal event (cancel,
+            # client disconnect, server stop), leave the turn marked
+            # in_progress — a same-text retry within the resume window
+            # will pick it back up. The boot-time sweep mops up turns that
+            # never get a retry.
+            # T4.2: always release the per-session lock.
+            if lock_acquired:
+                try:
+                    session_lock.release()
+                except RuntimeError:  # already released, defensive
+                    pass
 
     # ─── v0.7.1 warm pool surface ─────────────────────────────────────
 
@@ -733,6 +899,67 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         """Snapshot of the provider pool counters. Surfaced for
         operator tooling (admin UI, ``corlinman doctor``)."""
         return self._provider_pool.stats()
+
+    # ------------------------------------------------------------------
+    # T4.1 — Journal lifecycle (lazy open + boot-time stale sweep)
+    # ------------------------------------------------------------------
+
+    async def _get_journal(self) -> AgentJournal | None:
+        """Lazily open the per-turn journal under ``<data_dir>/agent_journal.sqlite``.
+
+        ``False`` once an init failure has been logged so we don't retry
+        every request. The chat path is fully functional without a
+        journal — it just loses the resume capability.
+        """
+        if self._journal_init_done:
+            return self._journal
+        self._journal_init_done = True
+        try:
+            path = _resolve_data_dir() / "agent_journal.sqlite"
+            self._journal = await AgentJournal.open(path)
+            logger.info("agent.journal.opened", path=str(path))
+        except Exception as exc:  # noqa: BLE001 — degrade silently
+            logger.warning("agent.journal.init_failed", error=str(exc))
+            self._journal = None
+            return None
+        # One-shot stale sweep on first open so a previously-crashed
+        # gateway doesn't leave phantom in_progress rows.
+        if not self._journal_swept_stale and self._journal is not None:
+            self._journal_swept_stale = True
+            try:
+                await self._journal.mark_stale_in_progress_as_errored()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("agent.journal.sweep_failed", error=str(exc))
+        return self._journal
+
+    async def recent_errored_turns(
+        self, session_key: str, limit: int = 5
+    ) -> list[dict[str, Any]]:
+        """T4.4 helper — recent errored turns for an operator / self-heal hook."""
+        j = await self._get_journal()
+        if j is None:
+            return []
+        return await j.recent_errored_turns(session_key, limit=limit)
+
+    # ------------------------------------------------------------------
+    # T4.2 — Per-session async lock
+    # ------------------------------------------------------------------
+
+    def _lock_for(self, session_key: str) -> asyncio.Lock:
+        """Return the lock for ``session_key`` (creating one lazily).
+
+        Empty session_key (one-shot HTTP callers) gets a NEW lock per
+        call so they remain independent. Created locks linger for the
+        process lifetime — the entries are tiny and bounded by the
+        number of distinct chat sessions.
+        """
+        if not session_key:
+            return asyncio.Lock()
+        lock = self._session_locks.get(session_key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._session_locks[session_key] = lock
+        return lock
 
     def cost_snapshot(self, session_key: str) -> dict[str, int]:
         """Return the per-session token totals tracked by the cost meter.

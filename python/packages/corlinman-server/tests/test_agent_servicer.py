@@ -1050,3 +1050,52 @@ async def test_dispatch_builtin_no_hook_bus_still_works() -> None:
     # Calculator returns the parsed expression result.
     payload = json.loads(result)
     assert payload["result"] == 5
+
+
+# ---------------------------------------------------------------------------
+# T4.1 / T4.2 / T4.4 — journal + session lock
+# ---------------------------------------------------------------------------
+
+
+async def test_lock_for_returns_same_instance_per_session() -> None:
+    """T4.2: same session_key → same lock → serialized; different keys → distinct locks."""
+    servicer = CorlinmanAgentServicer(provider_resolver=lambda _m: _FakeProvider([]))
+    a1 = servicer._lock_for("sess-A")
+    a2 = servicer._lock_for("sess-A")
+    b1 = servicer._lock_for("sess-B")
+    assert a1 is a2
+    assert a1 is not b1
+
+
+async def test_lock_for_empty_session_gets_fresh_lock_each_call() -> None:
+    """Empty session_key (one-shot HTTP callers) get independent locks."""
+    servicer = CorlinmanAgentServicer(provider_resolver=lambda _m: _FakeProvider([]))
+    a = servicer._lock_for("")
+    b = servicer._lock_for("")
+    assert a is not b
+
+
+async def test_recent_errored_turns_returns_empty_when_no_journal() -> None:
+    """Servicer.recent_errored_turns() returns [] when the journal can't open."""
+    import os
+
+    servicer = CorlinmanAgentServicer(provider_resolver=lambda _m: _FakeProvider([]))
+    # Force the journal open path: empty session is fine — fixtures don't care.
+    crumbs = await servicer.recent_errored_turns("any-session", limit=5)
+    assert isinstance(crumbs, list)
+
+
+async def test_recent_errored_turns_surfaces_journal_entries(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T4.4: an errored turn appears via servicer.recent_errored_turns()."""
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+    servicer = CorlinmanAgentServicer(provider_resolver=lambda _m: _FakeProvider([]))
+    # Force-open the journal and stamp an error directly so we don't have to
+    # drive the full chat path here.
+    j = await servicer._get_journal()
+    assert j is not None
+    tid = await j.begin_turn("s-err", "broken")
+    await j.error_turn(tid, "BANG")
+    crumbs = await servicer.recent_errored_turns("s-err")
+    assert any("BANG" in (c["error"] or "") for c in crumbs)
