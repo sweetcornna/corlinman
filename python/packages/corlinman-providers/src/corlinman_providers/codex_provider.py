@@ -12,6 +12,7 @@ and rejects temperature and max_output_tokens parameters.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from functools import partial
 from typing import Any, ClassVar, Sequence
 
 import structlog
@@ -23,6 +24,7 @@ from corlinman_providers._codex_oauth import (
     load_codex_credential,
     refresh_codex_token,
 )
+from corlinman_providers._retry import default_retryable_codex, with_retry
 from corlinman_providers.base import ProviderChunk
 from corlinman_providers.specs import ProviderKind, ProviderSpec
 
@@ -87,6 +89,75 @@ def _messages_to_responses_input(messages: Sequence[Any]) -> list[dict]:
     return result
 
 
+def _is_terminal_event(event: Any) -> bool:
+    """``response.incomplete`` / ``response.failed`` mean the server gave up."""
+    event_type = getattr(event, "type", "")
+    return event_type in {"response.incomplete", "response.failed"}
+
+
+def _log_terminal(event: Any) -> None:
+    resp_obj = getattr(event, "response", None)
+    status = getattr(resp_obj, "status", None) if resp_obj else None
+    logger.warning(
+        "codex.stream_terminated",
+        event_type=getattr(event, "type", ""),
+        status=status,
+    )
+
+
+async def _open_stream_and_first_event(
+    client: Any, kwargs: dict[str, Any]
+) -> tuple[Any, Any] | None:
+    """Enter ``client.responses.stream(**kwargs)`` and pull the first event.
+
+    Used as the retry boundary by :meth:`CodexProvider.chat_stream`: if
+    either the ``async with`` open or the first ``__anext__`` raises a
+    transient error, the whole open phase is retried. We hand back the
+    already-entered context manager + its async iterator + the first
+    event we already consumed; the caller is responsible for exiting
+    the CM.
+
+    Returns ``None`` if the stream opens but closes without yielding
+    any events at all (rare — surfaced as a no-content done in the
+    caller).
+
+    The returned object is the original CM with a ``_cm_iter``
+    attribute attached for the caller to drive the remaining events.
+    """
+    stream_cm = client.responses.stream(**kwargs)
+    entered = await stream_cm.__aenter__()
+    try:
+        stream_iter = entered.__aiter__()
+    except Exception:
+        await stream_cm.__aexit__(None, None, None)
+        raise
+
+    try:
+        first_event = await stream_iter.__anext__()
+    except StopAsyncIteration:
+        # Stream closed immediately. Tell the caller to emit a no-content
+        # done by returning None. We exit the CM ourselves since the
+        # caller never gets a chance to.
+        try:
+            await stream_cm.__aexit__(None, None, None)
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+    except BaseException:
+        # First-event failure — surface to retry logic. Exit the CM
+        # cleanly so the next attempt opens a fresh one.
+        try:
+            await stream_cm.__aexit__(None, None, None)
+        except Exception:  # noqa: BLE001
+            pass
+        raise
+
+    # Stash the iterator on the CM so the caller can consume the
+    # remainder without re-iterating from scratch.
+    stream_cm._cm_iter = stream_iter  # type: ignore[attr-defined]
+    return stream_cm, first_event
+
+
 class CodexProvider:
     """Codex (ChatGPT subscription) OAuth provider.
 
@@ -143,7 +214,19 @@ class CodexProvider:
         temperature: float | None = None,
         max_tokens: int | None = None,
         extra: dict[str, Any] | None = None,
+        background: bool = False,
     ) -> AsyncIterator[ProviderChunk]:
+        """Stream Codex Responses-API chunks with retry on the open phase.
+
+        The open + first-event phase is wrapped in
+        :func:`corlinman_providers._retry.with_retry`. Once any token /
+        tool-call chunk has been emitted, mid-stream failures still
+        propagate (a partial-stream retry would duplicate text).
+
+        ``background=True`` tells the retry classifier to treat 529
+        overload as terminal — Claude Code's foreground/background gate.
+        No caller passes this today; wired for future use.
+        """
         await self._ensure_fresh()
         client = self._make_client()
 
@@ -187,6 +270,43 @@ class CodexProvider:
             ]
             kwargs["tool_choice"] = "auto"
 
+        # --- Open phase with retry --------------------------------------
+        # `_open_stream_once` enters the `responses.stream(...)` context
+        # manager and pulls the first event. If either step raises a
+        # transient error (429 / 5xx / connection blip), with_retry
+        # backs off and tries again. We hand back the still-open CM
+        # *and* the first event so we don't lose it. If the first event
+        # already triggered a yield, we couldn't safely retry — which is
+        # why the retry boundary is precisely first-event, not later.
+
+        def _on_retry(attempt: int, delay: float, exc: BaseException) -> None:
+            logger.warning(
+                "codex.retry",
+                attempt=attempt,
+                delay=round(delay, 3),
+                reason=type(exc).__name__,
+                error=str(exc)[:200],
+            )
+
+        try:
+            open_result = await with_retry(
+                lambda: _open_stream_and_first_event(client, kwargs),
+                retryable=partial(default_retryable_codex, background=background),
+                on_retry=_on_retry,
+            )
+        except Exception as exc:
+            logger.warning("codex.stream_open_failed", error=str(exc))
+            yield ProviderChunk(kind="done", finish_reason="error")
+            return
+
+        if open_result is None:
+            # Stream opened but produced zero events (e.g. immediate
+            # close). Surface a stop done — nothing to retry against.
+            yield ProviderChunk(kind="done", finish_reason="stop")
+            return
+
+        stream_cm, first_event = open_result
+
         # item_id (fc_…) → call_id (call_…). Arg-delta events carry only
         # item_id; the call_id needed for the function_call_output
         # round-trip lives on the output_item.added event.
@@ -197,71 +317,105 @@ class CodexProvider:
         args_streamed: dict[str, bool] = {}
         saw_tool_call = False
 
-        try:
-            async with client.responses.stream(**kwargs) as stream:
-                async for event in stream:
-                    event_type = getattr(event, "type", "")
-                    if "output_text.delta" in event_type:
-                        delta = getattr(event, "delta", "")
-                        if delta:
-                            yield ProviderChunk(kind="token", text=delta)
-                    elif event_type == "response.output_item.added":
-                        item = getattr(event, "item", None)
-                        if item is not None and getattr(item, "type", "") == "function_call":
-                            item_id = getattr(item, "id", "") or ""
-                            call_id = getattr(item, "call_id", "") or item_id
-                            name = getattr(item, "name", "") or ""
-                            call_ids[item_id] = call_id
-                            args_streamed[call_id] = False
-                            saw_tool_call = True
-                            yield ProviderChunk(
-                                kind="tool_call_start",
-                                tool_call_id=call_id,
-                                tool_name=name,
-                            )
-                    elif event_type == "response.function_call_arguments.delta":
-                        item_id = getattr(event, "item_id", "") or ""
-                        call_id = call_ids.get(item_id, item_id)
-                        delta = getattr(event, "delta", "") or ""
-                        if delta:
-                            args_streamed[call_id] = True
+        async def _process_event(event: Any) -> AsyncIterator[ProviderChunk]:
+            """Translate one Responses-API event into ProviderChunks.
+
+            Inner generator so the first-event we already pulled and the
+            remaining events go through identical processing.
+            """
+            event_type = getattr(event, "type", "")
+            if "output_text.delta" in event_type:
+                delta = getattr(event, "delta", "")
+                if delta:
+                    yield ProviderChunk(kind="token", text=delta)
+            elif event_type == "response.output_item.added":
+                item = getattr(event, "item", None)
+                if item is not None and getattr(item, "type", "") == "function_call":
+                    item_id = getattr(item, "id", "") or ""
+                    call_id = getattr(item, "call_id", "") or item_id
+                    name = getattr(item, "name", "") or ""
+                    call_ids[item_id] = call_id
+                    args_streamed[call_id] = False
+                    yield ProviderChunk(
+                        kind="tool_call_start",
+                        tool_call_id=call_id,
+                        tool_name=name,
+                    )
+            elif event_type == "response.function_call_arguments.delta":
+                item_id = getattr(event, "item_id", "") or ""
+                call_id = call_ids.get(item_id, item_id)
+                delta = getattr(event, "delta", "") or ""
+                if delta:
+                    args_streamed[call_id] = True
+                    yield ProviderChunk(
+                        kind="tool_call_delta",
+                        tool_call_id=call_id,
+                        arguments_delta=delta,
+                    )
+            elif event_type == "response.output_item.done":
+                item = getattr(event, "item", None)
+                if item is not None and getattr(item, "type", "") == "function_call":
+                    item_id = getattr(item, "id", "") or ""
+                    call_id = call_ids.get(item_id, item_id)
+                    # Backend shipped args in one shot — replay them
+                    # as a single delta so the loop can aggregate.
+                    if not args_streamed.get(call_id):
+                        full_args = getattr(item, "arguments", "") or ""
+                        if full_args:
                             yield ProviderChunk(
                                 kind="tool_call_delta",
                                 tool_call_id=call_id,
-                                arguments_delta=delta,
+                                arguments_delta=str(full_args),
                             )
-                    elif event_type == "response.output_item.done":
-                        item = getattr(event, "item", None)
-                        if item is not None and getattr(item, "type", "") == "function_call":
-                            item_id = getattr(item, "id", "") or ""
-                            call_id = call_ids.get(item_id, item_id)
-                            # Backend shipped args in one shot — replay them
-                            # as a single delta so the loop can aggregate.
-                            if not args_streamed.get(call_id):
-                                full_args = getattr(item, "arguments", "") or ""
-                                if full_args:
-                                    yield ProviderChunk(
-                                        kind="tool_call_delta",
-                                        tool_call_id=call_id,
-                                        arguments_delta=str(full_args),
-                                    )
-                            yield ProviderChunk(
-                                kind="tool_call_end",
-                                tool_call_id=call_id,
-                            )
-                    elif event_type in {"response.incomplete", "response.failed"}:
-                        resp_obj = getattr(event, "response", None)
-                        status = getattr(resp_obj, "status", None) if resp_obj else None
-                        logger.warning(
-                            "codex.stream_terminated",
-                            event_type=event_type,
-                            status=status,
-                        )
-                        yield ProviderChunk(kind="done", finish_reason="error")
-                        return
+                    yield ProviderChunk(
+                        kind="tool_call_end",
+                        tool_call_id=call_id,
+                    )
+
+        terminated_early = False
+        try:
+            # ``stream_cm`` is already entered (by _open_stream_and_first_event)
+            # so we drive the inner async iterator directly and close the
+            # CM in the finally block. The first event we already pulled
+            # goes through the same _process_event path as the rest.
+            stream_iter = stream_cm._cm_iter  # set by _open_stream_and_first_event
+
+            # First event.
+            if _is_terminal_event(first_event):
+                _log_terminal(first_event)
+                yield ProviderChunk(kind="done", finish_reason="error")
+                terminated_early = True
+            else:
+                async for chunk in _process_event(first_event):
+                    if chunk.kind == "tool_call_start":
+                        saw_tool_call = True
+                    yield chunk
+
+                # Remaining events.
+                if not terminated_early:
+                    async for event in stream_iter:
+                        if _is_terminal_event(event):
+                            _log_terminal(event)
+                            yield ProviderChunk(kind="done", finish_reason="error")
+                            terminated_early = True
+                            break
+                        async for chunk in _process_event(event):
+                            if chunk.kind == "tool_call_start":
+                                saw_tool_call = True
+                            yield chunk
         except Exception as exc:
             logger.warning("codex.stream_error", error=str(exc))
             yield ProviderChunk(kind="done", finish_reason="error")
+            return
+        finally:
+            # The original `async with` would have called __aexit__ for
+            # us; since we manually entered above, we mirror that here.
+            try:
+                await stream_cm.__aexit__(None, None, None)
+            except Exception:  # noqa: BLE001 — exit failures must not mask the result
+                pass
+
+        if terminated_early:
             return
 
         yield ProviderChunk(

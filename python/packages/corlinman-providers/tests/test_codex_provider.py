@@ -648,3 +648,154 @@ async def test_chat_stream_handles_stream_error() -> None:
             chunks.append(chunk)
 
     assert any(c.kind == "done" and c.finish_reason == "error" for c in chunks)
+
+
+# ---------------------------------------------------------------------------
+# CodexProvider.chat_stream — retry / backoff (T1.2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_retries_on_429_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 429 with ``Retry-After: 0.1`` is retried; the second attempt streams."""
+    from types import SimpleNamespace
+
+    future_ms = int(time.time() * 1000) + 3_600_000
+    cred = CodexOAuthCredential(
+        access_token="good-token", refresh_token=None, expires_at_ms=future_ms
+    )
+    prov = CodexProvider(credential=cred)
+
+    class _Fake429(Exception):
+        def __init__(self) -> None:
+            super().__init__("HTTP 429 rate limited")
+            self.status_code = 429
+            self.response = SimpleNamespace(
+                status_code=429, headers={"Retry-After": "0.1"}
+            )
+
+    events = [
+        SimpleNamespace(type="response.output_text.delta", delta="hello"),
+    ]
+
+    class _GoodStream:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return False
+
+        def __aiter__(self):
+            return self._gen()
+
+        async def _gen(self):
+            for e in events:
+                yield e
+
+    class _Raise429Stream:
+        """Raises 429 right on ``__aenter__`` to force a retry of the open phase."""
+
+        async def __aenter__(self):
+            raise _Fake429()
+
+        async def __aexit__(self, *_):
+            return False
+
+    call_count = {"n": 0}
+
+    class _FakeResponses:
+        def stream(self, **_kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return _Raise429Stream()
+            return _GoodStream()
+
+    class _FakeClient:
+        responses = _FakeResponses()
+
+    # Stub asyncio.sleep so the test is instant and we can assert the
+    # delay equals Retry-After exactly (no jitter for header-driven retries).
+    slept: list[float] = []
+
+    async def _fake_sleep(d: float) -> None:
+        slept.append(d)
+
+    monkeypatch.setattr("asyncio.sleep", _fake_sleep)
+
+    with patch.object(prov, "_make_client", return_value=_FakeClient()):
+        chunks = []
+        async for chunk in prov.chat_stream(
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "ping"}],
+        ):
+            chunks.append(chunk)
+
+    assert call_count["n"] == 2  # one retry happened
+    assert slept == [0.1]  # Retry-After honored verbatim
+
+    token_chunks = [c for c in chunks if c.kind == "token"]
+    assert len(token_chunks) == 1
+    assert token_chunks[0].text == "hello"
+    assert chunks[-1].kind == "done"
+    assert chunks[-1].finish_reason == "stop"
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_does_not_retry_on_insufficient_quota(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``insufficient_quota`` is a billing error — terminal even under a 429."""
+    from types import SimpleNamespace
+
+    future_ms = int(time.time() * 1000) + 3_600_000
+    cred = CodexOAuthCredential(
+        access_token="good-token", refresh_token=None, expires_at_ms=future_ms
+    )
+    prov = CodexProvider(credential=cred)
+
+    class _QuotaError(Exception):
+        def __init__(self) -> None:
+            super().__init__("Error 429: insufficient_quota — billing problem")
+            self.status_code = 429
+            self.response = SimpleNamespace(status_code=429, headers={})
+
+    class _RaiseQuotaStream:
+        async def __aenter__(self):
+            raise _QuotaError()
+
+        async def __aexit__(self, *_):
+            return False
+
+    call_count = {"n": 0}
+
+    class _FakeResponses:
+        def stream(self, **_kwargs):
+            call_count["n"] += 1
+            return _RaiseQuotaStream()
+
+    class _FakeClient:
+        responses = _FakeResponses()
+
+    slept: list[float] = []
+
+    async def _fake_sleep(d: float) -> None:
+        slept.append(d)
+
+    monkeypatch.setattr("asyncio.sleep", _fake_sleep)
+
+    with patch.object(prov, "_make_client", return_value=_FakeClient()):
+        chunks = []
+        async for chunk in prov.chat_stream(
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "ping"}],
+        ):
+            chunks.append(chunk)
+
+    assert call_count["n"] == 1  # no retry — billing problem is terminal
+    assert slept == []  # never slept
+    # The provider surfaces the open failure as a done/error chunk so
+    # the reasoning loop can decide what to do with the turn.
+    assert chunks[-1].kind == "done"
+    assert chunks[-1].finish_reason == "error"
