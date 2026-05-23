@@ -641,6 +641,38 @@ class TestHandleOneTelegram:
         await asyncio.sleep(0.1)
         assert len(sender.chat_actions) == actions_at_stop
 
+    @pytest.mark.asyncio
+    async def test_long_reply_is_truncated(self) -> None:
+        """Replies longer than Telegram's 4096-char cap must be clamped
+        with a truncation marker before edit/send — otherwise the API
+        returns 400 and the user sees nothing."""
+        import asyncio
+
+        big = "x" * 5000
+        svc = _ScriptedChatService([
+            _Ev(kind="token_delta", text=big),
+            _Ev(kind="done"),
+        ])
+        binding = ChannelBinding.telegram(bot_id=999, chat_id=42, user_id=42)
+        inbound: InboundEvent[Any] = InboundEvent(
+            channel="telegram",
+            binding=binding,
+            text="ping",
+            message_id="7",
+            timestamp=0,
+            mentioned=True,
+        )
+        sender = _FakeTelegramSender()
+
+        await handle_one_telegram(svc, inbound, "m", sender, asyncio.Event())  # type: ignore[arg-type]
+
+        # The final edit (placeholder path) must be ≤ 4096 chars and
+        # end with the truncation marker.
+        assert sender.edits, "expected a final edit with the reply"
+        _, _, final_text = sender.edits[-1]
+        assert len(final_text) <= 4096
+        assert final_text.endswith("[...回复过长,已截断]")
+
 
 # ---------------------------------------------------------------------------
 # Config validation

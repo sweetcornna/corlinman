@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -495,6 +495,28 @@ async def _qq_send_attachment(
     return f"📎 已发送文件: {display}"
 
 
+async def _pulse(
+    action: Callable[[], Awaitable[None]],
+    cancel: asyncio.Event,
+    interval_s: float,
+) -> None:
+    """Re-fire ``action`` until ``cancel`` is set. Best-effort: action
+    failures are swallowed."""
+    try:
+        while not cancel.is_set():
+            try:
+                await action()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                await asyncio.wait_for(cancel.wait(), timeout=interval_s)
+                return
+            except asyncio.TimeoutError:
+                continue
+    except asyncio.CancelledError:
+        return
+
+
 async def _qq_input_status_pulse(
     adapter: OneBotAdapter,
     user_id: int,
@@ -508,26 +530,12 @@ async def _qq_input_status_pulse(
     generated. NapCat clears the indicator after ~5s, so the loop
     period matches. Non-NapCat OneBot backends return an "unsupported"
     envelope; the adapter logs and moves on.
-
-    Best-effort: ``adapter.send_action`` may raise ``TransportError`` if
-    the WS just disconnected — we swallow it so the pulse failure never
-    blocks the surrounding reply path.
     """
-    try:
-        while not cancel.is_set():
-            try:
-                await adapter.send_action(
-                    SetInputStatus(user_id=user_id, event_type=1)
-                )
-            except Exception:  # noqa: BLE001
-                pass
-            try:
-                await asyncio.wait_for(cancel.wait(), timeout=interval_s)
-                return
-            except asyncio.TimeoutError:
-                continue
-    except asyncio.CancelledError:
-        return
+    await _pulse(
+        lambda: adapter.send_action(SetInputStatus(user_id=user_id, event_type=1)),
+        cancel,
+        interval_s,
+    )
 
 
 async def handle_one_qq(
@@ -766,6 +774,22 @@ _TG_STATUS_THINKING = "🧠 思考中..."
 #: started producing the final answer.
 _TG_STATUS_GENERATING = "✍️ 生成回复中..."
 
+#: Telegram's ``sendMessage`` / ``editMessageText`` cap at 4096 chars; a
+#: few-char safety margin avoids 400s on edge cases (e.g. surrogate pairs
+#: counted differently server-side).
+_TELEGRAM_TEXT_LIMIT = 4000
+
+
+def _truncate_for_telegram(body: str) -> str:
+    """Clamp ``body`` to :data:`_TELEGRAM_TEXT_LIMIT`, appending a marker
+    when truncation actually happened. Logs the original length so the
+    drop is observable in production."""
+    original_len = len(body)
+    if original_len <= _TELEGRAM_TEXT_LIMIT:
+        return body
+    _log.warning("telegram reply truncated len=%d", original_len)
+    return body[: _TELEGRAM_TEXT_LIMIT - 32] + "\n\n[...回复过长,已截断]"
+
 
 async def _telegram_typing_pulse(
     sender: TelegramSender,
@@ -780,20 +804,12 @@ async def _telegram_typing_pulse(
     the loop period must be < 5s. Designed to be cancelled from outside
     (``Task.cancel()``) when the reply lands or the surrounding
     ``cancel`` event fires.
-
-    Best-effort: a transport failure is swallowed by
-    :meth:`TelegramSender.send_chat_action`, so the pulse keeps trying.
     """
-    try:
-        while not cancel.is_set():
-            await sender.send_chat_action(chat_id, "typing")
-            try:
-                await asyncio.wait_for(cancel.wait(), timeout=interval_s)
-                return
-            except asyncio.TimeoutError:
-                continue
-    except asyncio.CancelledError:
-        return
+    await _pulse(
+        lambda: sender.send_chat_action(chat_id, "typing"),
+        cancel,
+        interval_s,
+    )
 
 
 #: Tool name that the channel handler intercepts to actually upload a
@@ -989,6 +1005,7 @@ async def handle_one_telegram(
     # Final emit is best-effort: surface transport / API failures via
     # the logger instead of propagating, so a 429 or "blocked by user"
     # at the very end never crashes the channel loop.
+    body = _truncate_for_telegram(body)
     try:
         if placeholder_id is not None:
             await sender.edit_message_text(chat_id, placeholder_id, body)
@@ -1378,7 +1395,7 @@ async def _race_iter_or_cancel(
             # Race tie — both fired; consume the value we already got.
             try:
                 return next_task.result()
-            except (StopAsyncIteration, BaseException):
+            except (StopAsyncIteration, Exception):
                 return None
         return None
     try:
