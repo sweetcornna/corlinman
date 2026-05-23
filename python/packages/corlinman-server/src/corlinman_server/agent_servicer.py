@@ -68,6 +68,7 @@ from corlinman_agent.coding import (
     EDIT_FILE_TOOL,
     LIST_FILES_TOOL,
     READ_FILE_TOOL,
+    REVERT_CHANGES_TOOL,
     RUN_SHELL_TOOL,
     SEARCH_FILES_TOOL,
     TODO_WRITE_TOOL,
@@ -78,6 +79,7 @@ from corlinman_agent.coding import (
     dispatch_edit_file,
     dispatch_list_files,
     dispatch_read_file,
+    dispatch_revert_changes,
     dispatch_run_shell,
     dispatch_search_files,
     dispatch_todo_write,
@@ -85,6 +87,7 @@ from corlinman_agent.coding import (
     render_todo_block,
     resolve_workspace,
 )
+from corlinman_agent.coding._snapshot import snapshot as _snapshot_workspace
 from corlinman_agent.variables import VariableCascade
 from corlinman_agent.web import (
     CALCULATOR_TOOL,
@@ -531,11 +534,22 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # supplied one — otherwise it operates the tools blind.
         _ensure_system_prompt(start)
 
-        # Automatic conversation memory: recall before answering. The
-        # user's text is captured first — both for the post-turn store
-        # and so it reflects the user's words, not the recall note we
-        # are about to inject.
+        # Capture the user's text before any recall / todo block goes in
+        # so it reflects the user's words (used for the post-turn memory
+        # store *and* the snapshot label below).
         user_text = _last_user_text(start.messages)
+
+        # T2.4: snapshot the workspace so the agent (or the user) can
+        # revert this turn's edits via ``revert_changes``. Best-effort —
+        # degrades silently if git is missing on the host. Labelled with
+        # the user message head so ``git log`` reads as a turn-by-turn
+        # history.
+        try:
+            _snapshot_workspace(resolve_workspace(), user_text or "turn")
+        except Exception as exc:  # noqa: BLE001 — never fail the chat
+            logger.warning("agent.chat.snapshot_failed", error=str(exc))
+
+        # Automatic conversation memory: recall before answering.
         await self._recall_memory(start)
 
         # Re-show the session's task list so the model keeps sight of its
@@ -791,6 +805,8 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     store=self._todo_store,
                     session_key=start.session_key,
                 )
+            if event.tool == REVERT_CHANGES_TOOL:
+                return dispatch_revert_changes(args_json=event.args_json)
         except Exception as exc:
             logger.exception(
                 "agent.chat.builtin_tool_failed",
