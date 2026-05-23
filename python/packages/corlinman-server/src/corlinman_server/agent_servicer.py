@@ -994,7 +994,11 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         self._journal_init_done = True
         try:
             path = _resolve_data_dir() / "agent_journal.sqlite"
-            self._journal = await AgentJournal.open(path)
+            # ``open_from_env`` honours ``CORLINMAN_JOURNAL_BACKEND``;
+            # unset / "sqlite" preserves the existing on-disk behavior
+            # at ``path``. Future HA deployments can swap the backend
+            # via env vars without touching this call site.
+            self._journal = await AgentJournal.open_from_env(path)
             logger.info("agent.journal.opened", path=str(path))
         except Exception as exc:  # noqa: BLE001 — degrade silently
             logger.warning("agent.journal.init_failed", error=str(exc))
