@@ -66,6 +66,7 @@ from corlinman_agent.coding import (
     APPLY_PATCH_TOOL,
     CODING_TOOLS,
     EDIT_FILE_TOOL,
+    FileState,
     LIST_FILES_TOOL,
     READ_FILE_TOOL,
     REVERT_CHANGES_TOOL,
@@ -549,6 +550,10 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         except Exception as exc:  # noqa: BLE001 — never fail the chat
             logger.warning("agent.chat.snapshot_failed", error=str(exc))
 
+        # T2.1: per-RPC file-read cache + staleness tracker. Threaded
+        # into the file-tool dispatch below; other tools don't need it.
+        file_state = FileState()
+
         # Automatic conversation memory: recall before answering.
         await self._recall_memory(start)
 
@@ -601,7 +606,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                             args=event.args_json.decode("utf-8", "replace")[:200],
                         )
                         result_json = await self._dispatch_builtin(
-                            event, start, provider
+                            event, start, provider, file_state
                         )
                         logger.info(
                             "agent.tool.result",
@@ -715,6 +720,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         event: ToolCallEvent,
         start: AgentChatStart,
         provider: CorlinmanProvider,
+        file_state: FileState | None = None,
     ) -> str:
         """Route an in-process builtin tool to its handler.
 
@@ -786,11 +792,11 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 return dispatch_calculator(args_json=event.args_json)
             # Coding tools — workspace-confined file ops + shell.
             if event.tool == READ_FILE_TOOL:
-                return dispatch_read_file(args_json=event.args_json)
+                return dispatch_read_file(args_json=event.args_json, state=file_state)
             if event.tool == WRITE_FILE_TOOL:
-                return dispatch_write_file(args_json=event.args_json)
+                return dispatch_write_file(args_json=event.args_json, state=file_state)
             if event.tool == EDIT_FILE_TOOL:
-                return dispatch_edit_file(args_json=event.args_json)
+                return dispatch_edit_file(args_json=event.args_json, state=file_state)
             if event.tool == LIST_FILES_TOOL:
                 return dispatch_list_files(args_json=event.args_json)
             if event.tool == SEARCH_FILES_TOOL:

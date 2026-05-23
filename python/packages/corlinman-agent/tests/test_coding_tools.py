@@ -685,3 +685,115 @@ def test_coding_tools_set_includes_revert_changes() -> None:
     names = {s["function"]["name"] for s in schemas}
     assert "revert_changes" in names
     assert len(schemas) == len(CODING_TOOLS) == 9
+
+
+# ---------------------------------------------------------------------------
+# T2.1 — FileState (per-turn read cache + staleness tracker)
+# ---------------------------------------------------------------------------
+
+
+def test_filestate_cached_read_skips_disk(tmp_path: Path) -> None:
+    """Second read hits the cache when mtime is unchanged."""
+    import os
+
+    from corlinman_agent.coding import FileState
+
+    path = tmp_path / "f.txt"
+    path.write_text("v1\n")
+    state = FileState()
+
+    r1 = json.loads(
+        dispatch_read_file(args_json=_args(path="f.txt"), workspace=tmp_path, state=state)
+    )
+    assert "v1" in r1["content"]
+    pinned = path.stat().st_mtime
+    # Rewrite the bytes but pin mtime to the recorded value, so the
+    # cache sees "no change" even though disk content shifted.
+    path.write_text("v2-on-disk\n")
+    os.utime(path, (pinned, pinned))
+
+    r2 = json.loads(
+        dispatch_read_file(args_json=_args(path="f.txt"), workspace=tmp_path, state=state)
+    )
+    # Cache fired → we see the original "v1", not the on-disk "v2".
+    assert "v1" in r2["content"]
+    assert "v2-on-disk" not in r2["content"]
+
+
+def test_filestate_invalidates_on_write(tmp_path: Path) -> None:
+    """A write through dispatch_write_file forgets the cached read."""
+    from corlinman_agent.coding import FileState
+
+    path = tmp_path / "f.txt"
+    path.write_text("v1\n")
+    state = FileState()
+
+    dispatch_read_file(args_json=_args(path="f.txt"), workspace=tmp_path, state=state)
+    assert state.cached_read(path) is not None
+
+    dispatch_write_file(
+        args_json=_args(path="f.txt", content="v2\n"),
+        workspace=tmp_path,
+        state=state,
+    )
+    assert state.cached_read(path) is None
+
+
+def test_filestate_invalidates_on_edit(tmp_path: Path) -> None:
+    """An edit through dispatch_edit_file forgets the cached read."""
+    from corlinman_agent.coding import FileState
+
+    path = tmp_path / "f.txt"
+    path.write_text("alpha beta\n")
+    state = FileState()
+
+    dispatch_read_file(args_json=_args(path="f.txt"), workspace=tmp_path, state=state)
+    assert state.cached_read(path) is not None
+
+    dispatch_edit_file(
+        args_json=_args(path="f.txt", old_string="beta", new_string="GAMMA"),
+        workspace=tmp_path,
+        state=state,
+    )
+    assert state.cached_read(path) is None
+
+
+def test_filestate_is_stale_after_external_mtime_bump(tmp_path: Path) -> None:
+    """A change to mtime under the agent flips is_stale True."""
+    import os
+
+    from corlinman_agent.coding import FileState
+
+    path = tmp_path / "f.txt"
+    path.write_text("v1\n")
+    state = FileState()
+    dispatch_read_file(args_json=_args(path="f.txt"), workspace=tmp_path, state=state)
+    assert state.is_stale(path) is False
+
+    new_mtime = path.stat().st_mtime + 100
+    os.utime(path, (new_mtime, new_mtime))
+    assert state.is_stale(path) is True
+
+
+def test_filestate_is_stale_false_when_no_record(tmp_path: Path) -> None:
+    """A file the state has never seen is not 'stale'."""
+    from corlinman_agent.coding import FileState
+
+    path = tmp_path / "f.txt"
+    path.write_text("hi\n")
+    state = FileState()
+    assert state.is_stale(path) is False
+
+
+def test_dispatch_read_file_no_state_works_as_before(tmp_path: Path) -> None:
+    """Passing state=None keeps the existing single-read behaviour exactly."""
+    path = tmp_path / "f.txt"
+    path.write_text("hello\n")
+
+    with_state_json = dispatch_read_file(
+        args_json=_args(path="f.txt"), workspace=tmp_path, state=None
+    )
+    without_state_json = dispatch_read_file(
+        args_json=_args(path="f.txt"), workspace=tmp_path
+    )
+    assert json.loads(with_state_json) == json.loads(without_state_json)

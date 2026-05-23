@@ -16,6 +16,7 @@ from corlinman_agent.coding._common import (
     resolve_in_workspace,
     resolve_workspace,
 )
+from corlinman_agent.coding._filestate import FileState
 from corlinman_agent.coding._snapshot import (
     ensure_repo,
     list_snapshots,
@@ -101,6 +102,7 @@ __all__ = [
     "APPLY_PATCH_TOOL",
     "CODING_TOOLS",
     "EDIT_FILE_TOOL",
+    "FileState",
     "LIST_FILES_TOOL",
     "READ_FILE_TOOL",
     "REVERT_CHANGES_TOOL",

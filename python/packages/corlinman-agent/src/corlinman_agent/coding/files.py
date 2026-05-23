@@ -27,6 +27,7 @@ from corlinman_agent.coding._common import (
     resolve_workspace,
     workspace_rel,
 )
+from corlinman_agent.coding._filestate import FileState
 
 logger = structlog.get_logger(__name__)
 
@@ -178,9 +179,18 @@ def _err(payload: dict[str, Any]) -> str:
 
 
 def dispatch_read_file(
-    *, args_json: bytes | str, workspace: Path | None = None
+    *,
+    args_json: bytes | str,
+    workspace: Path | None = None,
+    state: FileState | None = None,
 ) -> str:
-    """Read a workspace file. Returns a JSON envelope; never raises."""
+    """Read a workspace file. Returns a JSON envelope; never raises.
+
+    When a per-turn ``state`` is supplied and the file's mtime is
+    unchanged since the previous read in this turn, the cached content
+    is reused (no disk hit). Every real read records ``(mtime, text)``
+    so a follow-up ``edit_file`` can detect staleness (T2.2).
+    """
     try:
         raw = decode_args(args_json)
         ws = resolve_workspace(workspace)
@@ -203,10 +213,19 @@ def dispatch_read_file(
     except (TypeError, ValueError):
         return _err({"error": "args_invalid: offset/limit must be integers"})
 
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError as exc:
-        return _err({"path": raw.get("path"), "error": f"read_failed: {exc}"})
+    text: str | None = None
+    if state is not None:
+        text = state.cached_read(path)
+    if text is None:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            return _err({"path": raw.get("path"), "error": f"read_failed: {exc}"})
+        if state is not None:
+            try:
+                state.record_read(path, path.stat().st_mtime, text)
+            except OSError:
+                pass
 
     lines = text.splitlines()
     total = len(lines)
@@ -230,9 +249,16 @@ def dispatch_read_file(
 
 
 def dispatch_write_file(
-    *, args_json: bytes | str, workspace: Path | None = None
+    *,
+    args_json: bytes | str,
+    workspace: Path | None = None,
+    state: FileState | None = None,
 ) -> str:
-    """Create or overwrite a workspace file. JSON envelope; never raises."""
+    """Create or overwrite a workspace file. JSON envelope; never raises.
+
+    A ``state`` write invalidates any cached read for the path so the
+    next read re-fetches and re-pins the new mtime.
+    """
     try:
         raw = decode_args(args_json)
         ws = resolve_workspace(workspace)
@@ -256,6 +282,8 @@ def dispatch_write_file(
         path.write_text(content, encoding="utf-8")
     except OSError as exc:
         return _err({"path": raw.get("path"), "error": f"write_failed: {exc}"})
+    if state is not None:
+        state.forget(path)
     return json.dumps(
         {
             "path": workspace_rel(ws, path),
@@ -267,9 +295,17 @@ def dispatch_write_file(
 
 
 def dispatch_edit_file(
-    *, args_json: bytes | str, workspace: Path | None = None
+    *,
+    args_json: bytes | str,
+    workspace: Path | None = None,
+    state: FileState | None = None,
 ) -> str:
-    """Replace an exact string in a workspace file. JSON envelope."""
+    """Replace an exact string in a workspace file. JSON envelope.
+
+    A successful edit invalidates any cached read for the path in
+    ``state`` so subsequent reads see the new content + mtime. T2.2
+    will extend this with a pre-edit staleness check.
+    """
     try:
         raw = decode_args(args_json)
         ws = resolve_workspace(workspace)
@@ -315,6 +351,8 @@ def dispatch_edit_file(
         path.write_text(updated, encoding="utf-8")
     except OSError as exc:
         return _err({"path": raw.get("path"), "error": f"write_failed: {exc}"})
+    if state is not None:
+        state.forget(path)
     return json.dumps(
         {
             "path": workspace_rel(ws, path),
