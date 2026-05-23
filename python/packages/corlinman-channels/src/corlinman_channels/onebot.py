@@ -546,6 +546,15 @@ class OneBotAdapter:
         """
         return self._last_event_at_ms
 
+    @property
+    def url(self) -> str:
+        """The NapCat ws endpoint this adapter dials.
+
+        Surfaced so the heartbeat watcher can point operators at the
+        right ws URL when it can't reach NapCat.
+        """
+        return self._cfg.url
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------

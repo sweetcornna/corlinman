@@ -555,3 +555,103 @@ class TestHandleOneFeishu:
         await handle_one_feishu(svc, _inbound("feishu"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
         assert "[corlinman error]" in sender.sent[0][1]
         assert "bad" in sender.sent[0][1]
+
+
+class TestQqHealthWatcher:
+    """Heartbeat watcher message rendering — regression for the
+    ``no NapCat event in Nones`` formatting bug when ``last_event_at_ms``
+    is ``None`` (NapCat never sent an event yet)."""
+
+    @pytest.mark.asyncio
+    async def test_warns_with_ws_url_when_no_event_ever_received(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        import asyncio
+        import logging
+
+        from corlinman_channels.service import _qq_health_watcher
+
+        adapter = SimpleNamespace(
+            last_event_at_ms=None, url="ws://napcat.example:3001"
+        )
+        cancel = asyncio.Event()
+
+        async def cancel_soon() -> None:
+            # Fire well after the first probe tick (probe_s=1) so the
+            # warning has a chance to land before we exit.
+            await asyncio.sleep(1.3)
+            cancel.set()
+
+        import os
+
+        os.environ["CORLINMAN_QQ_HEALTH_PROBE_S"] = "1"
+        os.environ["CORLINMAN_QQ_HEALTH_LOST_S"] = "1"
+        try:
+            with caplog.at_level(
+                logging.WARNING, logger="corlinman_channels.service"
+            ):
+                await asyncio.wait_for(
+                    asyncio.gather(
+                        _qq_health_watcher(adapter, cancel),  # type: ignore[arg-type]
+                        cancel_soon(),
+                    ),
+                    timeout=3.0,
+                )
+        finally:
+            os.environ.pop("CORLINMAN_QQ_HEALTH_PROBE_S", None)
+            os.environ.pop("CORLINMAN_QQ_HEALTH_LOST_S", None)
+
+        warnings = [
+            r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
+        ]
+        assert any("heartbeat_lost" in m for m in warnings)
+        # The buggy version rendered "no NapCat event in Nones"; the fix
+        # routes the None case to a different branch that names the ws url.
+        joined = "\n".join(warnings)
+        assert "Nones" not in joined
+        assert "ws://napcat.example:3001" in joined
+        assert "received yet" in joined
+
+    @pytest.mark.asyncio
+    async def test_warns_with_seconds_when_events_then_silence(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        import asyncio
+        import logging
+        import os
+        import time
+
+        from corlinman_channels.service import _qq_health_watcher
+
+        # last event was 200s ago — over the 1s test threshold.
+        last = int(time.time() * 1000) - 200_000
+        adapter = SimpleNamespace(last_event_at_ms=last, url="ws://x")
+        cancel = asyncio.Event()
+
+        async def cancel_soon() -> None:
+            await asyncio.sleep(1.3)
+            cancel.set()
+
+        os.environ["CORLINMAN_QQ_HEALTH_PROBE_S"] = "1"
+        os.environ["CORLINMAN_QQ_HEALTH_LOST_S"] = "1"
+        try:
+            with caplog.at_level(
+                logging.WARNING, logger="corlinman_channels.service"
+            ):
+                await asyncio.wait_for(
+                    asyncio.gather(
+                        _qq_health_watcher(adapter, cancel),  # type: ignore[arg-type]
+                        cancel_soon(),
+                    ),
+                    timeout=3.0,
+                )
+        finally:
+            os.environ.pop("CORLINMAN_QQ_HEALTH_PROBE_S", None)
+            os.environ.pop("CORLINMAN_QQ_HEALTH_LOST_S", None)
+
+        msgs = "\n".join(
+            r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
+        )
+        assert "heartbeat_lost" in msgs
+        assert "Nones" not in msgs
+        assert "scan a fresh QR" in msgs

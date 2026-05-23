@@ -319,11 +319,11 @@ async def _qq_health_watcher(
     import time
 
     try:
-        probe_s = max(5, int(os.environ.get("CORLINMAN_QQ_HEALTH_PROBE_S", "30")))
+        probe_s = max(1, int(os.environ.get("CORLINMAN_QQ_HEALTH_PROBE_S", "30")))
     except ValueError:
         probe_s = 30
     try:
-        lost_s = max(60, int(os.environ.get("CORLINMAN_QQ_HEALTH_LOST_S", "120")))
+        lost_s = max(1, int(os.environ.get("CORLINMAN_QQ_HEALTH_LOST_S", "120")))
     except ValueError:
         lost_s = 120
 
@@ -354,13 +354,22 @@ async def _qq_health_watcher(
         if is_lost and not was_lost:
             if lost_since_ms is None:
                 lost_since_ms = now_ms
-            _log.warning(
-                "qq.heartbeat_lost: no NapCat event in %ss "
-                "(threshold=%ss). Bot QQ likely kicked offline; "
-                "scan a fresh QR via NapCat WebUI to recover.",
-                seconds_since,
-                lost_s,
-            )
+            if seconds_since is None:
+                _log.warning(
+                    "qq.heartbeat_lost: no NapCat event received yet "
+                    "(threshold=%ss). NapCat ws may be down or unauthenticated; "
+                    "check %s and the bot QQ login.",
+                    lost_s,
+                    getattr(adapter, "url", "the NapCat ws endpoint"),
+                )
+            else:
+                _log.warning(
+                    "qq.heartbeat_lost: no NapCat event in %ss "
+                    "(threshold=%ss). Bot QQ likely kicked offline; "
+                    "scan a fresh QR via NapCat WebUI to recover.",
+                    seconds_since,
+                    lost_s,
+                )
             was_lost = True
         elif not is_lost and was_lost:
             offline_s = (now_ms - (lost_since_ms or now_ms)) // 1000
