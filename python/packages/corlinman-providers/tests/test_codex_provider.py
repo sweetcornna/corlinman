@@ -932,3 +932,233 @@ async def test_chat_stream_done_usage_none_when_upstream_omits() -> None:
     done = chunks[-1]
     assert done.kind == "done"
     assert done.usage is None
+
+
+# ---------------------------------------------------------------------------
+# Reactive token recovery — 401 token_invalidated → refresh → retry once
+# ---------------------------------------------------------------------------
+
+
+def _fake_invalidated_401() -> Exception:
+    """Build an exception that looks like a Codex token_invalidated 401."""
+    from unittest.mock import MagicMock
+
+    class _AuthError(Exception):
+        pass
+
+    err = _AuthError(
+        "Error code: 401 - {'error': {'code': 'token_invalidated', 'message': "
+        "'Your authentication token has been invalidated.'}}"
+    )
+    err.status_code = 401  # type: ignore[attr-defined]
+    resp = MagicMock()
+    resp.status_code = 401
+    resp.json.return_value = {
+        "error": {
+            "code": "token_invalidated",
+            "message": "Your authentication token has been invalidated.",
+        }
+    }
+    err.response = resp  # type: ignore[attr-defined]
+    return err
+
+
+def test_is_token_invalidated_detects_real_shape() -> None:
+    from corlinman_providers.codex_provider import _is_token_invalidated
+
+    assert _is_token_invalidated(_fake_invalidated_401()) is True
+
+
+def test_is_token_invalidated_skips_refresh_token_invalidated() -> None:
+    """Refresh-token invalidation is NOT recoverable locally — must return False."""
+    from unittest.mock import MagicMock
+
+    from corlinman_providers.codex_provider import _is_token_invalidated
+
+    class _AuthError(Exception):
+        pass
+
+    err = _AuthError(
+        "Error code: 401 - {'error': {'code': 'refresh_token_invalidated'}}"
+    )
+    err.status_code = 401  # type: ignore[attr-defined]
+    resp = MagicMock()
+    resp.status_code = 401
+    resp.json.return_value = {"error": {"code": "refresh_token_invalidated"}}
+    err.response = resp  # type: ignore[attr-defined]
+    assert _is_token_invalidated(err) is False
+
+
+def test_is_token_invalidated_ignores_other_errors() -> None:
+    from corlinman_providers.codex_provider import _is_token_invalidated
+
+    assert _is_token_invalidated(RuntimeError("network down")) is False
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_recovers_on_token_invalidated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A 401 token_invalidated triggers refresh + persist + one retry."""
+    from types import SimpleNamespace
+
+    # Point auth.json at a tmp file so persist_codex_credential is sandboxed.
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    _write_auth_json(tmp_path, access_token="stale-token", refresh_token="rt-good")
+
+    cred = CodexOAuthCredential(
+        access_token="stale-token",
+        refresh_token="rt-good",
+        expires_at_ms=int(time.time() * 1000) + 3_600_000,
+    )
+    prov = CodexProvider(credential=cred)
+
+    fresh_cred = CodexOAuthCredential(
+        access_token="brand-new",
+        refresh_token="rt-good",
+        expires_at_ms=int(time.time() * 1000) + 3_600_000,
+    )
+    refresh_called = {"count": 0}
+
+    async def _fake_refresh(*, refresh_token: str) -> CodexOAuthCredential:
+        refresh_called["count"] += 1
+        assert refresh_token == "rt-good"
+        return fresh_cred
+
+    # Provider-side _make_client fakes: first call returns a client that
+    # raises 401-invalidated; second call (after recovery) returns a
+    # client that streams a real token.
+    attempt = {"n": 0}
+
+    class _FakeStream:
+        async def __aenter__(self):
+            attempt["n"] += 1
+            if attempt["n"] == 1:
+                raise _fake_invalidated_401()
+            return self
+
+        async def __aexit__(self, *_):
+            return False
+
+        def __aiter__(self):
+            return self._gen()
+
+        async def _gen(self):
+            yield SimpleNamespace(type="response.output_text.delta", delta="hi")
+
+    class _FakeResponses:
+        def stream(self, **_kw):
+            return _FakeStream()
+
+    class _FakeClient:
+        responses = _FakeResponses()
+
+    with (
+        patch("corlinman_providers.codex_provider.refresh_codex_token", _fake_refresh),
+        patch.object(prov, "_make_client", return_value=_FakeClient()),
+    ):
+        chunks = []
+        async for chunk in prov.chat_stream(
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "ping"}],
+        ):
+            chunks.append(chunk)
+
+    # Refresh was attempted once; the retry produced the actual token.
+    assert refresh_called["count"] == 1
+    assert prov._credential.access_token == "brand-new"
+    # Persisted to the sandbox auth.json.
+    persisted = json.loads((tmp_path / "auth.json").read_text())
+    assert persisted["tokens"]["access_token"] == "brand-new"
+    # And the stream's token reached the caller.
+    token_chunks = [c for c in chunks if c.kind == "token"]
+    assert token_chunks and token_chunks[0].text == "hi"
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_gives_up_when_refresh_token_also_dead(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If refresh also fails, the original 401 surfaces as a clean done/error."""
+    from corlinman_providers._codex_oauth import CodexOAuthRefreshError
+
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    _write_auth_json(tmp_path, access_token="dead", refresh_token="rt-also-dead")
+
+    cred = CodexOAuthCredential(
+        access_token="dead",
+        refresh_token="rt-also-dead",
+        expires_at_ms=int(time.time() * 1000) + 3_600_000,
+    )
+    prov = CodexProvider(credential=cred)
+
+    async def _fake_refresh(*, refresh_token: str) -> CodexOAuthCredential:
+        raise CodexOAuthRefreshError("refresh_token_invalidated")
+
+    class _FakeStream:
+        async def __aenter__(self):
+            raise _fake_invalidated_401()
+
+        async def __aexit__(self, *_):
+            return False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+    class _FakeResponses:
+        def stream(self, **_kw):
+            return _FakeStream()
+
+    class _FakeClient:
+        responses = _FakeResponses()
+
+    with (
+        patch("corlinman_providers.codex_provider.refresh_codex_token", _fake_refresh),
+        patch.object(prov, "_make_client", return_value=_FakeClient()),
+    ):
+        chunks = []
+        async for chunk in prov.chat_stream(
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "ping"}],
+        ):
+            chunks.append(chunk)
+
+    # Clean done/error envelope — no exception leaks; access token unchanged.
+    assert chunks[-1].kind == "done"
+    assert chunks[-1].finish_reason == "error"
+    assert prov._credential.access_token == "dead"
+
+
+def test_persist_codex_credential_atomic_write(tmp_path: Path) -> None:
+    """persist_codex_credential writes the new tokens and preserves siblings."""
+    from corlinman_providers._codex_oauth import persist_codex_credential
+
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_text(
+        json.dumps(
+            {
+                "tokens": {"access_token": "old", "refresh_token": "rt-old"},
+                "OPENAI_API_KEY": None,
+                "last_refresh": "2026-01-01",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    new_cred = CodexOAuthCredential(
+        access_token="new-access",
+        refresh_token="new-refresh",
+        expires_at_ms=None,
+    )
+    assert persist_codex_credential(new_cred, path=auth_path) is True
+
+    data = json.loads(auth_path.read_text())
+    assert data["tokens"]["access_token"] == "new-access"
+    assert data["tokens"]["refresh_token"] == "new-refresh"
+    # Sibling fields preserved.
+    assert "OPENAI_API_KEY" in data
+    # Timestamp refreshed.
+    assert data["last_refresh"] != "2026-01-01"

@@ -22,6 +22,7 @@ from corlinman_providers._codex_oauth import (
     CodexOAuthRefreshError,
     codex_cloudflare_headers,
     load_codex_credential,
+    persist_codex_credential,
     refresh_codex_token,
 )
 from corlinman_providers._retry import default_retryable_codex, with_retry
@@ -149,6 +150,43 @@ def _log_terminal(event: Any) -> None:
         event_type=getattr(event, "type", ""),
         status=status,
     )
+
+
+def _is_token_invalidated(exc: BaseException) -> bool:
+    """Detect a server-side ChatGPT token revocation.
+
+    The Codex backend invalidates a token (returns HTTP 401 with
+    ``error.code == "token_invalidated"``) when the user signs out, the
+    account rotates a session, or the server otherwise decides the
+    token is no longer trustworthy — independent of JWT ``exp``. The
+    refresh token is invalidated separately with code
+    ``refresh_token_invalidated``; that branch we cannot recover from
+    locally and the caller should surface the original error.
+    """
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        resp = getattr(exc, "response", None)
+        status = getattr(resp, "status_code", None) if resp is not None else None
+    if status != 401:
+        return False
+    body = ""
+    resp = getattr(exc, "response", None)
+    if resp is not None:
+        try:
+            data = resp.json()
+            code = data.get("error", {}).get("code", "") if isinstance(data, dict) else ""
+            if code == "token_invalidated":
+                return True
+            if code == "refresh_token_invalidated":
+                # Refresh token already dead — caller cannot self-heal.
+                return False
+            body = str(data)
+        except Exception:  # noqa: BLE001 — best-effort body sniff
+            body = ""
+    msg = (str(exc) + " " + body).lower()
+    if "refresh_token_invalidated" in msg:
+        return False
+    return "token_invalidated" in msg or "token has been invalidated" in msg
 
 
 async def _open_stream_and_first_event(
@@ -341,9 +379,45 @@ class CodexProvider:
                 on_retry=_on_retry,
             )
         except Exception as exc:
-            logger.warning("codex.stream_open_failed", error=str(exc))
-            yield ProviderChunk(kind="done", finish_reason="error")
-            return
+            # Reactive token recovery: when the Codex server has actively
+            # invalidated the access_token (independent of JWT exp), refresh
+            # with the still-valid refresh_token, persist, and retry the open
+            # ONCE. Distinct from with_retry's generic backoff because
+            # ``default_retryable_codex`` correctly treats 401 as terminal
+            # for the generic case — we only re-attempt after we've fixed
+            # the credential.
+            if _is_token_invalidated(exc):
+                logger.warning("codex.token_invalidated_detected")
+                recovered = await self._attempt_token_recovery()
+                if recovered:
+                    client = self._make_client()
+                    try:
+                        open_result = await with_retry(
+                            lambda: _open_stream_and_first_event(client, kwargs),
+                            retryable=partial(
+                                default_retryable_codex, background=background
+                            ),
+                            on_retry=_on_retry,
+                        )
+                    except Exception as exc2:
+                        logger.warning(
+                            "codex.stream_open_failed_after_recovery",
+                            error=str(exc2),
+                        )
+                        yield ProviderChunk(kind="done", finish_reason="error")
+                        return
+                else:
+                    logger.warning(
+                        "codex.stream_open_failed",
+                        error=str(exc),
+                        recovery="failed",
+                    )
+                    yield ProviderChunk(kind="done", finish_reason="error")
+                    return
+            else:
+                logger.warning("codex.stream_open_failed", error=str(exc))
+                yield ProviderChunk(kind="done", finish_reason="error")
+                return
 
         if open_result is None:
             # Stream opened but produced zero events (e.g. immediate
@@ -497,11 +571,38 @@ class CodexProvider:
                 refresh_token=self._credential.refresh_token,
             )
             self._credential = refreshed
+            persist_codex_credential(refreshed)
             logger.debug("codex.token_refreshed")
         except CodexOAuthRefreshError as exc:
             logger.warning("codex.token_refresh_failed", error=str(exc))
             # Fall through — try the current (possibly expired) token;
             # the upstream will return a 401 if it's truly dead.
+
+    async def _attempt_token_recovery(self) -> bool:
+        """Reactive refresh after a server-side ``token_invalidated`` 401.
+
+        Calls :func:`refresh_codex_token` with the current refresh token;
+        on success updates :attr:`_credential` and writes the new pair
+        back to ``~/.codex/auth.json`` so subsequent process restarts
+        see the fresh token. Returns ``True`` iff the refresh + persist
+        succeeded. The persist step is best-effort — a write failure
+        still leaves the in-memory credential updated so the current
+        turn can recover.
+        """
+        if not self._credential.refresh_token:
+            logger.warning("codex.token_recovery_skipped", reason="no_refresh_token")
+            return False
+        try:
+            refreshed = await refresh_codex_token(
+                refresh_token=self._credential.refresh_token,
+            )
+        except CodexOAuthRefreshError as exc:
+            logger.warning("codex.token_recovery_failed", error=str(exc))
+            return False
+        self._credential = refreshed
+        persisted = persist_codex_credential(refreshed)
+        logger.info("codex.token_recovered", persisted=persisted)
+        return True
 
 
 __all__ = ["CodexProvider", "_messages_to_responses_input"]

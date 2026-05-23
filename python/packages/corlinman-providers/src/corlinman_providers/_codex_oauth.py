@@ -203,6 +203,49 @@ async def refresh_codex_token(
     )
 
 
+def persist_codex_credential(
+    cred: CodexOAuthCredential, *, path: Path | None = None
+) -> bool:
+    """Write a refreshed credential back to ``~/.codex/auth.json``.
+
+    Preserves the other top-level fields (``OPENAI_API_KEY``,
+    ``last_refresh``) when the file already exists, only swapping the
+    ``tokens.access_token`` and ``tokens.refresh_token`` in place.
+    Returns True on success, False on any I/O / JSON failure (logged by
+    the caller — we keep this side-effect-free on errors so a refresh
+    that we can't persist still updates the in-memory credential).
+    """
+    target = path or _codex_auth_path()
+    try:
+        if target.is_file():
+            data = json.loads(target.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                data = {}
+        else:
+            data = {}
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    tokens = data.get("tokens") if isinstance(data.get("tokens"), dict) else {}
+    tokens["access_token"] = cred.access_token
+    if cred.refresh_token:
+        tokens["refresh_token"] = cred.refresh_token
+    data["tokens"] = tokens
+    data["last_refresh"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # Atomic-ish: write to a sibling tmp file and rename.
+        tmp = target.with_suffix(target.suffix + ".tmp")
+        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        try:
+            tmp.chmod(0o600)
+        except OSError:
+            pass
+        tmp.replace(target)
+    except OSError:
+        return False
+    return True
+
+
 def _extract_chatgpt_account_id(access_token: str) -> str | None:
     """Extract chatgpt_account_id from the Codex OAuth JWT claims."""
     try:
