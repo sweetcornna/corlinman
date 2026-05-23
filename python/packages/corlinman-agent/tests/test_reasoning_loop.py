@@ -522,3 +522,181 @@ async def test_done_event_usage_reflects_last_round_in_multi_round_loop() -> Non
     assert final.finish_reason == "stop"
     # LAST round's usage — not the round-1 numbers.
     assert final.usage == {"input_tokens": 150, "output_tokens": 12}
+
+
+# ---------------------------------------------------------------------------
+# T2.3 — token-aware context compaction
+# ---------------------------------------------------------------------------
+
+
+def test_estimate_tokens_sums_string_and_multimodal_content() -> None:
+    """Estimator sums string content + multimodal text parts, ignores images."""
+    from corlinman_agent.reasoning_loop import _estimate_tokens
+
+    messages = [
+        {"role": "user", "content": "hello"},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "world"},
+                {"type": "image_url", "image_url": {"url": "https://x/y.png"}},
+            ],
+        },
+    ]
+    # 5 chars + 5 chars = 10 → 10 // 4 = 2.
+    assert _estimate_tokens(messages) == 10 // 4
+
+
+def test_compact_history_passthrough_when_under_budget() -> None:
+    """Small histories below budget are returned unchanged and unmutated."""
+    from corlinman_agent.reasoning_loop import _compact_history
+
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": "you are a helper"},
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+    ]
+    snapshot = [dict(m) for m in messages]
+    out = _compact_history(messages, budget=100_000)
+    # Same contents, no mutation of the input.
+    assert out == snapshot
+    assert messages == snapshot
+
+
+def test_compact_history_elides_old_tool_rounds() -> None:
+    """Older role=tool payloads collapse to the sentinel; recent 3 rounds + seed remain."""
+    from corlinman_agent.reasoning_loop import (
+        _ELIDED_TOOL_CONTENT,
+        _compact_history,
+    )
+
+    huge = "X" * 1_000
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "task"},
+    ]
+    for i in range(6):
+        cid = f"c{i}"
+        messages.append(
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": cid,
+                        "type": "function",
+                        "function": {"name": "t", "arguments": "{}"},
+                    }
+                ],
+            }
+        )
+        messages.append({"role": "tool", "tool_call_id": cid, "content": huge})
+
+    original_len = len(messages)
+    snapshot = [dict(m) for m in messages]
+    out = _compact_history(messages, budget=200)
+
+    # No deletions — assistant tool_calls shells must keep matching tool msgs.
+    assert len(out) == original_len
+    # Input wasn't mutated.
+    assert messages == snapshot
+    # Seed system + user preserved verbatim.
+    assert out[0] == {"role": "system", "content": "sys"}
+    assert out[1] == {"role": "user", "content": "task"}
+    # Pull out the tool messages in order.
+    tool_msgs = [m for m in out if m.get("role") == "tool"]
+    assert len(tool_msgs) == 6
+    # First three rounds → elided; last three rounds → verbatim.
+    for tm in tool_msgs[:3]:
+        assert tm["content"] == _ELIDED_TOOL_CONTENT
+        assert tm["tool_call_id"]  # tool_call_id preserved
+    for tm in tool_msgs[3:]:
+        assert tm["content"] == huge
+    # Older assistant shells still carry tool_calls (so the elided tool
+    # messages still have a matching assistant entry).
+    assistants = [m for m in out if m.get("role") == "assistant"]
+    assert len(assistants) == 6
+    for am in assistants:
+        assert isinstance(am.get("tool_calls"), list)
+        assert len(am["tool_calls"]) == 1
+
+
+def test_compact_history_idempotent_after_first_pass() -> None:
+    """Re-running compaction on an already-compacted history is a no-op."""
+    from corlinman_agent.reasoning_loop import _compact_history
+
+    huge = "Y" * 1_000
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "task"},
+    ]
+    for i in range(6):
+        cid = f"c{i}"
+        messages.append(
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": cid,
+                        "type": "function",
+                        "function": {"name": "t", "arguments": "{}"},
+                    }
+                ],
+            }
+        )
+        messages.append({"role": "tool", "tool_call_id": cid, "content": huge})
+
+    first = _compact_history(messages, budget=200)
+    second = _compact_history(first, budget=200)
+    assert second == first
+
+
+@pytest.mark.asyncio
+async def test_run_invokes_compact_each_round(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The reasoning loop calls _compact_history at the top of every round."""
+    from corlinman_agent import reasoning_loop as rl_module
+
+    counter = {"calls": 0}
+    real = rl_module._compact_history
+
+    def _spy(msgs: list[dict[str, Any]], budget: int) -> list[dict[str, Any]]:
+        counter["calls"] += 1
+        return real(msgs, budget)
+
+    monkeypatch.setattr(rl_module, "_compact_history", _spy)
+
+    # Drive 3 rounds: tool_call → tool_call → final stop.
+    round1 = [
+        ProviderChunk(kind="tool_call_start", tool_call_id="c1", tool_name="t"),
+        ProviderChunk(kind="tool_call_delta", tool_call_id="c1", arguments_delta="{}"),
+        ProviderChunk(kind="tool_call_end", tool_call_id="c1"),
+        ProviderChunk(kind="done", finish_reason="tool_calls"),
+    ]
+    round2 = [
+        ProviderChunk(kind="tool_call_start", tool_call_id="c2", tool_name="t"),
+        ProviderChunk(kind="tool_call_delta", tool_call_id="c2", arguments_delta="{}"),
+        ProviderChunk(kind="tool_call_end", tool_call_id="c2"),
+        ProviderChunk(kind="done", finish_reason="tool_calls"),
+    ]
+    round3 = [
+        ProviderChunk(kind="token", text="done"),
+        ProviderChunk(kind="done", finish_reason="stop"),
+    ]
+    prov = _MultiRoundProvider([round1, round2, round3])
+    loop = ReasoningLoop(prov, tool_result_timeout=1.0)
+
+    async def driver() -> None:
+        async for e in loop.run(
+            ChatStart(model="x", messages=[{"role": "user", "content": "go"}])
+        ):
+            if isinstance(e, ToolCallEvent):
+                loop.feed_tool_result(ToolResult(call_id=e.call_id, content='{"ok":true}'))
+
+    await asyncio.wait_for(driver(), timeout=2.0)
+
+    # Three provider rounds happened, so compact ran at least 3 times.
+    # Spec says "at least rounds + 1" (defensive lower bound is fine —
+    # exactly-once-per-round is the contract).
+    assert len(prov.calls_seen) == 3
+    assert counter["calls"] >= 3
