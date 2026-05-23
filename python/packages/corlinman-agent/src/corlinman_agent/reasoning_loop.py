@@ -183,6 +183,165 @@ _TOOL_RESULT_HEAD_CHARS = 2_000
 _TOOL_RESULT_TAIL_CHARS = 5_000
 
 
+# T2.3: cap on total estimated context tokens fed into the provider on
+# each round. Once exceeded, ``_compact_history`` elides older
+# ``role="tool"`` payloads to the literal ``_ELIDED_TOOL_CONTENT``
+# sentinel (kept under-budget for natural idempotence). The most-recent
+# 3 assistant rounds plus the seed system/user messages stay verbatim.
+# Override with ``$CORLINMAN_CONTEXT_BUDGET``; floor mirrors
+# ``_TOOL_RESULT_CAP``'s pattern.
+try:
+    _CONTEXT_BUDGET = max(8_000, int(os.environ.get("CORLINMAN_CONTEXT_BUDGET", "120000")))
+except ValueError:
+    _CONTEXT_BUDGET = 120_000
+
+# Sentinel string written into elided ``role="tool"`` messages. Keep
+# short — it's sub-budget by construction so subsequent
+# ``_compact_history`` passes are no-ops.
+_ELIDED_TOOL_CONTENT = "[older tool output elided]"
+
+# How many trailing assistant rounds stay verbatim through compaction.
+_COMPACT_RECENT_ROUNDS = 3
+
+
+def _estimate_tokens(messages: Sequence[dict[str, Any]]) -> int:
+    """Cheap ``chars // 4`` token estimator over a message list.
+
+    Walks each message and sums:
+
+    * the character length of ``content`` when it's a ``str``;
+    * for list-form (multimodal) content parts, the character length
+      of each part's ``"text"`` key — non-text parts (images, files)
+      are ignored so vendor-specific binary metadata can't blow the
+      estimate;
+    * the character length of any ``tool_calls[].function.arguments``
+      JSON string (it's part of what the provider re-tokenises on the
+      next round).
+
+    Returns ``total_chars // 4``. Pure / no-I/O — the
+    :func:`_compact_history` budget check calls this every round.
+    """
+    total_chars = 0
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, str):
+            total_chars += len(content)
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict):
+                    text = part.get("text")
+                    if isinstance(text, str):
+                        total_chars += len(text)
+        tool_calls = msg.get("tool_calls")
+        if isinstance(tool_calls, list):
+            for tc in tool_calls:
+                if not isinstance(tc, dict):
+                    continue
+                fn = tc.get("function")
+                if isinstance(fn, dict):
+                    args = fn.get("arguments")
+                    if isinstance(args, str):
+                        total_chars += len(args)
+    return total_chars // 4
+
+
+def _compact_history(
+    messages: list[dict[str, Any]], budget: int
+) -> list[dict[str, Any]]:
+    """Return a possibly-elided copy of ``messages`` capped at ``budget`` tokens.
+
+    Passthrough when ``_estimate_tokens(messages) <= budget`` — returns
+    the input list unchanged (callers may rely on identity).
+
+    Otherwise, the algorithm:
+
+    * preserves the **leading system message(s)** (every message at the
+      head with ``role="system"``);
+    * preserves the **first ``role="user"`` message** (the original task);
+    * preserves the **most-recent 3 rounds verbatim**, where a "round"
+      ends at a ``role="assistant"`` turn. The simplest correct slice:
+      keep everything physically at-or-after the third-from-last
+      assistant message;
+    * for every other ``role="tool"`` message in the older zone,
+      REPLACES its ``content`` with ``_ELIDED_TOOL_CONTENT`` while
+      keeping the matching ``tool_call_id``. Removing the tool message
+      would orphan the matching assistant ``tool_calls`` entry and
+      break the transcript;
+    * leaves older ``role="assistant"`` messages alone (their
+      ``tool_calls`` shells must remain to match the elided tool
+      messages).
+
+    Returns a NEW list of NEW message dicts on the elision path —
+    callers can mutate the result safely without affecting the input.
+
+    Idempotent: once a tool message has been replaced with
+    ``_ELIDED_TOOL_CONTENT`` (short, sub-budget by construction),
+    re-running this function yields an equal result.
+    """
+    before = _estimate_tokens(messages)
+    if before <= budget:
+        return messages
+
+    # Locate every assistant index — the recency anchor lives here.
+    assistant_indices = [
+        i for i, m in enumerate(messages) if m.get("role") == "assistant"
+    ]
+    if len(assistant_indices) <= _COMPACT_RECENT_ROUNDS:
+        # Not enough history to safely elide — nothing in the "older"
+        # zone. Return the input unchanged so we don't accidentally
+        # strip the leading turns.
+        return messages
+
+    # Cutoff: every message at or after this index is verbatim.
+    recent_cutoff = assistant_indices[-_COMPACT_RECENT_ROUNDS]
+
+    # Identify the first role="user" index (the task seed).
+    first_user_idx: int | None = None
+    for i, m in enumerate(messages):
+        if m.get("role") == "user":
+            first_user_idx = i
+            break
+
+    out: list[dict[str, Any]] = []
+    elided_count = 0
+    for i, msg in enumerate(messages):
+        if i >= recent_cutoff:
+            out.append(dict(msg))
+            continue
+        role = msg.get("role")
+        # Preserve seed system + first user message verbatim.
+        if role == "system":
+            out.append(dict(msg))
+            continue
+        if first_user_idx is not None and i == first_user_idx:
+            out.append(dict(msg))
+            continue
+        if role == "tool":
+            existing = msg.get("content")
+            if existing == _ELIDED_TOOL_CONTENT:
+                # Already elided — preserve as-is (idempotence path).
+                out.append(dict(msg))
+                continue
+            new_msg = dict(msg)
+            new_msg["content"] = _ELIDED_TOOL_CONTENT
+            out.append(new_msg)
+            elided_count += 1
+            continue
+        # role="assistant" in the older zone keeps its tool_calls shell
+        # so the elided tool messages still match.
+        out.append(dict(msg))
+
+    if elided_count:
+        after = _estimate_tokens(out)
+        logger.info(
+            "agent.context.compacted",
+            before=before,
+            after=after,
+            elided=elided_count,
+        )
+    return out
+
+
 def _truncate_tool_result(content: str) -> str:
     """Cap a tool result at ``_TOOL_RESULT_CAP`` chars, keeping head + tail.
 
@@ -282,6 +441,11 @@ class ReasoningLoop:
                     reason="cancelled",
                 )
                 return
+            # T2.3: cap context before each provider call. The first
+            # pass after a tool round may elide; subsequent passes are
+            # idempotent on already-elided history (the sentinel is
+            # sub-budget by construction).
+            messages = _compact_history(messages, budget=_CONTEXT_BUDGET)
             rounds += 1
             tool_calls_this_round: list[ToolCallEvent] = []
             finish_reason = "stop"
