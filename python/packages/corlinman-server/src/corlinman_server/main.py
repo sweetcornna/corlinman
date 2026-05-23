@@ -215,6 +215,17 @@ async def _serve() -> int:
         options=[
             ("grpc.max_send_message_length", 64 * 1024 * 1024),
             ("grpc.max_receive_message_length", 64 * 1024 * 1024),
+            # Mirror the client's keepalive policy
+            # (``corlinman_grpc.agent_client.connect_channel``) so long
+            # agent turns don't trip the server's default
+            # ``max_ping_strikes=2`` after the gateway sends two keepalive
+            # pings without data, which surfaces upstream as
+            # ``UNAVAILABLE: Too many pings``.
+            ("grpc.keepalive_time_ms", 30_000),
+            ("grpc.keepalive_timeout_ms", 10_000),
+            ("grpc.keepalive_permit_without_calls", 1),
+            ("grpc.http2.min_recv_ping_interval_without_data_ms", 10_000),
+            ("grpc.http2.max_ping_strikes", 0),
         ],
     )
 

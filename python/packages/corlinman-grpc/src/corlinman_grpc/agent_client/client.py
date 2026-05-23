@@ -101,9 +101,21 @@ def connect_channel(endpoint: str) -> grpc.aio.Channel:
     target = _normalise_target(endpoint)
     if not target:
         raise ConfigError(f"invalid agent endpoint: {endpoint!r}")
+    # Keepalive policy must match the server's
+    # ``grpc.http2.min_recv_ping_interval_without_data_ms`` /
+    # ``max_ping_strikes`` settings, otherwise long-running streams
+    # (agent turns can run for minutes between tokens) get killed with
+    # ``UNAVAILABLE: Too many pings`` after 2 strikes. Required pair:
+    #
+    #   * ``keepalive_permit_without_calls=1`` — keep the connection
+    #     warm even when no RPC is active.
+    #   * ``http2.max_pings_without_data=0`` — unlimited pings during a
+    #     long-lived call without intervening data frames.
     options = [
         ("grpc.keepalive_time_ms", 30_000),
-        ("grpc.keepalive_timeout_ms", 5_000),
+        ("grpc.keepalive_timeout_ms", 10_000),
+        ("grpc.keepalive_permit_without_calls", 1),
+        ("grpc.http2.max_pings_without_data", 0),
         # tonic enables TCP_NODELAY by default; mirror it here.
         ("grpc.http2.min_time_between_pings_ms", 10_000),
     ]

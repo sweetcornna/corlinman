@@ -153,6 +153,14 @@ async def serve_agent(
         options=[
             ("grpc.max_send_message_length", 64 * 1024 * 1024),
             ("grpc.max_receive_message_length", 64 * 1024 * 1024),
+            # Match the client (corlinman-grpc.connect_channel) keepalive
+            # policy so long agent turns don't trip the server's default
+            # ``max_ping_strikes=2`` and surface as "Too many pings".
+            ("grpc.keepalive_time_ms", 30_000),
+            ("grpc.keepalive_timeout_ms", 10_000),
+            ("grpc.keepalive_permit_without_calls", 1),
+            ("grpc.http2.min_recv_ping_interval_without_data_ms", 10_000),
+            ("grpc.http2.max_ping_strikes", 0),
         ],
     )
     agent_pb2_grpc.add_AgentServicer_to_server(
