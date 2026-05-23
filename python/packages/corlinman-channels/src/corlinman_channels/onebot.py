@@ -426,9 +426,43 @@ class SetInputStatus:
     event_type: int = 1
 
 
+@dataclass(slots=True)
+class UploadPrivateFile:
+    """``action = "upload_private_file"`` — NapCat OneBot v11 extension.
+
+    Sends a file to a private chat. ``file`` is a path the NapCat
+    process can read (the channel handler resolves it from the
+    gateway-side absolute path; NapCat and the gateway run on the
+    same host so the path is the same).
+    """
+
+    user_id: int
+    file: str
+    name: str | None = None
+
+
+@dataclass(slots=True)
+class UploadGroupFile:
+    """``action = "upload_group_file"`` — NapCat OneBot v11 extension.
+
+    Sends a file to a QQ group. ``folder`` is optional (defaults to
+    the root folder of the group's file area).
+    """
+
+    group_id: int
+    file: str
+    name: str | None = None
+    folder: str | None = None
+
+
 #: Tagged-union of every action corlinman emits.
 Action = (
-    SendPrivateMsg | SendGroupMsg | SendGroupForwardMsg | SetInputStatus
+    SendPrivateMsg
+    | SendGroupMsg
+    | SendGroupForwardMsg
+    | SetInputStatus
+    | UploadPrivateFile
+    | UploadGroupFile
 )
 
 
@@ -485,6 +519,24 @@ def action_to_wire(action: Action) -> dict[str, Any]:
                 "event_type": action.event_type,
             },
         }
+    if isinstance(action, UploadPrivateFile):
+        params: dict[str, Any] = {
+            "user_id": action.user_id,
+            "file": action.file,
+        }
+        if action.name is not None:
+            params["name"] = action.name
+        return {"action": "upload_private_file", "params": params}
+    if isinstance(action, UploadGroupFile):
+        gparams: dict[str, Any] = {
+            "group_id": action.group_id,
+            "file": action.file,
+        }
+        if action.name is not None:
+            gparams["name"] = action.name
+        if action.folder is not None:
+            gparams["folder"] = action.folder
+        return {"action": "upload_group_file", "params": gparams}
     # SendGroupForwardMsg
     return {
         "action": "send_group_forward_msg",
@@ -798,6 +850,8 @@ __all__ = [
     "SendGroupMsg",
     "SendPrivateMsg",
     "SetInputStatus",
+    "UploadGroupFile",
+    "UploadPrivateFile",
     "Sender",
     "TextSegment",
     "UnknownEvent",

@@ -243,6 +243,28 @@ class TelegramSender:
         mp = build_multipart(chat_id, "voice", filename, content, caption, "audio/ogg")
         return await self._post_multipart("sendVoice", mp)
 
+    async def send_document(
+        self,
+        chat_id: int,
+        path: Path,
+        caption: str | None = None,
+        filename: str | None = None,
+        mime: str = "application/octet-stream",
+    ) -> int:
+        """POST ``/sendDocument`` from a local file path.
+
+        Used by the ``send_attachment`` agent tool — supports any file
+        type (HTML, PDF, code, etc.). ``filename`` overrides the
+        on-disk basename for the user-visible display.
+        """
+        try:
+            content = path.read_bytes()
+        except OSError as exc:
+            raise SendIoError(str(exc)) from exc
+        name = filename or path.name or "file.bin"
+        mp = build_multipart(chat_id, "document", name, content, caption, mime)
+        return await self._post_multipart("sendDocument", mp)
+
     async def send_chat_action(
         self, chat_id: int, action: str = "typing"
     ) -> None:

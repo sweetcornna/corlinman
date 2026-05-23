@@ -59,6 +59,7 @@ class _Ev:
     error: str = ""
     plugin: str = ""
     tool: str = ""
+    args_json: bytes = b""
 
 
 class _ScriptedChatService:
@@ -120,6 +121,28 @@ class _FakeTelegramSender:
     ) -> None:
         self.chat_actions.append((chat_id, action))
 
+    async def send_document(
+        self,
+        chat_id: int,
+        path: Any,
+        caption: str | None = None,
+        filename: str | None = None,
+        mime: str = "application/octet-stream",
+    ) -> int:
+        self._next_message_id += 1
+        self.sent.append((chat_id, f"[doc {filename or path}]", caption))  # type: ignore[arg-type]
+        return self._next_message_id
+
+    async def send_photo(self, *args: Any, **kw: Any) -> int:
+        self._next_message_id += 1
+        self.sent.append((args[0], "[photo]", kw.get("caption")))  # type: ignore[arg-type]
+        return self._next_message_id
+
+    async def send_voice(self, *args: Any, **kw: Any) -> int:
+        self._next_message_id += 1
+        self.sent.append((args[0], "[voice]", kw.get("caption")))  # type: ignore[arg-type]
+        return self._next_message_id
+
 
 # ---------------------------------------------------------------------------
 # QQ reply assembly
@@ -136,6 +159,21 @@ def _sample_group_event() -> MessageEvent:
         message_id=42,
         message=[TextSegment(text="格兰早")],
         raw_message="格兰早",
+        time=1_700_000_000,
+        sender=None,
+    )
+
+
+def _qq_private_event(user_id: int = 555) -> MessageEvent:
+    return MessageEvent(
+        self_id=100,
+        message_type=MessageType.PRIVATE,
+        sub_type="friend",
+        group_id=None,
+        user_id=user_id,
+        message_id=42,
+        message=[TextSegment(text="hi")],
+        raw_message="hi",
         time=1_700_000_000,
         sender=None,
     )
@@ -276,6 +314,43 @@ class TestHandleOneQq:
         assert adapter.sent == []
 
     @pytest.mark.asyncio
+    async def test_send_attachment_private_uploads_via_napcat(
+        self, tmp_path: Any
+    ) -> None:
+        """send_attachment tool_call must dispatch an UploadPrivateFile
+        action for QQ private chats."""
+        import json
+
+        from corlinman_channels.onebot import UploadPrivateFile
+
+        f = tmp_path / "doc.pdf"
+        f.write_bytes(b"%PDF-fake")
+        args = json.dumps({"path": str(f), "filename": "doc.pdf"})
+        svc = _ScriptedChatService([
+            _Ev(
+                kind="tool_call",
+                plugin="send_attachment",
+                tool="send_attachment",
+                args_json=args.encode("utf-8"),
+            ),
+            _Ev(kind="token_delta", text="ok"),
+            _Ev(kind="done"),
+        ])
+        ev = _qq_private_event(user_id=10001)
+        binding = ChannelBinding.qq_private(999, 10001)
+        req = RoutedRequest(binding=binding, content="give me the pdf")
+        adapter = _FakeOneBotAdapter()
+
+        import asyncio
+
+        await handle_one_qq(svc, req, ev, "m", adapter, asyncio.Event())  # type: ignore[arg-type]
+        uploads = [a for a in adapter.sent if isinstance(a, UploadPrivateFile)]
+        assert uploads, f"expected UploadPrivateFile; got {[type(a).__name__ for a in adapter.sent]}"
+        assert uploads[0].user_id == 10001
+        assert uploads[0].name == "doc.pdf"
+        assert uploads[0].file.endswith("doc.pdf")
+
+    @pytest.mark.asyncio
     async def test_input_status_pulse_fires_until_cancelled(self) -> None:
         """NapCat-only ``set_input_status`` pulse must re-fire on its
         interval and stop on cancel.set(). Private chats only."""
@@ -391,6 +466,48 @@ class TestHandleOneTelegram:
         _, _, final_text = sender.edits[-1]
         assert "[corlinman error]" in final_text
         assert "nope" in final_text
+
+    @pytest.mark.asyncio
+    async def test_send_attachment_uploads_via_sender(
+        self, tmp_path: Any
+    ) -> None:
+        """A tool_call event with tool=send_attachment must trigger a
+        real upload via the sender (not just a status edit)."""
+        import json
+
+        html = tmp_path / "page.html"
+        html.write_text("<!DOCTYPE html><h1>hi</h1>", encoding="utf-8")
+        args = json.dumps({"path": str(html), "filename": "page.html"})
+        svc = _ScriptedChatService([
+            _Ev(
+                kind="tool_call",
+                plugin="send_attachment",
+                tool="send_attachment",
+                args_json=args.encode("utf-8"),
+            ),
+            _Ev(kind="token_delta", text="文件已发送"),
+            _Ev(kind="done"),
+        ])
+        binding = ChannelBinding.telegram(bot_id=999, chat_id=7, user_id=7)
+        inbound: InboundEvent[Any] = InboundEvent(
+            channel="telegram",
+            binding=binding,
+            text="give me the html",
+            message_id="1",
+            timestamp=0,
+            mentioned=True,
+        )
+        sender = _FakeTelegramSender()
+
+        import asyncio
+
+        await handle_one_telegram(svc, inbound, "m", sender, asyncio.Event())  # type: ignore[arg-type]
+        # The sender must have been called via send_document.
+        doc_calls = [s for s in sender.sent if isinstance(s[1], str) and s[1].startswith("[doc")]
+        assert doc_calls, f"expected send_document; got sent={sender.sent}"
+        # The placeholder must show the upload status.
+        edit_texts = [e[2] for e in sender.edits]
+        assert any("已发送文件: page.html" in t for t in edit_texts)
 
     @pytest.mark.asyncio
     async def test_tool_call_event_updates_status(self) -> None:

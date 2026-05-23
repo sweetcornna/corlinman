@@ -122,6 +122,14 @@ from corlinman_server.runner_pool import PoolStats, RunnerPool
 
 logger = structlog.get_logger(__name__)
 
+#: The "send file via current channel" tool — surfaced as a builtin so
+#: the LLM can reply with a file (HTML, PDF, etc.) instead of dumping
+#: raw text. The agent-side dispatch is a no-op stub: the actual upload
+#: happens in the channel handler (`handle_one_telegram` /
+#: `handle_one_qq`) which holds the channel sender + binding.
+SEND_ATTACHMENT_TOOL = "send_attachment"
+
+
 #: Tool names dispatched in-process by the servicer rather than routed
 #: through the Rust plugin registry. These cover the v0.7 multi-agent
 #: surface (subagent fan-out + shared blackboard) plus the v0.8 web
@@ -137,8 +145,56 @@ BUILTIN_TOOLS: frozenset[str] = frozenset(
         WEB_FETCH_TOOL,
         WEB_SEARCH_TOOL,
         CALCULATOR_TOOL,
+        SEND_ATTACHMENT_TOOL,
     }
 ) | CODING_TOOLS
+
+
+def _send_attachment_tool_schema() -> dict[str, Any]:
+    """OpenAI tool descriptor for the channel-side file-send tool."""
+    return {
+        "type": "function",
+        "function": {
+            "name": SEND_ATTACHMENT_TOOL,
+            "description": (
+                "Send a file from the local filesystem back to the user "
+                "via the current chat channel (Telegram document/photo/"
+                "voice; QQ private or group file). The file MUST already "
+                "exist — write content to disk with `write_file` first "
+                "if you need to create it. Use this whenever the user "
+                "asks for a file (HTML, PDF, image, audio) instead of "
+                "pasting the content as text."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": (
+                            "Absolute filesystem path of the file to "
+                            "send. The file must be readable by the "
+                            "gateway process."
+                        ),
+                    },
+                    "caption": {
+                        "type": "string",
+                        "description": (
+                            "Optional caption shown alongside the file "
+                            "(Telegram only; ignored on QQ)."
+                        ),
+                    },
+                    "filename": {
+                        "type": "string",
+                        "description": (
+                            "Optional display name for the file. "
+                            "Defaults to the basename of `path`."
+                        ),
+                    },
+                },
+                "required": ["path"],
+            },
+        },
+    }
 
 #: Builtin tools advertised to the model on every chat turn so it can
 #: actually *call* them. ``BUILTIN_TOOLS`` (above) is the dispatch gate;
@@ -156,6 +212,7 @@ def _builtin_tool_schemas() -> list[dict[str, Any]]:
         calculator_tool_schema(),
         web_search_tool_schema(),
         web_fetch_tool_schema(),
+        _send_attachment_tool_schema(),
         *coding_tool_schemas(),
     ]
 
@@ -1180,6 +1237,41 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 )
             if event.tool == REVERT_CHANGES_TOOL:
                 return dispatch_revert_changes(args_json=event.args_json)
+            if event.tool == SEND_ATTACHMENT_TOOL:
+                # No-op stub on the agent side. The real upload happens
+                # in the channel handler (handle_one_telegram /
+                # handle_one_qq) which observes the matching ToolCall
+                # frame and has the sender + binding. We surface a
+                # ``deferred_to_channel`` marker so the reasoning loop
+                # treats the call as successful and stops re-invoking
+                # the same tool in a loop. Errors during the actual
+                # upload are reported to the user as a [corlinman error]
+                # reply by the channel handler.
+                try:
+                    args = json.loads(
+                        event.args_json.decode("utf-8") or "{}"
+                    )
+                except json.JSONDecodeError:
+                    args = {}
+                path = str(args.get("path") or "").strip()
+                if not path:
+                    return json.dumps(
+                        {
+                            "ok": False,
+                            "error": "send_attachment requires a `path`",
+                        }
+                    )
+                return json.dumps(
+                    {
+                        "ok": True,
+                        "deferred_to_channel": True,
+                        "note": (
+                            "The channel handler is uploading the file. "
+                            "Do not re-invoke send_attachment for the "
+                            "same path; continue with the reply text."
+                        ),
+                    }
+                )
         except Exception as exc:
             ok = False
             error_code = type(exc).__name__

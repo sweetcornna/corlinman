@@ -106,6 +106,8 @@ from corlinman_channels.onebot import (
     SendPrivateMsg,
     SetInputStatus,
     TextSegment,
+    UploadGroupFile,
+    UploadPrivateFile,
 )
 from corlinman_channels.rate_limit import TokenBucket
 from corlinman_channels.router import ChannelRouter, GroupKeywords, RoutedRequest
@@ -453,6 +455,46 @@ async def _qq_dispatch_loop(
             t.cancel()
 
 
+async def _qq_send_attachment(
+    adapter: OneBotAdapter,
+    event: MessageEvent,
+    ev: Any,
+) -> str:
+    """Upload a file via NapCat extension actions. Returns a status line
+    for the placeholder. Best-effort: failures fold into status text.
+    """
+    from pathlib import Path
+
+    path_str, _caption, filename = _parse_send_attachment_args(ev)
+    if not path_str:
+        return "⚠️ 发送文件失败: missing `path`"
+    p = Path(path_str)
+    if not p.exists() or not p.is_file():
+        return f"⚠️ 发送文件失败: {p.name} 不存在"
+    display = filename or p.name
+    try:
+        if event.message_type == MessageType.GROUP and event.group_id is not None:
+            await adapter.send_action(
+                UploadGroupFile(
+                    group_id=event.group_id,
+                    file=str(p.resolve()),
+                    name=display,
+                )
+            )
+        else:
+            await adapter.send_action(
+                UploadPrivateFile(
+                    user_id=event.user_id,
+                    file=str(p.resolve()),
+                    name=display,
+                )
+            )
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("qq send_attachment failed: %s", exc)
+        return f"⚠️ 发送文件失败: {display} ({exc})"
+    return f"📎 已发送文件: {display}"
+
+
 async def _qq_input_status_pulse(
     adapter: OneBotAdapter,
     user_id: int,
@@ -545,7 +587,15 @@ async def handle_one_qq(
                     chat_ev, "message", ""
                 )
                 break
-            # tool_call → informational; gateway handles execution.
+            elif kind == "tool_call":
+                if getattr(chat_ev, "tool", "") == _SEND_ATTACHMENT_TOOL:
+                    # Real upload; the agent-side dispatch is a no-op
+                    # stub so the loop continues — we do the work here.
+                    await _qq_send_attachment(adapter, event, chat_ev)
+                # Other tool_call frames stay informational — QQ has no
+                # editMessage equivalent, so we can't render a mutable
+                # spinner. The set_input_status pulse is the user-
+                # visible signal that work is happening.
     except Exception as exc:  # noqa: BLE001 — never let a crash kill the row
         _log.exception("qq handle_one crashed: %s", exc)
         if inbox is not None and inbox_id is not None:
@@ -746,15 +796,89 @@ async def _telegram_typing_pulse(
         return
 
 
+#: Tool name that the channel handler intercepts to actually upload a
+#: file (agent-side dispatch is a no-op stub).
+_SEND_ATTACHMENT_TOOL = "send_attachment"
+
+
 def _format_tool_status(ev: Any) -> str:
     """Render a :class:`ToolCallEvent` as the next mutable-line status.
 
     Mirrors hermes-agent's ``_last_activity_desc`` style ("emoji + label").
+    Truncates / sanitises so a runaway tool name can't blow past
+    Telegram's 4096-char editMessageText limit.
     """
-    tool = getattr(ev, "tool", "") or "?"
-    plugin = getattr(ev, "plugin", "") or ""
+    tool = (getattr(ev, "tool", "") or "?").replace("\n", " ")
+    plugin = (getattr(ev, "plugin", "") or "").replace("\n", " ")
     label = f"{plugin}.{tool}" if plugin and plugin != tool else tool
+    if len(label) > 80:
+        label = label[:77] + "..."
     return f"🔧 调用工具: {label}"
+
+
+def _parse_send_attachment_args(ev: Any) -> tuple[str, str | None, str | None]:
+    """Parse ``send_attachment`` tool args into ``(path, caption, filename)``.
+
+    Returns empty path on any decode/parse failure — caller should
+    surface a friendly status instead of raising.
+    """
+    import json
+
+    raw = getattr(ev, "args_json", b"") or b""
+    try:
+        obj = json.loads(bytes(raw).decode("utf-8") or "{}")
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return ("", None, None)
+    if not isinstance(obj, dict):
+        return ("", None, None)
+    path = str(obj.get("path") or "").strip()
+    caption = obj.get("caption")
+    if caption is not None and not isinstance(caption, str):
+        caption = None
+    filename = obj.get("filename")
+    if filename is not None and not isinstance(filename, str):
+        filename = None
+    return (path, caption, filename)
+
+
+async def _telegram_send_attachment(
+    sender: TelegramSender,
+    chat_id: int,
+    reply_to: int | None,
+    ev: Any,
+) -> str:
+    """Send a file via the Telegram sender, picking photo/voice/document
+    by MIME. Returns the status text to render in the placeholder.
+
+    Best-effort: any failure is folded into a status line — never raises.
+    """
+    import mimetypes
+    from pathlib import Path
+
+    path_str, caption, filename = _parse_send_attachment_args(ev)
+    if not path_str:
+        return "⚠️ 发送文件失败: missing `path`"
+    p = Path(path_str)
+    if not p.exists() or not p.is_file():
+        return f"⚠️ 发送文件失败: {p.name} 不存在"
+    mime, _ = mimetypes.guess_type(p.name)
+    mime = mime or "application/octet-stream"
+    display = filename or p.name
+    try:
+        if mime.startswith("image/"):
+            from corlinman_channels.telegram_send import PhotoSource
+
+            await sender.send_photo(chat_id, PhotoSource.Path(p), caption=caption)
+        elif mime.startswith("audio/") and p.suffix.lower() in {".ogg", ".oga"}:
+            await sender.send_voice(chat_id, p, caption=caption)
+        else:
+            await sender.send_document(
+                chat_id, p, caption=caption, filename=display, mime=mime
+            )
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("telegram send_attachment failed: %s", exc)
+        return f"⚠️ 发送文件失败: {display} ({exc})"
+    return f"📎 已发送文件: {display}"
 
 
 async def handle_one_telegram(
@@ -818,7 +942,17 @@ async def handle_one_telegram(
                 if last_status != _TG_STATUS_GENERATING:
                     await _maybe_edit(_TG_STATUS_GENERATING)
             elif kind == "tool_call":
-                await _maybe_edit(_format_tool_status(ev))
+                if getattr(ev, "tool", "") == _SEND_ATTACHMENT_TOOL:
+                    # Channel-side file upload — the agent already
+                    # dispatched a stub OK in-process; we do the real
+                    # work here using the sender + chat_id from this
+                    # turn's binding.
+                    status = await _telegram_send_attachment(
+                        sender, chat_id, reply_to, ev
+                    )
+                    await _maybe_edit(status)
+                else:
+                    await _maybe_edit(_format_tool_status(ev))
             elif kind == "done":
                 break
             elif kind == "error":

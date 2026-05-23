@@ -196,6 +196,30 @@ class TestActionToWire:
         assert s["params"]["user_id"] == 9876
         assert s["params"]["event_type"] == 1
 
+    def test_upload_private_file_envelope(self) -> None:
+        from corlinman_channels.onebot import UploadPrivateFile
+
+        s = action_to_wire(
+            UploadPrivateFile(user_id=42, file="/tmp/a.html", name="a.html")
+        )
+        assert s["action"] == "upload_private_file"
+        assert s["params"]["user_id"] == 42
+        assert s["params"]["file"] == "/tmp/a.html"
+        assert s["params"]["name"] == "a.html"
+
+    def test_upload_group_file_envelope(self) -> None:
+        from corlinman_channels.onebot import UploadGroupFile
+
+        s = action_to_wire(
+            UploadGroupFile(group_id=10, file="/tmp/x.pdf", name="x.pdf")
+        )
+        assert s["action"] == "upload_group_file"
+        assert s["params"]["group_id"] == 10
+        assert s["params"]["file"] == "/tmp/x.pdf"
+        assert s["params"]["name"] == "x.pdf"
+        # ``folder`` is omitted when not set.
+        assert "folder" not in s["params"]
+
 
 # ---------------------------------------------------------------------------
 # Adapter-level tests
