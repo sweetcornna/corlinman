@@ -118,6 +118,9 @@ from corlinman_server.agent_journal import (
     ResumeData,
     TURN_IN_PROGRESS,
 )
+from corlinman_server.gateway.services.chat_service import (
+    _BUILTIN_OBSERVATION_PREFIX,
+)
 from corlinman_server.runner_pool import PoolStats, RunnerPool
 
 logger = structlog.get_logger(__name__)
@@ -778,7 +781,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                         yield agent_pb2.ServerFrame(
                             tool_call=agent_pb2.ToolCall(
                                 call_id=event.call_id,
-                                plugin=f"_builtin:{event.plugin}",
+                                plugin=f"{_BUILTIN_OBSERVATION_PREFIX}{event.plugin}",
                                 tool=event.tool,
                                 args_json=event.args_json,
                                 seq=seq,

@@ -67,6 +67,10 @@ __all__ = [
 log = logging.getLogger(__name__)
 
 
+# Plugin names starting with this prefix are reserved for the agent servicer's observation-only frames. Real plugins MUST NOT use this prefix.
+_BUILTIN_OBSERVATION_PREFIX = "_builtin:"
+
+
 # ─── Backend protocol ────────────────────────────────────────────────
 
 
@@ -275,13 +279,22 @@ async def _run_chat(
                 # round-tripping a second ``tool_result`` here would
                 # double-feed the call_id and corrupt the conversation.
                 # Strip the prefix and yield the event without executing.
-                if tc.plugin.startswith("_builtin:"):
+                if tc.plugin.startswith(_BUILTIN_OBSERVATION_PREFIX):
                     yield ToolCallEvent(
-                        plugin=tc.plugin[len("_builtin:"):],
+                        plugin=tc.plugin[len(_BUILTIN_OBSERVATION_PREFIX):],
                         tool=tc.tool,
                         args_json=bytes(tc.args_json),
                     )
                     continue
+                # Defense in depth: catch an upstream that's mistakenly
+                # stripping the sentinel prefix before we see it. A real
+                # plugin name should never contain the reserved literal.
+                if _BUILTIN_OBSERVATION_PREFIX in tc.plugin:
+                    log.warning(
+                        "chat_service.suspicious_plugin_name plugin=%s tool=%s",
+                        tc.plugin,
+                        tc.tool,
+                    )
                 # Execute the tool via the injected executor and feed the
                 # genuine result back into the reasoning loop so it makes
                 # real multi-round progress. The production executor
