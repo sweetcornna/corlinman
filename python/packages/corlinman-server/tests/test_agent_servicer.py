@@ -1099,3 +1099,261 @@ async def test_recent_errored_turns_surfaces_journal_entries(
     await j.error_turn(tid, "BANG")
     crumbs = await servicer.recent_errored_turns("s-err")
     assert any("BANG" in (c["error"] or "") for c in crumbs)
+
+
+# ---------------------------------------------------------------------------
+# T4.1 — Chat-handler resume integration
+#
+# The handler must consult ``AgentJournal.find_resumable_turn`` BEFORE
+# calling ``begin_turn``. When a fresh in-progress row matches (same
+# session_key + same user text within the resume window), it must splice
+# the replay into ``start.messages`` and bypass ``begin_turn`` entirely.
+# Stale rows (older than the window) must NOT match — the handler
+# creates a brand-new turn instead.
+# ---------------------------------------------------------------------------
+
+
+class _CapturingLoop:
+    """Stand-in for ``ReasoningLoop`` that records ``start`` and ends
+    immediately with a ``DoneEvent``. Used to assert the messages the
+    handler hands the loop without driving a real provider."""
+
+    captured_starts: list[Any] = []
+
+    def __init__(self, provider: Any, *, tool_result_timeout: float = 0.05) -> None:
+        self._provider = provider
+
+    def feed_tool_result(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    def cancel(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    def signal_input_closed(self) -> None:
+        return None
+
+    async def run(self, start: Any) -> AsyncIterator[Any]:
+        from corlinman_agent.reasoning_loop import DoneEvent
+
+        # Deep-snapshot messages so subsequent in-place mutations cannot
+        # contaminate the assertion target.
+        type(self).captured_starts.append(
+            SimpleNamespace(
+                messages=[dict(m) for m in start.messages],
+                session_key=start.session_key,
+            )
+        )
+        yield DoneEvent(finish_reason="stop")
+
+
+async def _drive_chat_once(
+    servicer: CorlinmanAgentServicer,
+    *,
+    session_key: str,
+    user_text: str,
+) -> None:
+    """Drive one Chat RPC end-to-end against ``servicer`` and drain it."""
+    server = grpc.aio.server()
+    agent_pb2_grpc.add_AgentServicer_to_server(servicer, server)
+    port = server.add_insecure_port("127.0.0.1:0")
+    await server.start()
+    try:
+        async with grpc.aio.insecure_channel(f"127.0.0.1:{port}") as channel:
+            stub = agent_pb2_grpc.AgentStub(channel)
+
+            async def frames():
+                yield agent_pb2.ClientFrame(
+                    start=agent_pb2.ChatStart(
+                        model="claude-sonnet-4-5",
+                        session_key=session_key,
+                        messages=[
+                            common_pb2.Message(
+                                role=common_pb2.USER, content=user_text
+                            )
+                        ],
+                    )
+                )
+
+            call = stub.Chat(frames())
+            async for _ in call:
+                pass
+    finally:
+        await server.stop(grace=None)
+
+
+async def test_chat_resumes_in_progress_turn_replaying_tool_results(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same session_key + same user text → handler resumes the journal
+    turn, replays its (assistant tool_call, tool result) pair into
+    ``start.messages``, and does NOT create a fresh turn via ``begin_turn``."""
+    import structlog
+    from corlinman_server import agent_servicer as srv_mod
+    from corlinman_server.agent_journal import AgentJournal
+
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+    # Swap the reasoning loop for one that just captures + ends.
+    monkeypatch.setattr(srv_mod, "ReasoningLoop", _CapturingLoop)
+    _CapturingLoop.captured_starts = []
+
+    servicer = CorlinmanAgentServicer(
+        provider_resolver=lambda _m: _FakeProvider([]),
+    )
+    # Seed the journal: an in_progress turn for "s1" with one
+    # (assistant tool_call, tool_result) pair already journaled.
+    j = await servicer._get_journal()
+    assert j is not None
+    seed_turn_id = await j.begin_turn("s1", "do the thing")
+    await j.append_message(seed_turn_id, role="user", content="do the thing")
+    await j.append_message(
+        seed_turn_id,
+        role="assistant",
+        content="",
+        tool_calls=[
+            {
+                "id": "call_seed",
+                "type": "function",
+                "function": {"name": "calc.add", "arguments": '{"a":1,"b":2}'},
+            }
+        ],
+    )
+    await j.append_message(
+        seed_turn_id,
+        role="tool",
+        content='{"result": 3}',
+        tool_call_id="call_seed",
+    )
+
+    # Wrap ``begin_turn`` at the class level so we can assert it was NOT
+    # called by the handler on the resume path. ``AgentJournal`` uses
+    # ``__slots__`` so per-instance monkeypatching is impossible — the
+    # class-level swap reaches every instance, which is fine here.
+    # Seeding above already used the real method; this counter only
+    # measures the chat handler's behaviour.
+    begin_calls: list[tuple[str, str]] = []
+    real_begin = AgentJournal.begin_turn
+
+    async def _counting_begin(
+        self_inner: Any, session_key: str, user_text: str
+    ) -> int:
+        begin_calls.append((session_key, user_text))
+        return await real_begin(self_inner, session_key, user_text)
+
+    monkeypatch.setattr(AgentJournal, "begin_turn", _counting_begin)
+
+    with structlog.testing.capture_logs() as captured:
+        await _drive_chat_once(servicer, session_key="s1", user_text="do the thing")
+
+    # ``loop.run`` was invoked exactly once with the spliced messages.
+    assert len(_CapturingLoop.captured_starts) == 1
+    spliced = _CapturingLoop.captured_starts[0].messages
+    roles_and_calls = [
+        (
+            m.get("role"),
+            m.get("tool_call_id"),
+            (m.get("tool_calls") or [{}])[0].get("id")
+            if m.get("tool_calls")
+            else None,
+        )
+        for m in spliced
+    ]
+    # The replay user/assistant/tool triple lands in-order in front of
+    # whatever post-resume context (system prompt, env block) the handler
+    # adds. We assert on the relative positions rather than the absolute
+    # message count so prompt scaffolding can evolve without breaking us.
+    user_idx = next(
+        i for i, m in enumerate(spliced)
+        if m.get("role") == "user" and m.get("content") == "do the thing"
+    )
+    assistant_idx = next(
+        i for i, m in enumerate(spliced)
+        if m.get("role") == "assistant"
+        and any(
+            (tc or {}).get("id") == "call_seed"
+            for tc in (m.get("tool_calls") or [])
+        )
+    )
+    tool_idx = next(
+        i for i, m in enumerate(spliced)
+        if m.get("role") == "tool" and m.get("tool_call_id") == "call_seed"
+    )
+    assert user_idx < assistant_idx < tool_idx, (
+        f"replay ordering broken: {roles_and_calls}"
+    )
+
+    # ``begin_turn`` was NOT called by the handler — resume reuses the
+    # seeded turn_id.
+    assert begin_calls == [], (
+        f"resume path must not call begin_turn; got {begin_calls}"
+    )
+
+    # The resume log line fired with the canonical fields.
+    resume_logs = [r for r in captured if r.get("event") == "agent.chat.resumed"]
+    assert resume_logs, (
+        f"expected agent.chat.resumed log; got events: "
+        f"{[r.get('event') for r in captured]}"
+    )
+    rec = resume_logs[0]
+    assert rec["turn_id"] == seed_turn_id
+    assert rec["session"] == "s1"
+    assert rec["replayed_tool_results"] == 1
+
+
+async def test_chat_does_not_resume_stale_in_progress_turn(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An in_progress row older than the resume window (5 min) must NOT
+    match; the handler creates a fresh turn via ``begin_turn`` instead."""
+    import time
+
+    import structlog
+    from corlinman_server import agent_servicer as srv_mod
+    from corlinman_server.agent_journal import AgentJournal
+
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(srv_mod, "ReasoningLoop", _CapturingLoop)
+    _CapturingLoop.captured_starts = []
+
+    servicer = CorlinmanAgentServicer(
+        provider_resolver=lambda _m: _FakeProvider([]),
+    )
+    j = await servicer._get_journal()
+    assert j is not None
+    # Insert a stale in_progress row directly (10 min old) so the
+    # resume window (5 min) rejects it. We bypass the open-time stale
+    # sweep by writing AFTER ``_get_journal`` has already run, and we
+    # reuse the journal's own aiosqlite connection so pytest teardown
+    # doesn't leak a separate worker thread.
+    stale_started_ms = int(time.time() * 1000) - 10 * 60 * 1000
+    backend_conn = j.backend._c  # noqa: SLF001 — test fixture
+    await backend_conn.execute(
+        "INSERT INTO turns (turn_id, session_key, status, "
+        "started_at_ms, user_text) VALUES (?, ?, ?, ?, ?)",
+        (stale_started_ms, "s2", "in_progress", stale_started_ms, "old prompt"),
+    )
+    await backend_conn.commit()
+
+    # Patch ``begin_turn`` at the class level (see sibling test for the
+    # __slots__ rationale).
+    begin_calls: list[tuple[str, str]] = []
+    real_begin = AgentJournal.begin_turn
+
+    async def _counting_begin(
+        self_inner: Any, session_key: str, user_text: str
+    ) -> int:
+        begin_calls.append((session_key, user_text))
+        return await real_begin(self_inner, session_key, user_text)
+
+    monkeypatch.setattr(AgentJournal, "begin_turn", _counting_begin)
+
+    with structlog.testing.capture_logs() as captured:
+        await _drive_chat_once(servicer, session_key="s2", user_text="old prompt")
+
+    # Stale row doesn't match → no resume log, fresh begin_turn fired.
+    resume_logs = [r for r in captured if r.get("event") == "agent.chat.resumed"]
+    assert resume_logs == [], (
+        f"stale in_progress must not trigger resume; got {resume_logs}"
+    )
+    assert begin_calls == [("s2", "old prompt")], (
+        f"expected one fresh begin_turn; got {begin_calls}"
+    )

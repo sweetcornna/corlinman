@@ -672,10 +672,14 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             # Use the resumed turn's id so post-dispatch appends + the
             # final complete/error stamp land on the same row.
             journal_turn_id = resume_data.turn_id
+            replayed_tool_results = sum(
+                1 for m in resume_data.messages if m.get("role") == "tool"
+            )
             logger.info(
-                "agent.turn.resumed",
+                "agent.chat.resumed",
                 session=start.session_key,
                 turn_id=journal_turn_id,
+                replayed_tool_results=replayed_tool_results,
                 replayed_messages=len(resume_data.messages),
                 started_at_ms=resume_data.started_at_ms,
             )
