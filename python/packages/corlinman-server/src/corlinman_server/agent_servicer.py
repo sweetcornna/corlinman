@@ -22,6 +22,7 @@ import contextlib
 import json
 import os
 import sys
+import time
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from datetime import date
 from pathlib import Path
@@ -32,6 +33,12 @@ import structlog
 from corlinman_agent.agents import AgentCard, AgentCardRegistry, AgentExpander
 from corlinman_agent.context_assembler import ContextAssembler, PlaceholderError
 from corlinman_agent.hooks import LoggingHookEmitter
+from corlinman_agent.permission import (
+    ALLOW as _PERM_ALLOW,
+    DENY as _PERM_DENY,
+    LOG as _PERM_LOG,
+    PermissionGate,
+)
 from corlinman_agent.placeholder_client import PlaceholderClient
 from corlinman_agent.reasoning_loop import (
     Attachment as AgentAttachment,
@@ -422,6 +429,8 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         *,
         aliases: Mapping[str, AliasEntry] | None = None,
         context_assembler: Any | None = None,
+        hook_bus: Any | None = None,
+        permission_gate: PermissionGate | None = None,
     ) -> None:
         """Construct the servicer.
 
@@ -474,6 +483,20 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # ``cost_snapshot(session_key)`` exposes totals for a future
         # admin route.
         self._cost_meter = _CostMeter()
+        # T3.2 hook bus — optional ``corlinman_hooks.HookBus``. When set,
+        # ``_dispatch_builtin`` emits ``PreToolDispatch`` before and
+        # ``ToolCalled`` after every builtin tool call. ``None`` means
+        # no telemetry hook fan-out (the structlog event logs still
+        # fire).
+        self._hook_bus = hook_bus
+        # T3.1 permission gate — declarative allow/deny/log per tool.
+        # Constructed from env when not explicitly supplied so a stock
+        # boot still gets one (default: allow-all).
+        self._permission_gate = (
+            permission_gate
+            if permission_gate is not None
+            else PermissionGate.from_env()
+        )
 
     async def Chat(  # noqa: N802 — gRPC method name
         self,
@@ -523,6 +546,13 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # provider adapter forwards it to the SDK call body.
         start.model = upstream_model
         _apply_merged_params(start, merged_params)
+        # T3.5: surface the session key as the Responses API prompt-cache
+        # hint. The Codex provider only uses it when CORLINMAN_CODEX_
+        # PROMPT_CACHE is set, so a stock boot remains identical.
+        if start.session_key:
+            extra: dict[str, Any] = dict(start.extra or {})
+            extra.setdefault("prompt_cache_key", start.session_key)
+            start.extra = extra
         start = await self._assemble_context(start)
 
         # Advertise the builtin tools to the model so it can call them.
@@ -715,6 +745,58 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         """
         return self._cost_meter.snapshot(session_key)
 
+    # ------------------------------------------------------------------
+    # T3.2 — hook bus emitters (no-op when no bus is configured)
+    # ------------------------------------------------------------------
+
+    def _emit_pre_tool_dispatch(
+        self,
+        event: ToolCallEvent,
+        start: AgentChatStart,
+        args_preview: str,
+    ) -> None:
+        if self._hook_bus is None:
+            return
+        try:
+            from corlinman_hooks import HookEvent  # lazy: hooks dep is optional
+
+            self._hook_bus.emit_nonblocking(
+                HookEvent.PreToolDispatch(
+                    tool=event.tool,
+                    call_id=event.call_id,
+                    args_preview=args_preview,
+                    session_key_=start.session_key or "",
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 — never let a hook break a tool
+            logger.warning("agent.tool.pre_emit_failed", error=str(exc))
+
+    def _emit_tool_called(
+        self,
+        event: ToolCallEvent,
+        start: AgentChatStart,
+        *,
+        ok: bool,
+        duration_ms: int,
+        error_code: str | None,
+    ) -> None:
+        if self._hook_bus is None:
+            return
+        try:
+            from corlinman_hooks import HookEvent
+
+            self._hook_bus.emit_nonblocking(
+                HookEvent.ToolCalled(
+                    tool=event.tool,
+                    runner_id="builtin",
+                    duration_ms=duration_ms,
+                    ok=ok,
+                    error_code=error_code,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("agent.tool.post_emit_failed", error=str(exc))
+
     async def _dispatch_builtin(
         self,
         event: ToolCallEvent,
@@ -744,6 +826,46 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             depth=0,
             trace_id=start.session_key or "",
         )
+
+        # T3.2: pre-dispatch hook event — observers can audit / log /
+        # plug their own policy on top of the gate. Fire-and-forget;
+        # the dispatch path is authoritative.
+        args_preview = event.args_json.decode("utf-8", "replace")[:200]
+        self._emit_pre_tool_dispatch(event, start, args_preview)
+
+        # T3.1: permission gate. ``deny`` short-circuits with a clean
+        # ``permission_denied`` envelope; ``log`` is observer-only and
+        # passes through; ``allow`` is the default.
+        decision = self._permission_gate.decide(event.tool)
+        if decision == _PERM_DENY:
+            logger.warning(
+                "agent.tool.denied",
+                tool=event.tool,
+                call_id=event.call_id,
+                strict=self._permission_gate.strict,
+            )
+            result = json.dumps(
+                {
+                    "error": (
+                        f"permission_denied: tool {event.tool!r} is not "
+                        "permitted by the agent's permission rules"
+                    ),
+                    "tool": event.tool,
+                }
+            )
+            self._emit_tool_called(event, start, ok=False, duration_ms=0,
+                                   error_code="permission_denied")
+            return result
+        if decision == _PERM_LOG:
+            logger.info(
+                "agent.tool.logged",
+                tool=event.tool,
+                call_id=event.call_id,
+            )
+
+        started_at = time.perf_counter()
+        ok = True
+        error_code: str | None = None
         try:
             if event.tool == SUBAGENT_SPAWN_TOOL:
                 registry = self._get_agent_registry()
@@ -814,14 +936,29 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             if event.tool == REVERT_CHANGES_TOOL:
                 return dispatch_revert_changes(args_json=event.args_json)
         except Exception as exc:
+            ok = False
+            error_code = type(exc).__name__
             logger.exception(
                 "agent.chat.builtin_tool_failed",
                 tool=event.tool,
                 call_id=event.call_id,
             )
             return json.dumps({"error": f"builtin_tool_failed: {exc}"})
+        finally:
+            # T3.2: post-dispatch hook event with timing + outcome.
+            # Fires on every exit path (return, exception, fallthrough)
+            # so subscribers get a complete trace of every tool call.
+            duration_ms = int((time.perf_counter() - started_at) * 1000)
+            self._emit_tool_called(
+                event, start,
+                ok=ok, duration_ms=duration_ms, error_code=error_code,
+            )
         # Unreachable in practice — BUILTIN_TOOLS is the gate above the
         # dispatch — but return a clean envelope rather than implicit None.
+        # NOTE: ok/error_code were captured by the ``finally`` above as
+        # the still-True default; subscribers seeing a tool name they
+        # don't recognise should treat that as the diagnostic, not
+        # rely on the ok flag here.
         return json.dumps({"error": f"unknown_builtin_tool: {event.tool}"})
 
     def _get_agent_registry(self) -> AgentCardRegistry | None:

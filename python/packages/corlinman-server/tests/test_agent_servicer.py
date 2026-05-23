@@ -907,3 +907,146 @@ def test_cost_snapshot_returns_a_copy() -> None:
     snap["input_tokens"] = 99_999  # try to poison the meter
 
     assert servicer.cost_snapshot("s1")["input_tokens"] == 10
+
+
+# ---------------------------------------------------------------------------
+# T3.1 — permission gate + T3.2 hook bus emit
+# ---------------------------------------------------------------------------
+
+
+class _RecordingHookBus:
+    """Captures emit_nonblocking calls for assertions."""
+
+    def __init__(self) -> None:
+        self.events: list[Any] = []
+
+    def emit_nonblocking(self, ev: Any) -> None:
+        self.events.append(ev)
+
+
+async def test_dispatch_builtin_emits_pre_and_post_around_tool() -> None:
+    """T3.2: PreToolDispatch fires before, ToolCalled fires after."""
+    from corlinman_agent.reasoning_loop import ToolCallEvent
+
+    bus = _RecordingHookBus()
+    servicer = CorlinmanAgentServicer(
+        provider_resolver=lambda _m: _FakeProvider([]),
+        hook_bus=bus,
+    )
+
+    start = SimpleNamespace(
+        session_key="sess-emit",
+        model="gpt-test",
+        tools=[],
+        messages=[],
+    )
+    event = ToolCallEvent(
+        call_id="c1",
+        plugin="calculator",
+        tool="calculator",
+        args_json=b'{"expression": "1 + 2"}',
+    )
+    result = await servicer._dispatch_builtin(event, start, provider=None)
+    assert "result" in result or "error" not in json.loads(result)
+
+    # Two events emitted in order:
+    kinds = [type(e).__name__ for e in bus.events]
+    assert "_PreToolDispatch" in kinds
+    assert "_ToolCalled" in kinds
+    pre = next(e for e in bus.events if type(e).__name__ == "_PreToolDispatch")
+    post = next(e for e in bus.events if type(e).__name__ == "_ToolCalled")
+    assert pre.tool == "calculator"
+    assert pre.call_id == "c1"
+    assert pre.session_key_ == "sess-emit"
+    assert post.tool == "calculator"
+    assert post.ok is True
+    assert post.duration_ms >= 0
+
+
+async def test_dispatch_builtin_denies_with_permission_gate() -> None:
+    """T3.1: a deny rule blocks the tool, emits ToolCalled ok=False."""
+    from corlinman_agent.permission import DENY, PermissionGate, PermissionRule
+    from corlinman_agent.reasoning_loop import ToolCallEvent
+
+    bus = _RecordingHookBus()
+    gate = PermissionGate([PermissionRule(tool="calculator", action=DENY)])
+    servicer = CorlinmanAgentServicer(
+        provider_resolver=lambda _m: _FakeProvider([]),
+        hook_bus=bus,
+        permission_gate=gate,
+    )
+
+    start = SimpleNamespace(
+        session_key="sess-deny",
+        model="gpt-test",
+        tools=[],
+        messages=[],
+    )
+    event = ToolCallEvent(
+        call_id="c-deny",
+        plugin="calculator",
+        tool="calculator",
+        args_json=b'{"expression": "1 + 1"}',
+    )
+    result = await servicer._dispatch_builtin(event, start, provider=None)
+    payload = json.loads(result)
+    assert "permission_denied" in payload["error"]
+    assert payload["tool"] == "calculator"
+
+    # Post-event marked ok=False with the right error_code.
+    post = next(e for e in bus.events if type(e).__name__ == "_ToolCalled")
+    assert post.ok is False
+    assert post.error_code == "permission_denied"
+
+
+async def test_dispatch_builtin_strict_mode_denies_mutating_tools() -> None:
+    """Strict mode auto-denies the mutating tool set without per-tool rules."""
+    from corlinman_agent.permission import PermissionGate
+    from corlinman_agent.reasoning_loop import ToolCallEvent
+
+    gate = PermissionGate(strict=True)
+    servicer = CorlinmanAgentServicer(
+        provider_resolver=lambda _m: _FakeProvider([]),
+        permission_gate=gate,
+    )
+
+    start = SimpleNamespace(
+        session_key="sess-strict",
+        model="gpt-test",
+        tools=[],
+        messages=[],
+    )
+    event = ToolCallEvent(
+        call_id="c-strict",
+        plugin="run_shell",
+        tool="run_shell",
+        args_json=b'{"command": "echo hi"}',
+    )
+    result = await servicer._dispatch_builtin(event, start, provider=None)
+    payload = json.loads(result)
+    assert "permission_denied" in payload["error"]
+
+
+async def test_dispatch_builtin_no_hook_bus_still_works() -> None:
+    """Default servicer (no hook_bus) dispatches without trying to emit."""
+    from corlinman_agent.reasoning_loop import ToolCallEvent
+
+    servicer = CorlinmanAgentServicer(
+        provider_resolver=lambda _m: _FakeProvider([]),
+    )
+    start = SimpleNamespace(
+        session_key="sess-nobus",
+        model="gpt-test",
+        tools=[],
+        messages=[],
+    )
+    event = ToolCallEvent(
+        call_id="c",
+        plugin="calculator",
+        tool="calculator",
+        args_json=b'{"expression": "5"}',
+    )
+    result = await servicer._dispatch_builtin(event, start, provider=None)
+    # Calculator returns the parsed expression result.
+    payload = json.loads(result)
+    assert payload["result"] == 5

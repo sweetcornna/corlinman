@@ -243,11 +243,23 @@ T2.3 and T2.4 are independent and can land in any order.
 
 ---
 
-# TIER 3 — large / lower value for a chat bot
+# TIER 3 — deep implementation pass
 
-Documented as design sketches; implement only on a concrete need.
-None of these are required for coding-agent parity — they are platform
-features.
+User asked for "深度功能实现" (deep implementation), so the items below
+move from design sketches into concrete builds — with the same honest
+trade-offs:
+
+| Item | Status |
+|---|---|
+| T3.1 Permission gate | **build** — declarative rules + hook-based audit + env-toggled strict mode |
+| T3.2 Hook system | **build** — `PreToolDispatch` event + emit `ToolCalled` per tool with timing/ok/error |
+| T3.3 Coordinator | **defer with rationale** — `subagent_spawn` + `blackboard` already cover the practical surface; explicit coordinator is a usage pattern, not new infrastructure |
+| T3.4 Plugin lifecycle | **defer with rationale** — `SkillRegistry` + MCP channel already cover what a chat bot needs from a "plugin" |
+| T3.5 Prompt caching | **probe + minimal** — investigate Codex Responses API support; ship if feasible |
+| T3.6 LSP | **out of scope** — IDE feature, not a chat-bot feature |
+
+The pieces we are *not* building are documented below with the
+specific corlinman surface that already covers each role.
 
 ## T3.1 — Permission ruleset + tool gate
 

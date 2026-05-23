@@ -11,6 +11,7 @@ and rejects temperature and max_output_tokens parameters.
 
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator
 from functools import partial
 from typing import Any, ClassVar, Sequence
@@ -353,6 +354,26 @@ class CodexProvider:
                 if isinstance(t, dict) and "function" in t
             ]
             kwargs["tool_choice"] = "auto"
+
+        # T3.5: prompt cache hint. The Responses API supports
+        # ``prompt_cache_key`` — when the Codex backend honours it,
+        # consecutive turns sharing a key reuse the cached prompt prefix.
+        # Off by default since we cannot probe support without trying;
+        # enable with ``CORLINMAN_CODEX_PROMPT_CACHE=1`` and pass the
+        # cache key via ``extra={"prompt_cache_key": "<session>"}`` from
+        # the caller (the agent servicer threads ``session_key`` in).
+        # If the backend rejects the parameter the request fails clearly
+        # with a 400 (T1.2's classifier won't retry, by design).
+        if extra and isinstance(extra, dict):
+            cache_key = extra.get("prompt_cache_key")
+            if (
+                cache_key
+                and os.environ.get(
+                    "CORLINMAN_CODEX_PROMPT_CACHE", ""
+                ).strip().lower()
+                in ("1", "true", "yes", "on")
+            ):
+                kwargs["prompt_cache_key"] = str(cache_key)
 
         # --- Open phase with retry --------------------------------------
         # `_open_stream_once` enters the `responses.stream(...)` context

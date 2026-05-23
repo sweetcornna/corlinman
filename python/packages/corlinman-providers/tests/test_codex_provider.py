@@ -1132,6 +1132,101 @@ async def test_chat_stream_gives_up_when_refresh_token_also_dead(
     assert prov._credential.access_token == "dead"
 
 
+@pytest.mark.asyncio
+async def test_chat_stream_threads_prompt_cache_key_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T3.5: with the env switch on, extra['prompt_cache_key'] flows
+    into the Responses API call as ``prompt_cache_key``."""
+    monkeypatch.setenv("CORLINMAN_CODEX_PROMPT_CACHE", "1")
+
+    cred = CodexOAuthCredential(
+        access_token="ok",
+        refresh_token=None,
+        expires_at_ms=int(time.time() * 1000) + 3_600_000,
+    )
+    prov = CodexProvider(credential=cred)
+
+    captured: dict[str, Any] = {}
+
+    class _FakeStream:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return False
+
+        def __aiter__(self):
+            return self._gen()
+
+        async def _gen(self):
+            return
+            yield  # pragma: no cover — make this a generator
+
+    class _FakeResponses:
+        def stream(self, **kw):
+            captured.update(kw)
+            return _FakeStream()
+
+    class _FakeClient:
+        responses = _FakeResponses()
+
+    with patch.object(prov, "_make_client", return_value=_FakeClient()):
+        async for _ in prov.chat_stream(
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "hi"}],
+            extra={"prompt_cache_key": "sess-cached"},
+        ):
+            pass
+
+    assert captured.get("prompt_cache_key") == "sess-cached"
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_skips_prompt_cache_key_by_default() -> None:
+    """Without CORLINMAN_CODEX_PROMPT_CACHE, the key is NOT sent."""
+    cred = CodexOAuthCredential(
+        access_token="ok",
+        refresh_token=None,
+        expires_at_ms=int(time.time() * 1000) + 3_600_000,
+    )
+    prov = CodexProvider(credential=cred)
+
+    captured: dict[str, Any] = {}
+
+    class _FakeStream:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return False
+
+        def __aiter__(self):
+            return self._gen()
+
+        async def _gen(self):
+            return
+            yield  # pragma: no cover
+
+    class _FakeResponses:
+        def stream(self, **kw):
+            captured.update(kw)
+            return _FakeStream()
+
+    class _FakeClient:
+        responses = _FakeResponses()
+
+    with patch.object(prov, "_make_client", return_value=_FakeClient()):
+        async for _ in prov.chat_stream(
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "hi"}],
+            extra={"prompt_cache_key": "sess-cached"},
+        ):
+            pass
+
+    assert "prompt_cache_key" not in captured
+
+
 def test_persist_codex_credential_atomic_write(tmp_path: Path) -> None:
     """persist_codex_credential writes the new tokens and preserves siblings."""
     from corlinman_providers._codex_oauth import persist_codex_credential

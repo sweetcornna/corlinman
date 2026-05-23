@@ -219,6 +219,34 @@ class _ConfigChanged(_HookEventBase):
 
 
 @dataclass(frozen=True)
+class _PreToolDispatch(_HookEventBase):
+    """Fired *before* a builtin tool dispatch runs.
+
+    Observers can audit / log / refuse a tool call (subscribers run
+    fire-and-forget; the dispatch itself decides whether to honor a
+    refusal via the :class:`PermissionGate`, not the bus).
+    """
+
+    tool: str
+    call_id: str
+    args_preview: str
+    session_key_: str = ""
+    tenant_id: str | None = None
+    user_id: str | None = None
+
+    KIND: ClassVar[str] = "pre_tool_dispatch"
+    OPTIONAL_FIELDS: ClassVar[tuple[str, ...]] = ("tenant_id", "user_id")
+
+    def session_key(self) -> str | None:
+        return self.session_key_ or None
+
+    def to_dict(self) -> dict[str, Any]:
+        d = super().to_dict()
+        d["session_key"] = d.pop("session_key_")
+        return d
+
+
+@dataclass(frozen=True)
 class _ToolCalled(_HookEventBase):
     tool: str
     runner_id: str
@@ -408,6 +436,7 @@ class HookEvent(_HookEventBase):
     AgentBootstrap = _AgentBootstrap
     GatewayStartup = _GatewayStartup
     ConfigChanged = _ConfigChanged
+    PreToolDispatch = _PreToolDispatch
     ToolCalled = _ToolCalled
     ApprovalRequested = _ApprovalRequested
     ApprovalDecided = _ApprovalDecided
@@ -433,6 +462,7 @@ class HookEvent(_HookEventBase):
         "AgentBootstrap": _AgentBootstrap,
         "GatewayStartup": _GatewayStartup,
         "ConfigChanged": _ConfigChanged,
+        "PreToolDispatch": _PreToolDispatch,
         "ToolCalled": _ToolCalled,
         "ApprovalRequested": _ApprovalRequested,
         "ApprovalDecided": _ApprovalDecided,
@@ -459,6 +489,7 @@ class HookEvent(_HookEventBase):
             "SessionPatch",
             "AgentBootstrap",
             "ApprovalRequested",
+            "PreToolDispatch",
             "RateLimitTriggered",
         }
     )
