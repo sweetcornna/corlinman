@@ -37,6 +37,7 @@ from corlinman_agent.permission import (
     ALLOW as _PERM_ALLOW,
     DENY as _PERM_DENY,
     LOG as _PERM_LOG,
+    PermissionContext,
     PermissionGate,
 )
 from corlinman_agent.placeholder_client import PlaceholderClient
@@ -1156,14 +1157,24 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
 
         # T3.1: permission gate. ``deny`` short-circuits with a clean
         # ``permission_denied`` envelope; ``log`` is observer-only and
-        # passes through; ``allow`` is the default.
-        decision = self._permission_gate.decide(event.tool)
+        # passes through; ``allow`` is the default. The decision is
+        # made against the full caller context (tool + model + session
+        # + user_id) so per-channel / per-user / per-model rules can
+        # selectively narrow what the model is allowed to invoke.
+        perm_ctx = PermissionContext(
+            model=getattr(start, "model", None) or None,
+            session_key=getattr(start, "session_key", None) or None,
+            user_id=_extract_user_id(start),
+        )
+        decision, rule_idx = self._permission_gate.resolve(event.tool, perm_ctx)
         if decision == _PERM_DENY:
+            audit = self._permission_gate.audit_log_entry(
+                event.tool, perm_ctx, decision, rule_index=rule_idx
+            )
             logger.warning(
-                "agent.tool.denied",
-                tool=event.tool,
+                "agent.permission.denied",
                 call_id=event.call_id,
-                strict=self._permission_gate.strict,
+                **audit,
             )
             result = json.dumps(
                 {
@@ -1634,6 +1645,26 @@ def _context_metadata(start: AgentChatStart) -> dict[str, str]:
     if start.session_key:
         md["session_key"] = start.session_key
     return md
+
+
+def _extract_user_id(start: AgentChatStart) -> str | None:
+    """Peek the channel-level sender id off the chat start frame.
+
+    The agent's :class:`AgentChatStart` dataclass currently doesn't
+    carry the binding (the proto does, the gateway-side translator
+    drops it). We read it defensively via ``getattr`` so the helper
+    keeps working once the binding is plumbed through, and degrades to
+    :data:`None` today. An empty ``sender`` also returns :data:`None`
+    so a permission rule keyed on ``user_pattern="*"`` doesn't
+    accidentally fire on anonymous calls.
+    """
+    binding = getattr(start, "binding", None)
+    if binding is None:
+        return None
+    sender = getattr(binding, "sender", None)
+    if not sender:
+        return None
+    return str(sender)
 
 
 def _context_timeout_secs() -> float:
