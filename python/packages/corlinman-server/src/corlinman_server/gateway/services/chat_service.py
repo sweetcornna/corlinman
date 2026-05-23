@@ -269,6 +269,19 @@ async def _run_chat(
 
             if kind == "tool_call":
                 tc = frame.tool_call
+                # ``_builtin:`` prefix on ``plugin`` marks an observation-
+                # only frame — the agent servicer already dispatched the
+                # tool in-process and fed the result back to its loop, so
+                # round-tripping a second ``tool_result`` here would
+                # double-feed the call_id and corrupt the conversation.
+                # Strip the prefix and yield the event without executing.
+                if tc.plugin.startswith("_builtin:"):
+                    yield ToolCallEvent(
+                        plugin=tc.plugin[len("_builtin:"):],
+                        tool=tc.tool,
+                        args_json=bytes(tc.args_json),
+                    )
+                    continue
                 # Execute the tool via the injected executor and feed the
                 # genuine result back into the reasoning loop so it makes
                 # real multi-round progress. The production executor

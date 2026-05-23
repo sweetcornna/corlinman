@@ -705,11 +705,29 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     seq += 1
                 elif isinstance(event, ToolCallEvent):
                     if event.tool in BUILTIN_TOOLS:
-                        # Builtin tools (subagent.spawn{,_many}, blackboard.*)
-                        # are dispatched in-process. We never emit a ToolCall
-                        # proto frame for them; the loop is fed the result
-                        # directly. Failure here is folded into the loop's
-                        # ToolResult envelope so the model can keep going.
+                        # Builtin tools (subagent.spawn{,_many}, blackboard.*,
+                        # web/calc/coding) are dispatched in-process — the
+                        # plugin runtime doesn't need to round-trip a result.
+                        # We still emit an *observation-only* ToolCall frame
+                        # so the gateway's chat stream surfaces tool calls
+                        # to UI consumers (e.g. Telegram's mutable-spinner
+                        # placeholder shows "🔧 调用工具: web_search").
+                        # The ``_builtin:`` sentinel prefix on ``plugin``
+                        # tells :mod:`gateway.services.chat_service` to skip
+                        # ``executor.execute`` — otherwise it would round-
+                        # trip a ``tool_result`` back to the loop, double-
+                        # feeding the call_id that we already resolved
+                        # in-process below.
+                        yield agent_pb2.ServerFrame(
+                            tool_call=agent_pb2.ToolCall(
+                                call_id=event.call_id,
+                                plugin=f"_builtin:{event.plugin}",
+                                tool=event.tool,
+                                args_json=event.args_json,
+                                seq=seq,
+                            )
+                        )
+                        seq += 1
                         logger.info(
                             "agent.tool.dispatch",
                             tool=event.tool,
