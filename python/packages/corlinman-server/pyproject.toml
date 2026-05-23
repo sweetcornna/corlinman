@@ -54,6 +54,21 @@ dependencies = [
     "tomli-w>=1.2.0",
 ]
 
+[project.optional-dependencies]
+# Multi-gateway HA Postgres journal backend
+# (``CORLINMAN_JOURNAL_BACKEND=postgres``). Off by default — installing
+# the base package does not pull asyncpg, so single-process SQLite
+# deployments stay slim.
+postgres = ["asyncpg>=0.29,<1.0"]
+# Tests for the Postgres backend skip cleanly when these extras are
+# missing (see ``tests/test_agent_journal_postgres.py``). Bundled here
+# so a developer working on the journal can ``uv sync --extra test`` and
+# get a working live-Postgres integration test path.
+test = [
+    "asyncpg>=0.29,<1.0",
+    "pytest-postgresql>=6.0",
+]
+
 [tool.uv.sources]
 corlinman-agent = { workspace = true }
 corlinman-providers = { workspace = true }

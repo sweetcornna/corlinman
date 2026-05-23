@@ -11,9 +11,10 @@ Concrete backends:
 
 - :class:`SqliteJournalBackend` — current behavior, single-process file.
   Default. No deployment change, no migration risk.
-- :class:`PostgresJournalBackend` — stub, raises ``NotImplementedError``.
-  When implemented, lets N gateways behind a load balancer share one
-  journal via ``CORLINMAN_JOURNAL_POSTGRES_DSN``.
+- :class:`~corlinman_server.agent_journal_postgres.PostgresJournalBackend`
+  — multi-gateway HA. Lets N gateways behind a load balancer share one
+  journal via ``CORLINMAN_JOURNAL_POSTGRES_DSN``. Lives in
+  ``agent_journal_postgres.py`` so the asyncpg import stays optional.
 - :class:`RedisJournalBackend` — stub, raises ``NotImplementedError``.
   Lower-latency alternative for ephemeral resume state via
   ``CORLINMAN_JOURNAL_REDIS_URL``.
@@ -29,10 +30,19 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import aiosqlite
 import structlog
+
+if TYPE_CHECKING:
+    # Imported only for static type-checkers so the symbol exists in
+    # ``__all__`` without forcing the real (optional, asyncpg-bearing)
+    # module to load on every gateway boot. The runtime path goes
+    # through ``__getattr__`` below.
+    from corlinman_server.agent_journal_postgres import (
+        PostgresJournalBackend as PostgresJournalBackend,
+    )
 
 logger = structlog.get_logger(__name__)
 
@@ -458,32 +468,52 @@ class SqliteJournalBackend:
 
 
 # ---------------------------------------------------------------------------
-# Stubs for future HA backends — intentionally non-functional. They exist so
-# ``open_from_env()`` has a single dispatch table and ops can detect a
-# misconfigured deployment loudly (NotImplementedError) instead of silently
-# falling back to a local file.
+# Postgres backend lives in ``agent_journal_postgres.py`` so the optional
+# asyncpg dependency stays out of the import path until the env actually
+# selects it. We re-export the class here for back-compat with callers
+# that historically imported ``PostgresJournalBackend`` from this module.
 # ---------------------------------------------------------------------------
 
 
-class PostgresJournalBackend:
-    """Stub. A future implementation will share state across N gateways
-    via a Postgres ``turns``/``turn_messages`` schema. Until then this
-    class refuses to open so ops can't accidentally rely on it.
+def _load_postgres_backend_cls() -> type[Any]:
+    """Lazy importer for :class:`PostgresJournalBackend`.
 
-    When implemented, the contract is identical to
-    :class:`SqliteJournalBackend` — both satisfy :class:`JournalBackend`.
+    Centralised so the env dispatcher and the module-level re-export use
+    exactly the same code path. Raises a friendly ``RuntimeError`` if
+    asyncpg is missing.
     """
-
-    def __init__(self, dsn: str) -> None:
-        self._dsn = dsn
-
-    @classmethod
-    async def open(cls, dsn: str) -> PostgresJournalBackend:
-        raise NotImplementedError(
-            "postgres journal backend not yet implemented; "
-            "set CORLINMAN_JOURNAL_BACKEND=sqlite (the default) "
-            "or track the HA journal issue"
+    try:
+        from corlinman_server.agent_journal_postgres import (
+            PostgresJournalBackend as _Postgres,
         )
+    except ImportError as exc:  # pragma: no cover — defensive
+        raise RuntimeError(
+            "postgres backend selected but asyncpg is not installed; "
+            "pip install corlinman-server[postgres]"
+        ) from exc
+    return _Postgres
+
+
+def __getattr__(name: str) -> Any:
+    """Module-level lazy attribute hook.
+
+    Keeps ``from corlinman_server.agent_journal_backend import
+    PostgresJournalBackend`` working without forcing the asyncpg import
+    at module load time. Anything else still raises AttributeError as
+    usual.
+    """
+    if name == "PostgresJournalBackend":
+        return _load_postgres_backend_cls()
+    raise AttributeError(
+        f"module {__name__!r} has no attribute {name!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Stubs for future HA backends — intentionally non-functional so a
+# misconfigured deployment fails loudly (NotImplementedError) instead of
+# silently falling back to a local file.
+# ---------------------------------------------------------------------------
 
 
 class RedisJournalBackend:
@@ -519,10 +549,12 @@ async def open_backend_from_env(
     no env-var change. ``env`` is injectable for tests; production
     callers pass ``None`` (reads ``os.environ``).
 
-    Raises ``NotImplementedError`` for ``postgres`` / ``redis`` until
-    those backends ship — that's intentional, so a misconfigured
-    deployment fails loudly at startup rather than silently writing to
-    a local file that other gateways can't read.
+    The ``postgres`` backend is implemented in
+    :mod:`corlinman_server.agent_journal_postgres`; the ``redis`` backend
+    is still a stub that raises ``NotImplementedError`` — that's
+    intentional, so a misconfigured deployment fails loudly at startup
+    rather than silently writing to a local file that other gateways
+    can't read.
     """
     e = env if env is not None else os.environ
     kind = (e.get(ENV_BACKEND) or "sqlite").strip().lower()
@@ -535,7 +567,8 @@ async def open_backend_from_env(
             raise RuntimeError(
                 f"{ENV_BACKEND}=postgres requires {ENV_POSTGRES_DSN} to be set"
             )
-        return await PostgresJournalBackend.open(dsn)
+        postgres_cls = _load_postgres_backend_cls()
+        return await postgres_cls.open(dsn)
     if kind == "redis":
         url = e.get(ENV_REDIS_URL, "").strip()
         if not url:

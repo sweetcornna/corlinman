@@ -15,7 +15,6 @@ import inspect
 from pathlib import Path
 
 import pytest
-
 from corlinman_server.agent_journal import AgentJournal
 from corlinman_server.agent_journal_backend import (
     ENV_BACKEND,
@@ -27,7 +26,6 @@ from corlinman_server.agent_journal_backend import (
     SqliteJournalBackend,
     open_backend_from_env,
 )
-
 
 # The set of public async methods a backend MUST implement. Keep this
 # list in lockstep with the JournalBackend Protocol — if a method is
@@ -131,15 +129,32 @@ async def test_open_from_env_is_case_insensitive(tmp_path: Path) -> None:
         await j.close()
 
 
-async def test_open_from_env_postgres_raises_not_implemented(
+async def test_open_from_env_postgres_dispatches_to_postgres_backend(
     tmp_path: Path,
 ) -> None:
+    """The selector must reach the real Postgres backend's ``open`` —
+    not fall back to SQLite, not raise NotImplementedError, not raise
+    a config error. We use an unreachable DSN so we can assert the
+    dispatch landed in asyncpg/Postgres-backend territory without
+    actually needing a live Postgres in the dev environment.
+
+    The exact exception type depends on whether asyncpg is installed
+    (ImportError-wrapped RuntimeError) or installed but unreachable
+    (OSError / asyncpg.PostgresError). Either way, NotImplementedError
+    is the one outcome we want to be sure is GONE.
+    """
     env = {
         ENV_BACKEND: "postgres",
-        ENV_POSTGRES_DSN: "postgres://user:pass@localhost/journal",
+        # 127.0.0.1:1 — guaranteed-unreachable port; resolves instantly
+        # without DNS, so the test never waits on a slow lookup.
+        ENV_POSTGRES_DSN: "postgresql://nobody:nopass@127.0.0.1:1/journal",
     }
-    with pytest.raises(NotImplementedError, match="postgres"):
+    with pytest.raises(BaseException) as excinfo:
         await AgentJournal.open_from_env(tmp_path / "j.sqlite", env=env)
+    assert not isinstance(excinfo.value, NotImplementedError), (
+        "Postgres backend is now implemented — the dispatcher must not "
+        f"raise NotImplementedError, got {excinfo.value!r}"
+    )
 
 
 async def test_open_from_env_redis_raises_not_implemented(
@@ -178,15 +193,23 @@ async def test_open_from_env_rejects_unknown_backend(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Direct stub probes — calling ``.open()`` on a stub backend must raise
-# even if the user constructs it manually (defense in depth against any
-# future helper that bypasses ``open_from_env``).
+# Direct stub probe — Redis is still a stub (out of scope for now).
+# Postgres has shipped, so its ``.open()`` is exercised in
+# ``test_agent_journal_postgres.py`` against a real DB (or skipped when
+# no Postgres is available).
 # ---------------------------------------------------------------------------
 
 
-async def test_postgres_stub_open_raises() -> None:
-    with pytest.raises(NotImplementedError):
-        await PostgresJournalBackend.open("postgres://ignored")
+async def test_postgres_backend_class_is_importable() -> None:
+    """``PostgresJournalBackend`` is now real — importing the attribute
+    via the back-compat re-export must succeed and yield a class with
+    an async ``open`` classmethod, not the old stub."""
+    cls = PostgresJournalBackend  # exercise the module ``__getattr__``.
+    assert isinstance(cls, type), f"expected a class, got {cls!r}"
+    assert inspect.iscoroutinefunction(cls.open), (
+        "PostgresJournalBackend.open must be ``async def`` to satisfy "
+        "the JournalBackend Protocol"
+    )
 
 
 async def test_redis_stub_open_raises() -> None:
