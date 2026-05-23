@@ -33,7 +33,7 @@ def _args(**kw: object) -> bytes:
 
 def test_coding_tools_set_and_schemas_align() -> None:
     schemas = coding_tool_schemas()
-    assert len(schemas) == len(CODING_TOOLS) == 8
+    assert len(schemas) == len(CODING_TOOLS) == 9
     names = {s["function"]["name"] for s in schemas}
     assert names == set(CODING_TOOLS)
 
@@ -526,3 +526,162 @@ async def test_run_shell_tail_truncates_and_spills_to_log(tmp_path: Path) -> Non
     assert "000004999" in full
     # 5000 lines × 10 chars/line ("000000000\n") = 50_000 chars exactly.
     assert len(full) >= 50_000
+
+
+# ---------------------------------------------------------------------------
+# T2.4 — workspace snapshot + revert_changes
+# ---------------------------------------------------------------------------
+
+
+def test_snapshot_init_then_snapshot_then_revert_roundtrip(tmp_path: Path) -> None:
+    """End-to-end: init → snapshot v1 → mutate → snapshot v2 → revert → v1."""
+    from corlinman_agent.coding import (
+        list_snapshots,
+        revert_last,
+        snapshot,
+    )
+
+    target = tmp_path / "a.txt"
+    target.write_text("v1\n")
+    sha1 = snapshot(tmp_path, "v1")
+    assert sha1 is not None and len(sha1) >= 4
+
+    target.write_text("v2\n")
+    sha2 = snapshot(tmp_path, "v2")
+    assert sha2 is not None and sha2 != sha1
+
+    snaps = list_snapshots(tmp_path)
+    # Newest first: [v2, v1, initial, …].
+    assert len(snaps) >= 3
+    assert snaps[0]["sha"] == sha2
+    assert snaps[0]["label"].endswith("v2")
+    assert snaps[1]["sha"] == sha1
+    assert snaps[1]["label"].endswith("v1")
+
+    result = revert_last(tmp_path)
+    assert result.get("reverted_to") == sha1
+    assert result.get("from") == sha2
+    assert "v1" in result.get("label", "")
+    assert target.read_text() == "v1\n"
+
+
+def test_dispatch_revert_changes_list_mode(tmp_path: Path) -> None:
+    """``mode='list'`` returns the recent snapshot log without reverting."""
+    from corlinman_agent.coding import (
+        dispatch_revert_changes,
+        snapshot,
+    )
+
+    (tmp_path / "f.txt").write_text("hi\n")
+    snapshot(tmp_path, "first")
+    res = json.loads(
+        dispatch_revert_changes(
+            args_json=_args(mode="list"), workspace=tmp_path
+        )
+    )
+    snaps = res["snapshots"]
+    assert isinstance(snaps, list)
+    # initial + first = 2 entries at minimum.
+    assert len(snaps) >= 2
+    # Each entry has sha+label keys.
+    assert {"sha", "label"} <= snaps[0].keys()
+    # Mode list never touches the working tree.
+    assert (tmp_path / "f.txt").read_text() == "hi\n"
+
+
+def test_dispatch_revert_changes_no_snapshots(tmp_path: Path) -> None:
+    """Brand-new workspace (initial commit only) reports no_snapshots."""
+    from corlinman_agent.coding import (
+        dispatch_revert_changes,
+        ensure_repo,
+    )
+
+    assert ensure_repo(tmp_path) is True
+    res = json.loads(
+        dispatch_revert_changes(
+            args_json=_args(mode="last"), workspace=tmp_path
+        )
+    )
+    assert res.get("error") == "no_snapshots"
+
+
+def test_dispatch_revert_changes_default_mode_is_last(tmp_path: Path) -> None:
+    """Omitting ``mode`` defaults to ``last`` (the spec'd default)."""
+    from corlinman_agent.coding import (
+        dispatch_revert_changes,
+        snapshot,
+    )
+
+    (tmp_path / "f.txt").write_text("a\n")
+    snapshot(tmp_path, "edit-a")
+    (tmp_path / "f.txt").write_text("b\n")
+    snapshot(tmp_path, "edit-b")
+
+    res = json.loads(
+        dispatch_revert_changes(args_json=_args(), workspace=tmp_path)
+    )
+    assert "reverted_to" in res
+    assert (tmp_path / "f.txt").read_text() == "a\n"
+
+
+def test_dispatch_revert_changes_rejects_bad_mode(tmp_path: Path) -> None:
+    """Invalid mode strings return an ``args_invalid`` envelope."""
+    from corlinman_agent.coding import dispatch_revert_changes
+
+    res = json.loads(
+        dispatch_revert_changes(
+            args_json=_args(mode="bogus"), workspace=tmp_path
+        )
+    )
+    assert "args_invalid" in res["error"]
+
+
+def test_snapshot_handles_no_git_gracefully(
+    tmp_path: Path, monkeypatch: object
+) -> None:
+    """When ``git`` is missing from PATH, snapshot() returns None silently."""
+    import shutil
+
+    from corlinman_agent.coding import list_snapshots, snapshot
+
+    # Hide git from shutil.which without poisoning the rest of PATH.
+    real_which = shutil.which
+
+    def fake_which(name: str, *a: object, **kw: object) -> str | None:
+        if name == "git":
+            return None
+        return real_which(name, *a, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(shutil, "which", fake_which)  # type: ignore[attr-defined]
+
+    assert snapshot(tmp_path, "anything") is None
+    # And list_snapshots returns [] rather than raising.
+    assert list_snapshots(tmp_path) == []
+
+
+def test_snapshot_sanitises_long_multiline_label(tmp_path: Path) -> None:
+    """A multi-line / overlong label becomes a single ≤80-char subject."""
+    from corlinman_agent.coding import list_snapshots, snapshot
+
+    long_label = "X" * 200 + "\nsecond line that must not leak\n"
+    sha = snapshot(tmp_path, long_label)
+    assert sha is not None
+
+    snaps = list_snapshots(tmp_path)
+    top = snaps[0]["label"]
+    # Single line.
+    assert "\n" not in top
+    # Bounded length — "snapshot: " prefix + ≤80 char subject body.
+    assert len(top) <= len("snapshot: ") + 80
+    assert "second line" not in top
+
+
+def test_coding_tools_set_includes_revert_changes() -> None:
+    """T2.4 wiring: revert_changes must be in CODING_TOOLS and have a schema."""
+    from corlinman_agent.coding import CODING_TOOLS, coding_tool_schemas
+
+    assert "revert_changes" in CODING_TOOLS
+    schemas = coding_tool_schemas()
+    names = {s["function"]["name"] for s in schemas}
+    assert "revert_changes" in names
+    assert len(schemas) == len(CODING_TOOLS) == 9
