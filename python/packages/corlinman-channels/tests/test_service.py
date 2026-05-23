@@ -294,6 +294,16 @@ class TestHandleOneTelegram:
         assert chat_id == 42
         assert text == "hi there"
         assert reply_to == 7
+        # Regression: handle_one_telegram used to pass a plain dict to
+        # chat_service.run, which crashed downstream with
+        # ``AttributeError: 'dict' object has no attribute 'model'``.
+        assert len(svc.calls) == 1
+        req = svc.calls[0]
+        assert not isinstance(req, dict)
+        assert req.model == "m"
+        assert req.messages[0].role == "user"
+        assert req.messages[0].content == "ping"
+        assert req.stream is True
 
     @pytest.mark.asyncio
     async def test_error_renders_short_reply(self) -> None:

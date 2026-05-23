@@ -665,16 +665,7 @@ async def handle_one_telegram(
     """Run one Telegram chat turn and post the reply via
     :class:`TelegramSender`. Parallel structure to :func:`handle_one_qq`.
     """
-    request = {
-        "model": model,
-        "messages": [{"role": "user", "content": inbound.text}],
-        "session_key": inbound.binding.session_key(),
-        "stream": True,
-        "max_tokens": None,
-        "temperature": None,
-        "attachments": list(inbound.attachments),
-        "binding": inbound.binding,
-    }
+    request = _build_text_channel_request(inbound, model)
     stream = chat_service.run(request, cancel)
     text_parts: list[str] = []
     error_message: str | None = None
@@ -1000,6 +991,33 @@ async def handle_one_feishu(
 # ---------------------------------------------------------------------------
 
 
+def _build_text_channel_request(
+    inbound: InboundEvent[Any], model: str
+) -> Any:
+    """Build the request handed to ``chat_service.run`` for the
+    text-only channels (Telegram / Discord / Slack / Feishu).
+
+    Returns a :class:`~types.SimpleNamespace` so the downstream
+    ``ChatService`` can use attribute access (``req.model``,
+    ``req.messages``…) — same shape as :func:`_build_internal_request`
+    for QQ. The earlier dict form crashed the gateway with
+    ``AttributeError: 'dict' object has no attribute 'model'``.
+    """
+    from types import SimpleNamespace
+
+    message = SimpleNamespace(role="user", content=inbound.text)
+    return SimpleNamespace(
+        model=model,
+        messages=[message],
+        session_key=inbound.binding.session_key(),
+        stream=True,
+        max_tokens=None,
+        temperature=None,
+        attachments=list(inbound.attachments),
+        binding=inbound.binding,
+    )
+
+
 async def _collect_reply(
     chat_service: ChatServiceLike,
     inbound: InboundEvent[Any],
@@ -1015,16 +1033,7 @@ async def _collect_reply(
     error the body is a short ``[corlinman error] <msg>`` string so the
     user knows something failed — matching :func:`handle_one_telegram`.
     """
-    request = {
-        "model": model,
-        "messages": [{"role": "user", "content": inbound.text}],
-        "session_key": inbound.binding.session_key(),
-        "stream": True,
-        "max_tokens": None,
-        "temperature": None,
-        "attachments": list(inbound.attachments),
-        "binding": inbound.binding,
-    }
+    request = _build_text_channel_request(inbound, model)
     stream = chat_service.run(request, cancel)
     text_parts: list[str] = []
     error_message: str | None = None
