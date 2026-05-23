@@ -267,10 +267,109 @@ async def run_qq_channel(
 
     try:
         async with adapter:
-            await _qq_dispatch_loop(adapter, router, params, cancel)
+            # NapCat health watcher: alongside the dispatch loop, run a
+            # task that flags long silence (no heartbeat / no event)
+            # which usually means the bot QQ account got kicked offline
+            # by Tencent while the WS stayed up. Logs warn + flips
+            # state so /admin/channels/qq/status can surface it.
+            health_task = asyncio.create_task(
+                _qq_health_watcher(adapter, cancel),
+                name="qq-health-watcher",
+            )
+            try:
+                await _qq_dispatch_loop(adapter, router, params, cancel)
+            finally:
+                health_task.cancel()
+                try:
+                    await health_task
+                except (asyncio.CancelledError, Exception):
+                    pass
     finally:
         for t in gc_tasks:
             t.cancel()
+
+
+# Public, mutable: latest NapCat health probe result for the QQ channel.
+# A dict so callers can ``health.get(...)`` without importing a type;
+# updated by ``_qq_health_watcher`` and read by admin status routes.
+QQ_HEALTH: dict[str, Any] = {
+    "online": False,
+    "last_event_at_ms": None,
+    "seconds_since_event": None,
+    "checked_at_ms": None,
+}
+
+
+async def _qq_health_watcher(
+    adapter: OneBotAdapter, cancel: asyncio.Event
+) -> None:
+    """Periodic NapCat heartbeat watcher.
+
+    A healthy NapCat sends a heartbeat meta event every ~30s. Long
+    silence (default 120s) means the bot QQ account got kicked offline
+    by Tencent — operators normally find out only when they notice the
+    bot stopped replying. Log a structured warning the moment we
+    detect it (and a recovery log when events resume).
+
+    Tunable via env:
+      - ``CORLINMAN_QQ_HEALTH_PROBE_S`` — poll interval (default 30)
+      - ``CORLINMAN_QQ_HEALTH_LOST_S`` — silence threshold (default 120)
+    """
+    import os
+    import time
+
+    try:
+        probe_s = max(5, int(os.environ.get("CORLINMAN_QQ_HEALTH_PROBE_S", "30")))
+    except ValueError:
+        probe_s = 30
+    try:
+        lost_s = max(60, int(os.environ.get("CORLINMAN_QQ_HEALTH_LOST_S", "120")))
+    except ValueError:
+        lost_s = 120
+
+    was_lost = False
+    lost_since_ms: int | None = None
+
+    while not cancel.is_set():
+        try:
+            await asyncio.wait_for(cancel.wait(), timeout=probe_s)
+            return  # cancel fired during the wait
+        except asyncio.TimeoutError:
+            pass
+
+        now_ms = int(time.time() * 1000)
+        last = adapter.last_event_at_ms
+        seconds_since = (
+            None if last is None else max(0, (now_ms - last) // 1000)
+        )
+        is_lost = seconds_since is None or seconds_since >= lost_s
+
+        QQ_HEALTH.update(
+            online=(not is_lost) and seconds_since is not None,
+            last_event_at_ms=last,
+            seconds_since_event=seconds_since,
+            checked_at_ms=now_ms,
+        )
+
+        if is_lost and not was_lost:
+            if lost_since_ms is None:
+                lost_since_ms = now_ms
+            _log.warning(
+                "qq.heartbeat_lost: no NapCat event in %ss "
+                "(threshold=%ss). Bot QQ likely kicked offline; "
+                "scan a fresh QR via NapCat WebUI to recover.",
+                seconds_since,
+                lost_s,
+            )
+            was_lost = True
+        elif not is_lost and was_lost:
+            offline_s = (now_ms - (lost_since_ms or now_ms)) // 1000
+            _log.info(
+                "qq.heartbeat_recovered: NapCat events resumed after ~%ss offline",
+                offline_s,
+            )
+            was_lost = False
+            lost_since_ms = None
 
 
 async def _qq_dispatch_loop(

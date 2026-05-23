@@ -528,6 +528,23 @@ class OneBotAdapter:
         self._inbound_q: asyncio.Queue[Event] = asyncio.Queue(maxsize=64)
         self._outbound_q: asyncio.Queue[Action] = asyncio.Queue(maxsize=64)
         self._reader_task: asyncio.Task[None] | None = None
+        # NapCat heartbeat timestamp — updated on every parsed event
+        # (messages, meta heartbeats, lifecycle, notices). A healthy
+        # NapCat sends a heartbeat meta event every ~30s; long silence
+        # means the bot QQ account got kicked offline by Tencent while
+        # the WS stayed up. ``None`` until the first event lands.
+        self._last_event_at_ms: int | None = None
+
+    @property
+    def last_event_at_ms(self) -> int | None:
+        """Wall-clock ms when the last inbound event was parsed.
+
+        ``None`` before the first event lands (initial connect, or
+        adapter not yet connected). The QQ health watcher polls this to
+        detect a kicked-offline bot — a healthy NapCat sends a heartbeat
+        meta event every ~30 seconds.
+        """
+        return self._last_event_at_ms
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -668,6 +685,10 @@ class OneBotAdapter:
                 if not isinstance(raw, dict):
                     continue
                 event = parse_event(raw)
+                # Update the NapCat heartbeat timestamp on every event so
+                # the health watcher can flag a kicked-offline bot.
+                import time as _t
+                self._last_event_at_ms = int(_t.time() * 1000)
                 # Backpressure: queue.put will block if the consumer falls
                 # behind; that's intentional — we want to slow the WS read.
                 await self._inbound_q.put(event)

@@ -48,6 +48,12 @@ class StatusOut(BaseModel):
     group_keywords: dict[str, list[str]] = Field(default_factory=dict)
     runtime: str = "unknown"
     recent_messages: list[Any] = Field(default_factory=list)
+    # NapCat health (T4 follow-up): updated by the QQ health watcher
+    # every CORLINMAN_QQ_HEALTH_PROBE_S (default 30s).
+    health_online: bool | None = None
+    health_last_event_at_ms: int | None = None
+    health_seconds_since_event: int | None = None
+    health_checked_at_ms: int | None = None
 
 
 class KeywordsBody(BaseModel):
@@ -102,12 +108,26 @@ def router() -> APIRouter:
                 enabled=False,
                 ws_url=None,
             )
+        # Pull the latest NapCat health snapshot (best-effort; the
+        # channels package may not be installed for non-QQ deploys).
+        health: dict[str, Any] = {}
+        try:
+            from corlinman_channels.service import QQ_HEALTH
+
+            health = dict(QQ_HEALTH)
+        except Exception:  # noqa: BLE001
+            health = {}
+
         return StatusOut(
             configured=True,
             enabled=bool(qq.get("enabled", False)),
             ws_url=qq.get("ws_url"),
             self_ids=list(qq.get("self_ids", [])),
             group_keywords=dict(qq.get("group_keywords", {})),
+            health_online=health.get("online"),
+            health_last_event_at_ms=health.get("last_event_at_ms"),
+            health_seconds_since_event=health.get("seconds_since_event"),
+            health_checked_at_ms=health.get("checked_at_ms"),
         )
 
     @r.post(
