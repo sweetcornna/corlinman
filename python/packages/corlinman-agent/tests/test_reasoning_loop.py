@@ -339,3 +339,77 @@ async def test_attachment_image_bytes_become_data_url() -> None:
     img = next(p for p in content if p.get("type") == "image_url")
     url = img["image_url"]["url"]
     assert url.startswith("data:image/png;base64,")
+
+
+# ---------------------------------------------------------------------------
+# T1.1 — tool-result truncation + freeze
+# ---------------------------------------------------------------------------
+
+
+def test_truncate_tool_result_keeps_head_and_tail() -> None:
+    """A 20k-char string is capped under the limit and keeps head+tail."""
+    from corlinman_agent.reasoning_loop import (
+        _TOOL_RESULT_CAP,
+        _truncate_tool_result,
+    )
+
+    head_chunk = "H" * 1_000
+    middle_chunk = "M" * 15_000
+    tail_chunk = "T" * 4_000
+    original = head_chunk + middle_chunk + tail_chunk  # 20_000 chars
+    assert len(original) == 20_000
+
+    out = _truncate_tool_result(original)
+
+    # Capped under the limit; the elision notice + head + tail fit
+    # comfortably inside _TOOL_RESULT_CAP.
+    assert len(out) < _TOOL_RESULT_CAP
+    # The first 1k chars of the original are at the start of the result
+    # (the head slice is 2k chars so the leading 'H' block is fully
+    # preserved).
+    assert out.startswith(head_chunk)
+    # The trailing 4k chars are at the end.
+    assert out.endswith(tail_chunk)
+    # The notice is in the middle and reports the elided count.
+    assert "elided" in out
+    assert "…[" in out
+
+
+def test_truncate_tool_result_passthrough_under_cap() -> None:
+    """Strings at or below the cap pass through unchanged (no notice)."""
+    from corlinman_agent.reasoning_loop import _truncate_tool_result
+
+    small = "a" * 500
+    assert _truncate_tool_result(small) == small
+    assert "elided" not in _truncate_tool_result(small)
+
+
+def test_extend_with_tool_round_truncates_long_result() -> None:
+    """``_extend_with_tool_round`` caps each result before history-append."""
+    from corlinman_agent.reasoning_loop import (
+        _TOOL_RESULT_CAP,
+        _extend_with_tool_round,
+    )
+
+    call = ToolCallEvent(
+        call_id="call_1",
+        plugin="run_shell",
+        tool="run_shell",
+        args_json=b'{"command":"echo hi"}',
+    )
+    big = "x" * 50_000
+    result = ToolResult(call_id="call_1", content=big, is_error=False)
+
+    extended = _extend_with_tool_round([], [call], [result])
+
+    # Assistant message + one tool message.
+    assert len(extended) == 2
+    tool_msg = extended[1]
+    assert tool_msg["role"] == "tool"
+    assert tool_msg["tool_call_id"] == "call_1"
+    capped = tool_msg["content"]
+    assert isinstance(capped, str)
+    # Strictly below the configured cap.
+    assert len(capped) < _TOOL_RESULT_CAP
+    # Carries the elision notice — proves truncation actually fired.
+    assert "elided" in capped
