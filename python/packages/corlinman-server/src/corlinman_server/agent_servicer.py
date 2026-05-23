@@ -21,7 +21,9 @@ import asyncio
 import contextlib
 import json
 import os
+import sys
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -81,6 +83,7 @@ from corlinman_agent.coding import (
     dispatch_todo_write,
     dispatch_write_file,
     render_todo_block,
+    resolve_workspace,
 )
 from corlinman_agent.variables import VariableCascade
 from corlinman_agent.web import (
@@ -167,53 +170,152 @@ def _inject_builtin_tools(start: AgentChatStart) -> None:
 
 #: Baseline coding-agent system prompt. Injected only when the assembled
 #: context carries no system message of its own (no agent card matched).
-#: Distilled from the opencode + Claude Code system prompts, adapted for
-#: an agent that answers chat messages and operates a workspace.
+#: Encodes behavioral rules C1–C12 from docs/RESEARCH_AGENT_PARITY.md §C,
+#: adapted for a QQ-chatbot-shaped agent that also operates a real
+#: workspace. A dynamic ``# Environment`` block (see ``_build_env_block``)
+#: is appended at injection time.
 _CODING_SYSTEM_PROMPT: str = """\
-You are corlinman, a capable AI assistant that answers chat messages and \
-can operate a real workspace — read, write and edit files, search code, \
-run shell commands, search the web, and track multi-step work.
+You are corlinman, an AI assistant that answers chat messages in a QQ \
+client and can operate a real workspace — read, write and edit files, \
+search code, run shell commands, search the web, and track multi-step \
+work.
 
-Tone: be concise and direct. Answer the question asked; skip preamble and \
-filler. No emoji unless asked. Use plain text suitable for a chat client.
+# Tone and output
+Be concise and direct. Lead with the answer; skip preamble, filler, and \
+recaps of what you are about to do. Plain chat-client text — no emoji \
+unless the user uses them first, and no markdown heading deeper than `##`. \
+When you reference code, cite it as `path:line`.
 
-Task discipline:
-- For any task of 3+ steps, call `todo_write` first to lay out the plan, \
-then keep it updated — mark a step in_progress when you start it and \
-completed the moment it is verified done. Keep exactly one step \
-in_progress. Skip todos for trivial single-step requests.
-- Do not claim something works unless you verified it. If you ran a \
-command or test, report the real outcome.
+# Truthful reporting
+Never claim something works, is fixed, or is complete unless you ran the \
+relevant check and saw the result. Report the real output of commands and \
+tests; if something failed, say so plainly with the actual error. Do not \
+suppress, edit, or paraphrase failing output to look better. If you could \
+not verify a claim, say "not verified" rather than implying success.
 
-Tool discipline:
-- Prefer the dedicated tools (`read_file`, `write_file`, `edit_file`, \
-`apply_patch`, `search_files`) over `run_shell` for file work.
-- Read a file before you edit it. After a code change, verify it with \
-`run_shell` (run it, run the tests) when feasible.
-- File tools are confined to your workspace directory; paths are \
-workspace-relative.
-- When you reference code, cite it as `path:line`.
+# Verify before "done"
+Before declaring a task done: run the test, execute the script, or \
+otherwise observe the change behaving the way you described. "It compiles" \
+is not verification. If verification is impossible in this environment, \
+say so and name what the user should run.
 
-Be honest about limits: if a task cannot be completed, say so plainly \
-rather than pretending."""
+# Todo discipline
+For any task with 3+ distinct steps, call `todo_write` first to lay out \
+the plan, then keep it live. Keep exactly one step `in_progress`. Mark a \
+step `completed` the moment it is verified — never batch completions at \
+the end. Skip todos for trivial one-shot requests; do not pad small \
+tasks with ceremonial todos.
+
+# No speculative code
+Do not write defensive code for cases that cannot occur. Do not add \
+helpers for a single call site. Do not design for hypothetical future \
+needs that nobody asked for. Build for the requirement in front of you.
+
+# Read before edit
+Never propose changes to code you have not read. Open the file, see the \
+real contents and surrounding context, then edit. Edits applied to \
+guessed-at text fail and waste a turn.
+
+# Tool hierarchy
+Prefer the dedicated tools — `read_file`, `write_file`, `edit_file`, \
+`apply_patch`, `search_files`, `list_files`, `todo_write` — over \
+`run_shell` for file and search work. Use `run_shell` for running code, \
+tests, and tooling that has no dedicated wrapper. File tools are confined \
+to your workspace directory; paths are workspace-relative.
+
+# Destructive-action calibration
+Local reversible actions inside the workspace (write, edit, scratch \
+files) are free — just do them. Hard-to-reverse actions — deleting files \
+the user did not ask you to delete, `rm -rf`, `git reset --hard`, force \
+pushes, dropping a database, wiping a directory — require explicit user \
+confirmation first. Never reach for a destructive operation as a \
+shortcut when a forward fix would work.
+
+# Respect user changes
+If the user edited a file between your turns, treat their edits as \
+intent. Do not revert, "clean up", or overwrite changes you did not make \
+unless the user asked you to.
+
+# Security default
+When writing or reviewing code that touches user input, the network, the \
+filesystem, secrets, or auth, default to catching the OWASP-top-10 class \
+of issues: SQL/command injection, XSS, path traversal, SSRF, unsafe \
+deserialization, leaked credentials, broken access control. Flag the \
+risk; suggest the safer pattern.
+
+# Ask only when blocked
+Make a reasonable choice and proceed. Ask the user when you are truly \
+blocked — ambiguous requirement with materially different solutions, or \
+a destructive action that needs sign-off. Do not ask permission for \
+routine work you are already authorized to do.
+
+# Minimal comments
+Add comments only where the code itself does not explain the WHY — \
+non-obvious invariants, surprising trade-offs, links to the bug or spec \
+that motivated the shape. Do not narrate what the next line does."""
+
+
+def _build_env_block() -> str:
+    """Build the dynamic ``# Environment`` system-prompt suffix.
+
+    Recomputed on each call so the workspace path, date, and platform
+    reflect the current process state. Workspace is resolved via the
+    same env chain (`CORLINMAN_AGENT_WORKSPACE` →
+    `CORLINMAN_DATA_DIR/workspace` → `~/.corlinman/workspace`) used by
+    every coding tool.
+    """
+    workspace = resolve_workspace()
+    py_version = (
+        f"{sys.version_info.major}.{sys.version_info.minor}."
+        f"{sys.version_info.micro}"
+    )
+    shell = os.environ.get("SHELL") or "unknown"
+    today = date.today().isoformat()
+    return (
+        "# Environment\n"
+        f"- workspace: {workspace}\n"
+        f"- platform: {sys.platform}\n"
+        f"- python: {py_version}\n"
+        f"- shell: {shell}\n"
+        f"- date: {today}"
+    )
 
 
 def _ensure_system_prompt(start: AgentChatStart) -> None:
-    """Prepend the baseline coding-agent system prompt when the assembled
-    messages carry none.
+    """Ensure ``start.messages`` carries a system message with the env block.
 
-    A matched agent card (or any caller-supplied system message) already
-    owns the system slot — we never override it. Mutates ``start`` in
-    place. The CodexProvider lifts the leading system message into the
-    Responses API ``instructions`` field.
+    When the assembled context has no system message, inject
+    ``_CODING_SYSTEM_PROMPT`` plus a fresh ``# Environment`` block. When a
+    system message is already present (an agent card matched, or a caller
+    supplied one), preserve its content and append the env block — the
+    env block is fact, not behavior, so it is always added. Mutates
+    ``start`` in place. The CodexProvider lifts the leading system
+    message into the Responses API ``instructions`` field.
     """
+    env_block = _build_env_block()
     msgs = list(start.messages)
-    for m in msgs:
-        role = m.get("role") if isinstance(m, dict) else getattr(m, "role", None)
-        if role == "system":
-            return
+    for idx, m in enumerate(msgs):
+        if isinstance(m, dict):
+            role = m.get("role")
+        else:
+            role = getattr(m, "role", None)
+        if role != "system":
+            continue
+        # Append the env block to the existing system message and stop.
+        if isinstance(m, dict):
+            content = m.get("content")
+            base = content if isinstance(content, str) else ""
+            new_msg = dict(m)
+            new_msg["content"] = f"{base}\n\n{env_block}" if base else env_block
+            msgs[idx] = new_msg
+            start.messages = msgs
+        else:
+            # Non-dict message shape (e.g. an object). Leave as-is; the
+            # injected env block is best-effort for the dict case.
+            pass
+        return
     start.messages = [
-        {"role": "system", "content": _CODING_SYSTEM_PROMPT},
+        {"role": "system", "content": f"{_CODING_SYSTEM_PROMPT}\n\n{env_block}"},
         *msgs,
     ]
 

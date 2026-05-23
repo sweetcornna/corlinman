@@ -346,7 +346,12 @@ async def test_servicer_assembles_context_before_provider_call() -> None:
     assert assembler.calls[0]["session_key"] == "sess-ctx"
     assert assembler.calls[0]["model_name"] == "gpt-4o-mini"
     provider_messages = fake.last_kwargs["messages"]
-    assert provider_messages[0]["content"] == "Recall: memory hit from assembler"
+    # Caller-supplied system message survives the assembler's placeholder
+    # substitution; T1.3 then appends the dynamic env block, so only the
+    # prefix is fixed.
+    assert provider_messages[0]["content"].startswith(
+        "Recall: memory hit from assembler"
+    )
 
 
 @pytest.mark.asyncio
@@ -724,3 +729,82 @@ async def test_servicer_web_search_degrades_without_network(
     )
     assert payload["results"] == []
     assert "error" in payload
+
+
+# ---------------------------------------------------------------------------
+# T1.3 — enriched system prompt + dynamic environment block
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_system_prompt_injects_when_absent() -> None:
+    """When no system message exists, the injected one carries both the
+    behavioral prompt and the dynamic ``# Environment`` block."""
+    from corlinman_agent.reasoning_loop import ChatStart
+    from corlinman_server.agent_servicer import _ensure_system_prompt
+
+    start = ChatStart(
+        model="m",
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[],
+        session_key="s",
+    )
+    _ensure_system_prompt(start)
+
+    msgs = list(start.messages)
+    assert msgs[0]["role"] == "system"
+    assert "# Environment" in msgs[0]["content"]
+    # Behavioral content survives too.
+    assert "corlinman" in msgs[0]["content"]
+    # User message untouched, after the system message.
+    assert msgs[1] == {"role": "user", "content": "hi"}
+
+
+def test_ensure_system_prompt_appends_env_to_existing() -> None:
+    """An existing system message (e.g. from an agent card) is preserved
+    and the env block is appended — still exactly one system message."""
+    from corlinman_agent.reasoning_loop import ChatStart
+    from corlinman_server.agent_servicer import (
+        _build_env_block,
+        _ensure_system_prompt,
+    )
+
+    start = ChatStart(
+        model="m",
+        messages=[
+            {"role": "system", "content": "you are X"},
+            {"role": "user", "content": "hi"},
+        ],
+        tools=[],
+        session_key="s",
+    )
+    _ensure_system_prompt(start)
+
+    msgs = list(start.messages)
+    # Still exactly one system message, in position 0.
+    system_msgs = [m for m in msgs if m.get("role") == "system"]
+    assert len(system_msgs) == 1
+    assert msgs[0]["role"] == "system"
+
+    content = msgs[0]["content"]
+    # Behavioral content (the agent card) is preserved at the start...
+    assert content.startswith("you are X")
+    # ...and the env block is appended at the end. The exact volatile
+    # values (date, shell) shift, but the heading + the workspace line
+    # come straight from ``_build_env_block`` and pin the suffix.
+    env_block = _build_env_block()
+    assert content.endswith(env_block)
+    # Env block is appended, not prefixed — behavioral content first.
+    assert content.index("you are X") < content.index("# Environment")
+    # User message untouched, after the system message.
+    assert msgs[1] == {"role": "user", "content": "hi"}
+
+
+def test_env_block_contains_workspace_and_platform() -> None:
+    """The dynamic env block names the workspace path and platform."""
+    from corlinman_server.agent_servicer import _build_env_block
+
+    block = _build_env_block()
+    assert "workspace" in block
+    assert "platform" in block
+    # Heading shape too.
+    assert block.startswith("# Environment")
