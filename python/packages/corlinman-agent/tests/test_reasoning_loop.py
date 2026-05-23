@@ -413,3 +413,112 @@ def test_extend_with_tool_round_truncates_long_result() -> None:
     assert len(capped) < _TOOL_RESULT_CAP
     # Carries the elision notice — proves truncation actually fired.
     assert "elided" in capped
+
+
+# ---------------------------------------------------------------------------
+# T1.4 — provider usage flows DoneEvent.usage onto the outer terminal Done
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_done_event_carries_usage_from_provider() -> None:
+    """Provider-reported usage on the done chunk reaches the outer DoneEvent.
+
+    The reasoning loop's per-round :class:`DoneEvent` is consumed
+    inside ``run()`` — only the outer terminal Done is yielded to the
+    caller. T1.4 captures the LAST round's usage and attaches it onto
+    the outer Done so the servicer's cost meter can fold a single
+    record per turn.
+    """
+    prov = _FakeProvider(
+        [
+            ProviderChunk(kind="token", text="ok"),
+            ProviderChunk(
+                kind="done",
+                finish_reason="stop",
+                usage={"input_tokens": 5, "output_tokens": 8},
+            ),
+        ]
+    )
+    events = await _collect(ReasoningLoop(prov), ChatStart(model="x", messages=[]))
+    final = events[-1]
+    assert isinstance(final, DoneEvent)
+    assert final.finish_reason == "stop"
+    assert final.usage == {"input_tokens": 5, "output_tokens": 8}
+
+
+@pytest.mark.asyncio
+async def test_done_event_usage_none_when_provider_omits() -> None:
+    """A provider that never reports usage leaves DoneEvent.usage at None."""
+    prov = _FakeProvider(
+        [
+            ProviderChunk(kind="token", text="hi"),
+            ProviderChunk(kind="done", finish_reason="stop"),
+        ]
+    )
+    events = await _collect(ReasoningLoop(prov), ChatStart(model="x", messages=[]))
+    final = events[-1]
+    assert isinstance(final, DoneEvent)
+    assert final.usage is None
+
+
+@pytest.mark.asyncio
+async def test_done_event_usage_reflects_last_round_in_multi_round_loop() -> None:
+    """For tool-driven multi-round turns, the outer Done carries the LAST round's usage.
+
+    The model is billed at each round; tracking the LAST round matches
+    what a single ``response.completed`` event would report on a real
+    Responses-API turn that ended cleanly. The cost meter is called
+    once per ``Chat`` turn, so per-round granularity inside the loop
+    would over-count the same prefix tokens.
+    """
+    rounds = [
+        # Round 1: tool call + usage_a, loop continues after tool result.
+        [
+            ProviderChunk(
+                kind="tool_call_start",
+                tool_call_id="call_1",
+                tool_name="echo",
+            ),
+            ProviderChunk(
+                kind="tool_call_delta",
+                tool_call_id="call_1",
+                arguments_delta='{"x":1}',
+            ),
+            ProviderChunk(kind="tool_call_end", tool_call_id="call_1"),
+            ProviderChunk(
+                kind="done",
+                finish_reason="tool_calls",
+                usage={"input_tokens": 100, "output_tokens": 5},
+            ),
+        ],
+        # Round 2: plain text, final usage — this is what the outer Done must carry.
+        [
+            ProviderChunk(kind="token", text="done"),
+            ProviderChunk(
+                kind="done",
+                finish_reason="stop",
+                usage={"input_tokens": 150, "output_tokens": 12},
+            ),
+        ],
+    ]
+    prov = _MultiRoundProvider(rounds)
+    loop = ReasoningLoop(prov, tool_result_timeout=1.0)
+
+    # Drive the loop, feeding a tool result so round 2 runs.
+    async def _drive() -> list:
+        out = []
+        async for ev in loop.run(ChatStart(model="x", messages=[])):
+            out.append(ev)
+            if isinstance(ev, ToolCallEvent):
+                loop.feed_tool_result(
+                    ToolResult(call_id=ev.call_id, content='{"ok":true}')
+                )
+        return out
+
+    events = await _drive()
+    final = events[-1]
+    assert isinstance(final, DoneEvent)
+    assert final.finish_reason == "stop"
+    # LAST round's usage — not the round-1 numbers.
+    assert final.usage == {"input_tokens": 150, "output_tokens": 12}

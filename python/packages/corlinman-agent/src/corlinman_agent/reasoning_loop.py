@@ -109,9 +109,19 @@ class ToolCallEvent:
 
 @dataclass(slots=True)
 class DoneEvent:
-    """Terminal event; always the last yielded."""
+    """Terminal event; always the last yielded.
+
+    ``usage`` carries the provider's vendor-reported token accounting
+    when available (``input_tokens``, ``output_tokens`` plus optional
+    cached / reasoning counts). For multi-round turns, the outer
+    :class:`DoneEvent` yielded by :meth:`ReasoningLoop.run` reflects the
+    **last** round's usage — the per-round usage is consumed inside the
+    loop and not re-emitted individually. The servicer's cost meter
+    accumulates these on each turn.
+    """
 
     finish_reason: str = "stop"
+    usage: dict[str, int] | None = None
 
 
 @dataclass(slots=True)
@@ -259,6 +269,11 @@ class ReasoningLoop:
             list(start.messages), start.attachments
         )
         rounds = 0
+        # T1.4: most-recently-seen provider usage across rounds. The
+        # outer DoneEvent carries the LAST round's value (the cost meter
+        # is called once per turn and pricing-by-final-round matches the
+        # provider's own report).
+        last_usage: dict[str, int] | None = None
 
         while rounds < _MAX_ROUNDS:
             if self._cancelled.is_set():
@@ -278,6 +293,8 @@ class ReasoningLoop:
                         yield event
                     elif isinstance(event, DoneEvent):
                         finish_reason = event.finish_reason
+                        if event.usage is not None:
+                            last_usage = event.usage
                     elif isinstance(event, ErrorEvent):
                         yield event
                         return
@@ -298,7 +315,7 @@ class ReasoningLoop:
 
             # No tool calls → we're done; emit the terminal Done and exit.
             if not tool_calls_this_round:
-                yield DoneEvent(finish_reason=finish_reason)
+                yield DoneEvent(finish_reason=finish_reason, usage=last_usage)
                 return
 
             # Tool calls were emitted. If the caller hasn't wired the
@@ -313,7 +330,7 @@ class ReasoningLoop:
                 )
                 return
             if results is None:
-                yield DoneEvent(finish_reason=finish_reason)
+                yield DoneEvent(finish_reason=finish_reason, usage=last_usage)
                 return
 
             # Otherwise, append an assistant message recording the calls
@@ -324,12 +341,12 @@ class ReasoningLoop:
             if any(_is_awaiting_placeholder(r.content) for r in results):
                 # Prevent a doom loop: if every result is a placeholder, the
                 # next round will ask for the same tool again.
-                yield DoneEvent(finish_reason=finish_reason)
+                yield DoneEvent(finish_reason=finish_reason, usage=last_usage)
                 return
 
         # Rounds exhausted — surface a terminal Done with "length" so the
         # caller can tell this wasn't a clean end.
-        yield DoneEvent(finish_reason="length")
+        yield DoneEvent(finish_reason="length", usage=last_usage)
 
     async def _run_one_round(
         self, start: ChatStart, messages: Sequence[dict[str, Any]]
@@ -375,7 +392,10 @@ class ReasoningLoop:
                     ev = _finalise_tool_call(call_id, open_calls, open_names)
                     if ev is not None:
                         yield ev
-                yield DoneEvent(finish_reason=finish_reason)
+                # T1.4: forward provider-reported token usage onto the
+                # per-round DoneEvent. ``run()`` then bubbles the LAST
+                # seen value onto the outer terminal Done.
+                yield DoneEvent(finish_reason=finish_reason, usage=chunk.usage)
                 return
         # Provider closed without an explicit `done` chunk — treat as stop.
         for call_id in list(open_calls.keys()):
