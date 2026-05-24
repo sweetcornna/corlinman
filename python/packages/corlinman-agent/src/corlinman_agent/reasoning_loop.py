@@ -259,22 +259,23 @@ _SUMMARY_PROMPT = (
 )
 
 
-def _estimate_tokens(messages: Sequence[dict[str, Any]]) -> int:
-    """Cheap ``chars // 4`` token estimator over a message list.
+def _estimate_chars(messages: Sequence[dict[str, Any]]) -> int:
+    """Sum the user-visible character count across ``messages``.
 
-    Walks each message and sums:
+    Pure helper underpinning :func:`_estimate_tokens` and the
+    :class:`ReasoningLoop` incremental cache. Accumulates over:
 
-    * the character length of ``content`` when it's a ``str``;
-    * for list-form (multimodal) content parts, the character length
-      of each part's ``"text"`` key — non-text parts (images, files)
-      are ignored so vendor-specific binary metadata can't blow the
-      estimate;
-    * the character length of any ``tool_calls[].function.arguments``
-      JSON string (it's part of what the provider re-tokenises on the
-      next round).
+    * string ``content``;
+    * multimodal ``content`` parts' ``"text"`` field (non-text parts
+      like images / files are ignored — vendor-specific binary metadata
+      must not blow the estimate);
+    * ``tool_calls[].function.arguments`` JSON strings (the provider
+      re-tokenises these on the next round).
 
-    Returns ``total_chars // 4``. Pure / no-I/O — the
-    :func:`_compact_history` budget check calls this every round.
+    Keeping the char-level total exposed lets the cache add new tails
+    and divide-by-4 at retrieval time, which gives exact equality with
+    ``_estimate_tokens(messages)`` (rather than the off-by-one errors
+    you get from summing per-slice ``chars // 4`` results).
     """
     total_chars = 0
     for msg in messages:
@@ -297,7 +298,16 @@ def _estimate_tokens(messages: Sequence[dict[str, Any]]) -> int:
                     args = fn.get("arguments")
                     if isinstance(args, str):
                         total_chars += len(args)
-    return total_chars // 4
+    return total_chars
+
+
+def _estimate_tokens(messages: Sequence[dict[str, Any]]) -> int:
+    """Cheap ``chars // 4`` token estimator over a message list.
+
+    Returns ``_estimate_chars(messages) // 4``. Pure / no-I/O — the
+    :func:`_compact_history` budget check calls this every round.
+    """
+    return _estimate_chars(messages) // 4
 
 
 async def _compact_history(
@@ -307,6 +317,7 @@ async def _compact_history(
     provider: Any = None,
     model: str | None = None,
     fast_path_only: bool = False,
+    prev_estimate: int | None = None,
 ) -> list[dict[str, Any]]:
     """Return a possibly-compacted copy of ``messages`` capped at ``budget`` tokens.
 
@@ -337,8 +348,15 @@ async def _compact_history(
 
     ``fast_path_only`` forces the cheap path regardless of pressure.
     Used by tests + edge cases where a sub-provider call is undesirable.
+
+    ``prev_estimate`` — perf hook for callers (notably
+    :class:`ReasoningLoop`) that already track a running token total
+    via the incremental cache. When supplied, the initial
+    ``_estimate_tokens(messages)`` walk is skipped; the value is used
+    as-is for the budget check. Pass ``None`` (the default) to retain
+    the original behaviour — compute it here.
     """
-    before = _estimate_tokens(messages)
+    before = prev_estimate if prev_estimate is not None else _estimate_tokens(messages)
     elide_threshold = int(budget * _COMPACT_ELIDE_THRESHOLD)
     if before < elide_threshold:
         # Sub-elide pressure — no compaction needed. Returning the
@@ -655,6 +673,20 @@ class ReasoningLoop:
         # ``inject_user_message`` can stamp it on the hook event without
         # the caller having to plumb it through manually.
         self._session_key: str = ""
+        # Incremental token-estimate cache. ``_estimate_tokens`` walks
+        # the entire message list every call; on a 100-msg conversation
+        # over 10 rounds that's hundreds of full walks per turn. We keep
+        # a running CHAR total here (not the //4 token count — summing
+        # per-slice token counts accumulates rounding error) and divide
+        # by 4 at retrieval time so the cached result matches
+        # ``_estimate_tokens(messages)`` exactly. Invalidated whenever
+        # ``_compact_history`` returns a fresh list (identity change)
+        # or the list shrinks / its head changes.
+        self._messages_char_total: int = 0
+        self._messages_token_seen: int = 0
+        # Cheap fingerprint of the FIRST message — detects in-place
+        # edits to the seed that don't change ``len(messages)``.
+        self._messages_token_head_hash: int = 0
 
     def feed_tool_result(self, result: ToolResult) -> None:
         """Push a :class:`ToolResult` for consumption by the next round.
@@ -708,6 +740,69 @@ class ReasoningLoop:
         """
         self._input_closed.set()
 
+    def _invalidate_token_cache(self) -> None:
+        """Reset the incremental token-estimate cache.
+
+        Called whenever ``_compact_history`` returns a fresh list
+        (identity check failure) — the new list may have dropped
+        messages, replaced tool payloads with the elision sentinel, or
+        injected a synthetic summary system block. Any of those mutates
+        the running total in ways the incremental walker can't track,
+        so we drop the cache and let the next call re-walk from
+        scratch.
+        """
+        self._messages_char_total = 0
+        self._messages_token_seen = 0
+        self._messages_token_head_hash = 0
+
+    def messages_total_token_estimate(
+        self, messages: Sequence[dict[str, Any]]
+    ) -> int:
+        """Return the cached running-total token estimate for ``messages``.
+
+        On the steady-state hot path (round N+1 appended new tool
+        messages onto round N's list) only the tail slice is re-walked;
+        the cached prefix total is reused. Falls back to a full re-walk
+        when:
+
+        * the list shrank below ``_messages_token_seen`` (compaction or
+          manual replacement);
+        * the head fingerprint diverged from the cached value (in-place
+          edit of ``messages[0]``);
+        * the cache hasn't been seeded yet (``_messages_token_seen ==
+          0``).
+
+        Internally tracks the raw character total and divides by 4 on
+        return, so the cached value is bit-exact equal to
+        ``_estimate_tokens(messages)`` for any sequence of appends —
+        no rounding error from summing per-slice token counts.
+        """
+        n = len(messages)
+        # Head fingerprint detects in-place edits to messages[0] that
+        # don't change ``len(messages)``. ``repr`` is stable for the
+        # dict / list-of-dict content we store in messages.
+        head_hash = hash(repr(messages[0])) if n > 0 else 0
+
+        # Cache miss: shrink, head divergence, or no prior seed.
+        if (
+            self._messages_token_seen == 0
+            or n < self._messages_token_seen
+            or head_hash != self._messages_token_head_hash
+        ):
+            chars = _estimate_chars(messages)
+            self._messages_char_total = chars
+            self._messages_token_seen = n
+            self._messages_token_head_hash = head_hash
+            return chars // 4
+
+        # Cache hit: walk only the new tail (char count, not tokens —
+        # avoids accumulating ``//4`` rounding error across rounds).
+        if n > self._messages_token_seen:
+            tail = messages[self._messages_token_seen:]
+            self._messages_char_total += _estimate_chars(tail)
+            self._messages_token_seen = n
+        return self._messages_char_total // 4
+
     async def run(self, start: ChatStart) -> AsyncIterator[Event]:
         """Execute the loop, yielding events until the stream ends."""
         # Stash session_key so ``inject_user_message`` can stamp it on
@@ -745,12 +840,29 @@ class ReasoningLoop:
             # sub-budget by construction). At extreme pressure the
             # summarization path fires — a sub-provider call that
             # compresses the older portion into one system block.
+            #
+            # Perf: feed the cached running total in so ``_compact_history``
+            # skips its own full-list walk. We retain the identity of
+            # ``messages`` across rounds whenever compaction is a no-op,
+            # so the cache keeps growing incrementally; only the new
+            # tail (the tool messages just appended) needs re-walking.
+            prev_estimate = self.messages_total_token_estimate(messages)
+            messages_before_compact = messages
             messages = await _compact_history(
                 messages,
                 budget=_CONTEXT_BUDGET,
                 provider=self._provider,
                 model=start.model,
+                prev_estimate=prev_estimate,
             )
+            # Identity check: ``_compact_history`` returns the SAME
+            # list when no compaction was needed (passthrough below
+            # the elide threshold). If it returned a fresh list, our
+            # cached running total no longer corresponds to the new
+            # message identities — invalidate so the next round
+            # re-seeds from scratch.
+            if messages is not messages_before_compact:
+                self._invalidate_token_cache()
             rounds += 1
             tool_calls_this_round: list[ToolCallEvent] = []
             finish_reason = "stop"

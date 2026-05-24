@@ -32,6 +32,12 @@ logger = structlog.get_logger(__name__)
 _USER_EMAIL = "agent@corlinman"
 _USER_NAME = "corlinman-agent"
 _MAX_LABEL_CHARS = 80
+# Default length of git's abbreviated SHA (matches ``core.abbrev``
+# default + what ``git log --pretty=format:%h`` emits on stock
+# config). We truncate the full SHA to this width so the value
+# returned by :func:`snapshot` round-trips against
+# :func:`list_snapshots`.
+_SHORT_SHA_LEN = 7
 
 
 def _have_git() -> bool:
@@ -56,6 +62,101 @@ def _run_git(workspace: Path, *args: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
     )
+
+
+def _read_git_head_sha(workspace: Path) -> str | None:
+    """Resolve ``HEAD`` to its full 40-char SHA without forking ``git``.
+
+    Mirrors what ``git rev-parse HEAD`` would print, but takes ~30 µs
+    (one or two stat + small-file reads) instead of ~3 ms (fork + exec
+    of the ``git`` binary). The hot path uses this directly after
+    ``git commit`` so the SHA lookup costs nothing on each agent turn.
+
+    Strategy:
+
+    1. Read ``<ws>/.git/HEAD``.
+       * If it starts with ``ref: <path>`` it's an attached HEAD — follow
+         the ref to ``<ws>/.git/<path>`` and read the SHA from there.
+       * If that ref file is missing the ref might be packed — fall
+         back to scanning ``<ws>/.git/packed-refs`` for a matching line.
+       * If it's already a 40-char hex string it's a detached HEAD;
+         return as-is.
+    2. Validate the result looks like a hex SHA before returning.
+       Anything malformed (empty, comment lines, wrong length) becomes
+       ``None`` — the caller logs and surfaces a snapshot failure.
+
+    Never raises. Returns ``None`` for any parse failure so the caller
+    can log + fall back gracefully (the snapshot itself already
+    succeeded; we just can't report the SHA).
+    """
+    try:
+        head_text = (workspace / ".git" / "HEAD").read_text().strip()
+    except OSError:
+        return None
+    if not head_text:
+        return None
+
+    if head_text.startswith("ref:"):
+        # Attached HEAD: "ref: refs/heads/main"
+        ref_path = head_text[4:].strip()
+        if not ref_path:
+            return None
+        # Loose ref first.
+        loose = workspace / ".git" / ref_path
+        try:
+            sha = loose.read_text().strip()
+            if _looks_like_sha(sha):
+                return sha
+        except OSError:
+            # Fall through to packed-refs scan.
+            pass
+        return _lookup_packed_ref(workspace, ref_path)
+
+    # Detached HEAD: the file already holds the SHA.
+    if _looks_like_sha(head_text):
+        return head_text
+    return None
+
+
+def _looks_like_sha(value: str) -> bool:
+    """Cheap structural check for a 40-char lowercase hex SHA.
+
+    git's loose-ref / packed-refs files store SHAs as exactly 40 hex
+    characters; anything else (empty, padded, with annotations) is a
+    parse failure. We avoid ``re`` for the per-turn hot path.
+    """
+    if len(value) != 40:
+        return False
+    return all(c in "0123456789abcdef" for c in value)
+
+
+def _lookup_packed_ref(workspace: Path, ref_path: str) -> str | None:
+    """Find ``<ref_path>`` inside ``<ws>/.git/packed-refs``; return SHA or None.
+
+    ``packed-refs`` lines look like:
+
+    .. code-block:: text
+
+       # pack-refs with: peeled fully-peeled sorted
+       fd4cba616ef506c032e4cd2fb089c80fd360e575 refs/heads/main
+       ^c0fda7c83f1834212b6c1c1cdde6234aaaabbbbb   (peeled tag, ignored)
+
+    We linear-scan because ``packed-refs`` rarely exceeds a few KB and
+    the alternative (loading + bisecting) isn't worth the complexity
+    on the hot path.
+    """
+    try:
+        packed = (workspace / ".git" / "packed-refs").read_text()
+    except OSError:
+        return None
+    for raw_line in packed.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or line.startswith("^"):
+            continue
+        sha, _, ref = line.partition(" ")
+        if ref == ref_path and _looks_like_sha(sha):
+            return sha
+    return None
 
 
 def _sanitise_label(label: str) -> str:
@@ -134,6 +235,11 @@ def snapshot(workspace: Path, label: str) -> str | None:
 
     Returns ``None`` on any failure (git missing, init failed, commit
     failed). Failures are logged but never raised.
+
+    Perf: the SHA lookup step is performed by reading ``.git/HEAD``
+    directly via :func:`_read_git_head_sha` rather than forking
+    ``git rev-parse``. Two subprocess calls per snapshot (``add`` +
+    ``commit``) instead of three, saving ~3 ms per agent turn.
     """
     if not ensure_repo(workspace):
         return None
@@ -158,13 +264,23 @@ def snapshot(workspace: Path, label: str) -> str | None:
             stderr=commit.stderr.strip(),
         )
         return None
-    sha = _run_git(workspace, "rev-parse", "--short", "HEAD")
-    if sha.returncode != 0:
+    # Perf: skip the ``git rev-parse --short HEAD`` subprocess. Read
+    # ``.git/HEAD`` (+ optional loose-ref or packed-refs file) ourselves
+    # — ~30 µs vs ~3 ms for a fork+exec of git. The result is the full
+    # 40-char SHA; we truncate to 7 chars to match git's default
+    # ``--short`` output so the value still round-trips against
+    # :func:`list_snapshots` (which uses ``%h``).
+    full_sha = _read_git_head_sha(workspace)
+    if full_sha is None:
+        # Parse failure — log + return None so the caller knows the
+        # snapshot was taken but the SHA is unreadable. The commit
+        # itself still exists; ``list_snapshots`` will find it.
         logger.warning(
-            "agent.snapshot.git_revparse_failed", stderr=sha.stderr.strip()
+            "agent.snapshot.head_parse_failed",
+            workspace=str(workspace),
         )
         return None
-    short = sha.stdout.strip()
+    short = full_sha[:_SHORT_SHA_LEN]
     logger.info("agent.snapshot.taken", sha=short, label=safe_label)
     return short or None
 

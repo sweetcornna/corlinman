@@ -673,6 +673,7 @@ async def test_run_invokes_compact_each_round(monkeypatch: pytest.MonkeyPatch) -
         provider: Any = None,
         model: str | None = None,
         fast_path_only: bool = False,
+        prev_estimate: int | None = None,
     ) -> list[dict[str, Any]]:
         counter["calls"] += 1
         return await real(
@@ -681,6 +682,7 @@ async def test_run_invokes_compact_each_round(monkeypatch: pytest.MonkeyPatch) -
             provider=provider,
             model=model,
             fast_path_only=fast_path_only,
+            prev_estimate=prev_estimate,
         )
 
     monkeypatch.setattr(rl_module, "_compact_history", _spy)
@@ -1253,3 +1255,244 @@ async def test_inject_empty_or_whitespace_is_dropped() -> None:
         and m["content"].startswith("[追加上下文] ")
     ]
     assert supplements == []
+
+
+# ---------------------------------------------------------------------------
+# Perf — incremental token-estimate cache on ReasoningLoop
+# ---------------------------------------------------------------------------
+
+
+def test_token_cache_incremental_on_append() -> None:
+    """After seeding the cache with N messages, appending M more
+    re-walks only the M-message tail — NOT the full N+M list.
+
+    Instruments the cache's underlying ``_estimate_chars`` helper with
+    a counter wrapper to count how many messages were walked across
+    two calls. With the cache the second call must walk strictly
+    ``M`` messages, not ``N + M``.
+    """
+    from corlinman_agent import reasoning_loop as rl_mod
+    from corlinman_agent.reasoning_loop import (
+        ReasoningLoop,
+        _estimate_chars,
+        _estimate_tokens,
+    )
+
+    walked: list[int] = []
+    original = _estimate_chars
+
+    def _counting_estimate(msgs: list[dict[str, Any]]) -> int:
+        walked.append(len(msgs))
+        return original(msgs)
+
+    # Monkeypatch the module-level reference so the bound method
+    # (resolved via module attribute on each call) picks up the spy.
+    saved = rl_mod._estimate_chars
+    rl_mod._estimate_chars = _counting_estimate  # type: ignore[assignment]
+    try:
+        loop = ReasoningLoop(provider=object())
+        first_batch = [
+            {"role": "user", "content": "msg-{}".format(i)} for i in range(50)
+        ]
+        # Seed the cache: full walk of 50 messages.
+        seeded = loop.messages_total_token_estimate(first_batch)
+        assert seeded == _estimate_tokens(first_batch)
+        assert walked[-1] == 50  # full walk on cache miss
+
+        # Append 10 more — the cache MUST only walk the new tail.
+        extended = first_batch + [
+            {"role": "tool", "tool_call_id": "c{}".format(i), "content": "x" * 100}
+            for i in range(10)
+        ]
+        before_count = len(walked)
+        cached = loop.messages_total_token_estimate(extended)
+        after_count = len(walked)
+
+        # Exactly one new walk happened, and it walked exactly 10 msgs.
+        assert after_count - before_count == 1
+        assert walked[-1] == 10, (
+            "expected to walk only the 10 new tail messages, walked "
+            f"{walked[-1]}"
+        )
+        # And the cached running total matches the pure-function ground truth.
+        assert cached == _estimate_tokens(extended)
+    finally:
+        rl_mod._estimate_chars = saved  # type: ignore[assignment]
+
+
+@pytest.mark.asyncio
+async def test_token_cache_invalidates_on_compaction() -> None:
+    """When the loop's compaction step returns a NEW list, the cache
+    is invalidated so the next estimate call re-walks from scratch.
+    """
+    from corlinman_agent.reasoning_loop import ReasoningLoop
+
+    loop = ReasoningLoop(provider=object())
+    # Seed with a 10-message list.
+    msgs: list[dict[str, Any]] = [
+        {"role": "user", "content": "a" * 20} for _ in range(10)
+    ]
+    loop.messages_total_token_estimate(msgs)
+    assert loop._messages_token_seen == 10
+    assert loop._messages_char_total > 0
+
+    # Compaction completed → fresh list returned → invalidate.
+    loop._invalidate_token_cache()
+    assert loop._messages_token_seen == 0
+    assert loop._messages_char_total == 0
+
+    # Next call re-walks from scratch and re-seeds.
+    msgs_after = [{"role": "user", "content": "b" * 5} for _ in range(3)]
+    out = loop.messages_total_token_estimate(msgs_after)
+    assert loop._messages_token_seen == 3
+    # 3 * 5 chars // 4 == 3 (per-message 5//4=1, summed) — exact match
+    # against the pure walker.
+    from corlinman_agent.reasoning_loop import _estimate_tokens as _et
+    assert out == _et(msgs_after)
+
+
+def test_token_cache_consistent_with_pure_function() -> None:
+    """Across a randomized append/shrink/edit sequence the cache stays
+    within ±1 of the pure ``_estimate_tokens`` result (the only
+    permitted divergence is from integer-division rounding when a
+    re-walked tail's chars don't align with the prefix's chars).
+    """
+    import random
+
+    from corlinman_agent.reasoning_loop import (
+        ReasoningLoop,
+        _estimate_tokens,
+    )
+
+    rng = random.Random(0xC0FFEE)
+    loop = ReasoningLoop(provider=object())
+    msgs: list[dict[str, Any]] = []
+
+    for _ in range(80):
+        action = rng.choice(("append", "append", "append", "shrink", "edit_head"))
+        if action == "append":
+            length = rng.randint(0, 200)
+            msgs.append(
+                {"role": rng.choice(("user", "assistant", "tool")),
+                 "content": "z" * length}
+            )
+        elif action == "shrink" and msgs:
+            # Mimic compaction: shrink list — cache must detect and re-walk.
+            drop = rng.randint(1, max(1, len(msgs) // 2))
+            msgs = msgs[:-drop]
+        elif action == "edit_head" and msgs:
+            # In-place head edit — fingerprint must catch this.
+            new_msg = dict(msgs[0])
+            new_msg["content"] = (new_msg.get("content") or "") + "X"
+            msgs[0] = new_msg
+
+        cached = loop.messages_total_token_estimate(msgs)
+        truth = _estimate_tokens(msgs)
+        # Cache tracks raw chars internally and divides by 4 at
+        # retrieval, so the result is bit-exact equal to the pure
+        # walker. (Spec allows ±1 for safety; we land at 0.)
+        assert abs(cached - truth) <= 1, (
+            f"cache diverged: cached={cached} truth={truth} "
+            f"seen={loop._messages_token_seen} n={len(msgs)}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_token_cache_invalidates_through_run_when_compacted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end: when ``_compact_history`` returns a fresh list during
+    ``run()``, the cache invalidates so subsequent rounds re-seed.
+    """
+    from corlinman_agent import reasoning_loop as rl_mod
+
+    # Force compaction to always return a fresh list (object identity
+    # break) so the loop's identity check triggers the invalidation.
+    async def _replacement_compact(
+        msgs: list[dict[str, Any]],
+        *,
+        budget: int,
+        provider: Any = None,
+        model: str | None = None,
+        fast_path_only: bool = False,
+        prev_estimate: int | None = None,
+    ) -> list[dict[str, Any]]:
+        # Return a list with same content but different identity.
+        return [dict(m) for m in msgs]
+
+    monkeypatch.setattr(rl_mod, "_compact_history", _replacement_compact)
+
+    round1 = [
+        ProviderChunk(kind="tool_call_start", tool_call_id="c1", tool_name="t"),
+        ProviderChunk(kind="tool_call_delta", tool_call_id="c1", arguments_delta="{}"),
+        ProviderChunk(kind="tool_call_end", tool_call_id="c1"),
+        ProviderChunk(kind="done", finish_reason="tool_calls"),
+    ]
+    round2 = [
+        ProviderChunk(kind="token", text="ok"),
+        ProviderChunk(kind="done", finish_reason="stop"),
+    ]
+    prov = _MultiRoundProvider([round1, round2])
+    loop = ReasoningLoop(prov, tool_result_timeout=1.0)
+
+    invalidate_count = {"n": 0}
+    real_invalidate = loop._invalidate_token_cache
+
+    def _spy_invalidate() -> None:
+        invalidate_count["n"] += 1
+        real_invalidate()
+
+    monkeypatch.setattr(loop, "_invalidate_token_cache", _spy_invalidate)
+
+    async def driver() -> None:
+        async for e in loop.run(
+            ChatStart(model="x", messages=[{"role": "user", "content": "go"}])
+        ):
+            if isinstance(e, ToolCallEvent):
+                loop.feed_tool_result(
+                    ToolResult(call_id=e.call_id, content='{"ok":true}')
+                )
+
+    await asyncio.wait_for(driver(), timeout=2.0)
+    # Two rounds → compaction ran twice → invalidate called twice
+    # (identity always breaks with our replacement compactor).
+    assert invalidate_count["n"] == 2
+
+
+def test_compact_history_accepts_prev_estimate_kwarg() -> None:
+    """The ``prev_estimate`` kwarg short-circuits the budget walk —
+    when supplied with a sub-elide value, the function returns the
+    input unchanged WITHOUT calling ``_estimate_tokens`` first.
+    """
+    import asyncio as _asyncio
+
+    from corlinman_agent import reasoning_loop as rl_mod
+
+    walked: list[int] = []
+    real = rl_mod._estimate_tokens
+
+    def _counting(msgs: list[dict[str, Any]]) -> int:
+        walked.append(len(msgs))
+        return real(msgs)
+
+    saved = rl_mod._estimate_tokens
+    rl_mod._estimate_tokens = _counting  # type: ignore[assignment]
+    try:
+        # A small message list — under the elide threshold of any
+        # reasonable budget. Passthrough must take the fast exit.
+        messages = [{"role": "user", "content": "hi"}]
+        # 1 char -> 0 tokens (the pure function would compute this).
+        # We supply prev_estimate=0 so the function skips the walk.
+        out = _asyncio.run(rl_mod._compact_history(
+            messages,
+            budget=100_000,
+            fast_path_only=True,
+            prev_estimate=0,
+        ))
+        # Passthrough — input returned unchanged.
+        assert out is messages
+        # And the supplied prev_estimate short-circuited the initial
+        # walk: zero recorded walks.
+        assert walked == []
+    finally:
+        rl_mod._estimate_tokens = saved  # type: ignore[assignment]

@@ -914,6 +914,163 @@ def test_snapshot_sanitises_long_multiline_label(tmp_path: Path) -> None:
     assert "second line" not in top
 
 
+# ---------------------------------------------------------------------------
+# Perf — snapshot resolves SHA without a third subprocess
+# ---------------------------------------------------------------------------
+
+
+def test_snapshot_resolves_sha_without_subprocess(
+    tmp_path: Path, monkeypatch: object
+) -> None:
+    """After ``ensure_repo`` seeds the repo, a snapshot must run only
+    TWO subprocess calls (``add`` + ``commit``) and resolve the SHA by
+    reading ``.git/HEAD`` directly.
+
+    Regression for the perf fix that dropped the ``git rev-parse
+    --short HEAD`` step in favour of a Python-side ref walker.
+    """
+    import subprocess as _subprocess
+
+    from corlinman_agent.coding import _snapshot as snap_mod
+    from corlinman_agent.coding import snapshot
+
+    # First, seed the repo so ensure_repo's three subprocess calls
+    # don't pollute the count.
+    snap_mod.ensure_repo(tmp_path)
+
+    # Now count subprocess.run calls happening through _run_git
+    # during ONE snapshot() invocation.
+    calls: list[tuple[str, ...]] = []
+    real_run = _subprocess.run
+
+    def _counting_run(cmd: list[str], *a: object, **kw: object):  # type: ignore[no-untyped-def]
+        # Only count git invocations originating from _snapshot —
+        # ignore anything else the test harness might fork.
+        if isinstance(cmd, list) and cmd and cmd[0] == "git":
+            calls.append(tuple(cmd))
+        return real_run(cmd, *a, **kw)
+
+    monkeypatch.setattr(_subprocess, "run", _counting_run)  # type: ignore[attr-defined]
+
+    (tmp_path / "f.txt").write_text("hello\n")
+    sha = snapshot(tmp_path, "perf-check")
+    assert sha is not None and len(sha) >= 4
+
+    # Exactly two git subcommands: ``add -A`` and ``commit ... -m ...``.
+    # The third (``rev-parse --short HEAD``) is GONE — that's the perf win.
+    assert len(calls) == 2, (
+        f"expected 2 git subprocess calls (add + commit), got {len(calls)}: "
+        f"{calls!r}"
+    )
+    subcommands = [c[1] for c in calls]
+    assert subcommands == ["add", "commit"], (
+        f"unexpected subcommand sequence: {subcommands!r}"
+    )
+
+
+def test_snapshot_handles_detached_head(tmp_path: Path) -> None:
+    """When ``.git/HEAD`` holds a SHA directly (detached HEAD), the
+    ref walker still reads it correctly.
+    """
+    from corlinman_agent.coding import _snapshot as snap_mod
+    from corlinman_agent.coding import snapshot
+
+    snap_mod.ensure_repo(tmp_path)
+    # Take an initial snapshot so we have a commit to detach to.
+    (tmp_path / "a.txt").write_text("x\n")
+    first_short = snapshot(tmp_path, "first")
+    assert first_short is not None
+
+    # Resolve the full SHA + detach.
+    head_full = (tmp_path / ".git" / "HEAD").read_text().strip()
+    if head_full.startswith("ref:"):
+        ref = head_full[4:].strip()
+        full = (tmp_path / ".git" / ref).read_text().strip()
+    else:
+        full = head_full
+    # Write a detached HEAD: the file contains the SHA, no ``ref:`` prefix.
+    (tmp_path / ".git" / "HEAD").write_text(full + "\n")
+
+    # Direct call to the helper: detached HEAD must resolve cleanly.
+    resolved = snap_mod._read_git_head_sha(tmp_path)
+    assert resolved == full
+
+    # And a fresh snapshot succeeds (git advances HEAD to the new commit
+    # on the same detached anchor).
+    (tmp_path / "a.txt").write_text("y\n")
+    second_short = snapshot(tmp_path, "second")
+    assert second_short is not None
+    assert second_short != first_short
+
+
+def test_snapshot_handles_packed_refs(tmp_path: Path) -> None:
+    """When the loose-ref file is missing but ``packed-refs`` carries
+    the entry, the helper finds the SHA via the packed-refs scan.
+    """
+    from corlinman_agent.coding import _snapshot as snap_mod
+
+    snap_mod.ensure_repo(tmp_path)
+    head_text = (tmp_path / ".git" / "HEAD").read_text().strip()
+    assert head_text.startswith("ref:"), (
+        f"test precondition: HEAD must be a symbolic ref, got {head_text!r}"
+    )
+    ref_path = head_text[4:].strip()
+    loose = tmp_path / ".git" / ref_path
+    sha = loose.read_text().strip()
+
+    # Move the ref from loose form into a fake packed-refs file.
+    loose.unlink()
+    packed = tmp_path / ".git" / "packed-refs"
+    packed.write_text(
+        "# pack-refs with: peeled fully-peeled sorted\n"
+        f"{sha} {ref_path}\n"
+    )
+
+    resolved = snap_mod._read_git_head_sha(tmp_path)
+    assert resolved == sha
+
+
+def test_snapshot_head_parse_failure_returns_none(
+    tmp_path: Path, monkeypatch: object
+) -> None:
+    """When ``.git/HEAD`` is unreadable / malformed the helper returns
+    ``None`` and the snapshot logs + returns ``None`` — must NOT crash.
+    """
+    from corlinman_agent.coding import _snapshot as snap_mod
+    from corlinman_agent.coding import snapshot
+
+    snap_mod.ensure_repo(tmp_path)
+    # Replace _read_git_head_sha so the SHA lookup fails even though
+    # the commit succeeds — proves the failure-path is graceful.
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        snap_mod, "_read_git_head_sha", lambda _ws: None
+    )
+
+    out = snapshot(tmp_path, "broken")
+    # No exception — failure observable only via the None return + log.
+    assert out is None
+
+
+def test_snapshot_short_sha_matches_list_snapshots(tmp_path: Path) -> None:
+    """The SHA returned by ``snapshot()`` must round-trip against the
+    SHA reported by ``list_snapshots()`` (``%h`` from ``git log``).
+
+    Without this invariant the revert flow breaks — the SHA the agent
+    just took wouldn't appear in the snapshot listing.
+    """
+    from corlinman_agent.coding import list_snapshots, snapshot
+
+    (tmp_path / "f.txt").write_text("v1\n")
+    sha1 = snapshot(tmp_path, "v1")
+    (tmp_path / "f.txt").write_text("v2\n")
+    sha2 = snapshot(tmp_path, "v2")
+
+    listed = list_snapshots(tmp_path)
+    seen = {entry["sha"] for entry in listed}
+    assert sha1 in seen, f"sha1={sha1!r} not in {seen!r}"
+    assert sha2 in seen, f"sha2={sha2!r} not in {seen!r}"
+
+
 def test_coding_tools_set_includes_revert_changes() -> None:
     """T2.4 wiring: revert_changes must be in CODING_TOOLS and have a schema."""
     from corlinman_agent.coding import CODING_TOOLS, coding_tool_schemas
