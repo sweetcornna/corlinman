@@ -2,7 +2,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/ymylive/corlinman/ci.yml?branch=main&label=CI)](https://github.com/ymylive/corlinman/actions)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.0.0-brightgreen)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.1.0-brightgreen)](CHANGELOG.md)
 [![Docs](https://img.shields.io/badge/docs-architecture-informational)](docs/architecture.md)
 
 **A self-hosted intelligent-agent platform.** Give a language model durable
@@ -549,6 +549,14 @@ ops/                Grafana dashboard + observability compose
 
 ## Roadmap + status
 
+**v1.1.0** (current) — channel parity (QQ official bot + WeChat 公众号
+land alongside existing channels), Claude-Code-style task UX (live
+todo-list view + summary-based context compaction + mid-turn user
+message injection), and admin UI simplification (sidebar trimmed to
+10 operator pages with a Developer Settings toggle for the rest).
+Released 2026-05-24, tagged `v1.1.0`. Full notes in
+[`CHANGELOG.md`](CHANGELOG.md#110--2026-05-24--channel-parity--claude-code-style-task-ux).
+
 **v1.0.0** — full Python port, multi-channel chat with status streaming
 + file replies, multi-gateway HA via shared Postgres journal, hook
 event bus, context-aware permissions, on-demand skill reload,
@@ -557,6 +565,23 @@ reliability (reactive 401 refresh across every provider). Released
 2026-05-24, tagged `v1.0.0`. Post-1.0 work is tracked in
 [`docs/milestones.md`](docs/milestones.md) and
 [`docs/roadmap.md`](docs/roadmap.md).
+
+Shipped in 1.1 (on top of 1.0):
+
+- ✅ QQ 官方机器人 channel + 微信公众号 channel
+- ✅ Discord / Slack / Feishu mutable-spinner parity (the four
+  edit-capable channels now share Telegram's `_status.py` core)
+- ✅ Live task-list rendering (`📋 任务清单 ☑/▣/☐`) from the
+  `todo_write` builtin
+- ✅ Claude-Code-style summary-based context compaction (≥ 95 %
+  budget triggers a sub-call summary; failure degrades to elision)
+- ✅ Mid-turn user-message injection
+  (`ReasoningLoop.inject_user_message`) — a follow-up message to a
+  busy session merges into the live turn instead of queueing
+- ✅ Sessions admin page wired to the journal + Delete /
+  Clear-all controls
+- ✅ Admin sidebar trimmed to 10 operator items with a Dev
+  Settings toggle
 
 Shipped in 1.0 (vs the 0.6.x line):
 

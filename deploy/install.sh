@@ -1,11 +1,21 @@
 #!/usr/bin/env bash
-# corlinman one-line installer (Python plane, v1.x).
+# corlinman one-line installer + upgrader (Python plane, v1.1+).
 #
 # Usage (any one of):
+#   # Fresh install (default: docker mode, latest main)
 #   curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh | bash
-#   curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh | bash -s -- --mode docker
-#   curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh | bash -s -- --mode native
-#   curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh | bash -s -- --mode native --china
+#
+#   # Fresh native install pinned to a release tag
+#   curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh \
+#     | bash -s -- --mode native --version v1.1.0
+#
+#   # In-place upgrade of an existing native deployment (preserves data)
+#   curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh \
+#     | bash -s -- --upgrade
+#
+#   # China-region (auto-detected, or force with --china)
+#   curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh \
+#     | bash -s -- --mode native --china
 #
 # Modes:
 #   docker  (default) — builds a Docker image locally from this repo, brings
@@ -16,6 +26,14 @@
 #                       `corlinman-gateway`. Requires root or sudo on Linux.
 #
 # Flags:
+#   --upgrade         In-place upgrade an existing native deployment at
+#                     $CORLINMAN_PREFIX. Pulls the requested --version into
+#                     the existing repo (default: main), re-runs `uv sync
+#                     --frozen`, restarts the systemd service. Never touches
+#                     $CORLINMAN_DATA_DIR. Skips the docker / image-build
+#                     path entirely. Re-running install.sh without --upgrade
+#                     rewrites the systemd unit — use --upgrade to leave
+#                     local edits alone.
 #   --china           Use 2026-verified CN mirrors:
 #                       PyPI    → pypi.tuna.tsinghua.edu.cn (Tsinghua TUNA)
 #                       GitHub  → gh-proxy.com (clone + raw)
@@ -27,7 +45,7 @@
 #                     Mount /var/run/docker.sock so Docker-backed plugin
 #                     sandboxing can spawn child containers. High-trust hosts
 #                     only; disabled by default.
-#   --version <ref>   Git ref / branch to install from (default: main).
+#   --version <ref>   Git ref / branch / tag to install from (default: main).
 #
 # Environment overrides:
 #   CORLINMAN_PREFIX     install root for --mode native (default: /opt/corlinman)
@@ -51,6 +69,7 @@ PORT="${CORLINMAN_PORT:-6005}"
 REPO="ymylive/corlinman"
 USE_CHINA=""
 ENABLE_DOCKER_SANDBOX="${CORLINMAN_ENABLE_DOCKER_SANDBOX:-}"
+UPGRADE_MODE=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -60,8 +79,9 @@ while [[ $# -gt 0 ]]; do
         --version=*) REF="${1#--version=}"; shift ;;
         --china) USE_CHINA="1"; shift ;;
         --enable-docker-sandbox) ENABLE_DOCKER_SANDBOX="1"; shift ;;
+        --upgrade) UPGRADE_MODE="1"; shift ;;
         -h|--help)
-            head -42 "$0" | sed -n '2,$p' | sed 's/^# \{0,1\}//'
+            head -60 "$0" | sed -n '2,$p' | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *) echo "unknown argument: $1" >&2; exit 1 ;;
@@ -289,8 +309,62 @@ EOF
 EOF
 }
 
+# ----- Upgrade path (native deployments only) --------------------------------
+# Idempotent: pulls REF into the existing repo, refreshes the venv, restarts
+# the systemd unit. Never rewrites config.toml or touches $DATA_DIR.
+upgrade_native() {
+    require git
+    require uv
+    [[ -d "$PREFIX/repo/.git" ]] \
+        || die "no existing native install at $PREFIX/repo — run install.sh without --upgrade for a fresh install"
+
+    log "upgrading $PREFIX/repo to ref=$REF"
+    git -C "$PREFIX/repo" fetch --depth 1 origin "$REF"
+    # Detect the resolved commit before we touch the worktree so the summary
+    # at the end can show before/after SHAs.
+    local before_sha
+    before_sha="$(git -C "$PREFIX/repo" rev-parse --short HEAD)"
+    git -C "$PREFIX/repo" checkout "$REF"
+    git -C "$PREFIX/repo" reset --hard FETCH_HEAD
+    local after_sha
+    after_sha="$(git -C "$PREFIX/repo" rev-parse --short HEAD)"
+
+    log "uv sync --frozen (refreshing venv)"
+    (cd "$PREFIX/repo" && uv sync --all-packages --frozen --no-dev)
+
+    if [[ "$(uname -s)" == "Linux" ]] \
+        && [[ -f /etc/systemd/system/corlinman.service ]]; then
+        log "restarting corlinman.service"
+        sudo systemctl restart corlinman.service
+        sudo systemctl is-active corlinman.service || warn "service did not return active"
+    elif [[ "$(uname -s)" == "Linux" ]] \
+        && [[ -f /etc/systemd/system/corlinman-gateway.service ]]; then
+        # Older deployments registered the unit as corlinman-gateway.service.
+        log "restarting corlinman-gateway.service (legacy unit name)"
+        sudo systemctl restart corlinman-gateway.service
+    else
+        warn "no systemd unit found — restart corlinman manually"
+    fi
+
+    cat <<EOF
+
+✅ corlinman upgraded
+   $before_sha → $after_sha  (ref=$REF)
+   prefix : $PREFIX
+   data   : $DATA_DIR (untouched)
+   health : curl -fsS http://localhost:${PORT}/health
+EOF
+}
+
 # ----- entry -----------------------------------------------------------------
 main() {
+    if [[ -n "$UPGRADE_MODE" ]]; then
+        # Upgrade path doesn't need the china mirror dance for the venv path
+        # (uv already cached most wheels); only the git fetch matters and we
+        # still respect $CN_GH_PROXY through the existing remote.
+        upgrade_native
+        return
+    fi
     autodetect_china
     apply_china_mirrors
     case "$MODE" in

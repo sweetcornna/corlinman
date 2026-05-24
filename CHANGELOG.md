@@ -4,6 +4,120 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] — 2026-05-24 — channel parity + Claude-Code-style task UX
+
+> 10 commits on top of v1.0.0. Brings the new chat channels to feature
+> parity with Telegram (status streaming + file replies), adds two
+> brand-new channels (QQ official bot + WeChat 公众号), fixes the
+> session-management page (it was reading from the wrong store),
+> simplifies the admin UI by ~16 pages, ports Claude Code's summary-
+> based context compaction + mid-turn user-message injection, and
+> renders the agent's task list as a live ☑/▣/☐ checkbox view.
+
+### Added
+
+- **QQ 官方机器人 channel** — Tencent 官方 bot platform (api.sgroup.qq.com).
+  WebSocket gateway + REST sender + Ed25519 webhook sig + access-token
+  single-flight refresh. Image attachments via `send_attachment`; non-
+  images render an explanatory line (platform limitation).
+- **微信公众号 channel** — webhook with sha1 signature verification +
+  4.5 s passive-reply window with automatic fallback to customer-
+  service messages over the 48 h reply window. Temp-media upload for
+  image / voice replies. AES encryption is a documented v1 gap.
+- **Discord / Slack / Feishu mutable-spinner status** — the three
+  channels now render the same Telegram-style "🧠 思考中 → 🔧 调用工具
+  → ✅ 完成 → ✍️ 生成回复 → final reply" mutable placeholder, with
+  per-channel file uploads via `send_attachment` (Discord 25 MiB
+  multipart, Slack `files.upload`, Feishu two-step `/im/v1/files`).
+- **QQ tool-activity summary block** — QQ can't edit messages, so when
+  a turn used ≥1 tool the agent's reply is now prepended with a
+  compact `📋 本次操作: …` block listing every tool call + duration +
+  outcome + file uploads. Env-gated via `CORLINMAN_QQ_TOOL_SUMMARY=0/1`.
+- **Hermes-style detailed status** — Telegram spinner now shows arg
+  previews (`🔧 web_search 'gpt-5.5 news'`), durations
+  (`✅ web_search (302ms)`), errors (`❌ run_shell 失败 (42ms): perm…`),
+  and reasoning deltas (`💭 推理: …` lines from Anthropic thinking
+  blocks + DeepSeek-R1 reasoning_content). Mirrors hermes-agent's
+  `_last_activity_desc` mutable spinner line.
+- **`send_attachment` everywhere** — Discord, Slack, Feishu, QQ-official
+  joined the existing Telegram + QQ-OneBot support. The agent calls
+  `send_attachment(path=...)` and each channel picks the right transport.
+- **Live task-list rendering** — `todo_write` tool calls now render as
+  `📋 任务清单 (3/5): ☑ Search… ▣ Drafting… ☐ Build…`. Telegram
+  spinners edit in place; QQ / QQ-official / WeChat prepend the final
+  snapshot to the reply.
+- **Claude-Code-style context compaction** — when token estimate ≥ 95 %
+  of `CORLINMAN_CONTEXT_BUDGET` the reasoning loop now runs a
+  summarization sub-call (same model, no tools, ≤1500 output tokens),
+  replacing older messages with one synthetic system block:
+  `PRIOR CONVERSATION SUMMARY: …`. Failure falls back to the existing
+  elision path. The naive elision threshold dropped from 100 % to 60 %
+  of budget so it fires earlier.
+- **Mid-turn user-message injection** — while the agent is processing
+  turn N for session-key X, a NEW message arriving for the same
+  session is INJECTED into the running turn as additional user
+  context (Claude Code's "supplemental message" UX). The second RPC
+  returns `Done(finish_reason="supplemented")` and the channel
+  silently keeps the typing indicator alive; no parallel turn is
+  spawned. New `HookEvent.UserSupplemented` event fires for audit.
+  `ReasoningLoop.inject_user_message(text)` is the public surface.
+- **AgentJournal session APIs** — `list_session_summaries(*, limit)`
+  + `delete_session(session_key)` on both the SQLite and Postgres
+  backends. Aggregates chat history per session, returns
+  `(session_key, first_seen, last_seen, turn_count, message_count,
+  last_user_text, last_status)`. The Sessions admin page now reads
+  this surface and operators can finally see + delete real chat
+  history.
+- **Sessions admin page rework** — Delete per row + Clear-all button
+  + AlertDialog confirmations + last-seen column + empty-state copy.
+  `DELETE /admin/sessions/{session_key}` and `DELETE /admin/sessions`
+  routes on the backend with audit logs.
+- **`useDevMode()` hook + Developer Settings page** — admin sidebar
+  now shows 10 operator items by default with a toggle on
+  `/admin/dev-settings` to surface the 11 developer-only pages (Config,
+  Tenants, Credentials, Agents, Skills, Plugins, RAG, Profiles,
+  Evolution, Hooks, Nodes). Preference persists in `localStorage`
+  (`corlinman.devMode.v1`).
+- **Per-channel concurrency cap** — every chat channel now caps
+  in-flight turns at `CORLINMAN_<CHANNEL>_MAX_CONCURRENCY` (default 8),
+  preventing a 100-message burst from spawning 100 parallel LLM
+  streams.
+- **gRPC keepalive aligned** — client + both server bind sites use the
+  same `keepalive_time_ms=30s` + `max_ping_strikes=0` to stop the
+  intermittent "UNAVAILABLE: Too many pings" on long agent turns.
+
+### Changed
+
+- **Sidebar trimmed** — removed 6 niche admin pages
+  (`embedding`, `tagmemo`, `canvas`, `diary`, `characters`,
+  `federation`) along with their backend routes. ~9 400 lines deleted.
+  Provider-runtime embedding code is unaffected (just the deleted
+  admin UI for it).
+- **`JournalBackend.find_resumable_turn` / `begin_turn`** gained a
+  `user_id` kwarg so group-chat members can't replay each other's
+  tool side effects (default preserves legacy single-user behavior).
+- **Sessions route data source** — `GET /admin/sessions` now reads
+  from `agent_journal.sqlite` (the source of truth) instead of the
+  unused legacy `sessions.sqlite` (which has been empty since 0.7.x).
+  Legacy file is still consulted as a fallback if the journal is
+  unavailable.
+
+### Fixed
+
+- **`/admin/sessions` returned empty** because it was reading the
+  wrong store; see "Changed" above.
+- **Long tasks loop until `_MAX_ROUNDS`** because the old elision-only
+  compaction kept feeding the same `tool_calls` skeletons to the
+  model. Summary-based compaction collapses redundant retries into a
+  single sentence so the model has room to plan.
+- **Discord / Slack / Feishu had no typing-indicator parity** — now
+  fired (Discord `/typing`; Slack stub for missing-API; Feishu stub).
+
+### Removed
+
+- Admin UI pages: `embedding`, `tagmemo`, `canvas`, `diary`,
+  `characters`, `federation`. Matching backend admin routes too.
+
 ## [1.0.0] — 2026-05-24 — Python port complete + production-ready edge
 
 > Major release. Cuts the umbilical to the Rust gateway and finishes the
