@@ -501,6 +501,119 @@ async def _qq_run_one(
         semaphore.release()
 
 
+def _qq_activity_label_for_call(ev: Any) -> str:
+    """Render a ``tool_call`` event as a compact label for the summary
+    block — same per-tool argument extraction as
+    :func:`_format_tool_status`, but without the leading "🔧 调用工具:"
+    prefix. Used by :func:`_qq_format_activity_summary`.
+    """
+    tool = (getattr(ev, "tool", "") or "?").replace("\n", " ")
+    plugin = (getattr(ev, "plugin", "") or "").replace("\n", " ")
+    label = f"{plugin}.{tool}" if plugin and plugin != tool else tool
+    if len(label) > 60:
+        label = label[:57] + "..."
+    preview = _tool_arg_preview(tool, getattr(ev, "args_json", b""))
+    return f"{label} {preview}".rstrip()
+
+
+def _qq_format_duration(duration_ms: int | None) -> str:
+    """Human-friendly duration for the QQ summary block (None → empty)."""
+    if duration_ms is None:
+        return ""
+    dur_ms = int(duration_ms or 0)
+    return f"{dur_ms}ms" if dur_ms < 1000 else f"{dur_ms / 1000:.1f}s"
+
+
+def _qq_format_activity_summary(
+    activity: list[tuple[str, str, int | None, bool, str]],
+) -> str:
+    """Render the per-turn tool-activity prelude for QQ replies.
+
+    ``activity`` is a list of ``(kind, label, duration_ms, is_error,
+    error_summary)`` tuples in arrival order. ``kind`` is one of:
+
+    * ``"call"``       — a ``tool_call`` event (label is the tool + arg preview).
+    * ``"result"``     — a ``tool_result`` event (paired with the most
+      recent unpaired ``"call"`` by position).
+    * ``"attachment"`` — an outbound file upload (label is the filename).
+
+    Returns the empty string if there's nothing worth showing
+    (no tool calls happened on this turn). Caller is responsible for
+    honouring ``CORLINMAN_QQ_TOOL_SUMMARY=0``.
+
+    Output shape (each line ≤80 chars)::
+
+        📋 本次操作:
+        🔧 web_search 'gpt-5.5 news' (302ms)
+        ✅ write_file hello.html (2ms)
+        📎 已发送文件: hello.html
+        ─────────────
+    """
+    if not activity:
+        return ""
+    # Walk in arrival order and pair calls with results by index. Each
+    # call line absorbs the next result (success / failure / duration);
+    # send_attachment renders as its own 📎 line instead of a call/result
+    # pair because the channel-side upload is what the user cares about.
+    rendered: list[str] = []
+    # Index + label of the most recent unpaired "call" entry, so a
+    # following "result" can replace its rendered line in-place while
+    # preserving the call's full label (tool name + per-tool arg
+    # preview).
+    pending_call_idx: int | None = None
+    pending_call_label: str = ""
+    for kind, label, duration_ms, is_error, error_summary in activity:
+        if kind == "attachment":
+            rendered.append(f"📎 已发送文件: {label}")
+            pending_call_idx = None
+            pending_call_label = ""
+            continue
+        if kind == "call":
+            rendered.append(f"🔧 {label}".rstrip())
+            pending_call_idx = len(rendered) - 1
+            pending_call_label = label
+            continue
+        if kind == "result":
+            # Prefer the call's richer label (tool + arg preview) over
+            # the bare tool name carried on the result event — keeps the
+            # "web_search 'gpt-5.5 news'" context visible after pairing.
+            display_label = pending_call_label or label
+            dur = _qq_format_duration(duration_ms)
+            suffix = f" ({dur})" if dur else ""
+            if is_error:
+                err = (error_summary or "").replace("\n", " ")
+                if len(err) > 80:
+                    err = err[:79] + "…"
+                detail = f": {err}" if err else ""
+                line = f"❌ {display_label} 失败{suffix}{detail}"
+            else:
+                line = f"✅ {display_label}{suffix}"
+            if pending_call_idx is not None:
+                # Replace the bare call line with the resolved one — the
+                # user only needs one entry per tool, not two.
+                rendered[pending_call_idx] = line
+                pending_call_idx = None
+                pending_call_label = ""
+            else:
+                rendered.append(line)
+            continue
+    if not rendered:
+        return ""
+    lines = ["📋 本次操作:", *rendered, "─────────────"]
+    return "\n".join(lines)
+
+
+def _qq_tool_summary_enabled() -> bool:
+    """Honour ``CORLINMAN_QQ_TOOL_SUMMARY`` — default on, ``0`` / ``false``
+    / ``no`` / ``off`` disables the prelude block."""
+    import os
+
+    raw = os.environ.get("CORLINMAN_QQ_TOOL_SUMMARY", "")
+    if not raw:
+        return True
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
 async def _qq_send_attachment(
     adapter: OneBotAdapter,
     event: MessageEvent,
@@ -610,6 +723,14 @@ async def handle_one_qq(
     Surfaces a NapCat "正在输入..." indicator in private chats for the
     duration of the turn (QQ groups don't render typing indicators —
     skipped there).
+
+    QQ has no clean editMessage equivalent (NapCat / OneBot edit support
+    is patchy across clients and noisy in groups), so per-step spinner
+    text isn't feasible here. Instead we collect every ``tool_call`` /
+    ``tool_result`` / ``send_attachment`` event and prepend a compact
+    "📋 本次操作:" summary block to the final reply so the user can see
+    what the agent did. Disable per-deployment with
+    ``CORLINMAN_QQ_TOOL_SUMMARY=0``.
     """
     request = _build_internal_request(req, event, model)
     _log.info("qq handle_one start user=%s model=%s", event.user_id, model)
@@ -628,6 +749,10 @@ async def handle_one_qq(
 
     text_parts: list[str] = []
     error_message: str | None = None
+    # Per-turn tool-activity log. Each entry: (kind, label, duration_ms,
+    # is_error, error_summary). Rendered by _qq_format_activity_summary
+    # and prepended to the final reply if non-empty.
+    activity: list[tuple[str, str, int | None, bool, str]] = []
     try:
         stream = chat_service.run(request, cancel)
         async for chat_ev in stream:
@@ -642,14 +767,49 @@ async def handle_one_qq(
                 )
                 break
             elif kind == "tool_call":
-                if getattr(chat_ev, "tool", "") == _SEND_ATTACHMENT_TOOL:
+                tool_name = getattr(chat_ev, "tool", "") or ""
+                if tool_name == _SEND_ATTACHMENT_TOOL:
                     # Real upload; the agent-side dispatch is a no-op
                     # stub so the loop continues — we do the work here.
+                    # The attachment line stands in for the call/result
+                    # pair in the summary block.
                     await _qq_send_attachment(adapter, event, chat_ev)
+                    _path, _caption, _filename = _parse_send_attachment_args(
+                        chat_ev
+                    )
+                    display = (_filename or "").strip()
+                    if not display and _path:
+                        from pathlib import Path as _P
+
+                        display = _P(_path).name
+                    activity.append(
+                        ("attachment", display or "(file)", None, False, "")
+                    )
+                else:
+                    activity.append(
+                        ("call", _qq_activity_label_for_call(chat_ev),
+                         None, False, "")
+                    )
                 # Other tool_call frames stay informational — QQ has no
                 # editMessage equivalent, so we can't render a mutable
                 # spinner. The set_input_status pulse is the user-
-                # visible signal that work is happening.
+                # visible signal that work is happening; the summary
+                # block (prepended below) is the post-hoc audit trail.
+            elif kind == "tool_result":
+                tool_name = getattr(chat_ev, "tool", "") or ""
+                if tool_name == _SEND_ATTACHMENT_TOOL:
+                    # send_attachment already rendered as its own 📎
+                    # line — the completion is implicit.
+                    continue
+                dur_ms = int(getattr(chat_ev, "duration_ms", 0) or 0)
+                is_error = bool(getattr(chat_ev, "is_error", False))
+                err_summary = getattr(chat_ev, "error_summary", "") or ""
+                tool_label = (tool_name or "?").replace("\n", " ")
+                if len(tool_label) > 60:
+                    tool_label = tool_label[:57] + "..."
+                activity.append(
+                    ("result", tool_label, dur_ms, is_error, err_summary)
+                )
     except Exception as exc:  # noqa: BLE001 — never let a crash kill the row
         _log.exception("qq handle_one crashed: %s", exc)
         if inbox is not None and inbox_id is not None:
@@ -664,20 +824,50 @@ async def handle_one_qq(
             with suppress(asyncio.CancelledError, Exception):
                 await typing_task
 
+    # Build the optional tool-activity prelude (honours env knob).
+    summary = (
+        _qq_format_activity_summary(activity)
+        if _qq_tool_summary_enabled()
+        else ""
+    )
+
     if error_message is not None:
         body = f"[corlinman error] {error_message}"
+        if summary:
+            body = summary + "\n" + body
         _log.error("qq handle_one error user=%s error=%r", event.user_id, error_message)
     else:
         body = "".join(text_parts)
         if not body.strip():
-            _log.warning("qq handle_one empty reply user=%s", event.user_id)
-            if inbox is not None and inbox_id is not None:
-                try:
-                    await inbox.mark_done(inbox_id)
-                except Exception:  # noqa: BLE001
-                    pass
-            return  # Empty assistant reply → silent drop.
-        _log.info("qq handle_one reply user=%s len=%d", event.user_id, len(body))
+            # Empty assistant reply. If we ran tools this turn, the user
+            # still deserves to see what happened — send just the
+            # summary block. Otherwise stay silent as before.
+            if summary:
+                body = summary.rstrip()
+                _log.info(
+                    "qq handle_one summary-only reply user=%s tools=%d",
+                    event.user_id,
+                    len(activity),
+                )
+            else:
+                _log.warning(
+                    "qq handle_one empty reply user=%s", event.user_id
+                )
+                if inbox is not None and inbox_id is not None:
+                    try:
+                        await inbox.mark_done(inbox_id)
+                    except Exception:  # noqa: BLE001
+                        pass
+                return  # Empty assistant reply → silent drop.
+        else:
+            if summary:
+                body = summary + "\n" + body
+            _log.info(
+                "qq handle_one reply user=%s len=%d tools=%d",
+                event.user_id,
+                len(body),
+                len(activity),
+            )
 
     action = _build_reply_action(event, body)
     await adapter.send_action(action)

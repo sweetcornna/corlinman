@@ -397,6 +397,171 @@ class TestHandleOneQq:
         await asyncio.sleep(0.1)
         assert len(adapter.sent) == count_at_stop
 
+    # -- tool-activity summary prelude (QQ-only; groups + private) ----------
+
+    @pytest.mark.asyncio
+    async def test_summary_prepends_when_tool_used(self) -> None:
+        """A turn that used a tool must prepend the 📋 本次操作 block
+        with one resolved tool line before the assistant body."""
+        import asyncio
+
+        svc = _ScriptedChatService([
+            _Ev(
+                kind="tool_call",
+                plugin="web_search",
+                tool="web_search",
+                args_json=b'{"query":"gpt-5.5 news"}',
+            ),
+            _Ev(
+                kind="tool_result",
+                plugin="web_search",
+                tool="web_search",
+                duration_ms=302,
+                is_error=False,
+            ),
+            _Ev(kind="token_delta", text="answer"),
+            _Ev(kind="done"),
+        ])
+        ev = _sample_group_event()
+        binding = ChannelBinding.qq_group(ev.self_id, ev.group_id or 0, ev.user_id)
+        req = RoutedRequest(binding=binding, content="hi")
+        adapter = _FakeOneBotAdapter()
+
+        await handle_one_qq(svc, req, ev, "m", adapter, asyncio.Event())  # type: ignore[arg-type]
+        assert len(adapter.sent) == 1
+        action = adapter.sent[0]
+        assert isinstance(action, SendGroupMsg)
+        text_seg = action.message[1]
+        assert isinstance(text_seg, TextSegment)
+        text = text_seg.text
+        # Summary block heading comes first (groups prepend a leading
+        # space because the @-mention precedes the text segment).
+        assert text.lstrip().startswith("📋 本次操作:"), text
+        # Tool line carries the per-tool preview + success duration.
+        assert "web_search" in text
+        assert "'gpt-5.5 news'" in text or "gpt-5.5 news" in text
+        assert "302ms" in text
+        assert "✅" in text
+        # Divider + assistant body trail the block.
+        assert "─────" in text
+        assert text.rstrip().endswith("answer")
+
+    @pytest.mark.asyncio
+    async def test_summary_omitted_when_no_tools(self) -> None:
+        """No tool events → body is exactly the assistant text, no
+        summary prefix. Preserves the legacy single-line reply shape."""
+        import asyncio
+
+        svc = _ScriptedChatService([
+            _Ev(kind="token_delta", text="just talk"),
+            _Ev(kind="done"),
+        ])
+        ev = _sample_group_event()
+        binding = ChannelBinding.qq_group(ev.self_id, ev.group_id or 0, ev.user_id)
+        req = RoutedRequest(binding=binding, content="hi")
+        adapter = _FakeOneBotAdapter()
+
+        await handle_one_qq(svc, req, ev, "m", adapter, asyncio.Event())  # type: ignore[arg-type]
+        assert len(adapter.sent) == 1
+        text_seg = adapter.sent[0].message[1]
+        assert isinstance(text_seg, TextSegment)
+        # No 📋 prefix anywhere — body is only the answer (with whatever
+        # newline shape the reply builder added around it).
+        assert "📋" not in text_seg.text
+        assert "just talk" in text_seg.text
+
+    @pytest.mark.asyncio
+    async def test_summary_includes_send_attachment_line(
+        self, tmp_path: Any
+    ) -> None:
+        """A send_attachment tool_call must surface as a 📎 已发送文件
+        line in the summary block."""
+        import asyncio
+        import json
+
+        f = tmp_path / "hello.html"
+        f.write_text("<h1>hi</h1>", encoding="utf-8")
+        args = json.dumps({"path": str(f), "filename": "hello.html"})
+        svc = _ScriptedChatService([
+            _Ev(
+                kind="tool_call",
+                plugin="send_attachment",
+                tool="send_attachment",
+                args_json=args.encode("utf-8"),
+            ),
+            _Ev(kind="token_delta", text="done"),
+            _Ev(kind="done"),
+        ])
+        ev = _qq_private_event(user_id=42)
+        binding = ChannelBinding.qq_private(999, 42)
+        req = RoutedRequest(binding=binding, content="give me the html")
+        adapter = _FakeOneBotAdapter()
+
+        await handle_one_qq(svc, req, ev, "m", adapter, asyncio.Event())  # type: ignore[arg-type]
+        # Locate the text reply (an UploadPrivateFile action also lands).
+        text_actions = [a for a in adapter.sent if isinstance(a, SendPrivateMsg)]
+        assert text_actions, f"expected SendPrivateMsg; got {[type(a).__name__ for a in adapter.sent]}"
+        text = text_actions[-1].message[0].text
+        assert "📋 本次操作:" in text
+        assert "📎 已发送文件: hello.html" in text
+        assert "done" in text
+
+    @pytest.mark.asyncio
+    async def test_summary_env_disable_suppresses_block(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """CORLINMAN_QQ_TOOL_SUMMARY=0 must hide the prelude even when
+        tools were used — body is just the assistant text."""
+        import asyncio
+
+        monkeypatch.setenv("CORLINMAN_QQ_TOOL_SUMMARY", "0")
+        svc = _ScriptedChatService([
+            _Ev(kind="tool_call", plugin="web_search", tool="web_search",
+                args_json=b'{"query":"x"}'),
+            _Ev(kind="tool_result", plugin="web_search", tool="web_search",
+                duration_ms=10, is_error=False),
+            _Ev(kind="token_delta", text="answer"),
+            _Ev(kind="done"),
+        ])
+        ev = _sample_group_event()
+        binding = ChannelBinding.qq_group(ev.self_id, ev.group_id or 0, ev.user_id)
+        req = RoutedRequest(binding=binding, content="hi")
+        adapter = _FakeOneBotAdapter()
+
+        await handle_one_qq(svc, req, ev, "m", adapter, asyncio.Event())  # type: ignore[arg-type]
+        text = adapter.sent[0].message[1].text
+        assert "📋" not in text
+        assert "web_search" not in text
+        assert "answer" in text
+
+    @pytest.mark.asyncio
+    async def test_summary_includes_error_lines(self) -> None:
+        """tool_result with is_error=True must render ❌ + summary text
+        in the prelude block."""
+        import asyncio
+
+        svc = _ScriptedChatService([
+            _Ev(kind="tool_call", plugin="run_shell", tool="run_shell",
+                args_json=b'{"command":"rm -rf /"}'),
+            _Ev(kind="tool_result", plugin="run_shell", tool="run_shell",
+                duration_ms=42, is_error=True,
+                error_summary="permission denied"),
+            _Ev(kind="token_delta", text="failed"),
+            _Ev(kind="done"),
+        ])
+        ev = _sample_group_event()
+        binding = ChannelBinding.qq_group(ev.self_id, ev.group_id or 0, ev.user_id)
+        req = RoutedRequest(binding=binding, content="hi")
+        adapter = _FakeOneBotAdapter()
+
+        await handle_one_qq(svc, req, ev, "m", adapter, asyncio.Event())  # type: ignore[arg-type]
+        text = adapter.sent[0].message[1].text
+        assert "📋 本次操作:" in text
+        assert "❌" in text
+        assert "run_shell" in text
+        assert "permission denied" in text
+        assert "42ms" in text
+
 
 # ---------------------------------------------------------------------------
 # handle_one_telegram
