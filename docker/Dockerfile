@@ -1,5 +1,10 @@
 # corlinman v1.x — pure Python multi-stage Dockerfile.
 #
+# BuildKit required: RUN steps below use `--mount=type=cache` to share apt /
+# uv / pnpm download caches across builds. Set `DOCKER_BUILDKIT=1` or use
+# `docker buildx build` (default on modern Docker / in CI via
+# docker/build-push-action).
+#
 # Stages:
 #   1. py-builder  → install workspace + deps into a venv with uv.
 #   2. ui-builder  → build the Next.js static admin export.
@@ -30,13 +35,14 @@ RUN if [ "$DEBIAN_MIRROR" != "deb.debian.org" ]; then \
             || sed -i "s|deb.debian.org|$DEBIAN_MIRROR|g" /etc/apt/sources.list; \
     fi
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         protobuf-compiler \
         curl \
         ca-certificates \
-        git \
-    && rm -rf /var/lib/apt/lists/*
+        git
 
 # Install uv — pinned for reproducibility.
 ENV UV_INSTALL_DIR=/usr/local/bin
@@ -54,7 +60,8 @@ COPY scripts/gen-proto.sh ./scripts/gen-proto.sh
 
 # Sync the entire workspace into /opt/venv. --frozen ensures we use uv.lock.
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv
-RUN uv sync --all-packages --frozen --no-dev
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --all-packages --frozen --no-dev
 
 # Regenerate proto stubs (the generated files are committed but rebuild
 # defensively — keeps the image self-consistent even if a stale commit
@@ -76,14 +83,16 @@ WORKDIR /build
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY ui/package.json ./ui/package.json
 
-RUN corepack enable \
+RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
+    corepack enable \
     && corepack prepare pnpm@10.33.0 --activate \
     && if [ -n "$NPM_REGISTRY" ]; then pnpm config set registry "$NPM_REGISTRY"; fi \
     && pnpm install --frozen-lockfile
 
 COPY ui ./ui
 
-RUN pnpm -C ui build
+RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
+    pnpm -C ui build
 
 # ---------------------------------------------------------------------------
 # Stage 3: runtime — slim image with just the venv + sources + UI static
