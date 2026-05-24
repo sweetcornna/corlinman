@@ -242,6 +242,62 @@ async def test_two_begin_turn_in_parallel_return_distinct_ids(
     assert isinstance(b, int)
 
 
+async def test_begin_turn_race_returns_none_on_conflict(
+    backend,  # type: ignore[no-untyped-def]
+) -> None:
+    """C5: two ``begin_turn`` calls with the SAME (session_key,
+    user_text, user_id) tuple race against the partial unique index —
+    exactly one returns a turn_id; the other returns ``None``. The
+    chat handler treats the ``None`` as "another gateway opened the
+    turn; fall back to find_resumable_turn"."""
+    coros = [
+        backend.begin_turn("race-1", "same prompt", user_id="alice"),
+        backend.begin_turn("race-1", "same prompt", user_id="alice"),
+    ]
+    a, b = await asyncio.gather(*coros)
+    results = [a, b]
+    nones = [r for r in results if r is None]
+    ids = [r for r in results if isinstance(r, int)]
+    assert len(nones) == 1, (
+        f"C5 violation: expected exactly one None on race; got {results}"
+    )
+    assert len(ids) == 1
+    # The surviving row is findable via find_resumable_turn.
+    resume = await backend.find_resumable_turn(
+        "race-1", "same prompt", user_id="alice"
+    )
+    assert resume is not None
+    assert resume.turn_id == ids[0]
+
+
+async def test_begin_turn_different_user_ids_do_not_collide(
+    backend,  # type: ignore[no-untyped-def]
+) -> None:
+    """The C5 partial unique index uses user_id as part of its key, so
+    two DIFFERENT users in the same session typing the same text MUST
+    both succeed — they are independent turns."""
+    a = await backend.begin_turn("race-2", "ship it", user_id="alice")
+    b = await backend.begin_turn("race-2", "ship it", user_id="bob")
+    assert a is not None and b is not None and a != b
+
+
+async def test_find_resumable_scopes_by_user_id(
+    backend,  # type: ignore[no-untyped-def]
+) -> None:
+    """S4 on Postgres: a turn opened by Alice is NOT visible to Mallory
+    even with the same session_key + user_text."""
+    tid = await backend.begin_turn("g1", "ship it", user_id="alice")
+    assert tid is not None
+    assert (
+        await backend.find_resumable_turn("g1", "ship it", user_id="mallory")
+    ) is None
+    found = await backend.find_resumable_turn(
+        "g1", "ship it", user_id="alice"
+    )
+    assert found is not None
+    assert found.turn_id == tid
+
+
 async def test_recent_errored_turns_is_session_scoped(backend) -> None:  # type: ignore[no-untyped-def]
     a = await backend.begin_turn("sess-a", "a-task")
     b = await backend.begin_turn("sess-b", "b-task")

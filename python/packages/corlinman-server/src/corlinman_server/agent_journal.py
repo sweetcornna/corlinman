@@ -127,8 +127,24 @@ class AgentJournal:
     # Turn lifecycle — straight delegation.
     # ------------------------------------------------------------------
 
-    async def begin_turn(self, session_key: str, user_text: str) -> int:
-        return await self._backend.begin_turn(session_key, user_text)
+    async def begin_turn(
+        self,
+        session_key: str,
+        user_text: str,
+        *,
+        user_id: str | None = None,
+    ) -> int | None:
+        """Forward to the backend, including the optional S4 user_id scope.
+
+        Backends that race-check against a partial unique index (Postgres
+        C5) may return ``None`` to signal "another gateway already opened
+        a turn for the same (session_key, user_text, user_id)"; SQLite
+        returns the new id unchanged because the per-session asyncio lock
+        keeps concurrent writers from racing in the same process.
+        """
+        return await self._backend.begin_turn(
+            session_key, user_text, user_id=user_id
+        )
 
     async def complete_turn(self, turn_id: int) -> None:
         await self._backend.complete_turn(turn_id)
@@ -162,9 +178,21 @@ class AgentJournal:
     # ------------------------------------------------------------------
 
     async def find_resumable_turn(
-        self, session_key: str, user_text: str
+        self,
+        session_key: str,
+        user_text: str,
+        *,
+        user_id: str | None = None,
     ) -> ResumeData | None:
-        return await self._backend.find_resumable_turn(session_key, user_text)
+        """Find a resumable turn, optionally scoped to ``user_id`` (S4).
+
+        See :meth:`JournalBackend.find_resumable_turn`. The default
+        ``user_id=None`` preserves the legacy user_text-only match for
+        callers that don't carry a channel sender (HTTP turns).
+        """
+        return await self._backend.find_resumable_turn(
+            session_key, user_text, user_id=user_id
+        )
 
     async def _load_messages(self, turn_id: int) -> list[dict[str, Any]]:
         """Backward-compat alias for the original private loader.

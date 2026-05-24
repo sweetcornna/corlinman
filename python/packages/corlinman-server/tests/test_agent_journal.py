@@ -164,3 +164,126 @@ async def test_recent_errored_turns_is_session_scoped(
     b_crumbs = await journal.recent_errored_turns("sess-b")
     assert {c["error"] for c in a_crumbs} == {"fail-a"}
     assert {c["error"] for c in b_crumbs} == {"fail-b"}
+
+
+# ---------------------------------------------------------------------------
+# S4 — user_id scoping (group-chat replay-attack protection)
+# ---------------------------------------------------------------------------
+
+
+async def test_find_resumable_does_not_cross_users_within_session(
+    journal: AgentJournal,
+) -> None:
+    """S4: two distinct ``user_id`` values on the same ``session_key`` with
+    the same ``user_text`` must NOT resume each other's turn.
+
+    The group-chat replay attack: Mallory parrots Alice's exact text;
+    without ``user_id`` scoping the journal would happily hand Mallory
+    Alice's in-progress turn. With S4, Mallory's lookup misses.
+    """
+    # Alice opens a turn in group ``g1`` with text "ship it".
+    alice_tid = await journal.begin_turn(
+        "g1", "ship it", user_id="alice"
+    )
+    assert alice_tid is not None
+    # Mallory in the same group replays Alice's text — must NOT resume.
+    mallory_match = await journal.find_resumable_turn(
+        "g1", "ship it", user_id="mallory"
+    )
+    assert mallory_match is None, (
+        "S4 violation: Mallory could resume Alice's turn by replaying her text"
+    )
+    # Alice herself can still resume — same user_id + same text + same session.
+    alice_match = await journal.find_resumable_turn(
+        "g1", "ship it", user_id="alice"
+    )
+    assert alice_match is not None
+    assert alice_match.turn_id == alice_tid
+
+
+async def test_find_resumable_legacy_null_user_id_is_visible_to_anyone(
+    journal: AgentJournal,
+) -> None:
+    """Rows journaled before S4 had no ``user_id`` (NULL). The lookup
+    tolerates NULL so a redeploy doesn't strand mid-flight resumes —
+    but rows journaled WITH a user_id still get scoped."""
+    legacy_tid = await journal.begin_turn("s-mix", "legacy task")
+    assert legacy_tid is not None
+    # An S4-aware lookup with any user_id can still pick up the NULL row.
+    legacy_match = await journal.find_resumable_turn(
+        "s-mix", "legacy task", user_id="someone"
+    )
+    assert legacy_match is not None
+    assert legacy_match.turn_id == legacy_tid
+
+
+async def test_find_resumable_no_user_id_arg_is_legacy_match(
+    journal: AgentJournal,
+) -> None:
+    """HTTP callers without a channel sender pass ``user_id=None``
+    (the default); the match is user_text-only, matching pre-S4 behaviour."""
+    tid_a = await journal.begin_turn("h1", "http task", user_id="alice")
+    assert tid_a is not None
+    # No user_id supplied → legacy match wins regardless of who began it.
+    legacy_lookup = await journal.find_resumable_turn("h1", "http task")
+    assert legacy_lookup is not None
+    assert legacy_lookup.turn_id == tid_a
+
+
+# ---------------------------------------------------------------------------
+# L5 — aiosqlite begin/rollback semantics
+# ---------------------------------------------------------------------------
+
+
+async def test_complete_turn_still_works_after_append_collision(
+    journal: AgentJournal,
+) -> None:
+    """L5 regression: an ``append_message`` that hits the rollback path
+    must not leave the connection in a half-aborted transaction state
+    that silently no-ops the subsequent ``complete_turn`` write.
+    """
+    tid = await journal.begin_turn("s-L5", "L5 task")
+    assert tid is not None
+
+    # Append a normal message — proves the journal is healthy.
+    await journal.append_message(tid, "user", "L5 task")
+
+    # Force an append failure by feeding a PRIMARY KEY collision: two
+    # appends with the same (turn_id, seq) clash. We synthesise the
+    # collision by inserting a row directly at a guessed-next seq and
+    # then asking the journal to append again — the SELECT MAX(seq)
+    # will see seq=1 already taken, INSERT fails with IntegrityError.
+    # We bypass into the backend via the public ``backend`` accessor.
+    import aiosqlite  # local to keep the public test surface tidy
+    backend = journal.backend
+    # Insert a row at seq=1 directly so the next ``append_message`` →
+    # MAX(seq)+1 = 1 collides on the PRIMARY KEY.
+    conn = backend._c  # noqa: SLF001 — test-only deep poke
+    try:
+        await conn.execute(
+            "INSERT INTO turn_messages (turn_id, seq, role, content) "
+            "VALUES (?, ?, ?, ?)",
+            (tid, 1, "assistant", "directly inserted"),
+        )
+        await conn.commit()
+    except aiosqlite.Error:
+        # If sqlite refuses the manual write, the test setup is wrong —
+        # bail out cleanly so a real bug isn't masked.
+        pytest.skip("could not stage a manual conflicting row")
+
+    # The next ``append_message`` attempt should hit IntegrityError
+    # inside its transaction; the L5 fix logs + rolls back cleanly.
+    await journal.append_message(tid, "user", "this should fail to land")
+
+    # Crucial assertion: ``complete_turn`` still works. Pre-L5 this
+    # silently no-op'd because the connection sat in autocommit limbo
+    # with the previous tx half-aborted.
+    await journal.complete_turn(tid)
+    # If complete_turn took effect, find_resumable_turn must miss
+    # (completed turns aren't resumable).
+    assert (
+        await journal.find_resumable_turn("s-L5", "L5 task")
+    ) is None, (
+        "L5 violation: complete_turn silently no-op'd after a rolled-back "
+        "append_message left the connection in a dirty tx state"
+    )

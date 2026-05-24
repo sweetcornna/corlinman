@@ -58,9 +58,22 @@ from corlinman_server.agent_journal_backend import (
 logger = structlog.get_logger(__name__)
 
 
-# DDL kept in sync with ``migrations/journal_postgres_v1.sql``. Both are
-# idempotent (``IF NOT EXISTS``) so running this on a Postgres that has
-# already had the migration file applied is a no-op.
+# DDL kept in sync with ``migrations/journal_postgres_v1.sql`` (base
+# tables + indexes) and ``journal_postgres_v2.sql`` (S4 user_id column
+# + C5 partial unique index). All statements are idempotent —
+# ``CREATE ... IF NOT EXISTS`` / ``ADD COLUMN IF NOT EXISTS`` — so
+# running this on a Postgres that already has the migrations applied is
+# a no-op.
+#
+# S4: ``user_id`` column scopes ``find_resumable_turn`` by channel
+# sender (defeats the group-chat replay attack). The column is nullable
+# so HTTP callers without a sender (and legacy rows) keep working.
+#
+# C5: the partial unique index on
+# ``(session_key, user_text, COALESCE(user_id, ''))`` where status is
+# ``in_progress`` lets two gateways race ``begin_turn`` safely — the
+# second loser hits ``ON CONFLICT DO NOTHING`` and the chat handler
+# falls back to ``find_resumable_turn`` to grab the winner's row.
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS journal_turns (
     turn_id       BIGSERIAL PRIMARY KEY,
@@ -69,14 +82,21 @@ CREATE TABLE IF NOT EXISTS journal_turns (
     started_at_ms BIGINT NOT NULL,
     ended_at_ms   BIGINT,
     user_text     TEXT,
+    user_id       TEXT,
     error         TEXT
 );
+
+ALTER TABLE journal_turns ADD COLUMN IF NOT EXISTS user_id TEXT;
 
 CREATE INDEX IF NOT EXISTS journal_turns_session_status_idx
     ON journal_turns(session_key, status, started_at_ms DESC);
 
 CREATE INDEX IF NOT EXISTS journal_turns_status_started_idx
     ON journal_turns(status, started_at_ms);
+
+CREATE UNIQUE INDEX IF NOT EXISTS journal_turns_in_progress_uniq
+    ON journal_turns (session_key, user_text, COALESCE(user_id, ''))
+    WHERE status = 'in_progress';
 
 CREATE TABLE IF NOT EXISTS journal_turn_messages (
     turn_id         BIGINT  NOT NULL REFERENCES journal_turns(turn_id) ON DELETE CASCADE,
@@ -172,26 +192,57 @@ class PostgresJournalBackend:
     # Turn lifecycle
     # ------------------------------------------------------------------
 
-    async def begin_turn(self, session_key: str, user_text: str) -> int:
+    async def begin_turn(
+        self,
+        session_key: str,
+        user_text: str,
+        *,
+        user_id: str | None = None,
+    ) -> int | None:
         """Insert an in-progress row; return the new ``turn_id``.
 
         Unlike SQLite (which uses wall-clock ms as the id), Postgres
-        uses a ``BIGSERIAL`` so two concurrent writers never collide.
+        uses a ``BIGSERIAL`` so two concurrent writers never collide on
+        the primary key.
+
+        C5: a partial unique index on
+        ``(session_key, user_text, COALESCE(user_id, ''))`` where
+        ``status = 'in_progress'`` makes the INSERT race-safe across HA
+        gateways. The query uses ``ON CONFLICT DO NOTHING RETURNING
+        turn_id``; when two gateways open the same (session_key,
+        user_text, user_id) tuple concurrently the loser gets back zero
+        rows and we return ``None``. The chat handler then re-runs
+        ``find_resumable_turn`` to grab the winner's row and join it.
+
+        S4: ``user_id`` is journaled so ``find_resumable_turn`` can
+        scope its match by channel sender. ``None`` is preserved
+        verbatim (the column is nullable) for HTTP turns that have no
+        sender id.
         """
         ts = _now_ms()
         async with self._p.acquire() as conn:
             row = await conn.fetchrow(
                 "INSERT INTO journal_turns "
-                "(session_key, status, started_at_ms, user_text) "
-                "VALUES ($1, $2, $3, $4) RETURNING turn_id",
+                "(session_key, status, started_at_ms, user_text, user_id) "
+                "VALUES ($1, $2, $3, $4, $5) "
+                "ON CONFLICT DO NOTHING RETURNING turn_id",
                 session_key or "",
                 TURN_IN_PROGRESS,
                 ts,
                 user_text,
+                user_id,
             )
-        # ``fetchrow`` only returns ``None`` if there is no RETURNING row;
-        # an INSERT with RETURNING always produces one.
-        assert row is not None
+        if row is None:
+            # C5 — another gateway raced us and won the partial unique
+            # index. The servicer falls back to ``find_resumable_turn``
+            # so the caller continues on the winner's row instead of
+            # creating a duplicate.
+            logger.info(
+                "agent.journal.begin_turn_conflict",
+                session_key=session_key,
+                user_id=user_id,
+            )
+            return None
         return int(row["turn_id"])
 
     async def complete_turn(self, turn_id: int) -> None:
@@ -289,28 +340,51 @@ class PostgresJournalBackend:
     # ------------------------------------------------------------------
 
     async def find_resumable_turn(
-        self, session_key: str, user_text: str
+        self,
+        session_key: str,
+        user_text: str,
+        *,
+        user_id: str | None = None,
     ) -> ResumeData | None:
         """Return the most-recent in-progress turn for ``session_key``
         whose ``user_text`` matches and that is younger than
         :data:`RESUME_MAX_AGE_MS`. Mirrors the SQLite backend's
         candidate-only semantics — the caller decides whether to resume.
+
+        S4 — when ``user_id`` is non-None, the candidate row's
+        ``user_id`` must match (or be NULL for legacy rows journaled
+        before the column existed). ``user_id=None`` keeps the legacy
+        user_text-only match for HTTP turns.
         """
         if not session_key or not user_text:
             return None
         cutoff = _now_ms() - RESUME_MAX_AGE_MS
         try:
             async with self._p.acquire() as conn:
-                row = await conn.fetchrow(
-                    "SELECT turn_id, started_at_ms FROM journal_turns "
-                    "WHERE session_key = $1 AND status = $2 "
-                    "AND user_text = $3 AND started_at_ms >= $4 "
-                    "ORDER BY started_at_ms DESC LIMIT 1",
-                    session_key,
-                    TURN_IN_PROGRESS,
-                    user_text,
-                    cutoff,
-                )
+                if user_id is not None:
+                    row = await conn.fetchrow(
+                        "SELECT turn_id, started_at_ms FROM journal_turns "
+                        "WHERE session_key = $1 AND status = $2 "
+                        "AND user_text = $3 AND started_at_ms >= $4 "
+                        "AND (user_id = $5 OR user_id IS NULL) "
+                        "ORDER BY started_at_ms DESC LIMIT 1",
+                        session_key,
+                        TURN_IN_PROGRESS,
+                        user_text,
+                        cutoff,
+                        user_id,
+                    )
+                else:
+                    row = await conn.fetchrow(
+                        "SELECT turn_id, started_at_ms FROM journal_turns "
+                        "WHERE session_key = $1 AND status = $2 "
+                        "AND user_text = $3 AND started_at_ms >= $4 "
+                        "ORDER BY started_at_ms DESC LIMIT 1",
+                        session_key,
+                        TURN_IN_PROGRESS,
+                        user_text,
+                        cutoff,
+                    )
         except Exception as exc:
             logger.warning("agent.journal.find_resumable_failed", error=str(exc))
             return None

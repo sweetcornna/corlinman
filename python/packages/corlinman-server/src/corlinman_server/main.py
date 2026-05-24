@@ -299,6 +299,15 @@ async def _serve() -> int:
     reason = await shutdown.wait()
     logger.info("grpc.server.shutdown", reason=reason)
 
+    # R4: close the servicer's owned resources (journal, memory store,
+    # blackboard, hook bus) BEFORE the gRPC server stop. ``aclose`` is
+    # individually wrapped per resource so a torn Postgres pool does
+    # not block the SQLite memory host from flushing its WAL.
+    try:
+        await agent_servicer.aclose()
+    except Exception as exc:  # noqa: BLE001 — never block shutdown
+        logger.warning("server.shutdown.aclose_failed", error=str(exc))
+
     # 5s grace for in-flight RPCs, then force close.
     await server.stop(grace=5.0)
     logger.info("grpc.server.stopped")

@@ -1205,6 +1205,10 @@ async def test_chat_resumes_in_progress_turn_replaying_tool_results(
     assert j is not None
     seed_turn_id = await j.begin_turn("s1", "do the thing")
     await j.append_message(seed_turn_id, role="user", content="do the thing")
+    # Use ``calculator`` (a real builtin) so the resume splice's C6
+    # stale-tool filter keeps the tool_call instead of pruning it.
+    # ``calc.add`` would be filtered as unknown — that is the C6
+    # behaviour, exercised separately in ``test_resume_prunes_stale_tool_calls``.
     await j.append_message(
         seed_turn_id,
         role="assistant",
@@ -1213,14 +1217,14 @@ async def test_chat_resumes_in_progress_turn_replaying_tool_results(
             {
                 "id": "call_seed",
                 "type": "function",
-                "function": {"name": "calc.add", "arguments": '{"a":1,"b":2}'},
+                "function": {"name": "calculator", "arguments": '{"expression":"2+2"}'},
             }
         ],
     )
     await j.append_message(
         seed_turn_id,
         role="tool",
-        content='{"result": 3}',
+        content='{"result": 4}',
         tool_call_id="call_seed",
     )
 
@@ -1234,10 +1238,16 @@ async def test_chat_resumes_in_progress_turn_replaying_tool_results(
     real_begin = AgentJournal.begin_turn
 
     async def _counting_begin(
-        self_inner: Any, session_key: str, user_text: str
-    ) -> int:
+        self_inner: Any,
+        session_key: str,
+        user_text: str,
+        *,
+        user_id: str | None = None,
+    ) -> int | None:
         begin_calls.append((session_key, user_text))
-        return await real_begin(self_inner, session_key, user_text)
+        return await real_begin(
+            self_inner, session_key, user_text, user_id=user_id
+        )
 
     monkeypatch.setattr(AgentJournal, "begin_turn", _counting_begin)
 
@@ -1339,10 +1349,16 @@ async def test_chat_does_not_resume_stale_in_progress_turn(
     real_begin = AgentJournal.begin_turn
 
     async def _counting_begin(
-        self_inner: Any, session_key: str, user_text: str
-    ) -> int:
+        self_inner: Any,
+        session_key: str,
+        user_text: str,
+        *,
+        user_id: str | None = None,
+    ) -> int | None:
         begin_calls.append((session_key, user_text))
-        return await real_begin(self_inner, session_key, user_text)
+        return await real_begin(
+            self_inner, session_key, user_text, user_id=user_id
+        )
 
     monkeypatch.setattr(AgentJournal, "begin_turn", _counting_begin)
 
@@ -1356,4 +1372,323 @@ async def test_chat_does_not_resume_stale_in_progress_turn(
     )
     assert begin_calls == [("s2", "old prompt")], (
         f"expected one fresh begin_turn; got {begin_calls}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# C6 — resume splice prunes assistant tool_calls referencing tools that
+# are no longer in the current turn's tool surface, plus the matching
+# role="tool" rows.
+# ---------------------------------------------------------------------------
+
+
+def test_prune_stale_tool_calls_drops_unknown_and_pairs() -> None:
+    """Direct unit test for :func:`_prune_stale_tool_calls`.
+
+    Two assistant tool_calls — one for ``calculator`` (in BUILTIN_TOOLS)
+    and one for ``vanished_plugin`` (removed since the journal was
+    written). Plus two matching ``role=tool`` rows. After pruning, only
+    the calculator pair survives.
+    """
+    from corlinman_server.agent_servicer import _prune_stale_tool_calls
+
+    current = frozenset({"calculator"})
+    msgs = [
+        {"role": "user", "content": "do both"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "calculator", "arguments": "{}"},
+                },
+                {
+                    "id": "c2",
+                    "type": "function",
+                    "function": {"name": "vanished_plugin", "arguments": "{}"},
+                },
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "{}"},
+        {"role": "tool", "tool_call_id": "c2", "content": "{}"},
+    ]
+    out, dropped = _prune_stale_tool_calls(msgs, current)
+    assert dropped == 1
+    # The assistant row keeps only c1.
+    assistant_row = next(m for m in out if m["role"] == "assistant")
+    kept_ids = [tc["id"] for tc in assistant_row["tool_calls"]]
+    assert kept_ids == ["c1"], (
+        f"expected only c1 to survive, got {kept_ids}"
+    )
+    # The matching c2 tool row is gone.
+    tool_ids = [m.get("tool_call_id") for m in out if m["role"] == "tool"]
+    assert tool_ids == ["c1"], (
+        f"expected only c1's tool row, got {tool_ids}"
+    )
+
+
+async def test_chat_resume_prunes_stale_tool_calls(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """C6 end-to-end: a journal entry referencing a tool not in the
+    current ``start.tools`` (and not in BUILTIN_TOOLS) is pruned
+    before splicing into the live message list."""
+    import structlog
+    from corlinman_server import agent_servicer as srv_mod
+
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(srv_mod, "ReasoningLoop", _CapturingLoop)
+    _CapturingLoop.captured_starts = []
+
+    servicer = CorlinmanAgentServicer(
+        provider_resolver=lambda _m: _FakeProvider([]),
+    )
+    j = await servicer._get_journal()
+    assert j is not None
+    seed = await j.begin_turn("c6-sess", "two-tool task")
+    await j.append_message(seed, role="user", content="two-tool task")
+    # One known tool (calculator, in BUILTIN_TOOLS) + one stale tool
+    # (gone_plugin, not in the current surface).
+    await j.append_message(
+        seed,
+        role="assistant",
+        content="",
+        tool_calls=[
+            {
+                "id": "keep1",
+                "type": "function",
+                "function": {"name": "calculator", "arguments": "{}"},
+            },
+            {
+                "id": "drop1",
+                "type": "function",
+                "function": {"name": "gone_plugin", "arguments": "{}"},
+            },
+        ],
+    )
+    await j.append_message(
+        seed, role="tool", content='{"result":1}', tool_call_id="keep1"
+    )
+    await j.append_message(
+        seed, role="tool", content='{"result":2}', tool_call_id="drop1"
+    )
+
+    with structlog.testing.capture_logs() as captured:
+        await _drive_chat_once(
+            servicer, session_key="c6-sess", user_text="two-tool task"
+        )
+
+    spliced = _CapturingLoop.captured_starts[0].messages
+    # The kept tool_call (calculator) survives.
+    kept = [
+        tc["id"]
+        for m in spliced
+        if m.get("role") == "assistant"
+        for tc in (m.get("tool_calls") or [])
+    ]
+    assert "keep1" in kept and "drop1" not in kept, (
+        f"C6 violation: kept={kept}"
+    )
+    # The matching ``tool`` row for drop1 is also gone.
+    tool_ids = [
+        m["tool_call_id"]
+        for m in spliced
+        if m.get("role") == "tool" and "tool_call_id" in m
+    ]
+    assert "drop1" not in tool_ids, (
+        f"C6 violation: dropped tool_call's role=tool row survived: {tool_ids}"
+    )
+    # The structured log fires with the drop count.
+    pruned_logs = [
+        r for r in captured if r.get("event") == "agent.resume.tools_pruned"
+    ]
+    assert pruned_logs, (
+        "expected agent.resume.tools_pruned log; got "
+        f"{[r.get('event') for r in captured]}"
+    )
+    assert pruned_logs[0]["dropped"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# R1 — bounded session-keyed caches (lock map + cost meter)
+# ---------------------------------------------------------------------------
+
+
+def test_session_lock_cache_evicts_unheld_locks_at_cap() -> None:
+    """5000 unique session_keys → cache size stays at or below cap (4096
+    by default). Held locks are pinned and survive even if older than
+    the cap allows."""
+    from corlinman_server.agent_servicer import _SessionLockCache
+
+    cap = 4096
+    cache = _SessionLockCache(cap)
+    for i in range(5000):
+        cache.get(f"s-{i}")
+    # The cap is the steady-state upper bound — there should be no
+    # entry growth beyond it.
+    assert len(cache) <= cap, (
+        f"R1 violation: cache grew to {len(cache)} entries (cap={cap})"
+    )
+
+
+def test_session_lock_cache_pins_held_locks() -> None:
+    """A held lock cannot be evicted (the in-flight RPC still needs it)."""
+    import asyncio
+    from corlinman_server.agent_servicer import _SessionLockCache
+
+    cap = 100
+    cache = _SessionLockCache(cap)
+
+    async def _run() -> None:
+        # Acquire the first lock — it's now "held".
+        first = cache.get("held")
+        await first.acquire()
+        try:
+            # Pour in 2*cap NEW keys; the held one must NOT be evicted.
+            for i in range(2 * cap):
+                cache.get(f"flood-{i}")
+            # The held entry is still present.
+            still_present = cache.get("held")
+            assert still_present is first, (
+                "R1 violation: held lock got evicted under flood load"
+            )
+        finally:
+            first.release()
+
+    asyncio.run(_run())
+
+
+def test_cost_meter_evicts_oldest_unconditionally() -> None:
+    """Unlike the lock cache, the cost meter has no held-entry concept —
+    LRU evicts the oldest session unconditionally past the cap. The
+    most recently added session is preserved."""
+    from corlinman_server.agent_servicer import _CostMeter
+
+    meter = _CostMeter(cap=100)
+    for i in range(500):
+        meter.add(f"sess-{i}", {"input_tokens": 1, "output_tokens": 1})
+    assert len(meter) == 100, (
+        f"R1 violation: cost meter grew to {len(meter)} sessions (cap=100)"
+    )
+    # The most recently added session is still there.
+    assert meter.snapshot("sess-499") != {}
+    # An old session has been evicted.
+    assert meter.snapshot("sess-0") == {}
+
+
+def test_session_cache_cap_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``CORLINMAN_MAX_SESSION_CACHE`` raises the cap."""
+    from corlinman_server.agent_servicer import (
+        _CostMeter,
+        _SessionLockCache,
+        _session_cache_cap,
+    )
+
+    monkeypatch.setenv("CORLINMAN_MAX_SESSION_CACHE", "256")
+    assert _session_cache_cap() == 256
+    assert _SessionLockCache(_session_cache_cap()).cap == 256
+    assert _CostMeter().cap == 256
+
+
+# ---------------------------------------------------------------------------
+# R4 — coordinated shutdown closes every owned resource
+# ---------------------------------------------------------------------------
+
+
+class _FakeClosable:
+    """Tiny stand-in resource that records every ``close()`` call.
+
+    Used to instrument the servicer's R4 ``aclose`` walk without
+    depending on the real journal / blackboard / hook bus internals
+    (each of which uses ``__slots__`` or otherwise resists per-instance
+    monkey-patching).
+    """
+
+    def __init__(self, label: str, raises: bool = False) -> None:
+        self.label = label
+        self.calls: list[str] = []
+        self.raises = raises
+
+    async def close(self) -> None:
+        self.calls.append("close")
+        if self.raises:
+            raise RuntimeError(f"simulated teardown failure for {self.label}")
+
+
+class _FakeSyncClosable:
+    """Synchronous variant — :meth:`aclose` must tolerate non-coroutine close()."""
+
+    def __init__(self, label: str) -> None:
+        self.label = label
+        self.calls: list[str] = []
+
+    def close(self) -> None:
+        self.calls.append("close")
+
+
+async def test_aclose_closes_every_owned_resource(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``aclose()`` calls ``close``/``aclose`` on every lazily-opened
+    resource the servicer owns, never raises, and is idempotent."""
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+    servicer = CorlinmanAgentServicer(
+        provider_resolver=lambda _m: _FakeProvider([]),
+    )
+
+    # Swap in fake closables so we can observe close() invocations.
+    # Each is a different shape: async coroutine, sync method, attribute
+    # name — the servicer's aclose() walks both ``close`` and ``aclose``
+    # and accepts coroutine + sync returns.
+    journal_fake = _FakeClosable("journal")
+    memory_fake = _FakeClosable("memory")
+    bb_fake = _FakeSyncClosable("blackboard")
+    hook_fake = _FakeClosable("hook_bus")
+    servicer._journal = journal_fake  # type: ignore[assignment]
+    servicer._memory_host = memory_fake
+    servicer._blackboard_store = bb_fake  # type: ignore[assignment]
+    servicer._hook_bus = hook_fake
+
+    # First aclose closes every resource.
+    await servicer.aclose()
+    assert journal_fake.calls == ["close"]
+    assert memory_fake.calls == ["close"]
+    assert bb_fake.calls == ["close"]
+    assert hook_fake.calls == ["close"]
+
+    # Second aclose is idempotent — resources are now None, so no
+    # extra close() calls land.
+    await servicer.aclose()
+    assert journal_fake.calls == ["close"]
+    assert memory_fake.calls == ["close"]
+    assert bb_fake.calls == ["close"]
+
+
+async def test_aclose_tolerates_resource_close_failures(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One resource raising on close must not block the others."""
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+    servicer = CorlinmanAgentServicer(
+        provider_resolver=lambda _m: _FakeProvider([]),
+    )
+
+    bad_journal = _FakeClosable("journal", raises=True)
+    good_memory = _FakeClosable("memory")
+    good_bb = _FakeSyncClosable("blackboard")
+    servicer._journal = bad_journal  # type: ignore[assignment]
+    servicer._memory_host = good_memory
+    servicer._blackboard_store = good_bb  # type: ignore[assignment]
+
+    # aclose must NOT raise — it logs and continues so the rest of the
+    # resources still get their close() invocation.
+    await servicer.aclose()
+    assert bad_journal.calls == ["close"]  # close attempted
+    assert good_memory.calls == ["close"], (
+        "R4 violation: a failing journal.close blocked the memory close"
+    )
+    assert good_bb.calls == ["close"], (
+        "R4 violation: a failing journal.close blocked the blackboard close"
     )

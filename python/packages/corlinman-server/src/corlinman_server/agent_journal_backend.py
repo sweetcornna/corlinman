@@ -94,8 +94,25 @@ class JournalBackend(Protocol):
         """Release any underlying connections. Idempotent."""
         ...
 
-    async def begin_turn(self, session_key: str, user_text: str) -> int:
-        """Insert an in-progress row; return the new turn_id."""
+    async def begin_turn(
+        self,
+        session_key: str,
+        user_text: str,
+        *,
+        user_id: str | None = None,
+    ) -> int | None:
+        """Insert an in-progress row; return the new turn_id.
+
+        ``user_id`` (S4) scopes the row to a specific channel sender so a
+        group-chat replay attack — Mallory parroting Alice's user_text on
+        the same session_key — can't pick up Alice's in-progress turn.
+        ``None`` keeps the legacy "no sender" semantics for HTTP callers.
+
+        May return ``None`` when a concurrent ``begin_turn`` for the same
+        (session_key, user_text, user_id) already opened a row — the
+        caller should re-run ``find_resumable_turn`` to grab the winner.
+        Backends that cannot detect this race return the new id unchanged.
+        """
         ...
 
     async def complete_turn(self, turn_id: int) -> None:
@@ -119,9 +136,20 @@ class JournalBackend(Protocol):
         ...
 
     async def find_resumable_turn(
-        self, session_key: str, user_text: str
+        self,
+        session_key: str,
+        user_text: str,
+        *,
+        user_id: str | None = None,
     ) -> ResumeData | None:
-        """Return the most-recent in-progress turn matching session+text."""
+        """Return the most-recent in-progress turn matching session+text.
+
+        ``user_id`` (S4): when set, only rows journaled under the same
+        ``user_id`` are considered — Mallory cannot resume Alice's turn
+        in a group chat by replaying her text. ``None`` falls back to
+        the legacy user_text-only match for backwards-compatible HTTP
+        callers that don't carry a channel sender.
+        """
         ...
 
     async def recent_errored_turns(
@@ -157,6 +185,7 @@ CREATE TABLE IF NOT EXISTS turns (
     started_at_ms  INTEGER NOT NULL,
     ended_at_ms    INTEGER,
     user_text      TEXT,
+    user_id        TEXT,
     error          TEXT
 );
 
@@ -177,6 +206,12 @@ CREATE TABLE IF NOT EXISTS turn_messages (
     FOREIGN KEY (turn_id) REFERENCES turns(turn_id) ON DELETE CASCADE
 );
 """
+
+
+# Pre-S4 deployments have a ``turns`` table without ``user_id``. The
+# additive ``ALTER TABLE`` is idempotent under our gate (we only fire
+# it when the column is absent) so re-running on a fresh DB is a no-op.
+_USER_ID_MIGRATION = "ALTER TABLE turns ADD COLUMN user_id TEXT"
 
 
 class SqliteJournalBackend:
@@ -207,6 +242,21 @@ class SqliteJournalBackend:
         await conn.execute("PRAGMA foreign_keys = ON")
         await conn.executescript(_SCHEMA)
         await conn.commit()
+        # S4: additive ``user_id TEXT`` migration on pre-existing
+        # journals. ``PRAGMA table_info`` is the documented way to
+        # check column presence in SQLite — adding the column only
+        # when missing keeps the open path idempotent.
+        try:
+            cur = await conn.execute("PRAGMA table_info(turns)")
+            rows = await cur.fetchall()
+            await cur.close()
+            existing = {str(r[1]) for r in rows}
+            if "user_id" not in existing:
+                await conn.execute(_USER_ID_MIGRATION)
+                await conn.commit()
+                logger.info("agent.journal.migrated", migration="user_id_column")
+        except aiosqlite.Error as exc:  # pragma: no cover — defensive
+            logger.warning("agent.journal.migrate_failed", error=str(exc))
         self._conn = conn
 
     async def close(self) -> None:
@@ -231,12 +281,28 @@ class SqliteJournalBackend:
     # Turn lifecycle
     # ------------------------------------------------------------------
 
-    async def begin_turn(self, session_key: str, user_text: str) -> int:
-        """Insert an in-progress row; return the new turn_id.
+    async def begin_turn(
+        self,
+        session_key: str,
+        user_text: str,
+        *,
+        user_id: str | None = None,
+    ) -> int | None:
+        """Insert an in-progress row; return the new ``turn_id``.
 
         ``turn_id`` is wall-clock ms — uniqueness across one process is
-        good enough for a chat-turn store. Two opens in the same ms
-        collide; we retry with ms+1 on the rare ``UNIQUE`` failure.
+        good enough for a chat-turn store. Two inserts in the same ms
+        collide on the PK; we retry with ms+1 on
+        :class:`aiosqlite.IntegrityError`.
+
+        L5: the retry only catches ``IntegrityError`` — narrowed from
+        the previous broad ``aiosqlite.Error`` so a corrupted DB or I/O
+        error surfaces as a real exception instead of looping silently.
+
+        S4 — ``user_id`` is stored so a later
+        ``find_resumable_turn`` can scope its match by sender. ``None``
+        keeps the legacy behaviour for HTTP-only callers (the column
+        stays NULL).
         """
         conn = self._c
         ts = int(time.time() * 1000)
@@ -245,12 +311,24 @@ class SqliteJournalBackend:
             try:
                 await conn.execute(
                     "INSERT INTO turns (turn_id, session_key, status, "
-                    "started_at_ms, user_text) VALUES (?, ?, ?, ?, ?)",
-                    (tid, session_key or "", TURN_IN_PROGRESS, ts, user_text),
+                    "started_at_ms, user_text, user_id) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        tid,
+                        session_key or "",
+                        TURN_IN_PROGRESS,
+                        ts,
+                        user_text,
+                        user_id,
+                    ),
                 )
                 await conn.commit()
                 return tid
             except aiosqlite.IntegrityError:
+                # PK collision — the next ms is almost certainly free.
+                # ``commit`` is not reached on the failed INSERT, so
+                # sqlite auto-aborts the statement and no rollback is
+                # needed.
                 continue
         # Vanishingly unlikely; fall through with a tagged turn_id.
         return ts
@@ -296,10 +374,25 @@ class SqliteJournalBackend:
         tool_call_id: str | None = None,
         tool_calls: Any | None = None,
     ) -> None:
-        """Append one message to the turn. ``seq`` is computed under
-        ``BEGIN IMMEDIATE`` so concurrent appends to the same turn can't
-        observe a stale max(seq) (the chat handler is single-task per
-        session, but defending the invariant is cheap)."""
+        """Append one message to the turn.
+
+        ``seq`` is computed inside a ``BEGIN IMMEDIATE`` / ``COMMIT``
+        envelope so a SELECT-then-INSERT pair on the same turn_id can't
+        observe a stale ``MAX(seq)``.
+
+        L5: the prior implementation caught the broad ``aiosqlite.Error``
+        on every step and issued a blind ``ROLLBACK`` — which raised a
+        secondary "no transaction is active" error when the failure
+        happened pre-BEGIN, was then swallowed by the inner
+        ``except aiosqlite.Error: pass``, and left the connection in
+        an undefined state where subsequent ``complete_turn`` writes
+        silently no-op'd. The fix:
+
+        - rely on ``conn.in_transaction`` instead of blindly emitting
+          ``ROLLBACK`` (sqlite raises if there is no live tx);
+        - keep the outer catch as the diagnostic boundary, but never
+          mask its inner rollback failure.
+        """
         conn = self._c
         tool_calls_text: str | None = None
         if tool_calls is not None:
@@ -313,7 +406,8 @@ class SqliteJournalBackend:
         try:
             await conn.execute("BEGIN IMMEDIATE")
             cur = await conn.execute(
-                "SELECT COALESCE(MAX(seq), -1) + 1 FROM turn_messages WHERE turn_id = ?",
+                "SELECT COALESCE(MAX(seq), -1) + 1 FROM turn_messages "
+                "WHERE turn_id = ?",
                 (turn_id,),
             )
             row = await cur.fetchone()
@@ -322,39 +416,82 @@ class SqliteJournalBackend:
             await conn.execute(
                 "INSERT INTO turn_messages (turn_id, seq, role, content, "
                 "tool_call_id, tool_calls_json) VALUES (?, ?, ?, ?, ?, ?)",
-                (turn_id, next_seq, role, content, tool_call_id, tool_calls_text),
+                (
+                    turn_id,
+                    next_seq,
+                    role,
+                    content,
+                    tool_call_id,
+                    tool_calls_text,
+                ),
             )
             await conn.commit()
         except aiosqlite.Error as exc:
             logger.warning("agent.journal.append_failed", error=str(exc))
-            try:
-                await conn.execute("ROLLBACK")
-            except aiosqlite.Error:
-                pass
+            # L5: only roll back when sqlite still has the tx open;
+            # blindly issuing ROLLBACK on a connection that already
+            # auto-aborted raises and corrupts subsequent writes.
+            if conn.in_transaction:
+                try:
+                    await conn.rollback()
+                except aiosqlite.Error as rb_exc:
+                    logger.warning(
+                        "agent.journal.append_rollback_failed",
+                        error=str(rb_exc),
+                    )
 
     # ------------------------------------------------------------------
     # Resume
     # ------------------------------------------------------------------
 
     async def find_resumable_turn(
-        self, session_key: str, user_text: str
+        self,
+        session_key: str,
+        user_text: str,
+        *,
+        user_id: str | None = None,
     ) -> ResumeData | None:
         """Return the most-recent in-progress turn for ``session_key``
         whose ``user_text`` matches and that is younger than the resume
         window. The caller decides whether to actually resume — this
-        method only finds the candidate."""
+        method only finds the candidate.
+
+        S4 — when ``user_id`` is non-None, the candidate row's
+        ``user_id`` must match exactly (or be NULL for legacy rows
+        journaled before the scoping was added). ``user_id=None``
+        preserves the legacy user_text-only match for HTTP callers.
+        """
         if not session_key or not user_text:
             return None
         now_ms = int(time.time() * 1000)
         cutoff = now_ms - RESUME_MAX_AGE_MS
         try:
-            cur = await self._c.execute(
-                "SELECT turn_id, started_at_ms FROM turns "
-                "WHERE session_key = ? AND status = ? AND user_text = ? "
-                "AND started_at_ms >= ? "
-                "ORDER BY started_at_ms DESC LIMIT 1",
-                (session_key, TURN_IN_PROGRESS, user_text, cutoff),
-            )
+            if user_id is not None:
+                # S4: only resume turns started by the same sender, but
+                # tolerate NULL (rows from before the user_id column
+                # existed, or HTTP turns that began without a sender).
+                cur = await self._c.execute(
+                    "SELECT turn_id, started_at_ms FROM turns "
+                    "WHERE session_key = ? AND status = ? AND user_text = ? "
+                    "AND started_at_ms >= ? "
+                    "AND (user_id = ? OR user_id IS NULL) "
+                    "ORDER BY started_at_ms DESC LIMIT 1",
+                    (
+                        session_key,
+                        TURN_IN_PROGRESS,
+                        user_text,
+                        cutoff,
+                        user_id,
+                    ),
+                )
+            else:
+                cur = await self._c.execute(
+                    "SELECT turn_id, started_at_ms FROM turns "
+                    "WHERE session_key = ? AND status = ? AND user_text = ? "
+                    "AND started_at_ms >= ? "
+                    "ORDER BY started_at_ms DESC LIMIT 1",
+                    (session_key, TURN_IN_PROGRESS, user_text, cutoff),
+                )
             row = await cur.fetchone()
             await cur.close()
         except aiosqlite.Error as exc:

@@ -23,6 +23,7 @@ import json
 import os
 import sys
 import time
+from collections import OrderedDict
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from datetime import date
 from pathlib import Path
@@ -435,6 +436,88 @@ _ResolverCallable = Callable[..., Any]
 _COST_METER_BASE_KEYS = ("input_tokens", "output_tokens")
 
 
+# R1: bounded session-keyed caches. A long-running gateway used to grow
+# ``_session_locks`` and ``_CostMeter._sessions`` without bound — one
+# OrderedDict entry per ever-seen session_key. The default cap of 4096
+# is the working-set ceiling; operators can raise it via
+# ``CORLINMAN_MAX_SESSION_CACHE`` when they expect more concurrent
+# sessions in flight than that.
+_DEFAULT_SESSION_CACHE_CAP = 4096
+
+
+def _session_cache_cap() -> int:
+    raw = os.environ.get("CORLINMAN_MAX_SESSION_CACHE")
+    if not raw:
+        return _DEFAULT_SESSION_CACHE_CAP
+    try:
+        n = int(raw)
+    except ValueError:
+        return _DEFAULT_SESSION_CACHE_CAP
+    return max(64, n)
+
+
+class _SessionLockCache:
+    """LRU-bounded ``session_key`` → :class:`asyncio.Lock` map.
+
+    R1: bounds the per-session lock map at a configurable cap so the
+    dict can't grow without limit on a process that sees many distinct
+    session_keys over its lifetime (group-chat gateways routinely do).
+
+    Eviction policy:
+
+    - LRU order via :class:`collections.OrderedDict.move_to_end`.
+    - Held locks are NOT evicted (the in-flight RPC still needs them).
+      The cache walks oldest-first and skips any entry whose lock is
+      currently held; once the unheld locks are evicted we tolerate
+      the cache exceeding ``cap`` briefly rather than break a request.
+    """
+
+    def __init__(self, cap: int) -> None:
+        self._cap = max(64, int(cap))
+        self._data: OrderedDict[str, asyncio.Lock] = OrderedDict()
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    @property
+    def cap(self) -> int:
+        return self._cap
+
+    def get(self, session_key: str) -> asyncio.Lock:
+        """Return the lock for ``session_key`` (creating it lazily).
+
+        Touches the LRU order on every access so an actively-used
+        session can't get evicted before an idle one.
+        """
+        lock = self._data.get(session_key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._data[session_key] = lock
+            self._evict_if_over_cap()
+        else:
+            self._data.move_to_end(session_key)
+        return lock
+
+    def _evict_if_over_cap(self) -> None:
+        if len(self._data) <= self._cap:
+            return
+        # Walk oldest-first, evict only unheld locks. Stop once we're
+        # back within the cap or we've scanned the whole dict.
+        candidates = list(self._data.keys())
+        for key in candidates:
+            if len(self._data) <= self._cap:
+                return
+            lock = self._data.get(key)
+            if lock is None:
+                continue
+            if lock.locked():
+                # Held by an in-flight RPC; promote to MRU so we don't
+                # keep re-scanning it on every eviction pass.
+                self._data.move_to_end(key)
+                continue
+            self._data.pop(key, None)
+
+
 class _CostMeter:
     """Per-session token accumulator.
 
@@ -452,9 +535,21 @@ class _CostMeter:
     the ``agent.cost.turn`` log line which is durable.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, cap: int | None = None) -> None:
+        # R1: LRU-bounded so the dict can't grow without limit. Uses
+        # the same cap as the session-lock cache by default; unlike
+        # the locks, eviction here is unconditional (the meter is just
+        # metrics — losing an old session's totals is harmless).
+        self._cap = cap if cap is not None else _session_cache_cap()
         # session_key → {token_key: int, …, "requests": int}.
-        self._sessions: dict[str, dict[str, int]] = {}
+        self._sessions: OrderedDict[str, dict[str, int]] = OrderedDict()
+
+    @property
+    def cap(self) -> int:
+        return self._cap
+
+    def __len__(self) -> int:
+        return len(self._sessions)
 
     def add(self, session_key: str, usage: dict[str, int] | None) -> None:
         """Fold one turn's usage into the running totals.
@@ -467,7 +562,12 @@ class _CostMeter:
         """
         if not session_key or not usage:
             return
-        bucket = self._sessions.setdefault(session_key, {})
+        bucket = self._sessions.get(session_key)
+        if bucket is None:
+            bucket = {}
+            self._sessions[session_key] = bucket
+        else:
+            self._sessions.move_to_end(session_key)
         for key, value in usage.items():
             try:
                 bucket[key] = bucket.get(key, 0) + int(value)
@@ -476,6 +576,10 @@ class _CostMeter:
                 # rest of the usage dict.
                 continue
         bucket["requests"] = bucket.get("requests", 0) + 1
+        # Unconditional LRU eviction — totals are metrics, not a
+        # correctness surface, so dropping the oldest session is fine.
+        while len(self._sessions) > self._cap:
+            self._sessions.popitem(last=False)
 
     def snapshot(self, session_key: str) -> dict[str, int]:
         """Return a *copy* of the current totals for ``session_key``.
@@ -483,7 +587,13 @@ class _CostMeter:
         Empty dict when the session has never recorded usage. Always a
         copy so admin callers can't mutate the meter's interior.
         """
-        return dict(self._sessions.get(session_key, {}))
+        bucket = self._sessions.get(session_key)
+        if bucket is None:
+            return {}
+        # Snapshot reads bump LRU order so an actively-monitored
+        # session won't drop out under traffic.
+        self._sessions.move_to_end(session_key)
+        return dict(bucket)
 
 
 class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
@@ -572,7 +682,12 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # T4.2 per-session async lock — same-session RPCs serialize so
         # the todo store / cost meter / workspace snapshot can't race;
         # different sessions run concurrently as today.
-        self._session_locks: dict[str, asyncio.Lock] = {}
+        # R1: bounded LRU so the per-session lock map can't grow
+        # without limit. Held locks are pinned; idle ones are evicted
+        # in LRU order once we exceed ``CORLINMAN_MAX_SESSION_CACHE``.
+        self._session_locks: _SessionLockCache = _SessionLockCache(
+            _session_cache_cap()
+        )
 
     async def Chat(  # noqa: N802 — gRPC method name
         self,
@@ -690,13 +805,20 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # When found, prepend the prior turn's messages so the model
         # picks up where it left off; the tool results that already
         # landed are re-fed verbatim, so completed tools are not redone.
+        #
+        # S4 — scope the lookup by the channel sender's ``user_id`` so
+        # two distinct users in the same group ``session_key`` can't
+        # resume each other's turn just because they typed the same
+        # text. ``None`` keeps the legacy match for HTTP turns that
+        # carry no sender (backwards-compat).
         journal = await self._get_journal()
         resume_data: ResumeData | None = None
         journal_turn_id: int | None = None
+        turn_user_id = _extract_user_id(start)
         if journal is not None and start.session_key and user_text:
             try:
                 resume_data = await journal.find_resumable_turn(
-                    start.session_key, user_text
+                    start.session_key, user_text, user_id=turn_user_id
                 )
             except Exception as exc:  # noqa: BLE001 — degrade
                 logger.warning("agent.journal.find_resumable_failed", error=str(exc))
@@ -704,21 +826,41 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             # Use the resumed turn's id so post-dispatch appends + the
             # final complete/error stamp land on the same row.
             journal_turn_id = resume_data.turn_id
+            # C6 — drop assistant ``tool_calls`` referencing tools that
+            # are no longer in the current turn's tool surface (the
+            # plugin/MCP registry changed, the operator removed a
+            # builtin, etc.) plus the matching ``tool`` rows. Replaying
+            # those calls into the model would surface a tool name it
+            # can no longer execute and the loop would spin on the
+            # unknown tool. The filter is conservative: it keeps every
+            # assistant message but strips stale tool_calls + their
+            # paired results.
+            current_tools = _current_tool_names(start)
+            filtered_messages, pruned = _prune_stale_tool_calls(
+                resume_data.messages, current_tools
+            )
+            if pruned:
+                logger.info(
+                    "agent.resume.tools_pruned",
+                    session=start.session_key,
+                    turn_id=journal_turn_id,
+                    dropped=pruned,
+                )
             replayed_tool_results = sum(
-                1 for m in resume_data.messages if m.get("role") == "tool"
+                1 for m in filtered_messages if m.get("role") == "tool"
             )
             logger.info(
                 "agent.chat.resumed",
                 session=start.session_key,
                 turn_id=journal_turn_id,
                 replayed_tool_results=replayed_tool_results,
-                replayed_messages=len(resume_data.messages),
+                replayed_messages=len(filtered_messages),
                 started_at_ms=resume_data.started_at_ms,
             )
             # Splice the replay history BEFORE the freshly-built start
             # messages, dropping the first user message of start (it's
             # the duplicate the resume already covers).
-            replay = list(resume_data.messages)
+            replay = list(filtered_messages)
             tail_messages = list(start.messages)
             # Strip the leading duplicate user turn — the replay already
             # contains a user message with the same text.
@@ -734,15 +876,43 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         elif journal is not None:
             try:
                 journal_turn_id = await journal.begin_turn(
-                    start.session_key, user_text
+                    start.session_key, user_text, user_id=turn_user_id
                 )
-                # Record the user message that started this turn so
-                # resume can replay it.
-                await journal.append_message(
-                    journal_turn_id,
-                    role="user",
-                    content=user_text,
-                )
+                # C5 — the Postgres backend returns ``None`` when its
+                # partial-unique index says another gateway already
+                # opened the same (session_key, user_text, user_id)
+                # turn. Re-run ``find_resumable_turn`` once to grab the
+                # winner's row; if it's still missing, the race
+                # observer cleared it (turn completed between our two
+                # queries) and we proceed without a journal row for
+                # this turn.
+                if journal_turn_id is None:
+                    logger.info(
+                        "agent.journal.begin_conflict_recover",
+                        session=start.session_key,
+                    )
+                    try:
+                        recover = await journal.find_resumable_turn(
+                            start.session_key,
+                            user_text,
+                            user_id=turn_user_id,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "agent.journal.begin_conflict_recover_failed",
+                            error=str(exc),
+                        )
+                        recover = None
+                    if recover is not None:
+                        journal_turn_id = recover.turn_id
+                if journal_turn_id is not None:
+                    # Record the user message that started this turn
+                    # so resume can replay it.
+                    await journal.append_message(
+                        journal_turn_id,
+                        role="user",
+                        content=user_text,
+                    )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("agent.journal.begin_failed", error=str(exc))
                 journal_turn_id = None
@@ -1125,17 +1295,16 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         """Return the lock for ``session_key`` (creating one lazily).
 
         Empty session_key (one-shot HTTP callers) gets a NEW lock per
-        call so they remain independent. Created locks linger for the
-        process lifetime — the entries are tiny and bounded by the
-        number of distinct chat sessions.
+        call so they remain independent.
+
+        R1: the underlying cache is an LRU with a cap of
+        ``CORLINMAN_MAX_SESSION_CACHE`` (4096 by default). Held locks
+        are pinned; idle ones get evicted as new sessions arrive so
+        the dict can't grow without bound over the process lifetime.
         """
         if not session_key:
             return asyncio.Lock()
-        lock = self._session_locks.get(session_key)
-        if lock is None:
-            lock = asyncio.Lock()
-            self._session_locks[session_key] = lock
-        return lock
+        return self._session_locks.get(session_key)
 
     def cost_snapshot(self, session_key: str) -> dict[str, int]:
         """Return the per-session token totals tracked by the cost meter.
@@ -1147,6 +1316,60 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         to operators without poking at the meter directly.
         """
         return self._cost_meter.snapshot(session_key)
+
+    # ------------------------------------------------------------------
+    # R4 — Coordinated shutdown
+    # ------------------------------------------------------------------
+
+    async def aclose(self) -> None:
+        """Close every owned resource before the gRPC server stops.
+
+        Walks each lazily-opened resource (journal, memory host,
+        blackboard, hook bus) and calls its ``close``/``aclose`` if
+        present. Every call is wrapped in a try/except so one resource
+        failing to close (e.g. a torn Postgres pool) does not block
+        the rest — the server is going down anyway; we want every
+        resource to get its best shot at a clean release.
+
+        Idempotent. Safe to call from a SIGTERM handler before
+        :meth:`grpc.aio.Server.stop`.
+        """
+        # Tuples of (label, resource). Each entry is independent — a
+        # failure on one does not skip the rest. The hook bus is
+        # closed last so observers can record any final shutdown
+        # events the other resources emit. ``_inbox`` is referenced
+        # defensively because a future revision may attach an inbox
+        # to the servicer; today it is owned by the channel layer.
+        resources: list[tuple[str, Any]] = [
+            ("journal", self._journal),
+            ("memory_host", self._memory_host),
+            ("blackboard_store", self._blackboard_store),
+            ("inbox", getattr(self, "_inbox", None)),
+            ("hook_bus", self._hook_bus),
+        ]
+        for label, res in resources:
+            if res is None or res is False:
+                continue
+            close = getattr(res, "aclose", None) or getattr(res, "close", None)
+            if close is None:
+                continue
+            logger.info("server.shutdown.closing", resource=label)
+            try:
+                result = close()
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception as exc:  # noqa: BLE001 — never block shutdown
+                logger.warning(
+                    "server.shutdown.close_failed",
+                    resource=label,
+                    error=str(exc),
+                )
+        # Mark resources as gone so a double-close is a no-op.
+        self._journal = None
+        self._journal_init_done = True
+        self._memory_host = None
+        self._memory_init_done = True
+        self._blackboard_store = None
 
     # ------------------------------------------------------------------
     # T3.2 — hook bus emitters (no-op when no bus is configured)
@@ -1750,6 +1973,102 @@ def _context_metadata(start: AgentChatStart) -> dict[str, str]:
     if start.session_key:
         md["session_key"] = start.session_key
     return md
+
+
+def _current_tool_names(start: AgentChatStart) -> frozenset[str]:
+    """Return the set of tool names the model can currently call.
+
+    Combines the in-process :data:`BUILTIN_TOOLS` with whatever the
+    gateway / MCP layer attached to ``start.tools``. Used by C6 to
+    detect resumed assistant ``tool_calls`` that reference a tool no
+    longer in scope (operator removed a plugin, MCP server unmounted,
+    builtin set narrowed). Stale calls are pruned before splicing the
+    journal replay into the live message list so the loop doesn't get
+    stuck retrying a tool the model has no path to dispatch.
+    """
+    names: set[str] = set(BUILTIN_TOOLS)
+    for tool in start.tools or ():
+        if not isinstance(tool, dict):
+            continue
+        fn = tool.get("function")
+        name: Any = None
+        if isinstance(fn, dict):
+            name = fn.get("name")
+        else:
+            name = tool.get("name")
+        if isinstance(name, str) and name:
+            names.add(name)
+    return frozenset(names)
+
+
+def _prune_stale_tool_calls(
+    messages: Sequence[Any],
+    current_tools: frozenset[str],
+) -> tuple[list[dict[str, Any]], int]:
+    """Strip assistant ``tool_calls`` that reference a tool no longer
+    in :data:`current_tools`, plus the matching ``role="tool"`` rows.
+
+    Returns ``(filtered_messages, dropped_count)``. The drop count is
+    the number of *tool call entries* removed (assistant.tool_calls
+    items + their paired tool rows). The function never raises — a
+    weird message shape is preserved verbatim — so the resume path
+    degrades gracefully.
+
+    C6: prevents a journaled replay from re-feeding the model a tool
+    name it can no longer execute (loop would spin on unknown_tool).
+    """
+    if not messages:
+        return [], 0
+    # Pass 1: walk assistant rows, identify stale tool_calls, collect
+    # the set of tool_call_ids that must also be dropped from the
+    # paired ``role="tool"`` rows.
+    drop_tool_call_ids: set[str] = set()
+    dropped = 0
+    out: list[dict[str, Any]] = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            out.append(msg)  # type: ignore[arg-type]
+            continue
+        if msg.get("role") == "assistant" and isinstance(
+            msg.get("tool_calls"), list
+        ):
+            kept: list[Any] = []
+            for tc in msg["tool_calls"]:
+                if not isinstance(tc, dict):
+                    kept.append(tc)
+                    continue
+                fn = tc.get("function") or {}
+                tname = fn.get("name") if isinstance(fn, dict) else None
+                if isinstance(tname, str) and tname in current_tools:
+                    kept.append(tc)
+                else:
+                    tcid = tc.get("id")
+                    if isinstance(tcid, str):
+                        drop_tool_call_ids.add(tcid)
+                    dropped += 1
+            new_msg = dict(msg)
+            if kept:
+                new_msg["tool_calls"] = kept
+            else:
+                # Empty tool_calls list looks suspicious to some
+                # providers; drop the key entirely.
+                new_msg.pop("tool_calls", None)
+            out.append(new_msg)
+        else:
+            out.append(dict(msg))
+    # Pass 2: filter ``role="tool"`` rows whose tool_call_id was
+    # paired with a stale call.
+    if drop_tool_call_ids:
+        out = [
+            m
+            for m in out
+            if not (
+                isinstance(m, dict)
+                and m.get("role") == "tool"
+                and m.get("tool_call_id") in drop_tool_call_ids
+            )
+        ]
+    return out, dropped
 
 
 def _extract_user_id(start: AgentChatStart) -> str | None:
