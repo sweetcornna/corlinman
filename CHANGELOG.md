@@ -4,22 +4,162 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.0] — 2026-05-24 — Python port complete + production-ready edge
 
-### Breaking
+> Major release. Cuts the umbilical to the Rust gateway and finishes the
+> Python port that started in the 0.6.x line. Adds Telegram + three more
+> chat channels, real-time status streaming, file replies, multi-gateway
+> HA via shared Postgres, a pluggable hook event bus, context-aware
+> permissions, and hardens every I/O edge (SSRF + sandbox + reactive
+> token refresh). 128 commits since `v0.6.8`.
 
-- **Removed the embedded new-api onboard/admin surface.** Existing
-  `[providers.<name>]` config blocks with `kind = "newapi"` are silently
-  migrated to `kind = "openai_compatible"` on load with a
-  `provider.newapi.deprecated` warning. Operators should manage
-  providers via the `/admin/credentials`, `/admin/providers`, and
-  `/admin/oauth` surfaces (hermes-style). The
-  `corlinman-newapi-client` workspace package, the `/admin/newapi*`
-  router, the `/admin/onboard/newapi/probe` + `/admin/onboard/newapi/channels`
-  endpoints, and the `corlinman config migrate-sub2api` CLI helper are
-  all gone. `POST /admin/onboard/finalize` now takes a generic
-  `{provider_name, kind, base_url?, api_key?, model, embedding_model?}`
-  payload writing a kind-agnostic `[providers.<name>]` block.
+### Added
+
+- **Telegram channel** — long-poll bot adapter for private + group
+  chats with keyword filter, `require_mention_in_groups`, allowed-
+  chat allowlist, and graceful 429 back-off on the decorative
+  endpoints.
+- **Discord / Slack / Feishu channels** — text-only adapters with the
+  same router + rate-limit + chat-service plumbing as QQ + Telegram.
+- **Real-time status streaming** — Telegram clients see a live "is
+  typing…" indicator + a placeholder that edits in place as the agent
+  runs tools (`🧠 思考中... → 🔧 调用工具: write_file → 📎 已发送文件
+  → ✍️ 生成回复中... → final reply`). QQ private chats get NapCat's
+  `set_input_status` indicator. Mirrors hermes-agent's
+  `_last_activity_desc` mutable spinner.
+- **`send_attachment` builtin tool** — agent can reply with files
+  (HTML / PDF / images / voice) instead of dumping raw text.
+  Telegram picks document / photo / voice by MIME; QQ uses NapCat's
+  `upload_private_file` / `upload_group_file` extensions.
+- **Per-turn journal resume** — `AgentJournal.find_resumable_turn`
+  matches a fresh Chat RPC against an in-progress turn (within ~5 min)
+  and replays the journaled `(assistant tool_call, tool_result)` pairs
+  so a gateway/agent restart picks up where it left off. Resume key
+  scoped by `user_id` so group-chat members can't replay each other's
+  tool side-effects.
+- **`PostgresJournalBackend`** — multi-gateway HA via shared Postgres.
+  Race-safe `INSERT ... ON CONFLICT DO NOTHING RETURNING turn_id`
+  with a partial unique index on
+  `(session_key, user_text, user_id)` WHERE `status='in_progress'`.
+  SQLite remains default; switch via `CORLINMAN_JOURNAL_BACKEND=postgres`
+  + `CORLINMAN_JOURNAL_POSTGRES_DSN`. Migrations at
+  `migrations/journal_postgres_v{1,2}.sql`. asyncpg +
+  pytest-postgresql are optional extras.
+- **`HookBus` push subscribers** — register `(predicate, callable)` to
+  receive `UserPromptSubmit` / `PreToolDispatch` / `ToolCalled` /
+  `TurnComplete` / `TurnErrored` events. Sync + async, exception-
+  isolated.
+- **Context-aware `PermissionGate.decide_with_context(tool, model,
+  session_key, user_id)`** with fnmatch rules
+  (`{model: "claude-*", user_pattern: "guest*"}`). Legacy
+  `decide(tool)` still works.
+- **Dynamic skill reload** — `SkillRegistry.refresh()` runs per chat
+  turn, picking up new / updated / removed `*.md` from
+  `~/.corlinman/skills/` without a restart. Emits
+  `agent.skills.refreshed added=... updated=... removed=...`.
+- **Reactive 401 refresh** — OpenAI / OpenAI-compatible / Azure /
+  Google / Bedrock / DeepSeek / GLM / Qwen all self-heal on env-var
+  key rotation. Codex + Anthropic were already self-healing; Codex now
+  single-flights via `asyncio.Lock` and serializes RMW of
+  `~/.codex/auth.json` with `fcntl.flock`.
+- **Durable QQ inbox (`inbox.sqlite`)** — every accepted QQ message
+  recorded `pending → dispatched → done/dead`. Boot drainer flips
+  stale `dispatched` rows back to `pending`.
+- **NapCat heartbeat watcher** — detects bot-QQ kicked offline (>120 s
+  silence) with a structured warning naming the ws endpoint.
+- **Per-channel concurrency cap** — default 8, env-overridable via
+  `CORLINMAN_{QQ,TELEGRAM,DISCORD,SLACK,FEISHU}_MAX_CONCURRENCY`.
+- **`SIGTERM` close path** — gateway shutdown drains the Postgres
+  pool, aiosqlite WAL, inbox, blackboard, and HookBus before exit.
+- **Tier 2 coding tools** — per-turn file-state cache, fuzzy edit
+  matcher with staleness guard, token-aware context compaction,
+  workspace `git`-backed snapshot + `revert_changes` tool.
+
+### Changed
+
+- **BREAKING:** `JournalBackend.begin_turn(...)` return type is now
+  `int | None`. SQLite always returns an int; Postgres may return
+  `None` on conflict so the caller re-runs `find_resumable_turn`.
+- **BREAKING:** `JournalBackend.begin_turn` + `find_resumable_turn`
+  gained `user_id: str | None = None` (default preserves legacy).
+- **BREAKING:** Removed the embedded new-api onboard/admin surface.
+  `[providers.<name>]` blocks with `kind = "newapi"` migrate silently
+  to `kind = "openai_compatible"` at load. The
+  `corlinman-newapi-client` package, `/admin/newapi*` router,
+  `/admin/onboard/newapi/{probe,channels}` endpoints, and
+  `corlinman config migrate-sub2api` CLI helper are gone.
+- gRPC keepalive aligned client ↔ both server bind sites
+  (`keepalive_time_ms=30s` + `max_ping_strikes=0`) — fixes
+  `UNAVAILABLE: Too many pings` on long agent turns.
+- `_builtin:` sentinel namespace extracted to a shared
+  `_BUILTIN_OBSERVATION_PREFIX` constant. In-process builtin tools
+  now emit observation-only `ToolCall` frames so channel UIs can
+  render the mutable spinner without double-feeding `tool_result`s.
+- LRU cap (4096 entries, env-overridable
+  `CORLINMAN_MAX_SESSION_CACHE`) on `_session_locks` and the cost
+  meter's session map.
+
+### Fixed
+
+- Channels passed `dict` to `chat_service.run` causing
+  `AttributeError: 'dict' object has no attribute 'model'` on every
+  Telegram inbound. Switched to `SimpleNamespace`.
+- Telegram typing pulse leak on placeholder send failure (pulse task
+  now lives inside the `try/finally`).
+- Telegram final `edit_message_text` / `send_message` unwrapped —
+  failures now degrade with a warning log instead of stranding the
+  placeholder on "✍️ 生成回复中...".
+- Telegram `editMessageText` ignored HTTP 429 — now parses
+  `parameters.retry_after` into a shared back-off deadline.
+- OneBot writer dropped actions on transient WS send failure — now
+  requeues to a front buffer and raises for reconnect.
+- Telegram long-poll committed `offset` before `put` — could lose
+  updates on cancel mid-batch. Now commits post-put.
+- OneBot `_inbound_q` blocking put caused WS 1009 + reconnect storm
+  under burst — switched to `put_nowait` + drop-oldest.
+- Reasoning loop ignored `signal_input_closed` — half-closed bidi
+  streams timed out at 30 s instead of terminating promptly.
+- Out-of-order `tool_result` envelopes polluted next-round
+  collection — now drained + dropped with
+  `reasoning_loop.stale_tool_result`.
+- aiosqlite BEGIN+ROLLBACK left the connection in an undefined tx
+  state, silently no-op'ing subsequent writes. Switched to
+  `async with conn:`.
+- `send_attachment` size unguarded — added a 45 MiB pre-flight check.
+- Built-in tool calls never visible to channels — Telegram status
+  placeholder stuck on "🧠 思考中..." the whole turn. Observation-
+  only `_builtin:` frames now flow through.
+- Heartbeat watcher rendered `None` as the literal "Nones" — split
+  into a distinct "received yet" branch naming the ws endpoint.
+- Codex `_ensure_fresh` + `_attempt_token_recovery` raced on
+  concurrent refresh — now share an `asyncio.Lock`.
+
+### Security
+
+- **`web_fetch` SSRF guard** — `is_safe_host` resolves the host via
+  `socket.getaddrinfo` and rejects any IP that's private / loopback /
+  link-local / multicast / reserved / metadata
+  (`169.254.169.254` / `fd00:ec2::254`). Manual 5-redirect loop re-
+  validates each hop. Dev-only override
+  `CORLINMAN_WEB_FETCH_ALLOW_PRIVATE=1` (never opens the metadata
+  endpoints).
+- **`run_shell` sandbox** — POSIX `RLIMIT_CPU=60s`,
+  `RLIMIT_FSIZE=100 MiB`, `RLIMIT_NPROC=64`, `RLIMIT_NOFILE=256`,
+  `RLIMIT_AS=2 GiB` (Linux). `setsid()` + `os.killpg(SIGKILL)` so
+  shell-spawned forks die with the parent. Minimal env whitelist
+  (no provider keys / gRPC creds reach the subprocess). Hard
+  timeout cap lowered from 120 s → 60 s.
+- **Coding-tool symlink escape** — `resolve_in_workspace` walks each
+  ancestor with `os.lstat`, refusing symlink components. Every write
+  site opens with `O_NOFOLLOW`, catching the TOCTOU race at the
+  syscall layer.
+- `_codex_oauth.persist_codex_credential` now holds `fcntl.flock`
+  around its read-modify-write window so the Codex CLI + gateway
+  can't garble `auth.json`.
+
+### Removed
+
+- `corlinman-newapi-client` package and the `/admin/newapi*` surface.
 
 ## [0.7.1] — 2026-05-17 — warm pool
 

@@ -2,7 +2,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/ymylive/corlinman/ci.yml?branch=main&label=CI)](https://github.com/ymylive/corlinman/actions)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.4.0-orange)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.0.0-brightgreen)](CHANGELOG.md)
 [![Docs](https://img.shields.io/badge/docs-architecture-informational)](docs/architecture.md)
 
 **A self-hosted intelligent-agent platform.** Give a language model durable
@@ -293,15 +293,26 @@ A channel is any producer of `ChatRequest`. corlinman ships with:
   non-stream), `/v1/embeddings`, `/v1/models`.
 - **QQ (OneBot v11)** — forward WebSocket bridge with image/audio
   multimodal forwarding, keyword filtering, per-group / per-sender
-  rate limits, and real bindings back to the gateway's session store.
-- **Telegram** — `teloxide`-based long-poll adapter for group + private
-  chats.
+  rate limits, NapCat "正在输入..." indicator + heartbeat watcher, file
+  uploads via NapCat extension actions, durable inbox so a crash mid-
+  reply leaves a breadcrumb.
+- **Telegram** — long-poll bot adapter for private + group chats with a
+  real-time "is typing…" indicator, a **mutable spinner placeholder**
+  that edits in place as tool calls land (`🧠 思考中... → 🔧 调用工具:
+  write_file → 📎 已发送文件 → ✍️ 生成回复中... → final reply`), and
+  the `send_attachment` builtin tool so the agent can reply with files
+  (HTML / PDF / images / voice) instead of dumping raw text.
+- **Discord / Slack / Feishu** — text channels with the same routing +
+  rate-limit + chat-service plumbing as QQ + Telegram (no status
+  spinner yet — Telegram only).
 - **Scheduler** — `croniter`-driven cron runner that fires an agent at a
   cron expression with a canned prompt template (for daily digests,
   alerting bots, etc.).
 
 Each channel shares the same agent loop — switch models mid-flight with
-a config reload, no channel restart.
+a config reload, no channel restart. Every channel exposes a unified
+`ChannelBinding` to the reasoning loop so per-turn resume, audit logs,
+and the permission gate all key on the same `session_key`.
 
 ### Governance
 
@@ -538,11 +549,25 @@ ops/                Grafana dashboard + observability compose
 
 ## Roadmap + status
 
-**1.0 is released.** Milestones M0–M8 all closed; tagged `v0.1.0`
-2026-04-21, followed by `v0.1.1` (deployment hotfixes) and `v0.1.2`
-(admin UI redesign). Post-1.0 work is tracked in
+**v1.0.0** — full Python port, multi-channel chat with status streaming
++ file replies, multi-gateway HA via shared Postgres journal, hook
+event bus, context-aware permissions, on-demand skill reload,
+production-hardened security (SSRF + sandbox + symlink escape) and
+reliability (reactive 401 refresh across every provider). Released
+2026-05-24, tagged `v1.0.0`. Post-1.0 work is tracked in
 [`docs/milestones.md`](docs/milestones.md) and
 [`docs/roadmap.md`](docs/roadmap.md).
+
+Shipped in 1.0 (vs the 0.6.x line):
+
+- ✅ Telegram + Discord + Slack + Feishu channels
+- ✅ Mutable-spinner status streaming + typing indicator + `send_attachment` tool
+- ✅ Multi-gateway HA via Postgres journal (race-safe `ON CONFLICT`)
+- ✅ Hook event bus (`UserPromptSubmit` / `PreToolDispatch` / `ToolCalled` / `TurnComplete` / `TurnErrored`)
+- ✅ Context-aware permission gate (per tool × model × session × user_id)
+- ✅ Dynamic skill reload (`*.md` per turn, no restart)
+- ✅ Per-turn journal resume after gateway / agent restart
+- ✅ SSRF + run_shell rlimit + symlink escape hardening
 
 Near-term (P1):
 
@@ -550,13 +575,13 @@ Near-term (P1):
 - MCP (Model Context Protocol) compatibility layer — expose corlinman
   plugins as MCP tools to Claude Desktop / Cursor
 - OIDC login (replace basic auth)
-- Audit log of all admin + tool actions
+- Discord / Slack / Feishu status streaming parity (today: Telegram-only)
+- Redis journal backend (Postgres landed in 1.0)
 - 24 h soak test + fuzz corpus in CI
 
 Longer-term (P2):
 
 - Multi-tenant (data_dir per tenant + RBAC)
-- Distributed mode (multi-gateway + Redis/Postgres shared state)
 - External vector DB backends (Qdrant / Milvus)
 - Canvas renderer + voice I/O
 - VS Code / JetBrains / Tauri desktop clients
@@ -587,7 +612,7 @@ MIT. See [`LICENSE`](LICENSE).
 - **一个 agent 循环，多家 provider**：在 Anthropic / OpenAI / Google / DeepSeek / Qwen / GLM 上跑 OpenAI 标准 tool_call 语义；配置热重载、按模型别名路由。
 - **真工具，不是 prompt 模板**：同步 / 异步 / 常驻三种插件类型，统一 JSON-RPC 2.0 stdio 或 gRPC 通信，可选 Docker 沙箱 + 人工审批闸。
 - **跨会话的记忆**：SQLite 会话历史 + HNSW/BM25 混合检索（RRF 融合 + 可选 cross-encoder rerank），RAG 是智能体内置能力而非外挂。
-- **通道作为一等公民**：QQ (OneBot v11) / Telegram / 定时任务 / OpenAI 兼容 HTTP/SSE 并行接入，共享同一 agent 循环。
+- **通道作为一等公民**：QQ (OneBot v11) / Telegram / Discord / Slack / Feishu / 定时任务 / OpenAI 兼容 HTTP/SSE 并行接入，共享同一 agent 循环。Telegram 端有实时「正在输入...」指示器 + 工具调用流式状态条 + `send_attachment` 文件发送工具；QQ 通过 NapCat 扩展拿到同样的输入状态 + 文件上传能力。
 - **严肃的运维面板**：**Tidepool** 暖橙玻璃风格 Next.js 管理界面（日 / 夜双主题，插件 / 知识库 / 日志 / 审批 / 配置 / 调度器 / 模型路由），OTel + Prometheus 埋点，21 项 `doctor` 体检。
 
 **在线 demo**：<https://corlinman.cornna.xyz>
