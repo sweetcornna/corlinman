@@ -35,6 +35,12 @@ export interface SessionSummary {
   session_key: string;
   /** Unix milliseconds of the most-recent message in the session. */
   last_message_at: number;
+  /**
+   * Unix milliseconds of the most-recent observed activity (heartbeat,
+   * typing, etc.). Optional — older gateways may not emit it; the UI falls
+   * back to `last_message_at` in that case.
+   */
+  last_seen_at_ms?: number;
   /** Total message count across both roles. */
   message_count: number;
 }
@@ -92,6 +98,21 @@ export type ReplayResult =
   | { kind: "disabled" }
   | { kind: "rerun_disabled" };
 
+/**
+ * Per-key delete result. `not_found` is treated as success-equivalent by
+ * the page (the row is removed from the list either way) but kept as a
+ * distinct tag so callers can suppress the success toast on idempotent
+ * re-deletes if they want.
+ */
+export type DeleteSessionResult =
+  | { kind: "ok"; deleted: number }
+  | { kind: "not_found"; session_key: string }
+  | { kind: "disabled" };
+
+export type DeleteAllSessionsResult =
+  | { kind: "ok"; deleted: number }
+  | { kind: "disabled" };
+
 /* ------------------------------------------------------------------ */
 /*                          URL builders                              */
 /* ------------------------------------------------------------------ */
@@ -105,6 +126,11 @@ export const SESSIONS_LIST_PATH = "/admin/sessions";
  */
 export function sessionsReplayPath(sessionKey: string): string {
   return `/admin/sessions/${encodeURIComponent(sessionKey)}/replay`;
+}
+
+/** DELETE path for a single session. */
+export function sessionDeletePath(sessionKey: string): string {
+  return `/admin/sessions/${encodeURIComponent(sessionKey)}`;
 }
 
 /* ------------------------------------------------------------------ */
@@ -180,6 +206,57 @@ export async function replaySession(
     }
     if (hasErrorCode(err, 503, "rerun_disabled")) {
       return { kind: "rerun_disabled" };
+    }
+    throw err;
+  }
+}
+
+/**
+ * DELETE /admin/sessions/:key — removes a single session from the journal.
+ *
+ * Idempotent: a 404 is mapped to a tagged `not_found` instead of an
+ * exception so the UI can optimistically prune the row either way.
+ */
+export async function deleteSession(
+  sessionKey: string,
+): Promise<DeleteSessionResult> {
+  try {
+    const res = await apiFetch<{ deleted?: number } | null>(
+      sessionDeletePath(sessionKey),
+      { method: "DELETE" },
+    );
+    const deleted =
+      typeof res === "object" && res !== null && typeof res.deleted === "number"
+        ? res.deleted
+        : 1;
+    return { kind: "ok", deleted };
+  } catch (err) {
+    if (is404(err)) return { kind: "not_found", session_key: sessionKey };
+    if (hasErrorCode(err, 503, "sessions_disabled")) {
+      return { kind: "disabled" };
+    }
+    throw err;
+  }
+}
+
+/**
+ * DELETE /admin/sessions — clears every session in the journal. Server
+ * returns `{ deleted: N }` for the count it just wiped.
+ */
+export async function deleteAllSessions(): Promise<DeleteAllSessionsResult> {
+  try {
+    const res = await apiFetch<{ deleted?: number } | null>(
+      SESSIONS_LIST_PATH,
+      { method: "DELETE" },
+    );
+    const deleted =
+      typeof res === "object" && res !== null && typeof res.deleted === "number"
+        ? res.deleted
+        : 0;
+    return { kind: "ok", deleted };
+  } catch (err) {
+    if (hasErrorCode(err, 503, "sessions_disabled")) {
+      return { kind: "disabled" };
     }
     throw err;
   }

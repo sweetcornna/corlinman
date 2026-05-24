@@ -26,9 +26,21 @@ import * as React from "react";
 
 import { i18next, initI18n } from "@/lib/i18n";
 import type {
+  DeleteAllSessionsResult,
+  DeleteSessionResult,
   ReplayResult,
   SessionsListResult,
 } from "@/lib/api/sessions";
+
+// Sonner ships its own polyfill but jsdom doesn't host the toaster, so stub
+// the toast surface — we only need to know whether the success/error path
+// ran, not how it visually rendered.
+vi.mock("sonner", () => ({
+  toast: {
+    success: vi.fn(),
+    error: vi.fn(),
+  },
+}));
 
 // ---------------------------------------------------------------------------
 // Module mock — install before importing the page.
@@ -44,6 +56,16 @@ const replayMock: ReturnType<typeof vi.fn> = vi.fn(
     throw new Error("replayMock not configured");
   },
 );
+const deleteMock: ReturnType<typeof vi.fn> = vi.fn(
+  async (): Promise<DeleteSessionResult> => {
+    throw new Error("deleteMock not configured");
+  },
+);
+const deleteAllMock: ReturnType<typeof vi.fn> = vi.fn(
+  async (): Promise<DeleteAllSessionsResult> => {
+    throw new Error("deleteAllMock not configured");
+  },
+);
 
 vi.mock("@/lib/api/sessions", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api/sessions")>(
@@ -54,6 +76,8 @@ vi.mock("@/lib/api/sessions", async () => {
     fetchSessions: () => fetchMock(),
     replaySession: (key: string, opts?: { mode?: "transcript" | "rerun" }) =>
       replayMock(key, opts),
+    deleteSession: (key: string) => deleteMock(key),
+    deleteAllSessions: () => deleteAllMock(),
   };
 });
 
@@ -74,6 +98,8 @@ beforeEach(() => {
   i18next.changeLanguage("en");
   fetchMock.mockReset();
   replayMock.mockReset();
+  deleteMock.mockReset();
+  deleteAllMock.mockReset();
 });
 
 afterEach(() => {
@@ -214,5 +240,240 @@ describe("SessionsPage", () => {
     await waitFor(() => {
       expect(screen.getByTestId("sessions-load-failed")).toBeInTheDocument();
     });
+  });
+
+  it("renders the operator-friendly empty-state copy when no sessions are returned", async () => {
+    fetchMock.mockResolvedValueOnce({ kind: "ok", sessions: [] });
+
+    render(
+      <Harness>
+        <SessionsPage />
+      </Harness>,
+    );
+
+    const cell = await screen.findByTestId("sessions-empty");
+    expect(cell.textContent ?? "").toMatch(/once you chat with the bot/i);
+  });
+
+  it("renders the 'last seen' column when last_seen_at_ms is supplied", async () => {
+    fetchMock.mockResolvedValueOnce({
+      kind: "ok",
+      sessions: [
+        {
+          session_key: "qq:1234",
+          last_message_at: 1_777_500_000_000,
+          last_seen_at_ms: 1_777_593_600_000,
+          message_count: 3,
+        },
+      ],
+    });
+
+    render(
+      <Harness>
+        <SessionsPage />
+      </Harness>,
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("session-last-seen-qq:1234"),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it("delete button removes the session optimistically on success", async () => {
+    fetchMock.mockResolvedValueOnce({
+      kind: "ok",
+      sessions: [
+        {
+          session_key: "qq:1234",
+          last_message_at: 1_777_593_600_000,
+          message_count: 12,
+        },
+        {
+          session_key: "telegram:9001",
+          last_message_at: 1_777_500_000_000,
+          message_count: 6,
+        },
+      ],
+    });
+    deleteMock.mockResolvedValueOnce({ kind: "ok", deleted: 1 });
+
+    render(
+      <Harness>
+        <SessionsPage />
+      </Harness>,
+    );
+
+    const delBtn = await screen.findByTestId("session-delete-qq:1234");
+    fireEvent.click(delBtn);
+    // Confirm dialog opens — confirm it.
+    const confirm = await screen.findByTestId(
+      "sessions-delete-confirm-confirm",
+    );
+    fireEvent.click(confirm);
+
+    await waitFor(() => {
+      expect(
+        screen.queryByTestId("session-row-qq:1234"),
+      ).not.toBeInTheDocument();
+    });
+    expect(screen.getByTestId("session-row-telegram:9001")).toBeInTheDocument();
+    expect(deleteMock).toHaveBeenCalledWith("qq:1234");
+  });
+
+  it("delete button treats 404 (not_found) as success and removes the row", async () => {
+    fetchMock.mockResolvedValueOnce({
+      kind: "ok",
+      sessions: [
+        {
+          session_key: "qq:1234",
+          last_message_at: 1_777_593_600_000,
+          message_count: 12,
+        },
+      ],
+    });
+    deleteMock.mockResolvedValueOnce({
+      kind: "not_found",
+      session_key: "qq:1234",
+    });
+
+    render(
+      <Harness>
+        <SessionsPage />
+      </Harness>,
+    );
+
+    const delBtn = await screen.findByTestId("session-delete-qq:1234");
+    fireEvent.click(delBtn);
+    fireEvent.click(
+      await screen.findByTestId("sessions-delete-confirm-confirm"),
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.queryByTestId("session-row-qq:1234"),
+      ).not.toBeInTheDocument();
+    });
+  });
+
+  it("delete button restores the row when the backend errors", async () => {
+    fetchMock.mockResolvedValueOnce({
+      kind: "ok",
+      sessions: [
+        {
+          session_key: "qq:1234",
+          last_message_at: 1_777_593_600_000,
+          message_count: 12,
+        },
+      ],
+    });
+    deleteMock.mockRejectedValueOnce(new Error("network down"));
+
+    render(
+      <Harness>
+        <SessionsPage />
+      </Harness>,
+    );
+
+    const delBtn = await screen.findByTestId("session-delete-qq:1234");
+    fireEvent.click(delBtn);
+    fireEvent.click(
+      await screen.findByTestId("sessions-delete-confirm-confirm"),
+    );
+
+    // The row should reappear after the optimistic removal is reverted.
+    await waitFor(() => {
+      expect(screen.getByTestId("session-row-qq:1234")).toBeInTheDocument();
+    });
+  });
+
+  it("cancelling the delete dialog keeps the row visible", async () => {
+    fetchMock.mockResolvedValueOnce({
+      kind: "ok",
+      sessions: [
+        {
+          session_key: "qq:1234",
+          last_message_at: 1_777_593_600_000,
+          message_count: 12,
+        },
+      ],
+    });
+
+    render(
+      <Harness>
+        <SessionsPage />
+      </Harness>,
+    );
+
+    const delBtn = await screen.findByTestId("session-delete-qq:1234");
+    fireEvent.click(delBtn);
+    fireEvent.click(
+      await screen.findByTestId("sessions-delete-confirm-cancel"),
+    );
+
+    expect(deleteMock).not.toHaveBeenCalled();
+    expect(screen.getByTestId("session-row-qq:1234")).toBeInTheDocument();
+  });
+
+  it("clear-all button calls deleteAllSessions and empties the list", async () => {
+    fetchMock.mockResolvedValueOnce({
+      kind: "ok",
+      sessions: [
+        {
+          session_key: "qq:1234",
+          last_message_at: 1_777_593_600_000,
+          message_count: 12,
+        },
+        {
+          session_key: "telegram:9001",
+          last_message_at: 1_777_500_000_000,
+          message_count: 6,
+        },
+      ],
+    });
+    // After the clear-all the invalidate triggers a refetch — return empty.
+    fetchMock.mockResolvedValueOnce({ kind: "ok", sessions: [] });
+    deleteAllMock.mockResolvedValueOnce({ kind: "ok", deleted: 2 });
+
+    render(
+      <Harness>
+        <SessionsPage />
+      </Harness>,
+    );
+
+    // Wait for the query to resolve so the Clear-all button is enabled.
+    await screen.findByTestId("session-row-qq:1234");
+    const clearBtn = screen.getByTestId("sessions-clear-all");
+    expect(clearBtn).not.toBeDisabled();
+    fireEvent.click(clearBtn);
+    fireEvent.click(
+      await screen.findByTestId("sessions-clear-all-confirm-confirm"),
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.queryByTestId("session-row-qq:1234"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId("session-row-telegram:9001"),
+      ).not.toBeInTheDocument();
+    });
+    expect(deleteAllMock).toHaveBeenCalledTimes(1);
+    // Empty state takes over.
+    expect(screen.getByTestId("sessions-empty")).toBeInTheDocument();
+  });
+
+  it("clear-all button is disabled while the list is empty", async () => {
+    fetchMock.mockResolvedValueOnce({ kind: "ok", sessions: [] });
+
+    render(
+      <Harness>
+        <SessionsPage />
+      </Harness>,
+    );
+
+    const clearBtn = await screen.findByTestId("sessions-clear-all");
+    expect(clearBtn).toBeDisabled();
   });
 });

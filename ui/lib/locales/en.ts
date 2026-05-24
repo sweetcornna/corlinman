@@ -390,6 +390,7 @@ export const en = {
     sessions: "Sessions",
     identity: "Identity",
     federation: "Federation",
+    devSettings: "Developer Settings",
     expandSidebar: "Expand sidebar",
     collapseSidebar: "Collapse sidebar",
     openPalette: "Open command palette",
@@ -2018,6 +2019,86 @@ export const en = {
     },
   },
 
+  devSettings: {
+    title: "Developer Settings",
+    subtitle:
+      "To keep the operator sidebar focused, the advanced pages below are hidden by default. Flip the switch to pin them in the sidebar, or open one directly from a card.",
+    toggleLabel: "Show developer pages in sidebar",
+    toggleHint:
+      "Only affects sidebar visibility on this browser. The pages below remain reachable from this dashboard regardless of the toggle state.",
+    cardOpen: "Open →",
+    pages: {
+      config: {
+        title: "Config",
+        description: "Raw TOML editor and runtime [section] inspector.",
+      },
+      tenants: {
+        title: "Tenants",
+        description: "Multi-tenant isolation, quotas, and slugs.",
+      },
+      credentials: {
+        title: "Credentials",
+        description: "Provider API keys and OAuth tokens.",
+      },
+      agents: {
+        title: "Agents",
+        description: "Markdown-defined agent prompts.",
+      },
+      characters: {
+        title: "Characters",
+        description: "Persona / character-card prompt templates.",
+      },
+      skills: {
+        title: "Skills",
+        description: "Tool-call & executable skill registry.",
+      },
+      plugins: {
+        title: "Plugins",
+        description: "Loaded sync / async / preprocessor plugins.",
+      },
+      embedding: {
+        title: "Embedding",
+        description: "Embedding jobs, models, and dimensions.",
+      },
+      federation: {
+        title: "Federation",
+        description: "Cross-tenant evolution proposal peering.",
+      },
+      hooks: {
+        title: "Hooks",
+        description: "Webhook and callback registrations.",
+      },
+      rag: {
+        title: "RAG",
+        description: "Retrieval corpus, chunks, and tags.",
+      },
+      profiles: {
+        title: "Profiles",
+        description: "User profile preferences and defaults.",
+      },
+      nodes: {
+        title: "Nodes",
+        description: "Distributed node topology and per-node status.",
+      },
+      evolution: {
+        title: "Evolution",
+        description: "Hermes self-evolution proposal queue and history.",
+      },
+      tagmemo: {
+        title: "Tag Memo",
+        description: "Tag-scoped notes and operational memos.",
+      },
+      diary: {
+        title: "Diary",
+        description: "Narrative long-term memory for agents.",
+      },
+      canvas: {
+        title: "Canvas",
+        description: "Conversation canvas and collaborative scratch area.",
+      },
+    },
+  },
+
   sessions: {
     title: "Sessions",
     subtitle:
@@ -2025,9 +2106,27 @@ export const en = {
     colSessionKey: "Session key",
     colMessageCount: "Messages",
     colLastMessageAt: "Last message",
+    colLastSeenAt: "Last seen",
     colActions: "Actions",
     replay: "Replay",
-    empty: "No sessions recorded yet.",
+    delete: "Delete",
+    deleteAriaLabel: "Delete session {{key}}",
+    deleteConfirmTitle: "Delete this session?",
+    deleteConfirmBody:
+      "This will permanently remove the session history from the journal.\n确认删除此会话?会话历史会从 journal 永久移除。",
+    deleteConfirmAction: "Permanently delete",
+    deleteSucceeded: "Deleted session {{key}}",
+    deleteFailed: "Delete failed: {{msg}}",
+    clearAll: "Clear all",
+    clearAllConfirmTitle: "Clear all sessions?",
+    clearAllConfirmBody:
+      "This will permanently remove all {{n}} session records.\n清空所有会话?将永久删除 {{n}} 条会话记录。",
+    clearAllConfirmAction: "Clear everything",
+    clearAllSucceeded: "Cleared {{n}} sessions",
+    clearAllFailed: "Clear failed: {{msg}}",
+    cancel: "Cancel",
+    empty:
+      "No sessions yet — once you chat with the bot, sessions will appear here.",
     loadFailed: "Could not load sessions",
     sessionsDisabledTitle: "Session storage is off",
     sessionsDisabledHint:

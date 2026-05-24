@@ -375,6 +375,7 @@ export const zhCN = {
     sessions: "会话",
     identity: "身份",
     federation: "联邦",
+    devSettings: "开发者设置",
     expandSidebar: "展开侧边栏",
     collapseSidebar: "折叠侧边栏",
     openPalette: "打开命令面板",
@@ -1976,15 +1977,112 @@ export const zhCN = {
     },
   },
 
+  devSettings: {
+    title: "开发者设置",
+    subtitle:
+      "为保持运维侧栏简洁，下列高阶页面默认隐藏。开启右上角的开关即可常驻显示，或在卡片中直接进入。",
+    toggleLabel: "在侧边栏显示开发者页面",
+    toggleHint:
+      "仅影响本浏览器的侧边栏可见性。无论开关状态如何，下列页面均可从本面板进入。",
+    cardOpen: "打开 →",
+    pages: {
+      config: {
+        title: "配置（Config）",
+        description: "原始 TOML 编辑器与运行时 [section] 视图。",
+      },
+      tenants: {
+        title: "租户",
+        description: "管理多租户隔离与配额。",
+      },
+      credentials: {
+        title: "凭证",
+        description: "Provider API key 与 OAuth token 管理。",
+      },
+      agents: {
+        title: "Agents",
+        description: "Markdown 形式的 Agent prompt 集合。",
+      },
+      characters: {
+        title: "角色卡",
+        description: "角色卡（人设）与 system prompt 模板。",
+      },
+      skills: {
+        title: "技能",
+        description: "工具调用与可执行 skill 注册表。",
+      },
+      plugins: {
+        title: "插件",
+        description: "已加载的同步/异步/预处理插件清单。",
+      },
+      embedding: {
+        title: "Embedding",
+        description: "向量化任务、模型与维度。",
+      },
+      federation: {
+        title: "联邦",
+        description: "跨租户演化提案接收/发布关系。",
+      },
+      hooks: {
+        title: "Hooks",
+        description: "Webhook 与回调注册。",
+      },
+      rag: {
+        title: "RAG",
+        description: "检索增强生成的语料、分片与标签。",
+      },
+      profiles: {
+        title: "Profile",
+        description: "用户配置档与默认偏好。",
+      },
+      nodes: {
+        title: "节点",
+        description: "分布式节点拓扑与节点级状态。",
+      },
+      evolution: {
+        title: "演化",
+        description: "Hermes 自演化提案队列与历史。",
+      },
+      tagmemo: {
+        title: "Tag Memo",
+        description: "标签级别的备忘与运营记录。",
+      },
+      diary: {
+        title: "日记",
+        description: "Agent 长期记忆的叙事化日记。",
+      },
+      canvas: {
+        title: "Canvas",
+        description: "对话画布与协作草稿区。",
+      },
+    },
+  },
+
   sessions: {
     title: "会话",
     subtitle: "查看历史会话；点击 “重放” 可按只读方式回看完整逐字记录。",
     colSessionKey: "会话标识",
     colMessageCount: "消息数",
     colLastMessageAt: "最近消息",
+    colLastSeenAt: "上次活跃",
     colActions: "操作",
     replay: "重放",
-    empty: "尚未记录任何会话。",
+    delete: "删除",
+    deleteAriaLabel: "删除会话 {{key}}",
+    deleteConfirmTitle: "确认删除此会话?",
+    deleteConfirmBody:
+      "确认删除此会话?会话历史会从 journal 永久移除。\nThis will permanently remove the session history from the journal.",
+    deleteConfirmAction: "永久删除",
+    deleteSucceeded: "已删除会话 {{key}}",
+    deleteFailed: "删除失败：{{msg}}",
+    clearAll: "清空全部",
+    clearAllConfirmTitle: "清空所有会话?",
+    clearAllConfirmBody:
+      "清空所有会话?将永久删除 {{n}} 条会话记录。\nThis will permanently remove all {{n}} session records.",
+    clearAllConfirmAction: "全部清空",
+    clearAllSucceeded: "已清空 {{n}} 条会话",
+    clearAllFailed: "清空失败：{{msg}}",
+    cancel: "取消",
+    empty: "暂无会话历史 — 与机器人发起对话后,会话会出现在这里。",
     loadFailed: "会话列表加载失败",
     sessionsDisabledTitle: "会话存储已关闭",
     sessionsDisabledHint:

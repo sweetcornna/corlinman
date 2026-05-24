@@ -18,8 +18,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   RERUN_NOT_IMPLEMENTED,
   SESSIONS_LIST_PATH,
+  deleteAllSessions,
+  deleteSession,
   fetchSessions,
   replaySession,
+  sessionDeletePath,
   sessionsReplayPath,
 } from "./sessions";
 
@@ -253,5 +256,128 @@ describe("replaySession", () => {
     expect(result.kind).toBe("ok");
     if (result.kind !== "ok") throw new Error("expected ok");
     expect(result.replay.summary.rerun_diff).toBe(RERUN_NOT_IMPLEMENTED);
+  });
+});
+
+describe("sessionDeletePath URL builder", () => {
+  it("encodes session keys with colons", () => {
+    expect(sessionDeletePath("qq:1234")).toBe("/admin/sessions/qq%3A1234");
+  });
+
+  it("encodes group keys with punctuation", () => {
+    expect(sessionDeletePath("qq:group:123/abc")).toBe(
+      "/admin/sessions/qq%3Agroup%3A123%2Fabc",
+    );
+  });
+});
+
+describe("deleteSession", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("returns ok with the deleted count on 200", async () => {
+    const { fn, calls } = makeFetchStub(() =>
+      jsonResponse(200, { deleted: 1 }),
+    );
+    vi.stubGlobal("fetch", fn);
+
+    const result = await deleteSession("qq:1234");
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") throw new Error("expected ok");
+    expect(result.deleted).toBe(1);
+    expect(calls[0]?.init.method).toBe("DELETE");
+    expect(calls[0]?.url).toContain("/admin/sessions/qq%3A1234");
+  });
+
+  it("defaults the deleted count to 1 when the body omits it", async () => {
+    const { fn } = makeFetchStub(() => jsonResponse(200, {}));
+    vi.stubGlobal("fetch", fn);
+    const result = await deleteSession("qq:1234");
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") throw new Error("expected ok");
+    expect(result.deleted).toBe(1);
+  });
+
+  it("tolerates a 204 No Content response", async () => {
+    const { fn } = makeFetchStub(
+      () => new Response(null, { status: 204 }),
+    );
+    vi.stubGlobal("fetch", fn);
+    const result = await deleteSession("qq:1234");
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") throw new Error("expected ok");
+    expect(result.deleted).toBe(1);
+  });
+
+  it("returns not_found on 404 (idempotent delete)", async () => {
+    const { fn } = makeFetchStub(() =>
+      jsonResponse(404, { error: "not_found", session_key: "missing" }),
+    );
+    vi.stubGlobal("fetch", fn);
+    const result = await deleteSession("missing");
+    expect(result.kind).toBe("not_found");
+    if (result.kind !== "not_found") throw new Error("expected not_found");
+    expect(result.session_key).toBe("missing");
+  });
+
+  it("returns disabled on 503 sessions_disabled", async () => {
+    const { fn } = makeFetchStub(() =>
+      jsonResponse(503, { error: "sessions_disabled" }),
+    );
+    vi.stubGlobal("fetch", fn);
+    const result = await deleteSession("qq:1234");
+    expect(result.kind).toBe("disabled");
+  });
+
+  it("rethrows on other failures (e.g. 500)", async () => {
+    const { fn } = makeFetchStub(() =>
+      jsonResponse(500, { error: "boom" }),
+    );
+    vi.stubGlobal("fetch", fn);
+    await expect(deleteSession("qq:1234")).rejects.toThrow();
+  });
+});
+
+describe("deleteAllSessions", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("returns { deleted: N } on success", async () => {
+    const { fn, calls } = makeFetchStub(() =>
+      jsonResponse(200, { deleted: 42 }),
+    );
+    vi.stubGlobal("fetch", fn);
+    const result = await deleteAllSessions();
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") throw new Error("expected ok");
+    expect(result.deleted).toBe(42);
+    expect(calls[0]?.init.method).toBe("DELETE");
+    expect(calls[0]?.url).toContain("/admin/sessions");
+  });
+
+  it("returns disabled on 503 sessions_disabled", async () => {
+    const { fn } = makeFetchStub(() =>
+      jsonResponse(503, { error: "sessions_disabled" }),
+    );
+    vi.stubGlobal("fetch", fn);
+    const result = await deleteAllSessions();
+    expect(result.kind).toBe("disabled");
+  });
+
+  it("defaults to deleted=0 when the body omits the count", async () => {
+    const { fn } = makeFetchStub(() => jsonResponse(200, {}));
+    vi.stubGlobal("fetch", fn);
+    const result = await deleteAllSessions();
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") throw new Error("expected ok");
+    expect(result.deleted).toBe(0);
   });
 });

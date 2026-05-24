@@ -6,7 +6,6 @@ import { usePathname, useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import { useTranslation } from "react-i18next";
 import {
-  Activity,
   Beaker,
   BookOpen,
   Bot,
@@ -33,6 +32,7 @@ import {
   Settings,
   Share2,
   Sparkles,
+  Terminal,
   Timer,
   Users,
   UserSquare,
@@ -43,6 +43,7 @@ import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
 import { logout } from "@/lib/auth";
+import { useDevMode } from "@/lib/dev-mode";
 import { useMotion } from "@/components/ui/motion-safe";
 import { useMobileDrawer } from "./mobile-drawer-context";
 import { BrandMark } from "./brand-mark";
@@ -53,6 +54,15 @@ interface NavItem {
   href: string;
   labelKey: string;
   icon: React.ComponentType<{ className?: string }>;
+  /**
+   * When `true`, the item is hidden in the default Operator sidebar and only
+   * appears when `useDevMode().enabled === true`. Power-user pages — raw
+   * config TOML, tenants, credentials, agents, characters, skills, plugins,
+   * embedding, federation, hooks, RAG, profiles, nodes, evolution, tagmemo,
+   * diary, canvas — set this flag so a fresh install isn't drowning the
+   * operator in 25+ entries.
+   */
+  isDeveloper?: boolean;
 }
 
 interface NavGroup {
@@ -62,18 +72,28 @@ interface NavGroup {
   labelKey: string;
   icon: React.ComponentType<{ className?: string }>;
   children: NavItem[];
+  /** Mirrors `NavItem.isDeveloper` for the whole group. */
+  isDeveloper?: boolean;
 }
 
 type NavEntry = NavItem | NavGroup;
 
-const ITEMS: NavEntry[] = [
-  { href: "/", labelKey: "nav.dashboard", icon: Activity },
-  { href: "/plugins", labelKey: "nav.plugins", icon: Boxes },
-  { href: "/skills", labelKey: "nav.skills", icon: Wrench },
-  { href: "/agents", labelKey: "nav.agents", icon: Bot },
-  { href: "/characters", labelKey: "nav.characters", icon: UserSquare },
-  { href: "/diary", labelKey: "nav.diary", icon: BookOpen },
-  { href: "/rag", labelKey: "nav.rag", icon: Database },
+/**
+ * Visible-by-default Operator surface. 9 page entries (with Channels as a
+ * collapsible group exposing QQ + Telegram leaves) + the always-visible
+ * Developer Settings link at the bottom — 10 sidebar rows total.
+ *
+ * Order: top-down by frequency of use during a normal operator shift
+ * (chat → approvals → audit) then configuration (providers / models /
+ * channels / scheduler / identity).
+ */
+const OPERATOR_ITEMS: NavEntry[] = [
+  { href: "/playground/protocol", labelKey: "nav.playground", icon: Beaker },
+  { href: "/approvals", labelKey: "nav.approvals", icon: ClipboardCheck },
+  { href: "/sessions", labelKey: "nav.sessions", icon: MessagesSquare },
+  { href: "/logs", labelKey: "nav.logs", icon: FileTerminal },
+  { href: "/providers", labelKey: "nav.providers", icon: Plug },
+  { href: "/models", labelKey: "nav.models", icon: Route },
   {
     kind: "group",
     id: "channels",
@@ -93,25 +113,56 @@ const ITEMS: NavEntry[] = [
     ],
   },
   { href: "/scheduler", labelKey: "nav.scheduler", icon: Timer },
-  { href: "/approvals", labelKey: "nav.approvals", icon: ClipboardCheck },
-  { href: "/sessions", labelKey: "nav.sessions", icon: MessagesSquare },
   { href: "/identity", labelKey: "nav.identity", icon: Fingerprint },
-  { href: "/evolution", labelKey: "nav.evolution", icon: Leaf },
-  { href: "/models", labelKey: "nav.models", icon: Route },
-  { href: "/providers", labelKey: "nav.providers", icon: Plug },
-  { href: "/credentials", labelKey: "nav.credentials", icon: KeyRound },
-  { href: "/embedding", labelKey: "nav.embedding", icon: Sparkles },
-  { href: "/tagmemo", labelKey: "nav.tagmemo", icon: Sparkles },
-  { href: "/config", labelKey: "nav.config", icon: Settings },
-  { href: "/tenants", labelKey: "nav.tenants", icon: Building2 },
-  { href: "/profiles", labelKey: "nav.profiles", icon: Users },
-  { href: "/federation", labelKey: "nav.federation", icon: Share2 },
-  { href: "/logs", labelKey: "nav.logs", icon: FileTerminal },
-  { href: "/hooks", labelKey: "nav.hooks", icon: Zap },
-  { href: "/nodes", labelKey: "nav.nodes", icon: Network },
-  { href: "/playground/protocol", labelKey: "nav.playground", icon: Beaker },
-  { href: "/canvas", labelKey: "nav.canvas", icon: Frame },
 ];
+
+/**
+ * Developer-only entries — hidden until `useDevMode().enabled === true`.
+ * Always reachable through `/admin/dev-settings` regardless of the flag.
+ */
+const DEV_ITEMS: NavEntry[] = [
+  { href: "/config", labelKey: "nav.config", icon: Settings, isDeveloper: true },
+  { href: "/tenants", labelKey: "nav.tenants", icon: Building2, isDeveloper: true },
+  { href: "/credentials", labelKey: "nav.credentials", icon: KeyRound, isDeveloper: true },
+  { href: "/agents", labelKey: "nav.agents", icon: Bot, isDeveloper: true },
+  { href: "/characters", labelKey: "nav.characters", icon: UserSquare, isDeveloper: true },
+  { href: "/skills", labelKey: "nav.skills", icon: Wrench, isDeveloper: true },
+  { href: "/plugins", labelKey: "nav.plugins", icon: Boxes, isDeveloper: true },
+  { href: "/embedding", labelKey: "nav.embedding", icon: Sparkles, isDeveloper: true },
+  { href: "/federation", labelKey: "nav.federation", icon: Share2, isDeveloper: true },
+  { href: "/hooks", labelKey: "nav.hooks", icon: Zap, isDeveloper: true },
+  { href: "/rag", labelKey: "nav.rag", icon: Database, isDeveloper: true },
+  { href: "/profiles", labelKey: "nav.profiles", icon: Users, isDeveloper: true },
+  { href: "/nodes", labelKey: "nav.nodes", icon: Network, isDeveloper: true },
+  { href: "/evolution", labelKey: "nav.evolution", icon: Leaf, isDeveloper: true },
+  { href: "/tagmemo", labelKey: "nav.tagmemo", icon: Sparkles, isDeveloper: true },
+  { href: "/diary", labelKey: "nav.diary", icon: BookOpen, isDeveloper: true },
+  { href: "/canvas", labelKey: "nav.canvas", icon: Frame, isDeveloper: true },
+];
+
+/** Always-visible footer link to the dev-settings dashboard. */
+const DEV_SETTINGS_ENTRY: NavItem = {
+  href: "/dev-settings",
+  labelKey: "nav.devSettings",
+  icon: Terminal,
+};
+
+/**
+ * Returns the ordered sidebar entries for the current dev-mode state.
+ * Operator mode = OPERATOR_ITEMS + dev-settings link; dev mode appends the
+ * full DEV_ITEMS list above the dev-settings link.
+ */
+export function resolveSidebarEntries(devModeEnabled: boolean): NavEntry[] {
+  if (devModeEnabled) {
+    return [...OPERATOR_ITEMS, ...DEV_ITEMS, DEV_SETTINGS_ENTRY];
+  }
+  return [...OPERATOR_ITEMS, DEV_SETTINGS_ENTRY];
+}
+
+/** Exposed for tests + the dev-settings dashboard's card grid. */
+export const SIDEBAR_OPERATOR_ITEMS = OPERATOR_ITEMS;
+export const SIDEBAR_DEV_ITEMS = DEV_ITEMS;
+export const SIDEBAR_DEV_SETTINGS_ENTRY = DEV_SETTINGS_ENTRY;
 
 function isActiveHref(pathname: string, href: string): boolean {
   if (href === "/") return pathname === "/";
@@ -165,6 +216,11 @@ export function Sidebar({ user }: SidebarProps) {
   const [changePasswordOpen, setChangePasswordOpen] = React.useState(false);
   const { open: drawerOpen } = useMobileDrawer();
   const mobileDrawerHidden = useIsMobileSidebar() && !drawerOpen;
+  const { enabled: devModeEnabled } = useDevMode();
+  const entries = React.useMemo(
+    () => resolveSidebarEntries(devModeEnabled),
+    [devModeEnabled],
+  );
 
   React.useEffect(() => {
     setCollapsed(readCollapsed());
@@ -246,7 +302,7 @@ export function Sidebar({ user }: SidebarProps) {
       </div>
 
       <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto p-2">
-        {ITEMS.map((entry) => {
+        {entries.map((entry) => {
           if (entry.kind === "group") {
             return (
               <SidebarGroup
