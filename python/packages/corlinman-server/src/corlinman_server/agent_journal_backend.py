@@ -165,6 +165,7 @@ class JournalBackend(Protocol):
         *,
         user_id: str | None = None,
         channel: str = "",
+        pending_question_json: str | None = None,
     ) -> int | None:
         """Insert an in-progress row; return the new turn_id.
 
@@ -179,6 +180,13 @@ class JournalBackend(Protocol):
         tag to dispatch the right re-delivery path. The default ``""``
         keeps every existing call site (and every pre-column row)
         working unchanged.
+
+        ``pending_question_json`` (ask_user) optionally stores the JSON
+        payload of the ``ask_user`` tool call that ended the turn — the
+        question text plus any canned answer options. Purely
+        informational at this layer (no read path inside the chat
+        handler yet); the admin UI is the consumer. ``None`` is the
+        normal case.
 
         May return ``None`` when a concurrent ``begin_turn`` for the same
         (session_key, user_text, user_id) already opened a row — the
@@ -322,16 +330,17 @@ class JournalBackend(Protocol):
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS turns (
-    turn_id        INTEGER PRIMARY KEY,
-    session_key    TEXT    NOT NULL,
-    status         TEXT    NOT NULL
-                          CHECK (status IN ('in_progress', 'completed', 'errored')),
-    started_at_ms  INTEGER NOT NULL,
-    ended_at_ms    INTEGER,
-    user_text      TEXT,
-    user_id        TEXT,
-    channel        TEXT    NOT NULL DEFAULT '',
-    error          TEXT
+    turn_id              INTEGER PRIMARY KEY,
+    session_key          TEXT    NOT NULL,
+    status               TEXT    NOT NULL
+                                CHECK (status IN ('in_progress', 'completed', 'errored')),
+    started_at_ms        INTEGER NOT NULL,
+    ended_at_ms          INTEGER,
+    user_text            TEXT,
+    user_id              TEXT,
+    channel              TEXT    NOT NULL DEFAULT '',
+    pending_question_json TEXT,
+    error                TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_turns_session_status
@@ -364,6 +373,15 @@ _USER_ID_MIGRATION = "ALTER TABLE turns ADD COLUMN user_id TEXT"
 # one round-trips to the canonical empty string instead of NULL.
 _CHANNEL_MIGRATION = (
     "ALTER TABLE turns ADD COLUMN channel TEXT NOT NULL DEFAULT ''"
+)
+
+# Pre-ask_user deployments have no ``pending_question_json`` column.
+# Nullable (defaults to NULL) so legacy rows round-trip cleanly. The
+# column is purely informational — the chat handler does not read it
+# back today; future surfaces (admin UI "session is waiting for an
+# answer" badge) consume it.
+_PENDING_QUESTION_MIGRATION = (
+    "ALTER TABLE turns ADD COLUMN pending_question_json TEXT"
 )
 
 
@@ -419,6 +437,13 @@ class SqliteJournalBackend:
                 await conn.execute(_CHANNEL_MIGRATION)
                 await conn.commit()
                 logger.info("agent.journal.migrated", migration="channel_column")
+            if "pending_question_json" not in existing:
+                await conn.execute(_PENDING_QUESTION_MIGRATION)
+                await conn.commit()
+                logger.info(
+                    "agent.journal.migrated",
+                    migration="pending_question_json_column",
+                )
         except aiosqlite.Error as exc:  # pragma: no cover — defensive
             logger.warning("agent.journal.migrate_failed", error=str(exc))
         self._conn = conn
@@ -452,6 +477,7 @@ class SqliteJournalBackend:
         *,
         user_id: str | None = None,
         channel: str = "",
+        pending_question_json: str | None = None,
     ) -> int | None:
         """Insert an in-progress row; return the new ``turn_id``.
 
@@ -475,6 +501,12 @@ class SqliteJournalBackend:
         :class:`~corlinman_server.auto_resume.AgentResumeService` so
         re-delivery dispatches to the right surface. Default ``""``
         preserves every existing call site.
+
+        ask_user — ``pending_question_json`` optionally stores the raw
+        args JSON of the ``ask_user`` tool call that terminated the
+        turn. Purely informational at the storage layer; a future admin
+        surface can read this to show "session is awaiting an answer".
+        ``None`` is the normal case.
         """
         conn = self._c
         ts = int(time.time() * 1000)
@@ -483,8 +515,9 @@ class SqliteJournalBackend:
             try:
                 await conn.execute(
                     "INSERT INTO turns (turn_id, session_key, status, "
-                    "started_at_ms, user_text, user_id, channel) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "started_at_ms, user_text, user_id, channel, "
+                    "pending_question_json) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         tid,
                         session_key or "",
@@ -493,6 +526,7 @@ class SqliteJournalBackend:
                         user_text,
                         user_id,
                         channel or "",
+                        pending_question_json,
                     ),
                 )
                 await conn.commit()

@@ -39,6 +39,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 __all__ = [
+    "ASK_USER_TOOL",
     "REASONING_PREVIEW_CHARS",
     "SEND_ATTACHMENT_TOOL",
     "STATUS_GENERATING",
@@ -48,9 +49,11 @@ __all__ = [
     "TODO_WRITE_TOOL",
     "TRUNCATION_MARKER",
     "MutableSpinner",
+    "format_ask_user",
     "format_todo_list",
     "format_tool_result",
     "format_tool_status",
+    "parse_ask_user_args",
     "parse_send_attachment_args",
     "tool_arg_preview",
     "truncate_reply",
@@ -98,6 +101,13 @@ SEND_ATTACHMENT_TOOL: str = "send_attachment"
 #: generic ``🔧 todo_write {N} item(s)`` spinner line so the user sees
 #: the actual plan the agent is working through.
 TODO_WRITE_TOOL: str = "todo_write"
+
+#: Tool name for the agent's "pause and ask the user" tool. The spinner
+#: special-cases this just like ``todo_write`` / ``send_attachment``:
+#: instead of the generic ``🔧 ask_user ...`` line we render the
+#: question (and its canned options as bullets, when present). The
+#: matching ``tool_result`` is suppressed — the question IS the status.
+ASK_USER_TOOL: str = "ask_user"
 
 
 # ---------------------------------------------------------------------------
@@ -312,6 +322,13 @@ def format_tool_status(ev: Any) -> str:
     The ``todo_write`` tool is special-cased: instead of the generic
     ``🔧 todo_write 5 item(s)`` line we render the full checkbox list
     (mutable in-place across the turn) via :func:`format_todo_list`.
+
+    The ``ask_user`` tool is similarly special-cased — we render
+    ``❓ 等待用户回答: <question>`` plus a bulleted list of options when
+    present via :func:`format_ask_user`. The matching ``tool_result`` is
+    suppressed by :func:`format_tool_result` (the question line IS the
+    user-facing signal; the model's assistant text will repeat the
+    question as the turn's final reply).
     """
     tool = (getattr(ev, "tool", "") or "?").replace("\n", " ")
     if tool == TODO_WRITE_TOOL:
@@ -320,6 +337,11 @@ def format_tool_status(ev: Any) -> str:
             return rendered
         # Fall through to the generic rendering if parsing failed —
         # better to show *something* than to silently hide the call.
+    if tool == ASK_USER_TOOL:
+        rendered = format_ask_user(getattr(ev, "args_json", b""))
+        if rendered:
+            return rendered
+        # Same fall-through policy — never silently hide a tool call.
     plugin = (getattr(ev, "plugin", "") or "").replace("\n", " ")
     label = f"{plugin}.{tool}" if plugin and plugin != tool else tool
     if len(label) > 60:
@@ -341,10 +363,14 @@ def format_tool_result(ev: Any) -> str:
     Returns an empty string for ``todo_write`` (same suppression as
     ``send_attachment``): the call-side already rendered the full list
     and a trailing ``✅ todo_write (3ms)`` line would just clutter the
-    spinner.
+    spinner. Same suppression applies to ``ask_user``: the question line
+    rendered on the call side is the user-facing signal, and a follow-up
+    ``✅ ask_user (1ms)`` line would just overwrite it.
     """
     tool = (getattr(ev, "tool", "") or "?").replace("\n", " ")
     if tool == TODO_WRITE_TOOL:
+        return ""
+    if tool == ASK_USER_TOOL:
         return ""
     if len(tool) > 60:
         tool = tool[:57] + "..."
@@ -355,6 +381,85 @@ def format_tool_result(ev: Any) -> str:
         msg = msg[:80] + "…" if len(msg) > 80 else msg
         return f"❌ {tool} 失败 ({dur}){': ' + msg if msg else ''}"
     return f"✅ {tool} ({dur})"
+
+
+#: Cap on the question text rendered into the spinner / op-summary
+#: line. Mirrors the agent-side cap in
+#: :mod:`corlinman_agent.interactive.ask_user` so the same value
+#: round-trips between the two layers without surprise truncation.
+_ASK_USER_QUESTION_CHARS: int = 400
+
+#: Per-option label cap when rendering as a bulleted list. Telegram's
+#: inline-keyboard ``callback_data`` is 64 bytes; the visible button
+#: text can be longer, so we keep the renderer cap a bit looser for the
+#: textual fallback path.
+_ASK_USER_OPTION_CHARS: int = 80
+
+
+def parse_ask_user_args(args_json: bytes | str) -> tuple[str, list[str], bool]:
+    """Parse ``ask_user`` tool args into ``(question, options, multiple)``.
+
+    Pure: never raises and never touches I/O. Returns ``("", [], False)``
+    on any decode / shape error so the caller can branch on the empty
+    question string and skip rendering.
+
+    Used by:
+
+    * :func:`format_ask_user` for the spinner / op-summary text block.
+    * The Telegram handler (in :mod:`service`) when building the inline
+      keyboard for the final reply.
+    """
+    raw = args_json or b""
+    try:
+        raw_str = (
+            raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw
+        )
+        obj = _json.loads(raw_str or "{}")
+    except (UnicodeDecodeError, _json.JSONDecodeError):
+        return ("", [], False)
+    if not isinstance(obj, dict):
+        return ("", [], False)
+    q_raw = obj.get("question")
+    question = q_raw.strip() if isinstance(q_raw, str) else ""
+    opts_raw = obj.get("options") or []
+    options: list[str] = []
+    if isinstance(opts_raw, list):
+        for o in opts_raw[:8]:
+            label = str(o).replace("\n", " ").strip()
+            if not label:
+                continue
+            if len(label) > _ASK_USER_OPTION_CHARS:
+                label = label[: _ASK_USER_OPTION_CHARS - 1] + "…"
+            options.append(label)
+    multiple = bool(obj.get("multiple", False))
+    return (question, options, multiple)
+
+
+def format_ask_user(args_json: bytes | str) -> str:
+    """Render ``ask_user`` args as the spinner / op-summary block.
+
+    Output shape::
+
+        ❓ 等待用户回答: <question>
+          · option A
+          · option B
+          · option C
+
+    Returns ``""`` on parse failure / empty question so the caller can
+    fall back to the generic ``🔧 ask_user`` spinner line. Question is
+    truncated at :data:`_ASK_USER_QUESTION_CHARS` to keep the spinner
+    line under Telegram's ``editMessageText`` cap on long questions.
+    """
+    question, options, _multiple = parse_ask_user_args(args_json)
+    if not question:
+        return ""
+    q = question.replace("\n", " ")
+    if len(q) > _ASK_USER_QUESTION_CHARS:
+        q = q[: _ASK_USER_QUESTION_CHARS - 1] + "…"
+    lines = [f"❓ 等待用户回答: {q}"]
+    for opt in options:
+        lines.append(f"  · {opt}")
+    return "\n".join(lines)
 
 
 def parse_send_attachment_args(ev: Any) -> tuple[str, str | None, str | None]:
@@ -433,6 +538,7 @@ class MutableSpinner:
 
     __slots__ = (
         "_edit_callback",
+        "_last_ask_user_args",
         "_last_op_status",
         "_last_status",
         "_last_todo_args",
@@ -464,6 +570,13 @@ class MutableSpinner:
         #: reasoning) ``token_delta`` arrives — the operation is over,
         #: the response is coming.
         self._last_op_status: str | None = None
+        #: Raw JSON args of the most recent ``ask_user`` call this turn.
+        #: ``None`` when the agent never called ``ask_user``. The Telegram
+        #: handler reads this at end-of-turn to decide whether to attach
+        #: an inline keyboard to the final reply; QQ-family channels
+        #: ignore it (the bulleted options already render via the
+        #: spinner / summary path).
+        self._last_ask_user_args: bytes | None = None
 
     @property
     def last_status(self) -> str:
@@ -494,6 +607,18 @@ class MutableSpinner:
         ``None`` when the agent never called ``todo_write``.
         """
         return self._last_todo_args
+
+    @property
+    def last_ask_user_args(self) -> bytes | None:
+        """Raw JSON args of the most recent ``ask_user`` call this turn.
+
+        The Telegram handler reads this at end-of-turn to decide whether
+        to send the final reply with an inline-keyboard of option
+        buttons; other channels can ignore it (their bulleted-list
+        rendering already lives in the spinner / op-summary block).
+        ``None`` when the agent never called ``ask_user``.
+        """
+        return self._last_ask_user_args
 
     async def _maybe_edit(self, text: str) -> None:
         """Call ``edit_callback`` iff the visible text would actually change.
@@ -636,6 +761,19 @@ class MutableSpinner:
             self._last_todo_args = raw
             await self._render_combined()
             return None
+        if tool == ASK_USER_TOOL:
+            # Stash the args bytes so the Telegram handler can read the
+            # options at end-of-turn and attach an inline keyboard. Then
+            # render the question as the live op-flow status line so the
+            # spinner shows "❓ 等待用户回答: ..." until the assistant
+            # text replaces the placeholder.
+            raw = getattr(ev, "args_json", b"") or b""
+            if isinstance(raw, str):
+                raw = raw.encode("utf-8")
+            self._last_ask_user_args = raw
+            self._last_op_status = format_tool_status(ev)
+            await self._render_combined()
+            return None
         # Non-todo, non-attachment tool: this IS the live op flow now.
         self._last_op_status = format_tool_status(ev)
         await self._render_combined()
@@ -663,6 +801,13 @@ class MutableSpinner:
         if tool == SEND_ATTACHMENT_TOOL:
             return
         if tool == TODO_WRITE_TOOL:
+            return
+        if tool == ASK_USER_TOOL:
+            # Same suppression as todo_write — the question rendered on
+            # the call side is the user-facing signal; overwriting it
+            # with ``✅ ask_user (1ms)`` would lose useful context. The
+            # next call (or the assistant's final reply) will naturally
+            # supersede.
             return
         self._last_op_status = format_tool_result(ev)
         await self._render_combined()

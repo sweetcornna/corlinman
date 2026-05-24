@@ -98,6 +98,11 @@ from corlinman_agent.coding import (
     resolve_workspace,
 )
 from corlinman_agent.coding._snapshot import snapshot as _snapshot_workspace
+from corlinman_agent.interactive import (
+    ASK_USER_TOOL,
+    ask_user_tool_schema,
+    dispatch_ask_user,
+)
 from corlinman_agent.variables import VariableCascade
 from corlinman_agent.web import (
     CALCULATOR_TOOL,
@@ -151,6 +156,7 @@ BUILTIN_TOOLS: frozenset[str] = frozenset(
         WEB_SEARCH_TOOL,
         CALCULATOR_TOOL,
         SEND_ATTACHMENT_TOOL,
+        ASK_USER_TOOL,
     }
 ) | CODING_TOOLS
 
@@ -221,6 +227,7 @@ def _builtin_tool_schemas() -> list[dict[str, Any]]:
         web_search_tool_schema(),
         web_fetch_tool_schema(),
         _send_attachment_tool_schema(),
+        ask_user_tool_schema(),
         *coding_tool_schemas(),
     ]
 
@@ -344,7 +351,11 @@ risk; suggest the safer pattern.
 Make a reasonable choice and proceed. Ask the user when you are truly \
 blocked — ambiguous requirement with materially different solutions, or \
 a destructive action that needs sign-off. Do not ask permission for \
-routine work you are already authorized to do.
+routine work you are already authorized to do. When you must ask, call \
+the `ask_user` tool with the question (and optional `options` list of \
+canned answers). After calling `ask_user`, finalize your reply with the \
+question text and do NOT invoke any other tool in the same turn — the \
+user's next message will arrive as a new turn.
 
 # Minimal comments
 Add comments only where the code itself does not explain the WHY — \
@@ -1775,6 +1786,16 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 )
             if event.tool == REVERT_CHANGES_TOOL:
                 return dispatch_revert_changes(args_json=event.args_json)
+            if event.tool == ASK_USER_TOOL:
+                # Stub dispatch — the actual "ask the user" UX is
+                # rendered by the channel handler when it observes the
+                # matching ToolCall frame (Telegram inline keyboard;
+                # QQ-family bulleted list). The envelope here is the
+                # marker the reasoning loop needs to close the round
+                # cleanly. The system prompt instructs the model to
+                # finalise the reply with the question text and not
+                # call any more tools this turn.
+                return dispatch_ask_user(args_json=event.args_json)
             if event.tool == SEND_ATTACHMENT_TOOL:
                 # No-op stub on the agent side. The real upload happens
                 # in the channel handler (handle_one_telegram /

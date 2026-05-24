@@ -137,6 +137,7 @@ class AgentJournal:
         *,
         user_id: str | None = None,
         channel: str = "",
+        pending_question_json: str | None = None,
     ) -> int | None:
         """Forward to the backend, including the optional S4 user_id scope.
 
@@ -151,9 +152,18 @@ class AgentJournal:
         boot-time :class:`AgentResumeService` can pick the right
         re-delivery surface. Default ``""`` preserves every existing
         call site verbatim.
+
+        ``pending_question_json`` (ask_user) optionally stores the JSON
+        payload of an ``ask_user`` tool call that ended the turn — a
+        question + canned answer options. Purely informational at this
+        layer; the chat handler doesn't read it back yet.
         """
         return await self._backend.begin_turn(
-            session_key, user_text, user_id=user_id, channel=channel
+            session_key,
+            user_text,
+            user_id=user_id,
+            channel=channel,
+            pending_question_json=pending_question_json,
         )
 
     async def complete_turn(self, turn_id: int) -> None:

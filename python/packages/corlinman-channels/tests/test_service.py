@@ -108,6 +108,11 @@ class _FakeTelegramSender:
         self.sent: list[tuple[int, str, int | None]] = []
         self.edits: list[tuple[int, int, str]] = []
         self.chat_actions: list[tuple[int, str]] = []
+        #: Inline-keyboard payloads observed on ``send_message`` calls,
+        #: parallel-indexed against ``sent``. ``None`` when the call
+        #: didn't include a keyboard. Tests for the ``ask_user`` path
+        #: assert on this to confirm the buttons threaded through.
+        self.sent_keyboards: list[list[list[dict[str, str]]] | None] = []
         self._next_message_id = 0
         # Test knobs: flip to make the corresponding sender call raise.
         self.send_message_should_raise = False
@@ -118,11 +123,13 @@ class _FakeTelegramSender:
         chat_id: int,
         text: str,
         reply_to_message_id: int | None = None,
+        inline_keyboard: list[list[dict[str, str]]] | None = None,
     ) -> int:
         if self.send_message_should_raise:
             raise RuntimeError("simulated send_message failure")
         self._next_message_id += 1
         self.sent.append((chat_id, text, reply_to_message_id))
+        self.sent_keyboards.append(inline_keyboard)
         return self._next_message_id
 
     async def edit_message_text(
@@ -1020,6 +1027,101 @@ class TestHandleOneTelegram:
         assert any(("💭" in t and "let me think" in t) for t in edits), edits
         # The final reply must NOT contain the reasoning text.
         assert sender.edits[-1][2] == "the answer is 42"
+
+    @pytest.mark.asyncio
+    async def test_handle_one_telegram_sends_buttons_when_ask_user_called(
+        self,
+    ) -> None:
+        """An ``ask_user`` tool call with canned options must surface a
+        final ``send_message`` with an ``inline_keyboard`` payload — the
+        button labels are the option strings the agent supplied."""
+        import asyncio
+        import json
+
+        args = json.dumps(
+            {
+                "question": "Overwrite README.md?",
+                "options": ["yes", "no", "let me think"],
+            }
+        ).encode()
+        svc = _ScriptedChatService([
+            _Ev(
+                kind="tool_call",
+                plugin="builtin",
+                tool="ask_user",
+                args_json=args,
+            ),
+            _Ev(
+                kind="tool_result",
+                plugin="builtin",
+                tool="ask_user",
+                duration_ms=1,
+            ),
+            _Ev(kind="token_delta", text="Overwrite README.md?"),
+            _Ev(kind="done"),
+        ])
+        binding = ChannelBinding.telegram(bot_id=999, chat_id=42, user_id=42)
+        inbound: InboundEvent[Any] = InboundEvent(
+            channel="telegram",
+            binding=binding,
+            text="please rewrite the readme",
+            message_id="7",
+            timestamp=0,
+            mentioned=True,
+        )
+        sender = _FakeTelegramSender()
+        await handle_one_telegram(
+            svc, inbound, "m", sender, asyncio.Event()  # type: ignore[arg-type]
+        )
+
+        # At least one send_message call must carry an inline_keyboard.
+        keyboards = [kb for kb in sender.sent_keyboards if kb is not None]
+        assert keyboards, (
+            "expected a send_message with inline_keyboard; sent_keyboards="
+            f"{sender.sent_keyboards!r}"
+        )
+        kb = keyboards[-1]
+        # Each option becomes one row with a single button.
+        assert len(kb) == 3
+        labels = [row[0]["text"] for row in kb]
+        assert labels == ["yes", "no", "let me think"]
+        # callback_data echoes the label (so the inbound flow gets a
+        # meaningful synthesized text on press).
+        for row, label in zip(kb, labels):
+            assert row[0]["callback_data"] == label
+
+    @pytest.mark.asyncio
+    async def test_handle_one_telegram_no_buttons_when_ask_user_omits_options(
+        self,
+    ) -> None:
+        """``ask_user`` without options is a plain question — no
+        inline_keyboard should attach to the final reply (otherwise the
+        Telegram client renders an empty button bar)."""
+        import asyncio
+        import json
+
+        args = json.dumps({"question": "What's the deadline?"}).encode()
+        svc = _ScriptedChatService([
+            _Ev(
+                kind="tool_call",
+                plugin="builtin",
+                tool="ask_user",
+                args_json=args,
+            ),
+            _Ev(kind="token_delta", text="What's the deadline?"),
+            _Ev(kind="done"),
+        ])
+        binding = ChannelBinding.telegram(bot_id=999, chat_id=42, user_id=42)
+        inbound: InboundEvent[Any] = InboundEvent(
+            channel="telegram", binding=binding, text="hi",
+            message_id="1", timestamp=0, mentioned=True,
+        )
+        sender = _FakeTelegramSender()
+        await handle_one_telegram(
+            svc, inbound, "m", sender, asyncio.Event()  # type: ignore[arg-type]
+        )
+        # No send_message call may carry a keyboard.
+        assert all(kb is None for kb in sender.sent_keyboards)
 
     @pytest.mark.asyncio
     async def test_placeholder_send_raises_cancels_typing_pulse(self) -> None:

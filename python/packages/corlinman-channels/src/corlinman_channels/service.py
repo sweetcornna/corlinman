@@ -108,6 +108,7 @@ from corlinman_channels._status import (
     MutableSpinner,
     format_tool_result as _format_tool_result,
     format_tool_status as _format_tool_status,
+    parse_ask_user_args as _parse_ask_user_args,
     parse_send_attachment_args as _parse_send_attachment_args,
     tool_arg_preview as _tool_arg_preview,
     truncate_reply,
@@ -1146,6 +1147,55 @@ async def _telegram_typing_pulse(
 # top of this module preserve the historical local names.
 
 
+#: Telegram bot API caps ``callback_data`` at 64 bytes UTF-8. Each option
+#: is the entire payload (we don't prefix with a call_id — the question
+#: that was just asked is unambiguous in the conversation context, and
+#: prefixing burns bytes for ~zero deduplication value), so we shorten
+#: any option label that would overflow. The visible button text is the
+#: full label; only the per-press payload is shortened.
+_TG_CALLBACK_DATA_BYTES: int = 64
+
+
+def _build_ask_user_keyboard(
+    ask_user_args: bytes | None,
+) -> list[list[dict[str, str]]] | None:
+    """Build the Telegram ``reply_markup.inline_keyboard`` for an
+    ``ask_user`` call that supplied canned options.
+
+    Returns ``None`` when the agent never called ``ask_user`` this turn,
+    or when the options list was empty (we fall back to a plain text
+    reply — the question itself still gets sent as the message body).
+
+    Each option becomes one button on its own row (1-column layout so a
+    long label never gets clipped). ``callback_data`` is the option text
+    UTF-8 encoded; the rare option that exceeds the 64-byte Telegram
+    cap is truncated with a trailing ``…`` so the press still echoes a
+    recognisable substring back into the conversation.
+    """
+    if ask_user_args is None:
+        return None
+    _question, options, _multiple = _parse_ask_user_args(ask_user_args)
+    if not options:
+        return None
+    keyboard: list[list[dict[str, str]]] = []
+    for label in options:
+        # Encode then truncate at the byte boundary so we never slice a
+        # multi-byte UTF-8 codepoint in half.
+        data = label.encode("utf-8")
+        if len(data) > _TG_CALLBACK_DATA_BYTES:
+            # Reserve 3 bytes for the ellipsis.
+            cap = _TG_CALLBACK_DATA_BYTES - 3
+            data = data[:cap]
+            # Drop trailing continuation bytes so the final char is whole.
+            while data and (data[-1] & 0xC0) == 0x80:
+                data = data[:-1]
+            callback = data.decode("utf-8", errors="ignore") + "…"
+        else:
+            callback = label
+        keyboard.append([{"text": label, "callback_data": callback}])
+    return keyboard
+
+
 async def _telegram_send_attachment(
     sender: TelegramSender,
     chat_id: int,
@@ -1287,6 +1337,33 @@ async def handle_one_telegram(
     # the logger instead of propagating, so a 429 or "blocked by user"
     # at the very end never crashes the channel loop.
     body = _truncate_for_telegram(body)
+
+    # If the agent called ``ask_user`` with canned options, surface them
+    # as a clickable inline keyboard on the final reply. We send a fresh
+    # message (rather than editing the placeholder) because the bot API
+    # does NOT support ``editMessageText`` + ``inline_keyboard`` on a
+    # message that was sent without one — the cleaner path is a new
+    # send, and the placeholder is overwritten with a benign final
+    # status line so the user isn't left looking at "✍️ 生成回复中...".
+    keyboard = _build_ask_user_keyboard(spinner.last_ask_user_args)
+    if keyboard is not None:
+        try:
+            if placeholder_id is not None:
+                # Replace the placeholder with the question body (no
+                # keyboard yet) so a stale spinner line doesn't survive.
+                # The buttons attach to the fresh send below — this two-
+                # step keeps the user-visible artefact ordering correct.
+                await sender.edit_message_text(chat_id, placeholder_id, body)
+            await sender.send_message(
+                chat_id,
+                body,
+                reply_to_message_id=reply_to,
+                inline_keyboard=keyboard,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("telegram final emit with buttons failed: %s", exc)
+        return
+
     try:
         if placeholder_id is not None:
             await sender.edit_message_text(chat_id, placeholder_id, body)

@@ -784,3 +784,94 @@ class TestUploadSizeGuard:
         message_id = await sender.send_document(42, f, filename="small.pdf")
         await client.aclose()
         assert message_id == 99
+
+
+# ---------------------------------------------------------------------------
+# ask_user — sendMessage with inline_keyboard + answerCallbackQuery.
+# ---------------------------------------------------------------------------
+
+
+class TestSendMessageWithButtons:
+    """``send_message`` must thread an ``inline_keyboard`` through into
+    ``reply_markup`` on the bot API payload so the agent's ``ask_user``
+    tool can surface clickable answer buttons."""
+
+    @pytest.mark.asyncio
+    async def test_send_message_with_buttons_envelope(self) -> None:
+        recorded: list[httpx.Request] = []
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            recorded.append(req)
+            return httpx.Response(200, json=_ok_envelope(7))
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        sender = TelegramSender(client, "TEST")
+        keyboard = [
+            [{"text": "Yes", "callback_data": "Yes"}],
+            [{"text": "No", "callback_data": "No"}],
+        ]
+        message_id = await sender.send_message(
+            123, "Overwrite README?", inline_keyboard=keyboard
+        )
+        await client.aclose()
+
+        assert message_id == 7
+        body = recorded[0].read()
+        # reply_markup.inline_keyboard must be in the JSON payload — the
+        # bot API key the Telegram client uses to render the buttons.
+        assert b'"reply_markup"' in body
+        assert b'"inline_keyboard"' in body
+        assert b'"callback_data":"Yes"' in body
+        assert b'"callback_data":"No"' in body
+        assert b'"text":"Yes"' in body
+
+    @pytest.mark.asyncio
+    async def test_send_message_without_buttons_omits_reply_markup(
+        self,
+    ) -> None:
+        """No keyboard supplied → no ``reply_markup`` key in the body, so
+        the regression-coverage test for the existing call sites holds."""
+        recorded: list[httpx.Request] = []
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            recorded.append(req)
+            return httpx.Response(200, json=_ok_envelope(8))
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        sender = TelegramSender(client, "TEST")
+        await sender.send_message(123, "plain")
+        await client.aclose()
+
+        body = recorded[0].read()
+        assert b"reply_markup" not in body
+
+    @pytest.mark.asyncio
+    async def test_answer_callback_query_round_trips(self) -> None:
+        """``answer_callback_query`` posts to the documented endpoint."""
+        recorded: list[httpx.Request] = []
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            recorded.append(req)
+            return httpx.Response(200, json={"ok": True, "result": True})
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        sender = TelegramSender(client, "TEST")
+        await sender.answer_callback_query("cbq-1")
+        await client.aclose()
+
+        assert len(recorded) == 1
+        assert recorded[0].url.path.endswith("/answerCallbackQuery")
+        body = recorded[0].read()
+        assert b'"callback_query_id":"cbq-1"' in body
+
+    @pytest.mark.asyncio
+    async def test_answer_callback_query_swallows_http_errors(self) -> None:
+        """Best-effort: a transport failure mustn't crash the caller."""
+        def handler(req: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("boom")
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        sender = TelegramSender(client, "TEST")
+        # Must not raise.
+        await sender.answer_callback_query("cbq-2")
+        await client.aclose()

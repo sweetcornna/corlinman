@@ -147,9 +147,14 @@ class Message(BaseModel):
 
     Subset matches the Rust ``Message`` struct field-for-field; richer
     fields (video / sticker / edit_date) deserialise as ignored defaults.
+
+    ``populate_by_name=True`` is set so the internal synthesizer
+    :func:`_message_from_callback` can pass ``from_`` directly (the
+    field name) instead of the JSON alias ``from`` when building a
+    Message from a :class:`CallbackQuery`.
     """
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
     message_id: int
     from_: User | None = Field(default=None, alias="from")
@@ -176,6 +181,24 @@ class Message(BaseModel):
 Message.model_rebuild()
 
 
+class CallbackQuery(BaseModel):
+    """Telegram ``CallbackQuery`` subset.
+
+    Fired when a user taps an inline-keyboard button (e.g. one rendered
+    by the agent's ``ask_user`` tool). The bot must call
+    ``answerCallbackQuery`` to clear the per-button spinner in the
+    client — the adapter does this in :meth:`TelegramAdapter._poll_loop`
+    after enqueueing a synthetic ``Message`` for the press.
+    """
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    id: str
+    from_: User | None = Field(default=None, alias="from")
+    message: Message | None = None
+    data: str | None = None
+
+
 class Update(BaseModel):
     """One item from ``getUpdates``."""
 
@@ -183,6 +206,7 @@ class Update(BaseModel):
 
     update_id: int
     message: Message | None = None
+    callback_query: CallbackQuery | None = None
 
 
 class File(BaseModel):
@@ -300,6 +324,44 @@ def classify(msg: Message, bot_id: int, bot_username: str | None) -> MessageRout
             return MessageRoute.GROUP_ADDRESSED
 
     return MessageRoute.GROUP_IGNORED
+
+
+def _message_from_callback(cq: CallbackQuery) -> Message | None:
+    """Synthesize a :class:`Message` for an inline-keyboard press.
+
+    Builds a Message whose ``text`` is the ``callback_data`` payload
+    (the option label the bot put on the button when it called
+    ``send_message`` with ``inline_keyboard=...``) so the rest of the
+    inbound pipeline — classify / mention check / channel-binding /
+    chat handler — treats the press as if the user typed the option.
+
+    Returns ``None`` when the embedded ``message`` is absent (the
+    Telegram API guarantees it exists for non-inline callbacks, but we
+    stay defensive — a press on a previously-deleted message would be
+    treated as a no-op rather than crashing the long-poll loop).
+
+    The synthetic ``Message`` carries:
+    - ``message_id`` = the embedded message's id (so reply-context still
+      lines up with the bot's previous prompt);
+    - ``from_`` = the callback-query's ``from`` user (NOT the embedded
+      message's ``from``, which would be the bot);
+    - ``chat`` = the embedded message's chat;
+    - ``text`` = the callback_data payload, never empty.
+    """
+    embedded = cq.message
+    if embedded is None:
+        return None
+    data = (cq.data or "").strip()
+    if not data:
+        return None
+    sender = cq.from_ if cq.from_ is not None else embedded.from_
+    return Message(
+        message_id=embedded.message_id,
+        from_=sender,  # type: ignore[call-arg]
+        chat=embedded.chat,
+        date=embedded.date,
+        text=data,
+    )
 
 
 def binding_from_message(msg: Message, bot_id: int) -> ChannelBinding:
@@ -525,12 +587,32 @@ class TelegramAdapter:
             pending_offset: int | None = self._offset
             for upd in updates:
                 pending_offset = upd.update_id + 1
-                if upd.message is None:
+                msg: Message | None = upd.message
+                if msg is None and upd.callback_query is not None:
+                    # An inline-keyboard button was tapped (e.g. the agent
+                    # asked a question via ``ask_user`` and offered canned
+                    # options as buttons). Synthesize a ``Message`` whose
+                    # text is the button's ``callback_data`` payload so
+                    # the rest of the inbound pipeline can treat it as a
+                    # normal user reply. Without this synthesis the press
+                    # would be silently dropped by the ``upd.message is
+                    # None`` branch above.
+                    msg = _message_from_callback(upd.callback_query)
+                    # Best-effort ack — clears the spinner that Telegram
+                    # shows on the button until the bot answers. We
+                    # ignore failures because the actual reply path is
+                    # already on the inbound queue.
+                    if upd.callback_query.id:
+                        with suppress(Exception):
+                            await self._answer_callback_query(
+                                upd.callback_query.id
+                            )
+                if msg is None:
                     continue
                 if self._closed:
                     return
                 try:
-                    await self._inbound_q.put(upd.message)
+                    await self._inbound_q.put(msg)
                 except asyncio.CancelledError:
                     return
             # All updates in the batch have been queued — safe to commit.
@@ -564,10 +646,32 @@ class TelegramAdapter:
             raise TransportError("getMe returned non-object result")
         return User.model_validate(env)
 
+    async def _answer_callback_query(self, callback_query_id: str) -> None:
+        """Best-effort POST to ``/answerCallbackQuery``.
+
+        Telegram requires this so the per-button spinner clears in the
+        user's client; we don't need a toast / alert so the body is just
+        ``{"callback_query_id": ...}``. Errors are swallowed because the
+        real reply path is already on the inbound queue and the ack is
+        purely decorative.
+        """
+        try:
+            await self._client.post(
+                self._endpoint("answerCallbackQuery"),
+                json={"callback_query_id": callback_query_id},
+            )
+        except httpx.HTTPError:
+            return
+
     async def _get_updates(self, offset: int | None) -> list[Update]:
         params: dict[str, Any] = {"timeout": self._cfg.long_poll_timeout}
         if offset is not None:
             params["offset"] = offset
+        # Tell Telegram we want callback_query events in addition to the
+        # default messages — without this, button presses never surface.
+        # The ``allowed_updates`` parameter is JSON-encoded per the bot
+        # API spec.
+        params["allowed_updates"] = "[\"message\",\"callback_query\"]"
         resp = await self._client.get(self._endpoint("getUpdates"), params=params)
         env = _unwrap(resp)
         if env is None:
@@ -650,6 +754,7 @@ __all__ = [
     "ERROR_BACKOFF_SECS",
     "LONG_POLL_TIMEOUT",
     "MAX_DOWNLOAD_BYTES",
+    "CallbackQuery",
     "Chat",
     "Document",
     "File",

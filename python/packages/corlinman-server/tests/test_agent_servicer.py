@@ -1951,3 +1951,111 @@ def test_builtin_tool_schemas_cached_at_module_load() -> None:
     ]
     live_names = [s["function"]["name"] for s in live]
     assert cached_names == live_names
+
+
+# ---------------------------------------------------------------------------
+# ask_user — pause-and-ask builtin.
+# ---------------------------------------------------------------------------
+
+
+def test_ask_user_in_builtin_tools_set() -> None:
+    """The dispatch gate must list ``ask_user`` so the reasoning loop
+    routes the call in-process instead of emitting a no-op ToolCall
+    frame to a nonexistent plugin runtime."""
+    from corlinman_server.agent_servicer import BUILTIN_TOOLS
+
+    assert "ask_user" in BUILTIN_TOOLS
+
+
+def test_ask_user_appears_in_advertised_tools() -> None:
+    """Cache of advertised builtin schemas must surface ``ask_user`` so
+    every chat turn ships its descriptor to the model."""
+    from corlinman_server.agent_servicer import (
+        _CACHED_BUILTIN_TOOL_SCHEMAS,
+        _builtin_tool_schemas,
+    )
+
+    cached_names = {s["function"]["name"] for s in _CACHED_BUILTIN_TOOL_SCHEMAS}
+    assert "ask_user" in cached_names
+
+    live_names = {s["function"]["name"] for s in _builtin_tool_schemas()}
+    assert "ask_user" in live_names
+
+
+@pytest.mark.asyncio
+async def test_ask_user_dispatch_returns_stub_envelope() -> None:
+    """``ask_user`` flows through ``_dispatch_builtin`` and returns the
+    "awaiting user reply" marker so the reasoning loop closes cleanly."""
+    from corlinman_agent.reasoning_loop import ChatStart, ToolCallEvent
+    from corlinman_server.agent_servicer import CorlinmanAgentServicer
+
+    servicer = CorlinmanAgentServicer(provider_resolver=lambda _m: _FakeProvider([]))
+    start = ChatStart(model="m", messages=[], tools=[], session_key="s")
+    event = ToolCallEvent(
+        call_id="c-ask",
+        plugin="builtin",
+        tool="ask_user",
+        args_json=b'{"question": "Overwrite README.md?"}',
+    )
+    payload = json.loads(
+        await servicer._dispatch_builtin(event, start, _FakeProvider([]))
+    )
+    assert payload["ok"] is True
+    assert payload["status"] == "awaiting_user_reply"
+    assert payload["question"] == "Overwrite README.md?"
+
+
+@pytest.mark.asyncio
+async def test_ask_user_dispatch_propagates_options() -> None:
+    """Options on the args round-trip through the dispatch envelope so a
+    channel handler reading the envelope can render them."""
+    from corlinman_agent.reasoning_loop import ChatStart, ToolCallEvent
+    from corlinman_server.agent_servicer import CorlinmanAgentServicer
+
+    servicer = CorlinmanAgentServicer(provider_resolver=lambda _m: _FakeProvider([]))
+    start = ChatStart(model="m", messages=[], tools=[], session_key="s")
+    event = ToolCallEvent(
+        call_id="c-ask",
+        plugin="builtin",
+        tool="ask_user",
+        args_json=b'{"question": "pick", "options": ["a", "b"]}',
+    )
+    payload = json.loads(
+        await servicer._dispatch_builtin(event, start, _FakeProvider([]))
+    )
+    assert payload["options"] == ["a", "b"]
+
+
+@pytest.mark.asyncio
+async def test_ask_user_empty_question_returns_error_envelope() -> None:
+    """A blank question yields the documented error shape (not a stub)."""
+    from corlinman_agent.reasoning_loop import ChatStart, ToolCallEvent
+    from corlinman_server.agent_servicer import CorlinmanAgentServicer
+
+    servicer = CorlinmanAgentServicer(provider_resolver=lambda _m: _FakeProvider([]))
+    start = ChatStart(model="m", messages=[], tools=[], session_key="s")
+    event = ToolCallEvent(
+        call_id="c-ask-bad",
+        plugin="builtin",
+        tool="ask_user",
+        args_json=b'{"question": ""}',
+    )
+    payload = json.loads(
+        await servicer._dispatch_builtin(event, start, _FakeProvider([]))
+    )
+    assert payload["ok"] is False
+    assert "question" in payload["error"]
+
+
+def test_ask_user_system_prompt_clause_present() -> None:
+    """The baseline system prompt must instruct the model on how to use
+    ``ask_user`` — call the tool, then finalise with the question text,
+    then stop. Without this clause models won't reach for the tool."""
+    from corlinman_server.agent_servicer import _CODING_SYSTEM_PROMPT
+
+    assert "ask_user" in _CODING_SYSTEM_PROMPT
+    # Pin the two key behaviours so a future prompt rewrite that drops
+    # them fails this test loudly.
+    assert "finalize" in _CODING_SYSTEM_PROMPT.lower()
+    assert "do not invoke" in _CODING_SYSTEM_PROMPT.lower() or \
+        "do not call" in _CODING_SYSTEM_PROMPT.lower()

@@ -584,3 +584,149 @@ class TestOffsetCommitAfterPut:
             # Allow the poll loop one more tick so the commit lands.
             await asyncio.sleep(0.05)
             assert adapter._offset == 201
+
+
+# ---------------------------------------------------------------------------
+# callback_query — inline-keyboard press synthesis for ``ask_user`` flows.
+# ---------------------------------------------------------------------------
+
+
+class TestCallbackQuerySynthesis:
+    """When an inline-keyboard button (e.g. one rendered by the agent's
+    ``ask_user`` tool) is tapped, Telegram pushes a ``callback_query``
+    update instead of a ``message``. The adapter must synthesise a
+    ``Message`` whose text is the button's ``callback_data`` payload so
+    the rest of the inbound pipeline can treat the press identically to
+    a typed reply."""
+
+    async def test_callback_query_synthesizes_inbound_event_with_data_as_text(
+        self, tg_script
+    ) -> None:
+        tg_script.add_updates([
+            {
+                "update_id": 1,
+                "callback_query": {
+                    "id": "cbq-1",
+                    "from": {"id": 77, "is_bot": False, "username": "alice"},
+                    "message": {
+                        "message_id": 7,
+                        "from": {"id": 999, "is_bot": True,
+                                 "username": "corlinman_bot"},
+                        "chat": {"id": 77, "type": "private"},
+                        "date": 1_700_000_000,
+                        "text": "Overwrite README.md?",
+                    },
+                    "data": "yes",
+                },
+            },
+        ])
+        adapter = TelegramAdapter(
+            TelegramConfig(bot_token="TEST", long_poll_timeout=1),
+            http_client=tg_script.client(),
+        )
+        async with adapter:
+            async def first() -> Any:
+                async for ev in adapter.inbound():
+                    return ev
+                return None
+
+            ev = await asyncio.wait_for(first(), timeout=5.0)
+
+        assert ev is not None
+        # The callback_data is the user-facing message body now.
+        assert ev.text == "yes"
+        # Sender is the human who tapped the button (NOT the bot).
+        assert ev.binding.sender == "77"
+        assert ev.binding.thread == "77"
+
+    async def test_callback_query_in_group_uses_callback_sender(
+        self, tg_script
+    ) -> None:
+        """In a group chat the ``from`` on the embedded message is the
+        bot; the synthesised Message must use ``callback_query.from`` as
+        the human sender so routing / journal scoping is correct."""
+        tg_script.add_updates([
+            {
+                "update_id": 1,
+                "callback_query": {
+                    "id": "cbq-2",
+                    "from": {"id": 555, "is_bot": False, "username": "carol"},
+                    "message": {
+                        "message_id": 11,
+                        "from": {"id": 999, "is_bot": True,
+                                 "username": "corlinman_bot"},
+                        "chat": {"id": -1001, "type": "supergroup",
+                                 "title": "hangout"},
+                        "date": 1_700_000_000,
+                        "text": "Pick one.",
+                    },
+                    "data": "option_b",
+                },
+            },
+        ])
+        adapter = TelegramAdapter(
+            TelegramConfig(bot_token="TEST", long_poll_timeout=1),
+            http_client=tg_script.client(),
+        )
+        async with adapter:
+            async def first() -> Any:
+                async for ev in adapter.inbound():
+                    return ev
+                return None
+
+            ev = await asyncio.wait_for(first(), timeout=5.0)
+
+        assert ev is not None
+        assert ev.text == "option_b"
+        assert ev.binding.sender == "555"
+        assert ev.binding.thread == "-1001"
+
+    async def test_callback_query_missing_data_skipped(
+        self, tg_script
+    ) -> None:
+        """No ``data`` on the callback means nothing to feed back into
+        the loop — the synth helper must return None so the update is
+        skipped rather than crashing the long-poll loop."""
+        tg_script.add_updates([
+            {
+                "update_id": 1,
+                "callback_query": {
+                    "id": "cbq-3",
+                    "from": {"id": 77, "is_bot": False},
+                    "message": {
+                        "message_id": 7,
+                        "from": {"id": 999, "is_bot": True},
+                        "chat": {"id": 77, "type": "private"},
+                        "date": 0,
+                        "text": "ignore me",
+                    },
+                    # missing "data"
+                },
+            },
+            {
+                "update_id": 2,
+                "message": {
+                    "message_id": 8,
+                    "from": {"id": 77, "is_bot": False},
+                    "chat": {"id": 77, "type": "private"},
+                    "date": 0,
+                    "text": "manual reply",
+                },
+            },
+        ])
+        adapter = TelegramAdapter(
+            TelegramConfig(bot_token="TEST", long_poll_timeout=1),
+            http_client=tg_script.client(),
+        )
+        async with adapter:
+            async def first() -> Any:
+                async for ev in adapter.inbound():
+                    return ev
+                return None
+
+            ev = await asyncio.wait_for(first(), timeout=5.0)
+
+        # The dataless callback was skipped; the next text message is what
+        # the iterator yields.
+        assert ev is not None
+        assert ev.text == "manual reply"

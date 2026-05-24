@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 from corlinman_channels._status import (
+    ASK_USER_TOOL,
     REASONING_PREVIEW_CHARS,
     SEND_ATTACHMENT_TOOL,
     STATUS_GENERATING,
@@ -25,9 +26,11 @@ from corlinman_channels._status import (
     TODO_WRITE_TOOL,
     TRUNCATION_MARKER,
     MutableSpinner,
+    format_ask_user,
     format_todo_list,
     format_tool_result,
     format_tool_status,
+    parse_ask_user_args,
     parse_send_attachment_args,
     tool_arg_preview,
     truncate_reply,
@@ -791,3 +794,159 @@ class TestMutableSpinnerTodo:
         assert f"\n\n{STATUS_REASONING_PREFIX}" in combined, combined
         # Reasoning text does NOT accumulate into the reply buffer.
         assert spinner.text_parts == []
+
+
+# ---------------------------------------------------------------------------
+# ask_user — pause-and-ask tool rendering.
+# ---------------------------------------------------------------------------
+
+
+def _ask_user_json(question: str, options: list[str] | None = None,
+                   multiple: bool = False) -> bytes:
+    payload: dict[str, Any] = {"question": question}
+    if options is not None:
+        payload["options"] = options
+    if multiple:
+        payload["multiple"] = True
+    return json.dumps(payload).encode("utf-8")
+
+
+class TestAskUserToolName:
+    def test_constant(self) -> None:
+        assert ASK_USER_TOOL == "ask_user"
+
+
+class TestFormatToolStatusAskUser:
+    """``format_tool_status`` must special-case ``ask_user`` and emit
+    the ❓ question block instead of the generic 🔧 line."""
+
+    def test_format_tool_status_ask_user_renders_question(self) -> None:
+        args = _ask_user_json("Should I overwrite README.md?")
+        out = format_tool_status(_Ev(tool="ask_user", args_json=args))
+        assert out.startswith("❓ 等待用户回答")
+        assert "README.md" in out
+        # No generic fallback strings.
+        assert "🔧 ask_user" not in out
+
+    def test_format_tool_status_ask_user_with_options_renders_bullets(
+        self,
+    ) -> None:
+        args = _ask_user_json("Pick", options=["yes", "no", "maybe"])
+        out = format_tool_status(_Ev(tool="ask_user", args_json=args))
+        # Question line first.
+        assert out.splitlines()[0].startswith("❓")
+        # Bulleted options follow, one per line with the "  · " marker.
+        for opt in ("yes", "no", "maybe"):
+            assert f"  · {opt}" in out
+
+    def test_format_tool_status_ask_user_falls_back_on_malformed(self) -> None:
+        out = format_tool_status(_Ev(tool="ask_user", args_json=b"not json"))
+        # Either the generic 🔧 line OR an empty options block — never
+        # silently nothing.
+        assert out  # non-empty
+        # If we fell through to the generic renderer, the tool name is
+        # carried through.
+        if "❓" not in out:
+            assert "ask_user" in out
+
+
+class TestFormatToolResultAskUser:
+    """``format_tool_result`` must suppress the trailing ✅ line for
+    ``ask_user`` (the question line on the call side IS the signal)."""
+
+    def test_format_tool_result_ask_user_is_suppressed(self) -> None:
+        assert format_tool_result(_Ev(tool="ask_user", duration_ms=3)) == ""
+
+    def test_other_tools_still_render(self) -> None:
+        # Sanity: the suppression is targeted, not blanket.
+        out = format_tool_result(_Ev(tool="read_file", duration_ms=10))
+        assert out == "✅ read_file (10ms)"
+
+
+class TestParseAskUserArgs:
+    def test_full(self) -> None:
+        args = _ask_user_json("q?", options=["a", "b"], multiple=True)
+        q, opts, multi = parse_ask_user_args(args)
+        assert q == "q?"
+        assert opts == ["a", "b"]
+        assert multi is True
+
+    def test_no_options(self) -> None:
+        q, opts, multi = parse_ask_user_args(_ask_user_json("q?"))
+        assert q == "q?"
+        assert opts == []
+        assert multi is False
+
+    def test_malformed_returns_empty(self) -> None:
+        q, opts, multi = parse_ask_user_args(b"not json")
+        assert q == ""
+        assert opts == []
+        assert multi is False
+
+    def test_long_label_truncates(self) -> None:
+        long = "x" * 500
+        _q, opts, _multi = parse_ask_user_args(
+            _ask_user_json("q?", options=[long])
+        )
+        assert len(opts) == 1
+        assert opts[0].endswith("…")
+        assert len(opts[0]) < 200
+
+
+class TestFormatAskUserStandalone:
+    def test_empty_args_empty_output(self) -> None:
+        assert format_ask_user(b"") == ""
+
+    def test_empty_question_empty_output(self) -> None:
+        # ``ask_user`` MUST have a question — empty body returns "".
+        assert format_ask_user(b'{"question": ""}') == ""
+
+    def test_with_options_block(self) -> None:
+        out = format_ask_user(_ask_user_json("Pick", options=["a", "b"]))
+        lines = out.splitlines()
+        assert lines[0].startswith("❓")
+        assert lines[1] == "  · a"
+        assert lines[2] == "  · b"
+
+
+class TestMutableSpinnerAskUser:
+    """The spinner must stash the args (for the Telegram keyboard) and
+    suppress the matching ``tool_result``."""
+
+    @pytest.mark.asyncio
+    async def test_call_renders_question_and_stashes_args(self) -> None:
+        edits: list[str] = []
+
+        async def edit(text: str) -> None:
+            edits.append(text)
+
+        spinner = MutableSpinner(edit)
+        args = _ask_user_json("Overwrite?", options=["yes", "no"])
+        await spinner.on_tool_call(_Ev(tool="ask_user", args_json=args))
+        # The spinner emitted the ❓ block.
+        assert edits, "expected an edit with the question"
+        assert edits[-1].startswith("❓")
+        # The args are available for end-of-turn handlers.
+        assert spinner.last_ask_user_args == args
+
+    @pytest.mark.asyncio
+    async def test_result_is_suppressed(self) -> None:
+        edits: list[str] = []
+
+        async def edit(text: str) -> None:
+            edits.append(text)
+
+        spinner = MutableSpinner(edit)
+        await spinner.on_tool_result(
+            _Ev(tool="ask_user", duration_ms=2, is_error=False)
+        )
+        # No edit fired — the question already shown IS the signal.
+        assert edits == []
+
+    @pytest.mark.asyncio
+    async def test_last_ask_user_args_default_none(self) -> None:
+        async def edit(text: str) -> None:
+            return None
+
+        spinner = MutableSpinner(edit)
+        assert spinner.last_ask_user_args is None

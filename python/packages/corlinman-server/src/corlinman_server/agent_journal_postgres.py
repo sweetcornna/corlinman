@@ -79,19 +79,21 @@ logger = structlog.get_logger(__name__)
 # falls back to ``find_resumable_turn`` to grab the winner's row.
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS journal_turns (
-    turn_id       BIGSERIAL PRIMARY KEY,
-    session_key   TEXT   NOT NULL,
-    status        TEXT   NOT NULL,
-    started_at_ms BIGINT NOT NULL,
-    ended_at_ms   BIGINT,
-    user_text     TEXT,
-    user_id       TEXT,
-    channel       TEXT   NOT NULL DEFAULT '',
-    error         TEXT
+    turn_id               BIGSERIAL PRIMARY KEY,
+    session_key           TEXT   NOT NULL,
+    status                TEXT   NOT NULL,
+    started_at_ms         BIGINT NOT NULL,
+    ended_at_ms           BIGINT,
+    user_text             TEXT,
+    user_id               TEXT,
+    channel               TEXT   NOT NULL DEFAULT '',
+    pending_question_json TEXT,
+    error                 TEXT
 );
 
 ALTER TABLE journal_turns ADD COLUMN IF NOT EXISTS user_id TEXT;
 ALTER TABLE journal_turns ADD COLUMN IF NOT EXISTS channel TEXT NOT NULL DEFAULT '';
+ALTER TABLE journal_turns ADD COLUMN IF NOT EXISTS pending_question_json TEXT;
 
 CREATE INDEX IF NOT EXISTS journal_turns_session_status_idx
     ON journal_turns(session_key, status, started_at_ms DESC);
@@ -204,6 +206,7 @@ class PostgresJournalBackend:
         *,
         user_id: str | None = None,
         channel: str = "",
+        pending_question_json: str | None = None,
     ) -> int | None:
         """Insert an in-progress row; return the new ``turn_id``.
 
@@ -230,13 +233,19 @@ class PostgresJournalBackend:
         :class:`~corlinman_server.auto_resume.AgentResumeService` can
         pick the right re-delivery path. ``""`` keeps every legacy
         caller working unchanged.
+
+        ask_user: ``pending_question_json`` is the optional JSON
+        payload of the ``ask_user`` tool call that terminated the
+        turn. Purely informational — no read path inside the chat
+        handler today.
         """
         ts = _now_ms()
         async with self._p.acquire() as conn:
             row = await conn.fetchrow(
                 "INSERT INTO journal_turns "
-                "(session_key, status, started_at_ms, user_text, user_id, channel) "
-                "VALUES ($1, $2, $3, $4, $5, $6) "
+                "(session_key, status, started_at_ms, user_text, user_id, "
+                "channel, pending_question_json) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7) "
                 "ON CONFLICT DO NOTHING RETURNING turn_id",
                 session_key or "",
                 TURN_IN_PROGRESS,
@@ -244,6 +253,7 @@ class PostgresJournalBackend:
                 user_text,
                 user_id,
                 channel or "",
+                pending_question_json,
             )
         if row is None:
             # C5 — another gateway raced us and won the partial unique

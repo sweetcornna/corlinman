@@ -229,16 +229,63 @@ class TelegramSender:
         chat_id: int,
         text: str,
         reply_to_message_id: int | None = None,
+        inline_keyboard: list[list[dict[str, str]]] | None = None,
     ) -> int:
-        """POST ``/sendMessage``. Returns the Telegram ``message_id``."""
+        """POST ``/sendMessage``. Returns the Telegram ``message_id``.
+
+        When ``inline_keyboard`` is provided we attach a
+        ``reply_markup.inline_keyboard`` payload so the user sees
+        clickable buttons under the message. The shape mirrors the
+        Telegram bot API verbatim — each row is a list of
+        ``{"text": "...", "callback_data": "..."}`` dicts. The agent's
+        ``ask_user`` tool plumbs through here so a question with canned
+        options becomes a button grid (see ``handle_one_telegram``).
+
+        ``callback_data`` is hard-capped by Telegram at 64 bytes UTF-8;
+        the caller is responsible for the cap. ``text`` on the button
+        face is the user-visible label (no Telegram-side cap beyond the
+        4096-char message body).
+        """
         body: dict[str, object] = {"chat_id": chat_id, "text": text}
         if reply_to_message_id is not None:
             body["reply_to_message_id"] = reply_to_message_id
+        if inline_keyboard:
+            body["reply_markup"] = {"inline_keyboard": inline_keyboard}
         try:
             resp = await self.client.post(self._endpoint("sendMessage"), json=body)
         except httpx.HTTPError as exc:
             raise SendHttpError(str(exc)) from exc
         return await _parse_envelope(resp)
+
+    async def answer_callback_query(
+        self,
+        callback_query_id: str,
+        text: str | None = None,
+    ) -> None:
+        """POST ``/answerCallbackQuery``. Best-effort.
+
+        Telegram requires the bot to acknowledge an inline-button press;
+        otherwise the client shows a spinner on the button forever.
+        ``text`` (optional) pops a toast on the user's screen. Failures
+        are logged-and-swallowed because the actual inbound flow is
+        already driven by the callback's payload — the ack is purely
+        decorative.
+        """
+        payload: dict[str, object] = {"callback_query_id": callback_query_id}
+        if text is not None:
+            payload["text"] = text
+        try:
+            resp = await self.client.post(
+                self._endpoint("answerCallbackQuery"), json=payload
+            )
+            # The endpoint returns ok:true on success; we don't care about
+            # the response body. Non-2xx is best-effort logged via the
+            # rate-limit hook so an over-eager call site can't break the
+            # adapter loop.
+            if resp.status_code == 429:
+                self._note_retry_after(resp)
+        except httpx.HTTPError:
+            return
 
     async def send_photo(
         self,
