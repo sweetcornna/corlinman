@@ -263,6 +263,40 @@ class QqChannelParams:
     done/dead) so a gateway crash mid-turn leaves a breadcrumb. When
     ``None``, the channel runs exactly as before — purely additive."""
 
+    # ---- human-like persona toggle (T-persona) -------------------------
+    #
+    # Optional system_prompt-injection layer driven by an admin-curated
+    # persona registry. Off by default — the channel runs exactly as
+    # before when ``humanlike_enabled`` is False or ``persona_store`` is
+    # None. Designed channel-agnostic so other channels can opt in by
+    # taking the same three fields without schema migration.
+    humanlike_enabled: bool = False
+    """Master gate. When False (default) the persona block is never
+    injected even if ``persona_id`` + ``persona_store`` are both set."""
+
+    persona_id: str | None = None
+    """Persona row id to inject. ``None`` falls back to "no persona
+    today" even when the gate is on, which makes a half-configured
+    ``[channels.qq.humanlike]`` section a no-op rather than a crash."""
+
+    persona_store: Any = None
+    """Open :class:`corlinman_server.persona.PersonaStore`. Typed as
+    ``Any`` so this package doesn't take a hard dep on corlinman-server
+    (unit tests pass a stripped-down fake). Looked up per-turn so a
+    persona body edit goes live on the next inbound message without a
+    channel restart."""
+
+    humanlike_resolver: Any = None
+    """Optional callable ``() -> tuple[bool, str | None]`` that returns
+    the live ``(enabled, persona_id)`` pair at call time. When set, it
+    overrides the static ``humanlike_enabled`` / ``persona_id`` fields
+    on a per-turn basis — the gateway uses this to point at the live
+    in-memory channels config dict so an admin PUT to the toggle takes
+    effect on the very next inbound message without restarting the
+    channel task (config-watcher hot-reload integration). When ``None``,
+    the static fields are read directly. Typed as ``Any`` so this
+    package stays type-checker-friendly without a Callable import."""
+
 
 async def run_qq_channel(
     params: QqChannelParams,
@@ -513,6 +547,7 @@ async def _qq_dispatch_loop(
                     cancel,
                     inbox=inbox,
                     inbox_id=inbox_id,
+                    params=params,
                 )
             )
             pending.add(t)
@@ -534,10 +569,17 @@ async def _qq_run_one(
     *,
     inbox: Any,
     inbox_id: int | None,
+    params: "QqChannelParams | None" = None,
 ) -> None:
     """Wrapper that releases the per-channel semaphore in ``finally`` —
     keeps concurrency-control bookkeeping out of the public
-    ``handle_one_qq`` signature so existing callers stay unchanged."""
+    ``handle_one_qq`` signature so existing callers stay unchanged.
+
+    ``params`` is forwarded so :func:`handle_one_qq` can read the
+    persona-injection knobs without changing the historical positional
+    signature — old callers in tests still work because the kwarg
+    defaults to ``None`` and the persona path no-ops on that.
+    """
     try:
         await handle_one_qq(
             chat_service,
@@ -548,6 +590,7 @@ async def _qq_run_one(
             cancel,
             inbox=inbox,
             inbox_id=inbox_id,
+            params=params,
         )
     finally:
         semaphore.release()
@@ -765,6 +808,7 @@ async def handle_one_qq(
     *,
     inbox: Any = None,
     inbox_id: int | None = None,
+    params: "QqChannelParams | None" = None,
 ) -> None:
     """Run one chat turn and post the reply back through the adapter.
 
@@ -791,6 +835,16 @@ async def handle_one_qq(
     ``CORLINMAN_QQ_TOOL_SUMMARY=0``.
     """
     request = _build_internal_request(req, event, model)
+    # Optionally prepend a persona system_prompt at the head of the
+    # request messages. Off by default; opt-in via the per-channel
+    # ``[channels.qq.humanlike]`` config or the live ``humanlike_resolver``
+    # callback. The resolver wins when set so an admin PUT to
+    # ``/admin/channels/qq/humanlike`` takes effect on the very next
+    # inbound message without restarting the channel task. Empty body or
+    # missing persona_id silently no-ops — half-configured TOML stays
+    # operational rather than crashing.
+    if params is not None:
+        await _qq_inject_persona_if_enabled(request, params)
     _log.info("qq handle_one start user=%s model=%s", event.user_id, model)
     if inbox is not None and inbox_id is not None:
         try:
@@ -973,6 +1027,59 @@ async def handle_one_qq(
             await inbox.mark_done(inbox_id)
         except Exception as exc:  # noqa: BLE001
             _log.warning("qq inbox mark_done failed: %s", exc)
+
+
+async def _qq_inject_persona_if_enabled(
+    request: Any, params: "QqChannelParams"
+) -> None:
+    """Prepend a persona ``role="system"`` message to ``request.messages``.
+
+    Reads ``(enabled, persona_id)`` from the live resolver when provided
+    (so an admin toggle takes effect on the next inbound message
+    without restarting the channel task), otherwise from the static
+    ``humanlike_enabled`` / ``persona_id`` fields. Silently no-ops when:
+
+    * the gate is off,
+    * ``persona_id`` is None,
+    * the persona store is None,
+    * the persona row is missing or has empty ``system_prompt``.
+
+    Best-effort: any store failure logs a warning and continues with
+    the unmodified request — persona is decorative; chat must keep
+    working when it breaks.
+    """
+    from types import SimpleNamespace
+
+    enabled = bool(params.humanlike_enabled)
+    persona_id = params.persona_id
+    resolver = params.humanlike_resolver
+    if callable(resolver):
+        try:
+            resolved = resolver()
+            if isinstance(resolved, tuple) and len(resolved) == 2:
+                enabled = bool(resolved[0])
+                persona_id = resolved[1]
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("qq humanlike resolver failed: %s", exc)
+    if not enabled or not persona_id:
+        return
+    store = params.persona_store
+    if store is None:
+        return
+    try:
+        persona = await store.get(persona_id)
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("qq persona lookup failed: %s", exc)
+        return
+    if persona is None:
+        return
+    body = getattr(persona, "system_prompt", "") or ""
+    if not body.strip():
+        return
+    sys_msg = SimpleNamespace(
+        role="system", content=body + "\n\n---\n"
+    )
+    request.messages = [sys_msg, *list(request.messages)]
 
 
 def _build_internal_request(

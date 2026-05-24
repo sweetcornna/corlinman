@@ -97,7 +97,12 @@ def _is_enabled(section: Mapping[str, Any]) -> bool:
 
 
 def _build_qq_params(
-    qq_cfg: Mapping[str, Any], model: str, chat_service: Any, inbox: Any = None
+    qq_cfg: Mapping[str, Any],
+    model: str,
+    chat_service: Any,
+    inbox: Any = None,
+    *,
+    persona_store: Any = None,
 ) -> Any:
     """Build :class:`corlinman_channels.QqChannelParams` from the
     ``[channels.qq]`` config table.
@@ -107,6 +112,16 @@ def _build_qq_params(
     ``docker-compose.qq.yml`` injects (the config template documents
     exactly this). We resolve the env var as a fallback so the standard
     NapCat deployment works without the operator hand-editing the TOML.
+
+    ``persona_store`` is the open
+    :class:`corlinman_server.persona.PersonaStore`. When set together
+    with a ``[channels.qq.humanlike]`` block that has ``enabled=true``
+    + ``persona_id``, the per-turn handler injects the persona's
+    ``system_prompt`` at the head of the chat request. The resolver
+    closes over ``qq_cfg`` so admin PUTs to
+    ``/admin/channels/qq/humanlike`` are picked up on the next inbound
+    message without restarting the channel task (config_watcher rewrites
+    the same dict in place).
     """
     from corlinman_channels import QqChannelParams
 
@@ -122,11 +137,34 @@ def _build_qq_params(
     if ws_url:
         cfg["ws_url"] = ws_url
 
+    # Live humanlike resolver — re-reads the toggle on every inbound
+    # message. The closure captures ``qq_cfg`` (the LIVE config dict the
+    # admin route mutates), not a snapshot, so a PUT takes effect on
+    # next message without channel restart.
+    def _live_humanlike() -> tuple[bool, str | None]:
+        hl = qq_cfg.get("humanlike")
+        if not isinstance(hl, dict):
+            return (False, None)
+        return (
+            bool(hl.get("enabled", False)),
+            hl.get("persona_id") if isinstance(hl.get("persona_id"), str) else None,
+        )
+
+    block = qq_cfg.get("humanlike")
+    initial_enabled = bool(block.get("enabled", False)) if isinstance(block, dict) else False
+    initial_persona_id = (
+        block.get("persona_id") if isinstance(block, dict) else None
+    )
+
     return QqChannelParams(
         config=cfg,
         model=model,
         chat_service=chat_service,
         inbox=inbox,
+        humanlike_enabled=initial_enabled,
+        persona_id=initial_persona_id if isinstance(initial_persona_id, str) else None,
+        persona_store=persona_store,
+        humanlike_resolver=_live_humanlike,
     )
 
 
@@ -367,6 +405,7 @@ def build_channel_tasks(
     chat_service: Any,
     cancel: asyncio.Event,
     inbox: Any = None,
+    persona_store: Any = None,
 ) -> list[asyncio.Task[Any]]:
     """Build (but the caller owns scheduling) the channel background
     tasks for every enabled channel in ``channels_cfg``.
@@ -387,7 +426,10 @@ def build_channel_tasks(
         try:
             from corlinman_channels import run_qq_channel
 
-            params = _build_qq_params(qq_cfg, model, chat_service, inbox=inbox)
+            params = _build_qq_params(
+                qq_cfg, model, chat_service, inbox=inbox,
+                persona_store=persona_store,
+            )
             task = asyncio.create_task(
                 _run_channel(
                     "qq",
@@ -651,12 +693,26 @@ def bootstrap(state: Any) -> list[asyncio.Task[Any]]:
     # drain together.
     cancel = asyncio.Event()
 
+    # The persona store is opened at admin_a wiring time and parked on
+    # the admin_a state. Reach across to it so QQ humanlike injection
+    # has a live handle without a second sqlite open. Best-effort —
+    # missing handle silently disables persona injection.
+    persona_store: Any | None = None
+    try:
+        from corlinman_server.gateway.routes_admin_a import get_admin_state
+
+        admin_a_state = get_admin_state()
+        persona_store = getattr(admin_a_state, "persona_store", None)
+    except Exception:  # noqa: BLE001 — defensive
+        persona_store = None
+
     try:
         tasks = build_channel_tasks(
             channels_cfg,
             model=model,
             chat_service=chat_service,
             cancel=cancel,
+            persona_store=persona_store,
         )
     except Exception as exc:  # pragma: no cover — defensive umbrella
         logger.warning("gateway.channels.bootstrap_failed", error=str(exc))

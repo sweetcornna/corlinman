@@ -618,11 +618,16 @@ def _mount_routes(
                             error=str(exc),
                         )
                         profile_store = None
+                # Persona store opens later inside the lifespan
+                # (open + seed are both async, and _mount_routes is
+                # sync). Leave the field None now; the lifespan setter
+                # below populates it before FastAPI accepts requests.
                 admin_a_state = admin_a_state_cls(
                     data_dir=data_dir,
                     config_path=admin_config_path,
                     admin_write_lock=asyncio.Lock(),
                     profile_store=profile_store,
+                    persona_store=None,
                 )
                 set_admin_a(admin_a_state)
             app.include_router(admin_a.build_router())
@@ -818,6 +823,29 @@ def build_app(
             admin_a_state.admin_password_hash = seeded.password_hash
             admin_a_state.config_path = seeded.config_path
             admin_a_state.must_change_password = seeded.must_change_password
+
+        # Open the persona store (async) + seed builtin Grantley on
+        # first boot. Best-effort — failure leaves persona_store=None
+        # and the /admin/personas + /admin/channels/qq/humanlike routes
+        # return 503 ``persona_store_missing`` instead of crashing the
+        # gateway.
+        if admin_a_state is not None and resolved_data_dir is not None:
+            try:
+                from corlinman_server.persona import (
+                    PersonaStore,
+                    seed_builtin_personas,
+                )
+
+                _ps = await PersonaStore.open(
+                    resolved_data_dir / "personas.sqlite"
+                )
+                await seed_builtin_personas(_ps)
+                admin_a_state.persona_store = _ps
+                logger.info("gateway.persona_store.opened")
+            except Exception as exc:  # pragma: no cover — best-effort
+                logger.warning(
+                    "gateway.persona_store.init_failed", error=str(exc)
+                )
 
         # W5.0: open the evolution sqlite + attach the curator / signals
         # repos to admin_b (the /admin/curator/* routes read them from

@@ -277,6 +277,134 @@ class TestEventKind:
 # ---------------------------------------------------------------------------
 
 
+class TestQqPersonaInjection:
+    """Verify the per-channel humanlike persona toggle prepends the
+    persona system_prompt to the chat request when on, and stays out of
+    the way when off."""
+
+    class _FakePersonaStore:
+        def __init__(self, persona_id: str, system_prompt: str) -> None:
+            from types import SimpleNamespace
+
+            self._row = SimpleNamespace(
+                id=persona_id,
+                display_name="Test Persona",
+                short_summary="",
+                system_prompt=system_prompt,
+                is_builtin=False,
+            )
+
+        async def get(self, persona_id: str):
+            if persona_id == self._row.id:
+                return self._row
+            return None
+
+    @pytest.mark.asyncio
+    async def test_persona_prepended_when_humanlike_on(self) -> None:
+        """With humanlike_enabled=True + persona_id + persona_store, the
+        chat_service should see a leading role=system message carrying
+        the persona body."""
+        import asyncio
+
+        from corlinman_channels.service import QqChannelParams, handle_one_qq
+
+        svc = _ScriptedChatService([
+            _Ev(kind="token_delta", text="ok"),
+            _Ev(kind="done"),
+        ])
+        ev = _sample_group_event()
+        binding = ChannelBinding.qq_group(ev.self_id, ev.group_id or 0, ev.user_id)
+        req = RoutedRequest(binding=binding, content="hi")
+        adapter = _FakeOneBotAdapter()
+        store = self._FakePersonaStore("grantley", "PERSONA-BODY-MARK\nYou are Grantley.")
+        params = QqChannelParams(
+            config={},
+            model="m",
+            chat_service=svc,
+            humanlike_enabled=True,
+            persona_id="grantley",
+            persona_store=store,
+        )
+
+        await handle_one_qq(
+            svc, req, ev, "m", adapter, asyncio.Event(), params=params,  # type: ignore[arg-type]
+        )
+        assert svc.calls, "chat_service.run was never invoked"
+        request = svc.calls[0]
+        # Should have at least 2 messages: leading system + user
+        assert len(request.messages) >= 2
+        sys_msg = request.messages[0]
+        assert sys_msg.role == "system"
+        assert "PERSONA-BODY-MARK" in sys_msg.content
+
+    @pytest.mark.asyncio
+    async def test_no_injection_when_humanlike_off(self) -> None:
+        import asyncio
+
+        from corlinman_channels.service import QqChannelParams, handle_one_qq
+
+        svc = _ScriptedChatService([
+            _Ev(kind="token_delta", text="ok"),
+            _Ev(kind="done"),
+        ])
+        ev = _sample_group_event()
+        binding = ChannelBinding.qq_group(ev.self_id, ev.group_id or 0, ev.user_id)
+        req = RoutedRequest(binding=binding, content="hi")
+        adapter = _FakeOneBotAdapter()
+        store = self._FakePersonaStore("grantley", "PERSONA-BODY-MARK")
+        params = QqChannelParams(
+            config={},
+            model="m",
+            chat_service=svc,
+            humanlike_enabled=False,   # off
+            persona_id="grantley",
+            persona_store=store,
+        )
+
+        await handle_one_qq(
+            svc, req, ev, "m", adapter, asyncio.Event(), params=params,  # type: ignore[arg-type]
+        )
+        request = svc.calls[0]
+        # No system message when humanlike is off.
+        roles = [m.role for m in request.messages]
+        assert "system" not in roles
+
+    @pytest.mark.asyncio
+    async def test_resolver_overrides_static_fields(self) -> None:
+        """When humanlike_resolver is callable, it wins. Live admin PUT
+        flips the toggle via the resolver without restarting the channel."""
+        import asyncio
+
+        from corlinman_channels.service import QqChannelParams, handle_one_qq
+
+        svc = _ScriptedChatService([
+            _Ev(kind="token_delta", text="ok"),
+            _Ev(kind="done"),
+        ])
+        ev = _sample_group_event()
+        binding = ChannelBinding.qq_group(ev.self_id, ev.group_id or 0, ev.user_id)
+        req = RoutedRequest(binding=binding, content="hi")
+        adapter = _FakeOneBotAdapter()
+        store = self._FakePersonaStore("kitty", "MEOW-PERSONA")
+        params = QqChannelParams(
+            config={},
+            model="m",
+            chat_service=svc,
+            humanlike_enabled=False,      # static says off
+            persona_id=None,
+            persona_store=store,
+            humanlike_resolver=lambda: (True, "kitty"),  # live says on
+        )
+
+        await handle_one_qq(
+            svc, req, ev, "m", adapter, asyncio.Event(), params=params,  # type: ignore[arg-type]
+        )
+        request = svc.calls[0]
+        sys_msg = request.messages[0]
+        assert sys_msg.role == "system"
+        assert "MEOW-PERSONA" in sys_msg.content
+
+
 class TestHandleOneQq:
     @pytest.mark.asyncio
     async def test_concatenates_token_deltas_and_sends_action(self) -> None:

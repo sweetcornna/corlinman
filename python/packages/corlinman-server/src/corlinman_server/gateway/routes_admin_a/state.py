@@ -120,6 +120,14 @@ class AdminState:
     # → all four /admin/identity routes 503 ``identity_disabled``.
     identity_store: Any | None = None
 
+    # -- /admin/personas --------------------------------------------
+    #
+    # ``corlinman_server.persona.PersonaStore`` instance. ``None`` →
+    # every ``/admin/personas*`` + ``/admin/channels/qq/humanlike``
+    # route returns 503 ``persona_store_missing``. The store is opened
+    # at boot and seeded with the default ``grantley`` row.
+    persona_store: Any | None = None
+
     # -- /admin/sessions --------------------------------------------
     #
     # Wave-2 kill switch + an optional pre-resolved sessions backend.
