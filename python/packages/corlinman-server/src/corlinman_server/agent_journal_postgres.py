@@ -49,10 +49,12 @@ import structlog
 
 from corlinman_server.agent_journal_backend import (
     RESUME_MAX_AGE_MS,
+    SESSION_SUMMARY_PREVIEW_LEN,
     TURN_COMPLETED,
     TURN_ERRORED,
     TURN_IN_PROGRESS,
     ResumeData,
+    SessionSummary,
 )
 
 logger = structlog.get_logger(__name__)
@@ -465,6 +467,107 @@ class PostgresJournalBackend:
             }
             for r in rows
         ]
+
+    async def list_session_summaries(
+        self, *, limit: int = 200
+    ) -> list[SessionSummary]:
+        """Aggregate ``journal_turns`` by ``session_key`` for the
+        ``/admin/sessions`` UI.
+
+        Uses ``DISTINCT ON (session_key)`` semantics via a CTE so the
+        most-recent turn's ``user_text`` + ``status`` come back in the
+        same scan as the aggregate. One acquire per call, matching the
+        other read methods.
+        """
+        if limit <= 0:
+            return []
+        try:
+            async with self._p.acquire() as conn:
+                rows = await conn.fetch(
+                    # ``latest`` picks the most-recent turn per
+                    # session_key once (DISTINCT ON + ORDER BY started
+                    # DESC); ``agg`` collapses every row of that
+                    # session_key into a single bucket. The join binds
+                    # the two for the final row shape.
+                    "WITH latest AS ( "
+                    "    SELECT DISTINCT ON (session_key) "
+                    "           session_key, user_text, status "
+                    "    FROM journal_turns "
+                    "    ORDER BY session_key, started_at_ms DESC "
+                    "), agg AS ( "
+                    "    SELECT session_key, "
+                    "           MIN(started_at_ms) AS first_seen, "
+                    "           MAX(started_at_ms) AS last_seen, "
+                    "           COUNT(*)           AS turn_count "
+                    "    FROM journal_turns "
+                    "    GROUP BY session_key "
+                    "), msg_counts AS ( "
+                    "    SELECT t.session_key, COUNT(m.turn_id) AS message_count "
+                    "    FROM journal_turns t "
+                    "    LEFT JOIN journal_turn_messages m ON m.turn_id = t.turn_id "
+                    "    GROUP BY t.session_key "
+                    ") "
+                    "SELECT a.session_key, a.first_seen, a.last_seen, "
+                    "       a.turn_count, mc.message_count, "
+                    "       l.user_text, l.status "
+                    "FROM agg a "
+                    "JOIN latest l USING (session_key) "
+                    "JOIN msg_counts mc USING (session_key) "
+                    "ORDER BY a.last_seen DESC "
+                    "LIMIT $1",
+                    int(limit),
+                )
+        except Exception as exc:
+            logger.warning(
+                "agent.journal.list_session_summaries_failed",
+                error=str(exc),
+            )
+            return []
+        out: list[SessionSummary] = []
+        for r in rows:
+            preview = r["user_text"]
+            if preview is not None and len(preview) > SESSION_SUMMARY_PREVIEW_LEN:
+                preview = preview[:SESSION_SUMMARY_PREVIEW_LEN]
+            out.append(
+                SessionSummary(
+                    session_key=str(r["session_key"] or ""),
+                    first_seen_at_ms=int(r["first_seen"]),
+                    last_seen_at_ms=int(r["last_seen"]),
+                    turn_count=int(r["turn_count"]),
+                    message_count=int(r["message_count"] or 0),
+                    last_user_text=preview,
+                    last_status=(
+                        str(r["status"]) if r["status"] is not None else None
+                    ),
+                )
+            )
+        return out
+
+    async def delete_session(self, session_key: str) -> int:
+        """Delete every turn (and its cascading messages) for
+        ``session_key``. Returns the count of ``journal_turns`` rows
+        actually deleted, computed via ``RETURNING turn_id`` since
+        asyncpg's command tag is best-effort.
+
+        ``journal_turn_messages`` rows are removed by the schema's
+        ``REFERENCES journal_turns(turn_id) ON DELETE CASCADE``.
+        """
+        if not session_key:
+            return 0
+        try:
+            async with self._p.acquire() as conn:
+                rows = await conn.fetch(
+                    "DELETE FROM journal_turns "
+                    "WHERE session_key = $1 "
+                    "RETURNING turn_id",
+                    session_key,
+                )
+        except Exception as exc:
+            logger.warning(
+                "agent.journal.delete_session_failed", error=str(exc)
+            )
+            return 0
+        return len(rows)
 
     async def mark_stale_in_progress_as_errored(self) -> int:
         """Sweep stale in-progress turns past :data:`RESUME_MAX_AGE_MS`.

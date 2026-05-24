@@ -38,6 +38,7 @@ from corlinman_server.agent_journal_backend import (
     ENV_REDIS_URL,
     JournalBackend,
     ResumeData,
+    SessionSummary,
     SqliteJournalBackend,
     TURN_COMPLETED,
     TURN_ERRORED,
@@ -216,6 +217,27 @@ class AgentJournal:
     async def mark_stale_in_progress_as_errored(self) -> int:
         return await self._backend.mark_stale_in_progress_as_errored()
 
+    # ------------------------------------------------------------------
+    # /admin/sessions surface — projected straight from the journal so
+    # the UI no longer reads from the dead ``sessions.sqlite`` file.
+    # ------------------------------------------------------------------
+
+    async def list_session_summaries(
+        self, *, limit: int = 200
+    ) -> list[SessionSummary]:
+        """Return one :class:`SessionSummary` per ``session_key``,
+        ordered by ``last_seen_at_ms DESC``. Powers
+        ``GET /admin/sessions``.
+        """
+        return await self._backend.list_session_summaries(limit=limit)
+
+    async def delete_session(self, session_key: str) -> int:
+        """Wipe every turn (and its cascading messages) for
+        ``session_key``. Returns the count of ``turns`` rows deleted —
+        the route maps ``0`` to ``404 not_found``.
+        """
+        return await self._backend.delete_session(session_key)
+
 
 __all__ = [
     "AgentJournal",
@@ -224,6 +246,7 @@ __all__ = [
     "ENV_REDIS_URL",
     "JournalBackend",
     "ResumeData",
+    "SessionSummary",
     "TURN_COMPLETED",
     "TURN_ERRORED",
     "TURN_IN_PROGRESS",

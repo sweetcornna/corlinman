@@ -77,6 +77,45 @@ class ResumeData:
     when this is non-None — the resume IS the continuation."""
 
 
+# Cap for the ``last_user_text`` preview so the wire row never grows
+# unbounded — the admin sessions UI only renders the first line.
+SESSION_SUMMARY_PREVIEW_LEN = 80
+
+
+@dataclass(frozen=True)
+class SessionSummary:
+    """One row of the ``/admin/sessions`` listing, projected straight
+    out of the journal's ``turns`` table.
+
+    Distinct from :class:`corlinman_replay.SessionSummary` (the legacy
+    ``sessions.sqlite`` shape) — this one lives on the journal side and
+    is what the admin route really wants to surface now that the
+    servicer writes there and not into ``sessions.sqlite``.
+
+    ``first_seen_at_ms`` / ``last_seen_at_ms`` are wall-clock unix
+    milliseconds derived from ``MIN``/``MAX(started_at_ms)`` per
+    session_key — they are turn-start times, not message times, so two
+    turns spaced minutes apart will show distinct ``last_seen`` values
+    even when ``message_count`` doesn't change.
+
+    ``last_user_text`` is the first 80 chars of the most-recent turn's
+    ``user_text`` column (``None`` when no user_text was journaled —
+    rare, but possible for malformed callers).
+
+    ``last_status`` is the ``status`` of the most-recent turn — one of
+    ``"in_progress" | "completed" | "errored"`` so the UI can render an
+    appropriate badge.
+    """
+
+    session_key: str
+    first_seen_at_ms: int
+    last_seen_at_ms: int
+    turn_count: int
+    message_count: int
+    last_user_text: str | None
+    last_status: str | None
+
+
 @runtime_checkable
 class JournalBackend(Protocol):
     """The contract every storage backend must satisfy.
@@ -167,6 +206,30 @@ class JournalBackend(Protocol):
 
         Public on the backend so it can be tested in isolation; callers
         normally read ``ResumeData.messages``.
+        """
+        ...
+
+    async def list_session_summaries(
+        self, *, limit: int = 200
+    ) -> list[SessionSummary]:
+        """Aggregate ``turns`` by ``session_key`` and return one row per
+        session ordered by ``MAX(started_at_ms) DESC``.
+
+        Powers the ``/admin/sessions`` admin surface. Backends compute
+        the aggregate server-side so a chat history with 100k turns
+        across 50 sessions doesn't ship 100k rows over the wire.
+        """
+        ...
+
+    async def delete_session(self, session_key: str) -> int:
+        """Wipe every turn (and its cascading messages) for
+        ``session_key``. Returns the number of turn rows deleted.
+
+        Returns ``0`` when no turns matched — the route layer maps that
+        to ``404``. ``turn_messages`` rows are removed by the schema's
+        ``ON DELETE CASCADE`` (SQLite) / explicit ``REFERENCES ... ON
+        DELETE CASCADE`` (Postgres) so callers don't need to issue a
+        second statement.
         """
         ...
 
@@ -574,6 +637,115 @@ class SqliteJournalBackend:
             for r in rows
         ]
 
+    async def list_session_summaries(
+        self, *, limit: int = 200
+    ) -> list[SessionSummary]:
+        """Aggregate ``turns`` by ``session_key`` for the
+        ``/admin/sessions`` UI.
+
+        The aggregate is computed in a single SQL statement using a
+        ``GROUP BY session_key`` with a correlated subquery for the
+        most-recent turn's ``user_text`` + ``status`` so the listing
+        scales to thousands of turns without round-tripping each
+        session_key from Python.
+        """
+        if limit <= 0:
+            return []
+        try:
+            cur = await self._c.execute(
+                # The outer aggregate gives us the counts; the
+                # subquery (``last_turn``) pins the *most recent* turn's
+                # user_text + status for the preview column. Using a
+                # correlated subquery keeps the query a single round
+                # trip; an alternative window-function form is
+                # equivalent on SQLite >= 3.25 but more verbose.
+                "SELECT t.session_key, "
+                "       MIN(t.started_at_ms) AS first_seen, "
+                "       MAX(t.started_at_ms) AS last_seen, "
+                "       COUNT(*)             AS turn_count, "
+                "       (SELECT COUNT(*) FROM turn_messages tm "
+                "        WHERE tm.turn_id IN (SELECT turn_id FROM turns "
+                "                             WHERE session_key = t.session_key)) "
+                "                            AS message_count, "
+                "       (SELECT user_text FROM turns "
+                "        WHERE session_key = t.session_key "
+                "        ORDER BY started_at_ms DESC LIMIT 1) "
+                "                            AS last_user_text, "
+                "       (SELECT status FROM turns "
+                "        WHERE session_key = t.session_key "
+                "        ORDER BY started_at_ms DESC LIMIT 1) "
+                "                            AS last_status "
+                "FROM turns t "
+                "GROUP BY t.session_key "
+                "ORDER BY last_seen DESC "
+                "LIMIT ?",
+                (int(limit),),
+            )
+            rows = await cur.fetchall()
+            await cur.close()
+        except aiosqlite.Error as exc:
+            logger.warning(
+                "agent.journal.list_session_summaries_failed",
+                error=str(exc),
+            )
+            return []
+        out: list[SessionSummary] = []
+        for r in rows:
+            preview = r[5]
+            if preview is not None and len(preview) > SESSION_SUMMARY_PREVIEW_LEN:
+                preview = preview[:SESSION_SUMMARY_PREVIEW_LEN]
+            out.append(
+                SessionSummary(
+                    session_key=str(r[0] or ""),
+                    first_seen_at_ms=int(r[1]),
+                    last_seen_at_ms=int(r[2]),
+                    turn_count=int(r[3]),
+                    message_count=int(r[4]),
+                    last_user_text=preview,
+                    last_status=str(r[6]) if r[6] is not None else None,
+                )
+            )
+        return out
+
+    async def delete_session(self, session_key: str) -> int:
+        """Wipe every turn (and its cascading turn_messages) for
+        ``session_key``. Returns the count of ``turns`` rows deleted.
+
+        Uses an explicit ``BEGIN IMMEDIATE`` / ``COMMIT`` envelope (same
+        shape as :meth:`append_message`) so the DELETE + ON DELETE
+        CASCADE fire atomically and the rowcount we report matches what
+        actually survived the commit. ``aiosqlite``'s
+        ``async with conn:`` shortcut re-awaits the connection, which
+        explodes once the worker thread is already started — keep the
+        manual envelope.
+        """
+        if not session_key:
+            return 0
+        conn = self._c
+        try:
+            await conn.execute("BEGIN IMMEDIATE")
+            cur = await conn.execute(
+                "DELETE FROM turns WHERE session_key = ?",
+                (session_key,),
+            )
+            n = cur.rowcount or 0
+            await cur.close()
+            await conn.commit()
+        except aiosqlite.Error as exc:
+            logger.warning(
+                "agent.journal.delete_session_failed", error=str(exc)
+            )
+            if conn.in_transaction:
+                try:
+                    await conn.rollback()
+                except aiosqlite.Error as rb_exc:
+                    logger.warning(
+                        "agent.journal.delete_session_rollback_failed",
+                        error=str(rb_exc),
+                    )
+            return 0
+        return int(n)
+
     async def mark_stale_in_progress_as_errored(self) -> int:
         """Sweep stale in-progress turns (older than the resume window)
         and stamp them errored — called once on gateway boot so a
@@ -727,6 +899,8 @@ __all__ = [
     "RedisJournalBackend",
     "RESUME_MAX_AGE_MS",
     "ResumeData",
+    "SESSION_SUMMARY_PREVIEW_LEN",
+    "SessionSummary",
     "SqliteJournalBackend",
     "TURN_COMPLETED",
     "TURN_ERRORED",

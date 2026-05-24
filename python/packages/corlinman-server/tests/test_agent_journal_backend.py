@@ -40,6 +40,8 @@ _BACKEND_METHODS = (
     "recent_errored_turns",
     "mark_stale_in_progress_as_errored",
     "load_messages",
+    "list_session_summaries",
+    "delete_session",
 )
 
 
