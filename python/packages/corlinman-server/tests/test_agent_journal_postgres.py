@@ -363,3 +363,74 @@ async def test_close_is_idempotent(backend) -> None:  # type: ignore[no-untyped-
     # exists to assert the ``_pool is None`` defence rather than any
     # value here.
     assert TURN_ERRORED == "errored"
+
+
+# ---------------------------------------------------------------------------
+# Auto-resume — channel column + list_resumable_in_progress (Postgres parity)
+# ---------------------------------------------------------------------------
+
+
+async def test_pg_begin_turn_persists_channel(backend) -> None:  # type: ignore[no-untyped-def]
+    """The ``channel`` column round-trips through the row so the
+    auto-resume scanner can dispatch re-delivery to the right surface.
+    """
+    tid_tg = await backend.begin_turn(
+        "sess-tg", "telegram task", channel="telegram"
+    )
+    tid_qq = await backend.begin_turn(
+        "sess-qq", "qq task", channel="qq"
+    )
+    assert tid_tg is not None and tid_qq is not None
+
+    rows = await backend.list_resumable_in_progress()
+    by_id = {r.turn_id: r for r in rows}
+    assert by_id[tid_tg].channel == "telegram"
+    assert by_id[tid_qq].channel == "qq"
+
+
+async def test_pg_list_resumable_in_progress_respects_window(
+    backend,  # type: ignore[no-untyped-def]
+) -> None:
+    """Window cutoff matches the SQLite peer."""
+    tid = await backend.begin_turn(
+        "sess-w-pg", "stale", channel="telegram"
+    )
+    async with backend._p.acquire() as conn:
+        await conn.execute(
+            "UPDATE journal_turns SET started_at_ms = 0 WHERE turn_id = $1",
+            tid,
+        )
+    # Default window excludes it.
+    rows = await backend.list_resumable_in_progress()
+    assert tid not in {r.turn_id for r in rows}
+
+    # A huge window picks it up — sanity check the param wires through.
+    wide = await backend.list_resumable_in_progress(window_ms=10**13)
+    assert tid in {r.turn_id for r in wide}
+
+
+async def test_pg_mark_stale_accepts_older_than_seconds(
+    backend,  # type: ignore[no-untyped-def]
+) -> None:
+    """The boot-time sweep passes a multi-hour cutoff; verify the
+    Postgres backend honours it rather than the default 5-min window."""
+    tid = await backend.begin_turn(
+        "sess-mid-pg", "mid-age", channel="telegram"
+    )
+    backdated = int(time.time() * 1000) - 10 * 60 * 1000
+    async with backend._p.acquire() as conn:
+        await conn.execute(
+            "UPDATE journal_turns SET started_at_ms = $1 WHERE turn_id = $2",
+            backdated,
+            tid,
+        )
+    # 1 h cutoff — row stays (younger than 1 h).
+    swept_long = await backend.mark_stale_in_progress_as_errored(
+        older_than_seconds=3600
+    )
+    assert swept_long == 0
+    # 1 min cutoff — row flips.
+    swept_short = await backend.mark_stale_in_progress_as_errored(
+        older_than_seconds=60
+    )
+    assert swept_short == 1

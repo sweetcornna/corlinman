@@ -28,7 +28,12 @@ import structlog
 from corlinman_grpc import agent_pb2_grpc
 from corlinman_providers import AliasEntry, ProviderRegistry, ProviderSpec
 
+from corlinman_server.agent_journal import AgentJournal
 from corlinman_server.agent_servicer import CorlinmanAgentServicer, _resolve_data_dir
+from corlinman_server.auto_resume import (
+    open_inbox_for_boot_resume,
+    run_boot_auto_resume,
+)
 from corlinman_server.middleware import install_tracecontext_interceptor
 from corlinman_server.shutdown import GracefulShutdown
 from corlinman_server.telemetry import init_telemetry, shutdown_telemetry
@@ -223,6 +228,46 @@ def _bind_address() -> str:
     return f"unix://{_DEFAULT_SOCKET}"
 
 
+async def _run_boot_auto_resume() -> None:
+    """Open the journal + inbox and run one auto-resume scan.
+
+    Best-effort: every failure path degrades to a warning and returns —
+    a crashed journal must NEVER block the gateway from accepting fresh
+    traffic. The chat handler's per-RPC ``find_resumable_turn`` lookup
+    still works without this scan; the scan only adds the cross-channel
+    re-delivery that turns "user has to resend" into "agent picks up
+    automatically".
+    """
+    data_dir = _resolve_data_dir()
+    try:
+        journal = await AgentJournal.open_from_env(
+            data_dir / "agent_journal.sqlite"
+        )
+    except Exception as exc:  # noqa: BLE001 — degrade silently
+        logger.warning("agent.resume.journal_open_failed", error=str(exc))
+        return
+
+    inbox = await open_inbox_for_boot_resume(data_dir)
+    try:
+        await run_boot_auto_resume(journal, inbox)
+    except Exception as exc:  # noqa: BLE001 — degrade silently
+        logger.warning("agent.resume.scan_failed", error=str(exc))
+    finally:
+        # Close the boot-time handles so the servicer's lazy open
+        # opens a fresh connection. SQLite handles cross-connection
+        # consistency via WAL; Postgres handles it via the connection
+        # pool.
+        try:
+            await journal.close()
+        except Exception:  # noqa: BLE001
+            pass
+        if inbox is not None:
+            try:
+                await inbox.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
 async def _serve() -> int:
     """Run the server until SIGTERM / SIGINT is received.
 
@@ -296,6 +341,16 @@ async def _serve() -> int:
     print(f"corlinman-server ready (Agent servicer registered) — bind={bind}", flush=True)
 
     await server.start()
+
+    # Auto-resume — scan the journal for in_progress rows left over by a
+    # previous crash and re-deliver them through the right channel
+    # surface. Runs once AFTER the gRPC server starts (so a synthesized
+    # inbox row that triggers a fresh Chat RPC lands on a live socket)
+    # but BEFORE we block on shutdown — the scan is best-effort and
+    # never blocks boot. Operators grep ``agent.resume.scan_complete``
+    # to confirm it fired.
+    await _run_boot_auto_resume()
+
     reason = await shutdown.wait()
     logger.info("grpc.server.shutdown", reason=reason)
 

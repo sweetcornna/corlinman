@@ -287,3 +287,179 @@ async def test_complete_turn_still_works_after_append_collision(
         "L5 violation: complete_turn silently no-op'd after a rolled-back "
         "append_message left the connection in a dirty tx state"
     )
+
+
+# ---------------------------------------------------------------------------
+# Auto-resume — channel column + list_resumable_in_progress
+# ---------------------------------------------------------------------------
+
+
+async def test_list_resumable_in_progress_returns_recent_in_progress_only(
+    journal: AgentJournal,
+) -> None:
+    """The scanner returns rows that are BOTH in_progress AND fresh.
+
+    A completed turn must not appear (it doesn't need re-delivery).
+    An errored turn must not appear (the user already saw the failure
+    or moved on). Only in_progress wins.
+    """
+    # Two in_progress rows on different sessions; one will get completed.
+    keep = await journal.begin_turn(
+        "sess-keep", "still cooking", channel="telegram"
+    )
+    completed = await journal.begin_turn("sess-done", "finished", channel="qq")
+    await journal.complete_turn(completed)
+
+    errored = await journal.begin_turn("sess-err", "broke", channel="discord")
+    await journal.error_turn(errored, "fail")
+
+    rows = await journal.list_resumable_in_progress()
+    seen_turn_ids = {r.turn_id for r in rows}
+    assert keep in seen_turn_ids
+    assert completed not in seen_turn_ids
+    assert errored not in seen_turn_ids
+
+
+async def test_list_resumable_in_progress_respects_window(
+    journal: AgentJournal,
+) -> None:
+    """Rows older than ``window_ms`` are excluded.
+
+    Backdate the started_at_ms past the window — the scanner must not
+    pick the row up.
+    """
+    import aiosqlite
+
+    tid = await journal.begin_turn("sess-old", "stale", channel="telegram")
+    async with aiosqlite.connect(journal._path) as conn:
+        await conn.execute(
+            "UPDATE turns SET started_at_ms = 0 WHERE turn_id = ?", (tid,)
+        )
+        await conn.commit()
+
+    # Default window (5 min via RESUME_MAX_AGE_MS) excludes the row.
+    rows = await journal.list_resumable_in_progress()
+    assert tid not in {r.turn_id for r in rows}
+
+    # An extremely large window picks it up (sanity check the param wires).
+    rows_wide = await journal.list_resumable_in_progress(
+        window_ms=10**13
+    )
+    assert tid in {r.turn_id for r in rows_wide}
+
+
+async def test_begin_turn_persists_channel_field(
+    journal: AgentJournal,
+) -> None:
+    """``channel`` round-trips through the row so the scanner can
+    dispatch re-delivery to the right surface."""
+    tid_tg = await journal.begin_turn(
+        "sess-tg", "telegram task", channel="telegram"
+    )
+    tid_qq = await journal.begin_turn(
+        "sess-qq", "qq task", channel="qq"
+    )
+    # HTTP turn — no channel.
+    tid_http = await journal.begin_turn("sess-http", "http task")
+
+    rows = await journal.list_resumable_in_progress()
+    by_id = {r.turn_id: r for r in rows}
+    assert by_id[tid_tg].channel == "telegram"
+    assert by_id[tid_qq].channel == "qq"
+    assert by_id[tid_http].channel == ""
+
+
+async def test_schema_migration_adds_channel_column_to_legacy_db(
+    tmp_path,
+) -> None:
+    """A SQLite file written by the pre-auto-resume code path must get
+    the ``channel`` column added when the new code opens it — no manual
+    psql / sqlite3 step required on the VPS.
+    """
+    import aiosqlite
+
+    path = tmp_path / "legacy.sqlite"
+    # Hand-roll the pre-auto-resume schema (no ``channel`` column).
+    async with aiosqlite.connect(path) as conn:
+        await conn.execute(
+            "CREATE TABLE turns ("
+            " turn_id INTEGER PRIMARY KEY,"
+            " session_key TEXT NOT NULL,"
+            " status TEXT NOT NULL,"
+            " started_at_ms INTEGER NOT NULL,"
+            " ended_at_ms INTEGER,"
+            " user_text TEXT,"
+            " user_id TEXT,"
+            " error TEXT)"
+        )
+        await conn.execute(
+            "CREATE TABLE turn_messages ("
+            " turn_id INTEGER NOT NULL,"
+            " seq INTEGER NOT NULL,"
+            " role TEXT NOT NULL,"
+            " content TEXT NOT NULL,"
+            " tool_call_id TEXT,"
+            " tool_calls_json TEXT,"
+            " PRIMARY KEY (turn_id, seq))"
+        )
+        # Insert a pre-existing row to make sure migration doesn't drop data.
+        await conn.execute(
+            "INSERT INTO turns (turn_id, session_key, status, "
+            "started_at_ms, user_text) VALUES (?, ?, ?, ?, ?)",
+            (42, "sess-legacy", "in_progress", 1234, "legacy task"),
+        )
+        await conn.commit()
+
+    # Open via the public API — migration must fire.
+    journal = await AgentJournal.open(path)
+    try:
+        # The legacy row survives and has the default '' channel.
+        rows = await journal.list_resumable_in_progress(window_ms=10**13)
+        legacy = {r.turn_id: r for r in rows}
+        assert 42 in legacy
+        assert legacy[42].channel == ""
+
+        # A fresh begin_turn now accepts and persists the channel kwarg.
+        new_tid = await journal.begin_turn(
+            "sess-post", "post-migration", channel="telegram"
+        )
+        assert new_tid is not None
+        rows_after = await journal.list_resumable_in_progress(window_ms=10**13)
+        by_id = {r.turn_id: r for r in rows_after}
+        assert by_id[new_tid].channel == "telegram"
+    finally:
+        await journal.close()
+
+
+async def test_mark_stale_in_progress_accepts_older_than_seconds(
+    journal: AgentJournal,
+) -> None:
+    """The boot-time auto-resume sweep passes a multi-hour cutoff; the
+    journal must honour it instead of the 5-min default."""
+    import aiosqlite
+
+    # A turn started 10 minutes ago — older than the 5-min default but
+    # younger than the 1-hour cutoff we'll pass.
+    tid = await journal.begin_turn("sess-mid", "mid-age", channel="telegram")
+    import time as _time
+
+    backdated = int(_time.time() * 1000) - 10 * 60 * 1000
+    async with aiosqlite.connect(journal._path) as conn:
+        await conn.execute(
+            "UPDATE turns SET started_at_ms = ? WHERE turn_id = ?",
+            (backdated, tid),
+        )
+        await conn.commit()
+
+    # Sweep with a 1-hour cutoff — the row should NOT flip (it's
+    # younger than 1 h).
+    swept_long = await journal.mark_stale_in_progress_as_errored(
+        older_than_seconds=3600
+    )
+    assert swept_long == 0
+
+    # Sweep with a 1-minute cutoff — now it DOES flip (it's 10 min old).
+    swept_short = await journal.mark_stale_in_progress_as_errored(
+        older_than_seconds=60
+    )
+    assert swept_short == 1

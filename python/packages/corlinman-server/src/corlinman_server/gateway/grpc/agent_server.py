@@ -173,6 +173,17 @@ async def serve_agent(
         log.warning("gateway.grpc.agent.bind_failed", bind=bind, error=str(exc))
         return
 
+    # Auto-resume — same boot scan the standalone server runs, mirrored
+    # here so a single-process co-hosted deployment also picks up
+    # in-progress turns left by a crash. Best-effort; the agent path is
+    # fully functional without it.
+    try:
+        from corlinman_server.main import _run_boot_auto_resume
+
+        await _run_boot_auto_resume()
+    except Exception as exc:  # noqa: BLE001 — never block boot
+        log.warning("gateway.grpc.agent.resume_scan_failed", error=str(exc))
+
     log.info("gateway.grpc.agent.serving", bind=bind)
     try:
         await shutdown.wait()

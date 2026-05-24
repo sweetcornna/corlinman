@@ -711,6 +711,17 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             return
 
         start = _to_agent_start(start_frame.start)
+        # Auto-resume: tag the journal row with the originating channel
+        # so the boot-time scanner can pick the right re-delivery
+        # surface. ``binding`` defaults to an empty ``ChannelBinding``
+        # on the proto when the gateway translator drops it, so the
+        # empty string falls through cleanly for HTTP turns.
+        turn_channel = ""
+        try:
+            binding = start_frame.start.binding
+            turn_channel = (binding.channel or "").strip()
+        except (AttributeError, TypeError):  # pragma: no cover — defensive
+            turn_channel = ""
         logger.info("agent.chat.start", model=start.model, session=start.session_key)
 
         # W-D1: per-agent model binding. Peek the messages for an agent
@@ -945,7 +956,10 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         elif journal is not None:
             try:
                 journal_turn_id = await journal.begin_turn(
-                    start.session_key, user_text, user_id=turn_user_id
+                    start.session_key,
+                    user_text,
+                    user_id=turn_user_id,
+                    channel=turn_channel,
                 )
                 # C5 — the Postgres backend returns ``None`` when its
                 # partial-unique index says another gateway already

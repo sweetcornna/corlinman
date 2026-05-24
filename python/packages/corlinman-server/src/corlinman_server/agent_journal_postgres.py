@@ -53,6 +53,7 @@ from corlinman_server.agent_journal_backend import (
     TURN_COMPLETED,
     TURN_ERRORED,
     TURN_IN_PROGRESS,
+    InProgressTurn,
     ResumeData,
     SessionSummary,
 )
@@ -85,10 +86,12 @@ CREATE TABLE IF NOT EXISTS journal_turns (
     ended_at_ms   BIGINT,
     user_text     TEXT,
     user_id       TEXT,
+    channel       TEXT   NOT NULL DEFAULT '',
     error         TEXT
 );
 
 ALTER TABLE journal_turns ADD COLUMN IF NOT EXISTS user_id TEXT;
+ALTER TABLE journal_turns ADD COLUMN IF NOT EXISTS channel TEXT NOT NULL DEFAULT '';
 
 CREATE INDEX IF NOT EXISTS journal_turns_session_status_idx
     ON journal_turns(session_key, status, started_at_ms DESC);
@@ -200,6 +203,7 @@ class PostgresJournalBackend:
         user_text: str,
         *,
         user_id: str | None = None,
+        channel: str = "",
     ) -> int | None:
         """Insert an in-progress row; return the new ``turn_id``.
 
@@ -220,19 +224,26 @@ class PostgresJournalBackend:
         scope its match by channel sender. ``None`` is preserved
         verbatim (the column is nullable) for HTTP turns that have no
         sender id.
+
+        Auto-resume: ``channel`` tags the originating channel surface
+        so the boot-time
+        :class:`~corlinman_server.auto_resume.AgentResumeService` can
+        pick the right re-delivery path. ``""`` keeps every legacy
+        caller working unchanged.
         """
         ts = _now_ms()
         async with self._p.acquire() as conn:
             row = await conn.fetchrow(
                 "INSERT INTO journal_turns "
-                "(session_key, status, started_at_ms, user_text, user_id) "
-                "VALUES ($1, $2, $3, $4, $5) "
+                "(session_key, status, started_at_ms, user_text, user_id, channel) "
+                "VALUES ($1, $2, $3, $4, $5, $6) "
                 "ON CONFLICT DO NOTHING RETURNING turn_id",
                 session_key or "",
                 TURN_IN_PROGRESS,
                 ts,
                 user_text,
                 user_id,
+                channel or "",
             )
         if row is None:
             # C5 — another gateway raced us and won the partial unique
@@ -569,15 +580,25 @@ class PostgresJournalBackend:
             return 0
         return len(rows)
 
-    async def mark_stale_in_progress_as_errored(self) -> int:
-        """Sweep stale in-progress turns past :data:`RESUME_MAX_AGE_MS`.
+    async def mark_stale_in_progress_as_errored(
+        self, older_than_seconds: int | None = None
+    ) -> int:
+        """Sweep stale in-progress turns past the cutoff.
 
-        Called once at gateway boot so a previously-crashed process
-        does not leave the table littered with phantom in-progress
-        rows. Returns the number of rows flipped to ``errored``.
+        ``older_than_seconds=None`` keeps the legacy
+        :data:`RESUME_MAX_AGE_MS` window; the boot-time
+        :class:`~corlinman_server.auto_resume.AgentResumeService` passes
+        a much larger window (e.g. 24h) to clear truly-abandoned rows
+        without disturbing fresh in-flight turns the same scan plans to
+        resume.
+
+        Returns the number of rows flipped to ``errored``.
         """
         now = _now_ms()
-        cutoff = now - RESUME_MAX_AGE_MS
+        if older_than_seconds is None:
+            cutoff = now - RESUME_MAX_AGE_MS
+        else:
+            cutoff = now - max(0, int(older_than_seconds)) * 1000
         try:
             async with self._p.acquire() as conn:
                 result = await conn.execute(
@@ -604,6 +625,48 @@ class PostgresJournalBackend:
         if n:
             logger.info("agent.journal.swept_stale", count=n)
         return n
+
+    async def list_resumable_in_progress(
+        self, *, window_ms: int = RESUME_MAX_AGE_MS
+    ) -> list[InProgressTurn]:
+        """Return every in-progress turn started within ``window_ms``.
+
+        Boot-time auto-resume scanner; ordered ``started_at_ms ASC`` so
+        the gateway re-delivers turns in arrival order. Behaves like the
+        SQLite peer.
+        """
+        cutoff = _now_ms() - max(0, int(window_ms))
+        try:
+            async with self._p.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT turn_id, session_key, user_id, user_text, "
+                    "started_at_ms, channel FROM journal_turns "
+                    "WHERE status = $1 AND started_at_ms >= $2 "
+                    "ORDER BY started_at_ms ASC",
+                    TURN_IN_PROGRESS,
+                    cutoff,
+                )
+        except Exception as exc:
+            logger.warning(
+                "agent.journal.list_resumable_in_progress_failed",
+                error=str(exc),
+            )
+            return []
+        out: list[InProgressTurn] = []
+        for r in rows:
+            out.append(
+                InProgressTurn(
+                    turn_id=int(r["turn_id"]),
+                    session_key=str(r["session_key"] or ""),
+                    user_id=(
+                        str(r["user_id"]) if r["user_id"] is not None else None
+                    ),
+                    user_text=str(r["user_text"] or ""),
+                    started_at_ms=int(r["started_at_ms"]),
+                    channel=str(r["channel"] or ""),
+                )
+            )
+        return out
 
 
 __all__ = ["PostgresJournalBackend"]

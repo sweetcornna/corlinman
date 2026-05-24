@@ -1244,10 +1244,15 @@ async def test_chat_resumes_in_progress_turn_replaying_tool_results(
         user_text: str,
         *,
         user_id: str | None = None,
+        channel: str = "",
     ) -> int | None:
         begin_calls.append((session_key, user_text))
         return await real_begin(
-            self_inner, session_key, user_text, user_id=user_id
+            self_inner,
+            session_key,
+            user_text,
+            user_id=user_id,
+            channel=channel,
         )
 
     monkeypatch.setattr(AgentJournal, "begin_turn", _counting_begin)
@@ -1355,10 +1360,15 @@ async def test_chat_does_not_resume_stale_in_progress_turn(
         user_text: str,
         *,
         user_id: str | None = None,
+        channel: str = "",
     ) -> int | None:
         begin_calls.append((session_key, user_text))
         return await real_begin(
-            self_inner, session_key, user_text, user_id=user_id
+            self_inner,
+            session_key,
+            user_text,
+            user_id=user_id,
+            channel=channel,
         )
 
     monkeypatch.setattr(AgentJournal, "begin_turn", _counting_begin)

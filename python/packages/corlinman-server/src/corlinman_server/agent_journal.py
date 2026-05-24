@@ -36,7 +36,9 @@ from corlinman_server.agent_journal_backend import (
     ENV_BACKEND,
     ENV_POSTGRES_DSN,
     ENV_REDIS_URL,
+    InProgressTurn,
     JournalBackend,
+    RESUME_MAX_AGE_MS,
     ResumeData,
     SessionSummary,
     SqliteJournalBackend,
@@ -134,6 +136,7 @@ class AgentJournal:
         user_text: str,
         *,
         user_id: str | None = None,
+        channel: str = "",
     ) -> int | None:
         """Forward to the backend, including the optional S4 user_id scope.
 
@@ -142,9 +145,15 @@ class AgentJournal:
         a turn for the same (session_key, user_text, user_id)"; SQLite
         returns the new id unchanged because the per-session asyncio lock
         keeps concurrent writers from racing in the same process.
+
+        ``channel`` (auto-resume) is the channel-id (``"qq"`` /
+        ``"telegram"`` / ``""`` for HTTP) the row originated on, so the
+        boot-time :class:`AgentResumeService` can pick the right
+        re-delivery surface. Default ``""`` preserves every existing
+        call site verbatim.
         """
         return await self._backend.begin_turn(
-            session_key, user_text, user_id=user_id
+            session_key, user_text, user_id=user_id, channel=channel
         )
 
     async def complete_turn(self, turn_id: int) -> None:
@@ -214,8 +223,34 @@ class AgentJournal:
     ) -> list[dict[str, Any]]:
         return await self._backend.recent_errored_turns(session_key, limit)
 
-    async def mark_stale_in_progress_as_errored(self) -> int:
-        return await self._backend.mark_stale_in_progress_as_errored()
+    async def mark_stale_in_progress_as_errored(
+        self, older_than_seconds: int | None = None
+    ) -> int:
+        """Sweep abandoned in-progress turns; flip them to ``errored``.
+
+        ``older_than_seconds=None`` keeps the legacy
+        :data:`RESUME_MAX_AGE_MS` cutoff (5 minutes); the boot-time
+        :class:`~corlinman_server.auto_resume.AgentResumeService` passes
+        e.g. ``older_than_seconds=24 * 3600`` to clear deeply abandoned
+        rows without disturbing the fresh window the same scan plans to
+        re-deliver.
+        """
+        return await self._backend.mark_stale_in_progress_as_errored(
+            older_than_seconds
+        )
+
+    async def list_resumable_in_progress(
+        self, *, window_ms: int = RESUME_MAX_AGE_MS
+    ) -> list[InProgressTurn]:
+        """Return every in-progress turn started within ``window_ms``.
+
+        Powers the boot-time auto-resume scanner. See
+        :class:`~corlinman_server.auto_resume.AgentResumeService` for
+        the consumer.
+        """
+        return await self._backend.list_resumable_in_progress(
+            window_ms=window_ms
+        )
 
     # ------------------------------------------------------------------
     # /admin/sessions surface — projected straight from the journal so
@@ -244,7 +279,9 @@ __all__ = [
     "ENV_BACKEND",
     "ENV_POSTGRES_DSN",
     "ENV_REDIS_URL",
+    "InProgressTurn",
     "JournalBackend",
+    "RESUME_MAX_AGE_MS",
     "ResumeData",
     "SessionSummary",
     "TURN_COMPLETED",

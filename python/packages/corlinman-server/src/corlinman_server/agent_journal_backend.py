@@ -77,6 +77,31 @@ class ResumeData:
     when this is non-None — the resume IS the continuation."""
 
 
+@dataclass(frozen=True)
+class InProgressTurn:
+    """A single in-progress journal row, projected for the boot-time
+    auto-resume scanner.
+
+    Distinct from :class:`ResumeData` — this one is the "row header" the
+    :class:`AgentResumeService` uses to decide *whether* a turn needs to
+    be re-driven (and through which channel). The full replay buffer is
+    not loaded here; the eventual chat-handler re-entry will call
+    :meth:`JournalBackend.find_resumable_turn` to pick up the messages.
+
+    ``channel`` is the channel identifier the turn was originated on
+    (``"qq"`` / ``"telegram"`` / ``"discord"`` / ``""`` for HTTP /
+    pre-channel-column legacy rows). The auto-resume service uses it to
+    pick the right re-delivery path.
+    """
+
+    turn_id: int
+    session_key: str
+    user_id: str | None
+    user_text: str
+    started_at_ms: int
+    channel: str
+
+
 # Cap for the ``last_user_text`` preview so the wire row never grows
 # unbounded — the admin sessions UI only renders the first line.
 SESSION_SUMMARY_PREVIEW_LEN = 80
@@ -139,6 +164,7 @@ class JournalBackend(Protocol):
         user_text: str,
         *,
         user_id: str | None = None,
+        channel: str = "",
     ) -> int | None:
         """Insert an in-progress row; return the new turn_id.
 
@@ -146,6 +172,13 @@ class JournalBackend(Protocol):
         group-chat replay attack — Mallory parroting Alice's user_text on
         the same session_key — can't pick up Alice's in-progress turn.
         ``None`` keeps the legacy "no sender" semantics for HTTP callers.
+
+        ``channel`` (auto-resume) tags the row with the channel that
+        originated it (``"qq"`` / ``"telegram"`` / ``"discord"`` / ``""``
+        for HTTP). The boot-time :class:`AgentResumeService` uses the
+        tag to dispatch the right re-delivery path. The default ``""``
+        keeps every existing call site (and every pre-column row)
+        working unchanged.
 
         May return ``None`` when a concurrent ``begin_turn`` for the same
         (session_key, user_text, user_id) already opened a row — the
@@ -197,8 +230,35 @@ class JournalBackend(Protocol):
         """Return the most recent errored turns for diagnostics."""
         ...
 
-    async def mark_stale_in_progress_as_errored(self) -> int:
-        """Sweep abandoned in-progress turns past the resume window."""
+    async def mark_stale_in_progress_as_errored(
+        self, older_than_seconds: int | None = None
+    ) -> int:
+        """Sweep abandoned in-progress turns past the resume window.
+
+        ``older_than_seconds`` overrides the default
+        :data:`RESUME_MAX_AGE_MS` cutoff; the
+        :class:`~corlinman_server.auto_resume.AgentResumeService` uses
+        this to clear *very* old rows (24h+) at gateway boot so a long
+        downtime doesn't leak abandoned rows forever. ``None`` keeps the
+        legacy resume-window cutoff.
+        """
+        ...
+
+    async def list_resumable_in_progress(
+        self, *, window_ms: int = RESUME_MAX_AGE_MS
+    ) -> list[InProgressTurn]:
+        """Return every in-progress turn started within ``window_ms``.
+
+        Boot-time scanner for the gateway auto-resume service: each row
+        in the return value is a candidate for re-delivery (the channel
+        handler that owns the row's ``channel`` is responsible for
+        deciding whether to actually re-deliver — see
+        :class:`~corlinman_server.auto_resume.AgentResumeService`).
+
+        Rows are ordered by ``started_at_ms ASC`` so re-delivery
+        respects original arrival order — important when two turns on
+        the same session arrived rapidly before the crash.
+        """
         ...
 
     async def load_messages(self, turn_id: int) -> list[dict[str, Any]]:
@@ -249,6 +309,7 @@ CREATE TABLE IF NOT EXISTS turns (
     ended_at_ms    INTEGER,
     user_text      TEXT,
     user_id        TEXT,
+    channel        TEXT    NOT NULL DEFAULT '',
     error          TEXT
 );
 
@@ -275,6 +336,14 @@ CREATE TABLE IF NOT EXISTS turn_messages (
 # additive ``ALTER TABLE`` is idempotent under our gate (we only fire
 # it when the column is absent) so re-running on a fresh DB is a no-op.
 _USER_ID_MIGRATION = "ALTER TABLE turns ADD COLUMN user_id TEXT"
+
+# Pre-auto-resume deployments have a ``turns`` table without ``channel``.
+# Same gated-ALTER pattern as ``user_id``. ``NOT NULL DEFAULT ''`` matches
+# the inline schema so a row inserted by an OLD process and read by a NEW
+# one round-trips to the canonical empty string instead of NULL.
+_CHANNEL_MIGRATION = (
+    "ALTER TABLE turns ADD COLUMN channel TEXT NOT NULL DEFAULT ''"
+)
 
 
 class SqliteJournalBackend:
@@ -305,10 +374,17 @@ class SqliteJournalBackend:
         await conn.execute("PRAGMA foreign_keys = ON")
         await conn.executescript(_SCHEMA)
         await conn.commit()
-        # S4: additive ``user_id TEXT`` migration on pre-existing
-        # journals. ``PRAGMA table_info`` is the documented way to
-        # check column presence in SQLite — adding the column only
-        # when missing keeps the open path idempotent.
+        # S4 / auto-resume: additive ``user_id`` and ``channel`` column
+        # migrations on pre-existing journals. ``PRAGMA table_info`` is
+        # the documented way to check column presence in SQLite —
+        # adding the column only when missing keeps the open path
+        # idempotent (re-running it on a fresh DB is a no-op).
+        #
+        # The migrations are runnable on the live VPS without manual
+        # intervention — operators redeploying the gateway pick this
+        # path up on the next process start, and the same code branch
+        # leaves brand-new DBs (where the inline schema already added
+        # the column) untouched.
         try:
             cur = await conn.execute("PRAGMA table_info(turns)")
             rows = await cur.fetchall()
@@ -318,6 +394,10 @@ class SqliteJournalBackend:
                 await conn.execute(_USER_ID_MIGRATION)
                 await conn.commit()
                 logger.info("agent.journal.migrated", migration="user_id_column")
+            if "channel" not in existing:
+                await conn.execute(_CHANNEL_MIGRATION)
+                await conn.commit()
+                logger.info("agent.journal.migrated", migration="channel_column")
         except aiosqlite.Error as exc:  # pragma: no cover — defensive
             logger.warning("agent.journal.migrate_failed", error=str(exc))
         self._conn = conn
@@ -350,6 +430,7 @@ class SqliteJournalBackend:
         user_text: str,
         *,
         user_id: str | None = None,
+        channel: str = "",
     ) -> int | None:
         """Insert an in-progress row; return the new ``turn_id``.
 
@@ -366,6 +447,13 @@ class SqliteJournalBackend:
         ``find_resumable_turn`` can scope its match by sender. ``None``
         keeps the legacy behaviour for HTTP-only callers (the column
         stays NULL).
+
+        Auto-resume — ``channel`` tags the row with the originating
+        channel id (``"qq"`` / ``"telegram"`` / ``"discord"`` / ``""``
+        for HTTP). Read back by the boot-time
+        :class:`~corlinman_server.auto_resume.AgentResumeService` so
+        re-delivery dispatches to the right surface. Default ``""``
+        preserves every existing call site.
         """
         conn = self._c
         ts = int(time.time() * 1000)
@@ -374,8 +462,8 @@ class SqliteJournalBackend:
             try:
                 await conn.execute(
                     "INSERT INTO turns (turn_id, session_key, status, "
-                    "started_at_ms, user_text, user_id) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    "started_at_ms, user_text, user_id, channel) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (
                         tid,
                         session_key or "",
@@ -383,6 +471,7 @@ class SqliteJournalBackend:
                         ts,
                         user_text,
                         user_id,
+                        channel or "",
                     ),
                 )
                 await conn.commit()
@@ -746,12 +835,24 @@ class SqliteJournalBackend:
             return 0
         return int(n)
 
-    async def mark_stale_in_progress_as_errored(self) -> int:
-        """Sweep stale in-progress turns (older than the resume window)
-        and stamp them errored — called once on gateway boot so a
-        previously-crashed process doesn't leave the table littered
-        with phantom in-progress rows. Returns the count flipped."""
-        cutoff = int(time.time() * 1000) - RESUME_MAX_AGE_MS
+    async def mark_stale_in_progress_as_errored(
+        self, older_than_seconds: int | None = None
+    ) -> int:
+        """Sweep stale in-progress turns and stamp them errored.
+
+        ``older_than_seconds=None`` keeps the legacy
+        :data:`RESUME_MAX_AGE_MS` (5-min) cutoff — used by the per-RPC
+        defensive sweep. The boot-time
+        :class:`~corlinman_server.auto_resume.AgentResumeService` passes
+        a much larger window (e.g. 24h) so deeply abandoned rows from
+        long downtimes get cleared without disturbing fresh in-flight
+        turns that the same boot pass is about to resume.
+        """
+        now_ms = int(time.time() * 1000)
+        if older_than_seconds is None:
+            cutoff = now_ms - RESUME_MAX_AGE_MS
+        else:
+            cutoff = now_ms - max(0, int(older_than_seconds)) * 1000
         try:
             cur = await self._c.execute(
                 "UPDATE turns SET status = ?, ended_at_ms = ?, "
@@ -759,7 +860,7 @@ class SqliteJournalBackend:
                 "WHERE status = ? AND started_at_ms < ?",
                 (
                     TURN_ERRORED,
-                    int(time.time() * 1000),
+                    now_ms,
                     "abandoned: gateway restart left turn in_progress",
                     TURN_IN_PROGRESS,
                     cutoff,
@@ -774,6 +875,51 @@ class SqliteJournalBackend:
         if n:
             logger.info("agent.journal.swept_stale", count=n)
         return int(n)
+
+    async def list_resumable_in_progress(
+        self, *, window_ms: int = RESUME_MAX_AGE_MS
+    ) -> list[InProgressTurn]:
+        """Return every in-progress turn started within ``window_ms``.
+
+        Powers the boot-time auto-resume scanner. Ordered by
+        ``started_at_ms ASC`` so the gateway re-delivers turns in their
+        original arrival order — important when a single session
+        received two rapid messages before the crash.
+
+        Empty list on any read failure — degrading silently here is
+        correct because auto-resume is best-effort; a fully missed
+        re-delivery falls back to the user re-sending.
+        """
+        cutoff = int(time.time() * 1000) - max(0, int(window_ms))
+        try:
+            cur = await self._c.execute(
+                "SELECT turn_id, session_key, user_id, user_text, "
+                "started_at_ms, channel FROM turns "
+                "WHERE status = ? AND started_at_ms >= ? "
+                "ORDER BY started_at_ms ASC",
+                (TURN_IN_PROGRESS, cutoff),
+            )
+            rows = await cur.fetchall()
+            await cur.close()
+        except aiosqlite.Error as exc:
+            logger.warning(
+                "agent.journal.list_resumable_in_progress_failed",
+                error=str(exc),
+            )
+            return []
+        out: list[InProgressTurn] = []
+        for r in rows:
+            out.append(
+                InProgressTurn(
+                    turn_id=int(r[0]),
+                    session_key=str(r[1] or ""),
+                    user_id=str(r[2]) if r[2] is not None else None,
+                    user_text=str(r[3] or ""),
+                    started_at_ms=int(r[4]),
+                    channel=str(r[5] or ""),
+                )
+            )
+        return out
 
 
 # ---------------------------------------------------------------------------
@@ -894,6 +1040,7 @@ __all__ = [
     "ENV_BACKEND",
     "ENV_POSTGRES_DSN",
     "ENV_REDIS_URL",
+    "InProgressTurn",
     "JournalBackend",
     "PostgresJournalBackend",
     "RedisJournalBackend",

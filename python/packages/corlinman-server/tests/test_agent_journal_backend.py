@@ -39,6 +39,7 @@ _BACKEND_METHODS = (
     "find_resumable_turn",
     "recent_errored_turns",
     "mark_stale_in_progress_as_errored",
+    "list_resumable_in_progress",
     "load_messages",
     "list_session_summaries",
     "delete_session",

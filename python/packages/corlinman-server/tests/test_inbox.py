@@ -134,3 +134,55 @@ async def test_concurrent_enqueues_get_distinct_ids(inbox: Inbox) -> None:
     assert len(set(ids)) == 3
     pending = await inbox.list_pending()
     assert len(pending) == 3
+
+
+# ---------------------------------------------------------------------------
+# Auto-resume — cross-channel inbox usage
+# ---------------------------------------------------------------------------
+
+
+async def test_inbox_accepts_telegram_channel_rows(inbox: Inbox) -> None:
+    """The boot-replay dispatcher writes Telegram (and Discord / Slack /
+    Feishu) rows through the same inbox the QQ dispatcher already uses.
+    The CHECK constraint sits on ``status``, not ``channel`` — any
+    channel id round-trips verbatim.
+    """
+    tg_id = await inbox.enqueue(
+        channel="telegram",
+        session_key="tg|chat:42",
+        message_id="resume:1700000000",
+        user_text="please continue",
+    )
+    disc_id = await inbox.enqueue(
+        channel="discord",
+        session_key="disc|g:1|c:2",
+        message_id="resume:1700000001",
+        user_text="finish the task",
+    )
+    assert tg_id > 0 and disc_id > 0
+
+    tg_rows = await inbox.list_pending(channel="telegram")
+    assert len(tg_rows) == 1
+    assert tg_rows[0].user_text == "please continue"
+    assert tg_rows[0].status == INBOX_PENDING
+
+    disc_rows = await inbox.list_pending(channel="discord")
+    assert len(disc_rows) == 1
+    assert disc_rows[0].user_text == "finish the task"
+
+
+async def test_inbox_message_id_carries_resume_marker(inbox: Inbox) -> None:
+    """Synthesized boot-replay rows use ``message_id="resume:<turn_id>"``
+    so a channel handler can detect a resume-injected row (and e.g.
+    suppress the "received your message" ack)."""
+    turn_id = 1700123456789
+    await inbox.enqueue(
+        channel="telegram",
+        session_key="tg|sess",
+        message_id=f"resume:{turn_id}",
+        user_text="continue",
+    )
+    rows = await inbox.list_pending(channel="telegram")
+    assert len(rows) == 1
+    assert rows[0].message_id == f"resume:{turn_id}"
+    assert rows[0].message_id.startswith("resume:")
