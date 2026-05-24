@@ -822,6 +822,14 @@ _TG_STATUS_THINKING = "🧠 思考中..."
 #: started producing the final answer.
 _TG_STATUS_GENERATING = "✍️ 生成回复中..."
 
+#: Reasoning-delta prefix (Anthropic ``thinking`` blocks, DeepSeek-R1
+#: ``reasoning_content``). The first 80 chars of the model's internal
+#: monologue show up here.
+_TG_STATUS_REASONING_PREFIX = "💭 推理: "
+
+#: Max chars of reasoning text to show inside the spinner line.
+_TG_REASONING_PREVIEW_CHARS = 80
+
 #: Telegram's ``sendMessage`` / ``editMessageText`` cap at 4096 chars; a
 #: few-char safety margin avoids 400s on edge cases (e.g. surrogate pairs
 #: counted differently server-side).
@@ -865,19 +873,97 @@ async def _telegram_typing_pulse(
 _SEND_ATTACHMENT_TOOL = "send_attachment"
 
 
+def _tool_arg_preview(tool: str, args_json: bytes) -> str:
+    """Extract a one-line preview from a tool's args, per known tool.
+
+    Returns an empty string for unknown tools or malformed args so the
+    caller can render the bare tool name. Mirrors hermes-agent's
+    ``_format_tool_progress`` per-tool argument summarisation — gives
+    the user a concrete hook into what the agent is doing without
+    dumping the whole JSON.
+    """
+    import json as _json
+
+    try:
+        args = _json.loads(bytes(args_json).decode("utf-8") or "{}")
+    except (UnicodeDecodeError, ValueError):
+        return ""
+    if not isinstance(args, dict):
+        return ""
+    # Per-tool extractors — keep each value short (≤60 chars).
+    def _short(v: Any, n: int = 60) -> str:
+        s = str(v).replace("\n", " ").strip()
+        return s if len(s) <= n else s[: n - 1] + "…"
+
+    if tool in ("web_search",):
+        q = args.get("query") or args.get("q") or ""
+        return _short(repr(q))
+    if tool in ("web_fetch",):
+        return _short(args.get("url") or "", 70)
+    if tool in ("read_file", "write_file", "edit_file", "list_files"):
+        return _short(args.get("path") or args.get("file") or "", 60)
+    if tool in ("search_files",):
+        return _short(repr(args.get("pattern") or args.get("regex") or ""))
+    if tool in ("apply_patch",):
+        return _short(args.get("file") or args.get("path") or "", 60)
+    if tool in ("run_shell",):
+        return _short(args.get("command") or args.get("cmd") or "", 60)
+    if tool in ("calculator",):
+        return _short(args.get("expression") or args.get("expr") or "", 50)
+    if tool in ("send_attachment",):
+        p = args.get("path") or args.get("filename") or ""
+        return _short(p.rsplit("/", 1)[-1] if "/" in p else p, 50)
+    if tool in ("todo_write",):
+        items = args.get("items") or args.get("todos") or []
+        if isinstance(items, list):
+            return f"{len(items)} item(s)"
+    if tool in ("revert_changes",):
+        return ""
+    if tool in ("subagent_spawn", "subagent_spawn_many"):
+        return _short(args.get("agent") or args.get("name") or "", 40)
+    # Fallback: pick the first scalar value we can find.
+    for k in ("name", "path", "query", "url", "text"):
+        if k in args and isinstance(args[k], str):
+            return _short(args[k], 60)
+    return ""
+
+
 def _format_tool_status(ev: Any) -> str:
     """Render a :class:`ToolCallEvent` as the next mutable-line status.
 
-    Mirrors hermes-agent's ``_last_activity_desc`` style ("emoji + label").
-    Truncates / sanitises so a runaway tool name can't blow past
-    Telegram's 4096-char editMessageText limit.
+    Mirrors hermes-agent's ``_last_activity_desc`` style ("emoji + label
+    + arg preview"). Truncates / sanitises so a runaway tool name can't
+    blow past Telegram's 4096-char editMessageText limit.
     """
     tool = (getattr(ev, "tool", "") or "?").replace("\n", " ")
     plugin = (getattr(ev, "plugin", "") or "").replace("\n", " ")
     label = f"{plugin}.{tool}" if plugin and plugin != tool else tool
-    if len(label) > 80:
-        label = label[:77] + "..."
+    if len(label) > 60:
+        label = label[:57] + "..."
+    preview = _tool_arg_preview(tool, getattr(ev, "args_json", b""))
+    if preview:
+        return f"🔧 {label}  {preview}"
     return f"🔧 调用工具: {label}"
+
+
+def _format_tool_result(ev: Any) -> str:
+    """Render a :class:`ToolResultEvent` as a "tool finished" line.
+
+    ✅ for success, ❌ for error. Duration is human-friendly (ms < 1s,
+    seconds otherwise). Mirrors hermes-agent's
+    ``tool_progress_callback("tool.completed", duration=..., is_error=...)``
+    rendering.
+    """
+    tool = (getattr(ev, "tool", "") or "?").replace("\n", " ")
+    if len(tool) > 60:
+        tool = tool[:57] + "..."
+    dur_ms = int(getattr(ev, "duration_ms", 0) or 0)
+    dur = f"{dur_ms}ms" if dur_ms < 1000 else f"{dur_ms / 1000:.1f}s"
+    if getattr(ev, "is_error", False):
+        msg = (getattr(ev, "error_summary", "") or "").replace("\n", " ")
+        msg = msg[:80] + "…" if len(msg) > 80 else msg
+        return f"❌ {tool} 失败 ({dur}){': ' + msg if msg else ''}"
+    return f"✅ {tool} ({dur})"
 
 
 def _parse_send_attachment_args(ev: Any) -> tuple[str, str | None, str | None]:
@@ -1005,7 +1091,23 @@ async def handle_one_telegram(
         async for ev in stream:
             kind = _event_kind(ev)
             if kind == "token_delta":
-                text_parts.append(getattr(ev, "text", "") or "")
+                text = getattr(ev, "text", "") or ""
+                if getattr(ev, "is_reasoning", False):
+                    # Don't accumulate reasoning text into the final
+                    # reply — it's internal monologue, not user-facing
+                    # output. Show it as a "💭 推理: …" spinner line so
+                    # the user sees the agent thinking in real time.
+                    if text.strip():
+                        snippet = text.strip().replace("\n", " ")
+                        if len(snippet) > _TG_REASONING_PREVIEW_CHARS:
+                            snippet = (
+                                snippet[: _TG_REASONING_PREVIEW_CHARS - 1] + "…"
+                            )
+                        await _maybe_edit(
+                            f"{_TG_STATUS_REASONING_PREFIX}{snippet}"
+                        )
+                    continue
+                text_parts.append(text)
                 if last_status != _TG_STATUS_GENERATING:
                     await _maybe_edit(_TG_STATUS_GENERATING)
             elif kind == "tool_call":
@@ -1020,6 +1122,13 @@ async def handle_one_telegram(
                     await _maybe_edit(status)
                 else:
                     await _maybe_edit(_format_tool_status(ev))
+            elif kind == "tool_result":
+                # Tool completion: render ✅ / ❌ + duration on the
+                # spinner. send_attachment intentionally suppresses
+                # the completion line because its dedicated "📎 已发送
+                # 文件" status already conveys success.
+                if getattr(ev, "tool", "") != _SEND_ATTACHMENT_TOOL:
+                    await _maybe_edit(_format_tool_result(ev))
             elif kind == "done":
                 break
             elif kind == "error":
@@ -1471,6 +1580,7 @@ def _event_kind(ev: Any) -> str:
     mapping = {
         "TokenDelta": "token_delta",
         "ToolCall": "tool_call",
+        "ToolResult": "tool_result",
         "Done": "done",
         "Error": "error",
         "InternalChatEvent": "token_delta",

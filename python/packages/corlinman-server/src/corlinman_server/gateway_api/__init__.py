@@ -45,6 +45,7 @@ from corlinman_server.gateway_api.types import (
     Role,
     TokenDeltaEvent,
     ToolCallEvent,
+    ToolResultEvent,
     Usage,
     internal_chat_error_from_corlinman_error,
 )
@@ -63,6 +64,7 @@ __all__ = [
     "InternalChatEvent",
     "TokenDeltaEvent",
     "ToolCallEvent",
+    "ToolResultEvent",
     "DoneEvent",
     "ErrorEvent",
     # Protocol / trait surface

@@ -54,6 +54,7 @@ from corlinman_server.gateway_api import (
     Role as ApiRole,
     TokenDeltaEvent,
     ToolCallEvent,
+    ToolResultEvent,
     Usage as ApiUsage,
 )
 
@@ -69,6 +70,10 @@ log = logging.getLogger(__name__)
 
 # Plugin names starting with this prefix are reserved for the agent servicer's observation-only frames. Real plugins MUST NOT use this prefix.
 _BUILTIN_OBSERVATION_PREFIX = "_builtin:"
+# Companion prefix the servicer uses to broadcast "tool finished" events
+# after an in-process builtin returns. The ``args_json`` payload of these
+# frames carries ``{"duration_ms", "is_error", "error_summary"}``.
+_BUILTIN_DONE_PREFIX = "_builtin_done:"
 
 
 # ─── Backend protocol ────────────────────────────────────────────────
@@ -268,11 +273,36 @@ async def _run_chat(
 
             kind = frame.WhichOneof("kind")
             if kind == "token":
-                yield TokenDeltaEvent(text=frame.token.text)
+                yield TokenDeltaEvent(
+                    text=frame.token.text,
+                    is_reasoning=bool(frame.token.is_reasoning),
+                )
                 continue
 
             if kind == "tool_call":
                 tc = frame.tool_call
+                # ``_builtin_done:`` prefix marks a tool-completion
+                # observation: the in-process dispatch returned, and the
+                # servicer broadcasts duration + error info so channel
+                # UIs can render "✅ tool (1.2s)" or "❌ tool failed".
+                # No execution, no round-trip — purely a notification.
+                if tc.plugin.startswith(_BUILTIN_DONE_PREFIX):
+                    try:
+                        meta = (
+                            __import__("json").loads(bytes(tc.args_json).decode("utf-8"))
+                            if tc.args_json else {}
+                        )
+                    except Exception:  # noqa: BLE001
+                        meta = {}
+                    yield ToolResultEvent(
+                        plugin=tc.plugin[len(_BUILTIN_DONE_PREFIX):],
+                        tool=tc.tool,
+                        call_id=tc.call_id,
+                        duration_ms=int(meta.get("duration_ms", 0) or 0),
+                        is_error=bool(meta.get("is_error", False)),
+                        error_summary=str(meta.get("error_summary", ""))[:200],
+                    )
+                    continue
                 # ``_builtin:`` prefix on ``plugin`` marks an observation-
                 # only frame — the agent servicer already dispatched the
                 # tool in-process and fed the result back to its loop, so
@@ -284,6 +314,7 @@ async def _run_chat(
                         plugin=tc.plugin[len(_BUILTIN_OBSERVATION_PREFIX):],
                         tool=tc.tool,
                         args_json=bytes(tc.args_json),
+                        call_id=tc.call_id,
                     )
                     continue
                 # Defense in depth: catch an upstream that's mistakenly
@@ -315,6 +346,7 @@ async def _run_chat(
                     plugin=tc.plugin,
                     tool=tc.tool,
                     args_json=bytes(tc.args_json),
+                    call_id=tc.call_id,
                 )
                 continue
 

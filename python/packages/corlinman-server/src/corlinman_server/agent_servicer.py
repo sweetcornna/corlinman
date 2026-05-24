@@ -1000,20 +1000,68 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                             call_id=event.call_id,
                             args=event.args_json.decode("utf-8", "replace")[:200],
                         )
+                        _dispatch_started_at = time.monotonic()
                         result_json = await self._dispatch_builtin(
                             event, start, provider, file_state
                         )
+                        _dispatch_dur_ms = int(
+                            (time.monotonic() - _dispatch_started_at) * 1000
+                        )
+                        # Detect error envelope so the channel UI can
+                        # render ❌ instead of ✅. Cheap parse — bail on
+                        # malformed JSON (counts as success then).
+                        _result_is_error = False
+                        _result_err_summary = ""
+                        try:
+                            _parsed = json.loads(result_json or "{}")
+                            if isinstance(_parsed, dict):
+                                if _parsed.get("error"):
+                                    _result_is_error = True
+                                    _result_err_summary = str(
+                                        _parsed["error"]
+                                    )[:200]
+                                elif _parsed.get("is_error"):
+                                    _result_is_error = True
+                                    _result_err_summary = str(
+                                        _parsed.get("error_summary")
+                                        or _parsed.get("message")
+                                        or ""
+                                    )[:200]
+                        except (json.JSONDecodeError, TypeError, ValueError):
+                            pass
                         logger.info(
                             "agent.tool.result",
                             tool=event.tool,
                             call_id=event.call_id,
                             result=result_json[:200],
+                            duration_ms=_dispatch_dur_ms,
+                            is_error=_result_is_error,
                         )
+                        # Companion observation frame — channels render
+                        # this as the "tool finished" line on the mutable
+                        # spinner. Same sentinel pattern as the in-process
+                        # ToolCall observation above, but with the
+                        # _builtin_done: prefix so chat_service knows to
+                        # yield ToolResultEvent (no executor round-trip).
+                        yield agent_pb2.ServerFrame(
+                            tool_call=agent_pb2.ToolCall(
+                                call_id=event.call_id,
+                                plugin=f"_builtin_done:{event.plugin}",
+                                tool=event.tool,
+                                args_json=json.dumps({
+                                    "duration_ms": _dispatch_dur_ms,
+                                    "is_error": _result_is_error,
+                                    "error_summary": _result_err_summary,
+                                }).encode("utf-8"),
+                                seq=seq,
+                            )
+                        )
+                        seq += 1
                         loop.feed_tool_result(
                             ToolResult(
                                 call_id=event.call_id,
                                 content=result_json,
-                                is_error=False,
+                                is_error=_result_is_error,
                             )
                         )
                         # T4.1: journal the (assistant tool_call, tool result)

@@ -47,6 +47,7 @@ __all__ = [
     "Role",
     "TokenDeltaEvent",
     "ToolCallEvent",
+    "ToolResultEvent",
     "Usage",
     "internal_chat_error_from_corlinman_error",
 ]
@@ -295,9 +296,15 @@ class TokenDeltaEvent:
 
     Concatenate ``text`` across events to recover the full message body.
     Mirrors the Rust ``InternalChatEvent::TokenDelta(String)`` variant.
+
+    ``is_reasoning=True`` marks the delta as a reasoning / thinking
+    chunk (Anthropic ``thinking`` blocks, DeepSeek-R1 ``reasoning_content``)
+    rather than user-visible reply text. UI consumers render these as a
+    "💭 推理: …" status line rather than the final reply.
     """
 
     text: str
+    is_reasoning: bool = False
     kind: Literal["token_delta"] = field(default="token_delta", init=False)
 
 
@@ -316,7 +323,27 @@ class ToolCallEvent:
     plugin: str
     tool: str
     args_json: bytes
+    call_id: str = ""
     kind: Literal["tool_call"] = field(default="tool_call", init=False)
+
+
+@dataclass(frozen=True, slots=True)
+class ToolResultEvent:
+    """Companion to :class:`ToolCallEvent` — fires when an in-process
+    builtin tool finishes. UI consumers render this as
+    ``✅ tool (1.2s)`` (success) or ``❌ tool failed`` (error).
+
+    Mirrors hermes-agent's ``tool_progress_callback("tool.completed",
+    duration=..., is_error=...)`` shape.
+    """
+
+    plugin: str
+    tool: str
+    call_id: str
+    duration_ms: int
+    is_error: bool = False
+    error_summary: str = ""
+    kind: Literal["tool_result"] = field(default="tool_result", init=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -347,6 +374,7 @@ class ErrorEvent:
 InternalChatEvent = Union[
     TokenDeltaEvent,
     ToolCallEvent,
+    ToolResultEvent,
     DoneEvent,
     ErrorEvent,
 ]

@@ -60,6 +60,11 @@ class _Ev:
     plugin: str = ""
     tool: str = ""
     args_json: bytes = b""
+    is_reasoning: bool = False
+    call_id: str = ""
+    duration_ms: int = 0
+    is_error: bool = False
+    error_summary: str = ""
 
 
 class _ScriptedChatService:
@@ -544,6 +549,105 @@ class TestHandleOneTelegram:
         assert any("read_file" in t for t in edit_texts)
         # Final edit is the assistant reply, not a status line.
         assert sender.edits[-1][2] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_tool_call_renders_arg_preview(self) -> None:
+        """tool_call event with args_json must show a per-tool preview
+        next to the tool name on the spinner line."""
+        import asyncio
+
+        svc = _ScriptedChatService([
+            _Ev(
+                kind="tool_call",
+                plugin="web_search",
+                tool="web_search",
+                args_json=b'{"query":"latest gpt-5.5 news"}',
+            ),
+            _Ev(kind="token_delta", text="done"),
+            _Ev(kind="done"),
+        ])
+        binding = ChannelBinding.telegram(bot_id=999, chat_id=7, user_id=7)
+        inbound: InboundEvent[Any] = InboundEvent(
+            channel="telegram", binding=binding, text="hi",
+            message_id="1", timestamp=0, mentioned=True,
+        )
+        sender = _FakeTelegramSender()
+        await handle_one_telegram(svc, inbound, "m", sender, asyncio.Event())  # type: ignore[arg-type]
+        # Some edit must surface the query string as the preview.
+        edits = [e[2] for e in sender.edits]
+        assert any("latest gpt-5.5 news" in t for t in edits), edits
+
+    @pytest.mark.asyncio
+    async def test_tool_result_renders_duration_success(self) -> None:
+        """tool_result event must render ✅ + human duration."""
+        import asyncio
+
+        svc = _ScriptedChatService([
+            _Ev(kind="tool_call", plugin="web_search", tool="web_search",
+                args_json=b'{"query":"x"}'),
+            _Ev(kind="tool_result", plugin="web_search", tool="web_search",
+                duration_ms=1234, is_error=False),
+            _Ev(kind="token_delta", text="ok"),
+            _Ev(kind="done"),
+        ])
+        binding = ChannelBinding.telegram(bot_id=999, chat_id=7, user_id=7)
+        inbound: InboundEvent[Any] = InboundEvent(
+            channel="telegram", binding=binding, text="hi",
+            message_id="1", timestamp=0, mentioned=True,
+        )
+        sender = _FakeTelegramSender()
+        await handle_one_telegram(svc, inbound, "m", sender, asyncio.Event())  # type: ignore[arg-type]
+        edits = [e[2] for e in sender.edits]
+        assert any(("✅" in t and "1.2s" in t) for t in edits), edits
+
+    @pytest.mark.asyncio
+    async def test_tool_result_renders_error(self) -> None:
+        """tool_result with is_error=True must render ❌ + summary."""
+        import asyncio
+
+        svc = _ScriptedChatService([
+            _Ev(kind="tool_call", plugin="run_shell", tool="run_shell",
+                args_json=b'{"command":"rm -rf /"}'),
+            _Ev(kind="tool_result", plugin="run_shell", tool="run_shell",
+                duration_ms=42, is_error=True,
+                error_summary="permission denied"),
+            _Ev(kind="token_delta", text="failed"),
+            _Ev(kind="done"),
+        ])
+        binding = ChannelBinding.telegram(bot_id=999, chat_id=7, user_id=7)
+        inbound: InboundEvent[Any] = InboundEvent(
+            channel="telegram", binding=binding, text="hi",
+            message_id="1", timestamp=0, mentioned=True,
+        )
+        sender = _FakeTelegramSender()
+        await handle_one_telegram(svc, inbound, "m", sender, asyncio.Event())  # type: ignore[arg-type]
+        edits = [e[2] for e in sender.edits]
+        assert any(("❌" in t and "permission denied" in t) for t in edits), edits
+
+    @pytest.mark.asyncio
+    async def test_reasoning_delta_shows_thinking_line(self) -> None:
+        """token_delta with is_reasoning=True must render as 💭 推理: …
+        and NOT be accumulated into the final reply."""
+        import asyncio
+
+        svc = _ScriptedChatService([
+            _Ev(kind="token_delta", text="let me think about this",
+                is_reasoning=True),
+            _Ev(kind="token_delta", text="the answer is 42"),
+            _Ev(kind="done"),
+        ])
+        binding = ChannelBinding.telegram(bot_id=999, chat_id=7, user_id=7)
+        inbound: InboundEvent[Any] = InboundEvent(
+            channel="telegram", binding=binding, text="hi",
+            message_id="1", timestamp=0, mentioned=True,
+        )
+        sender = _FakeTelegramSender()
+        await handle_one_telegram(svc, inbound, "m", sender, asyncio.Event())  # type: ignore[arg-type]
+        edits = [e[2] for e in sender.edits]
+        # The reasoning text must appear on a 💭 line.
+        assert any(("💭" in t and "let me think" in t) for t in edits), edits
+        # The final reply must NOT contain the reasoning text.
+        assert sender.edits[-1][2] == "the answer is 42"
 
     @pytest.mark.asyncio
     async def test_placeholder_send_raises_cancels_typing_pulse(self) -> None:
