@@ -57,9 +57,12 @@ Same `--china` flag.
 
 - If a previous `/opt/corlinman/data/config.toml` was preserved, leave it in
   place; the new binary reads the same schema.
-- Fresh install: the gateway boots and serves `/onboard` for an interactive
-  4-step wizard. If you're scripting, you can `POST /admin/config` instead
-  (see `docs/runbook.md` for the JSON envelope).
+- Fresh install: the gateway boots and serves `/login`. Sign in with the
+  seeded default `admin` / `root` — you'll be redirected to **Account &
+  Security** and forced to rotate the password. From there the optional
+  `/onboard` wizard wires LLM providers; for scripted setups
+  `POST /admin/config` does the same (see `docs/runbook.md` for the JSON
+  envelope).
 
 ### Phase 4 — Verify
 
@@ -70,10 +73,12 @@ Run all four:
    on a fresh install until providers are configured).
 3. `ssh USER@HOST 'corlinman doctor --json'` — every check should be `ok` or
    `warn`; never `fail`.
-4. If providers are configured, send a real chat:
+4. If providers are configured, send a real chat. Pull the OpenAI-style
+   API key shown at `/admin/tokens` (admin UI → Tokens) and pass it as the
+   Bearer credential:
    ```bash
    curl -fsS http://HOST:6005/v1/chat/completions \
-     -H "Authorization: Bearer $(corlinman tenant token list --json | jq -r '.[0].token')" \
+     -H "Authorization: Bearer $CORLINMAN_API_KEY" \
      -H "Content-Type: application/json" \
      -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"ping"}]}'
    ```

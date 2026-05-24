@@ -140,6 +140,9 @@ loop — with a real executor that dispatches against the plugin plane:
   NapCat's own QR. Tests trimmed to the iframe-embed contract.
 - `deploy/config.toml.template` aligned with the easy-setup schema
   (`username` / `password_hash` / `must_change_password`).
+  *(Subsequently removed in the Deploy UX overhaul — `admin_seed.py` now
+  writes the `[admin]` block automatically; see `docs/config.example.toml`
+  for the canonical reference.)*
 
 ## Acceptance gates (§5 of the plan) — all passed
 

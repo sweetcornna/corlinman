@@ -131,9 +131,16 @@ Two ways in. **Humans pick the one-liner;** **AI agents read [`deploy/AI_DEPLOY.
 | **Native (uv + systemd)** | `curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh \| bash -s -- --mode native` | Installs `uv`, clones the repo to `/opt/corlinman/repo`, syncs the workspace, registers a systemd unit. No container runtime needed. |
 | **🇨🇳 China network** | append ` --china` to either command above | Switches PyPI → Tsinghua, Docker Hub → DaoCloud, github.com → gh-proxy.com, npm → npmmirror. Auto-enabled when `pypi.org` TTFB > 3s. See [China-region deployment](#-china-region-deployment) below. |
 
-Both paths converge on `http://localhost:6005/onboard` — the 4-step wizard
-that writes a complete `config.toml`. After onboarding the admin UI lives
-at `http://localhost:6005/admin`.
+Both paths converge on `http://localhost:6005/login` — sign in with
+`admin` / `root`, rotate the password on the **Account & Security** page
+you're redirected to, then optionally walk `/onboard` to wire a real LLM
+provider (or skip and use the bundled mock provider). After that the
+admin UI lives at `http://localhost:6005/admin`.
+
+Add `--with-qq` to either installer to bring up the NapCat QQ sidecar
+alongside corlinman; the installer will materialise `.env` from
+`deploy/.env.template` on first run and prompt you to fill in `QQ_*` /
+`OPENAI_API_KEY` before re-running.
 
 ### 🇨🇳 China-region deployment
 
@@ -207,8 +214,9 @@ docker compose -f docker/compose/docker-compose.yml up -d
 docker compose -f docker/compose/docker-compose.yml \
   -f docker/compose/docker-compose.sandbox.yml up -d
 
-# Visit http://127.0.0.1:6005/health then http://127.0.0.1:6005/onboard.
-# Or run the CLI wizard inside the container:
+# Visit http://127.0.0.1:6005/health then http://127.0.0.1:6005/login
+# (default admin / root — change on first login). For LLM provider setup,
+# either click through the in-UI /onboard wizard or run the CLI:
 docker exec -it corlinman corlinman onboard
 ```
 

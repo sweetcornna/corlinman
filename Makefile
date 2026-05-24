@@ -1,6 +1,6 @@
 # corlinman root Makefile. Keep thin — real logic in scripts/ or uv/pnpm.
 .DEFAULT_GOAL := help
-.PHONY: help dev build test lint fmt proto docker ci clean
+.PHONY: help dev build test lint fmt proto doctor docker ci clean
 
 help:
 	@echo "corlinman make targets:"
@@ -10,6 +10,7 @@ help:
 	@echo "  lint     ruff + mypy + ui typecheck"
 	@echo "  fmt      ruff format"
 	@echo "  proto    regenerate Python gRPC stubs"
+	@echo "  doctor   run corlinman doctor health checks"
 	@echo "  docker   build runtime image (no push)"
 	@echo "  ci       run every .github/workflows/ci.yml job locally"
 
@@ -34,6 +35,9 @@ fmt:
 
 proto:
 	bash scripts/gen-proto.sh
+
+doctor:
+	uv run corlinman doctor
 
 docker:
 	docker buildx build --target runtime -f docker/Dockerfile -t corlinman:dev .

@@ -96,7 +96,9 @@ follow-up tasks scoped tightly.
   `aarch64-linux-gnu`, `x86_64-linux-gnu` exist through v0.6.4+.
   `deploy/install.sh` supports `--mode docker` and `--mode native`.
 - `docker/Dockerfile:55-69` — cargo-chef recipe caching is in place.
-  ghcr.io/ymylive/corlinman is published per tag + `:latest` + `:dev`.
+  ghcr.io/ymylive/corlinman will be published per tag + `:latest` once
+  `.github/workflows/release-image.yml` ships (see PLAN_DEPLOY_UX.md task B).
+  Until then the docker mode falls back to a local `buildx` build.
 
 The implication: a lot of v0.7.0 is **flipping gates and adding the
 concurrency + pool plumbing**, not green-fielding.
