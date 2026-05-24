@@ -373,6 +373,7 @@ export const en = {
     approvals: "Approvals",
     evolution: "Evolution",
     models: "Models",
+    persona: "Persona",
     providers: "Providers",
     credentials: "Credentials",
     config: "Config",
@@ -1503,6 +1504,7 @@ export const en = {
     sessions: "Sessions",
     account: "Account",
     security: "Security",
+    persona: "Persona",
   },
 
   health: {
@@ -1932,6 +1934,86 @@ export const en = {
       "`{{key}}` is not in the sessions database — it may have been pruned.",
     replayLoading: "Replaying…",
     replayFailed: "Replay failed: {{msg}}",
+  },
+
+  persona: {
+    title: "Persona — human-like chat",
+    subtitle:
+      "Give the agent a fixed persona on the QQ channel. Useful for fan communities + roleplay groups.",
+    // QQ humanlike toggle card
+    toggleTitle: "QQ OneBot · humanlike mode",
+    toggleDescription:
+      "When enabled, the agent replies on QQ as the selected persona — same character voice across DMs and groups.",
+    toggleLabel: "Enable humanlike mode on QQ OneBot",
+    personaSelectLabel: "Active persona",
+    personaSelectPlaceholder: "Pick a persona…",
+    save: "Save",
+    statusOn: "Status: enabled → {{name}}",
+    statusOff: "Status: disabled",
+    statusOnNoPersona: "Status: enabled — no persona selected yet",
+    saveSucceeded: "QQ humanlike updated",
+    saveFailed: "Save failed: {{msg}}",
+    loadHumanlikeFailed: "Could not load the QQ humanlike state: {{msg}}",
+    // Personas list section
+    listTitle: "Personas",
+    listSubtitle:
+      "Built-in personas can be edited but never deleted. Custom ones can be removed once they're no longer in use.",
+    newPersona: "+ New persona",
+    colName: "Name",
+    colSummary: "Summary",
+    colBuiltin: "Built-in",
+    colUpdated: "Updated",
+    colActions: "Actions",
+    edit: "Edit",
+    delete: "Delete",
+    deleteAriaLabel: "Delete persona {{name}}",
+    builtinBadge: "built-in",
+    builtinDeleteTooltip: "Built-in personas cannot be deleted",
+    empty:
+      "No personas yet — click \"+ New persona\" to create one. (The built-in `grantley` should already be here once the backend seeds.)",
+    loadFailed: "Could not load personas",
+    deleteConfirmTitle: "Delete this persona?",
+    deleteConfirmBody:
+      "This will permanently remove the persona.\n确认删除此 persona?将永久移除。",
+    deleteConfirmAction: "Permanently delete",
+    deleteSucceeded: "Deleted persona {{name}}",
+    deleteFailed: "Delete failed: {{msg}}",
+    deleteBuiltinBlocked:
+      "Built-in personas cannot be deleted (server returned 404).",
+    cancel: "Cancel",
+    // Editor modal
+    editorNewTitle: "New persona",
+    editorEditTitle: "Edit persona — {{name}}",
+    editorDescription:
+      "Fill in the slug, display name, summary and the markdown system prompt. The system prompt is what the agent receives — write it as plain markdown.",
+    fieldId: "Slug",
+    fieldIdHint: "Stable ID, lowercase a–z / 0–9 / hyphens. Cannot be changed after creation.",
+    fieldDisplayName: "Display name",
+    fieldShortSummary: "Short summary",
+    fieldShortSummaryHint: "One or two lines — shown in the list row.",
+    fieldSystemPrompt: "System prompt (markdown)",
+    fieldSystemPromptHint:
+      "Markdown body. May reference user message, recent memory, channel context.",
+    saveCreate: "Create persona",
+    saveUpdate: "Save changes",
+    saving: "Saving…",
+    createSucceeded: "Persona {{name}} created",
+    updateSucceeded: "Persona {{name}} updated",
+    createFailed: "Create failed: {{msg}}",
+    updateFailed: "Update failed: {{msg}}",
+    resetToDefault: "Reset to default",
+    resetToDefaultTooltip: "Not implemented yet",
+    // Test box (disabled placeholder)
+    testBoxTitle: "Test message",
+    testBoxPlaceholder: "Send a fake message to preview…",
+    testBoxButton: "Test",
+    testBoxTooltip: "To test, send a real message to @QQbot",
+    // Validation
+    errIdRequired: "Slug is required",
+    errIdInvalid: "Slug must be lowercase a–z, 0–9, hyphens",
+    errDisplayNameRequired: "Display name is required",
+    errSummaryRequired: "Summary is required",
+    errPromptRequired: "System prompt cannot be empty",
   },
 
 } satisfies LocaleBundle;

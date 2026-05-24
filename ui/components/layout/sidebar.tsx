@@ -28,6 +28,7 @@ import {
   Route,
   Send,
   Settings,
+  Sparkles,
   Terminal,
   Timer,
   Users,
@@ -88,6 +89,10 @@ const OPERATOR_ITEMS: NavEntry[] = [
   { href: "/logs", labelKey: "nav.logs", icon: FileTerminal },
   { href: "/providers", labelKey: "nav.providers", icon: Plug },
   { href: "/models", labelKey: "nav.models", icon: Route },
+  // Persona — humanlike-mode operator surface; sits between Models and
+  // Scheduler because it's a chat-personality knob that pairs with model
+  // configuration, not a developer concern.
+  { href: "/persona", labelKey: "nav.persona", icon: Sparkles },
   {
     kind: "group",
     id: "channels",

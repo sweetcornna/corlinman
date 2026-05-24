@@ -25,6 +25,7 @@ const SEGMENT_KEY: Record<string, string> = {
   sessions: "breadcrumbs.sessions",
   account: "breadcrumbs.account",
   security: "breadcrumbs.security",
+  persona: "breadcrumbs.persona",
 };
 
 const NON_LINKABLE_HREFS = new Set(["/account"]);

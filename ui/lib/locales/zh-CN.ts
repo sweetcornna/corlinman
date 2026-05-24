@@ -358,6 +358,7 @@ export const zhCN = {
     approvals: "审批",
     evolution: "演化",
     models: "模型",
+    persona: "Persona",
     providers: "Providers",
     credentials: "凭证",
     config: "配置",
@@ -1470,6 +1471,7 @@ export const zhCN = {
     sessions: "会话",
     account: "账户",
     security: "安全",
+    persona: "Persona",
   },
 
   health: {
@@ -1888,6 +1890,86 @@ export const zhCN = {
     notFoundHint: "`{{key}}` 不在 sessions 数据库中，可能已被清理。",
     replayLoading: "正在重放…",
     replayFailed: "重放失败：{{msg}}",
+  },
+
+  persona: {
+    title: "Persona — 拟人化聊天",
+    subtitle:
+      "为 QQ 通道指定固定 persona。适合粉丝群与角色扮演群组。",
+    // QQ humanlike toggle card
+    toggleTitle: "QQ OneBot · 拟人化模式",
+    toggleDescription:
+      "开启后，bot 会在 QQ 上以选中的 persona 回复 — 私聊与群聊声音一致。",
+    toggleLabel: "在 QQ OneBot 上启用拟人化模式",
+    personaSelectLabel: "当前 persona",
+    personaSelectPlaceholder: "选择 persona…",
+    save: "保存",
+    statusOn: "状态：启用 → {{name}}",
+    statusOff: "状态：关闭",
+    statusOnNoPersona: "状态：启用 — 但尚未选择 persona",
+    saveSucceeded: "QQ 拟人化设置已更新",
+    saveFailed: "保存失败：{{msg}}",
+    loadHumanlikeFailed: "无法加载 QQ 拟人化状态：{{msg}}",
+    // Personas list section
+    listTitle: "Persona 列表",
+    listSubtitle:
+      "内置 persona 可编辑但不可删除。自定义 persona 可在不再使用时删除。",
+    newPersona: "+ 新建 persona",
+    colName: "名称",
+    colSummary: "简介",
+    colBuiltin: "内置",
+    colUpdated: "更新于",
+    colActions: "操作",
+    edit: "编辑",
+    delete: "删除",
+    deleteAriaLabel: "删除 persona {{name}}",
+    builtinBadge: "内置",
+    builtinDeleteTooltip: "内置 persona 不可删除",
+    empty:
+      "还没有 persona — 点击「+ 新建 persona」创建一个。（后端 seed 后，内置 `grantley` 应在此列出。）",
+    loadFailed: "无法加载 personas",
+    deleteConfirmTitle: "删除此 persona？",
+    deleteConfirmBody:
+      "将永久移除该 persona。\nThis will permanently remove the persona.",
+    deleteConfirmAction: "永久删除",
+    deleteSucceeded: "已删除 persona {{name}}",
+    deleteFailed: "删除失败：{{msg}}",
+    deleteBuiltinBlocked:
+      "内置 persona 不可删除（后端返回 404）。",
+    cancel: "取消",
+    // Editor modal
+    editorNewTitle: "新建 persona",
+    editorEditTitle: "编辑 persona — {{name}}",
+    editorDescription:
+      "填写 slug、显示名、简介、以及 markdown system prompt。System prompt 会直接传给 agent — 用 markdown 编写即可。",
+    fieldId: "Slug",
+    fieldIdHint: "稳定标识，仅限小写 a–z / 0–9 / 连字符。创建后不可修改。",
+    fieldDisplayName: "显示名",
+    fieldShortSummary: "简短描述",
+    fieldShortSummaryHint: "一两行 — 显示在列表行中。",
+    fieldSystemPrompt: "System prompt（markdown）",
+    fieldSystemPromptHint:
+      "Markdown 正文。可以引用用户消息、最近记忆、通道上下文。",
+    saveCreate: "创建 persona",
+    saveUpdate: "保存修改",
+    saving: "保存中…",
+    createSucceeded: "已创建 persona {{name}}",
+    updateSucceeded: "已更新 persona {{name}}",
+    createFailed: "创建失败：{{msg}}",
+    updateFailed: "更新失败：{{msg}}",
+    resetToDefault: "重置为默认",
+    resetToDefaultTooltip: "暂未实现",
+    // Test box (disabled placeholder)
+    testBoxTitle: "测试消息",
+    testBoxPlaceholder: "发送一条假消息预览…",
+    testBoxButton: "测试",
+    testBoxTooltip: "实测请直接给 @QQbot 发消息",
+    // Validation
+    errIdRequired: "Slug 必填",
+    errIdInvalid: "Slug 仅限小写 a–z、0–9、连字符",
+    errDisplayNameRequired: "显示名必填",
+    errSummaryRequired: "简介必填",
+    errPromptRequired: "System prompt 不能为空",
   },
 
 };
