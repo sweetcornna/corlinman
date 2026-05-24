@@ -158,6 +158,11 @@ from corlinman_channels.slack import (
 )
 from corlinman_channels.telegram import TelegramAdapter, TelegramConfig
 from corlinman_channels.telegram_send import TelegramSender
+from corlinman_channels.wechat_official import (
+    WeChatOfficialAdapter,
+    WeChatOfficialConfig,
+)
+from corlinman_channels.wechat_official_send import WeChatOfficialSender
 
 __all__ = [
     "ChatEventLike",
@@ -168,18 +173,21 @@ __all__ = [
     "QqOfficialChannelParams",
     "SlackChannelParams",
     "TelegramChannelParams",
+    "WeChatOfficialChannelParams",
     "handle_one_discord",
     "handle_one_feishu",
     "handle_one_qq",
     "handle_one_qq_official",
     "handle_one_slack",
     "handle_one_telegram",
+    "handle_one_wechat_official",
     "run_discord_channel",
     "run_feishu_channel",
     "run_qq_channel",
     "run_qq_official_channel",
     "run_slack_channel",
     "run_telegram_channel",
+    "run_wechat_official_channel",
 ]
 
 
@@ -2199,6 +2207,257 @@ async def handle_one_qq_official(
             await inbox.mark_done(inbox_id)
         except Exception as exc:  # noqa: BLE001
             _log.warning("qq_official inbox mark_done failed: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# WeChat Official Account channel
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class WeChatOfficialChannelParams:
+    """Parameters for :func:`run_wechat_official_channel`.
+
+    Parallel structure to :class:`FeishuChannelParams`. WeChat Official
+    Account is webhook-only (no long-poll / WS), so the runner registers
+    a route + idles waiting for cancellation. ``register_route`` is the
+    sibling-call the gateway uses to actually mount
+    ``adapter.handle_webhook`` on a FastAPI router — pulled out as a
+    callback so this service module never imports FastAPI.
+    """
+
+    config: Any
+    """``cfg.channels.wechat_official`` — must expose ``app_id``,
+    ``app_secret``, ``token``, optional ``encoding_aes_key`` (empty for
+    v1: AES is not implemented), optional ``passive_timeout_s``, and an
+    optional ``bot_name`` slug used in the public webhook path
+    ``/wechat/<bot_name>`` (defaults to ``"default"``)."""
+
+    model: str = ""
+    chat_service: ChatServiceLike | None = None
+    register_route: Any = None
+    """Sync callable ``(bot_name: str, adapter: WeChatOfficialAdapter) ->
+    None``. Invoked once at startup. Optional — when ``None`` the runner
+    keeps the adapter alive but no webhook is mounted (useful in tests
+    that drive ``adapter.handle_webhook`` directly)."""
+
+
+async def run_wechat_official_channel(
+    params: WeChatOfficialChannelParams,
+    cancel: asyncio.Event,
+) -> None:
+    """Wire the WeChat webhook + run an idle loop until ``cancel`` is set.
+
+    Different shape from the other ``run_*_channel`` helpers: there's
+    no inbound stream to drain because every event is delivered via
+    :meth:`WeChatOfficialAdapter.handle_webhook` from the FastAPI
+    layer. The runner:
+
+    1. constructs the adapter from ``params.config``;
+    2. wires the per-turn sink (``handle_one_wechat_official``);
+    3. asks the gateway to mount the webhook (``register_route``);
+    4. blocks on ``cancel`` so it lives + dies with its sibling channels.
+
+    Raises ``ValueError`` on missing required config (matches the QQ /
+    Telegram runners). Raises :class:`NotImplementedError` when
+    ``encoding_aes_key`` is configured (v1 doesn't decrypt).
+    """
+    cfg = params.config
+    app_id = _attr(cfg, "app_id", "")
+    app_secret = _attr(cfg, "app_secret", "")
+    token = _attr(cfg, "token", "")
+    if not app_id:
+        raise ValueError("channels.wechat_official.app_id is empty")
+    if not app_secret:
+        raise ValueError("channels.wechat_official.app_secret is empty")
+    if not token:
+        raise ValueError("channels.wechat_official.token is empty")
+
+    aes_key = _attr(cfg, "encoding_aes_key", "") or ""
+    passive_timeout = float(_attr(cfg, "passive_timeout_s", 0.0) or 0.0)
+    bot_name = str(_attr(cfg, "bot_name", "default") or "default")
+
+    wx_cfg = WeChatOfficialConfig(
+        app_id=str(app_id),
+        app_secret=str(app_secret),
+        token=str(token),
+        encoding_aes_key=str(aes_key),
+        passive_timeout_s=passive_timeout,
+    )
+    adapter = WeChatOfficialAdapter(wx_cfg)
+    send_client = httpx.AsyncClient()
+    sender = WeChatOfficialSender(
+        app_id=wx_cfg.app_id,
+        app_secret=wx_cfg.app_secret,
+        client=send_client,
+    )
+    semaphore = asyncio.Semaphore(_channel_max_concurrency("WECHAT_OFFICIAL"))
+    pending: set[asyncio.Task[None]] = set()
+
+    async def _sink(
+        inbound: InboundEvent[Any],
+        passive_future: asyncio.Future[str],
+    ) -> None:
+        """Per-event sink — bounded-spawn a turn task and immediately return.
+
+        The webhook is already blocked on ``passive_future``; we just need
+        to make sure exactly one ``handle_one_wechat_official`` runs per
+        inbound and that it respects the channel concurrency cap so a
+        burst of subscribers doesn't fan out unbounded tasks.
+        """
+        if params.chat_service is None:
+            # No backend wired (degraded). Resolve the future with the
+            # empty string so the webhook returns an empty 200 promptly
+            # instead of waiting the full passive deadline.
+            if not passive_future.done():
+                passive_future.set_result("")
+            return
+        await _bounded_spawn(
+            semaphore,
+            pending,
+            lambda chat_service=params.chat_service: handle_one_wechat_official(
+                chat_service,
+                inbound,
+                params.model,
+                sender,
+                cancel,
+                passive_future=passive_future,
+            ),
+        )
+
+    adapter.set_on_event(_sink)
+
+    if params.register_route is not None:
+        try:
+            params.register_route(bot_name, adapter)
+        except Exception as exc:
+            _log.warning("wechat_official register_route failed: %s", exc)
+
+    try:
+        # Webhook-only — block on cancel, the adapter does its work from
+        # the FastAPI side.
+        await cancel.wait()
+    finally:
+        for t in pending:
+            t.cancel()
+        await send_client.aclose()
+
+
+#: Conservative prefix length below which we publish the whole reply as
+#: the passive XML (no second customer-service send). WeChat passive
+#: replies cap silently at ~2048 chars; staying well under is safer.
+_WECHAT_PASSIVE_CAP: int = 600
+
+
+def _split_passive_and_rest(body: str) -> tuple[str, str]:
+    """Pick the chunk to ship in the passive XML + the remainder.
+
+    Mirrors the QQ summary-agent "prepend the summary" approach: send a
+    short first sentence (or the whole reply when short) as the passive
+    XML so the user sees an instant answer, then push the rest via the
+    customer-service path. Returns ``(passive, remainder)`` with
+    ``remainder == ""`` meaning the whole body fit in passive.
+    """
+    if not body:
+        return ("", "")
+    if len(body) <= _WECHAT_PASSIVE_CAP:
+        return (body, "")
+    # Look for the first sentence-ending punctuation in the first
+    # ``_WECHAT_PASSIVE_CAP`` chars and break there.
+    head = body[:_WECHAT_PASSIVE_CAP]
+    for marker in ("\n\n", "\n", "。", ". ", "! ", "? ", "！", "？"):  # noqa: RUF001
+        idx = head.rfind(marker)
+        if idx >= 100:  # not the very first chars — needs to be a real sentence
+            cut = idx + len(marker)
+            return (body[:cut].rstrip(), body[cut:].lstrip())
+    # No nice break — slice mid-word with an ellipsis so the user knows
+    # more is coming. The ellipsis is included in the cap budget so
+    # passive payload never exceeds _WECHAT_PASSIVE_CAP.
+    cut = max(_WECHAT_PASSIVE_CAP - 1, 1)
+    return (body[:cut].rstrip() + "…", body[cut:].lstrip())
+
+
+async def handle_one_wechat_official(
+    chat_service: ChatServiceLike,
+    inbound: InboundEvent[Any],
+    model: str,
+    sender: WeChatOfficialSender,
+    cancel: asyncio.Event,
+    *,
+    passive_future: asyncio.Future[str] | None = None,
+) -> None:
+    """Run one WeChat Official Account turn.
+
+    Mirrors :func:`handle_one_qq` (WeChat, like QQ, cannot edit messages
+    so the spinner-edit pattern from :func:`handle_one_telegram` is out
+    of reach). Uses the QQ summary-agent's "prepend a short summary"
+    pattern: the FIRST sentence of the reply (or the full reply if
+    short) resolves ``passive_future`` so the webhook returns it inline;
+    the remainder is pushed via :meth:`WeChatOfficialSender.send_text_customer`.
+
+    When ``passive_future`` is ``None`` the whole reply goes via the
+    customer-service path — useful when the webhook already timed out
+    (the runner pops the future map entry on the timeout side).
+    """
+    request = _build_text_channel_request(inbound, model)
+    text_parts: list[str] = []
+    error_message: str | None = None
+    try:
+        stream = chat_service.run(request, cancel)
+        async for ev in stream:
+            kind = _event_kind(ev)
+            if kind == "token_delta":
+                text_parts.append(getattr(ev, "text", "") or "")
+            elif kind == "done":
+                break
+            elif kind == "error":
+                error_message = getattr(ev, "error", "") or getattr(
+                    ev, "message", ""
+                )
+                break
+            # tool_call / tool_result frames are informational only —
+            # WeChat has no live status surface (no edit, no typing
+            # indicator) so we silently drop them.
+    except Exception as exc:
+        # Never let a crash kill the bot — log + release any waiting webhook.
+        _log.exception("wechat_official handle_one crashed: %s", exc)
+        if passive_future is not None and not passive_future.done():
+            passive_future.set_result("")
+        raise
+
+    if error_message is not None:
+        body = f"[corlinman error] {error_message}"
+    else:
+        body = "".join(text_parts).strip()
+        if not body:
+            # Empty reply — release the webhook so it doesn't sit on
+            # the passive deadline forever, and don't push anything.
+            if passive_future is not None and not passive_future.done():
+                passive_future.set_result("")
+            return
+
+    passive, remainder = _split_passive_and_rest(body)
+
+    # Resolve the passive future as soon as we have something to say.
+    if passive_future is not None and not passive_future.done():
+        passive_future.set_result(passive)
+        passive_delivered = True
+    else:
+        passive_delivered = False
+
+    # Push remainder via customer-service. If the passive future was
+    # already gone (timeout / no future supplied), push the WHOLE body
+    # so the user still gets the answer.
+    openid = inbound.binding.sender
+    push_body = remainder if passive_delivered else body
+    if push_body and push_body.strip():
+        try:
+            await sender.send_text_customer(openid, push_body)
+        except Exception as exc:
+            _log.warning(
+                "wechat_official customer/send failed user=%s err=%s",
+                openid, exc,
+            )
 
 
 # ---------------------------------------------------------------------------

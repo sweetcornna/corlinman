@@ -49,6 +49,7 @@ from corlinman_server.gateway.routes import (
     metrics,
     models,
     plugin_callback,
+    wechat_webhook,
 )
 
 __all__ = [
@@ -111,6 +112,12 @@ def build_app_router(state: GatewayState) -> APIRouter:
     # Channel webhooks
     if state.channels_telegram is not None:
         parent.include_router(channels.router(state.channels_telegram))
+
+    # WeChat Official Account — always mount; the per-bot registry lives
+    # at module scope (``wechat_webhook.WECHAT_BOT_REGISTRY``) and is
+    # populated by the channel runtime after gateway boot. An unregistered
+    # bot name surfaces as 404 from the route itself.
+    parent.include_router(wechat_webhook.build_wechat_router())
 
     # Plugin callback — type-narrow the registry slot for lazy import safety.
     if state.plugin_async_tasks is not None:

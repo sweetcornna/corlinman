@@ -236,6 +236,49 @@ def _build_qq_official_params(
     )
 
 
+def _build_wechat_official_params(
+    wx_cfg: Mapping[str, Any], model: str, chat_service: Any
+) -> Any:
+    """Build :class:`corlinman_channels.WeChatOfficialChannelParams` from
+    the ``[channels.wechat_official]`` config table.
+
+    Wires the ``register_route`` callback to
+    :func:`corlinman_server.gateway.routes.wechat_webhook.register_bot`
+    so the channel runtime can install its adapter on the gateway's
+    public ``/wechat/<bot_name>`` route at startup. The credentials
+    (``app_id`` / ``app_secret`` / ``token``) may also be supplied via
+    ``WECHAT_APP_ID`` / ``WECHAT_APP_SECRET`` / ``WECHAT_TOKEN`` env
+    vars, mirroring the pattern the other channels use.
+    """
+    from corlinman_channels import WeChatOfficialChannelParams
+
+    cfg: dict[str, Any] = dict(wx_cfg)
+    app_id = cfg.get("app_id") or os.environ.get("WECHAT_APP_ID") or ""
+    app_secret = cfg.get("app_secret") or os.environ.get("WECHAT_APP_SECRET") or ""
+    token = cfg.get("token") or os.environ.get("WECHAT_TOKEN") or ""
+    if app_id:
+        cfg["app_id"] = app_id
+    if app_secret:
+        cfg["app_secret"] = app_secret
+    if token:
+        cfg["token"] = token
+
+    # Lazy-import the route registrar — keeps the channels_runtime import
+    # graph minimal at boot. The callback shape matches
+    # ``WeChatOfficialChannelParams.register_route``.
+    def _register(bot_name: str, adapter: Any) -> None:
+        from corlinman_server.gateway.routes.wechat_webhook import register_bot
+
+        register_bot(bot_name, adapter)
+
+    return WeChatOfficialChannelParams(
+        config=cfg,
+        model=model,
+        chat_service=chat_service,
+        register_route=_register,
+    )
+
+
 def _build_feishu_params(
     fs_cfg: Mapping[str, Any], model: str, chat_service: Any
 ) -> Any:
@@ -515,6 +558,37 @@ def build_channel_tasks(
             )
     elif fs_cfg:
         logger.debug("gateway.channels.disabled", channel="feishu")
+
+    # --- WeChat Official Account (webhook-only) -----------------------------
+    wx_cfg = _as_mapping(channels_cfg.get("wechat_official"))
+    if _is_enabled(wx_cfg):
+        try:
+            from corlinman_channels import run_wechat_official_channel
+
+            params = _build_wechat_official_params(wx_cfg, model, chat_service)
+            task = asyncio.create_task(
+                _run_channel(
+                    "wechat_official",
+                    lambda c, p=params: run_wechat_official_channel(p, c),
+                    cancel,
+                ),
+                name="channel-wechat_official",
+            )
+            tasks.append(task)
+            logger.info(
+                "gateway.channels.started",
+                channel="wechat_official",
+                model=model,
+                has_chat_service=chat_service is not None,
+            )
+        except Exception as exc:
+            logger.warning(
+                "gateway.channels.build_failed",
+                channel="wechat_official",
+                error=str(exc),
+            )
+    elif wx_cfg:
+        logger.debug("gateway.channels.disabled", channel="wechat_official")
 
     return tasks
 

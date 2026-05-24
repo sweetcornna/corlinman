@@ -127,18 +127,21 @@ from corlinman_channels.service import (
     QqOfficialChannelParams,
     SlackChannelParams,
     TelegramChannelParams,
+    WeChatOfficialChannelParams,
     handle_one_discord,
     handle_one_feishu,
     handle_one_qq,
     handle_one_qq_official,
     handle_one_slack,
     handle_one_telegram,
+    handle_one_wechat_official,
     run_discord_channel,
     run_feishu_channel,
     run_qq_channel,
     run_qq_official_channel,
     run_slack_channel,
     run_telegram_channel,
+    run_wechat_official_channel,
 )
 from corlinman_channels.slack import (
     SlackAdapter,
@@ -183,6 +186,17 @@ from corlinman_channels.telegram_webhook import (
     default_media_dir,
     process_update,
     verify_secret,
+)
+from corlinman_channels.wechat_official import (
+    WeChatOfficialAdapter,
+    WeChatOfficialConfig,
+    build_passive_xml,
+    parse_wechat_xml,
+    verify_signature,
+)
+from corlinman_channels.wechat_official_send import (
+    WeChatOfficialSender,
+    split_for_send,
 )
 
 # ``ChannelError`` is defined in *both* ``common`` (the base error for
@@ -232,18 +246,21 @@ __all__ = [  # noqa: RUF022 — grouped by subsystem for human readability.
     "QqOfficialChannelParams",
     "SlackChannelParams",
     "TelegramChannelParams",
+    "WeChatOfficialChannelParams",
     "handle_one_discord",
     "handle_one_feishu",
     "handle_one_qq",
     "handle_one_qq_official",
     "handle_one_slack",
     "handle_one_telegram",
+    "handle_one_wechat_official",
     "run_discord_channel",
     "run_feishu_channel",
     "run_qq_channel",
     "run_qq_official_channel",
     "run_slack_channel",
     "run_telegram_channel",
+    "run_wechat_official_channel",
     # Discord
     "DiscordAdapter",
     "DiscordConfig",
@@ -260,6 +277,14 @@ __all__ = [  # noqa: RUF022 — grouped by subsystem for human readability.
     "QqOfficialAdapter",
     "QqOfficialConfig",
     "QqOfficialSender",
+    # WeChat Official Account (webhook-only)
+    "WeChatOfficialAdapter",
+    "WeChatOfficialConfig",
+    "WeChatOfficialSender",
+    "build_passive_xml",
+    "parse_wechat_xml",
+    "split_for_send",
+    "verify_signature",
     # OneBot
     "Action",
     "AtSegment",
