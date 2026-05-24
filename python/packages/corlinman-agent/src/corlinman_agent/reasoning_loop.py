@@ -579,16 +579,57 @@ class ReasoningLoop:
         round. Also returns ``None`` if the loop is cancelled while
         waiting; the caller checks :attr:`_cancelled` to distinguish the
         two outcomes.
+
+        Behaviour:
+
+        * **C4 — out-of-order drain**: results pushed for a ``call_id``
+          outside the current round's ``needed`` set are not retained for
+          a future round. The function drains the queue once on entry
+          with non-blocking ``get_nowait()`` calls, keeps entries whose
+          ``call_id`` is needed, and drops the rest with a structured
+          warning. This prevents stale results from polluting a later
+          round.
+        * **C3 — input-closed termination**: when the client half of the
+          bidi stream closes, :meth:`signal_input_closed` fires. The wait
+          loop watches that event in addition to the per-result get and
+          cancel, so the loop terminates promptly (under the round's
+          tool-result timeout) instead of waiting full
+          ``tool_result_timeout`` on a queue that will never be fed.
+          When triggered the partial ``got`` dict is dropped (we have no
+          way to synthesise the missing tool messages) and ``None`` is
+          returned — the outer loop then emits a terminal Done with the
+          last ``finish_reason``.
         """
         needed = {ev.call_id for ev in calls}
         got: dict[str, ToolResult] = {}
+
+        # --- C4: one-shot drain of stale queue entries -----------------
+        while True:
+            try:
+                queued = self._tool_results.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if queued.call_id in needed and queued.call_id not in got:
+                got[queued.call_id] = queued
+            else:
+                logger.warning(
+                    "reasoning_loop.stale_tool_result",
+                    call_id=queued.call_id,
+                    needed=sorted(needed),
+                )
+
         while needed - got.keys():
             if self._cancelled.is_set():
                 return None
+            if self._input_closed.is_set():
+                # C3: client closed its half — no more results will come.
+                # Drop partial state and let the outer loop terminate.
+                return None
             get_task = asyncio.ensure_future(self._tool_results.get())
             cancel_task = asyncio.ensure_future(self._cancelled.wait())
+            closed_task = asyncio.ensure_future(self._input_closed.wait())
             done, pending = await asyncio.wait(
-                {get_task, cancel_task},
+                {get_task, cancel_task, closed_task},
                 timeout=self._tool_result_timeout,
                 return_when=asyncio.FIRST_COMPLETED,
             )
@@ -605,12 +646,28 @@ class ReasoningLoop:
                     with contextlib.suppress(asyncio.CancelledError, Exception):
                         _ = get_task.result()
                 return None
+            if closed_task in done:
+                # C3: input closed. If get_task also produced a result,
+                # drop it — we still cannot satisfy the remainder of
+                # ``needed`` and synthesising partial tool messages
+                # would leave the assistant turn with orphan tool_calls.
+                if get_task in done and not get_task.cancelled():
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        _ = get_task.result()
+                return None
             if get_task in done:
                 try:
                     result = get_task.result()
                 except (asyncio.CancelledError, Exception):
                     return None
-                got[result.call_id] = result
+                if result.call_id in needed and result.call_id not in got:
+                    got[result.call_id] = result
+                else:
+                    logger.warning(
+                        "reasoning_loop.stale_tool_result",
+                        call_id=result.call_id,
+                        needed=sorted(needed),
+                    )
                 continue
             # Neither completed → timeout; caller isn't wired.
             return None

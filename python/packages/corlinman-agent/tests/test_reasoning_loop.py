@@ -700,3 +700,147 @@ async def test_run_invokes_compact_each_round(monkeypatch: pytest.MonkeyPatch) -
     # exactly-once-per-round is the contract).
     assert len(prov.calls_seen) == 3
     assert counter["calls"] >= 3
+
+
+# ---------------------------------------------------------------------------
+# C3 — signal_input_closed() wakes _collect_results promptly
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_signal_input_closed_terminates_collect_results_promptly() -> None:
+    """The loop must terminate within the round's tool-result timeout
+    once ``signal_input_closed()`` fires while it is waiting for results.
+
+    Regression for C3: the helper previously watched only
+    ``_tool_results.get()`` and ``_cancelled``, so a client half-close
+    on a round with un-fulfilled tool calls would either spin on the
+    per-iter timeout (0.05s) forever or — under the production wiring
+    where ``tool_result_timeout`` is raised to 30s for real plugins —
+    block for the full 30s. The fix wires the event into
+    ``asyncio.wait`` and returns immediately when it fires.
+    """
+    round1 = [
+        ProviderChunk(kind="tool_call_start", tool_call_id="c1", tool_name="t"),
+        ProviderChunk(kind="tool_call_delta", tool_call_id="c1", arguments_delta="{}"),
+        ProviderChunk(kind="tool_call_end", tool_call_id="c1"),
+        ProviderChunk(kind="done", finish_reason="tool_calls"),
+    ]
+    prov = _MultiRoundProvider([round1])
+    # Big per-iter timeout proves we are NOT just timing out — we are
+    # genuinely woken by signal_input_closed().
+    loop = ReasoningLoop(prov, tool_result_timeout=30.0)
+
+    events: list = []
+
+    async def driver() -> None:
+        async for e in loop.run(
+            ChatStart(model="x", messages=[{"role": "user", "content": "hi"}])
+        ):
+            events.append(e)
+
+    async def closer() -> None:
+        # Give the loop one round-trip to land in _collect_results.
+        await asyncio.sleep(0.05)
+        loop.signal_input_closed()
+
+    # The fix must terminate well under the 30s tool_result_timeout.
+    # Two seconds is comfortably above any realistic scheduler jitter
+    # while still being a clear failure signal if the event is ignored.
+    await asyncio.wait_for(asyncio.gather(driver(), closer()), timeout=2.0)
+
+    # The terminal event must be a DoneEvent (NOT an ErrorEvent — close
+    # is graceful, distinct from ``cancel()``). The finish_reason
+    # reflects the provider's last report — "tool_calls" here.
+    assert isinstance(events[-1], DoneEvent), f"unexpected terminal: {events[-1]!r}"
+    assert events[-1].finish_reason == "tool_calls"
+    # Exactly one provider round — we did NOT loop around looking for
+    # the (impossible-to-fulfil) follow-up.
+    assert len(prov.calls_seen) == 1
+
+
+# ---------------------------------------------------------------------------
+# C4 — stale tool results are dropped, not retained for a later round
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stale_tool_result_is_dropped_with_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ``ToolResult`` whose ``call_id`` is not in the current round's
+    ``needed`` set must be discarded with a warning, not retained for a
+    future round or returned as part of ``got``.
+
+    Regression for C4: ``_tool_results.get()`` previously consumed
+    every queue entry indiscriminately, so a stale push could either
+    block the round forever (mismatched id never satisfied ``needed``)
+    or contaminate the *next* round's collection.
+    """
+    # Intercept the module-level structlog logger so we can assert the
+    # warning fired without depending on global structlog configuration
+    # (which differs between dev and CI).
+    import corlinman_agent.reasoning_loop as rl_mod
+
+    captured: list[tuple[str, dict]] = []
+
+    class _StubLogger:
+        def warning(self, event: str, **kw: object) -> None:
+            captured.append((event, dict(kw)))
+
+        def info(self, event: str, **kw: object) -> None:
+            pass
+
+        def exception(self, event: str, **kw: object) -> None:
+            pass
+
+    monkeypatch.setattr(rl_mod, "logger", _StubLogger())
+
+    round1 = [
+        ProviderChunk(kind="tool_call_start", tool_call_id="real_call", tool_name="t"),
+        ProviderChunk(
+            kind="tool_call_delta", tool_call_id="real_call", arguments_delta="{}"
+        ),
+        ProviderChunk(kind="tool_call_end", tool_call_id="real_call"),
+        ProviderChunk(kind="done", finish_reason="tool_calls"),
+    ]
+    round2 = [
+        ProviderChunk(kind="token", text="ok"),
+        ProviderChunk(kind="done", finish_reason="stop"),
+    ]
+    prov = _MultiRoundProvider([round1, round2])
+    loop = ReasoningLoop(prov, tool_result_timeout=1.0)
+
+    # Push a stale result BEFORE the round runs — when _collect_results
+    # drains the queue, it must reject this entry (unknown call_id) and
+    # then proceed to wait for the real_call result.
+    loop.feed_tool_result(
+        ToolResult(call_id="ghost_call", content='{"stale":true}')
+    )
+
+    async def driver() -> None:
+        async for e in loop.run(
+            ChatStart(model="x", messages=[{"role": "user", "content": "hi"}])
+        ):
+            if isinstance(e, ToolCallEvent):
+                loop.feed_tool_result(
+                    ToolResult(call_id=e.call_id, content='{"ok":true}')
+                )
+
+    await asyncio.wait_for(driver(), timeout=2.0)
+
+    # Round 2 saw the real tool message — the ghost was never appended.
+    assert len(prov.calls_seen) == 2
+    round2_msgs = prov.calls_seen[1]
+    tool_msgs = [m for m in round2_msgs if m.get("role") == "tool"]
+    assert len(tool_msgs) == 1
+    assert tool_msgs[0]["tool_call_id"] == "real_call"
+
+    # Warning fired exactly once for the stale id; never for real_call.
+    stale_events = [
+        (ev, kw)
+        for ev, kw in captured
+        if ev == "reasoning_loop.stale_tool_result"
+    ]
+    assert len(stale_events) == 1, f"expected 1 stale warning, got: {captured!r}"
+    assert stale_events[0][1].get("call_id") == "ghost_call"
