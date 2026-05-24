@@ -40,6 +40,7 @@ import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol
 
 import httpx
@@ -80,6 +81,33 @@ async def _try_open_inbox() -> Any:
         _log.warning("qq inbox boot sweep failed: %s", exc)
     return inbox
 
+from corlinman_channels._status import (
+    REASONING_PREVIEW_CHARS as _REASONING_PREVIEW_CHARS,
+)
+from corlinman_channels._status import (
+    SEND_ATTACHMENT_TOOL as _SEND_ATTACHMENT_TOOL,
+)
+from corlinman_channels._status import (
+    STATUS_GENERATING as _TG_STATUS_GENERATING,
+)
+from corlinman_channels._status import (
+    STATUS_REASONING_PREFIX as _TG_STATUS_REASONING_PREFIX,
+)
+from corlinman_channels._status import (
+    STATUS_THINKING as _TG_STATUS_THINKING,
+)
+from corlinman_channels._status import (
+    TEXT_LIMIT as _TELEGRAM_TEXT_LIMIT,
+)
+from corlinman_channels._status import (
+    TRUNCATION_MARKER,
+    MutableSpinner,
+    format_tool_result as _format_tool_result,
+    format_tool_status as _format_tool_status,
+    parse_send_attachment_args as _parse_send_attachment_args,
+    tool_arg_preview as _tool_arg_preview,
+    truncate_reply,
+)
 from corlinman_channels.common import InboundEvent
 from corlinman_channels.discord import (
     DEFAULT_GATEWAY_URL,
@@ -1004,26 +1032,12 @@ async def run_telegram_channel(
         await send_client.aclose()
 
 
-#: Status text shown in the placeholder message before any token / tool
-#: events land. Mirrors hermes-agent's "🧠 Thinking..." spinner state.
-_TG_STATUS_THINKING = "🧠 思考中..."
+# Mutable-spinner constants live in :mod:`corlinman_channels._status` so
+# Discord / Slack / Feishu can share them. The aliases above keep the
+# historical local names available to the rest of this module.
 
-#: Shown the first time a token_delta arrives — signals the agent has
-#: started producing the final answer.
-_TG_STATUS_GENERATING = "✍️ 生成回复中..."
-
-#: Reasoning-delta prefix (Anthropic ``thinking`` blocks, DeepSeek-R1
-#: ``reasoning_content``). The first 80 chars of the model's internal
-#: monologue show up here.
-_TG_STATUS_REASONING_PREFIX = "💭 推理: "
-
-#: Max chars of reasoning text to show inside the spinner line.
-_TG_REASONING_PREVIEW_CHARS = 80
-
-#: Telegram's ``sendMessage`` / ``editMessageText`` cap at 4096 chars; a
-#: few-char safety margin avoids 400s on edge cases (e.g. surrogate pairs
-#: counted differently server-side).
-_TELEGRAM_TEXT_LIMIT = 4000
+#: Alias for back-compat: the test suite imports this name.
+_TG_REASONING_PREVIEW_CHARS = _REASONING_PREVIEW_CHARS
 
 
 def _truncate_for_telegram(body: str) -> str:
@@ -1034,7 +1048,7 @@ def _truncate_for_telegram(body: str) -> str:
     if original_len <= _TELEGRAM_TEXT_LIMIT:
         return body
     _log.warning("telegram reply truncated len=%d", original_len)
-    return body[: _TELEGRAM_TEXT_LIMIT - 32] + "\n\n[...回复过长,已截断]"
+    return truncate_reply(body, _TELEGRAM_TEXT_LIMIT)
 
 
 async def _telegram_typing_pulse(
@@ -1058,127 +1072,10 @@ async def _telegram_typing_pulse(
     )
 
 
-#: Tool name that the channel handler intercepts to actually upload a
-#: file (agent-side dispatch is a no-op stub).
-_SEND_ATTACHMENT_TOOL = "send_attachment"
-
-
-def _tool_arg_preview(tool: str, args_json: bytes) -> str:
-    """Extract a one-line preview from a tool's args, per known tool.
-
-    Returns an empty string for unknown tools or malformed args so the
-    caller can render the bare tool name. Mirrors hermes-agent's
-    ``_format_tool_progress`` per-tool argument summarisation — gives
-    the user a concrete hook into what the agent is doing without
-    dumping the whole JSON.
-    """
-    import json as _json
-
-    try:
-        args = _json.loads(bytes(args_json).decode("utf-8") or "{}")
-    except (UnicodeDecodeError, ValueError):
-        return ""
-    if not isinstance(args, dict):
-        return ""
-    # Per-tool extractors — keep each value short (≤60 chars).
-    def _short(v: Any, n: int = 60) -> str:
-        s = str(v).replace("\n", " ").strip()
-        return s if len(s) <= n else s[: n - 1] + "…"
-
-    if tool in ("web_search",):
-        q = args.get("query") or args.get("q") or ""
-        return _short(repr(q))
-    if tool in ("web_fetch",):
-        return _short(args.get("url") or "", 70)
-    if tool in ("read_file", "write_file", "edit_file", "list_files"):
-        return _short(args.get("path") or args.get("file") or "", 60)
-    if tool in ("search_files",):
-        return _short(repr(args.get("pattern") or args.get("regex") or ""))
-    if tool in ("apply_patch",):
-        return _short(args.get("file") or args.get("path") or "", 60)
-    if tool in ("run_shell",):
-        return _short(args.get("command") or args.get("cmd") or "", 60)
-    if tool in ("calculator",):
-        return _short(args.get("expression") or args.get("expr") or "", 50)
-    if tool in ("send_attachment",):
-        p = args.get("path") or args.get("filename") or ""
-        return _short(p.rsplit("/", 1)[-1] if "/" in p else p, 50)
-    if tool in ("todo_write",):
-        items = args.get("items") or args.get("todos") or []
-        if isinstance(items, list):
-            return f"{len(items)} item(s)"
-    if tool in ("revert_changes",):
-        return ""
-    if tool in ("subagent_spawn", "subagent_spawn_many"):
-        return _short(args.get("agent") or args.get("name") or "", 40)
-    # Fallback: pick the first scalar value we can find.
-    for k in ("name", "path", "query", "url", "text"):
-        if k in args and isinstance(args[k], str):
-            return _short(args[k], 60)
-    return ""
-
-
-def _format_tool_status(ev: Any) -> str:
-    """Render a :class:`ToolCallEvent` as the next mutable-line status.
-
-    Mirrors hermes-agent's ``_last_activity_desc`` style ("emoji + label
-    + arg preview"). Truncates / sanitises so a runaway tool name can't
-    blow past Telegram's 4096-char editMessageText limit.
-    """
-    tool = (getattr(ev, "tool", "") or "?").replace("\n", " ")
-    plugin = (getattr(ev, "plugin", "") or "").replace("\n", " ")
-    label = f"{plugin}.{tool}" if plugin and plugin != tool else tool
-    if len(label) > 60:
-        label = label[:57] + "..."
-    preview = _tool_arg_preview(tool, getattr(ev, "args_json", b""))
-    if preview:
-        return f"🔧 {label}  {preview}"
-    return f"🔧 调用工具: {label}"
-
-
-def _format_tool_result(ev: Any) -> str:
-    """Render a :class:`ToolResultEvent` as a "tool finished" line.
-
-    ✅ for success, ❌ for error. Duration is human-friendly (ms < 1s,
-    seconds otherwise). Mirrors hermes-agent's
-    ``tool_progress_callback("tool.completed", duration=..., is_error=...)``
-    rendering.
-    """
-    tool = (getattr(ev, "tool", "") or "?").replace("\n", " ")
-    if len(tool) > 60:
-        tool = tool[:57] + "..."
-    dur_ms = int(getattr(ev, "duration_ms", 0) or 0)
-    dur = f"{dur_ms}ms" if dur_ms < 1000 else f"{dur_ms / 1000:.1f}s"
-    if getattr(ev, "is_error", False):
-        msg = (getattr(ev, "error_summary", "") or "").replace("\n", " ")
-        msg = msg[:80] + "…" if len(msg) > 80 else msg
-        return f"❌ {tool} 失败 ({dur}){': ' + msg if msg else ''}"
-    return f"✅ {tool} ({dur})"
-
-
-def _parse_send_attachment_args(ev: Any) -> tuple[str, str | None, str | None]:
-    """Parse ``send_attachment`` tool args into ``(path, caption, filename)``.
-
-    Returns empty path on any decode/parse failure — caller should
-    surface a friendly status instead of raising.
-    """
-    import json
-
-    raw = getattr(ev, "args_json", b"") or b""
-    try:
-        obj = json.loads(bytes(raw).decode("utf-8") or "{}")
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return ("", None, None)
-    if not isinstance(obj, dict):
-        return ("", None, None)
-    path = str(obj.get("path") or "").strip()
-    caption = obj.get("caption")
-    if caption is not None and not isinstance(caption, str):
-        caption = None
-    filename = obj.get("filename")
-    if filename is not None and not isinstance(filename, str):
-        filename = None
-    return (path, caption, filename)
+# The send_attachment intercept name, per-tool arg preview, and the
+# ToolCall / ToolResult renderers live in :mod:`corlinman_channels._status`
+# so Discord / Slack / Feishu can share them. The names imported at the
+# top of this module preserve the historical local names.
 
 
 async def _telegram_send_attachment(
@@ -1236,6 +1133,9 @@ async def handle_one_telegram(
       * a placeholder message is edited in place as ``ToolCallEvent`` /
         token-delta events land — mirroring hermes-agent's mutable
         spinner line — and finally rewritten with the assistant's reply.
+
+    Refactored to use :class:`MutableSpinner` so the per-turn state
+    machine is shared with the Discord / Slack / Feishu handlers below.
     """
     chat_id = int(inbound.binding.thread)
     reply_to: int | None = None
@@ -1251,12 +1151,22 @@ async def handle_one_telegram(
     # exception from the placeholder send or stream construction can
     # never strand it firing sendChatAction forever.
     placeholder_id: int | None = None
-    text_parts: list[str] = []
-    last_status: str = _TG_STATUS_THINKING
     error_message: str | None = None
     typing_task = asyncio.create_task(
         _telegram_typing_pulse(sender, chat_id, cancel)
     )
+
+    async def _edit(text: str) -> None:
+        # The spinner already dedupes by last_status; here we only need
+        # to no-op when the placeholder never landed.
+        if placeholder_id is None:
+            return
+        await sender.edit_message_text(chat_id, placeholder_id, text)
+
+    async def _send_attachment(ev: Any) -> str:
+        return await _telegram_send_attachment(sender, chat_id, reply_to, ev)
+
+    spinner = MutableSpinner(_edit, send_attachment_handler=_send_attachment)
     try:
         try:
             placeholder_id = await sender.send_message(
@@ -1268,64 +1178,7 @@ async def handle_one_telegram(
             # at the end.
             _log.warning("telegram placeholder send failed: %s", exc)
 
-        request = _build_text_channel_request(inbound, model)
-        stream = chat_service.run(request, cancel)
-
-        async def _maybe_edit(text: str) -> None:
-            nonlocal last_status
-            if placeholder_id is None or text == last_status:
-                return
-            last_status = text
-            await sender.edit_message_text(chat_id, placeholder_id, text)
-
-        async for ev in stream:
-            kind = _event_kind(ev)
-            if kind == "token_delta":
-                text = getattr(ev, "text", "") or ""
-                if getattr(ev, "is_reasoning", False):
-                    # Don't accumulate reasoning text into the final
-                    # reply — it's internal monologue, not user-facing
-                    # output. Show it as a "💭 推理: …" spinner line so
-                    # the user sees the agent thinking in real time.
-                    if text.strip():
-                        snippet = text.strip().replace("\n", " ")
-                        if len(snippet) > _TG_REASONING_PREVIEW_CHARS:
-                            snippet = (
-                                snippet[: _TG_REASONING_PREVIEW_CHARS - 1] + "…"
-                            )
-                        await _maybe_edit(
-                            f"{_TG_STATUS_REASONING_PREFIX}{snippet}"
-                        )
-                    continue
-                text_parts.append(text)
-                if last_status != _TG_STATUS_GENERATING:
-                    await _maybe_edit(_TG_STATUS_GENERATING)
-            elif kind == "tool_call":
-                if getattr(ev, "tool", "") == _SEND_ATTACHMENT_TOOL:
-                    # Channel-side file upload — the agent already
-                    # dispatched a stub OK in-process; we do the real
-                    # work here using the sender + chat_id from this
-                    # turn's binding.
-                    status = await _telegram_send_attachment(
-                        sender, chat_id, reply_to, ev
-                    )
-                    await _maybe_edit(status)
-                else:
-                    await _maybe_edit(_format_tool_status(ev))
-            elif kind == "tool_result":
-                # Tool completion: render ✅ / ❌ + duration on the
-                # spinner. send_attachment intentionally suppresses
-                # the completion line because its dedicated "📎 已发送
-                # 文件" status already conveys success.
-                if getattr(ev, "tool", "") != _SEND_ATTACHMENT_TOOL:
-                    await _maybe_edit(_format_tool_result(ev))
-            elif kind == "done":
-                break
-            elif kind == "error":
-                error_message = getattr(ev, "error", "") or getattr(
-                    ev, "message", ""
-                )
-                break
+        error_message = await _drive_spinner(spinner, chat_service, inbound, model, cancel)
     finally:
         typing_task.cancel()
         with suppress(asyncio.CancelledError, Exception):
@@ -1334,7 +1187,7 @@ async def handle_one_telegram(
     if error_message is not None:
         body = f"[corlinman error] {error_message}"
     else:
-        body = "".join(text_parts).strip()
+        body = "".join(spinner.text_parts).strip()
         if not body:
             # Empty reply — tidy the placeholder so the user knows the
             # turn ended rather than leaving "✍️ 生成回复中..." stuck.
@@ -1362,6 +1215,42 @@ async def handle_one_telegram(
             )
     except Exception as exc:  # noqa: BLE001
         _log.warning("telegram final emit failed: %s", exc)
+
+
+async def _drive_spinner(
+    spinner: MutableSpinner,
+    chat_service: ChatServiceLike,
+    inbound: InboundEvent[Any],
+    model: str,
+    cancel: asyncio.Event,
+) -> str | None:
+    """Stream ``chat_service.run`` events into ``spinner``.
+
+    Returns an ``error_message`` string when the backend sent an ``error``
+    event, ``None`` otherwise. The caller is responsible for assembling
+    the final reply from ``spinner.text_parts``.
+
+    Shared by the four mutable-spinner channels (Telegram / Discord /
+    Slack / Feishu) so the event-loop logic stays in one place.
+    """
+    request = _build_text_channel_request(inbound, model)
+    stream = chat_service.run(request, cancel)
+    async for ev in stream:
+        kind = _event_kind(ev)
+        if kind == "token_delta":
+            await spinner.on_token_delta(
+                getattr(ev, "text", "") or "",
+                bool(getattr(ev, "is_reasoning", False)),
+            )
+        elif kind == "tool_call":
+            await spinner.on_tool_call(ev)
+        elif kind == "tool_result":
+            await spinner.on_tool_result(ev)
+        elif kind == "done":
+            return None
+        elif kind == "error":
+            return getattr(ev, "error", "") or getattr(ev, "message", "")
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1437,6 +1326,63 @@ async def run_discord_channel(
         await send_client.aclose()
 
 
+#: Discord's hard cap on ``content`` is 2000 chars. We leave a small
+#: safety margin so a near-cap reply doesn't trip the API on edge cases.
+_DISCORD_TEXT_LIMIT = 1990
+
+
+async def _discord_typing_pulse(
+    sender: DiscordSender,
+    channel_id: str,
+    cancel: asyncio.Event,
+    *,
+    interval_s: float = 5.0,
+) -> None:
+    """Re-fire ``POST /channels/{id}/typing`` until cancelled.
+
+    Discord's typing indicator auto-clears after ~10s — we re-fire at 5s
+    intervals to match the Telegram cadence and keep the indicator
+    rock-steady through long tool chains.
+    """
+    await _pulse(
+        lambda: sender.trigger_typing(channel_id),
+        cancel,
+        interval_s,
+    )
+
+
+async def _discord_send_attachment(
+    sender: DiscordSender,
+    channel_id: str,
+    reply_to: str | None,
+    ev: Any,
+) -> str:
+    """Upload a file via Discord's multipart ``files[0]`` form.
+
+    Returns the status text to render in the placeholder. Best-effort:
+    any failure folds into a status line — never raises.
+    """
+    path_str, caption, filename = _parse_send_attachment_args(ev)
+    if not path_str:
+        return "⚠️ 发送文件失败: missing `path`"
+    p = Path(path_str)
+    if not p.exists() or not p.is_file():
+        return f"⚠️ 发送文件失败: {p.name} 不存在"
+    display = filename or p.name
+    try:
+        await sender.send_file(
+            channel_id,
+            p,
+            filename=display,
+            content=caption,
+            reply_to_message_id=reply_to,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("discord send_attachment failed: %s", exc)
+        return f"⚠️ 发送文件失败: {display} ({exc})"
+    return f"📎 已发送文件: {display}"
+
+
 async def handle_one_discord(
     chat_service: ChatServiceLike,
     inbound: InboundEvent[Any],
@@ -1446,16 +1392,67 @@ async def handle_one_discord(
 ) -> None:
     """Run one Discord chat turn and post the reply via
     :class:`DiscordSender`. Parallel structure to :func:`handle_one_telegram`.
+
+    Mirrors the Telegram UX 1:1: typing pulse + placeholder + mutable-
+    spinner edits + final ``edit_message`` that overwrites the
+    placeholder with the assistant's reply.
     """
-    body = await _collect_reply(chat_service, inbound, model, cancel)
-    if body is None:
-        return
-    # ``binding.thread`` is the Discord channel id.
-    await sender.send_message(
-        inbound.binding.thread,
-        body,
-        reply_to_message_id=inbound.message_id,
+    channel_id = inbound.binding.thread
+    reply_to = inbound.message_id
+
+    placeholder_id: str | None = None
+    error_message: str | None = None
+    typing_task = asyncio.create_task(
+        _discord_typing_pulse(sender, channel_id, cancel)
     )
+
+    async def _edit(text: str) -> None:
+        if placeholder_id is None:
+            return
+        await sender.edit_message(channel_id, placeholder_id, text)
+
+    async def _send_attachment(ev: Any) -> str:
+        return await _discord_send_attachment(sender, channel_id, reply_to, ev)
+
+    spinner = MutableSpinner(_edit, send_attachment_handler=_send_attachment)
+    try:
+        try:
+            placeholder_id = await sender.send_message(
+                channel_id, _TG_STATUS_THINKING, reply_to_message_id=reply_to
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("discord placeholder send failed: %s", exc)
+
+        error_message = await _drive_spinner(spinner, chat_service, inbound, model, cancel)
+    finally:
+        typing_task.cancel()
+        with suppress(asyncio.CancelledError, Exception):
+            await typing_task
+
+    if error_message is not None:
+        body = f"[corlinman error] {error_message}"
+    else:
+        body = "".join(spinner.text_parts).strip()
+        if not body:
+            if placeholder_id is not None:
+                try:
+                    await sender.edit_message(
+                        channel_id, placeholder_id, "（无回复）"
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    _log.warning("discord final emit failed: %s", exc)
+            return
+
+    body = truncate_reply(body, _DISCORD_TEXT_LIMIT)
+    try:
+        if placeholder_id is not None:
+            await sender.edit_message(channel_id, placeholder_id, body)
+        else:
+            await sender.send_message(
+                channel_id, body, reply_to_message_id=reply_to
+            )
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("discord final emit failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -1534,6 +1531,42 @@ async def run_slack_channel(
         await send_client.aclose()
 
 
+#: Slack's hard cap on ``chat.postMessage`` ``text`` is 40_000 chars but
+#: 4000 keeps the message visually compact and matches the Telegram cap;
+#: the reasoning agent rarely produces longer answers anyway.
+_SLACK_TEXT_LIMIT = 4000
+
+
+async def _slack_send_attachment(
+    sender: SlackSender,
+    channel: str,
+    thread_ts: str | None,
+    ev: Any,
+) -> str:
+    """Upload a file via Slack's ``files.upload`` and post it into the
+    channel / thread. Returns the status text to render in the
+    placeholder. Best-effort: any failure folds into a status line."""
+    path_str, caption, filename = _parse_send_attachment_args(ev)
+    if not path_str:
+        return "⚠️ 发送文件失败: missing `path`"
+    p = Path(path_str)
+    if not p.exists() or not p.is_file():
+        return f"⚠️ 发送文件失败: {p.name} 不存在"
+    display = filename or p.name
+    try:
+        await sender.upload_file(
+            channel,
+            p,
+            filename=display,
+            initial_comment=caption,
+            thread_ts=thread_ts,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("slack send_attachment failed: %s", exc)
+        return f"⚠️ 发送文件失败: {display} ({exc})"
+    return f"📎 已发送文件: {display}"
+
+
 async def handle_one_slack(
     chat_service: ChatServiceLike,
     inbound: InboundEvent[Any],
@@ -1545,16 +1578,54 @@ async def handle_one_slack(
 
     The reply is threaded under the inbound message ``ts`` so the
     conversation stays grouped — parallel to the Telegram ``reply_to``.
+
+    Mirrors the Telegram UX as closely as Slack permits: there's no real
+    typing indicator (``post_typing`` is a stub), but the placeholder /
+    mutable-spinner edits / final ``chat.update`` flow is identical.
     """
-    body = await _collect_reply(chat_service, inbound, model, cancel)
-    if body is None:
-        return
-    # ``binding.thread`` is the Slack channel id; ``message_id`` is the ts.
-    await sender.send_message(
-        inbound.binding.thread,
-        body,
-        thread_ts=inbound.message_id,
-    )
+    channel = inbound.binding.thread
+    thread_ts = inbound.message_id
+    placeholder_ts: str | None = None
+    error_message: str | None = None
+
+    async def _edit(text: str) -> None:
+        if placeholder_ts is None:
+            return
+        await sender.update_message(channel, placeholder_ts, text)
+
+    async def _send_attachment(ev: Any) -> str:
+        return await _slack_send_attachment(sender, channel, thread_ts, ev)
+
+    spinner = MutableSpinner(_edit, send_attachment_handler=_send_attachment)
+    try:
+        placeholder_ts = await sender.send_message(
+            channel, _TG_STATUS_THINKING, thread_ts=thread_ts
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("slack placeholder send failed: %s", exc)
+
+    error_message = await _drive_spinner(spinner, chat_service, inbound, model, cancel)
+
+    if error_message is not None:
+        body = f"[corlinman error] {error_message}"
+    else:
+        body = "".join(spinner.text_parts).strip()
+        if not body:
+            if placeholder_ts is not None:
+                try:
+                    await sender.update_message(channel, placeholder_ts, "（无回复）")
+                except Exception as exc:  # noqa: BLE001
+                    _log.warning("slack final emit failed: %s", exc)
+            return
+
+    body = truncate_reply(body, _SLACK_TEXT_LIMIT)
+    try:
+        if placeholder_ts is not None:
+            await sender.update_message(channel, placeholder_ts, body)
+        else:
+            await sender.send_message(channel, body, thread_ts=thread_ts)
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("slack final emit failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -1635,6 +1706,43 @@ async def run_feishu_channel(
         await send_client.aclose()
 
 
+#: Feishu's hard cap on ``msg_type=text`` content is ~30k chars; 4000
+#: matches the Telegram cap so the UX feels identical across channels.
+_FEISHU_TEXT_LIMIT = 4000
+
+
+async def _feishu_send_attachment(
+    sender: FeishuSender,
+    chat_id: str,
+    reply_to: str | None,
+    ev: Any,
+) -> str:
+    """Upload a file via Feishu's two-step ``/im/v1/files`` + send-as-file
+    flow. Returns the status text to render in the placeholder.
+
+    Best-effort: any failure folds into a status line — never raises.
+    Feishu requires a separate ``send`` call after the upload (the
+    upload returns a ``file_key``; ``msg_type=file`` references it),
+    which is exactly what :meth:`FeishuSender.send_file_message` handles.
+    """
+    path_str, _caption, filename = _parse_send_attachment_args(ev)
+    if not path_str:
+        return "⚠️ 发送文件失败: missing `path`"
+    p = Path(path_str)
+    if not p.exists() or not p.is_file():
+        return f"⚠️ 发送文件失败: {p.name} 不存在"
+    display = filename or p.name
+    try:
+        file_key = await sender.upload_file(p, filename=display)
+        await sender.send_file_message(
+            chat_id, file_key, reply_to_message_id=reply_to
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("feishu send_attachment failed: %s", exc)
+        return f"⚠️ 发送文件失败: {display} ({exc})"
+    return f"📎 已发送文件: {display}"
+
+
 async def handle_one_feishu(
     chat_service: ChatServiceLike,
     inbound: InboundEvent[Any],
@@ -1646,17 +1754,56 @@ async def handle_one_feishu(
 
     The reply is posted via the ``/messages/{id}/reply`` endpoint so the
     addressing stays clear — parallel to the Telegram ``reply_to``.
+
+    Mirrors the Slack flow: no typing indicator (Feishu doesn't expose
+    one to bots), but the placeholder / mutable-spinner edits / final
+    ``update_message`` flow is identical to Telegram.
     """
-    body = await _collect_reply(chat_service, inbound, model, cancel)
-    if body is None:
-        return
-    # ``binding.thread`` is the Feishu chat id; ``message_id`` is the
-    # original message id we reply to.
-    await sender.send_message(
-        inbound.binding.thread,
-        body,
-        reply_to_message_id=inbound.message_id,
-    )
+    chat_id = inbound.binding.thread
+    reply_to = inbound.message_id
+    placeholder_id: str | None = None
+    error_message: str | None = None
+
+    async def _edit(text: str) -> None:
+        if placeholder_id is None:
+            return
+        await sender.update_message(placeholder_id, text)
+
+    async def _send_attachment(ev: Any) -> str:
+        return await _feishu_send_attachment(sender, chat_id, reply_to, ev)
+
+    spinner = MutableSpinner(_edit, send_attachment_handler=_send_attachment)
+    try:
+        placeholder_id = await sender.send_message(
+            chat_id, _TG_STATUS_THINKING, reply_to_message_id=reply_to
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("feishu placeholder send failed: %s", exc)
+
+    error_message = await _drive_spinner(spinner, chat_service, inbound, model, cancel)
+
+    if error_message is not None:
+        body = f"[corlinman error] {error_message}"
+    else:
+        body = "".join(spinner.text_parts).strip()
+        if not body:
+            if placeholder_id is not None:
+                try:
+                    await sender.update_message(placeholder_id, "（无回复）")
+                except Exception as exc:  # noqa: BLE001
+                    _log.warning("feishu final emit failed: %s", exc)
+            return
+
+    body = truncate_reply(body, _FEISHU_TEXT_LIMIT)
+    try:
+        if placeholder_id is not None:
+            await sender.update_message(placeholder_id, body)
+        else:
+            await sender.send_message(
+                chat_id, body, reply_to_message_id=reply_to
+            )
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("feishu final emit failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------

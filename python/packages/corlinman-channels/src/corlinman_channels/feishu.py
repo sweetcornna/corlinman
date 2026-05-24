@@ -49,6 +49,7 @@ import time
 from collections.abc import AsyncIterator
 from contextlib import suppress
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -511,9 +512,19 @@ class FeishuSender:
     The sender needs a fresh ``tenant_access_token`` per call; the
     adapter owns the token lifecycle, so the sender takes a
     ``token_provider`` async callable that yields a current token.
+
+    The "decorative" endpoint (``update_message``) shares a single 429
+    back-off deadline like the Telegram / Discord / Slack senders.
+    Feishu doesn't expose a typing indicator to bots, so the mutable-
+    spinner edits are the only user-visible "I'm working" signal.
     """
 
-    __slots__ = ("api_base", "client", "token_provider")
+    __slots__ = (
+        "_edit_rate_limit_until",
+        "api_base",
+        "client",
+        "token_provider",
+    )
 
     def __init__(
         self,
@@ -524,6 +535,7 @@ class FeishuSender:
         self.client = client
         self.token_provider = token_provider
         self.api_base = api_base
+        self._edit_rate_limit_until: float = 0.0
 
     async def send_message(
         self,
@@ -575,6 +587,174 @@ class FeishuSender:
             raise TransportError(f"feishu send error code {code}")
         data = env.get("data") or {}
         return str(data.get("message_id", "")) if isinstance(data, dict) else ""
+
+    async def update_message(self, message_id: str, text: str) -> None:
+        """PUT ``/open-apis/im/v1/messages/{message_id}``. Mutates an
+        earlier message in place — used as the "mutable spinner line"
+        while tool calls land.
+
+        Best-effort: any non-2xx (or Feishu's non-zero ``code``) is
+        swallowed so a re-fire of the same content (or a rate-limit)
+        never breaks the turn. Mirrors
+        :meth:`TelegramSender.edit_message_text`.
+
+        Feishu's edit endpoint takes the same ``msg_type`` + JSON-encoded
+        ``content`` shape as the send endpoint. We only need ``text``.
+        """
+        if time.time() < self._edit_rate_limit_until:
+            return
+        try:
+            token = await self.token_provider()
+        except Exception:  # noqa: BLE001
+            return
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json; charset=utf-8",
+        }
+        body = {
+            "msg_type": "text",
+            "content": json.dumps({"text": text}, ensure_ascii=False),
+        }
+        try:
+            resp = await self.client.put(
+                f"{self.api_base}/open-apis/im/v1/messages/{message_id}",
+                json=body,
+                headers=headers,
+            )
+        except httpx.HTTPError:
+            return
+        if resp.status_code == 429:
+            self._note_retry_after(resp)
+
+    async def upload_file(
+        self,
+        path: Path,
+        *,
+        filename: str | None = None,
+        file_type: str = "stream",
+    ) -> str:
+        """POST ``/open-apis/im/v1/files`` with a multipart file part.
+
+        Returns the new file key. The agent then references this key in
+        a ``msg_type="file"`` message via :meth:`send_file_message`. The
+        two-step shape mirrors Feishu's documented API — they don't have
+        a single-call "upload + send" endpoint.
+
+        ``file_type`` is one of ``opus`` / ``mp4`` / ``pdf`` / ``doc`` /
+        ``xls`` / ``ppt`` / ``stream``. ``stream`` is the safe fallback
+        for arbitrary binaries; the caller can override when they know
+        the MIME family.
+
+        Raises :class:`TransportError` on transport / API failure — the
+        channel handler folds the error into a friendly status line.
+        """
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            raise TransportError(f"feishu file read failed: {exc}") from exc
+        try:
+            token = await self.token_provider()
+        except Exception as exc:  # noqa: BLE001
+            raise TransportError(f"feishu token refresh failed: {exc}") from exc
+
+        name = filename or path.name or "file.bin"
+        form: dict[str, Any] = {
+            "file_type": file_type,
+            "file_name": name,
+        }
+        try:
+            resp = await self.client.post(
+                f"{self.api_base}/open-apis/im/v1/files",
+                data=form,
+                files={"file": (name, data, "application/octet-stream")},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        except httpx.HTTPError as exc:
+            raise TransportError(f"feishu files upload failed: {exc}") from exc
+        if resp.status_code >= 400:
+            raise TransportError(
+                f"feishu files upload HTTP {resp.status_code}"
+            )
+        try:
+            env = resp.json()
+        except ValueError as exc:
+            raise TransportError(
+                f"feishu files upload invalid JSON: {exc}"
+            ) from exc
+        if not isinstance(env, dict) or env.get("code") != 0:
+            code = env.get("code") if isinstance(env, dict) else "?"
+            raise TransportError(f"feishu files upload error code {code}")
+        data_obj = env.get("data") or {}
+        return str(data_obj.get("file_key", "")) if isinstance(data_obj, dict) else ""
+
+    async def send_file_message(
+        self,
+        chat_id: str,
+        file_key: str,
+        *,
+        reply_to_message_id: str | None = None,
+    ) -> str:
+        """Send a ``msg_type="file"`` message referencing an earlier
+        ``upload_file`` ``file_key``. Mirrors the shape of
+        :meth:`send_message` but with the file payload.
+        """
+        try:
+            token = await self.token_provider()
+        except Exception as exc:  # noqa: BLE001
+            raise TransportError(f"feishu token refresh failed: {exc}") from exc
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json; charset=utf-8",
+        }
+        content = json.dumps({"file_key": file_key}, ensure_ascii=False)
+        if reply_to_message_id is not None:
+            url = (
+                f"{self.api_base}/open-apis/im/v1/messages/"
+                f"{reply_to_message_id}/reply"
+            )
+            body: dict[str, Any] = {"content": content, "msg_type": "file"}
+        else:
+            url = (
+                f"{self.api_base}/open-apis/im/v1/messages"
+                "?receive_id_type=chat_id"
+            )
+            body = {
+                "receive_id": chat_id,
+                "content": content,
+                "msg_type": "file",
+            }
+        try:
+            resp = await self.client.post(url, json=body, headers=headers)
+        except httpx.HTTPError as exc:
+            raise TransportError(f"feishu file message failed: {exc}") from exc
+        if resp.status_code >= 400:
+            raise TransportError(f"feishu file message HTTP {resp.status_code}")
+        try:
+            env = resp.json()
+        except ValueError as exc:
+            raise TransportError(
+                f"feishu file message invalid JSON: {exc}"
+            ) from exc
+        if not isinstance(env, dict) or env.get("code") != 0:
+            code = env.get("code") if isinstance(env, dict) else "?"
+            raise TransportError(f"feishu file message error code {code}")
+        data = env.get("data") or {}
+        return str(data.get("message_id", "")) if isinstance(data, dict) else ""
+
+    def _note_retry_after(self, resp: httpx.Response) -> None:
+        """Extend the shared 429 back-off using Feishu's ``Retry-After``
+        header (Feishu mostly returns HTTP 200 with non-zero ``code`` but
+        429 does fire on extreme abuse). Falls back to 1s when missing
+        or unparseable.
+        """
+        retry_after: float = 1.0
+        try:
+            ra = resp.headers.get("Retry-After")
+            if ra:
+                retry_after = float(ra)
+        except (TypeError, ValueError):
+            pass
+        self._edit_rate_limit_until = time.time() + retry_after
 
 
 # ===========================================================================

@@ -54,9 +54,11 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from collections.abc import AsyncIterator
 from contextlib import suppress
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -470,9 +472,15 @@ class SlackSender:
     Parallel to :class:`corlinman_channels.telegram_send.TelegramSender`.
     Construct once per bot token and reuse — the underlying
     :class:`httpx.AsyncClient` connection pool is the real cost.
+
+    The "decorative" endpoints (``post_typing`` + ``update_message``)
+    share a single 429 back-off deadline like the Telegram / Discord
+    senders. Slack returns 429 with a ``Retry-After`` header; the
+    helper extracts it and silently skips further calls until the
+    window expires.
     """
 
-    __slots__ = ("base", "client", "token")
+    __slots__ = ("_edit_rate_limit_until", "base", "client", "token")
 
     def __init__(
         self,
@@ -483,6 +491,7 @@ class SlackSender:
         self.client = client
         self.token = token
         self.base = base
+        self._edit_rate_limit_until: float = 0.0
 
     async def send_message(
         self,
@@ -524,6 +533,125 @@ class SlackSender:
             err = env.get("error", "<no error>") if isinstance(env, dict) else "?"
             raise TransportError(f"slack chat.postMessage error: {err}")
         return str(env.get("ts", ""))
+
+    async def post_typing(
+        self, channel: str, thread_ts: str | None = None
+    ) -> None:
+        """Slack has no per-thread typing indicator for bot users —
+        ``users.profile.set`` with a fake status would work but is
+        invasive (mutates the user's visible status) and the official
+        SDK doesn't expose anything cleaner.
+
+        This stub exists for parity with Telegram / Discord so the
+        per-channel handler can call ``sender.post_typing(...)`` without
+        a transport-specific branch. The call is a no-op; the mutable-
+        spinner edits are still the user-visible "I'm working" signal.
+        """
+        # Intentionally empty — see docstring.
+        _ = (channel, thread_ts)
+
+    async def update_message(
+        self, channel: str, ts: str, text: str
+    ) -> None:
+        """POST ``chat.update``. Mutates an earlier message in place —
+        used as the "mutable spinner line" while tool calls land.
+
+        Best-effort: any non-2xx is swallowed so a re-fire of the same
+        content (or a 429) never breaks the turn. HTTP 429 updates a
+        shared back-off so subsequent updates / typing pulses silently
+        skip until the window expires. Mirrors
+        :meth:`TelegramSender.edit_message_text`.
+        """
+        if time.time() < self._edit_rate_limit_until:
+            return
+        body: dict[str, Any] = {"channel": channel, "ts": ts, "text": text}
+        try:
+            resp = await self.client.post(
+                f"{self.base}/chat.update",
+                json=body,
+                headers={
+                    "Authorization": f"Bearer {self.token}",
+                    "Content-Type": "application/json; charset=utf-8",
+                },
+            )
+        except httpx.HTTPError:
+            return
+        if resp.status_code == 429:
+            self._note_retry_after(resp)
+
+    async def upload_file(
+        self,
+        channels: str,
+        path: Path,
+        *,
+        filename: str | None = None,
+        initial_comment: str | None = None,
+        thread_ts: str | None = None,
+    ) -> str:
+        """POST ``files.upload`` with a multipart ``file`` attachment.
+
+        Returns the new file id. The legacy ``files.upload`` endpoint
+        still works and matches the simple multipart pattern the
+        Telegram / Discord senders already use; the newer
+        ``files.getUploadURLExternal`` / ``files.completeUploadExternal``
+        flow is more efficient but requires two round-trips and is
+        unnecessary for the modest file sizes the agent emits.
+
+        Raises :class:`TransportError` on transport / API failure — the
+        channel handler folds the error into a friendly status line.
+        """
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            raise TransportError(f"slack file read failed: {exc}") from exc
+
+        name = filename or path.name or "file.bin"
+        # ``files.upload`` accepts ``multipart/form-data`` with the file
+        # part named ``file``. Other fields (channels, initial_comment,
+        # thread_ts, filename) ride as form parts alongside it.
+        form: dict[str, Any] = {
+            "channels": channels,
+            "filename": name,
+        }
+        if initial_comment is not None:
+            form["initial_comment"] = initial_comment
+        if thread_ts is not None:
+            form["thread_ts"] = thread_ts
+        try:
+            resp = await self.client.post(
+                f"{self.base}/files.upload",
+                data=form,
+                files={"file": (name, data, "application/octet-stream")},
+                headers={"Authorization": f"Bearer {self.token}"},
+            )
+        except httpx.HTTPError as exc:
+            raise TransportError(f"slack files.upload failed: {exc}") from exc
+        if resp.status_code >= 400:
+            raise TransportError(f"slack files.upload HTTP {resp.status_code}")
+        try:
+            env = resp.json()
+        except ValueError as exc:
+            raise TransportError(f"slack files.upload invalid JSON: {exc}") from exc
+        if not isinstance(env, dict) or not env.get("ok"):
+            err = env.get("error", "<no error>") if isinstance(env, dict) else "?"
+            raise TransportError(f"slack files.upload error: {err}")
+        file_obj = env.get("file")
+        if isinstance(file_obj, dict):
+            return str(file_obj.get("id", ""))
+        return ""
+
+    def _note_retry_after(self, resp: httpx.Response) -> None:
+        """Extend the shared 429 back-off using Slack's ``Retry-After``
+        header. Falls back to a 1s penalty when missing or unparseable.
+        """
+        retry_after: float = 1.0
+        try:
+            ra = resp.headers.get("Retry-After")
+            if ra:
+                retry_after = float(ra)
+        except (TypeError, ValueError):
+            pass
+        self._edit_rate_limit_until = time.time() + retry_after
 
 
 # ===========================================================================

@@ -50,9 +50,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import secrets
+import time
 from collections.abc import AsyncIterator
 from contextlib import suppress
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -70,6 +73,7 @@ __all__ = [
     "DEFAULT_GATEWAY_URL",
     "DEFAULT_REST_BASE",
     "GATEWAY_INTENT_GUILD_MESSAGES",
+    "MAX_UPLOAD_BYTES",
     "DiscordAdapter",
     "DiscordConfig",
     "DiscordSender",
@@ -88,6 +92,13 @@ DEFAULT_GATEWAY_URL: str = "wss://gateway.discord.gg/?v=10&encoding=json"
 
 #: Default Discord REST base. API v10 matches the gateway version above.
 DEFAULT_REST_BASE: str = "https://discord.com/api/v10"
+
+#: Hard cap on Discord file uploads — Nitro tier raises this to 25 MiB
+#: for the average bot; free / no-boost servers cap at 8 MiB but Discord
+#: silently truncates the multipart at the channel cap on the API side.
+#: 25 MiB matches the Nitro ceiling so we don't preemptively block
+#: medium-sized files; the API will return 413 if the channel is below.
+MAX_UPLOAD_BYTES: int = 25 * 1024 * 1024
 
 #: Gateway intents bitfield. ``GUILD_MESSAGES`` (1<<9) + ``DIRECT_MESSAGES``
 #: (1<<12) + ``MESSAGE_CONTENT`` (1<<15). ``MESSAGE_CONTENT`` is a
@@ -499,9 +510,15 @@ class DiscordSender:
     Parallel to :class:`corlinman_channels.telegram_send.TelegramSender`.
     Construct once per bot token and reuse — the underlying
     :class:`httpx.AsyncClient` connection pool is the real cost.
+
+    The "decorative" endpoints (``trigger_typing`` + ``edit_message``)
+    share a single 429 back-off deadline — Discord rate-limits per-route
+    *and* per-channel, and once we trip the limit any further calls in
+    the window deepen the penalty. Skipping them silently until the
+    deadline passes mirrors :class:`TelegramSender._edit_rate_limit_until`.
     """
 
-    __slots__ = ("base", "client", "token")
+    __slots__ = ("_edit_rate_limit_until", "base", "client", "token")
 
     def __init__(
         self,
@@ -512,6 +529,7 @@ class DiscordSender:
         self.client = client
         self.token = token
         self.base = base
+        self._edit_rate_limit_until: float = 0.0
 
     async def send_message(
         self,
@@ -545,6 +563,182 @@ class DiscordSender:
         except ValueError as exc:
             raise TransportError(f"discord sendMessage invalid JSON: {exc}") from exc
         return str(env.get("id", "")) if isinstance(env, dict) else ""
+
+    async def trigger_typing(self, channel_id: str) -> None:
+        """POST ``/channels/{id}/typing``. Shows "<Bot> is typing…" for
+        about 10 seconds in the Discord client (longer than Telegram's
+        ~5s but the channel handler still pulses at ~5s intervals for
+        parity). No body is required.
+
+        Best-effort: a failure here never blocks the reply path. Mirrors
+        :meth:`TelegramSender.send_chat_action`.
+        """
+        if time.time() < self._edit_rate_limit_until:
+            return
+        try:
+            resp = await self.client.post(
+                f"{self.base}/channels/{channel_id}/typing",
+                headers={"Authorization": f"Bot {self.token}"},
+            )
+            if resp.status_code == 429:
+                self._note_retry_after(resp)
+                return
+        except httpx.HTTPError:
+            return
+
+    async def edit_message(
+        self, channel_id: str, message_id: str, content: str
+    ) -> None:
+        """PATCH ``/channels/{id}/messages/{id}``. Mutates an earlier
+        message in place — used as the "mutable spinner line" while tool
+        calls land.
+
+        Best-effort: any non-2xx is swallowed so a re-fire of the same
+        content (or a 429) never breaks the turn. HTTP 429 updates a
+        shared back-off so subsequent edits / typing pulses silently skip
+        until the window expires. Mirrors
+        :meth:`TelegramSender.edit_message_text`.
+        """
+        if time.time() < self._edit_rate_limit_until:
+            return
+        try:
+            resp = await self.client.patch(
+                f"{self.base}/channels/{channel_id}/messages/{message_id}",
+                json={"content": content},
+                headers={"Authorization": f"Bot {self.token}"},
+            )
+        except httpx.HTTPError:
+            return
+        if resp.status_code == 429:
+            self._note_retry_after(resp)
+
+    async def send_file(
+        self,
+        channel_id: str,
+        path: Path,
+        *,
+        filename: str | None = None,
+        content: str | None = None,
+        reply_to_message_id: str | None = None,
+    ) -> str:
+        """POST ``/channels/{id}/messages`` with a multipart ``files[0]``
+        attachment. Returns the new message id.
+
+        Discord accepts both ``content`` (text) and ``files[N]`` (binary)
+        in the same multipart, so the caller can include a caption
+        alongside the file. ``filename`` overrides the on-disk basename
+        for the user-visible attachment name. Raises
+        :class:`TransportError` on transport / API failure — the channel
+        handler folds the error into a friendly status line rather than
+        crashing the turn.
+        """
+        try:
+            size = path.stat().st_size
+        except OSError as exc:
+            raise TransportError(f"discord file stat failed: {exc}") from exc
+        if size > MAX_UPLOAD_BYTES:
+            raise TransportError(
+                f"discord file too large: {size} > {MAX_UPLOAD_BYTES} "
+                f"(path={path.name})"
+            )
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            raise TransportError(f"discord file read failed: {exc}") from exc
+
+        name = filename or path.name or "file.bin"
+        # Discord's docs require a JSON ``payload_json`` field alongside
+        # the file part. Build a minimal multipart by hand — mirrors the
+        # Telegram approach in ``telegram_send.build_multipart`` so the
+        # dep graph stays minimal (we only need ``files[0]``, not the
+        # general N-file array).
+        boundary = f"corlinman-dc-{secrets.token_hex(16)}"
+        payload: dict[str, Any] = {}
+        if content is not None:
+            payload["content"] = content
+        if reply_to_message_id is not None:
+            payload["message_reference"] = {"message_id": reply_to_message_id}
+
+        body = bytearray()
+        crlf = b"\r\n"
+        dash = b"--"
+        # payload_json text part
+        body.extend(dash)
+        body.extend(boundary.encode())
+        body.extend(crlf)
+        body.extend(b'Content-Disposition: form-data; name="payload_json"')
+        body.extend(crlf)
+        body.extend(b"Content-Type: application/json")
+        body.extend(crlf)
+        body.extend(crlf)
+        body.extend(json.dumps(payload).encode("utf-8"))
+        body.extend(crlf)
+        # files[0] binary part
+        body.extend(dash)
+        body.extend(boundary.encode())
+        body.extend(crlf)
+        # ``filename`` is reflected in the message attachment metadata.
+        body.extend(
+            f'Content-Disposition: form-data; name="files[0]"; filename="{name}"'
+            .encode("utf-8")
+        )
+        body.extend(crlf)
+        body.extend(b"Content-Type: application/octet-stream")
+        body.extend(crlf)
+        body.extend(crlf)
+        body.extend(data)
+        body.extend(crlf)
+        # closing boundary
+        body.extend(dash)
+        body.extend(boundary.encode())
+        body.extend(dash)
+        body.extend(crlf)
+
+        try:
+            resp = await self.client.post(
+                f"{self.base}/channels/{channel_id}/messages",
+                content=bytes(body),
+                headers={
+                    "Authorization": f"Bot {self.token}",
+                    "Content-Type": f"multipart/form-data; boundary={boundary}",
+                },
+            )
+        except httpx.HTTPError as exc:
+            raise TransportError(f"discord file upload failed: {exc}") from exc
+        if resp.status_code >= 400:
+            raise TransportError(
+                f"discord file upload HTTP {resp.status_code}: {resp.text}"
+            )
+        try:
+            env = resp.json()
+        except ValueError as exc:
+            raise TransportError(f"discord file upload invalid JSON: {exc}") from exc
+        return str(env.get("id", "")) if isinstance(env, dict) else ""
+
+    def _note_retry_after(self, resp: httpx.Response) -> None:
+        """Extend the shared 429 back-off using Discord's ``retry_after``.
+
+        Discord encodes retry_after as a float (seconds) in the JSON body
+        and also in the ``Retry-After`` header. Falls back to a 1s
+        penalty when neither is parseable — Discord always sets the
+        field on a real rate-limit response, but the parse is best-
+        effort so a malformed reply never raises.
+        """
+        retry_after: float = 1.0
+        try:
+            env = resp.json()
+            if isinstance(env, dict):
+                ra = env.get("retry_after")
+                if isinstance(ra, (int, float)):
+                    retry_after = float(ra)
+        except Exception:  # noqa: BLE001
+            try:
+                ra_header = resp.headers.get("Retry-After")
+                if ra_header:
+                    retry_after = float(ra_header)
+            except (TypeError, ValueError):
+                pass
+        self._edit_rate_limit_until = time.time() + retry_after
 
 
 # ===========================================================================

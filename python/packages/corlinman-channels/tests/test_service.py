@@ -1033,15 +1033,35 @@ class TestRunChannelConfig:
 
 # ---------------------------------------------------------------------------
 # handle_one_discord / handle_one_slack / handle_one_feishu — these three
-# text-only channels share the ``_collect_reply`` collapse, so the tests
-# assert the round-trip (token deltas → concatenated reply) and the
-# error-rendering path for each transport's sender shape.
+# now share the Telegram-style mutable-spinner UX. Each section asserts
+# the four canonical scenarios:
+#   1. tool_call renders the arg preview on the spinner
+#   2. tool_result renders ✅ + human duration
+#   3. tool_result with is_error renders ❌ + summary
+#   4. reasoning delta shows 💭 line + is excluded from the final reply
+# plus the placeholder / final-edit / error round-trip the prior tests
+# already covered.
 # ---------------------------------------------------------------------------
 
 
 class _FakeDiscordSender:
+    """Fake :class:`DiscordSender` — captures every outbound call.
+
+    Discord's mutable-spinner UX uses ``send_message`` to drop the
+    initial placeholder, ``edit_message`` for every spinner edit, and
+    ``trigger_typing`` for the typing-pulse helper. ``send_file`` is the
+    multipart upload triggered by the ``send_attachment`` tool intercept.
+    """
+
     def __init__(self) -> None:
         self.sent: list[tuple[str, str, str | None]] = []
+        self.edits: list[tuple[str, str, str]] = []
+        self.typings: list[str] = []
+        self.files: list[tuple[str, str, str | None, str | None]] = []
+        self._next_id = 0
+        # Test knobs.
+        self.send_message_should_raise = False
+        self.edit_message_should_raise = False
 
     async def send_message(
         self,
@@ -1049,13 +1069,49 @@ class _FakeDiscordSender:
         text: str,
         reply_to_message_id: str | None = None,
     ) -> str:
+        if self.send_message_should_raise:
+            raise RuntimeError("simulated send_message failure")
+        self._next_id += 1
         self.sent.append((channel_id, text, reply_to_message_id))
-        return "new-msg"
+        return f"msg-{self._next_id}"
+
+    async def edit_message(
+        self, channel_id: str, message_id: str, content: str
+    ) -> None:
+        if self.edit_message_should_raise:
+            raise RuntimeError("simulated edit_message failure")
+        self.edits.append((channel_id, message_id, content))
+
+    async def trigger_typing(self, channel_id: str) -> None:
+        self.typings.append(channel_id)
+
+    async def send_file(
+        self,
+        channel_id: str,
+        path: Any,
+        *,
+        filename: str | None = None,
+        content: str | None = None,
+        reply_to_message_id: str | None = None,
+    ) -> str:
+        self._next_id += 1
+        self.files.append(
+            (channel_id, str(path), filename, content)
+        )
+        return f"file-{self._next_id}"
 
 
 class _FakeSlackSender:
+    """Fake :class:`SlackSender`. ``post_typing`` is a stub for parity."""
+
     def __init__(self) -> None:
         self.sent: list[tuple[str, str, str | None]] = []
+        self.updates: list[tuple[str, str, str]] = []
+        self.typings: list[tuple[str, str | None]] = []
+        self.uploads: list[tuple[str, str, str | None, str | None, str | None]] = []
+        self._next_id = 0
+        self.send_message_should_raise = False
+        self.update_message_should_raise = False
 
     async def send_message(
         self,
@@ -1063,13 +1119,51 @@ class _FakeSlackSender:
         text: str,
         thread_ts: str | None = None,
     ) -> str:
+        if self.send_message_should_raise:
+            raise RuntimeError("simulated send_message failure")
+        self._next_id += 1
         self.sent.append((channel, text, thread_ts))
-        return "1.1"
+        return f"1.{self._next_id}"
+
+    async def update_message(
+        self, channel: str, ts: str, text: str
+    ) -> None:
+        if self.update_message_should_raise:
+            raise RuntimeError("simulated update_message failure")
+        self.updates.append((channel, ts, text))
+
+    async def post_typing(
+        self, channel: str, thread_ts: str | None = None
+    ) -> None:
+        self.typings.append((channel, thread_ts))
+
+    async def upload_file(
+        self,
+        channels: str,
+        path: Any,
+        *,
+        filename: str | None = None,
+        initial_comment: str | None = None,
+        thread_ts: str | None = None,
+    ) -> str:
+        self._next_id += 1
+        self.uploads.append(
+            (channels, str(path), filename, initial_comment, thread_ts)
+        )
+        return f"F-{self._next_id}"
 
 
 class _FakeFeishuSender:
+    """Fake :class:`FeishuSender`."""
+
     def __init__(self) -> None:
         self.sent: list[tuple[str, str, str | None]] = []
+        self.updates: list[tuple[str, str]] = []
+        self.uploads: list[tuple[str, str | None]] = []
+        self.file_messages: list[tuple[str, str, str | None]] = []
+        self._next_id = 0
+        self.send_message_should_raise = False
+        self.update_message_should_raise = False
 
     async def send_message(
         self,
@@ -1077,8 +1171,34 @@ class _FakeFeishuSender:
         text: str,
         reply_to_message_id: str | None = None,
     ) -> str:
+        if self.send_message_should_raise:
+            raise RuntimeError("simulated send_message failure")
+        self._next_id += 1
         self.sent.append((chat_id, text, reply_to_message_id))
-        return "om-new"
+        return f"om-{self._next_id}"
+
+    async def update_message(self, message_id: str, text: str) -> None:
+        if self.update_message_should_raise:
+            raise RuntimeError("simulated update_message failure")
+        self.updates.append((message_id, text))
+
+    async def upload_file(
+        self, path: Any, *, filename: str | None = None, file_type: str = "stream",
+    ) -> str:
+        self._next_id += 1
+        self.uploads.append((str(path), filename))
+        return f"fk-{self._next_id}"
+
+    async def send_file_message(
+        self,
+        chat_id: str,
+        file_key: str,
+        *,
+        reply_to_message_id: str | None = None,
+    ) -> str:
+        self._next_id += 1
+        self.file_messages.append((chat_id, file_key, reply_to_message_id))
+        return f"omf-{self._next_id}"
 
 
 def _inbound(channel: str) -> InboundEvent[Any]:
@@ -1095,9 +1215,16 @@ def _inbound(channel: str) -> InboundEvent[Any]:
     )
 
 
+# ---------------------------------------------------------------------------
+# Discord
+# ---------------------------------------------------------------------------
+
+
 class TestHandleOneDiscord:
     @pytest.mark.asyncio
     async def test_concat_and_send(self) -> None:
+        """Token deltas accumulate and land as the final edit on the
+        placeholder — same UX shape as Telegram."""
         import asyncio
 
         svc = _ScriptedChatService([
@@ -1107,21 +1234,43 @@ class TestHandleOneDiscord:
         ])
         sender = _FakeDiscordSender()
         await handle_one_discord(svc, _inbound("discord"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
-        assert sender.sent == [("T1", "hello", "M1")]
+        # Placeholder went out as a normal sendMessage.
+        assert len(sender.sent) == 1
+        chan, ph_text, reply_to = sender.sent[0]
+        assert chan == "T1"
+        assert "思考中" in ph_text
+        assert reply_to == "M1"
+        # Final edit text is the joined reply.
+        assert sender.edits, "expected at least one edit_message call"
+        last_edit = sender.edits[-1]
+        assert last_edit[2] == "hello"
+        # Generating spinner appeared at some point.
+        edit_texts = [e[2] for e in sender.edits]
+        assert any("生成回复中" in t for t in edit_texts)
+        # Regression: the handler must pass a SimpleNamespace, not a dict,
+        # to chat_service.run (downstream attribute access).
+        req = svc.calls[0]
+        assert not isinstance(req, dict)
+        assert req.model == "m"
+        assert req.messages[0].content == "ping"
 
     @pytest.mark.asyncio
     async def test_error_renders_short_reply(self) -> None:
+        """error event renders as a final [corlinman error] edit."""
         import asyncio
 
         svc = _ScriptedChatService([_Ev(kind="error", error="boom")])
         sender = _FakeDiscordSender()
         await handle_one_discord(svc, _inbound("discord"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
-        assert len(sender.sent) == 1
-        assert "[corlinman error]" in sender.sent[0][1]
-        assert "boom" in sender.sent[0][1]
+        assert sender.edits, "expected error reply edit"
+        _, _, final_text = sender.edits[-1]
+        assert "[corlinman error]" in final_text
+        assert "boom" in final_text
 
     @pytest.mark.asyncio
-    async def test_empty_reply_is_dropped(self) -> None:
+    async def test_empty_reply_edits_placeholder(self) -> None:
+        """An empty assistant reply must tidy the placeholder rather
+        than leave it stuck at the generating spinner."""
         import asyncio
 
         svc = _ScriptedChatService([
@@ -1130,7 +1279,184 @@ class TestHandleOneDiscord:
         ])
         sender = _FakeDiscordSender()
         await handle_one_discord(svc, _inbound("discord"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
-        assert sender.sent == []
+        # No new send_message after the placeholder.
+        assert len(sender.sent) == 1
+        # The placeholder was edited to a tidy "no reply" marker.
+        assert sender.edits, "expected the placeholder to be tidied"
+        assert sender.edits[-1][2] == "（无回复）"
+
+    @pytest.mark.asyncio
+    async def test_tool_call_renders_arg_preview(self) -> None:
+        import asyncio
+
+        svc = _ScriptedChatService([
+            _Ev(
+                kind="tool_call",
+                plugin="web_search",
+                tool="web_search",
+                args_json=b'{"query":"latest gpt-5.5 news"}',
+            ),
+            _Ev(kind="token_delta", text="done"),
+            _Ev(kind="done"),
+        ])
+        sender = _FakeDiscordSender()
+        await handle_one_discord(svc, _inbound("discord"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
+        edit_texts = [e[2] for e in sender.edits]
+        assert any("latest gpt-5.5 news" in t for t in edit_texts), edit_texts
+
+    @pytest.mark.asyncio
+    async def test_tool_result_renders_duration_success(self) -> None:
+        import asyncio
+
+        svc = _ScriptedChatService([
+            _Ev(kind="tool_call", plugin="web_search", tool="web_search",
+                args_json=b'{"query":"x"}'),
+            _Ev(kind="tool_result", plugin="web_search", tool="web_search",
+                duration_ms=1234, is_error=False),
+            _Ev(kind="token_delta", text="ok"),
+            _Ev(kind="done"),
+        ])
+        sender = _FakeDiscordSender()
+        await handle_one_discord(svc, _inbound("discord"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
+        edit_texts = [e[2] for e in sender.edits]
+        assert any(("✅" in t and "1.2s" in t) for t in edit_texts), edit_texts
+
+    @pytest.mark.asyncio
+    async def test_tool_result_renders_error(self) -> None:
+        import asyncio
+
+        svc = _ScriptedChatService([
+            _Ev(kind="tool_call", plugin="run_shell", tool="run_shell",
+                args_json=b'{"command":"rm -rf /"}'),
+            _Ev(kind="tool_result", plugin="run_shell", tool="run_shell",
+                duration_ms=42, is_error=True,
+                error_summary="permission denied"),
+            _Ev(kind="token_delta", text="failed"),
+            _Ev(kind="done"),
+        ])
+        sender = _FakeDiscordSender()
+        await handle_one_discord(svc, _inbound("discord"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
+        edit_texts = [e[2] for e in sender.edits]
+        assert any(("❌" in t and "permission denied" in t) for t in edit_texts), edit_texts
+
+    @pytest.mark.asyncio
+    async def test_reasoning_delta_shows_thinking_line(self) -> None:
+        """token_delta with is_reasoning=True must render as 💭 推理: …
+        and NOT be accumulated into the final reply."""
+        import asyncio
+
+        svc = _ScriptedChatService([
+            _Ev(kind="token_delta", text="let me think about this",
+                is_reasoning=True),
+            _Ev(kind="token_delta", text="the answer is 42"),
+            _Ev(kind="done"),
+        ])
+        sender = _FakeDiscordSender()
+        await handle_one_discord(svc, _inbound("discord"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
+        edit_texts = [e[2] for e in sender.edits]
+        assert any(("💭" in t and "let me think" in t) for t in edit_texts), edit_texts
+        # Final reply must NOT contain the reasoning text.
+        assert sender.edits[-1][2] == "the answer is 42"
+
+    @pytest.mark.asyncio
+    async def test_send_attachment_uploads_via_sender(self, tmp_path: Any) -> None:
+        """A tool_call event with tool=send_attachment must trigger a
+        real multipart upload via sender.send_file (not just a status edit)."""
+        import asyncio
+        import json
+
+        html = tmp_path / "page.html"
+        html.write_text("<!DOCTYPE html><h1>hi</h1>", encoding="utf-8")
+        args = json.dumps({"path": str(html), "filename": "page.html"})
+        svc = _ScriptedChatService([
+            _Ev(
+                kind="tool_call",
+                plugin="send_attachment",
+                tool="send_attachment",
+                args_json=args.encode("utf-8"),
+            ),
+            _Ev(kind="token_delta", text="文件已发送"),
+            _Ev(kind="done"),
+        ])
+        sender = _FakeDiscordSender()
+        await handle_one_discord(svc, _inbound("discord"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
+        assert sender.files, f"expected send_file call; got files={sender.files}"
+        assert sender.files[0][2] == "page.html"
+        # The placeholder must show the upload status.
+        edit_texts = [e[2] for e in sender.edits]
+        assert any("已发送文件: page.html" in t for t in edit_texts)
+
+    @pytest.mark.asyncio
+    async def test_typing_pulse_fires_until_cancelled(self) -> None:
+        import asyncio
+
+        from corlinman_channels.service import _discord_typing_pulse
+
+        sender = _FakeDiscordSender()
+        cancel = asyncio.Event()
+
+        async def stop() -> None:
+            await asyncio.sleep(0.15)
+            cancel.set()
+
+        await asyncio.gather(
+            _discord_typing_pulse(
+                sender,  # type: ignore[arg-type]
+                channel_id="T1",
+                cancel=cancel,
+                interval_s=0.05,
+            ),
+            stop(),
+        )
+        assert sender.typings, "expected at least one trigger_typing call"
+        assert all(c == "T1" for c in sender.typings)
+        count_at_stop = len(sender.typings)
+        await asyncio.sleep(0.1)
+        assert len(sender.typings) == count_at_stop
+
+    @pytest.mark.asyncio
+    async def test_placeholder_send_raises_cancels_typing_pulse(self) -> None:
+        """If the placeholder send raises, the typing-pulse task must
+        still be cancelled."""
+        import asyncio
+
+        svc = _ScriptedChatService([_Ev(kind="done")])
+        sender = _FakeDiscordSender()
+        sender.send_message_should_raise = True
+
+        all_tasks_before = set(asyncio.all_tasks())
+        await handle_one_discord(svc, _inbound("discord"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
+        await asyncio.sleep(0.05)
+        new_tasks = set(asyncio.all_tasks()) - all_tasks_before
+        live = [t for t in new_tasks if not t.done()]
+        assert not live, f"typing pulse leaked: {live}"
+
+    @pytest.mark.asyncio
+    async def test_final_edit_failure_does_not_crash(self) -> None:
+        """If the final edit_message raises, the function must still
+        return cleanly."""
+        import asyncio
+
+        svc = _ScriptedChatService([
+            _Ev(kind="token_delta", text="hi"),
+            _Ev(kind="done"),
+        ])
+        sender = _FakeDiscordSender()
+        original_edit = sender.edit_message
+
+        async def _edit(channel_id: str, message_id: str, content: str) -> None:
+            if content == "hi":
+                raise RuntimeError("simulated final edit failure")
+            await original_edit(channel_id, message_id, content)
+
+        sender.edit_message = _edit  # type: ignore[assignment]
+        # Must NOT raise.
+        await handle_one_discord(svc, _inbound("discord"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# Slack
+# ---------------------------------------------------------------------------
 
 
 class TestHandleOneSlack:
@@ -1145,8 +1471,20 @@ class TestHandleOneSlack:
         ])
         sender = _FakeSlackSender()
         await handle_one_slack(svc, _inbound("slack"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
-        # message_id is threaded as thread_ts.
-        assert sender.sent == [("T1", "hi there", "M1")]
+        # Placeholder sent into the thread.
+        assert len(sender.sent) == 1
+        chan, ph_text, thread_ts = sender.sent[0]
+        assert chan == "T1"
+        assert "思考中" in ph_text
+        assert thread_ts == "M1"
+        # Final update is the joined reply.
+        assert sender.updates, "expected at least one update_message call"
+        assert sender.updates[-1][2] == "hi there"
+        edit_texts = [u[2] for u in sender.updates]
+        assert any("生成回复中" in t for t in edit_texts)
+        req = svc.calls[0]
+        assert not isinstance(req, dict)
+        assert req.model == "m"
 
     @pytest.mark.asyncio
     async def test_error_renders_short_reply(self) -> None:
@@ -1155,7 +1493,141 @@ class TestHandleOneSlack:
         svc = _ScriptedChatService([_Ev(kind="error", error="nope")])
         sender = _FakeSlackSender()
         await handle_one_slack(svc, _inbound("slack"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
-        assert "[corlinman error]" in sender.sent[0][1]
+        assert sender.updates, "expected error reply update"
+        _, _, final_text = sender.updates[-1]
+        assert "[corlinman error]" in final_text
+        assert "nope" in final_text
+
+    @pytest.mark.asyncio
+    async def test_empty_reply_edits_placeholder(self) -> None:
+        import asyncio
+
+        svc = _ScriptedChatService([
+            _Ev(kind="token_delta", text="  "),
+            _Ev(kind="done"),
+        ])
+        sender = _FakeSlackSender()
+        await handle_one_slack(svc, _inbound("slack"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
+        assert len(sender.sent) == 1
+        assert sender.updates, "expected tidy placeholder edit"
+        assert sender.updates[-1][2] == "（无回复）"
+
+    @pytest.mark.asyncio
+    async def test_tool_call_renders_arg_preview(self) -> None:
+        import asyncio
+
+        svc = _ScriptedChatService([
+            _Ev(
+                kind="tool_call",
+                plugin="web_search",
+                tool="web_search",
+                args_json=b'{"query":"slack mutable spinner"}',
+            ),
+            _Ev(kind="token_delta", text="done"),
+            _Ev(kind="done"),
+        ])
+        sender = _FakeSlackSender()
+        await handle_one_slack(svc, _inbound("slack"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
+        edit_texts = [u[2] for u in sender.updates]
+        assert any("slack mutable spinner" in t for t in edit_texts), edit_texts
+
+    @pytest.mark.asyncio
+    async def test_tool_result_renders_duration_success(self) -> None:
+        import asyncio
+
+        svc = _ScriptedChatService([
+            _Ev(kind="tool_call", plugin="web_search", tool="web_search",
+                args_json=b'{"query":"x"}'),
+            _Ev(kind="tool_result", plugin="web_search", tool="web_search",
+                duration_ms=2500, is_error=False),
+            _Ev(kind="token_delta", text="ok"),
+            _Ev(kind="done"),
+        ])
+        sender = _FakeSlackSender()
+        await handle_one_slack(svc, _inbound("slack"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
+        edit_texts = [u[2] for u in sender.updates]
+        assert any(("✅" in t and "2.5s" in t) for t in edit_texts), edit_texts
+
+    @pytest.mark.asyncio
+    async def test_tool_result_renders_error(self) -> None:
+        import asyncio
+
+        svc = _ScriptedChatService([
+            _Ev(kind="tool_call", plugin="run_shell", tool="run_shell",
+                args_json=b'{"command":"x"}'),
+            _Ev(kind="tool_result", plugin="run_shell", tool="run_shell",
+                duration_ms=42, is_error=True,
+                error_summary="permission denied"),
+            _Ev(kind="token_delta", text="failed"),
+            _Ev(kind="done"),
+        ])
+        sender = _FakeSlackSender()
+        await handle_one_slack(svc, _inbound("slack"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
+        edit_texts = [u[2] for u in sender.updates]
+        assert any(("❌" in t and "permission denied" in t) for t in edit_texts), edit_texts
+
+    @pytest.mark.asyncio
+    async def test_reasoning_delta_shows_thinking_line(self) -> None:
+        import asyncio
+
+        svc = _ScriptedChatService([
+            _Ev(kind="token_delta", text="hmm",
+                is_reasoning=True),
+            _Ev(kind="token_delta", text="answer"),
+            _Ev(kind="done"),
+        ])
+        sender = _FakeSlackSender()
+        await handle_one_slack(svc, _inbound("slack"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
+        edit_texts = [u[2] for u in sender.updates]
+        assert any(("💭" in t and "hmm" in t) for t in edit_texts), edit_texts
+        # Final reply must NOT contain the reasoning text.
+        assert sender.updates[-1][2] == "answer"
+
+    @pytest.mark.asyncio
+    async def test_send_attachment_uploads_via_sender(self, tmp_path: Any) -> None:
+        import asyncio
+        import json
+
+        html = tmp_path / "doc.pdf"
+        html.write_bytes(b"%PDF-1.4 fake")
+        args = json.dumps({"path": str(html), "filename": "doc.pdf"})
+        svc = _ScriptedChatService([
+            _Ev(
+                kind="tool_call",
+                plugin="send_attachment",
+                tool="send_attachment",
+                args_json=args.encode("utf-8"),
+            ),
+            _Ev(kind="token_delta", text="文件已发送"),
+            _Ev(kind="done"),
+        ])
+        sender = _FakeSlackSender()
+        await handle_one_slack(svc, _inbound("slack"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
+        assert sender.uploads, f"expected upload_file call; got uploads={sender.uploads}"
+        assert sender.uploads[0][2] == "doc.pdf"
+        # Thread_ts threaded into the upload to keep replies grouped.
+        assert sender.uploads[0][4] == "M1"
+        edit_texts = [u[2] for u in sender.updates]
+        assert any("已发送文件: doc.pdf" in t for t in edit_texts)
+
+    @pytest.mark.asyncio
+    async def test_post_typing_is_noop_stub(self) -> None:
+        """Slack has no per-thread typing indicator — post_typing must
+        return without raising and without mutating state visibly."""
+        import asyncio
+
+        sender = _FakeSlackSender()
+        # Direct call must not raise.
+        await sender.post_typing("T1", "M1")
+        # The handle_one path itself doesn't use post_typing (Slack lacks
+        # a typing pulse), so updates / sent must remain empty.
+        assert sender.sent == []
+        assert sender.updates == []
+
+
+# ---------------------------------------------------------------------------
+# Feishu
+# ---------------------------------------------------------------------------
 
 
 class TestHandleOneFeishu:
@@ -1169,7 +1641,18 @@ class TestHandleOneFeishu:
         ])
         sender = _FakeFeishuSender()
         await handle_one_feishu(svc, _inbound("feishu"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
-        assert sender.sent == [("T1", "ok", "M1")]
+        # Placeholder went out as a sendMessage; final edit landed via update_message.
+        assert len(sender.sent) == 1
+        chat_id, ph_text, reply_to = sender.sent[0]
+        assert chat_id == "T1"
+        assert "思考中" in ph_text
+        assert reply_to == "M1"
+        assert sender.updates, "expected at least one update_message call"
+        # The last update is the reply text.
+        assert sender.updates[-1][1] == "ok"
+        req = svc.calls[0]
+        assert not isinstance(req, dict)
+        assert req.model == "m"
 
     @pytest.mark.asyncio
     async def test_error_renders_short_reply(self) -> None:
@@ -1178,8 +1661,124 @@ class TestHandleOneFeishu:
         svc = _ScriptedChatService([_Ev(kind="error", error="bad")])
         sender = _FakeFeishuSender()
         await handle_one_feishu(svc, _inbound("feishu"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
-        assert "[corlinman error]" in sender.sent[0][1]
-        assert "bad" in sender.sent[0][1]
+        assert sender.updates, "expected error reply update"
+        _, final_text = sender.updates[-1]
+        assert "[corlinman error]" in final_text
+        assert "bad" in final_text
+
+    @pytest.mark.asyncio
+    async def test_empty_reply_edits_placeholder(self) -> None:
+        import asyncio
+
+        svc = _ScriptedChatService([
+            _Ev(kind="token_delta", text="  "),
+            _Ev(kind="done"),
+        ])
+        sender = _FakeFeishuSender()
+        await handle_one_feishu(svc, _inbound("feishu"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
+        assert len(sender.sent) == 1
+        assert sender.updates, "expected tidy placeholder edit"
+        assert sender.updates[-1][1] == "（无回复）"
+
+    @pytest.mark.asyncio
+    async def test_tool_call_renders_arg_preview(self) -> None:
+        import asyncio
+
+        svc = _ScriptedChatService([
+            _Ev(
+                kind="tool_call",
+                plugin="web_search",
+                tool="web_search",
+                args_json=b'{"query":"feishu spinner port"}',
+            ),
+            _Ev(kind="token_delta", text="done"),
+            _Ev(kind="done"),
+        ])
+        sender = _FakeFeishuSender()
+        await handle_one_feishu(svc, _inbound("feishu"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
+        edit_texts = [u[1] for u in sender.updates]
+        assert any("feishu spinner port" in t for t in edit_texts), edit_texts
+
+    @pytest.mark.asyncio
+    async def test_tool_result_renders_duration_success(self) -> None:
+        import asyncio
+
+        svc = _ScriptedChatService([
+            _Ev(kind="tool_call", plugin="web_search", tool="web_search",
+                args_json=b'{"query":"x"}'),
+            _Ev(kind="tool_result", plugin="web_search", tool="web_search",
+                duration_ms=500, is_error=False),
+            _Ev(kind="token_delta", text="ok"),
+            _Ev(kind="done"),
+        ])
+        sender = _FakeFeishuSender()
+        await handle_one_feishu(svc, _inbound("feishu"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
+        edit_texts = [u[1] for u in sender.updates]
+        # < 1000ms renders as 500ms (no decimal)
+        assert any(("✅" in t and "500ms" in t) for t in edit_texts), edit_texts
+
+    @pytest.mark.asyncio
+    async def test_tool_result_renders_error(self) -> None:
+        import asyncio
+
+        svc = _ScriptedChatService([
+            _Ev(kind="tool_call", plugin="run_shell", tool="run_shell",
+                args_json=b'{"command":"x"}'),
+            _Ev(kind="tool_result", plugin="run_shell", tool="run_shell",
+                duration_ms=42, is_error=True,
+                error_summary="permission denied"),
+            _Ev(kind="token_delta", text="failed"),
+            _Ev(kind="done"),
+        ])
+        sender = _FakeFeishuSender()
+        await handle_one_feishu(svc, _inbound("feishu"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
+        edit_texts = [u[1] for u in sender.updates]
+        assert any(("❌" in t and "permission denied" in t) for t in edit_texts), edit_texts
+
+    @pytest.mark.asyncio
+    async def test_reasoning_delta_shows_thinking_line(self) -> None:
+        import asyncio
+
+        svc = _ScriptedChatService([
+            _Ev(kind="token_delta", text="thinking out loud",
+                is_reasoning=True),
+            _Ev(kind="token_delta", text="42"),
+            _Ev(kind="done"),
+        ])
+        sender = _FakeFeishuSender()
+        await handle_one_feishu(svc, _inbound("feishu"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
+        edit_texts = [u[1] for u in sender.updates]
+        assert any(("💭" in t and "thinking out loud" in t) for t in edit_texts), edit_texts
+        assert sender.updates[-1][1] == "42"
+
+    @pytest.mark.asyncio
+    async def test_send_attachment_uploads_via_sender(self, tmp_path: Any) -> None:
+        import asyncio
+        import json
+
+        html = tmp_path / "report.csv"
+        html.write_text("col1,col2\n1,2\n", encoding="utf-8")
+        args = json.dumps({"path": str(html), "filename": "report.csv"})
+        svc = _ScriptedChatService([
+            _Ev(
+                kind="tool_call",
+                plugin="send_attachment",
+                tool="send_attachment",
+                args_json=args.encode("utf-8"),
+            ),
+            _Ev(kind="token_delta", text="文件已发送"),
+            _Ev(kind="done"),
+        ])
+        sender = _FakeFeishuSender()
+        await handle_one_feishu(svc, _inbound("feishu"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
+        # Two-step: upload_file mints a file_key, send_file_message posts it.
+        assert sender.uploads, f"expected upload_file call; got uploads={sender.uploads}"
+        assert sender.uploads[0][1] == "report.csv"
+        assert sender.file_messages, "expected send_file_message call"
+        # send_file_message must reply to the original message id.
+        assert sender.file_messages[0][2] == "M1"
+        edit_texts = [u[1] for u in sender.updates]
+        assert any("已发送文件: report.csv" in t for t in edit_texts)
 
 
 class TestQqHealthWatcher:
