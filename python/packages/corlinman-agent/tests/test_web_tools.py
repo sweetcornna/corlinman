@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import socket
 from typing import Callable
 
 import httpx
@@ -26,6 +27,38 @@ from corlinman_agent.web import (
     web_search_tool_schema,
 )
 from corlinman_agent.web.fetch import DEFAULT_MAX_CHARS, MAX_BODY_BYTES
+
+#: IANA-reserved example IPv4 (RFC 5737). Treated as public by
+#: ``ipaddress``; safe to use as the resolved address for synthetic
+#: test hostnames so the SSRF guard lets the (mocked) request through.
+_PUBLIC_TEST_IP = "93.184.216.34"
+
+
+@pytest.fixture(autouse=True)
+def _fake_dns_for_test_hosts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make synthetic test hostnames (``*.example.com`` / ``*.example``
+    / ``slow.example.com`` / ``safe.example.com``) resolve to a known
+    public IP so the SSRF guard does not refuse them on DNS failure.
+
+    Tests that deliberately exercise unsafe resolution
+    (e.g. ``evil.test`` mapped to 10.0.0.5) install their own
+    ``getaddrinfo`` stub that delegates to this baseline for everything
+    else.
+    """
+    real = socket.getaddrinfo
+
+    def _fake(host: str, *args, **kw):  # type: ignore[no-untyped-def]
+        if host and (
+            host.endswith(".example.com")
+            or host.endswith(".example")
+            or host == "example.com"
+        ):
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (_PUBLIC_TEST_IP, 0))]
+        return real(host, *args, **kw)
+
+    from corlinman_agent.web import _common as wc
+
+    monkeypatch.setattr(wc.socket, "getaddrinfo", _fake)
 
 
 def _transport(
@@ -420,3 +453,230 @@ def test_calculator_rejects_missing_expression() -> None:
 def test_calculator_rejects_bad_json() -> None:
     out = json.loads(dispatch_calculator(args_json=b"<<<"))
     assert out["error"].startswith("args_invalid:")
+
+
+# ---------------------------------------------------------------------------
+# S1 — SSRF guard on web_fetch
+# ---------------------------------------------------------------------------
+
+
+def _expect_unsafe(out: dict, *, key: str = "error") -> None:
+    """Helper: every SSRF refusal returns ``{"error": "unsafe_host: ..."}``
+    or ``{"error": "unsafe_redirect: ..."}`` — no body is fetched."""
+    assert key in out, f"expected refusal envelope, got: {out!r}"
+    assert (
+        out[key].startswith("unsafe_host:") or out[key].startswith("unsafe_redirect:")
+    ), f"unexpected refusal shape: {out!r}"
+
+
+def test_web_fetch_rejects_loopback_v4() -> None:
+    out = json.loads(
+        asyncio.run(
+            dispatch_web_fetch(args_json=json.dumps({"url": "http://127.0.0.1/admin"}))
+        )
+    )
+    _expect_unsafe(out)
+
+
+def test_web_fetch_rejects_localhost_via_dns() -> None:
+    """Hostname ``localhost`` resolves to 127.0.0.1 via DNS — the guard
+    must classify the resolved address, not the literal hostname."""
+    out = json.loads(
+        asyncio.run(
+            dispatch_web_fetch(args_json=json.dumps({"url": "http://localhost:8080"}))
+        )
+    )
+    _expect_unsafe(out)
+
+
+def test_web_fetch_rejects_private_rfc1918_literal() -> None:
+    out = json.loads(
+        asyncio.run(
+            dispatch_web_fetch(args_json=json.dumps({"url": "http://10.0.0.1/x"}))
+        )
+    )
+    _expect_unsafe(out)
+
+
+def test_web_fetch_rejects_cloud_metadata_endpoint() -> None:
+    out = json.loads(
+        asyncio.run(
+            dispatch_web_fetch(
+                args_json=json.dumps({"url": "http://169.254.169.254/latest/meta-data"})
+            )
+        )
+    )
+    _expect_unsafe(out)
+    # Metadata error message names the endpoint explicitly.
+    assert "metadata" in out["error"].lower() or "169.254" in out["error"]
+
+
+def test_web_fetch_metadata_blocked_even_with_allow_private(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The dev override turns off RFC1918/loopback checks but MUST NOT
+    open up the cloud metadata endpoint."""
+    monkeypatch.setenv("CORLINMAN_WEB_FETCH_ALLOW_PRIVATE", "1")
+    out = json.loads(
+        asyncio.run(
+            dispatch_web_fetch(
+                args_json=json.dumps({"url": "http://169.254.169.254/latest/meta-data"})
+            )
+        )
+    )
+    _expect_unsafe(out)
+
+
+def test_web_fetch_rejects_hostname_that_resolves_to_private_ip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DNS-pinning: ``evil.test`` resolves to 10.0.0.5, the guard must
+    classify EACH resolved address and refuse even one internal hit."""
+    from corlinman_agent.web import _common as wc
+
+    def fake_getaddrinfo(host: str, *args, **kw):  # type: ignore[no-untyped-def]
+        if host == "evil.test":
+            return [(socket.AF_INET, 1, 0, "", ("10.0.0.5", 0))]
+        return socket.getaddrinfo(host, *args, **kw)
+
+    monkeypatch.setattr(wc.socket, "getaddrinfo", fake_getaddrinfo)
+    out = json.loads(
+        asyncio.run(
+            dispatch_web_fetch(args_json=json.dumps({"url": "http://evil.test/"}))
+        )
+    )
+    _expect_unsafe(out)
+
+
+def test_web_fetch_rejects_redirect_to_internal_host() -> None:
+    """A public site that 302s to an internal address must be refused at
+    the redirect stage; the guard re-validates every hop."""
+    visited: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        visited.append(str(request.url))
+        if "public" in str(request.url):
+            return httpx.Response(
+                302, headers={"location": "http://127.0.0.1/secret"}
+            )
+        return httpx.Response(200, text="LEAKED")
+
+    out = json.loads(
+        asyncio.run(
+            dispatch_web_fetch(
+                args_json=json.dumps({"url": "https://public.example.com/start"}),
+                transport=_transport(handler),
+            )
+        )
+    )
+    assert out["error"].startswith("unsafe_redirect:"), out
+    # We only ever dialed the first (public) URL. The 127.0.0.1 leg was
+    # blocked before any socket was opened.
+    assert len(visited) == 1
+    assert "public" in visited[0]
+
+
+def test_web_fetch_follows_safe_redirect_chain() -> None:
+    """Capped redirect loop still works for normal public redirects."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = httpx.URL(str(request.url)).path
+        if path == "/one":
+            return httpx.Response(
+                302, headers={"location": "https://example.com/final"}
+            )
+        return httpx.Response(
+            200, text="ok-body", headers={"content-type": "text/plain"}
+        )
+
+    out = json.loads(
+        asyncio.run(
+            dispatch_web_fetch(
+                args_json=json.dumps({"url": "https://example.com/one"}),
+                transport=_transport(handler),
+            )
+        )
+    )
+    assert out["status"] == 200
+    assert out["text"] == "ok-body"
+
+
+def test_web_fetch_refuses_too_many_redirects() -> None:
+    """An infinite redirect loop is bounded by ``MAX_REDIRECTS``."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        # Always 302 back to the same public host; we should give up
+        # after MAX_REDIRECTS hops, not loop forever.
+        return httpx.Response(302, headers={"location": "https://example.com/x"})
+
+    out = json.loads(
+        asyncio.run(
+            dispatch_web_fetch(
+                args_json=json.dumps({"url": "https://example.com/x"}),
+                transport=_transport(handler),
+            )
+        )
+    )
+    assert out["error"].startswith("too_many_redirects:")
+
+
+def test_web_fetch_allow_private_override_admits_loopback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dev override lets developers hit a local fixture explicitly."""
+    monkeypatch.setenv("CORLINMAN_WEB_FETCH_ALLOW_PRIVATE", "1")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, text="local-only", headers={"content-type": "text/plain"}
+        )
+
+    out = json.loads(
+        asyncio.run(
+            dispatch_web_fetch(
+                args_json=json.dumps({"url": "http://127.0.0.1:8080/dev"}),
+                transport=_transport(handler),
+            )
+        )
+    )
+    assert out["status"] == 200
+    assert out["text"] == "local-only"
+
+
+def test_web_search_drops_unsafe_result_urls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Search results pointing at internal hosts are filtered out before
+    surfacing to the model — the model can never even see them."""
+    # Inject the keyless DDG backend so the filter codepath runs.
+    monkeypatch.setenv("CORLINMAN_WEB_SEARCH_BACKEND", "ddg")
+
+    html_with_mixed_urls = """
+<html><body>
+<div class="result">
+  <a class="result__a" href="https://safe.example.com/page">Public Hit</a>
+  <a class="result__snippet">A public, fetchable page.</a>
+</div>
+<div class="result">
+  <a class="result__a" href="http://10.0.0.7/internal">Internal Hit</a>
+  <a class="result__snippet">Should be filtered out.</a>
+</div>
+<div class="result">
+  <a class="result__a" href="http://169.254.169.254/latest">Metadata Hit</a>
+  <a class="result__snippet">Also filtered.</a>
+</div>
+</body></html>
+"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=html_with_mixed_urls)
+
+    out = json.loads(
+        asyncio.run(
+            dispatch_web_search(
+                args_json=json.dumps({"query": "anything"}),
+                transport=_transport(handler),
+            )
+        )
+    )
+    urls = [r["url"] for r in out["results"]]
+    assert "https://safe.example.com/page" in urls
+    assert all("10.0.0.7" not in u and "169.254" not in u for u in urls), urls

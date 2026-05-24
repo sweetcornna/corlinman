@@ -224,6 +224,244 @@ async def test_run_shell_refuses_smuggled_compound_command(tmp_path: Path) -> No
 
 
 # ---------------------------------------------------------------------------
+# S2 — run_shell rlimits + env scrubbing + process-group kill
+# ---------------------------------------------------------------------------
+
+
+import sys as _sys
+
+import pytest as _pytest
+
+
+@_pytest.mark.skipif(
+    _sys.platform == "win32",
+    reason="POSIX rlimits / setsid only apply on POSIX",
+)
+async def test_run_shell_env_does_not_leak_provider_keys(
+    tmp_path: Path, monkeypatch: _pytest.MonkeyPatch
+) -> None:
+    """The spawned shell MUST NOT see the gateway's provider API keys.
+
+    Regression for S2: previously the subprocess inherited the parent
+    process env wholesale, so the model could ``echo $OPENAI_API_KEY``
+    and exfiltrate it via stdout. The whitelist
+    (PATH/LANG/LC_ALL/HOME/USER) is the only env it sees.
+    """
+    # Plant a fake secret in the parent process env; the child must NOT
+    # observe it.
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-secret-test-token-xyz")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-also-secret")
+
+    res = json.loads(
+        await dispatch_run_shell(
+            args_json=_args(
+                command=(
+                    'echo "OPENAI=${OPENAI_API_KEY:-UNSET}";'
+                    'echo "ANTHROPIC=${ANTHROPIC_API_KEY:-UNSET}";'
+                    # Sanity: PATH (whitelisted) must survive.
+                    'echo "PATH_PRESENT=${PATH:+yes}"'
+                ),
+            ),
+            workspace=tmp_path,
+        )
+    )
+    out = res["output"]
+    # Secrets stripped — the child sees UNSET, never the real value.
+    assert "OPENAI=UNSET" in out, out
+    assert "ANTHROPIC=UNSET" in out, out
+    # And the real secret never appears anywhere in the output.
+    assert "sk-secret-test-token-xyz" not in out
+    assert "sk-ant-also-secret" not in out
+    # PATH survives the whitelist.
+    assert "PATH_PRESENT=yes" in out
+
+
+@_pytest.mark.skipif(
+    _sys.platform == "win32",
+    reason="POSIX rlimits only apply on POSIX",
+)
+async def test_run_shell_rlimit_fsize_caps_output_file(tmp_path: Path) -> None:
+    """``RLIMIT_FSIZE`` truncates a giant write at 100 MiB instead of
+    letting it fill the disk."""
+    # Try to write 200 MiB; the rlimit (100 MiB) will trip and the
+    # shell terminates the writer. We verify the resulting file is
+    # bounded under the cap.
+    target = tmp_path / "big.bin"
+    # Use ``head`` + ``/dev/zero`` rather than ``dd if=`` (denylist).
+    cmd = f"head -c 209715200 /dev/zero > {target.name}"
+    res = json.loads(
+        await dispatch_run_shell(
+            args_json=_args(command=cmd, timeout=20), workspace=tmp_path
+        )
+    )
+    # The command exits non-zero (signal or write error), and any file
+    # that was created is bounded under the RLIMIT_FSIZE cap.
+    assert res["exit_code"] != 0
+    if target.exists():
+        assert target.stat().st_size <= 100 * 1024 * 1024 + 4096
+
+
+@_pytest.mark.skipif(
+    _sys.platform == "win32",
+    reason="POSIX setsid / killpg only apply on POSIX",
+)
+async def test_run_shell_timeout_kills_forked_children(tmp_path: Path) -> None:
+    """A timeout must kill the whole process tree, not just the shell.
+
+    Regression for S2: previously ``proc.kill()`` only killed the
+    immediate child (the ``/bin/sh -c`` wrapper), and a long-running
+    ``python -c 'time.sleep(...)'`` it spawned survived. With
+    ``setsid`` + ``killpg(SIGKILL)`` the whole group dies.
+    """
+    import time as _time
+
+    # The shell wrapper forks a python subprocess that sleeps for a
+    # very long time. The OUTER timeout (1s) must reap both.
+    cmd = "python3 -c 'import time; time.sleep(30)'"
+    t0 = _time.monotonic()
+    res = json.loads(
+        await dispatch_run_shell(
+            args_json=_args(command=cmd, timeout=1), workspace=tmp_path
+        )
+    )
+    elapsed = _time.monotonic() - t0
+    assert "timeout" in res["error"]
+    # The whole call must return promptly — the wait_for on
+    # ``proc.wait()`` after killpg gives us a tight envelope.
+    assert elapsed < 5.0, f"timeout reap took {elapsed:.2f}s — process tree leak?"
+
+
+async def test_run_shell_timeout_cap_lowered_to_60s(tmp_path: Path) -> None:
+    """The hard ``_MAX_TIMEOUT`` is 60s (down from 120s)."""
+    from corlinman_agent.coding.shell import _MAX_TIMEOUT
+
+    assert _MAX_TIMEOUT == 60
+
+
+# ---------------------------------------------------------------------------
+# S3 — workspace escape through symlinked parent directory
+# ---------------------------------------------------------------------------
+
+
+@_pytest.mark.skipif(
+    _sys.platform == "win32",
+    reason="POSIX symlink semantics",
+)
+def test_write_through_symlinked_parent_is_refused(tmp_path: Path) -> None:
+    """Plant ``workspace/escape_dir`` pointing at an outside directory.
+    A write to ``escape_dir/secret`` MUST be refused and the outside
+    target file MUST NOT be created.
+
+    Regression for S3: ``Path.resolve()`` followed the symlink, so the
+    write landed inside ``/tmp/attacker`` even though the call was
+    "inside" the workspace.
+    """
+    # Set up the attacker target directory OUTSIDE the workspace.
+    attacker = tmp_path.parent / f"attacker_{tmp_path.name}"
+    attacker.mkdir()
+    # Plant the symlink inside the workspace.
+    escape = tmp_path / "escape_dir"
+    escape.symlink_to(attacker, target_is_directory=True)
+
+    res = json.loads(
+        dispatch_write_file(
+            args_json=_args(path="escape_dir/secret", content="LEAKED"),
+            workspace=tmp_path,
+        )
+    )
+    assert "workspace_escape" in res["error"], res
+    # The attacker directory MUST remain empty.
+    assert list(attacker.iterdir()) == [], (
+        f"write escaped the workspace — attacker dir contains: "
+        f"{list(attacker.iterdir())}"
+    )
+
+
+@_pytest.mark.skipif(
+    _sys.platform == "win32",
+    reason="POSIX symlink semantics",
+)
+def test_write_to_leaf_symlink_is_refused(tmp_path: Path) -> None:
+    """A leaf that is itself a symlink (even pointing back inside the
+    workspace) is refused for writes — easy to misuse."""
+    target = tmp_path / "real.txt"
+    target.write_text("real")
+    link = tmp_path / "alias.txt"
+    link.symlink_to(target)
+
+    res = json.loads(
+        dispatch_write_file(
+            args_json=_args(path="alias.txt", content="rewritten"),
+            workspace=tmp_path,
+        )
+    )
+    assert "workspace_escape" in res["error"], res
+    # The real target file is untouched.
+    assert target.read_text() == "real"
+
+
+@_pytest.mark.skipif(
+    _sys.platform == "win32",
+    reason="POSIX symlink semantics",
+)
+def test_apply_patch_through_symlinked_parent_is_refused(tmp_path: Path) -> None:
+    """``apply_patch`` adding a file under a symlinked-out directory
+    must be refused at the staging step before any disk write."""
+    from corlinman_agent.coding import dispatch_apply_patch
+
+    attacker = tmp_path.parent / f"attacker_{tmp_path.name}_patch"
+    attacker.mkdir()
+    escape = tmp_path / "escape_dir"
+    escape.symlink_to(attacker, target_is_directory=True)
+
+    patch = (
+        "*** Begin Patch\n"
+        "*** Add File: escape_dir/new.txt\n"
+        "+leaked\n"
+        "*** End Patch\n"
+    )
+    res = json.loads(
+        dispatch_apply_patch(
+            args_json=_args(patch=patch), workspace=tmp_path
+        )
+    )
+    assert "workspace_escape" in res["error"], res
+    assert list(attacker.iterdir()) == []
+
+
+@_pytest.mark.skipif(
+    _sys.platform == "win32",
+    reason="POSIX symlink semantics",
+)
+def test_edit_file_through_symlinked_parent_is_refused(tmp_path: Path) -> None:
+    """``edit_file`` resolves with ``for_write=True``, so a write
+    through a symlinked-out parent must be refused even though the
+    file appears to be inside the workspace."""
+    attacker = tmp_path.parent / f"attacker_{tmp_path.name}_edit"
+    attacker.mkdir()
+    # Plant a real file in the attacker dir.
+    target_in_attacker = attacker / "victim.txt"
+    target_in_attacker.write_text("original content")
+    # Symlink inside the workspace points at attacker dir.
+    escape = tmp_path / "escape_dir"
+    escape.symlink_to(attacker, target_is_directory=True)
+
+    res = json.loads(
+        dispatch_edit_file(
+            args_json=_args(
+                path="escape_dir/victim.txt",
+                old_string="original",
+                new_string="MODIFIED",
+            ),
+            workspace=tmp_path,
+        )
+    )
+    assert "workspace_escape" in res["error"], res
+    # Original content untouched.
+    assert target_in_attacker.read_text() == "original content"
+
+
+# ---------------------------------------------------------------------------
 # todo_write
 # ---------------------------------------------------------------------------
 

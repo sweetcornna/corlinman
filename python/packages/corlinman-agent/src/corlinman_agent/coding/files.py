@@ -12,6 +12,7 @@ Each ``dispatch_*`` returns a JSON envelope string for
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,12 @@ from corlinman_agent.coding._common import (
     workspace_rel,
 )
 from corlinman_agent.coding._filestate import FileState
+
+# Optional O_NOFOLLOW — present on every POSIX target this project
+# supports (Linux + macOS). Windows lacks the flag entirely; the
+# per-component lstat scan in :func:`resolve_in_workspace` is the only
+# protection on that platform.
+_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
 logger = structlog.get_logger(__name__)
 
@@ -262,7 +269,10 @@ def dispatch_write_file(
     try:
         raw = decode_args(args_json)
         ws = resolve_workspace(workspace)
-        path = resolve_in_workspace(ws, raw.get("path"))
+        # S3: ``for_write=True`` refuses symlinked ancestors *and* a
+        # leaf that is itself a symlink, so a write through a symlink
+        # planted by an earlier turn cannot escape the workspace.
+        path = resolve_in_workspace(ws, raw.get("path"), for_write=True)
     except CodingArgsInvalidError as exc:
         return _err({"error": f"args_invalid: {exc.message}"})
     except WorkspaceEscapeError as exc:
@@ -279,7 +289,31 @@ def dispatch_write_file(
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         existed = path.exists()
-        path.write_text(content, encoding="utf-8")
+        # S3: open with ``O_NOFOLLOW`` so a leaf symlink that appeared
+        # between :func:`resolve_in_workspace` and the open (TOCTOU)
+        # is also refused at the syscall layer. The pre-check catches
+        # the static case; ``O_NOFOLLOW`` catches the race.
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _O_NOFOLLOW
+        try:
+            fd = os.open(path, flags, 0o644)
+        except OSError as exc:
+            # ELOOP from O_NOFOLLOW surfaces as OSError; treat as
+            # a workspace_escape so the model sees a consistent error.
+            msg = str(exc)
+            if "ELOOP" in msg or "Too many levels of symbolic links" in msg or getattr(exc, "errno", None) == 62:
+                return _err(
+                    {"path": raw.get("path"), "error": f"workspace_escape: O_NOFOLLOW refused: {exc}"}
+                )
+            return _err(
+                {"path": raw.get("path"), "error": f"write_failed: {exc}"}
+            )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(content)
+        except OSError as exc:
+            return _err(
+                {"path": raw.get("path"), "error": f"write_failed: {exc}"}
+            )
     except OSError as exc:
         return _err({"path": raw.get("path"), "error": f"write_failed: {exc}"})
     if state is not None:
@@ -378,7 +412,8 @@ def dispatch_edit_file(
     try:
         raw = decode_args(args_json)
         ws = resolve_workspace(workspace)
-        path = resolve_in_workspace(ws, raw.get("path"))
+        # S3: edits are writes — refuse symlinked ancestors and leaves.
+        path = resolve_in_workspace(ws, raw.get("path"), for_write=True)
     except CodingArgsInvalidError as exc:
         return _err({"error": f"args_invalid: {exc.message}"})
     except WorkspaceEscapeError as exc:
@@ -462,7 +497,27 @@ def dispatch_edit_file(
             return _err({"path": raw.get("path"), "error": "old_string_not_found"})
 
     try:
-        path.write_text(updated, encoding="utf-8")
+        # S3: open with O_NOFOLLOW. The earlier resolve_in_workspace
+        # pre-check refused if any ancestor was a symlink at that
+        # point; O_NOFOLLOW catches a leaf symlink swapped in between
+        # the check and the open (TOCTOU). The path already exists
+        # here (we just read it above), so O_TRUNC + O_WRONLY is
+        # safe.
+        flags = os.O_WRONLY | os.O_TRUNC | _O_NOFOLLOW
+        try:
+            fd = os.open(path, flags)
+        except OSError as exc:
+            msg = str(exc)
+            if "ELOOP" in msg or "Too many levels of symbolic links" in msg or getattr(exc, "errno", None) == 62:
+                return _err(
+                    {"path": raw.get("path"), "error": f"workspace_escape: O_NOFOLLOW refused: {exc}"}
+                )
+            return _err({"path": raw.get("path"), "error": f"write_failed: {exc}"})
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(updated)
+        except OSError as exc:
+            return _err({"path": raw.get("path"), "error": f"write_failed: {exc}"})
     except OSError as exc:
         return _err({"path": raw.get("path"), "error": f"write_failed: {exc}"})
     if state is not None:

@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 from pathlib import Path
 from typing import Any
 
@@ -98,12 +99,37 @@ def resolve_workspace(explicit: str | os.PathLike[str] | None = None) -> Path:
     return root.resolve()
 
 
-def resolve_in_workspace(workspace: Path, rel: str) -> Path:
+def resolve_in_workspace(
+    workspace: Path,
+    rel: str,
+    *,
+    for_write: bool = False,
+) -> Path:
     """Resolve ``rel`` against ``workspace`` and confine it to the root.
 
     Raises :class:`WorkspaceEscapeError` if the resolved path escapes the
     workspace (via ``..`` or an absolute path outside it). The path need
     not exist — callers handle missing files themselves.
+
+    **Symlink safety (S3)**: ``Path.resolve()`` follows every symlink in
+    the path. For an *existing* path that targets outside the workspace
+    the post-resolve ``relative_to`` check still rejects it, but for a
+    *non-existing* leaf whose parent directory is a symlink pointing
+    outside the workspace, ``resolve()`` would happily expand
+    ``workspace/escape_dir/new_file`` to ``/tmp/attacker/new_file`` —
+    inside the symlink's target, outside the workspace. The write would
+    then escape.
+
+    The fix walks each ancestor of the intended (un-resolved) path under
+    the workspace root and ``lstat``-checks every component. If any
+    ancestor is itself a symlink, the call is refused. Additionally,
+    when ``for_write=True`` (writes / patches / edits), the immediate
+    parent of the final leaf must NOT be a symlink either — too easy
+    to misuse even when the symlink points back inside the workspace.
+
+    Read-only callers may pass ``for_write=False`` (the default) to
+    accept symlink-parented leafs when they exist; the existing
+    ``relative_to`` post-resolve check still catches outright escapes.
     """
     if not isinstance(rel, str) or not rel.strip():
         raise CodingArgsInvalidError("missing or empty 'path'")
@@ -120,6 +146,58 @@ def resolve_in_workspace(workspace: Path, rel: str) -> Path:
         raise WorkspaceEscapeError(
             f"path {rel!r} escapes the agent workspace"
         ) from None
+
+    # ---- S3: per-component lstat scan ---------------------------------
+    # Walk the INTENDED (un-resolved) path under the workspace root and
+    # lstat each component. If any ancestor is a symlink, we reject —
+    # this catches the case where ``workspace/escape_dir`` is a symlink
+    # to ``/tmp/attacker`` and the caller tries to write to
+    # ``escape_dir/secret`` (a non-existing leaf whose ``resolve()``
+    # would land inside the attacker's directory).
+    if candidate.is_absolute():
+        try:
+            intended = candidate.relative_to(workspace)
+        except ValueError:
+            # Already rejected above; keep the safe fallback.
+            intended = Path(candidate.name)
+    else:
+        intended = candidate
+
+    cursor = workspace
+    parts = [p for p in intended.parts if p not in ("", ".")]
+
+    for idx, part in enumerate(parts):
+        if part == "..":
+            # ``..`` segments are already collapsed by ``resolve()``
+            # above; nothing to lstat here.
+            cursor = cursor.parent
+            continue
+        cursor = cursor / part
+        try:
+            st = os.lstat(cursor)
+        except FileNotFoundError:
+            # Past the existing prefix — every remaining component is
+            # being newly created. No more symlinks to find.
+            break
+        except OSError:
+            # Any other lstat error (permission, etc.) — fail closed.
+            raise WorkspaceEscapeError(
+                f"path {rel!r}: cannot stat component {part!r}"
+            ) from None
+        is_last = idx == len(parts) - 1
+        if stat.S_ISLNK(st.st_mode):
+            # The leaf itself being a symlink is fine for READS (the
+            # post-resolve ``relative_to`` check above already
+            # guaranteed the target lives in-workspace). For WRITES,
+            # refuse — the caller almost certainly didn't intend to
+            # follow the link and replace the target, and ``O_NOFOLLOW``
+            # on the open would error out anyway.
+            if for_write or not is_last:
+                raise WorkspaceEscapeError(
+                    f"path {rel!r}: ancestor / target component "
+                    f"{part!r} is a symlink"
+                )
+
     return resolved
 
 

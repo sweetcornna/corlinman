@@ -44,7 +44,9 @@ import structlog
 
 from corlinman_agent.web._common import (
     WebArgsInvalidError,
+    WebFetchUnsafeHostError,
     decode_args,
+    is_safe_host,
     make_client,
 )
 
@@ -161,6 +163,24 @@ def _normalise_ddg_href(href: str) -> str:
     return href
 
 
+def _filter_unsafe_url(url: str) -> bool:
+    """Return True if ``url`` is safe to surface to the model.
+
+    Cheap, sync wrapper around :func:`is_safe_host`. We don't want a
+    poisoned search-results page (e.g. an attacker who controls one of
+    the top hits) to hand the LLM a link to ``http://10.0.0.1/admin``
+    that it might then ``web_fetch``. The fetcher already enforces the
+    same rule, but filtering here also keeps the model from ever
+    seeing the internal URL.
+    """
+    try:
+        is_safe_host(url)
+    except WebFetchUnsafeHostError as exc:
+        logger.info("web_search.dropped_unsafe", url=url, reason=str(exc))
+        return False
+    return True
+
+
 def _parse_ddg_html(markup: str, max_results: int) -> list[dict[str, str]]:
     """Scrape result rows out of a DuckDuckGo HTML response."""
     titles = list(_DDG_RESULT_RE.finditer(markup))
@@ -173,6 +193,8 @@ def _parse_ddg_html(markup: str, max_results: int) -> list[dict[str, str]]:
         title = _clean(match.group("title"))
         snippet = _clean(snippets[idx]) if idx < len(snippets) else ""
         if not url or not title:
+            continue
+        if not _filter_unsafe_url(url):
             continue
         results.append({"title": title, "url": url, "snippet": snippet})
     return results
@@ -212,6 +234,8 @@ async def _search_serpapi(
         url = hit.get("link") or ""
         title = hit.get("title") or ""
         if not url or not title:
+            continue
+        if not _filter_unsafe_url(str(url)):
             continue
         results.append(
             {
@@ -255,7 +279,13 @@ async def dispatch_web_search(
         )
 
     try:
-        async with make_client(transport=transport) as client:
+        # The search backend hits a fixed, hard-coded endpoint
+        # (``html.duckduckgo.com`` or ``serpapi.com``). Following
+        # redirects against a known public host is safe; the SSRF
+        # surface here is the search-result URL list, not the
+        # request-to-backend transport. Keep redirects on for
+        # compatibility with DDG's canonicalisation 30x's.
+        async with make_client(transport=transport, follow_redirects=True) as client:
             if backend == "serpapi":
                 results = await _search_serpapi(query, max_results, client)
             elif backend == "ddg":

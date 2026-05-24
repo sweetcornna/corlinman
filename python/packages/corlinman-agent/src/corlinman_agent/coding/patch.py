@@ -29,6 +29,7 @@ not break an otherwise-valid patch.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -271,24 +272,25 @@ def dispatch_apply_patch(
     except PatchParseError as exc:
         return json.dumps({"error": f"patch_parse_error: {exc}"})
 
+    # S3: every patch op writes — refuse symlinked ancestors and leaves.
     staged: list[tuple[str, Path, str | None]] = []  # (action, path, content)
     try:
         for op in ops:
             if isinstance(op, _AddFile):
-                p = resolve_in_workspace(ws, op.path)
+                p = resolve_in_workspace(ws, op.path, for_write=True)
                 staged.append(("add", p, op.content))
             elif isinstance(op, _DeleteFile):
-                p = resolve_in_workspace(ws, op.path)
+                p = resolve_in_workspace(ws, op.path, for_write=True)
                 staged.append(("delete", p, None))
             else:  # _UpdateFile
-                p = resolve_in_workspace(ws, op.path)
+                p = resolve_in_workspace(ws, op.path, for_write=True)
                 if not p.is_file():
                     return json.dumps(
                         {"error": f"update_target_missing: {op.path}"}
                     )
                 new_text = _apply_update(p.read_text(encoding="utf-8"), op)
                 dest = (
-                    resolve_in_workspace(ws, op.move_to)
+                    resolve_in_workspace(ws, op.move_to, for_write=True)
                     if op.move_to
                     else p
                 )
@@ -303,6 +305,10 @@ def dispatch_apply_patch(
         return json.dumps({"error": f"patch_io_error: {exc}"})
 
     # --- commit ---------------------------------------------------------
+    # S3: use O_NOFOLLOW on every write so a leaf symlink swapped in
+    # between the resolve_in_workspace pre-check and the open (TOCTOU)
+    # is refused at the syscall layer.
+    o_nofollow = getattr(os, "O_NOFOLLOW", 0)
     changed: list[str] = []
     try:
         for action, path, content in staged:
@@ -313,10 +319,26 @@ def dispatch_apply_patch(
             else:  # add / update
                 path.parent.mkdir(parents=True, exist_ok=True)
                 assert content is not None
-                path.write_text(content, encoding="utf-8")
+                flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | o_nofollow
+                fd = os.open(path, flags, 0o644)
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                        fh.write(content)
+                except OSError as exc:
+                    return json.dumps(
+                        {
+                            "error": f"patch_write_failed: {exc}",
+                            "partial": changed,
+                        }
+                    )
                 verb = "added" if action == "add" else "updated"
                 changed.append(f"{verb} {workspace_rel(ws, path)}")
     except OSError as exc:
+        msg = str(exc)
+        if "ELOOP" in msg or "Too many levels of symbolic links" in msg or getattr(exc, "errno", None) == 62:
+            return json.dumps(
+                {"error": f"workspace_escape: O_NOFOLLOW refused: {exc}", "partial": changed}
+            )
         return json.dumps(
             {"error": f"patch_write_failed: {exc}", "partial": changed}
         )

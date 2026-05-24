@@ -33,9 +33,11 @@ import structlog
 
 from corlinman_agent.web._common import (
     WebArgsInvalidError,
+    WebFetchUnsafeHostError,
     decode_args,
     extract_title,
     html_to_text,
+    is_safe_host,
     looks_like_html,
     make_client,
 )
@@ -55,6 +57,12 @@ DEFAULT_MAX_CHARS: int = 12_000
 #: response larger than this is truncated mid-stream and flagged — we
 #: never load an unbounded body into memory.
 MAX_BODY_BYTES: int = 4_000_000
+
+#: Hard ceiling on the redirect chain length. We re-validate each hop
+#: through :func:`is_safe_host` before dialing it, so a malicious server
+#: cannot bounce us into an internal address; 5 hops is far above what
+#: any well-behaved public site needs.
+MAX_REDIRECTS: int = 5
 
 
 def web_fetch_tool_schema() -> dict[str, Any]:
@@ -142,40 +150,110 @@ async def dispatch_web_fetch(
     except WebArgsInvalidError as exc:
         return json.dumps({"error": f"args_invalid: {exc.message}"})
 
+    # SSRF guard: refuse to dial private / loopback / link-local /
+    # multicast / metadata addresses BEFORE we open the client. This
+    # catches both literal-IP URLs (http://10.0.0.1) and hostnames whose
+    # DNS resolves to internal addresses. We re-check on every redirect
+    # below so a public site that 302s to http://169.254.169.254 cannot
+    # smuggle credentials out of the cloud metadata service.
     try:
-        async with make_client(transport=transport) as client:
-            async with client.stream("GET", url) as response:
-                final_url = str(response.url)
-                content_type = response.headers.get("content-type")
-                # Stream the body so an oversized response is bounded.
-                chunks: list[bytes] = []
-                total = 0
-                oversized = False
-                async for chunk in response.aiter_bytes():
-                    chunks.append(chunk)
-                    total += len(chunk)
-                    if total > MAX_BODY_BYTES:
-                        oversized = True
-                        break
-                body_bytes = b"".join(chunks)
+        is_safe_host(url)
+    except WebFetchUnsafeHostError as exc:
+        logger.warning("web_fetch.unsafe_host", url=url, reason=str(exc))
+        return json.dumps({"url": url, "error": f"unsafe_host: {exc}"})
 
-                if response.status_code >= 400:
-                    logger.info(
-                        "web_fetch.non_200",
-                        url=url,
-                        status=response.status_code,
-                    )
-                    return json.dumps(
-                        {
-                            "url": url,
-                            "final_url": final_url,
-                            "status": response.status_code,
-                            "error": (
-                                f"http_status: server returned "
-                                f"{response.status_code}"
-                            ),
-                        }
-                    )
+    try:
+        async with make_client(transport=transport, follow_redirects=False) as client:
+            current_url = url
+            redirects = 0
+            while True:
+                async with client.stream("GET", current_url) as response:
+                    final_url = str(response.url)
+                    status = response.status_code
+                    # Manual redirect handling — re-validate each hop.
+                    if status in (301, 302, 303, 307, 308):
+                        location = response.headers.get("location")
+                        if not location:
+                            # Redirect status with no Location header —
+                            # treat as a normal response (no body left
+                            # to read, so the envelope just records the
+                            # status).
+                            content_type = response.headers.get("content-type")
+                            body_bytes = b""
+                            oversized = False
+                            total = 0
+                            break
+                        # Resolve relative redirects against the current URL.
+                        next_url = str(httpx.URL(current_url).join(location))
+                        if redirects >= MAX_REDIRECTS:
+                            logger.warning(
+                                "web_fetch.too_many_redirects",
+                                url=url,
+                                current=current_url,
+                                hops=redirects,
+                            )
+                            return json.dumps(
+                                {
+                                    "url": url,
+                                    "final_url": final_url,
+                                    "status": status,
+                                    "error": (
+                                        f"too_many_redirects: "
+                                        f"exceeded {MAX_REDIRECTS}"
+                                    ),
+                                }
+                            )
+                        try:
+                            is_safe_host(next_url)
+                        except WebFetchUnsafeHostError as exc:
+                            logger.warning(
+                                "web_fetch.unsafe_redirect",
+                                url=url,
+                                target=next_url,
+                                reason=str(exc),
+                            )
+                            return json.dumps(
+                                {
+                                    "url": url,
+                                    "final_url": final_url,
+                                    "status": status,
+                                    "error": f"unsafe_redirect: {exc}",
+                                }
+                            )
+                        redirects += 1
+                        current_url = next_url
+                        continue
+                    content_type = response.headers.get("content-type")
+                    # Stream the body so an oversized response is bounded.
+                    chunks: list[bytes] = []
+                    total = 0
+                    oversized = False
+                    async for chunk in response.aiter_bytes():
+                        chunks.append(chunk)
+                        total += len(chunk)
+                        if total > MAX_BODY_BYTES:
+                            oversized = True
+                            break
+                    body_bytes = b"".join(chunks)
+
+                    if response.status_code >= 400:
+                        logger.info(
+                            "web_fetch.non_200",
+                            url=url,
+                            status=response.status_code,
+                        )
+                        return json.dumps(
+                            {
+                                "url": url,
+                                "final_url": final_url,
+                                "status": response.status_code,
+                                "error": (
+                                    f"http_status: server returned "
+                                    f"{response.status_code}"
+                                ),
+                            }
+                        )
+                    break
 
         raw_text = body_bytes.decode("utf-8", errors="replace")
         if looks_like_html(content_type, raw_text):
@@ -193,7 +271,7 @@ async def dispatch_web_fetch(
             {
                 "url": url,
                 "final_url": final_url,
-                "status": response.status_code,
+                "status": status,
                 "title": title,
                 "content_type": content_type,
                 "text": text,
