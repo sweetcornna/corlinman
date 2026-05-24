@@ -720,47 +720,6 @@ export async function deleteAlias(name: string): Promise<void> {
   );
 }
 
-export interface EmbeddingView {
-  provider: string;
-  model: string;
-  dimension: number;
-  enabled: boolean;
-  params: Record<string, unknown>;
-  params_schema: JSONSchema;
-}
-
-export type EmbeddingUpsert = EmbeddingView;
-
-export async function fetchEmbedding(): Promise<EmbeddingView> {
-  return apiFetch<EmbeddingView>("/admin/embedding");
-}
-
-export async function upsertEmbedding(
-  body: EmbeddingUpsert,
-): Promise<EmbeddingView> {
-  return apiFetch<EmbeddingView>("/admin/embedding", {
-    method: "POST",
-    body,
-  });
-}
-
-export interface BenchmarkView {
-  dimension: number;
-  latency_ms_p50: number;
-  latency_ms_p99: number;
-  similarity_matrix: number[][];
-  warnings: string[];
-}
-
-export async function benchmarkEmbedding(
-  samples: string[],
-): Promise<BenchmarkView> {
-  return apiFetch<BenchmarkView>("/admin/embedding/benchmark", {
-    method: "POST",
-    body: { samples },
-  });
-}
-
 // ---------------------------------------------------------------------------
 // Wave 1-D — EvolutionLoop proposal queue
 //

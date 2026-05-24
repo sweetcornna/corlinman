@@ -2,7 +2,7 @@
  * Dev Settings page tests.
  *
  * Asserts:
- *   - Renders one card per hidden page (17 total).
+ *   - Renders one card per hidden page (11 total).
  *   - The toggle reflects + writes the `useDevMode()` flag.
  *   - Toggling the switch persists to localStorage and shows the new state.
  */
@@ -56,7 +56,7 @@ describe("DevSettingsPage", () => {
 
   it("renders one card per hidden developer page", () => {
     renderPage();
-    expect(DEV_PAGE_KEYS).toHaveLength(17);
+    expect(DEV_PAGE_KEYS).toHaveLength(11);
     for (const key of DEV_PAGE_KEYS) {
       expect(
         screen.getByTestId(`dev-settings-card-${key}`),

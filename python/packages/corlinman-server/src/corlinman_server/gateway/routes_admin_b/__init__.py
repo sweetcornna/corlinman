@@ -5,7 +5,6 @@ Mirrors these Rust modules from
 
 * :mod:`config`      — runtime config view + edit (``/admin/config*``)
 * :mod:`evolution`   — proposal queue mgmt (``/admin/evolution*``)
-* :mod:`federation`  — federation peer mgmt (``/admin/federation/peers*``)
 * :mod:`logs`        — SSE log stream (``/admin/logs/stream``)
 * :mod:`memory`      — operator escape hatches (``/admin/memory/*``)
 * :mod:`models`      — model alias / provider snapshot (``/admin/models*``)
@@ -44,7 +43,6 @@ from corlinman_server.gateway.routes_admin_b import (
     credentials as _credentials,
     curator as _curator,
     evolution as _evolution,
-    federation as _federation,
     logs as _logs,
     memory as _memory,
     models as _models,
@@ -79,7 +77,6 @@ def build_router() -> APIRouter:
         _credentials,
         _curator,
         _evolution,
-        _federation,
         _logs,
         _memory,
         _models,

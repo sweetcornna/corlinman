@@ -41,19 +41,13 @@ const DEV_PAGE_KEYS = [
   "tenants",
   "credentials",
   "agents",
-  "characters",
   "skills",
   "plugins",
-  "embedding",
-  "federation",
   "hooks",
   "rag",
   "profiles",
   "nodes",
   "evolution",
-  "tagmemo",
-  "diary",
-  "canvas",
 ] as const;
 
 type DevPageKey = (typeof DEV_PAGE_KEYS)[number];
@@ -63,19 +57,13 @@ const ROUTE_FOR_KEY: Record<DevPageKey, string> = {
   tenants: "/tenants",
   credentials: "/credentials",
   agents: "/agents",
-  characters: "/characters",
   skills: "/skills",
   plugins: "/plugins",
-  embedding: "/embedding",
-  federation: "/federation",
   hooks: "/hooks",
   rag: "/rag",
   profiles: "/profiles",
   nodes: "/nodes",
   evolution: "/evolution",
-  tagmemo: "/tagmemo",
-  diary: "/diary",
-  canvas: "/canvas",
 };
 
 export default function DevSettingsPage() {

@@ -19,7 +19,6 @@ const SEGMENT_KEY: Record<string, string> = {
   models: "breadcrumbs.models",
   providers: "breadcrumbs.providers",
   credentials: "breadcrumbs.credentials",
-  embedding: "breadcrumbs.embedding",
   config: "breadcrumbs.config",
   logs: "breadcrumbs.logs",
   tenants: "breadcrumbs.tenants",

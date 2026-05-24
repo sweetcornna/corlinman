@@ -4,7 +4,7 @@
  *      expansion, auto-expand on matching route).
  *   2. Operator-vs-Developer mode filtering: by default only 9 operator
  *      entries + a "Developer Settings" link appear; flipping
- *      `useDevMode()` reveals the 17 hidden power-user pages.
+ *      `useDevMode()` reveals the 11 hidden power-user pages.
  */
 
 import {
@@ -119,12 +119,12 @@ describe("Sidebar", () => {
     expect(entries[entries.length - 1]).toBe(SIDEBAR_DEV_SETTINGS_ENTRY);
   });
 
-  it("resolveSidebarEntries appends all 17 dev pages when devMode is on", () => {
+  it("resolveSidebarEntries appends all 11 dev pages when devMode is on", () => {
     const entries = resolveSidebarEntries(true);
     expect(entries).toHaveLength(
       SIDEBAR_OPERATOR_ITEMS.length + SIDEBAR_DEV_ITEMS.length + 1,
     );
-    expect(SIDEBAR_DEV_ITEMS).toHaveLength(17);
+    expect(SIDEBAR_DEV_ITEMS).toHaveLength(11);
     // All dev items carry the isDeveloper flag.
     for (const entry of SIDEBAR_DEV_ITEMS) {
       expect("isDeveloper" in entry && entry.isDeveloper === true).toBe(true);

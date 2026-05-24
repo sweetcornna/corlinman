@@ -9,7 +9,6 @@ Mirrors these Rust modules from
 * :mod:`auth`       — admin login / session lifecycle
                       (``/admin/login``, ``/admin/logout``, etc.)
 * :mod:`channels`   — QQ/OneBot channel mgmt (``/admin/channels/qq*``)
-* :mod:`embedding`  — embedding provider + benchmark (``/admin/embedding*``)
 * :mod:`identity`   — identity graph admin (``/admin/identity*``)
 * :mod:`sessions`   — replay surface (``/admin/sessions*``)
 * :mod:`tenants`    — multi-tenant registry (``/admin/tenants*``)
@@ -44,7 +43,6 @@ from corlinman_server.gateway.routes_admin_a import (
     approvals as _approvals,
     auth as _auth,
     channels as _channels,
-    embedding as _embedding,
     identity as _identity,
     password_reset as _password_reset,
     profiles as _profiles,
@@ -80,7 +78,6 @@ def build_router() -> APIRouter:
         _approvals,
         _auth,
         _channels,
-        _embedding,
         _identity,
         _password_reset,
         _profiles,

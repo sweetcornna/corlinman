@@ -133,18 +133,6 @@ vi.mock("@/lib/sse", () => ({
   openEventStream: vi.fn(() => () => {}),
 }));
 
-// Canvas API client used by /canvas.
-vi.mock("@/lib/api/canvas", async () => {
-  const actual = await vi.importActual<typeof import("@/lib/api/canvas")>(
-    "@/lib/api/canvas",
-  );
-  return {
-    ...actual,
-    createCanvasSession: vi.fn(() => new Promise(() => {})),
-    sendCanvasFrame: vi.fn(() => Promise.resolve({ kind: "live", ok: true })),
-  };
-});
-
 // Telegram client.
 vi.mock("@/lib/api/telegram", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api/telegram")>(
@@ -311,7 +299,6 @@ const CASES: AuditCase[] = [
   },
   { name: "models", loader: () => import("@/app/(admin)/models/page") },
   { name: "providers", loader: () => import("@/app/(admin)/providers/page") },
-  { name: "embedding", loader: () => import("@/app/(admin)/embedding/page") },
   { name: "config", loader: () => import("@/app/(admin)/config/page") },
   { name: "rag", loader: () => import("@/app/(admin)/rag/page") },
   { name: "scheduler", loader: () => import("@/app/(admin)/scheduler/page") },
@@ -333,24 +320,13 @@ const CASES: AuditCase[] = [
     loader: () => import("@/app/(admin)/channels/telegram/page"),
   },
   { name: "skills", loader: () => import("@/app/(admin)/skills/page") },
-  { name: "characters", loader: () => import("@/app/(admin)/characters/page") },
   { name: "hooks", loader: () => import("@/app/(admin)/hooks/page") },
   {
     name: "playground/protocol",
     loader: () => import("@/app/(admin)/playground/protocol/page"),
   },
   { name: "nodes", loader: () => import("@/app/(admin)/nodes/page") },
-  { name: "tagmemo", loader: () => import("@/app/(admin)/tagmemo/page") },
-  { name: "diary", loader: () => import("@/app/(admin)/diary/page") },
   { name: "evolution", loader: () => import("@/app/(admin)/evolution/page") },
-  {
-    name: "canvas",
-    loader: () => import("@/app/(admin)/canvas/page"),
-    // axe in jsdom cannot scan inside sandboxed iframes ("Respondable target
-    // must be a frame in the current window"). The chrome around the iframe
-    // is audited via other pages' scans and by the real axe CLI in CI.
-    skip: "jsdom-iframe-scan",
-  },
   { name: "login", loader: () => import("@/app/login/page") },
   { name: "tenants", loader: () => import("@/app/(admin)/tenants/page") },
   { name: "sessions", loader: () => import("@/app/(admin)/sessions/page") },

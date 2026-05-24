@@ -114,19 +114,6 @@ class AdminState:
     channels_config: dict[str, Any] | None = None
     channels_writer: Any | None = None
 
-    # -- /admin/embedding -------------------------------------------
-    #
-    # Snapshot of the active embedding config + a writer that persists
-    # mutations. The Python side keeps the snapshot as a dict so the
-    # admin surface doesn't have to take a dep on a specific
-    # ``EmbeddingConfig`` shape.
-    embedding_config: dict[str, Any] | None = None
-    embedding_writer: Any | None = None
-    # URL of the python ``embedding/benchmark`` sidecar surface. Only
-    # used by the benchmark route's HTTP passthrough; defaults to the
-    # localhost address the Rust side already uses.
-    py_admin_url: str = "http://127.0.0.1:50052"
-
     # -- /admin/identity --------------------------------------------
     #
     # ``corlinman_identity.IdentityStore`` (protocol) instance. ``None``

@@ -7,7 +7,6 @@ import { motion } from "framer-motion";
 import { useTranslation } from "react-i18next";
 import {
   Beaker,
-  BookOpen,
   Bot,
   Boxes,
   Building2,
@@ -18,7 +17,6 @@ import {
   Database,
   FileTerminal,
   Fingerprint,
-  Frame,
   KeyRound,
   Leaf,
   LogOut,
@@ -30,12 +28,9 @@ import {
   Route,
   Send,
   Settings,
-  Share2,
-  Sparkles,
   Terminal,
   Timer,
   Users,
-  UserSquare,
   Wrench,
   Zap,
 } from "lucide-react";
@@ -57,10 +52,9 @@ interface NavItem {
   /**
    * When `true`, the item is hidden in the default Operator sidebar and only
    * appears when `useDevMode().enabled === true`. Power-user pages — raw
-   * config TOML, tenants, credentials, agents, characters, skills, plugins,
-   * embedding, federation, hooks, RAG, profiles, nodes, evolution, tagmemo,
-   * diary, canvas — set this flag so a fresh install isn't drowning the
-   * operator in 25+ entries.
+   * config TOML, tenants, credentials, agents, skills, plugins, hooks, RAG,
+   * profiles, nodes, evolution — set this flag so a fresh install isn't
+   * drowning the operator in 25+ entries.
    */
   isDeveloper?: boolean;
 }
@@ -125,19 +119,13 @@ const DEV_ITEMS: NavEntry[] = [
   { href: "/tenants", labelKey: "nav.tenants", icon: Building2, isDeveloper: true },
   { href: "/credentials", labelKey: "nav.credentials", icon: KeyRound, isDeveloper: true },
   { href: "/agents", labelKey: "nav.agents", icon: Bot, isDeveloper: true },
-  { href: "/characters", labelKey: "nav.characters", icon: UserSquare, isDeveloper: true },
   { href: "/skills", labelKey: "nav.skills", icon: Wrench, isDeveloper: true },
   { href: "/plugins", labelKey: "nav.plugins", icon: Boxes, isDeveloper: true },
-  { href: "/embedding", labelKey: "nav.embedding", icon: Sparkles, isDeveloper: true },
-  { href: "/federation", labelKey: "nav.federation", icon: Share2, isDeveloper: true },
   { href: "/hooks", labelKey: "nav.hooks", icon: Zap, isDeveloper: true },
   { href: "/rag", labelKey: "nav.rag", icon: Database, isDeveloper: true },
   { href: "/profiles", labelKey: "nav.profiles", icon: Users, isDeveloper: true },
   { href: "/nodes", labelKey: "nav.nodes", icon: Network, isDeveloper: true },
   { href: "/evolution", labelKey: "nav.evolution", icon: Leaf, isDeveloper: true },
-  { href: "/tagmemo", labelKey: "nav.tagmemo", icon: Sparkles, isDeveloper: true },
-  { href: "/diary", labelKey: "nav.diary", icon: BookOpen, isDeveloper: true },
-  { href: "/canvas", labelKey: "nav.canvas", icon: Frame, isDeveloper: true },
 ];
 
 /** Always-visible footer link to the dev-settings dashboard. */
