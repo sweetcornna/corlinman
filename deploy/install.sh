@@ -319,12 +319,16 @@ upgrade_native() {
         || die "no existing native install at $PREFIX/repo — run install.sh without --upgrade for a fresh install"
 
     log "upgrading $PREFIX/repo to ref=$REF"
+    # Shallow fetch of the requested ref into FETCH_HEAD. Tags only land
+    # as a local ref when --tags is passed (and even then a shallow clone
+    # may not import the tag object), so we never `git checkout <tag>` —
+    # we reset --hard FETCH_HEAD directly, which points at whatever the
+    # fetched ref resolved to (branch tip, tag commit, or arbitrary SHA).
     git -C "$PREFIX/repo" fetch --depth 1 origin "$REF"
     # Detect the resolved commit before we touch the worktree so the summary
     # at the end can show before/after SHAs.
     local before_sha
     before_sha="$(git -C "$PREFIX/repo" rev-parse --short HEAD)"
-    git -C "$PREFIX/repo" checkout "$REF"
     git -C "$PREFIX/repo" reset --hard FETCH_HEAD
     local after_sha
     after_sha="$(git -C "$PREFIX/repo" rev-parse --short HEAD)"
