@@ -68,6 +68,7 @@ class _Ev:
     duration_ms: int = 0
     is_error: bool = False
     error_summary: str = ""
+    finish_reason: str = ""
 
 
 class _ScriptedChatService:
@@ -565,6 +566,27 @@ class TestHandleOneQq:
         assert "permission denied" in text
         assert "42ms" in text
 
+    @pytest.mark.asyncio
+    async def test_supplemented_done_skips_reply_send(self) -> None:
+        """A ``Done(finish_reason="supplemented")`` on the QQ handler must
+        skip the reply ``send_action`` entirely — the running turn for
+        the same session_key already has the user's text and will
+        produce the actual reply when it finishes.
+        """
+        svc = _ScriptedChatService([
+            _Ev(kind="done", finish_reason="supplemented"),
+        ])
+        ev = _sample_group_event()
+        binding = ChannelBinding.qq_group(ev.self_id, ev.group_id or 0, ev.user_id)
+        req = RoutedRequest(binding=binding, content="再问一句")
+        adapter = _FakeOneBotAdapter()
+
+        import asyncio
+
+        await handle_one_qq(svc, req, ev, "m", adapter, asyncio.Event())  # type: ignore[arg-type]
+        # No reply action sent — the handler stayed silent.
+        assert adapter.sent == []
+
 
 # ---------------------------------------------------------------------------
 # handle_one_telegram
@@ -944,6 +966,49 @@ class TestHandleOneTelegram:
         _, _, final_text = sender.edits[-1]
         assert len(final_text) <= 4096
         assert final_text.endswith("[...回复过长,已截断]")
+
+    @pytest.mark.asyncio
+    async def test_supplemented_done_skips_final_emit(self) -> None:
+        """A ``Done(finish_reason="supplemented")`` must NOT trigger a final
+        edit / send — the agent absorbed our user text into a running turn
+        and the original turn will produce the actual reply.
+
+        Regression: without the supplemented short-circuit the handler
+        would overwrite the placeholder with ``"（无回复）"`` (the empty-reply
+        cleanup branch), making the user think the bot dropped their
+        supplemental message.
+        """
+        import asyncio
+
+        svc = _ScriptedChatService([
+            _Ev(kind="done", finish_reason="supplemented"),
+        ])
+        binding = ChannelBinding.telegram(bot_id=999, chat_id=42, user_id=42)
+        inbound: InboundEvent[Any] = InboundEvent(
+            channel="telegram",
+            binding=binding,
+            text="第二条消息",
+            message_id="9",
+            timestamp=0,
+            mentioned=True,
+        )
+        sender = _FakeTelegramSender()
+
+        await handle_one_telegram(svc, inbound, "m", sender, asyncio.Event())  # type: ignore[arg-type]
+
+        # Placeholder was sent (decorative spinner) — but no final edit
+        # or "(no reply)" overwrite happened. The first turn's
+        # placeholder remains in place until the running turn yields
+        # its own reply.
+        assert len(sender.sent) == 1, (
+            "expected only the initial placeholder; no extra send"
+        )
+        # No edits with the empty-reply cleanup text — the handler
+        # must not have touched the placeholder.
+        for _, _, edit_text in sender.edits:
+            assert "（无回复）" not in edit_text, (
+                "supplemented Done must not trigger the empty-reply cleanup"
+            )
 
 
 # ---------------------------------------------------------------------------

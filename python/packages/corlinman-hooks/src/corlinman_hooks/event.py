@@ -492,6 +492,34 @@ class _TurnErrored(_HookEventBase):
         return d
 
 
+@dataclass(frozen=True)
+class _UserSupplemented(_HookEventBase):
+    """Fired when a mid-turn user message is injected into a running loop.
+
+    Claude-Code-style "supplemental context": rather than serialising a
+    concurrent Chat RPC behind the existing turn, the gateway absorbs
+    the new user text into the in-flight :class:`ReasoningLoop` so the
+    model sees it on the next round. This event lets observers (admin
+    UI, audit trail) record what was supplemented and when.
+
+    ``text`` is truncated by the emitter to a short preview so the bus
+    doesn't carry full message bodies.
+    """
+
+    session_key_: str
+    text: str
+
+    KIND: ClassVar[str] = "user_supplemented"
+
+    def session_key(self) -> str | None:
+        return self.session_key_ or None
+
+    def to_dict(self) -> dict[str, Any]:
+        d = super().to_dict()
+        d["session_key"] = d.pop("session_key_")
+        return d
+
+
 # ---------------------------------------------------------------------------
 # Public umbrella class: exposes variants as attributes mirroring Rust's
 # ``HookEvent::Variant`` syntax in the source crate.
@@ -532,6 +560,7 @@ class HookEvent(_HookEventBase):
     UserPromptSubmit = _UserPromptSubmit
     TurnComplete = _TurnComplete
     TurnErrored = _TurnErrored
+    UserSupplemented = _UserSupplemented
 
     # Registry of PascalCase variant name -> concrete dataclass. Keys
     # mirror the Rust ``#[serde(tag = "kind")]`` discriminant values
@@ -561,6 +590,7 @@ class HookEvent(_HookEventBase):
         "UserPromptSubmit": _UserPromptSubmit,
         "TurnComplete": _TurnComplete,
         "TurnErrored": _TurnErrored,
+        "UserSupplemented": _UserSupplemented,
     }
 
     # Set of variants that store the JSON ``session_key`` field under
@@ -581,6 +611,7 @@ class HookEvent(_HookEventBase):
             "UserPromptSubmit",
             "TurnComplete",
             "TurnErrored",
+            "UserSupplemented",
         }
     )
 

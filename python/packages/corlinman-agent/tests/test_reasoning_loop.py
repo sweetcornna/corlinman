@@ -547,7 +547,8 @@ def test_estimate_tokens_sums_string_and_multimodal_content() -> None:
     assert _estimate_tokens(messages) == 10 // 4
 
 
-def test_compact_history_passthrough_when_under_budget() -> None:
+@pytest.mark.asyncio
+async def test_compact_history_passthrough_when_under_budget() -> None:
     """Small histories below budget are returned unchanged and unmutated."""
     from corlinman_agent.reasoning_loop import _compact_history
 
@@ -557,13 +558,14 @@ def test_compact_history_passthrough_when_under_budget() -> None:
         {"role": "assistant", "content": "hello"},
     ]
     snapshot = [dict(m) for m in messages]
-    out = _compact_history(messages, budget=100_000)
+    out = await _compact_history(messages, budget=100_000, fast_path_only=True)
     # Same contents, no mutation of the input.
     assert out == snapshot
     assert messages == snapshot
 
 
-def test_compact_history_elides_old_tool_rounds() -> None:
+@pytest.mark.asyncio
+async def test_compact_history_elides_old_tool_rounds() -> None:
     """Older role=tool payloads collapse to the sentinel; recent 3 rounds + seed remain."""
     from corlinman_agent.reasoning_loop import (
         _ELIDED_TOOL_CONTENT,
@@ -594,7 +596,10 @@ def test_compact_history_elides_old_tool_rounds() -> None:
 
     original_len = len(messages)
     snapshot = [dict(m) for m in messages]
-    out = _compact_history(messages, budget=200)
+    # ``fast_path_only=True`` — keep the historic test intent (verify
+    # the elision math) while the slow summarization path lives behind
+    # a dedicated test below.
+    out = await _compact_history(messages, budget=200, fast_path_only=True)
 
     # No deletions — assistant tool_calls shells must keep matching tool msgs.
     assert len(out) == original_len
@@ -621,7 +626,8 @@ def test_compact_history_elides_old_tool_rounds() -> None:
         assert len(am["tool_calls"]) == 1
 
 
-def test_compact_history_idempotent_after_first_pass() -> None:
+@pytest.mark.asyncio
+async def test_compact_history_idempotent_after_first_pass() -> None:
     """Re-running compaction on an already-compacted history is a no-op."""
     from corlinman_agent.reasoning_loop import _compact_history
 
@@ -647,8 +653,8 @@ def test_compact_history_idempotent_after_first_pass() -> None:
         )
         messages.append({"role": "tool", "tool_call_id": cid, "content": huge})
 
-    first = _compact_history(messages, budget=200)
-    second = _compact_history(first, budget=200)
+    first = await _compact_history(messages, budget=200, fast_path_only=True)
+    second = await _compact_history(first, budget=200, fast_path_only=True)
     assert second == first
 
 
@@ -660,9 +666,22 @@ async def test_run_invokes_compact_each_round(monkeypatch: pytest.MonkeyPatch) -
     counter = {"calls": 0}
     real = rl_module._compact_history
 
-    def _spy(msgs: list[dict[str, Any]], budget: int) -> list[dict[str, Any]]:
+    async def _spy(
+        msgs: list[dict[str, Any]],
+        *,
+        budget: int,
+        provider: Any = None,
+        model: str | None = None,
+        fast_path_only: bool = False,
+    ) -> list[dict[str, Any]]:
         counter["calls"] += 1
-        return real(msgs, budget)
+        return await real(
+            msgs,
+            budget=budget,
+            provider=provider,
+            model=model,
+            fast_path_only=fast_path_only,
+        )
 
     monkeypatch.setattr(rl_module, "_compact_history", _spy)
 
@@ -844,3 +863,393 @@ async def test_stale_tool_result_is_dropped_with_warning(
     ]
     assert len(stale_events) == 1, f"expected 1 stale warning, got: {captured!r}"
     assert stale_events[0][1].get("call_id") == "ghost_call"
+
+
+# ---------------------------------------------------------------------------
+# Fix 1 — Claude-Code-style summarization compaction
+# ---------------------------------------------------------------------------
+
+
+def _huge_tool_history(rounds: int = 6, char_count: int = 1_000) -> list[dict[str, Any]]:
+    """Build a synthetic message list with ``rounds`` assistant/tool pairs.
+
+    Each tool message carries ``char_count`` chars of payload — at the
+    default 1k per round × 6 rounds the token estimate clears any
+    "tight" budget set by the test (the slow path threshold is what
+    decides between elision and summarization, not the absolute size).
+    """
+    huge = "X" * char_count
+    msgs: list[dict[str, Any]] = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "task"},
+    ]
+    for i in range(rounds):
+        cid = f"c{i}"
+        msgs.append(
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": cid,
+                        "type": "function",
+                        "function": {"name": "t", "arguments": "{}"},
+                    }
+                ],
+            }
+        )
+        msgs.append({"role": "tool", "tool_call_id": cid, "content": huge})
+    return msgs
+
+
+@pytest.mark.asyncio
+async def test_compact_falls_back_to_elision_under_budget() -> None:
+    """Pressure between 0.6*budget and 0.95*budget → elision, not summarization.
+
+    The summarization sub-call is the heavy-weight escape hatch — it
+    should only fire once the model is genuinely approaching its
+    window (≥95% of budget). At sub-summary pressure the fast elision
+    path must run instead, leaving the older tool payloads as the
+    ``_ELIDED_TOOL_CONTENT`` sentinel and the recent 3 rounds verbatim.
+    """
+    from corlinman_agent.reasoning_loop import (
+        _COMPACT_ELIDE_THRESHOLD,
+        _ELIDED_TOOL_CONTENT,
+        _compact_history,
+        _estimate_tokens,
+    )
+
+    messages = _huge_tool_history(rounds=6, char_count=1_000)
+    tokens = _estimate_tokens(messages)
+    # Pick a budget that puts the message list between the elide and
+    # summary thresholds: tokens >= 0.6 * budget, tokens < 0.95 *
+    # budget. ``budget = int(tokens / 0.7)`` lands the estimate at
+    # ~70% — comfortably above the elide cutoff (60%) and below the
+    # summary cutoff (95%).
+    budget = int(tokens / 0.7)
+    assert tokens >= int(budget * _COMPACT_ELIDE_THRESHOLD), "bracket invariant"
+    assert tokens < int(budget * 0.95), "bracket invariant"
+
+    # Provider stub that fails the assertion if the summary path runs —
+    # exposing a regression where the elision fast path is accidentally
+    # bypassed at sub-threshold pressure.
+    class _NeverCalledProvider:
+        async def chat_stream(self, **_: Any) -> AsyncIterator[ProviderChunk]:  # type: ignore[override]
+            raise AssertionError(
+                "summary path must not fire at sub-threshold pressure"
+            )
+            # Unreachable — kept so this is a valid async generator.
+            yield ProviderChunk(kind="done")
+
+    out = await _compact_history(
+        messages,
+        budget=budget,
+        provider=_NeverCalledProvider(),
+        model="x",
+    )
+    # Elision path observable: tool messages collapsed to the sentinel.
+    tool_msgs = [m for m in out if m.get("role") == "tool"]
+    assert any(m["content"] == _ELIDED_TOOL_CONTENT for m in tool_msgs)
+
+
+@pytest.mark.asyncio
+async def test_compact_summarizes_when_threshold_hit() -> None:
+    """At ≥ 0.95 * budget pressure, the summarization sub-call runs.
+
+    Injects a fake provider that emits a deterministic summary text;
+    the compaction result should be ``[system, summary_block, *recent]``
+    where ``summary_block`` carries the marker prefix.
+    """
+    from corlinman_agent.reasoning_loop import _compact_history
+
+    messages = _huge_tool_history(rounds=6, char_count=1_000)
+
+    # Tight budget so any non-trivial history clears the 0.95 threshold.
+    budget = 200
+
+    summary_text = "Task: refactor; decisions made; pending work captured."
+
+    class _SummaryProvider:
+        def __init__(self) -> None:
+            self.calls_seen: list[dict[str, Any]] = []
+
+        async def chat_stream(
+            self,
+            *,
+            model: str,
+            messages: list[dict[str, Any]],
+            tools: Any = None,
+            temperature: Any = None,
+            max_tokens: Any = None,
+            extra: Any = None,
+        ) -> AsyncIterator[ProviderChunk]:  # type: ignore[override]
+            self.calls_seen.append({
+                "model": model,
+                "messages": list(messages),
+                "tools": tools,
+                "max_tokens": max_tokens,
+            })
+            yield ProviderChunk(kind="token", text=summary_text)
+            yield ProviderChunk(kind="done", finish_reason="stop")
+
+    prov = _SummaryProvider()
+    out = await _compact_history(
+        messages,
+        budget=budget,
+        provider=prov,
+        model="claude-sonnet-test",
+    )
+
+    # Sub-call fired exactly once, tools suppressed, model echoed.
+    assert len(prov.calls_seen) == 1
+    call = prov.calls_seen[0]
+    assert call["tools"] is None
+    assert call["model"] == "claude-sonnet-test"
+    # The sub-call saw a leading system prompt + the older messages.
+    sub_messages = call["messages"]
+    assert sub_messages[0]["role"] == "system"
+    assert "compacting" in sub_messages[0]["content"]
+
+    # Result shape: leading system blocks + ONE synthetic summary block
+    # + the last 3 assistant rounds (each with its matching tool msg).
+    roles = [m.get("role") for m in out]
+    assert roles[0] == "system"  # leading system preserved
+    # The synthetic summary block sits right after the leading system.
+    summary_block = out[1]
+    assert summary_block["role"] == "system"
+    assert summary_block["content"].startswith("PRIOR CONVERSATION SUMMARY:")
+    assert summary_text in summary_block["content"]
+    # Recent 3 assistant rounds (each = assistant + tool) preserved.
+    recent_assistant = [m for m in out[2:] if m.get("role") == "assistant"]
+    assert len(recent_assistant) == 3
+    recent_tools = [m for m in out[2:] if m.get("role") == "tool"]
+    assert len(recent_tools) == 3
+    # Recent tool content NOT elided — the slow path drops the old
+    # tool messages entirely and replaces them with the summary block.
+    for tm in recent_tools:
+        assert tm["content"] == "X" * 1_000
+
+
+@pytest.mark.asyncio
+async def test_compact_summary_provider_failure_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the sub-provider call raises, compaction degrades to elision.
+
+    Context overflow must never brick the chat — a transient 5xx /
+    timeout on the summarization call should silently fall back to the
+    cheap path so the parent reasoning loop still gets a sub-budget
+    message list to feed the next round.
+    """
+    from corlinman_agent.reasoning_loop import (
+        _ELIDED_TOOL_CONTENT,
+        _compact_history,
+        _estimate_tokens,
+    )
+
+    messages = _huge_tool_history(rounds=6, char_count=1_000)
+    budget = 200
+
+    class _BrokenProvider:
+        async def chat_stream(self, **_: Any) -> AsyncIterator[ProviderChunk]:  # type: ignore[override]
+            raise RuntimeError("simulated upstream 5xx")
+            yield ProviderChunk(kind="done")  # unreachable
+
+    # Intercept the warning so we can confirm the fallback fired
+    # without depending on global structlog configuration.
+    import corlinman_agent.reasoning_loop as rl_mod
+
+    captured: list[tuple[str, dict]] = []
+
+    class _StubLogger:
+        def warning(self, event: str, **kw: object) -> None:
+            captured.append((event, dict(kw)))
+
+        def info(self, event: str, **kw: object) -> None:
+            pass
+
+        def exception(self, event: str, **kw: object) -> None:
+            pass
+
+    monkeypatch.setattr(rl_mod, "logger", _StubLogger())
+
+    before = _estimate_tokens(messages)
+    out = await _compact_history(
+        messages,
+        budget=budget,
+        provider=_BrokenProvider(),
+        model="x",
+    )
+
+    # Fallback observable: result is strictly smaller than the input
+    # AND carries elided tool sentinels (the elision path, not the
+    # summary path). We can't promise a strict sub-budget bound — the
+    # elision strategy keeps the recent 3 rounds verbatim and only
+    # collapses the older tool payloads to the sentinel.
+    after = _estimate_tokens(out)
+    assert after < before, "elision must reduce token estimate"
+    tool_msgs = [m for m in out if m.get("role") == "tool"]
+    elided = [m for m in tool_msgs if m["content"] == _ELIDED_TOOL_CONTENT]
+    assert elided, "elision sentinel should appear after summary fallback"
+
+    # Warning fired with the failure reason captured.
+    failure_warnings = [
+        (ev, kw) for ev, kw in captured if ev == "agent.context.summarize_failed"
+    ]
+    assert len(failure_warnings) == 1
+    assert "5xx" in str(failure_warnings[0][1].get("error", ""))
+
+
+# ---------------------------------------------------------------------------
+# Fix 2 — Mid-task user message injection
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_inject_user_message_drains_into_next_round() -> None:
+    """``inject_user_message`` queues text that becomes a user msg next round.
+
+    Drives a two-round loop. After the first round completes (a tool
+    call), the test injects a supplemental user message; the second
+    provider call's ``messages`` list must carry that text as a fresh
+    ``role="user"`` block with the ``[追加上下文]`` marker prefix.
+    """
+    round1 = [
+        ProviderChunk(kind="tool_call_start", tool_call_id="c1", tool_name="t"),
+        ProviderChunk(kind="tool_call_delta", tool_call_id="c1", arguments_delta="{}"),
+        ProviderChunk(kind="tool_call_end", tool_call_id="c1"),
+        ProviderChunk(kind="done", finish_reason="tool_calls"),
+    ]
+    round2 = [
+        ProviderChunk(kind="token", text="done"),
+        ProviderChunk(kind="done", finish_reason="stop"),
+    ]
+    prov = _MultiRoundProvider([round1, round2])
+    loop = ReasoningLoop(prov, tool_result_timeout=1.0)
+
+    async def driver() -> None:
+        async for e in loop.run(
+            ChatStart(model="x", messages=[{"role": "user", "content": "go"}])
+        ):
+            if isinstance(e, ToolCallEvent):
+                # Inject BEFORE feeding the tool result so the queue
+                # is populated when the next round starts. The order
+                # doesn't actually matter — both happen between rounds.
+                loop.inject_user_message("追问：还要查 X")
+                loop.feed_tool_result(
+                    ToolResult(call_id=e.call_id, content='{"ok":true}')
+                )
+
+    await asyncio.wait_for(driver(), timeout=2.0)
+
+    # Round 2's message list contains the supplement as the LAST user msg.
+    assert len(prov.calls_seen) == 2
+    round2_messages = prov.calls_seen[1]
+    user_messages = [m for m in round2_messages if m.get("role") == "user"]
+    # Original "go" + the injected supplement.
+    assert any("追问" in m.get("content", "") for m in user_messages)
+    supplements = [
+        m for m in user_messages
+        if isinstance(m.get("content"), str)
+        and m["content"].startswith("[追加上下文] ")
+    ]
+    assert len(supplements) == 1
+    assert supplements[0]["content"] == "[追加上下文] 追问：还要查 X"
+
+
+@pytest.mark.asyncio
+async def test_inject_user_message_thread_safe() -> None:
+    """Multiple parallel injects all arrive on the next round.
+
+    Validates the queue is unbounded enough to absorb a burst — a
+    busy group chat can fire several messages between rounds, and
+    silently dropping any of them would corrupt the conversation.
+    """
+    round1 = [
+        ProviderChunk(kind="tool_call_start", tool_call_id="c1", tool_name="t"),
+        ProviderChunk(kind="tool_call_delta", tool_call_id="c1", arguments_delta="{}"),
+        ProviderChunk(kind="tool_call_end", tool_call_id="c1"),
+        ProviderChunk(kind="done", finish_reason="tool_calls"),
+    ]
+    round2 = [
+        ProviderChunk(kind="token", text="ack"),
+        ProviderChunk(kind="done", finish_reason="stop"),
+    ]
+    prov = _MultiRoundProvider([round1, round2])
+    loop = ReasoningLoop(prov, tool_result_timeout=1.0)
+
+    async def _injector(label: str) -> None:
+        loop.inject_user_message(f"burst-{label}")
+
+    async def driver() -> None:
+        async for e in loop.run(
+            ChatStart(model="x", messages=[{"role": "user", "content": "go"}])
+        ):
+            if isinstance(e, ToolCallEvent):
+                # Fan out 8 parallel injections from independent tasks
+                # (gather guarantees the puts all complete before the
+                # next round runs).
+                await asyncio.gather(*(
+                    _injector(str(i)) for i in range(8)
+                ))
+                loop.feed_tool_result(
+                    ToolResult(call_id=e.call_id, content='{"ok":true}')
+                )
+
+    await asyncio.wait_for(driver(), timeout=2.0)
+
+    round2_messages = prov.calls_seen[1]
+    supplements = [
+        m for m in round2_messages
+        if m.get("role") == "user"
+        and isinstance(m.get("content"), str)
+        and m["content"].startswith("[追加上下文] burst-")
+    ]
+    # Every burst arrived — none silently dropped.
+    assert len(supplements) == 8
+    # Order is preserved (FIFO queue) — labels appear 0..7 in arrival
+    # order. ``asyncio.gather`` is not ordering-guaranteed across awaits
+    # but each ``put_nowait`` is synchronous, so the order matches the
+    # iteration order over ``range(8)``.
+    labels = [m["content"].split("-", 1)[1] for m in supplements]
+    assert labels == [str(i) for i in range(8)]
+
+
+@pytest.mark.asyncio
+async def test_inject_empty_or_whitespace_is_dropped() -> None:
+    """Empty / whitespace-only injects don't pollute the next round.
+
+    A misbehaving channel handler that forwards a blank message
+    shouldn't burn a user-supplement slot — drop quietly at the
+    inject point so the queue stays clean.
+    """
+    round1 = [
+        ProviderChunk(kind="tool_call_start", tool_call_id="c1", tool_name="t"),
+        ProviderChunk(kind="tool_call_end", tool_call_id="c1"),
+        ProviderChunk(kind="done", finish_reason="tool_calls"),
+    ]
+    round2 = [
+        ProviderChunk(kind="done", finish_reason="stop"),
+    ]
+    prov = _MultiRoundProvider([round1, round2])
+    loop = ReasoningLoop(prov, tool_result_timeout=1.0)
+
+    async def driver() -> None:
+        async for e in loop.run(
+            ChatStart(model="x", messages=[{"role": "user", "content": "go"}])
+        ):
+            if isinstance(e, ToolCallEvent):
+                loop.inject_user_message("")
+                loop.inject_user_message("   \n\t  ")
+                loop.feed_tool_result(
+                    ToolResult(call_id=e.call_id, content='{"ok":true}')
+                )
+
+    await asyncio.wait_for(driver(), timeout=2.0)
+    round2_messages = prov.calls_seen[1]
+    supplements = [
+        m for m in round2_messages
+        if isinstance(m.get("content"), str)
+        and m["content"].startswith("[追加上下文] ")
+    ]
+    assert supplements == []

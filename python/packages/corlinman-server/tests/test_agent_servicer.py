@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
@@ -1692,3 +1693,198 @@ async def test_aclose_tolerates_resource_close_failures(
     assert good_bb.calls == ["close"], (
         "R4 violation: a failing journal.close blocked the blackboard close"
     )
+
+
+# ---------------------------------------------------------------------------
+# Claude-Code-style mid-turn user supplement
+#
+# A second Chat RPC for the SAME session_key while a turn is still in
+# flight must NOT serialise behind the session lock as a new turn —
+# instead the new user text is injected into the running loop and the
+# second RPC returns a short "supplemented" Done frame.
+# ---------------------------------------------------------------------------
+
+
+class _PausingProvider:
+    """Provider that drives a 2-round turn with a pause point the test
+    controls. Round 1 emits a tool_call + done(tool_calls) and BLOCKS
+    on ``round1_block`` before signalling done — that's the window
+    during which the test installs the active loop AND drives the
+    second Chat RPC to inject a supplement. Round 2 sees the
+    supplement in its drained messages list (the reasoning loop drains
+    the queue at the top of every round, *before* calling chat_stream).
+    """
+
+    def __init__(
+        self,
+        round1_seen: asyncio.Event,
+        release: asyncio.Event,
+    ) -> None:
+        # Fired the moment the provider's round-1 chat_stream begins
+        # running — proves the active loop is live and gives the test
+        # a deterministic synchronisation point.
+        self._round1_seen = round1_seen
+        self._release = release
+        self.rounds_seen: list[list[dict[str, Any]]] = []
+
+    async def chat_stream(
+        self, *, messages: list[dict[str, Any]], **_: Any
+    ) -> AsyncIterator[ProviderChunk]:  # type: ignore[override]
+        self.rounds_seen.append([dict(m) for m in messages])
+        idx = len(self.rounds_seen) - 1
+        if idx == 0:
+            # Signal the test that round 1 has started and block until
+            # the supplement has been injected via the second RPC.
+            self._round1_seen.set()
+            await self._release.wait()
+            yield ProviderChunk(
+                kind="tool_call_start",
+                tool_call_id="calc1",
+                tool_name="calculator",
+            )
+            yield ProviderChunk(
+                kind="tool_call_delta",
+                tool_call_id="calc1",
+                arguments_delta='{"expression":"1+1"}',
+            )
+            yield ProviderChunk(kind="tool_call_end", tool_call_id="calc1")
+            yield ProviderChunk(kind="done", finish_reason="tool_calls")
+            return
+        if idx == 1:
+            # Round 2 — drained message list at the top of this round
+            # includes the supplemented user text. Just emit a final
+            # text + done(stop) so the loop terminates cleanly.
+            yield ProviderChunk(kind="token", text="final answer")
+            yield ProviderChunk(kind="done", finish_reason="stop")
+            return
+        # Defensive — extra rounds shouldn't happen in this test.
+        yield ProviderChunk(kind="done", finish_reason="stop")
+
+
+@pytest.mark.asyncio
+async def test_concurrent_chat_for_same_session_injects_instead_of_serializing(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second Chat RPC for the same session_key supplements the running turn.
+
+    Drives RPC #1 against a paused provider; while RPC #1 is mid-flight
+    (parked on the second-round provider wait), fires RPC #2 against the
+    same session_key with new user text. RPC #2 must return a short
+    ``Done(finish_reason="supplemented")`` frame without starting a new
+    turn, and the supplemented text must appear in RPC #1's second-round
+    message list.
+    """
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+    round1_seen = asyncio.Event()
+    release = asyncio.Event()
+    provider = _PausingProvider(round1_seen, release)
+    servicer = CorlinmanAgentServicer(provider_resolver=lambda _m: provider)
+
+    server = grpc.aio.server()
+    agent_pb2_grpc.add_AgentServicer_to_server(servicer, server)
+    port = server.add_insecure_port("127.0.0.1:0")
+    await server.start()
+
+    try:
+        async with grpc.aio.insecure_channel(f"127.0.0.1:{port}") as channel:
+            stub = agent_pb2_grpc.AgentStub(channel)
+
+            async def first_frames() -> AsyncIterator[agent_pb2.ClientFrame]:
+                yield agent_pb2.ClientFrame(
+                    start=agent_pb2.ChatStart(
+                        model="claude-sonnet-4-5",
+                        session_key="sess-supplement",
+                        messages=[
+                            common_pb2.Message(
+                                role=common_pb2.USER, content="算 1+1"
+                            )
+                        ],
+                    )
+                )
+                # Hold the request side open so the inbound pump on the
+                # server can keep listening (preserves the same-stream
+                # contract the production gateway uses).
+                await release.wait()
+                # Reach here only after the test releases; then close.
+
+            first_call = stub.Chat(first_frames())
+            first_done: list[str] = []
+            first_tokens: list[str] = []
+
+            async def drain_first() -> None:
+                async for f in first_call:
+                    k = f.WhichOneof("kind")
+                    if k == "token":
+                        first_tokens.append(f.token.text)
+                    elif k == "done":
+                        first_done.append(f.done.finish_reason)
+
+            first_task = asyncio.create_task(drain_first())
+
+            # Wait until the provider's round-1 chat_stream has actually
+            # started running (proves the active loop is fully wired and
+            # the supplement injection will land on round 2 — not race
+            # with round-1 setup).
+            await asyncio.wait_for(round1_seen.wait(), timeout=5.0)
+            assert servicer._active_loops.get("sess-supplement") is not None, (
+                "RPC #1 never registered its active loop"
+            )
+
+            # Drive RPC #2 — same session_key, new user text. Must
+            # return promptly with finish_reason="supplemented" and
+            # MUST NOT start a parallel turn.
+            async def second_frames() -> AsyncIterator[agent_pb2.ClientFrame]:
+                yield agent_pb2.ClientFrame(
+                    start=agent_pb2.ChatStart(
+                        model="claude-sonnet-4-5",
+                        session_key="sess-supplement",
+                        messages=[
+                            common_pb2.Message(
+                                role=common_pb2.USER, content="再算 2+2"
+                            )
+                        ],
+                    )
+                )
+
+            second_call = stub.Chat(second_frames())
+            second_finishes: list[str] = []
+            async for f in second_call:
+                k = f.WhichOneof("kind")
+                if k == "done":
+                    second_finishes.append(f.done.finish_reason)
+
+            # RPC #2 returned a single Done(supplemented) — no new turn.
+            assert second_finishes == ["supplemented"], (
+                f"RPC #2 returned the wrong terminator: {second_finishes!r}"
+            )
+
+            # Release the provider so round 1 finishes (emits the tool
+            # call), the servicer dispatches calculator + feeds the
+            # result back, and round 2 begins. The reasoning loop
+            # drains the pending-user-messages queue at the top of
+            # round 2 — that's where the supplemented text appears in
+            # ``provider.rounds_seen[1]``.
+            release.set()
+            # Wait so RPC #1's drain task completes.
+            await asyncio.wait_for(first_task, timeout=5.0)
+
+            # RPC #1 saw its supplement: the second round's message
+            # list must contain the supplemented text with the
+            # ``[追加上下文]`` prefix.
+            assert len(provider.rounds_seen) == 2
+            round2_msgs = provider.rounds_seen[1]
+            supplemented = [
+                m for m in round2_msgs
+                if isinstance(m.get("content"), str)
+                and m["content"].startswith("[追加上下文] ")
+                and "2+2" in m["content"]
+            ]
+            assert len(supplemented) == 1, (
+                f"RPC #1 round 2 missing supplement: {round2_msgs!r}"
+            )
+
+            # RPC #1 produced the final answer text.
+            assert "final answer" in "".join(first_tokens)
+            assert first_done == ["stop"]
+    finally:
+        await server.stop(grace=None)

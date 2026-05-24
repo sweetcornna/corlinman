@@ -797,6 +797,7 @@ async def handle_one_qq(
 
     text_parts: list[str] = []
     error_message: str | None = None
+    supplemented = False
     # Per-turn tool-activity log. Each entry: (kind, label, duration_ms,
     # is_error, error_summary). Rendered by _qq_format_activity_summary
     # and prepended to the final reply if non-empty.
@@ -808,6 +809,17 @@ async def handle_one_qq(
             if kind == "token_delta":
                 text_parts.append(getattr(chat_ev, "text", "") or "")
             elif kind == "done":
+                # Claude-Code-style mid-turn supplement: the agent
+                # servicer absorbed this RPC's user text into the
+                # already-running turn for the same session_key. Don't
+                # render a reply — the original turn is still in flight
+                # and will produce one of its own.
+                if _is_supplemented_done(chat_ev):
+                    supplemented = True
+                    _log.info(
+                        "qq handle_one supplemented session=%s",
+                        req.binding.session_key(),
+                    )
                 break
             elif kind == "error":
                 error_message = getattr(chat_ev, "error", "") or getattr(
@@ -871,6 +883,19 @@ async def handle_one_qq(
             typing_task.cancel()
             with suppress(asyncio.CancelledError, Exception):
                 await typing_task
+
+    if supplemented:
+        # Silent acknowledgement — the running turn for this session
+        # absorbed our user text. Do NOT post any reply / summary.
+        # The inbox row is marked done (the supplement was successfully
+        # absorbed; no error to report).
+        if inbox is not None and inbox_id is not None:
+            try:
+                await inbox.mark_done(inbox_id)
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("qq inbox mark_done failed: %s", exc)
+        _log.info("channel.user_supplemented channel=qq user=%s", event.user_id)
+        return
 
     # Build the optional tool-activity prelude (honours env knob).
     summary = (
@@ -1198,11 +1223,24 @@ async def handle_one_telegram(
             # at the end.
             _log.warning("telegram placeholder send failed: %s", exc)
 
-        error_message = await _drive_spinner(spinner, chat_service, inbound, model, cancel)
+        outcome = await _drive_spinner(spinner, chat_service, inbound, model, cancel)
     finally:
         typing_task.cancel()
         with suppress(asyncio.CancelledError, Exception):
             await typing_task
+
+    if outcome.supplemented:
+        # Silent acknowledgement: the agent absorbed this RPC's user
+        # text into the already-running turn for the same session. Do
+        # not touch the placeholder (the user sees the spinner /
+        # typing indicator continue) and do not emit a final reply.
+        _log.info(
+            "channel.user_supplemented channel=telegram session=%s",
+            inbound.binding.session_key(),
+        )
+        return
+
+    error_message = outcome.error_message
 
     if error_message is not None:
         body = f"[corlinman error] {error_message}"
@@ -1237,18 +1275,35 @@ async def handle_one_telegram(
         _log.warning("telegram final emit failed: %s", exc)
 
 
+@dataclass(slots=True)
+class _DriveSpinnerOutcome:
+    """Structured result from :func:`_drive_spinner`.
+
+    ``error_message`` is non-empty when the backend emitted an
+    ``error`` event; ``supplemented`` is ``True`` when the backend
+    emitted ``Done(finish_reason="supplemented")`` — meaning the agent
+    servicer absorbed this RPC's user text into an already-running
+    turn for the same session_key and the channel handler MUST NOT
+    render any reply.
+    """
+
+    error_message: str | None = None
+    supplemented: bool = False
+
+
 async def _drive_spinner(
     spinner: MutableSpinner,
     chat_service: ChatServiceLike,
     inbound: InboundEvent[Any],
     model: str,
     cancel: asyncio.Event,
-) -> str | None:
+) -> _DriveSpinnerOutcome:
     """Stream ``chat_service.run`` events into ``spinner``.
 
-    Returns an ``error_message`` string when the backend sent an ``error``
-    event, ``None`` otherwise. The caller is responsible for assembling
-    the final reply from ``spinner.text_parts``.
+    Returns a :class:`_DriveSpinnerOutcome` describing how the stream
+    terminated. The caller is responsible for assembling the final
+    reply from ``spinner.text_parts`` when ``error_message`` is
+    ``None`` and ``supplemented`` is ``False``.
 
     Shared by the four mutable-spinner channels (Telegram / Discord /
     Slack / Feishu) so the event-loop logic stays in one place.
@@ -1267,10 +1322,16 @@ async def _drive_spinner(
         elif kind == "tool_result":
             await spinner.on_tool_result(ev)
         elif kind == "done":
-            return None
+            if _is_supplemented_done(ev):
+                return _DriveSpinnerOutcome(supplemented=True)
+            return _DriveSpinnerOutcome()
         elif kind == "error":
-            return getattr(ev, "error", "") or getattr(ev, "message", "")
-    return None
+            return _DriveSpinnerOutcome(
+                error_message=(
+                    getattr(ev, "error", "") or getattr(ev, "message", "")
+                ),
+            )
+    return _DriveSpinnerOutcome()
 
 
 # ---------------------------------------------------------------------------
@@ -1443,11 +1504,19 @@ async def handle_one_discord(
         except Exception as exc:  # noqa: BLE001
             _log.warning("discord placeholder send failed: %s", exc)
 
-        error_message = await _drive_spinner(spinner, chat_service, inbound, model, cancel)
+        outcome = await _drive_spinner(spinner, chat_service, inbound, model, cancel)
     finally:
         typing_task.cancel()
         with suppress(asyncio.CancelledError, Exception):
             await typing_task
+
+    if outcome.supplemented:
+        _log.info(
+            "channel.user_supplemented channel=discord session=%s",
+            inbound.binding.session_key(),
+        )
+        return
+    error_message = outcome.error_message
 
     if error_message is not None:
         body = f"[corlinman error] {error_message}"
@@ -1624,7 +1693,14 @@ async def handle_one_slack(
     except Exception as exc:  # noqa: BLE001
         _log.warning("slack placeholder send failed: %s", exc)
 
-    error_message = await _drive_spinner(spinner, chat_service, inbound, model, cancel)
+    outcome = await _drive_spinner(spinner, chat_service, inbound, model, cancel)
+    if outcome.supplemented:
+        _log.info(
+            "channel.user_supplemented channel=slack session=%s",
+            inbound.binding.session_key(),
+        )
+        return
+    error_message = outcome.error_message
 
     if error_message is not None:
         body = f"[corlinman error] {error_message}"
@@ -1800,7 +1876,14 @@ async def handle_one_feishu(
     except Exception as exc:  # noqa: BLE001
         _log.warning("feishu placeholder send failed: %s", exc)
 
-    error_message = await _drive_spinner(spinner, chat_service, inbound, model, cancel)
+    outcome = await _drive_spinner(spinner, chat_service, inbound, model, cancel)
+    if outcome.supplemented:
+        _log.info(
+            "channel.user_supplemented channel=feishu session=%s",
+            inbound.binding.session_key(),
+        )
+        return
+    error_message = outcome.error_message
 
     if error_message is not None:
         body = f"[corlinman error] {error_message}"
@@ -2132,6 +2215,7 @@ async def handle_one_qq_official(
     tool_lines: list[str] = []
     status_lines: list[str] = []
     error_message: str | None = None
+    supplemented = False
     try:
         stream = chat_service.run(request, cancel)
         async for chat_ev in stream:
@@ -2152,6 +2236,8 @@ async def handle_one_qq_official(
                 else:
                     tool_lines.append(_format_tool_summary_line(chat_ev))
             elif kind == "done":
+                if _is_supplemented_done(chat_ev):
+                    supplemented = True
                 break
             elif kind == "error":
                 error_message = (
@@ -2169,6 +2255,18 @@ async def handle_one_qq_official(
             except Exception:  # noqa: BLE001
                 pass
         raise
+
+    if supplemented:
+        _log.info(
+            "channel.user_supplemented channel=qq_official session=%s",
+            inbound.binding.session_key(),
+        )
+        if inbox is not None and inbox_id is not None:
+            try:
+                await inbox.mark_done(inbox_id)
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("qq_official inbox mark_done failed: %s", exc)
+        return
 
     if error_message is not None:
         body = f"[corlinman error] {error_message}"
@@ -2402,6 +2500,7 @@ async def handle_one_wechat_official(
     request = _build_text_channel_request(inbound, model)
     text_parts: list[str] = []
     error_message: str | None = None
+    supplemented = False
     try:
         stream = chat_service.run(request, cancel)
         async for ev in stream:
@@ -2409,6 +2508,8 @@ async def handle_one_wechat_official(
             if kind == "token_delta":
                 text_parts.append(getattr(ev, "text", "") or "")
             elif kind == "done":
+                if _is_supplemented_done(ev):
+                    supplemented = True
                 break
             elif kind == "error":
                 error_message = getattr(ev, "error", "") or getattr(
@@ -2424,6 +2525,17 @@ async def handle_one_wechat_official(
         if passive_future is not None and not passive_future.done():
             passive_future.set_result("")
         raise
+
+    if supplemented:
+        _log.info(
+            "channel.user_supplemented channel=wechat_official session=%s",
+            inbound.binding.session_key(),
+        )
+        # Release the webhook so it returns without a passive reply —
+        # the running turn will push its own answer when ready.
+        if passive_future is not None and not passive_future.done():
+            passive_future.set_result("")
+        return
 
     if error_message is not None:
         body = f"[corlinman error] {error_message}"
@@ -2503,9 +2615,12 @@ async def _collect_reply(
     Shared by the Discord / Slack / Feishu ``handle_one_*`` helpers — the
     inbound→chat→reply collapse is identical across these three text-only
     channels. Returns the reply body, or ``None`` when the assistant
-    produced an empty reply (caller should send nothing). On a backend
-    error the body is a short ``[corlinman error] <msg>`` string so the
-    user knows something failed — matching :func:`handle_one_telegram`.
+    produced an empty reply (caller should send nothing) OR when the
+    backend signalled ``Done(finish_reason="supplemented")`` — the
+    running turn absorbed the user text and the caller must stay silent.
+    On a backend error the body is a short ``[corlinman error] <msg>``
+    string so the user knows something failed — matching
+    :func:`handle_one_telegram`.
     """
     request = _build_text_channel_request(inbound, model)
     stream = chat_service.run(request, cancel)
@@ -2516,6 +2631,8 @@ async def _collect_reply(
         if kind == "token_delta":
             text_parts.append(getattr(ev, "text", "") or "")
         elif kind == "done":
+            if _is_supplemented_done(ev):
+                return None  # silent ack — running turn absorbed it
             break
         elif kind == "error":
             error_message = getattr(ev, "error", "") or getattr(ev, "message", "")
@@ -2577,6 +2694,30 @@ def _event_kind(ev: Any) -> str:
         "InternalChatEvent": "token_delta",
     }
     return mapping.get(name, name.lower())
+
+
+#: Wire sentinel for a Done frame that absorbed a mid-turn user
+#: supplement (see ``agent_servicer.Chat`` — when a second Chat RPC
+#: arrives for an already-running session, it injects the new user
+#: text into the in-flight ``ReasoningLoop`` and returns a Done with
+#: this finish_reason). Channel handlers MUST NOT render a reply for
+#: these — the original turn is still running and will produce the
+#: actual reply on its own.
+_SUPPLEMENTED_FINISH_REASON = "supplemented"
+
+
+def _is_supplemented_done(ev: Any) -> bool:
+    """Return ``True`` if ``ev`` is the ``Done(supplemented)`` sentinel.
+
+    Checks the kind first to avoid mistakenly treating a non-Done
+    event with a stray ``finish_reason`` attribute as supplemented.
+    Tolerates both the dataclass shape (``ev.kind == "done"``) and
+    the gateway_api dataclass (``finish_reason`` attribute).
+    """
+    if _event_kind(ev) != "done":
+        return False
+    fr = getattr(ev, "finish_reason", "") or ""
+    return fr == _SUPPLEMENTED_FINISH_REASON
 
 
 def _attr(obj: Any, name: str, default: Any) -> Any:

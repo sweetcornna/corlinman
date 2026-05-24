@@ -688,6 +688,14 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         self._session_locks: _SessionLockCache = _SessionLockCache(
             _session_cache_cap()
         )
+        # Claude-Code-style mid-turn supplements: while a turn is in
+        # flight for ``session_key``, a second Chat RPC for the SAME
+        # session_key shouldn't queue up behind the lock — instead the
+        # new user text gets injected into the running loop so the
+        # model absorbs it on the next round. This map is the lookup:
+        # populated under the session lock right before ``loop.run()``
+        # starts, cleared in the same handler's ``finally``.
+        self._active_loops: dict[str, ReasoningLoop] = {}
 
     async def Chat(  # noqa: N802 — gRPC method name
         self,
@@ -783,6 +791,67 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 )
             except Exception as exc:  # noqa: BLE001 — never block the chat
                 logger.warning("agent.chat.user_prompt_emit_failed", error=str(exc))
+
+        # Claude-Code-style mid-turn supplement: if a turn is ALREADY
+        # running for this session_key, inject the new user text into
+        # the in-flight loop and return a short ``supplemented`` Done
+        # frame instead of queueing a fresh turn behind the session
+        # lock. The channel handler renders this as a silent
+        # acknowledgement — the user sees the bot still "thinking"
+        # while their supplement gets absorbed by the running model.
+        if start.session_key and user_text:
+            active_loop = self._active_loops.get(start.session_key)
+            if active_loop is not None:
+                active_loop.inject_user_message(user_text)
+                # T4.1: journal the supplement onto the existing turn
+                # so a resume sees the full conversation. Best-effort.
+                journal = await self._get_journal()
+                if journal is not None:
+                    try:
+                        active_turn = await journal.find_resumable_turn(
+                            start.session_key,
+                            user_text,
+                            user_id=_extract_user_id(start),
+                        )
+                        if active_turn is not None:
+                            await journal.append_message(
+                                active_turn.turn_id,
+                                role="user",
+                                content=f"[追加] {user_text}",
+                            )
+                    except Exception as exc:  # noqa: BLE001 — degrade
+                        logger.warning(
+                            "agent.chat.supplement_journal_failed",
+                            error=str(exc),
+                        )
+                # Hook event so observers see the supplement.
+                try:
+                    from corlinman_hooks import HookEvent
+
+                    await self._emit_hook_event(
+                        HookEvent.UserSupplemented(
+                            session_key_=start.session_key,
+                            text=user_text[:200],
+                        )
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "agent.chat.user_supplemented_emit_failed",
+                        error=str(exc),
+                    )
+                logger.info(
+                    "agent.chat.user_supplemented",
+                    session=start.session_key,
+                    preview=user_text[:200],
+                )
+                # Wire-compatible "no new turn" Done — finish_reason is
+                # a free-form string on the proto. The channel handler
+                # interprets ``"supplemented"`` as "absorbed by the
+                # running turn — do not render a reply".
+                yield agent_pb2.ServerFrame(
+                    done=agent_pb2.Done(finish_reason="supplemented")
+                )
+                return
 
         # T4.2: per-session async lock — same-session RPCs serialize so
         # the todo store / cost meter / workspace snapshot can't race.
@@ -957,6 +1026,16 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         seq = 0
         reply_parts: list[str] = []
         try:
+            # Register the active loop so a concurrent Chat RPC for the
+            # same session_key can find it and inject its user text
+            # instead of queuing a fresh turn behind the session lock.
+            # Cleared in the matching ``finally`` block so a crashing
+            # handler can't leak a stale entry. Skipped when
+            # ``session_key`` is empty (one-shot HTTP callers — they
+            # don't need the supplement path).
+            if start.session_key:
+                self._active_loops[start.session_key] = loop
+
             async for event in loop.run(start):
                 if isinstance(event, TokenEvent):
                     if not event.is_reasoning:
@@ -1238,6 +1317,21 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 )
             yield _error_frame("unknown", str(exc))
         finally:
+            # Drop the active-loop registration FIRST (sync, no await
+            # before it) so a racing Chat RPC can't see an entry that
+            # is about to be cleaned up. Concurrency note: in CPython
+            # asyncio is single-threaded, so the only way a second
+            # RPC sees this entry is if it ran BEFORE the finally
+            # block was entered — which means the parent loop was
+            # still active and the inject is safe to drain. Once
+            # ``loop.run`` returns, control yields here and the pop
+            # happens before any of the subsequent ``await`` points
+            # (inbound_task.cancel + await inbound_task). Compare-
+            # and-pop to avoid clobbering a future replacement.
+            if start.session_key:
+                existing = self._active_loops.get(start.session_key)
+                if existing is loop:
+                    self._active_loops.pop(start.session_key, None)
             inbound_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await inbound_task
