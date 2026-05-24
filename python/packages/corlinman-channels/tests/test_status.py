@@ -22,8 +22,10 @@ from corlinman_channels._status import (
     STATUS_REASONING_PREFIX,
     STATUS_THINKING,
     TEXT_LIMIT,
+    TODO_WRITE_TOOL,
     TRUNCATION_MARKER,
     MutableSpinner,
+    format_todo_list,
     format_tool_result,
     format_tool_status,
     parse_send_attachment_args,
@@ -373,3 +375,309 @@ class TestMutableSpinner:
         # Same event again — no new edit.
         await spinner.on_tool_call(_Ev(tool="finish"))
         assert len(edits) == first_len
+
+
+# ---------------------------------------------------------------------------
+# format_todo_list — Claude-Code-style checkbox renderer for the
+# ``todo_write`` tool call. Lives in the mutable-spinner module so the
+# Telegram spinner + the QQ/WeChat summary block share the same shape.
+# ---------------------------------------------------------------------------
+
+
+def _todos_json(items: list[dict[str, str]]) -> bytes:
+    """Encode a ``todo_write`` args payload as the dispatcher would."""
+    return json.dumps({"todos": items}).encode("utf-8")
+
+
+class TestFormatTodoList:
+    def test_constant_exported(self) -> None:
+        """The shared tool-name constant must match the agent-side one
+        so the channel handlers wire correctly without a stale literal."""
+        assert TODO_WRITE_TOOL == "todo_write"
+
+    def test_renders_checkboxes(self) -> None:
+        """Mixed 2-completed / 1-in_progress / 2-pending list must
+        render all three checkbox glyphs and the (done/total) header."""
+        args = _todos_json([
+            {"content": "Search market data",
+             "activeForm": "Searching market data",
+             "status": "completed"},
+            {"content": "Collate vendor list",
+             "activeForm": "Collating vendor list",
+             "status": "completed"},
+            {"content": "Draft decision memo",
+             "activeForm": "Drafting decision memo",
+             "status": "in_progress"},
+            {"content": "Build chart",
+             "activeForm": "Building chart",
+             "status": "pending"},
+            {"content": "Send final files",
+             "activeForm": "Sending final files",
+             "status": "pending"},
+        ])
+        out = format_todo_list(args)
+        assert "📋 任务清单 (2/5):" in out
+        assert "☑" in out
+        assert "▣" in out
+        assert "☐" in out
+
+    def test_uses_active_form_for_in_progress(self) -> None:
+        """The in_progress row prefers ``activeForm`` (present-continuous)
+        over ``content`` so the spinner reads naturally — "Drafting…"
+        instead of "Draft…"."""
+        args = _todos_json([
+            {"content": "Draft decision memo",
+             "activeForm": "Drafting decision memo",
+             "status": "in_progress"},
+        ])
+        out = format_todo_list(args)
+        assert "▣ Drafting decision memo" in out
+        # The imperative form must NOT appear on the in_progress row.
+        assert "Draft decision memo" not in out
+
+    def test_uses_content_for_non_active_rows(self) -> None:
+        """completed + pending rows render ``content`` (imperative)
+        even when ``activeForm`` is supplied."""
+        args = _todos_json([
+            {"content": "Search market data",
+             "activeForm": "Searching market data",
+             "status": "completed"},
+            {"content": "Build chart",
+             "activeForm": "Building chart",
+             "status": "pending"},
+        ])
+        out = format_todo_list(args)
+        assert "☑ Search market data" in out
+        assert "☐ Build chart" in out
+        # Active form must not bleed into non-in_progress rows.
+        assert "Searching market data" not in out
+        assert "Building chart" not in out
+
+    def test_truncates_long_content(self) -> None:
+        """Content > 60 chars must be truncated with a trailing ``…``."""
+        long_content = "x" * 100
+        args = _todos_json([
+            {"content": long_content,
+             "activeForm": "Doing thing",
+             "status": "pending"},
+        ])
+        out = format_todo_list(args)
+        # 60-char cap (59 visible + …) — anything longer would blow past
+        # the per-line budget.
+        assert "…" in out
+        # Original full-length string must NOT appear.
+        assert long_content not in out
+
+    def test_collapses_overflow(self) -> None:
+        """12-item list with ``max_lines=5`` must show 4 rows + the
+        "… +N more" summary line so the block stays compact."""
+        items = [
+            {"content": f"Task {i}",
+             "activeForm": f"Doing task {i}",
+             "status": "pending"}
+            for i in range(12)
+        ]
+        out = format_todo_list(_todos_json(items), max_lines=5)
+        lines = out.splitlines()
+        # 1 header + 4 visible rows + 1 "… +N more" = 6 lines total.
+        assert len(lines) == 6
+        assert "… +" in lines[-1]
+        assert "more" in lines[-1]
+
+    def test_overflow_keeps_in_progress_visible(self) -> None:
+        """When the active row would be hidden by max_lines truncation,
+        it must be swapped into the last visible slot so the user always
+        sees what the agent is doing RIGHT NOW."""
+        items = [
+            {"content": f"Task {i}",
+             "activeForm": f"Doing task {i}",
+             "status": "completed"}
+            for i in range(10)
+        ]
+        # Make the last item the in-progress one (well past max_lines).
+        items[-1] = {
+            "content": "The active task",
+            "activeForm": "Running the active task",
+            "status": "in_progress",
+        }
+        out = format_todo_list(_todos_json(items), max_lines=5)
+        assert "▣" in out
+        assert "Running the active task" in out
+
+    def test_empty_array_returns_empty(self) -> None:
+        assert format_todo_list(b'{"todos":[]}') == ""
+
+    def test_malformed_json_returns_empty(self) -> None:
+        assert format_todo_list(b"not json at all") == ""
+
+    def test_missing_todos_key_returns_empty(self) -> None:
+        assert format_todo_list(b'{"other":[]}') == ""
+
+    def test_null_todos_returns_empty(self) -> None:
+        assert format_todo_list(b'{"todos":null}') == ""
+
+    def test_non_dict_root_returns_empty(self) -> None:
+        assert format_todo_list(b"[]") == ""
+
+    def test_empty_args_returns_empty(self) -> None:
+        assert format_todo_list(b"") == ""
+        assert format_todo_list("") == ""
+
+    def test_accepts_str_args(self) -> None:
+        """JSON args may arrive as str (in tests / when an upstream
+        already decoded). Both bytes and str must work."""
+        items = [
+            {"content": "a", "activeForm": "doing a", "status": "pending"},
+        ]
+        raw = json.dumps({"todos": items})
+        out = format_todo_list(raw)
+        assert "☐ a" in out
+
+    def test_unknown_status_falls_back_to_pending_glyph(self) -> None:
+        """A row with an unrecognised status must render as ☐ rather
+        than crash — keeps the channel robust against agent-side bugs."""
+        args = json.dumps({"todos": [
+            {"content": "Mystery task",
+             "activeForm": "Doing mystery task",
+             "status": "whatever"},
+        ]}).encode("utf-8")
+        out = format_todo_list(args)
+        assert "☐ Mystery task" in out
+
+    def test_block_capped_at_safety_limit(self) -> None:
+        """A pathological list must stay under the 1500-char hard cap
+        so a runaway agent can never blow past Telegram's editMessageText
+        limit. The cap is enforced AFTER max_lines collapse, so this
+        test exercises the post-collapse truncation path with a very
+        wide ``max_lines`` value."""
+        items = [
+            {"content": "x" * 50,
+             "activeForm": "y" * 50,
+             "status": "pending"}
+            for _ in range(200)
+        ]
+        out = format_todo_list(_todos_json(items), max_lines=300)
+        # The cap is 1500; allow exact equality, never overrun.
+        assert len(out) <= 1500
+
+
+class TestFormatToolStatusTodo:
+    """``format_tool_status`` must special-case ``todo_write`` and emit
+    the rendered checkbox list instead of the generic ``🔧`` line."""
+
+    def test_renders_todo_list_for_todo_write(self) -> None:
+        args = _todos_json([
+            {"content": "Step one", "activeForm": "Doing step one",
+             "status": "in_progress"},
+            {"content": "Step two", "activeForm": "Doing step two",
+             "status": "pending"},
+        ])
+        out = format_tool_status(_Ev(tool="todo_write", args_json=args))
+        # The list header must replace the generic spinner line.
+        assert out.startswith("📋 任务清单")
+        # No legacy "🔧 todo_write" fallback should appear.
+        assert "🔧 todo_write" not in out
+        assert "item(s)" not in out
+
+    def test_falls_back_to_generic_on_malformed_args(self) -> None:
+        """If the todo_write args are unparseable we must NOT swallow
+        the call — fall back to the generic 🔧 line so the user still
+        sees that something happened."""
+        out = format_tool_status(_Ev(tool="todo_write", args_json=b"not json"))
+        # Either the generic fallback or the empty-list fallback are
+        # acceptable; the point is the call cannot vanish silently.
+        assert out  # non-empty
+        # If it fell back to the generic line it must carry the tool name.
+        if "📋" not in out:
+            assert "todo_write" in out
+
+
+class TestFormatToolResultTodo:
+    """``format_tool_result`` must suppress the trailing ✅ line for
+    ``todo_write`` so it doesn't clutter the spinner immediately after
+    the checkbox list rendered on the call side."""
+
+    def test_todo_write_result_returns_empty(self) -> None:
+        assert format_tool_result(_Ev(tool="todo_write", duration_ms=3)) == ""
+
+    def test_other_tools_still_render(self) -> None:
+        # Sanity: the suppression is targeted, not a blanket disable.
+        out = format_tool_result(_Ev(tool="read_file", duration_ms=10))
+        assert out == "✅ read_file (10ms)"
+
+
+class TestMutableSpinnerTodo:
+    """Spinner-level wiring: ``todo_write`` calls must render the list,
+    stash the args for end-of-turn summary builders, and suppress the
+    paired ``tool_result``."""
+
+    @pytest.mark.asyncio
+    async def test_call_renders_todo_list(self) -> None:
+        edits: list[str] = []
+
+        async def edit(text: str) -> None:
+            edits.append(text)
+
+        spinner = MutableSpinner(edit)
+        args = _todos_json([
+            {"content": "a", "activeForm": "doing a", "status": "pending"},
+            {"content": "b", "activeForm": "doing b", "status": "in_progress"},
+        ])
+        await spinner.on_tool_call(_Ev(tool="todo_write", args_json=args))
+        # Exactly one edit, carrying the list header.
+        assert len(edits) == 1
+        assert edits[0].startswith("📋 任务清单")
+        # The spinner stashed the args for the QQ summary path.
+        assert spinner.last_todo_args == args
+
+    @pytest.mark.asyncio
+    async def test_result_is_suppressed(self) -> None:
+        edits: list[str] = []
+
+        async def edit(text: str) -> None:
+            edits.append(text)
+
+        spinner = MutableSpinner(edit)
+        await spinner.on_tool_result(
+            _Ev(tool="todo_write", duration_ms=3, is_error=False)
+        )
+        # No edit fired — the list already shown is the signal.
+        assert edits == []
+
+    @pytest.mark.asyncio
+    async def test_last_todo_args_overwritten_on_each_call(self) -> None:
+        """Two ``todo_write`` calls in one turn must leave only the
+        LATEST snapshot on the spinner — the summary block re-renders
+        that state, not an intermediate one."""
+        edits: list[str] = []
+
+        async def edit(text: str) -> None:
+            edits.append(text)
+
+        spinner = MutableSpinner(edit)
+        first = _todos_json([
+            {"content": "a", "activeForm": "doing a", "status": "pending"},
+        ])
+        second = _todos_json([
+            {"content": "a", "activeForm": "doing a", "status": "completed"},
+            {"content": "b", "activeForm": "doing b", "status": "in_progress"},
+        ])
+        await spinner.on_tool_call(_Ev(tool="todo_write", args_json=first))
+        await spinner.on_tool_call(_Ev(tool="todo_write", args_json=second))
+        assert spinner.last_todo_args == second
+
+    @pytest.mark.asyncio
+    async def test_str_args_coerced_to_bytes(self) -> None:
+        """Defensive: a unit-test event might feed args_json as str. The
+        spinner must normalise to bytes so the summary builder can hand
+        them straight back to format_todo_list (which accepts both,
+        but the bytes round-trip is the documented contract)."""
+        edits: list[str] = []
+
+        async def edit(text: str) -> None:
+            edits.append(text)
+
+        spinner = MutableSpinner(edit)
+        args_str = '{"todos":[{"content":"x","activeForm":"doing x","status":"pending"}]}'
+        await spinner.on_tool_call(_Ev(tool="todo_write", args_json=args_str))  # type: ignore[arg-type]
+        assert isinstance(spinner.last_todo_args, bytes)

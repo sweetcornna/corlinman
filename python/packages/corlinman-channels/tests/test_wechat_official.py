@@ -806,6 +806,114 @@ async def test_handle_one_wechat_official_empty_reply_releases_future() -> None:
     sender.send_text_customer.assert_not_called()
 
 
+class _TodoFakeEvent:
+    """Extended fake event that also exposes ``tool`` + ``args_json`` so
+    the wechat handler can pick up todo_write calls."""
+
+    def __init__(
+        self,
+        kind: str,
+        *,
+        text: str = "",
+        tool: str = "",
+        args_json: bytes = b"",
+    ) -> None:
+        self.kind = kind
+        self.text = text
+        self.tool = tool
+        self.args_json = args_json
+        self.error = ""
+
+
+class _TodoScriptedChatService:
+    """Streams a fixed list of fake events — needed for the WeChat
+    todo_write coverage, which the plain ``_FakeChatService`` (built
+    around a body string) can't express."""
+
+    def __init__(self, events: list[_TodoFakeEvent]) -> None:
+        self._events = events
+
+    def run(self, request: Any, cancel: asyncio.Event) -> Any:
+        events = self._events
+
+        async def _gen() -> Any:
+            for ev in events:
+                yield ev
+
+        return _gen()
+
+
+@pytest.mark.asyncio
+async def test_handle_one_wechat_official_prepends_todo_list() -> None:
+    """A ``todo_write`` call must prepend the rendered checkbox list
+    above the assistant reply on the WeChat Official channel. WeChat
+    has no edit / typing surface so the list is the user's only signal
+    that the agent planned the work."""
+    todos = json.dumps({"todos": [
+        {"content": "Look up the answer",
+         "activeForm": "Looking up the answer",
+         "status": "completed"},
+        {"content": "Compose reply",
+         "activeForm": "Composing reply",
+         "status": "in_progress"},
+    ]}).encode("utf-8")
+    chat = _TodoScriptedChatService([
+        _TodoFakeEvent("tool_call", tool="todo_write", args_json=todos),
+        _TodoFakeEvent("token_delta", text="here is the reply"),
+        _TodoFakeEvent("done"),
+    ])
+    sender = AsyncMock(spec=WeChatOfficialSender)
+    fut: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+    inbound = _inbound()
+    cancel = asyncio.Event()
+
+    await handle_one_wechat_official(
+        chat, inbound, "model-x", sender, cancel, passive_future=fut
+    )
+
+    assert fut.done()
+    passive = fut.result()
+    # The passive payload carries the todo list header AND the reply,
+    # since the combined body fits under the 600-char passive cap.
+    assert "📋 任务清单 (1/2)" in passive
+    assert "☑ Look up the answer" in passive
+    assert "▣ Composing reply" in passive
+    assert "here is the reply" in passive
+    # Ordering: todo block above body.
+    assert passive.index("📋 任务清单") < passive.index("here is the reply")
+    sender.send_text_customer.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handle_one_wechat_official_todo_only_empty_reply_ships_list() -> None:
+    """If the agent ONLY writes a todo list and produces no token text,
+    the passive payload must still carry the rendered list — otherwise
+    the user sees nothing despite the agent doing work."""
+    todos = json.dumps({"todos": [
+        {"content": "Check inbox",
+         "activeForm": "Checking inbox",
+         "status": "in_progress"},
+    ]}).encode("utf-8")
+    chat = _TodoScriptedChatService([
+        _TodoFakeEvent("tool_call", tool="todo_write", args_json=todos),
+        _TodoFakeEvent("done"),
+    ])
+    sender = AsyncMock(spec=WeChatOfficialSender)
+    fut: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+    inbound = _inbound()
+    cancel = asyncio.Event()
+
+    await handle_one_wechat_official(
+        chat, inbound, "model-x", sender, cancel, passive_future=fut
+    )
+
+    assert fut.done()
+    passive = fut.result()
+    assert "📋 任务清单 (0/1)" in passive
+    assert "▣ Checking inbox" in passive
+    sender.send_text_customer.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # Channel runner — exercise the register_route callback
 # ---------------------------------------------------------------------------

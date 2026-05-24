@@ -45,8 +45,10 @@ __all__ = [
     "STATUS_REASONING_PREFIX",
     "STATUS_THINKING",
     "TEXT_LIMIT",
+    "TODO_WRITE_TOOL",
     "TRUNCATION_MARKER",
     "MutableSpinner",
+    "format_todo_list",
     "format_tool_result",
     "format_tool_status",
     "parse_send_attachment_args",
@@ -90,6 +92,12 @@ TRUNCATION_MARKER: str = "\n\n[...回复过长,已截断]"
 #: side dispatches a no-op stub so the reasoning loop keeps going while
 #: the channel side does the real transport-specific work.
 SEND_ATTACHMENT_TOOL: str = "send_attachment"
+
+#: Tool name for the agent's session-scoped task list. Channels render
+#: the JSON args as a checkbox list (``☑ / ▣ / ☐``) instead of the
+#: generic ``🔧 todo_write {N} item(s)`` spinner line so the user sees
+#: the actual plan the agent is working through.
+TODO_WRITE_TOOL: str = "todo_write"
 
 
 # ---------------------------------------------------------------------------
@@ -168,14 +176,150 @@ def tool_arg_preview(tool: str, args_json: bytes | str) -> str:
     return ""
 
 
+#: Max characters per todo line (content / activeForm) before truncation.
+_TODO_LINE_CHARS: int = 60
+
+#: Hard cap on the rendered todo block — Telegram's editMessageText hard
+#: limit is 4096; keep a comfortable safety margin so a runaway list
+#: never blows past it (and so the surrounding spinner / reply body has
+#: room too).
+_TODO_BLOCK_CHARS: int = 1500
+
+
+def format_todo_list(args_json: bytes | str, *, max_lines: int = 8) -> str:
+    """Render ``todo_write`` JSON args as a checkbox list.
+
+    Output shape::
+
+        📋 任务清单 (2/5):
+        ☑ Search market data
+        ☑ Collate vendor list
+        ▣ Drafting decision memo
+        ☐ Build chart
+        ☐ Send final files
+
+    * ``☑`` (completed) / ``▣`` (in_progress) / ``☐`` (pending or unknown).
+    * The ``in_progress`` row prefers ``activeForm`` (present-continuous —
+      "Drafting decision memo") over ``content``; everything else uses
+      ``content``.
+    * Long lines are truncated to :data:`_TODO_LINE_CHARS` with a trailing
+      ``…``.
+    * When the list is longer than ``max_lines`` we show the first
+      ``max_lines - 1`` entries (always keeping the active row visible)
+      plus a trailing ``… +N more`` summary line.
+    * Empty / malformed input returns ``""`` so the caller can fall back
+      to the generic spinner line.
+
+    The whole rendered block is capped at :data:`_TODO_BLOCK_CHARS` to
+    keep Telegram's ``editMessageText`` happy and to leave room for the
+    final assistant reply when prepended to a QQ summary block.
+    """
+    raw_str: str
+    try:
+        if isinstance(args_json, (bytes, bytearray)):
+            raw_str = args_json.decode("utf-8")
+        else:
+            raw_str = args_json or ""
+    except UnicodeDecodeError:
+        return ""
+    if not raw_str.strip():
+        return ""
+    try:
+        obj = _json.loads(raw_str)
+    except ValueError:
+        return ""
+    if not isinstance(obj, dict):
+        return ""
+
+    todos = obj.get("todos")
+    if not isinstance(todos, list) or not todos:
+        return ""
+
+    # Normalise each row up-front so the slice logic below can stay
+    # ignorant of validation.
+    rows: list[tuple[str, str]] = []  # (mark, text)
+    done = 0
+    in_progress_idx: int | None = None
+    for i, entry in enumerate(todos):
+        if not isinstance(entry, dict):
+            # Malformed entry: render a placeholder so the user notices
+            # without crashing the whole list.
+            rows.append(("☐", "(invalid)"))
+            continue
+        status = entry.get("status")
+        content = entry.get("content")
+        active = entry.get("activeForm") or entry.get("active_form")
+        # Anything outside the canonical 3 statuses falls back to ☐.
+        if status == "completed":
+            mark = "☑"
+            done += 1
+        elif status == "in_progress":
+            mark = "▣"
+            if in_progress_idx is None:
+                in_progress_idx = i
+        else:
+            mark = "☐"
+        # Prefer activeForm for the in-flight row; everything else uses
+        # the imperative content.
+        if status == "in_progress" and isinstance(active, str) and active.strip():
+            text = active.strip()
+        elif isinstance(content, str) and content.strip():
+            text = content.strip()
+        elif isinstance(active, str) and active.strip():
+            text = active.strip()
+        else:
+            text = "(unnamed)"
+        text = text.replace("\n", " ")
+        if len(text) > _TODO_LINE_CHARS:
+            text = text[: _TODO_LINE_CHARS - 1] + "…"
+        rows.append((mark, text))
+
+    total = len(rows)
+    header = f"📋 任务清单 ({done}/{total}):"
+
+    # Slice for overflow. If total > max_lines we show max_lines-1 rows +
+    # a "… +N more" summary. Keep the in-progress row visible: if it
+    # would otherwise be hidden, swap it into the last visible slot.
+    if total > max_lines:
+        keep = max_lines - 1
+        visible_indices = list(range(keep))
+        if (
+            in_progress_idx is not None
+            and in_progress_idx >= keep
+        ):
+            # Swap the active row into the last visible slot so the user
+            # always sees what's running RIGHT NOW.
+            visible_indices[-1] = in_progress_idx
+        body_lines = [f"{rows[i][0]} {rows[i][1]}" for i in visible_indices]
+        body_lines.append(f"… +{total - keep} more")
+    else:
+        body_lines = [f"{m} {t}" for m, t in rows]
+
+    out = "\n".join([header, *body_lines])
+    if len(out) > _TODO_BLOCK_CHARS:
+        # Hard cap with a clear marker so the truncation is observable.
+        out = out[: _TODO_BLOCK_CHARS - 1] + "…"
+    return out
+
+
 def format_tool_status(ev: Any) -> str:
     """Render a ``ToolCallEvent`` as the next mutable-line status.
 
     Mirrors hermes-agent's ``_last_activity_desc`` style ("emoji + label +
     arg preview"). Truncates / sanitises so a runaway tool name can't blow
     past channel-specific message-length caps when fed into the edit.
+
+    The ``todo_write`` tool is special-cased: instead of the generic
+    ``🔧 todo_write 5 item(s)`` line we render the full checkbox list
+    (mutable in-place across the turn) via :func:`format_todo_list`.
     """
     tool = (getattr(ev, "tool", "") or "?").replace("\n", " ")
+    if tool == TODO_WRITE_TOOL:
+        rendered = format_todo_list(getattr(ev, "args_json", b""))
+        if rendered:
+            return rendered
+        # Fall through to the generic rendering if parsing failed —
+        # better to show *something* than to silently hide the call.
     plugin = (getattr(ev, "plugin", "") or "").replace("\n", " ")
     label = f"{plugin}.{tool}" if plugin and plugin != tool else tool
     if len(label) > 60:
@@ -193,8 +337,15 @@ def format_tool_result(ev: Any) -> str:
     seconds otherwise). Mirrors hermes-agent's
     ``tool_progress_callback("tool.completed", duration=..., is_error=...)``
     rendering.
+
+    Returns an empty string for ``todo_write`` (same suppression as
+    ``send_attachment``): the call-side already rendered the full list
+    and a trailing ``✅ todo_write (3ms)`` line would just clutter the
+    spinner.
     """
     tool = (getattr(ev, "tool", "") or "?").replace("\n", " ")
+    if tool == TODO_WRITE_TOOL:
+        return ""
     if len(tool) > 60:
         tool = tool[:57] + "..."
     dur_ms = int(getattr(ev, "duration_ms", 0) or 0)
@@ -283,6 +434,7 @@ class MutableSpinner:
     __slots__ = (
         "_edit_callback",
         "_last_status",
+        "_last_todo_args",
         "_send_attachment_handler",
         "_text_parts",
     )
@@ -297,6 +449,11 @@ class MutableSpinner:
         self._send_attachment_handler = send_attachment_handler
         self._last_status: str = STATUS_THINKING
         self._text_parts: list[str] = []
+        #: The most recent ``todo_write`` args bytes seen this turn — the
+        #: full list snapshot, ready to be re-rendered by callers that
+        #: want to prepend it to a final summary (QQ / QQ-official /
+        #: WeChat-official). Reset to ``None`` between turns.
+        self._last_todo_args: bytes | None = None
 
     @property
     def last_status(self) -> str:
@@ -315,6 +472,18 @@ class MutableSpinner:
         usually ``"".join(spinner.text_parts)`` once at end-of-turn.
         """
         return self._text_parts
+
+    @property
+    def last_todo_args(self) -> bytes | None:
+        """Raw JSON args of the most recent ``todo_write`` call this turn.
+
+        Channels that prepend a post-hoc summary block (QQ / QQ-official /
+        WeChat-official, which can't edit messages live) read this at
+        end-of-turn and feed it back through :func:`format_todo_list` so
+        the user sees the FINAL list snapshot above the activity log.
+        ``None`` when the agent never called ``todo_write``.
+        """
+        return self._last_todo_args
 
     async def _maybe_edit(self, text: str) -> None:
         """Call ``edit_callback`` iff the visible text would actually change.
@@ -359,6 +528,12 @@ class MutableSpinner:
         the caller that the matching ``tool_result`` should be suppressed
         (the 📎 status already conveys completion).
 
+        For ``todo_write``: stash the args bytes (so end-of-turn summary
+        builders can re-render the final list) and edit the spinner with
+        the rendered checkbox list. The matching ``tool_result`` is also
+        suppressed — the list IS the status; a trailing ``✅ todo_write``
+        would just clutter the line.
+
         For everything else: render the standard 🔧 status line. Returns
         ``None``.
         """
@@ -367,6 +542,15 @@ class MutableSpinner:
             status = await self._send_attachment_handler(ev)
             await self._maybe_edit(status)
             return "intercept"
+        if tool == TODO_WRITE_TOOL:
+            # Normalise args to bytes so the end-of-turn summary builder
+            # can hand them straight back to ``format_todo_list``. The
+            # tool dispatcher always sends bytes, but be defensive in
+            # case a unit test feeds a str.
+            raw = getattr(ev, "args_json", b"") or b""
+            if isinstance(raw, str):
+                raw = raw.encode("utf-8")
+            self._last_todo_args = raw
         await self._maybe_edit(format_tool_status(ev))
         return None
 
@@ -377,7 +561,18 @@ class MutableSpinner:
         are suppressed because :meth:`on_tool_call` already rendered the
         dedicated 📎 line — re-overwriting it with ✅ would lose the
         useful "📎 已发送文件: X" status for ~zero gain.
+
+        ``todo_write`` completions are likewise suppressed — the list
+        rendered on the call side IS the user-visible signal that the
+        plan changed; a follow-up ``✅ todo_write (3ms)`` would only
+        overwrite it with strictly less information. The spinner does
+        NOT need to revert to the previous status — the list IS the
+        status. The next ``tool_call`` for a different tool will
+        naturally overwrite it.
         """
-        if getattr(ev, "tool", "") == SEND_ATTACHMENT_TOOL:
+        tool = getattr(ev, "tool", "") or ""
+        if tool == SEND_ATTACHMENT_TOOL:
+            return
+        if tool == TODO_WRITE_TOOL:
             return
         await self._maybe_edit(format_tool_result(ev))

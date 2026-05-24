@@ -587,6 +587,159 @@ class TestHandleOneQq:
         # No reply action sent — the handler stayed silent.
         assert adapter.sent == []
 
+    # -- todo_write rendering (QQ summary block + Telegram spinner) ---------
+
+    @pytest.mark.asyncio
+    async def test_summary_prepends_final_todo_list(self) -> None:
+        """A turn that called ``todo_write`` must render the FINAL list
+        snapshot above the activity log in the QQ summary block —
+        layout:
+
+            📋 任务清单 (X/Y):
+            ☑ ...
+            ▣ ...
+
+            🔧 操作:
+            🔧 web_search '...' (302ms)
+            ─────────────
+            <reply body>
+        """
+        import asyncio
+        import json
+
+        # Two todo_write calls — the SECOND one represents the final
+        # state and is the only one the summary should reflect.
+        first_todos = json.dumps({"todos": [
+            {"content": "Search market data",
+             "activeForm": "Searching market data",
+             "status": "in_progress"},
+            {"content": "Draft memo",
+             "activeForm": "Drafting memo",
+             "status": "pending"},
+        ]}).encode("utf-8")
+        final_todos = json.dumps({"todos": [
+            {"content": "Search market data",
+             "activeForm": "Searching market data",
+             "status": "completed"},
+            {"content": "Draft memo",
+             "activeForm": "Drafting memo",
+             "status": "in_progress"},
+        ]}).encode("utf-8")
+
+        svc = _ScriptedChatService([
+            _Ev(kind="tool_call", plugin="builtin", tool="todo_write",
+                args_json=first_todos),
+            _Ev(kind="tool_result", plugin="builtin", tool="todo_write",
+                duration_ms=3, is_error=False),
+            _Ev(kind="tool_call", plugin="web_search", tool="web_search",
+                args_json=b'{"query":"gpt-5.5 news"}'),
+            _Ev(kind="tool_result", plugin="web_search", tool="web_search",
+                duration_ms=302, is_error=False),
+            _Ev(kind="tool_call", plugin="builtin", tool="todo_write",
+                args_json=final_todos),
+            _Ev(kind="tool_result", plugin="builtin", tool="todo_write",
+                duration_ms=2, is_error=False),
+            _Ev(kind="token_delta", text="answer"),
+            _Ev(kind="done"),
+        ])
+        ev = _sample_group_event()
+        binding = ChannelBinding.qq_group(ev.self_id, ev.group_id or 0, ev.user_id)
+        req = RoutedRequest(binding=binding, content="hi")
+        adapter = _FakeOneBotAdapter()
+
+        await handle_one_qq(svc, req, ev, "m", adapter, asyncio.Event())  # type: ignore[arg-type]
+        assert len(adapter.sent) == 1
+        text = adapter.sent[0].message[1].text
+        # The todo header appears BEFORE the activity block AND before
+        # the reply body — ordering is the whole point.
+        todo_idx = text.find("📋 任务清单")
+        tools_idx = text.find("🔧 操作:")
+        body_idx = text.find("answer")
+        assert todo_idx != -1
+        assert tools_idx != -1
+        assert body_idx != -1
+        assert todo_idx < tools_idx < body_idx, text
+        # The header reflects the FINAL list state (1 done / 2 total),
+        # not the intermediate snapshot (0 done / 2 total).
+        assert "(1/2)" in text
+        # ▣ glyph for the in-progress row, ☑ for the completed row.
+        assert "☑" in text
+        assert "▣" in text
+        # The duplicate "🔧 todo_write 2 item(s)" call must NOT appear —
+        # the checkbox view replaces it.
+        assert "todo_write" not in text
+        # The web_search line still resolves with ✅ + duration.
+        assert "web_search" in text
+        assert "302ms" in text
+        # No legacy "📋 本次操作:" header when a todo list is present —
+        # we lifted it to "🔧 操作:" so the two blocks don't share a
+        # leading 📋 glyph.
+        assert "📋 本次操作:" not in text
+
+    @pytest.mark.asyncio
+    async def test_summary_todo_only_no_other_tools(self) -> None:
+        """todo_write with no other tool calls must still render the
+        checkbox block + divider above the reply."""
+        import asyncio
+        import json
+
+        todos = json.dumps({"todos": [
+            {"content": "Verify the patch",
+             "activeForm": "Verifying the patch",
+             "status": "in_progress"},
+        ]}).encode("utf-8")
+        svc = _ScriptedChatService([
+            _Ev(kind="tool_call", plugin="builtin", tool="todo_write",
+                args_json=todos),
+            _Ev(kind="tool_result", plugin="builtin", tool="todo_write",
+                duration_ms=1, is_error=False),
+            _Ev(kind="token_delta", text="working on it"),
+            _Ev(kind="done"),
+        ])
+        ev = _sample_group_event()
+        binding = ChannelBinding.qq_group(ev.self_id, ev.group_id or 0, ev.user_id)
+        req = RoutedRequest(binding=binding, content="hi")
+        adapter = _FakeOneBotAdapter()
+
+        await handle_one_qq(svc, req, ev, "m", adapter, asyncio.Event())  # type: ignore[arg-type]
+        text = adapter.sent[0].message[1].text
+        assert "📋 任务清单 (0/1):" in text
+        assert "▣ Verifying the patch" in text
+        # No "🔧 操作:" header because there are no other tool lines.
+        assert "🔧 操作:" not in text
+        # Divider between the block and the body.
+        assert "─────" in text
+        assert text.rstrip().endswith("working on it")
+
+    @pytest.mark.asyncio
+    async def test_summary_env_disable_hides_todo_block(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """CORLINMAN_QQ_TOOL_SUMMARY=0 must hide the todo block too —
+        the env knob is the user's escape hatch for ALL of the prelude."""
+        import asyncio
+        import json
+
+        monkeypatch.setenv("CORLINMAN_QQ_TOOL_SUMMARY", "0")
+        todos = json.dumps({"todos": [
+            {"content": "x", "activeForm": "doing x", "status": "pending"},
+        ]}).encode("utf-8")
+        svc = _ScriptedChatService([
+            _Ev(kind="tool_call", plugin="builtin", tool="todo_write",
+                args_json=todos),
+            _Ev(kind="token_delta", text="just text"),
+            _Ev(kind="done"),
+        ])
+        ev = _sample_group_event()
+        binding = ChannelBinding.qq_group(ev.self_id, ev.group_id or 0, ev.user_id)
+        req = RoutedRequest(binding=binding, content="hi")
+        adapter = _FakeOneBotAdapter()
+
+        await handle_one_qq(svc, req, ev, "m", adapter, asyncio.Event())  # type: ignore[arg-type]
+        text = adapter.sent[0].message[1].text
+        assert "📋 任务清单" not in text
+        assert "just text" in text
+
 
 # ---------------------------------------------------------------------------
 # handle_one_telegram
@@ -1009,6 +1162,96 @@ class TestHandleOneTelegram:
             assert "（无回复）" not in edit_text, (
                 "supplemented Done must not trigger the empty-reply cleanup"
             )
+
+    # -- todo_write rendering (Telegram spinner) -----------------------------
+
+    @pytest.mark.asyncio
+    async def test_telegram_spinner_renders_todo_list(self) -> None:
+        """A ``tool_call(todo_write)`` event must edit the placeholder
+        with the rendered checkbox list. Subsequent ``token_delta`` +
+        ``done`` overwrite it with the assistant reply; we only assert
+        that at least one mid-turn edit carried the list."""
+        import asyncio
+        import json
+
+        todos = json.dumps({"todos": [
+            {"content": "Search market data",
+             "activeForm": "Searching market data",
+             "status": "completed"},
+            {"content": "Collate vendor list",
+             "activeForm": "Collating vendor list",
+             "status": "in_progress"},
+            {"content": "Send the report",
+             "activeForm": "Sending the report",
+             "status": "pending"},
+        ]}).encode("utf-8")
+        svc = _ScriptedChatService([
+            _Ev(kind="tool_call", plugin="builtin", tool="todo_write",
+                args_json=todos),
+            _Ev(kind="tool_result", plugin="builtin", tool="todo_write",
+                duration_ms=3, is_error=False),
+            _Ev(kind="token_delta", text="done"),
+            _Ev(kind="done"),
+        ])
+        binding = ChannelBinding.telegram(bot_id=999, chat_id=7, user_id=7)
+        inbound: InboundEvent[Any] = InboundEvent(
+            channel="telegram", binding=binding, text="hi",
+            message_id="1", timestamp=0, mentioned=True,
+        )
+        sender = _FakeTelegramSender()
+        await handle_one_telegram(svc, inbound, "m", sender, asyncio.Event())  # type: ignore[arg-type]
+        # At least one mid-turn edit must carry the rendered list.
+        edits = [e[2] for e in sender.edits]
+        assert any("📋 任务清单 (1/3)" in t for t in edits), edits
+        # The list edit must carry all three checkbox glyphs.
+        list_edits = [t for t in edits if "📋 任务清单" in t]
+        assert list_edits, edits
+        sample = list_edits[0]
+        assert "☑" in sample
+        assert "▣" in sample
+        assert "☐" in sample
+        # The in_progress row uses the activeForm (present-continuous).
+        assert "Collating vendor list" in sample
+        # Final edit overwrites everything with the assistant reply.
+        assert sender.edits[-1][2] == "done"
+
+    @pytest.mark.asyncio
+    async def test_telegram_spinner_suppresses_todo_write_completion(
+        self,
+    ) -> None:
+        """``tool_result(todo_write)`` must NOT fire a ``✅ todo_write``
+        edit — the checkbox list rendered on the call side is the
+        signal; a trailing completion line would just clutter it."""
+        import asyncio
+        import json
+
+        todos = json.dumps({"todos": [
+            {"content": "a", "activeForm": "doing a", "status": "pending"},
+        ]}).encode("utf-8")
+        svc = _ScriptedChatService([
+            _Ev(kind="tool_call", plugin="builtin", tool="todo_write",
+                args_json=todos),
+            _Ev(kind="tool_result", plugin="builtin", tool="todo_write",
+                duration_ms=3, is_error=False),
+            _Ev(kind="token_delta", text="ok"),
+            _Ev(kind="done"),
+        ])
+        binding = ChannelBinding.telegram(bot_id=999, chat_id=7, user_id=7)
+        inbound: InboundEvent[Any] = InboundEvent(
+            channel="telegram", binding=binding, text="hi",
+            message_id="1", timestamp=0, mentioned=True,
+        )
+        sender = _FakeTelegramSender()
+        await handle_one_telegram(svc, inbound, "m", sender, asyncio.Event())  # type: ignore[arg-type]
+        edits = [e[2] for e in sender.edits]
+        # No ✅ todo_write completion line anywhere — the suppression
+        # is unconditional, same shape as send_attachment.
+        for t in edits:
+            assert "✅ todo_write" not in t, t
+        # And no "🔧 todo_write" generic fallback either — we rendered
+        # the list directly.
+        for t in edits:
+            assert "🔧 todo_write" not in t, t
 
 
 # ---------------------------------------------------------------------------
@@ -2560,6 +2803,60 @@ class TestHandleOneQqOfficial:
             svc, inbound, "m", sender, asyncio.Event()  # type: ignore[arg-type]
         )
         assert sender.text_sends == []
+
+    @pytest.mark.asyncio
+    async def test_todo_write_prepends_checkbox_list(self) -> None:
+        """``todo_write`` on the QQ-official channel must render the
+        checkbox view above the existing 🔧 工具调用记录 block, NOT as
+        a "• todo_write 2 item(s)" bullet under it."""
+        import asyncio
+        import json as _json
+
+        todos = _json.dumps({"todos": [
+            {"content": "Fetch earnings page",
+             "activeForm": "Fetching earnings page",
+             "status": "completed"},
+            {"content": "Draft summary",
+             "activeForm": "Drafting summary",
+             "status": "in_progress"},
+            {"content": "Email customer",
+             "activeForm": "Emailing customer",
+             "status": "pending"},
+        ]}).encode("utf-8")
+        svc = _ScriptedChatService([
+            _Ev(kind="tool_call", plugin="builtin", tool="todo_write",
+                args_json=todos),
+            _Ev(kind="tool_call", plugin="web_search", tool="web_search",
+                args_json=b'{"query":"tencent earnings"}'),
+            _Ev(kind="token_delta", text="here is the answer"),
+            _Ev(kind="done"),
+        ])
+        sender = _FakeQqOfficialSender()
+        inbound = _qq_official_inbound(
+            event_type="C2C_MESSAGE_CREATE",
+            thread="ou_todo",
+            sender="ou_todo",
+        )
+        await handle_one_qq_official(
+            svc, inbound, "m", sender, asyncio.Event()  # type: ignore[arg-type]
+        )
+        assert len(sender.text_sends) == 1
+        body = sender.text_sends[0][1]
+        # Todo list lands above the tool block AND above the reply.
+        todo_idx = body.find("📋 任务清单")
+        tools_idx = body.find("🔧 工具调用记录")
+        body_idx = body.find("here is the answer")
+        assert todo_idx != -1
+        assert tools_idx != -1
+        assert body_idx != -1
+        assert todo_idx < tools_idx < body_idx, body
+        # 1 done / 3 total snapshot.
+        assert "(1/3)" in body
+        # The duplicate bullet for the todo_write call must NOT appear.
+        assert "todo_write" not in body
+        # The web_search bullet must still render.
+        assert "web_search" in body
+        assert "tencent earnings" in body
 
     @pytest.mark.asyncio
     async def test_run_qq_official_channel_requires_app_id(self) -> None:
