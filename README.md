@@ -48,7 +48,7 @@ What you get out of the box:
   glass web console (**Tidepool** design system, day + night themes) for
   plugin management, RAG inspection, live log streaming, approval
   queues, config live-reload, and model routing — plus OTel traces,
-  Prometheus metrics, and a 20+ check `doctor` command.
+  Prometheus metrics, and a `corlinman doctor` smoke command.
 
 If you want something you can hand your teammate a URL to, then audit on
 Sunday morning without reverse-engineering twenty repos — that's corlinman.
@@ -57,13 +57,36 @@ Sunday morning without reverse-engineering twenty repos — that's corlinman.
 
 ## Quickstart (60 seconds)
 
-1. `docker compose up` (or `make dev` for native)
-2. Open <http://localhost:6005>
-3. Login with `admin` / `root` — you'll be redirected to **Account & Security** to set a real password
-4. (Optional) Visit `/onboard` to wire a real LLM, or click **Skip — use mock provider** to start chatting immediately
-5. Done.
+```bash
+curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh | bash
+```
 
-> **Security**: first-boot credentials are `admin` / `root` and are explicitly intended for local development. The UI forces a password rotation on first login and stamps a banner until you change them.
+The one-liner does the rest:
+
+1. **Preflight** — checks disk (≥ 5 GB), RAM (≥ 1 GB), port `6005`, docker version, required tools. Bails early with a clear `✗ port 6005 held by PID …` if anything's off.
+2. **Image** — `docker pull ghcr.io/ymylive/corlinman:latest` (multi-arch amd64/arm64, ~30 s). Falls back to a local `docker buildx build` if the registry is unreachable.
+3. **Boot** — `docker compose up -d` with the bundled compose file.
+4. **Health gate** — polls `/health` until 200 (≤ 60 s; override with `CORLINMAN_HEALTH_TIMEOUT`).
+5. **Done** — prints the URL to open and the seed credentials:
+
+```
+✅ corlinman is live: http://localhost:6005/login
+   default login:  admin / root   ← change immediately at /account/security
+   data dir:       /opt/corlinman/data
+   upgrade later:  bash deploy/install.sh --upgrade
+```
+
+Sign in with `admin` / `root`, get redirected to **Account & Security**,
+rotate the password — done. Want a real LLM? Walk `/onboard` from the UI
+or run `corlinman init` (works headless on a server without a browser).
+Want to start chatting immediately on the bundled mock provider? Hit
+**Skip** in `/onboard`.
+
+> **Security**: first-boot credentials are `admin` / `root` and are explicitly intended for local development. The UI forces a password rotation on first login and stamps a banner until you change them; `corlinman doctor` will keep warning until the default is gone.
+
+**Upgrade later**: `bash deploy/install.sh --upgrade` — auto-detects
+docker vs native, pulls the new image (or re-syncs the venv), restarts
+the service, runs a fresh `/health` probe, never touches the data dir.
 
 For multi-agent setups, deeper provider config, and the self-evolution curator, see:
 
@@ -127,20 +150,27 @@ Two ways in. **Humans pick the one-liner;** **AI agents read [`deploy/AI_DEPLOY.
 
 | Path | One-liner | Notes |
 | --- | --- | --- |
-| **Docker (recommended)** | `curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh \| bash -s -- --mode docker` | Builds locally, brings up via `docker compose`. Needs Docker Engine 24+. |
+| **Docker (recommended)** | `curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh \| bash -s -- --mode docker` | Pulls `ghcr.io/ymylive/corlinman:latest` (multi-arch amd64+arm64), falls back to a local build if the registry is unreachable. Needs Docker Engine 24+ with the compose v2 plugin. |
 | **Native (uv + systemd)** | `curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh \| bash -s -- --mode native` | Installs `uv`, clones the repo to `/opt/corlinman/repo`, syncs the workspace, registers a systemd unit. No container runtime needed. |
-| **🇨🇳 China network** | append ` --china` to either command above | Switches PyPI → Tsinghua, Docker Hub → DaoCloud, github.com → gh-proxy.com, npm → npmmirror. Auto-enabled when `pypi.org` TTFB > 3s. See [China-region deployment](#-china-region-deployment) below. |
+| **In-place upgrade** | `bash deploy/install.sh --upgrade` (any mode) | Auto-detects docker vs native, pulls/rebuilds the new image or re-syncs the venv, restarts the service, re-probes `/health`. Never touches `$DATA_DIR`. Re-run with `--version vX.Y.Z` to pin a specific release tag. |
+| **🇨🇳 China network** | append ` --china` to either fresh-install command above | Switches PyPI → Tsinghua, Docker Hub → DaoCloud, github.com → gh-proxy.com, npm → npmmirror. Auto-enabled when `pypi.org` TTFB > 3s. See [China-region deployment](#-china-region-deployment) below. |
+| **🤖 QQ bot sidecar** | append ` --with-qq` to the docker fresh-install command | Layers `docker-compose.qq.yml` so NapCat (OneBot v11) boots alongside corlinman. The installer materialises `.env` from `deploy/.env.template` on first run and prompts you to fill in `QQ_*` / `OPENAI_API_KEY` before re-running. Docker mode only — NapCat is a container. |
 
-Both paths converge on `http://localhost:6005/login` — sign in with
+Every fresh install starts with a **preflight** (disk ≥ 5 GB, RAM ≥ 1 GB,
+port 6005 free, docker/curl/git on PATH, supported OS), then ends with a
+**health gate** that polls `/health` until 200 before printing success
+— so the URL you click is guaranteed to respond.
+
+Both paths converge on `http://localhost:6005/login`. Sign in with
 `admin` / `root`, rotate the password on the **Account & Security** page
 you're redirected to, then optionally walk `/onboard` to wire a real LLM
 provider (or skip and use the bundled mock provider). After that the
 admin UI lives at `http://localhost:6005/admin`.
 
-Add `--with-qq` to either installer to bring up the NapCat QQ sidecar
-alongside corlinman; the installer will materialise `.env` from
-`deploy/.env.template` on first run and prompt you to fill in `QQ_*` /
-`OPENAI_API_KEY` before re-running.
+For headless servers without a browser, `corlinman init` is the
+interactive CLI equivalent — walks the same admin password change +
+provider key paste + model alias write that the web wizard does, then
+restarts the gateway.
 
 ### 🇨🇳 China-region deployment
 
@@ -189,25 +219,28 @@ ghcr.io/ymylive/corlinman:dev | ssh vps "docker load"` 是最快的搬运姿势�
 ### For AI agents — prompt-driven deploy
 
 Paste [`deploy/AI_DEPLOY.md`](deploy/AI_DEPLOY.md) into Claude Code / Cursor /
-Aider and tell it your VPS host + mode. The prompt covers 6 phases
-(inventory → stop old → install → restore config → verify → cleanup) with
-explicit stop conditions. Use this when you want a structured, audit-able
-deploy that you can re-run on multiple hosts.
+Aider and tell it your VPS host + mode. The prompt covers 7 phases
+(inventory → stop old → install → restore config → verify → upgrade →
+cleanup) with explicit stop conditions. The install.sh that the AI
+invokes already runs preflight + health gate on its own, so the AI's job
+is mostly orchestration + verification, not babysitting the bash.
 
 ### Environment overrides
 
 `CORLINMAN_VERSION` (git ref / branch, default `main`),
 `CORLINMAN_PREFIX` (install root, default `/opt/corlinman`),
 `CORLINMAN_DATA_DIR` (data dir, default `$CORLINMAN_PREFIX/data`),
-`CORLINMAN_PORT` (gateway port, default `6005`).
+`CORLINMAN_PORT` (gateway port, default `6005`),
+`CORLINMAN_HEALTH_TIMEOUT` (post-boot `/health` poll cap in seconds, default `60`),
+`CORLINMAN_TAG` (compose image tag, default `latest` — pin to `vX.Y.Z` for prod).
 
 ### From source
 
 ```bash
-# Container path
+# Container path — pull the prebuilt image (or set CORLINMAN_TAG=local
+# to force a local build via the bundled compose file).
 git clone https://github.com/ymylive/corlinman && cd corlinman
-docker buildx build --platform linux/amd64 \
-  -f docker/Dockerfile -t corlinman:latest --target runtime --load .
+docker compose -f docker/compose/docker-compose.yml pull
 docker compose -f docker/compose/docker-compose.yml up -d
 
 # Optional: enable Docker-backed plugin sandboxing on trusted hosts.
@@ -217,21 +250,25 @@ docker compose -f docker/compose/docker-compose.yml \
 # Visit http://127.0.0.1:6005/health then http://127.0.0.1:6005/login
 # (default admin / root — change on first login). For LLM provider setup,
 # either click through the in-UI /onboard wizard or run the CLI:
-docker exec -it corlinman corlinman onboard
+docker exec -it corlinman corlinman init
 ```
 
 ### Native (build from source)
 
-Requirements: Python 3.12, `uv`, Node 20+, `pnpm`, `protoc`.
+Requirements: Python 3.12, `uv`, Node 20+, `pnpm`, `protoc`. The
+`dev-setup.sh` script now checks all of these up front and prints a
+per-platform install hint if anything's missing.
 
 ```bash
-./scripts/dev-setup.sh                              # deps + proto + git hooks
+./scripts/dev-setup.sh                              # prereq check + deps + proto + hooks + doctor smoke
 uv sync --all-packages --frozen
 pnpm -C ui install && pnpm -C ui build
 
-uv run corlinman onboard                            # interactive wizard
+uv run corlinman init                               # interactive setup wizard (recommended)
 uv run corlinman-gateway                            # gateway (FastAPI/uvicorn)
 uv run corlinman-python-server                      # agent sidecar (grpc.aio)
+
+uv run corlinman doctor                             # 9-check smoke (config, providers, port, etc.)
 ```
 
 Data lives in `~/.corlinman/` by default; override with `--data-dir` or
@@ -338,11 +375,13 @@ and the permission gate all key on the same `session_key`.
   covering QPS, latency, tool-call rate, backoff, stream inflight,
   RAG stage timings, and plugin execution duration. A bundled
   Grafana dashboard lives in `ops/dashboards/corlinman.json`.
-- **Doctor.** `corlinman doctor` runs 21 local checks (manifest
-  duplicates, Python subprocess health, disk space, log rotation,
-  Docker daemon reachability, scheduler next triggers, pending
-  approval overflow, broken symlinks…) in under 1 s on an empty
-  environment.
+- **Doctor.** `corlinman doctor` (also `make doctor`) runs 9 local
+  checks — data dir writability, config TOML parseability, Python
+  version, required packages, runtime config loader, provider registry,
+  runtime wiring (P1+P2 boot sim), `must_change_password` (warns until
+  you rotate the seed `admin/root`), and `port_bindable` (catches "port
+  6005 already held" before the gateway tries to start). `--json` mode
+  is CI-friendly: every check returns `ok`/`warn`, never `fail`.
 
 ---
 
@@ -513,6 +552,9 @@ pnpm -C ui typecheck
 pnpm -C ui lint
 pnpm -C ui build
 bash scripts/gen-proto.sh && git diff --exit-code python/packages/corlinman-grpc/src/corlinman_grpc/_generated/
+
+# Quick local smoke (config + providers + port-bindable + must_change_password).
+make doctor                                         # → uv run corlinman doctor
 ```
 
 Coding expectations, branch + commit conventions, live-lane tests, and
@@ -652,14 +694,24 @@ MIT. See [`LICENSE`](LICENSE).
 
 **架构**：纯 Python 单语言栈 —— FastAPI/uvicorn gateway + grpc.aio agent sidecar + 插件 runtime + 向量引擎（usearch）+ CLI + provider SDK + reasoning loop + embedding 全部在 `python/packages/` 下，共享一个 venv；W3C `traceparent` 贯穿全链路。
 
-**快速开始**：
+**快速开始**（60 秒）：
 
 ```bash
-git clone https://github.com/ymylive/corlinman && cd corlinman
-docker buildx build --platform linux/amd64 \
-  -f docker/Dockerfile -t corlinman:latest --target runtime --load .
-docker compose -f docker/compose/docker-compose.yml up -d
-docker exec -it corlinman corlinman onboard
+# 一行装好，全自动 preflight → 拉镜像 → 启动 → 等 /health 200 → 打印 URL
+curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh | bash
+
+# 国内网络加 --china（清华 PyPI / gh-proxy / DaoCloud），TTFB > 3 秒会自动开
+curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh | bash -s -- --china
+
+# 想顺便起 NapCat QQ 机器人就再加 --with-qq（docker 模式）
+curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh | bash -s -- --china --with-qq
 ```
+
+装完打开 `http://<服务器>:6005/login`，用 `admin` / `root` 登录后会被
+强制跳到 **账户安全** 改密码。想给一个真 LLM？走 UI 里的 `/onboard` 或
+在服务器上跑 `corlinman init`（headless 交互式向导，免浏览器）。
+
+**升级**：`bash deploy/install.sh --upgrade`，自动识别 docker 还是
+native 模式，拉新镜像/重 sync venv，重启服务，重跑 /health。不会动数据目录。
 
 数据默认落在 `~/.corlinman/`，通过 `CORLINMAN_DATA_DIR` 覆盖。完整生产部署（nginx + acme.sh DNS-01 + Cloudflare）见 [`docs/runbook.md`](docs/runbook.md)，架构细节见 [`docs/architecture.md`](docs/architecture.md)。
