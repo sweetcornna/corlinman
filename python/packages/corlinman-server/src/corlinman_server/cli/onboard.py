@@ -39,7 +39,10 @@ data_dir = "{data_dir}"
 """
 
 
-@click.command("onboard")
+@click.command(
+    "onboard",
+    short_help="(deprecated; use `corlinman init` for interactive setup)",
+)
 @click.option(
     "--non-interactive",
     is_flag=True,

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import socket
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -312,6 +313,175 @@ def _check_runtime_wiring(data_dir: Path) -> CheckReport:
     )
 
 
+def _check_must_change_password(data_dir: Path) -> CheckReport:
+    """Warn when the seeded ``admin/root`` default has not been rotated.
+
+    * ``warn`` — ``[admin].must_change_password`` is ``true`` in the on-disk
+      config (the bootstrap default is still active).
+    * ``ok`` — flag is absent or set to ``false`` (the operator either
+      hand-wrote credentials or rotated through ``/account/security``).
+    * ``warn`` (degraded) — config file absent altogether; we can't tell.
+
+    Never raises; any unexpected parse failure is reported as ``warn`` so
+    ``doctor`` stays green-tinted on a healthy host.
+    """
+    config_path = data_dir / "config.toml"
+    if not config_path.exists():
+        return CheckReport(
+            name="must_change_password",
+            status="warn",
+            message="config.toml absent — cannot verify admin credentials",
+            hint="run `corlinman init` to seed credentials",
+        )
+    try:
+        import tomllib
+
+        parsed = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 — never crash doctor
+        return CheckReport(
+            name="must_change_password",
+            status="warn",
+            message=f"failed to parse {config_path}: {exc}",
+            hint="check TOML syntax with `python -m tomllib <config.toml>`",
+        )
+    admin = parsed.get("admin")
+    if not isinstance(admin, dict):
+        return CheckReport(
+            name="must_change_password",
+            status="warn",
+            message="[admin] block missing — credentials will be seeded on next boot",
+            hint="run `corlinman init` or start the gateway once to seed",
+        )
+    if bool(admin.get("must_change_password", False)):
+        return CheckReport(
+            name="must_change_password",
+            status="warn",
+            message="default password still active (admin/root)",
+            hint="run `corlinman init` or change in /account/security",
+        )
+    return CheckReport(
+        name="must_change_password",
+        status="ok",
+        message="custom credentials set",
+    )
+
+
+def _resolve_port(data_dir: Path) -> int:
+    """Best-effort port resolution mirroring entrypoint.py's
+    :func:`_resolve_bind`: ``[server].port`` in TOML → ``$CORLINMAN_PORT`` →
+    ``$PORT`` → default ``6005``.
+    """
+    config_path = data_dir / "config.toml"
+    if config_path.exists():
+        try:
+            import tomllib
+
+            parsed = tomllib.loads(config_path.read_text(encoding="utf-8"))
+            server = parsed.get("server")
+            if isinstance(server, dict):
+                port = server.get("port")
+                if isinstance(port, int) and 0 < port < 65536:
+                    return port
+                # ``bind`` form: e.g. "0.0.0.0:6005"
+                bind = server.get("bind")
+                if isinstance(bind, str) and ":" in bind:
+                    tail = bind.rsplit(":", 1)[1]
+                    if tail.isdigit():
+                        parsed_port = int(tail)
+                        if 0 < parsed_port < 65536:
+                            return parsed_port
+        except Exception:  # noqa: BLE001 — fall through to env / default
+            pass
+    for env_var in ("CORLINMAN_PORT", "PORT"):
+        v = os.environ.get(env_var)
+        if v and v.isdigit():
+            parsed_port = int(v)
+            if 0 < parsed_port < 65536:
+                return parsed_port
+    return 6005
+
+
+def _port_holder_is_corlinman(port: int) -> bool | None:
+    """Best-effort: ask ``lsof`` whether a corlinman process holds ``port``.
+
+    Returns ``True`` / ``False`` when we got a clean answer, or ``None`` when
+    ``lsof`` is unavailable / errored — callers should treat ``None`` as
+    "can't tell" rather than as a definitive "not corlinman".
+    """
+    import shutil
+    import subprocess
+
+    lsof = shutil.which("lsof")
+    if lsof is None:
+        return None
+    try:
+        # ``-iTCP:<port>`` + ``-sTCP:LISTEN`` + ``-P -n -F c`` → one ``c<cmd>``
+        # line per holding process.
+        result = subprocess.run(
+            [lsof, f"-iTCP:{port}", "-sTCP:LISTEN", "-P", "-n", "-F", "c"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except Exception:  # noqa: BLE001 — lsof flaky → unknown
+        return None
+    if result.returncode != 0 or not result.stdout:
+        return None
+    for line in result.stdout.splitlines():
+        if line.startswith("c") and "corlinman" in line.lower():
+            return True
+    return False
+
+
+def _check_port_bindable(data_dir: Path) -> CheckReport:
+    """Try to bind the gateway port; report whether it's free or taken.
+
+    * ``ok`` — port is bindable (free) OR is held by a corlinman process
+      (gateway is already running).
+    * ``warn`` — port is held by a non-corlinman process; suggest stopping
+      it or overriding ``$CORLINMAN_PORT``.
+
+    Never raises; any unexpected socket error is reported as ``warn``.
+    """
+    port = _resolve_port(data_dir)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind(("127.0.0.1", port))
+    except OSError:
+        holder = _port_holder_is_corlinman(port)
+        if holder is True:
+            return CheckReport(
+                name="port_bindable",
+                status="ok",
+                message=f"gateway running on port {port}",
+            )
+        if holder is False:
+            return CheckReport(
+                name="port_bindable",
+                status="warn",
+                message=f"port {port} held by another process",
+                hint="stop the other process or set CORLINMAN_PORT",
+            )
+        # holder is None — lsof unavailable; degrade gracefully
+        return CheckReport(
+            name="port_bindable",
+            status="warn",
+            message=f"port {port} occupied (holder unknown)",
+            hint="stop the other process or set CORLINMAN_PORT",
+        )
+    finally:
+        try:
+            sock.close()
+        except Exception:  # noqa: BLE001 — best-effort cleanup
+            pass
+
+    return CheckReport(
+        name="port_bindable",
+        status="ok",
+        message=f"port {port} available",
+    )
+
+
 # Registered checks; keep the names stable so ``--module`` filtering is
 # scriptable. Insertion order is the display order.
 _CHECK_FNS = {
@@ -322,6 +492,8 @@ _CHECK_FNS = {
     "runtime_config": lambda dd: _check_runtime_config(dd),
     "provider_registry": lambda dd: _check_provider_registry(dd),
     "runtime_wiring": lambda dd: _check_runtime_wiring(dd),
+    "must_change_password": lambda dd: _check_must_change_password(dd),
+    "port_bindable": lambda dd: _check_port_bindable(dd),
 }
 
 
