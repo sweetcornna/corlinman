@@ -1011,3 +1011,286 @@ class TestQqHealthWatcher:
         assert "heartbeat_lost" in msgs
         assert "Nones" not in msgs
         assert "scan a fresh QR" in msgs
+
+
+# ---------------------------------------------------------------------------
+# R3 — per-channel dispatch concurrency cap (semaphore-bounded fan-out).
+# ---------------------------------------------------------------------------
+
+
+class TestQqDispatchConcurrencyCap:
+    """Regression for R3 — ``_qq_dispatch_loop`` used to ``create_task``
+    per inbound message with no cap. A burst of 20 messages under a
+    slow chat backend would fan out 20 tasks instantly. The fix bounds
+    fan-out via an ``asyncio.Semaphore`` configurable via
+    ``CORLINMAN_QQ_MAX_CONCURRENCY``."""
+
+    @pytest.mark.asyncio
+    async def test_qq_inbound_burst_caps_concurrent_handlers(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Fire 20 inbound messages with max_concurrency=2 and assert
+        the chat service NEVER sees more than 2 concurrent ``run`` calls."""
+        import asyncio
+
+        from corlinman_channels.common import ChannelBinding, InboundEvent
+        from corlinman_channels.onebot import (
+            MessageEvent as _ME,
+            MessageType as _MT,
+            TextSegment as _TS,
+        )
+        from corlinman_channels.router import ChannelRouter
+        from corlinman_channels.service import (
+            QqChannelParams,
+            _qq_dispatch_loop,
+        )
+
+        monkeypatch.setenv("CORLINMAN_QQ_MAX_CONCURRENCY", "2")
+
+        # Build 20 inbound MessageEvent payloads wrapped as InboundEvent.
+        events: list[InboundEvent[_ME]] = []
+        for i in range(20):
+            msg = _ME(
+                self_id=100,
+                message_type=_MT.PRIVATE,
+                sub_type="friend",
+                group_id=None,
+                user_id=1000 + i,
+                message_id=i,
+                message=[_TS(text="hi")],
+                raw_message="hi",
+                time=0,
+                sender=None,
+            )
+            events.append(
+                InboundEvent(
+                    channel="qq",
+                    binding=ChannelBinding.qq_private(100, msg.user_id),
+                    text="hi",
+                    message_id=str(msg.message_id),
+                    timestamp=0,
+                    mentioned=True,
+                    payload=msg,
+                )
+            )
+
+        class _FakeAdapter:
+            """Just enough surface for the dispatch loop. Holds the
+            inbound stream open after the 20 events have flowed so the
+            dispatch loop doesn't tear down in-flight tasks via its
+            ``finally: t.cancel()`` clause — we want every handler to
+            actually run to completion to count it."""
+
+            def __init__(self) -> None:
+                self.sent: list[Any] = []
+                self.drained = asyncio.Event()
+
+            async def inbound(self):  # type: ignore[no-untyped-def]
+                for ev in events:
+                    yield ev
+                # Pause indefinitely so the loop stays alive until the
+                # test sets ``cancel`` explicitly.
+                self.drained.set()
+                await asyncio.Event().wait()
+
+            async def send_action(self, action: Any) -> None:
+                self.sent.append(action)
+
+        concurrent: int = 0
+        peak: int = 0
+        finished: int = 0
+        gate = asyncio.Event()
+
+        class _ConcurrencyRecorder:
+            """Returns an async generator that records concurrent entry."""
+
+            def run(self, request: Any, cancel: Any):  # type: ignore[no-untyped-def]
+                async def _gen():
+                    nonlocal concurrent, peak, finished
+                    concurrent += 1
+                    if concurrent > peak:
+                        peak = concurrent
+                    try:
+                        # Pause so the scheduler has a chance to try (and
+                        # fail) to fan out more — proves the semaphore is
+                        # actually parking the dispatch loop.
+                        try:
+                            await asyncio.wait_for(gate.wait(), timeout=0.25)
+                        except asyncio.TimeoutError:
+                            pass
+                        from types import SimpleNamespace
+                        yield SimpleNamespace(kind="token_delta", text="ok")
+                        yield SimpleNamespace(kind="done")
+                    finally:
+                        concurrent -= 1
+                        finished += 1
+
+                return _gen()
+
+        # The router needs ``self_ids`` to match the event ``self_id`` for
+        # @mention; PRIVATE chats always route, so any value is fine.
+        router = ChannelRouter(self_ids=[100])
+        params = QqChannelParams(
+            config=SimpleNamespace(ws_url="ws://x", self_ids=[100]),
+            model="m",
+            chat_service=_ConcurrencyRecorder(),  # type: ignore[arg-type]
+        )
+        adapter = _FakeAdapter()
+        cancel = asyncio.Event()
+
+        async def release_gate() -> None:
+            # Give the dispatch loop time to fan out under the cap.
+            await asyncio.sleep(0.15)
+            gate.set()
+
+        async def stop_when_done() -> None:
+            # Wait until every handler has run, then cancel so the
+            # dispatch loop exits — don't fire cancel on a timer because
+            # that would cancel an in-flight final task and skew the
+            # ``finished`` counter.
+            for _ in range(500):
+                if finished == 20:
+                    break
+                await asyncio.sleep(0.01)
+            cancel.set()
+
+        await asyncio.gather(
+            _qq_dispatch_loop(adapter, router, params, cancel),  # type: ignore[arg-type]
+            release_gate(),
+            stop_when_done(),
+        )
+
+        # CRITICAL: the recorder never saw more than the cap concurrently.
+        assert peak <= 2, (
+            f"semaphore cap=2 was violated; observed peak={peak} concurrent runs"
+        )
+        # Every accepted inbound must have been dispatched.
+        assert finished == 20, f"expected all 20 to finish, got {finished}"
+
+
+class TestQqDispatchInboxLocalScope:
+    """Regression for L4 — ``_qq_dispatch_loop`` used to mutate
+    ``params.inbox = await _try_open_inbox()`` which made the lazily-
+    opened inbox handle leak across channel restarts. The fix keeps the
+    lazy fallback as a LOCAL variable inside the loop. ``params.inbox``
+    stays untouched so callers can re-run the channel without their
+    config drifting from underneath them."""
+
+    @pytest.mark.asyncio
+    async def test_lazy_inbox_open_does_not_mutate_params(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import asyncio
+
+        from corlinman_channels.common import ChannelBinding, InboundEvent
+        from corlinman_channels.onebot import (
+            MessageEvent as _ME,
+            MessageType as _MT,
+            TextSegment as _TS,
+        )
+        from corlinman_channels.router import ChannelRouter
+        from corlinman_channels import service as _service_mod
+        from corlinman_channels.service import (
+            QqChannelParams,
+            _qq_dispatch_loop,
+        )
+
+        # Substitute a sentinel inbox the lazy open would return, so we
+        # can assert it does NOT leak into ``params.inbox``. Stubs avoid
+        # the sqlite thread that ``corlinman_server.inbox.Inbox.open``
+        # would otherwise spawn under tests.
+        class _StubInbox:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            async def enqueue(self, **_kw: Any) -> int:
+                self.calls.append("enqueue")
+                return 1
+
+            async def mark_dispatched(self, *_a: Any) -> None:
+                self.calls.append("mark_dispatched")
+
+            async def mark_done(self, *_a: Any) -> None:
+                self.calls.append("mark_done")
+
+            async def mark_dead(self, *_a: Any, **_kw: Any) -> None:
+                self.calls.append("mark_dead")
+
+        sentinel_inbox = _StubInbox()
+
+        async def _fake_open() -> Any:
+            return sentinel_inbox
+
+        monkeypatch.setattr(_service_mod, "_try_open_inbox", _fake_open)
+
+        class _FakeAdapter:
+            def __init__(self) -> None:
+                self.sent: list[Any] = []
+
+            async def inbound(self):  # type: ignore[no-untyped-def]
+                ev = _ME(
+                    self_id=100,
+                    message_type=_MT.PRIVATE,
+                    sub_type="friend",
+                    group_id=None,
+                    user_id=200,
+                    message_id=1,
+                    message=[_TS(text="hi")],
+                    raw_message="hi",
+                    time=0,
+                    sender=None,
+                )
+                yield InboundEvent(
+                    channel="qq",
+                    binding=ChannelBinding.qq_private(100, 200),
+                    text="hi",
+                    message_id="1",
+                    timestamp=0,
+                    mentioned=True,
+                    payload=ev,
+                )
+                # Keep the stream open so the dispatch loop doesn't tear
+                # down the in-flight handler before its inbox calls fire.
+                await asyncio.Event().wait()
+
+            async def send_action(self, action: Any) -> None:
+                self.sent.append(action)
+
+        svc = _ScriptedChatService([
+            _Ev(kind="token_delta", text="ok"),
+            _Ev(kind="done"),
+        ])
+        router = ChannelRouter(self_ids=[100])
+        params = QqChannelParams(
+            config=SimpleNamespace(ws_url="ws://x", self_ids=[100]),
+            model="m",
+            chat_service=svc,  # type: ignore[arg-type]
+            inbox=None,  # explicit — the lazy-open path is what's tested
+        )
+        adapter = _FakeAdapter()
+        cancel = asyncio.Event()
+
+        async def stop_when_done() -> None:
+            for _ in range(200):
+                if "mark_done" in sentinel_inbox.calls:
+                    break
+                await asyncio.sleep(0.01)
+            cancel.set()
+
+        await asyncio.gather(
+            _qq_dispatch_loop(adapter, router, params, cancel),  # type: ignore[arg-type]
+            stop_when_done(),
+        )
+
+        # The loop must NOT have mutated params.inbox — the lazy open
+        # lives in a local. L4 regression: the prior code did
+        # ``params.inbox = await _try_open_inbox()`` which leaked the
+        # sentinel into the shared params dataclass.
+        assert params.inbox is None, (
+            "params.inbox was mutated by the dispatch loop — L4 regression"
+        )
+        # And the local *did* get used during the handler — proves the
+        # lazy open ran and that handle_one_qq actually saw the stub.
+        assert "enqueue" in sentinel_inbox.calls
+        assert "mark_dispatched" in sentinel_inbox.calls
+        assert "mark_done" in sentinel_inbox.calls

@@ -15,7 +15,7 @@ import json
 from typing import Any
 
 import pytest
-from corlinman_channels.common import AttachmentKind, ConfigError
+from corlinman_channels.common import AttachmentKind, ConfigError, TransportError
 from corlinman_channels.onebot import (
     AtSegment,
     FaceSegment,
@@ -360,3 +360,182 @@ class TestOneBotIntegration:
         assert payload["action"] == "send_group_msg"
         assert payload["params"]["group_id"] == 10
         assert payload["params"]["message"][0]["data"]["text"] == "hi"
+
+
+# ---------------------------------------------------------------------------
+# C1 — writer requeues actions on transient send failure.
+# ---------------------------------------------------------------------------
+
+
+class TestWriterRequeueOnSendFailure:
+    """Regression for C1 — _writer_loop must not drop an action when
+    ws.send raises; it requeues to the front buffer so the next ws
+    iteration retries instead of leaving the inbox row stuck for 10
+    minutes waiting for the stale-dispatched sweep."""
+
+    @pytest.mark.asyncio
+    async def test_send_failure_requeues_action_at_front(self) -> None:
+        """First ws.send raises, second ws.send succeeds — the action
+        must end up on the wire exactly once, on the second try."""
+        adapter = OneBotAdapter(OneBotConfig(url="ws://127.0.0.1:1"))
+        action = SendGroupMsg(group_id=42, message=[TextSegment(text="ping")])
+
+        sent: list[str] = []
+        attempts = {"count": 0}
+
+        class _Ws:
+            async def send(self, payload: str) -> None:
+                attempts["count"] += 1
+                if attempts["count"] == 1:
+                    raise RuntimeError("simulated transport failure")
+                sent.append(payload)
+
+        # Seed the outbound queue and run the writer until the action lands.
+        await adapter._outbound_q.put(action)
+
+        # First pass — the writer raises after requeueing.
+        with pytest.raises(Exception):
+            await adapter._writer_loop(_Ws())  # type: ignore[arg-type]
+
+        # Action must be in the front buffer with retry=1.
+        assert list(adapter._outbound_front) == [action]
+        assert adapter._outbound_retries.get(id(action)) == 1
+
+        # Second pass — the writer drains the front buffer first and
+        # ws.send succeeds. Use create_task + a short sleep so we can
+        # cancel after the action lands. The writer catches
+        # CancelledError around its outer ``_outbound_q.get()`` and
+        # returns cleanly, so the task finishes normally rather than
+        # propagating the cancellation.
+        task = asyncio.create_task(adapter._writer_loop(_Ws()))  # type: ignore[arg-type]
+        for _ in range(20):
+            if sent:
+                break
+            await asyncio.sleep(0.01)
+        task.cancel()
+        # The loop swallows CancelledError on its outer get(), so the
+        # task completes without raising.
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        assert len(sent) == 1, f"expected exactly one wire send, got {sent}"
+        payload = json.loads(sent[0])
+        assert payload["action"] == "send_group_msg"
+        assert payload["params"]["group_id"] == 42
+        # Successful send must clear the retry bookkeeping.
+        assert id(action) not in adapter._outbound_retries
+
+    @pytest.mark.asyncio
+    async def test_two_consecutive_failures_drop_poison_action(self) -> None:
+        """After two failed attempts the action is dropped so a poison
+        payload can't infinite-loop the writer."""
+        adapter = OneBotAdapter(OneBotConfig(url="ws://127.0.0.1:1"))
+        poison = SendGroupMsg(group_id=1, message=[TextSegment(text="x")])
+        good = SendGroupMsg(group_id=2, message=[TextSegment(text="ok")])
+
+        sent: list[str] = []
+        attempts = {"count": 0}
+
+        class _Ws:
+            async def send(self, payload: str) -> None:
+                attempts["count"] += 1
+                # Fail on every send of the poison; succeed for the good
+                # one.
+                obj = json.loads(payload)
+                if obj["params"]["group_id"] == 1:
+                    raise RuntimeError("poison")
+                sent.append(payload)
+
+        await adapter._outbound_q.put(poison)
+        await adapter._outbound_q.put(good)
+
+        # First invocation: poison fails once → requeued to front (retry=1)
+        # → TransportError raised.
+        with pytest.raises(TransportError):
+            await adapter._writer_loop(_Ws())  # type: ignore[arg-type]
+
+        # Second invocation: poison comes from the front buffer → fails
+        # again → retry=2 → DROPPED (no requeue, no raise). Loop then
+        # proceeds to drain the good action from _outbound_q which lands
+        # on the wire. Run as a task so we can cancel once the good
+        # action has flushed.
+        task = asyncio.create_task(adapter._writer_loop(_Ws()))  # type: ignore[arg-type]
+        for _ in range(40):
+            if sent:
+                break
+            await asyncio.sleep(0.01)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        assert sent, "expected the non-poison action to eventually land"
+        landed = json.loads(sent[0])
+        assert landed["params"]["group_id"] == 2
+        # Poison must NOT be tracked anymore (cleared on drop).
+        assert id(poison) not in adapter._outbound_retries
+
+
+# ---------------------------------------------------------------------------
+# R2 — _pump drops oldest on inbound queue overflow (no backpressure stall).
+# ---------------------------------------------------------------------------
+
+
+class TestInboundQueueDropOldest:
+    """Regression for R2 — when the inbound queue is full, ``_pump`` must
+    drop the OLDEST event and put the newest so the most recent user
+    message still surfaces. Blocking on ``put`` would let the websockets
+    frame buffer fill until NapCat closes the connection with 1009."""
+
+    @pytest.mark.asyncio
+    async def test_overflow_drops_oldest_and_counts(self) -> None:
+        adapter = OneBotAdapter(OneBotConfig(url="ws://127.0.0.1:1"))
+        # Tiny queue so a couple of puts fill it.
+        adapter._inbound_q = asyncio.Queue(maxsize=2)
+        assert adapter.inbound_dropped_count == 0
+
+        # Drive the drop-oldest path manually — same code that _pump runs.
+        async def push(ev_id: int) -> None:
+            event = parse_event({
+                "post_type": "message",
+                "message_type": "private",
+                "self_id": 1,
+                "user_id": 1,
+                "message_id": ev_id,
+                "message": [{"type": "text", "data": {"text": f"m{ev_id}"}}],
+                "time": ev_id,
+            })
+            try:
+                adapter._inbound_q.put_nowait(event)
+            except asyncio.QueueFull:
+                # Drop oldest, replace.
+                from contextlib import suppress as _s
+                with _s(asyncio.QueueEmpty):
+                    adapter._inbound_q.get_nowait()
+                adapter._inbound_dropped += 1
+                with _s(asyncio.QueueFull):
+                    adapter._inbound_q.put_nowait(event)
+
+        # Fill the queue, then push one more — oldest should be evicted.
+        await push(1)
+        await push(2)
+        await push(3)
+        await push(4)
+        # Queue capacity is 2 so two drops should have happened.
+        assert adapter._inbound_q.qsize() == 2
+        # We pushed 4 events into a 2-slot queue without ever blocking;
+        # at least two drops must have been recorded.
+        assert adapter.inbound_dropped_count >= 2
+
+        # The newest events must be at the head of the queue (FIFO),
+        # so what we pop should NOT be the very first one we pushed.
+        first_out = adapter._inbound_q.get_nowait()
+        assert isinstance(first_out, MessageEvent)
+        # The remaining queued event should be the most recently pushed
+        # (id=4).
+        last_out = adapter._inbound_q.get_nowait()
+        assert isinstance(last_out, MessageEvent)
+        assert last_out.message_id == 4

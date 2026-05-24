@@ -393,13 +393,24 @@ async def _qq_dispatch_loop(
 ) -> None:
     """Inner loop — reads inbound events and spawns per-message reply
     tasks. Equivalent of the Rust ``tokio::select! { cancelled() / recv() }``
-    in ``run_qq_channel``."""
+    in ``run_qq_channel``.
+
+    Concurrency is bounded by a per-channel semaphore (R3 fix); the
+    dispatch loop awaits the acquire so backpressure flows upstream —
+    the OneBot reader slows down instead of fanning out unboundedly.
+    """
     inbound_iter = adapter.inbound()
-    # T4.3: lazily open the durable inbox on first use. Resolved via
-    # corlinman_server.inbox if available; tests that import the
-    # channels package standalone keep ``params.inbox = None``.
-    if params.inbox is None:
-        params.inbox = await _try_open_inbox()
+    # L4 fix: keep the lazily-opened inbox as a LOCAL variable rather
+    # than writing back into ``params.inbox``. ``params`` is shared
+    # across channel restarts; mutating it would leave in-flight
+    # ``handle_one_qq`` calls referencing a now-stale inbox handle on
+    # the next reconnect. ``params.inbox`` remains as an injectable
+    # override (tests pass a pre-built inbox); only the loop's lazy
+    # fallback lives in this local scope.
+    inbox = params.inbox
+    if inbox is None:
+        inbox = await _try_open_inbox()
+    semaphore = asyncio.Semaphore(_channel_max_concurrency("QQ"))
     pending: set[asyncio.Task[None]] = set()
     try:
         while not cancel.is_set():
@@ -424,9 +435,9 @@ async def _qq_dispatch_loop(
             # and reply leaves a breadcrumb. Best-effort; a failure here
             # never blocks the chat path.
             inbox_id: int | None = None
-            if params.inbox is not None:
+            if inbox is not None:
                 try:
-                    inbox_id = await params.inbox.enqueue(
+                    inbox_id = await inbox.enqueue(
                         channel="qq",
                         session_key=req.session_key,
                         message_id=str(payload.message_id),
@@ -435,15 +446,20 @@ async def _qq_dispatch_loop(
                 except Exception as exc:  # noqa: BLE001 — never block chat
                     _log.warning("qq inbox enqueue failed: %s", exc)
                     inbox_id = None
+            # R3: acquire BEFORE create_task so a saturated semaphore
+            # parks the dispatch loop here — the upstream reader sees
+            # natural backpressure instead of unbounded task fan-out.
+            await semaphore.acquire()
             t = asyncio.create_task(
-                handle_one_qq(
+                _qq_run_one(
+                    semaphore,
                     params.chat_service,
                     req,
                     payload,
                     params.model,
                     adapter,
                     cancel,
-                    inbox=params.inbox,
+                    inbox=inbox,
                     inbox_id=inbox_id,
                 )
             )
@@ -453,6 +469,36 @@ async def _qq_dispatch_loop(
         # Best-effort: cancel any in-flight handlers on shutdown.
         for t in pending:
             t.cancel()
+
+
+async def _qq_run_one(
+    semaphore: asyncio.Semaphore,
+    chat_service: ChatServiceLike,
+    req: RoutedRequest,
+    payload: MessageEvent,
+    model: str,
+    adapter: OneBotAdapter,
+    cancel: asyncio.Event,
+    *,
+    inbox: Any,
+    inbox_id: int | None,
+) -> None:
+    """Wrapper that releases the per-channel semaphore in ``finally`` —
+    keeps concurrency-control bookkeeping out of the public
+    ``handle_one_qq`` signature so existing callers stay unchanged."""
+    try:
+        await handle_one_qq(
+            chat_service,
+            req,
+            payload,
+            model,
+            adapter,
+            cancel,
+            inbox=inbox,
+            inbox_id=inbox_id,
+        )
+    finally:
+        semaphore.release()
 
 
 async def _qq_send_attachment(
@@ -739,6 +785,7 @@ async def run_telegram_channel(
     adapter = TelegramAdapter(tg_cfg)
     send_client = httpx.AsyncClient()
     sender = TelegramSender(send_client, tg_cfg.bot_token, base=tg_cfg.base_url)
+    semaphore = asyncio.Semaphore(_channel_max_concurrency("TELEGRAM"))
     pending: set[asyncio.Task[None]] = set()
     try:
         async with adapter:
@@ -749,17 +796,18 @@ async def run_telegram_channel(
                     break
                 if params.chat_service is None:
                     continue
-                t = asyncio.create_task(
-                    handle_one_telegram(
-                        params.chat_service,
+                # R3: bounded fan-out — backpressure flows upstream.
+                await _bounded_spawn(
+                    semaphore,
+                    pending,
+                    lambda chat_service=params.chat_service, ev=ev: handle_one_telegram(
+                        chat_service,
                         ev,
                         params.model,
                         sender,
                         cancel,
-                    )
+                    ),
                 )
-                pending.add(t)
-                t.add_done_callback(pending.discard)
     finally:
         for t in pending:
             t.cancel()
@@ -1065,6 +1113,7 @@ async def run_discord_channel(
     adapter = DiscordAdapter(dc_cfg)
     send_client = httpx.AsyncClient()
     sender = DiscordSender(send_client, dc_cfg.bot_token, base=dc_cfg.rest_base)
+    semaphore = asyncio.Semaphore(_channel_max_concurrency("DISCORD"))
     pending: set[asyncio.Task[None]] = set()
     try:
         async with adapter:
@@ -1075,13 +1124,14 @@ async def run_discord_channel(
                     break
                 if params.chat_service is None:
                     continue
-                t = asyncio.create_task(
-                    handle_one_discord(
-                        params.chat_service, ev, params.model, sender, cancel
-                    )
+                # R3: bounded fan-out — backpressure flows upstream.
+                await _bounded_spawn(
+                    semaphore,
+                    pending,
+                    lambda chat_service=params.chat_service, ev=ev: handle_one_discord(
+                        chat_service, ev, params.model, sender, cancel
+                    ),
                 )
-                pending.add(t)
-                t.add_done_callback(pending.discard)
     finally:
         for t in pending:
             t.cancel()
@@ -1160,6 +1210,7 @@ async def run_slack_channel(
     adapter = SlackAdapter(sl_cfg)
     send_client = httpx.AsyncClient()
     sender = SlackSender(send_client, sl_cfg.bot_token, base=sl_cfg.api_base)
+    semaphore = asyncio.Semaphore(_channel_max_concurrency("SLACK"))
     pending: set[asyncio.Task[None]] = set()
     try:
         async with adapter:
@@ -1170,13 +1221,14 @@ async def run_slack_channel(
                     break
                 if params.chat_service is None:
                     continue
-                t = asyncio.create_task(
-                    handle_one_slack(
-                        params.chat_service, ev, params.model, sender, cancel
-                    )
+                # R3: bounded fan-out — backpressure flows upstream.
+                await _bounded_spawn(
+                    semaphore,
+                    pending,
+                    lambda chat_service=params.chat_service, ev=ev: handle_one_slack(
+                        chat_service, ev, params.model, sender, cancel
+                    ),
                 )
-                pending.add(t)
-                t.add_done_callback(pending.discard)
     finally:
         for t in pending:
             t.cancel()
@@ -1259,6 +1311,7 @@ async def run_feishu_channel(
     # The sender needs a fresh tenant_access_token per call; the adapter
     # owns the token lifecycle, so hand it the adapter's refresh hook.
     sender = FeishuSender(send_client, adapter._refresh_token, api_base=fs_cfg.api_base)
+    semaphore = asyncio.Semaphore(_channel_max_concurrency("FEISHU"))
     pending: set[asyncio.Task[None]] = set()
     try:
         async with adapter:
@@ -1269,13 +1322,14 @@ async def run_feishu_channel(
                     break
                 if params.chat_service is None:
                     continue
-                t = asyncio.create_task(
-                    handle_one_feishu(
-                        params.chat_service, ev, params.model, sender, cancel
-                    )
+                # R3: bounded fan-out — backpressure flows upstream.
+                await _bounded_spawn(
+                    semaphore,
+                    pending,
+                    lambda chat_service=params.chat_service, ev=ev: handle_one_feishu(
+                        chat_service, ev, params.model, sender, cancel
+                    ),
                 )
-                pending.add(t)
-                t.add_done_callback(pending.discard)
     finally:
         for t in pending:
             t.cancel()
@@ -1432,6 +1486,61 @@ def _attr(obj: Any, name: str, default: Any) -> Any:
     if isinstance(obj, dict):
         return obj.get(name, default)
     return getattr(obj, name, default)
+
+
+#: Default per-channel concurrent in-flight reply tasks. Conservative
+#: because a single chat turn already drives the upstream provider hard.
+_DEFAULT_CHANNEL_CONCURRENCY: int = 8
+
+
+def _channel_max_concurrency(channel: str) -> int:
+    """Resolve the per-channel concurrency cap.
+
+    Each channel can override via ``CORLINMAN_<CHANNEL>_MAX_CONCURRENCY``
+    (e.g. ``CORLINMAN_QQ_MAX_CONCURRENCY=4``). Invalid / unset values
+    fall back to :data:`_DEFAULT_CHANNEL_CONCURRENCY`. Values < 1 are
+    coerced to 1 so the semaphore can't deadlock the loop.
+
+    R3 fix: the dispatch loops acquire this semaphore BEFORE spawning a
+    reply task so a slow chat backend exerts backpressure on the
+    inbound reader instead of fanning out unbounded asyncio tasks.
+    """
+    import os
+
+    env_name = f"CORLINMAN_{channel.upper()}_MAX_CONCURRENCY"
+    raw = os.environ.get(env_name)
+    if not raw:
+        return _DEFAULT_CHANNEL_CONCURRENCY
+    try:
+        value = int(raw)
+    except ValueError:
+        return _DEFAULT_CHANNEL_CONCURRENCY
+    return max(1, value)
+
+
+async def _bounded_spawn(
+    semaphore: asyncio.Semaphore,
+    pending: set[asyncio.Task[None]],
+    coro_factory: Callable[[], Awaitable[None]],
+) -> None:
+    """Acquire ``semaphore`` then spawn the task, releasing on completion.
+
+    Used by the four text-only channel dispatch loops (Telegram /
+    Discord / Slack / Feishu) to keep R3's concurrency cap in one
+    place. The semaphore is released in the task's ``finally`` block
+    so a crashing handler never strands a permit.
+    """
+    await semaphore.acquire()
+
+    async def _wrapped() -> None:
+        try:
+            await coro_factory()
+        finally:
+            semaphore.release()
+
+    t = asyncio.create_task(_wrapped())
+    pending.add(t)
+    t.add_done_callback(pending.discard)
 
 
 def _coerce_keywords(raw: Any) -> GroupKeywords:

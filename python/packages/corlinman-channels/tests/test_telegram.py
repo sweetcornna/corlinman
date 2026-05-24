@@ -451,3 +451,136 @@ class TestUserChat:
         assert u.id == 100
         assert u.is_bot is False
         assert u.username is None
+
+
+# ---------------------------------------------------------------------------
+# C2 — offset must NOT advance before all updates in a batch are queued.
+# ---------------------------------------------------------------------------
+
+
+class TestOffsetCommitAfterPut:
+    """Regression for C2 — Telegram does NOT redeliver past offset, so
+    if ``self._offset`` is bumped pre-put and then ``put`` is interrupted
+    (cancellation, asyncio.QueueFull, close mid-batch), the un-put
+    updates are permanently lost. The fix stages the new offset locally
+    and only commits it AFTER every update has been put."""
+
+    @pytest.mark.asyncio
+    async def test_offset_not_advanced_when_put_interrupted(
+        self, tg_script: Any
+    ) -> None:
+        """Inject an exception on the second ``put`` of a 3-update
+        batch and assert ``self._offset`` did NOT advance past the prior
+        value — the next ``getUpdates`` must redo the whole batch."""
+        tg_script.add_updates([
+            {
+                "update_id": 100,
+                "message": {
+                    "message_id": 1,
+                    "from": {"id": 77, "is_bot": False},
+                    "chat": {"id": 77, "type": "private"},
+                    "date": 0,
+                    "text": "msg-100",
+                },
+            },
+            {
+                "update_id": 101,
+                "message": {
+                    "message_id": 2,
+                    "from": {"id": 77, "is_bot": False},
+                    "chat": {"id": 77, "type": "private"},
+                    "date": 0,
+                    "text": "msg-101",
+                },
+            },
+            {
+                "update_id": 102,
+                "message": {
+                    "message_id": 3,
+                    "from": {"id": 77, "is_bot": False},
+                    "chat": {"id": 77, "type": "private"},
+                    "date": 0,
+                    "text": "msg-102",
+                },
+            },
+        ])
+        adapter = TelegramAdapter(
+            TelegramConfig(bot_token="TEST", long_poll_timeout=1),
+            http_client=tg_script.client(),
+        )
+
+        # Resolve bot_id/username then swap the inbound queue for one
+        # that raises on the second put — simulates a close/cancel mid-
+        # batch where update 100 lands but 101/102 don't.
+        me = await adapter._get_me()
+        adapter._bot_id = me.id
+        adapter._bot_username = me.username
+
+        class _FailingQueue:
+            def __init__(self) -> None:
+                self.calls = 0
+                self.items: list[Any] = []
+
+            async def put(self, item: Any) -> None:
+                self.calls += 1
+                if self.calls == 2:
+                    raise RuntimeError("simulated interrupt mid-batch")
+                self.items.append(item)
+
+        failing = _FailingQueue()
+        adapter._inbound_q = failing  # type: ignore[assignment]
+
+        # Snapshot the pre-batch offset.
+        prior = adapter._offset
+
+        # Drive one poll iteration directly. The exception inside the
+        # batch loop propagates out of _poll_loop — we catch it here.
+        with pytest.raises(RuntimeError, match="simulated interrupt"):
+            await adapter._poll_loop()
+
+        # Critical: the offset MUST NOT have advanced. The next
+        # getUpdates will redeliver all three updates so 101/102 aren't
+        # lost.
+        assert adapter._offset == prior, (
+            f"offset advanced to {adapter._offset} even though only update "
+            f"100 was successfully put — 101/102 would be permanently lost"
+        )
+        # And only one message actually made it onto the queue.
+        assert len(failing.items) == 1
+        assert failing.items[0].text == "msg-100"
+
+    @pytest.mark.asyncio
+    async def test_offset_advances_when_batch_completes(
+        self, tg_script: Any
+    ) -> None:
+        """Happy path: when every update is queued successfully, the
+        offset commits to ``last.update_id + 1`` so subsequent polls
+        don't reprocess the batch."""
+        tg_script.add_updates([
+            {
+                "update_id": 200,
+                "message": {
+                    "message_id": 1,
+                    "from": {"id": 77, "is_bot": False},
+                    "chat": {"id": 77, "type": "private"},
+                    "date": 0,
+                    "text": "ok",
+                },
+            },
+        ])
+        adapter = TelegramAdapter(
+            TelegramConfig(bot_token="TEST", long_poll_timeout=1),
+            http_client=tg_script.client(),
+        )
+        async with adapter:
+            # Pull one event then close — by then the offset commit ran.
+            async def first() -> Any:
+                async for ev in adapter.inbound():
+                    return ev
+                return None
+
+            ev = await asyncio.wait_for(first(), timeout=5.0)
+            assert ev is not None
+            # Allow the poll loop one more tick so the commit lands.
+            await asyncio.sleep(0.05)
+            assert adapter._offset == 201

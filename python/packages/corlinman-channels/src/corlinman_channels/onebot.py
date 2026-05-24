@@ -38,6 +38,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+from collections import deque
 from collections.abc import AsyncIterator, Iterable
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -46,6 +48,8 @@ from typing import Any
 
 import websockets
 from websockets.asyncio.client import ClientConnection
+
+_log = logging.getLogger(__name__)
 
 from corlinman_channels.common import (
     Attachment,
@@ -605,8 +609,22 @@ class OneBotAdapter:
         self._ws: ClientConnection | None = None
         self._closed = False
         # Bounded queue so a stalled consumer doesn't grow without bound.
+        # On burst overflow the *oldest* event is dropped (so the most
+        # recent user message still surfaces) — see ``_pump`` for the
+        # drop-oldest path. ``_inbound_dropped`` counts those drops so
+        # operators can spot a consistently slow chat service.
         self._inbound_q: asyncio.Queue[Event] = asyncio.Queue(maxsize=64)
+        self._inbound_dropped: int = 0
         self._outbound_q: asyncio.Queue[Action] = asyncio.Queue(maxsize=64)
+        # ``_writer_loop`` drains this front buffer BEFORE ``_outbound_q``
+        # so a transient WS send failure can re-queue the action without
+        # losing ordering (asyncio.Queue has no push-left). See C1 fix.
+        self._outbound_front: deque[Action] = deque()
+        # Per-action retry counter — guards against poison messages that
+        # would otherwise loop forever. Keyed by ``id(action)`` since
+        # actions don't have a stable hash; entries are cleared once the
+        # action lands successfully or is dropped.
+        self._outbound_retries: dict[int, int] = {}
         self._reader_task: asyncio.Task[None] | None = None
         # NapCat heartbeat timestamp — updated on every parsed event
         # (messages, meta heartbeats, lifecycle, notices). A healthy
@@ -614,6 +632,16 @@ class OneBotAdapter:
         # means the bot QQ account got kicked offline by Tencent while
         # the WS stayed up. ``None`` until the first event lands.
         self._last_event_at_ms: int | None = None
+
+    @property
+    def inbound_dropped_count(self) -> int:
+        """Total inbound events dropped because the consumer fell behind.
+
+        A non-zero value indicates the chat service couldn't keep up with
+        the inbound burst rate; the drop-oldest behaviour in ``_pump``
+        kicked in to keep the most recent user message visible.
+        """
+        return self._inbound_dropped
 
     @property
     def last_event_at_ms(self) -> int | None:
@@ -778,28 +806,86 @@ class OneBotAdapter:
                 # the health watcher can flag a kicked-offline bot.
                 import time as _t
                 self._last_event_at_ms = int(_t.time() * 1000)
-                # Backpressure: queue.put will block if the consumer falls
-                # behind; that's intentional — we want to slow the WS read.
-                await self._inbound_q.put(event)
+                # Burst-absorb: a slow chat service must NOT block the
+                # WS reader (websockets' frame buffer fills → NapCat
+                # closes the connection with 1009 → reconnect storm).
+                # Drop the OLDEST event when the queue is saturated so
+                # the most recent user message still surfaces.
+                try:
+                    self._inbound_q.put_nowait(event)
+                except asyncio.QueueFull:
+                    with suppress(asyncio.QueueEmpty):
+                        self._inbound_q.get_nowait()
+                    self._inbound_dropped += 1
+                    _log.warning(
+                        "qq.inbound_q.dropped_oldest count=%d",
+                        self._inbound_dropped,
+                    )
+                    # Best-effort: if even the second put trips QueueFull
+                    # (extreme concurrency / re-entry from another task)
+                    # swallow it rather than blocking the reader.
+                    with suppress(asyncio.QueueFull):
+                        self._inbound_q.put_nowait(event)
         finally:
             writer.cancel()
             with suppress(asyncio.CancelledError):
                 await writer
 
     async def _writer_loop(self, ws: ClientConnection) -> None:
-        """Drain ``self._outbound_q`` and send each action as a text frame."""
+        """Drain ``self._outbound_q`` and send each action as a text frame.
+
+        On a transient send failure the action is requeued to the
+        ``_outbound_front`` buffer (drained first on the next iteration)
+        so the dispatched inbox row doesn't stay stuck for 10 minutes
+        waiting for the stale sweep. After two consecutive failures for
+        the same action we drop it — a "poison" payload (oversized text,
+        malformed segments) would otherwise loop forever and starve the
+        rest of the queue.
+        """
         while True:
-            try:
-                action = await self._outbound_q.get()
-            except asyncio.CancelledError:
-                return
+            # Front buffer wins so requeued actions retain ordering.
+            if self._outbound_front:
+                action = self._outbound_front.popleft()
+            else:
+                try:
+                    action = await self._outbound_q.get()
+                except asyncio.CancelledError:
+                    return
             payload = json.dumps(action_to_wire(action))
             try:
                 await ws.send(payload)
+            except asyncio.CancelledError:
+                # Treat as "didn't land" — requeue at the front so the
+                # reconnect path picks it up. Don't increment retries
+                # because cancellation isn't the action's fault.
+                self._outbound_front.appendleft(action)
+                raise
             except Exception as exc:
-                # Bounce the action back so the reconnect doesn't lose it?
-                # The Rust adapter drops on send failure; we match.
+                retries = self._outbound_retries.get(id(action), 0) + 1
+                if retries >= 2:
+                    self._outbound_retries.pop(id(action), None)
+                    _log.error(
+                        "qq.outbound.dropped action=%s retries=%d err=%s",
+                        type(action).__name__,
+                        retries,
+                        exc,
+                    )
+                    # Don't re-raise — keep draining the next action.
+                    continue
+                self._outbound_retries[id(action)] = retries
+                self._outbound_front.appendleft(action)
+                _log.warning(
+                    "qq.outbound.send_failed action=%s retry=%d err=%s",
+                    type(action).__name__,
+                    retries,
+                    exc,
+                )
+                # Raise to abort the _pump cycle so the reconnect path
+                # runs; the requeued action will fire on the new ws.
                 raise TransportError(f"OneBot send failed: {exc}") from exc
+            else:
+                # Successful send — clear any prior retry bookkeeping.
+                self._outbound_retries.pop(id(action), None)
 
 
 # ---------------------------------------------------------------------------

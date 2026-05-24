@@ -631,3 +631,156 @@ class TestErrorEnumAttrs:
     def test_send_error_aliases(self) -> None:
         for cls in (SendError.Api, SendError.Http, SendError.Io):
             assert issubclass(cls, SendError)
+
+
+# ---------------------------------------------------------------------------
+# R5 — file-size guard prevents OOM on multi-GB uploads.
+# ---------------------------------------------------------------------------
+
+
+class TestUploadSizeGuard:
+    """Regression for R5 — ``send_document`` / ``send_photo`` / ``send_voice``
+    used to ``path.read_bytes()`` unconditionally. A runaway agent that
+    wrote a 10 GB file would OOM the gateway. The guard checks
+    ``path.stat().st_size`` before reading."""
+
+    @pytest.mark.asyncio
+    async def test_send_document_rejects_oversize_file(
+        self,
+        tmpdir_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A document larger than MAX_UPLOAD_BYTES must raise SendIoError
+        BEFORE any HTTP traffic — the gateway never reads the bytes."""
+        from corlinman_channels.telegram_send import MAX_UPLOAD_BYTES, SendIoError
+
+        # Build a real file then monkey-patch its stat() so we don't
+        # actually write 50 MB to /tmp on every test run.
+        f = tmpdir_path / "huge.bin"
+        f.write_bytes(b"x")  # tiny on-disk file
+
+        real_stat = Path.stat
+        oversize = MAX_UPLOAD_BYTES + 1
+
+        def fake_stat(self: Path, *a: Any, **kw: Any) -> Any:
+            real = real_stat(self, *a, **kw)
+            if self == f:
+                # Forge a stat_result with the inflated size.
+                class _S:
+                    st_size = oversize
+                    def __getattr__(self_inner, name: str) -> Any:
+                        return getattr(real, name)
+                return _S()
+            return real
+
+        monkeypatch.setattr(Path, "stat", fake_stat)
+
+        called: list[str] = []
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            called.append(req.url.path)
+            return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        sender = TelegramSender(client, "TEST")
+        with pytest.raises(SendIoError, match="file too large"):
+            await sender.send_document(42, f, filename="huge.bin")
+        await client.aclose()
+        # The guard must reject BEFORE any HTTP traffic.
+        assert called == [], (
+            f"size check should run before send; saw HTTP calls {called}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_send_voice_rejects_oversize_file(
+        self,
+        tmpdir_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from corlinman_channels.telegram_send import MAX_UPLOAD_BYTES, SendIoError
+
+        f = tmpdir_path / "huge.ogg"
+        f.write_bytes(b"OggS")
+
+        real_stat = Path.stat
+
+        def fake_stat(self: Path, *a: Any, **kw: Any) -> Any:
+            real = real_stat(self, *a, **kw)
+            if self == f:
+                class _S:
+                    st_size = MAX_UPLOAD_BYTES + 1
+                    def __getattr__(self_inner, name: str) -> Any:
+                        return getattr(real, name)
+                return _S()
+            return real
+
+        monkeypatch.setattr(Path, "stat", fake_stat)
+
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda req: httpx.Response(
+                    200, json={"ok": True, "result": {"message_id": 1}}
+                )
+            )
+        )
+        sender = TelegramSender(client, "TEST")
+        with pytest.raises(SendIoError, match="file too large"):
+            await sender.send_voice(42, f)
+        await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_send_photo_path_rejects_oversize_file(
+        self,
+        tmpdir_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from corlinman_channels.telegram_send import MAX_UPLOAD_BYTES, SendIoError
+
+        f = tmpdir_path / "huge.jpg"
+        f.write_bytes(b"\xff\xd8\xff\xe0")
+
+        real_stat = Path.stat
+
+        def fake_stat(self: Path, *a: Any, **kw: Any) -> Any:
+            real = real_stat(self, *a, **kw)
+            if self == f:
+                class _S:
+                    st_size = MAX_UPLOAD_BYTES + 1
+                    def __getattr__(self_inner, name: str) -> Any:
+                        return getattr(real, name)
+                return _S()
+            return real
+
+        monkeypatch.setattr(Path, "stat", fake_stat)
+
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda req: httpx.Response(
+                    200, json={"ok": True, "result": {"message_id": 1}}
+                )
+            )
+        )
+        sender = TelegramSender(client, "TEST")
+        with pytest.raises(SendIoError, match="file too large"):
+            await sender.send_photo(42, PhotoSource.Path(f))
+        await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_normal_size_file_still_works(
+        self,
+        tmpdir_path: Path,
+    ) -> None:
+        """Sanity: the guard doesn't block normal-sized uploads."""
+        f = tmpdir_path / "small.pdf"
+        f.write_bytes(b"%PDF-fake content")
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200, json={"ok": True, "result": {"message_id": 99}}
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        sender = TelegramSender(client, "TEST")
+        message_id = await sender.send_document(42, f, filename="small.pdf")
+        await client.aclose()
+        assert message_id == 99

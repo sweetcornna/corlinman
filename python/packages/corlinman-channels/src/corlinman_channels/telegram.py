@@ -378,6 +378,12 @@ class TelegramAdapter:
         self._bot_username: str | None = None
         self._inbound_q: asyncio.Queue[Message] = asyncio.Queue(maxsize=256)
         self._reader_task: asyncio.Task[None] | None = None
+        # Long-poll cursor. Lives on the adapter (not as a poll-loop
+        # local) so a cancel/exception mid-batch can be observed by
+        # tests, and so that the loop only commits a NEW offset after
+        # every update in the batch has been queued — see C2 fix in
+        # ``_poll_loop`` for the no-data-loss invariant.
+        self._offset: int | None = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -491,10 +497,9 @@ class TelegramAdapter:
     # ------------------------------------------------------------------
 
     async def _poll_loop(self) -> None:
-        offset: int | None = None
         while not self._closed:
             try:
-                updates = await self._get_updates(offset)
+                updates = await self._get_updates(self._offset)
             except asyncio.CancelledError:
                 return
             except Exception:
@@ -511,10 +516,15 @@ class TelegramAdapter:
             if self._closed:
                 return
 
+            # Stage the new offset locally and commit it only AFTER every
+            # event in the batch has been put on the inbound queue. If a
+            # cancel / exception fires mid-batch, ``self._offset`` stays
+            # at the prior value so the next ``getUpdates`` redelivers
+            # the un-put updates. Telegram does NOT redeliver past
+            # offset — bumping it pre-put silently drops messages.
+            pending_offset: int | None = self._offset
             for upd in updates:
-                # Advance offset regardless of filter outcome — the Rust
-                # service does the same so dropped updates don't replay.
-                offset = upd.update_id + 1
+                pending_offset = upd.update_id + 1
                 if upd.message is None:
                     continue
                 if self._closed:
@@ -523,6 +533,8 @@ class TelegramAdapter:
                     await self._inbound_q.put(upd.message)
                 except asyncio.CancelledError:
                     return
+            # All updates in the batch have been queued — safe to commit.
+            self._offset = pending_offset
 
             # Yield unconditionally — when the transport completes
             # instantly (``httpx.MockTransport`` in tests, or a Telegram

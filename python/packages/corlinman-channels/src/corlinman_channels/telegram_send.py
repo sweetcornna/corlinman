@@ -22,11 +22,43 @@ from pathlib import Path
 import httpx
 
 __all__ = [
+    "MAX_UPLOAD_BYTES",
     "PhotoSource",
     "SendError",
     "TelegramSender",
     "build_multipart",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Upload guards
+# ---------------------------------------------------------------------------
+
+
+#: Hard cap on the size of local-file uploads (``sendDocument`` /
+#: ``sendPhoto`` / ``sendVoice``). Telegram's documented bot-API limit
+#: is 50 MiB for documents; we leave a safety headroom so the multipart
+#: envelope + a few-percent-overhead chunked transfer never trips the
+#: server-side ceiling. A runaway agent that wrote a 10 GiB file would
+#: otherwise OOM the gateway via ``Path.read_bytes()``.
+MAX_UPLOAD_BYTES: int = 45 * 1024 * 1024
+
+
+def _check_upload_size(path: Path) -> None:
+    """Raise :class:`SendIoError` if ``path`` exceeds :data:`MAX_UPLOAD_BYTES`.
+
+    Called before ``Path.read_bytes()`` so we never materialise a multi-GB
+    file into RAM. Streaming-multipart can land later; the size guard is
+    the minimum needed to keep the gateway memory-stable.
+    """
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        raise SendIoError(str(exc)) from exc
+    if size > MAX_UPLOAD_BYTES:
+        raise SendIoError(
+            f"file too large: {size} > {MAX_UPLOAD_BYTES} (path={path.name})"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -227,6 +259,7 @@ class TelegramSender:
             return await _parse_envelope(resp)
         # PhotoSource.Path
         path = source.path
+        _check_upload_size(path)
         try:
             content = path.read_bytes()
         except OSError as exc:
@@ -241,7 +274,13 @@ class TelegramSender:
         path: Path,
         caption: str | None = None,
     ) -> int:
-        """POST ``/sendVoice`` from a local OGG path."""
+        """POST ``/sendVoice`` from a local OGG path.
+
+        Raises :class:`SendIoError` when ``path`` exceeds
+        :data:`MAX_UPLOAD_BYTES` — protects the gateway from a runaway
+        agent that wrote a multi-GB file into the media dir.
+        """
+        _check_upload_size(path)
         try:
             content = path.read_bytes()
         except OSError as exc:
@@ -263,7 +302,12 @@ class TelegramSender:
         Used by the ``send_attachment`` agent tool — supports any file
         type (HTML, PDF, code, etc.). ``filename`` overrides the
         on-disk basename for the user-visible display.
+
+        Raises :class:`SendIoError` when ``path`` exceeds
+        :data:`MAX_UPLOAD_BYTES` — the channel handler folds the error
+        into a friendly status line rather than crashing the turn.
         """
+        _check_upload_size(path)
         try:
             content = path.read_bytes()
         except OSError as exc:
