@@ -57,5 +57,26 @@ PY
 
 # Now boot the agent sidecar + gateway in order (sidecar first).
 /opt/venv/bin/corlinman-python-server &
-sleep 3
+
+# Wait for the agent sidecar's gRPC listener to accept on :50051 before
+# starting the gateway — replaces a blind `sleep 3` that raced on slow
+# boots. We test-connect via the bundled venv python (no socket-utils
+# needed) and bail after ~18s so a broken sidecar can't block boot
+# indefinitely; the gateway will then surface the failure via its own
+# /health probe.
+echo "waiting for python sidecar gRPC ready on :50051..."
+ready=""
+i=1
+while [ "$i" -le 60 ]; do
+    if /opt/venv/bin/python3 -c "import socket; s=socket.socket(); s.settimeout(0.5); s.connect(('127.0.0.1',50051))" 2>/dev/null; then
+        ready="1"
+        break
+    fi
+    sleep 0.3
+    i=$((i + 1))
+done
+if [ -z "$ready" ]; then
+    echo "WARN: python sidecar did not become ready within 18s — starting gateway anyway"
+fi
+
 exec /opt/venv/bin/corlinman-gateway --config /data/config.toml

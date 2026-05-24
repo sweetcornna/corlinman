@@ -26,13 +26,17 @@
 #                       `corlinman-gateway`. Requires root or sudo on Linux.
 #
 # Flags:
-#   --upgrade         In-place upgrade an existing native deployment at
-#                     $CORLINMAN_PREFIX. Pulls the requested --version into
-#                     the existing repo (default: main), re-runs `uv sync
-#                     --frozen`, restarts the systemd service. Never touches
-#                     $CORLINMAN_DATA_DIR. Skips the docker / image-build
-#                     path entirely. Re-running install.sh without --upgrade
-#                     rewrites the systemd unit — use --upgrade to leave
+#   --upgrade         In-place upgrade an existing deployment at
+#                     $CORLINMAN_PREFIX — auto-detects docker vs native:
+#                       native : refreshes repo, re-runs `uv sync --frozen`,
+#                                restarts the systemd unit.
+#                       docker : pulls (or rebuilds on miss) the image for
+#                                --version and restarts only the corlinman
+#                                service (--no-deps, so napcat is left
+#                                alone in --with-qq stacks).
+#                     Never touches $CORLINMAN_DATA_DIR. Re-running
+#                     install.sh without --upgrade rewrites the systemd
+#                     unit and compose override — use --upgrade to leave
 #                     local edits alone.
 #   --china           Use 2026-verified CN mirrors:
 #                       PyPI    → pypi.tuna.tsinghua.edu.cn (Tsinghua TUNA)
@@ -45,6 +49,12 @@
 #                     Mount /var/run/docker.sock so Docker-backed plugin
 #                     sandboxing can spawn child containers. High-trust hosts
 #                     only; disabled by default.
+#   --with-qq         Docker mode only. Layer
+#                     `docker/compose/docker-compose.qq.yml` on top of the
+#                     base compose file so the NapCat QQ sidecar comes up
+#                     alongside corlinman. Auto-materialises `.env` from
+#                     `deploy/.env.template` if one isn't present; you'll be
+#                     prompted to edit it (QQ_* / OPENAI_API_KEY) and re-run.
 #   --version <ref>   Git ref / branch / tag to install from (default: main).
 #
 # Environment overrides:
@@ -70,6 +80,7 @@ REPO="ymylive/corlinman"
 USE_CHINA=""
 ENABLE_DOCKER_SANDBOX="${CORLINMAN_ENABLE_DOCKER_SANDBOX:-}"
 UPGRADE_MODE=""
+WITH_QQ=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -80,8 +91,12 @@ while [[ $# -gt 0 ]]; do
         --china) USE_CHINA="1"; shift ;;
         --enable-docker-sandbox) ENABLE_DOCKER_SANDBOX="1"; shift ;;
         --upgrade) UPGRADE_MODE="1"; shift ;;
+        --with-qq) WITH_QQ="1"; shift ;;
         -h|--help)
-            head -60 "$0" | sed -n '2,$p' | sed 's/^# \{0,1\}//'
+            # Print the top-of-file usage block (everything between line 2
+            # and the first non-`#` line) so all flags including --with-qq
+            # are visible regardless of where the block ends up.
+            awk 'NR>1 { if ($0 ~ /^#/) { sub(/^# ?/, ""); print } else { exit } }' "$0"
             exit 0
             ;;
         *) echo "unknown argument: $1" >&2; exit 1 ;;
@@ -92,6 +107,187 @@ log()  { printf "\033[1;34m==>\033[0m %s\n" "$*"; }
 warn() { printf "\033[1;33m!\033[0m %s\n" "$*" >&2; }
 die()  { printf "\033[1;31m✗\033[0m %s\n" "$*" >&2; exit 1; }
 require() { command -v "$1" >/dev/null 2>&1 || die "required tool '$1' not on PATH"; }
+
+# ----- Health probe -----------------------------------------------------------
+# Polls /health on the configured PORT until it returns 200, up to
+# $CORLINMAN_HEALTH_TIMEOUT seconds (default 60). Returns 0 on first 200,
+# 1 on timeout. Never `die`s — caller decides whether the timeout is fatal
+# (it usually isn't: cold container starts can outlast the default window).
+wait_for_health() {
+    local url="http://localhost:${PORT}/health"
+    local timeout="${CORLINMAN_HEALTH_TIMEOUT:-60}"
+    local start
+    start=$(date +%s)
+    log "waiting for /health (timeout ${timeout}s)..."
+    while (( $(date +%s) - start < timeout )); do
+        if curl -fsS -m 2 "$url" >/dev/null 2>&1; then
+            local elapsed=$(( $(date +%s) - start ))
+            log "/health ok after ${elapsed}s"
+            return 0
+        fi
+        sleep 1
+    done
+    warn "/health did not return 200 within ${timeout}s — service may still be starting"
+    return 1
+}
+
+# ----- Unified success banner -------------------------------------------------
+# Single source of truth for the post-install / post-upgrade echo. Both the
+# docker and native paths converge here so the user sees the same text and
+# the same first URL no matter how they installed. `$1` is the mode-specific
+# logs hint ("docker compose ..." | "journalctl ..."). `$2` is an optional
+# prefix (e.g. the warning sigil when wait_for_health timed out).
+print_success() {
+    local logs_hint="$1"
+    local prefix="${2:-}"
+    local header="✅ corlinman is live: http://localhost:${PORT}/login"
+    if [[ -n "$prefix" ]]; then
+        header="$prefix $header"
+    fi
+    cat <<EOF
+
+$header
+   default login:  admin / root   ← change immediately at /account/security
+   data dir:       ${DATA_DIR}
+   upgrade later:  bash deploy/install.sh --upgrade
+   logs:           ${logs_hint}
+EOF
+}
+
+# ----- Preflight --------------------------------------------------------------
+# Validates host has enough headroom + required tools BEFORE any side effects
+# (git clone, docker pull, sudo writes). Exits non-zero on any hard failure so
+# half-installed leftovers don't pollute the box. Skipped in --upgrade mode —
+# upgrade has its own minimal checks in upgrade_native().
+preflight() {
+    local has_tty=0
+    [[ -t 1 ]] && has_tty=1
+    # Color helpers — only paint if stdout is a TTY, plain text otherwise so
+    # piping into a logger / CI summary stays readable.
+    local ok fail
+    if [[ "$has_tty" == "1" ]]; then
+        ok=$'\033[32m\xe2\x9c\x93\033[0m'
+        fail=$'\033[31m\xe2\x9c\x97\033[0m'
+    else
+        ok="OK"
+        fail="FAIL"
+    fi
+
+    log "preflight checks"
+    local errors=0
+
+    # --- OS ---------------------------------------------------------------
+    local uname_s
+    uname_s="$(uname -s)"
+    case "$uname_s" in
+        Linux|Darwin)
+            printf "  [%s] os: %s\n" "$ok" "$uname_s"
+            ;;
+        *)
+            printf "  [%s] os: %s (only linux/darwin supported)\n" "$fail" "$uname_s"
+            errors=$((errors + 1))
+            ;;
+    esac
+
+    # --- Tools (always) ---------------------------------------------------
+    local tool
+    for tool in curl git tar; do
+        if command -v "$tool" >/dev/null 2>&1; then
+            printf "  [%s] tool: %s\n" "$ok" "$tool"
+        else
+            printf "  [%s] tool: %s (missing on PATH)\n" "$fail" "$tool"
+            errors=$((errors + 1))
+        fi
+    done
+
+    # --- Tools (docker only) ----------------------------------------------
+    if [[ "$MODE" == "docker" ]]; then
+        if command -v docker >/dev/null 2>&1; then
+            if docker compose version >/dev/null 2>&1; then
+                printf "  [%s] tool: docker (with compose v2 plugin)\n" "$ok"
+            else
+                printf "  [%s] tool: docker present but 'docker compose' v2 plugin missing\n" "$fail"
+                errors=$((errors + 1))
+            fi
+        else
+            printf "  [%s] tool: docker (missing on PATH)\n" "$fail"
+            errors=$((errors + 1))
+        fi
+    fi
+
+    # --- Disk space ($PREFIX target, fall back to /) ----------------------
+    # 5 GiB minimum: image build + uv cache + node_modules + a little slack.
+    local disk_target="/"
+    [[ -d "$PREFIX" ]] && disk_target="$PREFIX"
+    local avail_kb
+    # POSIX df: column 4 is "Available" in 1K blocks on both Linux + macOS
+    # when invoked with -k.
+    avail_kb=$(df -k "$disk_target" 2>/dev/null | awk 'NR==2 {print $4}')
+    if [[ -n "$avail_kb" && "$avail_kb" =~ ^[0-9]+$ ]]; then
+        local avail_gib=$((avail_kb / 1024 / 1024))
+        if [[ "$avail_gib" -ge 5 ]]; then
+            printf "  [%s] disk: %s GiB free at %s\n" "$ok" "$avail_gib" "$disk_target"
+        else
+            printf "  [%s] disk: %s GiB free at %s (need >= 5 GiB)\n" "$fail" "$avail_gib" "$disk_target"
+            errors=$((errors + 1))
+        fi
+    else
+        printf "  [%s] disk: could not read df output for %s\n" "$fail" "$disk_target"
+        errors=$((errors + 1))
+    fi
+
+    # --- RAM --------------------------------------------------------------
+    # 1 GiB minimum so uv sync + the gateway boot don't OOM.
+    local ram_mib=0
+    if [[ "$uname_s" == "Linux" ]]; then
+        # `free -m` total on column 2 of the Mem row.
+        if command -v free >/dev/null 2>&1; then
+            ram_mib=$(free -m 2>/dev/null | awk '/^Mem:/ {print $2}')
+        elif [[ -r /proc/meminfo ]]; then
+            ram_mib=$(awk '/^MemTotal:/ {print int($2/1024)}' /proc/meminfo)
+        fi
+    elif [[ "$uname_s" == "Darwin" ]]; then
+        local memsize_bytes
+        memsize_bytes=$(sysctl -n hw.memsize 2>/dev/null || echo 0)
+        ram_mib=$((memsize_bytes / 1024 / 1024))
+    fi
+    if [[ -n "$ram_mib" && "$ram_mib" =~ ^[0-9]+$ && "$ram_mib" -ge 1024 ]]; then
+        printf "  [%s] ram: %s MiB total\n" "$ok" "$ram_mib"
+    else
+        printf "  [%s] ram: %s MiB total (need >= 1024 MiB)\n" "$fail" "${ram_mib:-?}"
+        errors=$((errors + 1))
+    fi
+
+    # --- Port in use ------------------------------------------------------
+    # Probe $PORT for an existing listener. Linux: ss -ltn. Darwin: lsof.
+    local port_in_use=""
+    if [[ "$uname_s" == "Linux" ]]; then
+        if command -v ss >/dev/null 2>&1; then
+            ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${PORT}$" && port_in_use="1"
+        elif command -v netstat >/dev/null 2>&1; then
+            netstat -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${PORT}$" && port_in_use="1"
+        fi
+    elif [[ "$uname_s" == "Darwin" ]]; then
+        if command -v lsof >/dev/null 2>&1; then
+            lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1 && port_in_use="1"
+        fi
+    fi
+    if [[ -n "$port_in_use" ]]; then
+        printf "  [%s] port: %s already in use\n" "$fail" "$PORT"
+        errors=$((errors + 1))
+    else
+        printf "  [%s] port: %s free\n" "$ok" "$PORT"
+    fi
+
+    # --- Prior install (soft warning only) --------------------------------
+    if [[ -d "$PREFIX/repo/.git" ]]; then
+        warn "existing install detected at $PREFIX/repo — re-running install.sh will rewrite the systemd unit and compose override. Use --upgrade to leave them alone."
+    fi
+
+    if [[ "$errors" -gt 0 ]]; then
+        die "$errors preflight check(s) failed; resolve the items above and re-run."
+    fi
+}
 
 # ----- China autodetect -------------------------------------------------------
 # A 3-second TTFB on pypi.org is the rough breakpoint where uv sync starts to
@@ -146,6 +342,12 @@ apply_china_mirrors() {
 }
 
 # ----- Docker path ------------------------------------------------------------
+# Pulls the prebuilt image from GHCR when available (~30s) and falls back to
+# a local buildx build (~5-15min) on miss. With --with-qq we layer the
+# canonical QQ compose overlay on top of the repo's docker-compose.yml
+# instead of writing a standalone $PREFIX/corlinman.yml override — that
+# guarantees `napcat` comes up on the same network without us re-encoding
+# its config here.
 install_docker() {
     require docker
     if ! docker compose version >/dev/null 2>&1; then
@@ -178,19 +380,111 @@ install_docker() {
             || git clone --depth 1 --branch "$REF" "https://github.com/${REPO}.git" "$PREFIX/repo"
     fi
 
-    log "building image"
-    local extra_args=()
-    if [[ -n "$USE_CHINA" ]]; then
-        extra_args+=(
-            --build-arg "PIP_INDEX=$PIP_INDEX"
-            --build-arg "UV_INDEX_URL=$PIP_INDEX"
-            --build-arg "DEBIAN_MIRROR=${DEBIAN_MIRROR:-mirrors.tuna.tsinghua.edu.cn}"
-            --build-arg "NPM_REGISTRY=$NPM_REGISTRY"
-        )
+    # --- pull-first, build-on-miss ----------------------------------------
+    # Prebuilt images get tagged at `ghcr.io/${REPO}:${REF}` by the release-image
+    # workflow (see PLAN_DEPLOY_UX.md task B). Until that workflow ships, every
+    # tag will 404 here and we fall through to the local buildx path — which
+    # is exactly the legacy behaviour, no breakage.
+    local image_ref="ghcr.io/${REPO}:${REF}"
+    local pulled=""
+    local pull_start pull_end pull_seconds
+    log "trying to pull prebuilt image ($image_ref)"
+    pull_start=$(date +%s)
+    if docker pull "$image_ref" >/dev/null 2>&1; then
+        pull_end=$(date +%s)
+        pull_seconds=$((pull_end - pull_start))
+        log "pulled in ${pull_seconds}s — skipping local build"
+        # Tag as corlinman:local so the override compose file's `image:`
+        # reference (and the legacy non-QQ standalone override below) keeps
+        # working unchanged whether the image came from pull or build.
+        docker tag "$image_ref" corlinman:local
+        pulled="1"
+    else
+        warn "no prebuilt image for ref=$REF — building locally (5-15min)"
+        local build_start build_end build_seconds
+        build_start=$(date +%s)
+        local extra_args=()
+        if [[ -n "$USE_CHINA" ]]; then
+            extra_args+=(
+                --build-arg "PIP_INDEX=$PIP_INDEX"
+                --build-arg "UV_INDEX_URL=$PIP_INDEX"
+                --build-arg "DEBIAN_MIRROR=${DEBIAN_MIRROR:-mirrors.tuna.tsinghua.edu.cn}"
+                --build-arg "NPM_REGISTRY=$NPM_REGISTRY"
+            )
+        fi
+        (cd "$PREFIX/repo" && docker buildx build "${extra_args[@]}" \
+            -f docker/Dockerfile --target runtime -t corlinman:local --load .)
+        build_end=$(date +%s)
+        build_seconds=$((build_end - build_start))
+        log "built in ${build_seconds}s"
     fi
-    (cd "$PREFIX/repo" && docker buildx build "${extra_args[@]}" \
-        -f docker/Dockerfile --target runtime -t corlinman:local --load .)
+    # In both branches `corlinman:local` is now a valid local tag, so the
+    # compose files (which expect that ref via the override below or via
+    # CORLINMAN_TAG=local for the canonical compose) resolve cleanly.
 
+    # --- compose orchestration --------------------------------------------
+    # Two paths:
+    #   plain : write a custom $PREFIX/corlinman.yml override (legacy
+    #           behaviour — respects $DATA_DIR/$PORT/$ENABLE_DOCKER_SANDBOX).
+    #   --with-qq : use the repo's canonical docker-compose.yml +
+    #               docker-compose.qq.yml so NapCat comes up on the same
+    #               network with the right env vars and volume layout.
+    if [[ -n "$WITH_QQ" ]]; then
+        if [[ "$ENABLE_DOCKER_SANDBOX" == "1" ]]; then
+            warn "--enable-docker-sandbox is ignored in --with-qq mode; layer docker/compose/docker-compose.sandbox.yml manually if needed."
+        fi
+        # The canonical compose file picks the image via ${CORLINMAN_TAG};
+        # we just built / pulled and tagged corlinman:local, so we point at
+        # that and skip the GHCR roundtrip a second time. CORLINMAN_TAG=local
+        # makes `image: ghcr.io/ymylive/corlinman:local` — point docker at
+        # the matching local tag.
+        docker tag corlinman:local "ghcr.io/${REPO}:local" >/dev/null 2>&1 || true
+
+        # Materialise .env if missing so napcat (QQ_*) + corlinman
+        # (OPENAI_API_KEY / GEMINI_API_KEY) have something to read at boot.
+        local env_path="$PREFIX/repo/.env"
+        local env_template="$PREFIX/repo/deploy/.env.template"
+        local env_created=""
+        if [[ ! -f "$env_path" ]]; then
+            if [[ -f "$env_template" ]]; then
+                cp "$env_template" "$env_path"
+                chmod 600 "$env_path" 2>/dev/null || true
+                env_created="1"
+                log "materialised .env from deploy/.env.template"
+            else
+                warn ".env.template not found at $env_template — skipping .env bootstrap"
+            fi
+        fi
+        if [[ -n "$env_created" ]]; then
+            cat <<EOF
+
+⚠️  edit $env_path with QQ_* / OPENAI_API_KEY then re-run:
+      cd $PREFIX/repo/docker/compose && \\
+        CORLINMAN_TAG=local docker compose -f docker-compose.yml -f docker-compose.qq.yml --profile qq up -d
+
+EOF
+            return 0
+        fi
+
+        log "starting (with-qq overlay)"
+        (cd "$PREFIX/repo/docker/compose" && \
+            CORLINMAN_TAG=local docker compose \
+                -f docker-compose.yml \
+                -f docker-compose.qq.yml \
+                --profile qq up -d)
+
+        local prefix=""
+        wait_for_health || prefix="⚠️  health probe timed out —"
+        print_success "docker logs -f corlinman  /  docker logs -f corlinman-napcat" "$prefix"
+        cat <<EOF
+   napcat WebUI:   http://127.0.0.1:6099 (SSH tunnel from your laptop if remote)
+   config ref:     https://github.com/${REPO}/blob/main/docs/config.example.toml
+   stop:           cd $PREFIX/repo/docker/compose && docker compose -f docker-compose.yml -f docker-compose.qq.yml --profile qq down
+EOF
+        return 0
+    fi
+
+    # --- legacy standalone override (no --with-qq) -----------------------
     log "writing compose override"
     mkdir -p "$DATA_DIR"
     cat > "$PREFIX/corlinman.yml" <<EOF
@@ -220,12 +514,12 @@ EOF
     log "starting"
     (cd "$PREFIX" && docker compose -f corlinman.yml up -d)
 
+    local prefix=""
+    wait_for_health || prefix="⚠️  health probe timed out —"
+    print_success "docker compose -f $PREFIX/corlinman.yml logs -f" "$prefix"
     cat <<EOF
-
-✅ corlinman running at http://localhost:${PORT}
-   open http://localhost:${PORT}/onboard to walk the 4-step wizard.
-   logs: docker compose -f $PREFIX/corlinman.yml logs -f
-   stop: docker compose -f $PREFIX/corlinman.yml down
+   config ref:     https://github.com/${REPO}/blob/main/docs/config.example.toml
+   stop:           docker compose -f $PREFIX/corlinman.yml down
 EOF
 }
 
@@ -298,13 +592,12 @@ EOF
         log "service status: $(systemctl is-active corlinman)"
     fi
 
+    local prefix=""
+    wait_for_health || prefix="⚠️  health probe timed out —"
+    print_success "journalctl -u corlinman -f" "$prefix"
     cat <<EOF
-
-✅ corlinman installed under $PREFIX/repo
-   data dir: $DATA_DIR
-   gateway port: $PORT
-   open: http://localhost:${PORT}/onboard
-   manual run: cd $PREFIX/repo && uv run corlinman-gateway
+   config ref:     https://github.com/${REPO}/blob/main/docs/config.example.toml
+   manual run:     cd $PREFIX/repo && uv run corlinman-gateway
 
 EOF
 }
@@ -350,13 +643,61 @@ upgrade_native() {
         warn "no systemd unit found — restart corlinman manually"
     fi
 
+    local prefix=""
+    wait_for_health || prefix="⚠️  health probe timed out —"
+    print_success "journalctl -u corlinman -f" "$prefix"
     cat <<EOF
+   upgraded:       $before_sha → $after_sha (ref=$REF)
 
-✅ corlinman upgraded
-   $before_sha → $after_sha  (ref=$REF)
-   prefix : $PREFIX
-   data   : $DATA_DIR (untouched)
-   health : curl -fsS http://localhost:${PORT}/health
+EOF
+}
+
+# ----- Upgrade path (docker deployments) -------------------------------------
+# Sibling of upgrade_native(). Pull the requested ref's prebuilt image from
+# GHCR, fall back to a local rebuild on miss, then restart only the
+# corlinman service (no --build; image is already swapped). Data volume is
+# untouched. With --with-qq compose stacks the napcat sidecar isn't
+# refreshed here — rerun install.sh without --upgrade if you also want to
+# bounce napcat.
+upgrade_docker() {
+    require docker
+    docker compose version >/dev/null 2>&1 || die "docker compose v2 plugin required"
+    [[ -d "$PREFIX/repo/.git" ]] \
+        || die "no existing docker install at $PREFIX/repo — run install.sh without --upgrade for a fresh install"
+
+    log "upgrading docker deployment to ref=$REF"
+    local before_digest
+    before_digest=$(docker inspect corlinman --format '{{.Image}}' 2>/dev/null || echo "<none>")
+
+    # Pull new image; on miss, fetch the new source and buildx locally.
+    local image_ref="ghcr.io/${REPO}:${REF}"
+    if docker pull "$image_ref"; then
+        export CORLINMAN_TAG="${REF}"
+        log "pulled $image_ref"
+    else
+        warn "docker pull failed for $image_ref — rebuilding locally"
+        (cd "$PREFIX/repo" && git fetch --depth 1 origin "$REF" && git reset --hard FETCH_HEAD)
+        (cd "$PREFIX/repo" && docker buildx build -f docker/Dockerfile --target runtime -t "$image_ref" --load .)
+        export CORLINMAN_TAG="${REF}"
+    fi
+
+    # Restart only the corlinman service. --no-deps avoids touching napcat /
+    # any other sidecar; --build is intentionally omitted so the image we
+    # just resolved (pulled or rebuilt) is what comes up.
+    (cd "$PREFIX/repo/docker/compose" && docker compose up -d --no-deps corlinman)
+
+    local after_digest
+    after_digest=$(docker inspect corlinman --format '{{.Image}}')
+
+    log "image: $before_digest → $after_digest"
+    log "data dir: $DATA_DIR (untouched)"
+
+    local prefix=""
+    wait_for_health || prefix="⚠️  health probe timed out —"
+    print_success "docker logs -f corlinman" "$prefix"
+    cat <<EOF
+   upgraded:       $before_digest → $after_digest (ref=$REF)
+
 EOF
 }
 
@@ -365,10 +706,32 @@ main() {
     if [[ -n "$UPGRADE_MODE" ]]; then
         # Upgrade path doesn't need the china mirror dance for the venv path
         # (uv already cached most wheels); only the git fetch matters and we
-        # still respect $CN_GH_PROXY through the existing remote.
-        upgrade_native
+        # still respect $CN_GH_PROXY through the existing remote. Skips
+        # preflight too — upgrade_* have their own minimal checks.
+        #
+        # Auto-detect: native (systemd unit active) > docker (container
+        # named `corlinman` exists) > die. We don't fall through to docker
+        # on a stopped systemd unit on purpose; a half-deactivated native
+        # deploy + a stale docker container would be ambiguous.
+        if systemctl is-active --quiet corlinman.service 2>/dev/null \
+            || systemctl is-active --quiet corlinman-gateway.service 2>/dev/null; then
+            upgrade_native
+        elif docker inspect corlinman >/dev/null 2>&1; then
+            upgrade_docker
+        else
+            die "no existing corlinman deployment found (no systemd unit, no docker container named 'corlinman')"
+        fi
         return
     fi
+    # --with-qq only makes sense in docker mode (NapCat ships as a docker
+    # image; the native path has no equivalent).
+    if [[ -n "$WITH_QQ" && "$MODE" != "docker" ]]; then
+        die "--with-qq requires --mode docker (got --mode=$MODE)"
+    fi
+    # Fresh install: validate the host BEFORE any side effects (git clone,
+    # docker pull, sudo writes) so half-installed leftovers don't survive a
+    # missing prerequisite.
+    preflight
     autodetect_china
     apply_china_mirrors
     case "$MODE" in

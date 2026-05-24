@@ -9,7 +9,11 @@
 
 services:
   corlinman:
-    image: ghcr.io/ymylive/corlinman:dev  # built locally; override via `docker compose pull`
+    # CORLINMAN_TAG selects the GHCR tag at runtime (defaults to `latest`).
+    # Set to `local` after a local `docker buildx build -t corlinman:local`
+    # to skip GHCR entirely; the build: block below still works as a
+    # fallback when `docker compose pull` 404s.
+    image: ghcr.io/ymylive/corlinman:${CORLINMAN_TAG:-latest}
     build:
       context: ../../
       dockerfile: docker/Dockerfile
