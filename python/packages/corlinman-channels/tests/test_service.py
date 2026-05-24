@@ -30,6 +30,7 @@ from corlinman_channels.service import (
     DiscordChannelParams,
     FeishuChannelParams,
     QqChannelParams,
+    QqOfficialChannelParams,
     SlackChannelParams,
     TelegramChannelParams,
     _build_internal_request,
@@ -38,11 +39,13 @@ from corlinman_channels.service import (
     handle_one_discord,
     handle_one_feishu,
     handle_one_qq,
+    handle_one_qq_official,
     handle_one_slack,
     handle_one_telegram,
     run_discord_channel,
     run_feishu_channel,
     run_qq_channel,
+    run_qq_official_channel,
     run_slack_channel,
     run_telegram_channel,
 )
@@ -2162,3 +2165,353 @@ class TestQqDispatchInboxLocalScope:
         assert "enqueue" in sentinel_inbox.calls
         assert "mark_dispatched" in sentinel_inbox.calls
         assert "mark_done" in sentinel_inbox.calls
+
+
+# ---------------------------------------------------------------------------
+# QQ Official (api.sgroup.qq.com) — summary-prepend handler
+# ---------------------------------------------------------------------------
+
+
+class _FakeQqOfficialSender:
+    """Records every text / image send call. Mirrors the surface that
+    :func:`handle_one_qq_official` exercises."""
+
+    def __init__(self) -> None:
+        self.text_sends: list[tuple[str, str, str | None]] = []
+        self.image_sends: list[tuple[str, str, str | None]] = []
+        self.uploads: list[tuple[str, bytes | str | None]] = []
+        self._next_id = 0
+
+    def _id(self) -> str:
+        self._next_id += 1
+        return f"msg_{self._next_id}"
+
+    async def send_c2c_text(
+        self,
+        openid: str,
+        content: str,
+        *,
+        msg_id: str | None = None,
+        event_id: str | None = None,
+    ) -> str:
+        self.text_sends.append((openid, content, msg_id))
+        return self._id()
+
+    async def send_group_text(
+        self,
+        group_openid: str,
+        content: str,
+        *,
+        msg_id: str | None = None,
+        event_id: str | None = None,
+    ) -> str:
+        self.text_sends.append((group_openid, content, msg_id))
+        return self._id()
+
+    async def send_text(
+        self,
+        channel_id: str,
+        content: str,
+        *,
+        msg_id: str | None = None,
+        event_id: str | None = None,
+    ) -> str:
+        self.text_sends.append((channel_id, content, msg_id))
+        return self._id()
+
+    async def upload_group_image(
+        self,
+        group_openid: str,
+        *,
+        url: str | None = None,
+        file_data: bytes | None = None,
+    ) -> str:
+        self.uploads.append((group_openid, file_data or url))
+        return "file_info_grp"
+
+    async def upload_c2c_image(
+        self,
+        openid: str,
+        *,
+        url: str | None = None,
+        file_data: bytes | None = None,
+    ) -> str:
+        self.uploads.append((openid, file_data or url))
+        return "file_info_c2c"
+
+    async def send_group_image(
+        self,
+        group_openid: str,
+        file_info: str,
+        *,
+        msg_id: str | None = None,
+        event_id: str | None = None,
+        content: str = "",
+    ) -> str:
+        self.image_sends.append((group_openid, file_info, msg_id))
+        return self._id()
+
+    async def send_c2c_image(
+        self,
+        openid: str,
+        file_info: str,
+        *,
+        msg_id: str | None = None,
+        event_id: str | None = None,
+        content: str = "",
+    ) -> str:
+        self.image_sends.append((openid, file_info, msg_id))
+        return self._id()
+
+
+def _qq_official_inbound(
+    *,
+    event_type: str,
+    thread: str,
+    sender: str,
+    message_id: str = "msg_inbound_1",
+    text: str = "hi",
+) -> InboundEvent[Any]:
+    """Build an :class:`InboundEvent` shaped like the qq_official adapter."""
+    binding = ChannelBinding(
+        channel="qq_official",
+        account="app_xyz",
+        thread=thread,
+        sender=sender,
+    )
+    payload = {
+        "id": message_id,
+        "content": text,
+        "_qq_official_event_type": event_type,
+    }
+    return InboundEvent(
+        channel="qq_official",
+        binding=binding,
+        text=text,
+        message_id=message_id,
+        timestamp=0,
+        mentioned=True,
+        attachments=[],
+        payload=payload,
+    )
+
+
+class TestHandleOneQqOfficial:
+    @pytest.mark.asyncio
+    async def test_text_reply_routes_to_c2c_endpoint(self) -> None:
+        """A plain text reply for a C2C inbound must hit
+        ``send_c2c_text`` carrying the inbound ``msg_id``."""
+        import asyncio
+
+        svc = _ScriptedChatService([
+            _Ev(kind="token_delta", text="hello "),
+            _Ev(kind="token_delta", text="world"),
+            _Ev(kind="done"),
+        ])
+        sender = _FakeQqOfficialSender()
+        inbound = _qq_official_inbound(
+            event_type="C2C_MESSAGE_CREATE",
+            thread="ou_user_1",
+            sender="ou_user_1",
+            message_id="msg_inbound_42",
+        )
+        await handle_one_qq_official(
+            svc, inbound, "m", sender, asyncio.Event()  # type: ignore[arg-type]
+        )
+        assert len(sender.text_sends) == 1
+        openid, body, msg_id = sender.text_sends[0]
+        assert openid == "ou_user_1"
+        assert "hello world" in body
+        assert msg_id == "msg_inbound_42"
+
+    @pytest.mark.asyncio
+    async def test_tool_calls_prepend_summary_block(self) -> None:
+        """Tool-call events must collect into a summary block that
+        prepends the final reply (no mutable spinner available)."""
+        import asyncio
+
+        svc = _ScriptedChatService([
+            _Ev(
+                kind="tool_call",
+                plugin="web_search",
+                tool="web_search",
+                args_json=b'{"query":"tencent earnings"}',
+            ),
+            _Ev(
+                kind="tool_call",
+                plugin="builtin",
+                tool="read_file",
+                args_json=b'{"path":"/tmp/notes.md"}',
+            ),
+            _Ev(kind="token_delta", text="here is the answer"),
+            _Ev(kind="done"),
+        ])
+        sender = _FakeQqOfficialSender()
+        inbound = _qq_official_inbound(
+            event_type="GROUP_AT_MESSAGE_CREATE",
+            thread="og_group_99",
+            sender="om_user_5",
+            message_id="msg_grp_1",
+        )
+        await handle_one_qq_official(
+            svc, inbound, "m", sender, asyncio.Event()  # type: ignore[arg-type]
+        )
+        assert len(sender.text_sends) == 1
+        body = sender.text_sends[0][1]
+        # The summary header must appear BEFORE the reply.
+        assert body.index("🔧 工具调用记录") < body.index("here is the answer")
+        # Each tool call must be listed.
+        assert "web_search" in body
+        assert "read_file" in body
+        # And the args preview must surface for each tool.
+        assert "tencent earnings" in body
+        assert "/tmp/notes.md" in body
+        # The separator line must appear.
+        assert "─" in body
+
+    @pytest.mark.asyncio
+    async def test_send_attachment_uploads_and_sends_image(
+        self, tmp_path: Any
+    ) -> None:
+        """``send_attachment`` for an image must pre-upload via
+        ``upload_*_image`` then dispatch via ``send_*_image``."""
+        import asyncio
+        import json as _json
+
+        # Real PNG header so mimetypes guesses correctly.
+        img = tmp_path / "chart.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+        args = _json.dumps({"path": str(img), "filename": "chart.png"})
+        svc = _ScriptedChatService([
+            _Ev(
+                kind="tool_call",
+                plugin="send_attachment",
+                tool="send_attachment",
+                args_json=args.encode("utf-8"),
+            ),
+            _Ev(kind="token_delta", text="see attached"),
+            _Ev(kind="done"),
+        ])
+        sender = _FakeQqOfficialSender()
+        inbound = _qq_official_inbound(
+            event_type="C2C_MESSAGE_CREATE",
+            thread="ou_user_x",
+            sender="ou_user_x",
+            message_id="msg_c2c_99",
+        )
+        await handle_one_qq_official(
+            svc, inbound, "m", sender, asyncio.Event()  # type: ignore[arg-type]
+        )
+        # The upload + the image send must both have fired.
+        assert sender.uploads, "expected upload_c2c_image to be called"
+        assert sender.uploads[0][0] == "ou_user_x"
+        assert sender.image_sends, "expected send_c2c_image to be called"
+        assert sender.image_sends[0][1] == "file_info_c2c"
+        assert sender.image_sends[0][2] == "msg_c2c_99"
+        # The text reply must mention the attachment status.
+        assert len(sender.text_sends) == 1
+        body = sender.text_sends[0][1]
+        assert "已发送图片: chart.png" in body
+        assert "see attached" in body
+
+    @pytest.mark.asyncio
+    async def test_non_image_attachment_renders_unsupported_status(
+        self, tmp_path: Any
+    ) -> None:
+        """Non-image files cannot be sent via QQ Official; the handler
+        must surface a friendly status text instead of crashing."""
+        import asyncio
+        import json as _json
+
+        f = tmp_path / "doc.pdf"
+        f.write_bytes(b"%PDF-1.4 fake")
+        args = _json.dumps({"path": str(f), "filename": "doc.pdf"})
+        svc = _ScriptedChatService([
+            _Ev(
+                kind="tool_call",
+                plugin="send_attachment",
+                tool="send_attachment",
+                args_json=args.encode("utf-8"),
+            ),
+            _Ev(kind="token_delta", text="ok"),
+            _Ev(kind="done"),
+        ])
+        sender = _FakeQqOfficialSender()
+        inbound = _qq_official_inbound(
+            event_type="C2C_MESSAGE_CREATE",
+            thread="ou_user_pdf",
+            sender="ou_user_pdf",
+            message_id="msg_pdf_1",
+        )
+        await handle_one_qq_official(
+            svc, inbound, "m", sender, asyncio.Event()  # type: ignore[arg-type]
+        )
+        # No upload should have happened for the non-image file.
+        assert sender.uploads == []
+        assert sender.image_sends == []
+        # The summary block must include the unsupported notice.
+        assert len(sender.text_sends) == 1
+        body = sender.text_sends[0][1]
+        assert "QQ官方机器人暂不支持文件直发" in body
+        assert "doc.pdf" in body
+
+    @pytest.mark.asyncio
+    async def test_error_event_renders_corlinman_error_reply(self) -> None:
+        """A backend error must surface as a short ``[corlinman error]``
+        reply so the user knows the turn failed."""
+        import asyncio
+
+        svc = _ScriptedChatService([_Ev(kind="error", error="boom")])
+        sender = _FakeQqOfficialSender()
+        inbound = _qq_official_inbound(
+            event_type="C2C_MESSAGE_CREATE",
+            thread="ou_err",
+            sender="ou_err",
+        )
+        await handle_one_qq_official(
+            svc, inbound, "m", sender, asyncio.Event()  # type: ignore[arg-type]
+        )
+        assert len(sender.text_sends) == 1
+        assert "[corlinman error]" in sender.text_sends[0][1]
+        assert "boom" in sender.text_sends[0][1]
+
+    @pytest.mark.asyncio
+    async def test_empty_reply_with_no_tool_activity_is_silent(self) -> None:
+        """If the assistant says nothing AND no tool ran, the handler
+        must not ship an empty message."""
+        import asyncio
+
+        svc = _ScriptedChatService([
+            _Ev(kind="token_delta", text="   "),
+            _Ev(kind="done"),
+        ])
+        sender = _FakeQqOfficialSender()
+        inbound = _qq_official_inbound(
+            event_type="C2C_MESSAGE_CREATE",
+            thread="ou_empty",
+            sender="ou_empty",
+        )
+        await handle_one_qq_official(
+            svc, inbound, "m", sender, asyncio.Event()  # type: ignore[arg-type]
+        )
+        assert sender.text_sends == []
+
+    @pytest.mark.asyncio
+    async def test_run_qq_official_channel_requires_app_id(self) -> None:
+        import asyncio
+
+        params = QqOfficialChannelParams(
+            config=SimpleNamespace(app_id="", app_secret="s")
+        )
+        with pytest.raises(ValueError, match="app_id"):
+            await run_qq_official_channel(params, asyncio.Event())
+
+    @pytest.mark.asyncio
+    async def test_run_qq_official_channel_requires_app_secret(self) -> None:
+        import asyncio
+
+        params = QqOfficialChannelParams(
+            config=SimpleNamespace(app_id="a", app_secret="")
+        )
+        with pytest.raises(ValueError, match="app_secret"):
+            await run_qq_official_channel(params, asyncio.Event())

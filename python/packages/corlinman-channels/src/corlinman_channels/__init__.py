@@ -101,6 +101,11 @@ from corlinman_channels.onebot import (
     segments_to_attachments,
     segments_to_text,
 )
+from corlinman_channels.qq_official import (
+    QqOfficialAdapter,
+    QqOfficialConfig,
+)
+from corlinman_channels.qq_official_send import QqOfficialSender
 from corlinman_channels.rate_limit import (
     GC_INTERVAL,
     GC_STALE_AFTER,
@@ -119,16 +124,19 @@ from corlinman_channels.service import (
     DiscordChannelParams,
     FeishuChannelParams,
     QqChannelParams,
+    QqOfficialChannelParams,
     SlackChannelParams,
     TelegramChannelParams,
     handle_one_discord,
     handle_one_feishu,
     handle_one_qq,
+    handle_one_qq_official,
     handle_one_slack,
     handle_one_telegram,
     run_discord_channel,
     run_feishu_channel,
     run_qq_channel,
+    run_qq_official_channel,
     run_slack_channel,
     run_telegram_channel,
 )
@@ -221,16 +229,19 @@ __all__ = [  # noqa: RUF022 — grouped by subsystem for human readability.
     "DiscordChannelParams",
     "FeishuChannelParams",
     "QqChannelParams",
+    "QqOfficialChannelParams",
     "SlackChannelParams",
     "TelegramChannelParams",
     "handle_one_discord",
     "handle_one_feishu",
     "handle_one_qq",
+    "handle_one_qq_official",
     "handle_one_slack",
     "handle_one_telegram",
     "run_discord_channel",
     "run_feishu_channel",
     "run_qq_channel",
+    "run_qq_official_channel",
     "run_slack_channel",
     "run_telegram_channel",
     # Discord
@@ -245,6 +256,10 @@ __all__ = [  # noqa: RUF022 — grouped by subsystem for human readability.
     "FeishuAdapter",
     "FeishuConfig",
     "FeishuSender",
+    # QQ Official (api.sgroup.qq.com)
+    "QqOfficialAdapter",
+    "QqOfficialConfig",
+    "QqOfficialSender",
     # OneBot
     "Action",
     "AtSegment",

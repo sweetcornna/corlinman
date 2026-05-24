@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import mimetypes
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -108,7 +109,7 @@ from corlinman_channels._status import (
     tool_arg_preview as _tool_arg_preview,
     truncate_reply,
 )
-from corlinman_channels.common import InboundEvent
+from corlinman_channels.common import InboundEvent, TransportError
 from corlinman_channels.discord import (
     DEFAULT_GATEWAY_URL,
     DEFAULT_REST_BASE,
@@ -137,6 +138,14 @@ from corlinman_channels.onebot import (
     UploadGroupFile,
     UploadPrivateFile,
 )
+from corlinman_channels.qq_official import (
+    DEFAULT_INTENTS as QQ_OFFICIAL_DEFAULT_INTENTS,
+)
+from corlinman_channels.qq_official import (
+    QqOfficialAdapter,
+    QqOfficialConfig,
+)
+from corlinman_channels.qq_official_send import QqOfficialSender
 from corlinman_channels.rate_limit import TokenBucket
 from corlinman_channels.router import ChannelRouter, GroupKeywords, RoutedRequest
 from corlinman_channels.slack import (
@@ -156,16 +165,19 @@ __all__ = [
     "DiscordChannelParams",
     "FeishuChannelParams",
     "QqChannelParams",
+    "QqOfficialChannelParams",
     "SlackChannelParams",
     "TelegramChannelParams",
     "handle_one_discord",
     "handle_one_feishu",
     "handle_one_qq",
+    "handle_one_qq_official",
     "handle_one_slack",
     "handle_one_telegram",
     "run_discord_channel",
     "run_feishu_channel",
     "run_qq_channel",
+    "run_qq_official_channel",
     "run_slack_channel",
     "run_telegram_channel",
 ]
@@ -1804,6 +1816,389 @@ async def handle_one_feishu(
             )
     except Exception as exc:  # noqa: BLE001
         _log.warning("feishu final emit failed: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# QQ 官方机器人 (Official) channel
+# ---------------------------------------------------------------------------
+
+
+# QQ Official dispatch event-type slugs the handler routes on.
+_QQ_OFFICIAL_EVT_C2C = "C2C_MESSAGE_CREATE"
+_QQ_OFFICIAL_EVT_GROUP = "GROUP_AT_MESSAGE_CREATE"
+_QQ_OFFICIAL_EVT_GUILD_AT = "AT_MESSAGE_CREATE"
+_QQ_OFFICIAL_EVT_GUILD = "MESSAGE_CREATE"
+_QQ_OFFICIAL_EVT_DIRECT = "DIRECT_MESSAGE_CREATE"
+
+
+@dataclass(slots=True)
+class QqOfficialChannelParams:
+    """Parameters for :func:`run_qq_official_channel`.
+
+    Mirrors :class:`QqChannelParams` but for the official QQ Bot
+    platform (api.sgroup.qq.com) — a wholly different transport from
+    the gocq / NapCat OneBot path, so the two run as independent
+    channels.
+    """
+
+    config: Any
+    """``cfg.channels.qq_official`` — must expose ``app_id`` +
+    ``app_secret``, optional ``sandbox`` (bool), optional ``intents``
+    (int bitmask)."""
+
+    model: str = ""
+    chat_service: ChatServiceLike | None = None
+
+
+async def run_qq_official_channel(
+    params: QqOfficialChannelParams,
+    cancel: asyncio.Event,
+) -> None:
+    """Spawn the QQ Official channel loop and run until ``cancel`` is set.
+
+    Parallel structure to :func:`run_qq_channel` — inbound over the
+    official Gateway WebSocket, outbound replies through
+    :class:`QqOfficialSender`. Raises ``ValueError`` on missing
+    required config (matches the QQ / Telegram runners).
+    """
+    cfg = params.config
+    app_id = _attr(cfg, "app_id", "")
+    app_secret = _attr(cfg, "app_secret", "")
+    if not app_id:
+        raise ValueError("channels.qq_official.app_id is empty")
+    if not app_secret:
+        raise ValueError("channels.qq_official.app_secret is empty")
+
+    intents = _attr(cfg, "intents", None)
+    try:
+        intents_int = int(intents) if intents is not None else QQ_OFFICIAL_DEFAULT_INTENTS
+    except (TypeError, ValueError):
+        intents_int = QQ_OFFICIAL_DEFAULT_INTENTS
+    if intents_int <= 0:
+        # Operators sometimes paste "0" expecting a default; coerce so
+        # the bot still receives something meaningful.
+        intents_int = QQ_OFFICIAL_DEFAULT_INTENTS
+
+    qq_cfg = QqOfficialConfig(
+        app_id=str(app_id),
+        app_secret=str(app_secret),
+        sandbox=bool(_attr(cfg, "sandbox", False)),
+        intents=intents_int,
+    )
+    adapter = QqOfficialAdapter(qq_cfg)
+    send_client = httpx.AsyncClient(timeout=httpx.Timeout(30.0))
+    sender = QqOfficialSender(
+        send_client,
+        adapter.access_token,
+        app_id=qq_cfg.app_id,
+        api_base=qq_cfg.api_base,
+    )
+    semaphore = asyncio.Semaphore(_channel_max_concurrency("QQ_OFFICIAL"))
+    pending: set[asyncio.Task[None]] = set()
+    try:
+        async with adapter:
+            iterator = adapter.inbound()
+            while not cancel.is_set():
+                ev = await _race_iter_or_cancel(iterator, cancel)
+                if ev is None:
+                    break
+                if params.chat_service is None:
+                    continue
+                await _bounded_spawn(
+                    semaphore,
+                    pending,
+                    lambda chat_service=params.chat_service, ev=ev: handle_one_qq_official(
+                        chat_service,
+                        ev,
+                        params.model,
+                        sender,
+                        cancel,
+                    ),
+                )
+    finally:
+        for t in pending:
+            t.cancel()
+        await send_client.aclose()
+
+
+def _qq_official_event_type(inbound: InboundEvent[Any]) -> str:
+    """Pull the cached dispatch-event-type out of an inbound payload.
+
+    The adapter stashes it under ``_qq_official_event_type`` so this
+    helper doesn't need to re-classify based on binding shape.
+    """
+    payload = inbound.payload
+    if isinstance(payload, dict):
+        ty = payload.get("_qq_official_event_type")
+        if isinstance(ty, str):
+            return ty
+    return ""
+
+
+async def _qq_official_send_text(
+    sender: QqOfficialSender,
+    inbound: InboundEvent[Any],
+    text: str,
+) -> str:
+    """Dispatch ``text`` to the right send endpoint for ``inbound``.
+
+    Routes by the adapter-stashed event type:
+
+    * C2C → :meth:`QqOfficialSender.send_c2c_text`
+    * group@bot → :meth:`QqOfficialSender.send_group_text`
+    * guild channel / DM → :meth:`QqOfficialSender.send_text`
+
+    The platform enforces a 5-minute passive-reply window; we thread
+    ``inbound.message_id`` (the original ``msg_id``) so the reply
+    lands inside the window.
+    """
+    msg_id = inbound.message_id
+    event_type = _qq_official_event_type(inbound)
+    thread = inbound.binding.thread
+    if event_type == _QQ_OFFICIAL_EVT_C2C:
+        return await sender.send_c2c_text(thread, text, msg_id=msg_id)
+    if event_type == _QQ_OFFICIAL_EVT_GROUP:
+        return await sender.send_group_text(thread, text, msg_id=msg_id)
+    # Default: guild channel / DM both go through the channel endpoint.
+    return await sender.send_text(thread, text, msg_id=msg_id)
+
+
+async def _qq_official_send_image(
+    sender: QqOfficialSender,
+    inbound: InboundEvent[Any],
+    *,
+    url: str | None = None,
+    file_data: bytes | None = None,
+    caption: str = "",
+) -> str:
+    """Upload (if needed) + send an image for ``inbound``.
+
+    For C2C / 群 the platform requires a pre-upload returning a
+    ``file_info`` token before the actual send call; guild channel
+    messages accept the URL inline. The caller already verified
+    the file is an image — non-image attachments are not supported
+    by the platform (we render a status text upstream).
+    """
+    event_type = _qq_official_event_type(inbound)
+    thread = inbound.binding.thread
+    msg_id = inbound.message_id
+    if event_type == _QQ_OFFICIAL_EVT_C2C:
+        info = await sender.upload_c2c_image(
+            thread, url=url, file_data=file_data
+        )
+        return await sender.send_c2c_image(
+            thread, info, msg_id=msg_id, content=caption
+        )
+    if event_type == _QQ_OFFICIAL_EVT_GROUP:
+        info = await sender.upload_group_image(
+            thread, url=url, file_data=file_data
+        )
+        return await sender.send_group_image(
+            thread, info, msg_id=msg_id, content=caption
+        )
+    # Guild channel — direct image URL is supported on this endpoint.
+    if url is None:
+        # Guild channel needs an HTTPS URL; for local files we can't
+        # synthesize one. Surface a status caption instead.
+        raise TransportError(
+            "qq_official guild-channel image requires a public HTTPS url"
+        )
+    return await sender.send_image(
+        thread, url, msg_id=msg_id, content=caption
+    )
+
+
+async def _qq_official_send_attachment(
+    sender: QqOfficialSender,
+    inbound: InboundEvent[Any],
+    ev: Any,
+) -> str:
+    """Handle a ``send_attachment`` tool call for QQ Official.
+
+    Returns the status text to fold into the summary block. The QQ
+    Official platform only supports IMAGE attachments on the C2C /
+    group endpoints — for non-image files we surface a friendly
+    fallback so the user understands why the file didn't ship.
+    """
+    path_str, caption, filename = _parse_send_attachment_args(ev)
+    if not path_str:
+        return "⚠️ 发送文件失败: missing `path`"
+    p = Path(path_str)
+    if not p.exists() or not p.is_file():
+        return f"⚠️ 发送文件失败: {p.name} 不存在"
+    mime, _ = mimetypes.guess_type(p.name)
+    mime = mime or "application/octet-stream"
+    display = filename or p.name
+    if not mime.startswith("image/"):
+        # Platform limitation — only images survive the C2C / group
+        # pipeline. Surface a clear human-readable status instead of
+        # silently dropping the file.
+        return f"📎 [文件] {display} (QQ官方机器人暂不支持文件直发)"
+    try:
+        data = p.read_bytes()
+        await _qq_official_send_image(
+            sender, inbound, file_data=data, caption=caption or ""
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("qq_official send_attachment failed: %s", exc)
+        return f"⚠️ 发送文件失败: {display} ({exc})"
+    return f"📎 已发送图片: {display}"
+
+
+def _format_tool_summary_line(ev: Any) -> str:
+    """Render one tool-activity line for the summary block.
+
+    Mirrors :func:`_format_tool_status` shape but trimmed for a
+    summary-prepend context (no spinner emoji — we're describing
+    things that ALREADY happened by the time the reply lands).
+    """
+    tool = (getattr(ev, "tool", "") or "?").replace("\n", " ")
+    plugin = (getattr(ev, "plugin", "") or "").replace("\n", " ")
+    label = f"{plugin}.{tool}" if plugin and plugin != tool else tool
+    if len(label) > 60:
+        label = label[:57] + "..."
+    preview = _tool_arg_preview(tool, getattr(ev, "args_json", b""))
+    if preview:
+        return f"• {label}  {preview}"
+    return f"• {label}"
+
+
+def _build_qq_official_summary(
+    tool_lines: list[str], status_lines: list[str]
+) -> str:
+    """Assemble the summary block prepended to the final reply.
+
+    Empty input → empty string (no block). When non-empty the block
+    is delimited so the model output stays clearly separated:
+
+    ::
+
+        🔧 工具调用记录:
+        • web_search  "tencent earnings"
+        • read_file  /tmp/notes.md
+        📎 已发送图片: chart.png
+        ────────────────
+        <model output here>
+    """
+    blocks: list[str] = []
+    if tool_lines:
+        blocks.append("🔧 工具调用记录:")
+        blocks.extend(tool_lines)
+    blocks.extend(status_lines)
+    if not blocks:
+        return ""
+    blocks.append("────────────────")
+    return "\n".join(blocks) + "\n"
+
+
+async def handle_one_qq_official(
+    chat_service: ChatServiceLike,
+    inbound: InboundEvent[Any],
+    model: str,
+    sender: QqOfficialSender,
+    cancel: asyncio.Event,
+    *,
+    inbox: Any = None,
+    inbox_id: int | None = None,
+) -> None:
+    """Run one chat turn and post the reply via :class:`QqOfficialSender`.
+
+    The official QQ Bot platform has **no message-edit API** — replies
+    are atomic, so we can't render a mutable spinner like Telegram
+    does. Instead we collect tool-activity events into a summary
+    block and prepend it to the final assistant reply, so the user
+    still sees what the agent did even though it streams as one
+    message.
+
+    Inbox bookkeeping mirrors :func:`handle_one_qq`: when ``inbox`` is
+    supplied the row transitions pending → dispatched → done/dead.
+    """
+    if inbox is not None and inbox_id is not None:
+        try:
+            await inbox.mark_dispatched(inbox_id)
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("qq_official inbox mark_dispatched failed: %s", exc)
+
+    request = _build_text_channel_request(inbound, model)
+    text_parts: list[str] = []
+    tool_lines: list[str] = []
+    status_lines: list[str] = []
+    error_message: str | None = None
+    try:
+        stream = chat_service.run(request, cancel)
+        async for chat_ev in stream:
+            kind = _event_kind(chat_ev)
+            if kind == "token_delta":
+                if getattr(chat_ev, "is_reasoning", False):
+                    # Skip reasoning deltas — internal monologue, not
+                    # user-facing. We have no live spinner to show
+                    # them on; just absorb.
+                    continue
+                text_parts.append(getattr(chat_ev, "text", "") or "")
+            elif kind == "tool_call":
+                if getattr(chat_ev, "tool", "") == _SEND_ATTACHMENT_TOOL:
+                    status = await _qq_official_send_attachment(
+                        sender, inbound, chat_ev
+                    )
+                    status_lines.append(status)
+                else:
+                    tool_lines.append(_format_tool_summary_line(chat_ev))
+            elif kind == "done":
+                break
+            elif kind == "error":
+                error_message = (
+                    getattr(chat_ev, "error", "")
+                    or getattr(chat_ev, "message", "")
+                )
+                break
+            # tool_result frames are intentionally absorbed — the summary
+            # block stays short by listing the tool invocations only.
+    except Exception as exc:  # noqa: BLE001 — never let a crash kill the row
+        _log.exception("qq_official handle_one crashed: %s", exc)
+        if inbox is not None and inbox_id is not None:
+            try:
+                await inbox.mark_dead(inbox_id, error=f"crash: {exc!r}")
+            except Exception:  # noqa: BLE001
+                pass
+        raise
+
+    if error_message is not None:
+        body = f"[corlinman error] {error_message}"
+    else:
+        body = "".join(text_parts).strip()
+        if not body:
+            # If the model said nothing but we DID do work (uploaded
+            # an image, etc.), still ship the status so the user
+            # sees a confirmation.
+            if not status_lines and not tool_lines:
+                if inbox is not None and inbox_id is not None:
+                    try:
+                        await inbox.mark_done(inbox_id)
+                    except Exception:  # noqa: BLE001
+                        pass
+                return
+
+    summary = _build_qq_official_summary(tool_lines, status_lines)
+    final = (summary + body) if summary else body
+    if not final.strip():
+        return
+
+    try:
+        await _qq_official_send_text(sender, inbound, final)
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("qq_official final send failed: %s", exc)
+        if inbox is not None and inbox_id is not None:
+            try:
+                await inbox.mark_dead(inbox_id, error=f"send: {exc!r}")
+            except Exception:  # noqa: BLE001
+                pass
+        return
+
+    if inbox is not None and inbox_id is not None:
+        try:
+            await inbox.mark_done(inbox_id)
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("qq_official inbox mark_done failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------

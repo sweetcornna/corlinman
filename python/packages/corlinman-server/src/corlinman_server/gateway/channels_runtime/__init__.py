@@ -203,6 +203,39 @@ def _build_slack_params(
     )
 
 
+def _build_qq_official_params(
+    qq_cfg: Mapping[str, Any], model: str, chat_service: Any
+) -> Any:
+    """Build :class:`corlinman_channels.QqOfficialChannelParams` from
+    the ``[channels.qq_official]`` config table.
+
+    ``run_qq_official_channel`` reads ``app_id`` + ``app_secret`` /
+    ``sandbox`` / ``intents`` off the structural ``config``. Both
+    credentials may also be supplied via ``QQ_OFFICIAL_APP_ID`` /
+    ``QQ_OFFICIAL_APP_SECRET`` env vars so the standard docker deploy
+    works without hand-editing TOML.
+    """
+    from corlinman_channels import QqOfficialChannelParams
+
+    cfg: dict[str, Any] = dict(qq_cfg)
+    app_id = cfg.get("app_id") or os.environ.get("QQ_OFFICIAL_APP_ID") or ""
+    app_secret = (
+        cfg.get("app_secret")
+        or os.environ.get("QQ_OFFICIAL_APP_SECRET")
+        or ""
+    )
+    if app_id:
+        cfg["app_id"] = app_id
+    if app_secret:
+        cfg["app_secret"] = app_secret
+
+    return QqOfficialChannelParams(
+        config=cfg,
+        model=model,
+        chat_service=chat_service,
+    )
+
+
 def _build_feishu_params(
     fs_cfg: Mapping[str, Any], model: str, chat_service: Any
 ) -> Any:
@@ -422,6 +455,37 @@ def build_channel_tasks(
             )
     elif sl_cfg:
         logger.debug("gateway.channels.disabled", channel="slack")
+
+    # --- QQ Official (api.sgroup.qq.com) -----------------------------------
+    qq_off_cfg = _as_mapping(channels_cfg.get("qq_official"))
+    if _is_enabled(qq_off_cfg):
+        try:
+            from corlinman_channels import run_qq_official_channel
+
+            params = _build_qq_official_params(qq_off_cfg, model, chat_service)
+            task = asyncio.create_task(
+                _run_channel(
+                    "qq_official",
+                    lambda c, p=params: run_qq_official_channel(p, c),
+                    cancel,
+                ),
+                name="channel-qq_official",
+            )
+            tasks.append(task)
+            logger.info(
+                "gateway.channels.started",
+                channel="qq_official",
+                model=model,
+                has_chat_service=chat_service is not None,
+            )
+        except Exception as exc:
+            logger.warning(
+                "gateway.channels.build_failed",
+                channel="qq_official",
+                error=str(exc),
+            )
+    elif qq_off_cfg:
+        logger.debug("gateway.channels.disabled", channel="qq_official")
 
     # --- Feishu / Lark ------------------------------------------------------
     fs_cfg = _as_mapping(channels_cfg.get("feishu"))
