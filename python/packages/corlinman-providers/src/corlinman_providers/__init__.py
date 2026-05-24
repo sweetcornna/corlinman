@@ -10,6 +10,7 @@ tool_calls are the one true protocol).
 
 from __future__ import annotations
 
+from corlinman_providers._auth_refresh import with_401_recovery
 from corlinman_providers.anthropic_provider import AnthropicProvider
 from corlinman_providers.azure_provider import AzureProvider
 from corlinman_providers.base import CorlinmanProvider, ProviderChunk
@@ -77,4 +78,5 @@ __all__ = [
     "load_all_specs",
     "load_spec_from_toml",
     "resolve",
+    "with_401_recovery",
 ]

@@ -15,14 +15,20 @@ Never logs ``access_token`` / ``refresh_token``.
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 import os
+import sys
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 import httpx
+import structlog
+
+_logger = structlog.get_logger(__name__)
 
 CODEX_OAUTH_CLIENT_ID: str = "app_EMoamEEZ73f0CkXaXp7hrann"
 CODEX_OAUTH_TOKEN_URL: str = "https://auth.openai.com/oauth/token"
@@ -203,6 +209,89 @@ async def refresh_codex_token(
     )
 
 
+@contextlib.contextmanager
+def _codex_auth_filelock(target: Path) -> Iterator[None]:
+    """Hold an exclusive ``flock`` on a sibling ``.lock`` file.
+
+    Wraps the entire read-modify-write of ``~/.codex/auth.json`` so two
+    processes (gateway + Codex CLI; or two gateways) can't interleave
+    their writes. Without this, the OAuth server rotates
+    ``refresh_token`` on every refresh and last-writer-wins on disk —
+    one process ends up with a refresh token that the other already
+    spent.
+
+    POSIX-only. On Windows ``fcntl`` is not available; the contextmgr
+    becomes a no-op + a one-time logger warning so operators can see
+    the gap. Concurrent persists on Windows fall back to the previous
+    lockless behaviour (last-writer-wins; rare in practice because the
+    gateway is typically the only Codex caller on Windows).
+
+    The lock file lives at ``<target>.lock`` (e.g.
+    ``~/.codex/auth.json.lock``) and is created with mode 0o600 to
+    match the secrecy of the credentials file. The fd is closed
+    exactly once on exit (the OS releases the flock as a side
+    effect).
+    """
+    if sys.platform == "win32":
+        _logger.warning(
+            "codex_oauth.lockless_platform",
+            platform=sys.platform,
+            target=str(target),
+        )
+        yield
+        return
+
+    import fcntl  # POSIX-only, gated above
+
+    lock_path = target.with_suffix(target.suffix + ".lock")
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        _logger.warning("codex_oauth.lock_parent_mkdir_failed", error=str(exc))
+        # Best-effort: proceed without a lock rather than fail the persist
+        # outright — the caller's in-memory credential is still updated.
+        yield
+        return
+
+    # ``os.open`` rather than ``Path.open`` to set the mode on creation
+    # in one shot — avoids a race where the lock file is briefly
+    # world-readable. ``O_RDWR`` so flock works on every libc; some
+    # platforms reject flock on read-only fds.
+    fd: int | None = None
+    try:
+        fd = os.open(
+            str(lock_path),
+            os.O_RDWR | os.O_CREAT,
+            0o600,
+        )
+    except OSError as exc:
+        _logger.warning("codex_oauth.lock_open_failed", error=str(exc))
+        yield
+        return
+
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        except OSError as exc:
+            _logger.warning("codex_oauth.flock_failed", error=str(exc))
+            # Proceed lockless — better to risk a clobber than to
+            # silently drop a freshly-refreshed credential.
+            yield
+            return
+        try:
+            yield
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError as exc:
+                _logger.warning("codex_oauth.flock_unlock_failed", error=str(exc))
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
 def persist_codex_credential(
     cred: CodexOAuthCredential, *, path: Path | None = None
 ) -> bool:
@@ -214,35 +303,41 @@ def persist_codex_credential(
     Returns True on success, False on any I/O / JSON failure (logged by
     the caller — we keep this side-effect-free on errors so a refresh
     that we can't persist still updates the in-memory credential).
+
+    The entire read-modify-write is serialised through
+    :func:`_codex_auth_filelock` on POSIX so concurrent persists (two
+    gateway workers, gateway + Codex CLI) can't interleave reads and
+    writes and stomp each other's freshly-rotated refresh_token.
     """
     target = path or _codex_auth_path()
-    try:
-        if target.is_file():
-            data = json.loads(target.read_text(encoding="utf-8"))
-            if not isinstance(data, dict):
-                data = {}
-        else:
-            data = {}
-    except (OSError, json.JSONDecodeError):
-        data = {}
-    tokens = data.get("tokens") if isinstance(data.get("tokens"), dict) else {}
-    tokens["access_token"] = cred.access_token
-    if cred.refresh_token:
-        tokens["refresh_token"] = cred.refresh_token
-    data["tokens"] = tokens
-    data["last_refresh"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        # Atomic-ish: write to a sibling tmp file and rename.
-        tmp = target.with_suffix(target.suffix + ".tmp")
-        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    with _codex_auth_filelock(target):
         try:
-            tmp.chmod(0o600)
+            if target.is_file():
+                data = json.loads(target.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    data = {}
+            else:
+                data = {}
+        except (OSError, json.JSONDecodeError):
+            data = {}
+        tokens = data.get("tokens") if isinstance(data.get("tokens"), dict) else {}
+        tokens["access_token"] = cred.access_token
+        if cred.refresh_token:
+            tokens["refresh_token"] = cred.refresh_token
+        data["tokens"] = tokens
+        data["last_refresh"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            # Atomic-ish: write to a sibling tmp file and rename.
+            tmp = target.with_suffix(target.suffix + ".tmp")
+            tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            try:
+                tmp.chmod(0o600)
+            except OSError:
+                pass
+            tmp.replace(target)
         except OSError:
-            pass
-        tmp.replace(target)
-    except OSError:
-        return False
+            return False
     return True
 
 

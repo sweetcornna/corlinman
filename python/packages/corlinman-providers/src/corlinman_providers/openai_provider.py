@@ -27,6 +27,10 @@ from typing import Any, ClassVar
 
 import structlog
 
+from corlinman_providers._auth_refresh import (
+    refresh_env_key_if_rotated,
+    with_401_recovery,
+)
 from corlinman_providers.base import ProviderChunk
 from corlinman_providers.failover import (
     AuthError,
@@ -60,6 +64,33 @@ class OpenAIProvider:
     ) -> None:
         self._api_key = api_key or os.environ.get(env_key) or None
         self._base_url = base_url
+        # Remember the env-var name so the reactive 401 path can re-read
+        # the (possibly rotated) secret without bounding adapter
+        # instances to a specific env name. ``Azure`` subclass overrides
+        # to ``AZURE_OPENAI_API_KEY``; ``openai_compatible`` keeps the
+        # default ``OPENAI_API_KEY`` (its operator typically scopes
+        # bring-your-own keys through the same env).
+        self._env_key = env_key
+
+    async def _refresh_credential(self) -> bool:
+        """Reactive 401 path: re-read the env var and update ``_api_key``.
+
+        Returns ``True`` when the env var carries a non-empty value
+        that differs from the one currently held in-process —
+        signalling :func:`with_401_recovery` to retry the open phase
+        with the new key. Returns ``False`` when the env var is empty
+        or unchanged; retrying with the same key would just hit the
+        same 401, so the original :class:`AuthError` propagates and
+        the failover layer can pick the next adapter.
+        """
+        def _set(new_value: str) -> None:
+            self._api_key = new_value
+
+        return await refresh_env_key_if_rotated(
+            env_name=self._env_key,
+            current=self._api_key,
+            on_update=_set,
+        )
 
     @classmethod
     def build(cls, spec: ProviderSpec) -> OpenAIProvider:
@@ -113,8 +144,6 @@ class OpenAIProvider:
         if not self._api_key:
             raise RuntimeError(f"API key missing for provider {self.name}")
 
-        client = self._make_client()
-
         kwargs: dict[str, Any] = {
             "model": model,
             "messages": [_normalise_message(m) for m in messages],
@@ -134,8 +163,30 @@ class OpenAIProvider:
         open_calls: dict[int, tuple[str, bool]] = {}
         finish_reason = "stop"
 
+        async def _open() -> tuple[Any, Any]:
+            """Build the client + open the stream, mapping any vendor SDK
+            exception to a :class:`CorlinmanError`.
+
+            Factored so :func:`with_401_recovery` can drive a single
+            reactive retry around the open phase only — once the stream
+            has yielded its first chunk, mid-stream failures still
+            propagate verbatim (a partial-stream retry would duplicate
+            tokens). The client is constructed inside the closure so the
+            second attempt picks up the refreshed ``self._api_key``.
+            """
+            client_ = self._make_client()
+            try:
+                stream_ = await client_.chat.completions.create(**kwargs)
+            except CorlinmanError:
+                raise
+            except Exception as exc:
+                raise _map_openai_error(exc, model=model, provider=self.name) from exc
+            return client_, stream_
+
         try:
-            stream = await client.chat.completions.create(**kwargs)
+            _client, stream = await with_401_recovery(
+                _open, refresh=self._refresh_credential, provider=self.name
+            )
             async for chunk in stream:
                 choices = getattr(chunk, "choices", None) or []
                 if not choices:

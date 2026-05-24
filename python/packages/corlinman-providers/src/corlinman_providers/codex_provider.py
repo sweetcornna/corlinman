@@ -11,6 +11,7 @@ and rejects temperature and max_output_tokens parameters.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import AsyncIterator
 from functools import partial
@@ -260,6 +261,17 @@ class CodexProvider:
 
     def __init__(self, *, credential: CodexOAuthCredential) -> None:
         self._credential = credential
+        # Single-flight gate for token refresh. Both ``_ensure_fresh``
+        # (the proactive JWT-exp path) and ``_attempt_token_recovery``
+        # (the reactive 401 ``token_invalidated`` path) acquire this
+        # before issuing a POST to ``/oauth/token``. Without it, two
+        # concurrent chat streams sharing the same expired credential
+        # both fire a refresh request; the auth server rotates
+        # ``refresh_token`` on each, only one process wins, and the
+        # other ends up holding a dead refresh token. Holding this
+        # lock through the refresh + ``_credential`` write ensures
+        # exactly one HTTP POST per genuine expiry / invalidation.
+        self._refresh_lock = asyncio.Lock()
 
     @classmethod
     def build(cls, spec: ProviderSpec, **_kwargs: Any) -> CodexProvider:
@@ -582,22 +594,38 @@ class CodexProvider:
     # ------------------------------------------------------------------
 
     async def _ensure_fresh(self) -> None:
-        """Refresh the access token if it is expired or close to expiry."""
+        """Refresh the access token if it is expired or close to expiry.
+
+        Single-flight: serialised through :attr:`_refresh_lock` so two
+        concurrent chat streams that both see an expired credential
+        don't both POST to ``/oauth/token``. The lock-holder
+        re-checks ``is_expired()`` after acquisition — if the racing
+        task already refreshed, the second arrival is a no-op.
+        """
+        # Fast-path: short-circuit on a fresh credential without taking
+        # the lock. Safe because writes to ``self._credential`` are
+        # only ever done under the lock, so we may see a stale-but-
+        # valid token (in which case we proceed) or a freshly-rotated
+        # token (in which case the inner check below covers the race).
         if not self._credential.is_expired():
             return
         if not self._credential.refresh_token:
             return  # no refresh_token; try with current token (may still be valid)
-        try:
-            refreshed = await refresh_codex_token(
-                refresh_token=self._credential.refresh_token,
-            )
-            self._credential = refreshed
-            persist_codex_credential(refreshed)
-            logger.debug("codex.token_refreshed")
-        except CodexOAuthRefreshError as exc:
-            logger.warning("codex.token_refresh_failed", error=str(exc))
-            # Fall through — try the current (possibly expired) token;
-            # the upstream will return a 401 if it's truly dead.
+        async with self._refresh_lock:
+            if not self._credential.is_expired():
+                # Another task refreshed while we waited on the lock.
+                return
+            try:
+                refreshed = await refresh_codex_token(
+                    refresh_token=self._credential.refresh_token,
+                )
+                self._credential = refreshed
+                persist_codex_credential(refreshed)
+                logger.debug("codex.token_refreshed")
+            except CodexOAuthRefreshError as exc:
+                logger.warning("codex.token_refresh_failed", error=str(exc))
+                # Fall through — try the current (possibly expired) token;
+                # the upstream will return a 401 if it's truly dead.
 
     async def _attempt_token_recovery(self) -> bool:
         """Reactive refresh after a server-side ``token_invalidated`` 401.
@@ -609,21 +637,47 @@ class CodexProvider:
         succeeded. The persist step is best-effort — a write failure
         still leaves the in-memory credential updated so the current
         turn can recover.
+
+        Serialised through the same :attr:`_refresh_lock` as
+        :meth:`_ensure_fresh` so a 401 ⇄ ensure_fresh race can't
+        double-refresh. The lock-holder snapshots the access token
+        on entry and short-circuits if another task already rotated
+        it — common when two concurrent streams both hit
+        ``token_invalidated`` and queue up at the lock.
         """
+        # Snapshot the access token we observed *before* waiting on the
+        # lock. If another task already rotated the credential while we
+        # waited, the caller can retry with the fresh token without us
+        # issuing another HTTP round-trip — the server-side
+        # ``token_invalidated`` we hit is for an access token that's
+        # already been superseded in-process.
+        pre_access = self._credential.access_token
         if not self._credential.refresh_token:
             logger.warning("codex.token_recovery_skipped", reason="no_refresh_token")
             return False
-        try:
-            refreshed = await refresh_codex_token(
-                refresh_token=self._credential.refresh_token,
-            )
-        except CodexOAuthRefreshError as exc:
-            logger.warning("codex.token_recovery_failed", error=str(exc))
-            return False
-        self._credential = refreshed
-        persisted = persist_codex_credential(refreshed)
-        logger.info("codex.token_recovered", persisted=persisted)
-        return True
+        async with self._refresh_lock:
+            if self._credential.access_token != pre_access:
+                # Lost the race but won the war — another task refreshed
+                # while we waited on the lock. Skip the POST.
+                logger.debug("codex.token_recovery_skipped_after_race")
+                return True
+            current_refresh = self._credential.refresh_token
+            if not current_refresh:
+                logger.warning(
+                    "codex.token_recovery_skipped", reason="no_refresh_token"
+                )
+                return False
+            try:
+                refreshed = await refresh_codex_token(
+                    refresh_token=current_refresh,
+                )
+            except CodexOAuthRefreshError as exc:
+                logger.warning("codex.token_recovery_failed", error=str(exc))
+                return False
+            self._credential = refreshed
+            persisted = persist_codex_credential(refreshed)
+            logger.info("codex.token_recovered", persisted=persisted)
+            return True
 
 
 __all__ = ["CodexProvider", "_messages_to_responses_input"]

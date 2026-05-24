@@ -43,6 +43,10 @@ from urllib.parse import urlsplit
 import httpx
 import structlog
 
+from corlinman_providers._auth_refresh import (
+    refresh_env_key_if_rotated,
+    with_401_recovery,
+)
 from corlinman_providers._aws_eventstream import (
     EventStreamDecoder,
     EventStreamError,
@@ -131,6 +135,55 @@ class BedrockProvider:
             instance_name=spec.name,
         )
 
+    async def _refresh_credential(self) -> bool:
+        """Reactive 401 path: re-read ``AWS_*`` env vars and update in-process state.
+
+        AWS credentials may rotate independently across three env vars
+        — access key id, secret access key, and (for STS sessions) the
+        session token. The reactive recovery checks all three; if any
+        carries a non-empty value that differs from what's currently
+        held in-process, we update the in-memory copy and signal
+        :func:`with_401_recovery` to retry the SigV4 sign + POST.
+
+        Spec-provided credentials (passed via ``api_key`` in
+        ``[providers.<name>]``) are not refreshable from env — operators
+        must reload the config. Returns ``False`` in that case so the
+        original :class:`AuthError` propagates.
+        """
+        rotated = False
+
+        def _set_ak(new: str) -> None:
+            nonlocal rotated
+            self._access_key_id = new
+            rotated = True
+
+        def _set_sk(new: str) -> None:
+            nonlocal rotated
+            self._secret_access_key = new
+            rotated = True
+
+        def _set_st(new: str) -> None:
+            nonlocal rotated
+            self._session_token = new
+            rotated = True
+
+        await refresh_env_key_if_rotated(
+            env_name="AWS_ACCESS_KEY_ID",
+            current=self._access_key_id,
+            on_update=_set_ak,
+        )
+        await refresh_env_key_if_rotated(
+            env_name="AWS_SECRET_ACCESS_KEY",
+            current=self._secret_access_key,
+            on_update=_set_sk,
+        )
+        await refresh_env_key_if_rotated(
+            env_name="AWS_SESSION_TOKEN",
+            current=self._session_token,
+            on_update=_set_st,
+        )
+        return rotated
+
     def _credentials(self) -> AwsCredentials:
         """Resolve the AWS credential triple or raise a clear config error."""
         if not self._access_key_id or not self._secret_access_key:
@@ -183,7 +236,6 @@ class BedrockProvider:
                 model=model,
             )
 
-        credentials = self._credentials()
         host, scheme = self._endpoint()
         # Bedrock model ids contain dots; the path segment must keep them
         # literal — the SigV4 path encoder preserves unreserved chars.
@@ -202,37 +254,61 @@ class BedrockProvider:
             "content-type": "application/json",
             "accept": "application/vnd.amazon.eventstream",
         }
-        signed = sigv4_headers(
-            credentials=credentials,
-            method="POST",
-            service=_SERVICE,
-            region=self._region,
-            host=host,
-            path=path,
-            body=body_bytes,
-            extra_headers=content_headers,
-        )
         url = f"{scheme}://{host}{path}"
 
-        try:
-            async with (
-                httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT_S) as client,
-                client.stream(
+        async def _open() -> tuple[httpx.AsyncClient, Any, httpx.Response]:
+            """Sign + open the streaming POST, raising on a non-2xx status.
+
+            Wrapped by :func:`with_401_recovery` so a rotation of the
+            ``AWS_*`` env vars between adapter construction and this
+            request is picked up automatically. Re-signs with the
+            current credential triple on each attempt — SigV4 bakes
+            the access key into the canonical request, so the second
+            attempt's signature reflects the refreshed key.
+            """
+            # Read credentials inside the closure so refresh() picks them up
+            # on the retry attempt.
+            credentials = self._credentials()
+            signed = sigv4_headers(
+                credentials=credentials,
+                method="POST",
+                service=_SERVICE,
+                region=self._region,
+                host=host,
+                path=path,
+                body=body_bytes,
+                extra_headers=content_headers,
+            )
+            client = httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT_S)
+            try:
+                stream_cm = client.stream(
                     "POST", url, headers=signed, content=body_bytes
-                ) as response,
-            ):
-                if response.status_code >= 400:
+                )
+                response = await stream_cm.__aenter__()
+            except BaseException:
+                await client.aclose()
+                raise
+
+            if response.status_code >= 400:
+                try:
                     raw = await response.aread()
-                    raise _map_http_status(
-                        response.status_code,
-                        raw.decode("utf-8", "replace"),
-                        provider=self.name,
-                        model=model,
-                    )
-                async for chunk in _translate_event_stream(
-                    response, provider=self.name, model=model
-                ):
-                    yield chunk
+                finally:
+                    try:
+                        await stream_cm.__aexit__(None, None, None)
+                    finally:
+                        await client.aclose()
+                raise _map_http_status(
+                    response.status_code,
+                    raw.decode("utf-8", "replace"),
+                    provider=self.name,
+                    model=model,
+                )
+            return client, stream_cm, response
+
+        try:
+            client, stream_cm, response = await with_401_recovery(
+                _open, refresh=self._refresh_credential, provider=self.name
+            )
         except CorlinmanError:
             raise
         except httpx.TimeoutException as exc:
@@ -241,6 +317,26 @@ class BedrockProvider:
             raise CorlinmanError(
                 str(exc), provider=self.name, model=model
             ) from exc
+
+        try:
+            try:
+                async for chunk in _translate_event_stream(
+                    response, provider=self.name, model=model
+                ):
+                    yield chunk
+            except CorlinmanError:
+                raise
+            except httpx.TimeoutException as exc:
+                raise TimeoutError(str(exc), provider=self.name, model=model) from exc
+            except httpx.HTTPError as exc:
+                raise CorlinmanError(
+                    str(exc), provider=self.name, model=model
+                ) from exc
+        finally:
+            try:
+                await stream_cm.__aexit__(None, None, None)
+            finally:
+                await client.aclose()
 
     async def embed(
         self,

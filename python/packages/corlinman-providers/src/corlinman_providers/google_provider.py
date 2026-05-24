@@ -22,8 +22,12 @@ from typing import Any, ClassVar
 
 import structlog
 
+from corlinman_providers._auth_refresh import (
+    refresh_env_key_if_rotated,
+    with_401_recovery,
+)
 from corlinman_providers.base import ProviderChunk
-from corlinman_providers.failover import CorlinmanError
+from corlinman_providers.failover import AuthError, CorlinmanError
 from corlinman_providers.specs import ProviderKind, ProviderSpec
 
 logger = structlog.get_logger(__name__)
@@ -35,8 +39,26 @@ class GoogleProvider:
     name: ClassVar[str] = "google"
     kind: ClassVar[ProviderKind] = ProviderKind.GOOGLE
 
+    GOOGLE_API_KEY_ENV: ClassVar[str] = "GOOGLE_API_KEY"
+
     def __init__(self, api_key: str | None = None) -> None:
-        self._api_key = api_key or os.environ.get("GOOGLE_API_KEY") or None
+        self._api_key = api_key or os.environ.get(self.GOOGLE_API_KEY_ENV) or None
+
+    async def _refresh_credential(self) -> bool:
+        """Reactive 401 path: re-read ``GOOGLE_API_KEY`` and update ``_api_key``.
+
+        Returns ``True`` when the env var carries a non-empty value that
+        differs from the in-process key; :func:`with_401_recovery` then
+        retries the open phase against Gemini with the new key.
+        """
+        def _set(new_value: str) -> None:
+            self._api_key = new_value
+
+        return await refresh_env_key_if_rotated(
+            env_name=self.GOOGLE_API_KEY_ENV,
+            current=self._api_key,
+            on_update=_set,
+        )
 
     @classmethod
     def build(cls, spec: ProviderSpec) -> GoogleProvider:
@@ -68,36 +90,52 @@ class GoogleProvider:
 
         from google import genai  # type: ignore[import-not-found]
 
-        try:
+        # Gemini wants a single flat prompt; join any history into one
+        # string for the text-only path. Multi-turn + roles are in the
+        # TODO above.
+        prompt_parts: list[str] = []
+        for m in messages:
+            role = _get(m, "role") or "user"
+            content = _get(m, "content") or ""
+            if content:
+                prompt_parts.append(f"{role}: {content}")
+        prompt = "\n".join(prompt_parts)
+
+        config: dict[str, Any] = {}
+        if temperature is not None:
+            config["temperature"] = temperature
+        if max_tokens:
+            config["max_output_tokens"] = max_tokens
+        if tools:
+            config["tools"] = _normalise_tools(tools)
+        if extra:
+            config.update(extra)
+
+        async def _open() -> Any:
+            """Build the Gemini client + open the streaming generator.
+
+            Wrapped by :func:`with_401_recovery` so a stale ``GOOGLE_API_KEY``
+            (rotated outside the process between adapter construction and
+            this request) is re-read and the open is retried once.
+            """
             client = genai.Client(api_key=self._api_key)
-            # Gemini wants a single flat prompt; join any history into one
-            # string for the text-only path. Multi-turn + roles are in the
-            # TODO above.
-            prompt_parts: list[str] = []
-            for m in messages:
-                role = _get(m, "role") or "user"
-                content = _get(m, "content") or ""
-                if content:
-                    prompt_parts.append(f"{role}: {content}")
-            prompt = "\n".join(prompt_parts)
+            try:
+                return await client.aio.models.generate_content_stream(
+                    model=model,
+                    contents=prompt,
+                    # google-genai accepts a plain dict at runtime but declares
+                    # a stricter ``GenerateContentConfig | GenerateContentConfigDict``
+                    # in its stubs; M3 will switch to the typed config builder.
+                    config=config or None,  # type: ignore[arg-type]
+                )
+            except CorlinmanError:
+                raise
+            except Exception as exc:
+                raise _map_google_error(exc, model=model) from exc
 
-            config: dict[str, Any] = {}
-            if temperature is not None:
-                config["temperature"] = temperature
-            if max_tokens:
-                config["max_output_tokens"] = max_tokens
-            if tools:
-                config["tools"] = _normalise_tools(tools)
-            if extra:
-                config.update(extra)
-
-            gen = await client.aio.models.generate_content_stream(
-                model=model,
-                contents=prompt,
-                # google-genai accepts a plain dict at runtime but declares
-                # a stricter ``GenerateContentConfig | GenerateContentConfigDict``
-                # in its stubs; M3 will switch to the typed config builder.
-                config=config or None,  # type: ignore[arg-type]
+        try:
+            gen = await with_401_recovery(
+                _open, refresh=self._refresh_credential, provider=self.name
             )
             finish = "stop"
             synthetic_call_index = 0
@@ -182,6 +220,35 @@ def _jsonable(value: Any) -> Any:
     if hasattr(value, "model_dump"):
         return value.model_dump(mode="json")
     return value
+
+
+def _map_google_error(exc: Exception, *, model: str) -> CorlinmanError:
+    """Best-effort 401 detection for the Gemini SDK.
+
+    google-genai surfaces failures as a small family of typed
+    exceptions (``ClientError`` / ``ServerError``) plus the lower-level
+    ``google.api_core`` ones. We sniff for the documented HTTP status
+    via the SDK's ``code`` / ``status_code`` attributes and fall back
+    to a substring scan on the message so the reactive auth refresh
+    path catches 401s without taking a hard dependency on every
+    version of every Google library.
+
+    All non-401 errors stay generic :class:`CorlinmanError` to keep
+    behavioural parity with the pre-refresh adapter.
+    """
+    status = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    try:
+        status_int = int(status) if status is not None else None
+    except (TypeError, ValueError):
+        status_int = None
+    if status_int in (401, 403):
+        return AuthError(str(exc), status_code=status_int, provider="google", model=model)
+    msg = str(exc).lower()
+    if "api key" in msg and ("invalid" in msg or "expired" in msg or "unauthorized" in msg):
+        return AuthError(str(exc), status_code=401, provider="google", model=model)
+    if "401" in msg or "unauthenticated" in msg or "permission_denied" in msg:
+        return AuthError(str(exc), status_code=401, provider="google", model=model)
+    return CorlinmanError(str(exc), provider="google", model=model)
 
 
 def _normalise_tools(tools: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
