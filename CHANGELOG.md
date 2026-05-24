@@ -4,6 +4,92 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] — 2026-05-24 — perf + UX polish + boot auto-resume
+
+> 4 commits on top of v1.1.0. Focuses on the per-turn hot path
+> (~500-800 ms shaved off a 10-round task), adds hermes-agent-style
+> auto-resume of in-progress turns at gateway boot, and tightens the
+> live status streaming so a `todo_write` no longer hides the
+> current tool being called.
+
+### Added
+
+- **Hermes-style auto-resume at boot** — when the gateway / agent
+  process starts, `AgentResumeService` scans the journal for
+  `in_progress` turns within a 10-minute window, sweeps anything
+  older to `errored`, and either lets the channel's existing inbox
+  drain re-deliver (QQ family) or seeds a fresh `pending` inbox row
+  with `message_id="resume:<turn_id>"` for future channel drains
+  (Telegram / Discord / Slack / Feishu). The chat handler's
+  `find_resumable_turn` matcher then replays the journaled
+  `(tool_call, tool_result)` pairs so the agent picks up where it
+  left off. Boot log line: `agent.resume.scan_complete found=N
+  resumed=M skipped=K window_minutes=10`.
+- **`channel` column on `journal_turns`** — SQLite gets an
+  idempotent `ALTER TABLE` at next open; Postgres gets
+  `migrations/journal_postgres_v3.sql` (also inlined as a no-op
+  `IF NOT EXISTS` so fresh deployments don't need a separate
+  migration step).
+
+### Changed
+
+- **Telegram spinner keeps the op-flow line visible under the todo
+  list.** Previously when the agent called `todo_write`, the
+  placeholder switched to showing JUST the checkbox list and the
+  user lost visibility of the current tool. Now the placeholder
+  shows both, separated by a blank line:
+  ```
+  📋 任务清单 (1/4):
+  ☑ Search market data
+  ▣ Drafting decision memo
+  ☐ Build chart
+
+  🔧 web_search  'gpt-5.5 news'
+  ```
+- **QQ-family summary block drops the ☐ pending todo list.** QQ /
+  QQ-official / WeChat-official can't edit messages, so a list of
+  pending future work appearing in the reply preamble is visual
+  noise. The block reverts to the legacy `📋 本次操作:` header with
+  just the operation log (`✅ web_search …`, `📎 已发送文件 …`).
+  The `format_todo_list` helper stays — Telegram + other edit-
+  capable channels still use it.
+
+### Performance
+
+- **`_builtin_tool_schemas()` cached at module load** — the 13-tool
+  schema list was rebuilt every round. Now resolved once into
+  `_CACHED_BUILTIN_TOOL_SCHEMAS` and reused. Saves ~30-50 ms × N
+  rounds (potentially ~500 ms on a 10-round task).
+- **`ReasoningLoop._estimate_tokens` incremental cache** — was
+  walking the entire message list every round (O(N) per call,
+  effectively O(N²) over a long task). Now keeps a running
+  character total + invalidates on compaction / list shrink /
+  seed-message mutation. Saves ~5-15 ms × N rounds.
+- **`AgentJournal.append_messages` batched transaction** — the
+  `(assistant tool_call, tool_result)` pair was two separate
+  `BEGIN IMMEDIATE` / `COMMIT` cycles per tool call. Now one
+  transaction wraps both inserts. Saves ~5 ms × tools-per-round.
+- **`SkillRegistry.refresh()` 30-second debounce** — was
+  `rglob() + stat()`-ing every `.md` file on every turn. Now
+  gated by a monotonic interval (env-overridable via
+  `CORLINMAN_SKILL_REFRESH_INTERVAL_MS`, default 30 000). Saves
+  ~5-10 ms / turn after the first turn.
+- **Workspace snapshot drops the `rev-parse` subprocess** —
+  `_snapshot.snapshot()` was forking three times (`git add` +
+  `git commit` + `git rev-parse`). The third call is now replaced
+  by a direct `.git/HEAD` parse (handles `ref:` indirection +
+  loose refs + `packed-refs` fallback). Saves ~2-3 ms / turn.
+
+### Fixed
+
+- **gRPC client message-size limits asymmetric with server.** The
+  agent server set `max_send_message_length = max_receive_message
+  _length = 64 MB`, but the client at `corlinman_grpc.agent_client
+  .connect_channel` left both at gRPC's 4 MB default. Large tool
+  results (>4 MB shell output / file reads) silently failed with
+  `RESOURCE_EXHAUSTED` despite the server happily sending them.
+  Client now mirrors 64 MB on both sides.
+
 ## [1.1.0] — 2026-05-24 — channel parity + Claude-Code-style task UX
 
 > 10 commits on top of v1.0.0. Brings the new chat channels to feature
