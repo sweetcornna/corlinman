@@ -844,11 +844,11 @@ class _TodoScriptedChatService:
 
 
 @pytest.mark.asyncio
-async def test_handle_one_wechat_official_prepends_todo_list() -> None:
-    """A ``todo_write`` call must prepend the rendered checkbox list
-    above the assistant reply on the WeChat Official channel. WeChat
-    has no edit / typing surface so the list is the user's only signal
-    that the agent planned the work."""
+async def test_handle_one_wechat_official_drops_todo_list() -> None:
+    """A ``todo_write`` call must NOT prepend the checkbox view on the
+    WeChat Official channel. Pending ``☐`` rows are forward-looking
+    noise on a non-editable transport — the user can't watch the boxes
+    flip, so the reply body alone is what they should see."""
     todos = json.dumps({"todos": [
         {"content": "Look up the answer",
          "activeForm": "Looking up the answer",
@@ -873,22 +873,22 @@ async def test_handle_one_wechat_official_prepends_todo_list() -> None:
 
     assert fut.done()
     passive = fut.result()
-    # The passive payload carries the todo list header AND the reply,
-    # since the combined body fits under the 600-char passive cap.
-    assert "📋 任务清单 (1/2)" in passive
-    assert "☑ Look up the answer" in passive
-    assert "▣ Composing reply" in passive
-    assert "here is the reply" in passive
-    # Ordering: todo block above body.
-    assert passive.index("📋 任务清单") < passive.index("here is the reply")
+    # The reply body still ships — but with NO todo header attached.
+    assert "📋 任务清单" not in passive
+    assert "☑" not in passive
+    assert "▣" not in passive
+    assert "☐" not in passive
+    assert passive == "here is the reply"
     sender.send_text_customer.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_handle_one_wechat_official_todo_only_empty_reply_ships_list() -> None:
+async def test_handle_one_wechat_official_todo_only_empty_reply_releases_future() -> None:
     """If the agent ONLY writes a todo list and produces no token text,
-    the passive payload must still carry the rendered list — otherwise
-    the user sees nothing despite the agent doing work."""
+    there's nothing user-facing to ship: pending ``☐`` rows are
+    forward-looking noise on this non-editable channel. The handler
+    must release the passive future with an empty payload so the
+    webhook doesn't sit on the deadline forever."""
     todos = json.dumps({"todos": [
         {"content": "Check inbox",
          "activeForm": "Checking inbox",
@@ -909,8 +909,9 @@ async def test_handle_one_wechat_official_todo_only_empty_reply_ships_list() -> 
 
     assert fut.done()
     passive = fut.result()
-    assert "📋 任务清单 (0/1)" in passive
-    assert "▣ Checking inbox" in passive
+    # Empty payload — no list, no nothing. The webhook returns the
+    # default "ack" because there's no model output to ship.
+    assert passive == ""
     sender.send_text_customer.assert_not_called()
 
 

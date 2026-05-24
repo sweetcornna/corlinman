@@ -587,28 +587,19 @@ class TestHandleOneQq:
         # No reply action sent — the handler stayed silent.
         assert adapter.sent == []
 
-    # -- todo_write rendering (QQ summary block + Telegram spinner) ---------
+    # -- todo_write rendering (QQ summary block) -----------------------------
 
     @pytest.mark.asyncio
-    async def test_summary_prepends_final_todo_list(self) -> None:
-        """A turn that called ``todo_write`` must render the FINAL list
-        snapshot above the activity log in the QQ summary block —
-        layout:
-
-            📋 任务清单 (X/Y):
-            ☑ ...
-            ▣ ...
-
-            🔧 操作:
-            🔧 web_search '...' (302ms)
-            ─────────────
-            <reply body>
-        """
+    async def test_qq_summary_no_longer_prepends_todo_list(self) -> None:
+        """``todo_write`` calls must NOT prepend the checkbox view on
+        the QQ summary block. Pending ``☐`` rows are forward-looking
+        noise on a non-editable channel — the operation log alone is
+        the user-visible "what just happened" signal. The legacy
+        ``📋 本次操作:`` header style applies whenever the activity log
+        is non-empty (no "🔧 操作:" lifted-header variant)."""
         import asyncio
         import json
 
-        # Two todo_write calls — the SECOND one represents the final
-        # state and is the only one the summary should reflect.
         first_todos = json.dumps({"todos": [
             {"content": "Search market data",
              "activeForm": "Searching market data",
@@ -650,36 +641,70 @@ class TestHandleOneQq:
         await handle_one_qq(svc, req, ev, "m", adapter, asyncio.Event())  # type: ignore[arg-type]
         assert len(adapter.sent) == 1
         text = adapter.sent[0].message[1].text
-        # The todo header appears BEFORE the activity block AND before
-        # the reply body — ordering is the whole point.
-        todo_idx = text.find("📋 任务清单")
-        tools_idx = text.find("🔧 操作:")
-        body_idx = text.find("answer")
-        assert todo_idx != -1
-        assert tools_idx != -1
-        assert body_idx != -1
-        assert todo_idx < tools_idx < body_idx, text
-        # The header reflects the FINAL list state (1 done / 2 total),
-        # not the intermediate snapshot (0 done / 2 total).
-        assert "(1/2)" in text
-        # ▣ glyph for the in-progress row, ☑ for the completed row.
-        assert "☑" in text
-        assert "▣" in text
-        # The duplicate "🔧 todo_write 2 item(s)" call must NOT appear —
-        # the checkbox view replaces it.
+        # No todo block anywhere — no header, no checkbox glyphs.
+        assert "📋 任务清单 (" not in text
+        assert "☑" not in text
+        assert "▣" not in text
+        assert "☐" not in text
+        # No reference to the todo_write tool itself either.
         assert "todo_write" not in text
-        # The web_search line still resolves with ✅ + duration.
-        assert "web_search" in text
-        assert "302ms" in text
-        # No legacy "📋 本次操作:" header when a todo list is present —
-        # we lifted it to "🔧 操作:" so the two blocks don't share a
-        # leading 📋 glyph.
-        assert "📋 本次操作:" not in text
+        # Lifted-header variant is gone too — back to the legacy shape.
+        assert "🔧 操作:" not in text
 
     @pytest.mark.asyncio
-    async def test_summary_todo_only_no_other_tools(self) -> None:
-        """todo_write with no other tool calls must still render the
-        checkbox block + divider above the reply."""
+    async def test_qq_summary_keeps_operation_log(self) -> None:
+        """The activity log still surfaces with the legacy
+        ``📋 本次操作:`` header. Each non-todo tool call resolves to
+        ``✅ <tool> (<duration>)`` and the divider sits between the
+        log and the body."""
+        import asyncio
+        import json
+
+        todos = json.dumps({"todos": [
+            {"content": "Plan the work",
+             "activeForm": "Planning the work",
+             "status": "in_progress"},
+        ]}).encode("utf-8")
+        svc = _ScriptedChatService([
+            _Ev(kind="tool_call", plugin="builtin", tool="todo_write",
+                args_json=todos),
+            _Ev(kind="tool_result", plugin="builtin", tool="todo_write",
+                duration_ms=3, is_error=False),
+            _Ev(kind="tool_call", plugin="web_search", tool="web_search",
+                args_json=b'{"query":"gpt-5.5 news"}'),
+            _Ev(kind="tool_result", plugin="web_search", tool="web_search",
+                duration_ms=302, is_error=False),
+            _Ev(kind="token_delta", text="answer"),
+            _Ev(kind="done"),
+        ])
+        ev = _sample_group_event()
+        binding = ChannelBinding.qq_group(ev.self_id, ev.group_id or 0, ev.user_id)
+        req = RoutedRequest(binding=binding, content="hi")
+        adapter = _FakeOneBotAdapter()
+
+        await handle_one_qq(svc, req, ev, "m", adapter, asyncio.Event())  # type: ignore[arg-type]
+        text = adapter.sent[0].message[1].text
+        # Legacy header style — ordering: header < tool line < body.
+        assert "📋 本次操作:" in text
+        hdr_idx = text.find("📋 本次操作:")
+        tool_idx = text.find("web_search")
+        body_idx = text.find("answer")
+        assert hdr_idx != -1 and tool_idx != -1 and body_idx != -1
+        assert hdr_idx < tool_idx < body_idx, text
+        # Tool resolved with ✅ + duration.
+        assert "✅ web_search" in text
+        assert "302ms" in text
+        # Divider between the log and the body.
+        assert "─────" in text
+        # No todo artefacts.
+        assert "📋 任务清单" not in text
+        assert "todo_write" not in text
+
+    @pytest.mark.asyncio
+    async def test_qq_summary_todo_only_no_other_tools_is_silent(self) -> None:
+        """When the ONLY tool activity is ``todo_write``, the QQ summary
+        builds to the empty string (no activity to log) — so the reply
+        body ships alone, with NO prelude block at all."""
         import asyncio
         import json
 
@@ -703,20 +728,20 @@ class TestHandleOneQq:
 
         await handle_one_qq(svc, req, ev, "m", adapter, asyncio.Event())  # type: ignore[arg-type]
         text = adapter.sent[0].message[1].text
-        assert "📋 任务清单 (0/1):" in text
-        assert "▣ Verifying the patch" in text
-        # No "🔧 操作:" header because there are no other tool lines.
-        assert "🔧 操作:" not in text
-        # Divider between the block and the body.
-        assert "─────" in text
-        assert text.rstrip().endswith("working on it")
+        assert "📋 任务清单" not in text
+        assert "📋 本次操作:" not in text
+        assert "─────" not in text
+        # Just the assistant body, nothing else.
+        assert text.strip() == "working on it"
 
     @pytest.mark.asyncio
     async def test_summary_env_disable_hides_todo_block(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """CORLINMAN_QQ_TOOL_SUMMARY=0 must hide the todo block too —
-        the env knob is the user's escape hatch for ALL of the prelude."""
+        """``CORLINMAN_QQ_TOOL_SUMMARY=0`` still suppresses the prelude
+        in full — even though the todo block was already dropped at the
+        builder layer, the env knob remains the user-facing escape
+        hatch for the operation log."""
         import asyncio
         import json
 
@@ -727,6 +752,8 @@ class TestHandleOneQq:
         svc = _ScriptedChatService([
             _Ev(kind="tool_call", plugin="builtin", tool="todo_write",
                 args_json=todos),
+            _Ev(kind="tool_call", plugin="web_search", tool="web_search",
+                args_json=b'{"query":"x"}'),
             _Ev(kind="token_delta", text="just text"),
             _Ev(kind="done"),
         ])
@@ -738,6 +765,8 @@ class TestHandleOneQq:
         await handle_one_qq(svc, req, ev, "m", adapter, asyncio.Event())  # type: ignore[arg-type]
         text = adapter.sent[0].message[1].text
         assert "📋 任务清单" not in text
+        assert "📋 本次操作:" not in text
+        assert "web_search" not in text
         assert "just text" in text
 
 
@@ -2805,10 +2834,12 @@ class TestHandleOneQqOfficial:
         assert sender.text_sends == []
 
     @pytest.mark.asyncio
-    async def test_todo_write_prepends_checkbox_list(self) -> None:
-        """``todo_write`` on the QQ-official channel must render the
-        checkbox view above the existing 🔧 工具调用记录 block, NOT as
-        a "• todo_write 2 item(s)" bullet under it."""
+    async def test_todo_write_dropped_keeps_tool_log(self) -> None:
+        """``todo_write`` on the QQ-official channel must NOT render the
+        checkbox view in the summary block. Pending ``☐`` rows are
+        forward-looking noise on a non-editable transport — the
+        ``🔧 工具调用记录`` block alone is the user-visible "what just
+        happened" signal."""
         import asyncio
         import json as _json
 
@@ -2842,21 +2873,19 @@ class TestHandleOneQqOfficial:
         )
         assert len(sender.text_sends) == 1
         body = sender.text_sends[0][1]
-        # Todo list lands above the tool block AND above the reply.
-        todo_idx = body.find("📋 任务清单")
+        # The tool log still appears, in order: header < bullet < body.
         tools_idx = body.find("🔧 工具调用记录")
+        bullet_idx = body.find("web_search")
         body_idx = body.find("here is the answer")
-        assert todo_idx != -1
-        assert tools_idx != -1
-        assert body_idx != -1
-        assert todo_idx < tools_idx < body_idx, body
-        # 1 done / 3 total snapshot.
-        assert "(1/3)" in body
-        # The duplicate bullet for the todo_write call must NOT appear.
-        assert "todo_write" not in body
-        # The web_search bullet must still render.
-        assert "web_search" in body
+        assert tools_idx != -1 and bullet_idx != -1 and body_idx != -1
+        assert tools_idx < bullet_idx < body_idx, body
         assert "tencent earnings" in body
+        # No todo artefacts anywhere.
+        assert "📋 任务清单" not in body
+        assert "☑" not in body
+        assert "▣" not in body
+        assert "☐" not in body
+        assert "todo_write" not in body
 
     @pytest.mark.asyncio
     async def test_run_qq_official_channel_requires_app_id(self) -> None:

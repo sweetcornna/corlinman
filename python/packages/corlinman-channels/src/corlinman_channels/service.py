@@ -95,9 +95,6 @@ from corlinman_channels._status import (
     TODO_WRITE_TOOL as _TODO_WRITE_TOOL,
 )
 from corlinman_channels._status import (
-    format_todo_list as _format_todo_list,
-)
-from corlinman_channels._status import (
     STATUS_REASONING_PREFIX as _TG_STATUS_REASONING_PREFIX,
 )
 from corlinman_channels._status import (
@@ -580,8 +577,6 @@ def _qq_format_duration(duration_ms: int | None) -> str:
 
 def _qq_format_activity_summary(
     activity: list[tuple[str, str, int | None, bool, str]],
-    *,
-    todo_args: bytes | None = None,
 ) -> str:
     """Render the per-turn tool-activity prelude for QQ replies.
 
@@ -593,46 +588,25 @@ def _qq_format_activity_summary(
       recent unpaired ``"call"`` by position).
     * ``"attachment"`` — an outbound file upload (label is the filename).
 
-    ``todo_args`` is the raw JSON payload from the FINAL ``todo_write``
-    call this turn (``None`` if the agent never wrote a todo list). When
-    present, the rendered checkbox list gets prepended above the
-    activity block so the user sees the plan first, then the tool log.
-
-    Returns the empty string if there's nothing worth showing
-    (no tool calls AND no todo list). Caller is responsible for
-    honouring ``CORLINMAN_QQ_TOOL_SUMMARY=0``.
+    Returns the empty string if ``activity`` is empty. Caller is
+    responsible for honouring ``CORLINMAN_QQ_TOOL_SUMMARY=0``.
 
     Output shape (each line ≤80 chars)::
 
-        📋 任务清单 (3/5):
-        ☑ Search market data
-        ☑ Collate vendors
-        ▣ Drafting decision memo
-        ☐ Build chart
-        ☐ Send final files
-
-        🔧 操作:
+        📋 本次操作:
         🔧 web_search 'gpt-5.5 news' (302ms)
         ✅ write_file hello.html (2ms)
         📎 已发送文件: hello.html
         ─────────────
 
-    When no todo list ran the legacy single-block shape is preserved
-    so the existing handle_one_qq tests still pass:
-
-        📋 本次操作:
-        🔧 web_search 'gpt-5.5 news' (302ms)
-        ─────────────
+    The todo-list block is intentionally NOT prepended on QQ-family
+    channels. Pending ``☐`` rows are forward-looking noise on
+    non-editable transports where the user can't watch the boxes flip;
+    the operation log IS the "what just happened" signal. Editable
+    channels (Telegram, Discord, Slack, Feishu) get the rendered
+    checkbox view via the live spinner in :mod:`_status`.
     """
-    todo_block = ""
-    if todo_args:
-        todo_block = _format_todo_list(todo_args)
     if not activity:
-        # The todo list alone is still worth surfacing — e.g. the agent
-        # planned the work then realised it could answer from memory and
-        # never called another tool. Render it as its own block.
-        if todo_block:
-            return todo_block + "\n─────────────"
         return ""
     # Walk in arrival order and pair calls with results by index. Each
     # call line absorbs the next result (success / failure / duration);
@@ -681,20 +655,8 @@ def _qq_format_activity_summary(
                 rendered.append(line)
             continue
     if not rendered:
-        # Activity entries were all filtered out (e.g. todo_write-only
-        # turn with rejected entries); still honour the todo block.
-        if todo_block:
-            return todo_block + "\n─────────────"
         return ""
-    # When a todo list is present, lift the activity header to "🔧 操作:"
-    # to disambiguate it from the "📋 任务清单" header above and add a
-    # blank line between the two blocks so they read as separate
-    # sections. Without a todo list, preserve the legacy "📋 本次操作:"
-    # shape so existing tests + screenshots continue to match.
-    if todo_block:
-        lines = [todo_block, "", "🔧 操作:", *rendered, "─────────────"]
-    else:
-        lines = ["📋 本次操作:", *rendered, "─────────────"]
+    lines = ["📋 本次操作:", *rendered, "─────────────"]
     return "\n".join(lines)
 
 
@@ -849,10 +811,6 @@ async def handle_one_qq(
     # is_error, error_summary). Rendered by _qq_format_activity_summary
     # and prepended to the final reply if non-empty.
     activity: list[tuple[str, str, int | None, bool, str]] = []
-    # Latest todo_write args bytes — overwritten on every todo_write call
-    # so the summary always reflects the FINAL list state, not an
-    # intermediate snapshot.
-    last_todo_args: bytes | None = None
     try:
         stream = chat_service.run(request, cancel)
         async for chat_ev in stream:
@@ -897,16 +855,12 @@ async def handle_one_qq(
                         ("attachment", display or "(file)", None, False, "")
                     )
                 elif tool_name == _TODO_WRITE_TOOL:
-                    # Capture the latest list snapshot; the summary
-                    # block prepends the rendered checkbox view above
-                    # the activity log. We deliberately do NOT push the
-                    # call onto ``activity`` — duplicating the list as
-                    # a "🔧 todo_write 5 item(s)" line under its own
-                    # render would be visual noise.
-                    raw = getattr(chat_ev, "args_json", b"") or b""
-                    if isinstance(raw, str):
-                        raw = raw.encode("utf-8")
-                    last_todo_args = raw
+                    # Drop ``todo_write`` calls from the QQ summary
+                    # entirely — pending ``☐`` rows are forward-looking
+                    # noise on a non-editable channel. The operation
+                    # flow (other tool calls) IS the "what just
+                    # happened" signal the user actually wants.
+                    pass
                 else:
                     activity.append(
                         ("call", _qq_activity_label_for_call(chat_ev),
@@ -963,12 +917,12 @@ async def handle_one_qq(
         _log.info("channel.user_supplemented channel=qq user=%s", event.user_id)
         return
 
-    # Build the optional tool-activity prelude (honours env knob).
-    # The final ``last_todo_args`` snapshot — if any ``todo_write`` ran
-    # this turn — gets prepended above the activity list so the user
-    # sees the plan first, then the work.
+    # Build the optional tool-activity prelude (honours env knob). The
+    # todo block is intentionally DROPPED on QQ — pending ☐ rows are
+    # forward-looking noise for non-editable channels; the operation
+    # flow IS the "what just happened" signal.
     summary = (
-        _qq_format_activity_summary(activity, todo_args=last_todo_args)
+        _qq_format_activity_summary(activity)
         if _qq_tool_summary_enabled()
         else ""
     )
@@ -2226,8 +2180,6 @@ def _format_tool_summary_line(ev: Any) -> str:
 def _build_qq_official_summary(
     tool_lines: list[str],
     status_lines: list[str],
-    *,
-    todo_args: bytes | None = None,
 ) -> str:
     """Assemble the summary block prepended to the final reply.
 
@@ -2236,11 +2188,6 @@ def _build_qq_official_summary(
 
     ::
 
-        📋 任务清单 (1/3):
-        ☑ Fetch earnings page
-        ▣ Drafting summary
-        ☐ Email customer
-
         🔧 工具调用记录:
         • web_search  "tencent earnings"
         • read_file  /tmp/notes.md
@@ -2248,21 +2195,12 @@ def _build_qq_official_summary(
         ────────────────
         <model output here>
 
-    ``todo_args`` is the raw JSON payload from the FINAL ``todo_write``
-    call this turn (``None`` if the agent never wrote a list). When
-    present, the rendered checkbox list gets prepended above the tool
-    block so the user sees the plan first.
+    The todo-list block is intentionally NOT prepended on the
+    QQ-official channel. Pending ``☐`` rows are forward-looking noise
+    on a non-editable transport where the user can't watch the boxes
+    flip; the operation log IS the "what just happened" signal.
     """
     blocks: list[str] = []
-    if todo_args:
-        todo_block = _format_todo_list(todo_args)
-        if todo_block:
-            blocks.append(todo_block)
-            # Blank line separator before the tool block — only added
-            # when both pieces are present, so a todo-only summary
-            # stays compact.
-            if tool_lines or status_lines:
-                blocks.append("")
     if tool_lines:
         blocks.append("🔧 工具调用记录:")
         blocks.extend(tool_lines)
@@ -2307,9 +2245,6 @@ async def handle_one_qq_official(
     status_lines: list[str] = []
     error_message: str | None = None
     supplemented = False
-    # Latest todo_write args bytes — overwritten on every call so the
-    # summary reflects the FINAL list state, not an intermediate one.
-    last_todo_args: bytes | None = None
     try:
         stream = chat_service.run(request, cancel)
         async for chat_ev in stream:
@@ -2329,14 +2264,11 @@ async def handle_one_qq_official(
                     )
                     status_lines.append(status)
                 elif tool_name == _TODO_WRITE_TOOL:
-                    # Capture the latest snapshot; rendered above the
-                    # tool list in the summary block. Skip pushing it
-                    # to ``tool_lines`` — the checkbox view is richer
-                    # than "• todo_write 5 item(s)".
-                    raw = getattr(chat_ev, "args_json", b"") or b""
-                    if isinstance(raw, str):
-                        raw = raw.encode("utf-8")
-                    last_todo_args = raw
+                    # Drop ``todo_write`` calls from the QQ-official
+                    # summary — pending ``☐`` rows are forward-looking
+                    # noise on a non-editable channel. The tool-call
+                    # log (other tools) is the user-visible signal.
+                    pass
                 else:
                     tool_lines.append(_format_tool_summary_line(chat_ev))
             elif kind == "done":
@@ -2378,13 +2310,9 @@ async def handle_one_qq_official(
         body = "".join(text_parts).strip()
         if not body:
             # If the model said nothing but we DID do work (uploaded
-            # an image, wrote a todo list, called a tool), still ship
-            # the status so the user sees a confirmation.
-            if (
-                not status_lines
-                and not tool_lines
-                and last_todo_args is None
-            ):
+            # an image, called a tool), still ship the status so the
+            # user sees a confirmation.
+            if not status_lines and not tool_lines:
                 if inbox is not None and inbox_id is not None:
                     try:
                         await inbox.mark_done(inbox_id)
@@ -2392,9 +2320,7 @@ async def handle_one_qq_official(
                         pass
                 return
 
-    summary = _build_qq_official_summary(
-        tool_lines, status_lines, todo_args=last_todo_args
-    )
+    summary = _build_qq_official_summary(tool_lines, status_lines)
     final = (summary + body) if summary else body
     if not final.strip():
         return
@@ -2611,12 +2537,6 @@ async def handle_one_wechat_official(
     text_parts: list[str] = []
     error_message: str | None = None
     supplemented = False
-    # Latest todo_write args bytes — overwritten on every call so the
-    # final list snapshot can prepend the reply (same pattern as the
-    # QQ + QQ-official handlers). WeChat has no live status surface so
-    # the rendered checkbox list is the user's only signal that the
-    # agent planned the work.
-    last_todo_args: bytes | None = None
     try:
         stream = chat_service.run(request, cancel)
         async for ev in stream:
@@ -2632,17 +2552,14 @@ async def handle_one_wechat_official(
                     ev, "message", ""
                 )
                 break
-            elif kind == "tool_call":
-                if getattr(ev, "tool", "") == _TODO_WRITE_TOOL:
-                    raw = getattr(ev, "args_json", b"") or b""
-                    if isinstance(raw, str):
-                        raw = raw.encode("utf-8")
-                    last_todo_args = raw
-            # Other tool_call / tool_result frames are informational
-            # only — WeChat has no live status surface (no edit, no
-            # typing indicator) so we silently drop them. The todo
-            # list is the one exception because it represents the
-            # agent's plan, which the user genuinely wants to see.
+            # tool_call / tool_result frames are informational only —
+            # WeChat has no live status surface (no edit, no typing
+            # indicator) so we silently drop them. ``todo_write`` is
+            # NOT exempt: pending ``☐`` rows are forward-looking noise
+            # on this transport, and the reply body alone is what the
+            # user can act on. Editable channels (Telegram, Discord,
+            # Slack, Feishu) get the live checkbox view via the
+            # mutable spinner in :mod:`_status`.
     except Exception as exc:
         # Never let a crash kill the bot — log + release any waiting webhook.
         _log.exception("wechat_official handle_one crashed: %s", exc)
@@ -2666,26 +2583,13 @@ async def handle_one_wechat_official(
     else:
         body = "".join(text_parts).strip()
         if not body:
-            # Empty reply — if we DID get a todo list, ship it as the
-            # passive payload so the user still sees the plan;
-            # otherwise release the webhook so it doesn't sit on the
-            # passive deadline forever.
-            if last_todo_args:
-                todo_block = _format_todo_list(last_todo_args)
-                if todo_block:
-                    body = todo_block
-            if not body:
-                if passive_future is not None and not passive_future.done():
-                    passive_future.set_result("")
-                return
-
-    # Prepend the rendered todo block if any todo_write ran this turn.
-    # A blank line separates the list from the assistant body so the
-    # two read as distinct sections.
-    if last_todo_args:
-        todo_block = _format_todo_list(last_todo_args)
-        if todo_block and not body.startswith(todo_block):
-            body = f"{todo_block}\n\n{body}" if body else todo_block
+            # Empty reply — release the webhook so it doesn't sit on
+            # the passive deadline forever. (Previously we'd ship the
+            # todo list as a fallback payload, but pending rows are
+            # forward-looking noise on a non-editable channel.)
+            if passive_future is not None and not passive_future.done():
+                passive_future.set_result("")
+            return
 
     passive, remainder = _split_passive_and_rest(body)
 

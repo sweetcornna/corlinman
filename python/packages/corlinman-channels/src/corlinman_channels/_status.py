@@ -433,6 +433,7 @@ class MutableSpinner:
 
     __slots__ = (
         "_edit_callback",
+        "_last_op_status",
         "_last_status",
         "_last_todo_args",
         "_send_attachment_handler",
@@ -454,6 +455,15 @@ class MutableSpinner:
         #: want to prepend it to a final summary (QQ / QQ-official /
         #: WeChat-official). Reset to ``None`` between turns.
         self._last_todo_args: bytes | None = None
+        #: The most recent NON-todo "operation flow" status line — a
+        #: tool-call (``🔧 web_search 'x'``), tool-result (``✅ … (200ms)``),
+        #: or reasoning-delta line (``💭 推理: …``). Used by
+        #: :meth:`_render_combined` to append the live op flow UNDER the
+        #: todo list so users see both "what's planned" and "what's
+        #: firing right now". Cleared to ``None`` when a real (non-
+        #: reasoning) ``token_delta`` arrives — the operation is over,
+        #: the response is coming.
+        self._last_op_status: str | None = None
 
     @property
     def last_status(self) -> str:
@@ -497,14 +507,73 @@ class MutableSpinner:
         self._last_status = text
         await self._edit_callback(text)
 
+    def _build_combined(self) -> str | None:
+        """Compose the visible spinner text from todo + op-status state.
+
+        Layout when both are set::
+
+            📋 任务清单 (1/3):
+            ☑ Search market data
+            ▣ Drafting decision memo
+            ☐ Send final files
+
+            🔧 web_search 'gpt-5.5 news'
+
+        A blank line separates the two blocks so users can parse "what's
+        planned" from "what's firing right now" at a glance. When only
+        the todo list is set, the bare list renders alone. When only the
+        op-status is set, the bare op line renders alone. When neither
+        is set, returns ``None`` — caller falls back to whatever bare
+        status it intended to emit (e.g. :data:`STATUS_GENERATING`,
+        :data:`STATUS_THINKING`).
+
+        The combined block honours the same 1500-char todo cap (already
+        applied by :func:`format_todo_list`) and the overall 4000-char
+        :data:`TEXT_LIMIT` so the result never overshoots Telegram's
+        ``editMessageText`` hard limit.
+        """
+        todo = self._last_todo_args
+        op = self._last_op_status
+        todo_block = ""
+        if todo:
+            todo_block = format_todo_list(todo)
+        if todo_block and op:
+            combined = f"{todo_block}\n\n{op}"
+        elif todo_block:
+            combined = todo_block
+        elif op:
+            combined = op
+        else:
+            return None
+        return truncate_reply(combined)
+
+    async def _render_combined(self) -> None:
+        """Emit the combined view via :meth:`_maybe_edit`.
+
+        No-op when neither state is populated (the caller is expected to
+        fall through to an explicit ``_maybe_edit`` of a bare status
+        like :data:`STATUS_GENERATING`).
+        """
+        text = self._build_combined()
+        if text is None:
+            return
+        await self._maybe_edit(text)
+
     async def on_token_delta(self, text: str, is_reasoning: bool) -> None:
         """Handle one ``token_delta`` event.
 
         * Reasoning deltas (Anthropic ``thinking``, DeepSeek-R1
           ``reasoning_content``) render as 💭 lines but are *not*
-          accumulated into the final reply.
+          accumulated into the final reply. When a todo list is in
+          flight the reasoning line appears UNDER it via
+          :meth:`_render_combined`, so the user sees both "what's
+          planned" and "what's currently being thought through".
         * Non-reasoning deltas are appended to ``text_parts`` and, on
           the first one, switch the status to ✍️ STATUS_GENERATING.
+          The op-flow status is cleared (the operation is over, the
+          response is coming) and the GENERATING transition is emitted
+          BARE — not appended under the todo list, since at this point
+          the user wants the answer, not a stale "what's planned" view.
         """
         if is_reasoning:
             stripped = text.strip()
@@ -513,9 +582,15 @@ class MutableSpinner:
             snippet = stripped.replace("\n", " ")
             if len(snippet) > REASONING_PREVIEW_CHARS:
                 snippet = snippet[: REASONING_PREVIEW_CHARS - 1] + "…"
-            await self._maybe_edit(f"{STATUS_REASONING_PREFIX}{snippet}")
+            self._last_op_status = f"{STATUS_REASONING_PREFIX}{snippet}"
+            await self._render_combined()
             return
         self._text_parts.append(text)
+        # First real token: clear the op flow and switch to GENERATING.
+        # The transition is emitted bare (no todo overlay) because the
+        # answer is what the user wants to see now; the planning context
+        # would just push the visible reply down a screen.
+        self._last_op_status = None
         if self._last_status != STATUS_GENERATING:
             await self._maybe_edit(STATUS_GENERATING)
 
@@ -530,16 +605,24 @@ class MutableSpinner:
 
         For ``todo_write``: stash the args bytes (so end-of-turn summary
         builders can re-render the final list) and edit the spinner with
-        the rendered checkbox list. The matching ``tool_result`` is also
-        suppressed — the list IS the status; a trailing ``✅ todo_write``
-        would just clutter the line.
+        the combined view — the rendered checkbox list plus, if a
+        previous non-todo tool is still in flight, the live op line
+        underneath. The matching ``tool_result`` is also suppressed —
+        the list IS the status; a trailing ``✅ todo_write`` would just
+        clutter the line.
 
-        For everything else: render the standard 🔧 status line. Returns
-        ``None``.
+        For everything else: stash the rendered ``format_tool_status``
+        line as the current op flow and emit the combined view via
+        :meth:`_render_combined`. Returns ``None``.
         """
         tool = getattr(ev, "tool", "") or ""
         if tool == SEND_ATTACHMENT_TOOL and self._send_attachment_handler is not None:
             status = await self._send_attachment_handler(ev)
+            # The dedicated 📎 status doubles as the op-flow line —
+            # subsequent reasoning / todo-write events that re-render
+            # the combined view should keep it visible until the next
+            # tool fires.
+            self._last_op_status = status
             await self._maybe_edit(status)
             return "intercept"
         if tool == TODO_WRITE_TOOL:
@@ -551,16 +634,22 @@ class MutableSpinner:
             if isinstance(raw, str):
                 raw = raw.encode("utf-8")
             self._last_todo_args = raw
-        await self._maybe_edit(format_tool_status(ev))
+            await self._render_combined()
+            return None
+        # Non-todo, non-attachment tool: this IS the live op flow now.
+        self._last_op_status = format_tool_status(ev)
+        await self._render_combined()
         return None
 
     async def on_tool_result(self, ev: Any) -> None:
         """Handle one ``tool_result`` event.
 
-        Renders ✅ / ❌ + human duration. ``send_attachment`` completions
-        are suppressed because :meth:`on_tool_call` already rendered the
-        dedicated 📎 line — re-overwriting it with ✅ would lose the
-        useful "📎 已发送文件: X" status for ~zero gain.
+        Renders ✅ / ❌ + human duration as the new op-flow line, then
+        re-emits the combined view so the result appears under the todo
+        list (if any). ``send_attachment`` completions are suppressed
+        because :meth:`on_tool_call` already rendered the dedicated 📎
+        line — re-overwriting it with ✅ would lose the useful
+        "📎 已发送文件: X" status for ~zero gain.
 
         ``todo_write`` completions are likewise suppressed — the list
         rendered on the call side IS the user-visible signal that the
@@ -575,4 +664,5 @@ class MutableSpinner:
             return
         if tool == TODO_WRITE_TOOL:
             return
-        await self._maybe_edit(format_tool_result(ev))
+        self._last_op_status = format_tool_result(ev)
+        await self._render_combined()

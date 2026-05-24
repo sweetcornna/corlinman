@@ -681,3 +681,113 @@ class TestMutableSpinnerTodo:
         args_str = '{"todos":[{"content":"x","activeForm":"doing x","status":"pending"}]}'
         await spinner.on_tool_call(_Ev(tool="todo_write", args_json=args_str))  # type: ignore[arg-type]
         assert isinstance(spinner.last_todo_args, bytes)
+
+    @pytest.mark.asyncio
+    async def test_spinner_renders_todo_with_current_op_below(self) -> None:
+        """A ``todo_write`` call followed by a non-todo ``tool_call`` must
+        produce a combined edit carrying BOTH the rendered list AND the
+        live op line ``🔧 web_search 'x'``, separated by a blank line.
+        This is the v1.1.1 fix: users could see the list flip but lost
+        sight of which tool was firing right now."""
+        edits: list[str] = []
+
+        async def edit(text: str) -> None:
+            edits.append(text)
+
+        spinner = MutableSpinner(edit)
+        args = _todos_json([
+            {"content": "Search market data",
+             "activeForm": "Searching market data",
+             "status": "in_progress"},
+            {"content": "Draft memo",
+             "activeForm": "Drafting memo",
+             "status": "pending"},
+        ])
+        await spinner.on_tool_call(_Ev(tool="todo_write", args_json=args))
+        await spinner.on_tool_call(_Ev(
+            plugin="web_search", tool="web_search",
+            args_json=b'{"query":"gpt-5.5 news"}',
+        ))
+        # At least one edit must carry BOTH blocks.
+        combined = [
+            e for e in edits
+            if "📋 任务清单" in e and "🔧 web_search" in e
+        ]
+        assert combined, f"no combined edit found: {edits}"
+        sample = combined[-1]
+        # Blank-line separator between the todo block and the op line.
+        assert "\n\n🔧 web_search" in sample, sample
+        # Todo content still visible (in-progress row uses activeForm).
+        assert "▣ Searching market data" in sample
+        # Op arg preview surfaces.
+        assert "gpt-5.5 news" in sample
+
+    @pytest.mark.asyncio
+    async def test_spinner_op_line_clears_on_token_delta_first(self) -> None:
+        """When tokens begin, the op-flow line under the todo list must
+        drop. The visible status switches to bare ``STATUS_GENERATING``
+        — no stale ``🔧 web_search`` line lingers under the list once
+        the answer is coming through. (Whether the GENERATING transition
+        keeps the todo header above it is an implementation choice; the
+        critical invariant is that the OLD op line is gone.)"""
+        edits: list[str] = []
+
+        async def edit(text: str) -> None:
+            edits.append(text)
+
+        spinner = MutableSpinner(edit)
+        args = _todos_json([
+            {"content": "Search market data",
+             "activeForm": "Searching market data",
+             "status": "in_progress"},
+        ])
+        await spinner.on_tool_call(_Ev(tool="todo_write", args_json=args))
+        await spinner.on_tool_call(_Ev(
+            plugin="web_search", tool="web_search",
+            args_json=b'{"query":"gpt-5.5 news"}',
+        ))
+        await spinner.on_tool_result(_Ev(
+            tool="web_search", duration_ms=302, is_error=False,
+        ))
+        # Drain a real (non-reasoning) token delta.
+        await spinner.on_token_delta("hello", is_reasoning=False)
+        # Final edit during streaming: must be the bare GENERATING
+        # status. No leftover web_search line, no completion line.
+        assert edits[-1] == STATUS_GENERATING, edits[-1]
+        # And the internal op-status really IS cleared (defensive).
+        assert spinner._last_op_status is None  # type: ignore[attr-defined]
+        # text_parts accumulated normally.
+        assert "".join(spinner.text_parts) == "hello"
+
+    @pytest.mark.asyncio
+    async def test_spinner_reasoning_appears_under_todo(self) -> None:
+        """Reasoning deltas (Anthropic ``thinking``, DeepSeek-R1
+        ``reasoning_content``) must render UNDER the todo list, not
+        replace it. Users keep sight of the plan while the model
+        thinks out loud."""
+        edits: list[str] = []
+
+        async def edit(text: str) -> None:
+            edits.append(text)
+
+        spinner = MutableSpinner(edit)
+        args = _todos_json([
+            {"content": "Search market data",
+             "activeForm": "Searching market data",
+             "status": "in_progress"},
+        ])
+        await spinner.on_tool_call(_Ev(tool="todo_write", args_json=args))
+        await spinner.on_token_delta(
+            "I should search broader sources first",
+            is_reasoning=True,
+        )
+        # The latest edit must combine the todo block with the
+        # reasoning preview line.
+        combined = edits[-1]
+        assert "📋 任务清单" in combined
+        assert STATUS_REASONING_PREFIX in combined
+        assert "search broader" in combined
+        # Blank-line separator.
+        assert f"\n\n{STATUS_REASONING_PREFIX}" in combined, combined
+        # Reasoning text does NOT accumulate into the reply buffer.
+        assert spinner.text_parts == []
