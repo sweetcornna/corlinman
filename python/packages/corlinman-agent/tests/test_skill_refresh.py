@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import time
 from pathlib import Path
+from typing import Any
 
 from corlinman_agent.skills import RefreshDelta, SkillRegistry
 
@@ -206,12 +207,14 @@ def test_refresh_recovers_after_directory_recreated(tmp_path: Path) -> None:
 
     (skills_dir / "a.md").unlink()
     skills_dir.rmdir()
-    assert registry.refresh().removed == ["alpha"]
+    # ``force=True`` so the debounce gate doesn't suppress the second
+    # disk scan inside this test (two refreshes in <30s).
+    assert registry.refresh(force=True).removed == ["alpha"]
 
     skills_dir.mkdir()
     _write_skill(skills_dir, "z.md", name="zeta")
 
-    delta = registry.refresh()
+    delta = registry.refresh(force=True)
     assert delta.added == ["zeta"]
     assert delta.updated == []
     assert delta.removed == []
@@ -316,3 +319,154 @@ def test_status_summary_reports_last_refreshed_at(tmp_path: Path) -> None:
     assert summary2["skill_count"] == 2
     assert summary2["names"] == ["alpha", "beta"]
     assert summary2["last_refreshed_at_ms"] >= ts
+
+
+# --------------------------------------------------------------------------- #
+# Perf — debounce + force kwarg                                                #
+# --------------------------------------------------------------------------- #
+
+
+def test_refresh_debounces_within_interval(tmp_path: Path) -> None:
+    """Two consecutive refresh() calls within the min interval: the
+    second one short-circuits to an empty delta and does not touch the
+    skills dir.
+
+    Hot path guarantee — the chat handler invokes refresh() at every
+    turn boundary; without debounce a hot session pays an rglob + stat
+    per turn for a directory that almost never changes between
+    adjacent turns.
+    """
+    from corlinman_agent.skills.registry import SkillRegistry
+
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    _write_skill(skills_dir, "hello.md", name="hello")
+
+    # Build with a long interval so the second refresh hits the debounce.
+    registry = SkillRegistry.load_from_dir(skills_dir)
+    # Override min_interval_ms on the loaded registry. load_from_dir
+    # builds via __init__() which reads env; reach in directly to pin a
+    # known value for this assertion.
+    registry._min_interval_ms = 30_000  # type: ignore[attr-defined]
+
+    # First refresh — no changes since load → empty delta, but it WILL
+    # scan and stamp the monotonic clock.
+    first = registry.refresh()
+    assert not first
+
+    # Drop a brand-new SKILL.md between refreshes. If debounce works,
+    # the very next refresh() must NOT see it — gating it on the
+    # 30s interval defers the disk scan.
+    _write_skill(skills_dir, "fresh.md", name="fresh")
+
+    second = registry.refresh()
+    assert not second, (
+        "debounce violation: refresh() within min_interval_ms must "
+        f"return an empty delta, got {second!r}"
+    )
+    # The new file is intentionally invisible until the interval elapses
+    # or a force=True call lands.
+    assert "fresh" not in registry
+
+
+def test_refresh_force_bypasses_debounce(tmp_path: Path) -> None:
+    """``force=True`` walks the skills dir even when the debounce
+    window says "skip" — used by the future "force refresh" admin
+    button and by tests that need deterministic disk reads.
+    """
+    from corlinman_agent.skills.registry import SkillRegistry
+
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    _write_skill(skills_dir, "hello.md", name="hello")
+
+    registry = SkillRegistry.load_from_dir(skills_dir)
+    registry._min_interval_ms = 30_000  # type: ignore[attr-defined]
+
+    # Prime the debounce clock with a real scan.
+    registry.refresh()
+
+    # New file dropped after the prime. A plain refresh() would skip;
+    # force=True must scan and pick it up.
+    _write_skill(skills_dir, "forced.md", name="forced")
+
+    delta = registry.refresh(force=True)
+    assert delta.added == ["forced"]
+    assert "forced" in registry
+
+
+def test_refresh_runs_after_interval_elapsed(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """When the debounce interval elapses, refresh() resumes its normal
+    disk scan. Simulated by advancing ``time.monotonic_ns`` via a
+    monkeypatched stub so the test doesn't actually sleep 30s.
+    """
+    from corlinman_agent.skills import registry as registry_mod
+    from corlinman_agent.skills.registry import SkillRegistry
+
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    _write_skill(skills_dir, "hello.md", name="hello")
+
+    reg = SkillRegistry.load_from_dir(skills_dir)
+    reg._min_interval_ms = 30_000  # type: ignore[attr-defined]
+
+    # Prime the monotonic clock with the first scan.
+    reg.refresh()
+
+    # Drop a new skill that the next refresh would normally skip.
+    _write_skill(skills_dir, "later.md", name="later")
+
+    # Fake the clock: jump 31 seconds forward. ``time.monotonic_ns``
+    # returns nanoseconds; the registry converts to ms internally.
+    last_ms = reg._last_refresh_monotonic_ms  # type: ignore[attr-defined]
+    fake_now_ns = int((last_ms + 31_000) * 1_000_000)
+    monkeypatch.setattr(
+        registry_mod.time, "monotonic_ns", lambda: fake_now_ns
+    )
+
+    delta = reg.refresh()
+    assert delta.added == ["later"], (
+        f"expected 'later' to be added after the interval elapsed, "
+        f"got delta={delta!r}"
+    )
+    assert "later" in reg
+
+
+def test_refresh_zero_interval_disables_debounce(tmp_path: Path) -> None:
+    """``min_interval_ms = 0`` opts out of debouncing entirely —
+    operators who want the legacy "scan every turn" behaviour can set
+    ``CORLINMAN_SKILL_REFRESH_INTERVAL_MS=0``.
+    """
+    from corlinman_agent.skills.registry import SkillRegistry
+
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    _write_skill(skills_dir, "hello.md", name="hello")
+
+    reg = SkillRegistry.load_from_dir(skills_dir)
+    reg._min_interval_ms = 0  # type: ignore[attr-defined]
+
+    reg.refresh()  # prime
+    _write_skill(skills_dir, "right_now.md", name="right_now")
+
+    # With debounce off, the immediate follow-up refresh must scan.
+    delta = reg.refresh()
+    assert delta.added == ["right_now"]
+
+
+def test_refresh_interval_env_override(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """``CORLINMAN_SKILL_REFRESH_INTERVAL_MS`` controls the default
+    interval used by :meth:`SkillRegistry.load_from_dir`-built
+    registries (the production code path).
+    """
+    from corlinman_agent.skills.registry import SkillRegistry
+
+    monkeypatch.setenv("CORLINMAN_SKILL_REFRESH_INTERVAL_MS", "12345")
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    reg = SkillRegistry.load_from_dir(skills_dir)
+    assert reg._min_interval_ms == 12345  # type: ignore[attr-defined]

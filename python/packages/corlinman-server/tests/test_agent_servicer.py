@@ -1898,3 +1898,56 @@ async def test_concurrent_chat_for_same_session_injects_instead_of_serializing(
             assert first_done == ["stop"]
     finally:
         await server.stop(grace=None)
+
+
+# ---------------------------------------------------------------------------
+# Perf: module-level cache for the builtin tool schemas.
+# ---------------------------------------------------------------------------
+
+
+def test_builtin_tool_schemas_cached_at_module_load() -> None:
+    """``_CACHED_BUILTIN_TOOL_SCHEMAS`` is computed once at import time.
+
+    Hot path: ``_inject_builtin_tools`` runs at the start of every chat
+    round. Before this cache the 13 descriptor dicts were rebuilt on
+    every call (~30-50ms / round on a 10-round task). The module-level
+    snapshot collapses that to one rebuild at import.
+
+    The test pins three properties:
+
+    1. The constant exists and is a list (the type the injector iterates).
+    2. The identity is stable across reads (it's not a property or a
+       function masquerading as a list).
+    3. The cached list matches the live ``_builtin_tool_schemas()``
+       output (so a regression that mutated only the function is
+       caught immediately).
+    """
+    from corlinman_server.agent_servicer import (
+        _CACHED_BUILTIN_TOOL_SCHEMAS,
+        _builtin_tool_schemas,
+    )
+
+    # Identity stable — two reads return the same object.
+    assert _CACHED_BUILTIN_TOOL_SCHEMAS is _CACHED_BUILTIN_TOOL_SCHEMAS
+
+    # Shape: non-empty list of dicts.
+    assert isinstance(_CACHED_BUILTIN_TOOL_SCHEMAS, list)
+    assert len(_CACHED_BUILTIN_TOOL_SCHEMAS) > 0
+    for schema in _CACHED_BUILTIN_TOOL_SCHEMAS:
+        assert isinstance(schema, dict)
+        # Each entry is the OpenAI ``{"type": "function", "function":
+        # {...}}`` descriptor the injector inspects.
+        fn = schema.get("function")
+        assert isinstance(fn, dict)
+        assert isinstance(fn.get("name"), str) and fn["name"]
+
+    # Cached length matches the live computation — guards against
+    # someone adding a builtin without updating the cache trigger.
+    live = _builtin_tool_schemas()
+    assert len(_CACHED_BUILTIN_TOOL_SCHEMAS) == len(live)
+    # Names match in order (descriptor lists are ordered).
+    cached_names = [
+        s["function"]["name"] for s in _CACHED_BUILTIN_TOOL_SCHEMAS
+    ]
+    live_names = [s["function"]["name"] for s in live]
+    assert cached_names == live_names

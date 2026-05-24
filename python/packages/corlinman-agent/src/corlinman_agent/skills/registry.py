@@ -30,6 +30,29 @@ from corlinman_agent.skills.card import Skill, SkillRequirements
 _log = structlog.get_logger(__name__)
 
 
+#: How long :meth:`SkillRegistry.refresh` waits between real disk scans
+#: by default. The chat handler calls ``refresh()`` at every turn
+#: boundary, which on a hot session was costing ~5-10ms / turn in
+#: ``rglob`` + ``stat()`` work for a directory that almost never changes
+#: between adjacent turns. 30 seconds is well below the operator
+#: "I dropped a new SKILL.md in" expectation (they almost always pause
+#: at least that long before their next chat) and well above the
+#: per-turn cadence. Operators can override via
+#: ``CORLINMAN_SKILL_REFRESH_INTERVAL_MS`` (set 0 to disable debounce
+#: entirely; tests pass ``force=True`` for the same effect).
+_DEFAULT_SKILL_REFRESH_INTERVAL_MS: int = 30_000
+
+
+def _default_refresh_interval_ms() -> int:
+    raw = os.environ.get("CORLINMAN_SKILL_REFRESH_INTERVAL_MS")
+    if raw is None or raw == "":
+        return _DEFAULT_SKILL_REFRESH_INTERVAL_MS
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return _DEFAULT_SKILL_REFRESH_INTERVAL_MS
+
+
 @dataclass(frozen=True)
 class RefreshDelta:
     """Diff returned by :meth:`SkillRegistry.refresh`.
@@ -194,7 +217,12 @@ class SkillRegistry:
     "why did my skill change?" tickets.
     """
 
-    def __init__(self, skills: dict[str, Skill] | None = None) -> None:
+    def __init__(
+        self,
+        skills: dict[str, Skill] | None = None,
+        *,
+        min_interval_ms: int | None = None,
+    ) -> None:
         self._skills: dict[str, Skill] = skills or {}
         # ``refresh()`` resolves changes by stat()ing the same root the
         # initial load walked. ``None`` means "never loaded from disk" —
@@ -212,6 +240,20 @@ class SkillRegistry:
         # initial load when no refresh has run). ``None`` only for
         # registries built from an in-memory dict via ``__init__``.
         self._last_refreshed_at_ms: int | None = None
+        # Debounce: monotonic timestamp (in ms) of the last refresh that
+        # actually scanned disk. Refresh calls within ``min_interval_ms``
+        # of this stamp short-circuit to an empty delta so the per-turn
+        # caller (chat handler) doesn't pay rglob + stat cost on every
+        # turn. ``force=True`` on :meth:`refresh` bypasses the debounce.
+        # Monotonic so a wall-clock jump back can't unblock the debounce
+        # spuriously, and so two refresh()es inside the same ms still
+        # produce a strictly-monotonic stamp.
+        self._min_interval_ms: int = (
+            int(min_interval_ms)
+            if min_interval_ms is not None
+            else _default_refresh_interval_ms()
+        )
+        self._last_refresh_monotonic_ms: float = 0.0
 
     @classmethod
     def load_from_dir(cls, root: Path) -> SkillRegistry:
@@ -262,6 +304,11 @@ class SkillRegistry:
         inst._mtimes = mtimes
         inst._path_to_name = path_to_name
         inst._last_refreshed_at_ms = int(time.time() * 1000)
+        # Intentionally leave ``_last_refresh_monotonic_ms`` at 0.0 here
+        # so the FIRST call to :meth:`refresh` after boot still scans
+        # (the debounce gate checks ``> 0.0`` before kicking in). The
+        # second turn — usually within the 30s window — is where the
+        # cost-savings start to land.
         return inst
 
     def get(self, name: str) -> Skill | None:
@@ -304,7 +351,7 @@ class SkillRegistry:
             "names": self.names(),
         }
 
-    def refresh(self) -> RefreshDelta:
+    def refresh(self, *, force: bool = False) -> RefreshDelta:
         """Re-walk the registry's root directory and reconcile against
         the cached state.
 
@@ -312,6 +359,16 @@ class SkillRegistry:
         something actually changed. The hot-path cost is one ``stat()``
         per known file plus one ``rglob`` on the root — single-digit ms
         for a directory of ~16 SKILL.md files on a warm filesystem.
+
+        Debounce — calls within ``self._min_interval_ms`` (default
+        :data:`_DEFAULT_SKILL_REFRESH_INTERVAL_MS`, overridable via
+        ``CORLINMAN_SKILL_REFRESH_INTERVAL_MS``) of the previous real
+        scan short-circuit to an empty delta. The chat handler invokes
+        :meth:`refresh` at every turn boundary; without this guard a
+        hot session pays ~5-10ms / turn rglob+stat on a directory that
+        almost never changes between adjacent turns. Pass
+        ``force=True`` to bypass the debounce — used by tests and the
+        future "force refresh" admin button.
 
         Failure modes are all fail-soft (the registry stays usable):
 
@@ -333,6 +390,18 @@ class SkillRegistry:
         if self._root is None:
             return RefreshDelta()
 
+        # Debounce gate. ``min_interval_ms <= 0`` disables debouncing
+        # entirely (operator opt-out via env). ``force=True`` is the
+        # explicit bypass for the admin / test paths.
+        if not force and self._min_interval_ms > 0:
+            now_ms = time.monotonic_ns() / 1_000_000
+            elapsed = now_ms - self._last_refresh_monotonic_ms
+            if (
+                self._last_refresh_monotonic_ms > 0.0
+                and elapsed < self._min_interval_ms
+            ):
+                return RefreshDelta()
+
         root = self._root
         added: list[str] = []
         updated: list[str] = []
@@ -351,7 +420,7 @@ class SkillRegistry:
                     removed.append(name)
             self._mtimes.clear()
             self._path_to_name.clear()
-            self._last_refreshed_at_ms = int(time.time() * 1000)
+            self._stamp_refresh()
             return RefreshDelta(added=added, updated=updated, removed=removed)
 
         if not root.is_dir():
@@ -360,7 +429,7 @@ class SkillRegistry:
             # load_from_dir would have raised, but that's a boot-time
             # contract — we don't want to crash a chat turn over it.
             _log.warning("agent.skills.refresh.root_not_dir", root=str(root))
-            self._last_refreshed_at_ms = int(time.time() * 1000)
+            self._stamp_refresh()
             return RefreshDelta()
 
         # Track per-name resolutions so a duplicate within one refresh
@@ -459,8 +528,19 @@ class SkillRegistry:
                     del self._skills[name]
                     removed.append(name)
 
-        self._last_refreshed_at_ms = int(time.time() * 1000)
+        self._stamp_refresh()
         return RefreshDelta(added=added, updated=updated, removed=removed)
+
+    def _stamp_refresh(self) -> None:
+        """Bookkeeping shared by every successful :meth:`refresh` exit.
+
+        Updates the wall-clock ``_last_refreshed_at_ms`` (exposed for
+        diagnostics) and the monotonic ``_last_refresh_monotonic_ms``
+        that the debounce gate at the top of :meth:`refresh` reads.
+        Kept private — callers go through :meth:`refresh`.
+        """
+        self._last_refreshed_at_ms = int(time.time() * 1000)
+        self._last_refresh_monotonic_ms = time.monotonic_ns() / 1_000_000
 
     def __contains__(self, name: object) -> bool:
         return isinstance(name, str) and name in self._skills

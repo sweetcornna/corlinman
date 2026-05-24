@@ -36,6 +36,7 @@ _BACKEND_METHODS = (
     "complete_turn",
     "error_turn",
     "append_message",
+    "append_messages",
     "find_resumable_turn",
     "recent_errored_turns",
     "mark_stale_in_progress_as_errored",

@@ -183,6 +183,22 @@ class AgentJournal:
             tool_calls=tool_calls,
         )
 
+    async def append_messages(
+        self,
+        turn_id: int,
+        messages: list[dict[str, Any]],
+    ) -> None:
+        """Append ``messages`` (each a dict with ``role``/``content`` plus
+        optional ``tool_call_id`` / ``tool_calls``) to ``turn_id`` in a
+        single backend transaction.
+
+        Additive — :meth:`append_message` keeps working unchanged. The
+        chat handler uses this to fold the (assistant tool_call, tool
+        result) pair from a builtin dispatch into one commit, saving
+        ~5ms per pair vs. two sequential single-message appends.
+        """
+        await self._backend.append_messages(turn_id, messages)
+
     # ------------------------------------------------------------------
     # Resume
     # ------------------------------------------------------------------

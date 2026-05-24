@@ -463,3 +463,200 @@ async def test_mark_stale_in_progress_accepts_older_than_seconds(
         older_than_seconds=60
     )
     assert swept_short == 1
+
+
+# ---------------------------------------------------------------------------
+# Perf — batched ``append_messages`` collapses N writes into one transaction.
+# ---------------------------------------------------------------------------
+
+
+async def test_append_messages_single_transaction(
+    journal: AgentJournal,
+) -> None:
+    """A two-message batch must execute exactly one BEGIN IMMEDIATE /
+    one COMMIT and produce N rows at strictly-incrementing seq.
+
+    Hot path: the chat handler calls this after every builtin tool
+    dispatch to journal the (assistant tool_call, tool result) pair.
+    Two separate ``append_message`` calls cost ~10ms in transactional
+    overhead; this single-transaction shape collapses that to ~5ms.
+
+    Implementation: sniff ``conn.execute`` on the live backend to count
+    ``BEGIN IMMEDIATE`` and ``COMMIT`` invocations across the batch.
+    """
+    tid = await journal.begin_turn("sess-batch", "batched task")
+    assert tid is not None
+
+    # ``AgentJournal`` exposes the backend so we can monkey the
+    # underlying aiosqlite connection. Reach in deliberately — this is
+    # a perf assertion that pins the wire shape.
+    from corlinman_server.agent_journal_backend import SqliteJournalBackend
+
+    backend = journal.backend
+    assert isinstance(backend, SqliteJournalBackend)
+    conn = backend._c  # type: ignore[attr-defined]
+
+    # Wrap execute() — record the SQL the backend issues during the
+    # batch. ``commit()`` on aiosqlite is a separate coroutine, not an
+    # execute("COMMIT"), so we also wrap that to count commits.
+    sql_log: list[str] = []
+    commit_count = {"n": 0}
+
+    original_execute = conn.execute
+    original_commit = conn.commit
+
+    async def spy_execute(sql: str, *args: Any, **kwargs: Any) -> Any:
+        sql_log.append(sql)
+        return await original_execute(sql, *args, **kwargs)
+
+    async def spy_commit() -> Any:
+        commit_count["n"] += 1
+        return await original_commit()
+
+    conn.execute = spy_execute  # type: ignore[method-assign]
+    conn.commit = spy_commit  # type: ignore[method-assign]
+    try:
+        await journal.append_messages(
+            tid,
+            [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "c1",
+                            "type": "function",
+                            "function": {
+                                "name": "calculator",
+                                "arguments": '{"expression":"2+2"}',
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "content": '{"result":4}',
+                    "tool_call_id": "c1",
+                },
+            ],
+        )
+    finally:
+        conn.execute = original_execute  # type: ignore[method-assign]
+        conn.commit = original_commit  # type: ignore[method-assign]
+
+    # ── Wire-shape assertions ─────────────────────────────────────
+    # Exactly ONE BEGIN IMMEDIATE for the whole batch.
+    begins = [s for s in sql_log if s.strip().upper().startswith("BEGIN")]
+    assert len(begins) == 1, (
+        f"expected 1 BEGIN IMMEDIATE for the batch, got {len(begins)}: "
+        f"{begins!r}"
+    )
+    # Exactly ONE commit for the whole batch.
+    assert commit_count["n"] == 1, (
+        f"expected 1 commit for the batch, got {commit_count['n']}"
+    )
+    # N INSERTs into turn_messages (one per message — 2 here).
+    inserts = [
+        s for s in sql_log
+        if "INSERT INTO turn_messages" in s
+    ]
+    assert len(inserts) == 2, (
+        f"expected 2 INSERTs for the 2-message batch, got {len(inserts)}: "
+        f"{inserts!r}"
+    )
+    # Exactly ONE SELECT MAX(seq) — the per-message increment is local
+    # to the loop so we don't pay a round-trip per row.
+    seq_selects = [
+        s for s in sql_log
+        if "MAX(seq)" in s and "turn_messages" in s
+    ]
+    assert len(seq_selects) == 1, (
+        f"expected 1 SELECT MAX(seq), got {len(seq_selects)}: "
+        f"{seq_selects!r}"
+    )
+
+    # ── Data-shape assertion ──────────────────────────────────────
+    # The batch persisted in strict seq order with no holes.
+    msgs = await journal._load_messages(tid)
+    assert [m["role"] for m in msgs] == ["assistant", "tool"]
+    assert msgs[0]["tool_calls"][0]["id"] == "c1"
+    assert msgs[1]["tool_call_id"] == "c1"
+
+
+async def test_append_messages_empty_list_is_noop(
+    journal: AgentJournal,
+) -> None:
+    """``append_messages(turn_id, [])`` must not touch the DB or raise.
+
+    Defensive — callers that accumulate a batch may end up with an
+    empty list (e.g. all entries failed pre-serialisation). The wire
+    shape stays correct: no BEGIN, no INSERT, no COMMIT.
+    """
+    tid = await journal.begin_turn("sess-empty-batch", "noop")
+    assert tid is not None
+
+    # Pre-batch row count from turn_messages.
+    from corlinman_server.agent_journal_backend import SqliteJournalBackend
+
+    backend = journal.backend
+    assert isinstance(backend, SqliteJournalBackend)
+    conn = backend._c  # type: ignore[attr-defined]
+
+    cur = await conn.execute(
+        "SELECT COUNT(*) FROM turn_messages WHERE turn_id = ?", (tid,)
+    )
+    row = await cur.fetchone()
+    await cur.close()
+    before = int(row[0]) if row is not None else 0
+
+    await journal.append_messages(tid, [])
+
+    cur = await conn.execute(
+        "SELECT COUNT(*) FROM turn_messages WHERE turn_id = ?", (tid,)
+    )
+    row = await cur.fetchone()
+    await cur.close()
+    after = int(row[0]) if row is not None else 0
+    assert before == after, (
+        "append_messages([]) must not insert any rows; "
+        f"before={before} after={after}"
+    )
+
+
+async def test_append_messages_round_trips_in_order(
+    journal: AgentJournal,
+) -> None:
+    """Batched messages land in the order they were supplied — seq is
+    assigned strictly increasing inside the single transaction.
+    """
+    tid = await journal.begin_turn("sess-order-batch", "ordering")
+    assert tid is not None
+
+    await journal.append_messages(
+        tid,
+        [
+            {"role": "user", "content": "step 1"},
+            {"role": "assistant", "content": "ack"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "type": "function",
+                        "function": {"name": "noop", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "content": "{}", "tool_call_id": "c1"},
+        ],
+    )
+
+    msgs = await journal._load_messages(tid)
+    assert [m["role"] for m in msgs] == [
+        "user", "assistant", "assistant", "tool",
+    ]
+    # The 3rd row carries the tool_calls payload; the 4th carries the
+    # tool_call_id back-reference.
+    assert msgs[2]["tool_calls"][0]["id"] == "c1"
+    assert msgs[3]["tool_call_id"] == "c1"

@@ -97,6 +97,13 @@ def connect_channel(endpoint: str) -> grpc.aio.Channel:
     is lazy by default and the keepalive / TCP options live on the
     channel-args list — we set ``tcp_nodelay`` for parity. Raises
     :class:`ConfigError` on malformed targets.
+
+    Message-size limits are symmetric with the server (64 MB send +
+    64 MB receive — see :mod:`corlinman_server.main` and
+    ``gateway.grpc.agent_server``). Before this was wired, gRPC's
+    4 MB default applied client-side, so a tool call that returned >4 MB
+    of shell output / file contents would silently fail with
+    ``RESOURCE_EXHAUSTED`` despite the server happily sending it.
     """
     target = _normalise_target(endpoint)
     if not target:
@@ -118,6 +125,10 @@ def connect_channel(endpoint: str) -> grpc.aio.Channel:
         ("grpc.http2.max_pings_without_data", 0),
         # tonic enables TCP_NODELAY by default; mirror it here.
         ("grpc.http2.min_time_between_pings_ms", 10_000),
+        # Symmetric 64 MB limits with the server (see docstring above).
+        # gRPC's 4 MB default silently rejects large tool results.
+        ("grpc.max_send_message_length", 64 * 1024 * 1024),
+        ("grpc.max_receive_message_length", 64 * 1024 * 1024),
     ]
     try:
         return grpc.aio.insecure_channel(target, options=options)

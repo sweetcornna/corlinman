@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator
+from typing import Any
 
 import grpc
 import grpc.aio
@@ -64,6 +65,53 @@ async def test_connect_channel_strips_http_scheme() -> None:
     ch = connect_channel("http://127.0.0.1:65535")
     assert ch is not None
     await ch.close()
+
+
+def test_connect_channel_sets_symmetric_message_size_limits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The client must declare 64 MB send + 64 MB receive limits to
+    match the server (corlinman_server.main + gateway.grpc.agent_server).
+
+    Before this wiring, gRPC's 4 MB default capped the client's
+    receive side — a tool result >4 MB (long shell output, large file
+    read) was silently rejected with ``RESOURCE_EXHAUSTED`` even
+    though the server happily sent it. Pinning both options here
+    catches a regression that drops them.
+
+    Implementation: intercept ``grpc.aio.insecure_channel`` to capture
+    the options list without ever constructing a real channel. Avoids
+    leaking a lazy grpc.aio channel into a sync test where the event
+    loop isn't running (the channel's GC finalizer would otherwise hit
+    ``RuntimeError: Event loop is closed`` later in the run).
+    """
+    captured: dict[str, Any] = {}
+
+    class _StubChannel:
+        """No-op stand-in so the function still returns 'a channel'
+        without ever booking a real grpc.aio resource."""
+
+    def fake_insecure_channel(
+        target: str,
+        options: list[tuple[str, Any]] | None = None,
+    ) -> Any:
+        captured["target"] = target
+        captured["options"] = list(options or [])
+        return _StubChannel()
+
+    monkeypatch.setattr(grpc.aio, "insecure_channel", fake_insecure_channel)
+
+    ch = connect_channel("127.0.0.1:65530")
+    assert ch is not None
+    opts = dict(captured["options"])
+    assert opts.get("grpc.max_send_message_length") == 64 * 1024 * 1024, (
+        "client send-limit must be 64 MB to match the server; "
+        f"got {opts.get('grpc.max_send_message_length')!r}"
+    )
+    assert opts.get("grpc.max_receive_message_length") == 64 * 1024 * 1024, (
+        "client receive-limit must be 64 MB to match the server; "
+        f"got {opts.get('grpc.max_receive_message_length')!r}"
+    )
 
 
 # ---------------------------------------------------------------------------

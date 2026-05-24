@@ -348,6 +348,84 @@ class PostgresJournalBackend:
         except Exception as exc:
             logger.warning("agent.journal.append_failed", error=str(exc))
 
+    async def append_messages(
+        self,
+        turn_id: int,
+        messages: list[dict[str, Any]],
+    ) -> None:
+        """Append multiple messages to ``turn_id`` in one pooled
+        transaction.
+
+        Single ``acquire()`` + single ``conn.transaction()`` wraps the
+        ``SELECT ... FOR UPDATE`` lock, the ``SELECT MAX(seq)``, and
+        every ``INSERT`` — so a 2-message batch costs one pool round
+        trip instead of two. Empty ``messages`` is a no-op.
+
+        Mirrors :meth:`append_message`'s error posture: a single
+        ``json.dumps`` failure on a per-message ``tool_calls`` payload
+        skips that message and continues; transactional failures log
+        and let the pool roll back automatically (the ``async with``
+        contract).
+        """
+        if not messages:
+            return
+        # Pre-serialise so a TypeError can't leave a half-applied batch.
+        prepared: list[tuple[str, str, str | None, str | None]] = []
+        for msg in messages:
+            role = str(msg.get("role") or "")
+            content = msg.get("content") or ""
+            if not isinstance(content, str):
+                content = str(content)
+            tool_call_id_val = msg.get("tool_call_id")
+            tool_call_id = (
+                str(tool_call_id_val) if tool_call_id_val is not None else None
+            )
+            tool_calls_val = msg.get("tool_calls")
+            tool_calls_text: str | None = None
+            if tool_calls_val is not None:
+                try:
+                    tool_calls_text = json.dumps(tool_calls_val)
+                except (TypeError, ValueError) as exc:
+                    logger.warning(
+                        "agent.journal.append_serialize_failed",
+                        error=str(exc),
+                    )
+                    continue
+            prepared.append((role, content, tool_call_id, tool_calls_text))
+        if not prepared:
+            return
+        try:
+            async with self._p.acquire() as conn, conn.transaction():
+                await conn.fetchval(
+                    "SELECT turn_id FROM journal_turns "
+                    "WHERE turn_id = $1 FOR UPDATE",
+                    int(turn_id),
+                )
+                next_seq_row = await conn.fetchrow(
+                    "SELECT COALESCE(MAX(seq), -1) + 1 AS next_seq "
+                    "FROM journal_turn_messages WHERE turn_id = $1",
+                    int(turn_id),
+                )
+                next_seq = (
+                    int(next_seq_row["next_seq"]) if next_seq_row else 0
+                )
+                for role, content, tool_call_id, tool_calls_text in prepared:
+                    await conn.execute(
+                        "INSERT INTO journal_turn_messages "
+                        "(turn_id, seq, role, content, tool_call_id, "
+                        "tool_calls_json) VALUES "
+                        "($1, $2, $3, $4, $5, $6)",
+                        int(turn_id),
+                        next_seq,
+                        role,
+                        content,
+                        tool_call_id,
+                        tool_calls_text,
+                    )
+                    next_seq += 1
+        except Exception as exc:
+            logger.warning("agent.journal.append_batch_failed", error=str(exc))
+
     # ------------------------------------------------------------------
     # Resume
     # ------------------------------------------------------------------

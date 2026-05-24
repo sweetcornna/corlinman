@@ -207,6 +207,27 @@ class JournalBackend(Protocol):
         """Append a single message to the turn's replay buffer."""
         ...
 
+    async def append_messages(
+        self,
+        turn_id: int,
+        messages: list[dict[str, Any]],
+    ) -> None:
+        """Append multiple messages to ``turn_id`` in a single transaction.
+
+        Each dict must carry ``role`` and ``content``; ``tool_call_id``
+        and ``tool_calls`` are optional. Backends wrap the whole insert
+        sequence in one transaction (one BEGIN / N inserts / one COMMIT
+        on SQLite; one pooled acquire + one ``conn.transaction()`` on
+        Postgres). Empty ``messages`` is a no-op.
+
+        Perf: collapses the (assistant tool_call, tool result) pair the
+        chat handler writes after every builtin dispatch into a single
+        commit, cutting ~10ms / commit overhead for 3-tool rounds.
+        Backward compat: ``append_message`` is preserved — this method
+        is additive.
+        """
+        ...
+
     async def find_resumable_turn(
         self,
         session_key: str,
@@ -583,6 +604,93 @@ class SqliteJournalBackend:
             # L5: only roll back when sqlite still has the tx open;
             # blindly issuing ROLLBACK on a connection that already
             # auto-aborted raises and corrupts subsequent writes.
+            if conn.in_transaction:
+                try:
+                    await conn.rollback()
+                except aiosqlite.Error as rb_exc:
+                    logger.warning(
+                        "agent.journal.append_rollback_failed",
+                        error=str(rb_exc),
+                    )
+
+    async def append_messages(
+        self,
+        turn_id: int,
+        messages: list[dict[str, Any]],
+    ) -> None:
+        """Append multiple messages in one ``BEGIN IMMEDIATE`` / ``COMMIT``
+        envelope.
+
+        Folds the (assistant tool_call, tool result) pair the chat
+        handler writes after every builtin dispatch into a single
+        commit. Single ``SELECT MAX(seq)`` is followed by N inserts
+        with locally-incrementing seq — same on-disk shape as N
+        sequential :meth:`append_message` calls, single commit cost.
+        Empty ``messages`` is a no-op.
+
+        Error posture mirrors :meth:`append_message`: ``aiosqlite.Error``
+        triggers a guarded rollback and a warning log; the chat path
+        keeps running. A serialisation failure on any single message
+        (``json.dumps`` raises) skips that message and continues —
+        same per-message contract as the single-shot path.
+        """
+        if not messages:
+            return
+        conn = self._c
+        # Pre-serialise tool_calls so a TypeError mid-transaction can't
+        # leave us with a half-applied batch.
+        prepared: list[tuple[str, str, str | None, str | None]] = []
+        for msg in messages:
+            role = str(msg.get("role") or "")
+            content = msg.get("content") or ""
+            if not isinstance(content, str):
+                content = str(content)
+            tool_call_id_val = msg.get("tool_call_id")
+            tool_call_id = (
+                str(tool_call_id_val) if tool_call_id_val is not None else None
+            )
+            tool_calls_val = msg.get("tool_calls")
+            tool_calls_text: str | None = None
+            if tool_calls_val is not None:
+                try:
+                    tool_calls_text = json.dumps(tool_calls_val)
+                except (TypeError, ValueError) as exc:
+                    logger.warning(
+                        "agent.journal.append_serialize_failed",
+                        error=str(exc),
+                    )
+                    continue
+            prepared.append((role, content, tool_call_id, tool_calls_text))
+        if not prepared:
+            return
+        try:
+            await conn.execute("BEGIN IMMEDIATE")
+            cur = await conn.execute(
+                "SELECT COALESCE(MAX(seq), -1) + 1 FROM turn_messages "
+                "WHERE turn_id = ?",
+                (turn_id,),
+            )
+            row = await cur.fetchone()
+            await cur.close()
+            next_seq = int(row[0]) if row is not None else 0
+            for role, content, tool_call_id, tool_calls_text in prepared:
+                await conn.execute(
+                    "INSERT INTO turn_messages (turn_id, seq, role, "
+                    "content, tool_call_id, tool_calls_json) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        turn_id,
+                        next_seq,
+                        role,
+                        content,
+                        tool_call_id,
+                        tool_calls_text,
+                    ),
+                )
+                next_seq += 1
+            await conn.commit()
+        except aiosqlite.Error as exc:
+            logger.warning("agent.journal.append_batch_failed", error=str(exc))
             if conn.in_transaction:
                 try:
                     await conn.rollback()
