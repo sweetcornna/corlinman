@@ -1,3 +1,4 @@
+import * as React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   act,
@@ -7,8 +8,24 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import ProtocolPlaygroundPage from "./page";
+
+// W2.3: the page now renders <AgentPicker> which fetches via
+// `useQuery(listAgents)`. Wrap the page in a QueryClientProvider so the
+// hook resolves; stub `fetch` so the agent list resolves to ``[]`` (the
+// picker just renders an "empty" footnote).
+function renderPage() {
+  const qc = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  return render(
+    <QueryClientProvider client={qc}>
+      <ProtocolPlaygroundPage />
+    </QueryClientProvider>,
+  );
+}
 
 function mockMatchMedia(opts: { reduce?: boolean } = {}) {
   const { reduce = false } = opts;
@@ -47,16 +64,33 @@ vi.mock("@/lib/mocks/protocol-streams", async () => {
 
 beforeEach(() => {
   mockMatchMedia({ reduce: false });
+  // W2.3: <AgentPicker> calls `listAgents()` via apiFetch on mount.
+  // Resolve to an empty list so the picker renders its "empty" state
+  // without throwing — these tests are about the protocol panes, not
+  // the picker behaviour.
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () =>
+      ({
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        json: async () => [],
+        text: async () => "[]",
+      }) as unknown as Response,
+    ),
+  );
 });
 
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
 
 describe("ProtocolPlaygroundPage", () => {
   it("renders both panes with headers and run button", () => {
-    render(<ProtocolPlaygroundPage />);
+    renderPage();
     expect(screen.getByTestId("pane-block")).toBeInTheDocument();
     expect(screen.getByTestId("pane-function-call")).toBeInTheDocument();
     expect(screen.getByTestId("run-button")).toBeInTheDocument();
@@ -71,7 +105,7 @@ describe("ProtocolPlaygroundPage", () => {
   });
 
   it("clicking Run both streams tokens into both panes", async () => {
-    render(<ProtocolPlaygroundPage />);
+    renderPage();
     await act(async () => {
       fireEvent.click(screen.getByTestId("run-button"));
     });
@@ -97,7 +131,7 @@ describe("ProtocolPlaygroundPage", () => {
 
   it("under reduced-motion renders streams without per-token fadeUp wrapper", async () => {
     mockMatchMedia({ reduce: true });
-    render(<ProtocolPlaygroundPage />);
+    renderPage();
     await act(async () => {
       fireEvent.click(screen.getByTestId("run-button"));
     });

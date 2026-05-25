@@ -17,6 +17,7 @@ import {
   Database,
   FileTerminal,
   Fingerprint,
+  GitFork,
   KeyRound,
   Leaf,
   LogOut,
@@ -88,6 +89,10 @@ const OPERATOR_ITEMS: NavEntry[] = [
   { href: "/approvals", labelKey: "nav.approvals", icon: ClipboardCheck },
   { href: "/sessions", labelKey: "nav.sessions", icon: MessagesSquare },
   { href: "/logs", labelKey: "nav.logs", icon: FileTerminal },
+  // W2.2 — live activity panel for background sub-agents. Operational
+  // adjacency to logs (auditing the in-flight surface) sits it above
+  // credentials.
+  { href: "/subagents", labelKey: "subagents.sidebarLabel", icon: GitFork },
   { href: "/credentials", labelKey: "nav.credentials", icon: KeyRound },
   { href: "/models", labelKey: "nav.models", icon: Route },
   // Persona — humanlike-mode operator surface; sits between Models and

@@ -13,6 +13,7 @@ import {
   type FilterChipOption,
 } from "@/components/ui/filter-chip-group";
 import { JsonView } from "@/components/ui/json-view";
+import { AgentPicker } from "@/components/playground/agent-picker";
 import { SplitPane } from "@/components/playground/split-pane";
 import { TokenStream } from "@/components/playground/token-stream";
 import { diffLineIndexes } from "@/components/playground/diff-highlight";
@@ -92,6 +93,11 @@ export default function ProtocolPlaygroundPage() {
   const [block, setBlock] = React.useState<PaneState>(EMPTY_PANE);
   const [fn, setFn] = React.useState<PaneState>(EMPTY_PANE);
   const [rawFramesOpen, setRawFramesOpen] = React.useState(false);
+  // W2.3: explicit agent override for the chat request payload. ``null`` =
+  // auto-route (existing message-peek heuristic in
+  // ``_peek_agent_binding``). When set, the backend prefers this hint over
+  // the heuristic.
+  const [explicitAgent, setExplicitAgent] = React.useState<string | null>(null);
   const abortRef = React.useRef<AbortController | null>(null);
   const promptRef = React.useRef<HTMLTextAreaElement | null>(null);
 
@@ -149,11 +155,24 @@ export default function ProtocolPlaygroundPage() {
     };
     setBlock(seed);
     setFn(seed);
+    // W2.3: compose the chat request payload shape that the gateway
+    // will receive when the mock streams are swapped for the real SSE
+    // endpoint. ``agent_id`` is only present when the operator picked
+    // an explicit agent — otherwise the backend's heuristic
+    // (``_peek_agent_binding``) routes via message-peek as before.
+    const _body = buildChatRequestBody({
+      prompt,
+      model,
+      maxTokens,
+      temperature,
+      agentId: explicitAgent,
+    });
+    void _body; // referenced for typecheck; consumed by real SSE path
     void Promise.all([
       runPane("block", ac.signal, setBlock),
       runPane("function-call", ac.signal, setFn),
     ]);
-  }, [runPane, offline]);
+  }, [runPane, offline, prompt, model, maxTokens, temperature, explicitAgent]);
 
   React.useEffect(() => {
     return () => abortRef.current?.abort();
@@ -334,6 +353,16 @@ export default function ProtocolPlaygroundPage() {
               data-testid="model-picker"
             />
           </div>
+
+          {/* W2.3: Agent picker — defaults to auto-route. When the
+              operator picks an explicit agent we thread ``agent_id``
+              into the chat request payload (see ``runBoth``); the
+              backend prefers this hint over the message-peek heuristic
+              in ``_peek_agent_binding``. */}
+          <AgentPicker
+            value={explicitAgent}
+            onChange={setExplicitAgent}
+          />
 
           <NumberControl
             label={t("playground.tp.controlsMaxTokens")}
@@ -751,6 +780,49 @@ function FramesColumn({ label, frames, emptyLabel }: FramesColumnProps) {
 }
 
 // ─── helpers ────────────────────────────────────────────────────────
+
+/**
+ * W2.3: compose the chat-completion request body that will be POSTed to
+ * the gateway when the mock streams are swapped for the real SSE
+ * endpoint. ``agent_id`` is only included when the operator picked an
+ * explicit agent — otherwise the backend's heuristic
+ * (``_peek_agent_binding``) routes via the message-peek as before.
+ *
+ * Exported for unit-test coverage and for the eventual real SSE path
+ * to consume.
+ */
+interface ChatRequestArgs {
+  prompt: string;
+  model: string;
+  maxTokens: number;
+  temperature: number;
+  /** ``null`` = auto-route (default). */
+  agentId: string | null;
+}
+
+export interface ChatRequestBody {
+  messages: Array<{ role: "user"; content: string }>;
+  model: string;
+  max_tokens: number;
+  temperature: number;
+  agent_id?: string;
+}
+
+export function buildChatRequestBody({
+  prompt,
+  model,
+  maxTokens,
+  temperature,
+  agentId,
+}: ChatRequestArgs): ChatRequestBody {
+  return {
+    messages: [{ role: "user", content: prompt }],
+    model,
+    max_tokens: maxTokens,
+    temperature,
+    ...(agentId ? { agent_id: agentId } : {}),
+  };
+}
 
 /**
  * Compute tokens-per-second over the rolling ≤2s tail. Returns `null` if
