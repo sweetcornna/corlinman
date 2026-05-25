@@ -27,11 +27,14 @@ schema drift.
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from typing import Any
 
-from fastapi import APIRouter, Depends, Path as FPath
+from corlinman_providers.specs import list_supported_kinds
+from fastapi import APIRouter, Depends
+from fastapi import Path as FPath
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
@@ -42,7 +45,6 @@ from corlinman_server.gateway.routes_admin_b.state import (
     get_admin_state,
     require_admin,
 )
-
 
 # ---------------------------------------------------------------------------
 # Wire models
@@ -107,35 +109,51 @@ class ProviderPatch(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-_KNOWN_KINDS = (
-    "openai",
-    "anthropic",
-    "google",
-    "openai-compatible",
-    "deepseek",
-    "glm",
-    "qwen",
-    "declarative",
-)
+# Legacy aliases accepted on write, but normalized to canonical
+# ``ProviderKind`` ids before persisting/returning.
+_KIND_ALIASES: dict[str, str] = {
+    "openai-compatible": "openai_compatible",
+    "newapi": "openai_compatible",
+}
+
+_CANONICAL_KINDS: frozenset[str] = frozenset(list_supported_kinds())
+
+
+def _normalize_kind(kind: str | None) -> str:
+    """Normalize user-supplied kind ids to canonical ProviderKind values.
+
+    Accepts historical aliases (``openai-compatible`` and ``newapi``) and
+    rewrites them to ``openai_compatible`` so admin CRUD, config-on-disk and
+    read APIs all expose one stable spelling.
+    """
+    raw = (kind or "openai_compatible").strip().lower()
+    normalized = _KIND_ALIASES.get(raw, raw)
+    return normalized.replace("-", "_")
+
+
+def _is_known_kind(kind: str) -> bool:
+    """Return whether ``kind`` is a recognized canonical ProviderKind id."""
+    return kind in _CANONICAL_KINDS
 
 
 def _kind_capabilities(kind: str) -> Capabilities:
-    if kind == "anthropic":
+    if _normalize_kind(kind) == "anthropic":
         return Capabilities(chat=True, embedding=False)
     return Capabilities(chat=True, embedding=True)
 
 
 def _params_schema_for(kind: str) -> dict[str, Any]:
     """Lazy lookup of ``corlinman_providers`` schema. Empty dict on miss."""
+    canonical_kind = _normalize_kind(kind)
     try:
-        from corlinman_providers import specs  # noqa: PLC0415
+        from corlinman_providers import specs
 
         getter = getattr(specs, "params_schema_for", None)
         if getter is not None:
-            schema = getter(kind)
+            schema = getter(canonical_kind)
             if isinstance(schema, dict):
                 return schema
-    except (ImportError, AttributeError, Exception):  # noqa: BLE001
+    except (ImportError, AttributeError, Exception):
         pass
     return {"type": "object", "additionalProperties": True}
 
@@ -150,7 +168,7 @@ def _view_from_entry(name: str, entry: dict[str, Any]) -> ProviderView:
         source, env_name = "value", None
     else:
         source, env_name = "value", None
-    kind = str(entry.get("kind") or "openai-compatible").lower()
+    kind = _normalize_kind(str(entry.get("kind") or "openai_compatible"))
     return ProviderView(
         name=name,
         kind=kind,
@@ -196,11 +214,11 @@ async def _persist(state: AdminState, cfg: dict[str, Any]) -> JSONResponse | Non
         return JSONResponse(status_code=503, content={"error": "config_path_unset"})
     try:
         try:
-            import tomli_w  # noqa: PLC0415
+            import tomli_w
         except ImportError:  # pragma: no cover
-            import toml as tomli_w  # type: ignore  # noqa: PLC0415
+            import toml as tomli_w  # type: ignore
         serialised = tomli_w.dumps(cfg)  # type: ignore[attr-defined]
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return JSONResponse(
             status_code=500,
             content={"error": "serialise_failed", "message": str(exc)},
@@ -231,15 +249,8 @@ async def _persist(state: AdminState, cfg: dict[str, Any]) -> JSONResponse | Non
 # ---------------------------------------------------------------------------
 
 
-# Lazy import to avoid a hard dependency cycle at module load — the
-# providers package is a sibling and may be reshuffled. ImportError
-# bubbles up as a 500 the first time a caller hits the kinds endpoint,
-# which is the desired loud failure for a missing wire-up.
-from corlinman_providers.specs import list_supported_kinds  # noqa: E402
-
-
 # Slug regex pinned by the plan — lowercase ascii + digits, optionally
-# separated by ``-`` or ``_``; 1–32 chars; first char alphanumeric.
+# separated by ``-`` or ``_``; 1-32 chars; first char alphanumeric.
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 
 
@@ -315,7 +326,7 @@ def _custom_view_from_entry(slug: str, entry: dict[str, Any]) -> CustomProviderV
             has_api_key = bool(api_key)
     return CustomProviderView(
         slug=slug,
-        kind=str(entry.get("kind") or "openai_compatible"),
+        kind=_normalize_kind(str(entry.get("kind") or "openai_compatible")),
         base_url=entry.get("base_url"),
         has_api_key=has_api_key,
         params=dict(entry.get("params") or {}),
@@ -330,9 +341,12 @@ _OPENAI_COMPATIBLE_KINDS: frozenset[str] = frozenset(
     {
         "openai",
         "openai_compatible",
-        "openai-compatible",
+        "mistral",
+        "cohere",
+        "together",
         "codex",
         "groq",
+        "replicate",
         "qwen",
         "glm",
         "deepseek",
@@ -414,6 +428,8 @@ _KIND_LABELS: dict[str, tuple[str, str]] = {
 # exposed for tests; production code never invalidates manually.
 _MODELS_CACHE_TTL_SECONDS: float = 30.0
 _MODELS_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_MODELS_RETRYABLE_HTTP_STATUS: frozenset[int] = frozenset({408, 425, 429, 500, 502, 503, 504})
+_MODELS_MAX_RETRIES: int = 2
 
 
 def _clear_models_cache() -> None:
@@ -434,6 +450,60 @@ def _redact(message: str, *secrets: str | None) -> str:
     return out
 
 
+def _http_status_from_error(error: str) -> int | None:
+    """Extract ``HTTP <status>`` from helper error text."""
+    match = re.match(r"^HTTP\s+(\d{3})$", error.strip())
+    if match is None:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def _is_retryable_models_error(error: str) -> bool:
+    """Whether an upstream models-list error should be retried."""
+    status = _http_status_from_error(error)
+    if status is not None:
+        return status in _MODELS_RETRYABLE_HTTP_STATUS
+    lowered = error.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "timeout",
+            "timed out",
+            "temporary",
+            "temporarily",
+            "connect",
+            "connection",
+            "network",
+            "dns",
+            "name or service not known",
+            "remote protocol error",
+            "connection reset",
+        )
+    )
+
+
+async def _query_provider_models_with_retry(name: str, cfg: dict[str, Any]) -> dict[str, Any]:
+    """Probe models with bounded retries for transient upstream failures."""
+    last_result: dict[str, Any] = {"ok": False, "models": [], "latency_ms": 0, "error": "unknown"}
+    for attempt in range(_MODELS_MAX_RETRIES + 1):
+        result = await _query_provider_models(name, cfg)
+        if result.get("ok"):
+            return result
+        last_result = result
+        if attempt >= _MODELS_MAX_RETRIES:
+            break
+        error = str(result.get("error") or "")
+        if not _is_retryable_models_error(error):
+            break
+        # Tiny linear backoff; keeps the endpoint responsive but smooths
+        # over short-lived upstream/network jitter.
+        await asyncio.sleep(0.15 * (attempt + 1))
+    return last_result
+
+
 def _zero_cost_probe_kind(kind: str) -> str:
     """Categorise ``kind`` by zero-cost probe strategy.
 
@@ -448,7 +518,7 @@ def _zero_cost_probe_kind(kind: str) -> str:
     k = kind.lower().replace("-", "_")
     if k == "mock":
         return "mock"
-    if k in _OPENAI_COMPATIBLE_KINDS or k.replace("_", "-") in _OPENAI_COMPATIBLE_KINDS:
+    if k in _OPENAI_COMPATIBLE_KINDS:
         return "openai_models"
     if k in _HARDCODED_MODELS:
         return "hardcoded"
@@ -501,12 +571,12 @@ async def _query_provider_models(
     if is_codex:
         # Read token from ~/.codex/auth.json
         try:
-            from corlinman_providers._codex_oauth import (  # noqa: PLC0415
+            from corlinman_providers._codex_oauth import (
                 load_codex_credential,
             )
 
             cred = load_codex_credential()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return {"ok": False, "models": [], "latency_ms": 0, "error": str(exc)}
         if cred is None:
             return {
@@ -519,7 +589,7 @@ async def _query_provider_models(
         base_url = "https://api.openai.com"
     else:
         entry_dict = dict(entry) if isinstance(entry, dict) else {}
-        kind = str(entry_dict.get("kind") or "openai_compatible").lower().replace("-", "_")
+        kind = _normalize_kind(str(entry_dict.get("kind") or "openai_compatible"))
         if kind not in _OPENAI_COMPATIBLE_KINDS:
             return {
                 "ok": False,
@@ -571,7 +641,7 @@ async def _query_provider_models(
             "latency_ms": latency_ms,
             "error": None,
         }
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         latency_ms = int((_time.monotonic() - t0) * 1000)
         return {"ok": False, "models": [], "latency_ms": latency_ms, "error": str(exc)}
 
@@ -598,7 +668,7 @@ def router() -> APIRouter:
             KindDescriptor(
                 kind=k, params_schema=_params_schema_for(k), capabilities=_kind_capabilities(k)
             )
-            for k in _KNOWN_KINDS
+            for k in list_supported_kinds()
         ]
         return ListOut(providers=providers, kinds=kinds)
 
@@ -606,14 +676,15 @@ def router() -> APIRouter:
     async def upsert_provider(body: ProviderUpsert):
         if not body.name:
             return _bad("invalid_name", "provider name must be non-empty")
-        if body.kind not in _KNOWN_KINDS:
+        normalized_kind = _normalize_kind(body.kind)
+        if not _is_known_kind(normalized_kind):
             return _bad("invalid_kind", f"unknown provider kind: {body.kind}")
         state = get_admin_state()
         async with state.admin_write_lock:
             cfg = dict(config_snapshot())
             providers = dict(cfg.get("providers") or {})
             existing = dict(providers.get(body.name) or {})
-            existing["kind"] = body.kind
+            existing["kind"] = normalized_kind
             if body.enabled is not None:
                 existing["enabled"] = body.enabled
             elif "enabled" not in existing:
@@ -647,9 +718,10 @@ def router() -> APIRouter:
                 )
             entry = dict(existing)
             if body.kind is not None:
-                if body.kind not in _KNOWN_KINDS:
+                normalized_kind = _normalize_kind(body.kind)
+                if not _is_known_kind(normalized_kind):
                     return _bad("invalid_kind", f"unknown provider kind: {body.kind}")
-                entry["kind"] = body.kind
+                entry["kind"] = normalized_kind
             if body.enabled is not None:
                 entry["enabled"] = body.enabled
             if body.base_url is not None:
@@ -761,7 +833,8 @@ def router() -> APIRouter:
                     "slug": body.slug,
                 },
             )
-        if body.kind not in list_supported_kinds():
+        normalized_kind = _normalize_kind(body.kind)
+        if not _is_known_kind(normalized_kind):
             return _bad("invalid_kind", f"unknown provider kind: {body.kind}")
 
         state = get_admin_state()
@@ -781,7 +854,7 @@ def router() -> APIRouter:
                     },
                 )
             entry: dict[str, Any] = {
-                "kind": body.kind,
+                "kind": normalized_kind,
                 "enabled": True,
             }
             if body.base_url is not None:
@@ -832,9 +905,10 @@ def router() -> APIRouter:
 
             entry = dict(existing)
             if body.kind is not None:
-                if body.kind not in list_supported_kinds():
+                normalized_kind = _normalize_kind(body.kind)
+                if not _is_known_kind(normalized_kind):
                     return _bad("invalid_kind", f"unknown provider kind: {body.kind}")
-                entry["kind"] = body.kind
+                entry["kind"] = normalized_kind
             if body.base_url is not None:
                 entry["base_url"] = body.base_url
             if body.api_key is not None:
@@ -930,9 +1004,7 @@ def router() -> APIRouter:
         if name == "codex":
             kind = "codex"
         else:
-            kind = str(
-                (entry or {}).get("kind") or "openai_compatible"
-            ).lower().replace("-", "_")
+            kind = _normalize_kind(str((entry or {}).get("kind") or "openai_compatible"))
 
         probe_strategy = _zero_cost_probe_kind(kind)
         api_key = _resolve_api_key(entry or {})
@@ -949,7 +1021,7 @@ def router() -> APIRouter:
                 result = await _asyncio.wait_for(
                     _query_provider_models(name, cfg), timeout=5.0
                 )
-            except _asyncio.TimeoutError:
+            except TimeoutError:
                 latency_ms = int((time.monotonic() - t0) * 1000)
                 return {"ok": False, "latency_ms": latency_ms, "error": "timeout"}
             latency_ms = int(result.get("latency_ms") or 0)
@@ -987,9 +1059,9 @@ def router() -> APIRouter:
         openai-shape providers we proxy ``GET <base>/v1/models`` with a
         30s in-memory cache. For providers with a known fixed catalog
         (anthropic, google, mock) we serve the canned list from
-        :data:`_HARDCODED_MODELS`. ``error`` is set on the response when
-        a live upstream probe failed; cached / hardcoded paths never
-        populate it.
+        :data:`_HARDCODED_MODELS`. On transient upstream failures we
+        retry and then fall back to the most recent cached success for
+        that provider (if any), marked with ``stale=true``.
         """
         cfg = dict(config_snapshot())
         providers_cfg = cfg.get("providers") or {}
@@ -1001,9 +1073,7 @@ def router() -> APIRouter:
         if name == "codex":
             kind = "codex"
         else:
-            kind = str(
-                (entry or {}).get("kind") or "openai_compatible"
-            ).lower().replace("-", "_")
+            kind = _normalize_kind(str((entry or {}).get("kind") or "openai_compatible"))
 
         probe_strategy = _zero_cost_probe_kind(kind)
 
@@ -1022,10 +1092,15 @@ def router() -> APIRouter:
         if cached is not None and cached[0] > now:
             return dict(cached[1])
 
-        result = await _query_provider_models(name, cfg)
+        result = await _query_provider_models_with_retry(name, cfg)
         api_key = _resolve_api_key(entry or {})
         if not result.get("ok"):
             err = _redact(str(result.get("error") or "upstream_error"), api_key)
+            if cached is not None:
+                stale_payload = dict(cached[1])
+                stale_payload["stale"] = True
+                stale_payload["warning"] = err
+                return stale_payload
             # Don't cache failures — operator likely just fixed the key.
             return {"models": [], "error": err}
 

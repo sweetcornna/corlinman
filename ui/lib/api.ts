@@ -2115,9 +2115,11 @@ export interface ProviderModel {
 /** GET /admin/providers/{name}/models — proxy/canned model catalog. */
 export async function getProviderModels(
   name: string,
-): Promise<{ models: ProviderModel[] }> {
-  return apiFetch<{ models: ProviderModel[] }>(
+  opts: { signal?: AbortSignal } = {},
+): Promise<{ models: ProviderModel[]; error?: string }> {
+  return apiFetch<{ models: ProviderModel[]; error?: string }>(
     `/admin/providers/${encodeURIComponent(name)}/models`,
+    { signal: opts.signal },
   );
 }
 

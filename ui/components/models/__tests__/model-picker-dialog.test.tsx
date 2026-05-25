@@ -37,6 +37,16 @@ const PROVIDERS = [
   { name: "openai", kind: "openai", enabled: true },
 ];
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("<ModelPickerDialog>", () => {
   beforeEach(() => {
     // `apiFetch` reads `res.headers.get("x-request-id")` + `res.status`
@@ -139,6 +149,98 @@ describe("<ModelPickerDialog>", () => {
         screen.getByTestId("model-picker-model-claude-opus-4-7"),
       ).toBeInTheDocument();
     });
+
+    fireEvent.click(screen.getByTestId("model-picker-provider-openai"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("model-picker-model-gpt-5")).toBeInTheDocument();
+    });
+  });
+
+  it("shows backend error when models endpoint returns {error}", async () => {
+    vi.unstubAllGlobals();
+    const respond = (body: unknown) =>
+      ({
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        json: async () => body,
+        text: async () => JSON.stringify(body),
+      }) as unknown as Response;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url.includes("/admin/providers/anthropic/models")) {
+          return respond({ models: [], error: "provider_not_found" });
+        }
+        return respond({ models: [] });
+      }),
+    );
+
+    render(
+      wrap(
+        <ModelPickerDialog
+          open
+          providers={PROVIDERS}
+          onConfirm={() => {}}
+          onClose={() => {}}
+        />,
+      ),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/provider_not_found/i)).toBeInTheDocument();
+    });
+  });
+
+  it("does not get stuck on loading after provider switch race", async () => {
+    vi.unstubAllGlobals();
+    const respond = (body: unknown) =>
+      ({
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        json: async () => body,
+        text: async () => JSON.stringify(body),
+      }) as unknown as Response;
+
+    const openaiFirst = deferred<Response>();
+    let openaiCalls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url.includes("/admin/providers/anthropic/models")) {
+          return respond({ models: [{ id: "claude-opus-4-7" }] });
+        }
+        if (url.includes("/admin/providers/openai/models")) {
+          openaiCalls += 1;
+          if (openaiCalls === 1) return openaiFirst.promise;
+          return respond({ models: [{ id: "gpt-5" }] });
+        }
+        return respond({ models: [] });
+      }),
+    );
+
+    render(
+      wrap(
+        <ModelPickerDialog
+          open
+          providers={PROVIDERS}
+          onConfirm={() => {}}
+          onClose={() => {}}
+        />,
+      ),
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("model-picker-model-claude-opus-4-7"),
+      ).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId("model-picker-provider-openai"));
+    fireEvent.click(screen.getByTestId("model-picker-provider-anthropic"));
+    openaiFirst.resolve(respond({ models: [{ id: "gpt-5" }] }));
 
     fireEvent.click(screen.getByTestId("model-picker-provider-openai"));
 
