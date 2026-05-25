@@ -360,6 +360,86 @@ class TestModelsEndpoint:
         # And the TTL constant matches the documented 30s window.
         assert _MODELS_CACHE_TTL_SECONDS == 30.0
 
+    def test_models_endpoint_retries_transient_upstream_failures(
+        self,
+        client: TestClient,
+        state_and_snapshot: tuple[AdminState, dict[str, Any]],
+    ) -> None:
+        """Transient 5xx should be retried and succeed without surfacing error."""
+        _, snapshot = state_and_snapshot
+        snapshot.clear()
+        snapshot.update({
+            "providers": {
+                "retryme": {
+                    "kind": "openai_compatible",
+                    "api_key": "sk-test",
+                    "base_url": "https://unstable.example",
+                    "enabled": True,
+                }
+            }
+        })
+
+        resp_503 = _mock_httpx_response(status_code=503, json_body={"error": "busy"})
+        resp_200 = _mock_httpx_response(
+            status_code=200,
+            json_body={"data": [{"id": "gpt-5"}]},
+        )
+        async_client = _mock_async_client(resp_200)
+        async_client.get = AsyncMock(side_effect=[resp_503, resp_200])
+        with patch("httpx.AsyncClient", return_value=async_client):
+            resp = client.get("/admin/providers/retryme/models")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["models"][0]["id"] == "gpt-5"
+        assert "error" not in body
+        assert async_client.get.await_count == 2
+
+    def test_models_endpoint_falls_back_to_stale_cache_when_upstream_fails(
+        self,
+        client: TestClient,
+        state_and_snapshot: tuple[AdminState, dict[str, Any]],
+    ) -> None:
+        """Expired cache is used as stale fallback when live probe keeps failing."""
+        _, snapshot = state_and_snapshot
+        snapshot.clear()
+        snapshot.update({
+            "providers": {
+                "cached": {
+                    "kind": "openai_compatible",
+                    "api_key": "sk-test",
+                    "base_url": "https://unstable.example",
+                    "enabled": True,
+                }
+            }
+        })
+
+        first_resp = _mock_httpx_response(
+            status_code=200,
+            json_body={"data": [{"id": "gpt-5"}]},
+        )
+        with patch("httpx.AsyncClient", return_value=_mock_async_client(first_resp)):
+            first = client.get("/admin/providers/cached/models")
+        assert first.status_code == 200
+        assert first.json()["models"][0]["id"] == "gpt-5"
+
+        # Force cache expiry while keeping cached payload for stale fallback.
+        expiry, payload = providers._MODELS_CACHE["cached"]  # type: ignore[attr-defined]
+        providers._MODELS_CACHE["cached"] = (-1.0, payload)  # type: ignore[attr-defined]
+        assert expiry > 0
+
+        timeout_exc = httpx.TimeoutException("connect timed out")
+        async_client = _mock_async_client(timeout_exc)
+        with patch("httpx.AsyncClient", return_value=async_client):
+            second = client.get("/admin/providers/cached/models")
+
+        assert second.status_code == 200
+        body = second.json()
+        assert body["models"][0]["id"] == "gpt-5"
+        assert body.get("stale") is True
+        assert isinstance(body.get("warning"), str) and body["warning"]
+        assert async_client.get.await_count == 3
+
     def test_models_endpoint_hardcoded_anthropic(
         self,
         client: TestClient,
@@ -402,6 +482,43 @@ class TestModelsEndpoint:
         assert resp.status_code == 200
         body = resp.json()
         assert body["models"][0]["id"] == "mock"
+
+    @pytest.mark.parametrize(
+        "kind",
+        ["mistral", "cohere", "together", "replicate"],
+    )
+    def test_models_endpoint_market_openai_shape_kinds_proxy_v1_models(
+        self,
+        kind: str,
+        client: TestClient,
+        state_and_snapshot: tuple[AdminState, dict[str, Any]],
+    ) -> None:
+        """Market OpenAI-shape kinds should use the /v1/models probe path."""
+        _, snapshot = state_and_snapshot
+        snapshot.clear()
+        snapshot.update({
+            "providers": {
+                "market": {
+                    "kind": kind,
+                    "api_key": "sk-test",
+                    "base_url": "https://market.example",
+                    "enabled": True,
+                }
+            }
+        })
+
+        mock_resp = _mock_httpx_response(
+            status_code=200,
+            json_body={"data": [{"id": "model-1"}]},
+        )
+        async_client = _mock_async_client(mock_resp)
+        with patch("httpx.AsyncClient", return_value=async_client):
+            resp = client.get("/admin/providers/market/models")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["models"][0]["id"] == "model-1"
+        assert async_client.get.await_count == 1
 
 
 # ---------------------------------------------------------------------------

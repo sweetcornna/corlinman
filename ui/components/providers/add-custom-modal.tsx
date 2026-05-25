@@ -16,9 +16,9 @@
  *     never hard-code the list — whatever the server enumerates is what
  *     the user can pick from. While the kinds query is loading, the
  *     dropdown is disabled and shows a placeholder.
- *   - base_url: required when the kind is `openai_compatible` or `newapi`
- *     (these two cannot resolve a default endpoint and would otherwise
- *     fail at first call). Optional for everything else.
+ *   - base_url: required when the kind is `openai_compatible`
+ *     (cannot resolve a default endpoint and would otherwise fail at
+ *     first call). Optional for everything else.
  *   - api_key: free-form text with an eye-toggle reveal borrowed from the
  *     credentials EnvVarRow pattern.
  *   - params: ad-hoc key/value list — adds the row to the POST body as a
@@ -70,7 +70,7 @@ interface ParamRow {
 /** Kinds whose backend providers don't ship a default endpoint and so
  * require a `base_url`. Mirrors the same rule from the existing built-in
  * provider editor for `openai_compatible`. */
-const KINDS_REQUIRING_BASE_URL = new Set(["openai_compatible", "newapi"]);
+const KINDS_REQUIRING_BASE_URL = new Set(["openai_compatible"]);
 
 function freshParamRow(): ParamRow {
   return {

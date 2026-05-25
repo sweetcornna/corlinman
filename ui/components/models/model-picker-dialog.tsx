@@ -117,6 +117,8 @@ export function ModelPickerDialog({
   const [modelsError, setModelsError] = React.useState<
     Record<string, string | null>
   >({});
+  const modelsRequestSeqRef = React.useRef(0);
+  const latestModelsRequestRef = React.useRef<Record<string, number>>({});
 
   // Seed selection from initial* on open.
   React.useEffect(() => {
@@ -146,31 +148,41 @@ export function ModelPickerDialog({
   React.useEffect(() => {
     if (!open || !selectedProvider) return;
     if (modelsCache[selectedProvider]) return;
-    if (modelsLoading[selectedProvider]) return;
 
-    let cancelled = false;
-    setModelsLoading((s) => ({ ...s, [selectedProvider]: true }));
-    setModelsError((s) => ({ ...s, [selectedProvider]: null }));
-    getProviderModels(selectedProvider)
+    const providerName = selectedProvider;
+    const requestId = modelsRequestSeqRef.current + 1;
+    modelsRequestSeqRef.current = requestId;
+    latestModelsRequestRef.current[providerName] = requestId;
+    const controller = new AbortController();
+
+    setModelsLoading((s) => ({ ...s, [providerName]: true }));
+    setModelsError((s) => ({ ...s, [providerName]: null }));
+    getProviderModels(providerName, { signal: controller.signal })
       .then((res) => {
-        if (cancelled) return;
-        setModelsCache((s) => ({ ...s, [selectedProvider]: res.models ?? [] }));
+        if (latestModelsRequestRef.current[providerName] !== requestId) return;
+        if (res.error) {
+          setModelsError((s) => ({ ...s, [providerName]: res.error ?? null }));
+          setModelsCache((s) => ({ ...s, [providerName]: [] }));
+          return;
+        }
+        setModelsCache((s) => ({ ...s, [providerName]: res.models ?? [] }));
       })
       .catch((err: unknown) => {
-        if (cancelled) return;
+        if (latestModelsRequestRef.current[providerName] !== requestId) return;
+        if (err instanceof DOMException && err.name === "AbortError") return;
         setModelsError((s) => ({
           ...s,
-          [selectedProvider]: err instanceof Error ? err.message : String(err),
+          [providerName]: err instanceof Error ? err.message : String(err),
         }));
       })
       .finally(() => {
-        if (cancelled) return;
-        setModelsLoading((s) => ({ ...s, [selectedProvider]: false }));
+        if (latestModelsRequestRef.current[providerName] !== requestId) return;
+        setModelsLoading((s) => ({ ...s, [providerName]: false }));
       });
     return () => {
-      cancelled = true;
+      controller.abort();
     };
-  }, [open, selectedProvider, modelsCache, modelsLoading]);
+  }, [open, selectedProvider, modelsCache]);
 
   const needle = query.trim().toLowerCase();
 
