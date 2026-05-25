@@ -137,6 +137,18 @@ class AdminState:
     journal: Any | None = None
     event_emitter: Any | None = None
 
+    # -- W1.1: GitHub-releases update checker ----------------------------
+    #
+    # ``update_checker`` is the
+    # :class:`~corlinman_server.system.UpdateChecker` the gateway
+    # lifecycle constructs once and shares with every admin route in
+    # this bundle. The ``/admin/system/*`` routes read it through
+    # :func:`get_admin_state` and degrade with a typed 503
+    # (``update_checker_disabled``) when it is absent — which keeps the
+    # gateway booting cleanly even when the system module is excluded
+    # from the build or the data dir is unwritable.
+    update_checker: Any | None = None
+
 
 _state: AdminState | None = None
 
