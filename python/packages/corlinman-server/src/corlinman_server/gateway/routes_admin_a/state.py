@@ -147,6 +147,21 @@ class AdminState:
     # hasn't landed yet.
     profile_store: Any | None = None
 
+    # -- /admin/agents (W1.2) ---------------------------------------
+    #
+    # ``corlinman_agent.agents.AgentCardRegistry`` instance the gateway
+    # built at boot via :meth:`load_from_dir_stack`. The Monaco editor's
+    # list endpoint reads ``source`` off these cards to flag built-ins
+    # (which it must not allow deleting). ``None`` keeps the
+    # pre-W1.2 routes working (they fall back to a raw filesystem scan).
+    agent_registry: Any | None = None
+    # Async callable: ``() -> AgentCardRegistry``. Invoked by the
+    # /admin/agents POST/DELETE/reload handlers so writes propagate to
+    # the in-memory registry without a restart. ``None`` keeps the
+    # write paths working with stale-registry semantics — operators
+    # would have to bounce the gateway to pick up a new card.
+    agent_registry_reload: Any | None = None
+
 
 # ---------------------------------------------------------------------------
 # Singleton plumbing — FastAPI dependency-override surface.
