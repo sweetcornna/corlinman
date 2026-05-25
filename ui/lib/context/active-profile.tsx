@@ -49,7 +49,13 @@ interface ActiveProfileContextValue {
   loading: boolean;
 }
 
-const ActiveProfileContext =
+/**
+ * Raw context handle. Exported so callers that want to render gracefully
+ * when no provider wraps them (e.g. the playground low-skill hint in
+ * standalone tests) can `useContext` directly and bail on ``null`` instead
+ * of throwing the way :func:`useActiveProfile` does.
+ */
+export const ActiveProfileContext =
   React.createContext<ActiveProfileContextValue | null>(null);
 
 function readStoredSlug(): string {

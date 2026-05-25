@@ -2236,6 +2236,79 @@ export function fetchUpgradeCommands(): Promise<UpgradeCommands> {
 }
 // === end W1.2 ===
 
+// === W2.1 — skill hub installed surface (do not edit other blocks) ===
+//
+// Mirrors `gateway/routes_admin_b/skills.py`. Three endpoints behind
+// `/admin/skills` drive the Installed tab on `/admin/skills`:
+//
+//   * GET    /admin/skills?profile=default       → InstalledSkillsResponse
+//   * POST   /admin/skills/{name}/pin            → InstalledSkillRow
+//   * DELETE /admin/skills/{name}?profile=…      → 204
+//
+// The names below are deliberately distinct from the older curator
+// surface (`listProfileSkills`, `pinSkill`, `SkillSummary`,
+// `SkillsListResponse`) so both clients keep type-checking while the
+// curator endpoints linger. The wire shape is the gateway's
+// `InstalledSkillOut` 1:1.
+//
+// `origin` is a free-form string: `"bundled" | "user" | "hub:<slug>@<ver>"`.
+// A 409 `bundled_protected` from DELETE means the row ships in-wheel and
+// is intentionally read-only.
+
+export interface InstalledSkillRow {
+  name: string;
+  description: string;
+  version: string;
+  /** Curator state — "active" | "stale" | "archived" today. */
+  state: string;
+  /** Free-form origin tag: `"bundled" | "user" | "hub:<slug>@<ver>"`. */
+  origin: string;
+  pinned: boolean;
+  use_count: number;
+  last_used_at: string | null;
+  created_at: string | null;
+}
+
+export interface InstalledSkillsResponse {
+  profile: string;
+  rows: InstalledSkillRow[];
+}
+
+/** GET /admin/skills?profile=… — full row list for one profile. */
+export function listInstalledSkills(
+  profile: string = "default",
+): Promise<InstalledSkillsResponse> {
+  const qs = new URLSearchParams({ profile }).toString();
+  return apiFetch<InstalledSkillsResponse>(`/admin/skills?${qs}`);
+}
+
+/** POST /admin/skills/{name}/pin — toggle the pinned flag. */
+export function pinInstalledSkill(
+  name: string,
+  pinned: boolean,
+  profile: string = "default",
+): Promise<InstalledSkillRow> {
+  const qs = new URLSearchParams({ profile }).toString();
+  return apiFetch<InstalledSkillRow>(
+    `/admin/skills/${encodeURIComponent(name)}/pin?${qs}`,
+    { method: "POST", body: { pinned } },
+  );
+}
+
+/** DELETE /admin/skills/{name}?profile=… — uninstall. 409
+ * `bundled_protected` when the row ships with corlinman. */
+export function deleteInstalledSkill(
+  name: string,
+  profile: string = "default",
+): Promise<void> {
+  const qs = new URLSearchParams({ profile }).toString();
+  return apiFetch<void>(
+    `/admin/skills/${encodeURIComponent(name)}?${qs}`,
+    { method: "DELETE" },
+  );
+}
+// === end W2.1 — skill hub installed surface ===
+
 // === One-click upgrade (Wave 2 of PLAN_ONE_CLICK_UPGRADE) ===
 
 export interface UpgradeStartResponse {
@@ -2325,4 +2398,152 @@ export function listSystemAudit(opts?: {
   if (opts?.before_ts) qs.set("before_ts", opts.before_ts);
   const suffix = qs.toString() ? `?${qs}` : "";
   return apiFetch<AuditTailResponse>(`/admin/system/audit${suffix}`);
+}
+
+// ---------------------------------------------------------------------------
+// W2.2 — Skill hub (ClawHub browse + install)
+//
+// Wire shapes mirror `gateway/routes_admin_b/skill_hub.py` (W1.3-frozen
+// contract). Endpoints under `/admin/skills/hub/*` proxy ClawHub's anonymous
+// read API + drive an async install pipeline with SSE progress.
+//
+// `{offline: true, rows: []}` indicates ClawHub is unreachable — UI surfaces
+// a banner + retry rather than throwing.
+// ---------------------------------------------------------------------------
+
+export interface HubSkillSummary {
+  slug: string;
+  name: string;
+  description: string;
+  emoji?: string;
+  stars: number;
+  downloads: number;
+  latest_version: string;
+  /** ISO-8601 UTC. */
+  updated_at: string;
+}
+
+export interface HubSearchResponse {
+  rows: HubSkillSummary[];
+  offline: boolean;
+}
+
+export interface HubListResponse extends HubSearchResponse {
+  next_cursor: string | null;
+}
+
+export interface HubSkillDetail extends HubSkillSummary {
+  homepage?: string;
+  versions: string[];
+  scan_summary?: "pass" | "warn" | "fail";
+  readme_excerpt: string;
+}
+
+export type HubSortKey = "trending" | "downloads" | "stars" | "updated";
+
+export interface HubInstallStatusOut {
+  request_id: string;
+  slug: string;
+  version: string;
+  profile: string;
+  state: "queued" | "running" | "installed" | "failed";
+  phase: string;
+  /** epoch-ms */
+  started_at?: number;
+  /** epoch-ms */
+  finished_at?: number;
+  name?: string;
+  error?: string;
+  message?: string;
+}
+
+/** GET /admin/skills/hub/search?q=&limit= */
+export function searchHubSkills(
+  q: string,
+  limit?: number,
+): Promise<HubSearchResponse> {
+  const params = new URLSearchParams();
+  params.set("q", q);
+  if (limit !== undefined) params.set("limit", String(limit));
+  return apiFetch<HubSearchResponse>(
+    `/admin/skills/hub/search?${params.toString()}`,
+  );
+}
+
+/** GET /admin/skills/hub/featured?sort=&cursor=&limit= */
+export function listHubFeatured(
+  sort: HubSortKey,
+  cursor?: string | null,
+  limit?: number,
+): Promise<HubListResponse> {
+  const params = new URLSearchParams();
+  params.set("sort", sort);
+  if (cursor) params.set("cursor", cursor);
+  if (limit !== undefined) params.set("limit", String(limit));
+  return apiFetch<HubListResponse>(
+    `/admin/skills/hub/featured?${params.toString()}`,
+  );
+}
+
+/** GET /admin/skills/hub/skills/{slug} */
+export function getHubSkill(slug: string): Promise<HubSkillDetail> {
+  return apiFetch<HubSkillDetail>(
+    `/admin/skills/hub/skills/${encodeURIComponent(slug)}`,
+  );
+}
+
+/** GET /admin/skills/hub/skills/{slug}/file?path=SKILL.md → raw file body. */
+export function getHubSkillFile(
+  slug: string,
+  path: string,
+): Promise<{ content: string }> {
+  const params = new URLSearchParams({ path });
+  return apiFetch<{ content: string }>(
+    `/admin/skills/hub/skills/${encodeURIComponent(slug)}/file?${params.toString()}`,
+  );
+}
+
+/** POST /admin/skills/hub/install → 202 + request_id. */
+export function postHubInstall(body: {
+  slug: string;
+  version?: string;
+  profile?: string;
+  force?: boolean;
+}): Promise<{ request_id: string }> {
+  return apiFetch<{ request_id: string }>("/admin/skills/hub/install", {
+    method: "POST",
+    body,
+  });
+}
+
+/** GET /admin/skills/hub/install/{request_id} → read-once snapshot. */
+export function getHubInstallStatus(
+  request_id: string,
+): Promise<HubInstallStatusOut> {
+  return apiFetch<HubInstallStatusOut>(
+    `/admin/skills/hub/install/${encodeURIComponent(request_id)}`,
+  );
+}
+
+/** GET /admin/skills/hub/install/{request_id}/events/live → SSE.
+ * Frames: `event: phase\ndata: <HubInstallStatusOut JSON>\n\n`.
+ * Stream closes when state ∈ {"installed", "failed"}. Callers attach
+ * `addEventListener("phase", …)` and own cleanup via `.close()`. */
+export function streamHubInstallEvents(
+  request_id: string,
+  onMessage: (frame: HubInstallStatusOut) => void,
+): EventSource {
+  const url = `${GATEWAY_BASE_URL}/admin/skills/hub/install/${encodeURIComponent(
+    request_id,
+  )}/events/live`;
+  const es = new EventSource(url, { withCredentials: true });
+  es.addEventListener("phase", (ev) => {
+    try {
+      const data = JSON.parse((ev as MessageEvent).data);
+      onMessage(data as HubInstallStatusOut);
+    } catch {
+      /* malformed frame — ignore; stream will recover or close on terminal */
+    }
+  });
+  return es;
 }
