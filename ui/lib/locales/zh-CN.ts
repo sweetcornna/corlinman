@@ -209,6 +209,20 @@ export const zhCN = {
     loadFailed: "加载凭证失败",
     saveFailed: "保存失败：{{msg}}",
     deleteFailed: "删除失败：{{msg}}",
+    envRow: {
+      set: "设置",
+      replace: "替换",
+      clear: "清除",
+      reveal: "显示",
+      hide: "隐藏",
+      confirmClear: "确认清除？此操作不可恢复",
+      placeholder: "粘贴你的密钥",
+      revealFailed: "显示失败",
+    },
+    group: {
+      allUnset: "全部未配置",
+      configured: "已配置 {{count}}",
+    },
   },
 
   oauth: {
@@ -959,6 +973,19 @@ export const zhCN = {
     paramsSaveFailed: "保存参数失败: {{msg}}",
     paramsBackendPending: "后端功能未就绪。请将网关升级到 0.2.x。",
     backendPending: "后端功能未就绪。请将网关升级到 0.2.x。",
+    picker: {
+      title: "选择模型",
+      searchPlaceholder: "搜索 provider 或模型…",
+      providers: "Provider",
+      models: "Model",
+      confirm: "确认",
+      cancel: "取消",
+      empty: "无 provider 配置",
+      modelsFetchError: "加载失败",
+      loading: "加载中…",
+      loadFailed: "加载失败",
+      changeButton: "更改模型…",
+    },
   },
 
   providers: {
@@ -1018,6 +1045,13 @@ export const zhCN = {
     kindQwen: "qwen",
     kindGlm: "glm",
     kindOpenaiCompatible: "openai_compatible",
+    // W2.3 — 测试连接按钮
+    test: {
+      button: "测试",
+      success: "连接正常",
+      fail: "连接失败",
+      testing: "测试中…",
+    },
   },
 
   tenants: {
@@ -1902,6 +1936,13 @@ export const zhCN = {
     },
     list: {
       lastTool: "最近工具",
+    },
+
+    // W2.3 — 历史回合导航条
+    pastTurns: {
+      label: "历史回合",
+      empty: "无历史回合",
+      loadMore: "加载更多",
     },
 
     // W2.1 — 实时时间线

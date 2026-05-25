@@ -45,8 +45,9 @@ import {
   CorlinmanApiError,
   CUSTOM_PROVIDER_SLUG_RE,
   createCustomProvider,
-  listProviderKinds,
+  listProviderKindDescriptors,
   type CustomProviderCreateBody,
+  type ProviderKindDescriptor,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -93,9 +94,9 @@ export function AddCustomProviderModal({
   const [params, setParams] = React.useState<ParamRow[]>([freshParamRow()]);
   const [submitError, setSubmitError] = React.useState<string | null>(null);
 
-  const kindsQuery = useQuery({
+  const kindsQuery = useQuery<ProviderKindDescriptor[]>({
     queryKey: ["admin", "providers", "kinds"],
-    queryFn: listProviderKinds,
+    queryFn: listProviderKindDescriptors,
     enabled: open,
     staleTime: 5 * 60_000,
   });
@@ -119,8 +120,17 @@ export function AddCustomProviderModal({
   // doesn't have to manually pick before the form is submittable.
   React.useEffect(() => {
     if (kind || !kindsQuery.data || kindsQuery.data.length === 0) return;
-    setKind(kindsQuery.data[0]!);
+    setKind(kindsQuery.data[0]!.kind);
   }, [kind, kindsQuery.data]);
+
+  // Look up the descriptor for the currently-picked kind so we can render
+  // its description as helper text under the dropdown.
+  const selectedKindDescriptor = React.useMemo<
+    ProviderKindDescriptor | undefined
+  >(
+    () => (kindsQuery.data ?? []).find((k) => k.kind === kind),
+    [kind, kindsQuery.data],
+  );
 
   const slugValid = CUSTOM_PROVIDER_SLUG_RE.test(slug);
   const baseUrlRequired = KINDS_REQUIRING_BASE_URL.has(kind);
@@ -248,8 +258,8 @@ export function AddCustomProviderModal({
                   <option value="">(no kinds advertised)</option>
                 ) : (
                   (kindsQuery.data ?? []).map((k) => (
-                    <option key={k} value={k}>
-                      {k}
+                    <option key={k.kind} value={k.kind}>
+                      {k.label ?? k.kind}
                     </option>
                   ))
                 )}
@@ -257,6 +267,10 @@ export function AddCustomProviderModal({
               {kindsQuery.isError ? (
                 <p className="text-[11px] text-destructive">
                   Could not fetch /admin/providers/kinds.
+                </p>
+              ) : selectedKindDescriptor?.description ? (
+                <p className="text-[11px] text-tp-ink-3">
+                  {selectedKindDescriptor.description}
                 </p>
               ) : null}
             </div>

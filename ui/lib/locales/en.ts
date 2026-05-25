@@ -219,6 +219,20 @@ export const en = {
     loadFailed: "Failed to load credentials",
     saveFailed: "Save failed: {{msg}}",
     deleteFailed: "Delete failed: {{msg}}",
+    envRow: {
+      set: "Set",
+      replace: "Replace",
+      clear: "Clear",
+      reveal: "Show",
+      hide: "Hide",
+      confirmClear: "Confirm clear? This cannot be undone.",
+      placeholder: "Paste your key",
+      revealFailed: "Failed to reveal",
+    },
+    group: {
+      allUnset: "all unset",
+      configured: "{{count}} configured",
+    },
   },
 
   oauth: {
@@ -982,6 +996,19 @@ export const en = {
     paramsBackendPending:
       "Backend feature pending. Upgrade the gateway to 0.2.x.",
     backendPending: "Backend feature pending. Upgrade the gateway to 0.2.x.",
+    picker: {
+      title: "Pick a model",
+      searchPlaceholder: "Search providers or models…",
+      providers: "Provider",
+      models: "Model",
+      confirm: "Confirm",
+      cancel: "Cancel",
+      empty: "No providers configured.",
+      modelsFetchError: "Failed to load models",
+      loading: "Loading…",
+      loadFailed: "Load failed",
+      changeButton: "Change model…",
+    },
   },
 
   providers: {
@@ -1044,6 +1071,13 @@ export const en = {
     kindQwen: "qwen",
     kindGlm: "glm",
     kindOpenaiCompatible: "openai_compatible",
+    // W2.3 — test connection button
+    test: {
+      button: "Test",
+      success: "Connected",
+      fail: "Failed",
+      testing: "Testing…",
+    },
   },
 
   tenants: {
@@ -1947,6 +1981,13 @@ export const en = {
     },
     list: {
       lastTool: "Last tool",
+    },
+
+    // W2.3 — past-turns navigator (pill row above the live timeline)
+    pastTurns: {
+      label: "Past turns",
+      empty: "No past turns",
+      loadMore: "Load more",
     },
 
     // W2.1 — live timeline view

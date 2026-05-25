@@ -1871,3 +1871,141 @@ export async function loadSessionCost(
 export { openLiveEventStream as streamSessionEvents } from "@/lib/sessions/event-stream";
 export type { LiveEvent } from "@/lib/sessions/event-stream";
 // === end W2.1 ===
+
+// === W2.3 — past-turns listing + provider test/models + credential reveal ===
+//
+// Four small helpers wired to backend endpoints that the W1.x backports
+// landed:
+//
+//   * `GET  /admin/sessions/{key}/turns`                       — W1.2
+//   * `POST /admin/providers/{name}/test`                      — W1.1
+//   * `GET  /admin/providers/{name}/models`                    — W1.1
+//   * `GET  /admin/credentials/{provider}/{key}/reveal`        — W2.1 (cred reveal)
+//
+// Kept in one block so the surface stays grep-able. The W1.1 kinds
+// descriptor reshape (`/admin/providers/kinds` now returns
+// `{kinds: [{kind, label, description, params_schema}]}`) is handled by a
+// new `ProviderKindDescriptor` type + the existing `listProviderKinds`
+// helper at the W-B2 block; consumers should migrate to that shape.
+
+/** One row in `GET /admin/sessions/{key}/turns`. Mirrors the journal's
+ * per-turn aggregate columns surfaced by `sessions_events.list_session_turns`. */
+export interface SessionTurnRow {
+  turn_id: string;
+  started_at_ms: number;
+  ended_at_ms?: number | null;
+  status: string;
+  finish_reason?: string | null;
+  elapsed_ms?: number | null;
+  estimated_cost_usd?: number | null;
+  cost_status?: string | null;
+  tool_call_count?: number | null;
+  reasoning_token_count?: number | null;
+  user_text_preview?: string | null;
+}
+
+export interface SessionTurnsResponse {
+  session_key: string;
+  turns: SessionTurnRow[];
+  next_cursor: string | null;
+}
+
+/** GET /admin/sessions/{key}/turns — cursor-paginated past-turns listing. */
+export async function listSessionTurns(
+  sessionKey: string,
+  opts: { limit?: number; before_turn_id?: string } = {},
+): Promise<SessionTurnsResponse> {
+  const params = new URLSearchParams();
+  if (opts.limit !== undefined) params.set("limit", String(opts.limit));
+  if (opts.before_turn_id) params.set("before_turn_id", opts.before_turn_id);
+  const qs = params.toString();
+  const path = `/admin/sessions/${encodeURIComponent(sessionKey)}/turns${
+    qs ? `?${qs}` : ""
+  }`;
+  return apiFetch<SessionTurnsResponse>(path);
+}
+
+/** Response shape for `POST /admin/providers/{name}/test`. */
+export interface ProviderTestResponse {
+  ok: boolean;
+  latency_ms: number;
+  models_count?: number;
+  error?: string;
+  note?: string;
+}
+
+/** POST /admin/providers/{name}/test — zero-cost connectivity probe. */
+export async function testProvider(
+  name: string,
+): Promise<ProviderTestResponse> {
+  return apiFetch<ProviderTestResponse>(
+    `/admin/providers/${encodeURIComponent(name)}/test`,
+    { method: "POST", body: {} },
+  );
+}
+
+/** One row in `GET /admin/providers/{name}/models`. */
+export interface ProviderModel {
+  id: string;
+  display_name?: string;
+  created_at?: string;
+}
+
+/** GET /admin/providers/{name}/models — proxy/canned model catalog. */
+export async function getProviderModels(
+  name: string,
+): Promise<{ models: ProviderModel[] }> {
+  return apiFetch<{ models: ProviderModel[] }>(
+    `/admin/providers/${encodeURIComponent(name)}/models`,
+  );
+}
+
+/** Wire shape of `GET /admin/credentials/{provider}/{key}/reveal`. */
+interface CredentialRevealResponse {
+  value: string;
+}
+
+/** GET /admin/credentials/{provider}/{key}/reveal — returns the bare
+ * cleartext value. Consumers wrap the reveal/hide UI themselves. */
+export async function revealCredential(
+  provider: string,
+  key: string,
+): Promise<string> {
+  const res = await apiFetch<CredentialRevealResponse>(
+    `/admin/credentials/${encodeURIComponent(provider)}/${encodeURIComponent(
+      key,
+    )}/reveal`,
+  );
+  return res.value;
+}
+
+/** W1.1 — descriptor row for one provider kind. Mirrors the response shape
+ * of `GET /admin/providers/kinds`. */
+export interface ProviderKindDescriptor {
+  kind: string;
+  label?: string;
+  description?: string;
+  params_schema?: JSONSchema;
+}
+
+/** GET /admin/providers/kinds → descriptor list (W1.1 shape). Coexists with
+ * the legacy `listProviderKinds()` above which flattens to bare strings. */
+export async function listProviderKindDescriptors(): Promise<
+  ProviderKindDescriptor[]
+> {
+  const res = await apiFetch<{ kinds: unknown }>("/admin/providers/kinds");
+  const kinds = Array.isArray(res.kinds) ? res.kinds : [];
+  return kinds.map((row) => {
+    // Tolerate both the legacy `[string]` shape and the new descriptor
+    // shape so a gateway mid-rollout doesn't break the UI.
+    if (typeof row === "string") return { kind: row };
+    const r = row as ProviderKindDescriptor;
+    return {
+      kind: String(r.kind ?? ""),
+      label: r.label,
+      description: r.description,
+      params_schema: r.params_schema,
+    };
+  });
+}
+// === end W2.3 ===

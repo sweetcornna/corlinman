@@ -55,6 +55,7 @@ import {
 } from "@/lib/api";
 import { DynamicParamsForm } from "@/components/dynamic-params-form";
 import { AddCustomProviderModal } from "@/components/providers/add-custom-modal";
+import { TestConnectionButton } from "@/components/providers/test-connection-button";
 import { cn } from "@/lib/utils";
 
 const KINDS: ProviderKind[] = [
@@ -230,7 +231,7 @@ export default function ProvidersPage() {
                 <TableHead className="w-24">
                   {t("providers.colEnabled")}
                 </TableHead>
-                <TableHead className="w-24"></TableHead>
+                <TableHead className="w-44"></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -281,6 +282,7 @@ export default function ProvidersPage() {
                   </TableCell>
                   <TableCell>
                     <div className="flex items-center gap-1">
+                      <TestConnectionButton name={p.name} />
                       <Button
                         size="sm"
                         variant="ghost"

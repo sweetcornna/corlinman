@@ -11,11 +11,11 @@
  * Until those land we ship the footer alone — a small but real UX win, since
  * today there's no way to see total cost for a session at all.
  *
- * TODO(W2.2-followup): when a `GET /admin/sessions/{key}/turns` listing
- * endpoint exists, render a horizontal "Past turns" pill row at the top of
- * the live timeline so operators can click directly through to
- * `/admin/sessions/{key}/turns/{turn_id}`. Today no such endpoint exists,
- * so the drill-down page is only reachable via deep link.
+ * W2.3 (this commit): wires the past-turns navigator above the live
+ * timeline. Pill row renders ≤10 turns at a time and exposes a "Load more"
+ * pill at the tail; clicking a pill deep-links into the per-turn
+ * drill-down page (W2.2). Data source: `GET /admin/sessions/{key}/turns`
+ * which the W1.2 backport added.
  */
 
 import * as React from "react";
@@ -26,6 +26,7 @@ import { ChevronLeft } from "lucide-react";
 
 import { CostFooter } from "@/components/sessions/cost-footer";
 import { EventTimeline } from "@/components/sessions/event-timeline";
+import { PastTurnsPills } from "@/components/sessions/past-turns-pills";
 import { Button } from "@/components/ui/button";
 
 export default function SessionDetailPage() {
@@ -58,8 +59,15 @@ export default function SessionDetailPage() {
         </div>
       </header>
 
+      {/* W2.3 — past-turns navigator, sitting above the live timeline. */}
+      {sessionKey ? (
+        <div className="mt-4">
+          <PastTurnsPills sessionKey={sessionKey} />
+        </div>
+      ) : null}
+
       {/* W2.1 — live SSE-driven event timeline. */}
-      <section className="mt-4 flex-1 rounded-lg border border-tp-glass-edge bg-tp-glass p-4 sm:p-6">
+      <section className="mt-3 flex-1 rounded-lg border border-tp-glass-edge bg-tp-glass p-4 sm:p-6">
         {sessionKey ? (
           <EventTimeline sessionKey={sessionKey} />
         ) : (
