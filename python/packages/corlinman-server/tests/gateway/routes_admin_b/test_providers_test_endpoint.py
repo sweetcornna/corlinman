@@ -1,0 +1,447 @@
+"""W1.1 — tests for ``/admin/providers/{name}/test``, ``/{name}/models``,
+and ``/kinds`` after the response-shape upgrade.
+
+These tests sit beside :mod:`test_provider_model_discovery` (which
+exercises the legacy ``_query_provider_models`` helper directly with
+the flat-string shape). The W1.1 endpoints layer richer descriptors,
+caching, hardcoded catalogs, and api-key redaction on top of that
+helper — this file covers that new surface end-to-end through the
+route handlers.
+
+All network calls are mocked so the suite stays fully offline.
+"""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import Iterator
+from pathlib import Path
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import httpx
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from corlinman_server.gateway.routes_admin_b import providers
+from corlinman_server.gateway.routes_admin_b.providers import (
+    _MODELS_CACHE_TTL_SECONDS,
+    _clear_models_cache,
+)
+from corlinman_server.gateway.routes_admin_b.state import (
+    AdminState,
+    set_admin_state,
+)
+
+from ._admin_auth import authenticated_test_client, configure_admin_auth
+
+
+# ---------------------------------------------------------------------------
+# Fixtures (mirror test_provider_model_discovery — kept local to avoid a
+# cross-file conftest dance for the same plumbing).
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def temp_config_path(tmp_path: Path) -> Path:
+    p = tmp_path / "config.toml"
+    p.write_text("", encoding="utf-8")
+    return p
+
+
+@pytest.fixture()
+def state_and_snapshot(
+    temp_config_path: Path,
+) -> Iterator[tuple[AdminState, dict[str, Any]]]:
+    snapshot: dict[str, Any] = {}
+
+    def _loader() -> dict[str, Any]:
+        return dict(snapshot)
+
+    state = AdminState(config_loader=_loader, config_path=temp_config_path)
+    configure_admin_auth(state)
+    set_admin_state(state)
+    # Always start with a clean cache so tests don't leak through the
+    # module-level dict on the providers module.
+    _clear_models_cache()
+    try:
+        yield state, snapshot
+    finally:
+        _clear_models_cache()
+        set_admin_state(None)
+
+
+@pytest.fixture()
+def client(
+    state_and_snapshot: tuple[AdminState, dict[str, Any]],
+) -> TestClient:
+    app = FastAPI()
+    app.include_router(providers.router())
+    return authenticated_test_client(app)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _mock_httpx_response(*, status_code: int = 200, json_body: Any = None) -> MagicMock:
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.json.return_value = json_body or {}
+    return resp
+
+
+def _mock_async_client(resp: MagicMock | Exception) -> AsyncMock:
+    """Build an AsyncMock that acts like ``httpx.AsyncClient`` for tests.
+
+    Pass a response mock to have ``.get`` resolve to it, or pass an
+    exception instance to have ``.get`` raise it.
+    """
+    client = AsyncMock()
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=False)
+    if isinstance(resp, Exception):
+        client.get = AsyncMock(side_effect=resp)
+    else:
+        client.get = AsyncMock(return_value=resp)
+    return client
+
+
+# ---------------------------------------------------------------------------
+# POST /admin/providers/{name}/test
+# ---------------------------------------------------------------------------
+
+
+class TestTestEndpoint:
+    def test_test_endpoint_mock_provider(
+        self,
+        client: TestClient,
+        state_and_snapshot: tuple[AdminState, dict[str, Any]],
+    ) -> None:
+        """Mock kind is the fast-path — instant ok, models_count=1."""
+        _, snapshot = state_and_snapshot
+        snapshot.clear()
+        snapshot.update({
+            "providers": {
+                "echo": {"kind": "mock", "enabled": True},
+            }
+        })
+
+        resp = client.post("/admin/providers/echo/test")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["latency_ms"] == 0
+        assert body["models_count"] == 1
+
+    def test_test_endpoint_openai_compatible_success(
+        self,
+        client: TestClient,
+        state_and_snapshot: tuple[AdminState, dict[str, Any]],
+    ) -> None:
+        """openai_compatible kind proxies /v1/models — 200 → ok=True + count."""
+        _, snapshot = state_and_snapshot
+        snapshot.clear()
+        snapshot.update({
+            "providers": {
+                "vllm": {
+                    "kind": "openai_compatible",
+                    "api_key": "sk-test-xxxxxx",
+                    "base_url": "https://my.vllm",
+                    "enabled": True,
+                }
+            }
+        })
+
+        mock_resp = _mock_httpx_response(
+            status_code=200,
+            json_body={"data": [{"id": "qwen-72b"}, {"id": "llama-70b"}]},
+        )
+        with patch("httpx.AsyncClient", return_value=_mock_async_client(mock_resp)):
+            resp = client.post("/admin/providers/vllm/test")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["models_count"] == 2
+        assert "error" not in body or body.get("error") is None
+
+    def test_test_endpoint_openai_compatible_auth_fail(
+        self,
+        client: TestClient,
+        state_and_snapshot: tuple[AdminState, dict[str, Any]],
+    ) -> None:
+        """A 401 from upstream surfaces as ok=False with a redacted error."""
+        _, snapshot = state_and_snapshot
+        api_key = "sk-secret-DO-NOT-LEAK"
+        snapshot.clear()
+        snapshot.update({
+            "providers": {
+                "broken": {
+                    "kind": "openai_compatible",
+                    "api_key": api_key,
+                    "base_url": "https://upstream",
+                    "enabled": True,
+                }
+            }
+        })
+
+        mock_resp = _mock_httpx_response(status_code=401, json_body={"error": "nope"})
+        with patch("httpx.AsyncClient", return_value=_mock_async_client(mock_resp)):
+            resp = client.post("/admin/providers/broken/test")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is False
+        # Error message exists and does NOT echo the key.
+        assert body.get("error")
+        assert api_key not in body["error"]
+        assert "401" in body["error"]
+
+    def test_test_endpoint_timeout(
+        self,
+        client: TestClient,
+        state_and_snapshot: tuple[AdminState, dict[str, Any]],
+    ) -> None:
+        """httpx.TimeoutException at the network layer surfaces as ok=False.
+
+        The helper catches every ``Exception`` and folds it into the
+        ``error`` string; the W1.1 cap on top is the asyncio.wait_for
+        5s wall (not exercised here — we want the underlying socket
+        timeout path to be visible too).
+        """
+        _, snapshot = state_and_snapshot
+        snapshot.clear()
+        snapshot.update({
+            "providers": {
+                "slow": {
+                    "kind": "openai_compatible",
+                    "api_key": "sk-test",
+                    "base_url": "https://very.slow",
+                    "enabled": True,
+                }
+            }
+        })
+
+        timeout_exc = httpx.TimeoutException("connect timed out")
+        with patch("httpx.AsyncClient", return_value=_mock_async_client(timeout_exc)):
+            resp = client.post("/admin/providers/slow/test")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is False
+        err = (body.get("error") or "").lower()
+        assert "timeout" in err or "timed out" in err
+
+    def test_test_endpoint_never_echoes_api_key(
+        self,
+        client: TestClient,
+        state_and_snapshot: tuple[AdminState, dict[str, Any]],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Whatever happens, the api key must not appear in body or logs.
+
+        Simulates a server-side exception whose stringified form embeds
+        the key — the redactor must strip it on the way out.
+        """
+        _, snapshot = state_and_snapshot
+        api_key = "sk-VERY-SECRET-KEY-abcdef123456"
+        snapshot.clear()
+        snapshot.update({
+            "providers": {
+                "leaky": {
+                    "kind": "openai_compatible",
+                    "api_key": api_key,
+                    "base_url": "https://upstream",
+                    "enabled": True,
+                }
+            }
+        })
+
+        # Force the helper's ``except Exception`` branch with a message
+        # that quotes the key — the redactor is what saves us here.
+        boom = RuntimeError(f"upstream failed; Authorization: Bearer {api_key}")
+        caplog.set_level(logging.DEBUG)
+        with patch("httpx.AsyncClient", return_value=_mock_async_client(boom)):
+            resp = client.post("/admin/providers/leaky/test")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert api_key not in resp.text
+        assert api_key not in str(body)
+        # Logs captured during the call must also be free of the key.
+        for record in caplog.records:
+            assert api_key not in record.getMessage()
+
+
+# ---------------------------------------------------------------------------
+# GET /admin/providers/{name}/models
+# ---------------------------------------------------------------------------
+
+
+class TestModelsEndpoint:
+    def test_models_endpoint_openai_proxy(
+        self,
+        client: TestClient,
+        state_and_snapshot: tuple[AdminState, dict[str, Any]],
+    ) -> None:
+        """openai-shape providers proxy /v1/models and reshape to object items."""
+        _, snapshot = state_and_snapshot
+        snapshot.clear()
+        snapshot.update({
+            "providers": {
+                "myopenai": {
+                    "kind": "openai",
+                    "api_key": "sk-test",
+                    "base_url": "https://api.openai.com",
+                    "enabled": True,
+                }
+            }
+        })
+
+        mock_resp = _mock_httpx_response(
+            status_code=200,
+            json_body={
+                "data": [
+                    {"id": "gpt-4o"},
+                    {"id": "gpt-4o-mini"},
+                    {"id": "gpt-3.5-turbo"},
+                ]
+            },
+        )
+        with patch("httpx.AsyncClient", return_value=_mock_async_client(mock_resp)):
+            resp = client.get("/admin/providers/myopenai/models")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "models" in body
+        ids = {m["id"] for m in body["models"]}
+        assert {"gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"} <= ids
+        # Each item is an object, not a bare string.
+        for item in body["models"]:
+            assert isinstance(item, dict)
+            assert "id" in item
+            assert "display_name" in item
+
+    def test_models_endpoint_cache_30s(
+        self,
+        client: TestClient,
+        state_and_snapshot: tuple[AdminState, dict[str, Any]],
+    ) -> None:
+        """First call hits upstream; second within 30s does not."""
+        _, snapshot = state_and_snapshot
+        snapshot.clear()
+        snapshot.update({
+            "providers": {
+                "cached": {
+                    "kind": "openai_compatible",
+                    "api_key": "sk-test",
+                    "base_url": "https://upstream",
+                    "enabled": True,
+                }
+            }
+        })
+
+        mock_resp = _mock_httpx_response(
+            status_code=200, json_body={"data": [{"id": "m1"}]}
+        )
+        async_client = _mock_async_client(mock_resp)
+        with patch("httpx.AsyncClient", return_value=async_client):
+            first = client.get("/admin/providers/cached/models")
+            second = client.get("/admin/providers/cached/models")
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert first.json() == second.json()
+        # Upstream is hit exactly once even though the client called twice.
+        assert async_client.get.await_count == 1
+        # And the TTL constant matches the documented 30s window.
+        assert _MODELS_CACHE_TTL_SECONDS == 30.0
+
+    def test_models_endpoint_hardcoded_anthropic(
+        self,
+        client: TestClient,
+        state_and_snapshot: tuple[AdminState, dict[str, Any]],
+    ) -> None:
+        """Anthropic has no zero-cost models endpoint; serve hardcoded catalog."""
+        _, snapshot = state_and_snapshot
+        snapshot.clear()
+        snapshot.update({
+            "providers": {
+                "myanthropic": {
+                    "kind": "anthropic",
+                    "api_key": "sk-ant-xxx",
+                    "enabled": True,
+                }
+            }
+        })
+
+        resp = client.get("/admin/providers/myanthropic/models")
+        assert resp.status_code == 200
+        body = resp.json()
+        ids = [m["id"] for m in body["models"]]
+        assert any(i.startswith("claude-") for i in ids)
+        # No upstream was contacted — error key absent.
+        assert "error" not in body
+
+    def test_models_endpoint_mock_provider(
+        self,
+        client: TestClient,
+        state_and_snapshot: tuple[AdminState, dict[str, Any]],
+    ) -> None:
+        """Mock kind always returns ``{models: [{id:'mock', ...}]}``."""
+        _, snapshot = state_and_snapshot
+        snapshot.clear()
+        snapshot.update({
+            "providers": {"echo": {"kind": "mock", "enabled": True}}
+        })
+
+        resp = client.get("/admin/providers/echo/models")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["models"][0]["id"] == "mock"
+
+
+# ---------------------------------------------------------------------------
+# GET /admin/providers/kinds
+# ---------------------------------------------------------------------------
+
+
+class TestKindsEndpoint:
+    def test_kinds_endpoint_lists_registered(
+        self,
+        client: TestClient,
+    ) -> None:
+        """Returns at least 5 kinds including openai, anthropic, mock —
+        each with the documented descriptor shape."""
+        resp = client.get("/admin/providers/kinds")
+        assert resp.status_code == 200
+        body = resp.json()
+        kinds = body["kinds"]
+        assert len(kinds) >= 5
+        ids = {k["kind"] for k in kinds}
+        assert {"openai", "anthropic", "mock", "openai_compatible"} <= ids
+
+        for item in kinds:
+            assert {"kind", "label", "description", "params_schema"} <= item.keys()
+            assert isinstance(item["label"], str) and item["label"]
+            assert isinstance(item["params_schema"], dict)
+
+    def test_kinds_endpoint_includes_params_schema(
+        self,
+        client: TestClient,
+    ) -> None:
+        """Each kind descriptor's ``params_schema`` is a JSON-schema-shaped dict."""
+        resp = client.get("/admin/providers/kinds")
+        assert resp.status_code == 200
+        body = resp.json()
+        for item in body["kinds"]:
+            schema = item["params_schema"]
+            assert isinstance(schema, dict)
+            # We never assert on a particular schema shape (per-kind
+            # adapter authors own that), but it must be a dict object.
+            # ``type`` / ``properties`` are typical keys; we just check
+            # the dict is non-None.
+            assert schema is not None

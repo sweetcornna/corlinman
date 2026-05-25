@@ -115,6 +115,15 @@ class TestProviderTest:
         providers_client: TestClient,
         providers_state: tuple[AdminState, dict[str, Any]],
     ) -> None:
+        """anthropic has no free upstream probe; W1.1 surfaces as ok with note.
+
+        Previously the route propagated the legacy helper's
+        "kind does not support /v1/models probe" error verbatim. After
+        W1.1 the test endpoint upgrades that case to ``ok=True`` with a
+        ``note`` flag (config-shape is valid, just not live-verified)
+        and a ``models_count`` from the hardcoded catalog so the UI
+        button shows green without burning a real chat call.
+        """
         _, snapshot = providers_state
         snapshot.clear()
         snapshot.update({
@@ -126,8 +135,9 @@ class TestProviderTest:
         resp = providers_client.post("/admin/providers/myanthropic/test")
         assert resp.status_code == 200
         body = resp.json()
-        assert body["ok"] is False
-        assert "does not support" in (body.get("error") or "")
+        assert body["ok"] is True
+        assert "note" in body
+        assert body["models_count"] >= 1
 
     @pytest.mark.asyncio
     async def test_openai_provider_success(
@@ -192,6 +202,11 @@ class TestProviderTest:
         providers_client: TestClient,
         providers_state: tuple[AdminState, dict[str, Any]],
     ) -> None:
+        """Codex is OpenAI-shape so W1.1 routes through the helper.
+
+        With no credential file the helper returns ``ok=False`` carrying
+        ``codex_auth_not_found``; the route forwards it after redacting.
+        """
         _, snapshot = providers_state
         snapshot.clear()
         snapshot.update({"providers": {}})

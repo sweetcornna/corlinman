@@ -99,20 +99,38 @@ def _on_disk(state: AdminState) -> dict[str, Any]:
 
 
 def test_kinds_discovery_returns_every_provider_kind(client: TestClient) -> None:
-    """Dropdown source must mirror ProviderKind exactly (alphabetised)."""
+    """Dropdown source must mirror ProviderKind exactly (alphabetised).
+
+    W1.1 reshaped the endpoint payload from ``{kinds: list[str]}`` to
+    ``{kinds: list[{kind, label, description, params_schema}]}`` —
+    assertions below extract the ``kind`` ids to validate ordering /
+    cardinality while still exercising the descriptor shape.
+    """
     resp = client.get("/admin/providers/kinds")
     assert resp.status_code == 200
     payload = resp.json()
-    assert payload == {"kinds": list_supported_kinds()}
+    assert "kinds" in payload
+    items = payload["kinds"]
+    assert isinstance(items, list)
+
+    # Every item is a descriptor object with the documented keys.
+    for item in items:
+        assert isinstance(item, dict)
+        assert {"kind", "label", "description", "params_schema"} <= item.keys()
+        assert isinstance(item["kind"], str)
+        assert isinstance(item["params_schema"], dict)
+
+    ids = [item["kind"] for item in items]
+    assert ids == list_supported_kinds()
     # Spot-check a few enum values are present so a future enum
     # rename surfaces here, not just in the helper.
-    assert "anthropic" in payload["kinds"]
-    assert "openai_compatible" in payload["kinds"]
-    assert "mock" in payload["kinds"]
+    assert "anthropic" in ids
+    assert "openai_compatible" in ids
+    assert "mock" in ids
     # And the ordering is stable / sorted.
-    assert payload["kinds"] == sorted(payload["kinds"])
+    assert ids == sorted(ids)
     # Length matches the enum cardinality.
-    assert len(payload["kinds"]) == len(list(ProviderKind))
+    assert len(ids) == len(list(ProviderKind))
 
 
 # ---------------------------------------------------------------------------

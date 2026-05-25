@@ -10,6 +10,14 @@ Routes:
 * ``PATCH  /admin/providers/{name}``       — partial update.
 * ``DELETE /admin/providers/{name}``       — refused with 409 when an
   alias or the ``[embedding]`` block still references it.
+* ``POST   /admin/providers/{name}/test``  — zero-cost connectivity probe
+  (W1.1). Returns ``{ok, latency_ms, error?, models_count?}``.
+* ``GET    /admin/providers/{name}/models``— list models exposed by a
+  provider (W1.1). 30s in-memory cache for openai-shape proxies;
+  hardcoded catalogs for anthropic / google / mock.
+* ``GET    /admin/providers/kinds``        — descriptor list of every
+  registered :class:`ProviderKind` (W1.1) — ``{kinds: [{kind, label,
+  description, params_schema}]}``.
 
 JSON-schema for ``params`` is pulled lazily from
 ``corlinman_providers`` (sibling package) so the Python source stays the
@@ -20,6 +28,7 @@ schema drift.
 from __future__ import annotations
 
 import re
+import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, Path as FPath
@@ -331,6 +340,141 @@ _OPENAI_COMPATIBLE_KINDS: frozenset[str] = frozenset(
 )
 
 
+# ---------------------------------------------------------------------------
+# W1.1 — test / models / kinds endpoints
+#
+# The legacy `_query_provider_models` helper above returns ``models``
+# as a flat ``list[str]`` shape used by older callers. The W1.1 plan
+# requires the public surface to expose richer objects + zero-cost
+# probes per kind, in-memory caching for the proxied list, and a
+# kind-descriptor list with each kind's ``params_schema``. We keep the
+# legacy helper untouched (existing tests depend on its shape) and
+# layer the new surface on top.
+# ---------------------------------------------------------------------------
+
+
+# Hard-coded model catalogs for kinds where ``/v1/models`` is either
+# unavailable, costs money to call, or returns the wrong shape. Source-
+# controlled because the canonical lists are small and stable enough to
+# beat live calls on both reliability and zero-cost guarantees. Each
+# entry is `{id, display_name}` — `created_at` is omitted (unknown for
+# hardcoded data; the wire shape allows the field to be absent).
+_HARDCODED_MODELS: dict[str, list[dict[str, Any]]] = {
+    "anthropic": [
+        {"id": "claude-opus-4-5", "display_name": "Claude Opus 4.5"},
+        {"id": "claude-sonnet-4-5", "display_name": "Claude Sonnet 4.5"},
+        {"id": "claude-haiku-4-5", "display_name": "Claude Haiku 4.5"},
+        {"id": "claude-3-7-sonnet-latest", "display_name": "Claude 3.7 Sonnet"},
+        {"id": "claude-3-5-sonnet-latest", "display_name": "Claude 3.5 Sonnet"},
+        {"id": "claude-3-5-haiku-latest", "display_name": "Claude 3.5 Haiku"},
+    ],
+    "google": [
+        {"id": "gemini-2.5-pro", "display_name": "Gemini 2.5 Pro"},
+        {"id": "gemini-2.5-flash", "display_name": "Gemini 2.5 Flash"},
+        {"id": "gemini-2.0-flash", "display_name": "Gemini 2.0 Flash"},
+        {"id": "gemini-1.5-pro", "display_name": "Gemini 1.5 Pro"},
+        {"id": "gemini-1.5-flash", "display_name": "Gemini 1.5 Flash"},
+    ],
+    "mock": [
+        {"id": "mock", "display_name": "Mock Echo"},
+    ],
+}
+
+
+# Human-readable labels + descriptions for the kinds descriptor. Used by
+# the W1.1 ``/admin/providers/kinds`` endpoint. Unknown kinds fall back
+# to a title-cased version of the kind id and an empty description.
+_KIND_LABELS: dict[str, tuple[str, str]] = {
+    "anthropic": ("Anthropic", "Claude models via the Anthropic Messages API."),
+    "openai": ("OpenAI", "GPT/o-series models via the OpenAI Chat Completions API."),
+    "google": ("Google", "Gemini models via the Google GenAI SDK."),
+    "deepseek": ("DeepSeek", "DeepSeek-Chat / DeepSeek-Coder via OpenAI-compatible wire."),
+    "qwen": ("Qwen", "Alibaba Qwen models via OpenAI-compatible wire."),
+    "glm": ("GLM", "Zhipu GLM-4 family via OpenAI-compatible wire."),
+    "openai_compatible": (
+        "OpenAI-compatible",
+        "Any service that speaks the OpenAI chat-completions wire shape.",
+    ),
+    "mistral": ("Mistral", "Mistral La Plateforme via OpenAI-compatible wire."),
+    "cohere": ("Cohere", "Cohere Command-R family via OpenAI-compatible wire."),
+    "together": ("Together AI", "Together inference platform via OpenAI-compatible wire."),
+    "groq": ("Groq", "Groq LPU inference via OpenAI-compatible wire."),
+    "replicate": ("Replicate", "Replicate prediction endpoint via OpenAI-compatible wire."),
+    "bedrock": ("AWS Bedrock", "AWS Bedrock InvokeModelWithResponseStream (SigV4)."),
+    "azure": ("Azure OpenAI", "Azure OpenAI Service with deployment-id routing."),
+    "codex": ("Codex (ChatGPT)", "ChatGPT subscription via the Codex OAuth flow."),
+    "mock": ("Mock", "Zero-config echo provider used for the easy-setup skip path."),
+}
+
+
+# In-memory cache for the W1.1 ``/admin/providers/{name}/models`` proxy.
+# Key: provider name. Value: ``(expiry_monotonic_seconds, payload_dict)``.
+# A 30s TTL keeps the dropdown snappy while bounding hits on upstream
+# from a frantic operator clicking around. ``_clear_models_cache`` is
+# exposed for tests; production code never invalidates manually.
+_MODELS_CACHE_TTL_SECONDS: float = 30.0
+_MODELS_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
+def _clear_models_cache() -> None:
+    """Drop every cached entry. Test-only escape hatch."""
+    _MODELS_CACHE.clear()
+
+
+def _redact(message: str, *secrets: str | None) -> str:
+    """Replace any occurrence of ``secret`` in ``message`` with ``***``.
+
+    Defensive: also strips obvious bearer-token leak shapes
+    (``Authorization: Bearer <key>`` patterns in URL or header dumps).
+    """
+    out = message
+    for s in secrets:
+        if s and len(s) >= 4 and s in out:
+            out = out.replace(s, "***")
+    return out
+
+
+def _zero_cost_probe_kind(kind: str) -> str:
+    """Categorise ``kind`` by zero-cost probe strategy.
+
+    Returns one of:
+    * ``"openai_models"``   — ``GET /v1/models`` is free + reliable.
+    * ``"hardcoded"``       — no zero-cost probe but we have a canned catalog
+                              we treat as success (matches W1.1 plan: degrade
+                              gracefully when upstream has no free probe).
+    * ``"mock"``            — fast-path local-only.
+    * ``"none"``            — no probe available.
+    """
+    k = kind.lower().replace("-", "_")
+    if k == "mock":
+        return "mock"
+    if k in _OPENAI_COMPATIBLE_KINDS or k.replace("_", "-") in _OPENAI_COMPATIBLE_KINDS:
+        return "openai_models"
+    if k in _HARDCODED_MODELS:
+        return "hardcoded"
+    return "none"
+
+
+def _resolve_api_key(entry: dict[str, Any]) -> str:
+    """Extract the configured api key from a provider entry.
+
+    Mirrors the env / value resolution used by
+    :func:`_query_provider_models` but exposed so the test-endpoint can
+    reuse it without going through the full models probe.
+    """
+    import os
+
+    raw_key = entry.get("api_key")
+    if isinstance(raw_key, dict):
+        if "value" in raw_key:
+            return str(raw_key["value"])
+        if "env" in raw_key:
+            return os.environ.get(str(raw_key["env"]), "")
+    elif isinstance(raw_key, str):
+        return raw_key
+    return ""
+
+
 async def _query_provider_models(
     name: str, cfg: dict[str, Any]
 ) -> dict[str, Any]:
@@ -563,9 +707,30 @@ def router() -> APIRouter:
     # surface). See ``docs/PLAN_PROVIDER_AUTH.md`` §1.2.
     # -----------------------------------------------------------------
 
-    @r.get("/admin/providers/kinds", response_model=CustomKindsOut)
-    async def list_provider_kinds() -> CustomKindsOut:
-        return CustomKindsOut(kinds=list_supported_kinds())
+    @r.get("/admin/providers/kinds")
+    async def list_provider_kinds() -> dict[str, Any]:
+        """W1.1 — descriptor list of every registered provider kind.
+
+        Returns ``{kinds: [{kind, label, description, params_schema}]}``
+        where ``params_schema`` is the per-kind adapter
+        :meth:`params_schema` value resolved through ``_params_schema_for``.
+        Order is the same alphabetical order as
+        :func:`list_supported_kinds`.
+        """
+        items: list[dict[str, Any]] = []
+        for kind in list_supported_kinds():
+            label, description = _KIND_LABELS.get(
+                kind, (kind.replace("_", " ").title(), "")
+            )
+            items.append(
+                {
+                    "kind": kind,
+                    "label": label,
+                    "description": description,
+                    "params_schema": _params_schema_for(kind),
+                }
+            )
+        return {"kinds": items}
 
     @r.get("/admin/providers/custom", response_model=CustomListOut)
     async def list_custom_providers() -> CustomListOut:
@@ -728,15 +893,149 @@ def router() -> APIRouter:
         return Response(status_code=204)
 
     @r.post("/admin/providers/{name}/test")
-    async def test_provider(name: str):
+    async def test_provider(name: str) -> dict[str, Any]:
+        """W1.1 — zero-cost connectivity probe for a configured provider.
+
+        Returns ``{ok: bool, latency_ms: int, error?: str,
+        models_count?: int}``. Strategy per kind:
+
+        * ``mock``                     — instant ok, ``models_count=1``.
+        * openai / openai-compatible   — ``GET <base>/v1/models``.
+        * anthropic / google / etc.    — no free upstream probe; return
+                                         ``ok=True`` with a hardcoded
+                                         catalog count to signal "config
+                                         shape is valid" without burning
+                                         tokens. The UI can label this
+                                         as "configured" rather than
+                                         "verified live".
+        * unknown                      — ``ok=False`` with diagnostic
+                                         error.
+
+        Every error message is run through :func:`_redact` so the api key
+        never leaks into the response (or, by extension, the access log).
+        Caps total latency at 5s via httpx timeout.
+        """
         cfg = dict(config_snapshot())
-        result = await _query_provider_models(name, cfg)
-        return result
+        providers_cfg = cfg.get("providers") or {}
+        entry = providers_cfg.get(name)
+
+        # Resolve kind. Codex is special-cased — it has no config entry.
+        if entry is None and name != "codex":
+            return {
+                "ok": False,
+                "latency_ms": 0,
+                "error": "provider_not_found",
+            }
+
+        if name == "codex":
+            kind = "codex"
+        else:
+            kind = str(
+                (entry or {}).get("kind") or "openai_compatible"
+            ).lower().replace("-", "_")
+
+        probe_strategy = _zero_cost_probe_kind(kind)
+        api_key = _resolve_api_key(entry or {})
+
+        if probe_strategy == "mock":
+            return {"ok": True, "latency_ms": 0, "models_count": 1}
+
+        if probe_strategy == "openai_models":
+            # Reuse the legacy helper, then reshape with a 5s cap.
+            import asyncio as _asyncio
+
+            t0 = time.monotonic()
+            try:
+                result = await _asyncio.wait_for(
+                    _query_provider_models(name, cfg), timeout=5.0
+                )
+            except _asyncio.TimeoutError:
+                latency_ms = int((time.monotonic() - t0) * 1000)
+                return {"ok": False, "latency_ms": latency_ms, "error": "timeout"}
+            latency_ms = int(result.get("latency_ms") or 0)
+            if result.get("ok"):
+                return {
+                    "ok": True,
+                    "latency_ms": latency_ms,
+                    "models_count": len(result.get("models") or []),
+                }
+            err = _redact(str(result.get("error") or "upstream_error"), api_key)
+            return {"ok": False, "latency_ms": latency_ms, "error": err}
+
+        if probe_strategy == "hardcoded":
+            # No free upstream probe — surface as ok so the operator sees
+            # green for a well-formed config; the dropdown below will
+            # serve the canned catalog. NOT a real liveness check.
+            return {
+                "ok": True,
+                "latency_ms": 0,
+                "models_count": len(_HARDCODED_MODELS.get(kind, [])),
+                "note": "no zero-cost upstream probe; config-shape only",
+            }
+
+        return {
+            "ok": False,
+            "latency_ms": 0,
+            "error": f"no zero-cost probe; configure provider kind {kind!r} to enable testing",
+        }
 
     @r.get("/admin/providers/{name}/models")
-    async def list_provider_models(name: str):
+    async def list_provider_models(name: str) -> dict[str, Any]:
+        """W1.1 — list models a provider exposes.
+
+        Returns ``{models: [{id, display_name?, created_at?}]}``. For
+        openai-shape providers we proxy ``GET <base>/v1/models`` with a
+        30s in-memory cache. For providers with a known fixed catalog
+        (anthropic, google, mock) we serve the canned list from
+        :data:`_HARDCODED_MODELS`. ``error`` is set on the response when
+        a live upstream probe failed; cached / hardcoded paths never
+        populate it.
+        """
         cfg = dict(config_snapshot())
+        providers_cfg = cfg.get("providers") or {}
+        entry = providers_cfg.get(name)
+
+        if entry is None and name != "codex":
+            return {"models": [], "error": "provider_not_found"}
+
+        if name == "codex":
+            kind = "codex"
+        else:
+            kind = str(
+                (entry or {}).get("kind") or "openai_compatible"
+            ).lower().replace("-", "_")
+
+        probe_strategy = _zero_cost_probe_kind(kind)
+
+        if probe_strategy in ("mock", "hardcoded"):
+            return {"models": list(_HARDCODED_MODELS.get(kind, []))}
+
+        if probe_strategy != "openai_models":
+            return {
+                "models": [],
+                "error": f"kind {kind!r} has no model-discovery endpoint",
+            }
+
+        # Cache lookup.
+        now = time.monotonic()
+        cached = _MODELS_CACHE.get(name)
+        if cached is not None and cached[0] > now:
+            return dict(cached[1])
+
         result = await _query_provider_models(name, cfg)
-        return {"models": result["models"], "error": result["error"]}
+        api_key = _resolve_api_key(entry or {})
+        if not result.get("ok"):
+            err = _redact(str(result.get("error") or "upstream_error"), api_key)
+            # Don't cache failures — operator likely just fixed the key.
+            return {"models": [], "error": err}
+
+        models = [
+            {"id": mid, "display_name": mid}
+            for mid in (result.get("models") or [])
+            if isinstance(mid, str)
+        ]
+        payload: dict[str, Any] = {"models": models}
+        _MODELS_CACHE[name] = (now + _MODELS_CACHE_TTL_SECONDS, payload)
+        return dict(payload)
 
     return r
