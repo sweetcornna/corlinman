@@ -1961,18 +1961,48 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         return self._blackboard_store
 
     def _peek_agent_binding(self, start: AgentChatStart) -> AgentCard | None:
-        """W-D1: detect which agent the request references so we can apply
-        its model / provider binding before the resolver runs.
+        """W-D1 / W2.3: detect which agent the request references so we
+        can apply its model / provider binding before the resolver runs.
 
-        Returns the bound :class:`AgentCard` if the messages reference a
+        Resolution order:
+            1. **Explicit hint** (W2.3) — when the request carries
+               ``extra["agent_id"]`` and the value is a non-empty,
+               non-``"auto"`` string, the matching registry card wins
+               unconditionally. Unknown ids log a warning and fall
+               through to the heuristic so a typo doesn't brick the
+               turn.
+            2. **Message-peek heuristic** (W-D1) — the existing
+               :class:`AgentExpander` scans ``start.messages`` for an
+               agent reference and returns that card.
+
+        Returns the bound :class:`AgentCard` if either path resolves a
         registered agent, otherwise ``None``. The full assembler will
-        re-run the same expansion later; running it twice is cheap (pure
-        in-memory string scan) and lets us keep this binding logic
-        completely separate from the placeholder / cascade pipeline.
+        re-run the same expansion later; running it twice is cheap
+        (pure in-memory string scan) and lets us keep this binding
+        logic completely separate from the placeholder / cascade
+        pipeline.
         """
         registry = self._get_agent_registry()
         if registry is None or len(registry) == 0:
             return None
+        # ---- W2.3: explicit hint wins ----
+        # ``ChatStart.extra`` exists on the dataclass today; older
+        # callers / proto frames that never populate it still work
+        # because ``getattr`` falls through to the empty dict default.
+        extra = getattr(start, "extra", None) or {}
+        explicit_id = extra.get("agent_id") if isinstance(extra, dict) else None
+        if isinstance(explicit_id, str):
+            explicit_id = explicit_id.strip()
+            if explicit_id and explicit_id != "auto":
+                card = registry.get(explicit_id)
+                if card is not None:
+                    return card
+                # Unknown id → log + fall through; never fail the turn.
+                logger.warning(
+                    "agent.chat.explicit_agent_id_unknown",
+                    agent_id=explicit_id,
+                )
+        # ---- existing heuristic ----
         try:
             expander = AgentExpander(registry, single_agent_gate=True)
             expansion = expander.expand(list(start.messages))

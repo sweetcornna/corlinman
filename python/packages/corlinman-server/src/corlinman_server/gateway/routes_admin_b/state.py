@@ -171,6 +171,19 @@ class AdminState:
     upgrader: Any | None = None
     audit_log: Any | None = None
 
+    # -- W1.3 (multi-agent): background subagent dispatch ----------------
+    #
+    # ``subagent_store`` is the :class:`~corlinman_server.system.subagent.
+    # SubagentTaskStore` opened against ``$DATA_DIR/.subagent-state.json``.
+    # ``subagent_dispatcher`` is the :class:`~corlinman_server.system.
+    # subagent.AsyncSubagentDispatcher` instance that wraps it + closes
+    # over the supervisor/agent-registry/provider plumbing the tool
+    # wrapper needs when ``run_in_background=true``. Both are ``None``
+    # in degraded boots; the ``/admin/subagents*`` routes return a typed
+    # 503 (``subagent_dispatcher_unavailable``) in that case.
+    subagent_store: Any | None = None
+    subagent_dispatcher: Any | None = None
+
 
 _state: AdminState | None = None
 

@@ -1,0 +1,209 @@
+"""Tests for :class:`corlinman_server.system.subagent.SubagentTaskStore`.
+
+Mirrors the cases in ``tests/system/upgrader/test_state.py`` but for the
+subagent shape: round-trip get, partial updates, in-flight list, log
+rolling at 4 kB, persistence across instances, kill-flip semantics.
+"""
+
+from __future__ import annotations
+
+import time
+from pathlib import Path
+
+import pytest
+
+from corlinman_server.system.subagent.store import (
+    SubagentRequest,
+    SubagentTaskStore,
+)
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _make_req(
+    request_id: str = "req-1",
+    parent_session_key: str = "sess-A",
+    subagent_type: str = "researcher",
+    description: str | None = "test work",
+) -> SubagentRequest:
+    return SubagentRequest(
+        request_id=request_id,
+        parent_session_key=parent_session_key,
+        parent_agent_id="agent-parent",
+        subagent_type=subagent_type,
+        goal="figure something out",
+        description=description,
+        requested_at=_now_ms(),
+        requested_by="admin",
+    )
+
+
+@pytest.mark.asyncio
+async def test_begin_then_get_roundtrips(tmp_path: Path) -> None:
+    store = SubagentTaskStore(tmp_path / ".subagent-state.json")
+    req = _make_req()
+    seeded = await store.begin(req)
+
+    fetched = await store.get(req.request_id)
+    assert fetched is not None
+    assert fetched.request_id == req.request_id
+    assert fetched.state == "queued"
+    assert fetched.subagent_type == "researcher"
+    assert fetched.description == "test work"
+    assert fetched.parent_session_key == "sess-A"
+
+    # Returned snapshot is a copy — mutating it MUST NOT bleed back.
+    seeded.state = "succeeded"  # type: ignore[assignment]
+    fetched_again = await store.get(req.request_id)
+    assert fetched_again is not None
+    assert fetched_again.state == "queued"
+
+
+@pytest.mark.asyncio
+async def test_update_partial_preserves_other_fields(tmp_path: Path) -> None:
+    store = SubagentTaskStore(tmp_path / ".subagent-state.json")
+    req = _make_req()
+    await store.begin(req)
+
+    await store.update(req.request_id, state="running", started_at=12345)
+    after = await store.get(req.request_id)
+    assert after is not None
+    assert after.state == "running"
+    assert after.started_at == 12345
+    assert after.subagent_type == "researcher"
+
+    await store.update(
+        req.request_id,
+        state="succeeded",
+        finished_at=67890,
+        tool_calls_made=7,
+        elapsed_ms=42,
+        finish_reason="stop",
+        summary="all done",
+    )
+    final = await store.get(req.request_id)
+    assert final is not None
+    assert final.state == "succeeded"
+    assert final.finished_at == 67890
+    assert final.tool_calls_made == 7
+    assert final.summary == "all done"
+
+
+@pytest.mark.asyncio
+async def test_current_in_flight_lists_active_only(tmp_path: Path) -> None:
+    store = SubagentTaskStore(tmp_path / ".subagent-state.json")
+    a = _make_req(request_id="req-A")
+    b = _make_req(request_id="req-B", parent_session_key="sess-B")
+    c = _make_req(request_id="req-C")
+    await store.begin(a)
+    await store.begin(b)
+    await store.begin(c)
+    await store.update("req-C", state="succeeded")
+
+    active = await store.list_active()
+    ids = {r.request_id for r in active}
+    assert ids == {"req-A", "req-B"}
+
+    # Scoping by parent_session_key
+    scoped = await store.current_in_flight(parent_session_key="sess-A")
+    assert {r.request_id for r in scoped} == {"req-A"}
+
+
+@pytest.mark.asyncio
+async def test_append_log_rolls_at_4kb(tmp_path: Path) -> None:
+    store = SubagentTaskStore(tmp_path / ".subagent-state.json")
+    req = _make_req()
+    await store.begin(req)
+
+    chunk = "x" * 1024
+    for _ in range(8):  # 8 kB of input
+        await store.append_log(req.request_id, chunk)
+
+    status = await store.get(req.request_id)
+    assert status is not None
+    assert len(status.log_tail.encode("utf-8")) <= 4 * 1024
+    assert status.log_tail.endswith("x")
+
+
+@pytest.mark.asyncio
+async def test_persistence_round_trip_across_instances(tmp_path: Path) -> None:
+    persist = tmp_path / ".subagent-state.json"
+    store1 = SubagentTaskStore(persist)
+    req = _make_req(request_id="req-PERSIST", subagent_type="editor")
+    await store1.begin(req)
+    await store1.update(
+        "req-PERSIST",
+        state="running",
+        started_at=4242,
+        child_session_key="sess-A::child::0",
+    )
+    await store1.append_log("req-PERSIST", "child output line\n")
+
+    # Brand-new store reading the same file.
+    store2 = SubagentTaskStore(persist)
+    recovered = await store2.get("req-PERSIST")
+    assert recovered is not None
+    assert recovered.state == "running"
+    assert recovered.subagent_type == "editor"
+    assert recovered.started_at == 4242
+    assert recovered.child_session_key == "sess-A::child::0"
+    assert recovered.log_tail == "child output line\n"
+
+    # ``get_request`` also round-trips
+    fetched_req = await store2.get_request("req-PERSIST")
+    assert fetched_req is not None
+    assert fetched_req.subagent_type == "editor"
+
+
+@pytest.mark.asyncio
+async def test_set_killed_flips_state(tmp_path: Path) -> None:
+    store = SubagentTaskStore(tmp_path / ".subagent-state.json")
+    req = _make_req()
+    await store.begin(req)
+    await store.update(req.request_id, state="running")
+
+    result = await store.set_killed(req.request_id, by="alice")
+    assert result is not None
+    assert result.state == "killed"
+    assert result.finish_reason == "killed_by:alice"
+    assert result.finished_at is not None
+
+    # Second kill — already terminal, returns None.
+    result2 = await store.set_killed(req.request_id, by="bob")
+    assert result2 is None
+
+
+@pytest.mark.asyncio
+async def test_update_unknown_request_raises(tmp_path: Path) -> None:
+    store = SubagentTaskStore(tmp_path / ".subagent-state.json")
+    with pytest.raises(KeyError):
+        await store.update("does-not-exist", state="running")
+
+
+@pytest.mark.asyncio
+async def test_get_unknown_request_returns_none(tmp_path: Path) -> None:
+    store = SubagentTaskStore(tmp_path / ".subagent-state.json")
+    assert await store.get("nope") is None
+
+
+@pytest.mark.asyncio
+async def test_append_log_unknown_request_noop(tmp_path: Path) -> None:
+    store = SubagentTaskStore(tmp_path / ".subagent-state.json")
+    # Must not raise.
+    await store.append_log("ghost", "data")
+
+
+@pytest.mark.asyncio
+async def test_summary_truncates_at_4kb(tmp_path: Path) -> None:
+    store = SubagentTaskStore(tmp_path / ".subagent-state.json")
+    req = _make_req()
+    await store.begin(req)
+
+    big = "A" * (5 * 1024)
+    await store.set_summary(req.request_id, big)
+
+    status = await store.get(req.request_id)
+    assert status is not None
+    assert len(status.summary.encode("utf-8")) <= 4 * 1024

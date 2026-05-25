@@ -55,6 +55,7 @@ from corlinman_server.gateway.routes_admin_b import (
     scheduler as _scheduler,
     sessions_cost as _sessions_cost,
     sessions_events as _sessions_events,
+    subagents as _subagents,
     system as _system,
 )
 from corlinman_server.gateway.routes_admin_b.state import AdminState, set_admin_state
@@ -92,6 +93,7 @@ def build_router() -> APIRouter:
         _scheduler,
         _sessions_cost,
         _sessions_events,
+        _subagents,
         _system,
     ):
         root.include_router(mod.router())

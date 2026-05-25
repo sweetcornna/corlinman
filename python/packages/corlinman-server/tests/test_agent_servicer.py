@@ -2069,3 +2069,117 @@ def test_ask_user_system_prompt_clause_present() -> None:
     assert "finalize" in _CODING_SYSTEM_PROMPT.lower()
     assert "do not invoke" in _CODING_SYSTEM_PROMPT.lower() or \
         "do not call" in _CODING_SYSTEM_PROMPT.lower()
+
+
+# ─── W2.3: explicit agent_id hint in _peek_agent_binding ─────────────
+
+
+def _picker_registry() -> Any:
+    """Pre-populated registry shared by the W2.3 binding-peek tests."""
+    from corlinman_agent.agents.card import AgentCard
+    from corlinman_agent.agents.registry import AgentCardRegistry
+
+    return AgentCardRegistry(
+        {
+            "researcher": AgentCard(
+                name="researcher",
+                description="finds papers",
+                system_prompt="you research",
+            ),
+            "editor": AgentCard(
+                name="editor",
+                description="tightens prose",
+                system_prompt="you edit",
+            ),
+        }
+    )
+
+
+def test_peek_agent_binding_prefers_explicit_hint() -> None:
+    """W2.3: when ``start.extra['agent_id']`` names a known card, the
+    binding peek returns that card without consulting the message-peek
+    heuristic. This is the playground "Agent picker" path: the operator
+    bypasses the auto-route by naming an explicit agent."""
+    from corlinman_agent.reasoning_loop import ChatStart
+
+    servicer = CorlinmanAgentServicer(provider_resolver=lambda _m: _FakeProvider([]))
+    servicer._builtin_agents = _picker_registry()
+
+    # Messages reference "researcher" via the heuristic, but the
+    # explicit hint names "editor" — explicit must win.
+    start = ChatStart(
+        model="orchestrator",
+        messages=[{"role": "user", "content": "@researcher find papers"}],
+        tools=[],
+        session_key="tenant-a::sess-1",
+        extra={"agent_id": "editor"},
+    )
+    bound = servicer._peek_agent_binding(start)
+    assert bound is not None
+    assert bound.name == "editor"
+
+
+def test_peek_agent_binding_unknown_hint_falls_back_to_heuristic(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """W2.3: an unknown explicit ``agent_id`` must not brick the turn.
+    The peek logs a warning and falls through to the existing
+    message-peek heuristic so the operator gets at least a best-effort
+    routing decision."""
+    from corlinman_agent.reasoning_loop import ChatStart
+
+    servicer = CorlinmanAgentServicer(provider_resolver=lambda _m: _FakeProvider([]))
+    servicer._builtin_agents = _picker_registry()
+
+    start = ChatStart(
+        model="orchestrator",
+        messages=[],
+        tools=[],
+        session_key="tenant-a::sess-1",
+        extra={"agent_id": "ghost-agent-does-not-exist"},
+    )
+    bound = servicer._peek_agent_binding(start)
+    # No messages, no heuristic match → ``None``. Hint mis-route should
+    # never raise.
+    assert bound is None
+    # Structlog renders to stdout/stderr in test mode; the warning event
+    # name and the offending id must surface so an operator chasing
+    # this in the logs can find it.
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "explicit_agent_id_unknown" in combined
+    assert "ghost-agent-does-not-exist" in combined
+
+
+def test_peek_agent_binding_no_hint_uses_heuristic_unchanged() -> None:
+    """W2.3 regression guard: when ``extra`` is empty / missing
+    ``agent_id``, the binding peek behaves exactly as pre-W2.3 — the
+    message-peek heuristic decides. This locks in backward
+    compatibility for the existing W-D1 callers."""
+    from corlinman_agent.reasoning_loop import ChatStart
+
+    servicer = CorlinmanAgentServicer(provider_resolver=lambda _m: _FakeProvider([]))
+    servicer._builtin_agents = _picker_registry()
+
+    # No ``agent_id`` in extra → fall through to heuristic. Messages
+    # don't reference any registered agent, so the result is ``None``
+    # (matching the pre-W2.3 behavior for this input).
+    start = ChatStart(
+        model="orchestrator",
+        messages=[{"role": "user", "content": "hello"}],
+        tools=[],
+        session_key="tenant-a::sess-1",
+    )
+    assert servicer._peek_agent_binding(start) is None
+
+    # Sanity: ``extra`` present but empty / ``"auto"`` / blank must not
+    # consume the explicit-hint branch.
+    for sentinel in ({}, {"agent_id": ""}, {"agent_id": "  "}, {"agent_id": "auto"}):
+        start_v = ChatStart(
+            model="orchestrator",
+            messages=[],
+            tools=[],
+            session_key="tenant-a::sess-1",
+            extra=dict(sentinel),
+        )
+        assert servicer._peek_agent_binding(start_v) is None

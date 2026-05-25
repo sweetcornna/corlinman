@@ -644,6 +644,97 @@ class _DegradedAppState:
 
 
 # ---------------------------------------------------------------------------
+# Agent registry stack (W1.2)
+# ---------------------------------------------------------------------------
+
+
+def _repo_agents_dir() -> Path:
+    """Resolve the bundled ``agents/`` dir on disk.
+
+    Walks up from this module towards the repo root, picking the first
+    ancestor that has both ``agents/`` and ``python/packages/``. This
+    keeps the gateway boot working under ``uv run`` from the repo
+    root, from a worktree, and from a wheel-installed deployment (in
+    which case the upward walk just falls off the tree and we return
+    a non-existent path — the registry loader silently ignores it).
+    """
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        candidate = parent / "agents"
+        if candidate.is_dir() and (parent / "python" / "packages").is_dir():
+            return candidate
+    # Fallback: ``./agents`` relative to CWD. ``load_from_dir_stack``
+    # skips non-existent paths so this is safe.
+    return Path("agents")
+
+
+def _build_agent_registry_stack(
+    data_dir: Path | None,
+) -> tuple[Any | None, Any | None]:
+    """Compose the three-tier agent-card registry + an async reloader.
+
+    Returns ``(registry, reload_callable)``. Either entry can be
+    ``None`` when the agent package isn't available — callers degrade
+    accordingly (the admin routes fall back to a raw filesystem scan).
+
+    The reload helper is closure-captured so the admin POST/DELETE
+    handlers can call it without threading the tier list through the
+    AdminState dataclass.
+    """
+    try:
+        from corlinman_agent.agents import AgentCardRegistry, AgentSource
+    except ImportError as exc:  # pragma: no cover — package missing
+        logger.warning("gateway.agent_registry.import_failed", error=str(exc))
+        return None, None
+
+    repo_dir = _repo_agents_dir()
+    user_dir: Path | None = None
+    if data_dir is not None:
+        user_dir = Path(data_dir) / "agents"
+        try:
+            user_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:  # pragma: no cover — defensive
+            logger.warning(
+                "gateway.agent_registry.user_overlay_mkdir_failed",
+                path=str(user_dir),
+                error=str(exc),
+            )
+            user_dir = None
+
+    def _stack() -> list[tuple[Path, AgentSource]]:
+        """Re-resolve the tier list per reload so a project overlay
+        created mid-run is picked up without a full restart."""
+        out: list[tuple[Path, AgentSource]] = [(repo_dir, "built-in")]
+        if user_dir is not None:
+            out.append((user_dir, "user"))
+        project_dir = Path.cwd() / ".corlinman" / "agents"
+        if project_dir.exists():
+            out.append((project_dir, "project"))
+        return out
+
+    try:
+        registry: Any = AgentCardRegistry.load_from_dir_stack(_stack())
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning("gateway.agent_registry.initial_load_failed", error=str(exc))
+        registry = None
+
+    async def _reload() -> Any:
+        """Re-scan the tier list. Errors are swallowed so callers
+        always get a registry back (potentially the previous one).
+        Synchronous under the hood but kept async so the route
+        handlers can await it uniformly."""
+        try:
+            return AgentCardRegistry.load_from_dir_stack(_stack())
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning(
+                "gateway.agent_registry.reload_failed", error=str(exc)
+            )
+            return None
+
+    return registry, _reload
+
+
+# ---------------------------------------------------------------------------
 # Routes composition (parallel-agent contracts diverge per submodule)
 # ---------------------------------------------------------------------------
 
@@ -770,12 +861,22 @@ def _mount_routes(
                 # (open + seed are both async, and _mount_routes is
                 # sync). Leave the field None now; the lifespan setter
                 # below populates it before FastAPI accepts requests.
+                #
+                # W1.2: build the stacked-directory agent registry +
+                # expose an async reload helper. Best-effort — the
+                # registry is optional surface (the routes degrade to
+                # the legacy filesystem scan when it's absent).
+                _agent_registry, _agent_registry_reload = (
+                    _build_agent_registry_stack(data_dir)
+                )
                 admin_a_state = admin_a_state_cls(
                     data_dir=data_dir,
                     config_path=admin_config_path,
                     admin_write_lock=asyncio.Lock(),
                     profile_store=profile_store,
                     persona_store=None,
+                    agent_registry=_agent_registry,
+                    agent_registry_reload=_agent_registry_reload,
                 )
                 set_admin_a(admin_a_state)
             app.include_router(admin_a.build_router())
@@ -1207,6 +1308,79 @@ def build_app(
                 logger.warning(
                     "gateway.system.upgrader_init_failed",
                     mode=mode,
+                    error=str(exc),
+                )
+
+        # W1.3 (multi-agent): background subagent dispatch surface.
+        #
+        # Owns the persistent :class:`SubagentTaskStore` (atomic JSON at
+        # ``$DATA_DIR/.subagent-state.json``) and an
+        # :class:`AsyncSubagentDispatcher` published onto AdminState so
+        # the ``/admin/subagents*`` routes resolve it via
+        # ``get_admin_state()``. The dispatcher is constructed with a
+        # ``run_child_factory`` placeholder that the W1.1 tool-wrapper
+        # integration replaces with a real supervisor-bound factory at
+        # the call site (until then ``run_in_background=true`` calls
+        # surface the placeholder's NotImplementedError-shaped envelope).
+        # Both pieces are best-effort: a failure leaves the routes
+        # serving a typed 503 ``subagent_dispatcher_unavailable``.
+        if resolved_data_dir is not None:
+            try:
+                from corlinman_server.system.subagent import (
+                    AsyncSubagentDispatcher,
+                    SubagentRequest,
+                    SubagentTaskStore,
+                    default_persist_path,
+                )
+
+                subagent_store = SubagentTaskStore(
+                    default_persist_path(resolved_data_dir)
+                )
+
+                async def _unwired_run_child_factory(
+                    req: "SubagentRequest",
+                ) -> Any:
+                    # Placeholder until W1.1 wires the real factory
+                    # (which closes over the supervisor + agent registry
+                    # + provider). The dispatcher's :meth:`_run` catches
+                    # this exception and flips the row to ``failed``.
+                    raise RuntimeError(
+                        "subagent run_child factory not wired; "
+                        "W1.1 must install one via "
+                        "AdminState.subagent_dispatcher.replace_factory()"
+                    )
+
+                # W3.1: thread the existing one-click-upgrade audit log
+                # into the dispatcher so background subagent lifecycle
+                # transitions surface on /admin/system Audit alongside
+                # upgrades + credential rotations. The audit log is
+                # `app.state.corlinman_audit_log` when wiring succeeded
+                # earlier in this same block; otherwise None (best-effort).
+                _audit_log = getattr(
+                    app.state, "corlinman_audit_log", None
+                )
+                subagent_dispatcher = AsyncSubagentDispatcher(
+                    store=subagent_store,
+                    run_child_factory=_unwired_run_child_factory,
+                    journal=observability_journal,
+                    audit_log=_audit_log,
+                )
+                if admin_b_state is not None:
+                    admin_b_state.subagent_store = subagent_store
+                    admin_b_state.subagent_dispatcher = subagent_dispatcher
+                app.state.corlinman_subagent_store = subagent_store
+                app.state.corlinman_subagent_dispatcher = (
+                    subagent_dispatcher
+                )
+                logger.info(
+                    "gateway.subagent.dispatcher_installed",
+                    persist=str(
+                        default_persist_path(resolved_data_dir)
+                    ),
+                )
+            except Exception as exc:  # pragma: no cover — best-effort
+                logger.warning(
+                    "gateway.subagent.dispatcher_init_failed",
                     error=str(exc),
                 )
 
