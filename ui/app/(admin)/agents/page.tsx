@@ -4,9 +4,12 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { FileText } from "lucide-react";
+import { FileText, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -16,8 +19,10 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { CreateAgentModal } from "@/components/agents/create-agent-modal";
 import {
   apiFetch,
+  deleteAgent,
   fetchModelsV2,
   listAgentBindings,
   setAgentModelBinding,
@@ -141,12 +146,75 @@ function ModelSelect({
   );
 }
 
+/**
+ * Per-row source badge. Three tiers — `built-in` (gray, immutable),
+ * `user` (amber, the operator-owned overlay), `project`
+ * (blue, workspace-scoped). The colour choice keeps built-in cards
+ * visually subordinate so the operator's overlays pop in a long list,
+ * while project rows read as "shared, not local" against the amber
+ * user tier.
+ */
+function SourceBadge({
+  source,
+}: {
+  source: AgentSummary["source"];
+}) {
+  const { t } = useTranslation();
+  const value: AgentSummary["source"] = source ?? "user";
+  if (value === "built-in") {
+    return (
+      <Badge
+        variant="outline"
+        className="border-tp-glass-edge bg-tp-glass text-tp-ink-3"
+      >
+        {t("agents.source.builtIn")}
+      </Badge>
+    );
+  }
+  if (value === "project") {
+    return (
+      <Badge className="border-transparent bg-tp-ok/20 text-tp-ok hover:bg-tp-ok/25">
+        {t("agents.source.project")}
+      </Badge>
+    );
+  }
+  return (
+    <Badge className="border-transparent bg-tp-amber/20 text-tp-amber hover:bg-tp-amber/25">
+      {t("agents.source.user")}
+    </Badge>
+  );
+}
+
 export default function AgentsPage() {
   const { t } = useTranslation();
+  const qc = useQueryClient();
+  const [createOpen, setCreateOpen] = useState(false);
+  // Two-state delete dialog: name + busy flag. `null` means closed.
+  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+
   const query = useQuery<AgentSummary[]>({
     queryKey: ["admin", "agents"],
     queryFn: () => apiFetch<AgentSummary[]>("/admin/agents"),
   });
+
+  async function handleDelete(name: string) {
+    setDeleteBusy(true);
+    try {
+      await deleteAgent(name);
+      toast.success(t("agents.deleteSuccess", { name }));
+      await qc.invalidateQueries({ queryKey: ["admin", "agents"] });
+      setPendingDelete(null);
+    } catch (err) {
+      toast.error(
+        t("agents.deleteFailed", {
+          msg: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    } finally {
+      setDeleteBusy(false);
+    }
+  }
 
   // Bindings + model list both feed the new column. Failures fall
   // through silently — the table still renders with "no binding" rows
@@ -184,11 +252,22 @@ export default function AgentsPage() {
 
   return (
     <>
-      <header className="space-y-1">
-        <h1 className="text-2xl font-semibold tracking-tight">
-          {t("agents.title")}
-        </h1>
-        <p className="text-sm text-tp-ink-3">{t("agents.subtitle")}</p>
+      <header className="flex items-start justify-between gap-4">
+        <div className="space-y-1">
+          <h1 className="text-2xl font-semibold tracking-tight">
+            {t("agents.title")}
+          </h1>
+          <p className="text-sm text-tp-ink-3">{t("agents.subtitle")}</p>
+        </div>
+        <Button
+          type="button"
+          size="sm"
+          onClick={() => setCreateOpen(true)}
+          data-testid="create-agent-open"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          {t("agents.create.button")}
+        </Button>
       </header>
 
       <section className="overflow-hidden rounded-lg border border-tp-glass-edge bg-tp-glass">
@@ -196,6 +275,7 @@ export default function AgentsPage() {
           <TableHeader>
             <TableRow className="border-b border-tp-glass-edge hover:bg-transparent">
               <TableHead className="pl-4">{t("agents.colName")}</TableHead>
+              <TableHead className="w-28">{t("agents.colSource")}</TableHead>
               <TableHead>{t("agents.colPath")}</TableHead>
               <TableHead className="w-48">
                 {t("agents.colModel", { defaultValue: "Model" })}
@@ -207,13 +287,14 @@ export default function AgentsPage() {
               <TableHead className="w-56">
                 {t("agents.colLastModified")}
               </TableHead>
+              <TableHead className="w-24">{t("agents.colActions")}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {query.isPending ? (
               Array.from({ length: 3 }).map((_, i) => (
                 <TableRow key={`sk-${i}`} className="border-b border-tp-glass-edge">
-                  {Array.from({ length: 6 }).map((_, j) => (
+                  {Array.from({ length: 8 }).map((_, j) => (
                     <TableCell key={j} className={j === 0 ? "pl-4" : undefined}>
                       <Skeleton className="h-4 w-24" />
                     </TableCell>
@@ -223,7 +304,7 @@ export default function AgentsPage() {
             ) : query.isError ? (
               <TableRow>
                 <TableCell
-                  colSpan={6}
+                  colSpan={8}
                   className="py-10 text-center text-sm text-destructive"
                 >
                   {t("agents.loadFailed")}: {(query.error as Error).message}
@@ -232,7 +313,7 @@ export default function AgentsPage() {
             ) : !query.data || query.data.length === 0 ? (
               <TableRow>
                 <TableCell
-                  colSpan={6}
+                  colSpan={8}
                   className="py-10 text-center text-sm text-tp-ink-3"
                 >
                   {t("agents.empty")}
@@ -242,6 +323,13 @@ export default function AgentsPage() {
               query.data.map((a) => {
                 const binding = bindingByName.get(a.name) ?? null;
                 const provider = binding?.provider ?? null;
+                const source: AgentSummary["source"] = a.source ?? "user";
+                const isBuiltIn = source === "built-in";
+                // Trim long descriptions to keep the row a single line —
+                // operators get the full text via tooltip on hover.
+                const desc = a.description ?? "";
+                const descShort =
+                  desc.length > 80 ? `${desc.slice(0, 80)}…` : desc;
                 return (
                   <TableRow
                     key={a.name}
@@ -259,6 +347,18 @@ export default function AgentsPage() {
                         <FileText className="h-3.5 w-3.5 text-tp-ink-3" />
                         {a.name}
                       </Link>
+                      {descShort ? (
+                        <div
+                          className="mt-0.5 text-[11px] text-tp-ink-3"
+                          title={desc}
+                          data-testid={`agent-desc-${a.name}`}
+                        >
+                          {descShort}
+                        </div>
+                      ) : null}
+                    </TableCell>
+                    <TableCell data-testid={`agent-source-${a.name}`}>
+                      <SourceBadge source={source} />
                     </TableCell>
                     <TableCell className="font-mono text-xs text-tp-ink-3">
                       {a.file_path}
@@ -290,6 +390,29 @@ export default function AgentsPage() {
                     <TableCell className="text-xs text-tp-ink-3">
                       {formatTime(a.last_modified)}
                     </TableCell>
+                    <TableCell>
+                      {isBuiltIn ? (
+                        <span
+                          className="inline-flex items-center text-[11px] text-tp-ink-3"
+                          title={t("agents.create.builtinReadonly")}
+                          data-testid={`agent-delete-disabled-${a.name}`}
+                        >
+                          —
+                        </span>
+                      ) : (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 px-2 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                          onClick={() => setPendingDelete(a.name)}
+                          data-testid={`agent-delete-${a.name}`}
+                          aria-label={t("agents.delete")}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      )}
+                    </TableCell>
                   </TableRow>
                 );
               })
@@ -297,6 +420,31 @@ export default function AgentsPage() {
           </TableBody>
         </Table>
       </section>
+
+      <CreateAgentModal
+        open={createOpen}
+        onOpenChange={setCreateOpen}
+        initialAgents={query.data}
+      />
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        onOpenChange={(o) => {
+          if (!o) setPendingDelete(null);
+        }}
+        title={t("agents.deleteConfirmTitle", {
+          name: pendingDelete ?? "",
+        })}
+        description={t("agents.deleteConfirmBody")}
+        confirmLabel={t("agents.deleteConfirmAction")}
+        cancelLabel={t("common.cancel")}
+        destructive
+        busy={deleteBusy}
+        onConfirm={async () => {
+          if (pendingDelete) await handleDelete(pendingDelete);
+        }}
+        testId="agent-delete-confirm"
+      />
     </>
   );
 }

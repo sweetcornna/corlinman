@@ -93,6 +93,14 @@ export interface AgentSummary {
   file_path: string;
   bytes: number;
   last_modified: string;
+  // W1.2: tier the registry resolved this card from. ``built-in`` rows
+  // are immutable from the API surface. Older gateways predate this
+  // field, so it's optional on the wire — callers default to
+  // ``"user"`` when missing so the source badge still renders.
+  source?: "built-in" | "user" | "project";
+  // W1.2: card.description (first line of the card body). Optional —
+  // older gateways omit it.
+  description?: string;
 }
 
 export async function listAgents(): Promise<AgentSummary[]> {
@@ -517,6 +525,159 @@ export function saveAgent(
     method: "POST",
     body: { content },
   });
+}
+
+// ---------------------------------------------------------------------------
+// Wave 2 — Agent CRUD (W2.1) + Subagent activity (W2.2)
+//
+// Mirrors `gateway/routes_admin_a/agents.py` (W1.2) and the subagent
+// surface in `routes_admin_a/subagents.py` (W1.3). The list endpoint
+// extended `AgentSummary` with `source` + `description` (added above).
+// ---------------------------------------------------------------------------
+
+/** Body for POST /admin/agents. Slug regex: `^[a-z][a-z0-9_-]*$`. */
+export interface CreateAgentBody {
+  name: string;
+  format: "yaml" | "md";
+  body: string;
+  /** Override a built-in card. Server returns 409 without this set when
+   * the name collides with a `source === "built-in"` registry entry. */
+  force?: boolean;
+}
+
+/** 201 response envelope from POST /admin/agents. Mirrors
+ * `CreatedAgentResponse` on the gateway. The `card` field is reserved
+ * for future enrichment — today the wire returns the flat row only. */
+export interface CreatedAgentResponse {
+  status: "ok";
+  name: string;
+  file_path: string;
+  bytes: number;
+  source: "user" | "project";
+  last_modified: string | null;
+}
+
+/** POST /admin/agents → 201 + created card. 400 on duplicate / invalid
+ * name; 409 ``shadows_builtin`` when name collides with a built-in and
+ * `force` is unset. */
+export function createAgent(
+  body: CreateAgentBody,
+): Promise<CreatedAgentResponse> {
+  return apiFetch<CreatedAgentResponse>("/admin/agents", {
+    method: "POST",
+    body,
+  });
+}
+
+/** DELETE /admin/agents/{name} → 204 on success. 409 for built-ins
+ * (server refuses to delete read-only cards), 404 when the overlay
+ * file doesn't exist. */
+export function deleteAgent(name: string): Promise<void> {
+  return apiFetch<void>(`/admin/agents/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+}
+
+/** POST /admin/agents/reload — re-scan the agent dir stack. Returns
+ * the post-reload registry size + every resolved card name (the
+ * gateway calls this list ``names``; consumers can ignore it when
+ * they don't need the cache-busting payload). */
+export interface ReloadAgentsResponse {
+  status: "ok";
+  count: number;
+  names: string[];
+}
+export function reloadAgents(): Promise<ReloadAgentsResponse> {
+  return apiFetch<ReloadAgentsResponse>("/admin/agents/reload", {
+    method: "POST",
+  });
+}
+
+/** Lifecycle states a subagent walks through. Mirrors
+ * `SubagentState` in `routes_admin_a/subagents.py`. */
+export type SubagentState =
+  | "queued"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "timeout"
+  | "killed"
+  | "stalled";
+
+/** One row in `GET /admin/subagents` / status / SSE frames. */
+export interface SubagentStatusResponse {
+  request_id: string;
+  parent_session_key: string;
+  subagent_type: string;
+  description: string | null;
+  state: SubagentState;
+  /** epoch-ms */
+  started_at: number | null;
+  /** epoch-ms */
+  finished_at: number | null;
+  child_session_key: string | null;
+  finish_reason: string | null;
+  tool_calls_made: number;
+  elapsed_ms: number;
+  error: string | null;
+  summary: string;
+}
+
+export interface SubagentListResponse {
+  subagents: SubagentStatusResponse[];
+}
+
+/** GET /admin/subagents?include_terminal=… */
+export function listSubagents(
+  opts: { include_terminal?: boolean } = {},
+): Promise<SubagentListResponse> {
+  const qs = new URLSearchParams();
+  if (opts.include_terminal !== undefined) {
+    qs.set("include_terminal", String(opts.include_terminal));
+  }
+  const suffix = qs.toString() ? `?${qs}` : "";
+  return apiFetch<SubagentListResponse>(`/admin/subagents${suffix}`);
+}
+
+/** GET /admin/subagents/{request_id}/status */
+export function fetchSubagentStatus(
+  request_id: string,
+): Promise<SubagentStatusResponse> {
+  return apiFetch<SubagentStatusResponse>(
+    `/admin/subagents/${encodeURIComponent(request_id)}/status`,
+  );
+}
+
+/** GET /admin/subagents/{request_id}/events — per-child SSE.
+ * Frames carry the same SubagentStatusResponse JSON; close on terminal
+ * state. Callers attach `addEventListener("subagent", …)` and own
+ * cleanup via `.close()`. */
+export function streamSubagentEvents(request_id: string): EventSource {
+  return new EventSource(
+    `${GATEWAY_BASE_URL}/admin/subagents/${encodeURIComponent(request_id)}/events`,
+    { withCredentials: true },
+  );
+}
+
+/** GET /admin/subagents/events/live — global overview SSE.
+ * Frames: `event: subagent\ndata: <SubagentStatus JSON>\n\n`. */
+export function streamSubagentsOverview(): EventSource {
+  return new EventSource(
+    `${GATEWAY_BASE_URL}/admin/subagents/events/live`,
+    { withCredentials: true },
+  );
+}
+
+/** POST /admin/subagents/{request_id}/kill — best-effort cancel. Server
+ * returns the post-kill status snapshot so the UI can transition the
+ * row to `killed` immediately. */
+export function killSubagent(
+  request_id: string,
+): Promise<SubagentStatusResponse> {
+  return apiFetch<SubagentStatusResponse>(
+    `/admin/subagents/${encodeURIComponent(request_id)}/kill`,
+    { method: "POST", body: {} },
+  );
 }
 
 // ---------------------------------------------------------------------------
