@@ -26,6 +26,7 @@ from corlinman_channels._status import (
     TODO_WRITE_TOOL,
     TRUNCATION_MARKER,
     MutableSpinner,
+    chunk_reply,
     format_ask_user,
     format_todo_list,
     format_tool_result,
@@ -102,6 +103,80 @@ class TestTruncateReply:
         out = truncate_reply(body, limit=2000)
         assert out.endswith(TRUNCATION_MARKER)
         assert len(out) <= 2000
+
+
+# ---------------------------------------------------------------------------
+# chunk_reply — multi-message split for final replies. Tests cover the
+# boundary heuristics (paragraph → line → sentence → hard cut) plus the
+# (n/N) prefix contract.
+# ---------------------------------------------------------------------------
+
+
+class TestChunkReply:
+    def test_short_body_passes_through_unchunked(self) -> None:
+        assert chunk_reply("hello") == ["hello"]
+
+    def test_exact_limit_passes_through(self) -> None:
+        body = "x" * TEXT_LIMIT
+        assert chunk_reply(body) == [body]
+
+    def test_split_preserves_full_content(self) -> None:
+        # 3 paragraphs each ~1700 chars → guaranteed split at 4000-limit.
+        para = "Sentence one. Sentence two. " + "y" * 1670 + "\n\n"
+        body = para * 3
+        chunks = chunk_reply(body)
+        assert len(chunks) >= 2
+        # Rejoin strips the "(n/N)\n" prefix from each chunk and
+        # asserts the visible content matches the input (modulo trim
+        # whitespace at chunk boundaries).
+        joined = "".join(c.split("\n", 1)[1] for c in chunks)
+        # All characters from the original body should be present.
+        # (Greedy splitter may trim whitespace at boundaries — assert by
+        # length proximity rather than exact match.)
+        assert len(joined) >= len(body) - 4 * len(chunks)
+        # Every chunk is within the limit.
+        for c in chunks:
+            assert len(c) <= TEXT_LIMIT
+        # No chunk carries the truncation marker.
+        for c in chunks:
+            assert "回复过长" not in c
+
+    def test_split_uses_paragraph_boundary(self) -> None:
+        # Build 6000 chars with one obvious paragraph boundary.
+        before = "A" * 3000 + "\n\nB"
+        body = before + "B" * 2998
+        chunks = chunk_reply(body, limit=4000)
+        assert len(chunks) == 2
+        # Chunk 1 should contain the run of A's; chunk 2 the run of B's.
+        c1, c2 = chunks
+        assert "A" in c1 and c1.count("A") >= 1000
+        assert "B" in c2 and c2.count("B") >= 1000
+
+    def test_chunks_carry_index_prefix(self) -> None:
+        body = "x" * 10_000  # forces ≥ 3 chunks at default limit.
+        chunks = chunk_reply(body)
+        assert len(chunks) >= 3
+        n = len(chunks)
+        for i, c in enumerate(chunks, start=1):
+            assert c.startswith(f"({i}/{n})\n"), f"chunk {i} prefix: {c[:20]!r}"
+
+    def test_custom_limit(self) -> None:
+        body = "x" * 2500
+        chunks = chunk_reply(body, limit=1000)
+        assert len(chunks) >= 3
+        for c in chunks:
+            assert len(c) <= 1000
+
+    def test_cjk_sentence_boundary(self) -> None:
+        # Two long Chinese paragraphs separated by 。 — splitter should
+        # prefer the 。 boundary over a mid-character cut.
+        body = "汉" * 3500 + "。" + "字" * 1000
+        chunks = chunk_reply(body, limit=4000)
+        assert len(chunks) >= 2
+        # Chunk 1 should end at or near the 。 (after prefix stripping).
+        first_body = chunks[0].split("\n", 1)[1] if "\n" in chunks[0] else chunks[0]
+        # The 。 lands within the first chunk's body.
+        assert "。" in first_body
 
 
 # ---------------------------------------------------------------------------

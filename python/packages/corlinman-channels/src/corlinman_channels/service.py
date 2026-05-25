@@ -112,6 +112,7 @@ from corlinman_channels._status import (
     parse_ask_user_args as _parse_ask_user_args,
     parse_send_attachment_args as _parse_send_attachment_args,
     tool_arg_preview as _tool_arg_preview,
+    chunk_reply,
     truncate_reply,
     try_append_footer,
 )
@@ -785,6 +786,13 @@ async def _pulse(
         return
 
 
+# NapCat / OneBot's practical per-QQ-message ceiling. Real protocol
+# limit varies by upstream client (NapCat tops out around 4500-5000
+# chars in our testing); leave a safety margin so we never silently
+# overshoot.
+_QQ_TEXT_LIMIT: int = 3800
+
+
 async def _qq_input_status_pulse(
     adapter: OneBotAdapter,
     user_id: int,
@@ -1028,8 +1036,23 @@ async def handle_one_qq(
                 len(activity),
             )
 
-    action = _build_reply_action(event, body)
-    await adapter.send_action(action)
+    # NapCat / OneBot don't expose an exact per-message char limit
+    # in the protocol, but in practice 4000-5000 chars per QQ message
+    # is the practical ceiling before NapCat itself truncates. Split
+    # on natural boundaries below that — same behaviour as Telegram /
+    # Discord / Slack / Feishu — instead of letting NapCat silently
+    # cut off the reply.
+    chunks = chunk_reply(body, _QQ_TEXT_LIMIT)
+    if len(chunks) > 1:
+        _log.info(
+            "qq reply split user=%s len=%d chunks=%d",
+            event.user_id,
+            len(body),
+            len(chunks),
+        )
+    for chunk in chunks:
+        action = _build_reply_action(event, chunk)
+        await adapter.send_action(action)
     if inbox is not None and inbox_id is not None:
         try:
             await inbox.mark_done(inbox_id)
@@ -1235,14 +1258,30 @@ _TG_REASONING_PREVIEW_CHARS = _REASONING_PREVIEW_CHARS
 
 
 def _truncate_for_telegram(body: str) -> str:
-    """Clamp ``body`` to :data:`_TELEGRAM_TEXT_LIMIT`, appending a marker
-    when truncation actually happened. Logs the original length so the
-    drop is observable in production."""
+    """Deprecated wrapper kept for tests that exercise the old truncate path.
+
+    The live final-emit path now uses :func:`chunk_reply` + multi-send
+    so users never see the truncation marker for legitimate long replies.
+    """
     original_len = len(body)
     if original_len <= _TELEGRAM_TEXT_LIMIT:
         return body
     _log.warning("telegram reply truncated len=%d", original_len)
     return truncate_reply(body, _TELEGRAM_TEXT_LIMIT)
+
+
+def _chunk_for_telegram(body: str) -> list[str]:
+    """Split a long Telegram reply into ≤ 4000-char chunks (multi-send).
+
+    Logs the original length when splitting actually happens so the
+    operator can audit how much extra traffic the bot is generating.
+    """
+    chunks = chunk_reply(body, _TELEGRAM_TEXT_LIMIT)
+    if len(chunks) > 1:
+        _log.info(
+            "telegram reply split len=%d chunks=%d", len(body), len(chunks)
+        )
+    return chunks
 
 
 async def _telegram_typing_pulse(
@@ -1485,13 +1524,19 @@ async def handle_one_telegram(
     # Final emit is best-effort: surface transport / API failures via
     # the logger instead of propagating, so a 429 or "blocked by user"
     # at the very end never crashes the channel loop.
-    body = _truncate_for_telegram(body)
-    # W4.1 — append the post-turn observability footer if non-empty.
-    # ``try_append_footer`` gracefully drops the footer when the
-    # composed body would overflow the channel cap.
+    #
+    # Multi-message split: when the body exceeds Telegram's
+    # editMessageText limit we no longer truncate with a "[已截断]"
+    # marker — we split on natural boundaries and send chunks 2..N as
+    # follow-up sendMessage calls keyed to the original reply target,
+    # so the user gets the full response.
+    chunks = _chunk_for_telegram(body)
+    # W4.1 — append the post-turn observability footer to the LAST chunk
+    # only (one footer per turn). ``try_append_footer`` drops it
+    # gracefully if attaching would push the chunk past the cap.
     footer = _build_footer_for_outcome(outcome, footer_state)
     if footer:
-        body = try_append_footer(body, footer, _TELEGRAM_TEXT_LIMIT)
+        chunks[-1] = try_append_footer(chunks[-1], footer, _TELEGRAM_TEXT_LIMIT)
 
     # If the agent called ``ask_user`` with canned options, surface them
     # as a clickable inline keyboard on the final reply. We send a fresh
@@ -1500,18 +1545,27 @@ async def handle_one_telegram(
     # message that was sent without one — the cleaner path is a new
     # send, and the placeholder is overwritten with a benign final
     # status line so the user isn't left looking at "✍️ 生成回复中...".
+    # When the body splits across multiple chunks we keep the keyboard
+    # on the last (or only) chunk so the buttons sit visually after the
+    # final reply text.
     keyboard = _build_ask_user_keyboard(spinner.last_ask_user_args)
     if keyboard is not None:
         try:
+            # Edit the placeholder with chunk 0 (no buttons; buttons
+            # land on the final send below).
             if placeholder_id is not None:
-                # Replace the placeholder with the question body (no
-                # keyboard yet) so a stale spinner line doesn't survive.
-                # The buttons attach to the fresh send below — this two-
-                # step keeps the user-visible artefact ordering correct.
-                await sender.edit_message_text(chat_id, placeholder_id, body)
+                await sender.edit_message_text(
+                    chat_id, placeholder_id, chunks[0]
+                )
+            # Middle chunks (if any) as plain follow-ups.
+            for chunk in chunks[1:-1]:
+                await sender.send_message(
+                    chat_id, chunk, reply_to_message_id=reply_to
+                )
+            # Last chunk carries the keyboard.
             await sender.send_message(
                 chat_id,
-                body,
+                chunks[-1] if len(chunks) > 1 else chunks[0],
                 reply_to_message_id=reply_to,
                 inline_keyboard=keyboard,
             )
@@ -1521,10 +1575,15 @@ async def handle_one_telegram(
 
     try:
         if placeholder_id is not None:
-            await sender.edit_message_text(chat_id, placeholder_id, body)
+            await sender.edit_message_text(chat_id, placeholder_id, chunks[0])
         else:
             await sender.send_message(
-                chat_id, body, reply_to_message_id=reply_to
+                chat_id, chunks[0], reply_to_message_id=reply_to
+            )
+        # Follow-up chunks (only when the body actually split).
+        for chunk in chunks[1:]:
+            await sender.send_message(
+                chat_id, chunk, reply_to_message_id=reply_to
             )
     except Exception as exc:  # noqa: BLE001
         _log.warning("telegram final emit failed: %s", exc)
@@ -1983,16 +2042,24 @@ async def handle_one_discord(
                     _log.warning("discord final emit failed: %s", exc)
             return
 
-    body = truncate_reply(body, _DISCORD_TEXT_LIMIT)
+    chunks = chunk_reply(body, _DISCORD_TEXT_LIMIT)
+    if len(chunks) > 1:
+        _log.info(
+            "discord reply split len=%d chunks=%d", len(body), len(chunks)
+        )
     footer = _build_footer_for_outcome(outcome, footer_state)
     if footer:
-        body = try_append_footer(body, footer, _DISCORD_TEXT_LIMIT)
+        chunks[-1] = try_append_footer(chunks[-1], footer, _DISCORD_TEXT_LIMIT)
     try:
         if placeholder_id is not None:
-            await sender.edit_message(channel_id, placeholder_id, body)
+            await sender.edit_message(channel_id, placeholder_id, chunks[0])
         else:
             await sender.send_message(
-                channel_id, body, reply_to_message_id=reply_to
+                channel_id, chunks[0], reply_to_message_id=reply_to
+            )
+        for chunk in chunks[1:]:
+            await sender.send_message(
+                channel_id, chunk, reply_to_message_id=reply_to
             )
     except Exception as exc:  # noqa: BLE001
         _log.warning("discord final emit failed: %s", exc)
@@ -2198,15 +2265,21 @@ async def handle_one_slack(
                     _log.warning("slack final emit failed: %s", exc)
             return
 
-    body = truncate_reply(body, _SLACK_TEXT_LIMIT)
+    chunks = chunk_reply(body, _SLACK_TEXT_LIMIT)
+    if len(chunks) > 1:
+        _log.info(
+            "slack reply split len=%d chunks=%d", len(body), len(chunks)
+        )
     footer = _build_footer_for_outcome(outcome, footer_state)
     if footer:
-        body = try_append_footer(body, footer, _SLACK_TEXT_LIMIT)
+        chunks[-1] = try_append_footer(chunks[-1], footer, _SLACK_TEXT_LIMIT)
     try:
         if placeholder_ts is not None:
-            await sender.update_message(channel, placeholder_ts, body)
+            await sender.update_message(channel, placeholder_ts, chunks[0])
         else:
-            await sender.send_message(channel, body, thread_ts=thread_ts)
+            await sender.send_message(channel, chunks[0], thread_ts=thread_ts)
+        for chunk in chunks[1:]:
+            await sender.send_message(channel, chunk, thread_ts=thread_ts)
     except Exception as exc:  # noqa: BLE001
         _log.warning("slack final emit failed: %s", exc)
 
@@ -2413,16 +2486,24 @@ async def handle_one_feishu(
                     _log.warning("feishu final emit failed: %s", exc)
             return
 
-    body = truncate_reply(body, _FEISHU_TEXT_LIMIT)
+    chunks = chunk_reply(body, _FEISHU_TEXT_LIMIT)
+    if len(chunks) > 1:
+        _log.info(
+            "feishu reply split len=%d chunks=%d", len(body), len(chunks)
+        )
     footer = _build_footer_for_outcome(outcome, footer_state)
     if footer:
-        body = try_append_footer(body, footer, _FEISHU_TEXT_LIMIT)
+        chunks[-1] = try_append_footer(chunks[-1], footer, _FEISHU_TEXT_LIMIT)
     try:
         if placeholder_id is not None:
-            await sender.update_message(placeholder_id, body)
+            await sender.update_message(placeholder_id, chunks[0])
         else:
             await sender.send_message(
-                chat_id, body, reply_to_message_id=reply_to
+                chat_id, chunks[0], reply_to_message_id=reply_to
+            )
+        for chunk in chunks[1:]:
+            await sender.send_message(
+                chat_id, chunk, reply_to_message_id=reply_to
             )
     except Exception as exc:  # noqa: BLE001
         _log.warning("feishu final emit failed: %s", exc)

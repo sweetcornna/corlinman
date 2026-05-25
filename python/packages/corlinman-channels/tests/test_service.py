@@ -1348,13 +1348,19 @@ class TestHandleOneTelegram:
         assert len(sender.chat_actions) == actions_at_stop
 
     @pytest.mark.asyncio
-    async def test_long_reply_is_truncated(self) -> None:
-        """Replies longer than Telegram's 4096-char cap must be clamped
-        with a truncation marker before edit/send — otherwise the API
-        returns 400 and the user sees nothing."""
+    async def test_long_reply_splits_into_multiple_messages(self) -> None:
+        """Replies longer than Telegram's 4000-char cap MUST be split
+        into chunks and sent as separate messages — never truncated with
+        a "[已截断]" marker. The placeholder edit gets chunk 1; chunks
+        2..N are follow-up sendMessage calls keyed to the same reply
+        target. Together the chunks must reconstruct the full body."""
         import asyncio
+        import re
 
-        big = "x" * 5000
+        # Use varied content so chunk_reply has real boundaries to find.
+        # Pure "xxxxx" lacks structure so it'd hard-cut at the limit —
+        # interleave paragraphs to exercise the natural-boundary path.
+        big = ("Paragraph " + "x" * 50 + ".\n\n") * 200
         svc = _ScriptedChatService([
             _Ev(kind="token_delta", text=big),
             _Ev(kind="done"),
@@ -1372,12 +1378,30 @@ class TestHandleOneTelegram:
 
         await handle_one_telegram(svc, inbound, "m", sender, asyncio.Event())  # type: ignore[arg-type]
 
-        # The final edit (placeholder path) must be ≤ 4096 chars and
-        # end with the truncation marker.
-        assert sender.edits, "expected a final edit with the reply"
-        _, _, final_text = sender.edits[-1]
-        assert len(final_text) <= 4096
-        assert final_text.endswith("[...回复过长,已截断]")
+        # The placeholder edit holds chunk 1.
+        assert sender.edits, "expected a final edit with chunk 1"
+        _, _, chunk1 = sender.edits[-1]
+        assert len(chunk1) <= 4096
+        # Chunk 1 carries the (1/N) prefix.
+        assert re.match(r"^\(1/\d+\)\n", chunk1), (
+            f"chunk 1 missing prefix: {chunk1[:30]!r}"
+        )
+        # Follow-up sends carry chunks 2..N. _FakeTelegramSender.sent
+        # records (chat_id, text, reply_to_message_id) tuples. The very
+        # first send is the placeholder ("🧠 思考中..."); the rest are
+        # our chunk follow-ups.
+        followups = [m for m in sender.sent if "🧠" not in m[1]]
+        assert len(followups) >= 1, "expected ≥1 follow-up send for long reply"
+        for i, (_, body, _) in enumerate(followups, start=2):
+            assert re.match(rf"^\({i}/\d+\)\n", body), (
+                f"chunk {i} missing prefix: {body[:30]!r}"
+            )
+            assert len(body) <= 4096
+        # No chunk should contain the truncation marker — the whole
+        # body is preserved across the split.
+        assert "回复过长" not in chunk1
+        for _, body, _ in followups:
+            assert "回复过长" not in body
 
     @pytest.mark.asyncio
     async def test_supplemented_done_skips_final_emit(self) -> None:

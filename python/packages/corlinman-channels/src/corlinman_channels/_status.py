@@ -61,6 +61,7 @@ __all__ = [
     "parse_send_attachment_args",
     "tool_arg_preview",
     "truncate_reply",
+    "chunk_reply",
     "try_append_footer",
 ]
 
@@ -131,14 +132,77 @@ def truncate_reply(body: str, limit: int = TEXT_LIMIT) -> str:
     """Clamp ``body`` to ``limit`` chars, appending :data:`TRUNCATION_MARKER`
     when truncation actually happened.
 
-    The marker eats ~32 chars from the budget so the final string is still
-    within the limit. The caller is expected to log the original length so
-    drops stay observable in production.
+    Used only for surfaces that physically cannot multi-send (the spinner
+    line is edited in place, so it gets one shot per render). Final
+    replies should call :func:`chunk_reply` + multi-send instead — see
+    that helper for the rationale.
     """
     if len(body) <= limit:
         return body
     # Leave room for the marker (≤32 chars).
     return body[: limit - 32] + TRUNCATION_MARKER
+
+
+def chunk_reply(
+    body: str,
+    limit: int = TEXT_LIMIT,
+    *,
+    prefix_overhead: int = 16,
+) -> list[str]:
+    """Split ``body`` into chunks ≤ ``limit`` chars, on natural boundaries.
+
+    Returns a list of strings each prefixed with ``(n/N)\\n`` when there
+    is more than one chunk so the reader knows the message is continued.
+    A single-chunk body is returned unchanged.
+
+    ``prefix_overhead`` reserves room for the ``(n/N)\\n`` header inside
+    each chunk's char budget. Default 16 covers ``(99/99)\\n`` plus a
+    safety margin.
+
+    Boundary preference: paragraph break (``\\n\\n``) → line break
+    (``\\n``) → sentence (``. ``/``。``) → hard char cut. The greedy
+    walker always picks the **latest** boundary within the effective
+    budget; if no boundary lands past half the budget the cut is forced
+    at ``effective`` to avoid pathological tiny chunks.
+
+    Unlike :func:`truncate_reply` this never appends a "truncated"
+    marker — every character of ``body`` is preserved across the
+    returned chunks. The caller is responsible for sending each chunk
+    via its channel's transport (multiple ``sendMessage`` for Telegram /
+    Discord / Slack / Feishu / QQ).
+    """
+    if len(body) <= limit:
+        return [body]
+
+    effective = max(limit - prefix_overhead, limit // 2)
+    half = effective // 2
+    chunks: list[str] = []
+    remaining = body
+    while remaining:
+        if len(remaining) <= effective:
+            chunks.append(remaining)
+            break
+        # Find the latest natural boundary within [half, effective].
+        window = remaining[:effective]
+        cut = window.rfind("\n\n")
+        if cut < half:
+            cut = window.rfind("\n")
+        if cut < half:
+            # Sentence boundaries — ASCII period+space, CJK full-stop.
+            cut = max(window.rfind(". "), window.rfind("。"), window.rfind("！"), window.rfind("？"))
+            if cut > 0:
+                cut += 1  # include the punctuation itself
+        if cut < half:
+            cut = effective  # hard char cut
+        # Slice; don't strip leading/trailing whitespace from chunk
+        # contents — preserves code-block fidelity if the body contains
+        # ``` ... ``` spanning chunks.
+        chunks.append(remaining[:cut].rstrip())
+        remaining = remaining[cut:].lstrip("\n")
+    if len(chunks) == 1:
+        return chunks
+    n = len(chunks)
+    return [f"({i + 1}/{n})\n{c}" for i, c in enumerate(chunks)]
 
 
 def tool_arg_preview(tool: str, args_json: bytes | str) -> str:
