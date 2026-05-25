@@ -1643,6 +1643,123 @@ export const en = {
   },
 
   skills: {
+    title: "Skill library",
+    subtitle: "Procedural knowledge bundles your agents can call into",
+    installed: {
+      tab: "Installed",
+      // Stat tiles
+      statTotal: "Total",
+      statBundled: "Bundled",
+      statUser: "User",
+      statHub: "From hub",
+      statFootTotal: "installed in this profile",
+      statFootBundled: "ship with corlinman",
+      statFootUser: "added locally",
+      statFootHub: "from ClawHub",
+      // Filter chips
+      filterAll: "All",
+      filterBundled: "Bundled",
+      filterUser: "User",
+      filterHub: "From hub",
+      filterPinned: "Pinned",
+      filterLabel: "skill filter",
+      // Search
+      searchPlaceholder: "Search installed skills…",
+      // Empty states
+      emptyTitle: "No skills installed yet",
+      emptyHint: "Browse the hub to add one.",
+      emptyFilteredTitle: "No skills match",
+      emptyFilteredHint: "Adjust the search or filter to widen the results.",
+      // Offline state
+      offlineTitle: "Gateway offline",
+      offlineHint: "The installed list will refresh once the gateway responds.",
+      // Grid + card aria
+      gridAria: "Installed skills",
+      cardAria: "Skill {{name}}",
+      noDescription: "No description provided.",
+      // Row actions
+      pin: "Pin {{name}}",
+      unpin: "Unpin {{name}}",
+      delete: "Remove {{name}}",
+      bundledTooltip: "Bundled skills ship with corlinman and cannot be removed.",
+      // Delete confirmation dialog (flat names — `delete` leaf + nested
+      // `delete.*` would collide under i18next's default separator).
+      deleteConfirmTitle: "Remove {{name}}?",
+      deleteConfirmBody:
+        "Type {{name}} to confirm. This permanently removes the skill from this profile.",
+      deleteConfirmRetype: "Re-type the skill name {{name}} to confirm",
+      deleteConfirmAction: "Remove",
+      // Toasts
+      deleteSuccess: "Removed {{name}}",
+      deleteFailed: "Could not remove {{name}}: {{message}}",
+      pinFailed: "Could not pin {{name}}: {{message}}",
+    },
+    origin: {
+      bundled: "Bundled",
+      user: "User",
+      hub: "Hub",
+      // `bundled.tooltip` would collide with the `bundled` leaf above —
+      // flattened to `bundledTooltip`. Surfaced in the W2.3 report.
+      bundledTooltip: "Ships with corlinman. Edit your profile copy to customise.",
+    },
+    hub: {
+      tab: "Browse hub",
+      search: {
+        placeholder: "Search the openclaw skill hub…",
+      },
+      sort: {
+        label: "Sort",
+        trending: "Trending",
+        downloads: "Downloads",
+        stars: "Stars",
+        updated: "Recently updated",
+      },
+      gridLabel: "Hub skills",
+      offline: {
+        title: "Skill hub unreachable",
+        hint: "We could not reach clawhub.ai. Check your network or try again.",
+        retry: "Retry",
+      },
+      empty: {
+        searchTitle: "No skills match",
+        searchHint: "Try a different keyword or clear the search.",
+        featuredTitle: "No featured skills right now",
+        featuredHint: "Check back once curators publish new picks.",
+      },
+      detail: {
+        close: "Close",
+        install: "Install",
+        homepage: "Homepage",
+        loading: "Loading skill…",
+        errorUnknown: "Could not load skill details.",
+        scanTitle: "Security scan",
+        scan: {
+          pass: "Security scan passed",
+          warn: "Security scan warning",
+          fail: "Security scan failed",
+        },
+        versionsTitle: "Versions",
+        readmeTitle: "SKILL.md preview",
+      },
+      install: {
+        titleRunning: "Installing…",
+        titleDone: "Install complete",
+        titleFailed: "Install failed",
+        subtitle: "{{name}}",
+        phase: {
+          download: { started: "Downloading" },
+          extract: { started: "Extracting" },
+          installed: "Installed",
+        },
+        errorTitle: "Install failed",
+        errorUnknown: "Install failed for an unknown reason.",
+        errorStream: "Lost connection to the install stream.",
+        toastSuccess: "Installed {{name}}",
+        retry: "Retry",
+        close: "Close",
+        done: "Done",
+      },
+    },
     tp: {
       leadPill: "{{total}} skills · {{requires}} need install · {{withTools}} with tools",
       proseLead: "{{total}} skills loaded",
@@ -1737,6 +1854,13 @@ export const en = {
       builtIn: "built-in",
       user: "user",
       project: "project",
+    },
+    skills: {
+      hint: {
+        title: "Add more skills",
+        body: "Your profile has {{count}} skills. Browse the hub for procedural knowledge bundles.",
+        cta: "Browse skill hub",
+      },
     },
   },
 

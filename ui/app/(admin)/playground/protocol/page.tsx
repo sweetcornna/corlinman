@@ -1,6 +1,8 @@
 "use client";
 
 import * as React from "react";
+import Link from "next/link";
+import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";
@@ -22,6 +24,17 @@ import {
   streamFunctionCall,
   type ProtocolVariant,
 } from "@/lib/mocks/protocol-streams";
+import { listInstalledSkills } from "@/lib/api";
+import { ActiveProfileContext } from "@/lib/context/active-profile";
+
+/**
+ * W2.3 — when the active profile has fewer than this many skills mounted,
+ * the playground renders a glass-card hint pointing the operator at
+ * ``/admin/skills`` so they can pick up procedural knowledge bundles from
+ * the openclaw skill hub. Threshold is intentionally low — once an
+ * operator has a handful of skills the hint stops being useful signal.
+ */
+const SKILLS_HINT_THRESHOLD = 5;
 
 const MODELS = ["gpt-4o", "claude-3.5-sonnet", "qwen2.5-72b"] as const;
 type Model = (typeof MODELS)[number];
@@ -556,6 +569,16 @@ export default function ProtocolPlaygroundPage() {
         ) : null}
       </section>
 
+      {/* ─── LOW-SKILL HINT (W2.3) ────────────────────────────
+          When the active profile has < SKILLS_HINT_THRESHOLD skills
+          mounted, point the operator at the hub so they don't sit on an
+          empty skill library. The hint reads from the same
+          ``/admin/skills`` row endpoint W2.1's Installed tab consumes;
+          it stays hidden while the query is pending or errors so a
+          gateway hiccup doesn't false-positive into "you have zero
+          skills". */}
+      <PlaygroundSkillsHint />
+
       {/* Scope the split-pane divider colours to the Tidepool amber palette
           without touching the shared SplitPane component. Uses a raw
           <style> block via dangerouslySetInnerHTML so we don't introduce a
@@ -902,4 +925,74 @@ function buildFnFrames(text: string): unknown[] {
     const tail = lines.slice(-RAW_FRAMES_MAX);
     return tail.map((line, i) => ({ frame: i + 1, raw: line }));
   }
+}
+
+/**
+ * W2.3 — low-skill-count CTA.
+ *
+ * Renders a single-line glass card that nudges the operator to browse the
+ * skill hub when their active profile is under-tooled. Reads the same
+ * ``GET /admin/skills`` row endpoint W2.1's Installed tab consumes so the
+ * count stays in lock-step with what the user actually sees on the
+ * Installed surface.
+ *
+ * Renders nothing when:
+ *
+ *   * the page is rendered outside :class:`ActiveProfileProvider` (e.g.
+ *     standalone snapshot tests) — the context is ``null`` so we bail
+ *     before issuing a query;
+ *   * the query is still pending — avoids flashing "you have 0 skills"
+ *     during the first paint;
+ *   * the query errored — a gateway hiccup shouldn't false-positive into a
+ *     hint;
+ *   * the profile already has ``>= SKILLS_HINT_THRESHOLD`` skills.
+ */
+function PlaygroundSkillsHint(): React.ReactElement | null {
+  const { t } = useTranslation();
+  const ctx = React.useContext(ActiveProfileContext);
+  const slug = ctx?.slug ?? null;
+
+  const query = useQuery({
+    queryKey: ["admin", "skills", "installed", slug ?? "__no_profile"],
+    queryFn: () => listInstalledSkills(slug ?? "default"),
+    enabled: slug !== null,
+    retry: false,
+    staleTime: 30_000,
+  });
+
+  if (!ctx || query.isPending || query.isError) return null;
+
+  const rows = query.data?.rows ?? [];
+  const count = rows.length;
+  if (count >= SKILLS_HINT_THRESHOLD) return null;
+
+  return (
+    <GlassPanel
+      variant="soft"
+      className="flex flex-col gap-2 p-4 sm:flex-row sm:items-center sm:justify-between sm:gap-4 sm:p-5"
+      data-testid="playground-skills-hint"
+    >
+      <div className="flex min-w-0 flex-col gap-1">
+        <h3 className="text-[14px] font-semibold text-tp-ink">
+          {t("playground.skills.hint.title")}
+        </h3>
+        <p className="text-[13px] leading-[1.55] text-tp-ink-2">
+          {t("playground.skills.hint.body", { count })}
+        </p>
+      </div>
+      <Link
+        href="/admin/skills"
+        className={cn(
+          "inline-flex w-fit shrink-0 items-center gap-1.5 rounded-full px-3 py-1.5",
+          "border border-tp-amber/40 bg-tp-amber/10 text-[12px] font-mono text-tp-amber",
+          "hover:bg-tp-amber/20 hover:text-tp-amber",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
+        )}
+        data-testid="playground-skills-hint-cta"
+      >
+        {t("playground.skills.hint.cta")}
+        <span aria-hidden>→</span>
+      </Link>
+    </GlassPanel>
+  );
 }

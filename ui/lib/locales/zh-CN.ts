@@ -1606,6 +1606,122 @@ export const zhCN = {
   },
 
   skills: {
+    title: "技能库",
+    subtitle: "可被你的智能体调用的程序化知识包",
+    installed: {
+      tab: "已安装",
+      // 统计卡片
+      statTotal: "总数",
+      statBundled: "内置",
+      statUser: "用户",
+      statHub: "来自中心",
+      statFootTotal: "已挂载到当前 profile",
+      statFootBundled: "随 corlinman 一并出厂",
+      statFootUser: "本地添加",
+      statFootHub: "来自 ClawHub",
+      // 过滤芯片
+      filterAll: "全部",
+      filterBundled: "内置",
+      filterUser: "用户",
+      filterHub: "来自中心",
+      filterPinned: "已置顶",
+      filterLabel: "技能筛选",
+      // 搜索
+      searchPlaceholder: "搜索已安装的技能…",
+      // 空态
+      emptyTitle: "尚未安装任何技能",
+      emptyHint: "前往技能中心挑一个吧。",
+      emptyFilteredTitle: "没有匹配的技能",
+      emptyFilteredHint: "调整搜索或筛选条件以扩大范围。",
+      // 离线
+      offlineTitle: "gateway 离线",
+      offlineHint: "连接恢复后，已安装列表将自动刷新。",
+      // 网格 + 卡片 aria
+      gridAria: "已安装技能",
+      cardAria: "技能 {{name}}",
+      noDescription: "未提供描述。",
+      // 行操作
+      pin: "置顶 {{name}}",
+      unpin: "取消置顶 {{name}}",
+      delete: "移除 {{name}}",
+      bundledTooltip: "内置技能随 corlinman 出厂，无法移除。",
+      // 移除确认弹窗（采用扁平命名 —— `delete` 叶节点与 `delete.*`
+      // 在 i18next 默认分隔符下会冲突）。
+      deleteConfirmTitle: "移除 {{name}}？",
+      deleteConfirmBody:
+        "输入 {{name}} 进行确认。该操作会将该技能从此 profile 永久移除。",
+      deleteConfirmRetype: "再次输入技能名 {{name}} 以确认",
+      deleteConfirmAction: "移除",
+      // Toast
+      deleteSuccess: "已移除 {{name}}",
+      deleteFailed: "无法移除 {{name}}：{{message}}",
+      pinFailed: "无法置顶 {{name}}：{{message}}",
+    },
+    origin: {
+      bundled: "内置",
+      user: "用户",
+      hub: "中心",
+      // `bundled` 同时作字符串与对象会冲突，扁平化为 `bundledTooltip`。
+      bundledTooltip: "随 corlinman 一并出厂。如需自定义，请编辑当前 profile 的副本。",
+    },
+    hub: {
+      tab: "浏览中心",
+      search: {
+        placeholder: "搜索 openclaw 技能中心…",
+      },
+      sort: {
+        label: "排序",
+        trending: "热门",
+        downloads: "下载量",
+        stars: "星标",
+        updated: "最近更新",
+      },
+      gridLabel: "技能中心列表",
+      offline: {
+        title: "技能中心无法访问",
+        hint: "无法连接 clawhub.ai。请检查网络后再试。",
+        retry: "重试",
+      },
+      empty: {
+        searchTitle: "没有匹配的技能",
+        searchHint: "换个关键词，或清空搜索框。",
+        featuredTitle: "暂无推荐技能",
+        featuredHint: "等待编辑发布新一轮精选后再来看看。",
+      },
+      detail: {
+        close: "关闭",
+        install: "安装",
+        homepage: "主页",
+        loading: "技能加载中…",
+        errorUnknown: "无法加载技能详情。",
+        scanTitle: "安全扫描",
+        scan: {
+          pass: "安全扫描通过",
+          warn: "安全扫描警告",
+          fail: "安全扫描未通过",
+        },
+        versionsTitle: "版本",
+        readmeTitle: "SKILL.md 预览",
+      },
+      install: {
+        titleRunning: "安装中…",
+        titleDone: "安装完成",
+        titleFailed: "安装失败",
+        subtitle: "{{name}}",
+        phase: {
+          download: { started: "下载中" },
+          extract: { started: "解压中" },
+          installed: "已安装",
+        },
+        errorTitle: "安装失败",
+        errorUnknown: "安装失败（未知原因）。",
+        errorStream: "与安装事件流的连接已断开。",
+        toastSuccess: "已安装 {{name}}",
+        retry: "重试",
+        close: "关闭",
+        done: "完成",
+      },
+    },
     tp: {
       leadPill: "{{total}} 个技能 · {{requires}} 需要安装 · {{withTools}} 携带工具",
       proseLead: "已加载 {{total}} 个技能",
@@ -1699,6 +1815,13 @@ export const zhCN = {
       builtIn: "内置",
       user: "用户",
       project: "项目",
+    },
+    skills: {
+      hint: {
+        title: "再加几个技能",
+        body: "当前 profile 只挂载了 {{count}} 个技能。前往技能中心挑选程序化知识包。",
+        cta: "前往技能中心",
+      },
     },
   },
 
