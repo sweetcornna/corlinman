@@ -950,3 +950,157 @@ class TestMutableSpinnerAskUser:
 
         spinner = MutableSpinner(edit)
         assert spinner.last_ask_user_args is None
+
+
+# ---------------------------------------------------------------------------
+# W3.1 — heartbeat / cancelling formatters + spinner reactions.
+# ---------------------------------------------------------------------------
+
+
+from corlinman_channels._status import (  # noqa: E402 — group with W3.1 tests
+    STATUS_CANCELLING,
+    format_elapsed_ms,
+    format_tool_heartbeat,
+)
+
+
+class TestFormatElapsedMs:
+    """Spec: §1.4 of ``docs/PLAN_TASK_OBSERVABILITY.md`` — must render
+    human-friendly elapsed-time text for the heartbeat spinner."""
+
+    def test_sub_second(self) -> None:
+        assert format_elapsed_ms(500) == "500ms"
+
+    def test_exact_second(self) -> None:
+        assert format_elapsed_ms(1000) == "1s"
+
+    def test_seconds(self) -> None:
+        assert format_elapsed_ms(12_345) == "12s"
+
+    def test_minutes(self) -> None:
+        # 83s → "1m23s"
+        assert format_elapsed_ms(83_000) == "1m23s"
+
+    def test_long_minutes(self) -> None:
+        assert format_elapsed_ms(605_000) == "10m05s"
+
+    def test_negative_clamps_to_zero(self) -> None:
+        # Clock skew defensiveness — never render -2s.
+        assert format_elapsed_ms(-5) == "0ms"
+
+
+class TestFormatToolHeartbeat:
+    """The heartbeat line keeps the same 🔧 prefix as the call line so
+    the user sees a stable spinner shape as a long-running tool ticks."""
+
+    def test_basic_shape(self) -> None:
+        assert format_tool_heartbeat("run_shell", 12_500) == "🔧 run_shell … 12s"
+
+    def test_sub_second(self) -> None:
+        out = format_tool_heartbeat("read_file", 800)
+        assert out == "🔧 read_file … 800ms"
+
+    def test_minute_plus(self) -> None:
+        assert (
+            format_tool_heartbeat("subagent_spawn", 90_000)
+            == "🔧 subagent_spawn … 1m30s"
+        )
+
+    def test_empty_name_renders_question_mark(self) -> None:
+        assert format_tool_heartbeat("", 5_000) == "🔧 ? … 5s"
+
+    def test_long_name_truncates(self) -> None:
+        out = format_tool_heartbeat("x" * 200, 1_000)
+        assert out.startswith("🔧 ")
+        assert "..." in out
+        # Sanity: doesn't blow Telegram's 4096-char hard limit.
+        assert len(out) < 100
+
+
+class TestStatusCancellingConstant:
+    def test_emoji_and_text(self) -> None:
+        assert STATUS_CANCELLING == "⏹ 正在取消…"
+
+
+class TestSpinnerHeartbeat:
+    """``MutableSpinner.on_tool_heartbeat`` refreshes the op-flow line
+    iff a tool is currently displayed; otherwise it stays silent."""
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_refreshes_after_tool_call(self) -> None:
+        edits: list[str] = []
+
+        async def edit(text: str) -> None:
+            edits.append(text)
+
+        spinner = MutableSpinner(edit)
+        await spinner.on_tool_call(
+            _Ev(tool="run_shell", args_json=b'{"command":"sleep 60"}')
+        )
+        # Initial call line.
+        assert edits[-1].startswith("🔧 run_shell")
+        await spinner.on_tool_heartbeat("run_shell", 10_000)
+        # Last edit must be the heartbeat line.
+        assert edits[-1] == "🔧 run_shell … 10s"
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_before_any_tool_is_suppressed(self) -> None:
+        edits: list[str] = []
+
+        async def edit(text: str) -> None:
+            edits.append(text)
+
+        spinner = MutableSpinner(edit)
+        await spinner.on_tool_heartbeat("any_tool", 5_000)
+        # No edit fired — the heartbeat arrived without context.
+        assert edits == []
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_while_generating_is_suppressed(self) -> None:
+        edits: list[str] = []
+
+        async def edit(text: str) -> None:
+            edits.append(text)
+
+        spinner = MutableSpinner(edit)
+        await spinner.on_tool_call(
+            _Ev(tool="run_shell", args_json=b'{"command":"x"}')
+        )
+        # Switch into GENERATING.
+        await spinner.on_token_delta("Hello", is_reasoning=False)
+        prior_len = len(edits)
+        # Heartbeat must not clobber the answer-in-flight indicator.
+        await spinner.on_tool_heartbeat("run_shell", 30_000)
+        assert len(edits) == prior_len
+
+
+class TestSpinnerCancelling:
+    """``MutableSpinner.on_cancelling`` flips to ``STATUS_CANCELLING``
+    regardless of prior state."""
+
+    @pytest.mark.asyncio
+    async def test_flips_to_cancelling(self) -> None:
+        edits: list[str] = []
+
+        async def edit(text: str) -> None:
+            edits.append(text)
+
+        spinner = MutableSpinner(edit)
+        await spinner.on_tool_call(
+            _Ev(tool="run_shell", args_json=b'{"command":"x"}')
+        )
+        await spinner.on_cancelling()
+        assert edits[-1] == STATUS_CANCELLING
+
+    @pytest.mark.asyncio
+    async def test_cancelling_idempotent_against_dedup(self) -> None:
+        edits: list[str] = []
+
+        async def edit(text: str) -> None:
+            edits.append(text)
+
+        spinner = MutableSpinner(edit)
+        await spinner.on_cancelling()
+        await spinner.on_cancelling()
+        # Second call dedups via ``_maybe_edit``.
+        assert edits.count(STATUS_CANCELLING) == 1

@@ -42,6 +42,7 @@ __all__ = [
     "ASK_USER_TOOL",
     "REASONING_PREVIEW_CHARS",
     "SEND_ATTACHMENT_TOOL",
+    "STATUS_CANCELLING",
     "STATUS_GENERATING",
     "STATUS_REASONING_PREFIX",
     "STATUS_THINKING",
@@ -50,13 +51,17 @@ __all__ = [
     "TRUNCATION_MARKER",
     "MutableSpinner",
     "format_ask_user",
+    "format_elapsed_ms",
     "format_todo_list",
+    "format_tool_heartbeat",
     "format_tool_result",
     "format_tool_status",
+    "format_turn_footer",
     "parse_ask_user_args",
     "parse_send_attachment_args",
     "tool_arg_preview",
     "truncate_reply",
+    "try_append_footer",
 ]
 
 
@@ -108,6 +113,13 @@ TODO_WRITE_TOOL: str = "todo_write"
 #: question (and its canned options as bullets, when present). The
 #: matching ``tool_result`` is suppressed — the question IS the status.
 ASK_USER_TOOL: str = "ask_user"
+
+#: Status line shown the moment a turn is cancelled (W3.1). Driven by
+#: the :class:`corlinman_agent.events.Cancelling` envelope the reasoning
+#: loop emits inside :meth:`ReasoningLoop.cancel`, so the user sees
+#: feedback within ~50ms instead of waiting for the next round
+#: boundary's ``ErrorEvent(reason="cancelled")``.
+STATUS_CANCELLING: str = "⏹ 正在取消…"
 
 
 # ---------------------------------------------------------------------------
@@ -350,6 +362,107 @@ def format_tool_status(ev: Any) -> str:
     if preview:
         return f"🔧 {label}  {preview}"
     return f"🔧 调用工具: {label}"
+
+
+def format_elapsed_ms(elapsed_ms: int) -> str:
+    """Human-friendly elapsed-time formatter for status lines.
+
+    * < 1000 ms → ``"500ms"``
+    * < 60 s → ``"3s"`` / ``"12s"``
+    * >= 60 s → ``"1m23s"`` / ``"10m05s"``
+
+    Negative / zero inputs render as ``"0s"`` so a clock skew never
+    surfaces a confusing ``-2s`` to the user.
+    """
+    ms = max(0, int(elapsed_ms))
+    if ms < 1000:
+        return f"{ms}ms"
+    seconds = ms // 1000
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, secs = divmod(seconds, 60)
+    return f"{minutes}m{secs:02d}s"
+
+
+def format_tool_heartbeat(name: str, elapsed_ms: int) -> str:
+    """Render a :class:`ToolStateHeartbeat` as the next mutable-spinner line.
+
+    Shape: ``🔧 {name} … {elapsed}`` — same emoji as
+    :func:`format_tool_status` so the spinner stays visually stable as a
+    long-running tool ticks through its heartbeat updates. ``name`` is
+    sanitised the same way ``format_tool_status`` sanitises the label
+    so a runaway tool name can't blow past channel-specific message-
+    length caps.
+
+    Spec: §1.4 of ``docs/PLAN_TASK_OBSERVABILITY.md`` — keeps users
+    informed for 60s+ tools that would otherwise look stuck.
+    """
+    label = (name or "?").replace("\n", " ")
+    if len(label) > 60:
+        label = label[:57] + "..."
+    return f"🔧 {label} … {format_elapsed_ms(elapsed_ms)}"
+
+
+def format_turn_footer(
+    elapsed_ms: int,
+    tool_calls: int,
+    estimated_cost_usd: float | None,
+    cost_status: str | None,
+) -> str:
+    """Render the post-turn observability footer (W4.1).
+
+    Shape (one line, parenthesised so it can be appended to any reply
+    without disrupting the model's paragraph structure)::
+
+        (elapsed: 12s · 3 tool calls · ~$0.0120)
+
+    Field rules:
+
+    * ``elapsed_ms`` always rendered via :func:`format_elapsed_ms`.
+    * ``tool_calls`` omitted when ``0``; singular ``"1 tool call"`` /
+      plural ``"N tool calls"``.
+    * Cost omitted when ``None`` or ``<= 0`` (a zero-cost turn carries no
+      signal and would be confusing — see W4.1 spec).
+    * Cost prefixed ``~`` when ``cost_status`` is ``"estimated"`` /
+      ``"unknown"`` / ``None``; bare otherwise (``"calculated"`` /
+      ``"actual"`` etc.). The ``~`` flags "best-effort number, not an
+      invoice", mirroring the gateway's ``_CostMeter`` semantics.
+
+    Spec: §1.4 of ``docs/PLAN_TASK_OBSERVABILITY.md`` — the channel
+    adapter (Telegram / QQ / Discord / Slack / Feishu) appends this
+    line to the final reply on ``TurnComplete``. Channels whose
+    message-length cap would push the reply over the limit drop the
+    footer gracefully via :func:`try_append_footer`.
+    """
+    parts = [f"elapsed: {format_elapsed_ms(elapsed_ms)}"]
+    if tool_calls > 0:
+        parts.append(
+            f"{tool_calls} tool call{'s' if tool_calls != 1 else ''}"
+        )
+    if estimated_cost_usd is not None and estimated_cost_usd > 0:
+        prefix = "~" if cost_status in ("estimated", "unknown", None) else ""
+        parts.append(f"{prefix}${estimated_cost_usd:.4f}")
+    return f"({' · '.join(parts)})"
+
+
+def try_append_footer(message: str, footer: str, limit: int = TEXT_LIMIT) -> str:
+    """Append ``footer`` to ``message`` on a fresh line iff it fits.
+
+    Used by every channel adapter to attach the post-turn footer (W4.1).
+    The ``\\n\\n{footer}`` separator keeps the footer visually distinct
+    from the model's prose; the footer is dropped silently when the
+    composed body would exceed ``limit`` so a near-cap reply doesn't
+    lose user-facing content for a decorative observability line.
+
+    ``footer`` empty → returns ``message`` unchanged (no trailing
+    whitespace, no separator).
+    """
+    if not footer:
+        return message
+    composed = f"{message}\n\n{footer}" if message else footer
+    if len(composed) > limit:
+        return message
+    return composed
 
 
 def format_tool_result(ev: Any) -> str:
@@ -778,6 +891,47 @@ class MutableSpinner:
         self._last_op_status = format_tool_status(ev)
         await self._render_combined()
         return None
+
+    async def on_tool_heartbeat(self, tool_name: str, elapsed_ms: int) -> None:
+        """Handle one :class:`ToolStateHeartbeat` event (W3.1).
+
+        Refreshes the live op-flow line with ``🔧 {tool} … {elapsed}``
+        so the user sees a long-running tool ticking forward instead of
+        a stale ``🔧 run_shell  pytest -x`` for 60+ seconds. Composes
+        the same combined-view layout as :meth:`on_tool_call` so a
+        heartbeat under an in-progress todo list refreshes only the
+        op-flow portion.
+
+        ``tool_name`` should match the spinner's most recently-shown
+        tool; if no tool is currently displayed (e.g. the spinner already
+        flipped to STATUS_GENERATING) the heartbeat is silently
+        suppressed — the user is reading the model's answer, not
+        the tool flow.
+        """
+        # If GENERATING is showing, the response is in flight and we
+        # explicitly do NOT want to clobber it with a tool heartbeat —
+        # see ``on_token_delta`` for the matching design comment.
+        if self._last_status == STATUS_GENERATING:
+            return
+        # If no op flow has been shown this turn yet, suppress —
+        # heartbeats arriving before the matching ToolStateRunning are
+        # an out-of-order anomaly the consumer shouldn't surface.
+        if self._last_op_status is None:
+            return
+        self._last_op_status = format_tool_heartbeat(tool_name, elapsed_ms)
+        await self._render_combined()
+
+    async def on_cancelling(self) -> None:
+        """Handle one :class:`Cancelling` event (W3.1).
+
+        Flips the spinner to :data:`STATUS_CANCELLING`
+        (``⏹ 正在取消…``) the moment cancellation is requested,
+        without waiting for the round-boundary ``TurnErrored`` to
+        propagate. Bare emit — no combined-view layout — so the user
+        immediately sees the system has acknowledged their cancel and
+        isn't ignoring them.
+        """
+        await self._maybe_edit(STATUS_CANCELLING)
 
     async def on_tool_result(self, ev: Any) -> None:
         """Handle one ``tool_result`` event.

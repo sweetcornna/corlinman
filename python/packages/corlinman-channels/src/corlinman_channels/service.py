@@ -108,10 +108,12 @@ from corlinman_channels._status import (
     MutableSpinner,
     format_tool_result as _format_tool_result,
     format_tool_status as _format_tool_status,
+    format_turn_footer,
     parse_ask_user_args as _parse_ask_user_args,
     parse_send_attachment_args as _parse_send_attachment_args,
     tool_arg_preview as _tool_arg_preview,
     truncate_reply,
+    try_append_footer,
 )
 from corlinman_channels.common import InboundEvent, TransportError
 from corlinman_channels.discord import (
@@ -296,6 +298,12 @@ class QqChannelParams:
     channel task (config-watcher hot-reload integration). When ``None``,
     the static fields are read directly. Typed as ``Any`` so this
     package stays type-checker-friendly without a Callable import."""
+
+    event_emitter: Any = None
+    """W4.1 — see :class:`TelegramChannelParams.event_emitter`. QQ uses
+    the same emitter to source ``ToolStateHeartbeat`` / ``Cancelling`` /
+    ``TurnComplete`` envelopes for its post-turn footer; ``None`` falls
+    back to the legacy in-process stream."""
 
 
 async def run_qq_channel(
@@ -1151,6 +1159,15 @@ class TelegramChannelParams:
     model: str = ""
     chat_service: ChatServiceLike | None = None
     base_url: str = "https://api.telegram.org"
+    event_emitter: Any = None
+    """W4.1 — optional gateway-wide
+    :class:`corlinman_server.gateway.observability.JournalBackedEmitter`.
+    When set, ``handle_one_telegram`` subscribes per-turn to receive
+    :class:`ToolStateHeartbeat` / :class:`Cancelling` / :class:`TurnComplete`
+    envelopes and surfaces them via the existing mutable spinner +
+    post-turn footer. ``None`` falls back to the legacy in-process
+    stream and computes elapsed / tool-call counts locally — keeps
+    test environments and pre-W4.1 deployments running unchanged."""
 
 
 async def run_telegram_channel(
@@ -1200,6 +1217,7 @@ async def run_telegram_channel(
                         params.model,
                         sender,
                         cancel,
+                        event_emitter=params.event_emitter,
                     ),
                 )
     finally:
@@ -1349,6 +1367,8 @@ async def handle_one_telegram(
     model: str,
     sender: TelegramSender,
     cancel: asyncio.Event,
+    *,
+    event_emitter: Any | None = None,
 ) -> None:
     """Run one Telegram chat turn and post the reply via
     :class:`TelegramSender`. Parallel structure to :func:`handle_one_qq`.
@@ -1361,6 +1381,12 @@ async def handle_one_telegram(
 
     Refactored to use :class:`MutableSpinner` so the per-turn state
     machine is shared with the Discord / Slack / Feishu handlers below.
+
+    W4.1: when ``event_emitter`` is supplied, a background task subscribes
+    per-turn to surface :class:`ToolStateHeartbeat` / :class:`Cancelling`
+    spinner refreshes plus a one-line ``(elapsed · tool calls · cost)``
+    footer appended to the final reply. ``None`` keeps the legacy
+    behaviour for tests and pre-W4.1 deployments.
     """
     chat_id = int(inbound.binding.thread)
     reply_to: int | None = None
@@ -1392,6 +1418,18 @@ async def handle_one_telegram(
         return await _telegram_send_attachment(sender, chat_id, reply_to, ev)
 
     spinner = MutableSpinner(_edit, send_attachment_handler=_send_attachment)
+    footer_state = _FooterState()
+    observability_task: asyncio.Task[None] | None = None
+    if event_emitter is not None:
+        observability_task = asyncio.create_task(
+            _consume_observability_events(
+                event_emitter,
+                inbound.binding.session_key(),
+                spinner,
+                footer_state,
+            ),
+            name="telegram-observability-consumer",
+        )
     try:
         try:
             placeholder_id = await sender.send_message(
@@ -1408,6 +1446,10 @@ async def handle_one_telegram(
         typing_task.cancel()
         with suppress(asyncio.CancelledError, Exception):
             await typing_task
+        if observability_task is not None:
+            observability_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await observability_task
 
     if outcome.supplemented:
         # Silent acknowledgement: the agent absorbed this RPC's user
@@ -1444,6 +1486,12 @@ async def handle_one_telegram(
     # the logger instead of propagating, so a 429 or "blocked by user"
     # at the very end never crashes the channel loop.
     body = _truncate_for_telegram(body)
+    # W4.1 — append the post-turn observability footer if non-empty.
+    # ``try_append_footer`` gracefully drops the footer when the
+    # composed body would overflow the channel cap.
+    footer = _build_footer_for_outcome(outcome, footer_state)
+    if footer:
+        body = try_append_footer(body, footer, _TELEGRAM_TEXT_LIMIT)
 
     # If the agent called ``ask_user`` with canned options, surface them
     # as a clickable inline keyboard on the final reply. We send a fresh
@@ -1492,10 +1540,121 @@ class _DriveSpinnerOutcome:
     servicer absorbed this RPC's user text into an already-running
     turn for the same session_key and the channel handler MUST NOT
     render any reply.
+
+    ``tool_call_count`` / ``started_at_ms`` feed the W4.1 post-turn
+    footer. ``tool_call_count`` is incremented from the legacy
+    ``tool_call`` stream so the count is meaningful even when the new
+    :class:`JournalBackedEmitter` is not wired (the consumer task is a
+    no-op in that case). ``started_at_ms`` is the wall-clock at which
+    :func:`_drive_spinner` began streaming.
     """
 
     error_message: str | None = None
     supplemented: bool = False
+    tool_call_count: int = 0
+    started_at_ms: int = 0
+
+
+@dataclass(slots=True)
+class _FooterState:
+    """Mutable post-turn footer payload shared between the observability
+    consumer task and the channel adapter's final emit.
+
+    Populated by :func:`_consume_observability_events` when a
+    :class:`corlinman_agent.events.TurnComplete` envelope arrives — the
+    channel adapter reads the populated fields right after the legacy
+    stream terminates and renders a one-line footer via
+    :func:`format_turn_footer` + :func:`try_append_footer`.
+
+    Set ``populated=True`` when at least one field flows in from the new
+    emitter so the channel knows whether to trust the cost / elapsed
+    figures over the fallback turn-side computation.
+    """
+
+    elapsed_ms: int = 0
+    estimated_cost_usd: float | None = None
+    cost_status: str | None = None
+    tool_call_count: int = 0
+    populated: bool = False
+
+
+async def _consume_observability_events(
+    emitter: Any | None,
+    session_key: str,
+    spinner: MutableSpinner,
+    footer_state: _FooterState,
+) -> None:
+    """Subscribe to the new EventEmitter and drive spinner + footer state.
+
+    Spawned as a background task alongside the legacy ``_drive_spinner``
+    consumer; cancelled in the surrounding ``finally``. Listens for:
+
+    * :class:`corlinman_agent.events.ToolStateRunning` — records the
+      tool name keyed by ``tool_call_id`` so a subsequent heartbeat can
+      address the spinner by name.
+    * :class:`corlinman_agent.events.ToolStateHeartbeat` — refreshes the
+      spinner via :meth:`MutableSpinner.on_tool_heartbeat`.
+    * :class:`corlinman_agent.events.ToolStateCompleted` — drops the
+      tool_call_id from the in-flight map.
+    * :class:`corlinman_agent.events.Cancelling` — flips the spinner to
+      :data:`STATUS_CANCELLING` via :meth:`MutableSpinner.on_cancelling`.
+    * :class:`corlinman_agent.events.TurnComplete` — stashes
+      elapsed / cost / cost_status / tool_call_count into
+      ``footer_state`` for the channel's post-turn footer render.
+
+    All other events ignore — the legacy gRPC stream is the source of
+    truth for tokens / final text. When ``emitter`` is ``None`` (the
+    common case in unit tests + during migration) the task returns
+    immediately so the surrounding ``handle_one_*`` stays a no-op.
+
+    Spec: §1.4 W4.1 of ``docs/PLAN_TASK_OBSERVABILITY.md``.
+    """
+    if emitter is None:
+        return
+    # Lazy-import — corlinman-agent is a hard dep but the event types
+    # only matter when the new emitter is actually wired. Keeping the
+    # import inside the function lets test environments stub the
+    # emitter without forcing the import resolver to find every
+    # observability symbol.
+    from corlinman_agent.events import (
+        Cancelling,
+        ToolStateCompleted,
+        ToolStateHeartbeat,
+        ToolStateRunning,
+        TurnComplete,
+    )
+
+    pending_tools: dict[str, str] = {}
+    queue, unsubscribe = await emitter.subscribe(session_key)
+    try:
+        while True:
+            envelope = await queue.get()
+            event = envelope.event
+            if isinstance(event, ToolStateRunning):
+                pending_tools[event.tool_call_id] = event.tool_name
+            elif isinstance(event, ToolStateHeartbeat):
+                name = pending_tools.get(event.tool_call_id)
+                if name:
+                    await spinner.on_tool_heartbeat(name, event.elapsed_ms)
+            elif isinstance(event, ToolStateCompleted):
+                pending_tools.pop(event.tool_call_id, None)
+                footer_state.tool_call_count += 1
+            elif isinstance(event, Cancelling):
+                await spinner.on_cancelling()
+            elif isinstance(event, TurnComplete):
+                footer_state.elapsed_ms = event.elapsed_ms
+                footer_state.estimated_cost_usd = event.estimated_cost_usd
+                footer_state.cost_status = event.cost_status
+                # Prefer the emitter-side count when populated; the
+                # legacy stream's tool_call count covers the no-emitter
+                # path. If the emitter never emitted ToolStateCompleted
+                # (e.g. early in the migration) we keep whatever the
+                # consumer accumulated above (often 0) and let the
+                # channel adapter's drive-spinner outcome win at footer
+                # render time.
+                footer_state.populated = True
+    finally:
+        await unsubscribe()
 
 
 async def _drive_spinner(
@@ -1514,7 +1673,18 @@ async def _drive_spinner(
 
     Shared by the four mutable-spinner channels (Telegram / Discord /
     Slack / Feishu) so the event-loop logic stays in one place.
+
+    W4.1: ``tool_call_count`` is incremented per ``tool_call`` event
+    (excluding ``send_attachment`` — that intercept is a transport
+    side-effect, not an agent tool invocation users care about counting)
+    and ``started_at_ms`` records the streaming start so the post-turn
+    footer can render ``(elapsed: 12s · 3 tool calls · ~$0.012)`` even
+    when the new :class:`JournalBackedEmitter` is not wired.
     """
+    import time as _time
+
+    started_at_ms = int(_time.time() * 1000)
+    outcome = _DriveSpinnerOutcome(started_at_ms=started_at_ms)
     request = _build_text_channel_request(inbound, model)
     stream = chat_service.run(request, cancel)
     async for ev in stream:
@@ -1525,20 +1695,68 @@ async def _drive_spinner(
                 bool(getattr(ev, "is_reasoning", False)),
             )
         elif kind == "tool_call":
+            tool_name = getattr(ev, "tool", "") or ""
+            # send_attachment is a channel-side intercept (file upload),
+            # not an agent reasoning step. Counting it in the footer
+            # would inflate the tool-call count for any turn that
+            # produced an attachment.
+            if tool_name and tool_name != _SEND_ATTACHMENT_TOOL:
+                outcome.tool_call_count += 1
             await spinner.on_tool_call(ev)
         elif kind == "tool_result":
             await spinner.on_tool_result(ev)
         elif kind == "done":
             if _is_supplemented_done(ev):
-                return _DriveSpinnerOutcome(supplemented=True)
-            return _DriveSpinnerOutcome()
+                outcome.supplemented = True
+                return outcome
+            return outcome
         elif kind == "error":
-            return _DriveSpinnerOutcome(
-                error_message=(
-                    getattr(ev, "error", "") or getattr(ev, "message", "")
-                ),
+            outcome.error_message = (
+                getattr(ev, "error", "") or getattr(ev, "message", "")
             )
-    return _DriveSpinnerOutcome()
+            return outcome
+    return outcome
+
+
+def _build_footer_for_outcome(
+    outcome: _DriveSpinnerOutcome,
+    footer_state: _FooterState,
+) -> str:
+    """Compose the W4.1 post-turn footer from outcome + emitter state.
+
+    Only renders a footer when the new emitter wired the per-turn flow
+    (``footer_state.populated`` is True). This gates the cost+elapsed
+    line behind the observability emitter so:
+
+    * Deployments without the emitter (older builds, unit-test harnesses
+      that mock the chat service directly) keep their pre-W4.1 reply
+      shape — the test suite's ``assert sender.edits[-1][2] == "ok"``
+      shape stays meaningful.
+    * Deployments WITH the emitter always show the footer because the
+      gateway emits :class:`corlinman_agent.events.TurnComplete` for
+      every turn (per W1.1 spec). The numbers there are
+      authoritative — :class:`_DriveSpinnerOutcome` only provides the
+      legacy ``tool_call_count`` fallback for the same turn.
+
+    Returns the empty string when ``footer_state`` was never populated;
+    callers (every spinner channel) pass the return through
+    :func:`try_append_footer` which is itself empty-footer-safe.
+    """
+    if not footer_state.populated:
+        return ""
+    elapsed_ms = footer_state.elapsed_ms
+    cost = footer_state.estimated_cost_usd
+    cost_status = footer_state.cost_status
+    # Prefer the emitter-side count when populated; the legacy stream's
+    # tool_call count covers the case where ToolStateCompleted hasn't
+    # fired yet (e.g. the agent finished too fast for the heartbeat
+    # task to spin up — counted by the consumer regardless).
+    tool_calls = (
+        footer_state.tool_call_count
+        if footer_state.tool_call_count > 0
+        else outcome.tool_call_count
+    )
+    return format_turn_footer(elapsed_ms, tool_calls, cost, cost_status)
 
 
 # ---------------------------------------------------------------------------
@@ -1560,6 +1778,8 @@ class DiscordChannelParams:
 
     model: str = ""
     chat_service: ChatServiceLike | None = None
+    event_emitter: Any = None
+    """W4.1 — see :class:`TelegramChannelParams.event_emitter`."""
 
 
 async def run_discord_channel(
@@ -1605,7 +1825,12 @@ async def run_discord_channel(
                     semaphore,
                     pending,
                     lambda chat_service=params.chat_service, ev=ev: handle_one_discord(
-                        chat_service, ev, params.model, sender, cancel
+                        chat_service,
+                        ev,
+                        params.model,
+                        sender,
+                        cancel,
+                        event_emitter=params.event_emitter,
                     ),
                 )
     finally:
@@ -1677,13 +1902,16 @@ async def handle_one_discord(
     model: str,
     sender: DiscordSender,
     cancel: asyncio.Event,
+    *,
+    event_emitter: Any | None = None,
 ) -> None:
     """Run one Discord chat turn and post the reply via
     :class:`DiscordSender`. Parallel structure to :func:`handle_one_telegram`.
 
     Mirrors the Telegram UX 1:1: typing pulse + placeholder + mutable-
     spinner edits + final ``edit_message`` that overwrites the
-    placeholder with the assistant's reply.
+    placeholder with the assistant's reply. ``event_emitter`` opt-in
+    same as :func:`handle_one_telegram` — see W4.1 doc there.
     """
     channel_id = inbound.binding.thread
     reply_to = inbound.message_id
@@ -1703,6 +1931,18 @@ async def handle_one_discord(
         return await _discord_send_attachment(sender, channel_id, reply_to, ev)
 
     spinner = MutableSpinner(_edit, send_attachment_handler=_send_attachment)
+    footer_state = _FooterState()
+    observability_task: asyncio.Task[None] | None = None
+    if event_emitter is not None:
+        observability_task = asyncio.create_task(
+            _consume_observability_events(
+                event_emitter,
+                inbound.binding.session_key(),
+                spinner,
+                footer_state,
+            ),
+            name="discord-observability-consumer",
+        )
     try:
         try:
             placeholder_id = await sender.send_message(
@@ -1716,6 +1956,10 @@ async def handle_one_discord(
         typing_task.cancel()
         with suppress(asyncio.CancelledError, Exception):
             await typing_task
+        if observability_task is not None:
+            observability_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await observability_task
 
     if outcome.supplemented:
         _log.info(
@@ -1740,6 +1984,9 @@ async def handle_one_discord(
             return
 
     body = truncate_reply(body, _DISCORD_TEXT_LIMIT)
+    footer = _build_footer_for_outcome(outcome, footer_state)
+    if footer:
+        body = try_append_footer(body, footer, _DISCORD_TEXT_LIMIT)
     try:
         if placeholder_id is not None:
             await sender.edit_message(channel_id, placeholder_id, body)
@@ -1770,6 +2017,8 @@ class SlackChannelParams:
 
     model: str = ""
     chat_service: ChatServiceLike | None = None
+    event_emitter: Any = None
+    """W4.1 — see :class:`TelegramChannelParams.event_emitter`."""
 
 
 async def run_slack_channel(
@@ -1818,7 +2067,12 @@ async def run_slack_channel(
                     semaphore,
                     pending,
                     lambda chat_service=params.chat_service, ev=ev: handle_one_slack(
-                        chat_service, ev, params.model, sender, cancel
+                        chat_service,
+                        ev,
+                        params.model,
+                        sender,
+                        cancel,
+                        event_emitter=params.event_emitter,
                     ),
                 )
     finally:
@@ -1869,6 +2123,8 @@ async def handle_one_slack(
     model: str,
     sender: SlackSender,
     cancel: asyncio.Event,
+    *,
+    event_emitter: Any | None = None,
 ) -> None:
     """Run one Slack chat turn and post the reply via :class:`SlackSender`.
 
@@ -1878,6 +2134,8 @@ async def handle_one_slack(
     Mirrors the Telegram UX as closely as Slack permits: there's no real
     typing indicator (``post_typing`` is a stub), but the placeholder /
     mutable-spinner edits / final ``chat.update`` flow is identical.
+    ``event_emitter`` opt-in same as :func:`handle_one_telegram` —
+    see W4.1 doc there.
     """
     channel = inbound.binding.thread
     thread_ts = inbound.message_id
@@ -1893,14 +2151,33 @@ async def handle_one_slack(
         return await _slack_send_attachment(sender, channel, thread_ts, ev)
 
     spinner = MutableSpinner(_edit, send_attachment_handler=_send_attachment)
-    try:
-        placeholder_ts = await sender.send_message(
-            channel, _TG_STATUS_THINKING, thread_ts=thread_ts
+    footer_state = _FooterState()
+    observability_task: asyncio.Task[None] | None = None
+    if event_emitter is not None:
+        observability_task = asyncio.create_task(
+            _consume_observability_events(
+                event_emitter,
+                inbound.binding.session_key(),
+                spinner,
+                footer_state,
+            ),
+            name="slack-observability-consumer",
         )
-    except Exception as exc:  # noqa: BLE001
-        _log.warning("slack placeholder send failed: %s", exc)
+    try:
+        try:
+            placeholder_ts = await sender.send_message(
+                channel, _TG_STATUS_THINKING, thread_ts=thread_ts
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("slack placeholder send failed: %s", exc)
 
-    outcome = await _drive_spinner(spinner, chat_service, inbound, model, cancel)
+        outcome = await _drive_spinner(spinner, chat_service, inbound, model, cancel)
+    finally:
+        if observability_task is not None:
+            observability_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await observability_task
+
     if outcome.supplemented:
         _log.info(
             "channel.user_supplemented channel=slack session=%s",
@@ -1922,6 +2199,9 @@ async def handle_one_slack(
             return
 
     body = truncate_reply(body, _SLACK_TEXT_LIMIT)
+    footer = _build_footer_for_outcome(outcome, footer_state)
+    if footer:
+        body = try_append_footer(body, footer, _SLACK_TEXT_LIMIT)
     try:
         if placeholder_ts is not None:
             await sender.update_message(channel, placeholder_ts, body)
@@ -1950,6 +2230,8 @@ class FeishuChannelParams:
 
     model: str = ""
     chat_service: ChatServiceLike | None = None
+    event_emitter: Any = None
+    """W4.1 — see :class:`TelegramChannelParams.event_emitter`."""
 
 
 async def run_feishu_channel(
@@ -2000,7 +2282,12 @@ async def run_feishu_channel(
                     semaphore,
                     pending,
                     lambda chat_service=params.chat_service, ev=ev: handle_one_feishu(
-                        chat_service, ev, params.model, sender, cancel
+                        chat_service,
+                        ev,
+                        params.model,
+                        sender,
+                        cancel,
+                        event_emitter=params.event_emitter,
                     ),
                 )
     finally:
@@ -2052,6 +2339,8 @@ async def handle_one_feishu(
     model: str,
     sender: FeishuSender,
     cancel: asyncio.Event,
+    *,
+    event_emitter: Any | None = None,
 ) -> None:
     """Run one Feishu chat turn and post the reply via :class:`FeishuSender`.
 
@@ -2060,7 +2349,8 @@ async def handle_one_feishu(
 
     Mirrors the Slack flow: no typing indicator (Feishu doesn't expose
     one to bots), but the placeholder / mutable-spinner edits / final
-    ``update_message`` flow is identical to Telegram.
+    ``update_message`` flow is identical to Telegram. ``event_emitter``
+    opt-in same as :func:`handle_one_telegram` — see W4.1 doc there.
     """
     chat_id = inbound.binding.thread
     reply_to = inbound.message_id
@@ -2076,14 +2366,33 @@ async def handle_one_feishu(
         return await _feishu_send_attachment(sender, chat_id, reply_to, ev)
 
     spinner = MutableSpinner(_edit, send_attachment_handler=_send_attachment)
-    try:
-        placeholder_id = await sender.send_message(
-            chat_id, _TG_STATUS_THINKING, reply_to_message_id=reply_to
+    footer_state = _FooterState()
+    observability_task: asyncio.Task[None] | None = None
+    if event_emitter is not None:
+        observability_task = asyncio.create_task(
+            _consume_observability_events(
+                event_emitter,
+                inbound.binding.session_key(),
+                spinner,
+                footer_state,
+            ),
+            name="feishu-observability-consumer",
         )
-    except Exception as exc:  # noqa: BLE001
-        _log.warning("feishu placeholder send failed: %s", exc)
+    try:
+        try:
+            placeholder_id = await sender.send_message(
+                chat_id, _TG_STATUS_THINKING, reply_to_message_id=reply_to
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("feishu placeholder send failed: %s", exc)
 
-    outcome = await _drive_spinner(spinner, chat_service, inbound, model, cancel)
+        outcome = await _drive_spinner(spinner, chat_service, inbound, model, cancel)
+    finally:
+        if observability_task is not None:
+            observability_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await observability_task
+
     if outcome.supplemented:
         _log.info(
             "channel.user_supplemented channel=feishu session=%s",
@@ -2105,6 +2414,9 @@ async def handle_one_feishu(
             return
 
     body = truncate_reply(body, _FEISHU_TEXT_LIMIT)
+    footer = _build_footer_for_outcome(outcome, footer_state)
+    if footer:
+        body = try_append_footer(body, footer, _FEISHU_TEXT_LIMIT)
     try:
         if placeholder_id is not None:
             await sender.update_message(placeholder_id, body)
