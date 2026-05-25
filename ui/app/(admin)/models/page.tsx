@@ -40,6 +40,7 @@ import {
   type ProviderView,
 } from "@/lib/api";
 import { DynamicParamsForm } from "@/components/dynamic-params-form";
+import { ModelPickerDialog } from "@/components/models/model-picker-dialog";
 
 /**
  * Models admin page.
@@ -125,6 +126,95 @@ export default function ModelsPage() {
     return (models.data as unknown as V2Models).aliases;
   }, [shape, models.data]);
 
+  /**
+   * Picker state.
+   *   - mode "add"   → on confirm, append a new local alias row prefilled
+   *                    with the chosen target. The user names it inline.
+   *                    (In v2 we also persist `provider` once the user
+   *                    saves via the toolbar Save — but since v1 doesn't
+   *                    model `provider`, we drop it; v2 upserts still work
+   *                    because the gateway resolves provider from `model`
+   *                    on Save when omitted, see /admin/models/aliases.)
+   *   - mode "edit"  → on confirm, persist immediately via upsertAlias
+   *                    (v2 path) or just patch the target in local state
+   *                    (v1 path).
+   */
+  const [pickerOpen, setPickerOpen] = React.useState(false);
+  const [pickerMode, setPickerMode] = React.useState<
+    | { kind: "add" }
+    | { kind: "edit"; idx: number; aliasName: string }
+  >({ kind: "add" });
+
+  const pickerProviders = React.useMemo(
+    () =>
+      (models.data?.providers ?? [])
+        .filter((p) => p.enabled)
+        .map((p) => ({
+          name: p.name,
+          kind: isV2Provider(p) ? p.kind : "",
+          enabled: p.enabled,
+        })),
+    [models.data],
+  );
+
+  const editingView =
+    pickerMode.kind === "edit" && aliasViews
+      ? aliasViews.find((a) => a.name === pickerMode.aliasName)
+      : undefined;
+
+  const handlePickerConfirm = React.useCallback(
+    (sel: { provider: string; model: string }) => {
+      if (pickerMode.kind === "add") {
+        // Append a new local row prefilled with the chosen target. Name +
+        // (v2: provider) are still required to actually save.
+        setAliases((prev) => [...prev, ["", sel.model]]);
+        // If we're on the v2 path, immediately upsert so the provider is
+        // recorded — otherwise the user has no surface to set provider
+        // before the toolbar Save fires (which drops provider entirely).
+        // Defer until they type the name; we just toast a hint.
+        toast.info(
+          t("models.pickerAddedHint", {
+            defaultValue:
+              "Row added — type an alias name then click Save.",
+          }),
+        );
+        return;
+      }
+      // edit path
+      const idx = pickerMode.idx;
+      if (aliasViews && editingView) {
+        // v2: persist immediately so provider+model stay aligned.
+        upsertAlias({
+          name: editingView.name,
+          provider: sel.provider,
+          model: sel.model,
+          params: editingView.params ?? {},
+        })
+          .then(() => {
+            toast.success(t("models.saveSuccess"));
+            qc.invalidateQueries({ queryKey: ["admin", "models"] });
+          })
+          .catch((err: unknown) =>
+            toast.error(
+              t("models.saveFailed", {
+                msg: err instanceof Error ? err.message : String(err),
+              }),
+            ),
+          );
+      } else {
+        // v1: only target string is tracked; update local state.
+        setAliases((prev) => {
+          const next = [...prev];
+          const current = next[idx];
+          if (!current) return prev;
+          next[idx] = [current[0], sel.model];
+          return next;
+        });
+      }
+    },
+    [pickerMode, aliasViews, editingView, qc, t],
+  );
+
   return (
     <>
       <header className="space-y-1">
@@ -176,6 +266,17 @@ export default function ModelsPage() {
             >
               <Plus className="h-3 w-3" />
               {t("models.addAlias")}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                setPickerMode({ kind: "add" });
+                setPickerOpen(true);
+              }}
+              data-testid="models-pick-btn"
+            >
+              {t("models.picker.changeButton")}
             </Button>
             <Button
               size="sm"
@@ -231,6 +332,14 @@ export default function ModelsPage() {
                     onRemove={() =>
                       setAliases(aliases.filter((_, i) => i !== idx))
                     }
+                    onPickModel={() => {
+                      setPickerMode({
+                        kind: "edit",
+                        idx,
+                        aliasName: alias,
+                      });
+                      setPickerOpen(true);
+                    }}
                   />
                 );
               })
@@ -248,6 +357,10 @@ export default function ModelsPage() {
                   onRemove={() =>
                     setAliases(aliases.filter((_, i) => i !== idx))
                   }
+                  onPickModel={() => {
+                    setPickerMode({ kind: "edit", idx, aliasName: alias });
+                    setPickerOpen(true);
+                  }}
                 />
               ))
             )}
@@ -261,6 +374,21 @@ export default function ModelsPage() {
           <p className="text-xs text-ok">{t("models.aliasSavedInline")}</p>
         ) : null}
       </section>
+
+      <ModelPickerDialog
+        open={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        providers={pickerProviders}
+        initialProvider={
+          pickerMode.kind === "edit" ? editingView?.provider : undefined
+        }
+        initialModel={
+          pickerMode.kind === "edit"
+            ? editingView?.model ?? aliases[pickerMode.idx]?.[1]
+            : undefined
+        }
+        onConfirm={handlePickerConfirm}
+      />
     </>
   );
 }
@@ -368,6 +496,7 @@ function AliasRowV2({
   providersByName,
   onChange,
   onRemove,
+  onPickModel,
 }: {
   alias: string;
   target: string;
@@ -375,6 +504,7 @@ function AliasRowV2({
   providersByName: Map<string, ProviderView>;
   onChange: (next: [string, string]) => void;
   onRemove: () => void;
+  onPickModel: () => void;
 }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = React.useState(false);
@@ -414,12 +544,24 @@ function AliasRowV2({
           {providerName || "—"}
         </TableCell>
         <TableCell>
-          <InlineEdit
-            value={target}
-            onCommit={(v) => onChange([alias, v])}
-            placeholder="claude-opus-4-7"
-            mono
-          />
+          <div className="flex items-center gap-1">
+            <InlineEdit
+              value={target}
+              onCommit={(v) => onChange([alias, v])}
+              placeholder="claude-opus-4-7"
+              mono
+            />
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={onPickModel}
+              aria-label={t("models.picker.changeButton")}
+              className="h-7 px-2 text-[10px]"
+              data-testid={`alias-pick-${alias}`}
+            >
+              {t("models.picker.changeButton")}
+            </Button>
+          </div>
         </TableCell>
         <TableCell>
           <Button
@@ -553,11 +695,13 @@ function AliasRow({
   target,
   onChange,
   onRemove,
+  onPickModel,
 }: {
   alias: string;
   target: string;
   onChange: (next: [string, string]) => void;
   onRemove: () => void;
+  onPickModel: () => void;
 }) {
   const { t } = useTranslation();
   return (
@@ -571,12 +715,23 @@ function AliasRow({
         />
       </TableCell>
       <TableCell>
-        <InlineEdit
-          value={target}
-          onCommit={(v) => onChange([alias, v])}
-          placeholder="claude-opus-4-7"
-          mono
-        />
+        <div className="flex items-center gap-1">
+          <InlineEdit
+            value={target}
+            onCommit={(v) => onChange([alias, v])}
+            placeholder="claude-opus-4-7"
+            mono
+          />
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={onPickModel}
+            aria-label={t("models.picker.changeButton")}
+            className="h-7 px-2 text-[10px]"
+          >
+            {t("models.picker.changeButton")}
+          </Button>
+        </div>
       </TableCell>
       <TableCell>
         <Button
