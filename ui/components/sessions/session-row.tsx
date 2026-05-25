@@ -6,6 +6,7 @@ import { Play, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { TableCell, TableRow } from "@/components/ui/table";
 import type { SessionSummary } from "@/lib/api/sessions";
+import { SessionCostCells } from "@/components/sessions/session-cost-cells";
 
 /**
  * Single row in the sessions list — extracted so the page module stays
@@ -60,6 +61,8 @@ export function SessionRow({ session, onReplay, onDelete }: SessionRowProps) {
           {formatTime(lastSeen)}
         </time>
       </TableCell>
+      {/* W2.3 cost enrichment — 3 lazy-fetched cells (total, avg turn, last tool). */}
+      <SessionCostCells sessionKey={session.session_key} />
       <TableCell className="pr-4 text-right">
         <div className="inline-flex items-center gap-1.5">
           <Button

@@ -12,6 +12,8 @@
  * hatch.
  */
 
+import type { LiveEvent as _W21LiveEvent } from "@/lib/sessions/event-stream";
+
 export const GATEWAY_BASE_URL = process.env.NEXT_PUBLIC_GATEWAY_URL ?? "";
 
 export interface ApiError extends Error {
@@ -1808,3 +1810,64 @@ export function disconnectGeminiOAuth(
   });
 }
 // === end W-A4 ===
+
+// === W2.1 — Session observability (replay + cost summary) =================
+//
+// Live SSE stream is opened via `lib/sessions/event-stream.ts`; these two
+// helpers cover the JSON cursor-replay and the cost-summary endpoints.
+
+export interface TurnEventsPage {
+  events: _W21LiveEvent[];
+  next_cursor: number | null;
+}
+
+/**
+ * `GET /admin/sessions/{key}/turns/{turn_id}/events?after_sequence=N&limit=500`
+ *
+ * Cursor-paginated replay for a single turn. Used for backfill on
+ * reconnect / `?turn_id=` deep-links.
+ */
+export async function loadTurnEvents(
+  sessionKey: string,
+  turnId: string,
+  opts: { afterSequence?: number; limit?: number; signal?: AbortSignal } = {},
+): Promise<TurnEventsPage> {
+  const params = new URLSearchParams();
+  if (opts.afterSequence !== undefined) {
+    params.set("after_sequence", String(opts.afterSequence));
+  }
+  if (opts.limit !== undefined) params.set("limit", String(opts.limit));
+  const qs = params.toString();
+  const path = `/admin/sessions/${encodeURIComponent(sessionKey)}/turns/${encodeURIComponent(
+    turnId,
+  )}/events${qs ? `?${qs}` : ""}`;
+  return apiFetch<TurnEventsPage>(path, { signal: opts.signal });
+}
+
+export interface SessionCostSummary {
+  turn_count: number;
+  total_elapsed_ms: number;
+  total_cost_usd: number;
+  total_input_tokens?: number;
+  total_output_tokens?: number;
+}
+
+/** `GET /admin/sessions/{key}/cost` */
+export async function loadSessionCost(
+  sessionKey: string,
+  opts: { signal?: AbortSignal } = {},
+): Promise<SessionCostSummary> {
+  return apiFetch<SessionCostSummary>(
+    `/admin/sessions/${encodeURIComponent(sessionKey)}/cost`,
+    { signal: opts.signal },
+  );
+}
+
+/**
+ * Re-export of the SSE opener so callers can `import { streamSessionEvents }
+ * from "@/lib/api"` alongside the JSON helpers above. Thin alias so we can
+ * swap the underlying transport without rippling through the components.
+ */
+export { openLiveEventStream as streamSessionEvents } from "@/lib/sessions/event-stream";
+export type { LiveEvent } from "@/lib/sessions/event-stream";
+// === end W2.1 ===

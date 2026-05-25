@@ -1890,6 +1890,69 @@ export const zhCN = {
     notFoundHint: "`{{key}}` 不在 sessions 数据库中，可能已被清理。",
     replayLoading: "正在重放…",
     replayFailed: "重放失败：{{msg}}",
+    // W2.3 成本 / 列表增强
+    cost: {
+      total: "总花费",
+      estimatedPrefix: "估算：",
+      avgTurnTime: "平均轮次",
+      totalTurns: "轮次",
+      totalTools: "工具调用",
+      lastTurnAt: "上次",
+      unknownTooltip: "部分轮次的成本状态未知 — 该数值仅为估算。",
+    },
+    list: {
+      lastTool: "最近工具",
+    },
+
+    // W2.1 — 实时时间线
+    timeline: {
+      empty: "（暂无内容）",
+      streaming: "流式生成中",
+      complete: "完成",
+      errored: "出错",
+      cancelling: "取消中",
+      connecting: "连接中…",
+      connected: "实时",
+      reconnecting: "重连中…",
+      waiting: "等待下一轮开始……",
+    },
+    // W2.2 — 单轮回合详情页
+    turn: {
+      title: "回合详情",
+      breadcrumb: "回合",
+      userInput: "用户输入",
+      finishReason: "结束原因",
+      started: "开始时间",
+      elapsed: "耗时",
+      tokens: "Token",
+      toolCalls: "工具调用",
+      empty: "（此回合无事件 — 可能从未启动）",
+      loadError: "加载失败",
+      retry: "重试",
+    },
+    tools: {
+      pending: "待运行",
+      running: "运行中",
+      completed: "完成",
+      error: "错误",
+      matchCount: "{{n}} 条匹配",
+    },
+    reasoning: {
+      thinking: "思考中…",
+      thought: "已思考",
+      empty: "（空）",
+    },
+    // W3.2 — 嵌套子任务时间线
+    subagent: {
+      spawned: "子任务启动",
+      depth: "深度",
+      running: "运行中",
+      completed: "完成",
+      errored: "失败",
+      tools: "工具",
+      tooDeep: "（更深层级已折叠）",
+      prompt: "提示",
+    },
   },
 
   persona: {

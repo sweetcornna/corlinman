@@ -190,6 +190,16 @@ export default function SessionsPage() {
               <TableHead className="w-48">
                 {t("sessions.colLastSeenAt")}
               </TableHead>
+              {/* W2.3 — cost enrichment columns. */}
+              <TableHead className="w-28">
+                {t("sessions.cost.total")}
+              </TableHead>
+              <TableHead className="w-24">
+                {t("sessions.cost.avgTurnTime")}
+              </TableHead>
+              <TableHead className="w-32">
+                {t("sessions.list.lastTool")}
+              </TableHead>
               <TableHead className="w-48 pr-4 text-right">
                 {t("sessions.colActions")}
               </TableHead>
@@ -201,7 +211,7 @@ export default function SessionsPage() {
             ) : query.isError ? (
               <TableRow>
                 <TableCell
-                  colSpan={5}
+                  colSpan={8}
                   className="py-10 text-center text-sm text-destructive"
                   data-testid="sessions-load-failed"
                 >
@@ -211,7 +221,7 @@ export default function SessionsPage() {
             ) : isDisabled ? (
               <TableRow>
                 <TableCell
-                  colSpan={5}
+                  colSpan={8}
                   className="py-10 text-center text-sm text-tp-ink-3"
                   data-testid="sessions-disabled-row"
                 >
@@ -221,7 +231,7 @@ export default function SessionsPage() {
             ) : sessions.length === 0 ? (
               <TableRow>
                 <TableCell
-                  colSpan={5}
+                  colSpan={8}
                   className="py-10 text-center text-sm text-tp-ink-3"
                   data-testid="sessions-empty"
                 >
@@ -324,6 +334,15 @@ function SessionsTableSkeleton() {
           </TableCell>
           <TableCell>
             <Skeleton className="h-4 w-40" />
+          </TableCell>
+          <TableCell>
+            <Skeleton className="h-4 w-16" />
+          </TableCell>
+          <TableCell>
+            <Skeleton className="h-4 w-12" />
+          </TableCell>
+          <TableCell>
+            <Skeleton className="h-4 w-20" />
           </TableCell>
           <TableCell className="pr-4 text-right">
             <Skeleton className="ml-auto h-7 w-32" />

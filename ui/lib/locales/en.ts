@@ -1934,6 +1934,70 @@ export const en = {
       "`{{key}}` is not in the sessions database — it may have been pruned.",
     replayLoading: "Replaying…",
     replayFailed: "Replay failed: {{msg}}",
+    // W2.3 cost / list enrichment
+    cost: {
+      total: "Total",
+      estimatedPrefix: "Estimated:",
+      avgTurnTime: "Avg turn",
+      totalTurns: "Turns",
+      totalTools: "Tools",
+      lastTurnAt: "Last",
+      unknownTooltip:
+        "Some turns have an unknown cost status — this figure is an estimate only.",
+    },
+    list: {
+      lastTool: "Last tool",
+    },
+
+    // W2.1 — live timeline view
+    timeline: {
+      empty: "(no parts yet)",
+      streaming: "streaming",
+      complete: "complete",
+      errored: "errored",
+      cancelling: "cancelling",
+      connecting: "connecting…",
+      connected: "live",
+      reconnecting: "reconnecting…",
+      waiting: "Waiting for the next turn to start streaming…",
+    },
+    // W2.2 — per-turn drill-down page
+    turn: {
+      title: "Turn detail",
+      breadcrumb: "Turn",
+      userInput: "User input",
+      finishReason: "Finish reason",
+      started: "Started",
+      elapsed: "Elapsed",
+      tokens: "Tokens",
+      toolCalls: "Tool calls",
+      empty: "(no events for this turn — it may never have started)",
+      loadError: "Failed to load",
+      retry: "Retry",
+    },
+    tools: {
+      pending: "pending",
+      running: "running",
+      completed: "done",
+      error: "error",
+      matchCount: "{{n}} matches",
+    },
+    reasoning: {
+      thinking: "Thinking…",
+      thought: "Thought",
+      empty: "(empty)",
+    },
+    // W3.2 — nested subagent timeline
+    subagent: {
+      spawned: "Subagent spawned",
+      depth: "depth",
+      running: "running",
+      completed: "completed",
+      errored: "errored",
+      tools: "tools",
+      tooDeep: "(deeper subagent collapsed)",
+      prompt: "prompt",
+    },
   },
 
   persona: {
