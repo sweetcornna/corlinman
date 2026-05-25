@@ -34,6 +34,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import structlog
 from fastapi import APIRouter, Depends, Path
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
@@ -44,6 +45,8 @@ from corlinman_server.gateway.routes_admin_b.state import (
     get_admin_state,
     require_admin,
 )
+
+logger = structlog.get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +156,12 @@ class StatusOk(BaseModel):
     status: str = "ok"
 
 
+class RevealResponse(BaseModel):
+    """Cleartext value of a stored credential (auth-gated; never logged)."""
+
+    value: str
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -231,6 +240,32 @@ def _resolve_field_view(
         preview=_mask_preview(literal) if literal else None,
         env_ref=default_env_ref,
     )
+
+
+def _resolve_raw_literal(raw: Any) -> str | None:
+    """Extract the cleartext literal stored for a field, if any.
+
+    Returns ``None`` for absent slots and for ``{env="FOO"}`` references —
+    env-var-shaped credentials are intentionally opaque to the admin
+    surface (the gateway never reads ``os.environ`` here, so there's no
+    plaintext to return). Plain strings, ``{"value": "..."}`` dicts and
+    coerce-to-str primitives all flow through.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        if "env" in raw:
+            # Never resolve env vars through the admin surface — that
+            # would leak operator secrets into our error/log paths.
+            return None
+        if "value" in raw:
+            literal = raw.get("value")
+            if literal is None or literal == "":
+                return None
+            return str(literal)
+        return None
+    literal = str(raw)
+    return literal if literal else None
 
 
 def _has_primary_set(provider: str, block: dict[str, Any]) -> bool:
@@ -450,6 +485,47 @@ def router() -> APIRouter:
                 return err
 
         return StatusOk()
+
+    @r.get(
+        "/admin/credentials/{provider}/{key}/reveal",
+        response_model=RevealResponse,
+    )
+    async def reveal_credential(
+        provider: str = Path(..., min_length=1),
+        key: str = Path(..., min_length=1),
+    ) -> JSONResponse | RevealResponse:
+        """Return the cleartext value of a stored credential.
+
+        Auth-gated by the router-level ``require_admin`` dependency.
+        Never logs the value — only ``provider`` and ``key`` make it into
+        the audit record. Env-var-shaped credentials (``{env="FOO"}``)
+        return 404 because the gateway intentionally never reads
+        ``os.environ`` from this surface.
+        """
+        allowed = _ALLOWED_FIELDS.get(provider, _ALLOWED_FIELDS["custom"])
+        if key not in allowed:
+            return _bad("unknown_field")
+
+        cfg = dict(config_snapshot())
+        providers_cfg = cfg.get("providers") or {}
+        if not isinstance(providers_cfg, dict):
+            providers_cfg = {}
+        block = providers_cfg.get(provider)
+        if not isinstance(block, dict):
+            return JSONResponse(
+                status_code=404, content={"error": "credential_not_found"}
+            )
+
+        literal = _resolve_raw_literal(block.get(key))
+        if literal is None:
+            return JSONResponse(
+                status_code=404, content={"error": "credential_not_found"}
+            )
+
+        # Audit log without the value. The value never appears in any
+        # log record on any path.
+        logger.info("credential.revealed", provider=provider, key=key)
+        return RevealResponse(value=literal)
 
     @r.get("/admin/credentials/codex/status")
     async def codex_credential_status():
