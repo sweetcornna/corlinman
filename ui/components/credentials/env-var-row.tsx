@@ -4,34 +4,48 @@
  * EnvVarRow — a single editable credential field inside a
  * `[providers.<name>]` block.
  *
- * Three visual states, gated by props:
+ * Two visual modes, modelled after hermes-agent `web/src/pages/EnvPage.tsx`
+ * (lines 99-330):
  *
- *   1. **unset** — the operator never wrote this key. Shows the key
- *      label, the conventional env-var hint, and an "Add" button that
- *      flips the row into editing mode.
- *   2. **set** — value is configured. Shows a masked preview (the
- *      server only ever returns "…last4") with eye-icon reveal,
- *      replace, and trash buttons.
- *   3. **editing** — a password-type Input, paste-only handler, Save
- *      and Cancel. Paste is allowed via `onPaste`; key-typing is
- *      tolerated but a one-time toast nudges the operator to paste
- *      instead so muscle-memory typos can't slip into the TOML.
+ *   - **Compact** (props.compact && !isSet && !editing): a low-density
+ *     inline row used inside :class:`ProviderGroupCard` so an unset
+ *     provider doesn't take more than one line per field. Hover lifts
+ *     opacity from 50% → 100%.
+ *   - **Full** (everything else): the wide layout with label badge,
+ *     description, monospace preview box, eye-icon reveal, replace +
+ *     clear buttons. During edit the preview collapses to a paste-only
+ *     password input with Save + Cancel.
  *
- * Borrowed from hermes-agent `web/src/pages/EnvPage.tsx:99-160`. The
- * key shape difference: corlinman's gateway never returns plaintext, so
- * the reveal action simply un-greys the existing "…last4" preview
- * rather than revealing the full value.
+ * Reveal flow (eye icon):
+ *   1. First click → fetch `/admin/credentials/{provider}/{key}/reveal`,
+ *      store the cleartext in local component state.
+ *   2. Subsequent toggles within the same mount just flip a boolean —
+ *      no re-fetch.
+ *   3. Any `field` prop change (e.g. parent refetch after save) clears
+ *      the cached value so we never echo a stale literal.
+ *
+ * The endpoint is auth-gated by the same admin middleware as every other
+ * `/admin/credentials/*` route; the value is never logged server-side.
  */
 
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { Check, Eye, EyeOff, Pencil, Trash2, X } from "lucide-react";
+import {
+  Check,
+  Eye,
+  EyeOff,
+  Pencil,
+  Save,
+  Trash2,
+  X,
+} from "lucide-react";
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import type { CredentialField } from "@/lib/api";
+import { revealCredential, type CredentialField } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 export interface EnvVarRowProps {
@@ -39,6 +53,10 @@ export interface EnvVarRowProps {
   field: CredentialField;
   /** Pretty label for the field — defaults to the raw key. */
   label?: string;
+  /** Optional description text rendered next to the label. */
+  description?: string;
+  /** Render in the dense single-line variant. */
+  compact?: boolean;
   saving?: boolean;
   onSave: (value: string) => void | Promise<void>;
   onDelete: () => void | Promise<void>;
@@ -50,6 +68,8 @@ export function EnvVarRow({
   provider,
   field,
   label,
+  description,
+  compact = false,
   saving = false,
   onSave,
   onDelete,
@@ -59,6 +79,10 @@ export function EnvVarRow({
   const [editing, setEditing] = React.useState(false);
   const [value, setValue] = React.useState("");
   const [revealed, setRevealed] = React.useState(false);
+  /** Cached cleartext fetched from /reveal. `null` = not yet fetched. */
+  const [cleartext, setCleartext] = React.useState<string | null>(null);
+  const [revealLoading, setRevealLoading] = React.useState(false);
+  const [editRevealed, setEditRevealed] = React.useState(false);
   const [typeWarned, setTypeWarned] = React.useState(false);
 
   const prefix = testIdPrefix ?? `cred-${provider}-${field.key}`;
@@ -70,6 +94,8 @@ export function EnvVarRow({
   React.useEffect(() => {
     if (!editing) setValue("");
     setRevealed(false);
+    setCleartext(null);
+    setEditRevealed(false);
   }, [editing, field.set, field.preview]);
 
   async function handleSave() {
@@ -84,29 +110,56 @@ export function EnvVarRow({
     setEditing(false);
     setValue("");
     setTypeWarned(false);
+    setEditRevealed(false);
+  }
+
+  async function handleRevealToggle() {
+    // Toggle off — keep the cached cleartext around so the next reveal
+    // is instant. Re-mounts or field-prop changes clear it via the
+    // effect above.
+    if (revealed) {
+      setRevealed(false);
+      return;
+    }
+    if (cleartext === null) {
+      setRevealLoading(true);
+      try {
+        const v = await revealCredential(provider, field.key);
+        setCleartext(v);
+        setRevealed(true);
+      } catch (err) {
+        toast.error(
+          err instanceof Error ? err.message : t("credentials.envRow.revealFailed"),
+        );
+      } finally {
+        setRevealLoading(false);
+      }
+      return;
+    }
+    setRevealed(true);
   }
 
   // -- editing --
   if (editing) {
     return (
       <div
-        className="flex min-w-0 flex-wrap items-center gap-2 rounded-md border border-tp-glass-edge bg-tp-glass-inner/40 px-3 py-2"
+        className="flex min-w-0 flex-wrap items-center gap-2 rounded-md border border-tp-amber/40 bg-tp-glass-inner/40 px-3 py-2 shadow-tp-amber-soft"
         data-testid={`${prefix}-row`}
       >
         <Label
           htmlFor={`${prefix}-input`}
-          className="w-full shrink-0 font-mono text-[11px] text-tp-ink-3 sm:w-32"
+          className="w-full shrink-0 font-mono text-[11px] text-tp-ink-2 sm:w-32"
         >
           {displayLabel}
         </Label>
         <Input
           id={`${prefix}-input`}
           data-testid={`${prefix}-input`}
-          type="password"
+          type={editRevealed ? "text" : "password"}
           autoFocus
           autoComplete="off"
           spellCheck={false}
-          placeholder={t("credentials.pastePlaceholder")}
+          placeholder={t("credentials.envRow.placeholder")}
           value={value}
           onPaste={(e) => {
             // Pasting is the intended path; we still let onChange fire
@@ -142,12 +195,32 @@ export function EnvVarRow({
         />
         <Button
           size="sm"
+          variant="ghost"
+          data-testid={`${prefix}-edit-reveal`}
+          aria-label={
+            editRevealed
+              ? t("credentials.envRow.hide")
+              : t("credentials.envRow.reveal")
+          }
+          aria-pressed={editRevealed}
+          onClick={() => setEditRevealed((r) => !r)}
+          disabled={saving}
+        >
+          {editRevealed ? (
+            <EyeOff className="h-3.5 w-3.5" />
+          ) : (
+            <Eye className="h-3.5 w-3.5" />
+          )}
+        </Button>
+        <Button
+          size="sm"
           data-testid={`${prefix}-save`}
           disabled={saving || !value}
           onClick={() => void handleSave()}
           aria-label={t("common.save")}
         >
-          <Check className="h-3.5 w-3.5" />
+          <Save className="h-3.5 w-3.5" />
+          <span className="hidden sm:inline">{t("common.save")}</span>
         </Button>
         <Button
           size="sm"
@@ -163,7 +236,41 @@ export function EnvVarRow({
     );
   }
 
-  // -- unset --
+  // -- compact unset (rendered inside ProviderGroupCard) --
+  if (compact && !field.set) {
+    return (
+      <div
+        className="flex min-w-0 items-center justify-between gap-3 px-1 py-1.5 opacity-50 transition-opacity hover:opacity-100"
+        data-testid={`${prefix}-row`}
+      >
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="font-mono text-[11px] text-tp-ink-3">
+            {displayLabel}
+          </span>
+          {(description ?? field.env_ref) && (
+            <span className="hidden truncate text-[10px] text-tp-ink-3/70 sm:inline">
+              {description ??
+                t("credentials.envHint", { env: field.env_ref })}
+            </span>
+          )}
+        </div>
+        <Button
+          size="sm"
+          variant="outline"
+          data-testid={`${prefix}-add`}
+          onClick={() => {
+            setEditing(true);
+            setValue("");
+          }}
+        >
+          <Pencil className="h-3 w-3" />
+          {t("credentials.envRow.set")}
+        </Button>
+      </div>
+    );
+  }
+
+  // -- non-compact unset --
   if (!field.set) {
     return (
       <div
@@ -189,60 +296,72 @@ export function EnvVarRow({
           onClick={() => setEditing(true)}
         >
           <Pencil className="h-3 w-3" />
-          {t("credentials.addValue")}
+          {t("credentials.envRow.set")}
         </Button>
       </div>
     );
   }
 
   // -- set --
+  const showCleartext = revealed && cleartext !== null;
   return (
     <div
-      className="flex min-w-0 flex-wrap items-center gap-2 rounded-md border border-tp-glass-edge px-3 py-2"
+      className={cn(
+        "flex min-w-0 flex-wrap items-center gap-2 rounded-md border px-3 py-2",
+        compact
+          ? "border-transparent px-1 py-1.5"
+          : "border-tp-glass-edge",
+      )}
       data-testid={`${prefix}-row`}
     >
-      <Label className="w-full shrink-0 font-mono text-[11px] text-tp-ink-2 sm:w-32">
-        {displayLabel}
-      </Label>
-      <div
-        data-testid={`${prefix}-preview`}
+      <Label
         className={cn(
-          "min-w-0 flex-1 truncate rounded border border-tp-glass-edge bg-tp-glass-inner/40 px-2 py-1 font-mono text-[11px]",
-          revealed ? "text-tp-ink" : "text-tp-ink-3",
+          "w-full shrink-0 font-mono text-tp-ink-2 sm:w-32",
+          compact ? "text-[11px]" : "text-[11px]",
         )}
       >
-        {field.preview ? (
-          revealed ? (
-            <span data-testid={`${prefix}-preview-revealed`}>
-              {field.preview}
-            </span>
-          ) : (
-            <span aria-hidden>{"•".repeat(8)}</span>
-          )
-        ) : field.env_ref ? (
-          <span className="text-tp-ink-3">env: {field.env_ref}</span>
-        ) : (
-          <span className="text-tp-ink-3">{t("credentials.fieldSet")}</span>
-        )}
-      </div>
-      {field.preview ? (
-        <Button
-          size="sm"
-          variant="ghost"
-          data-testid={`${prefix}-reveal`}
-          aria-label={
-            revealed ? t("credentials.hideValue") : t("credentials.revealValue")
-          }
-          aria-pressed={revealed}
-          onClick={() => setRevealed((r) => !r)}
-        >
-          {revealed ? (
-            <EyeOff className="h-3.5 w-3.5" />
-          ) : (
-            <Eye className="h-3.5 w-3.5" />
+        {displayLabel}
+      </Label>
+      <div className="flex min-w-0 flex-1 items-center gap-2">
+        <div
+          data-testid={`${prefix}-preview`}
+          className={cn(
+            "min-w-0 flex-1 truncate rounded border border-tp-glass-edge bg-tp-glass-inner/40 px-2 py-1 font-mono text-[11px]",
+            showCleartext ? "text-tp-ink select-all" : "text-tp-ink-3",
           )}
-        </Button>
-      ) : null}
+        >
+          {showCleartext ? (
+            <span data-testid={`${prefix}-preview-cleartext`}>{cleartext}</span>
+          ) : field.preview ? (
+            <span aria-hidden>{"•".repeat(8)}</span>
+          ) : field.env_ref ? (
+            <span className="text-tp-ink-3">env: {field.env_ref}</span>
+          ) : (
+            <span className="text-tp-ink-3">{t("credentials.fieldSet")}</span>
+          )}
+        </div>
+        {field.preview ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            data-testid={`${prefix}-reveal`}
+            disabled={revealLoading}
+            aria-label={
+              revealed
+                ? t("credentials.envRow.hide")
+                : t("credentials.envRow.reveal")
+            }
+            aria-pressed={revealed}
+            onClick={() => void handleRevealToggle()}
+          >
+            {revealed ? (
+              <EyeOff className="h-3.5 w-3.5" />
+            ) : (
+              <Eye className="h-3.5 w-3.5" />
+            )}
+          </Button>
+        ) : null}
+      </div>
       <Button
         size="sm"
         variant="outline"
@@ -250,13 +369,13 @@ export function EnvVarRow({
         onClick={() => setEditing(true)}
       >
         <Pencil className="h-3 w-3" />
-        {t("credentials.replaceValue")}
+        {t("credentials.envRow.replace")}
       </Button>
       <Button
         size="sm"
         variant="ghost"
         data-testid={`${prefix}-delete`}
-        aria-label={t("common.delete")}
+        aria-label={t("credentials.envRow.clear")}
         disabled={saving}
         onClick={() => void onDelete()}
         className="text-destructive hover:text-destructive"

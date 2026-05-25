@@ -57,7 +57,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
-import { EnvVarRow } from "@/components/credentials/env-var-row";
+import { ProviderGroupCard, getProviderPriority } from "@/components/credentials/provider-group-card";
 import {
   OAuthLoginModal,
   type OAuthLoginProvider,
@@ -469,12 +469,20 @@ export default function CredentialsPage() {
 
   const filtered = React.useMemo(() => {
     const q = search.trim().toLowerCase();
-    return providers.filter((p) => {
+    const matched = providers.filter((p) => {
       if (!showEmpty && !isProviderConfigured(p)) return false;
       if (!q) return true;
       return (
         p.name.toLowerCase().includes(q) || p.kind.toLowerCase().includes(q)
       );
+    });
+    // Apply the PROVIDER_GROUPS ordering — known providers float to
+    // their declared priority, everything else falls back to alpha.
+    return [...matched].sort((a, b) => {
+      const pa = getProviderPriority(a.name);
+      const pb = getProviderPriority(b.name);
+      if (pa !== pb) return pa - pb;
+      return a.name.localeCompare(b.name);
     });
   }, [providers, search, showEmpty]);
 
@@ -676,104 +684,40 @@ export default function CredentialsPage() {
           </CardContent>
         </Card>
       ) : (
-        <div className="flex flex-col gap-4">
+        <div className="flex flex-col gap-3">
           {filtered.map((p) => {
-            const configuredFields = p.fields.filter((f) => f.set).length;
-            const totalFields = p.fields.length;
+            const fieldLabels: Record<string, string> = {};
+            for (const f of p.fields) {
+              const labelKey = FIELD_LABEL_KEYS[f.key];
+              fieldLabels[f.key] = labelKey ? t(labelKey) : f.key;
+            }
+            const savingKey =
+              saveField.isPending && saveField.variables?.provider === p.name
+                ? `${p.name}/${saveField.variables?.key ?? ""}`
+                : removeField.isPending &&
+                    removeField.variables?.provider === p.name
+                  ? `${p.name}/${removeField.variables?.key ?? ""}`
+                  : null;
             return (
-              <Card
+              <ProviderGroupCard
                 key={p.name}
-                data-testid={`credentials-provider-${p.name}`}
-              >
-                <CardHeader className="border-b border-tp-glass-edge">
-                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                    <div className="flex min-w-0 flex-wrap items-center gap-2">
-                      <CardTitle className="text-base capitalize">
-                        {p.name}
-                      </CardTitle>
-                      <Badge variant="secondary" className="font-mono text-[10px]">
-                        {p.kind}
-                      </Badge>
-                      {p.enabled ? (
-                        <Badge className="border-transparent bg-ok/15 text-ok">
-                          {t("common.enabled")}
-                        </Badge>
-                      ) : (
-                        <Badge variant="secondary">{t("common.disabled")}</Badge>
-                      )}
-                    </div>
-                    <div className="flex w-full items-center justify-between gap-3 sm:w-auto sm:justify-end">
-                      <CardDescription
-                        data-testid={`credentials-provider-${p.name}-count`}
-                      >
-                        {t("credentials.countConfigured", {
-                          configured: configuredFields,
-                          total: totalFields,
-                        })}
-                      </CardDescription>
-                      <Switch
-                        checked={p.enabled}
-                        onCheckedChange={(next) =>
-                          toggleProvider.mutate({
-                            provider: p.name,
-                            enabled: next,
-                          })
-                        }
-                        aria-label={
-                          p.enabled
-                            ? t("credentials.providerDisabled", {
-                                provider: p.name,
-                              })
-                            : t("credentials.providerEnabled", {
-                                provider: p.name,
-                              })
-                        }
-                        data-testid={`credentials-provider-${p.name}-toggle`}
-                      />
-                    </div>
-                  </div>
-                </CardHeader>
-                <CardContent className="grid gap-2 pt-3">
-                  {p.fields.length === 0 ? (
-                    <p className="text-[11px] text-tp-ink-3">
-                      {t("credentials.fieldUnset")}
-                    </p>
-                  ) : (
-                    p.fields.map((f) => {
-                      const labelKey = FIELD_LABEL_KEYS[f.key];
-                      return (
-                        <EnvVarRow
-                          key={f.key}
-                          provider={p.name}
-                          field={f}
-                          label={labelKey ? t(labelKey) : f.key}
-                          saving={
-                            (saveField.isPending &&
-                              saveField.variables?.provider === p.name &&
-                              saveField.variables?.key === f.key) ||
-                            (removeField.isPending &&
-                              removeField.variables?.provider === p.name &&
-                              removeField.variables?.key === f.key)
-                          }
-                          onSave={async (value) => {
-                            await saveField.mutateAsync({
-                              provider: p.name,
-                              key: f.key,
-                              value,
-                            });
-                          }}
-                          onDelete={() =>
-                            setPendingDelete({
-                              provider: p.name,
-                              key: f.key,
-                            })
-                          }
-                        />
-                      );
-                    })
-                  )}
-                </CardContent>
-              </Card>
+                provider={p}
+                fieldLabels={fieldLabels}
+                savingKey={savingKey}
+                onSaveField={async (key, value) => {
+                  await saveField.mutateAsync({
+                    provider: p.name,
+                    key,
+                    value,
+                  });
+                }}
+                onDeleteField={(key) =>
+                  setPendingDelete({ provider: p.name, key })
+                }
+                onToggleEnabled={(next) =>
+                  toggleProvider.mutate({ provider: p.name, enabled: next })
+                }
+              />
             );
           })}
         </div>

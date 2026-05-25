@@ -148,38 +148,53 @@ describe("EnvVarRow", () => {
     expect(toastMessage).not.toHaveBeenCalled();
   });
 
-  it("set row toggles preview visibility through the eye-icon", () => {
+  it("set row toggles cleartext visibility through the eye-icon", async () => {
     const onSave = vi.fn();
     const onDelete = vi.fn();
-    render(
-      <EnvVarRow
-        provider="openai"
-        field={{
-          key: "api_key",
-          set: true,
-          preview: "…xyz9",
-          env_ref: "OPENAI_API_KEY",
-        }}
-        onSave={onSave}
-        onDelete={onDelete}
-      />,
-    );
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        new Response(JSON.stringify({ value: "sk-cleartext-secret" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+    try {
+      render(
+        <EnvVarRow
+          provider="openai"
+          field={{
+            key: "api_key",
+            set: true,
+            preview: "…xyz9",
+            env_ref: "OPENAI_API_KEY",
+          }}
+          onSave={onSave}
+          onDelete={onDelete}
+        />,
+      );
 
-    // Initial render: dots, no revealed preview.
-    expect(
-      screen.queryByTestId("cred-openai-api_key-preview-revealed"),
-    ).not.toBeInTheDocument();
+      // Initial render: dots, no cleartext yet.
+      expect(
+        screen.queryByTestId("cred-openai-api_key-preview-cleartext"),
+      ).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByTestId("cred-openai-api_key-reveal"));
-    expect(
-      screen.getByTestId("cred-openai-api_key-preview-revealed"),
-    ).toHaveTextContent("…xyz9");
+      fireEvent.click(screen.getByTestId("cred-openai-api_key-reveal"));
+      await waitFor(() =>
+        expect(
+          screen.getByTestId("cred-openai-api_key-preview-cleartext"),
+        ).toHaveTextContent("sk-cleartext-secret"),
+      );
 
-    // Clicking again re-masks.
-    fireEvent.click(screen.getByTestId("cred-openai-api_key-reveal"));
-    expect(
-      screen.queryByTestId("cred-openai-api_key-preview-revealed"),
-    ).not.toBeInTheDocument();
+      // Clicking again re-masks; no extra fetch since the value is cached.
+      fireEvent.click(screen.getByTestId("cred-openai-api_key-reveal"));
+      expect(
+        screen.queryByTestId("cred-openai-api_key-preview-cleartext"),
+      ).not.toBeInTheDocument();
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 
   it("delete button fires onDelete callback", () => {
