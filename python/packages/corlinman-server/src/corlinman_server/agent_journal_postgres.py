@@ -802,6 +802,19 @@ class PostgresJournalBackend:
         # SSE replay route (W1.3 ships SQLite-only).
         return []
 
+    async def list_session_turns(
+        self,
+        session_key: str,
+        *,
+        limit: int = 50,
+        before_turn_id: str | None = None,
+    ) -> list[dict[str, Any]]:  # pragma: no cover
+        # Postgres deployment doesn't yet wire the W1.2 UI surface; the
+        # SQLite backend is the source of truth for the past-turns
+        # navigator. Empty list keeps the admin route degrading
+        # gracefully rather than 500-ing on a non-SQLite gateway.
+        return []
+
     async def update_turn_cost(
         self,
         turn_id: int,

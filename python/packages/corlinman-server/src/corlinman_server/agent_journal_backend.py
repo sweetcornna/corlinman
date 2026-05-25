@@ -355,6 +355,16 @@ class JournalBackend(Protocol):
         """Most-recent turn ids for ``session_key`` (admin SSE bootstrap)."""
         ...
 
+    async def list_session_turns(
+        self,
+        session_key: str,
+        *,
+        limit: int = 50,
+        before_turn_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Per-turn metadata for the past-turns navigator (W1.2 UI)."""
+        ...
+
     async def update_turn_cost(
         self,
         turn_id: int,
@@ -1538,6 +1548,143 @@ class SqliteJournalBackend:
             )
             return []
         return [int(r[0]) for r in rows]
+
+    # ------------------------------------------------------------------
+    # W1.2 (UI) — past-turns navigator.
+    #
+    # The session-detail page renders a pill-row of recent turns; the
+    # underlying query joins the W1.2 aggregate columns (elapsed_ms,
+    # tool_call_count, estimated_cost_usd, cost_status) against the base
+    # ``turns`` row so the UI can render rich pills without a per-turn
+    # round trip. Pagination is cursor-style (``before_turn_id``) so
+    # infinite-scroll doesn't drift when a new turn lands between page
+    # requests.
+    # ------------------------------------------------------------------
+
+    async def list_session_turns(
+        self,
+        session_key: str,
+        *,
+        limit: int = 50,
+        before_turn_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return per-turn metadata for ``session_key`` in started_at_ms DESC.
+
+        Each row carries: ``turn_id``, ``started_at_ms``, ``ended_at_ms``,
+        ``status``, ``finish_reason`` (always None until a future
+        migration surfaces it), ``elapsed_ms``, ``estimated_cost_usd``,
+        ``cost_status``, ``tool_call_count``, ``reasoning_token_count``,
+        ``user_text_preview`` (200-char truncation).
+
+        ``before_turn_id`` is a cursor: when set, the query returns only
+        turns whose ``started_at_ms`` is strictly less than the cursor
+        turn's. Useful for infinite-scroll without offset drift if a new
+        turn lands between page requests. Unknown cursors are tolerated
+        — they resolve to a NULL started_at_ms which collapses the
+        ``<`` comparison to false (empty page), which is the right shape
+        for "cursor past the end".
+
+        Empty session → ``[]``. Errors → ``[]`` (best-effort: a degraded
+        admin surface is preferable to a 500 in the gateway).
+        """
+        if not session_key or limit <= 0:
+            return []
+        sql_parts = [
+            "SELECT turn_id, started_at_ms, ended_at_ms, status, "
+            "elapsed_ms, estimated_cost_usd, cost_status, "
+            "tool_call_count, reasoning_token_count, user_text ",
+            "FROM turns ",
+            "WHERE session_key = ? ",
+        ]
+        params: list[Any] = [session_key]
+        if before_turn_id is not None:
+            # Composite cursor: ``(started_at_ms, turn_id) <
+            # (cursor_started_at, cursor_turn_id)``. Same-ms turns
+            # (``begin_turn`` collides on its wall-clock id and bumps
+            # +1 without touching ``started_at_ms``) need the
+            # secondary turn_id key for the cursor to be strict — a
+            # bare ``started_at_ms <`` skips a same-ms tail.
+            sql_parts.append(
+                "AND ( "
+                "  started_at_ms < ("
+                "    SELECT started_at_ms FROM turns WHERE turn_id = ?"
+                "  ) "
+                "  OR ( "
+                "    started_at_ms = ("
+                "      SELECT started_at_ms FROM turns WHERE turn_id = ?"
+                "    ) "
+                "    AND turn_id < ? "
+                "  ) "
+                ") "
+            )
+            # The journal stores turn_id as INTEGER PK; the cursor
+            # arrives as a string from the URL. Best-effort coerce so
+            # a numeric cursor matches; non-numeric falls through to
+            # the empty-page semantics described above. The same value
+            # binds both subquery parameters and the secondary
+            # comparison.
+            try:
+                cursor_id = int(before_turn_id)
+            except (TypeError, ValueError):
+                cursor_id = -1
+            params.append(cursor_id)
+            params.append(cursor_id)
+            params.append(cursor_id)
+        # Secondary sort on ``turn_id DESC`` is critical: ``begin_turn``
+        # uses wall-clock ms for both ``turn_id`` and ``started_at_ms``,
+        # but the integrity-collision retry bumps the id by +1 while
+        # leaving ``started_at_ms`` unchanged — so two turns seeded
+        # within the same ms tie on ``started_at_ms`` and the natural
+        # row order would scramble them. The higher turn_id is the more
+        # recently inserted row, so it leads in the listing.
+        sql_parts.append("ORDER BY started_at_ms DESC, turn_id DESC LIMIT ?")
+        params.append(int(limit))
+        try:
+            cur = await self._c.execute("".join(sql_parts), tuple(params))
+            rows = await cur.fetchall()
+            await cur.close()
+        except aiosqlite.Error as exc:
+            logger.warning(
+                "agent.journal.list_session_turns_failed", error=str(exc)
+            )
+            return []
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            user_text = r[9]
+            preview: str | None = None
+            if isinstance(user_text, str):
+                preview = (
+                    user_text[:200] + "…"
+                    if len(user_text) > 200
+                    else user_text
+                )
+            out.append(
+                {
+                    "turn_id": str(r[0]),
+                    "started_at_ms": int(r[1]) if r[1] is not None else None,
+                    "ended_at_ms": int(r[2]) if r[2] is not None else None,
+                    "status": str(r[3]) if r[3] is not None else None,
+                    # finish_reason is not stored on ``turns`` today —
+                    # it lives in the ``TurnComplete`` event payload. The
+                    # listing surfaces ``None`` so the UI can render an
+                    # "—" placeholder; a future migration may project it
+                    # into a column to avoid the per-turn event scan.
+                    "finish_reason": None,
+                    "elapsed_ms": int(r[4]) if r[4] is not None else None,
+                    "estimated_cost_usd": (
+                        float(r[5]) if r[5] is not None else None
+                    ),
+                    "cost_status": str(r[6]) if r[6] is not None else None,
+                    "tool_call_count": (
+                        int(r[7]) if r[7] is not None else 0
+                    ),
+                    "reasoning_token_count": (
+                        int(r[8]) if r[8] is not None else 0
+                    ),
+                    "user_text_preview": preview,
+                }
+            )
+        return out
 
     async def update_turn_cost(
         self,

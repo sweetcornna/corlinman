@@ -361,6 +361,30 @@ class AgentJournal:
         """
         return await self._backend.get_session_turn_ids(session_key, limit)
 
+    async def list_session_turns(
+        self,
+        session_key: str,
+        *,
+        limit: int = 50,
+        before_turn_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return per-turn metadata for the past-turns navigator.
+
+        Each row carries ``turn_id``, ``started_at_ms``, ``ended_at_ms``,
+        ``status``, ``finish_reason`` (None until a future migration),
+        ``elapsed_ms``, ``estimated_cost_usd``, ``cost_status``,
+        ``tool_call_count``, ``reasoning_token_count``, and
+        ``user_text_preview`` (200-char truncation with an ellipsis).
+
+        Ordered by ``started_at_ms DESC``. Pagination via the
+        ``before_turn_id`` cursor — returns turns started strictly
+        before the cursor turn's ``started_at_ms``, suitable for
+        infinite-scroll without offset drift.
+        """
+        return await self._backend.list_session_turns(
+            session_key, limit=limit, before_turn_id=before_turn_id
+        )
+
     async def update_turn_cost(
         self,
         turn_id: int,

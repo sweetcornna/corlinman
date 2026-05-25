@@ -1,6 +1,8 @@
 """``/admin/sessions/{key}/events*`` — W1.3 task-observability surface.
 
-Two endpoints, sharing one ``EventEnvelope`` wire format:
+Three endpoints, sharing one ``EventEnvelope`` wire format for the SSE +
+JSON event surfaces and a separate per-turn-metadata shape for the
+past-turns navigator:
 
 * ``GET /admin/sessions/{key}/events/live`` — Server-Sent Events feed.
   Each frame is one envelope. Supports ``Last-Event-ID`` /
@@ -13,7 +15,13 @@ Two endpoints, sharing one ``EventEnvelope`` wire format:
   drill-down page (W2.2) can render the same timeline as the live
   stream.
 
-Auth: both routes mount behind :func:`require_admin` — same cookie /
+* ``GET /admin/sessions/{key}/turns`` — past-turns listing for the
+  session-detail page's pill row. Cursor-paginated via
+  ``before_turn_id``; each row carries the W1.2 aggregate columns
+  (elapsed_ms, tool_call_count, estimated_cost_usd, cost_status,
+  reasoning_token_count) plus a truncated user-text preview.
+
+Auth: all three routes mount behind :func:`require_admin` — same cookie /
 HTTP-Basic guard the rest of routes_admin_b uses.
 """
 
@@ -44,6 +52,14 @@ SSE_HEARTBEAT_SECONDS: float = 10.0
 # response.
 REPLAY_DEFAULT_LIMIT: int = 500
 REPLAY_MAX_LIMIT: int = 5000
+
+# Past-turns listing default + cap. 50 matches the default pill-row
+# the session-detail page renders on first load; the 200 cap keeps a
+# pathological request from materialising every turn of a long-lived
+# session into one response (the navigator paginates via
+# ``before_turn_id`` past that).
+TURNS_LIST_DEFAULT_LIMIT: int = 50
+TURNS_LIST_MAX_LIMIT: int = 200
 
 
 # ---------------------------------------------------------------------------
@@ -333,6 +349,70 @@ def router() -> APIRouter:
             "next_cursor": next_cursor,
         }
 
+    # ------------------------------------------------------------------
+    # GET /admin/sessions/{key}/turns
+    # ------------------------------------------------------------------
+
+    @r.get("/admin/sessions/{key}/turns")
+    async def list_session_turns(
+        key: str = Path(..., description="Session key to list turns for."),
+        limit: int = Query(
+            TURNS_LIST_DEFAULT_LIMIT,
+            ge=1,
+            le=TURNS_LIST_MAX_LIMIT,
+            description=(
+                "Max turns to return per page. Server-side clamped to "
+                f"[1, {TURNS_LIST_MAX_LIMIT}]."
+            ),
+        ),
+        before_turn_id: str | None = Query(
+            None,
+            description=(
+                "Cursor: return turns whose ``started_at_ms`` is strictly "
+                "less than the cursor turn's. Walk the navigator with "
+                "the previous response's ``next_cursor``."
+            ),
+        ),
+    ) -> dict[str, Any]:
+        """Past-turns listing for the session-detail pill row (W1.2 UI).
+
+        Powers the past-turns navigator: each row carries the W1.2
+        aggregate columns (elapsed_ms, tool_call_count, cost, etc.) plus
+        a truncated user-text preview so the UI can render rich pills
+        without a per-turn round trip.
+
+        Ordered ``started_at_ms DESC``. ``next_cursor`` is the trailing
+        turn id when the page filled to ``limit`` (callers should pass
+        it back as ``before_turn_id`` to fetch the next page); ``None``
+        when the page was short, signalling the end of the listing.
+
+        503 ``observability_disabled`` when the journal isn't wired —
+        matches the neighbouring SSE / replay routes' degradation shape.
+        """
+        state = get_admin_state()
+        journal = state.journal
+        if journal is None:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "observability_disabled",
+                    "message": "journal is not wired on this gateway",
+                },
+            )
+        turns = await journal.list_session_turns(
+            key, limit=limit, before_turn_id=before_turn_id
+        )
+        # ``next_cursor`` is only set when the page filled to ``limit``
+        # — otherwise we've hit the end and the UI should stop walking.
+        next_cursor: str | None = None
+        if len(turns) >= limit and turns:
+            next_cursor = str(turns[-1]["turn_id"])
+        return {
+            "session_key": key,
+            "turns": turns,
+            "next_cursor": next_cursor,
+        }
+
     return r
 
 
@@ -340,5 +420,7 @@ __all__ = [
     "REPLAY_DEFAULT_LIMIT",
     "REPLAY_MAX_LIMIT",
     "SSE_HEARTBEAT_SECONDS",
+    "TURNS_LIST_DEFAULT_LIMIT",
+    "TURNS_LIST_MAX_LIMIT",
     "router",
 ]
