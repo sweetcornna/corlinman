@@ -12,7 +12,7 @@
 Switch the production agent to a new provider + model:
 - Provider name: `cornna`
 - Base URL: `https://api.cornna.xyz/v1`
-- API key: `sk-9727da0eceec235cbb62141fb6685c9f4317c53ae5efd1658e607cfbfb64b427`
+- API key: `<REDACTED — see operator-only secrets store; key was rotated 2026-05-25 after a git-history leak; do NOT use the original key from the commit message of the runbook>`
 - Model: `gpt-5.5`
 - `reasoning_effort = "high"` (deep-think mode)
 
@@ -67,10 +67,14 @@ If a `[providers.cornna]` block already exists, **replace** its body; otherwise 
 ```toml
 [providers.cornna]
 kind = "openai_compatible"
-api_key = "sk-9727da0eceec235cbb62141fb6685c9f4317c53ae5efd1658e607cfbfb64b427"
+api_key = "REPLACE_WITH_THE_NEW_KEY_FROM_OPERATOR"  # paste here, do not commit
 base_url = "https://api.cornna.xyz/v1"
 enabled = true
 ```
+
+> The actual key is delivered out-of-band (1Password / Lark DM / paper).
+> If the operator accidentally typed it into a file that is tracked by
+> git, rotate it on api.cornna.xyz immediately.
 
 ### 2b. Repoint the default alias
 
