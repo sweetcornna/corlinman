@@ -40,6 +40,7 @@ import {
   SIDEBAR_DEV_ITEMS,
   SIDEBAR_DEV_SETTINGS_ENTRY,
   SIDEBAR_OPERATOR_ITEMS,
+  SIDEBAR_SYSTEM_ENTRY,
   Sidebar,
   resolveSidebarEntries,
 } from "./sidebar";
@@ -112,17 +113,19 @@ describe("Sidebar", () => {
     expect(screen.getByRole("link", { name: /开发者设置|Developer Settings/i })).toBeInTheDocument();
   });
 
-  it("resolveSidebarEntries returns operator+dev-settings in operator mode", () => {
+  it("resolveSidebarEntries returns operator+system+dev-settings in operator mode", () => {
     const entries = resolveSidebarEntries(false);
-    // OPERATOR_ITEMS (9 entries — 1 is the Channels group) + dev-settings = 10 NavEntries.
-    expect(entries).toHaveLength(SIDEBAR_OPERATOR_ITEMS.length + 1);
+    // OPERATOR_ITEMS (9 entries — 1 is the Channels group) + system + dev-settings = 11 NavEntries.
+    expect(entries).toHaveLength(SIDEBAR_OPERATOR_ITEMS.length + 2);
     expect(entries[entries.length - 1]).toBe(SIDEBAR_DEV_SETTINGS_ENTRY);
+    expect(entries[entries.length - 2]).toBe(SIDEBAR_SYSTEM_ENTRY);
   });
 
   it("resolveSidebarEntries appends all 11 dev pages when devMode is on", () => {
     const entries = resolveSidebarEntries(true);
+    // OPERATOR + DEV + system + dev-settings.
     expect(entries).toHaveLength(
-      SIDEBAR_OPERATOR_ITEMS.length + SIDEBAR_DEV_ITEMS.length + 1,
+      SIDEBAR_OPERATOR_ITEMS.length + SIDEBAR_DEV_ITEMS.length + 2,
     );
     expect(SIDEBAR_DEV_ITEMS).toHaveLength(11);
     // All dev items carry the isDeveloper flag.

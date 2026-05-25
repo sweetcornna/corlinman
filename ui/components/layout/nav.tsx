@@ -9,6 +9,7 @@ import { ProfileSwitcher } from "./profile-switcher";
 import { SearchTrigger } from "./search-trigger";
 import { TenantSwitcher } from "./tenant-switcher";
 import { useMobileDrawer } from "./mobile-drawer-context";
+import { UpdateBubble } from "@/components/system/update-bubble";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { cn } from "@/lib/utils";
 
@@ -49,6 +50,7 @@ export function TopNav() {
         <ProfileSwitcher className="hidden md:inline-flex" />
         <TenantSwitcher className="hidden md:inline-flex" />
         <HealthDot className="hidden md:inline-flex" />
+        <UpdateBubble className="hidden md:inline-flex" />
         <LanguageToggle />
         <ThemeToggle />
       </div>

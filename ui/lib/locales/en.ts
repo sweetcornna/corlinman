@@ -2121,4 +2121,48 @@ export const en = {
     errPromptRequired: "System prompt cannot be empty",
   },
 
+  // W1.2 — TopNav update bubble (chip that lights up when a newer
+  // corlinman release is available upstream).
+  update: {
+    bubble: {
+      label: "Update available · {{version}}",
+      dismiss: "Dismiss",
+      tooltip: "Click for release notes",
+    },
+  },
+
+  // W2.1 — /admin/system page (version + update banner + upgrade
+  // commands). All keys consumed by `<UpdateBubble>` + the system page.
+  system: {
+    title: "System",
+    subtitle: "Version, updates, and upgrade tooling",
+    sidebarLabel: "System",
+    version: {
+      current: "Current version",
+      latest: "Latest release",
+      lastChecked: "Last checked",
+      checking: "Checking…",
+      upToDate: "You're on the latest version",
+    },
+    update: {
+      available: "Update available",
+      refresh: "Check now",
+      dismiss: "Dismiss until next release",
+      published: "Published {{relative}}",
+      fullChangelog: "View on GitHub",
+      releaseNotes: "Release notes",
+    },
+    upgrade: {
+      title: "Upgrade commands",
+      subtitle: "Copy and run on your VPS",
+      tabNative: "Native",
+      tabDocker: "Docker",
+      tabDockerQq: "Docker + QQ",
+      copy: "Copy",
+      copied: "Copied",
+      note: "The --upgrade flag preserves your data dir.",
+      runbookLink: "Full runbook",
+    },
+  },
+
 } satisfies LocaleBundle;

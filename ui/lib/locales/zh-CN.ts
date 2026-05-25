@@ -2076,6 +2076,50 @@ export const zhCN = {
     errPromptRequired: "System prompt 不能为空",
   },
 
+  // W1.2 — TopNav update bubble (chip that lights up when a newer
+  // corlinman release is available upstream).
+  update: {
+    bubble: {
+      label: "有更新可用 · {{version}}",
+      dismiss: "忽略",
+      tooltip: "点击查看发布说明",
+    },
+  },
+
+  // W2.1 — /admin/system page (version + update banner + upgrade
+  // commands). All keys consumed by `<UpdateBubble>` + the system page.
+  system: {
+    title: "系统",
+    subtitle: "版本、更新与升级工具",
+    sidebarLabel: "系统",
+    version: {
+      current: "当前版本",
+      latest: "最新版本",
+      lastChecked: "上次检查",
+      checking: "检查中…",
+      upToDate: "已是最新版本",
+    },
+    update: {
+      available: "有更新可用",
+      refresh: "立即检查",
+      dismiss: "暂不提醒，下个版本再提示",
+      published: "发布于 {{relative}}",
+      fullChangelog: "在 GitHub 查看完整发布说明",
+      releaseNotes: "发布说明",
+    },
+    upgrade: {
+      title: "升级命令",
+      subtitle: "复制后在 VPS 执行",
+      tabNative: "原生 (systemd)",
+      tabDocker: "Docker",
+      tabDockerQq: "Docker + QQ",
+      copy: "复制",
+      copied: "已复制",
+      note: "--upgrade 不会动数据目录。",
+      runbookLink: "完整运维手册",
+    },
+  },
+
 };
 
 /**

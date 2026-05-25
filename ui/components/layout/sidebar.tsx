@@ -22,6 +22,7 @@ import {
   LogOut,
   MessageCircle,
   MessagesSquare,
+  MonitorCog,
   Network,
   Plug,
   Radio,
@@ -133,6 +134,17 @@ const DEV_ITEMS: NavEntry[] = [
   { href: "/evolution", labelKey: "nav.evolution", icon: Leaf, isDeveloper: true },
 ];
 
+/**
+ * Always-visible "System" entry — /admin/system surfaces version info,
+ * update banner, and copy-paste upgrade commands (W2.1). Placed alongside
+ * the dev-settings footer link so it's reachable in operator mode too.
+ */
+const SYSTEM_ENTRY: NavItem = {
+  href: "/system",
+  labelKey: "system.sidebarLabel",
+  icon: MonitorCog,
+};
+
 /** Always-visible footer link to the dev-settings dashboard. */
 const DEV_SETTINGS_ENTRY: NavItem = {
   href: "/dev-settings",
@@ -147,14 +159,15 @@ const DEV_SETTINGS_ENTRY: NavItem = {
  */
 export function resolveSidebarEntries(devModeEnabled: boolean): NavEntry[] {
   if (devModeEnabled) {
-    return [...OPERATOR_ITEMS, ...DEV_ITEMS, DEV_SETTINGS_ENTRY];
+    return [...OPERATOR_ITEMS, ...DEV_ITEMS, SYSTEM_ENTRY, DEV_SETTINGS_ENTRY];
   }
-  return [...OPERATOR_ITEMS, DEV_SETTINGS_ENTRY];
+  return [...OPERATOR_ITEMS, SYSTEM_ENTRY, DEV_SETTINGS_ENTRY];
 }
 
 /** Exposed for tests + the dev-settings dashboard's card grid. */
 export const SIDEBAR_OPERATOR_ITEMS = OPERATOR_ITEMS;
 export const SIDEBAR_DEV_ITEMS = DEV_ITEMS;
+export const SIDEBAR_SYSTEM_ENTRY = SYSTEM_ENTRY;
 export const SIDEBAR_DEV_SETTINGS_ENTRY = DEV_SETTINGS_ENTRY;
 
 function isActiveHref(pathname: string, href: string): boolean {

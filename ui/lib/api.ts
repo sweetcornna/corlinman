@@ -2009,3 +2009,68 @@ export async function listProviderKindDescriptors(): Promise<
   });
 }
 // === end W2.3 ===
+
+// === W1.2 system / update checker (do not edit other blocks) ===
+//
+// Mirrors `routes_admin_b/system.py`. Three endpoints behind `/admin/system/*`:
+//
+//   * GET  /admin/system/info             → UpdateStatus (cached)
+//   * POST /admin/system/check-updates    → UpdateStatus (force refresh)
+//   * GET  /admin/system/upgrade-commands → UpgradeCommands
+//
+// The TopNav `<UpdateBubble>` polls `/info` every 30s; the `/admin/system`
+// page also drives the force-refresh button + reads the upgrade commands.
+
+/** Status payload returned by `/admin/system/info` and
+ * `/admin/system/check-updates`. Both endpoints share the same shape — the
+ * POST variant simply bypasses the 6h backend TTL. */
+export interface UpdateStatus {
+  /** Currently-installed corlinman version (semver, no leading `v`). */
+  current: string;
+  /** Latest published release tag (e.g. `v1.4.2`), or null when the upstream
+   * check has never succeeded. */
+  latest: string | null;
+  /** True iff `latest` is strictly newer than `current`. */
+  available: boolean;
+  /** GitHub HTML URL for the release page; null when no release seen yet. */
+  release_url: string | null;
+  /** Raw GitHub markdown for the release notes; null when not fetched. */
+  release_notes_md: string | null;
+  /** epoch-ms publish timestamp of the latest release. */
+  published_at: number | null;
+  /** epoch-ms of the last successful poll. */
+  last_checked_at: number | null;
+  /** Prerelease tags the checker has seen but suppressed (per config). */
+  prerelease_seen: string[];
+}
+
+/** Copy-pasta blobs surfaced on `/admin/system`. Strings only — no
+ * structured fields — because each variant is a single multi-line bash
+ * command the operator runs as-is on their VPS. */
+export interface UpgradeCommands {
+  native: string;
+  docker: string;
+  docker_with_qq: string;
+}
+
+/** GET /admin/system/info — cached UpdateStatus (cheap; backend serves
+ * from the 6h on-disk cache). */
+export function fetchSystemInfo(): Promise<UpdateStatus> {
+  return apiFetch<UpdateStatus>("/admin/system/info");
+}
+
+/** POST /admin/system/check-updates — force-refresh the GitHub poll
+ * bypassing the TTL. Returns the same shape as `fetchSystemInfo`. */
+export function checkForUpdates(): Promise<UpdateStatus> {
+  return apiFetch<UpdateStatus>("/admin/system/check-updates", {
+    method: "POST",
+    body: {},
+  });
+}
+
+/** GET /admin/system/upgrade-commands — the three copy-pasta upgrade
+ * recipes (native systemd / docker / docker+QQ). Read-only. */
+export function fetchUpgradeCommands(): Promise<UpgradeCommands> {
+  return apiFetch<UpgradeCommands>("/admin/system/upgrade-commands");
+}
+// === end W1.2 ===
