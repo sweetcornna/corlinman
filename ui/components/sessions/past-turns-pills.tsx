@@ -115,7 +115,7 @@ interface PillProps {
 }
 
 function TurnPill({ sessionKey, turn, active }: PillProps) {
-  const href = `/admin/sessions/${encodeURIComponent(sessionKey)}/turns/${encodeURIComponent(
+  const href = `/admin/sessions/turn?key=${encodeURIComponent(sessionKey)}&turn=${encodeURIComponent(
     turn.turn_id,
   )}`;
   return (

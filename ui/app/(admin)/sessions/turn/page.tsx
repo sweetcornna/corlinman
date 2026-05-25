@@ -1,33 +1,24 @@
 "use client";
 
 /**
- * `/admin/sessions/[key]/turns/[turn_id]` — Phase 4 W2.2 per-turn drill-down.
+ * `/admin/sessions/turn?key=...&turn=...` — per-turn drill-down.
  *
- * Static replay of a single turn re-rendered through the *same* timeline
- * components the live view (`/admin/sessions/[key]`) uses. This mirrors
- * Claude Code's transcript-JSONL pattern: history files are replayed
- * through the live renderer so a finished turn looks pixel-identical to
- * the one that's still streaming.
+ * Query-string variant (replaces the original `[key]/turns/[turn_id]/`
+ * dynamic route which can't ship under `output: "export"` without
+ * static-param enumeration). Mirrors the pattern used by `agents/detail`
+ * and `plugins/detail`.
  *
  * Flow:
- *   1. Mount → paginate `loadTurnEvents` until `next_cursor === null` so
- *      we have every event for the turn locally.
- *   2. Stash the full event batch in state + extract a few flat fields
- *      (`userInput` from `TurnStart`, `finishReason` from `TurnComplete`)
- *      for the summary card.
- *   3. Render: own `<TimelineProvider>` → `<TurnSummaryCard>` +
- *      `<EventTimelineBody mode="replay" turnIdFilter={turn_id} ...>`.
- *      The body skips opening the SSE and instead dispatches our seed
- *      batch through the existing reducer; the summary card reads the
- *      resulting `Turn` from the same store.
- *
- * Loading/error states are local to this page — there's no global
- * loading shell at the (admin) layout level.
+ *   1. Mount → paginate `loadTurnEvents` until exhausted.
+ *   2. Stash full batch + extract `userInput` from `TurnStart` and
+ *      `finishReason` from `TurnComplete` for the summary card.
+ *   3. Render: `<TimelineProvider>` → `<TurnSummaryCard>` +
+ *      `<EventTimelineBody mode="replay" turnIdFilter={turn_id}>`.
  */
 
 import * as React from "react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { useTranslation } from "react-i18next";
 import { AlertTriangle, ChevronLeft, ChevronRight } from "lucide-react";
 
@@ -72,13 +63,9 @@ interface LoadState {
 }
 
 export default function TurnDetailPage() {
-  const params = useParams<{ key: string; turn_id: string }>();
-  const rawKey = Array.isArray(params?.key) ? params.key[0] : params?.key;
-  const rawTurnId = Array.isArray(params?.turn_id)
-    ? params.turn_id[0]
-    : params?.turn_id;
-  const sessionKey = rawKey ? decodeURIComponent(rawKey) : "";
-  const turnId = rawTurnId ? decodeURIComponent(rawTurnId) : "";
+  const search = useSearchParams();
+  const sessionKey = search?.get("key") ?? "";
+  const turnId = search?.get("turn") ?? "";
 
   const [state, setState] = React.useState<LoadState>({
     status: "loading",
@@ -96,8 +83,6 @@ export default function TurnDetailPage() {
       try {
         const all: LiveEvent[] = [];
         let cursor: number | undefined = undefined;
-        // Loop the cursor until exhausted — a long turn can easily blow
-        // past a single page.
         // eslint-disable-next-line no-constant-condition
         while (true) {
           const page = await loadTurnEvents(sessionKey, turnId, {
@@ -108,7 +93,6 @@ export default function TurnDetailPage() {
           if (cancelled) return;
           all.push(...page.events);
           if (page.next_cursor == null) break;
-          // Guard against a buggy server returning the same cursor.
           if (cursor !== undefined && page.next_cursor <= cursor) break;
           cursor = page.next_cursor;
         }
@@ -177,10 +161,6 @@ export default function TurnDetailPage() {
   );
 }
 
-/* -------------------------------------------------------------- */
-/*                          Sub-components                        */
-/* -------------------------------------------------------------- */
-
 function Breadcrumb({
   sessionKey,
   turnId,
@@ -189,6 +169,7 @@ function Breadcrumb({
   turnId: string;
 }) {
   const { t } = useTranslation();
+  const detailHref = `/admin/sessions/detail?key=${encodeURIComponent(sessionKey)}`;
   return (
     <header className="flex flex-col gap-3">
       <Button
@@ -197,7 +178,7 @@ function Breadcrumb({
         size="sm"
         className="-ml-2 h-7 w-fit px-2 text-tp-ink-3 hover:text-tp-ink"
       >
-        <Link href={`/admin/sessions/${encodeURIComponent(sessionKey)}`}>
+        <Link href={detailHref}>
           <ChevronLeft className="h-3.5 w-3.5" aria-hidden="true" />
           {sessionKey || t("sessions.title")}
         </Link>
@@ -214,7 +195,7 @@ function Breadcrumb({
         </Link>
         <ChevronRight className="h-3 w-3 opacity-50" aria-hidden="true" />
         <Link
-          href={`/admin/sessions/${encodeURIComponent(sessionKey)}`}
+          href={detailHref}
           className="font-mono hover:text-tp-ink hover:underline"
         >
           {sessionKey}

@@ -422,7 +422,7 @@ test.describe("admin pages smoke — stubs only", () => {
     await installSessionDetailStubs(page);
     await installSessionsListStubs(page);
 
-    await page.goto(`/admin/sessions/${encodeURIComponent(SESSION_KEY)}`);
+    await page.goto(`/admin/sessions/detail?key=${encodeURIComponent(SESSION_KEY)}`);
 
     // Past-turns pill row — W1.2 + W2.3 wiring.
     const pills = page.getByTestId("past-turns-pills");
@@ -453,7 +453,7 @@ test.describe("admin pages smoke — stubs only", () => {
     await installTurnDrilldownStubs(page);
 
     await page.goto(
-      `/admin/sessions/${encodeURIComponent(SESSION_KEY)}/turns/${encodeURIComponent(TURN_ID)}`,
+      `/admin/sessions/turn?key=${encodeURIComponent(SESSION_KEY)}&turn=${encodeURIComponent(TURN_ID)}`,
     );
 
     await expect(page.getByTestId("turn-summary-card")).toBeVisible({

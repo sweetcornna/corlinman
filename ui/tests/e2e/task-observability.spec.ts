@@ -328,7 +328,7 @@ test.describe("task observability — stubbed timeline", () => {
     await installSseStub(page);
 
     await page.goto(
-      `/admin/sessions/${encodeURIComponent(SESSION_KEY)}`,
+      `/admin/sessions/detail?key=${encodeURIComponent(SESSION_KEY)}`,
     );
 
     // The timeline container mounts immediately; wait for the SSE to
@@ -379,7 +379,7 @@ test.describe("task observability — stubbed timeline", () => {
     await installReplayStub(page);
 
     await page.goto(
-      `/admin/sessions/${encodeURIComponent(SESSION_KEY)}/turns/${TURN_ID}`,
+      `/admin/sessions/turn?key=${encodeURIComponent(SESSION_KEY)}&turn=${TURN_ID}`,
     );
 
     // Replay-mode body (not the live wrapper).
