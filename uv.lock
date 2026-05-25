@@ -341,7 +341,7 @@ wheels = [
 
 [[package]]
 name = "corlinman"
-version = "0.1.0"
+version = "1.1.1"
 source = { virtual = "." }
 dependencies = [
     { name = "corlinman-agent" },
@@ -693,7 +693,7 @@ requires-dist = [{ name = "aiosqlite", specifier = ">=0.20" }]
 
 [[package]]
 name = "corlinman-server"
-version = "0.1.0"
+version = "1.1.1"
 source = { editable = "python/packages/corlinman-server" }
 dependencies = [
     { name = "aiosqlite" },
@@ -720,6 +720,7 @@ dependencies = [
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp" },
     { name = "opentelemetry-sdk" },
+    { name = "packaging" },
     { name = "prometheus-client" },
     { name = "pydantic" },
     { name = "python-json-logger" },
@@ -767,6 +768,7 @@ requires-dist = [
     { name = "opentelemetry-api", specifier = ">=1.27" },
     { name = "opentelemetry-exporter-otlp", specifier = ">=1.27" },
     { name = "opentelemetry-sdk", specifier = ">=1.27" },
+    { name = "packaging", specifier = ">=24.0" },
     { name = "prometheus-client", specifier = ">=0.21" },
     { name = "pydantic", specifier = ">=2.10" },
     { name = "pytest-postgresql", marker = "extra == 'test'", specifier = ">=6.0" },
