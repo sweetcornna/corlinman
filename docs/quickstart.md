@@ -127,7 +127,10 @@ A finished turn doesn't disappear — click into the turn card or visit
 `/admin/sessions/{key}/turns/{turn_id}` to re-watch every event in
 replay mode. The replay page is the same React component as the live
 view, just seeded from the journal instead of the SSE stream, so it
-looks pixel-identical to how the turn looked when it ran.
+looks pixel-identical to how the turn looked when it ran. A past-turns
+pill row above the timeline jumps you to any earlier turn in the
+session, and `/admin/models` opens a two-column ModelPickerDialog for
+adding model aliases without typing the provider + model name twice.
 
 Channel-side, the same data drives a compact one-liner. Telegram /
 Discord / Slack / Feishu mutate a single message in place

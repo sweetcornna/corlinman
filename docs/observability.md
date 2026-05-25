@@ -205,6 +205,57 @@ prefer the emitter path — it's the same stream the UI sees.
 | `CORLINMAN_SSE_SUBSCRIBER_QUEUE_SIZE` | 256 | env var (gateway) | Per-subscriber bounded queue. Overflow drops oldest + reconnect uses `Last-Event-ID` for catch-up. |
 | `[observability].emit_legacy_serverframe` | `true` | `config.toml` | When set to `false`, channels that still rely on the legacy gRPC `ServerFrame` stream lose their data source. Don't touch unless every adapter has migrated to `emitter.subscribe`. |
 
+### Admin UI fixes (May 2026)
+
+Tracking issue: [`docs/PLAN_UI_FIXES.md`](PLAN_UI_FIXES.md). This round
+reconciles a split-brain state between `main` and the live deployment
+at `corlinman.cornna.xyz`: the live gateway shipped a handful of admin
+endpoints (`replay`, `provider test`, `provider/{name}/models`,
+`provider kinds`) that never made it into `main`, while the
+[task event stream](#task-event-stream) endpoints
+(`/events/live`, `/turns/{turn_id}/events`, `/cost`) landed in `main`
+but are absent from the live build. Until `main` is re-deployed, the UI
+on the live origin calls endpoints that 404 either way — that's the
+"用不了" complaint.
+
+#### Endpoints backported into `main`
+
+| Endpoint | Behaviour |
+|---|---|
+| `POST /admin/providers/{name}/test` | Zero-cost provider probe. For openai-compatible kinds it hits `/v1/models` on the configured `base_url`; for `anthropic` / `google` it returns `ok=true` with a `note` flag (those vendors don't expose a free models endpoint without a billed token). Never echoes the api key; latency capped at 5s. |
+| `GET /admin/providers/{name}/models` | Model catalog discovery. Proxies `/v1/models` for openai-compatible providers, returns a hardcoded list from `corlinman_providers.specs` for `anthropic` / `google`. 30s in-memory cache; feeds the new `<ModelPickerDialog>`. |
+| `GET /admin/providers/kinds` | **BREAKING** — response shape changed from `{kinds: [string]}` to `{kinds: [{kind, label, description, params_schema}]}`. Drives the schema-rendered custom-provider creation form. Old clients that consume just the `kind` string need to map over the new array. |
+| `GET /admin/sessions/{key}/turns` | Past-turns listing. `{turns: [{turn_id, started_at_ms, ended_at_ms, status, model, tool_call_count, finish_reason, user_text_preview}], next_cursor}`. Cursor pagination via `?limit=50&before_id=...`. Powers the past-turns pill row above the EventTimeline so the session detail page is reachable beyond deep links. |
+| `GET /admin/credentials/{provider}/{key}/reveal` | Admin-only cleartext reveal for the eye-icon UX on the credentials page. Auth-gated; the returned value is **never logged** (req/resp body redacted in the access log). |
+
+#### UI upgrades shipped alongside
+
+- **Credentials page** rebuilt around hermes-agent's `EnvPage` shape:
+  `<EnvVarRow>` (paste-only secret input, eye-icon reveal with per-row
+  client-side cache so toggling doesn't re-fetch) +
+  `<ProviderGroupCard>` (prefix-grouped, collapsible per provider).
+- **`<ModelPickerDialog>`** — two-column provider / model picker with a
+  single search filter, mounted on `/admin/models` (add-alias flow) and
+  `/admin/agents/[name]` (per-agent model override).
+- **Past-turns pill row** above the EventTimeline on
+  `/admin/sessions/{key}` — horizontal navigator with a "Load more"
+  button. Calls `GET /admin/sessions/{key}/turns`.
+- **`<TestConnectionButton>`** — one-click probe per provider row, with
+  toast feedback showing latency or the upstream error message.
+- **E2E smoke** (`ui/tests/e2e/admin-pages-smoke.spec.ts`) — visits
+  seven admin surfaces, fails on 404 XHRs and console errors, so the
+  next "UI calls missing endpoint" regression breaks CI before deploy.
+
+#### Deployment guidance
+
+Re-deploy `main` to production as soon as this round merges. The live
+UI on `corlinman.cornna.xyz` already references the new SSE / cost /
+replay endpoints; until the backend catches up, the session detail
+page reports SSE 404s and the cost footer stays empty. Both the new
+task-observability endpoints and the backported legacy endpoints
+coexist by path, so deploying `main` is purely additive — no live
+features regress.
+
 ### Future work
 
 Out of scope for this round (tracked in

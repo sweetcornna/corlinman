@@ -78,6 +78,99 @@ All notable changes to corlinman are documented here. Format follows
   round to see anything change. Same emit point now feeds the UI
   badge + the channel spinner.
 
+---
+
+> Admin UI fixes — credentials, model picker, sessions navigation.
+> Reconciles a split-brain state between `main` and the live
+> deployment at `corlinman.cornna.xyz` (legacy endpoints existed on
+> live but never landed in main; new observability endpoints exist in
+> main but not yet on live), then ports the hermes `EnvPage` paste-
+> only credentials pattern + two-column `ModelPickerDialog`. Plan at
+> [`docs/PLAN_UI_FIXES.md`](docs/PLAN_UI_FIXES.md).
+
+### Added
+
+- **Provider test-connection endpoint** —
+  `POST /admin/providers/{name}/test`. Zero-cost probe: hits
+  `/v1/models` for openai-compatible kinds; returns
+  `ok=true` + `note` for anthropic / google (no free probe surface).
+  Latency capped at 5s; the api key is never echoed in the response or
+  the access log. UI surfaces it as a per-row "Test connection" button
+  with toast feedback.
+- **Provider model discovery endpoint** —
+  `GET /admin/providers/{name}/models`. Proxies upstream `/v1/models`
+  for openai-compatible providers, returns a hardcoded list from
+  `corlinman_providers.specs` for anthropic / google. 30s in-memory
+  cache. Feeds the new `<ModelPickerDialog>`.
+- **Provider kinds descriptor endpoint** —
+  `GET /admin/providers/kinds`. Returns
+  `{kinds: [{kind, label, description, params_schema}]}` so the custom-
+  provider creation form can render itself from JSON-Schema instead of
+  hard-coding the per-kind shape.
+- **Session turns listing endpoint** —
+  `GET /admin/sessions/{key}/turns?limit=50&before_id=...`. Paginated
+  cursor over the `turns` SQLite table. Powers the past-turns pill row
+  above the EventTimeline so the session detail page is reachable
+  beyond deep links.
+- **Credential reveal endpoint** —
+  `GET /admin/credentials/{provider}/{key}/reveal`. Admin-only, auth-
+  gated, return body redacted in access log. Backs the eye-icon UX on
+  the credentials page.
+- **Session replay endpoint backported** —
+  `POST /admin/sessions/{session_key}/replay` with
+  `{mode: "transcript" | "rerun", since_turn_id?}`. Lives on the live
+  deployment today; brought back into main so a redeploy doesn't
+  regress the existing `<ReplayDialog>` consumer.
+- **`<ModelPickerDialog>`** — two-column provider / model picker with
+  a single search filter (port of hermes-agent's
+  `ModelPickerDialog.tsx`). Mounted on `/admin/models` (add-alias) and
+  `/admin/agents/[name]` (per-agent model override).
+- **`<EnvVarRow>` + `<ProviderGroupCard>`** — hermes-style credentials
+  UI: paste-only secret input, eye-icon reveal with per-row client-
+  side cache (toggle doesn't re-fetch), replace / clear buttons,
+  prefix-grouped collapsible cards.
+- **`<PastTurnsPills>`** — horizontal turn navigator above
+  `EventTimeline` on `/admin/sessions/{key}`. ≤10 pills with
+  `(turn_id, status, elapsed)`, "Load more" pagination.
+- **`<TestConnectionButton>`** — per-provider one-click probe with
+  toast feedback (latency on success, upstream error message on
+  failure).
+- **E2E smoke** — `ui/tests/e2e/admin-pages-smoke.spec.ts` visits
+  seven admin surfaces (`sessions`, `logs`, `providers`, `credentials`,
+  `models`, `agents`, session detail), fails on 404 XHRs and console
+  errors. Catches "UI calls missing endpoint" regressions before
+  deploy.
+
+### Changed
+
+- **BREAKING:** `GET /admin/providers/kinds` response shape changed
+  from `{kinds: [string]}` to
+  `{kinds: [{kind, label, description, params_schema}]}`.
+  `<AddCustomProviderModal>` migrated; downstream consumers reading
+  just the `kind` string need to map over the new array.
+- **`/admin/providers/{name}/test` for anthropic / google** returns
+  `ok=true` plus a `note` flag rather than a real round-trip. Those
+  vendors don't expose a free models endpoint without a billed token;
+  flagging the response keeps the UI honest about what it actually
+  verified.
+- **`<EnvVarRow>` eye-icon reveal** caches the fetched cleartext per
+  row; subsequent toggles render from cache instead of re-hitting
+  `/admin/credentials/{provider}/{key}/reveal`. Cache scope is the
+  component instance; navigating away clears it.
+
+### Fixed
+
+- **`/admin/sessions/{key}` had no way in beyond deep links.** The
+  detail page assumed you arrived with a `turn_id` in the URL.
+  The past-turns pill row above the timeline now exposes every turn
+  in the session, paginated.
+- **Live deployment regressed when consuming a stale UI bundle** —
+  the live UI calls SSE / cost / replay endpoints that the live
+  backend either didn't ship yet (new) or shipped under a different
+  path (legacy). Documented the deployment ordering in
+  [`docs/observability.md`](docs/observability.md) §"Admin UI fixes
+  (May 2026)".
+
 
 
 > 4 commits on top of v1.1.0. Focuses on the per-turn hot path
