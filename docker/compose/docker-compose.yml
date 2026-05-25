@@ -33,6 +33,11 @@ services:
       # — the gateway can dry-run but can't persist mutations back to disk.
       CORLINMAN_CONFIG: /data/config.toml
       CORLINMAN_UI_DIR: /app/ui-static
+      # Runtime-mode signal read by gateway/lifecycle/entrypoint.py (W1.3)
+      # to pick the right UpgraderProtocol impl. The native systemd unit
+      # sets CORLINMAN_RUNTIME_MODE=native via `Environment=`; the docker
+      # path sets it here.
+      CORLINMAN_RUNTIME_MODE: docker
     volumes:
       # Data directory (config.toml / plugins/ / agents/ / knowledge/ / vector/ / logs/)
       - ~/.corlinman:/data

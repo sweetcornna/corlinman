@@ -509,6 +509,7 @@ EOF
       BIND: 0.0.0.0
       CORLINMAN_DATA_DIR: /data
       CORLINMAN_CONFIG: /data/config.toml
+      CORLINMAN_RUNTIME_MODE: docker
 EOF
 
     log "starting"
@@ -581,14 +582,60 @@ ExecStart=${uv_path} run corlinman-gateway --config ${DATA_DIR}/config.toml --po
 Environment=CORLINMAN_DATA_DIR=${DATA_DIR}
 Environment=BIND=0.0.0.0
 Environment=PORT=${PORT}
+Environment=CORLINMAN_RUNTIME_MODE=native
 Restart=on-failure
 RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 EOF
+
+        # --- one-click upgrader helper units (W1.2) -----------------------
+        # PathChanged= watcher fires the one-shot upgrader.service whenever
+        # the gateway atomically writes $DATA_DIR/.upgrade-request. The
+        # upgrader runs as root (it has to call systemctl) but is locked
+        # down by:
+        #   * exec-only-one-command (corlinman-upgrader.sh)
+        #   * strict tag regex + live GitHub releases whitelist in the
+        #     script itself
+        #   * TimeoutStartSec=600 hard cap
+        # See deploy/corlinman-upgrader.sh for the full safety story.
+        log "writing one-click upgrader units"
+        sudo tee /etc/systemd/system/corlinman-upgrader.service >/dev/null <<EOF
+[Unit]
+Description=corlinman one-shot upgrader
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Environment=CORLINMAN_DATA_DIR=${DATA_DIR}
+Environment=INSTALL_PREFIX=${PREFIX}
+ExecStart=/bin/bash ${PREFIX}/repo/deploy/corlinman-upgrader.sh
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=corlinman-upgrader
+TimeoutStartSec=600
+EOF
+
+        sudo tee /etc/systemd/system/corlinman-upgrader.path >/dev/null <<EOF
+[Unit]
+Description=Watch for corlinman upgrade requests
+After=corlinman-upgrader.service
+
+[Path]
+PathChanged=${DATA_DIR}/.upgrade-request
+Unit=corlinman-upgrader.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
         sudo systemctl daemon-reload
         sudo systemctl enable --now corlinman
+        sudo systemctl enable --now corlinman-upgrader.path \
+            || warn "could not enable corlinman-upgrader.path — one-click upgrade will fall back to copy-paste"
         log "service status: $(systemctl is-active corlinman)"
     fi
 
