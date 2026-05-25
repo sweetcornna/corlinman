@@ -31,12 +31,7 @@ import {
   parseOrigin,
   type InstalledFilterValue,
 } from "@/components/skills/installed-list";
-// W2.2 — Browse Hub tab. The page-level tab container is owned by W2.1; once
-// the Installed/Browse-Hub switcher lands, mount <HubTab /> inside the Browse
-// Hub tab. Until then, <HubTab /> is the import users wire by hand. See
-// `components/skills/hub-tab.tsx`.
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-import { HubTab as _HubTab } from "@/components/skills/hub-tab";
+import { HubTab } from "@/components/skills/hub-tab";
 
 /**
  * Skills admin page — Tidepool cutover + W2.1 backend wire.
@@ -72,6 +67,7 @@ export default function SkillsPage() {
   const { t } = useTranslation();
   const variants = useMotionVariants();
   const queryClient = useQueryClient();
+  const [tab, setTab] = React.useState<"installed" | "hub">("installed");
   const [search, setSearch] = React.useState("");
   const [filter, setFilter] = React.useState<InstalledFilterValue>("all");
   const [pendingDelete, setPendingDelete] =
@@ -267,6 +263,39 @@ export default function SkillsPage() {
     >
       <SkillsHeader counts={offline ? undefined : headerCounts} offline={offline} />
 
+      {/* Installed | Browse hub tab switcher */}
+      <nav
+        role="tablist"
+        aria-label={t("skills.title")}
+        className="flex items-center gap-1 border-b border-tp-glass-edge"
+      >
+        {(["installed", "hub"] as const).map((id) => {
+          const active = tab === id;
+          return (
+            <button
+              key={id}
+              role="tab"
+              type="button"
+              aria-selected={active}
+              data-testid={`skills-tab-${id}`}
+              onClick={() => setTab(id)}
+              className={
+                "px-3 py-1.5 text-[12.5px] font-medium transition-colors " +
+                (active
+                  ? "border-b-2 border-tp-amber text-tp-ink"
+                  : "border-b-2 border-transparent text-tp-ink-3 hover:text-tp-ink-2")
+              }
+            >
+              {t(id === "installed" ? "skills.installed.tab" : "skills.hub.tab")}
+            </button>
+          );
+        })}
+      </nav>
+
+      {tab === "hub" ? (
+        <HubTab />
+      ) : (
+        <>
       {/* Stat chips row */}
       <motion.section
         className="grid grid-cols-1 gap-3.5 md:grid-cols-2 xl:grid-cols-4"
@@ -361,6 +390,8 @@ export default function SkillsPage() {
           pinBusy={pinBusy}
           deleteBusy={deleteBusy}
         />
+      )}
+        </>
       )}
 
       {/* Re-type delete confirmation — gates non-bundled deletes only.
