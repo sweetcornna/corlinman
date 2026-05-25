@@ -149,6 +149,28 @@ class AdminState:
     # from the build or the data dir is unwritable.
     update_checker: Any | None = None
 
+    # -- W1.3 (one-click upgrade): upgrader + audit log -----------------
+    #
+    # ``upgrader`` is the :class:`~corlinman_server.system.upgrader.
+    # UpgraderProtocol` instance the gateway lifecycle constructs once
+    # per process (Docker or native, picked by ``CORLINMAN_RUNTIME_MODE``).
+    # ``None`` keeps the ``/admin/system/upgrade*`` routes' typed 503
+    # (``upgrader_unavailable``) envelope live so a runtime-mode-unknown
+    # boot still serves cleanly — the operator can still use the
+    # copy-paste fallback from ``/admin/system/upgrade-commands``.
+    #
+    # ``audit_log`` is the :class:`~corlinman_server.system.SystemAuditLog`
+    # the lifecycle opens against ``<data_dir>/system-audit.log``. Every
+    # upgrade request + state transition records into it; the
+    # ``/admin/system/audit`` route tails it newest-first. ``None``
+    # collapses the audit-tail route to ``[]`` rather than 503 — a
+    # missing log is the empty-history case, not a degradation.
+    #
+    # Both are typed ``Any`` to avoid an import cycle between the routes
+    # bundle and the upgrader / audit modules at type-check time.
+    upgrader: Any | None = None
+    audit_log: Any | None = None
+
 
 _state: AdminState | None = None
 

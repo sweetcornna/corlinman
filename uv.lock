@@ -341,7 +341,7 @@ wheels = [
 
 [[package]]
 name = "corlinman"
-version = "1.1.1"
+version = "1.2.0"
 source = { virtual = "." }
 dependencies = [
     { name = "corlinman-agent" },
@@ -693,7 +693,7 @@ requires-dist = [{ name = "aiosqlite", specifier = ">=0.20" }]
 
 [[package]]
 name = "corlinman-server"
-version = "1.1.1"
+version = "1.2.0"
 source = { editable = "python/packages/corlinman-server" }
 dependencies = [
     { name = "aiosqlite" },
@@ -714,6 +714,7 @@ dependencies = [
     { name = "corlinman-replay" },
     { name = "corlinman-skills-registry" },
     { name = "croniter" },
+    { name = "docker" },
     { name = "fastapi" },
     { name = "grpcio" },
     { name = "httpx" },
@@ -762,6 +763,7 @@ requires-dist = [
     { name = "corlinman-replay", editable = "python/packages/corlinman-replay" },
     { name = "corlinman-skills-registry", editable = "python/packages/corlinman-skills-registry" },
     { name = "croniter", specifier = ">=6.0" },
+    { name = "docker", specifier = ">=7.1.0" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "grpcio", specifier = ">=1.67" },
     { name = "httpx", specifier = ">=0.27" },

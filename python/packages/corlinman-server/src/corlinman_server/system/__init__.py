@@ -12,6 +12,7 @@ it does not register tools or cron jobs — that is W2.2's surface.
 
 from __future__ import annotations
 
+from corlinman_server.system.audit import AuditEntry, SystemAuditLog, utcnow_iso
 from corlinman_server.system.update_checker import (
     SystemUpdateCheckConfig,
     UpdateChecker,
@@ -19,7 +20,10 @@ from corlinman_server.system.update_checker import (
 )
 
 __all__ = [
+    "AuditEntry",
+    "SystemAuditLog",
     "SystemUpdateCheckConfig",
     "UpdateChecker",
     "UpdateStatus",
+    "utcnow_iso",
 ]

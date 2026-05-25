@@ -31,6 +31,13 @@ dependencies = [
     "packaging>=24.0",
     "prometheus_client>=0.21",
     "watchdog>=5.0",
+    # docker-py SDK — used by the one-click upgrader's DockerUpgrader
+    # (W1.1 of docs/PLAN_ONE_CLICK_UPGRADE.md) to pull new gateway
+    # images and recreate the container against the mounted
+    # /var/run/docker.sock. Imported lazily inside method bodies so this
+    # dep is not required at module import time, but is a hard
+    # requirement for the docker runtime-mode upgrade path to work.
+    "docker>=7.1.0",
     "anyio>=4",
     "corlinman-agent",
     "corlinman-providers",

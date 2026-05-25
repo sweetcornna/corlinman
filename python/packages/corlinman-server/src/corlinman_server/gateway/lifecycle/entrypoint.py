@@ -1131,6 +1131,85 @@ def build_app(
                     error=str(exc),
                 )
 
+        # W1.3 (one-click upgrade) — wire the audit log + the runtime-
+        # mode-appropriate upgrader. Both are best-effort; the
+        # ``/admin/system/upgrade*`` routes degrade to typed 503
+        # (``upgrader_unavailable``) when either piece is missing, and
+        # the ``/admin/system/audit`` route silently returns an empty
+        # page when no log is wired.
+        #
+        # Mode detection precedence:
+        #   1. ``CORLINMAN_RUNTIME_MODE`` env var (set by install.sh's
+        #      install_native + the docker-compose template).
+        #   2. ``/.dockerenv`` presence (we're clearly in a container).
+        #   3. ``"unknown"`` — the upgrade endpoints short-circuit to
+        #      503 so the operator can still use the copy-paste
+        #      ``/admin/system/upgrade-commands`` fallback.
+        if resolved_data_dir is not None:
+            try:
+                from corlinman_server.system import SystemAuditLog
+
+                audit_log_path = resolved_data_dir / "system-audit.log"
+                audit_log = SystemAuditLog(audit_log_path)
+                if admin_b_state is not None:
+                    admin_b_state.audit_log = audit_log
+                app.state.corlinman_audit_log = audit_log
+                logger.info(
+                    "gateway.system.audit_log_installed",
+                    path=str(audit_log_path),
+                )
+            except Exception as exc:  # pragma: no cover — best-effort
+                logger.warning(
+                    "gateway.system.audit_log_init_failed", error=str(exc)
+                )
+                audit_log = None
+
+            mode_raw = os.environ.get("CORLINMAN_RUNTIME_MODE", "")
+            mode = mode_raw.strip().lower() if isinstance(mode_raw, str) else ""
+            if mode not in {"docker", "native"}:
+                mode = "unknown"
+            if mode == "unknown" and Path("/.dockerenv").exists():
+                mode = "docker"
+
+            try:
+                from corlinman_server.system.upgrader import (  # type: ignore[import-not-found]
+                    UpgradeStateStore,
+                    resolve_upgrader,
+                )
+
+                upgrade_state_store = UpgradeStateStore(
+                    resolved_data_dir / ".upgrade-state.json"
+                )
+                upgrader = resolve_upgrader(
+                    mode,
+                    store=upgrade_state_store,
+                    audit_log=audit_log,
+                    data_dir=resolved_data_dir,
+                )
+                if upgrader is not None:
+                    if admin_b_state is not None:
+                        admin_b_state.upgrader = upgrader
+                    app.state.corlinman_upgrader = upgrader
+                    logger.info(
+                        "gateway.system.upgrader_installed", mode=mode
+                    )
+                else:
+                    logger.info(
+                        "gateway.system.upgrader_disabled_for_mode",
+                        mode=mode,
+                    )
+            except ImportError as exc:
+                # W1.1/W1.2 not landed yet — degrade cleanly.
+                logger.warning(
+                    "gateway.system.upgrader_module_missing", error=str(exc)
+                )
+            except Exception as exc:  # pragma: no cover — best-effort
+                logger.warning(
+                    "gateway.system.upgrader_init_failed",
+                    mode=mode,
+                    error=str(exc),
+                )
+
         # W5.0: open the evolution sqlite + attach the curator / signals
         # repos to admin_b (the /admin/curator/* routes read them from
         # there) and to admin_a (W4.5 applier surfaces consult admin_a's
