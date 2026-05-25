@@ -147,6 +147,17 @@ Want the model to dispatch a topic-specific agent or to pin a session
 to a specific persona? `/admin/agents` lists what's available,
 `/admin/subagents` shows live dispatches — see [multi-agent](multi-agent.md).
 
+Want more procedural-knowledge skills than the 16 starters that ship
+in-wheel? `/admin/skills` is two tabs: **Installed** lists everything
+in the active profile (bundled rows are read-only, hub installs and
+operator-authored rows can be pinned or removed), and **Browse Hub**
+proxies the [openclaw ClawHub](https://clawhub.ai) so an operator can
+search, preview, and install a community skill without touching the
+host shell. The Install button kicks off a server-side download +
+extract pipeline driven by SSE progress; on success the new row shows
+up under Installed with a `hub:<slug>@<version>` origin badge. Full
+walkthrough at [skill-hub](skill-hub.md).
+
 Want to know when a new version drops? `/admin/system` polls GitHub and
 surfaces a TopNav bubble when an upgrade is available — see
 [system-updates](system-updates.md).

@@ -4,6 +4,103 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — Skill library v1.5.0
+
+> `/admin/skills` goes from a static mock to a live two-tab surface.
+> The **Installed** tab is wired to a new gateway endpoint and renders
+> origin-tagged rows (`bundled` / `user` / `hub:<slug>@<ver>`) with pin
+> + delete affordances. The **Browse Hub** tab proxies the
+> [openclaw ClawHub](https://clawhub.ai) anonymous read surface
+> server-side so an operator can search, preview, and install community
+> skills without leaving the admin UI. The install pipeline is
+> SSE-driven (`download.started → extract.started → installed`) with
+> path-traversal + 25 MiB total / 10 MiB per-file size caps + a
+> `.openclaw-meta.json` sidecar that gates the uninstall. Bundled
+> starter skills (the 16 in-wheel defaults from v1.4) stay read-only:
+> the UI disables the Delete button and the server returns 409
+> `bundled_protected` on bypass. Plan at
+> [`docs/PLAN_SKILL_HUB.md`](docs/PLAN_SKILL_HUB.md); operator deep-dive
+> at [`docs/skill-hub.md`](docs/skill-hub.md).
+
+### Added
+
+- **ClawHub browse + install via `/admin/skills`** — new Browse Hub
+  tab carries a debounced 300ms search input, a Trending /
+  Downloads / Stars / Updated sort dropdown, a card grid, and a
+  detail drawer with versions list + scan-summary chip + SKILL.md
+  README preview. Click Install → SSE-driven 3-stage progress modal →
+  toast + Installed-tab refetch on success.
+- **`/admin/skills` Installed tab wired to the live curator** —
+  replaces the previous static mock import. Each row carries an
+  `origin` tag we render as a three-tone badge (bundled / user / hub);
+  bundled rows have a disabled Delete button with a "ships with
+  corlinman" tooltip and the server enforces the same gate as a
+  defence-in-depth check.
+- **`system/skill_hub/` server module** — `client.py` (async httpx
+  with per-instance circuit breaker on `X-RateLimit-Remaining` +
+  `Retry-After`, 60s LRU+TTL cache for list/search, 5min for detail)
+  and `installer.py` (download → tarball verify → path-traversal +
+  size-cap guards → extract under
+  `<data_dir>/profiles/<slug>/skills/<hub-slug>/` → sidecar write →
+  audit log). Configurable via `CORLINMAN_SKILL_HUB_BASE_URL` for
+  air-gapped mirrors.
+- **Eight `/admin/skills/hub/*` endpoints** — `search`, `featured`,
+  `skills/{slug}`, `skills/{slug}/file`, `install` (POST → 202),
+  `install/{id}` (status snapshot), and `install/{id}/events/live`
+  (SSE with `event: phase` frames). Offline upstream surfaces as
+  `{rows: [], offline: true}` so the UI renders a banner + Retry
+  button instead of a thrown error.
+- **`.openclaw-meta.json` sidecar** — written next to the extracted
+  `SKILL.md` on install, carries `{slug, version, installed_at,
+  source, content_hash}`. Uninstall refuses any directory missing
+  this file — that's how bundled starter skills (which never get a
+  sidecar) stay protected from an `rm -rf` even on UI bypass.
+- **Audit log entries** — `skill.installed` (with `slug`, `version`,
+  `files_written`) and `skill.uninstalled` (with `slug`) join the
+  existing one-click-upgrade + subagent lines in
+  `$DATA_DIR/system-audit.log`.
+- **88 new i18n keys** across `skills.installed.*`, `skills.origin.*`,
+  `skills.hub.*` (en + zh-CN), plus 3 under `playground.skills.hint.*`
+  for the low-skill nudge. Both bundles mirror exactly (enforced by
+  `satisfies LocaleBundle` + a per-key test that asserts the zh-CN
+  value is not equal to its dotted key).
+- **Playground low-skill hint** — `/admin/playground/protocol` carries
+  a `<PlaygroundSkillsHint>` that fetches the active profile's
+  installed-skill count and renders a "browse hub" CTA when fewer
+  than 5 skills are loaded.
+- **Operator-facing docs at `docs/skill-hub.md`** — what is it,
+  layout (`<data_dir>/profiles/<slug>/skills/<name>/` + sidecar),
+  admin UI walkthrough + curl recipe + audit log, ClawHub API
+  summary with rate limits + offline behaviour, safety guarantees,
+  the 16 bundled starter skills, and a troubleshooting section for
+  `HubUnavailableError` / `SkillAlreadyInstalledError` /
+  `UnsafeTarballError`. `docs/quickstart.md` cross-links it.
+
+### Changed
+
+- **`<HubTab>` watches `response.offline === true`** rather than
+  catching exceptions, so the banner reflects the proxy's
+  documented offline contract (no stale-cache fallback — Retry only).
+  Locked in per the W1.4 design decision recorded in the plan.
+
+### Security
+
+- **Path-traversal guards** at the tarball-member layer — refuses
+  `..` segments, absolute paths, and symlinks on every entry before
+  any bytes hit disk.
+- **25 MiB total / 10 MiB per-file caps** prevent zip-bombs from
+  exhausting the gateway. The streaming extractor aborts with
+  `UnsafeTarballError` the moment either cap trips.
+- **Sidecar-gated uninstall** — `uninstall_skill` refuses any
+  directory missing `.openclaw-meta.json`. Bundled starters never
+  get a sidecar, so even a compromised admin session can't `rm -rf`
+  the in-wheel defaults.
+- **`DELETE /admin/skills/{name}` returns 409** on bundled rows. UI
+  disables the button client-side; the server check is the
+  authoritative gate.
+
+---
+
 ## [Unreleased] — multi-agent dispatch
 
 > The main model can now pick a topic-specific agent on the fly —
