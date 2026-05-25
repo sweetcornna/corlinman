@@ -4,7 +4,25 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — `/admin/system` + auto-update detection
+## [1.2.0] — 2026-05-25 — `/admin/system` + auto-update + observability overhaul + admin UI fixes
+
+> Big release. Three threads land together:
+>
+> 1. **Auto-update detection** (this section below) — gateway polls GitHub
+>    releases, surfaces a TopNav bubble + `/admin/system` upgrade page with
+>    sanitized release notes and copy-paste upgrade commands.
+> 2. **Task observability overhaul** (subsection further down) — typed
+>    event taxonomy + SSE live timeline + tool widgets + cost footer +
+>    sub-agent tree, replacing the prior "agent runs, user can't see what
+>    it's doing" gap.
+> 3. **Admin UI fixes** (folded in) — `/admin/sessions/{detail,turn}`
+>    query-string routes (replaces dynamic `[key]` that broke `output:
+>    "export"`), provider test endpoint, model-picker dialog, hermes-style
+>    credentials page, channel reply chunking (no more `[…回复过长,已截断]`).
+>
+> Release notes are grouped by thread.
+
+### Auto-update detection
 
 > The gateway now knows when a new release ships and tells the operator.
 > A 30s-polling `<UpdateBubble>` in the admin TopNav lights up amber when
@@ -74,7 +92,7 @@ All notable changes to corlinman are documented here. Format follows
 
 ---
 
-## [Unreleased] — task observability overhaul
+### Task observability overhaul (shipped in 1.2.0)
 
 > Makes the agent's work visible. Today nobody can see what tools fired
 > in a turn, what args went in, what came back, how long anything took,
