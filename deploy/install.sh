@@ -49,6 +49,14 @@
 #                     Mount /var/run/docker.sock so Docker-backed plugin
 #                     sandboxing can spawn child containers. High-trust hosts
 #                     only; disabled by default.
+#   --enable-one-click-upgrade
+#                     Docker mode only. Mount /var/run/docker.sock RW + add
+#                     the in-container corlinman user to the host's `docker`
+#                     group so `/admin/system` can run a one-click upgrade
+#                     via the Docker SDK (pull + recreate). docker.sock is
+#                     root-equivalent on the host — opt-in only. Native
+#                     installs always land the corlinman-upgrader.{path,
+#                     service} units; no flag needed there.
 #   --with-qq         Docker mode only. Layer
 #                     `docker/compose/docker-compose.qq.yml` on top of the
 #                     base compose file so the NapCat QQ sidecar comes up
@@ -79,6 +87,7 @@ PORT="${CORLINMAN_PORT:-6005}"
 REPO="ymylive/corlinman"
 USE_CHINA=""
 ENABLE_DOCKER_SANDBOX="${CORLINMAN_ENABLE_DOCKER_SANDBOX:-}"
+ENABLE_ONE_CLICK_UPGRADE="${CORLINMAN_ENABLE_ONE_CLICK_UPGRADE:-}"
 UPGRADE_MODE=""
 WITH_QQ=""
 
@@ -90,6 +99,7 @@ while [[ $# -gt 0 ]]; do
         --version=*) REF="${1#--version=}"; shift ;;
         --china) USE_CHINA="1"; shift ;;
         --enable-docker-sandbox) ENABLE_DOCKER_SANDBOX="1"; shift ;;
+        --enable-one-click-upgrade) ENABLE_ONE_CLICK_UPGRADE="1"; shift ;;
         --upgrade) UPGRADE_MODE="1"; shift ;;
         --with-qq) WITH_QQ="1"; shift ;;
         -h|--help)
@@ -503,6 +513,28 @@ EOF
         cat >> "$PREFIX/corlinman.yml" <<EOF
       - /var/run/docker.sock:/var/run/docker.sock:ro
 EOF
+    elif [[ "$ENABLE_ONE_CLICK_UPGRADE" == "1" ]]; then
+        # One-click upgrade requires read-write docker.sock so the
+        # gateway can pull a new image + recreate its own container
+        # via DockerUpgrader. We also need the in-container `corlinman`
+        # system user to join the host's `docker` group so it can
+        # actually open the socket (default ownership root:docker 660).
+        local docker_gid
+        docker_gid=$(getent group docker 2>/dev/null | cut -d: -f3 || true)
+        if [[ -z "$docker_gid" ]]; then
+            warn "host has no 'docker' group — one-click upgrade may fail with EACCES on the socket. Skipping group_add; mount only."
+        else
+            log "one-click upgrade enabled — adding container user to docker group (gid=$docker_gid)"
+        fi
+        cat >> "$PREFIX/corlinman.yml" <<EOF
+      - /var/run/docker.sock:/var/run/docker.sock
+EOF
+        if [[ -n "$docker_gid" ]]; then
+            cat >> "$PREFIX/corlinman.yml" <<EOF
+    group_add:
+      - "${docker_gid}"
+EOF
+        fi
     fi
     cat >> "$PREFIX/corlinman.yml" <<EOF
     environment:

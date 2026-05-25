@@ -40,15 +40,22 @@ vi.mock("next/link", () => ({
   ),
 }));
 
-// react-i18next stub — return the key (with simple interpolation) so the
-// tests assert against deterministic strings rather than translated text.
+// react-i18next stub — minimal translations of the keys the bubble
+// uses so tests assert against stable strings without pulling in the
+// real i18next runtime.
+const STUB_BUNDLE: Record<string, string> = {
+  "update.bubble.label": "Update available · {{version}}",
+  "update.bubble.dismiss": "Dismiss",
+  "update.bubble.tooltip": "Click for release notes",
+};
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (key: string, vars?: Record<string, string>) => {
-      if (!vars) return key;
+      const template = STUB_BUNDLE[key] ?? key;
+      if (!vars) return template;
       return Object.entries(vars).reduce(
         (acc, [k, v]) => acc.replace(`{{${k}}}`, String(v)),
-        key,
+        template,
       );
     },
   }),

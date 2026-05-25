@@ -2162,6 +2162,73 @@ export const en = {
       copied: "Copied",
       note: "The --upgrade flag preserves your data dir.",
       runbookLink: "Full runbook",
+      // One-click upgrade additions (Wave 2)
+      button: "Upgrade to {{tag}}",
+      buttonDisabled: "Upgrader unavailable",
+      confirm: {
+        title: "Upgrade to {{tag}}",
+        subtitle: "Current version: {{current}}",
+        warning:
+          "The gateway will restart. Make sure no critical in-flight requests.",
+        typeLabel: "Type {{tag}} to confirm",
+        typePlaceholder: "Type exactly: {{tag}}",
+        cancel: "Cancel",
+        submit: "Upgrade",
+        submitting: "Starting…",
+        alreadyRunning:
+          "An upgrade to {{tag}} is already running",
+      },
+      progress: {
+        title: "Upgrading…",
+        elapsed: "Elapsed {{seconds}}s",
+        cancel: "Stop watching",
+        cancelHint:
+          "Closes this view; the upgrade continues in the background.",
+      },
+      phases: {
+        validating: "Validating",
+        pulling: "Pulling image",
+        recreating: "Recreating container",
+        healthcheck: "Health check",
+        done: "Done",
+      },
+      succeeded: {
+        title: "Upgrade complete",
+        subtitle: "The gateway is now running {{tag}}.",
+        reload: "Reload page",
+        autoReload: "Auto-reload in {{seconds}}s",
+      },
+      failed: {
+        title: "Upgrade failed",
+        subtitle: "{{error}}",
+        viewLog: "View log excerpt",
+      },
+      stalled: {
+        title: "Upgrade stalled",
+      },
+      manual: {
+        title: "Manual upgrade — copy these commands",
+        subtitle: "For air-gapped or hardened deploys.",
+      },
+    },
+    audit: {
+      title: "Upgrade history",
+      subtitle: "Recent gateway upgrade events.",
+      empty: "No upgrade history yet.",
+      loadMore: "Load more",
+      refresh: "Refresh",
+      column: {
+        ts: "Time",
+        event: "Event",
+        tag: "Tag",
+        actor: "Actor",
+      },
+      event: {
+        requested: "Requested",
+        started: "Started",
+        completed: "Completed",
+        failed: "Failed",
+      },
     },
   },
 

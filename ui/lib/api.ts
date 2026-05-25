@@ -2074,3 +2074,94 @@ export function fetchUpgradeCommands(): Promise<UpgradeCommands> {
   return apiFetch<UpgradeCommands>("/admin/system/upgrade-commands");
 }
 // === end W1.2 ===
+
+// === One-click upgrade (Wave 2 of PLAN_ONE_CLICK_UPGRADE) ===
+
+export interface UpgradeStartResponse {
+  request_id: string;
+  state: string;
+  mode: string;
+  tag: string;
+}
+
+export interface UpgradeStatusResponse {
+  request_id: string;
+  tag: string;
+  state:
+    | "queued"
+    | "running"
+    | "succeeded"
+    | "failed"
+    | "stalled"
+    | "cancelled";
+  phase: string;
+  started_at: number | null;
+  finished_at: number | null;
+  log_excerpt: string;
+  error: string | null;
+}
+
+/** POST /admin/system/upgrade — body `{tag, typed_confirmation,
+ * allow_downgrade?}`. Backend enforces typed_confirmation === tag,
+ * tag-in-releases-whitelist, no-downgrade, single-flight (409). */
+export function startSystemUpgrade(
+  tag: string,
+  typed_confirmation: string,
+  opts?: { allow_downgrade?: boolean },
+): Promise<UpgradeStartResponse> {
+  return apiFetch<UpgradeStartResponse>("/admin/system/upgrade", {
+    method: "POST",
+    body: { tag, typed_confirmation, allow_downgrade: opts?.allow_downgrade },
+  });
+}
+
+/** GET /admin/system/upgrade/{request_id}/status — read-once snapshot. */
+export function fetchUpgradeStatus(
+  request_id: string,
+): Promise<UpgradeStatusResponse> {
+  return apiFetch<UpgradeStatusResponse>(
+    `/admin/system/upgrade/${encodeURIComponent(request_id)}/status`,
+  );
+}
+
+/** GET /admin/system/upgrade/{request_id}/events — SSE stream. Frames:
+ *   `event: status\ndata: <UpgradeStatusResponse JSON>\n\n`
+ * Terminates when state ∈ {succeeded, failed, stalled, cancelled}.
+ * 10s keepalive comment frames in between. */
+export function streamUpgradeEvents(
+  request_id: string,
+  opts?: { lastEventId?: string },
+): EventSource {
+  const qs = new URLSearchParams();
+  if (opts?.lastEventId) qs.set("last_event_id", opts.lastEventId);
+  const suffix = qs.toString() ? `?${qs}` : "";
+  const url = `/admin/system/upgrade/${encodeURIComponent(request_id)}/events${suffix}`;
+  return new EventSource(url, { withCredentials: true });
+}
+
+export interface AuditEntry {
+  ts: string; // ISO 8601 UTC
+  event: string; // e.g. "system.upgrade.requested"
+  request_id?: string | null;
+  tag?: string | null;
+  actor?: string | null;
+  details: Record<string, unknown>;
+}
+
+export interface AuditTailResponse {
+  entries: AuditEntry[];
+  next_before_ts?: string | null;
+}
+
+/** GET /admin/system/audit — paginated audit log (newest first).
+ * `before_ts` is the cursor returned in `next_before_ts`. */
+export function listSystemAudit(opts?: {
+  limit?: number;
+  before_ts?: string;
+}): Promise<AuditTailResponse> {
+  const qs = new URLSearchParams();
+  if (opts?.limit !== undefined) qs.set("limit", String(opts.limit));
+  if (opts?.before_ts) qs.set("before_ts", opts.before_ts);
+  const suffix = qs.toString() ? `?${qs}` : "";
+  return apiFetch<AuditTailResponse>(`/admin/system/audit${suffix}`);
+}

@@ -4,6 +4,108 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — one-click upgrade
+
+> The `/admin/system` page goes from "copy these commands and paste them
+> in your VPS shell" to "click Upgrade, type the tag to confirm, watch the
+> live progress panel." No more tab-switching to a terminal. Two
+> privileged paths under the hood, picked by `CORLINMAN_RUNTIME_MODE`:
+>
+> - **Docker** — `DockerUpgrader` opens `/var/run/docker.sock`, pulls
+>   the new image, recreates the corlinman container (compose CLI
+>   preferred, SDK mirror as fallback). Opt-in via
+>   `install.sh --enable-one-click-upgrade` because the socket mount is
+>   root-equivalent on the host.
+> - **Native systemd** — `NativeUpgrader` writes
+>   `$DATA_DIR/.upgrade-request`; `corlinman-upgrader.path` watches it,
+>   fires `corlinman-upgrader.service` (Type=oneshot, User=root) which
+>   validates the tag against GitHub's release list and calls
+>   `install.sh --upgrade --version vX.Y.Z`. Always installed by
+>   `install_native()` — no flag.
+>
+> Safety: admin session cookie + typed-confirmation dialog (operator
+> must retype the exact tag) + tag whitelisted against GitHub releases
+> + no downgrade by default + single in-flight + structured audit log
+> in the UI. Plan at
+> [`docs/PLAN_ONE_CLICK_UPGRADE.md`](docs/PLAN_ONE_CLICK_UPGRADE.md);
+> ops doc cross-link from `docs/system-updates.md`.
+
+### Added
+
+- **One-click upgrade UI** on `/admin/system` — primary "Upgrade to
+  vX.Y.Z" CTA replaces the copy-paste tabs as the recommended action.
+  Manual upgrade commands stay accessible as a collapsed accordion.
+- **`<UpgradeConfirmModal>`** — Dialog gating the upgrade behind
+  typed-confirmation (operator must type the exact tag for the Upgrade
+  button to enable). Inline 409 surfaces the in-flight request_id
+  without closing the modal.
+- **`<UpgradeProgress>`** — SSE-driven progress panel: phase pills
+  (validating → pulling → recreating → healthcheck → done), elapsed
+  counter, live log tail, terminal success/failure banners with
+  auto-reload-in-5s on success. EventSource with 2s polling fallback
+  for environments where SSE is blocked.
+- **`<AuditCard>`** — paginated `system-audit.log` reader at the
+  bottom of `/admin/system`. Newest-first table with relative
+  timestamps, color-coded event badges, expandable details JSON,
+  cursor-paginated "Load more".
+- **`POST /admin/system/upgrade`** — 202 starts the upgrade, 400 on
+  typed_confirmation mismatch, 503 if upgrader unavailable, 400 on
+  downgrade refusal, 409 on in-flight collision. 1/min server-side
+  rate limit.
+- **`GET /admin/system/upgrade/{request_id}/status`** — read-once
+  snapshot of an upgrade.
+- **`GET /admin/system/upgrade/{request_id}/events`** — SSE stream
+  with `event: status` frames + 10s keepalive.
+- **`GET /admin/system/audit`** — paginated audit log API.
+- **`UpgraderProtocol`** + `DockerUpgrader` + `NativeUpgrader` impls
+  in `corlinman_server/system/upgrader/`. Docker side opens the
+  socket lazily (no import of `docker` at module load time); native
+  side talks to systemd via a file-watched helper.
+- **`deploy/corlinman-upgrader.sh`** — privileged one-shot helper.
+  Validates JSON schema, semver-regex on tag, UUID-regex on
+  request_id, live GitHub release whitelist via `curl + jq`, sort-V
+  downgrade gate, atomic status writes. `UPGRADER_ALLOW_DOWNGRADE=1`
+  override for emergency rollbacks.
+- **`corlinman-upgrader.{path,service}` systemd units** — rendered by
+  `install_native()` alongside the main corlinman.service. The path
+  unit watches `$DATA_DIR/.upgrade-request` and triggers the
+  oneshot service.
+- **`install.sh --enable-one-click-upgrade`** — Docker-mode flag.
+  Mounts `/var/run/docker.sock` RW and adds the in-container
+  corlinman user to the host's `docker` group (auto-detected GID).
+- **`CORLINMAN_RUNTIME_MODE` env** — set to `native` by the
+  systemd unit, `docker` by the compose env. The gateway
+  `resolve_upgrader()` reads this to pick the right impl.
+- 12-key i18n block under `system.upgrade.{confirm,progress,phases,
+  succeeded,failed,stalled,manual}` + `system.audit.*` (en + zh-CN).
+- 56+ new tests (W1.1 docker upgrader: 23; W1.2 native + bash: 11
+  bash + 8 python; W1.3 endpoints: 8; audit log: 8; AuditCard
+  component test: 3 + W2.1 modal/progress as built manually).
+
+### Changed
+
+- `/admin/system` page restructured: when an update is available, the
+  primary "Upgrade to vX.Y.Z" button is the prominent CTA; the
+  existing "Manual upgrade — copy these commands" tabs become a
+  collapsed accordion below.
+- `system.upgrade.note` and surrounding strings are reused — no
+  in-page i18n breakage.
+
+### Security
+
+- The endpoint chain enforces typed-confirmation + tag whitelist + no
+  downgrade + single in-flight. A compromised admin session at worst
+  pulls a real upstream corlinman release — there is no path to
+  install an arbitrary image or arbitrary ref.
+- The native helper script never trusts the JSON file's content
+  unvalidated — semver regex, UUID regex, and a live GitHub release
+  list check all gate the call to `install.sh`.
+- Audit log records every state transition (`system.upgrade.requested
+  / .started / .completed / .failed`) with the actor + tag + details
+  before the upgrade itself starts.
+
+---
+
 ## [1.2.0] — 2026-05-25 — `/admin/system` + auto-update + observability overhaul + admin UI fixes
 
 > Big release. Three threads land together:

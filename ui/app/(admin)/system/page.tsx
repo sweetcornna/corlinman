@@ -31,7 +31,7 @@ import * as React from "react";
 import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { ExternalLink, RefreshCcw, Server } from "lucide-react";
+import { ChevronRight, ExternalLink, RefreshCcw, Server } from "lucide-react";
 import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
@@ -54,6 +54,10 @@ import {
 import { DISMISS_KEY } from "@/components/system/update-bubble";
 import { ReleaseNotes } from "@/components/system/release-notes";
 import { CopyUpgradeCommand } from "@/components/system/copy-upgrade-command";
+import { AuditCard } from "@/components/system/audit-card";
+import { UpgradeConfirmModal } from "@/components/system/upgrade-confirm-modal";
+import { UpgradeProgress } from "@/components/system/upgrade-progress";
+import { useSearchParams, useRouter } from "next/navigation";
 
 const SYSTEM_INFO_QUERY_KEY = ["admin", "system", "info"] as const;
 const UPGRADE_COMMANDS_QUERY_KEY = [
@@ -96,6 +100,22 @@ function relativeFromEpoch(
 export default function SystemPage() {
   const { t } = useTranslation();
   const qc = useQueryClient();
+  const searchParams = useSearchParams();
+  const router = useRouter();
+
+  // Deep-link: ?upgrade=<request_id> drives <UpgradeProgress> directly,
+  // typically set by <UpdateBubble>'s "Upgrade now" handler after the
+  // confirm modal POSTs. A local-state copy lets us clear the search
+  // param after terminal without re-mounting.
+  const deepLinkUpgradeId = searchParams?.get("upgrade") ?? null;
+  const [activeUpgradeId, setActiveUpgradeId] = React.useState<string | null>(
+    deepLinkUpgradeId,
+  );
+  React.useEffect(() => {
+    setActiveUpgradeId(deepLinkUpgradeId);
+  }, [deepLinkUpgradeId]);
+
+  const [confirmOpen, setConfirmOpen] = React.useState(false);
 
   // 60s "now" tick so the lastChecked relative time stays fresh without
   // an aggressive refetch. The query itself has 60s staleTime — we don't
@@ -297,8 +317,91 @@ export default function SystemPage() {
         )
       ) : null}
 
-      {/* Upgrade commands card */}
-      <UpgradeCommandsCard commands={commands} />
+      {/* Active upgrade — driven by ?upgrade=<id> deep-link or by the
+          primary Upgrade button below. */}
+      {activeUpgradeId ? (
+        <UpgradeProgress
+          requestId={activeUpgradeId}
+          onTerminal={() => {
+            // Stop driving the URL once the upgrade lands; let the user
+            // come back to a clean page if they refresh post-reload.
+            if (deepLinkUpgradeId) {
+              router.replace("/admin/system");
+            }
+          }}
+        />
+      ) : null}
+
+      {/* Primary upgrade CTA — only when an update is available AND no
+          upgrade is currently in flight on this page. */}
+      {info?.available && info.latest && !activeUpgradeId ? (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-tp-amber/40 bg-tp-amber/5 p-4">
+          <div className="space-y-1">
+            <h2 className="text-base font-semibold tracking-tight">
+              {t("system.upgrade.button", { tag: info.latest })}
+            </h2>
+            <p className="text-xs text-tp-ink-3">
+              {t("system.upgrade.note")}
+            </p>
+          </div>
+          <Button
+            type="button"
+            data-testid="system-upgrade-button"
+            onClick={() => setConfirmOpen(true)}
+          >
+            {t("system.upgrade.button", { tag: info.latest })}
+          </Button>
+        </div>
+      ) : null}
+
+      {/* Manual upgrade — copy these commands. Collapsed accordion when
+          a one-click path is available; expanded fallback when not. */}
+      <details
+        className="rounded-lg border border-tp-glass-edge bg-tp-glass p-4 sm:p-6 [&[open]>summary>svg]:rotate-90"
+        open={!info?.available}
+      >
+        <summary className="flex cursor-pointer items-center gap-2 list-none">
+          <ChevronRight
+            className="h-4 w-4 transition-transform"
+            aria-hidden
+          />
+          <div className="space-y-0.5">
+            <h2 className="text-base font-semibold tracking-tight">
+              {t("system.upgrade.manual.title")}
+            </h2>
+            <p className="text-xs text-tp-ink-3">
+              {t("system.upgrade.manual.subtitle")}
+            </p>
+          </div>
+        </summary>
+        <div className="mt-4">
+          <UpgradeCommandsCard commands={commands} />
+        </div>
+      </details>
+
+      {/* Audit log — past upgrade events. Self-contained. */}
+      <AuditCard />
+
+      {/* Typed-confirmation modal — wired to the primary upgrade button.
+          On 202 we redirect to ?upgrade=<id> so a refresh lands back on
+          the in-flight upgrade. */}
+      {info?.latest ? (
+        <UpgradeConfirmModal
+          open={confirmOpen}
+          onOpenChange={setConfirmOpen}
+          tag={info.latest}
+          currentVersion={info.current}
+          releaseNotesExcerpt={
+            info.release_notes_md?.split("\n").slice(0, 2).join(" ") ?? null
+          }
+          onUpgradeStarted={(res) => {
+            setActiveUpgradeId(res.request_id);
+            router.replace(
+              `/admin/system?upgrade=${encodeURIComponent(res.request_id)}`,
+            );
+          }}
+        />
+      ) : null}
     </div>
   );
 }

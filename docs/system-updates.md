@@ -143,12 +143,69 @@ paste when they get a tag out of band.
 
 ---
 
+## One-click upgrade (Unreleased)
+
+The next release (target v1.3.0) ships one-click upgrade — click the
+**Upgrade to vX.Y.Z** button on `/admin/system`, type the tag in the
+confirm dialog, watch the live progress panel. Two privileged paths:
+
+**Docker mode (opt-in)** — the gateway pulls a new image via
+`docker.from_env()` against `/var/run/docker.sock`, then recreates its
+own container via `docker compose up -d --no-deps corlinman`. The
+socket is **NOT** mounted by default — it's root-equivalent on the
+host. Enable explicitly:
+
+```bash
+bash deploy/install.sh --enable-one-click-upgrade --mode docker
+```
+
+The flag mounts `/var/run/docker.sock` read-write and adds the
+in-container `corlinman` user to the host's `docker` group (auto-
+detected GID via `getent group docker`).
+
+**Native systemd mode (always installed)** — `install_native()` writes
+two new units alongside `corlinman.service`:
+
+- `corlinman-upgrader.service` (Type=oneshot, User=root) — runs the
+  `deploy/corlinman-upgrader.sh` helper which validates the requested
+  tag against the live GitHub release list (semver regex + uuid regex
+  + `curl + jq` whitelist check + `sort -V` no-downgrade gate) then
+  calls `install.sh --upgrade --version vX.Y.Z`. Override the
+  no-downgrade gate via `UPGRADER_ALLOW_DOWNGRADE=1` for emergency
+  rollbacks.
+- `corlinman-upgrader.path` — watches `$DATA_DIR/.upgrade-request`
+  via `PathChanged=`. The gateway-side `NativeUpgrader.start()` writes
+  the request file atomically; the path unit fires the oneshot
+  service; gateway polls `$DATA_DIR/.upgrade-status` for state.
+
+Safety stack (both paths):
+
+- Admin session cookie + typed-confirmation modal (operator must
+  retype the exact tag for the Upgrade button to enable)
+- Tag whitelist against the live GitHub release list — never
+  arbitrary refs
+- Refuse downgrades unless `allow_downgrade=true` is passed
+- Single in-flight upgrade — concurrent POST returns 409 with the
+  existing `request_id`
+- Structured audit log at `$DATA_DIR/system-audit.log` (JSONL); the
+  `<AuditCard>` at the bottom of `/admin/system` renders it
+
+`CORLINMAN_RUNTIME_MODE` env is set by the systemd unit (`native`)
+and the docker compose env (`docker`). The gateway's
+`resolve_upgrader()` reads it and picks the right impl. If unset (or
+unknown mode), the endpoints short-circuit with 503 and the copy-
+paste fallback tab still works.
+
 ## Limitations
 
-- **No in-app upgrade.** Triggering `git pull` or `docker compose pull`
-  requires privileges the gateway process intentionally does not have.
-  The page is a polished version of "here's what to paste, you press
-  enter."
+- **No mid-flight cancel.** The "Stop watching" button on the progress
+  panel just closes the SSE client-side — the upgrade itself continues
+  in the background. Aborting an in-flight `docker pull` or `uv sync`
+  is a future feature.
+- **Air-gapped / hardened deploys keep the copy-paste fallback.** The
+  manual upgrade tabs stay accessible behind a collapsed accordion
+  below the primary Upgrade button. `[system.update_check] enabled =
+  false` disables polling but leaves the page useful.
 - **Scheduler-driven auto-check is pending.** The `system.update_check`
   builtin is registered with the scheduler, but the gateway lifespan
   hasn't been wired to spawn the scheduler loop yet. In the meantime
