@@ -39,23 +39,62 @@ from fastapi import APIRouter
 
 from corlinman_server.gateway.routes_admin_b import (
     agents as _agents,
+)
+from corlinman_server.gateway.routes_admin_b import (
     config as _config,
+)
+from corlinman_server.gateway.routes_admin_b import (
     credentials as _credentials,
+)
+from corlinman_server.gateway.routes_admin_b import (
     curator as _curator,
+)
+from corlinman_server.gateway.routes_admin_b import (
     evolution as _evolution,
+)
+from corlinman_server.gateway.routes_admin_b import (
     logs as _logs,
+)
+from corlinman_server.gateway.routes_admin_b import (
     memory as _memory,
+)
+from corlinman_server.gateway.routes_admin_b import (
     models as _models,
+)
+from corlinman_server.gateway.routes_admin_b import (
     napcat as _napcat,
+)
+from corlinman_server.gateway.routes_admin_b import (
     oauth as _oauth,
+)
+from corlinman_server.gateway.routes_admin_b import (
     onboard as _onboard,
+)
+from corlinman_server.gateway.routes_admin_b import (
     plugins as _plugins,
+)
+from corlinman_server.gateway.routes_admin_b import (
     providers as _providers,
+)
+from corlinman_server.gateway.routes_admin_b import (
     rag as _rag,
+)
+from corlinman_server.gateway.routes_admin_b import (
     scheduler as _scheduler,
+)
+from corlinman_server.gateway.routes_admin_b import (
     sessions_cost as _sessions_cost,
+)
+from corlinman_server.gateway.routes_admin_b import (
     sessions_events as _sessions_events,
+)
+from corlinman_server.gateway.routes_admin_b import (
+    skills as _skills,
+)
+from corlinman_server.gateway.routes_admin_b import (
     subagents as _subagents,
+)
+from corlinman_server.gateway.routes_admin_b import (
     system as _system,
 )
 from corlinman_server.gateway.routes_admin_b.state import AdminState, set_admin_state
@@ -93,6 +132,7 @@ def build_router() -> APIRouter:
         _scheduler,
         _sessions_cost,
         _sessions_events,
+        _skills,
         _subagents,
         _system,
     ):

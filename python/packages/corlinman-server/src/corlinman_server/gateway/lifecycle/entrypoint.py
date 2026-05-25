@@ -1338,7 +1338,7 @@ def build_app(
                 )
 
                 async def _unwired_run_child_factory(
-                    req: "SubagentRequest",
+                    req: SubagentRequest,
                 ) -> Any:
                     # Placeholder until W1.1 wires the real factory
                     # (which closes over the supervisor + agent registry
@@ -1381,6 +1381,50 @@ def build_app(
             except Exception as exc:  # pragma: no cover — best-effort
                 logger.warning(
                     "gateway.subagent.dispatcher_init_failed",
+                    error=str(exc),
+                )
+
+        # W1.3 (skill hub): wire the ClawHubClient + the in-process
+        # install task store onto admin_b. Both are best-effort — a
+        # failure here just means the ``/admin/skills/hub/*`` routes
+        # collapse to their offline envelopes (search/featured return
+        # ``offline: true``; install POST returns a typed 503). The
+        # client owns an httpx.AsyncClient + TTL cache and must be
+        # closed cleanly in the lifespan teardown so the WAL of its
+        # cache file is flushed.
+        if admin_b_state is not None:
+            try:
+                from corlinman_server.gateway.routes_admin_b.skills import (
+                    SkillInstallTaskStore,
+                )
+                from corlinman_server.system.skill_hub import (
+                    ClawHubClient,
+                )
+
+                # ``ClawHubClient`` doesn't take an audit log directly
+                # (the installer writes the ``skill.installed`` rows;
+                # the client only does anonymous read GETs). The audit
+                # log is already on ``admin_b_state.audit_log`` from
+                # earlier in this same block, so the install routes
+                # pick it up through state when they call into the
+                # installer.
+                clawhub_client = ClawHubClient()
+                skill_install_store = SkillInstallTaskStore()
+                admin_b_state.clawhub_client = clawhub_client
+                admin_b_state.skill_install_store = skill_install_store
+                app.state.corlinman_clawhub_client = clawhub_client
+                app.state.corlinman_skill_install_store = skill_install_store
+                logger.info("gateway.skill_hub.client_installed")
+            except ImportError as exc:
+                # W1.1 / W1.2 sibling agents haven't landed yet — degrade
+                # cleanly so the rest of the boot continues.
+                logger.warning(
+                    "gateway.skill_hub.client_module_missing",
+                    error=str(exc),
+                )
+            except Exception as exc:  # pragma: no cover — best-effort
+                logger.warning(
+                    "gateway.skill_hub.client_init_failed",
                     error=str(exc),
                 )
 
@@ -1489,7 +1533,7 @@ def build_app(
             await mcp_manager.connect_all()
             state.extras["mcp_manager"] = mcp_manager
             logger.info("gateway.mcp.manager_connected")
-        except Exception as exc:  # noqa: BLE001 — MCP is optional
+        except Exception as exc:
             logger.warning("gateway.mcp.manager_failed", error=str(exc))
 
         # Generic sibling-bootstrap seam (see docs/contracts/runtime-
@@ -1719,6 +1763,23 @@ def build_app(
                         error=str(exc),
                     )
                 app.state.corlinman_update_checker = None
+
+            # W1.3 (skill hub) teardown: release the httpx client + any
+            # TTL cache file handles held by the ClawHubClient. Safe when
+            # none was wired (a degraded boot or W1.1 not landed yet).
+            clawhub_client = getattr(
+                app.state, "corlinman_clawhub_client", None
+            )
+            if clawhub_client is not None:
+                try:
+                    await clawhub_client.aclose()
+                except Exception as exc:  # pragma: no cover — defensive
+                    logger.warning(
+                        "gateway.skill_hub.client_close_failed",
+                        error=str(exc),
+                    )
+                app.state.corlinman_clawhub_client = None
+                app.state.corlinman_skill_install_store = None
 
     app = FastAPI(lifespan=_lifespan)
     app.state.corlinman_state = state

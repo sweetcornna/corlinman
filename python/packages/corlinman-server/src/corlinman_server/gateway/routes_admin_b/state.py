@@ -184,6 +184,26 @@ class AdminState:
     subagent_store: Any | None = None
     subagent_dispatcher: Any | None = None
 
+    # -- W1.3 (skill hub): ClawHub client + install task store ----------
+    #
+    # ``clawhub_client`` is the
+    # :class:`~corlinman_server.system.skill_hub.ClawHubClient` instance
+    # the gateway lifecycle constructs once per process (it owns a
+    # reusable :class:`httpx.AsyncClient` + a small TTL cache). The
+    # ``/admin/skills/hub/*`` routes resolve it via ``get_admin_state``;
+    # a ``None`` slot collapses the search / featured handlers to the
+    # offline envelope rather than 503, which keeps the page renderable
+    # when the hub is unreachable.
+    #
+    # ``skill_install_store`` is the in-process
+    # :class:`~corlinman_server.gateway.routes_admin_b.skills.SkillInstallTaskStore`
+    # the lifecycle constructs alongside the client. The install POST
+    # handler registers one row per request_id; the SSE handler reads
+    # state transitions off the same store. A ``None`` slot returns a
+    # typed 503 ``skill_install_unavailable`` from the install routes.
+    clawhub_client: Any | None = None
+    skill_install_store: Any | None = None
+
 
 _state: AdminState | None = None
 
