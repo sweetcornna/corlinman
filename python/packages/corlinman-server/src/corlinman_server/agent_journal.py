@@ -27,6 +27,7 @@ Backend selection is controlled by env (see
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -298,6 +299,86 @@ class AgentJournal:
         the route maps ``0`` to ``404 not_found``.
         """
         return await self._backend.delete_session(session_key)
+
+    # ------------------------------------------------------------------
+    # W1.2 — turn events timeline (admin observability).
+    #
+    # Straight delegation; the backend layer owns the schema + insert/
+    # query logic so a Postgres deployment can stub these out without
+    # affecting the SQLite default path.
+    # ------------------------------------------------------------------
+
+    async def append_event(self, envelope: Any) -> None:
+        """Persist one :class:`EventEnvelope` to the turn timeline.
+
+        Accepts the W1.1 dataclass *or* a dict with the same keys —
+        useful for SSE replay paths that round-trip through JSON. See
+        :func:`corlinman_server.agent_journal_backend._envelope_to_row`
+        for the exact projection.
+        """
+        await self._backend.append_event(envelope)
+
+    async def append_events_batch(self, envelopes: Sequence[Any]) -> None:
+        """Persist many envelopes in one transaction.
+
+        Folds the per-row commit overhead into a single ``BEGIN`` /
+        ``COMMIT`` envelope; a single turn can emit hundreds of
+        ``TextDelta`` events and this method shaves an order of
+        magnitude off the bulk-write cost vs sequential
+        :meth:`append_event` calls.
+        """
+        await self._backend.append_events_batch(envelopes)
+
+    async def load_events(self, turn_id: str | int) -> list[dict[str, Any]]:
+        """Load every event for ``turn_id`` in ``sequence ASC`` order.
+
+        Each dict carries ``turn_id``, ``sequence``, ``event_type``,
+        ``payload`` (parsed JSON), ``timestamp_ms`` — the SSE replay
+        wire format. Returns ``[]`` for an unknown / pre-W1.2 turn.
+        """
+        return await self._backend.load_events(turn_id)
+
+    def iter_events(
+        self, turn_id: str | int, start_sequence: int = 0
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Async-iterate events with ``sequence > start_sequence``.
+
+        SSE catch-up path: a reconnecting client with
+        ``Last-Event-ID: <seq>`` gets only the events it missed.
+        ``start_sequence=0`` (default) yields every event, equivalent to
+        :meth:`load_events` but unbuffered.
+        """
+        return self._backend.iter_events(turn_id, start_sequence)
+
+    async def get_session_turn_ids(
+        self, session_key: str, limit: int = 50
+    ) -> list[int]:
+        """Most-recent turn ids for ``session_key`` (admin SSE bootstrap).
+
+        Ordered by ``started_at_ms DESC``; the SSE bridge picks the head
+        for live replay and defers the tail to the on-demand
+        per-turn endpoint.
+        """
+        return await self._backend.get_session_turn_ids(session_key, limit)
+
+    async def update_turn_cost(
+        self,
+        turn_id: int,
+        *,
+        estimated_cost_usd: float | None,
+        cost_status: str | None,
+    ) -> None:
+        """Late-binding update for the W1.2 cost columns.
+
+        The journal does not own a ``_CostMeter`` (that lives in the
+        servicer); the gateway calls this once it has a confident
+        estimate. Idempotent and safe to call after ``complete_turn``.
+        """
+        await self._backend.update_turn_cost(
+            turn_id,
+            estimated_cost_usd=estimated_cost_usd,
+            cost_status=cost_status,
+        )
 
 
 __all__ = [

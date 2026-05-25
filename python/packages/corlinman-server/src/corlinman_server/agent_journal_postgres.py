@@ -43,6 +43,7 @@ from __future__ import annotations
 import contextlib
 import json
 import time
+from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
 import structlog
@@ -755,6 +756,60 @@ class PostgresJournalBackend:
                 )
             )
         return out
+
+
+    # ------------------------------------------------------------------
+    # W1.2 — turn events timeline.
+    #
+    # The Postgres backend does not yet persist per-turn events. The W1.2
+    # admin observability surface targets the SQLite single-process
+    # journal first (where event volume × write rate × WAL gives the
+    # best perf profile for streaming replay). When a Postgres deployment
+    # needs replay, ship a v5 migration with the matching
+    # ``journal_turn_events`` table; until then these methods stub out
+    # gracefully so the SSE bridge degrades to "no replay buffer" rather
+    # than 500-ing on a backend it can't serve.
+    # ------------------------------------------------------------------
+
+    async def append_event(self, envelope: Any) -> None:  # pragma: no cover
+        return None
+
+    async def append_events_batch(
+        self, envelopes: Sequence[Any]
+    ) -> None:  # pragma: no cover
+        return None
+
+    async def load_events(
+        self, turn_id: str | int
+    ) -> list[dict[str, Any]]:  # pragma: no cover
+        return []
+
+    async def iter_events(  # type: ignore[misc]
+        self, turn_id: str | int, start_sequence: int = 0
+    ) -> AsyncIterator[dict[str, Any]]:  # pragma: no cover
+        # Async-generator stub — yields nothing. The ``if False`` keeps
+        # this as a generator function (so the caller can ``async for``
+        # without an awaitable indirection) while emitting zero items.
+        if False:
+            yield {}
+        return
+
+    async def get_session_turn_ids(
+        self, session_key: str, limit: int = 50
+    ) -> list[int]:  # pragma: no cover
+        # Could be implemented as a thin SELECT on journal_turns; left
+        # unimplemented until a Postgres deployment actually wires the
+        # SSE replay route (W1.3 ships SQLite-only).
+        return []
+
+    async def update_turn_cost(
+        self,
+        turn_id: int,
+        *,
+        estimated_cost_usd: float | None,
+        cost_status: str | None,
+    ) -> None:  # pragma: no cover
+        return None
 
 
 __all__ = ["PostgresJournalBackend"]
