@@ -4,7 +4,81 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
-## [1.1.1] — 2026-05-24 — perf + UX polish + boot auto-resume
+## [Unreleased] — task observability overhaul
+
+> Makes the agent's work visible. Today nobody can see what tools fired
+> in a turn, what args went in, what came back, how long anything took,
+> or what happened on a turn 10 minutes ago — even though the gateway
+> collects most of that data. This release ports proven UX patterns
+> from Claude Code, opencode, and hermes-agent into a single typed
+> event stream that drives both the admin UI and the channel adapters.
+
+### Added
+
+- **Typed `EventEnvelope` event stream** — 14 events
+  (`TurnStart` / `BlockStart` / `TextDelta` / `ReasoningDelta` /
+  `ToolInputDelta` / `BlockStop` / `ToolStateRunning` /
+  `ToolStateHeartbeat` / `ToolStateCompleted` / `SubagentSpawned` /
+  `SubagentEvent` / `SubagentCompleted` / `Cancelling` /
+  `TurnComplete` / `TurnErrored`) emitted by `ReasoningLoop` +
+  `runner_pool` + `subagent.supervisor`. The legacy gRPC `ServerFrame`
+  keeps emitting alongside so existing channel adapters and SDK
+  consumers don't break.
+- **`turn_events` SQLite table** (journal migration `004_turn_events`)
+  — every emitted envelope is journaled (`turn_id` / `sequence` /
+  `event_type` / `payload_json` / `timestamp_ms`). Replays from this
+  table render identically to the live stream. TTL prune at boot +
+  daily; configurable via `CORLINMAN_TURN_EVENTS_TTL_DAYS` (default 30
+  days).
+- **Three admin SSE/JSON routes** —
+  `GET /admin/sessions/{key}/events/live` (SSE, 10s keepalive,
+  `Last-Event-ID` resume + `?last_event_id=…` proxy fallback),
+  `GET /admin/sessions/{key}/turns/{turn_id}/events` (paginated JSON
+  replay), `GET /admin/sessions/{key}/cost` (aggregated cost / turn
+  count / tool-call total).
+- **`/admin/sessions/{key}` event timeline** — live SSE-driven turn
+  cards. `ReasoningBlock` shimmer while streaming; `ToolWidget` with
+  pending → running → completed/error state machine, live-ticking
+  elapsed counter, expandable args + result through per-tool renderers
+  (`bash` / `read_file` / `write_file` / `webfetch` / `grep` /
+  fallback `generic`). rAF-batched merges so a fast-streaming turn
+  doesn't tank rendering.
+- **`/admin/sessions/{key}/turns/{turn_id}` drill-down** — same
+  timeline component in replay mode, seeded from the JSON replay
+  endpoint. Top-of-page `TurnSummaryCard` with elapsed / tool count /
+  cost / finish reason.
+- **Sticky cost footer** — five pills (total USD, turn count, avg
+  turn time, tool calls, last-turn-N-ago); 15s polling + a
+  `visibilitychange` refetch on tab focus. Session list grows three
+  columns (total / avg / last tool used).
+- **Sub-agent tree** — `BubbleEmitter` bubbles child envelopes into
+  the parent stream; the UI renders the child's events nested inside
+  the spawning tool widget, depth cap 3.
+- **Tool heartbeat** — `ToolStateHeartbeat` fires every 10s while a
+  tool runs so a `sleep 60` no longer leaves the UI quiet (configurable
+  via `CORLINMAN_TOOL_HEARTBEAT_INTERVAL_MS`).
+- **Channel post-turn footer + cancel/heartbeat consumer** — channel
+  `_status.py` now subscribes to `EventEmitter` directly. Heartbeats
+  refresh the spinner with `🔧 {tool} … {elapsed_s}s`; cancellation
+  shows `⏹ 正在取消…` within ~1s instead of waiting for the next round;
+  every reply gets a one-line footer `(elapsed: 12.4s · 3 tool calls ·
+  ~$0.012)` (the `~` drops to `$` when `cost_status == "billed"`).
+- **`ui/tests/e2e/task-observability.spec.ts`** — Playwright spec
+  covers the live timeline (reasoning, two tool widgets, expand-to-
+  see-args, cost footer pills) plus the drill-down replay.
+- **Docs** — `docs/observability.md` now leads with the task event
+  stream (taxonomy table, API endpoints with curl examples,
+  configuration env vars); `docs/quickstart.md` gains a "Watching the
+  agent work" section.
+
+### Changed
+
+- **`Cancelling` event is emitted the moment `ReasoningLoop.cancel()`
+  is called** — previously the user had to wait for the next reasoning
+  round to see anything change. Same emit point now feeds the UI
+  badge + the channel spinner.
+
+
 
 > 4 commits on top of v1.1.0. Focuses on the per-turn hot path
 > (~500-800 ms shaved off a 10-round task), adds hermes-agent-style

@@ -1,5 +1,230 @@
 # Observability
 
+corlinman exposes observability at two layers:
+
+- **Task observability** — what just happened in a turn? Which tools
+  fired with what args, how long they took, what reasoning the model
+  produced, how much it cost. Backed by a typed event stream surfaced
+  over SSE + a SQLite journal. **See [Task event stream](#task-event-stream).**
+- **Platform observability** — tracing spans + Prometheus metrics for
+  the gateway process itself (RPS, latency histograms, plugin invokes,
+  channel ingest counters). See [Platform tracing & metrics](#platform-tracing--metrics).
+
+This document catalogues both. Operators chasing "why was that one turn
+slow / wrong / expensive" want the first half; SREs wiring Grafana
+dashboards want the second.
+
+---
+
+## Task event stream
+
+### Overview
+
+Every chat turn the agent executes is rendered to a chronologically-
+ordered stream of typed `EventEnvelope` events. The same envelopes are
+journaled to the `turn_events` SQLite table on emission, so the UI can
+either consume the live SSE feed (`/admin/sessions/{key}/events/live`)
+or replay a historical turn from the journal
+(`/admin/sessions/{key}/turns/{turn_id}/events`) — both render through
+the identical timeline components.
+
+This replaces the previous "fire-once `ToolCallEvent` + lost reasoning"
+model and brings parity with Claude Code's `content_block_*` stream and
+opencode's `Part` discriminated union. The legacy gRPC `ServerFrame`
+keeps emitting (`token` / `tool_call` / `done` / `error`) so existing
+channel adapters and SDK consumers don't break — the new stream runs
+alongside it. Channels that want the richer signals (heartbeat,
+cancellation) can subscribe to `EventEmitter` directly; see
+[Channel adapters](#channel-adapters).
+
+```
+                       ┌───────────────────────┐
+   ReasoningLoop ──────► EventEmitter (in-mem) ├──► SSE clients (admin UI)
+        │              └────────────┬──────────┘
+        │                           │ tee
+        │                           ▼
+        │                  ┌────────────────┐
+        └─ legacy ServerFrame ► turn_events (sqlite, journaled)
+                                   │
+                                   └──► JSON replay route
+```
+
+### Event taxonomy
+
+14 typed events. `turn_id` + `sequence` (monotonic per turn) is the
+correlation key; `timestamp_ms` is wall-clock.
+
+| Event | Trigger | Payload | Emit from | Consume in |
+|---|---|---|---|---|
+| `TurnStart` | Start of `_run_one_round` | `model`, `user_text`, `system_message_preview` | `corlinman_agent.reasoning_loop` | UI summary card, channel preamble |
+| `BlockStart` | Provider emits `content_block_start` | `index`, `block_type` (`text` / `reasoning` / `tool_use`), `tool_name?`, `tool_call_id?` | `reasoning_loop` | UI timeline (creates a new part) |
+| `TextDelta` | Each model text token | `index`, `text`, `cumulative_len?` | `reasoning_loop` | UI text part, throttled via rAF |
+| `ReasoningDelta` | Each thinking-mode token | `index`, `text`, `signature?` | `reasoning_loop` | UI ReasoningBlock shimmer |
+| `ToolInputDelta` | Provider streams partial JSON args (Anthropic) | `index`, `partial_json` | `reasoning_loop` | UI tool widget args accumulator |
+| `BlockStop` | Provider emits `content_block_stop` | `index`, `elapsed_ms` | `reasoning_loop` | UI flips part to settled state |
+| `ToolStateRunning` | Just before plugin dispatch | `tool_call_id`, `tool_name`, `args_json`, `started_at_ms` | `corlinman_server.runner_pool` | UI tool widget → "running"; channel spinner `🔧 {name} {args}` |
+| `ToolStateHeartbeat` | Every 10s while a tool runs | `tool_call_id`, `elapsed_ms`, `stdout_tail?` | `runner_pool` heartbeat task | UI ticks elapsed; channel `🔧 {name} … 23s` |
+| `ToolStateCompleted` | Post-dispatch (success or error) | `tool_call_id`, `result_summary` (≤4kB), `result_json_ref?`, `elapsed_ms`, `is_error` | `runner_pool` | UI tool widget → "completed"/"error"; channel `✅/❌ {name} ({duration})` |
+| `SubagentSpawned` | Parent spawns a child session | `parent_session`, `child_session`, `child_agent_id`, `depth`, `prompt_preview` | `corlinman_subagent.supervisor` | UI sub-agent tree (depth cap 3) |
+| `SubagentEvent` | Bubble child envelope into parent stream | `child_session`, `envelope: EventEnvelope` | `supervisor` BubbleEmitter | UI nested timeline beneath spawning tool widget |
+| `SubagentCompleted` | Child finishes | `child_session`, `finish_reason`, `tool_calls_made`, `elapsed_ms`, `summary` | `supervisor` | UI collapses tree, channel summary |
+| `Cancelling` | The moment `ReasoningLoop.cancel()` is called | `reason` | `corlinman_agent.cancel` | UI badge `⏹ cancelling`; channel `⏹ 正在取消…` |
+| `TurnComplete` | End of a clean turn | `finish_reason`, `usage`, `elapsed_ms`, `estimated_cost_usd?`, `cost_status?` | `reasoning_loop` | UI status pill + cost footer refresh; channel post-turn footer |
+| `TurnErrored` | Error path | `reason`, `message`, `elapsed_ms` | `reasoning_loop` error handler | UI red banner, channel `❌` line |
+
+### API endpoints
+
+All three routes are admin-scoped — `Cookie: session=...` from `/admin/login` is required.
+
+#### `GET /admin/sessions/{key}/events/live` — live SSE
+
+Subscribe to the in-process `EventEmitter` for `key`. Catches up from
+the journal (`turn_events` rows ≥ `last_event_id` if supplied), then
+streams new events. 10s server-side keepalive ticks prevent idle
+proxies from closing the socket. Reconnect uses standard SSE
+`Last-Event-ID: <turn_id>:<sequence>` semantics — both the header and a
+`?last_event_id=...` query-string fallback are accepted (some proxies
+strip headers on long-lived streams).
+
+```bash
+curl -N --cookie "session=$COOKIE" \
+  "http://localhost:6005/admin/sessions/telegram:42/events/live"
+
+# →
+id: 0123abcd:1
+data: {"turn_id":"0123abcd","sequence":1,"timestamp_ms":1700000000000,"event_type":"TurnStart","payload":{"model":"…","user_text":"…"}}
+
+id: 0123abcd:2
+data: {"turn_id":"0123abcd","sequence":2,"timestamp_ms":1700000000050,"event_type":"BlockStart","payload":{"index":0,"block_type":"reasoning"}}
+
+: keepalive
+```
+
+#### `GET /admin/sessions/{key}/turns/{turn_id}/events` — JSON replay
+
+Paginated dump of every event for a single turn, ordered by sequence.
+`?after_sequence=N` + `?limit=M` cursor; `next_cursor: null` signals
+exhaustion.
+
+```bash
+curl --cookie "session=$COOKIE" \
+  "http://localhost:6005/admin/sessions/telegram:42/turns/0123abcd/events?limit=5000"
+
+# → {
+#   "events": [ {turn_id, sequence, timestamp_ms, event_type, payload}, ... ],
+#   "next_cursor": null
+# }
+```
+
+#### `GET /admin/sessions/{key}/cost` — aggregated session cost
+
+Aggregates `turn_events` for the session. Feeds the sticky cost footer
+on `/admin/sessions/{key}`; polled every 15s by the UI plus a refetch
+on `visibilitychange`.
+
+```bash
+curl --cookie "session=$COOKIE" \
+  "http://localhost:6005/admin/sessions/telegram:42/cost"
+
+# → {
+#   "session_key": "telegram:42",
+#   "turn_count": 14,
+#   "total_elapsed_ms": 87421,
+#   "total_cost_usd": 0.1234,
+#   "cost_status_breakdown": {"estimated": 12, "billed": 2, "unknown": 0},
+#   "total_tool_calls": 31,
+#   "last_turn_at_ms": 1700000123456,
+#   "avg_turn_ms": 6244,
+#   "last_tool_name": "bash"
+# }
+```
+
+When `cost_status_breakdown.unknown > 0` the UI prefixes the headline
+total with `~` and surfaces an info dot tooltipped "estimated".
+
+### Frontend UI
+
+The `/admin/sessions/{key}` page renders five linked surfaces:
+
+- **EventTimeline** (`data-testid="event-timeline"`) — ordered turn
+  cards, one per `TurnStart`. Each card contains the ordered parts.
+- **ReasoningBlock** (`data-testid="reasoning-block"`) — collapsible
+  "Thinking" panel with shimmer while `data-streaming="true"`.
+- **ToolWidget** (`data-testid="tool-widget"`) — one row per tool
+  call. State badge (`data-tool-state="pending|running|completed|error"`),
+  inline arg summary, live-ticking elapsed counter. Click to expand →
+  per-tool renderer shows full args + result.
+- **SubagentTree** — nested timeline beneath the spawning tool widget
+  when the child emits events through the `BubbleEmitter`.
+- **CostFooter** (`data-testid="cost-footer"`) — sticky bottom row of
+  five pills: total USD, turn count, average turn time, tool call
+  count, "last turn N ago".
+
+<!-- TODO: screenshot — save to docs/assets/observability-session-detail.png -->
+<!-- The screenshot should show /admin/sessions/{key} mid-turn with    -->
+<!-- a streaming reasoning block, two completed tool widgets, one      -->
+<!-- running tool widget with subagent tree, and the cost footer.      -->
+
+Per-turn drill-down lives at
+`/admin/sessions/{key}/turns/{turn_id}` — the same timeline component
+mounted in `mode="replay"`, seeded from the JSON replay endpoint.
+Pixel-identical rendering means a finished turn reviewed an hour later
+looks the same as it did when it was live.
+
+### Channel adapters
+
+Telegram / QQ / Discord / Slack / Feishu adapters render a mutable
+status line per turn. Two consumption paths feed it:
+
+1. **Legacy event tap** (`corlinman_channels._status._StatusFormatter`)
+   — receives `tool_call` / `tool_result` / `done` / `error` from the
+   in-process gRPC `ServerFrame` bus. Drives the steady-state
+   `🔧 {tool} {arg}` and `✅ {tool} ({duration})` lines.
+2. **New emitter.subscribe consumer** (W4.1) — subscribes to the same
+   `EventEmitter` the SSE route consumes. Picks up the two signals the
+   legacy tap doesn't carry:
+   - `ToolStateHeartbeat` → refreshes the spinner to
+     `🔧 {tool} … {elapsed_s}s` for long-running tools.
+   - `Cancelling` → flips the spinner to `⏹ 正在取消…` within ~1s of the
+     cancel button being pressed (previously waited for the next round).
+   - `TurnComplete` → appends a one-line footer to the final reply:
+     `(elapsed: 12.4s · 3 tool calls · ~$0.012)`. The `~` is dropped
+     when `cost_status == "billed"`.
+
+Both consumers run side by side; channels that don't subscribe to the
+emitter keep their existing UX. Adapters added in the future should
+prefer the emitter path — it's the same stream the UI sees.
+
+### Configuration
+
+| Knob | Default | Where | Notes |
+|---|---|---|---|
+| `CORLINMAN_TURN_EVENTS_TTL_DAYS` | 30 | env var (gateway) | Prune `turn_events` rows older than N days at gateway boot + once / day. Set to 0 to disable. |
+| `CORLINMAN_TOOL_HEARTBEAT_INTERVAL_MS` | 10000 | env var (runner_pool) | How often `ToolStateHeartbeat` fires while a tool runs. Lower bound 1000. |
+| `CORLINMAN_SSE_KEEPALIVE_INTERVAL_MS` | 10000 | env var (gateway) | SSE `: keepalive\n\n` comment frequency. Tune below your reverse proxy idle timeout. |
+| `CORLINMAN_SSE_SUBSCRIBER_QUEUE_SIZE` | 256 | env var (gateway) | Per-subscriber bounded queue. Overflow drops oldest + reconnect uses `Last-Event-ID` for catch-up. |
+| `[observability].emit_legacy_serverframe` | `true` | `config.toml` | When set to `false`, channels that still rely on the legacy gRPC `ServerFrame` stream lose their data source. Don't touch unless every adapter has migrated to `emitter.subscribe`. |
+
+### Future work
+
+Out of scope for this round (tracked in
+[`docs/PLAN_TASK_OBSERVABILITY.md` §4](PLAN_TASK_OBSERVABILITY.md)):
+
+- Replace gRPC `ServerFrame` with `EventEnvelope` end-to-end and
+  deprecate the legacy stream.
+- Per-token timing — currently per-block is enough.
+- Cost calculation accuracy improvements — we surface what
+  `_CostMeter` already produces.
+- Migrate Telegram/QQ adapters fully off the in-process tap and onto
+  the SSE stream directly.
+- WebSocket-based browsing of historical turn streams.
+- OTel-style distributed tracing for the agent loop (the gateway-
+  process spans below already cover the HTTP boundary).
+
+---
+
+## Platform tracing & metrics
+
 This document catalogues the tracing spans and Prometheus metrics exposed
 by the corlinman platform after B5-BE4. It is intended as a quick
 reference when debugging production issues or extending dashboards.

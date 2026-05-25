@@ -92,6 +92,56 @@ surface unlocks.
 
 ---
 
+## Watching the agent work
+
+Once a turn is in flight, open `/admin/sessions/{key}` to see exactly
+what the agent is doing — live, as it happens. `{key}` is the channel-
+qualified session id (for example `telegram:42` or `qq:group:9001`); the
+session list at `/admin/sessions` links straight to each row.
+
+The session detail page is built from five linked surfaces. Together
+they replace the old "spinning dots in the chat thread" with a
+structured timeline:
+
+1. **Text** — model output as it streams in, with a blinking caret on
+   the trailing token.
+2. **Reasoning block** — collapsible "Thinking" panel that shimmers
+   amber while the model is producing thinking-mode tokens, then
+   settles into a quiet card when the block closes. Click to fold it
+   away.
+3. **Tool widget** — one row per tool call. The badge shows
+   `pending → running → completed` (or `error`) and the elapsed counter
+   ticks live every second. Click to expand the row and see the full
+   arguments + result through a per-tool renderer (`bash`, `read_file`,
+   `write_file`, `webfetch`, `grep`, fallback `generic`). Long tools
+   that take more than 10s post a heartbeat so the row keeps moving.
+4. **Sub-agent tree** — when the agent spawns a child via `delegate`
+   or a sub-task tool, the child's timeline nests inside the spawning
+   tool widget (depth cap 3 so deeply recursive agents stay readable).
+5. **Cost footer** — sticky at the bottom of the scroll area, five
+   pills: total USD, turn count, average turn time, tool call count,
+   "last turn N ago". Polled every 15s and refreshed instantly on
+   `TurnComplete`.
+
+A finished turn doesn't disappear — click into the turn card or visit
+`/admin/sessions/{key}/turns/{turn_id}` to re-watch every event in
+replay mode. The replay page is the same React component as the live
+view, just seeded from the journal instead of the SSE stream, so it
+looks pixel-identical to how the turn looked when it ran.
+
+Channel-side, the same data drives a compact one-liner. Telegram /
+Discord / Slack / Feishu mutate a single message in place
+(`🔧 bash … 12s` → `✅ bash (12.4s)`) and append a footer to the
+final reply: `(elapsed: 12.4s · 3 tool calls · ~$0.012)`. QQ-family
+channels can't edit messages so they post the same footer as a
+separate `📋 本次操作:` summary block. The `~` prefix on the cost
+disappears once the provider returns a billed figure.
+
+See [Observability](observability.md) for the full event taxonomy and
+API contract.
+
+---
+
 ## Choose your setup path
 
 Once the default password is gone, the gateway is technically ready to
