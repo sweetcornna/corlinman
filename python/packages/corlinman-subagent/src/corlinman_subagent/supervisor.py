@@ -201,11 +201,24 @@ class Supervisor:
     The optional ``hook_bus`` lets the supervisor emit lifecycle events
     on each spawn / completion / rejection. Emits are best-effort:
     failures are swallowed so a slow listener can never break a spawn.
+
+    W3.2 — the optional ``event_emitter`` + ``parent_turn_id`` +
+    ``parent_session_key`` triple lets the supervisor stamp the
+    :class:`corlinman_agent.events.SubagentSpawned` /
+    :class:`corlinman_agent.events.SubagentCompleted` envelopes onto
+    the parent's task-observability stream. Like ``hook_bus``, this is
+    optional so unit tests don't need to stand up an emitter; when
+    ``None`` the supervisor falls back to the pre-existing
+    ``HookEvent.SubagentSpawned`` / ``HookEvent.SubagentCompleted``
+    fire-and-forget path (iter 9 telemetry, separate concern).
     """
 
     __slots__ = (
+        "_event_emitter",
         "_hook_bus",
         "_lock",
+        "_parent_session_key",
+        "_parent_turn_id",
         "_per_parent",
         "_per_tenant",
         "_policy",
@@ -216,6 +229,9 @@ class Supervisor:
         policy: SupervisorPolicy | None = None,
         *,
         hook_bus: Any | None = None,
+        event_emitter: Any | None = None,
+        parent_turn_id: str | None = None,
+        parent_session_key: str | None = None,
     ) -> None:
         """Initialise with ``policy`` (defaults applied if omitted).
 
@@ -224,11 +240,23 @@ class Supervisor:
         ``emit_nonblocking`` method on the bus. This matches the Rust
         crate's ``Option<Arc<HookBus>>`` field which is ``None`` by
         default; tests that don't care about hooks pass nothing.
+
+        ``event_emitter`` is the W1.1 task-observability sink
+        (:class:`corlinman_agent.events.EventEmitter`) — same loose
+        typing rationale as ``hook_bus`` so we don't pay an import
+        cost when nobody wires it. ``parent_turn_id`` /
+        ``parent_session_key`` are the parent's per-turn correlation
+        pair; the supervisor stamps every SubagentSpawned /
+        SubagentCompleted envelope with both so the parent's SSE
+        stream renders the nested events under the right turn.
         """
         self._policy = policy if policy is not None else SupervisorPolicy()
         self._per_parent: dict[str, int] = {}
         self._per_tenant: dict[str, int] = {}
         self._hook_bus = hook_bus
+        self._event_emitter = event_emitter
+        self._parent_turn_id = parent_turn_id
+        self._parent_session_key = parent_session_key
         # Single asyncio lock guards both counter dicts. The Rust crate
         # uses per-key DashMap entries; on a single-threaded asyncio
         # event loop one global lock is simpler and just as correct
@@ -365,24 +393,36 @@ class Supervisor:
         parent_ctx: ParentContext,
         child_ctx: ParentContext,
         agent_card: str,
+        *,
+        prompt_preview: str = "",
     ) -> None:
         """Iter-9 emit helper: ``SubagentSpawned`` once the slot is
         acquired and the child's runtime context is known.
-        """
-        if self._hook_bus is None:
-            return
-        from corlinman_hooks import HookEvent  # noqa: PLC0415
 
-        event = HookEvent.SubagentSpawned(
-            parent_session_key=parent_ctx.parent_session_key,
-            child_session_key=child_ctx.parent_session_key,
-            child_agent_id=child_ctx.parent_agent_id,
-            agent_card=agent_card,
-            depth=child_ctx.depth,
-            parent_trace_id=parent_ctx.trace_id,
-            tenant_id=parent_ctx.tenant_id,
-        )
-        self._safe_emit(event)
+        W3.2 — also forwards a task-observability
+        :class:`corlinman_agent.events.SubagentSpawned` envelope
+        through ``self._event_emitter`` (when wired). ``prompt_preview``
+        is truncated to 200 chars before emit; callers don't need to
+        pre-trim.
+        """
+        if self._hook_bus is not None:
+            from corlinman_hooks import HookEvent  # noqa: PLC0415
+
+            event = HookEvent.SubagentSpawned(
+                parent_session_key=parent_ctx.parent_session_key,
+                child_session_key=child_ctx.parent_session_key,
+                child_agent_id=child_ctx.parent_agent_id,
+                agent_card=agent_card,
+                depth=child_ctx.depth,
+                parent_trace_id=parent_ctx.trace_id,
+                tenant_id=parent_ctx.tenant_id,
+            )
+            self._safe_emit(event)
+
+        # W3.2 task-observability emit (orthogonal to the hook bus —
+        # the bus is for cross-process telemetry, the emitter feeds the
+        # SSE / journal stream the admin UI watches live).
+        self._emit_obs_spawned(parent_ctx, child_ctx, prompt_preview)
 
     def emit_finished(
         self,
@@ -397,37 +437,184 @@ class Supervisor:
         Pre-spawn rejections (``DEPTH_CAPPED`` / ``REJECTED``) are
         owned by :meth:`_emit_reject` and short-circuited here to
         avoid double-emits.
-        """
-        if self._hook_bus is None:
-            return
-        from corlinman_hooks import HookEvent  # noqa: PLC0415
 
-        if result.finish_reason is FinishReason.TIMEOUT:
-            event = HookEvent.SubagentTimedOut(
-                parent_session_key=parent_ctx.parent_session_key,
-                child_session_key=result.child_session_key,
-                child_agent_id=result.child_agent_id,
-                elapsed_ms=result.elapsed_ms,
-                parent_trace_id=parent_ctx.trace_id,
-                tenant_id=parent_ctx.tenant_id,
-            )
-        elif result.finish_reason.is_pre_spawn_rejection():
+        W3.2 — also forwards a task-observability
+        :class:`corlinman_agent.events.SubagentCompleted` envelope
+        through ``self._event_emitter`` (when wired) for every
+        terminal state *except* the pre-spawn rejections (which
+        belong to ``_emit_reject``'s lane).
+        """
+        if result.finish_reason.is_pre_spawn_rejection():
             # Pre-spawn rejections are owned by emit_reject — calling
             # emit_finished on one of these would double-emit. Drop
-            # silently.
+            # silently (both lanes).
             return
-        else:
-            event = HookEvent.SubagentCompleted(
-                parent_session_key=parent_ctx.parent_session_key,
-                child_session_key=result.child_session_key,
-                child_agent_id=result.child_agent_id,
-                finish_reason=result.finish_reason.as_str(),
-                elapsed_ms=result.elapsed_ms,
-                tool_calls_made=len(result.tool_calls_made),
-                parent_trace_id=parent_ctx.trace_id,
-                tenant_id=parent_ctx.tenant_id,
+
+        if self._hook_bus is not None:
+            from corlinman_hooks import HookEvent  # noqa: PLC0415
+
+            if result.finish_reason is FinishReason.TIMEOUT:
+                event = HookEvent.SubagentTimedOut(
+                    parent_session_key=parent_ctx.parent_session_key,
+                    child_session_key=result.child_session_key,
+                    child_agent_id=result.child_agent_id,
+                    elapsed_ms=result.elapsed_ms,
+                    parent_trace_id=parent_ctx.trace_id,
+                    tenant_id=parent_ctx.tenant_id,
+                )
+            else:
+                event = HookEvent.SubagentCompleted(
+                    parent_session_key=parent_ctx.parent_session_key,
+                    child_session_key=result.child_session_key,
+                    child_agent_id=result.child_agent_id,
+                    finish_reason=result.finish_reason.as_str(),
+                    elapsed_ms=result.elapsed_ms,
+                    tool_calls_made=len(result.tool_calls_made),
+                    parent_trace_id=parent_ctx.trace_id,
+                    tenant_id=parent_ctx.tenant_id,
+                )
+            self._safe_emit(event)
+
+        # W3.2 task-observability emit.
+        self._emit_obs_finished(result)
+
+    # ----------------------------------------------------------------- obs
+
+    def _truncate_preview(self, text: str, limit: int) -> str:
+        """Trim ``text`` to ``limit`` chars and append an ellipsis when
+        truncated. Centralised so the spawn / completion emits use one
+        consistent rule.
+        """
+        if not text:
+            return ""
+        if len(text) <= limit:
+            return text
+        return text[:limit] + "…"
+
+    def _emit_obs_spawned(
+        self,
+        parent_ctx: ParentContext,
+        child_ctx: ParentContext,
+        prompt_preview: str,
+    ) -> None:
+        """W3.2: ``SubagentSpawned`` task-observability envelope.
+
+        Fire-and-forget — schedules an asyncio task and returns
+        immediately so the spawn path never blocks on the emitter. A
+        broken emitter (e.g. journal write failure) is silently
+        dropped: observability is a nice-to-have, the supervisor's
+        cap-accounting contract is the load-bearing piece.
+        """
+        emitter = self._event_emitter
+        if (
+            emitter is None
+            or self._parent_turn_id is None
+            or self._parent_session_key is None
+        ):
+            return
+        # Lazy import keeps corlinman-subagent from pulling
+        # corlinman-agent at import time. Both packages already share a
+        # ParentContext dataclass so this is the only direction we need
+        # to break.
+        from corlinman_agent.events import SubagentSpawned  # noqa: PLC0415
+
+        event = SubagentSpawned(
+            parent_session_key=parent_ctx.parent_session_key,
+            child_session_key=child_ctx.parent_session_key,
+            child_agent_id=child_ctx.parent_agent_id,
+            depth=child_ctx.depth,
+            prompt_preview=self._truncate_preview(prompt_preview, 200),
+        )
+        self._safe_emit_obs(event)
+
+    def _emit_obs_finished(self, result: TaskResult) -> None:
+        """W3.2: ``SubagentCompleted`` task-observability envelope.
+
+        Pairs with :meth:`_emit_obs_spawned`. Pre-spawn rejection
+        short-circuit is handled by the caller (:meth:`emit_finished`),
+        so this helper does not need to re-check.
+        """
+        emitter = self._event_emitter
+        if (
+            emitter is None
+            or self._parent_turn_id is None
+            or self._parent_session_key is None
+        ):
+            return
+        from corlinman_agent.events import SubagentCompleted  # noqa: PLC0415
+
+        event = SubagentCompleted(
+            child_session_key=result.child_session_key,
+            finish_reason=result.finish_reason.as_str(),
+            tool_calls_made=len(result.tool_calls_made),
+            elapsed_ms=result.elapsed_ms,
+            summary=self._truncate_preview(result.output_text, 1024),
+        )
+        self._safe_emit_obs(event)
+
+    def _safe_emit_obs(self, event: Any) -> None:
+        """Schedule a best-effort emit on the wired emitter.
+
+        Like ``_safe_emit`` (hook bus), failures here must not break
+        the supervisor's spawn contract. ``emit_event`` is async so we
+        spawn a fire-and-forget task; the emitter itself is expected
+        to never raise on the hot path (its own contract), but the
+        scheduling itself can fail if the loop is shutting down — we
+        swallow that too.
+        """
+        emitter = self._event_emitter
+        if emitter is None:
+            return
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            return
+        try:
+            loop.create_task(
+                emitter.emit_event(
+                    self._parent_turn_id or "",
+                    self._parent_session_key or "",
+                    event,
+                )
             )
-        self._safe_emit(event)
+        except Exception:
+            # Loop closed / task creation refused — drop silently to
+            # match the supervisor's "observability never blocks
+            # spawn" contract.
+            pass
+
+    def child_emitter(self, child_session_key: str) -> Any | None:
+        """Build a :class:`BubbleEmitter` wrapping the parent's emitter
+        for ``child_session_key``.
+
+        Returned object conforms to
+        :class:`corlinman_agent.events.EventEmitter` so the caller can
+        hand it to the child agent's reasoning loop / runner pool as
+        the ``event_emitter`` arg. Returns ``None`` when no parent
+        emitter is wired — callers should treat that as "fall back to
+        the legacy no-observability path".
+        """
+        emitter = self._event_emitter
+        if (
+            emitter is None
+            or self._parent_turn_id is None
+            or self._parent_session_key is None
+        ):
+            return None
+        # Local import to keep corlinman-subagent free of a
+        # corlinman-server dependency at import time. The BubbleEmitter
+        # lives on the server side (next to JournalBackedEmitter)
+        # because that's where the gateway-wide emitter pipeline lives.
+        from corlinman_server.gateway.observability.emitter import (  # noqa: PLC0415
+            BubbleEmitter,
+        )
+
+        return BubbleEmitter(
+            parent=emitter,
+            parent_turn_id=self._parent_turn_id,
+            parent_session_key=self._parent_session_key,
+            child_session_key=child_session_key,
+        )
 
     # ----------------------------------------------------------------- spawn
 
@@ -480,7 +667,12 @@ class Supervisor:
         # for the agent callable. Mirrors the Rust bridge's
         # ``parent_ctx.child_context(&child_card, 0)`` call.
         child_ctx = parent_ctx.child_context(agent_card, child_seq)
-        self.emit_spawned(parent_ctx, child_ctx, agent_card)
+        self.emit_spawned(
+            parent_ctx,
+            child_ctx,
+            agent_card,
+            prompt_preview=task.goal,
+        )
 
         budget_s = self._resolve_budget_seconds(task)
         start_ns = time.monotonic_ns()

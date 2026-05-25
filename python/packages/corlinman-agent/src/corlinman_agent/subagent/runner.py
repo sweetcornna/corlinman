@@ -108,6 +108,7 @@ async def run_child(
     tool_result_timeout: float = 0.05,
     parent_tools: Sequence[dict[str, Any]] | None = None,
     max_depth: int = DEFAULT_MAX_DEPTH,
+    event_emitter: Any | None = None,
 ) -> TaskResult:
     """Drive one child reasoning loop and return its :class:`TaskResult`.
 
@@ -265,7 +266,15 @@ async def run_child(
         session_key=child_ctx.parent_session_key,
     )
 
-    loop = ReasoningLoop(provider, tool_result_timeout=tool_result_timeout)
+    # W3.2: child events bubble up to the parent's stream via the
+    # ``event_emitter`` (typically a :class:`BubbleEmitter` constructed
+    # by the dispatcher). ``None`` keeps the legacy no-observability
+    # path so unit tests that don't wire an emitter still work.
+    loop = ReasoningLoop(
+        provider,
+        tool_result_timeout=tool_result_timeout,
+        event_emitter=event_emitter,
+    )
     return await _drive_and_collect(
         loop, chat_start, child_ctx, started_ms, task
     )

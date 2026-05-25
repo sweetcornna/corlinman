@@ -223,6 +223,9 @@ async def dispatch_subagent_spawn(
     child_seq: int = 0,
     max_depth: int = DEFAULT_MAX_DEPTH,
     max_wall_seconds_ceiling: int | None = None,
+    event_emitter: Any | None = None,
+    parent_turn_id: str | None = None,
+    parent_session_key: str | None = None,
 ) -> str:
     """Translate one ``subagent.spawn`` tool call into a JSON
     :class:`TaskResult` envelope.
@@ -348,6 +351,34 @@ async def dispatch_subagent_spawn(
         slot_cm = outcome  # context-manager-shaped slot drop-guard
 
     # ── 5. Drive the child runner under the slot. ────────────────────
+    #
+    # W3.2 — when the caller wired an ``event_emitter`` + the parent's
+    # ``turn_id`` / ``session_key`` correlation pair, emit a
+    # ``SubagentSpawned`` envelope on the parent's stream the moment
+    # the slot was acquired (just above) and a matching
+    # ``SubagentCompleted`` once the child returns. The frontend reads
+    # both to nest the child's timeline under the spawning tool call.
+    child_ctx_preview = parent_ctx.child_context(agent_name, child_seq)
+    await _emit_subagent_spawned(
+        emitter=event_emitter,
+        parent_turn_id=parent_turn_id,
+        parent_session_key=parent_session_key,
+        parent_ctx=parent_ctx,
+        child_ctx=child_ctx_preview,
+        prompt_preview=spec.goal,
+    )
+
+    # Wrap the parent's emitter so the child's reasoning loop bubbles
+    # every envelope up under the parent's turn_id / session_key as
+    # ``SubagentEvent``. ``None`` when no observability is wired —
+    # ``run_child`` falls back to the legacy no-emitter path.
+    _child_emitter = _make_bubble_emitter(
+        parent=event_emitter,
+        parent_turn_id=parent_turn_id,
+        parent_session_key=parent_session_key,
+        child_session_key=child_ctx_preview.parent_session_key,
+    )
+
     try:
         with slot_cm:
             result = await run_child(
@@ -359,6 +390,7 @@ async def dispatch_subagent_spawn(
                 persona_store=persona_store,
                 parent_tools=parent_tools,
                 max_depth=max_depth,
+                event_emitter=_child_emitter,
             )
     except Exception as exc:
         logger.exception(
@@ -375,7 +407,126 @@ async def dispatch_subagent_spawn(
             error=str(exc),
         )
 
+    await _emit_subagent_completed(
+        emitter=event_emitter,
+        parent_turn_id=parent_turn_id,
+        parent_session_key=parent_session_key,
+        result=result,
+    )
+
     return _result_json(result)
+
+
+def _make_bubble_emitter(
+    *,
+    parent: Any | None,
+    parent_turn_id: str | None,
+    parent_session_key: str | None,
+    child_session_key: str,
+) -> Any | None:
+    """Construct a :class:`BubbleEmitter` for the child agent.
+
+    Lazy-imports ``corlinman_server.gateway.observability`` so the
+    subagent package retains zero compile-time dependency on the
+    server package — callers that don't wire observability (tests,
+    smoke runs) never trigger the import. Returns ``None`` when no
+    parent emitter / correlation pair is provided.
+    """
+    if parent is None or not parent_turn_id or not parent_session_key:
+        return None
+    try:
+        from corlinman_server.gateway.observability.emitter import (  # noqa: PLC0415
+            BubbleEmitter,
+        )
+    except ImportError:
+        # The server package isn't importable from this test/runtime —
+        # fall through and skip child bubbling. The parent-side spawn
+        # / completed envelopes still fire from the dispatcher itself.
+        return None
+    return BubbleEmitter(
+        parent=parent,
+        parent_turn_id=parent_turn_id,
+        parent_session_key=parent_session_key,
+        child_session_key=child_session_key,
+    )
+
+
+def _truncate(text: str, limit: int) -> str:
+    """Return ``text`` capped at ``limit`` chars with an ellipsis."""
+    if not text:
+        return ""
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+async def _emit_subagent_spawned(
+    *,
+    emitter: Any | None,
+    parent_turn_id: str | None,
+    parent_session_key: str | None,
+    parent_ctx: ParentContext,
+    child_ctx: ParentContext,
+    prompt_preview: str,
+) -> None:
+    """Best-effort emit of :class:`SubagentSpawned` on the parent stream.
+
+    No-op when any of (emitter, parent_turn_id, parent_session_key) is
+    ``None`` — the dispatcher is callable from test paths that don't
+    wire observability. Errors inside the emitter are swallowed: the
+    spawn must still happen.
+    """
+    if not emitter or not parent_turn_id or not parent_session_key:
+        return
+    from corlinman_agent.events import SubagentSpawned  # noqa: PLC0415
+
+    try:
+        await emitter.emit_event(
+            parent_turn_id,
+            parent_session_key,
+            SubagentSpawned(
+                parent_session_key=parent_ctx.parent_session_key,
+                child_session_key=child_ctx.parent_session_key,
+                child_agent_id=child_ctx.parent_agent_id,
+                depth=child_ctx.depth,
+                prompt_preview=_truncate(prompt_preview, 200),
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "subagent.dispatch.spawned_emit_failed",
+            session=parent_ctx.parent_session_key,
+            error=str(exc),
+        )
+
+
+async def _emit_subagent_completed(
+    *,
+    emitter: Any | None,
+    parent_turn_id: str | None,
+    parent_session_key: str | None,
+    result: TaskResult,
+) -> None:
+    """Best-effort emit of :class:`SubagentCompleted` on the parent stream."""
+    if not emitter or not parent_turn_id or not parent_session_key:
+        return
+    from corlinman_agent.events import SubagentCompleted  # noqa: PLC0415
+
+    try:
+        await emitter.emit_event(
+            parent_turn_id,
+            parent_session_key,
+            SubagentCompleted(
+                child_session_key=result.child_session_key,
+                finish_reason=result.finish_reason.as_str(),
+                tool_calls_made=len(result.tool_calls_made),
+                elapsed_ms=result.elapsed_ms,
+                summary=_truncate(result.output_text, 1024),
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "subagent.dispatch.completed_emit_failed",
+            error=str(exc),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -648,6 +799,9 @@ async def dispatch_subagent_spawn_many(
     max_depth: int = DEFAULT_MAX_DEPTH,
     max_wall_seconds_ceiling: int | None = None,
     max_tasks: int = SUBAGENT_SPAWN_MANY_MAX_TASKS,
+    event_emitter: Any | None = None,
+    parent_turn_id: str | None = None,
+    parent_session_key: str | None = None,
 ) -> str:
     """Translate one ``subagent.spawn_many`` tool call into a JSON
     envelope of :class:`TaskResult` siblings, run concurrently.
@@ -706,6 +860,9 @@ async def dispatch_subagent_spawn_many(
             child_seq=base_child_seq + i,
             max_depth=max_depth,
             max_wall_seconds_ceiling=max_wall_seconds_ceiling,
+            event_emitter=event_emitter,
+            parent_turn_id=parent_turn_id,
+            parent_session_key=parent_session_key,
         )
         for i, task_args in enumerate(task_specs)
     ]
