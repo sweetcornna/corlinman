@@ -4,6 +4,97 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — multi-agent dispatch
+
+> The main model can now pick a topic-specific agent on the fly —
+> `subagent.spawn` grows `subagent_type / description / run_in_background
+> / model` fields, and a new built-in `general-purpose` card fills in
+> when no name is given. The agent registry is a three-tier stack
+> (built-in / `$DATA_DIR/agents/` / `./.corlinman/agents/`, last wins),
+> so operators can author their own cards without committing to the
+> repo. Background dispatch mirrors the one-click upgrade pattern: the
+> tool returns a `request_id` immediately and the child runs detached,
+> bubbling events via the existing `BubbleEmitter`. On terminal state
+> a synthetic `user`-role notification lands in the parent journal so
+> the next turn sees the result.
+>
+> Operator surfaces: `/admin/agents` grows source badges + a Create
+> modal + Delete gating; `/admin/playground/protocol` gets an
+> `<AgentPicker>` (auto-route by default); a new `/admin/subagents`
+> page is an SSE-driven live table with per-row Kill and a click-row
+> drawer that reuses the live `<EventTimeline>`.
+>
+> Caps: 3 children per parent, 15 per tenant, max depth 2, 60s wall.
+> Tool whitelist enforcement is unchanged — child tools ⊆ parent
+> tools. The wildcard `"*"` is honoured only on a card's
+> `tools_allowed`; caller-side `tool_allowlist` rejects `"*"`
+> literally. Plan at
+> [`docs/PLAN_MULTI_AGENT.md`](docs/PLAN_MULTI_AGENT.md); operator
+> deep-dive at [`docs/multi-agent.md`](docs/multi-agent.md).
+
+### Added
+
+- **`subagent.spawn` tool** extended with `subagent_type`, `description`,
+  `run_in_background`, and `model` fields. The main model can now dispatch
+  topic-specific agents from the registry (researcher, editor, mentor,
+  ...) or fall through to the new `general-purpose` card. Setting
+  `run_in_background: true` returns a `request_id` immediately and the
+  child runs detached; a synthetic `user`-role notification lands in
+  the parent journal on terminal state.
+- **`general-purpose` built-in agent card** — wildcard `tools_allowed:
+  ["*"]` semantics: child inherits the parent's full tool set, subject
+  to the existing escalation check.
+- **Three-tier agent registry** — built-in (repo `agents/`) + user
+  (`$DATA_DIR/agents/`) + project (`./.corlinman/agents/`). Last wins;
+  shadows logged.
+- **Markdown-with-frontmatter card format** — recommended for new
+  agents; legacy YAML still parses. Unknown fields (`maxTurns`,
+  `background`) silently dropped.
+- **Five `/admin/subagents` endpoints** — list, status, per-child SSE,
+  global overview SSE, kill.
+- **Three `/admin/agents` CRUD endpoints** — create / delete / reload.
+- **`AsyncSubagentDispatcher`** + `SubagentTaskStore` mirroring the
+  one-click upgrade pattern. Cap = 15 in-flight per tenant; state
+  persisted at `$DATA_DIR/.subagent-state.json` with atomic JSON writes.
+- **`<AgentPicker>` on `/admin/playground/protocol`** — auto-route or
+  explicit pin. Threads `agent_id` into the chat request body so the
+  backend's `_peek_agent_binding` honors operator intent over the
+  heuristic.
+- **`<CreateAgentModal>` on `/admin/agents`** — name regex + format
+  radio + clone-from dropdown + force-override-built-in checkbox.
+- **`/admin/subagents` live activity panel** — SSE-driven table with
+  state pills, elapsed counter, Kill button, click-row drawer with
+  per-child `<EventTimeline mode="live">`.
+- **Audit log entries** — `subagent.dispatched / .completed / .failed
+  / .killed` join the existing one-click-upgrade lines in
+  `$DATA_DIR/system-audit.log` and surface in `/admin/system`.
+- **i18n** — ~40 new keys across `agents.create.*`, `agents.source.*`,
+  `subagents.*`, `playground.agentPicker.*` (en + zh-CN).
+
+### Changed
+
+- `_peek_agent_binding` prefers `start.extra["agent_id"]` over the
+  message-peek heuristic when set. Unknown id logs a warning and falls
+  back to the heuristic — backwards compatible.
+- Sidebar — new `Sub-agents` entry (icon `GitFork`) between `/logs` and
+  `/credentials`.
+- `AgentCardRegistry.load_from_dir_stack(dirs)` replaces the single-dir
+  loader. The gateway boots the registry from the three-tier stack and
+  the `POST /admin/agents/reload` endpoint flushes it.
+
+### Security
+
+- Tool whitelist enforcement: child tools ⊆ parent tools. Wildcard
+  `"*"` is honored ONLY on the card's `tools_allowed`; caller-side
+  `tool_allowlist` rejects `"*"` literally (no widening attack).
+- Background dispatcher rejects requests over the per-tenant cap
+  (default 15) with a clear sentinel rather than queueing.
+- `DELETE /admin/agents/{name}` returns 409 on built-in cards. The
+  UI disables the button on `built-in`-badged rows; the backend
+  enforces it even if the UI is bypassed.
+
+---
+
 ## [Unreleased] — one-click upgrade
 
 > The `/admin/system` page goes from "copy these commands and paste them

@@ -143,6 +143,10 @@ disappears once the provider returns a billed figure.
 See [Observability](observability.md) for the full event taxonomy and
 API contract.
 
+Want the model to dispatch a topic-specific agent or to pin a session
+to a specific persona? `/admin/agents` lists what's available,
+`/admin/subagents` shows live dispatches — see [multi-agent](multi-agent.md).
+
 Want to know when a new version drops? `/admin/system` polls GitHub and
 surfaces a TopNav bubble when an upgrade is available — see
 [system-updates](system-updates.md).
