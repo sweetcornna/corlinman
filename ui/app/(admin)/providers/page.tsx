@@ -133,7 +133,13 @@ function toUpsert(d: DraftProvider): ProviderUpsert {
   };
 }
 
-export default function ProvidersPage() {
+/**
+ * Exported as a named function so `/admin/credentials` can mount the
+ * same admin content inline (UX merge: providers + credentials are a
+ * single sidebar entry). The default export stays so `/admin/providers`
+ * still works as a deep link.
+ */
+export function ProvidersAdminContent() {
   const { t } = useTranslation();
   const qc = useQueryClient();
   const providers = useQuery<ProviderView[]>({
@@ -866,4 +872,8 @@ function CustomProvidersSection() {
       </Dialog>
     </>
   );
+}
+
+export default function ProvidersPage() {
+  return <ProvidersAdminContent />;
 }

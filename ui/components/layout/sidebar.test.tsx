@@ -127,7 +127,7 @@ describe("Sidebar", () => {
     expect(entries).toHaveLength(
       SIDEBAR_OPERATOR_ITEMS.length + SIDEBAR_DEV_ITEMS.length + 2,
     );
-    expect(SIDEBAR_DEV_ITEMS).toHaveLength(11);
+    expect(SIDEBAR_DEV_ITEMS).toHaveLength(10);
     // All dev items carry the isDeveloper flag.
     for (const entry of SIDEBAR_DEV_ITEMS) {
       expect("isDeveloper" in entry && entry.isDeveloper === true).toBe(true);

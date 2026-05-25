@@ -56,7 +56,7 @@ describe("DevSettingsPage", () => {
 
   it("renders one card per hidden developer page", () => {
     renderPage();
-    expect(DEV_PAGE_KEYS).toHaveLength(11);
+    expect(DEV_PAGE_KEYS).toHaveLength(10);
     for (const key of DEV_PAGE_KEYS) {
       expect(
         screen.getByTestId(`dev-settings-card-${key}`),

@@ -58,6 +58,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { ProviderGroupCard, getProviderPriority } from "@/components/credentials/provider-group-card";
+import { ProvidersAdminContent } from "@/app/(admin)/providers/page";
 import {
   OAuthLoginModal,
   type OAuthLoginProvider,
@@ -722,6 +723,17 @@ export default function CredentialsPage() {
           })}
         </div>
       )}
+
+      {/*
+        UX merge — providers admin is mounted inline here so a single
+        sidebar entry (Credentials) owns provider registration AND its
+        credentials. The standalone /admin/providers route stays alive
+        as a deep-link fallback (the default export there wraps this
+        same component).
+      */}
+      <div className="mt-6 border-t border-tp-glass-edge pt-6">
+        <ProvidersAdminContent />
+      </div>
 
       <OAuthLoginModal
         open={oauthModalProvider !== null}

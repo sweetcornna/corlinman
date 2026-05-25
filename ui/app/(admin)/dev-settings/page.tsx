@@ -39,7 +39,8 @@ import {
 const DEV_PAGE_KEYS = [
   "config",
   "tenants",
-  "credentials",
+  // credentials moved to the operator sidebar (out of the dev panel)
+  // alongside the merged providers admin — see /admin/credentials.
   "agents",
   "skills",
   "plugins",
@@ -55,7 +56,6 @@ type DevPageKey = (typeof DEV_PAGE_KEYS)[number];
 const ROUTE_FOR_KEY: Record<DevPageKey, string> = {
   config: "/config",
   tenants: "/tenants",
-  credentials: "/credentials",
   agents: "/agents",
   skills: "/skills",
   plugins: "/plugins",

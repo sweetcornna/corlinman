@@ -88,7 +88,7 @@ const OPERATOR_ITEMS: NavEntry[] = [
   { href: "/approvals", labelKey: "nav.approvals", icon: ClipboardCheck },
   { href: "/sessions", labelKey: "nav.sessions", icon: MessagesSquare },
   { href: "/logs", labelKey: "nav.logs", icon: FileTerminal },
-  { href: "/providers", labelKey: "nav.providers", icon: Plug },
+  { href: "/credentials", labelKey: "nav.credentials", icon: KeyRound },
   { href: "/models", labelKey: "nav.models", icon: Route },
   // Persona — humanlike-mode operator surface; sits between Models and
   // Scheduler because it's a chat-personality knob that pairs with model
@@ -123,7 +123,6 @@ const OPERATOR_ITEMS: NavEntry[] = [
 const DEV_ITEMS: NavEntry[] = [
   { href: "/config", labelKey: "nav.config", icon: Settings, isDeveloper: true },
   { href: "/tenants", labelKey: "nav.tenants", icon: Building2, isDeveloper: true },
-  { href: "/credentials", labelKey: "nav.credentials", icon: KeyRound, isDeveloper: true },
   { href: "/agents", labelKey: "nav.agents", icon: Bot, isDeveloper: true },
   { href: "/skills", labelKey: "nav.skills", icon: Wrench, isDeveloper: true },
   { href: "/plugins", labelKey: "nav.plugins", icon: Boxes, isDeveloper: true },
