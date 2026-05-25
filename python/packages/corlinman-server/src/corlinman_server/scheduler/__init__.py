@@ -27,6 +27,12 @@ transparently.
 
 from __future__ import annotations
 
+from corlinman_server.scheduler.builtins import (
+    BUILTIN_ACTIONS,
+    BuiltinContext,
+    register_builtin,
+    run_builtin,
+)
 from corlinman_server.scheduler.cron import (
     CronParseError,
     Schedule,
@@ -55,6 +61,11 @@ from corlinman_server.scheduler.runner import (
 )
 
 __all__ = [
+    # builtins
+    "BUILTIN_ACTIONS",
+    "BuiltinContext",
+    "register_builtin",
+    "run_builtin",
     # cron
     "CronParseError",
     "Schedule",

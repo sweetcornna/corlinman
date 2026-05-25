@@ -578,6 +578,48 @@ listen = "127.0.0.1:18788"
 accept_unsigned = false
 
 # ---------------------------------------------------------------------------
+# [system.update_check] — GitHub-releases update checker.
+#
+# Polls the corlinman GitHub repo on a fixed interval and surfaces a
+# "new version available" bubble in the admin UI's top nav. The
+# `/admin/system` page renders the release notes + copy-paste upgrade
+# commands. Periodic polling is driven by a scheduler builtin
+# (`system.update_check`) that the gateway auto-registers at boot
+# whenever this block is enabled — the cron cadence tracks
+# `interval_hours` below.
+#
+# Operators who want to take over the cadence (different interval,
+# custom timezone, or piping the result through a subprocess) can
+# pre-declare a `[[scheduler.jobs]] name = "system.update_check"`
+# entry above; the auto-registered default steps aside on a name
+# match and the explicit config wins.
+# ---------------------------------------------------------------------------
+[system.update_check]
+# Master switch. Set to false to skip GitHub polls entirely (e.g.
+# air-gapped deploys); the /admin/system page will still show the
+# current version but won't fetch a latest.
+enabled = true
+
+# Background poll interval. Each gateway instance shares this rhythm;
+# manual "Check now" from the UI is server-side rate-limited to 1/min
+# and bypasses this interval.
+interval_hours = 6
+
+# Whether prerelease tags (vX.Y.Z-rc.N) count as upgrade targets. By
+# default only stable releases trigger the bubble.
+include_prereleases = false
+
+# Source GitHub repo to poll. Override if you've forked corlinman.
+repo = "ymylive/corlinman"
+
+# Optional GitHub PAT. Unauthenticated requests are throttled to 60/hr
+# per IP; ETag caching keeps cost low so this is rarely needed for a
+# single-instance deploy. Multi-instance ops should authenticate. The
+# token only needs public-repo read access (fine-grained: Contents
+# read-only; classic: empty scopes).
+# github_token = { env = "CORLINMAN_GITHUB_TOKEN" }
+
+# ---------------------------------------------------------------------------
 # [meta] — maintained by `corlinman config set` / `save`. Do not edit by hand.
 # ---------------------------------------------------------------------------
 # [meta]

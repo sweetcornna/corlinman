@@ -413,6 +413,154 @@ def RESTART_REQUIRED_SECTIONS_LOCAL() -> frozenset[str]:
 
 
 # ---------------------------------------------------------------------------
+# W2.2 default scheduler-job registration
+# ---------------------------------------------------------------------------
+
+
+#: Canonical name of the default update-check cron job. Centralised so
+#: the de-dupe check + tests + future runtime hooks all read the same
+#: literal — change here and every callsite tracks.
+DEFAULT_UPDATE_CHECK_JOB_NAME: str = "system.update_check"
+
+
+def _config_has_scheduler_job(cfg: Any | None, name: str) -> bool:
+    """``True`` when the loaded config already carries a job by ``name``.
+
+    The gateway config loader hands back dict-shaped data (see
+    ``gateway.core.config`` docstring), so we read
+    ``cfg["scheduler"]["jobs"]`` and look for the first entry whose
+    ``name`` matches. Tolerates a missing scheduler section / non-list
+    ``jobs`` value / missing ``name`` keys without raising — the
+    explicit-config detection only needs to ``True`` on a clean match.
+
+    Plain dataclass-shaped configs (``cfg.scheduler.jobs``) also work;
+    we duck-type on attribute then fall back to mapping access so a
+    Wave-1 ``SimpleNamespace``-shaped test config goes through the
+    same branch the production loader does.
+    """
+    scheduler = _extract_section(cfg, "scheduler")
+    if scheduler is None:
+        return False
+    jobs = _extract_section(scheduler, "jobs")
+    if not isinstance(jobs, (list, tuple)):
+        return False
+    for entry in jobs:
+        entry_name = _extract_section(entry, "name")
+        if isinstance(entry_name, str) and entry_name == name:
+            return True
+    return False
+
+
+def _extract_section(obj: Any, key: str) -> Any:
+    """Read ``obj[key]`` / ``obj.key`` tolerantly.
+
+    Mirrors the ``_should_run_legacy_migration`` helper's discipline:
+    the config may arrive as a plain dict (production loader), a
+    dataclass-shaped wrapper (tests), or ``None`` (degraded boot). One
+    helper keeps every caller's branch logic single-line.
+    """
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        return obj.get(key)
+    return getattr(obj, key, None)
+
+
+def _register_default_update_check_job(
+    app: Any, cfg: Any | None, interval_hours: int
+) -> None:
+    """Stash a default ``system.update_check`` :class:`SchedulerJob` on ``app.state``.
+
+    Behaviour matrix (matches the spec in W2.2 of
+    ``docs/PLAN_AUTO_UPDATE.md``):
+
+    * ``[system.update_check] enabled = false`` — *not* called (the
+      caller guards on ``update_cfg.enabled`` first).
+    * Explicit ``[[scheduler.jobs]] name = "system.update_check"``
+      already in config — silent no-op so the operator's explicit
+      cron / timezone / action wins.
+    * Otherwise — appends a :class:`SchedulerJob` with cron
+      ``"0 0 */{interval_hours} * * * *"`` and a ``run_tool``-shaped
+      action pointing at the builtin name. The job lives on
+      ``app.state.corlinman_default_scheduler_jobs`` (a list) so the
+      scheduler runtime (once :func:`spawn` is wired into the lifespan)
+      can pick it up alongside the config jobs, and tests can assert
+      its presence without exercising the runtime.
+
+    All log lines use the ``gateway.system.update_check_job.*`` prefix
+    so a single grep surfaces the W2.2 wiring across boot logs.
+    """
+    if _config_has_scheduler_job(cfg, DEFAULT_UPDATE_CHECK_JOB_NAME):
+        logger.info(
+            "gateway.system.update_check_job.skipped_explicit_config",
+            name=DEFAULT_UPDATE_CHECK_JOB_NAME,
+        )
+        return
+
+    # Build the cron string in the project's 7-field grammar
+    # (sec min hour dom mon dow year). ``0 0 */N * * * *`` fires at
+    # the top of every Nth hour — matches every existing scheduler
+    # job's choice in ``docs/config.example.toml``. Clamp the interval
+    # so a misconfigured ``interval_hours = 0`` falls back to 1 (the
+    # config dataclass already clamps to ``>=1`` but a degraded boot
+    # may have skipped that path).
+    interval = max(1, int(interval_hours))
+    cron_expr = f"0 0 */{interval} * * * *"
+
+    try:
+        from corlinman_server.scheduler import JobAction, SchedulerJob
+
+        job = SchedulerJob(
+            name=DEFAULT_UPDATE_CHECK_JOB_NAME,
+            cron=cron_expr,
+            action=JobAction.run_tool(
+                plugin="system",
+                tool="update_check",
+            ),
+        )
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning(
+            "gateway.system.update_check_job.build_failed",
+            error=str(exc),
+        )
+        return
+
+    existing = getattr(app.state, "corlinman_default_scheduler_jobs", None)
+    if not isinstance(existing, list):
+        existing = []
+    # De-dupe against the in-memory list too so a hot-reload that
+    # re-runs this branch doesn't grow the list unbounded.
+    if any(
+        getattr(j, "name", None) == DEFAULT_UPDATE_CHECK_JOB_NAME
+        for j in existing
+    ):
+        return
+    existing.append(job)
+    app.state.corlinman_default_scheduler_jobs = existing
+
+    logger.info(
+        "gateway.system.update_check_job.registered",
+        name=DEFAULT_UPDATE_CHECK_JOB_NAME,
+        cron=cron_expr,
+    )
+
+
+def list_default_scheduler_jobs(app: Any) -> list[Any]:
+    """Read the in-memory default scheduler-job list.
+
+    Public helper so tests (and any future scheduler-spawn wiring) can
+    inspect what the lifecycle registered without poking
+    ``app.state.corlinman_default_scheduler_jobs`` directly. Returns a
+    *copy* so callers can iterate freely without racing the lifespan.
+    Empty list when nothing was registered or the slot is missing.
+    """
+    jobs = getattr(app.state, "corlinman_default_scheduler_jobs", None)
+    if isinstance(jobs, list):
+        return list(jobs)
+    return []
+
+
+# ---------------------------------------------------------------------------
 # AppState bridge
 # ---------------------------------------------------------------------------
 
@@ -914,6 +1062,75 @@ def build_app(
                     "gateway.observability.init_failed", error=str(exc)
                 )
 
+        # W1.1: GitHub-releases update checker. Best-effort wire — a
+        # missing system module / unwritable data dir logs at WARN and
+        # the gateway boots clean; the /admin/system/* routes then
+        # return a typed 503 ``update_checker_disabled`` envelope.
+        # Scheduler wiring belongs to W2.2; here we only construct the
+        # checker + publish it onto AdminState so the admin routes can
+        # resolve it.
+        if resolved_data_dir is not None:
+            try:
+                from corlinman_server.system import (
+                    SystemUpdateCheckConfig,
+                    UpdateChecker,
+                )
+
+                cfg_dict: dict[str, Any] = {}
+                if isinstance(cfg, dict):
+                    system_section = cfg.get("system")
+                    if isinstance(system_section, dict):
+                        update_section = system_section.get("update_check")
+                        if isinstance(update_section, dict):
+                            cfg_dict = update_section
+                update_cfg = SystemUpdateCheckConfig.from_mapping(cfg_dict)
+
+                if update_cfg.enabled:
+                    update_checker = UpdateChecker(
+                        config=update_cfg,
+                        cache_path=resolved_data_dir / ".update_check.json",
+                    )
+                    if admin_b_state is not None:
+                        admin_b_state.update_checker = update_checker
+                    app.state.corlinman_update_checker = update_checker
+                    logger.info(
+                        "gateway.system.update_checker_installed",
+                        repo=update_cfg.repo,
+                        interval_hours=update_cfg.interval_hours,
+                        include_prereleases=update_cfg.include_prereleases,
+                    )
+
+                    # W2.2: register the default cron job that polls the
+                    # checker on the same rhythm as the configured
+                    # interval. The job uses a ``run_tool``-shaped
+                    # JobAction pointing at the ``system.update_check``
+                    # builtin registered in
+                    # :mod:`corlinman_server.scheduler.builtins`. We
+                    # *don't* mutate the loaded TOML — the admin
+                    # ``GET /admin/scheduler/jobs`` route reads jobs
+                    # straight off the config snapshot, so a default
+                    # we stash here surfaces only to the scheduler
+                    # runtime (once spawned) and to the test surface
+                    # via :func:`list_default_scheduler_jobs`.
+                    #
+                    # Operator override wins: when an explicit
+                    # ``[[scheduler.jobs]] name = "system.update_check"``
+                    # is present in the config we leave the default
+                    # off so the operator's cron expression / timezone
+                    # / action choice is the one the scheduler runs.
+                    _register_default_update_check_job(
+                        app, cfg, update_cfg.interval_hours
+                    )
+                else:
+                    logger.info(
+                        "gateway.system.update_checker_disabled_by_config"
+                    )
+            except Exception as exc:  # pragma: no cover — best-effort
+                logger.warning(
+                    "gateway.system.update_checker_init_failed",
+                    error=str(exc),
+                )
+
         # W5.0: open the evolution sqlite + attach the curator / signals
         # repos to admin_b (the /admin/curator/* routes read them from
         # there) and to admin_a (W4.5 applier surfaces consult admin_a's
@@ -1235,6 +1452,21 @@ def build_app(
                 app.state.corlinman_journal = None
                 app.state.corlinman_event_emitter = None
 
+            # W1.1 teardown: release the httpx client held by the
+            # update checker. Safe when none was wired.
+            update_checker = getattr(
+                app.state, "corlinman_update_checker", None
+            )
+            if update_checker is not None:
+                try:
+                    await update_checker.aclose()
+                except Exception as exc:  # pragma: no cover — defensive
+                    logger.warning(
+                        "gateway.system.update_checker_close_failed",
+                        error=str(exc),
+                    )
+                app.state.corlinman_update_checker = None
+
     app = FastAPI(lifespan=_lifespan)
     app.state.corlinman_state = state
     # ``get_app_state`` (gateway.core.state) + the runtime route handlers
@@ -1530,7 +1762,9 @@ def main(argv: list[str] | None = None) -> None:
 __all__ = [
     "DEFAULT_HOST",
     "DEFAULT_PORT",
+    "DEFAULT_UPDATE_CHECK_JOB_NAME",
     "SIGTERM_EXIT_CODE",
     "build_app",
+    "list_default_scheduler_jobs",
     "main",
 ]
