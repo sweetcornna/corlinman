@@ -1121,8 +1121,18 @@ class _CapturingLoop:
 
     captured_starts: list[Any] = []
 
-    def __init__(self, provider: Any, *, tool_result_timeout: float = 0.05) -> None:
+    def __init__(
+        self,
+        provider: Any,
+        *,
+        tool_result_timeout: float = 0.05,
+        event_emitter: Any | None = None,
+    ) -> None:
         self._provider = provider
+        # W1.3 — accept the new optional emitter so the servicer's
+        # construction call site can pass it without unpacking errors.
+        # We don't drive emit() in this stub.
+        self._event_emitter = event_emitter
 
     def feed_tool_result(self, *_args: Any, **_kwargs: Any) -> None:
         return None
