@@ -18,6 +18,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
+
+AgentSource = Literal["built-in", "user", "project"]
 
 
 @dataclass(frozen=True)
@@ -62,6 +65,13 @@ class AgentCard:
         ``provider_hint`` so the resolver can prefer this specific
         provider when ambiguity exists. ``None`` keeps the legacy
         resolution chain untouched.
+    source
+        Which tier of the stacked-directory loader this card came from.
+        ``"built-in"`` is the repo's ``agents/`` dir, ``"user"`` is
+        ``$DATA_DIR/agents/``, ``"project"`` is the current working
+        directory's ``.corlinman/agents/`` overlay. The admin CRUD
+        surface uses this to refuse deletes/mutations against built-ins
+        and to flag overlay shadows to operators.
     """
 
     name: str
@@ -73,6 +83,7 @@ class AgentCard:
     source_path: Path | None = None
     model: str | None = None
     provider: str | None = None
+    source: AgentSource = "built-in"
 
 
-__all__ = ["AgentCard"]
+__all__ = ["AgentCard", "AgentSource"]

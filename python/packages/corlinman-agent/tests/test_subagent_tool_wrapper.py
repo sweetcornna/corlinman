@@ -95,11 +95,17 @@ def test_tool_schema_shape_is_openai_compatible() -> None:
     assert fn["name"] == "subagent.spawn", "wire-stable identifier"
     params = fn["parameters"]
     assert params["type"] == "object"
-    # Required fields = the minimum the LLM must emit for a valid call.
-    assert set(params["required"]) == {"agent", "goal"}
+    # W1.1: only ``goal`` is strictly required — ``subagent_type`` /
+    # the legacy ``agent`` alias are optional (omitting both resolves to
+    # the built-in ``general-purpose`` card).
+    assert set(params["required"]) == {"goal"}
     # Optional fields documented in the schema so the LLM knows they exist.
     for key in (
-        "agent",
+        "agent",  # legacy alias retained for backwards compatibility
+        "subagent_type",
+        "description",
+        "run_in_background",
+        "model",
         "goal",
         "tool_allowlist",
         "max_wall_seconds",
@@ -219,7 +225,10 @@ async def test_dispatch_rejects_unknown_agent() -> None:
     "args_json,expected_fragment",
     [
         (b"not json at all", "args_json not JSON"),
-        (b'{"goal": "no agent"}', "missing or empty 'agent'"),
+        # W1.1: omitting both ``subagent_type`` and ``agent`` is no longer
+        # an args-invalid error — the dispatcher falls back to the
+        # ``general-purpose`` card. The ``"missing or empty 'goal'"``
+        # row below still covers the only-truly-required-field case.
         (b'{"agent": "researcher"}', "missing or empty 'goal'"),
         (b'{"agent": "researcher", "goal": "x", "tool_allowlist": "not-a-list"}',
          "'tool_allowlist' must be a list of strings"),

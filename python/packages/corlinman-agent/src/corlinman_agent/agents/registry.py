@@ -8,11 +8,23 @@ out of scope for this workstream.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import yaml  # type: ignore[import-untyped]
 
-from corlinman_agent.agents.card import AgentCard
+from corlinman_agent.agents.card import AgentCard, AgentSource
+
+logger = logging.getLogger(__name__)
+
+#: Name of the built-in fallback subagent card. W1.1: when an LLM emits a
+#: ``subagent.spawn`` call without specifying ``subagent_type`` (or with an
+#: unknown value), the dispatcher resolves to this card via
+#: :meth:`AgentCardRegistry.get_or_default`. The card is shipped at the
+#: repo's ``agents/general-purpose.yaml`` and uses ``tools_allowed: ["*"]``
+#: to mean "inherit the parent's full tool set" (see the runner's
+#: wildcard handling).
+DEFAULT_SUBAGENT_NAME: str = "general-purpose"
 
 
 class AgentCardLoadError(RuntimeError):
@@ -69,13 +81,17 @@ def _as_str_dict(value: object, field_name: str, path: Path) -> dict[str, str]:
     return out
 
 
-def _load_card(path: Path) -> AgentCard:
+def _load_card(path: Path, *, source: AgentSource = "built-in") -> AgentCard:
     """Parse one ``<name>.yaml`` file into an :class:`AgentCard`.
 
     The filename stem is authoritative for ``name`` — if the yaml body
     also carries a ``name:`` key it must agree, otherwise the file is
     rejected (protects against copy-paste mistakes where a file was
     renamed without updating its body).
+
+    ``source`` tags which tier (built-in / user / project) the file
+    came from. The default ``"built-in"`` preserves the pre-W1.2
+    behaviour for callers that still use :meth:`load_from_dir`.
     """
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -127,6 +143,7 @@ def _load_card(path: Path) -> AgentCard:
         source_path=path,
         model=model,
         provider=provider,
+        source=source,
     )
 
 
@@ -176,13 +193,169 @@ class AgentCardRegistry:
             cards[card.name] = card
         return cls(cards)
 
+    @classmethod
+    def load_from_dir_stack(
+        cls,
+        dirs: list[tuple[Path, AgentSource]],
+    ) -> AgentCardRegistry:
+        """Load cards from multiple dirs in precedence order.
+
+        Each entry is ``(path, source)`` where ``source`` is one of
+        ``"built-in"`` / ``"user"`` / ``"project"``. Later tiers win on
+        name collision so the canonical stack
+        ``[(repo, "built-in"), (user, "user"), (project, "project")]``
+        gives operators a natural override surface: bundled cards as
+        defaults, ``$DATA_DIR/agents/`` for per-install overrides, and
+        ``.corlinman/agents/`` for per-checkout overrides.
+
+        Loading rules:
+
+        * ``.yaml`` / ``.yml`` → :func:`_load_card` (existing yaml path).
+        * ``.md`` → :func:`corlinman_agent.agents.markdown.parse_markdown_card`
+          (frontmatter MD).
+        * Files starting with ``_`` or ``.`` are ignored.
+        * Parse errors in **user** / **project** overlays are *logged*
+          but do not break boot — operators editing live get warned via
+          the logs and the registry stays usable. Errors in built-in
+          tiers are also logged (no crash) so a corrupt bundled file
+          can't bring the gateway down; tests still pin the strict-mode
+          surface via :meth:`load_from_dir`.
+
+        Within a single tier, ``.yaml`` is preferred over ``.md`` when
+        both files declare the same name — the second one is logged and
+        skipped (this matches Claude Code's behaviour where the explicit
+        long form wins).
+        """
+        # Lazy import — registry.py needs to be importable without the
+        # markdown module being present (it lives next door and imports
+        # back into us for the helper coercers).
+        from corlinman_agent.agents.markdown import parse_markdown_card
+
+        cards: dict[str, AgentCard] = {}
+        # Track per-name "first source seen" so we can log clearly when
+        # a later tier shadows an earlier one (operators must know they
+        # overrode a default).
+        first_seen_source: dict[str, AgentSource] = {}
+
+        for root, source in dirs:
+            if not root.exists():
+                continue
+            if not root.is_dir():
+                logger.warning(
+                    "agent_registry.skip_non_directory path=%s source=%s",
+                    str(root),
+                    source,
+                )
+                continue
+            # Per-tier "winners by name" so the .yaml/.md tie-break is
+            # deterministic and operator-visible.
+            tier_cards: dict[str, AgentCard] = {}
+            for path in sorted(root.iterdir()):
+                if not path.is_file():
+                    continue
+                stem = path.stem
+                if not stem or stem.startswith("_") or stem.startswith("."):
+                    continue
+                suffix = path.suffix.lower()
+                if suffix in (".yaml", ".yml"):
+                    parser = "yaml"
+                elif suffix == ".md":
+                    parser = "md"
+                else:
+                    continue
+                try:
+                    if parser == "yaml":
+                        card = _load_card(path, source=source)
+                    else:
+                        card = parse_markdown_card(
+                            path.read_text(encoding="utf-8"),
+                            name=stem,
+                            source_path=path,
+                            source=source,
+                        )
+                except AgentCardLoadError as exc:
+                    logger.warning(
+                        "agent_registry.load_error path=%s source=%s reason=%s",
+                        str(exc.path),
+                        source,
+                        exc.reason,
+                    )
+                    continue
+                except OSError as exc:
+                    logger.warning(
+                        "agent_registry.read_error path=%s source=%s error=%s",
+                        str(path),
+                        source,
+                        str(exc),
+                    )
+                    continue
+                if card.name in tier_cards:
+                    logger.warning(
+                        "agent_registry.duplicate_in_tier "
+                        "agent=%s source=%s winner=%s loser=%s",
+                        card.name,
+                        source,
+                        str(tier_cards[card.name].source_path),
+                        str(path),
+                    )
+                    continue
+                tier_cards[card.name] = card
+
+            # Promote tier_cards into the merged registry; log shadows.
+            for card_name, card in tier_cards.items():
+                if card_name in cards:
+                    prior_source = first_seen_source.get(card_name, "built-in")
+                    if prior_source != source:
+                        logger.warning(
+                            "agent_registry.shadow "
+                            "agent=%s shadowing_source=%s shadowed_source=%s "
+                            "shadowing_path=%s",
+                            card_name,
+                            source,
+                            prior_source,
+                            str(card.source_path),
+                        )
+                cards[card_name] = card
+                first_seen_source.setdefault(card_name, source)
+        return cls(cards)
+
     def get(self, name: str) -> AgentCard | None:
         """Return the card for ``name`` or ``None`` if not registered."""
         return self._cards.get(name)
 
+    def get_or_default(self, name: str | None) -> AgentCard | None:
+        """Resolve ``name`` to a card, falling back to ``general-purpose``.
+
+        W1.1 — backstops the new ``subagent_type`` arg on the
+        ``subagent.spawn`` tool. When the LLM omits ``subagent_type``
+        (or passes ``None``/empty), the registry returns the built-in
+        ``general-purpose`` card. When the LLM passes a non-empty name
+        the registry returns that card if registered, otherwise ``None``
+        — letting the dispatcher emit a ``REJECTED`` /
+        ``unknown_subagent_type`` envelope rather than silently
+        substituting the default (which would mask typos).
+
+        The fallback card itself is loaded from
+        ``agents/general-purpose.yaml`` at registry load time; if that
+        file is absent (e.g. a deployment that stripped the bundled
+        cards) ``get_or_default(None)`` returns ``None`` and the
+        dispatcher's unknown-type path fires.
+        """
+        if name:
+            card = self._cards.get(name)
+            if card is not None:
+                return card
+            return None
+        return self._cards.get(DEFAULT_SUBAGENT_NAME)
+
     def names(self) -> list[str]:
         """Return all registered agent names, sorted."""
         return sorted(self._cards.keys())
+
+    def cards(self) -> list[AgentCard]:
+        """Return every loaded card, sorted by name. Used by the admin
+        list endpoint so we don't have to expose ``_cards``."""
+        return [self._cards[name] for name in sorted(self._cards.keys())]
 
     def __contains__(self, name: object) -> bool:
         return isinstance(name, str) and name in self._cards
@@ -191,4 +364,8 @@ class AgentCardRegistry:
         return len(self._cards)
 
 
-__all__ = ["AgentCardLoadError", "AgentCardRegistry"]
+__all__ = [
+    "DEFAULT_SUBAGENT_NAME",
+    "AgentCardLoadError",
+    "AgentCardRegistry",
+]

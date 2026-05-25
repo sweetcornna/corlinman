@@ -10,12 +10,13 @@ everything else (``{{var.*}}``, ``{{skill.*}}``, dynamic tokens, ...).
 
 from __future__ import annotations
 
-from corlinman_agent.agents.card import AgentCard
+from corlinman_agent.agents.card import AgentCard, AgentSource
 from corlinman_agent.agents.expander import (
     AgentCircularReferenceError,
     AgentExpander,
     ExpansionResult,
 )
+from corlinman_agent.agents.markdown import parse_markdown_card
 from corlinman_agent.agents.registry import AgentCardLoadError, AgentCardRegistry
 
 __all__ = [
@@ -24,5 +25,7 @@ __all__ = [
     "AgentCardRegistry",
     "AgentCircularReferenceError",
     "AgentExpander",
+    "AgentSource",
     "ExpansionResult",
+    "parse_markdown_card",
 ]

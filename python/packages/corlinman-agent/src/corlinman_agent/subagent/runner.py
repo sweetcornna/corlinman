@@ -87,6 +87,15 @@ SUBAGENT_SPAWN_MANY_TOOL: str = "subagent.spawn_many"
 #: can branch on the exact reason the child was refused.
 TOOL_ALLOWLIST_ESCALATION_ERROR: str = "tool_allowlist_escalation"
 
+#: Wildcard token honoured *only* on an :class:`AgentCard.tools_allowed`
+#: entry. When the card's list contains exactly ``"*"`` the runner treats
+#: it as "inherit the parent's full tool set" (no card-side narrowing).
+#: Caller-supplied ``TaskSpec.tool_allowlist`` is **never** interpreted as
+#: a wildcard — caller-side allowlists stay strict so a malicious /
+#: confused parent LLM can't widen the child's reach beyond what its
+#: card declared.
+WILDCARD_TOOL: str = "*"
+
 if TYPE_CHECKING:  # pragma: no cover - import only for type checkers
     # Avoids forcing a runtime import of corlinman-persona for callers
     # who pass `persona_store=None`. The pyproject lists corlinman-persona
@@ -109,6 +118,7 @@ async def run_child(
     parent_tools: Sequence[dict[str, Any]] | None = None,
     max_depth: int = DEFAULT_MAX_DEPTH,
     event_emitter: Any | None = None,
+    model_override: str | None = None,
 ) -> TaskResult:
     """Drive one child reasoning loop and return its :class:`TaskResult`.
 
@@ -173,6 +183,15 @@ async def run_child(
         Defaults to :data:`api.DEFAULT_MAX_DEPTH` so unit tests don't
         need to thread the policy through; production callers (iter 8)
         pass the live policy value.
+    model_override
+        W1.1 — when set, overrides both ``agent_card.model`` and the
+        empty placeholder in :class:`ChatStart.model` so the child's
+        provider routing follows the parent's explicit choice. When
+        ``None`` the card's own ``model`` binding takes effect; when
+        the card has no model either, ``ChatStart.model`` stays
+        ``""`` (the legacy placeholder — production callers replace
+        this from the parent's resolved alias at the gateway layer).
+        Precedence: ``model_override`` > ``agent_card.model`` > ``""``.
 
     Returns
     -------
@@ -210,6 +229,7 @@ async def run_child(
     try:
         child_tool_names = _filter_tools_for_child(
             parent_tool_names=parent_tool_names,
+            card_tools_allowed=agent_card.tools_allowed,
             requested_allowlist=task.tool_allowlist,
             child_depth=child_ctx.depth,
             max_depth=max_depth,
@@ -251,11 +271,21 @@ async def run_child(
             )
 
     messages = _build_child_messages(agent_card, task)
+    # W1.1: resolve the child's model with the explicit precedence
+    # documented in the docstring — caller override > card binding >
+    # legacy empty placeholder. The gateway / provider router rewrites
+    # ``""`` from the parent's resolved alias as it does today, so the
+    # third branch is byte-compat with pre-W1.1 callers.
+    effective_model: str = (
+        model_override
+        if model_override
+        else (agent_card.model or "")
+    )
     chat_start = ChatStart(
         # ``model=""`` is a placeholder — real provider routing wires
         # this from the parent's resolved model alias in iter 8. Tests
         # supply a fake provider that ignores the model field.
-        model="",
+        model=effective_model,
         messages=messages,
         # Iter 7: filtered+pruned schema list. Empty when the parent
         # had no tools, when ``task.tool_allowlist == []`` (the explicit
@@ -442,21 +472,48 @@ class _ToolAllowlistEscalationError(Exception):
 def _filter_tools_for_child(
     *,
     parent_tool_names: frozenset[str],
+    card_tools_allowed: list[str] | None = None,
     requested_allowlist: list[str] | None,
     child_depth: int,
     max_depth: int,
 ) -> frozenset[str]:
     """Compute the child's effective tool-name set.
 
-    Implements the design § "Tool exposure" rules verbatim:
+    Two narrowing layers stack on top of ``parent_tool_names`` — the
+    *card's* declared ``tools_allowed`` (W1.1) and the *caller's*
+    per-spawn ``requested_allowlist``. The result is the intersection
+    of all three, then the depth-1 self-prune.
 
-    * ``requested_allowlist is None`` (the default) → child inherits
-      ``parent_tool_names`` verbatim.
-    * ``requested_allowlist == []`` → empty set; pure LLM call. Distinct
-      from ``None`` so the parent can opt the child out of all tools
-      without the runner inferring "they meant inherit".
-    * non-empty list → must be a subset of ``parent_tool_names``;
-      anything outside raises :class:`_ToolAllowlistEscalationError`.
+    Layer 1 — card narrowing (W1.1):
+
+    * ``card_tools_allowed`` is ``None`` or ``[]`` (legacy / built-in
+      defaults) → no card-side narrowing; child can see every tool
+      the parent holds. Preserves the pre-W1.1 contract where the
+      runner ignored the card's ``tools_allowed`` field entirely.
+    * ``card_tools_allowed == ["*"]`` (W1.1 wildcard sentinel) →
+      explicit "inherit parent's full set". Same effective behaviour
+      as the legacy default, but the card *declares* the intent so an
+      operator reading the YAML knows the agent is meant to inherit.
+    * ``card_tools_allowed`` non-empty without the wildcard → narrow
+      ``parent_tool_names`` to the intersection. A tool the card
+      lists but the parent doesn't hold is silently dropped (the card
+      is documenting "I'd like this tool if the parent has it");
+      escalation is *only* a concern at layer 2.
+
+    Layer 2 — caller's :class:`TaskSpec.tool_allowlist` (existing):
+
+    * ``requested_allowlist is None`` (the default) → no further
+      narrowing; child sees the layer-1 result.
+    * ``requested_allowlist == []`` → empty set; pure LLM call.
+      Distinct from ``None`` so the parent can opt the child out of
+      all tools without the runner inferring "they meant inherit".
+    * non-empty list → must be a subset of *layer 1's* result; any
+      name outside raises :class:`_ToolAllowlistEscalationError`.
+      The caller-side allowlist is **never** allowed to contain the
+      wildcard token — a parent LLM can't widen the child's reach
+      beyond what the card declared. Wildcard from the caller is
+      treated as an unknown tool name and rejected via the standard
+      escalation path.
 
     After resolution, prune ``subagent.spawn`` when the child is at the
     deepest depth that could still spawn a grandchild
@@ -469,16 +526,34 @@ def _filter_tools_for_child(
     payload may capture this set verbatim, and we don't want callers
     accidentally mutating that record.
     """
+    # ── Layer 1: card narrowing (W1.1). ──────────────────────────────
+    if not card_tools_allowed:
+        # Legacy / empty card list — inherit verbatim. Matches
+        # pre-W1.1 behaviour so existing cards (which never had the
+        # field consulted at runtime) keep working.
+        card_effective: set[str] = set(parent_tool_names)
+    elif WILDCARD_TOOL in card_tools_allowed:
+        # Wildcard on the card — explicit inherit. Other entries
+        # alongside the ``"*"`` are ignored (a card that says
+        # ``["*", "foo"]`` already gets "foo" via the parent's set;
+        # the wildcard alone is the canonical form).
+        card_effective = set(parent_tool_names)
+    else:
+        # Explicit narrowing — intersect with parent's set so a card
+        # advertising a tool the parent doesn't hold is silently
+        # dropped (the parent's set is the hard ceiling).
+        card_effective = set(card_tools_allowed) & set(parent_tool_names)
+
+    # ── Layer 2: caller's per-spawn allowlist (existing). ────────────
     if requested_allowlist is None:
-        # Inherit: copy the parent's set so the prune below doesn't
-        # mutate the parent's view (frozenset is immutable but the call
-        # site might not realise we already returned that exact object).
-        effective = set(parent_tool_names)
+        # Inherit layer-1: copy so the prune below doesn't mutate the
+        # caller's view.
+        effective = set(card_effective)
     else:
         requested = set(requested_allowlist)
         # Escalation check first — empty list is a legal subset of every
         # set so it falls straight through to the prune step.
-        offending = requested - parent_tool_names
+        offending = requested - card_effective
         if offending:
             raise _ToolAllowlistEscalationError(offending)
         effective = requested
@@ -679,6 +754,7 @@ __all__ = [
     "SUBAGENT_SPAWN_MANY_TOOL",
     "SUBAGENT_SPAWN_TOOL",
     "TOOL_ALLOWLIST_ESCALATION_ERROR",
+    "WILDCARD_TOOL",
     "replace",
     "run_child",
 ]

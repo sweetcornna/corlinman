@@ -53,6 +53,7 @@ import asyncio
 import json
 from collections.abc import Callable, Sequence
 from contextlib import nullcontext
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -85,6 +86,21 @@ logger = structlog.get_logger(__name__)
 #: on a stable string and the iter-9 hook event payload can carry it
 #: verbatim.
 AGENT_NOT_FOUND_ERROR: str = "agent_not_found"
+
+#: Sentinel error returned when ``args.subagent_type`` (W1.1) refers to
+#: an unknown card *and* the registry has no ``general-purpose``
+#: fallback wired. Distinct from :data:`AGENT_NOT_FOUND_ERROR` so the
+#: parent's prompt can tell apart "the legacy ``agent`` field referred
+#: to a missing card" from "the Claude-Code-style ``subagent_type``
+#: referred to a missing card without a fallback".
+UNKNOWN_SUBAGENT_TYPE_ERROR: str = "unknown_subagent_type"
+
+#: Sentinel error returned when the LLM sets ``run_in_background=true``
+#: before the W1.3 background-dispatch path lands. The schema accepts
+#: the field so the model's grammar matches Claude Code's; the backend
+#: rejects with this error until the async store / completion polling
+#: surface is in place.
+BACKGROUND_NOT_IMPLEMENTED_ERROR: str = "run_in_background_not_implemented"
 
 #: Sentinel error returned when the JSON args fail validation. The
 #: details (which field, what type) ride in the error message verbatim.
@@ -127,19 +143,14 @@ def subagent_spawn_tool_schema(
                 "context (fresh persona, fresh session) with read-only "
                 "access to the parent's memory federation. Use for "
                 "research-and-summarise fan-out, multi-source queries, "
-                "or fan-out evaluation where context isolation matters."
+                "or fan-out evaluation where context isolation matters. "
+                "Pass ``subagent_type`` to pick a pre-configured card "
+                "from the registry; omit for the built-in "
+                "``general-purpose`` agent."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "agent": {
-                        "type": "string",
-                        "description": (
-                            "Name of the registered agent card to "
-                            "spawn (filename stem under the agents/ "
-                            "directory)."
-                        ),
-                    },
                     "goal": {
                         "type": "string",
                         "description": (
@@ -147,6 +158,61 @@ def subagent_spawn_tool_schema(
                             "as its only message. Should be self-"
                             "contained — the child cannot see the "
                             "parent's chat history."
+                        ),
+                    },
+                    "subagent_type": {
+                        "type": "string",
+                        "description": (
+                            "Optional. Registry key of a pre-configured "
+                            "agent card. Omit (or pass empty) for the "
+                            "built-in ``general-purpose`` fallback. An "
+                            "explicit value that does not resolve in "
+                            "the registry rejects the spawn with "
+                            "error=unknown_subagent_type."
+                        ),
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": (
+                            "Optional 3-5 word task label, surfaced "
+                            "in the activity panel / observability UI. "
+                            "Has no effect on the child's reasoning "
+                            "loop — it's a human-readable handle the "
+                            "frontend renders alongside the spawn "
+                            "event."
+                        ),
+                    },
+                    "run_in_background": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": (
+                            "When true, dispatch asynchronously and "
+                            "return a request_id immediately so the "
+                            "parent can keep reasoning while the "
+                            "child runs. NOT YET IMPLEMENTED — "
+                            "currently rejects with "
+                            "error=run_in_background_not_implemented; "
+                            "background dispatch lands in W1.3."
+                        ),
+                    },
+                    "model": {
+                        "type": "string",
+                        "description": (
+                            "Optional model alias override. When set, "
+                            "the child uses this model instead of the "
+                            "card's bound model (or the parent's "
+                            "default if the card has no binding). "
+                            "Useful for fan-out where one sibling "
+                            "wants a cheaper model than the others."
+                        ),
+                    },
+                    "agent": {
+                        "type": "string",
+                        "description": (
+                            "DEPRECATED — legacy alias for "
+                            "``subagent_type``. Prefer "
+                            "``subagent_type`` for new callers. When "
+                            "both are passed, ``subagent_type`` wins."
                         ),
                     },
                     "tool_allowlist": {
@@ -187,7 +253,7 @@ def subagent_spawn_tool_schema(
                         ),
                     },
                 },
-                "required": ["agent", "goal"],
+                "required": ["goal"],
                 "additionalProperties": False,
             },
         },
@@ -226,6 +292,7 @@ async def dispatch_subagent_spawn(
     event_emitter: Any | None = None,
     parent_turn_id: str | None = None,
     parent_session_key: str | None = None,
+    subagent_dispatcher: Any | None = None,
 ) -> str:
     """Translate one ``subagent.spawn`` tool call into a JSON
     :class:`TaskResult` envelope.
@@ -284,7 +351,7 @@ async def dispatch_subagent_spawn(
     """
     # ── 1. Parse + validate the LLM's args. ──────────────────────────
     try:
-        spec, agent_name = _parse_args(args_json)
+        parsed = _parse_args(args_json)
     except _ArgsInvalidError as exc:
         logger.warning(
             "subagent.dispatch.args_invalid",
@@ -298,22 +365,85 @@ async def dispatch_subagent_spawn(
                 error=f"{ARGS_INVALID_ERROR}: {exc.message}",
             )
         )
+    spec = parsed.spec
 
-    # ── 2. Resolve the agent card. ───────────────────────────────────
-    card = agent_registry.get(agent_name)
+    # ── 1b. Background dispatch (W1.3). ──────────────────────────────
+    # When the LLM asks for ``run_in_background=true`` and a dispatcher
+    # is wired by the caller (gateway publishes one onto AdminState; the
+    # tool-call path threads it through here), we register the request
+    # in the background store and return an ``async_launched``-shaped
+    # envelope immediately so the parent's reasoning loop keeps going.
+    # The actual child runs under an asyncio.Task and surfaces a
+    # synthetic user-notification on terminal — Claude Code parity.
+    # Falls back to the legacy ``run_in_background_not_implemented``
+    # rejection when the dispatcher isn't wired (degraded boot / test
+    # path that hasn't installed one).
+    if parsed.run_in_background:
+        if subagent_dispatcher is None:
+            logger.info(
+                "subagent.dispatch.background_dispatcher_unavailable",
+                session=parent_ctx.parent_session_key,
+                subagent_type=parsed.subagent_type,
+            )
+            return _result_json(
+                _rejected_result(
+                    parent_ctx=parent_ctx,
+                    reason=FinishReason.REJECTED,
+                    error=BACKGROUND_NOT_IMPLEMENTED_ERROR,
+                )
+            )
+        return await _dispatch_via_background(
+            parsed=parsed,
+            parent_ctx=parent_ctx,
+            agent_registry=agent_registry,
+            subagent_dispatcher=subagent_dispatcher,
+            child_seq=child_seq,
+        )
+
+    # ── 2. Resolve the agent card. W1.1 ──────────────────────────────
+    # ``get_or_default`` returns the explicit card when the LLM passed
+    # a known ``subagent_type`` / ``agent`` value, the registry's
+    # ``general-purpose`` fallback when the field is empty/absent, or
+    # ``None`` when an *explicit* value didn't resolve (the dispatcher
+    # then emits ``unknown_subagent_type`` so the LLM can correct the
+    # typo rather than silently getting the default card).
+    card = agent_registry.get_or_default(parsed.subagent_type)
     if card is None:
+        if parsed.subagent_type:
+            # Explicit but unknown. Sentinel choice tracks which field
+            # the LLM used so callers built against either schema get
+            # the error string they branch on:
+            #   * legacy ``agent`` field  → ``agent_not_found``
+            #   * W1.1 ``subagent_type`` → ``unknown_subagent_type``
+            if parsed.used_legacy_agent_field:
+                error = f"{AGENT_NOT_FOUND_ERROR}: {parsed.subagent_type!r}"
+            else:
+                error = f"{UNKNOWN_SUBAGENT_TYPE_ERROR}: {parsed.subagent_type!r}"
+            requested_for_log = parsed.subagent_type
+        else:
+            # Caller omitted the type AND the fallback card isn't
+            # registered. Surfaces as the legacy ``agent_not_found``
+            # so dashboards / operators see a single error class for
+            # "missing card" rather than splitting the signal.
+            error = f"{AGENT_NOT_FOUND_ERROR}: 'general-purpose'"
+            requested_for_log = "<default>"
         logger.info(
             "subagent.dispatch.agent_not_found",
             session=parent_ctx.parent_session_key,
-            requested=agent_name,
+            requested=requested_for_log,
         )
         return _result_json(
             _rejected_result(
                 parent_ctx=parent_ctx,
                 reason=FinishReason.REJECTED,
-                error=f"{AGENT_NOT_FOUND_ERROR}: {agent_name!r}",
+                error=error,
             )
         )
+    # The resolved card's name is what threads into the child's
+    # ``parent_agent_id`` mangling (``::<card>::<seq>``) so a fallback
+    # to ``general-purpose`` is observable in the child's id rather
+    # than masked behind whatever the LLM typed.
+    agent_name = card.name
 
     # ── 3. Clamp request-side budgets to policy ceiling. ─────────────
     if (
@@ -391,6 +521,11 @@ async def dispatch_subagent_spawn(
                 parent_tools=parent_tools,
                 max_depth=max_depth,
                 event_emitter=_child_emitter,
+                # W1.1: caller's ``model`` arg (when present) wins over
+                # the card's binding; ``None`` lets the runner fall
+                # back to ``agent_card.model`` and then to the legacy
+                # gateway-substituted empty placeholder.
+                model_override=parsed.model,
             )
     except Exception as exc:
         logger.exception(
@@ -545,13 +680,43 @@ class _ArgsInvalidError(Exception):
         self.message = message
 
 
-def _parse_args(args_json: bytes | str) -> tuple[TaskSpec, str]:
+@dataclass(slots=True, frozen=True)
+class _ParsedSpawnArgs:
+    """Internal record for the parsed ``subagent.spawn`` tool-call args.
+
+    W1.1 — extending the original ``(spec, agent_name)`` tuple to carry
+    the four Claude-Code-style fields without churning every call site.
+    The dispatcher destructures this; tests can construct one directly
+    if needed.
+    """
+
+    spec: TaskSpec
+    #: Resolved subagent registry key. ``None`` → caller omitted both
+    #: ``subagent_type`` and the legacy ``agent`` field; the dispatcher
+    #: falls back to the registry's ``general-purpose`` card.
+    subagent_type: str | None
+    description: str | None
+    run_in_background: bool
+    model: str | None
+    #: ``True`` when the LLM used the deprecated ``agent`` field instead
+    #: of (or in addition to) ``subagent_type``. The dispatcher uses
+    #: this to choose between the legacy ``agent_not_found`` error and
+    #: the W1.1 ``unknown_subagent_type`` error so callers built
+    #: against either schema get the error sentinel they branch on.
+    used_legacy_agent_field: bool
+
+
+def _parse_args(args_json: bytes | str) -> _ParsedSpawnArgs:
     """Parse + validate the raw ``args_json`` from the tool call.
 
-    Returns a ``(spec, agent_name)`` pair. The agent name lives outside
-    :class:`TaskSpec` because :class:`TaskSpec` is the *child's* request
-    contract (no awareness of agent-card identity); the *spawn-tool's*
-    contract is the union of "what to spawn" + "how to spawn it".
+    Returns a :class:`_ParsedSpawnArgs` record. Field resolution:
+
+    * ``subagent_type`` is the new canonical handle (Claude-Code shape).
+    * ``agent`` is the legacy alias from the pre-W1.1 schema. When both
+      are supplied, ``subagent_type`` wins; the legacy field is kept
+      so existing trained-model prompts don't have to re-emit.
+    * ``goal`` is the only hard requirement — every other field is
+      optional with a documented default.
     """
     if isinstance(args_json, (bytes, bytearray)):
         try:
@@ -571,12 +736,47 @@ def _parse_args(args_json: bytes | str) -> tuple[TaskSpec, str]:
             f"args_json must be a JSON object, got {type(raw).__name__}"
         )
 
-    agent = raw.get("agent")
-    if not isinstance(agent, str) or not agent:
-        raise _ArgsInvalidError("missing or empty 'agent' field")
     goal = raw.get("goal")
     if not isinstance(goal, str) or not goal:
         raise _ArgsInvalidError("missing or empty 'goal' field")
+
+    # W1.1: ``subagent_type`` is the new canonical handle; ``agent`` is
+    # the legacy alias. Either may be omitted — the dispatcher falls
+    # back to the registry's ``general-purpose`` card when both are
+    # absent.
+    subagent_type_raw = raw.get("subagent_type")
+    legacy_agent = raw.get("agent")
+    if subagent_type_raw is not None and not isinstance(subagent_type_raw, str):
+        raise _ArgsInvalidError("'subagent_type' must be a string when provided")
+    if legacy_agent is not None and not isinstance(legacy_agent, str):
+        raise _ArgsInvalidError("'agent' must be a string when provided")
+    # Prefer ``subagent_type`` when both are passed. Empty strings are
+    # treated as omitted so the LLM can send ``{"subagent_type": ""}``
+    # to explicitly request the default card without resorting to
+    # JSON-null gymnastics.
+    used_legacy_agent_field = False
+    if isinstance(subagent_type_raw, str) and subagent_type_raw:
+        subagent_type: str | None = subagent_type_raw
+    elif isinstance(legacy_agent, str) and legacy_agent:
+        subagent_type = legacy_agent
+        used_legacy_agent_field = True
+    else:
+        subagent_type = None
+
+    description_raw = raw.get("description")
+    if description_raw is not None and not isinstance(description_raw, str):
+        raise _ArgsInvalidError("'description' must be a string when provided")
+    description: str | None = description_raw if description_raw else None
+
+    run_in_background_raw = raw.get("run_in_background", False)
+    if not isinstance(run_in_background_raw, bool):
+        raise _ArgsInvalidError("'run_in_background' must be a boolean when provided")
+    run_in_background: bool = run_in_background_raw
+
+    model_raw = raw.get("model")
+    if model_raw is not None and not isinstance(model_raw, str):
+        raise _ArgsInvalidError("'model' must be a string when provided")
+    model: str | None = model_raw if model_raw else None
 
     # Optional fields — validate type, fall through to defaults.
     tool_allowlist = raw.get("tool_allowlist")
@@ -608,7 +808,14 @@ def _parse_args(args_json: bytes | str) -> tuple[TaskSpec, str]:
         max_tool_calls=max_tool_calls,
         extra_context=dict(extra_context),
     )
-    return spec, agent
+    return _ParsedSpawnArgs(
+        spec=spec,
+        subagent_type=subagent_type,
+        description=description,
+        run_in_background=run_in_background,
+        model=model,
+        used_legacy_agent_field=used_legacy_agent_field,
+    )
 
 
 def _rejected_result(
@@ -634,6 +841,141 @@ def _rejected_result(
         finish_reason=reason,
         error=error,
     )
+
+
+async def _dispatch_via_background(
+    *,
+    parsed: _ParsedSpawnArgs,
+    parent_ctx: ParentContext,
+    agent_registry: AgentCardRegistry,
+    subagent_dispatcher: Any,
+    child_seq: int,
+) -> str:
+    """Register the spawn with the background dispatcher and return the
+    ``async_launched`` envelope immediately.
+
+    W1.3 — Claude Code parity. The parent model sees an immediate
+    response carrying the ``request_id``, can keep going on its current
+    turn, and observes the child's eventual completion via the synthetic
+    user-role notification the dispatcher injects into the parent
+    session's journal on terminal state.
+
+    Resolution rules:
+
+    * ``subagent_type`` resolves through the registry just like the
+      foreground path. An unknown type rejects with the same
+      ``unknown_subagent_type`` / ``agent_not_found`` sentinel so the
+      LLM's branching prompt is shape-stable across foreground vs
+      background calls.
+    * Tenant-quota refusal surfaces as
+      ``finish_reason=REJECTED, error="supervisor: tenant_quota_exceeded"``
+      so the LLM sees the same sentinel string the foreground path uses.
+    """
+    import uuid
+
+    # Lazy import — corlinman-agent intentionally has no compile-time
+    # dependency on corlinman-server (same rationale as
+    # :func:`_make_bubble_emitter`). When the dispatcher *was* wired,
+    # the corlinman_server.system.subagent module is necessarily on
+    # the import path; a degraded boot without it would have left
+    # ``subagent_dispatcher=None`` and we'd never get here.
+    try:
+        from corlinman_server.system.subagent import (  # noqa: PLC0415
+            SubagentRequest,
+            TenantQuotaExceeded,
+        )
+    except ImportError:
+        return _result_json(
+            _rejected_result(
+                parent_ctx=parent_ctx,
+                reason=FinishReason.REJECTED,
+                error=BACKGROUND_NOT_IMPLEMENTED_ERROR,
+            )
+        )
+
+    # Card resolution — mirrors the foreground path. We don't need the
+    # full card object here (the dispatcher's run_child_factory does the
+    # second lookup at execution time); we only need to know whether the
+    # name is valid so the rejection envelope can carry the right
+    # sentinel.
+    card = agent_registry.get_or_default(parsed.subagent_type)
+    if card is None:
+        sentinel = (
+            AGENT_NOT_FOUND_ERROR
+            if parsed.used_legacy_agent_field
+            else UNKNOWN_SUBAGENT_TYPE_ERROR
+        )
+        return _result_json(
+            _rejected_result(
+                parent_ctx=parent_ctx,
+                reason=FinishReason.REJECTED,
+                error=f"{sentinel}: {parsed.subagent_type!r}",
+            )
+        )
+
+    request_id = str(uuid.uuid4())
+    import time as _time
+
+    req = SubagentRequest(
+        request_id=request_id,
+        parent_session_key=parent_ctx.parent_session_key,
+        parent_agent_id=parent_ctx.parent_agent_id,
+        subagent_type=card.name,
+        goal=parsed.spec.goal,
+        description=parsed.description,
+        requested_at=int(_time.time() * 1000),
+        requested_by=None,
+    )
+
+    try:
+        status = await subagent_dispatcher.dispatch_async(req)
+    except TenantQuotaExceeded as exc:
+        return _result_json(
+            _rejected_result(
+                parent_ctx=parent_ctx,
+                reason=FinishReason.REJECTED,
+                error=f"supervisor: tenant_quota_exceeded ({exc.active}/{exc.ceiling})",
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "subagent.dispatch.background_dispatch_failed",
+            session=parent_ctx.parent_session_key,
+            subagent_type=card.name,
+        )
+        return _result_json(
+            _rejected_result(
+                parent_ctx=parent_ctx,
+                reason=FinishReason.REJECTED,
+                error=f"background_dispatch_failed: {exc}",
+            )
+        )
+
+    # ``async_launched`` envelope — matches Claude Code's shape. The
+    # parent model is trained to look for ``status`` here.
+    payload = {
+        "status": "async_launched",
+        "request_id": status.request_id,
+        "subagent_type": card.name,
+        "description": parsed.description,
+        "child_session_key": status.child_session_key,
+        "state": status.state,
+    }
+    # We tuck the JSON into the ``output_text`` field of a synthetic
+    # TaskResult so the parent's reasoning loop folds it into a
+    # ``role="tool"`` message the same way as the foreground path. The
+    # parent's prompt branches on the ``status`` field inside the JSON.
+    placeholder = TaskResult(
+        output_text=json.dumps(payload),
+        tool_calls_made=[],
+        child_session_key=status.child_session_key or "",
+        child_agent_id=card.name,
+        elapsed_ms=0,
+        finish_reason=FinishReason.STOP,
+        error=None,
+    )
+    _ = child_seq  # silenced — kept for future per-child registry seq use
+    return _result_json(placeholder)
 
 
 def _result_json(result: TaskResult) -> str:
@@ -953,7 +1295,9 @@ def _parse_spawn_many_args(
 __all__ = [
     "AGENT_NOT_FOUND_ERROR",
     "ARGS_INVALID_ERROR",
+    "BACKGROUND_NOT_IMPLEMENTED_ERROR",
     "SUBAGENT_SPAWN_MANY_MAX_TASKS",
+    "UNKNOWN_SUBAGENT_TYPE_ERROR",
     "SupervisorAcquire",
     "dispatch_subagent_spawn",
     "dispatch_subagent_spawn_many",
