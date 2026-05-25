@@ -4,6 +4,76 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — `/admin/system` + auto-update detection
+
+> The gateway now knows when a new release ships and tells the operator.
+> A 30s-polling `<UpdateBubble>` in the admin TopNav lights up amber when
+> the latest GitHub release tag outranks `importlib.metadata.version`;
+> clicking it lands on `/admin/system`, which renders sanitized release
+> notes plus copy-paste upgrade commands (Native / Docker / Docker + QQ).
+> No in-app one-click upgrade — the gateway can't sudo into the host —
+> but the operator-driven flow is now first-class instead of "check the
+> repo by hand." Plan at
+> [`docs/PLAN_AUTO_UPDATE.md`](docs/PLAN_AUTO_UPDATE.md); operator doc
+> at [`docs/system-updates.md`](docs/system-updates.md).
+
+### Added
+
+- **`<UpdateBubble>` in the admin TopNav** — quietly polls
+  `/admin/system/info` every 30s; renders an amber chip with the new
+  tag when one is available; dismissable per-tag via `localStorage`
+  (the chip stays hidden for that tag, reappears on the next release).
+- **`/admin/system` page** — three cards: current vs. latest version
+  with deploy-mode hint (`docker` / `native`, sniffed from env),
+  sanitized release-notes markdown (`react-markdown` + `rehype-
+  sanitize`), and tabbed upgrade commands (Native / Docker / Docker +
+  QQ) with copy buttons. Sidebar entry **System** under the settings
+  group (icon: `MonitorCog`).
+- **Three admin endpoints** —
+  `GET /admin/system/info` (current `UpdateStatus` + deploy mode),
+  `POST /admin/system/check-updates` (force-poll, server-side rate-
+  limited to 1/min, returns fresh `UpdateStatus`),
+  `GET /admin/system/upgrade-commands` (returns
+  `{native, docker, docker_with_qq}` strings pre-filled with the
+  target tag).
+- **`UpdateChecker`** — polls
+  `api.github.com/repos/ymylive/corlinman/releases/latest` with stored
+  `If-None-Match` so a no-change poll costs zero against the GitHub
+  rate-limit budget. 6h TTL, semver compare via
+  `packaging.version.Version`, optional `CORLINMAN_GITHUB_TOKEN` for
+  higher rate limits, prerelease channel opt-in.
+- **`[system.update_check]` config stanza** in
+  `docs/config.example.toml` — `enabled` / `interval_hours` /
+  `include_prereleases` / `repo` / `github_token`, fully commented.
+- **`system.update_check` scheduler builtin** — registered with the
+  scheduler tool registry but pending a lifespan `scheduler.spawn()`
+  wire-up; in the meantime `<UpdateBubble />`'s 30s poll and the on-
+  page-load fetch on `/admin/system` keep detection live whenever an
+  admin tab is open.
+- **30 i18n keys** across `system.*` and `update.bubble.*` (`en` +
+  `zh-CN`).
+- **`docs/system-updates.md`** — operator-facing doc covering
+  configuration, security model, GitHub rate-limit math, air-gapped
+  deploys, and troubleshooting. `docs/quickstart.md` cross-links it
+  from the "Watching the agent work" section.
+
+### Changed
+
+- **BREAKING: version unified to `1.1.1`** across the workspace
+  `pyproject.toml`, `corlinman-server`'s own `pyproject.toml`, and
+  `ui/package.json`. The git tag was already `v1.1.1`; this commit
+  collapses the three previous version-of-truth sources so
+  `importlib.metadata.version("corlinman-server")` matches the
+  deployed tag — which the update checker depends on for the
+  current-vs.-latest comparison to be meaningful.
+- **`<ReleaseNotes>` renders GitHub release bodies through
+  `rehype-sanitize`** — `<script>`, `javascript:` URLs, inline event
+  handlers (`onclick=`, …), and `<iframe>`/`<object>`/`<embed>` are
+  stripped; a unit test asserts a `<script>` payload in the release
+  body doesn't reach the DOM.
+
+---
+
 ## [Unreleased] — task observability overhaul
 
 > Makes the agent's work visible. Today nobody can see what tools fired

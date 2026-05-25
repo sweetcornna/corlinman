@@ -143,6 +143,10 @@ disappears once the provider returns a billed figure.
 See [Observability](observability.md) for the full event taxonomy and
 API contract.
 
+Want to know when a new version drops? `/admin/system` polls GitHub and
+surfaces a TopNav bubble when an upgrade is available — see
+[system-updates](system-updates.md).
+
 ---
 
 ## Choose your setup path
