@@ -128,7 +128,12 @@ from corlinman_server.agent_journal import (
 from corlinman_server.gateway.services.chat_service import (
     _BUILTIN_OBSERVATION_PREFIX,
 )
-from corlinman_server.runner_pool import PoolStats, RunnerPool
+from corlinman_server.runner_pool import (
+    DispatchContext as _DispatchCtx,
+    PoolStats,
+    RunnerPool,
+    dispatch_with_observability as _dispatch_with_obs,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -637,6 +642,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         context_assembler: Any | None = None,
         hook_bus: Any | None = None,
         permission_gate: PermissionGate | None = None,
+        event_emitter: Any | None = None,
     ) -> None:
         """Construct the servicer.
 
@@ -672,9 +678,15 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # per-chat path itself still delegates to the provider
         # registry's existing memoisation — the pool is the lever for
         # per-tenant / sandboxed providers in v0.8+.
+        # W1.3 — typed observability emitter the gateway lifecycle
+        # constructs once and shares with every reasoning loop / pool /
+        # subagent supervisor. ``None`` keeps the legacy yield-only path
+        # active (no SSE / journal fan-out) for tests + degraded boots.
+        self._event_emitter: Any | None = event_emitter
         self._provider_pool: RunnerPool[CorlinmanProvider] = RunnerPool(
             max_warm_per_key=int(os.environ.get("CORLINMAN_RUNNER_POOL_WARM", "2")),
             max_active_total=int(os.environ.get("CORLINMAN_RUNNER_POOL_MAX", "8")),
+            event_emitter=event_emitter,
         )
         # Automatic conversation memory. Lazily opened on first chat turn;
         # ``False`` once an init failure has been logged so we don't retry
@@ -1060,7 +1072,11 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # ToolResult frame back. The servicer is now the real feedback
         # channel — the ``awaiting_plugin_runtime`` placeholder short-circuit
         # still protects us against runaway loops.
-        loop = ReasoningLoop(provider, tool_result_timeout=30.0)
+        loop = ReasoningLoop(
+            provider,
+            tool_result_timeout=30.0,
+            event_emitter=self._event_emitter,
+        )
 
         inbound_task = asyncio.create_task(
             _pump_inbound(request_iterator, loop),
@@ -1124,8 +1140,43 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                             args=event.args_json.decode("utf-8", "replace")[:200],
                         )
                         _dispatch_started_at = time.monotonic()
-                        result_json = await self._dispatch_builtin(
-                            event, start, provider, file_state
+                        # W3.1 — emit ToolStateRunning before dispatch,
+                        # ToolStateHeartbeat every 10s while running,
+                        # ToolStateCompleted after. Pass-through when
+                        # no emitter is wired so the legacy flow keeps
+                        # working unchanged. ``summarise_result`` reuses
+                        # the result-error parsing the surrounding code
+                        # does below; we mirror it inline here so the
+                        # ToolStateCompleted envelope carries the right
+                        # ``is_error`` flag at emit time.
+                        _ds_ctx = _DispatchCtx(
+                            turn_id=loop.turn_id,
+                            session_key=loop.session_key,
+                            emitter=self._event_emitter,
+                        )
+
+                        def _summarise(rj: str) -> tuple[str, bool]:
+                            is_err = False
+                            try:
+                                parsed = json.loads(rj or "{}")
+                                if isinstance(parsed, dict) and (
+                                    parsed.get("error")
+                                    or parsed.get("is_error")
+                                ):
+                                    is_err = True
+                            except (json.JSONDecodeError, TypeError, ValueError):
+                                pass
+                            return rj, is_err
+
+                        result_json = await _dispatch_with_obs(
+                            _ds_ctx,
+                            tool_call_id=event.call_id,
+                            tool_name=event.tool,
+                            args_json=event.args_json,
+                            invoke=lambda: self._dispatch_builtin(
+                                event, start, provider, file_state
+                            ),
+                            summarise_result=_summarise,
                         )
                         _dispatch_dur_ms = int(
                             (time.monotonic() - _dispatch_started_at) * 1000
@@ -1724,12 +1775,27 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     return json.dumps(
                         {"error": "agent_registry_unavailable"}
                     )
+                # W3.2 — thread the parent's turn correlation through so
+                # the dispatcher can emit SubagentSpawned /
+                # SubagentCompleted envelopes on the parent's SSE
+                # stream. The parent's active reasoning loop owns the
+                # turn id; we look it up via the per-session map. When
+                # no loop is registered (one-shot HTTP callers,
+                # smoke-test paths) we pass None and the dispatcher
+                # silently no-ops the obs emits.
+                _parent_loop = self._active_loops.get(start.session_key or "")
+                _parent_turn_id = (
+                    _parent_loop.turn_id if _parent_loop is not None else None
+                )
                 return await dispatch_subagent_spawn(
                     args_json=event.args_json,
                     parent_ctx=parent_ctx,
                     agent_registry=registry,
                     provider=provider,
                     parent_tools=list(start.tools or []),
+                    event_emitter=self._event_emitter,
+                    parent_turn_id=_parent_turn_id,
+                    parent_session_key=start.session_key or None,
                 )
             if event.tool == SUBAGENT_SPAWN_MANY_TOOL:
                 registry = self._get_agent_registry()
@@ -1737,12 +1803,19 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     return json.dumps(
                         {"tasks": [], "error": "agent_registry_unavailable"}
                     )
+                _parent_loop = self._active_loops.get(start.session_key or "")
+                _parent_turn_id = (
+                    _parent_loop.turn_id if _parent_loop is not None else None
+                )
                 return await dispatch_subagent_spawn_many(
                     args_json=event.args_json,
                     parent_ctx=parent_ctx,
                     agent_registry=registry,
                     provider=provider,
                     parent_tools=list(start.tools or []),
+                    event_emitter=self._event_emitter,
+                    parent_turn_id=_parent_turn_id,
+                    parent_session_key=start.session_key or None,
                 )
             if event.tool == BLACKBOARD_READ_TOOL:
                 return dispatch_blackboard_read(

@@ -119,6 +119,24 @@ class AdminState:
     signals_repo: Any | None = None
     skill_registry_factory: Any | None = None
 
+    # -- W1.3: task-observability surface --------------------------------
+    #
+    # ``journal`` is the :class:`~corlinman_server.agent_journal.AgentJournal`
+    # the gateway already opens for per-turn resume (T4.1). The SSE
+    # replay route reads ``turn_events`` from it; the cost-aggregate
+    # route reads the ``turns`` table plus the ``TurnComplete`` event
+    # payloads for pre-W1.2 fallback.
+    #
+    # ``event_emitter`` is the :class:`~corlinman_server.gateway.
+    # observability.JournalBackedEmitter` instance the gateway lifecycle
+    # constructs once and shares with every reasoning loop / runner pool /
+    # subagent supervisor. The SSE-live route grabs a subscriber off it
+    # to receive envelopes in real time. ``None`` keeps the routes' typed
+    # 503 ``observability_disabled`` envelope live so an in-progress port
+    # / a degraded boot still serves cleanly.
+    journal: Any | None = None
+    event_emitter: Any | None = None
+
 
 _state: AdminState | None = None
 

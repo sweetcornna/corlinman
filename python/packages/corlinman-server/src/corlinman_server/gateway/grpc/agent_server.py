@@ -114,6 +114,8 @@ def resolve_agent_bind(state: Any | None = None) -> str:
 async def serve_agent(
     bind: str,
     shutdown: asyncio.Event,
+    *,
+    event_emitter: Any | None = None,
 ) -> None:
     """Bind a ``grpc.aio`` server hosting the ``Agent`` service and serve
     until ``shutdown`` fires.
@@ -163,8 +165,12 @@ async def serve_agent(
             ("grpc.http2.max_ping_strikes", 0),
         ],
     )
+    # W1.3 — thread the gateway-wide observability emitter through to
+    # the servicer so every ReasoningLoop it constructs tees envelopes
+    # into the journal + live SSE subscribers. ``None`` keeps the
+    # legacy yield-only path active for the test smoke / degraded boot.
     agent_pb2_grpc.add_AgentServicer_to_server(
-        CorlinmanAgentServicer(), server
+        CorlinmanAgentServicer(event_emitter=event_emitter), server
     )
     try:
         server.add_insecure_port(bind)
@@ -226,9 +232,22 @@ def serve_agent_in_background(
         return None
 
     bind = resolve_agent_bind(state)
+    # W1.3 — fetch the gateway-wide JournalBackedEmitter from AppState
+    # so the in-process servicer gets the same fan-out target as the
+    # SSE routes. Looked up via ``getattr`` so a stale boot path that
+    # didn't open the journal still constructs the servicer cleanly.
+    event_emitter = getattr(state, "event_emitter", None)
+    if event_emitter is None:
+        extras = getattr(state, "extras", None)
+        if isinstance(extras, dict):
+            event_emitter = extras.get("event_emitter")
     task = asyncio.create_task(
-        serve_agent(bind, cancel),
+        serve_agent(bind, cancel, event_emitter=event_emitter),
         name="gateway.grpc.agent_server",
     )
-    log.info("gateway.grpc.agent.inproc_spawned", bind=bind)
+    log.info(
+        "gateway.grpc.agent.inproc_spawned",
+        bind=bind,
+        event_emitter_wired=event_emitter is not None,
+    )
     return task

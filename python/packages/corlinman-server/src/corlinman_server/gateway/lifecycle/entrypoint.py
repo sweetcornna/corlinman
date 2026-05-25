@@ -847,6 +847,73 @@ def build_app(
                     "gateway.persona_store.init_failed", error=str(exc)
                 )
 
+        # W1.3 — task-observability surface. Open the per-turn journal
+        # the agent servicer also opens lazily on first chat, and
+        # construct one :class:`JournalBackedEmitter` for the whole
+        # gateway. The emitter is then wired into:
+        #
+        # * the admin_b state (so the SSE replay + cost routes can
+        #   resolve it from the singleton);
+        # * ``app.state`` (so other lifespan code / tests can introspect
+        #   it without going through routes_admin_b);
+        # * the existing AppState bag (so the agent servicer + runner
+        #   pool can pick it up when they construct ReasoningLoops).
+        #
+        # All best-effort — a missing AgentJournal / events module logs
+        # a warning and the gateway still boots, with the SSE / replay /
+        # cost routes returning typed 503 ``observability_disabled``.
+        observability_journal: Any | None = None
+        observability_emitter: Any | None = None
+        if resolved_data_dir is not None:
+            try:
+                from corlinman_server.agent_journal import AgentJournal
+                from corlinman_server.gateway.observability import (
+                    JournalBackedEmitter,
+                )
+
+                observability_journal = await AgentJournal.open_from_env(
+                    resolved_data_dir / "agent_journal.sqlite"
+                )
+                observability_emitter = JournalBackedEmitter(
+                    observability_journal
+                )
+
+                # Publish onto AdminState so the W1.3 admin routes can
+                # find both handles via ``get_admin_state()``.
+                if admin_b_state is not None:
+                    admin_b_state.journal = observability_journal
+                    admin_b_state.event_emitter = observability_emitter
+
+                # Publish onto app.state for tests + future producers
+                # that need the same shared emitter.
+                app.state.corlinman_journal = observability_journal
+                app.state.corlinman_event_emitter = observability_emitter
+
+                # Publish onto AppState so the agent servicer (mounted
+                # via gateway.services / gateway.grpc) can pick up the
+                # same emitter on construction. ``extras`` is the
+                # documented free-form bag — attach by a stable key so
+                # downstream consumers can probe for it.
+                extras = getattr(state, "extras", None)
+                if isinstance(extras, dict):
+                    extras["event_emitter"] = observability_emitter
+                    extras["journal"] = observability_journal
+                # Also expose as first-class attributes so a duck-typed
+                # consumer (``getattr(state, "event_emitter", None)``)
+                # finds it without reaching into ``.extras``.
+                with suppress(AttributeError, TypeError):
+                    state.event_emitter = observability_emitter
+                    state.journal = observability_journal
+
+                logger.info(
+                    "gateway.observability.emitter_installed",
+                    journal=str(resolved_data_dir / "agent_journal.sqlite"),
+                )
+            except Exception as exc:  # pragma: no cover — best-effort
+                logger.warning(
+                    "gateway.observability.init_failed", error=str(exc)
+                )
+
         # W5.0: open the evolution sqlite + attach the curator / signals
         # repos to admin_b (the /admin/curator/* routes read them from
         # there) and to admin_a (W4.5 applier surfaces consult admin_a's
@@ -1154,6 +1221,19 @@ def build_app(
                         error=str(exc),
                     )
                 app.state._evolution_store = None
+            # W1.3 teardown: close the observability journal so its WAL
+            # file is checkpointed before the process exits.
+            obs_journal = getattr(app.state, "corlinman_journal", None)
+            if obs_journal is not None:
+                try:
+                    await obs_journal.close()
+                except Exception as exc:  # pragma: no cover — defensive
+                    logger.warning(
+                        "gateway.observability.journal_close_failed",
+                        error=str(exc),
+                    )
+                app.state.corlinman_journal = None
+                app.state.corlinman_event_emitter = None
 
     app = FastAPI(lifespan=_lifespan)
     app.state.corlinman_state = state
