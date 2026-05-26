@@ -632,6 +632,15 @@ class OneBotAdapter:
         # means the bot QQ account got kicked offline by Tencent while
         # the WS stayed up. ``None`` until the first event lands.
         self._last_event_at_ms: int | None = None
+        # NapCat heartbeat payload carries ``status.online`` (boolean)
+        # that flips False *immediately* on KickedOffLine — the WS
+        # keeps heartbeating but the field signals the QQ account is
+        # gone. ``None`` until the first heartbeat lands. We update
+        # this from the raw frame in ``_pump`` (before the typed event
+        # is dispatched downstream) because the typed ``MetaEvent``
+        # doesn't carry the status block.
+        self._last_status_online: bool | None = None
+        self._last_status_online_at_ms: int | None = None
 
     @property
     def inbound_dropped_count(self) -> int:
@@ -653,6 +662,27 @@ class OneBotAdapter:
         meta event every ~30 seconds.
         """
         return self._last_event_at_ms
+
+    @property
+    def last_status_online(self) -> bool | None:
+        """Last ``status.online`` flag observed on a NapCat heartbeat
+        meta-event. ``None`` until the first heartbeat lands; ``True``
+        when the bot QQ account is fully online; ``False`` immediately
+        after a ``KickedOffLine`` (the WS keeps heartbeating but the
+        status flag flips before the account-status notice arrives).
+
+        Watcher reads this every probe interval so the admin UI can
+        surface "需要扫码" without an HTTP probe — NapCat's reverse-WS
+        config doesn't expose an HTTP plane.
+        """
+        return self._last_status_online
+
+    @property
+    def last_status_online_at_ms(self) -> int | None:
+        """Wall-clock ms of the heartbeat that set
+        :attr:`last_status_online`. Used for ``account_checked_at_ms``
+        in the admin status route."""
+        return self._last_status_online_at_ms
 
     @property
     def url(self) -> str:
@@ -805,7 +835,29 @@ class OneBotAdapter:
                 # Update the NapCat heartbeat timestamp on every event so
                 # the health watcher can flag a kicked-offline bot.
                 import time as _t
-                self._last_event_at_ms = int(_t.time() * 1000)
+                now_ms = int(_t.time() * 1000)
+                self._last_event_at_ms = now_ms
+                # Heartbeat meta-events carry ``status.online`` (boolean)
+                # which flips False *immediately* on KickedOffLine — the
+                # WS keeps heartbeating, but ``status.online=False``
+                # exposes that the QQ account is no longer reachable.
+                # The typed MetaEvent dataclass doesn't have a slot for
+                # the status block, so we read it off the raw frame
+                # before dispatching. Other event types implicitly mean
+                # the account WAS online at this moment, so flip True.
+                if raw.get("post_type") == "meta_event":
+                    if raw.get("meta_event_type") == "heartbeat":
+                        status_block = raw.get("status")
+                        if isinstance(status_block, dict):
+                            online_raw = status_block.get("online")
+                            if isinstance(online_raw, bool):
+                                self._last_status_online = online_raw
+                                self._last_status_online_at_ms = now_ms
+                else:
+                    # A real inbound message / notice / request implies the
+                    # account is up — heartbeats might lag.
+                    self._last_status_online = True
+                    self._last_status_online_at_ms = now_ms
                 # Burst-absorb: a slow chat service must NOT block the
                 # WS reader (websockets' frame buffer fills → NapCat
                 # closes the connection with 1009 → reconnect storm).

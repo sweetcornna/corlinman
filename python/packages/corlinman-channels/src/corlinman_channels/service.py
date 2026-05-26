@@ -495,18 +495,32 @@ async def _qq_health_watcher(
             checked_at_ms=now_ms,
         )
 
-        # Periodic NapCat account-online probe. WS heartbeats stay
-        # alive after a KickedOffLine, so the heartbeat-only signal
-        # lies. We fire the probe as a background task so a slow /
-        # unreachable NapCat HTTP can't block the watcher loop (which
-        # also drives the heartbeat metrics every probe_s). The probe
-        # writes to QQ_HEALTH directly when it finishes — readers see
-        # the previous value until then. Failures never raise.
+        # Update account-online state from the adapter's last-seen
+        # heartbeat ``status.online`` flag (set by the inbound pump
+        # whenever a heartbeat meta-event lands). NapCat's reverse-WS
+        # deployments don't expose an HTTP plane, so we can't probe
+        # /get_login_info — but every heartbeat already carries the
+        # state we need.
         if now_ms - last_account_probe_ms >= account_probe_s * 1000:
             last_account_probe_ms = now_ms
-            asyncio.create_task(
-                _qq_probe_account_online(adapter, now_ms),
-                name="qq-account-probe",
+            status_online = getattr(adapter, "last_status_online", None)
+            status_ts = getattr(adapter, "last_status_online_at_ms", None)
+            # Stale-data guard: if the last status flip was longer ago
+            # than 2× the heartbeat-lost threshold, the adapter likely
+            # disconnected entirely — surface as unknown (None) rather
+            # than a misleading True/False from a frozen value.
+            stale = (
+                status_ts is None
+                or (now_ms - status_ts) > (lost_s * 2 * 1000)
+            )
+            QQ_HEALTH.update(
+                account_online=None if stale else bool(status_online),
+                account_checked_at_ms=now_ms,
+                account_last_error=(
+                    "no_heartbeat_yet" if status_ts is None
+                    else ("stale_status" if stale
+                          else (None if status_online else "napcat_status_offline"))
+                ),
             )
 
         if is_lost and not was_lost:

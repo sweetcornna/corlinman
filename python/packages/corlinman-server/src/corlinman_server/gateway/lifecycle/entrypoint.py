@@ -621,6 +621,51 @@ def _build_state(cfg: Any | None, data_dir: Path) -> Any:
                 if getattr(built, "config", None) is None and cfg is not None:
                     with suppress(AttributeError, TypeError):
                         built.config = cfg
+
+                # Install the in-process log broadcaster + structlog
+                # processor that fans every log event into the
+                # /admin/logs/stream SSE feed. Without this step the
+                # route returns 503 ``logs_disabled`` even though the
+                # backend code exists — pre-1.6 deployments never wired
+                # it. Best-effort: a degraded boot keeps the previous
+                # 503 behaviour.
+                try:
+                    LogBroadcaster = getattr(core, "LogBroadcaster", None)
+                    make_processor = getattr(core, "make_structlog_processor", None)
+                    if (
+                        LogBroadcaster is not None
+                        and getattr(built, "log_broadcaster", None) is None
+                    ):
+                        broadcaster = LogBroadcaster()
+                        built.log_broadcaster = broadcaster
+                        if make_processor is not None:
+                            # Attach the processor to structlog's default
+                            # configuration so every ``logger.info(...)``
+                            # call (across server + agent + channels) is
+                            # mirrored onto the broadcaster, no per-
+                            # logger wiring required.
+                            try:
+                                import structlog
+
+                                cfg_obj = structlog.get_config()
+                                processors = list(cfg_obj.get("processors", []))
+                                # Insert the broadcaster processor just
+                                # before the final renderer so structured
+                                # fields are still present when it sees
+                                # the event.
+                                processors.insert(-1, make_processor(broadcaster))
+                                structlog.configure(processors=processors)
+                            except Exception as exc:  # noqa: BLE001
+                                logger.debug(
+                                    "gateway.log_broadcast.processor_attach_failed",
+                                    error=str(exc),
+                                )
+                        logger.info("gateway.log_broadcast.installed")
+                except Exception as exc:  # noqa: BLE001 — best-effort
+                    logger.warning(
+                        "gateway.log_broadcast.install_failed",
+                        error=str(exc),
+                    )
                 return built
     return _DegradedAppState(config=cfg, data_dir=data_dir)
 
