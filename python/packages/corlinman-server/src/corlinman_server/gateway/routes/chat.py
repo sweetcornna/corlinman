@@ -45,6 +45,9 @@ from fastapi import APIRouter, Header, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from corlinman_server.gateway.services.chat_bootstrap import (
+    rewrite_trailing_user_message,
+)
 from corlinman_server.gateway_api import (
     ChatService,
     DoneEvent,
@@ -187,12 +190,23 @@ def _role_from_str(s: str) -> Role:
 
 
 def _build_internal_request(req: ChatRequest, session_key: str | None) -> InternalChatRequest:
-    """Translate the OpenAI body into the internal protocol shape."""
+    """Translate the OpenAI body into the internal protocol shape.
+
+    Before the conversion, the **trailing user message** is checked
+    against the shared slash-command registry (W8 — Persona Studio). If
+    it matches (e.g. the user typed ``/persona``), its content is
+    swapped for the registry's wizard prelude so the agent sees a
+    structured invocation instruction instead of the literal command.
+    Older user messages in ``req.messages`` are intentionally left
+    untouched — see :mod:`corlinman_server.gateway.services.chat_bootstrap`
+    for why retroactive rewrites would corrupt the transcript.
+    """
+    rewritten = rewrite_trailing_user_message(req.messages)
     return InternalChatRequest(
         model=req.model,
         messages=[
             Message(role=_role_from_str(m.role), content=m.content)
-            for m in req.messages
+            for m in rewritten
         ],
         session_key=session_key or "",
         stream=req.stream,

@@ -33,6 +33,12 @@ that has access to an identity store can populate
 opaque handle.
 """
 
+from corlinman_channels.commands import (
+    COMMAND_REGISTRY,
+    CommandSpec,
+    apply_command_prelude,
+    match_command,
+)
 from corlinman_channels.channel import (
     ApnsChannel,
     Channel,
@@ -241,6 +247,11 @@ __all__ = [  # noqa: RUF022 — grouped by subsystem for human readability.
     "RateLimitHook",
     "RoutedRequest",
     "parse_group_keywords",
+    # Slash-command registry (W8 Persona Studio)
+    "COMMAND_REGISTRY",
+    "CommandSpec",
+    "apply_command_prelude",
+    "match_command",
     # Service orchestration
     "ChatEventLike",
     "ChatServiceLike",

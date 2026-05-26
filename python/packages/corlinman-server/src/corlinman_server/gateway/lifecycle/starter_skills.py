@@ -25,6 +25,16 @@ The copy step is **idempotent**: any ``*.md`` already present in the
 target directory wins. That way an operator who hand-edited
 ``MEMORY.md`` worth of skill body never has it silently overwritten on
 the next boot.
+
+Two on-disk layouts are supported under the bundle root:
+
+* **Flat** — ``<bundle>/<name>.md`` — copied to ``<target>/<name>.md``.
+* **Nested** — ``<bundle>/<name>/SKILL.md`` (plus arbitrary siblings
+  like ``references/``, ``scripts/``, ``.usage.json``) — copied as a
+  whole subtree to ``<target>/<name>/``. The corlinman skills
+  registry walks ``*.md`` recursively, so either layout shows up as a
+  registered skill. The nested form is reserved for skills that ship
+  scripts or asset bundles alongside the SKILL.md body.
 """
 
 from __future__ import annotations
@@ -158,6 +168,41 @@ def seed_starter_skills(target_dir: Path) -> SeedReport:
             )
             continue
         copied.append(src_path.name)
+
+    # Nested-layout subtree copy. We accept any subdirectory that
+    # contains a ``SKILL.md`` — that's the hermes / corlinman convention
+    # for skills shipping scripts or asset bundles. The whole subtree is
+    # copied so siblings (``references/``, ``scripts/``, ``.usage.json``)
+    # ride along; partial copies would leave the SKILL.md body referring
+    # to missing files.
+    for src_dir in sorted(p for p in source.iterdir() if p.is_dir()):
+        # Skip dunder dirs (``__pycache__`` etc.) — they're not skills.
+        if src_dir.name.startswith("_"):
+            continue
+        skill_md = src_dir / "SKILL.md"
+        if not skill_md.is_file():
+            continue
+        dst_dir = target / src_dir.name
+        if dst_dir.exists():
+            skipped.append(src_dir.name)
+            continue
+        try:
+            shutil.copytree(
+                src_dir,
+                dst_dir,
+                ignore=shutil.ignore_patterns(
+                    "__pycache__", "*.pyc", ".usage.json"
+                ),
+            )
+        except OSError as exc:  # pragma: no cover — defensive
+            logger.warning(
+                "starter_skills.copy_failed",
+                src=str(src_dir),
+                dst=str(dst_dir),
+                error=str(exc),
+            )
+            continue
+        copied.append(src_dir.name)
 
     logger.info(
         "starter_skills.seeded",

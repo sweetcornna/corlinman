@@ -40,14 +40,170 @@ completion, so :func:`bootstrap` selects it whenever
 from __future__ import annotations
 
 import logging
-from typing import Any
+from collections.abc import Iterable, Sequence
+from typing import Any, TypeVar
 
 __all__ = [
+    "MessageLike",
+    "apply_command_substitution",
     "bootstrap",
     "build_chat_service",
+    "rewrite_trailing_user_message",
 ]
 
 log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Slash-command substitution (W8 — Persona Studio)
+# ---------------------------------------------------------------------------
+#
+# The chat-message-assembly path runs once per HTTP request — see
+# ``gateway/routes/chat.py::_build_internal_request``. When the trailing
+# user message is a literal slash command (``/persona``, ``/help``, …) we
+# rewrite the agent-facing ``content`` to the registry's
+# ``wizard_prelude`` before the agent ever sees the request. Channels
+# go through :func:`corlinman_channels.router.ChannelRouter.dispatch` for
+# the same effect; both surfaces share the registry in
+# :mod:`corlinman_channels.commands` so adding a new command is a single
+# edit.
+#
+# Why only the trailing user message?
+# -----------------------------------
+# Commands are intentionally *invocation events* — when the user types
+# ``/persona`` mid-conversation, they're saying "start the wizard now".
+# A literal ``/persona`` sitting in an older turn of the same session is
+# part of the conversation history (perhaps the agent was explaining the
+# command, perhaps the user typed it earlier and was satisfied) and must
+# NOT be retroactively rewritten on every subsequent turn — that would
+# corrupt the transcript and re-trigger the wizard on every reply. So:
+# rewrite the last user message only; leave all prior turns untouched.
+
+
+class MessageLike:
+    """Structural marker for the ``message.content`` rewrite seam.
+
+    Any object exposing a mutable ``role`` and ``content`` attribute
+    satisfies the contract — both
+    :class:`corlinman_server.gateway_api.types.Message` (Pydantic v2,
+    mutable by default) and
+    :class:`corlinman_server.gateway.routes.chat.ChatMessage` (also
+    Pydantic v2) fit. Declared as a runtime class with no body so we can
+    use it as a documentation anchor without forcing isinstance() guards.
+    """
+
+
+_T = TypeVar("_T")
+
+
+def apply_command_substitution(content: str) -> str:
+    """Return the wizard prelude if ``content`` matches a registered
+    slash command, else return ``content`` unchanged.
+
+    Thin wrapper around
+    :func:`corlinman_channels.commands.match_command` +
+    :func:`corlinman_channels.commands.apply_command_prelude` so the
+    chat-route handler doesn't import the channels package directly
+    (keeps the dependency direction obvious in code review).
+    """
+    # Lazy import: avoids pulling the channels stack into module-load
+    # time for gateway tests that monkey-patch the chat router.
+    from corlinman_channels.commands import apply_command_prelude, match_command
+
+    spec = match_command(content)
+    if spec is None:
+        return content
+    return apply_command_prelude(content, spec)
+
+
+def rewrite_trailing_user_message(messages: Sequence[_T]) -> list[_T]:
+    """Return a new list with the trailing user message's content
+    rewritten via :func:`apply_command_substitution`, if it matches.
+
+    ``messages`` is treated as ordered oldest-first (the OpenAI request
+    convention). The function:
+
+    * Returns an empty list if ``messages`` is empty.
+    * Walks backward to find the first ``role == "user"`` message; if
+      none found, returns the input as a new list (no rewrite).
+    * If the trailing user message's content does NOT match a command,
+      returns a new list with the original objects (no copy / rewrite).
+    * If it does match, the matched message is replaced in-place on the
+      returned list with a copy whose ``content`` is the wizard prelude.
+      The original object is left untouched so the caller's reference
+      (and any audit trail it keeps) is preserved.
+
+    Important: we **only** consider the trailing user message — see the
+    module docstring for why retroactive history rewrites would corrupt
+    the transcript.
+    """
+    # Realise the iterable into a list once so we can do reverse scans
+    # and return a fresh container (the caller may mutate / append).
+    result: list[_T] = list(messages)
+    if not result:
+        return result
+
+    # Locate the last user-role message. Walking from the end keeps the
+    # cost O(1) for the typical case where the trailing message IS the
+    # user turn (the OpenAI convention).
+    target_index = -1
+    for i in range(len(result) - 1, -1, -1):
+        role = getattr(result[i], "role", None)
+        # Role may be a StrEnum (corlinman_server.gateway_api.types.Role)
+        # or a plain str (gateway.routes.chat.ChatMessage); compare by
+        # str() value to cover both.
+        if role is None:
+            continue
+        if str(role) in ("user", "Role.user"):
+            target_index = i
+            break
+        # ``Role.USER.value`` is the string ``"user"`` so ``str(role)``
+        # yields ``"user"`` on the StrEnum, but be defensive about the
+        # ``Role.<NAME>`` repr form some test stubs use.
+        if hasattr(role, "value") and str(getattr(role, "value")) == "user":
+            target_index = i
+            break
+
+    if target_index < 0:
+        return result
+
+    original = result[target_index]
+    content = getattr(original, "content", "") or ""
+    rewritten_content = apply_command_substitution(content)
+    if rewritten_content == content:
+        return result
+
+    # Substitute. Try Pydantic's ``model_copy(update=...)`` first
+    # (preserves immutability semantics on frozen models); fall back to a
+    # shallow ``copy`` + attribute set for plain dataclasses / objects.
+    try:
+        copied = original.model_copy(update={"content": rewritten_content})  # type: ignore[attr-defined]
+    except AttributeError:
+        import copy as _copy
+
+        copied = _copy.copy(original)
+        try:
+            copied.content = rewritten_content  # type: ignore[attr-defined]
+        except AttributeError:
+            # Object doesn't expose a settable ``content`` — give up and
+            # return the original list unchanged rather than crash.
+            return result
+
+    result[target_index] = copied
+    log.info(
+        "chat.command_substituted index=%d original_len=%d prelude_len=%d",
+        target_index,
+        len(content),
+        len(rewritten_content),
+    )
+    return result
+
+
+# Keep an ``Iterable`` import alive for future expansion paths; the
+# helper above narrows on ``Sequence`` for the index-walk, but the
+# public seam may grow an ``Iterable`` accepting variant for streamed
+# message sources.
+_ = Iterable
 
 
 def build_chat_service(state: Any) -> Any | None:

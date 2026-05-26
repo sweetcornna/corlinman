@@ -28,6 +28,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from corlinman_channels.commands import apply_command_prelude, match_command
 from corlinman_channels.common import ChannelBinding
 from corlinman_channels.onebot import (
     AtSegment,
@@ -216,7 +217,12 @@ class ChannelRouter:
     # dispatch
     # ------------------------------------------------------------------
 
-    def dispatch(self, event: MessageEvent) -> RoutedRequest | None:
+    def dispatch(
+        self,
+        event: MessageEvent,
+        *,
+        enable_commands: bool = True,
+    ) -> RoutedRequest | None:
         """Apply the keyword/mention gate + rate-limit checks and
         return a :class:`RoutedRequest` if the message should be
         forwarded.
@@ -228,6 +234,15 @@ class ChannelRouter:
         :attr:`rate_limit_hook`.
 
         Mirrors ``ChannelRouter::dispatch`` in Rust step-for-step.
+
+        :param enable_commands: when ``True`` (default), consult
+            :func:`corlinman_channels.commands.match_command` against
+            the routed text and, on a hit, replace the user-visible
+            ``RoutedRequest.content`` with the wizard prelude. The
+            original literal text is preserved on the inbox row by the
+            calling service — we only rewrite the agent-facing view.
+            Set ``False`` to opt out (tests that exercise non-command
+            flows lock in the byte-identical legacy behaviour).
         """
         # Auto-detect the bot's own QQ id from the live event stream:
         # every OneBot event carries ``self_id``. Learning it here keeps
@@ -276,9 +291,19 @@ class ChannelRouter:
                 self._emit_bus_rate_limit(binding, "sender")
                 return None
 
+        # Slash-command substitution (W8). The original literal text is
+        # already on the inbox row written by the calling service, so we
+        # only rewrite the agent-facing ``content`` view — there is no
+        # second copy to clean up downstream.
+        content = text
+        if enable_commands:
+            spec = match_command(text)
+            if spec is not None:
+                content = apply_command_prelude(text, spec)
+
         return RoutedRequest(
             binding=binding,
-            content=text,
+            content=content,
             message_id=str(event.message_id),
             timestamp=event.time,
             mentioned=mentioned,

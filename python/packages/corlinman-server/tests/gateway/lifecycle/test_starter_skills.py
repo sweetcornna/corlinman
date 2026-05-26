@@ -92,7 +92,17 @@ def test_bundled_skills_root_missing_env_falls_back_to_package(
 def test_seed_starter_skills_copies_every_bundled_md(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """First call into an empty target copies every bundled ``*.md``."""
+    """First call into an empty target copies every bundled skill.
+
+    Two layouts ship in the bundle:
+
+    * **Flat** — top-level ``<name>.md`` — copied as a single file.
+    * **Nested** — ``<name>/SKILL.md`` plus siblings — copied as a
+      subtree so scripts / references ride along.
+
+    Each entry in ``report.copied`` lands as either a file or a
+    directory on disk; nested skills must keep their SKILL.md.
+    """
     monkeypatch.delenv("CORLINMAN_BUNDLED_SKILLS_DIR", raising=False)
     target = tmp_path / "profiles" / "default" / "skills"
 
@@ -102,9 +112,16 @@ def test_seed_starter_skills_copies_every_bundled_md(
     assert report.target == target
     assert len(report.copied) > 0
     assert len(report.skipped) == 0
-    # Every reported copy actually landed on disk.
+    # Every reported copy actually landed on disk — as a file (flat
+    # layout) or as a directory containing a SKILL.md (nested layout).
     for name in report.copied:
-        assert (target / name).is_file()
+        path = target / name
+        if path.is_file():
+            continue
+        assert path.is_dir(), f"copied entry {name} is neither file nor dir"
+        assert (path / "SKILL.md").is_file(), (
+            f"nested skill {name} missing SKILL.md after seed"
+        )
 
 
 def test_seed_starter_skills_is_idempotent(
@@ -146,6 +163,63 @@ def test_seed_starter_skills_preserves_operator_edits(
     assert (
         (target / "code_review.md").read_text(encoding="utf-8") == sentinel_body
     )
+
+
+def test_seed_starter_skills_copies_nested_skill_subtree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nested ``<name>/SKILL.md`` layouts are copied as a whole subtree.
+
+    Covers the W8 ``configure-persona`` skill (which ships as a
+    directory because future revisions may grow asset siblings under
+    it), and asserts that any sibling files are pulled over too —
+    partial copies would leave SKILL.md referring to missing scripts.
+    """
+    monkeypatch.delenv("CORLINMAN_BUNDLED_SKILLS_DIR", raising=False)
+    custom = tmp_path / "private_bundle"
+    custom.mkdir()
+    skill_dir = custom / "demo-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: demo-skill\ndescription: x\n---\n# body\n",
+        encoding="utf-8",
+    )
+    (skill_dir / "extra.txt").write_text("ride-along\n", encoding="utf-8")
+    # __pycache__ subdir should be ignored.
+    (skill_dir / "__pycache__").mkdir()
+    (skill_dir / "__pycache__" / "noise.pyc").write_bytes(b"\x00")
+    monkeypatch.setenv("CORLINMAN_BUNDLED_SKILLS_DIR", str(custom))
+
+    target = tmp_path / "skills"
+    report = starter_skills.seed_starter_skills(target)
+
+    assert "demo-skill" in report.copied
+    assert (target / "demo-skill" / "SKILL.md").is_file()
+    assert (target / "demo-skill" / "extra.txt").is_file()
+    assert not (target / "demo-skill" / "__pycache__").exists()
+
+
+def test_seed_starter_skills_seeds_configure_persona(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """W8 contract: the ``configure-persona`` skill auto-seeds into the
+    default profile on first boot — without it, the /persona wizard
+    skill is invisible to the agent.
+    """
+    monkeypatch.delenv("CORLINMAN_BUNDLED_SKILLS_DIR", raising=False)
+    target = tmp_path / "skills"
+
+    report = starter_skills.seed_starter_skills(target)
+
+    assert "configure-persona" in report.copied
+    assert (target / "configure-persona" / "SKILL.md").is_file()
+    body = (target / "configure-persona" / "SKILL.md").read_text("utf-8")
+    assert "name: configure-persona" in body
+    # Spot-check the SKILL.md mentions the persona.* tool family the
+    # wizard drives — guards against a future edit that strips the
+    # tool list from the playbook.
+    assert "persona.create" in body
+    assert "ask_user" in body
 
 
 def test_seed_starter_skills_no_bundle_source_is_quiet(
