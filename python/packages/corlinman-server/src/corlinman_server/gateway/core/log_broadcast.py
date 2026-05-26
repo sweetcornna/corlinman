@@ -98,8 +98,20 @@ class LogSubscriber:
         when the queue is at capacity so the producer never blocks."""
         if self._closed:
             return
+        import sys as _sys
+        try:
+            _qsize_before = self._queue.qsize()
+        except Exception:
+            _qsize_before = "?"
         try:
             self._queue.put_nowait(record)
+            try:
+                _qsize_after = self._queue.qsize()
+            except Exception:
+                _qsize_after = "?"
+            _sys.stderr.write(
+                f"[_push-ok] target={record.target} qsize {_qsize_before}->{_qsize_after}\n"
+            )
         except asyncio.QueueFull:
             self._lagged += 1
             # Drop oldest to make room — symmetric with Rust
