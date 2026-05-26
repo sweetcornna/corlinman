@@ -350,7 +350,13 @@ class BroadcastLoggingHandler(logging.Handler):
                     subsystem=record.name,
                 )
             )
-        except Exception:  # noqa: BLE001 — never raise into the logging machinery
+            import sys as _sys
+            _sys.stderr.write(f"[BLH-publish-ok] {record.name}\n")
+        except Exception as _e:  # noqa: BLE001 — never raise into the logging machinery
+            import sys as _sys
+            import traceback as _tb
+            _sys.stderr.write(f"[BLH-publish-FAIL] {record.name}: {_e!r}\n")
+            _tb.print_exc(file=_sys.stderr)
             return
 
 
