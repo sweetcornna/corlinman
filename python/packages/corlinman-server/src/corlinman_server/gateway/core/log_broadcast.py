@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import threading
 import time
 from dataclasses import asdict, dataclass, field
@@ -287,7 +288,69 @@ def _json_safe(value: Any) -> Any:
     return repr(value)
 
 
+class BroadcastLoggingHandler(logging.Handler):
+    """``logging.Handler`` that mirrors every stdlib log record onto a
+    :class:`LogBroadcaster`.
+
+    The structlog processor (:func:`make_structlog_processor`) only sees
+    log calls that go through structlog's pipeline. corlinman-channels
+    (and chunks of corlinman-agent) use the stdlib ``logging.getLogger``
+    surface directly — so a structlog-only bridge leaves those events
+    invisible to ``/admin/logs/stream``. Attach this handler to the root
+    logger at boot to catch both populations through one pipe.
+
+    Idempotent: re-attaching to the same logger is a no-op when the
+    handler instance is already present.
+    """
+
+    def __init__(self, broadcaster: "LogBroadcaster", level: int = logging.INFO) -> None:
+        super().__init__(level=level)
+        self._broadcaster = broadcaster
+
+    def emit(self, record: logging.LogRecord) -> None:
+        # Don't build the record envelope when nobody's listening — the
+        # gateway logs hundreds of events per minute even idle.
+        if self._broadcaster.receiver_count() == 0:
+            return
+        try:
+            try:
+                msg = record.getMessage()
+            except Exception:  # noqa: BLE001 — format failure shouldn't crash log path
+                msg = str(record.msg)
+            ts = datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat()
+            fields: dict[str, Any] = {}
+            # Pull any structured ``extra={…}`` keys (skip stdlib's own
+            # bookkeeping attributes which would otherwise drown the
+            # output).
+            std_attrs = {
+                "name", "msg", "args", "levelname", "levelno", "pathname",
+                "filename", "module", "exc_info", "exc_text", "stack_info",
+                "lineno", "funcName", "created", "msecs", "relativeCreated",
+                "thread", "threadName", "processName", "process", "taskName",
+                "message",
+            }
+            for k, v in record.__dict__.items():
+                if k in std_attrs or k.startswith("_"):
+                    continue
+                fields[k] = _json_safe(v)
+            self._broadcaster.publish(
+                LogRecord(
+                    ts=ts,
+                    level=record.levelname,
+                    target=record.name,
+                    message=msg,
+                    fields=fields,
+                    trace_id=None,
+                    request_id=None,
+                    subsystem=record.name,
+                )
+            )
+        except Exception:  # noqa: BLE001 — never raise into the logging machinery
+            return
+
+
 __all__ = [
+    "BroadcastLoggingHandler",
     "DEFAULT_CAPACITY",
     "LogBroadcaster",
     "LogRecord",

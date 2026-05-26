@@ -32,6 +32,7 @@ from corlinman_server.gateway.core.config_watcher import (
 )
 from corlinman_server.gateway.core.log_broadcast import (
     DEFAULT_CAPACITY,
+    BroadcastLoggingHandler,
     LogBroadcaster,
     LogRecord,
     LogSubscriber,
@@ -89,6 +90,7 @@ __all__ = [
     "ReloadReport",
     "diff_sections",
     # log_broadcast
+    "BroadcastLoggingHandler",
     "DEFAULT_CAPACITY",
     "LogBroadcaster",
     "LogRecord",

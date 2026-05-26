@@ -631,6 +631,7 @@ def _build_state(cfg: Any | None, data_dir: Path) -> Any:
                 # 503 behaviour.
                 try:
                     LogBroadcaster = getattr(core, "LogBroadcaster", None)
+                    BroadcastHandler = getattr(core, "BroadcastLoggingHandler", None)
                     make_processor = getattr(core, "make_structlog_processor", None)
                     if (
                         LogBroadcaster is not None
@@ -638,21 +639,45 @@ def _build_state(cfg: Any | None, data_dir: Path) -> Any:
                     ):
                         broadcaster = LogBroadcaster()
                         built.log_broadcaster = broadcaster
+                        # Attach a stdlib-logging Handler to the root
+                        # logger so every ``logging.getLogger(...)`` call
+                        # across the codebase (channels uses these
+                        # directly) fans out to the SSE feed. The
+                        # structlog processor below catches the smaller
+                        # population that goes through structlog.
+                        if BroadcastHandler is not None:
+                            try:
+                                import logging as _logging
+
+                                handler = BroadcastHandler(broadcaster, level=_logging.INFO)
+                                root = _logging.getLogger()
+                                # Don't re-attach an identical handler
+                                # across hot reloads / re-builds.
+                                already = any(
+                                    isinstance(h, BroadcastHandler) for h in root.handlers
+                                )
+                                if not already:
+                                    root.addHandler(handler)
+                                    # Make sure the root level isn't
+                                    # blocking INFO — some boots only
+                                    # configure WARNING by default.
+                                    if root.level > _logging.INFO or root.level == 0:
+                                        root.setLevel(_logging.INFO)
+                            except Exception as exc:  # noqa: BLE001
+                                logger.debug(
+                                    "gateway.log_broadcast.stdlib_handler_attach_failed",
+                                    error=str(exc),
+                                )
                         if make_processor is not None:
                             # Attach the processor to structlog's default
-                            # configuration so every ``logger.info(...)``
-                            # call (across server + agent + channels) is
-                            # mirrored onto the broadcaster, no per-
-                            # logger wiring required.
+                            # configuration too — for events emitted via
+                            # ``structlog.get_logger`` which don't pass
+                            # through stdlib's root.
                             try:
                                 import structlog
 
                                 cfg_obj = structlog.get_config()
                                 processors = list(cfg_obj.get("processors", []))
-                                # Insert the broadcaster processor just
-                                # before the final renderer so structured
-                                # fields are still present when it sees
-                                # the event.
                                 processors.insert(-1, make_processor(broadcaster))
                                 structlog.configure(processors=processors)
                             except Exception as exc:  # noqa: BLE001
