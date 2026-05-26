@@ -78,7 +78,7 @@ def image_with_refs_tool_schema() -> dict[str, Any]:
                 "pack. Returns a path inside the agent workspace — pair "
                 "with `send_attachment` to deliver the image to the "
                 "user. `characters` are the label slots within the "
-                "persona's reference bucket (call `persona.list_assets` "
+                "persona's reference bucket (call `persona_list_assets` "
                 "to see what's available); unknown labels are silently "
                 "skipped."
             ),

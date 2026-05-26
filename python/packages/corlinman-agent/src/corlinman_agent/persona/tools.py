@@ -3,7 +3,7 @@
 Mirrors the wire contract documented in ``docs/PLAN_PERSONA_STUDIO.md``
 W3: seven builtin tools that let the agent read + mutate the persona
 registry mid-conversation (typical use: the ``/persona`` wizard skill
-walks the user through ``persona.create`` → ``persona.attach_asset_from_url``).
+walks the user through ``persona_create`` → ``persona_attach_asset_from_url``).
 
 Each schema is a plain ``{"type": "function", "function": {...}}`` dict
 ready to drop into ``ChatStart.tools`` via
@@ -20,13 +20,13 @@ from typing import Any
 
 #: Wire-stable tool names. Imported by the agent servicer's
 #: ``BUILTIN_TOOLS`` frozenset and any agent card that exposes the tools.
-PERSONA_LIST_TOOL: str = "persona.list"
-PERSONA_GET_TOOL: str = "persona.get"
-PERSONA_CREATE_TOOL: str = "persona.create"
-PERSONA_UPDATE_TOOL: str = "persona.update"
-PERSONA_DELETE_TOOL: str = "persona.delete"
-PERSONA_LIST_ASSETS_TOOL: str = "persona.list_assets"
-PERSONA_ATTACH_ASSET_FROM_URL_TOOL: str = "persona.attach_asset_from_url"
+PERSONA_LIST_TOOL: str = "persona_list"
+PERSONA_GET_TOOL: str = "persona_get"
+PERSONA_CREATE_TOOL: str = "persona_create"
+PERSONA_UPDATE_TOOL: str = "persona_update"
+PERSONA_DELETE_TOOL: str = "persona_delete"
+PERSONA_LIST_ASSETS_TOOL: str = "persona_list_assets"
+PERSONA_ATTACH_ASSET_FROM_URL_TOOL: str = "persona_attach_asset_from_url"
 
 #: Convenience set so the servicer can do ``BUILTIN_TOOLS | PERSONA_TOOLS``.
 PERSONA_TOOLS: frozenset[str] = frozenset(
@@ -53,7 +53,7 @@ _SLUG_HINT: str = (
 
 
 def persona_list_tool_schema() -> dict[str, Any]:
-    """``persona.list`` — return the full registry (no asset bytes)."""
+    """``persona_list`` — return the full registry (no asset bytes)."""
     return {
         "type": "function",
         "function": {
@@ -62,7 +62,7 @@ def persona_list_tool_schema() -> dict[str, Any]:
                 "List every persona registered in this corlinman "
                 "deployment. Returns a short summary view per persona "
                 "(id, display_name, short_summary, is_builtin) — call "
-                "persona.get for the full system_prompt body."
+                "persona_get for the full system_prompt body."
             ),
             "parameters": {
                 "type": "object",
@@ -74,7 +74,7 @@ def persona_list_tool_schema() -> dict[str, Any]:
 
 
 def persona_get_tool_schema() -> dict[str, Any]:
-    """``persona.get`` — fetch one persona by id."""
+    """``persona_get`` — fetch one persona by id."""
     return {
         "type": "function",
         "function": {
@@ -101,7 +101,7 @@ def persona_get_tool_schema() -> dict[str, Any]:
 
 
 def persona_create_tool_schema() -> dict[str, Any]:
-    """``persona.create`` — insert a new persona row."""
+    """``persona_create`` — insert a new persona row."""
     return {
         "type": "function",
         "function": {
@@ -151,7 +151,7 @@ def persona_create_tool_schema() -> dict[str, Any]:
 
 
 def persona_update_tool_schema() -> dict[str, Any]:
-    """``persona.update`` — patch fields on an existing persona."""
+    """``persona_update`` — patch fields on an existing persona."""
     return {
         "type": "function",
         "function": {
@@ -190,7 +190,7 @@ def persona_update_tool_schema() -> dict[str, Any]:
 
 
 def persona_delete_tool_schema() -> dict[str, Any]:
-    """``persona.delete`` — remove one custom persona row."""
+    """``persona_delete`` — remove one custom persona row."""
     return {
         "type": "function",
         "function": {
@@ -217,7 +217,7 @@ def persona_delete_tool_schema() -> dict[str, Any]:
 
 
 def persona_list_assets_tool_schema() -> dict[str, Any]:
-    """``persona.list_assets`` — list emoji + reference assets."""
+    """``persona_list_assets`` — list emoji + reference assets."""
     return {
         "type": "function",
         "function": {
@@ -253,7 +253,7 @@ def persona_list_assets_tool_schema() -> dict[str, Any]:
 
 
 def persona_attach_asset_from_url_tool_schema() -> dict[str, Any]:
-    """``persona.attach_asset_from_url`` — download + store an asset."""
+    """``persona_attach_asset_from_url`` — download + store an asset."""
     return {
         "type": "function",
         "function": {

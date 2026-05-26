@@ -46,7 +46,7 @@ __all__ = [
 ]
 
 
-#: Soft cap on the system_prompt body returned by ``persona.get``. Long
+#: Soft cap on the system_prompt body returned by ``persona_get``. Long
 #: bodies still get streamed back through the model context if the agent
 #: insists, but the default read path returns a trimmed view + the
 #: ``…truncated`` marker so a 10k-char persona body doesn't blow the
@@ -54,14 +54,14 @@ __all__ = [
 _GET_BODY_CLIP_CHARS: int = 2000
 
 #: Hard cap on the byte size of an image fetched by
-#: ``persona.attach_asset_from_url``. Matches the PLAN's "10 MiB" wording
+#: ``persona_attach_asset_from_url``. Matches the PLAN's "10 MiB" wording
 #: which is intentionally higher than the asset store's 8 MiB per-asset
 #: cap — we want the asset store to be the one to reject the upload (with
 #: its specific ``AssetTooLarge`` envelope) rather than swallowing the
 #: rejection silently in the download layer.
 _MAX_DOWNLOAD_BYTES: int = 10 * 1024 * 1024
 
-#: HTTP fetch timeout for ``persona.attach_asset_from_url``. Generous —
+#: HTTP fetch timeout for ``persona_attach_asset_from_url``. Generous —
 #: persona refs are often hosted on slow CDNs / Discord attachment URLs
 #: and a sub-10s timeout was tripping legitimate uploads in early
 #: testing.
@@ -120,7 +120,7 @@ def _ok(payload: dict[str, Any]) -> str:
 
 def _persona_summary(persona: Any) -> dict[str, Any]:
     """Project a Persona row into the short summary dict used by
-    ``persona.list``."""
+    ``persona_list``."""
     return {
         "id": getattr(persona, "id", ""),
         "display_name": getattr(persona, "display_name", ""),
@@ -131,7 +131,7 @@ def _persona_summary(persona: Any) -> dict[str, Any]:
 
 def _persona_full(persona: Any, *, clip_body: bool = True) -> dict[str, Any]:
     """Project a Persona row into the full dict returned by
-    ``persona.get``. ``system_prompt`` is clipped to
+    ``persona_get``. ``system_prompt`` is clipped to
     ``_GET_BODY_CLIP_CHARS`` with a ``…truncated`` suffix when
     ``clip_body`` is True (default) and the body exceeds the cap."""
     body = getattr(persona, "system_prompt", "") or ""
@@ -153,8 +153,8 @@ def _persona_full(persona: Any, *, clip_body: bool = True) -> dict[str, Any]:
 
 def _asset_summary(record: Any) -> dict[str, Any]:
     """Project an AssetRecord into the short summary dict used by
-    ``persona.list_assets`` and the success envelope of
-    ``persona.attach_asset_from_url``."""
+    ``persona_list_assets`` and the success envelope of
+    ``persona_attach_asset_from_url``."""
     return {
         "id": getattr(record, "id", ""),
         "persona_id": getattr(record, "persona_id", ""),
@@ -189,7 +189,7 @@ def _store_required(store: Any, kind: str) -> str | None:
 async def dispatch_persona_list(
     *, args_json: bytes | str, persona_store: Any, asset_store: Any = None
 ) -> str:
-    """``persona.list`` — return every persona as a summary list.
+    """``persona_list`` — return every persona as a summary list.
 
     ``asset_store`` is accepted but ignored so the agent_servicer can
     pass both stores uniformly to every persona dispatcher.
@@ -200,7 +200,7 @@ async def dispatch_persona_list(
     try:
         rows = await persona_store.list()
     except Exception as exc:  # noqa: BLE001 - dispatcher must never raise
-        logger.exception("persona.list.failed")
+        logger.exception("persona_list.failed")
         return _err("persona_list_failed", str(exc))
     return _ok({"personas": [_persona_summary(r) for r in rows]})
 
@@ -208,7 +208,7 @@ async def dispatch_persona_list(
 async def dispatch_persona_get(
     *, args_json: bytes | str, persona_store: Any, asset_store: Any = None
 ) -> str:
-    """``persona.get`` — return the full row (system_prompt clipped)."""
+    """``persona_get`` — return the full row (system_prompt clipped)."""
     del asset_store
     if (err := _store_required(persona_store, "persona_store")) is not None:
         return err
@@ -219,7 +219,7 @@ async def dispatch_persona_get(
     try:
         row = await persona_store.get(pid)
     except Exception as exc:  # noqa: BLE001
-        logger.exception("persona.get.failed", persona_id=pid)
+        logger.exception("persona_get.failed", persona_id=pid)
         return _err("persona_get_failed", str(exc))
     if row is None:
         return _err("persona_not_found", f"no persona with id {pid!r}")
@@ -229,7 +229,7 @@ async def dispatch_persona_get(
 async def dispatch_persona_list_assets(
     *, args_json: bytes | str, persona_store: Any, asset_store: Any
 ) -> str:
-    """``persona.list_assets`` — list one persona's emoji + ref assets."""
+    """``persona_list_assets`` — list one persona's emoji + ref assets."""
     if (err := _store_required(persona_store, "persona_store")) is not None:
         return err
     if (err := _store_required(asset_store, "persona_asset_store")) is not None:
@@ -254,7 +254,7 @@ async def dispatch_persona_list_assets(
     try:
         row = await persona_store.get(pid)
     except Exception as exc:  # noqa: BLE001
-        logger.exception("persona.list_assets.persona_lookup_failed", persona_id=pid)
+        logger.exception("persona_list_assets.persona_lookup_failed", persona_id=pid)
         return _err("persona_get_failed", str(exc))
     if row is None:
         return _err("persona_not_found", f"no persona with id {pid!r}")
@@ -262,7 +262,7 @@ async def dispatch_persona_list_assets(
         assets = await asset_store.list(pid, kind=kind) if kind is not None \
             else await asset_store.list(pid)
     except Exception as exc:  # noqa: BLE001
-        logger.exception("persona.list_assets.failed", persona_id=pid)
+        logger.exception("persona_list_assets.failed", persona_id=pid)
         return _err("persona_list_assets_failed", str(exc))
     return _ok({"assets": [_asset_summary(a) for a in assets]})
 
@@ -279,7 +279,7 @@ def _now_ms() -> int:
 async def dispatch_persona_create(
     *, args_json: bytes | str, persona_store: Any, asset_store: Any = None
 ) -> str:
-    """``persona.create`` — insert a new persona row."""
+    """``persona_create`` — insert a new persona row."""
     del asset_store
     if (err := _store_required(persona_store, "persona_store")) is not None:
         return err
@@ -294,7 +294,7 @@ async def dispatch_persona_create(
             PersonaProtected,
         )
     except ImportError as exc:
-        logger.warning("persona.create.import_failed", error=str(exc))
+        logger.warning("persona_create.import_failed", error=str(exc))
         return _err("persona_store_unavailable", str(exc))
 
     args = _decode(args_json)
@@ -342,7 +342,7 @@ async def dispatch_persona_create(
     except PersonaError as exc:
         return _err("persona_create_failed", str(exc))
     except Exception as exc:  # noqa: BLE001
-        logger.exception("persona.create.failed", persona_id=pid)
+        logger.exception("persona_create.failed", persona_id=pid)
         return _err("persona_create_failed", str(exc))
     return _ok({"persona": _persona_full(created, clip_body=False)})
 
@@ -350,7 +350,7 @@ async def dispatch_persona_create(
 async def dispatch_persona_update(
     *, args_json: bytes | str, persona_store: Any, asset_store: Any = None
 ) -> str:
-    """``persona.update`` — patch an existing persona row."""
+    """``persona_update`` — patch an existing persona row."""
     del asset_store
     if (err := _store_required(persona_store, "persona_store")) is not None:
         return err
@@ -360,7 +360,7 @@ async def dispatch_persona_update(
             PersonaProtected,
         )
     except ImportError as exc:
-        logger.warning("persona.update.import_failed", error=str(exc))
+        logger.warning("persona_update.import_failed", error=str(exc))
         return _err("persona_store_unavailable", str(exc))
 
     args = _decode(args_json)
@@ -400,7 +400,7 @@ async def dispatch_persona_update(
         # the admin route's 404 path.
         return _err("persona_not_found", str(exc))
     except Exception as exc:  # noqa: BLE001
-        logger.exception("persona.update.failed", persona_id=pid)
+        logger.exception("persona_update.failed", persona_id=pid)
         return _err("persona_update_failed", str(exc))
     return _ok({"persona": _persona_full(updated, clip_body=False)})
 
@@ -408,7 +408,7 @@ async def dispatch_persona_update(
 async def dispatch_persona_delete(
     *, args_json: bytes | str, persona_store: Any, asset_store: Any = None
 ) -> str:
-    """``persona.delete`` — remove one persona + its assets."""
+    """``persona_delete`` — remove one persona + its assets."""
     if (err := _store_required(persona_store, "persona_store")) is not None:
         return err
     try:
@@ -416,7 +416,7 @@ async def dispatch_persona_delete(
             PersonaProtected,
         )
     except ImportError as exc:
-        logger.warning("persona.delete.import_failed", error=str(exc))
+        logger.warning("persona_delete.import_failed", error=str(exc))
         return _err("persona_store_unavailable", str(exc))
 
     args = _decode(args_json)
@@ -432,14 +432,14 @@ async def dispatch_persona_delete(
         try:
             await asset_store.delete_all(pid)
         except Exception:  # noqa: BLE001 — never block the row delete
-            logger.warning("persona.delete.asset_cleanup_failed", persona_id=pid)
+            logger.warning("persona_delete.asset_cleanup_failed", persona_id=pid)
 
     try:
         removed = await persona_store.delete(pid)
     except PersonaProtected as exc:
         return _err("persona_protected", str(exc))
     except Exception as exc:  # noqa: BLE001
-        logger.exception("persona.delete.failed", persona_id=pid)
+        logger.exception("persona_delete.failed", persona_id=pid)
         return _err("persona_delete_failed", str(exc))
     return _ok({"removed": bool(removed), "id": pid})
 
@@ -456,7 +456,7 @@ async def dispatch_persona_attach_asset_from_url(
     asset_store: Any,
     transport: httpx.BaseTransport | None = None,
 ) -> str:
-    """``persona.attach_asset_from_url`` — fetch + store one asset.
+    """``persona_attach_asset_from_url`` — fetch + store one asset.
 
     The optional ``transport`` arg is a unit-test seam — production
     callers leave it ``None`` so :mod:`httpx` opens its standard
@@ -474,7 +474,7 @@ async def dispatch_persona_attach_asset_from_url(
         )
     except ImportError as exc:
         logger.warning(
-            "persona.attach_asset_from_url.import_failed", error=str(exc)
+            "persona_attach_asset_from_url.import_failed", error=str(exc)
         )
         return _err("persona_store_unavailable", str(exc))
 

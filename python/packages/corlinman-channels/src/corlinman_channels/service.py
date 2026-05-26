@@ -1114,12 +1114,25 @@ def _build_internal_request(
     matching the ``InternalChatRequest`` contract. Avoids a hard import
     dependency on ``corlinman-server`` so the channels package stays
     importable in isolation (unit tests, standalone deploys).
+
+    Bug fix (2026-05-26): we used to hand the chat service a list of
+    ``corlinman_channels.common.Attachment`` dataclasses, which carry a
+    ``data`` field — but the gateway's ``_attachment_to_proto`` reads
+    ``a.bytes_`` (the server-side ``gateway_api.Attachment`` field
+    name). On a QQ inbound that contained an image segment this raised
+    ``AttributeError`` deep inside the async generator and surfaced as
+    ``"generator didn't stop after throw()"`` — the whole turn died and
+    the inbox row went ``dead``. We now normalise to the lighter
+    "shape" the server-side proto builder is actually written against.
     """
     from types import SimpleNamespace
 
     from corlinman_channels.onebot import segments_to_attachments
 
-    attachments = segments_to_attachments(event.message)
+    attachments = [
+        _to_server_attachment_shape(a)
+        for a in segments_to_attachments(event.message)
+    ]
     message = SimpleNamespace(role="user", content=req.content)
     return SimpleNamespace(
         model=model,
@@ -1130,6 +1143,65 @@ def _build_internal_request(
         temperature=None,
         attachments=attachments,
         binding=req.binding,
+    )
+
+
+# Server-side enum strings the proto builder pattern-matches on (see
+# ``corlinman_server.gateway_api.types.AttachmentKind``). Channels-side
+# carries the same string values but as a SEPARATE enum class, so
+# equality across classes is False even when the wire value matches —
+# proto builder would silently coerce every kind to UNSPECIFIED.
+_KIND_REMAP: dict[str, str] = {
+    "image": "image",
+    "audio": "audio",
+    "video": "video",
+    "document": "file",   # channels uses DOCUMENT; server uses FILE
+    "file": "file",
+}
+
+
+def _to_server_attachment_shape(att: Any) -> Any:
+    """Convert a :class:`corlinman_channels.common.Attachment` to the
+    shape ``corlinman_server.gateway.services.chat_service._build_chat_start``
+    expects (``bytes_`` field name + lowercase string ``kind`` from the
+    server-side enum).
+
+    Done as a SimpleNamespace so neither side needs to know about the
+    other's concrete class (channels is import-decoupled from server).
+    """
+    from types import SimpleNamespace
+
+    kind_raw = getattr(att, "kind", None)
+    kind_str = (
+        str(kind_raw.value) if hasattr(kind_raw, "value") else str(kind_raw or "")
+    ).lower()
+    kind = _KIND_REMAP.get(kind_str, kind_str)
+
+    # Server's _attachment_to_proto compares via `== ApiAttachmentKind.IMAGE`
+    # etc. — those enums are StrEnum so comparing against the raw string
+    # value would fail. We lazy-import the server-side enum class to
+    # produce a real ApiAttachmentKind instance; if the server package
+    # isn't importable (standalone channel tests) we fall back to the
+    # raw string and accept that the proto builder will hit the
+    # UNSPECIFIED branch.
+    try:  # noqa: SIM105 — explicit fallback path needs the except body
+        from corlinman_server.gateway_api.types import (
+            AttachmentKind as ApiKind,
+        )
+
+        try:
+            kind_value = ApiKind(kind)
+        except ValueError:
+            kind_value = ApiKind.IMAGE if kind == "image" else ApiKind.FILE
+    except Exception:  # noqa: BLE001
+        kind_value = kind  # type: ignore[assignment]
+
+    return SimpleNamespace(
+        kind=kind_value,
+        url=getattr(att, "url", None) or None,
+        bytes_=getattr(att, "data", None) or None,
+        mime=getattr(att, "mime", None) or None,
+        file_name=getattr(att, "file_name", None) or None,
     )
 
 
@@ -3596,6 +3668,10 @@ def _build_text_channel_request(
     ``req.messages``…) — same shape as :func:`_build_internal_request`
     for QQ. The earlier dict form crashed the gateway with
     ``AttributeError: 'dict' object has no attribute 'model'``.
+
+    Attachments go through :func:`_to_server_attachment_shape` so the
+    server-side proto builder reads ``bytes_`` + ``ApiAttachmentKind``
+    correctly (see the same bug fix on ``_build_internal_request``).
     """
     from types import SimpleNamespace
 
@@ -3607,7 +3683,9 @@ def _build_text_channel_request(
         stream=True,
         max_tokens=None,
         temperature=None,
-        attachments=list(inbound.attachments),
+        attachments=[
+            _to_server_attachment_shape(a) for a in inbound.attachments
+        ],
         binding=inbound.binding,
     )
 

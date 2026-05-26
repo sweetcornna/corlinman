@@ -218,7 +218,7 @@ def test_seed_starter_skills_seeds_configure_persona(
     # Spot-check the SKILL.md mentions the persona.* tool family the
     # wizard drives — guards against a future edit that strips the
     # tool list from the playbook.
-    assert "persona.create" in body
+    assert "persona_create" in body
     assert "ask_user" in body
 
 

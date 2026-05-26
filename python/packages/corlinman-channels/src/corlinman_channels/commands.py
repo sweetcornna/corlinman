@@ -64,14 +64,14 @@ _PERSONA_WIZARD_PRELUDE: str = (
     "[a-z0-9_-]), display_name, and a system_prompt that captures the "
     "persona's voice / style. Optional: upload emoji + reference images "
     "by directing them to the /admin/persona UI for drag-drop, OR ask "
-    "them to paste image URLs and call persona.attach_asset_from_url "
+    "them to paste image URLs and call persona_attach_asset_from_url "
     "yourself. Steps:\n"
     "1. Greet the user and ask whether they want to create a new "
     "persona or edit one. Use ask_user for the question.\n"
     "2. If create: ask for the id and display_name, then conduct a 3-5 "
     "turn voice/style interview (one ask_user question per turn).\n"
     "3. Compose a draft system_prompt from the interview answers, show "
-    "it back to the user via ask_user, and only call persona.create "
+    "it back to the user via ask_user, and only call persona_create "
     "after they confirm.\n"
     "4. Offer asset-upload paths (web UI or URL-paste).\n"
     "5. Summarise what was created and link to /admin/persona."
@@ -80,7 +80,7 @@ _PERSONA_WIZARD_PRELUDE: str = (
 
 _PERSONA_LIST_PRELUDE: str = (
     "[SYSTEM-INSERTED] The user invoked the persona list shortcut. "
-    "Call persona.list and render the result as a numbered list "
+    "Call persona_list and render the result as a numbered list "
     "with each entry's id, display_name, and short_summary. Do not "
     "start a configuration wizard; this is a read-only listing."
 )

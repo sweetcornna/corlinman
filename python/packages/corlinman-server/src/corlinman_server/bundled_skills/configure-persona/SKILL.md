@@ -13,13 +13,13 @@ metadata:
       No installation needed. The skill drives the in-process
       `persona.*` tool family + `ask_user`; no external services.
 allowed-tools:
-  - persona.list
-  - persona.get
-  - persona.create
-  - persona.update
-  - persona.delete
-  - persona.list_assets
-  - persona.attach_asset_from_url
+  - persona_list
+  - persona_get
+  - persona_create
+  - persona_update
+  - persona_delete
+  - persona_list_assets
+  - persona_attach_asset_from_url
   - ask_user
 ---
 # Configure Persona
@@ -37,13 +37,13 @@ Use this skill whenever:
 
 ## Tools you will use
 
-- `persona.list` — read the registry (id, display_name, summary).
-- `persona.get` — fetch a full persona body (system_prompt + metadata).
-- `persona.create` — persist a new persona.
-- `persona.update` — patch an existing persona's fields.
-- `persona.list_assets` — enumerate emoji + reference images attached to
+- `persona_list` — read the registry (id, display_name, summary).
+- `persona_get` — fetch a full persona body (system_prompt + metadata).
+- `persona_create` — persist a new persona.
+- `persona_update` — patch an existing persona's fields.
+- `persona_list_assets` — enumerate emoji + reference images attached to
   a persona.
-- `persona.attach_asset_from_url` — pull an HTTP(S) image into the
+- `persona_attach_asset_from_url` — pull an HTTP(S) image into the
   persona's asset bag.
 - `ask_user` — the canned-question UX for any branch point that needs
   user input (interview questions, confirmations, mode selection).
@@ -56,7 +56,7 @@ Call `ask_user` with a short greeting and a two-option question:
 
 > 想创建新的 persona 还是编辑已有的？(create / edit)
 
-If the user picks `edit`, call `persona.list` first and ask which `id`
+If the user picks `edit`, call `persona_list` first and ask which `id`
 they want; then jump to **Step 6 (edit)**.
 
 If the user picks `create`, continue to **Step 2**.
@@ -104,7 +104,7 @@ they called out (do NOT re-ask everything).
 
 ### Step 5 — Persist
 
-After confirmation, call `persona.create` with `{id, display_name,
+After confirmation, call `persona_create` with `{id, display_name,
 system_prompt, short_summary}` where `short_summary` is a ≤120 字
 sentence derived from the system_prompt.
 
@@ -113,10 +113,10 @@ plain text and offer a one-shot retry path.
 
 ### Step 6 — Edit (alternate branch)
 
-After `persona.get` returns the current row, ask via `ask_user` which
+After `persona_get` returns the current row, ask via `ask_user` which
 field to patch (`display_name`, `system_prompt`, `short_summary`,
 `is_active`). Then collect the new value, present a diff-style preview
-(`old → new`), and on confirmation call `persona.update`.
+(`old → new`), and on confirmation call `persona_update`.
 
 ### Step 7 — Assets
 
@@ -128,7 +128,7 @@ After create/update, ask:
 > 3. 跳过
 
 For option 2, loop on `ask_user` collecting `{label, url}` pairs and
-call `persona.attach_asset_from_url` per entry. Always echo the
+call `persona_attach_asset_from_url` per entry. Always echo the
 resulting asset path back to the user.
 
 ### Step 8 — Wrap-up
@@ -139,9 +139,9 @@ channel bindings).
 
 ## Anti-patterns
 
-- Do NOT call `persona.create` before the user confirms the
+- Do NOT call `persona_create` before the user confirms the
   `system_prompt` draft in Step 4. The persona row is the persistent
-  unit; rolling back means a `persona.delete` round-trip.
+  unit; rolling back means a `persona_delete` round-trip.
 - Do NOT skip `ask_user` and infer answers from prior conversation
   context — the wizard's contract is explicit confirmation.
 - Do NOT auto-upload images without an explicit URL from the user;

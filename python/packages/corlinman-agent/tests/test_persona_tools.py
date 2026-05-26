@@ -107,22 +107,22 @@ async def _seed(persona_store: PersonaStore, *, pid: str = "kawaii") -> Persona:
 
 
 def test_tool_names_are_wire_stable() -> None:
-    assert PERSONA_LIST_TOOL == "persona.list"
-    assert PERSONA_GET_TOOL == "persona.get"
-    assert PERSONA_CREATE_TOOL == "persona.create"
-    assert PERSONA_UPDATE_TOOL == "persona.update"
-    assert PERSONA_DELETE_TOOL == "persona.delete"
-    assert PERSONA_LIST_ASSETS_TOOL == "persona.list_assets"
-    assert PERSONA_ATTACH_ASSET_FROM_URL_TOOL == "persona.attach_asset_from_url"
+    assert PERSONA_LIST_TOOL == "persona_list"
+    assert PERSONA_GET_TOOL == "persona_get"
+    assert PERSONA_CREATE_TOOL == "persona_create"
+    assert PERSONA_UPDATE_TOOL == "persona_update"
+    assert PERSONA_DELETE_TOOL == "persona_delete"
+    assert PERSONA_LIST_ASSETS_TOOL == "persona_list_assets"
+    assert PERSONA_ATTACH_ASSET_FROM_URL_TOOL == "persona_attach_asset_from_url"
     assert PERSONA_TOOLS == frozenset(
         {
-            "persona.list",
-            "persona.get",
-            "persona.create",
-            "persona.update",
-            "persona.delete",
-            "persona.list_assets",
-            "persona.attach_asset_from_url",
+            "persona_list",
+            "persona_get",
+            "persona_create",
+            "persona_update",
+            "persona_delete",
+            "persona_list_assets",
+            "persona_attach_asset_from_url",
         }
     )
 
@@ -130,13 +130,13 @@ def test_tool_names_are_wire_stable() -> None:
 @pytest.mark.parametrize(
     ("schema_fn", "name"),
     [
-        (persona_list_tool_schema, "persona.list"),
-        (persona_get_tool_schema, "persona.get"),
-        (persona_create_tool_schema, "persona.create"),
-        (persona_update_tool_schema, "persona.update"),
-        (persona_delete_tool_schema, "persona.delete"),
-        (persona_list_assets_tool_schema, "persona.list_assets"),
-        (persona_attach_asset_from_url_tool_schema, "persona.attach_asset_from_url"),
+        (persona_list_tool_schema, "persona_list"),
+        (persona_get_tool_schema, "persona_get"),
+        (persona_create_tool_schema, "persona_create"),
+        (persona_update_tool_schema, "persona_update"),
+        (persona_delete_tool_schema, "persona_delete"),
+        (persona_list_assets_tool_schema, "persona_list_assets"),
+        (persona_attach_asset_from_url_tool_schema, "persona_attach_asset_from_url"),
     ],
 )
 def test_schemas_are_openai_shaped(schema_fn, name) -> None:  # type: ignore[no-untyped-def]
@@ -154,7 +154,7 @@ def test_persona_tool_schemas_returns_all_seven() -> None:
 
 
 # ---------------------------------------------------------------------------
-# persona.list
+# persona_list
 # ---------------------------------------------------------------------------
 
 
@@ -203,7 +203,7 @@ async def test_list_store_unavailable() -> None:
 
 
 # ---------------------------------------------------------------------------
-# persona.get
+# persona_get
 # ---------------------------------------------------------------------------
 
 
@@ -275,7 +275,7 @@ async def test_get_missing_id_arg(persona_store, asset_store) -> None:
 
 
 # ---------------------------------------------------------------------------
-# persona.create
+# persona_create
 # ---------------------------------------------------------------------------
 
 
@@ -337,7 +337,7 @@ async def test_create_missing_args(persona_store, asset_store) -> None:
 
 
 # ---------------------------------------------------------------------------
-# persona.update
+# persona_update
 # ---------------------------------------------------------------------------
 
 
@@ -384,7 +384,7 @@ async def test_update_missing_persona(persona_store, asset_store) -> None:
 
 
 # ---------------------------------------------------------------------------
-# persona.delete
+# persona_delete
 # ---------------------------------------------------------------------------
 
 
@@ -437,7 +437,7 @@ async def test_delete_builtin_protected(persona_store, asset_store) -> None:
 
 
 # ---------------------------------------------------------------------------
-# persona.list_assets
+# persona_list_assets
 # ---------------------------------------------------------------------------
 
 
@@ -529,7 +529,7 @@ async def test_list_assets_invalid_kind(persona_store, asset_store) -> None:
 
 
 # ---------------------------------------------------------------------------
-# persona.attach_asset_from_url
+# persona_attach_asset_from_url
 # ---------------------------------------------------------------------------
 
 
