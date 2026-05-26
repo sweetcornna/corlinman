@@ -308,6 +308,11 @@ class BroadcastLoggingHandler(logging.Handler):
         self._broadcaster = broadcaster
 
     def emit(self, record: logging.LogRecord) -> None:
+        import sys as _sys
+        _sys.stderr.write(
+            f"[BLH-emit] name={record.name} level={record.levelname} "
+            f"recv={self._broadcaster.receiver_count()}\n"
+        )
         # Don't build the record envelope when nobody's listening — the
         # gateway logs hundreds of events per minute even idle.
         if self._broadcaster.receiver_count() == 0:
