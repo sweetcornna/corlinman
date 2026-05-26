@@ -847,6 +847,10 @@ class OneBotAdapter:
                 # the account WAS online at this moment, so flip True.
                 if raw.get("post_type") == "meta_event":
                     if raw.get("meta_event_type") == "heartbeat":
+                        _log.info(
+                            "onebot.heartbeat_seen status=%s",
+                            raw.get("status"),
+                        )
                         # NapCat's heartbeat shape varies by build:
                         #   * upstream OneBot v11: {"status": {"online": true, ...}}
                         #   * older NapCat:        {"status": {"online": 1, ...}}
