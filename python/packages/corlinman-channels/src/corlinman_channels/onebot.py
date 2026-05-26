@@ -847,12 +847,40 @@ class OneBotAdapter:
                 # the account WAS online at this moment, so flip True.
                 if raw.get("post_type") == "meta_event":
                     if raw.get("meta_event_type") == "heartbeat":
+                        # NapCat's heartbeat shape varies by build:
+                        #   * upstream OneBot v11: {"status": {"online": true, ...}}
+                        #   * older NapCat:        {"status": {"online": 1, ...}}
+                        #   * NapCat with bot logged out: status block may
+                        #     omit ``online`` entirely (we treat that as
+                        #     "the WS is up but the account isn't")
                         status_block = raw.get("status")
+                        online_raw: Any = None
                         if isinstance(status_block, dict):
                             online_raw = status_block.get("online")
-                            if isinstance(online_raw, bool):
-                                self._last_status_online = online_raw
-                                self._last_status_online_at_ms = now_ms
+                            if online_raw is None:
+                                # Fallback: NapCat sometimes nests under
+                                # ``status.app.online`` or surfaces a
+                                # ``good`` field next to ``online``. Try
+                                # those before declaring "unknown".
+                                inner_app = status_block.get("app")
+                                if isinstance(inner_app, dict):
+                                    online_raw = inner_app.get("online")
+                                if online_raw is None and "good" in status_block:
+                                    online_raw = status_block.get("good")
+                        if online_raw is None:
+                            # No online flag anywhere — the heartbeat
+                            # arrived but doesn't carry account state.
+                            # Surface as False (the bot can't actually
+                            # respond) rather than freezing the previous
+                            # True; the staleness guard upstream still
+                            # protects against an old reading.
+                            self._last_status_online = False
+                            self._last_status_online_at_ms = now_ms
+                        else:
+                            # Coerce truthy/falsy ints and strings into
+                            # the bool the watcher expects.
+                            self._last_status_online = bool(online_raw)
+                            self._last_status_online_at_ms = now_ms
                 else:
                     # A real inbound message / notice / request implies the
                     # account is up — heartbeats might lag.

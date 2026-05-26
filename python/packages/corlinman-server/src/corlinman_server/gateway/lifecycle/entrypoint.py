@@ -1221,6 +1221,20 @@ def build_app(
                 if admin_b_state is not None:
                     admin_b_state.journal = observability_journal
                     admin_b_state.event_emitter = observability_emitter
+                    # Bridge the AppState log broadcaster onto the
+                    # admin-B state under the field name the
+                    # /admin/logs/stream route reads (``log_broadcast``,
+                    # not ``log_broadcaster``). Without this the route
+                    # returns 503 ``logs_disabled`` even when the
+                    # broadcaster was installed during _build_state.
+                    bcaster = getattr(state, "log_broadcaster", None)
+                    if bcaster is not None and getattr(
+                        admin_b_state, "log_broadcast", None
+                    ) is None:
+                        try:
+                            admin_b_state.log_broadcast = bcaster
+                        except (AttributeError, TypeError):  # pragma: no cover
+                            pass
 
                 # Publish onto app.state for tests + future producers
                 # that need the same shared emitter.
