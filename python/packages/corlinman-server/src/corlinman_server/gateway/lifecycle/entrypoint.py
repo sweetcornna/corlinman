@@ -650,19 +650,63 @@ def _build_state(cfg: Any | None, data_dir: Path) -> Any:
                                 import logging as _logging
 
                                 handler = BroadcastHandler(broadcaster, level=_logging.INFO)
+                                # Attach the handler to the root logger
+                                # AND every existing named logger so
+                                # libraries that set propagate=False
+                                # (uvicorn, uvicorn.access, uvicorn.error,
+                                # httpx, etc.) still surface events into
+                                # the SSE feed. Idempotent: re-runs skip
+                                # loggers that already carry the handler.
                                 root = _logging.getLogger()
-                                # Don't re-attach an identical handler
-                                # across hot reloads / re-builds.
-                                already = any(
-                                    isinstance(h, BroadcastHandler) for h in root.handlers
-                                )
-                                if not already:
+                                if not any(
+                                    isinstance(h, BroadcastHandler)
+                                    for h in root.handlers
+                                ):
                                     root.addHandler(handler)
-                                    # Make sure the root level isn't
-                                    # blocking INFO — some boots only
-                                    # configure WARNING by default.
-                                    if root.level > _logging.INFO or root.level == 0:
-                                        root.setLevel(_logging.INFO)
+                                if root.level > _logging.INFO or root.level == 0:
+                                    root.setLevel(_logging.INFO)
+                                # Walk the existing logger registry. New
+                                # loggers created later inherit from
+                                # root, so attaching here covers
+                                # known-stubborn-propagate ones AND any
+                                # custom named loggers already alive at
+                                # boot. ``Logger.manager.loggerDict`` is
+                                # the documented introspection hook.
+                                logger_dict = getattr(
+                                    _logging.Logger.manager, "loggerDict", {}
+                                )
+                                for name, lg in list(logger_dict.items()):
+                                    if not isinstance(lg, _logging.Logger):
+                                        continue
+                                    if any(
+                                        isinstance(h, BroadcastHandler)
+                                        for h in lg.handlers
+                                    ):
+                                        continue
+                                    # Only attach to loggers that
+                                    # actively block propagation —
+                                    # otherwise the root handler covers
+                                    # them and we'd double-emit.
+                                    if not lg.propagate:
+                                        lg.addHandler(handler)
+                                        if lg.level > _logging.INFO or lg.level == 0:
+                                            lg.setLevel(_logging.INFO)
+                                # Also attach explicitly to uvicorn's
+                                # well-known loggers in case they were
+                                # registered AFTER our walk (e.g. on the
+                                # first request).
+                                for name in (
+                                    "uvicorn", "uvicorn.access", "uvicorn.error",
+                                    "fastapi", "httpx",
+                                ):
+                                    lg = _logging.getLogger(name)
+                                    if not any(
+                                        isinstance(h, BroadcastHandler)
+                                        for h in lg.handlers
+                                    ):
+                                        lg.addHandler(handler)
+                                    if lg.level > _logging.INFO or lg.level == 0:
+                                        lg.setLevel(_logging.INFO)
                             except Exception as exc:  # noqa: BLE001
                                 logger.debug(
                                     "gateway.log_broadcast.stdlib_handler_attach_failed",
