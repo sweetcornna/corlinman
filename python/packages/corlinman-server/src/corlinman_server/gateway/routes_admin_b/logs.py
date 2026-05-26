@@ -115,6 +115,15 @@ async def _sse_stream(broadcaster: Any, query: LogStreamQuery):
     # chunk so any output buffering on the path can't silently hold
     # the entire stream.
     yield b": connected\n\n"
+    # Self-test on first subscribe — fire a log of our own through the
+    # stdlib root path so the user sees at least ONE record even if no
+    # other code path emits during the session. Doubles as a smoke test
+    # for the publish chain.
+    import logging as _stdlib_logging
+    _stdlib_logging.getLogger("corlinman.gateway.admin.logs").info(
+        "admin_logs.subscribed receiver_count=%d",
+        broadcaster.receiver_count(),
+    )
     last_emit = asyncio.get_running_loop().time()
     try:
         while True:
