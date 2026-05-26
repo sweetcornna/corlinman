@@ -39,6 +39,7 @@ import asyncio
 import collections
 import logging
 import mimetypes
+import os
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
@@ -411,11 +412,24 @@ async def run_qq_channel(
 # Public, mutable: latest NapCat health probe result for the QQ channel.
 # A dict so callers can ``health.get(...)`` without importing a type;
 # updated by ``_qq_health_watcher`` and read by admin status routes.
+#
+# ``account_online`` is the truth-source for "can the bot actually
+# receive QQ messages right now". NapCat WS heartbeats stay healthy
+# even when the bot QQ account itself is kicked offline by Tencent
+# (the ``[KickedOffLine]`` event), so ``online`` (WS heartbeat) and
+# ``account_online`` (real QQ login state) can disagree. The admin UI
+# should treat ``account_online == False`` as the operator action
+# signal — it means re-scan-QR is required.
 QQ_HEALTH: dict[str, Any] = {
     "online": False,
     "last_event_at_ms": None,
     "seconds_since_event": None,
     "checked_at_ms": None,
+    "account_online": None,        # None = never probed; True/False = last result
+    "account_qq": None,            # int — the QQ id NapCat reports for the bot
+    "account_nickname": None,      # str — display name on the bot account
+    "account_checked_at_ms": None,
+    "account_last_error": None,    # str — most recent probe failure reason
 }
 
 
@@ -449,6 +463,17 @@ async def _qq_health_watcher(
     was_lost = False
     lost_since_ms: int | None = None
 
+    # Account-state probe — HTTP fetch interval is independent of the
+    # heartbeat poll. Default 60s (covers KickedOffLine within a minute);
+    # tunable via ``CORLINMAN_QQ_ACCOUNT_PROBE_S``.
+    try:
+        account_probe_s = max(
+            10, int(os.environ.get("CORLINMAN_QQ_ACCOUNT_PROBE_S", "60"))
+        )
+    except ValueError:
+        account_probe_s = 60
+    last_account_probe_ms = 0
+
     while not cancel.is_set():
         try:
             await asyncio.wait_for(cancel.wait(), timeout=probe_s)
@@ -469,6 +494,20 @@ async def _qq_health_watcher(
             seconds_since_event=seconds_since,
             checked_at_ms=now_ms,
         )
+
+        # Periodic NapCat account-online probe. WS heartbeats stay
+        # alive after a KickedOffLine, so the heartbeat-only signal
+        # lies. We fire the probe as a background task so a slow /
+        # unreachable NapCat HTTP can't block the watcher loop (which
+        # also drives the heartbeat metrics every probe_s). The probe
+        # writes to QQ_HEALTH directly when it finishes — readers see
+        # the previous value until then. Failures never raise.
+        if now_ms - last_account_probe_ms >= account_probe_s * 1000:
+            last_account_probe_ms = now_ms
+            asyncio.create_task(
+                _qq_probe_account_online(adapter, now_ms),
+                name="qq-account-probe",
+            )
 
         if is_lost and not was_lost:
             if lost_since_ms is None:
@@ -498,6 +537,115 @@ async def _qq_health_watcher(
             )
             was_lost = False
             lost_since_ms = None
+
+
+def _napcat_http_base(ws_url: str | None) -> str | None:
+    """Derive NapCat's HTTP-action base URL from its WS URL.
+
+    NapCat's reverse-WS endpoint is typically ``ws://host:3001/onebot``
+    and the matching HTTP action endpoint is ``http://host:3001``
+    (NapCat serves both off the same port). The mapping is purely
+    syntactic — flip the scheme, drop the ``/onebot[/v11]`` suffix.
+
+    Returns ``None`` when ``ws_url`` is missing or unparseable; the
+    caller treats that as "skip the probe this round". An explicit
+    ``CORLINMAN_NAPCAT_HTTP_URL`` env override always wins.
+    """
+    explicit = os.environ.get("CORLINMAN_NAPCAT_HTTP_URL")
+    if explicit:
+        return explicit.rstrip("/")
+    if not ws_url:
+        return None
+    base = ws_url
+    if base.startswith("wss://"):
+        base = "https://" + base[len("wss://"):]
+    elif base.startswith("ws://"):
+        base = "http://" + base[len("ws://"):]
+    # Strip any /onebot or /onebot/v11 suffix.
+    for suffix in ("/onebot/v11", "/onebot"):
+        if base.endswith(suffix):
+            base = base[: -len(suffix)]
+            break
+    return base.rstrip("/") or None
+
+
+async def _qq_probe_account_online(
+    adapter: OneBotAdapter, now_ms: int
+) -> None:
+    """Probe NapCat HTTP ``/get_login_info`` and update QQ_HEALTH.
+
+    Best-effort: any failure (network, missing config, malformed
+    response) records ``account_online=False`` plus a short
+    ``account_last_error`` string. Success records the bot's QQ id +
+    nickname.
+    """
+    import httpx as _httpx
+
+    base = _napcat_http_base(getattr(adapter, "url", None))
+    if base is None:
+        QQ_HEALTH.update(
+            account_online=False,
+            account_checked_at_ms=now_ms,
+            account_last_error="napcat_http_url_unknown",
+        )
+        return
+    url = f"{base}/get_login_info"
+    headers: dict[str, str] = {}
+    token = os.environ.get("CORLINMAN_NAPCAT_ACCESS_TOKEN", "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        async with _httpx.AsyncClient(timeout=2.0) as client:
+            resp = await client.get(url, headers=headers)
+    except _httpx.HTTPError as exc:
+        QQ_HEALTH.update(
+            account_online=False,
+            account_checked_at_ms=now_ms,
+            account_last_error=f"http_error: {exc}",
+        )
+        return
+    if resp.status_code != 200:
+        QQ_HEALTH.update(
+            account_online=False,
+            account_checked_at_ms=now_ms,
+            account_last_error=f"http_{resp.status_code}",
+        )
+        return
+    try:
+        env = resp.json()
+    except ValueError:
+        QQ_HEALTH.update(
+            account_online=False,
+            account_checked_at_ms=now_ms,
+            account_last_error="bad_json",
+        )
+        return
+    if not isinstance(env, dict) or env.get("status") != "ok":
+        # NapCat returns status="failed" when the bot account is
+        # offline (post-KickedOffLine). retcode 1 + message about
+        # login state.
+        msg = ""
+        if isinstance(env, dict):
+            msg = str(env.get("message") or env.get("wording") or "")
+        QQ_HEALTH.update(
+            account_online=False,
+            account_checked_at_ms=now_ms,
+            account_last_error=f"napcat: {msg or 'status_not_ok'}",
+        )
+        return
+    data = env.get("data") or {}
+    user_id = data.get("user_id") if isinstance(data, dict) else None
+    nickname = data.get("nickname") if isinstance(data, dict) else None
+    # NapCat reports user_id 0 when the account is offline mid-rotation
+    # but the HTTP plane is still answering. Treat that as offline.
+    account_online = isinstance(user_id, int) and user_id > 0
+    QQ_HEALTH.update(
+        account_online=account_online,
+        account_qq=user_id if account_online else None,
+        account_nickname=nickname if account_online else None,
+        account_checked_at_ms=now_ms,
+        account_last_error=None if account_online else "user_id_zero",
+    )
 
 
 async def _qq_dispatch_loop(

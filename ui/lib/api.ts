@@ -230,6 +230,19 @@ export interface QqStatus {
   group_keywords: Record<string, string[]>;
   runtime: "unknown" | "connected" | "disconnected";
   recent_messages: unknown[];
+  // NapCat WS heartbeat health.
+  health_online?: boolean | null;
+  health_last_event_at_ms?: number | null;
+  health_seconds_since_event?: number | null;
+  health_checked_at_ms?: number | null;
+  // Bot QQ account state — independent of WS health. False after
+  // Tencent kicks the account offline; UI should surface a "re-scan
+  // QR via NapCat WebUI" banner when False.
+  account_online?: boolean | null;
+  account_qq?: number | null;
+  account_nickname?: string | null;
+  account_checked_at_ms?: number | null;
+  account_last_error?: string | null;
 }
 export function fetchQqStatus(): Promise<QqStatus> {
   return apiFetch<QqStatus>("/admin/channels/qq/status");

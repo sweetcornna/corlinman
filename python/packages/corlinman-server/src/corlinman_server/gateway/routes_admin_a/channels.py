@@ -67,6 +67,15 @@ class StatusOut(BaseModel):
     health_last_event_at_ms: int | None = None
     health_seconds_since_event: int | None = None
     health_checked_at_ms: int | None = None
+    # Bot account state (separate from NapCat WS health; the WS can
+    # stay alive while the QQ account is kicked offline by Tencent).
+    # ``account_online=False`` is the operator-action signal: re-scan
+    # the QR via the NapCat WebUI.
+    account_online: bool | None = None
+    account_qq: int | None = None
+    account_nickname: str | None = None
+    account_checked_at_ms: int | None = None
+    account_last_error: str | None = None
 
 
 class KeywordsBody(BaseModel):
@@ -205,6 +214,11 @@ def router() -> APIRouter:
             health_last_event_at_ms=health.get("last_event_at_ms"),
             health_seconds_since_event=health.get("seconds_since_event"),
             health_checked_at_ms=health.get("checked_at_ms"),
+            account_online=health.get("account_online"),
+            account_qq=health.get("account_qq"),
+            account_nickname=health.get("account_nickname"),
+            account_checked_at_ms=health.get("account_checked_at_ms"),
+            account_last_error=health.get("account_last_error"),
         )
 
     @r.post(

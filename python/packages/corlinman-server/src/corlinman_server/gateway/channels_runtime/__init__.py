@@ -810,6 +810,24 @@ def bootstrap(state: Any) -> list[asyncio.Task[Any]]:
         asset_store = None
         admin_a_state = None
 
+    # Plumb the resolved channels config dict into admin_a state so the
+    # ``/admin/channels/{qq,telegram,...}/status`` routes can read the
+    # actual ws_url / bot_token presence / per-group keywords the live
+    # channels are running with. Without this the status route shows
+    # ``configured: false`` even when a channel is happily connected,
+    # because nothing else writes ``admin_a_state.channels_config``.
+    # Pass a *copy* so subsequent in-memory mutations by the routes
+    # (humanlike toggle, keywords PUT) operate on the same dict that
+    # the bootstrap already finished consuming — neither side races.
+    if admin_a_state is not None:
+        try:
+            # dict(channels_cfg) is shallow which is the right depth here
+            # — nested tables (humanlike, rate_limit) are read on each
+            # request, so they pick up route-driven edits naturally.
+            admin_a_state.channels_config = dict(channels_cfg)
+        except (AttributeError, TypeError):  # pragma: no cover — defensive
+            logger.debug("gateway.channels.admin_state_attach_failed")
+
     # W4-FE F2 — when the Telegram channel constructs its sender, park
     # it on admin_a state so the
     # ``POST /admin/channels/telegram/send`` route can post test

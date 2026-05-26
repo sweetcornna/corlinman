@@ -166,6 +166,40 @@ export default function QqChannelPage() {
           <QqOfflineBlock message={(status.error as Error | undefined)?.message} />
         ) : (
           <>
+            {status.data?.account_online === false && (
+              <div
+                role="alert"
+                className="flex items-start gap-3 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-200"
+              >
+                <span aria-hidden className="text-base">⚠️</span>
+                <div className="flex-1">
+                  <p className="font-medium">
+                    {t("channels.qq.accountOfflineTitle", "QQ 账号已下线")}
+                  </p>
+                  <p className="mt-1 text-xs opacity-80">
+                    {t(
+                      "channels.qq.accountOfflineBody",
+                      "NapCat 心跳正常但 QQ 账号被 Tencent 踢下线了。需要重新扫码登录后机器人才能收发消息。",
+                    )}
+                    {status.data?.account_last_error && (
+                      <>
+                        {" "}
+                        <span className="font-mono opacity-70">
+                          ({status.data.account_last_error})
+                        </span>
+                      </>
+                    )}
+                  </p>
+                  <button
+                    type="button"
+                    className="mt-2 inline-flex items-center gap-1 rounded-md bg-amber-500/20 px-2.5 py-1 text-xs font-medium hover:bg-amber-500/30"
+                    onClick={() => setScanLoginOpen(true)}
+                  >
+                    {t("channels.qq.accountOfflineAction", "打开扫码登录")}
+                  </button>
+                </div>
+              </div>
+            )}
             <QqHero
               connection={connection}
               wsUrl={status.data?.ws_url ?? null}
