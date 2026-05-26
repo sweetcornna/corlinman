@@ -108,6 +108,13 @@ async def _sse_stream(broadcaster: Any, query: LogStreamQuery):
       an ``event: lag`` frame.
     """
     sub = broadcaster.subscribe()
+    # Send a "subscribed" marker immediately so the UI's `Live` chip can
+    # confirm connectivity within ~1 RTT (otherwise the user stares at
+    # "等待事件..." until the first real log or the 15s keep-alive). This
+    # also forces uvicorn to flush the initial response headers + first
+    # chunk so any output buffering on the path can't silently hold
+    # the entire stream.
+    yield b": connected\n\n"
     last_emit = asyncio.get_running_loop().time()
     try:
         while True:
