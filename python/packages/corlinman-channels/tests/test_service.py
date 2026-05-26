@@ -465,6 +465,54 @@ class TestHandleOneQq:
         assert adapter.sent == []
 
     @pytest.mark.asyncio
+    async def test_multichunk_group_reply_ats_only_first_chunk(self) -> None:
+        """Regression: when a long body splits into multiple chunks the
+        @sender mention MUST appear only on chunk[0]. Pre-fix every
+        chunk prepended ``AtSegment``, spamming the user with N pings
+        in the group.
+        """
+        # Build a body that exceeds the 3800-char QQ cap so chunk_reply
+        # splits it into 2+ segments. Two paragraphs separated by a
+        # blank line so chunking lands on a paragraph boundary.
+        big = "A" * 2500
+        body = big + "\n\n" + big
+        svc = _ScriptedChatService([
+            _Ev(kind="token_delta", text=body),
+            _Ev(kind="done"),
+        ])
+        ev = _sample_group_event()
+        binding = ChannelBinding.qq_group(ev.self_id, ev.group_id or 0, ev.user_id)
+        req = RoutedRequest(binding=binding, content="long please")
+        adapter = _FakeOneBotAdapter()
+
+        import asyncio
+
+        await handle_one_qq(svc, req, ev, "m", adapter, asyncio.Event())  # type: ignore[arg-type]
+        sends = [a for a in adapter.sent if isinstance(a, SendGroupMsg)]
+        assert len(sends) >= 2, f"expected multi-chunk send; got {len(sends)}"
+
+        # Chunk[0]: AtSegment + TextSegment, in that order.
+        first = sends[0]
+        assert isinstance(first.message[0], AtSegment)
+        assert first.message[0].qq == str(ev.user_id)
+        assert isinstance(first.message[1], TextSegment)
+
+        # Chunks[1:]: no AtSegment, only a single TextSegment.
+        for follow in sends[1:]:
+            assert not any(
+                isinstance(seg, AtSegment) for seg in follow.message
+            ), (
+                "follow-up chunk must NOT @-mention again — Tencent "
+                "anti-spam treats repeat pings as abuse"
+            )
+            # And the text payload is non-empty.
+            text_segs = [
+                seg for seg in follow.message if isinstance(seg, TextSegment)
+            ]
+            assert text_segs
+            assert text_segs[0].text.strip()
+
+    @pytest.mark.asyncio
     async def test_send_attachment_private_uploads_via_napcat(
         self, tmp_path: Any
     ) -> None:

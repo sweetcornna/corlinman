@@ -1052,8 +1052,10 @@ async def handle_one_qq(
             len(body),
             len(chunks),
         )
-    for chunk in chunks:
-        action = _build_reply_action(event, chunk)
+    for idx, chunk in enumerate(chunks):
+        action = _build_reply_action(
+            event, chunk, prepend_at_mention=(idx == 0)
+        )
         await adapter.send_action(action)
     if inbox is not None and inbox_id is not None:
         try:
@@ -1145,21 +1147,31 @@ def _build_internal_request(
     )
 
 
-def _build_reply_action(event: MessageEvent, body: str) -> Action:
+def _build_reply_action(
+    event: MessageEvent, body: str, *, prepend_at_mention: bool = True
+) -> Action:
     """Build a ``SendGroupMsg`` / ``SendPrivateMsg`` action with a
-    single text segment. Group messages prepend an ``@sender`` so the
-    reply is clearly addressed (matches qqBot.js / Rust)."""
+    single text segment.
+
+    Group messages prepend an ``@sender`` so the reply is clearly
+    addressed (matches qqBot.js / Rust). When a long reply is split
+    into multiple chunks, the caller MUST set ``prepend_at_mention=False``
+    on every chunk after the first — otherwise the user gets
+    ``@User`` × N pings in the group, which QQ clients render as spam
+    and Tencent's anti-spam may rate-limit. Telegram does the
+    equivalent by only setting ``reply_to_message_id`` on chunk[0].
+    """
     if event.message_type == MessageType.GROUP:
         from corlinman_channels.onebot import AtSegment
 
         gid = event.group_id or 0
-        return SendGroupMsg(
-            group_id=gid,
-            message=[
-                AtSegment(qq=str(event.user_id)),
-                TextSegment(text=f" {body}"),
-            ],
-        )
+        segments: list[Any] = []
+        if prepend_at_mention:
+            segments.append(AtSegment(qq=str(event.user_id)))
+            segments.append(TextSegment(text=f" {body}"))
+        else:
+            segments.append(TextSegment(text=body))
+        return SendGroupMsg(group_id=gid, message=segments)
     return SendPrivateMsg(
         user_id=event.user_id,
         message=[TextSegment(text=body)],
