@@ -108,20 +108,15 @@ async def _sse_stream(broadcaster: Any, query: LogStreamQuery):
       an ``event: lag`` frame.
     """
     sub = broadcaster.subscribe()
+    # Send a "subscribed" marker immediately so the UI's `Live` chip can
+    # confirm connectivity within ~1 RTT and uvicorn flushes the initial
+    # response headers + first chunk.
+    yield b": connected\n\n"
+    # Self-test on subscribe — fire one log so the user sees an event
+    # even if no other code path emits during the session.
     import logging as _stdlib_logging
-    _root = _stdlib_logging.getLogger()
-    _handler_names = [type(h).__name__ for h in _root.handlers]
-    _hb = broadcaster.receiver_count()
-    yield (
-        f": connected handlers={_handler_names} receivers={_hb} "
-        f"root_level={_root.level}\n\n"
-    ).encode()
-    # Self-test on first subscribe — fire a log of our own through the
-    # stdlib root path so the user sees at least ONE record even if no
-    # other code path emits during the session. Doubles as a smoke test
-    # for the publish chain.
     _stdlib_logging.getLogger("corlinman.gateway.admin.logs").info(
-        "admin_logs.subscribed receiver_count=%d",
+        "admin_logs.subscribed (receiver_count=%d)",
         broadcaster.receiver_count(),
     )
     last_emit = asyncio.get_running_loop().time()
@@ -142,8 +137,26 @@ async def _sse_stream(broadcaster: Any, query: LogStreamQuery):
                 yield f"event: lag\ndata: {payload}\n\n".encode()
                 last_emit = asyncio.get_running_loop().time()
                 continue
+            # The broadcaster publishes ``LogRecord`` dataclass instances
+            # (not plain dicts). Coerce so the matcher + JSON renderer
+            # see the same shape they did when the route was first
+            # written against a dict-only producer.
             if not isinstance(item, dict):
-                continue
+                from dataclasses import asdict, is_dataclass
+
+                if is_dataclass(item):
+                    item = asdict(item)
+                else:
+                    # Some object types (proto messages, custom records)
+                    # — fall back to attribute scrape over the standard
+                    # field set. Drop the record entirely on shape
+                    # mismatch rather than 500ing the stream.
+                    fields = ("ts", "level", "target", "message", "fields",
+                              "trace_id", "request_id", "subsystem")
+                    if any(hasattr(item, f) for f in fields):
+                        item = {f: getattr(item, f, None) for f in fields}
+                    else:
+                        continue
             if not matches(query, item):
                 continue
             payload = json.dumps(item, default=str)

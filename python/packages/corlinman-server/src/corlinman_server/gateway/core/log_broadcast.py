@@ -98,20 +98,8 @@ class LogSubscriber:
         when the queue is at capacity so the producer never blocks."""
         if self._closed:
             return
-        import sys as _sys
-        try:
-            _qsize_before = self._queue.qsize()
-        except Exception:
-            _qsize_before = "?"
         try:
             self._queue.put_nowait(record)
-            try:
-                _qsize_after = self._queue.qsize()
-            except Exception:
-                _qsize_after = "?"
-            _sys.stderr.write(
-                f"[_push-ok] target={record.target} qsize {_qsize_before}->{_qsize_after}\n"
-            )
         except asyncio.QueueFull:
             self._lagged += 1
             # Drop oldest to make room — symmetric with Rust
@@ -320,11 +308,6 @@ class BroadcastLoggingHandler(logging.Handler):
         self._broadcaster = broadcaster
 
     def emit(self, record: logging.LogRecord) -> None:
-        import sys as _sys
-        _sys.stderr.write(
-            f"[BLH-emit] name={record.name} level={record.levelname} "
-            f"recv={self._broadcaster.receiver_count()}\n"
-        )
         # Don't build the record envelope when nobody's listening — the
         # gateway logs hundreds of events per minute even idle.
         if self._broadcaster.receiver_count() == 0:
@@ -362,13 +345,7 @@ class BroadcastLoggingHandler(logging.Handler):
                     subsystem=record.name,
                 )
             )
-            import sys as _sys
-            _sys.stderr.write(f"[BLH-publish-ok] {record.name}\n")
-        except Exception as _e:  # noqa: BLE001 — never raise into the logging machinery
-            import sys as _sys
-            import traceback as _tb
-            _sys.stderr.write(f"[BLH-publish-FAIL] {record.name}: {_e!r}\n")
-            _tb.print_exc(file=_sys.stderr)
+        except Exception:  # noqa: BLE001 — never raise into the logging machinery
             return
 
 
