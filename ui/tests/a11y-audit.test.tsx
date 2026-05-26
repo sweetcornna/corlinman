@@ -322,8 +322,8 @@ const CASES: AuditCase[] = [
   { name: "skills", loader: () => import("@/app/(admin)/skills/page") },
   { name: "hooks", loader: () => import("@/app/(admin)/hooks/page") },
   {
-    name: "playground/protocol",
-    loader: () => import("@/app/(admin)/playground/protocol/page"),
+    name: "playground",
+    loader: () => import("@/app/(admin)/playground/page"),
   },
   { name: "nodes", loader: () => import("@/app/(admin)/nodes/page") },
   { name: "evolution", loader: () => import("@/app/(admin)/evolution/page") },

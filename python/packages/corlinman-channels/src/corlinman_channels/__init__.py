@@ -129,6 +129,9 @@ from corlinman_channels.router import (
     parse_group_keywords,
 )
 from corlinman_channels.service import (
+    QQ_HEALTH,
+    TELEGRAM_HEALTH,
+    TELEGRAM_RECENT_MESSAGES,
     ChatEventLike,
     ChatServiceLike,
     DiscordChannelParams,
@@ -152,6 +155,8 @@ from corlinman_channels.service import (
     run_slack_channel,
     run_telegram_channel,
     run_wechat_official_channel,
+    telegram_record_inbound,
+    telegram_record_reply_sent,
 )
 from corlinman_channels.slack import (
     SlackAdapter,
@@ -259,7 +264,10 @@ __all__ = [  # noqa: RUF022 — grouped by subsystem for human readability.
     "FeishuChannelParams",
     "QqChannelParams",
     "QqOfficialChannelParams",
+    "QQ_HEALTH",
     "SlackChannelParams",
+    "TELEGRAM_HEALTH",
+    "TELEGRAM_RECENT_MESSAGES",
     "TelegramChannelParams",
     "WeChatOfficialChannelParams",
     "handle_one_discord",
@@ -276,6 +284,8 @@ __all__ = [  # noqa: RUF022 — grouped by subsystem for human readability.
     "run_slack_channel",
     "run_telegram_channel",
     "run_wechat_official_channel",
+    "telegram_record_inbound",
+    "telegram_record_reply_sent",
     # Persona injection (W7 Persona Studio)
     "compose_persona_emoji_block",
     "inject_persona_if_enabled",

@@ -19,10 +19,9 @@ import {
  * "Send test message" drawer — Phase 5e Tidepool retoken.
  *
  * Fields reuse Tidepool's warm-glass inputs (matches the scheduler search +
- * approvals deny-reason drawer dialect). The mutation is identical to the
- * pre-retoken version: `{ status: "not_deployed" }` toasts as a neutral
- * info message so the admin surface reads clean before `POST
- * /admin/channels/telegram/send` ships.
+ * approvals deny-reason drawer dialect). The mutation calls the live
+ * `POST /admin/channels/telegram/send` route; transport errors surface as
+ * toast notifications via `onError`.
  */
 export function SendTestDrawer({
   open,
@@ -46,10 +45,6 @@ export function SendTestDrawer({
   const mutation = useMutation({
     mutationFn: (body: TelegramSendRequest) => sendTelegramTestMessage(body),
     onSuccess: (res) => {
-      if (res.status === "not_deployed") {
-        toast.message(t("channels.telegram.tp.sendTestNotDeployed"));
-        return;
-      }
       if (res.status === "ok") {
         toast.success(t("channels.telegram.tp.sendTestSuccess"));
         onOpenChange(false);

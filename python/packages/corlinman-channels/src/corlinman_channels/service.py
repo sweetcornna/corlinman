@@ -36,11 +36,14 @@ loops stay structurally symmetric with the Rust crate.
 from __future__ import annotations
 
 import asyncio
+import collections
 import logging
 import mimetypes
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -1166,6 +1169,261 @@ def _build_reply_action(
 # ---------------------------------------------------------------------------
 
 
+# Public, mutable: latest Telegram health probe + traffic snapshot.
+# Mirrors :data:`QQ_HEALTH` — admin status routes read it directly so
+# the admin page sees real numbers instead of a hardcoded mock.
+#
+# Counter / aggregate semantics:
+#
+# * ``messages_today`` resets at UTC midnight (compared against
+#   ``_TELEGRAM_DAY_KEY``); ``messages_week`` rolls over the trailing
+#   7 days by pruning ``_TELEGRAM_DAY_COUNTS`` on every increment.
+# * ``latency_p50_ms`` / ``latency_p95_ms`` are computed lazily from the
+#   :data:`_TELEGRAM_LATENCIES` ring buffer; the buffer holds up to 200
+#   samples (inbound-event timestamp → reply-send wallclock).
+# * ``active_chats`` counts distinct ``chat_id`` keys seen in
+#   :data:`_TELEGRAM_ACTIVE_CHATS` over the last 24h; entries older than
+#   24h are pruned on every recompute.
+TELEGRAM_HEALTH: dict[str, Any] = {
+    "online": False,
+    "last_event_at_ms": None,
+    "seconds_since_event": None,
+    "checked_at_ms": None,
+    "messages_today": 0,
+    "messages_week": 0,
+    "latency_p50_ms": None,
+    "latency_p95_ms": None,
+    "active_chats": 0,
+}
+
+# Recent-messages ring buffer feeding ``/admin/channels/telegram/messages``.
+# Each entry is a dict whose shape matches the frontend's
+# ``TelegramMessage`` contract (id / kind / chat_id / chat_title /
+# from_username / content / timestamp_ms / routing / mention_reason).
+# Capped at 500 so a long-running gateway can't blow memory; the admin
+# UI typically fetches the most recent 20.
+TELEGRAM_RECENT_MESSAGES: collections.deque[dict[str, Any]] = collections.deque(
+    maxlen=500
+)
+
+# Trailing 7-day per-day counters keyed by ``YYYY-MM-DD`` (UTC). Pruned
+# on every update so a quiet bot doesn't accumulate stale keys.
+_TELEGRAM_DAY_COUNTS: dict[str, int] = {}
+_TELEGRAM_DAY_KEY: str | None = None
+
+# Round-trip latency samples (ms) — capped so the snapshot stays cheap to
+# compute and we don't hold onto an unbounded history.
+_TELEGRAM_LATENCIES: collections.deque[int] = collections.deque(maxlen=200)
+
+# ``chat_id -> last_seen_ms`` for the active-chats rollup. Pruned to
+# entries within the last 24h on every recompute.
+_TELEGRAM_ACTIVE_CHATS: dict[str, int] = {}
+
+# Health window: a Telegram channel is "online" if it has received an
+# update within the last 5 minutes. Long-poll typically refreshes every
+# 25 seconds, so this leaves a comfortable margin.
+_TELEGRAM_HEALTH_WINDOW_MS: int = 5 * 60 * 1000
+
+# 24h in ms — used to prune active-chats entries.
+_TELEGRAM_ACTIVE_WINDOW_MS: int = 24 * 60 * 60 * 1000
+
+
+def _telegram_utc_day_key(ts_ms: int) -> str:
+    """``YYYY-MM-DD`` for a UTC midnight bucket."""
+    return datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+
+
+def _telegram_recompute_aggregates(now_ms: int | None = None) -> None:
+    """Refresh ``TELEGRAM_HEALTH`` aggregates from the underlying buffers.
+
+    Called both on every accepted/sent event and on every ``/status``
+    read so a stale snapshot never reaches the admin UI. Pure: only
+    derives values from already-recorded samples and prunes stale entries.
+    """
+    if now_ms is None:
+        now_ms = int(time.time() * 1000)
+
+    # Rollover the day key if a UTC midnight crossed since the last bump.
+    today_key = _telegram_utc_day_key(now_ms)
+    global _TELEGRAM_DAY_KEY  # noqa: PLW0603 — module-level cursor
+    if _TELEGRAM_DAY_KEY is None:
+        _TELEGRAM_DAY_KEY = today_key
+
+    # Prune day counts older than 7 days.
+    cutoff_ms = now_ms - 7 * 24 * 60 * 60 * 1000
+    cutoff_key = _telegram_utc_day_key(cutoff_ms)
+    stale = [k for k in _TELEGRAM_DAY_COUNTS if k < cutoff_key]
+    for k in stale:
+        _TELEGRAM_DAY_COUNTS.pop(k, None)
+
+    TELEGRAM_HEALTH["messages_today"] = int(_TELEGRAM_DAY_COUNTS.get(today_key, 0))
+    TELEGRAM_HEALTH["messages_week"] = int(sum(_TELEGRAM_DAY_COUNTS.values()))
+
+    # Prune stale active chats and recount.
+    active_cutoff = now_ms - _TELEGRAM_ACTIVE_WINDOW_MS
+    expired = [cid for cid, last in _TELEGRAM_ACTIVE_CHATS.items() if last < active_cutoff]
+    for cid in expired:
+        _TELEGRAM_ACTIVE_CHATS.pop(cid, None)
+    TELEGRAM_HEALTH["active_chats"] = len(_TELEGRAM_ACTIVE_CHATS)
+
+    # Latency percentiles from the ring buffer.
+    samples = sorted(_TELEGRAM_LATENCIES)
+    if samples:
+        def _pct(p: float) -> int:
+            if len(samples) == 1:
+                return int(samples[0])
+            # Nearest-rank percentile — cheap + stable for a 200-sample
+            # window. Matches what most ops dashboards expect.
+            idx = max(0, min(len(samples) - 1, int(round(p * (len(samples) - 1)))))
+            return int(samples[idx])
+
+        TELEGRAM_HEALTH["latency_p50_ms"] = _pct(0.50)
+        TELEGRAM_HEALTH["latency_p95_ms"] = _pct(0.95)
+    else:
+        TELEGRAM_HEALTH["latency_p50_ms"] = None
+        TELEGRAM_HEALTH["latency_p95_ms"] = None
+
+    # Online flag — true when an event was seen recently.
+    last = TELEGRAM_HEALTH.get("last_event_at_ms")
+    if isinstance(last, int):
+        delta_ms = now_ms - last
+        TELEGRAM_HEALTH["seconds_since_event"] = max(0, delta_ms // 1000)
+        TELEGRAM_HEALTH["online"] = delta_ms <= _TELEGRAM_HEALTH_WINDOW_MS
+    else:
+        TELEGRAM_HEALTH["seconds_since_event"] = None
+        TELEGRAM_HEALTH["online"] = False
+    TELEGRAM_HEALTH["checked_at_ms"] = now_ms
+
+
+def telegram_record_inbound(
+    inbound: InboundEvent[Any],
+    *,
+    now_ms: int | None = None,
+) -> None:
+    """Record an accepted inbound event.
+
+    Bumps the day counter, marks the chat active, captures the event
+    wallclock for the latency round-trip, appends an entry to
+    :data:`TELEGRAM_RECENT_MESSAGES`, and refreshes the aggregates.
+
+    Best-effort: any exception is logged and swallowed so a counter bug
+    never breaks the chat path.
+    """
+    try:
+        if now_ms is None:
+            now_ms = int(time.time() * 1000)
+        day_key = _telegram_utc_day_key(now_ms)
+        _TELEGRAM_DAY_COUNTS[day_key] = _TELEGRAM_DAY_COUNTS.get(day_key, 0) + 1
+        chat_id = str(inbound.binding.thread)
+        _TELEGRAM_ACTIVE_CHATS[chat_id] = now_ms
+        TELEGRAM_HEALTH["last_event_at_ms"] = now_ms
+
+        # Snapshot the message into the recent-messages ring buffer. The
+        # frontend `TelegramMessage` shape uses string ids, kind /
+        # routing / mention_reason enums, and an epoch-ms timestamp.
+        payload = inbound.payload if isinstance(inbound.payload, dict) else None
+        chat_obj = payload.get("chat") if isinstance(payload, dict) else None
+        chat_type = ""
+        chat_title: str | None = None
+        if isinstance(chat_obj, dict):
+            chat_type = str(chat_obj.get("type", "") or "")
+            t = chat_obj.get("title")
+            if isinstance(t, str):
+                chat_title = t
+        is_group = chat_type in {"group", "supergroup", "channel"}
+
+        from_username: str | None = None
+        if isinstance(payload, dict):
+            from_obj = payload.get("from")
+            if isinstance(from_obj, dict):
+                u = from_obj.get("username")
+                if isinstance(u, str):
+                    from_username = u
+                else:
+                    fn = from_obj.get("first_name")
+                    if isinstance(fn, str):
+                        from_username = fn
+
+        if is_group:
+            mention_reason = "mention" if inbound.mentioned else "none"
+        else:
+            mention_reason = "dm"
+
+        TELEGRAM_RECENT_MESSAGES.append(
+            {
+                "id": str(inbound.message_id) if inbound.message_id is not None else f"tg-{now_ms}",
+                "kind": "group" if is_group else "private",
+                "chat_id": chat_id,
+                "chat_title": chat_title,
+                "from_username": from_username,
+                "content": inbound.text,
+                "timestamp_ms": now_ms,
+                "routing": "queued",
+                "mention_reason": mention_reason,
+            }
+        )
+
+        _telegram_recompute_aggregates(now_ms)
+    except Exception as exc:  # noqa: BLE001 — never block chat
+        _log.debug("telegram_record_inbound failed: %s", exc)
+
+
+def telegram_record_reply_sent(
+    inbound: InboundEvent[Any] | None,
+    *,
+    inbound_ts_ms: int | None,
+    now_ms: int | None = None,
+) -> None:
+    """Record a successful outbound reply for a turn.
+
+    ``inbound_ts_ms`` is the wallclock at which the originating inbound
+    landed (captured by :func:`telegram_record_inbound` via
+    ``TELEGRAM_HEALTH["last_event_at_ms"]`` but the caller passes the
+    pre-spinner snapshot so a long-running turn doesn't fold in the next
+    event's timestamp). Appends one sample to the latency ring buffer
+    and refreshes aggregates.
+    """
+    try:
+        if now_ms is None:
+            now_ms = int(time.time() * 1000)
+        if inbound_ts_ms is not None:
+            latency = max(0, now_ms - inbound_ts_ms)
+            _TELEGRAM_LATENCIES.append(int(latency))
+        if inbound is not None:
+            chat_id = str(inbound.binding.thread)
+            # Flip the most recent matching entry to "responded" so the
+            # admin feed reflects the live routing decision.
+            for entry in reversed(TELEGRAM_RECENT_MESSAGES):
+                if entry.get("chat_id") == chat_id and entry.get("routing") == "queued":
+                    entry["routing"] = "responded"
+                    break
+        _telegram_recompute_aggregates(now_ms)
+    except Exception as exc:  # noqa: BLE001 — never block chat
+        _log.debug("telegram_record_reply_sent failed: %s", exc)
+
+
+def _telegram_reset_state_for_tests() -> None:
+    """Test-only helper: clear every Telegram counter / buffer so each
+    test starts from a known baseline. Not part of the public surface."""
+    TELEGRAM_HEALTH.update(
+        online=False,
+        last_event_at_ms=None,
+        seconds_since_event=None,
+        checked_at_ms=None,
+        messages_today=0,
+        messages_week=0,
+        latency_p50_ms=None,
+        latency_p95_ms=None,
+        active_chats=0,
+    )
+    TELEGRAM_RECENT_MESSAGES.clear()
+    _TELEGRAM_DAY_COUNTS.clear()
+    global _TELEGRAM_DAY_KEY  # noqa: PLW0603 — test-only cursor reset
+    _TELEGRAM_DAY_KEY = None
+    _TELEGRAM_LATENCIES.clear()
+    _TELEGRAM_ACTIVE_CHATS.clear()
+
+
 @dataclass(slots=True)
 class TelegramChannelParams:
     """Parameters for :func:`run_telegram_channel`. Mirrors Rust
@@ -1179,6 +1437,15 @@ class TelegramChannelParams:
     model: str = ""
     chat_service: ChatServiceLike | None = None
     base_url: str = "https://api.telegram.org"
+
+    on_sender_ready: Any = None
+    """W4-FE F2 — optional sync callback ``(TelegramSender) -> None``
+    invoked once the channel constructs its live sender. Lets the
+    gateway park the sender on :class:`AdminState` so the
+    ``POST /admin/channels/telegram/send`` admin route can push test
+    messages through the same HTTPS surface the chat path uses.
+    ``None`` keeps the channel running unchanged — the admin send route
+    then returns 503 ``telegram_disabled``."""
 
     # ---- human-like persona toggle (W7 Persona Studio) -----------------
     # Mirror of the QQ humanlike fields — see :class:`QqChannelParams`
@@ -1227,6 +1494,14 @@ async def run_telegram_channel(
     adapter = TelegramAdapter(tg_cfg)
     send_client = httpx.AsyncClient()
     sender = TelegramSender(send_client, tg_cfg.bot_token, base=tg_cfg.base_url)
+    # W4-FE F2: hand the live sender back to the bootstrapper so the
+    # admin send route can post test messages. Best-effort — a callback
+    # exception must not abort the channel start.
+    if params.on_sender_ready is not None:
+        try:
+            params.on_sender_ready(sender)
+        except Exception as exc:  # noqa: BLE001 — never block the channel
+            _log.warning("telegram on_sender_ready callback failed: %s", exc)
     semaphore = asyncio.Semaphore(_channel_max_concurrency("TELEGRAM"))
     pending: set[asyncio.Task[None]] = set()
     try:
@@ -1445,6 +1720,13 @@ async def handle_one_telegram(
         except ValueError:
             reply_to = None
 
+    # W4-FE F2: snapshot the inbound wallclock BEFORE the spinner starts
+    # so the latency sample captures end-to-end round-trip (inbound→reply)
+    # rather than spinner-to-reply. Then record the accepted inbound so
+    # the day/week counters + active-chats rollup tick immediately.
+    inbound_ts_ms = int(time.time() * 1000)
+    telegram_record_inbound(inbound, now_ms=inbound_ts_ms)
+
     # Kick off the typing-indicator pulse + send the initial spinner
     # placeholder so the user sees activity within ~1s. The pulse task
     # must live inside the same try/finally that cancels it, so an
@@ -1592,6 +1874,7 @@ async def handle_one_telegram(
                 reply_to_message_id=reply_to,
                 inline_keyboard=keyboard,
             )
+            telegram_record_reply_sent(inbound, inbound_ts_ms=inbound_ts_ms)
         except Exception as exc:  # noqa: BLE001
             _log.warning("telegram final emit with buttons failed: %s", exc)
         return
@@ -1608,6 +1891,7 @@ async def handle_one_telegram(
             await sender.send_message(
                 chat_id, chunk, reply_to_message_id=reply_to
             )
+        telegram_record_reply_sent(inbound, inbound_ts_ms=inbound_ts_ms)
     except Exception as exc:  # noqa: BLE001
         _log.warning("telegram final emit failed: %s", exc)
 

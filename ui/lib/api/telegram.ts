@@ -1,31 +1,25 @@
 /**
- * Telegram channel admin API client (B4-FE1).
+ * Telegram channel admin API client.
  *
- * Tries the real gateway at `/admin/channels/telegram/*` and, when the
- * endpoint responds 404 (gateway not yet upgraded by B4-BE1 ops surface),
- * falls back to the B3-FE2 mock from `@/lib/mocks/telegram`. A one-shot
- * `console.info` fires on the first fallback inside a process so dev tools
- * stay readable.
+ * Hits the live gateway at `/admin/channels/telegram/*` — the three
+ * routes are now shipped by `routes_admin_a/channels.py` and back the
+ * page's stat chips with real numbers (W4-FE F2).
  *
- * The `TelegramMessage` shape intentionally diverges from the mock's
- * (`chat_kind`/`text`/`ts`): it mirrors what the backend
- * (`rust/crates/corlinman-channels/src/telegram/*.rs`) will return once the
- * admin surface ships — `kind`, `routing`, `mention_reason`, optional media
- * descriptor. The status adapter in this module bridges the two so the page
- * can render the same list either way.
+ * The `TelegramMessage` shape mirrors what the backend returns: `kind`,
+ * `routing`, `mention_reason`, optional media descriptor.
  *
- * TODO(B4-BE1 ops): endpoints flagged below.
+ * `TelegramConfig` / `TelegramStats` are re-exported from the legacy
+ * mock module (`@/lib/mocks/telegram`) ONLY for the shared type
+ * definitions — no mock data is fetched at runtime. A 404 / 503 from
+ * the gateway propagates to the caller so the page's existing offline
+ * banner renders (`statusQuery.isError` → the "Webhook is offline" path
+ * in `telegram/page.tsx`).
  */
 
-import {
-  CorlinmanApiError,
-  apiFetch,
-} from "@/lib/api";
-import {
-  fetchTelegramMock,
-  type TelegramConfig as MockTelegramConfig,
-  type TelegramStats as MockTelegramStats,
-  type TelegramMessage as MockTelegramMessage,
+import { apiFetch } from "@/lib/api";
+import type {
+  TelegramConfig as MockTelegramConfig,
+  TelegramStats as MockTelegramStats,
 } from "@/lib/mocks/telegram";
 
 /* ------------------------------------------------------------------ */
@@ -84,128 +78,52 @@ export interface TelegramSendResponse {
   error?: string;
 }
 
-/** Tag attached to fallback responses so consumers (and tests) can tell the
- *  page is running against the mock without inspecting console output. */
-export const TELEGRAM_MOCK_SOURCE = "mock" as const;
-export const TELEGRAM_LIVE_SOURCE = "live" as const;
-
-/* ------------------------------------------------------------------ */
-/*                        Fallback bookkeeping                        */
-/* ------------------------------------------------------------------ */
-
-let fallbackLogged = false;
-
-/** Reset the once-per-process fallback log flag — tests use this to reassert
- *  the console.info fired on the first 404. */
-export function __resetTelegramFallbackLog(): void {
-  fallbackLogged = false;
-}
-
-function logFallbackOnce(): void {
-  if (fallbackLogged) return;
-  fallbackLogged = true;
-  // eslint-disable-next-line no-console
-  console.info("[telegram] admin endpoint not available; using mock");
-}
-
-function is404(err: unknown): boolean {
-  return err instanceof CorlinmanApiError && err.status === 404;
-}
-
-/* ------------------------------------------------------------------ */
-/*                         Mock <-> live bridge                       */
-/* ------------------------------------------------------------------ */
-
-/**
- * Translate a B3-FE2 mock message (still the shape shipped in
- * `ui/lib/mocks/telegram.ts`) into the B4-BE1 `TelegramMessage` contract.
- * This keeps the fallback path exercising the same component code.
- */
-function adaptMockMessage(m: MockTelegramMessage): TelegramMessage {
-  const isGroup = m.chat_kind === "group" || m.chat_kind === "channel";
-  return {
-    id: m.id,
-    kind: isGroup ? "group" : "private",
-    chat_id: m.chat_title ?? m.from,
-    chat_title: m.chat_title ?? undefined,
-    from_username: m.from,
-    content: m.text,
-    timestamp_ms: Date.now(),
-    reply_deadline_ms: m.reply_deadline_ms,
-    reply_total_ms: m.reply_total_ms,
-    routing: m.reply_deadline_ms ? "queued" : isGroup ? "ignored" : "responded",
-    mention_reason: isGroup ? "none" : "dm",
-  };
-}
-
 /* ------------------------------------------------------------------ */
 /*                            Public fetches                          */
 /* ------------------------------------------------------------------ */
 
 /**
  * Fetches gateway status + config for the Telegram channel.
- *
- * TODO(B4-BE1 ops): `GET /admin/channels/telegram/status`.
+ * Errors (404 / 503 / network) propagate — the page renders its
+ * existing offline panel against `statusQuery.isError`.
  */
 export async function fetchTelegramStatus(): Promise<TelegramStatusResponse> {
-  try {
-    return await apiFetch<TelegramStatusResponse>(
-      "/admin/channels/telegram/status",
-    );
-  } catch (err) {
-    if (!is404(err)) throw err;
-    logFallbackOnce();
-    const mock = await fetchTelegramMock();
-    return {
-      config: mock.config,
-      stats: mock.stats,
-      connected: mock.connected,
-      runtime: mock.runtime,
-      last_error: mock.last_dispatch_error ?? null,
-      last_webhook_payload: mock.last_webhook_payload,
-    };
-  }
+  return apiFetch<TelegramStatusResponse>("/admin/channels/telegram/status");
 }
 
 /**
- * Fetches the recent-messages list.
- *
- * TODO(B4-BE1 ops): `GET /admin/channels/telegram/messages?limit=<n>`.
+ * Fetches the recent-messages list. Returns up to `limit` entries
+ * (newest first).
  */
 export async function fetchTelegramMessages(opts?: {
   limit?: number;
 }): Promise<TelegramMessage[]> {
   const limit = opts?.limit ?? 20;
   const qs = new URLSearchParams({ limit: String(limit) }).toString();
-  try {
-    return await apiFetch<TelegramMessage[]>(
-      `/admin/channels/telegram/messages?${qs}`,
-    );
-  } catch (err) {
-    if (!is404(err)) throw err;
-    logFallbackOnce();
-    const mock = await fetchTelegramMock();
-    return mock.recent_messages.slice(0, limit).map(adaptMockMessage);
-  }
+  return apiFetch<TelegramMessage[]>(
+    `/admin/channels/telegram/messages?${qs}`,
+  );
 }
 
 /**
- * Sends a test message via the gateway. Returns `{ status: "not_deployed" }`
- * when the endpoint 404s, so the caller can toast a friendly "backend
- * pending" message rather than an error.
- *
- * TODO(B4-BE1 ops): `POST /admin/channels/telegram/send`.
+ * Sends a test message via the gateway. Errors propagate; the caller
+ * is expected to toast the failure (the `SendTestDrawer` handles this).
  */
 export async function sendTelegramTestMessage(
   body: TelegramSendRequest,
-): Promise<TelegramSendResponse | { status: "not_deployed" }> {
-  try {
-    return await apiFetch<TelegramSendResponse>(
-      "/admin/channels/telegram/send",
-      { method: "POST", body },
-    );
-  } catch (err) {
-    if (is404(err)) return { status: "not_deployed" };
-    throw err;
-  }
+): Promise<TelegramSendResponse> {
+  return apiFetch<TelegramSendResponse>("/admin/channels/telegram/send", {
+    method: "POST",
+    body,
+  });
+}
+
+/**
+ * Legacy test-suite hook — the 404→mock fallback path was removed in
+ * W4-FE F2 so there's no log state to reset, but `page.test.tsx`
+ * imports this in `beforeEach` and we keep the export as a no-op to
+ * avoid churning the test file.
+ */
+export function __resetTelegramFallbackLog(): void {
+  // intentionally empty — the fallback path no longer exists.
 }

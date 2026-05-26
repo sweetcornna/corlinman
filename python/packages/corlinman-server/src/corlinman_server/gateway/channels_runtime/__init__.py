@@ -196,6 +196,7 @@ def _build_telegram_params(
     *,
     persona_store: Any = None,
     asset_store: Any = None,
+    on_sender_ready: Any = None,
 ) -> Any:
     """Build :class:`corlinman_channels.TelegramChannelParams` from the
     ``[channels.telegram]`` config table.
@@ -208,6 +209,11 @@ def _build_telegram_params(
     ``[channels.telegram.humanlike]`` block is set the persona's
     ``system_prompt`` (plus its emoji block when assets are wired) lands
     at the head of every Telegram chat request.
+
+    ``on_sender_ready`` is the W4-FE F2 hook the gateway passes so the
+    admin ``POST /admin/channels/telegram/send`` route can reach the
+    live :class:`TelegramSender`. ``None`` keeps the channel running
+    exactly as before; the admin send route then 503s ``telegram_disabled``.
     """
     from corlinman_channels import TelegramChannelParams
 
@@ -221,6 +227,7 @@ def _build_telegram_params(
         persona_store=persona_store,
         humanlike_resolver=_humanlike_resolver(tg_cfg),
         asset_store=asset_store,
+        on_sender_ready=on_sender_ready,
     )
 
 
@@ -477,6 +484,7 @@ def build_channel_tasks(
     inbox: Any = None,
     persona_store: Any = None,
     asset_store: Any = None,
+    telegram_on_sender_ready: Any = None,
 ) -> list[asyncio.Task[Any]]:
     """Build (but the caller owns scheduling) the channel background
     tasks for every enabled channel in ``channels_cfg``.
@@ -534,6 +542,7 @@ def build_channel_tasks(
                 tg_cfg, model, chat_service,
                 persona_store=persona_store,
                 asset_store=asset_store,
+                on_sender_ready=telegram_on_sender_ready,
             )
             task = asyncio.create_task(
                 _run_channel(
@@ -789,6 +798,7 @@ def bootstrap(state: Any) -> list[asyncio.Task[Any]]:
     # injection / the emoji block.
     persona_store: Any | None = None
     asset_store: Any | None = None
+    admin_a_state: Any | None = None
     try:
         from corlinman_server.gateway.routes_admin_a import get_admin_state
 
@@ -798,6 +808,25 @@ def bootstrap(state: Any) -> list[asyncio.Task[Any]]:
     except Exception:  # noqa: BLE001 — defensive
         persona_store = None
         asset_store = None
+        admin_a_state = None
+
+    # W4-FE F2 — when the Telegram channel constructs its sender, park
+    # it on admin_a state so the
+    # ``POST /admin/channels/telegram/send`` route can post test
+    # messages through the same HTTPS surface the chat path uses. The
+    # callback runs in the channel task at start-up; missing admin_a
+    # state silently disables the wiring.
+    def _telegram_on_sender_ready(sender: Any) -> None:
+        target = admin_a_state
+        if target is None:
+            return
+        try:
+            target.telegram_sender = sender
+        except (AttributeError, TypeError):  # pragma: no cover — defensive
+            logger.debug(
+                "gateway.channels.telegram_sender_attach_failed",
+                state_type=type(target).__name__,
+            )
 
     try:
         tasks = build_channel_tasks(
@@ -807,6 +836,7 @@ def bootstrap(state: Any) -> list[asyncio.Task[Any]]:
             cancel=cancel,
             persona_store=persona_store,
             asset_store=asset_store,
+            telegram_on_sender_ready=_telegram_on_sender_ready,
         )
     except Exception as exc:  # pragma: no cover — defensive umbrella
         logger.warning("gateway.channels.bootstrap_failed", error=str(exc))

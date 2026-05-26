@@ -85,7 +85,7 @@ type NavEntry = NavItem | NavGroup;
  * channels / scheduler / identity).
  */
 const OPERATOR_ITEMS: NavEntry[] = [
-  { href: "/playground/protocol", labelKey: "nav.playground", icon: Beaker },
+  { href: "/playground", labelKey: "nav.playground", icon: Beaker },
   { href: "/approvals", labelKey: "nav.approvals", icon: ClipboardCheck },
   { href: "/sessions", labelKey: "nav.sessions", icon: MessagesSquare },
   { href: "/logs", labelKey: "nav.logs", icon: FileTerminal },

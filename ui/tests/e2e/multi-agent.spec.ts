@@ -9,7 +9,7 @@
  *   B. `/admin/subagents`      — Live activity table + Kill button →
  *                                POST /admin/subagents/{id}/kill → row
  *                                state flips to "killed".
- *   C. `/admin/playground/protocol` — `<AgentPicker>` selection threads
+ *   C. `/admin/playground`      — `<AgentPicker>` selection threads
  *                                through to the chat-request body shape
  *                                (verified end-to-end via the trigger
  *                                label flipping to ``triggerPicked``
@@ -363,7 +363,7 @@ test.describe("multi-agent surfaces — stubs only", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Test C — /admin/playground/protocol AgentPicker threads agent_id
+  // Test C — /admin/playground AgentPicker threads agent_id
   // -------------------------------------------------------------------------
 
   test("playground: picking an agent updates the picker trigger label", async ({
@@ -380,32 +380,25 @@ test.describe("multi-agent surfaces — stubs only", () => {
         body: JSON.stringify(AGENTS_FIXTURE),
       });
     });
-    // Playground also asks for /v1/chat/completions when the real SSE
-    // wires arrive — until then `buildChatRequestBody`'s payload is
-    // built but not transmitted. Stub the endpoint anyway so any future
-    // wire-up doesn't surprise this test.
+    // Playground's Send button POSTs `/v1/chat/completions` with
+    // `stream: true`. Stub a single SSE chunk + DONE so the page can
+    // resolve a streamed assistant reply without a real gateway.
     await page.route(
       "**/v1/chat/completions",
       async (route: Route) => {
+        const chunk =
+          'data: {"id":"chatcmpl-stub","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":"stub"},"finish_reason":null}]}\n\n' +
+          'data: {"id":"chatcmpl-stub","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n' +
+          "data: [DONE]\n\n";
         await route.fulfill({
           status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({
-            id: "stub-completion",
-            object: "chat.completion",
-            choices: [
-              {
-                message: { role: "assistant", content: "stub" },
-                finish_reason: "stop",
-                index: 0,
-              },
-            ],
-          }),
+          contentType: "text/event-stream",
+          body: chunk,
         });
       },
     );
 
-    await page.goto("/admin/playground/protocol");
+    await page.goto("/admin/playground");
 
     // Picker trigger is always present; it defaults to the auto-route
     // label (the i18n keys fall back to the key string verbatim when
@@ -431,16 +424,9 @@ test.describe("multi-agent surfaces — stubs only", () => {
     await expect(page.getByTestId("agent-picker-popover")).not.toBeVisible();
     await expect(trigger).toContainText("researcher");
 
-    // Fill the prompt + run. `buildChatRequestBody` consumes
-    // `explicitAgent` → ``agent_id`` in the body shape (asserted by the
-    // component-level test). Here we only verify the user-visible
-    // contract: the picker's selection is captured by the page's state
-    // by the time Run is clicked.
-    await page.getByTestId("prompt-input").fill("hello world");
-    await page.getByTestId("run-button").click();
-
-    // Trigger still reflects the picked agent — the page didn't reset
-    // explicitAgent on run.
+    // Trigger still reflects the picked agent after a send.
+    await page.getByTestId("chat-composer").fill("hello world");
+    await page.getByTestId("chat-send").click();
     await expect(trigger).toContainText("researcher");
   });
 });

@@ -114,6 +114,17 @@ class AdminState:
     channels_config: dict[str, Any] | None = None
     channels_writer: Any | None = None
 
+    # Live :class:`corlinman_channels.TelegramSender` instance for the
+    # active Telegram channel. Wired by ``channels_runtime.bootstrap``
+    # when the Telegram channel starts so the
+    # ``/admin/channels/telegram/send`` admin action can post a test
+    # message via the same HTTPS surface the chat path uses. ``None``
+    # while the Telegram channel is disabled / not yet started — the
+    # send route then returns 503 ``telegram_disabled``. Typed loose
+    # with ``Any`` to keep this dataclass importable without
+    # corlinman-channels in the dependency graph at type-check time.
+    telegram_sender: Any | None = None
+
     # -- /admin/identity --------------------------------------------
     #
     # ``corlinman_identity.IdentityStore`` (protocol) instance. ``None``

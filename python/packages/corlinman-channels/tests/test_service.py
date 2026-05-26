@@ -27,6 +27,8 @@ from corlinman_channels.onebot import (
 )
 from corlinman_channels.router import RoutedRequest
 from corlinman_channels.service import (
+    TELEGRAM_HEALTH,
+    TELEGRAM_RECENT_MESSAGES,
     DiscordChannelParams,
     FeishuChannelParams,
     QqChannelParams,
@@ -36,6 +38,7 @@ from corlinman_channels.service import (
     _build_internal_request,
     _build_reply_action,
     _event_kind,
+    _telegram_reset_state_for_tests,
     handle_one_discord,
     handle_one_feishu,
     handle_one_qq,
@@ -48,6 +51,8 @@ from corlinman_channels.service import (
     run_qq_official_channel,
     run_slack_channel,
     run_telegram_channel,
+    telegram_record_inbound,
+    telegram_record_reply_sent,
 )
 
 # ---------------------------------------------------------------------------
@@ -3469,3 +3474,157 @@ class TestPersonaInjectionMultiChannel:
         assert "## Available emoji" in sys_msg.content
         assert "- happy: /abs/happy.png" in sys_msg.content
         assert "- sad: /abs/sad.png" in sys_msg.content
+
+
+# ---------------------------------------------------------------------------
+# Telegram health tracker (F2)
+# ---------------------------------------------------------------------------
+
+
+class TestTelegramHealth:
+    """Pins the W4-FE F2 counter / latency / recent-messages plumbing.
+
+    The recorders ride alongside ``handle_one_telegram`` so the admin
+    page sees real numbers instead of a hardcoded mock. These tests
+    exercise the public recorder helpers directly so we don't need to
+    drive a full Telegram round-trip per assertion.
+    """
+
+    def setup_method(self) -> None:
+        _telegram_reset_state_for_tests()
+
+    def teardown_method(self) -> None:
+        _telegram_reset_state_for_tests()
+
+    def _tg_inbound(
+        self,
+        *,
+        chat_id: int = 42,
+        message_id: str = "1",
+        text: str = "hi",
+        payload: dict[str, Any] | None = None,
+    ) -> InboundEvent[Any]:
+        binding = ChannelBinding.telegram(
+            bot_id=999, chat_id=chat_id, user_id=chat_id
+        )
+        return InboundEvent(
+            channel="telegram",
+            binding=binding,
+            text=text,
+            message_id=message_id,
+            timestamp=0,
+            mentioned=True,
+            payload=payload,
+        )
+
+    def test_record_inbound_bumps_day_counter(self) -> None:
+        inbound = self._tg_inbound()
+        now = 1_700_000_000_000  # arbitrary UTC ms
+        telegram_record_inbound(inbound, now_ms=now)
+        assert TELEGRAM_HEALTH["messages_today"] == 1
+        assert TELEGRAM_HEALTH["messages_week"] == 1
+        assert TELEGRAM_HEALTH["active_chats"] == 1
+        assert TELEGRAM_HEALTH["online"] is True
+        assert TELEGRAM_HEALTH["last_event_at_ms"] == now
+
+        # Second message from the same chat: counter ticks, distinct
+        # chats stays at 1.
+        telegram_record_inbound(self._tg_inbound(message_id="2"), now_ms=now + 1_000)
+        assert TELEGRAM_HEALTH["messages_today"] == 2
+        assert TELEGRAM_HEALTH["active_chats"] == 1
+
+    def test_active_chats_counts_distinct_threads(self) -> None:
+        now = 1_700_000_000_000
+        telegram_record_inbound(self._tg_inbound(chat_id=1), now_ms=now)
+        telegram_record_inbound(self._tg_inbound(chat_id=2), now_ms=now)
+        telegram_record_inbound(self._tg_inbound(chat_id=3), now_ms=now)
+        assert TELEGRAM_HEALTH["active_chats"] == 3
+
+    def test_active_chats_prunes_after_24h(self) -> None:
+        now = 1_700_000_000_000
+        telegram_record_inbound(self._tg_inbound(chat_id=1), now_ms=now)
+        # 25h later — the chat falls off the 24h rolling window.
+        later = now + (25 * 60 * 60 * 1000)
+        telegram_record_inbound(self._tg_inbound(chat_id=2), now_ms=later)
+        assert TELEGRAM_HEALTH["active_chats"] == 1
+
+    def test_latency_percentiles_from_round_trips(self) -> None:
+        inbound = self._tg_inbound()
+        # Simulate 5 turns with known round-trip latencies.
+        base = 1_700_000_000_000
+        deltas_ms = [120, 200, 300, 400, 800]
+        for i, d in enumerate(deltas_ms):
+            telegram_record_inbound(inbound, now_ms=base + i * 10_000)
+            telegram_record_reply_sent(
+                inbound,
+                inbound_ts_ms=base + i * 10_000,
+                now_ms=base + i * 10_000 + d,
+            )
+        assert TELEGRAM_HEALTH["latency_p50_ms"] == 300
+        assert TELEGRAM_HEALTH["latency_p95_ms"] == 800
+
+    def test_recent_messages_appended_and_capped(self) -> None:
+        # Recent messages buffer is capped at 500 — drive a few past
+        # that to confirm the deque truncates the oldest.
+        for i in range(600):
+            telegram_record_inbound(
+                self._tg_inbound(chat_id=i, message_id=str(i)),
+                now_ms=1_700_000_000_000 + i,
+            )
+        assert len(TELEGRAM_RECENT_MESSAGES) == 500
+        # The newest message id wins.
+        assert TELEGRAM_RECENT_MESSAGES[-1]["id"] == "599"
+
+    def test_reply_flips_routing_to_responded(self) -> None:
+        inbound = self._tg_inbound(chat_id=7, message_id="abc")
+        now = 1_700_000_000_000
+        telegram_record_inbound(inbound, now_ms=now)
+        entry = TELEGRAM_RECENT_MESSAGES[-1]
+        assert entry["routing"] == "queued"
+        assert entry["mention_reason"] == "dm"
+        telegram_record_reply_sent(inbound, inbound_ts_ms=now, now_ms=now + 50)
+        assert TELEGRAM_RECENT_MESSAGES[-1]["routing"] == "responded"
+
+    def test_inbound_payload_with_chat_metadata(self) -> None:
+        inbound = self._tg_inbound(
+            chat_id=99,
+            payload={
+                "chat": {"type": "supergroup", "title": "Bot Lab"},
+                "from": {"username": "alice"},
+            },
+        )
+        telegram_record_inbound(inbound, now_ms=1_700_000_000_000)
+        entry = TELEGRAM_RECENT_MESSAGES[-1]
+        assert entry["kind"] == "group"
+        assert entry["chat_title"] == "Bot Lab"
+        assert entry["from_username"] == "alice"
+        # group + mentioned=True → mention_reason="mention"
+        assert entry["mention_reason"] == "mention"
+
+    def test_online_flips_false_after_window(self) -> None:
+        # Record an event then recompute aggregates far in the future:
+        # the channel must be reported offline.
+        from corlinman_channels.service import _telegram_recompute_aggregates
+
+        inbound = self._tg_inbound()
+        now = 1_700_000_000_000
+        telegram_record_inbound(inbound, now_ms=now)
+        assert TELEGRAM_HEALTH["online"] is True
+
+        future = now + 10 * 60 * 1000  # 10 minutes later (> 5 min window)
+        _telegram_recompute_aggregates(future)
+        assert TELEGRAM_HEALTH["online"] is False
+        assert TELEGRAM_HEALTH["seconds_since_event"] is not None
+        assert TELEGRAM_HEALTH["seconds_since_event"] >= 600
+
+    def test_messages_week_resets_after_seven_days(self) -> None:
+        from corlinman_channels.service import _telegram_recompute_aggregates
+
+        inbound = self._tg_inbound()
+        now = 1_700_000_000_000
+        telegram_record_inbound(inbound, now_ms=now)
+        assert TELEGRAM_HEALTH["messages_week"] == 1
+        # 8 days later — the old bucket falls out of the 7-day window.
+        future = now + 8 * 24 * 60 * 60 * 1000
+        _telegram_recompute_aggregates(future)
+        assert TELEGRAM_HEALTH["messages_week"] == 0
