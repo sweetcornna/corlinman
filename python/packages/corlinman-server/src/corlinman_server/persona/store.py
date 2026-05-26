@@ -55,15 +55,21 @@ CREATE TABLE IF NOT EXISTS personas (
 );
 CREATE INDEX IF NOT EXISTS idx_personas_updated_at
     ON personas(updated_at_ms);
-CREATE INDEX IF NOT EXISTS idx_personas_owner
-    ON personas(owner_user_id);
 """
 
 
 async def _migrate_personas_table(conn: aiosqlite.Connection) -> None:
-    """Idempotent migration: add ``owner_user_id`` column to pre-W1
-    schemas. SQLite has no ``ADD COLUMN IF NOT EXISTS``; we PRAGMA-
-    check first and ALTER only when missing.
+    """Idempotent migration: add ``owner_user_id`` column (+ index) to
+    pre-W1 schemas. SQLite has no ``ADD COLUMN IF NOT EXISTS``; we
+    PRAGMA-check first and ALTER only when missing.
+
+    *Why the index lives here and not in ``_SCHEMA``*: an
+    ``IF NOT EXISTS`` index on a column the legacy table doesn't yet
+    have (``owner_user_id``) makes ``executescript(_SCHEMA)`` raise
+    ``no such column`` on existing DBs. The schema script only
+    references columns that exist in the legacy shape; the migration
+    adds the new column AND its index in one step so the two never
+    drift apart.
 
     Field rationale: nullable for forward-compatibility with the
     Persona Studio auth migration (see PLAN_PERSONA_STUDIO.md W1).
@@ -74,11 +80,13 @@ async def _migrate_personas_table(conn: aiosqlite.Connection) -> None:
         cols = {row[1] for row in await cur.fetchall()}
     if "owner_user_id" not in cols:
         await conn.execute("ALTER TABLE personas ADD COLUMN owner_user_id TEXT")
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_personas_owner "
-            "ON personas(owner_user_id)"
-        )
-        await conn.commit()
+    # Index creation is idempotent and cheap; run unconditionally so a
+    # half-migrated DB (column present, index missing) self-heals.
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_personas_owner "
+        "ON personas(owner_user_id)"
+    )
+    await conn.commit()
 
 
 @dataclass(frozen=True)

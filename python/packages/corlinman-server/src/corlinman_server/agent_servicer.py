@@ -126,6 +126,11 @@ from corlinman_agent.persona import (
     dispatch_persona_update,
     persona_tool_schemas,
 )
+from corlinman_agent.qzone import (
+    QZONE_PUBLISH_TOOL,
+    dispatch_qzone_publish,
+    qzone_publish_tool_schema,
+)
 from corlinman_agent.variables import VariableCascade
 from corlinman_agent.web import (
     CALCULATOR_TOOL,
@@ -186,6 +191,7 @@ BUILTIN_TOOLS: frozenset[str] = frozenset(
         SEND_ATTACHMENT_TOOL,
         ASK_USER_TOOL,
         IMAGE_WITH_REFS_TOOL,
+        QZONE_PUBLISH_TOOL,
     }
 ) | CODING_TOOLS | PERSONA_TOOLS
 
@@ -263,6 +269,7 @@ def _builtin_tool_schemas() -> list[dict[str, Any]]:
         _send_attachment_tool_schema(),
         ask_user_tool_schema(),
         image_with_refs_tool_schema(),
+        qzone_publish_tool_schema(),
         *persona_tool_schemas(),
         *coding_tool_schemas(),
     ]
@@ -1973,6 +1980,31 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     persona_store=await self._get_persona_store(),
                     asset_store=await self._get_persona_asset_store(),
                     bound_persona_id=bound_persona_id,
+                )
+            if event.tool == QZONE_PUBLISH_TOOL:
+                # W5 — qzone_publish. The dispatcher does its own
+                # OneBot credential fetch (via CORLINMAN_NAPCAT_HTTP_URL
+                # env + default 10s timeout). When the model passes a
+                # ``generate`` arg, we wire dispatch_image_with_refs
+                # through so the generated image lands in the workspace
+                # before the upload step runs — same persona resolution
+                # contract as the image branch above so a model that
+                # binds a persona on the channel gets it automatically.
+                qz_extra = getattr(start, "extra", None) or {}
+                qz_bound_persona_id: str | None = None
+                if isinstance(qz_extra, dict):
+                    val = qz_extra.get("persona_id")
+                    if isinstance(val, str) and val.strip():
+                        qz_bound_persona_id = val.strip()
+                return await dispatch_qzone_publish(
+                    args_json=event.args_json,
+                    image_with_refs_dispatcher=dispatch_image_with_refs,
+                    image_with_refs_kwargs={
+                        "provider": provider,
+                        "persona_store": await self._get_persona_store(),
+                        "asset_store": await self._get_persona_asset_store(),
+                        "bound_persona_id": qz_bound_persona_id,
+                    },
                 )
             if event.tool == SEND_ATTACHMENT_TOOL:
                 # No-op stub on the agent side. The real upload happens
