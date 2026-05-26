@@ -1096,6 +1096,27 @@ def build_app(
                     "gateway.persona_store.init_failed", error=str(exc)
                 )
 
+            # W1 Persona Studio: companion asset store for emoji +
+            # reference image packs. Filesystem layout lives under
+            # ``<data_dir>/personas/<persona_id>/{emoji,reference}/``;
+            # metadata in ``persona_assets.sqlite`` next to the
+            # main personas DB. Best-effort — failure leaves the
+            # asset routes returning 503 but bare persona CRUD works.
+            try:
+                from corlinman_server.persona import PersonaAssetStore
+
+                _pas = await PersonaAssetStore.open(
+                    resolved_data_dir / "persona_assets.sqlite",
+                    resolved_data_dir / "personas",
+                )
+                admin_a_state.persona_asset_store = _pas
+                logger.info("gateway.persona_asset_store.opened")
+            except Exception as exc:  # pragma: no cover — best-effort
+                logger.warning(
+                    "gateway.persona_asset_store.init_failed",
+                    error=str(exc),
+                )
+
         # W1.3 — task-observability surface. Open the per-turn journal
         # the agent servicer also opens lazily on first chat, and
         # construct one :class:`JournalBackedEmitter` for the whole

@@ -38,12 +38,24 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
+  ASSET_ALLOWED_MIMES,
+  ASSET_LABEL_RE,
+  ASSET_MAX_BYTES,
+  AssetUploadError,
+  PERSONA_TOTAL_BYTES_CAP,
+  REFERENCE_VISIBLE_CAP,
   createPersona,
+  deleteAsset,
   deletePersona,
   fetchPersonas,
   fetchQqHumanlike,
+  listAssets,
   setQqHumanlike,
   updatePersona,
+  uploadAsset,
+  type AssetKind,
+  type AssetRecord,
+  type AssetUploadErrorCode,
   type NewPersona,
   type PartialPersona,
   type Persona,
@@ -826,6 +838,20 @@ function PersonaEditorDialog({
             </div>
             <p className="text-[11px] text-tp-ink-3">{t("persona.testBoxTooltip")}</p>
           </fieldset>
+
+          {/* Asset sections — only meaningful once the persona has a
+              real id (the URL the upload route hangs off). Until then
+              we show a hint pointing the operator at the Save button. */}
+          {existing ? (
+            <PersonaAssetsPanel personaId={existing.id} />
+          ) : (
+            <div
+              className="rounded-md border border-dashed border-tp-glass-edge px-3 py-2 text-xs text-tp-ink-3"
+              data-testid="persona-assets-pending-save"
+            >
+              {t("persona.assetsSaveFirstHint")}
+            </div>
+          )}
         </div>
 
         <DialogFooter className="gap-2">
@@ -868,5 +894,537 @@ function PersonaEditorDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/* ----------------------------------------------------------------- */
+/*                       Asset panel (W2)                            */
+/* ----------------------------------------------------------------- */
+
+/** Local in-flight row — rendered as a placeholder cell with a spinner
+ * while the multipart POST is in flight. We tag it with a ULID-ish key
+ * so React's reconciliation never confuses it with the real
+ * `AssetRecord` that lands once the upload resolves. */
+interface PendingAsset {
+  /** Stable client-side id; never collides with backend ulids. */
+  client_id: string;
+  kind: AssetKind;
+  label: string;
+  /** `URL.createObjectURL(file)` — revoked when the row settles. */
+  preview_url: string;
+}
+
+/** Strip the extension + lowercase + collapse whitespace into hyphens.
+ * Used as the default label when the operator drops a file with a
+ * messy name (e.g. `"Happy Face.PNG" → "happy-face"`). Anything still
+ * outside the backend slug rule falls through the editor's per-cell
+ * validation. */
+function slugifyFilename(name: string): string {
+  const stem = name.replace(/\.[^.]+$/, "");
+  return stem
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    // Drop any character that isn't already in the slug alphabet so we
+    // don't ship a label the server will immediately reject.
+    .replace(/[^a-z0-9_-]/g, "-")
+    // Trim leading/trailing hyphens; collapse runs.
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64);
+}
+
+/** Pretty-print a byte count in MiB / KiB. Mirrors the convention the
+ * admin uses elsewhere (e.g. /admin/agents bytes column). */
+function formatBytes(n: number): string {
+  if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MiB`;
+  if (n >= 1024) return `${(n / 1024).toFixed(1)} KiB`;
+  return `${n} B`;
+}
+
+/** Map an `AssetUploadError.code` to a localized toast string. Falls
+ * back to a generic "upload failed" message when the server emits an
+ * unknown code so the user still gets actionable feedback. */
+function uploadErrorMessage(
+  t: ReturnType<typeof useTranslation>["t"],
+  code: AssetUploadErrorCode,
+  raw: string,
+): string {
+  switch (code) {
+    case "payload_too_large":
+      return t("persona.assetsErrPayloadTooLarge");
+    case "persona_quota_exceeded":
+      return t("persona.assetsErrQuotaExceeded");
+    case "unsupported_media_type":
+      return t("persona.assetsErrUnsupportedMime");
+    case "invalid_label":
+      return t("persona.assetsErrInvalidLabel");
+    case "duplicate_label":
+      return t("persona.assetsErrDuplicateLabel");
+    default:
+      return t("persona.assetsErrUploadFailed", { msg: raw });
+  }
+}
+
+/** Container component for both emoji + reference sections. Splits the
+ * combined asset list (one HTTP call) into two filtered slices so
+ * we can show the storage banner once and avoid double-fetching. */
+function PersonaAssetsPanel({ personaId }: { personaId: string }) {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+
+  const assetsKey = React.useMemo(
+    () => ["admin", "personas", personaId, "assets"] as const,
+    [personaId],
+  );
+
+  const assetsQuery = useQuery<AssetRecord[]>({
+    queryKey: assetsKey,
+    queryFn: () => listAssets(personaId),
+  });
+
+  // Memoise the empty-array fallback so the downstream useMemo deps
+  // don't see a fresh `[]` reference on every render (which the
+  // react-hooks/exhaustive-deps lint rule flags otherwise).
+  const assets = React.useMemo<AssetRecord[]>(
+    () => assetsQuery.data ?? [],
+    [assetsQuery.data],
+  );
+  const emojis = React.useMemo(
+    () => assets.filter((a) => a.kind === "emoji"),
+    [assets],
+  );
+  const refs = React.useMemo(
+    () => assets.filter((a) => a.kind === "reference"),
+    [assets],
+  );
+
+  const totalBytes = React.useMemo(
+    () => assets.reduce((acc, a) => acc + a.size_bytes, 0),
+    [assets],
+  );
+
+  // Pending uploads keyed by kind. Optimistic cells render alongside
+  // real rows; rollback drops the entry by `client_id` and triggers a
+  // toast in the calling handler.
+  const [pending, setPending] = React.useState<PendingAsset[]>([]);
+
+  const refresh = React.useCallback(() => {
+    return queryClient.invalidateQueries({ queryKey: assetsKey });
+  }, [assetsKey, queryClient]);
+
+  /** Shared upload pipeline — validates client-side, optimistically
+   * inserts the placeholder cell, fires the multipart POST, then
+   * either refreshes the list or rolls back + toasts. */
+  const beginUpload = React.useCallback(
+    async (kind: AssetKind, label: string, file: File) => {
+      // Client-side gates. We mirror the backend's MIME + size rules
+      // so the user sees an immediate red-toast without burning a
+      // round-trip.
+      if (!ASSET_ALLOWED_MIMES.includes(file.type)) {
+        toast.error(t("persona.assetsUnsupportedMime"));
+        return;
+      }
+      if (file.size > ASSET_MAX_BYTES) {
+        toast.error(t("persona.assetsTooLarge"));
+        return;
+      }
+      if (!ASSET_LABEL_RE.test(label)) {
+        toast.error(t("persona.assetsLabelInvalid"));
+        return;
+      }
+
+      const client_id = `pending-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const preview_url = URL.createObjectURL(file);
+      const entry: PendingAsset = { client_id, kind, label, preview_url };
+      setPending((prev) => [...prev, entry]);
+
+      try {
+        await uploadAsset(personaId, kind, label, file);
+        toast.success(t("persona.assetsUploadSucceeded", { label }));
+        await refresh();
+      } catch (err) {
+        if (err instanceof AssetUploadError) {
+          toast.error(uploadErrorMessage(t, err.code, err.message));
+        } else {
+          const msg = err instanceof Error ? err.message : String(err);
+          toast.error(t("persona.assetsErrUploadFailed", { msg }));
+        }
+      } finally {
+        setPending((prev) => prev.filter((p) => p.client_id !== client_id));
+        URL.revokeObjectURL(preview_url);
+      }
+    },
+    [personaId, refresh, t],
+  );
+
+  /** Delete one asset and refetch on success. */
+  const handleDelete = React.useCallback(
+    async (asset: AssetRecord) => {
+      try {
+        await deleteAsset(personaId, asset.id);
+        toast.success(
+          t("persona.assetsDeleteSucceeded", { label: asset.label }),
+        );
+        await refresh();
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        toast.error(t("persona.assetsErrUploadFailed", { msg }));
+      }
+    },
+    [personaId, refresh, t],
+  );
+
+  const pendingEmoji = React.useMemo(
+    () => pending.filter((p) => p.kind === "emoji"),
+    [pending],
+  );
+  const pendingRefs = React.useMemo(
+    () => pending.filter((p) => p.kind === "reference"),
+    [pending],
+  );
+
+  return (
+    <div className="space-y-3" data-testid="persona-assets-panel">
+      <AssetSection
+        kind="emoji"
+        title={t("persona.assetsEmojiTitle")}
+        description={t("persona.assetsEmojiDescription")}
+        addLabel={t("persona.assetsAddEmoji")}
+        assets={emojis}
+        pending={pendingEmoji}
+        loading={assetsQuery.isPending}
+        loadError={assetsQuery.error ?? null}
+        onUpload={(file, label) => beginUpload("emoji", label, file)}
+        onDelete={handleDelete}
+      />
+
+      <AssetSection
+        kind="reference"
+        title={t("persona.assetsRefsTitle")}
+        description={t("persona.assetsRefsDescription", {
+          cap: REFERENCE_VISIBLE_CAP,
+        })}
+        addLabel={t("persona.assetsAddReference")}
+        assets={refs}
+        pending={pendingRefs}
+        loading={assetsQuery.isPending}
+        loadError={assetsQuery.error ?? null}
+        onUpload={(file, label) => beginUpload("reference", label, file)}
+        onDelete={handleDelete}
+        overCap={refs.length > REFERENCE_VISIBLE_CAP}
+        overCapHint={t("persona.assetsRefsOverCapHint", {
+          cap: REFERENCE_VISIBLE_CAP,
+        })}
+      />
+
+      <p
+        className="text-right text-[11px] text-tp-ink-3"
+        data-testid="persona-assets-total"
+      >
+        {t("persona.assetsTotalUsed", {
+          used: formatBytes(totalBytes),
+          cap: formatBytes(PERSONA_TOTAL_BYTES_CAP),
+        })}
+      </p>
+    </div>
+  );
+}
+
+/** One collapsible section (emoji OR reference). Owns the drop-zone +
+ * grid + add-button. Stateless w.r.t. the asset list — the parent
+ * owns the query + optimistic-pending bookkeeping. */
+function AssetSection({
+  kind,
+  title,
+  description,
+  addLabel,
+  assets,
+  pending,
+  loading,
+  loadError,
+  onUpload,
+  onDelete,
+  overCap = false,
+  overCapHint,
+}: {
+  kind: AssetKind;
+  title: string;
+  description: string;
+  addLabel: string;
+  assets: AssetRecord[];
+  pending: PendingAsset[];
+  loading: boolean;
+  loadError: Error | null;
+  onUpload: (file: File, label: string) => void;
+  onDelete: (asset: AssetRecord) => void;
+  overCap?: boolean;
+  overCapHint?: string;
+}) {
+  const { t } = useTranslation();
+  const [open, setOpen] = React.useState(true);
+  const [dragOver, setDragOver] = React.useState(false);
+  const fileInputRef = React.useRef<HTMLInputElement | null>(null);
+  const [pendingDelete, setPendingDelete] =
+    React.useState<AssetRecord | null>(null);
+
+  const sectionTestId = `persona-assets-section-${kind}`;
+
+  // Filter the system-clipboard / OS drag payload down to image files
+  // the backend will accept. We dispatch one upload per file with a
+  // slugified default label.
+  const handleFiles = React.useCallback(
+    (files: FileList | File[]) => {
+      const list = Array.from(files);
+      for (const file of list) {
+        const label = slugifyFilename(file.name) || "asset";
+        onUpload(file, label);
+      }
+    },
+    [onUpload],
+  );
+
+  function onPick() {
+    fileInputRef.current?.click();
+  }
+
+  function onFileInputChange(e: React.ChangeEvent<HTMLInputElement>) {
+    if (e.target.files && e.target.files.length > 0) {
+      handleFiles(e.target.files);
+    }
+    // Reset the input so picking the same filename twice re-fires.
+    e.target.value = "";
+  }
+
+  function onDragEnter(e: React.DragEvent<HTMLDivElement>) {
+    if (e.dataTransfer?.types?.includes("Files")) {
+      e.preventDefault();
+      setDragOver(true);
+    }
+  }
+  function onDragOver(e: React.DragEvent<HTMLDivElement>) {
+    if (e.dataTransfer?.types?.includes("Files")) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+    }
+  }
+  function onDragLeave(e: React.DragEvent<HTMLDivElement>) {
+    // Skip phantom leaves caused by hovering child elements.
+    if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+    setDragOver(false);
+  }
+  function onDrop(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    setDragOver(false);
+    const files = e.dataTransfer?.files;
+    if (files && files.length > 0) {
+      handleFiles(files);
+    }
+  }
+
+  return (
+    <section
+      className="space-y-2 rounded-md border border-tp-glass-edge bg-tp-glass-inner px-3 py-2"
+      data-testid={sectionTestId}
+    >
+      <header className="flex items-center justify-between gap-2">
+        <button
+          type="button"
+          onClick={() => setOpen((p) => !p)}
+          className="flex items-center gap-2 text-left"
+          aria-expanded={open}
+          data-testid={`${sectionTestId}-toggle`}
+        >
+          <span className="text-sm font-medium">{title}</span>
+          <span className="rounded-full bg-tp-glass px-1.5 py-0.5 font-mono text-[10px] text-tp-ink-3">
+            {assets.length}
+          </span>
+        </button>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          onClick={onPick}
+          data-testid={`${sectionTestId}-add`}
+        >
+          {addLabel}
+        </Button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept={ASSET_ALLOWED_MIMES.join(",")}
+          multiple
+          className="hidden"
+          onChange={onFileInputChange}
+          data-testid={`${sectionTestId}-file`}
+        />
+      </header>
+
+      {open ? (
+        <>
+          <p className="text-[11px] text-tp-ink-3">{description}</p>
+
+          {overCap && overCapHint ? (
+            <p
+              className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-200"
+              data-testid={`${sectionTestId}-overcap`}
+            >
+              {overCapHint}
+            </p>
+          ) : null}
+
+          {loadError ? (
+            <p
+              className="text-xs text-destructive"
+              data-testid={`${sectionTestId}-load-error`}
+            >
+              {t("persona.assetsLoadFailed", {
+                msg: loadError.message,
+              })}
+            </p>
+          ) : null}
+
+          <div
+            onDragEnter={onDragEnter}
+            onDragOver={onDragOver}
+            onDragLeave={onDragLeave}
+            onDrop={onDrop}
+            className={cn(
+              "rounded-md border border-dashed px-3 py-3 transition-colors",
+              dragOver
+                ? "border-tp-amber bg-tp-amber/10"
+                : "border-tp-glass-edge",
+            )}
+            data-testid={`${sectionTestId}-dropzone`}
+            aria-label={t("persona.assetsDropHere", { kind: title })}
+          >
+            {loading ? (
+              <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+                {Array.from({ length: 2 }).map((_, i) => (
+                  <Skeleton key={i} className="h-24 w-full rounded-md" />
+                ))}
+              </div>
+            ) : assets.length === 0 && pending.length === 0 ? (
+              <p className="py-4 text-center text-xs text-tp-ink-3">
+                {t("persona.assetsEmpty")}
+              </p>
+            ) : (
+              <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+                {assets.map((asset) => (
+                  <AssetCell
+                    key={asset.id}
+                    asset={asset}
+                    onDelete={() => setPendingDelete(asset)}
+                    testId={`${sectionTestId}-cell-${asset.label}`}
+                  />
+                ))}
+                {pending.map((p) => (
+                  <PendingAssetCell
+                    key={p.client_id}
+                    pending={p}
+                    testId={`${sectionTestId}-pending-${p.client_id}`}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        </>
+      ) : null}
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        onOpenChange={(o) => {
+          if (!o) setPendingDelete(null);
+        }}
+        title={t("persona.assetsDeleteConfirmTitle")}
+        description={t("persona.assetsDeleteConfirmBody")}
+        cancelLabel={t("persona.cancel")}
+        confirmLabel={t("persona.assetsDelete")}
+        testId={`${sectionTestId}-delete-confirm`}
+        onConfirm={async () => {
+          const target = pendingDelete;
+          setPendingDelete(null);
+          if (target) await onDelete(target);
+        }}
+      />
+    </section>
+  );
+}
+
+function AssetCell({
+  asset,
+  onDelete,
+  testId,
+}: {
+  asset: AssetRecord;
+  onDelete: () => void;
+  testId: string;
+}) {
+  const { t } = useTranslation();
+  // Backend doesn't have a rename endpoint yet, so the label input is
+  // read-only with a tooltip pointing at the delete-then-reupload
+  // workaround. Validation still runs client-side as a teaching aid.
+  const labelOk = ASSET_LABEL_RE.test(asset.label);
+  return (
+    <div
+      className="group relative flex flex-col gap-1 rounded-md border border-tp-glass-edge bg-tp-glass p-1.5"
+      data-testid={testId}
+    >
+      {/* Square preview thumbnail, capped at 96px. `object-contain`
+          preserves aspect ratio so non-square stickers don't get
+          smashed into a square. */}
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={asset.url}
+        alt={asset.label}
+        className="mx-auto h-20 w-20 rounded-sm object-contain"
+        loading="lazy"
+      />
+      <Input
+        value={asset.label}
+        readOnly
+        title={t("persona.assetsLabelChangeHintNyi")}
+        aria-invalid={!labelOk}
+        className="h-7 px-1.5 text-[11px]"
+        data-testid={`${testId}-label`}
+      />
+      <div className="flex items-center justify-between text-[10px] text-tp-ink-3">
+        <span>{formatBytes(asset.size_bytes)}</span>
+        <button
+          type="button"
+          onClick={onDelete}
+          className="text-destructive hover:underline"
+          data-testid={`${testId}-delete`}
+        >
+          {t("persona.assetsDelete")}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function PendingAssetCell({
+  pending,
+  testId,
+}: {
+  pending: PendingAsset;
+  testId: string;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div
+      className="relative flex flex-col gap-1 rounded-md border border-dashed border-tp-glass-edge bg-tp-glass p-1.5 opacity-70"
+      data-testid={testId}
+    >
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={pending.preview_url}
+        alt={pending.label}
+        className="mx-auto h-20 w-20 rounded-sm object-contain"
+      />
+      <p className="truncate px-1 text-[11px]">{pending.label}</p>
+      <p className="px-1 text-[10px] text-tp-ink-3">
+        {t("persona.assetsUploading")}
+      </p>
+    </div>
   );
 }

@@ -20,6 +20,12 @@ dependencies = [
     "click>=8.1",
     "argon2-cffi>=23.1",
     "fastapi>=0.115",
+    # FastAPI's multipart/form-data parser. Required by the
+    # ``/admin/personas/{id}/assets`` upload route (PLAN_PERSONA_STUDIO
+    # W1). Without it FastAPI 400s any multipart request with
+    # "Form data requires python-multipart" — silently in dev,
+    # loudly in prod once a user tries to upload an emoji.
+    "python-multipart>=0.0.9",
     "uvicorn[standard]>=0.32",
     "websockets>=13",
     "httpx>=0.27",

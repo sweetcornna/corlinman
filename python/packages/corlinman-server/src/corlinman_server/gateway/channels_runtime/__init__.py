@@ -96,6 +96,40 @@ def _is_enabled(section: Mapping[str, Any]) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _humanlike_initial(
+    channel_cfg: Mapping[str, Any],
+) -> tuple[bool, str | None]:
+    """Read the ``(enabled, persona_id)`` pair from the static
+    ``[channels.{name}.humanlike]`` block — used to seed the channel
+    params dataclass. The live admin PUT path goes through the resolver
+    closure below instead so an admin toggle is picked up without
+    restarting the channel task."""
+    block = channel_cfg.get("humanlike")
+    if not isinstance(block, dict):
+        return (False, None)
+    persona_id = block.get("persona_id")
+    return (
+        bool(block.get("enabled", False)),
+        persona_id if isinstance(persona_id, str) else None,
+    )
+
+
+def _humanlike_resolver(
+    channel_cfg: Mapping[str, Any],
+) -> Any:
+    """Return a callable that re-reads ``(enabled, persona_id)`` from the
+    live ``channel_cfg`` mapping. Closing over the mapping (NOT a
+    snapshot) is what makes admin PUTs to
+    ``/admin/channels/{channel}/humanlike`` go live on the next inbound
+    message without a channel restart — the route mutates the same
+    in-memory dict the loader handed us at boot."""
+
+    def _live_humanlike() -> tuple[bool, str | None]:
+        return _humanlike_initial(channel_cfg)
+
+    return _live_humanlike
+
+
 def _build_qq_params(
     qq_cfg: Mapping[str, Any],
     model: str,
@@ -103,6 +137,7 @@ def _build_qq_params(
     inbox: Any = None,
     *,
     persona_store: Any = None,
+    asset_store: Any = None,
 ) -> Any:
     """Build :class:`corlinman_channels.QqChannelParams` from the
     ``[channels.qq]`` config table.
@@ -121,7 +156,9 @@ def _build_qq_params(
     closes over ``qq_cfg`` so admin PUTs to
     ``/admin/channels/qq/humanlike`` are picked up on the next inbound
     message without restarting the channel task (config_watcher rewrites
-    the same dict in place).
+    the same dict in place). ``asset_store`` wires the W7 emoji block
+    composer; when set the agent's system prompt gets an ``## Available
+    emoji`` listing for every emoji asset registered on the persona.
     """
     from corlinman_channels import QqChannelParams
 
@@ -137,24 +174,7 @@ def _build_qq_params(
     if ws_url:
         cfg["ws_url"] = ws_url
 
-    # Live humanlike resolver — re-reads the toggle on every inbound
-    # message. The closure captures ``qq_cfg`` (the LIVE config dict the
-    # admin route mutates), not a snapshot, so a PUT takes effect on
-    # next message without channel restart.
-    def _live_humanlike() -> tuple[bool, str | None]:
-        hl = qq_cfg.get("humanlike")
-        if not isinstance(hl, dict):
-            return (False, None)
-        return (
-            bool(hl.get("enabled", False)),
-            hl.get("persona_id") if isinstance(hl.get("persona_id"), str) else None,
-        )
-
-    block = qq_cfg.get("humanlike")
-    initial_enabled = bool(block.get("enabled", False)) if isinstance(block, dict) else False
-    initial_persona_id = (
-        block.get("persona_id") if isinstance(block, dict) else None
-    )
+    initial_enabled, initial_persona_id = _humanlike_initial(qq_cfg)
 
     return QqChannelParams(
         config=cfg,
@@ -162,14 +182,20 @@ def _build_qq_params(
         chat_service=chat_service,
         inbox=inbox,
         humanlike_enabled=initial_enabled,
-        persona_id=initial_persona_id if isinstance(initial_persona_id, str) else None,
+        persona_id=initial_persona_id,
         persona_store=persona_store,
-        humanlike_resolver=_live_humanlike,
+        humanlike_resolver=_humanlike_resolver(qq_cfg),
+        asset_store=asset_store,
     )
 
 
 def _build_telegram_params(
-    tg_cfg: Mapping[str, Any], model: str, chat_service: Any
+    tg_cfg: Mapping[str, Any],
+    model: str,
+    chat_service: Any,
+    *,
+    persona_store: Any = None,
+    asset_store: Any = None,
 ) -> Any:
     """Build :class:`corlinman_channels.TelegramChannelParams` from the
     ``[channels.telegram]`` config table.
@@ -177,18 +203,34 @@ def _build_telegram_params(
     ``run_telegram_channel`` reads ``bot_token`` / ``allowed_chat_ids`` /
     ``keyword_filter`` / ``require_mention_in_groups`` / ``base_url`` off
     the structural ``config``; the dict from the loader satisfies that.
+
+    The W7 humanlike fields mirror :func:`_build_qq_params` — when the
+    ``[channels.telegram.humanlike]`` block is set the persona's
+    ``system_prompt`` (plus its emoji block when assets are wired) lands
+    at the head of every Telegram chat request.
     """
     from corlinman_channels import TelegramChannelParams
 
+    initial_enabled, initial_persona_id = _humanlike_initial(tg_cfg)
     return TelegramChannelParams(
         config=dict(tg_cfg),
         model=model,
         chat_service=chat_service,
+        humanlike_enabled=initial_enabled,
+        persona_id=initial_persona_id,
+        persona_store=persona_store,
+        humanlike_resolver=_humanlike_resolver(tg_cfg),
+        asset_store=asset_store,
     )
 
 
 def _build_discord_params(
-    dc_cfg: Mapping[str, Any], model: str, chat_service: Any
+    dc_cfg: Mapping[str, Any],
+    model: str,
+    chat_service: Any,
+    *,
+    persona_store: Any = None,
+    asset_store: Any = None,
 ) -> Any:
     """Build :class:`corlinman_channels.DiscordChannelParams` from the
     ``[channels.discord]`` config table.
@@ -206,15 +248,26 @@ def _build_discord_params(
     if token:
         cfg["bot_token"] = token
 
+    initial_enabled, initial_persona_id = _humanlike_initial(dc_cfg)
     return DiscordChannelParams(
         config=cfg,
         model=model,
         chat_service=chat_service,
+        humanlike_enabled=initial_enabled,
+        persona_id=initial_persona_id,
+        persona_store=persona_store,
+        humanlike_resolver=_humanlike_resolver(dc_cfg),
+        asset_store=asset_store,
     )
 
 
 def _build_slack_params(
-    sl_cfg: Mapping[str, Any], model: str, chat_service: Any
+    sl_cfg: Mapping[str, Any],
+    model: str,
+    chat_service: Any,
+    *,
+    persona_store: Any = None,
+    asset_store: Any = None,
 ) -> Any:
     """Build :class:`corlinman_channels.SlackChannelParams` from the
     ``[channels.slack]`` config table.
@@ -234,10 +287,16 @@ def _build_slack_params(
     if bot_token:
         cfg["bot_token"] = bot_token
 
+    initial_enabled, initial_persona_id = _humanlike_initial(sl_cfg)
     return SlackChannelParams(
         config=cfg,
         model=model,
         chat_service=chat_service,
+        humanlike_enabled=initial_enabled,
+        persona_id=initial_persona_id,
+        persona_store=persona_store,
+        humanlike_resolver=_humanlike_resolver(sl_cfg),
+        asset_store=asset_store,
     )
 
 
@@ -318,7 +377,12 @@ def _build_wechat_official_params(
 
 
 def _build_feishu_params(
-    fs_cfg: Mapping[str, Any], model: str, chat_service: Any
+    fs_cfg: Mapping[str, Any],
+    model: str,
+    chat_service: Any,
+    *,
+    persona_store: Any = None,
+    asset_store: Any = None,
 ) -> Any:
     """Build :class:`corlinman_channels.FeishuChannelParams` from the
     ``[channels.feishu]`` config table.
@@ -338,10 +402,16 @@ def _build_feishu_params(
     if app_secret:
         cfg["app_secret"] = app_secret
 
+    initial_enabled, initial_persona_id = _humanlike_initial(fs_cfg)
     return FeishuChannelParams(
         config=cfg,
         model=model,
         chat_service=chat_service,
+        humanlike_enabled=initial_enabled,
+        persona_id=initial_persona_id,
+        persona_store=persona_store,
+        humanlike_resolver=_humanlike_resolver(fs_cfg),
+        asset_store=asset_store,
     )
 
 
@@ -406,6 +476,7 @@ def build_channel_tasks(
     cancel: asyncio.Event,
     inbox: Any = None,
     persona_store: Any = None,
+    asset_store: Any = None,
 ) -> list[asyncio.Task[Any]]:
     """Build (but the caller owns scheduling) the channel background
     tasks for every enabled channel in ``channels_cfg``.
@@ -429,6 +500,7 @@ def build_channel_tasks(
             params = _build_qq_params(
                 qq_cfg, model, chat_service, inbox=inbox,
                 persona_store=persona_store,
+                asset_store=asset_store,
             )
             task = asyncio.create_task(
                 _run_channel(
@@ -458,7 +530,11 @@ def build_channel_tasks(
         try:
             from corlinman_channels import run_telegram_channel
 
-            params = _build_telegram_params(tg_cfg, model, chat_service)
+            params = _build_telegram_params(
+                tg_cfg, model, chat_service,
+                persona_store=persona_store,
+                asset_store=asset_store,
+            )
             task = asyncio.create_task(
                 _run_channel(
                     "telegram",
@@ -489,7 +565,11 @@ def build_channel_tasks(
         try:
             from corlinman_channels import run_discord_channel
 
-            params = _build_discord_params(dc_cfg, model, chat_service)
+            params = _build_discord_params(
+                dc_cfg, model, chat_service,
+                persona_store=persona_store,
+                asset_store=asset_store,
+            )
             task = asyncio.create_task(
                 _run_channel(
                     "discord",
@@ -518,7 +598,11 @@ def build_channel_tasks(
         try:
             from corlinman_channels import run_slack_channel
 
-            params = _build_slack_params(sl_cfg, model, chat_service)
+            params = _build_slack_params(
+                sl_cfg, model, chat_service,
+                persona_store=persona_store,
+                asset_store=asset_store,
+            )
             task = asyncio.create_task(
                 _run_channel(
                     "slack",
@@ -578,7 +662,11 @@ def build_channel_tasks(
         try:
             from corlinman_channels import run_feishu_channel
 
-            params = _build_feishu_params(fs_cfg, model, chat_service)
+            params = _build_feishu_params(
+                fs_cfg, model, chat_service,
+                persona_store=persona_store,
+                asset_store=asset_store,
+            )
             task = asyncio.create_task(
                 _run_channel(
                     "feishu",
@@ -693,18 +781,23 @@ def bootstrap(state: Any) -> list[asyncio.Task[Any]]:
     # drain together.
     cancel = asyncio.Event()
 
-    # The persona store is opened at admin_a wiring time and parked on
-    # the admin_a state. Reach across to it so QQ humanlike injection
-    # has a live handle without a second sqlite open. Best-effort —
-    # missing handle silently disables persona injection.
+    # The persona store + asset store are opened at admin_a wiring time
+    # and parked on the admin_a state. Reach across to them so every
+    # humanlike-capable channel (QQ + Telegram + Discord + Slack +
+    # Feishu) can inject the persona system prompt and the W7 emoji
+    # block. Best-effort — missing handles silently disable persona
+    # injection / the emoji block.
     persona_store: Any | None = None
+    asset_store: Any | None = None
     try:
         from corlinman_server.gateway.routes_admin_a import get_admin_state
 
         admin_a_state = get_admin_state()
         persona_store = getattr(admin_a_state, "persona_store", None)
+        asset_store = getattr(admin_a_state, "persona_asset_store", None)
     except Exception:  # noqa: BLE001 — defensive
         persona_store = None
+        asset_store = None
 
     try:
         tasks = build_channel_tasks(
@@ -713,6 +806,7 @@ def bootstrap(state: Any) -> list[asyncio.Task[Any]]:
             chat_service=chat_service,
             cancel=cancel,
             persona_store=persona_store,
+            asset_store=asset_store,
         )
     except Exception as exc:  # pragma: no cover — defensive umbrella
         logger.warning("gateway.channels.bootstrap_failed", error=str(exc))

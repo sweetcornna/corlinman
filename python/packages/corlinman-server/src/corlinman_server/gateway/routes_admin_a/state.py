@@ -128,6 +128,13 @@ class AdminState:
     # at boot and seeded with the default ``grantley`` row.
     persona_store: Any | None = None
 
+    # Companion :class:`corlinman_server.persona.PersonaAssetStore` for
+    # the W1 Persona Studio asset layer (emoji packs + reference
+    # images). ``None`` → the ``/admin/personas/{id}/assets*`` routes
+    # return 503 ``persona_asset_store_missing`` but the bare persona
+    # CRUD above keeps working.
+    persona_asset_store: Any | None = None
+
     # -- /admin/sessions --------------------------------------------
     #
     # Wave-2 kill switch + an optional pre-resolved sessions backend.

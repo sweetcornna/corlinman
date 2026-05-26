@@ -70,6 +70,10 @@ from corlinman_channels.logstream import (
     LogStreamAdapter,
     LogStreamConfig,
 )
+from corlinman_channels.persona_inject import (
+    compose_persona_emoji_block,
+    inject_persona_if_enabled,
+)
 from corlinman_channels.onebot import (
     Action,
     AtSegment,
@@ -261,6 +265,9 @@ __all__ = [  # noqa: RUF022 — grouped by subsystem for human readability.
     "run_slack_channel",
     "run_telegram_channel",
     "run_wechat_official_channel",
+    # Persona injection (W7 Persona Studio)
+    "compose_persona_emoji_block",
+    "inject_persona_if_enabled",
     # Discord
     "DiscordAdapter",
     "DiscordConfig",

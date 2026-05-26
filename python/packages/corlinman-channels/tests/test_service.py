@@ -3208,3 +3208,264 @@ class TestHandleOneQqOfficial:
         )
         with pytest.raises(ValueError, match="app_secret"):
             await run_qq_official_channel(params, asyncio.Event())
+
+
+# ---------------------------------------------------------------------------
+# Persona injection for the four new channels (W7 Persona Studio)
+# ---------------------------------------------------------------------------
+
+
+class _FakePersonaStoreW7:
+    """Minimal :class:`PersonaStore` stand-in — returns a single canned
+    row. Stays here (not in conftest) so the W7-specific test
+    surface is co-located with its assertions."""
+
+    def __init__(self, persona_id: str, system_prompt: str) -> None:
+        self._row = SimpleNamespace(
+            id=persona_id,
+            display_name="Test",
+            short_summary="",
+            system_prompt=system_prompt,
+            is_builtin=False,
+        )
+
+    async def get(self, persona_id: str):  # type: ignore[no-untyped-def]
+        if persona_id == self._row.id:
+            return self._row
+        return None
+
+
+class _FakeAssetRecordW7:
+    """Tiny duck-typed asset record — only ``label`` + ``path``."""
+
+    def __init__(self, label: str, path: str) -> None:
+        self.label = label
+        self.path = path
+
+
+class _FakeAssetStoreW7:
+    """Minimal :class:`PersonaAssetStore` stand-in for W7 emoji tests."""
+
+    def __init__(self, records: list[_FakeAssetRecordW7]) -> None:
+        self._records = records
+
+    async def list(self, persona_id: str, *, kind: str | None = None):  # type: ignore[no-untyped-def]
+        if kind == "emoji":
+            return list(self._records)
+        return []
+
+    def path_for(self, record: _FakeAssetRecordW7) -> str:
+        return record.path
+
+
+class TestPersonaInjectionMultiChannel:
+    """Verify the W7 humanlike injector fires inside each text-channel
+    handle_one_* — Telegram / Discord / Slack / Feishu. Each test:
+
+    * builds a chat service that records the request,
+    * spins up the channel handler with a populated ``*ChannelParams``
+      carrying ``humanlike_enabled=True`` + a fake persona store + a
+      fake asset store with one emoji slot,
+    * asserts the chat backend saw a leading ``role="system"`` message
+      whose content carries both the persona body marker and the
+      ``## Available emoji`` block listing the emoji path.
+    """
+
+    @staticmethod
+    def _assert_persona_injected_with_emoji(req: Any) -> None:
+        sys_msg = req.messages[0]
+        assert sys_msg.role == "system"
+        assert "PERSONA-BODY-MARK" in sys_msg.content
+        assert "## Available emoji" in sys_msg.content
+        assert "- happy: /abs/happy.png" in sys_msg.content
+
+    @pytest.mark.asyncio
+    async def test_telegram_injects_persona_and_emoji_block(self) -> None:
+        import asyncio
+
+        svc = _ScriptedChatService([
+            _Ev(kind="token_delta", text="ok"),
+            _Ev(kind="done"),
+        ])
+        sender = _FakeTelegramSender()
+        # Telegram's handle_one_* does ``int(binding.thread)`` for the
+        # chat id; use a numeric binding here to avoid the cast failing.
+        binding = ChannelBinding.telegram(
+            bot_id=999, chat_id=42, user_id=42
+        )
+        inbound: InboundEvent[Any] = InboundEvent(
+            channel="telegram",
+            binding=binding,
+            text="ping",
+            message_id="7",
+            timestamp=0,
+            mentioned=True,
+            attachments=[],
+            payload=None,
+        )
+        params = TelegramChannelParams(
+            config={},
+            model="m",
+            chat_service=svc,
+            humanlike_enabled=True,
+            persona_id="grantley",
+            persona_store=_FakePersonaStoreW7(
+                "grantley", "PERSONA-BODY-MARK\nYou are Grantley."
+            ),
+            asset_store=_FakeAssetStoreW7(
+                [_FakeAssetRecordW7("happy", "/abs/happy.png")]
+            ),
+        )
+        await handle_one_telegram(
+            svc,
+            inbound,
+            "m",
+            sender,
+            asyncio.Event(),  # type: ignore[arg-type]
+            params=params,
+        )
+        assert svc.calls, "chat_service.run was never invoked"
+        self._assert_persona_injected_with_emoji(svc.calls[0])
+
+    @pytest.mark.asyncio
+    async def test_discord_injects_persona_and_emoji_block(self) -> None:
+        import asyncio
+
+        svc = _ScriptedChatService([
+            _Ev(kind="token_delta", text="ok"),
+            _Ev(kind="done"),
+        ])
+        sender = _FakeDiscordSender()
+        params = DiscordChannelParams(
+            config={},
+            model="m",
+            chat_service=svc,
+            humanlike_enabled=True,
+            persona_id="grantley",
+            persona_store=_FakePersonaStoreW7(
+                "grantley", "PERSONA-BODY-MARK"
+            ),
+            asset_store=_FakeAssetStoreW7(
+                [_FakeAssetRecordW7("happy", "/abs/happy.png")]
+            ),
+        )
+        await handle_one_discord(
+            svc,
+            _inbound("discord"),
+            "m",
+            sender,
+            asyncio.Event(),  # type: ignore[arg-type]
+            params=params,
+        )
+        assert svc.calls
+        self._assert_persona_injected_with_emoji(svc.calls[0])
+
+    @pytest.mark.asyncio
+    async def test_slack_injects_persona_and_emoji_block(self) -> None:
+        import asyncio
+
+        svc = _ScriptedChatService([
+            _Ev(kind="token_delta", text="ok"),
+            _Ev(kind="done"),
+        ])
+        sender = _FakeSlackSender()
+        params = SlackChannelParams(
+            config={},
+            model="m",
+            chat_service=svc,
+            humanlike_enabled=True,
+            persona_id="grantley",
+            persona_store=_FakePersonaStoreW7(
+                "grantley", "PERSONA-BODY-MARK"
+            ),
+            asset_store=_FakeAssetStoreW7(
+                [_FakeAssetRecordW7("happy", "/abs/happy.png")]
+            ),
+        )
+        await handle_one_slack(
+            svc,
+            _inbound("slack"),
+            "m",
+            sender,
+            asyncio.Event(),  # type: ignore[arg-type]
+            params=params,
+        )
+        assert svc.calls
+        self._assert_persona_injected_with_emoji(svc.calls[0])
+
+    @pytest.mark.asyncio
+    async def test_feishu_injects_persona_and_emoji_block(self) -> None:
+        import asyncio
+
+        svc = _ScriptedChatService([
+            _Ev(kind="token_delta", text="ok"),
+            _Ev(kind="done"),
+        ])
+        sender = _FakeFeishuSender()
+        params = FeishuChannelParams(
+            config={},
+            model="m",
+            chat_service=svc,
+            humanlike_enabled=True,
+            persona_id="grantley",
+            persona_store=_FakePersonaStoreW7(
+                "grantley", "PERSONA-BODY-MARK"
+            ),
+            asset_store=_FakeAssetStoreW7(
+                [_FakeAssetRecordW7("happy", "/abs/happy.png")]
+            ),
+        )
+        await handle_one_feishu(
+            svc,
+            _inbound("feishu"),
+            "m",
+            sender,
+            asyncio.Event(),  # type: ignore[arg-type]
+            params=params,
+        )
+        assert svc.calls
+        self._assert_persona_injected_with_emoji(svc.calls[0])
+
+    @pytest.mark.asyncio
+    async def test_qq_emoji_block_listed_in_system_prompt(self) -> None:
+        """QQ already had the persona injector; W7 adds the emoji block
+        when the new ``asset_store`` is wired. Mirror the QQ test in
+        :class:`TestQqPersonaInjection` with an asset store present."""
+        import asyncio
+
+        svc = _ScriptedChatService([
+            _Ev(kind="token_delta", text="ok"),
+            _Ev(kind="done"),
+        ])
+        ev = _sample_group_event()
+        binding = ChannelBinding.qq_group(
+            ev.self_id, ev.group_id or 0, ev.user_id
+        )
+        req = RoutedRequest(binding=binding, content="hi")
+        adapter = _FakeOneBotAdapter()
+        params = QqChannelParams(
+            config={},
+            model="m",
+            chat_service=svc,
+            humanlike_enabled=True,
+            persona_id="grantley",
+            persona_store=_FakePersonaStoreW7(
+                "grantley", "PERSONA-BODY-MARK"
+            ),
+            asset_store=_FakeAssetStoreW7(
+                [
+                    _FakeAssetRecordW7("happy", "/abs/happy.png"),
+                    _FakeAssetRecordW7("sad", "/abs/sad.png"),
+                ]
+            ),
+        )
+        await handle_one_qq(
+            svc, req, ev, "m", adapter, asyncio.Event(),  # type: ignore[arg-type]
+            params=params,
+        )
+        sys_msg = svc.calls[0].messages[0]
+        assert sys_msg.role == "system"
+        assert "PERSONA-BODY-MARK" in sys_msg.content
+        assert "## Available emoji" in sys_msg.content
+        assert "- happy: /abs/happy.png" in sys_msg.content
+        assert "- sad: /abs/sad.png" in sys_msg.content

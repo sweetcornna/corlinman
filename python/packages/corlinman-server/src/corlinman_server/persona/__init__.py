@@ -21,6 +21,19 @@ Public surface
 
 from __future__ import annotations
 
+from corlinman_server.persona.asset_store import (
+    ALLOWED_MIMES,
+    AssetError,
+    AssetKind,
+    AssetMimeRejected,
+    AssetNotFound,
+    AssetQuotaExceeded,
+    AssetRecord,
+    AssetTooLarge,
+    DEFAULT_MAX_BYTES_PER_ASSET,
+    DEFAULT_MAX_BYTES_PER_PERSONA,
+    PersonaAssetStore,
+)
 from corlinman_server.persona.default_grantley import (
     DEFAULT_GRANTLEY_DISPLAY_NAME,
     DEFAULT_GRANTLEY_ID,
@@ -37,10 +50,21 @@ from corlinman_server.persona.store import (
 )
 
 __all__ = [
+    "ALLOWED_MIMES",
+    "AssetError",
+    "AssetKind",
+    "AssetMimeRejected",
+    "AssetNotFound",
+    "AssetQuotaExceeded",
+    "AssetRecord",
+    "AssetTooLarge",
     "DEFAULT_GRANTLEY_DISPLAY_NAME",
     "DEFAULT_GRANTLEY_ID",
     "DEFAULT_GRANTLEY_SUMMARY",
+    "DEFAULT_MAX_BYTES_PER_ASSET",
+    "DEFAULT_MAX_BYTES_PER_PERSONA",
     "Persona",
+    "PersonaAssetStore",
     "PersonaError",
     "PersonaExists",
     "PersonaProtected",

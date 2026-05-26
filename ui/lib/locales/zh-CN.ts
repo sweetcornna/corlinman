@@ -2288,6 +2288,42 @@ export const zhCN = {
     errDisplayNameRequired: "显示名必填",
     errSummaryRequired: "简介必填",
     errPromptRequired: "System prompt 不能为空",
+    // W2 — 素材上传区（表情包 + 参考立绘）
+    assetsSaveFirstHint:
+      "请先保存 persona — 素材会绑定到 slug，需要先有 id 才能上传。",
+    assetsEmojiTitle: "表情包",
+    assetsEmojiDescription:
+      "agent 可通过 send_attachment 发送的表情贴图。每个 label 对应一个图位 — 名称简短即可（happy、angry、sleepy …）。",
+    assetsRefsTitle: "参考立绘",
+    assetsRefsDescription:
+      "供 image_with_refs 调用的角色立绘。模型仅使用前 {{cap}} 张；多余的会留存但被忽略。",
+    assetsRefsOverCapHint:
+      "image_with_refs 仅使用前 {{cap}} 张参考立绘。多余的保留供替换，但生成时不会用到。",
+    assetsAddEmoji: "+ 添加表情",
+    assetsAddReference: "+ 添加立绘",
+    assetsLabelPlaceholder: "标签",
+    assetsLabelInvalid: "标签需匹配 a–z、0–9、_、-（1–64 字符）",
+    assetsLabelChangeHintNyi:
+      "重命名请先删除再重新上传（重命名接口将在后续版本提供）。",
+    assetsDelete: "删除",
+    assetsDeleteConfirmTitle: "删除该素材？",
+    assetsDeleteConfirmBody: "图片将从 persona 素材库中移除，之后可重新上传。",
+    assetsLoadFailed: "无法加载素材：{{msg}}",
+    assetsEmpty: "暂无素材 — 拖拽图片到这里或点击「+」上传。",
+    assetsDropHere: "拖放图片到此上传为 {{kind}}",
+    assetsUploading: "上传中…",
+    assetsTotalUsed: "已使用 {{used}} / {{cap}}（上限 200 MiB）",
+    assetsUploadSucceeded: "已上传 {{label}}",
+    assetsDeleteSucceeded: "已删除 {{label}}",
+    assetsUnsupportedMime: "不支持的文件类型 — 仅支持 PNG / JPEG / WebP / GIF",
+    assetsTooLarge: "文件过大 — 单文件上限 8 MiB",
+    assetsErrPayloadTooLarge: "文件过大 — 单文件上限 8 MiB",
+    assetsErrQuotaExceeded: "persona 已达存储上限（200 MiB）",
+    assetsErrUnsupportedMime: "不支持的文件类型 — 仅支持 PNG / JPEG / WebP / GIF",
+    assetsErrInvalidLabel: "标签被服务端拒绝（a–z、0–9、_、-）",
+    assetsErrDuplicateLabel:
+      "已存在同名 label 的素材 — 请换一个名字，或先删除旧的素材。",
+    assetsErrUploadFailed: "上传失败：{{msg}}",
   },
 
   // W1.2 — TopNav update bubble (chip that lights up when a newer

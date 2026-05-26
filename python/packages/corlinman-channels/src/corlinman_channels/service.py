@@ -120,6 +120,9 @@ from corlinman_channels._status import (
     try_append_footer,
 )
 from corlinman_channels.common import InboundEvent, TransportError
+from corlinman_channels.persona_inject import (
+    inject_persona_if_enabled as _inject_persona_if_enabled,
+)
 from corlinman_channels.discord import (
     DEFAULT_GATEWAY_URL,
     DEFAULT_REST_BASE,
@@ -302,6 +305,17 @@ class QqChannelParams:
     channel task (config-watcher hot-reload integration). When ``None``,
     the static fields are read directly. Typed as ``Any`` so this
     package stays type-checker-friendly without a Callable import."""
+
+    asset_store: Any = None
+    """Optional :class:`corlinman_server.persona.PersonaAssetStore`.
+    When wired AND the resolved persona owns at least one ``emoji``
+    asset, the persona injector appends a ``## Available emoji`` block
+    to the system prompt listing each emoji label → absolute path so the
+    agent can call ``send_attachment`` with the right path to ship a
+    sticker. ``None`` keeps the persona injection working without the
+    emoji extension — the system prompt body still goes in, but no
+    emoji block is rendered. Typed as ``Any`` to avoid a hard dep on
+    corlinman-server at import time."""
 
     event_emitter: Any = None
     """W4.1 — see :class:`TelegramChannelParams.event_emitter`. QQ uses
@@ -1067,54 +1081,23 @@ async def handle_one_qq(
 async def _qq_inject_persona_if_enabled(
     request: Any, params: "QqChannelParams"
 ) -> None:
-    """Prepend a persona ``role="system"`` message to ``request.messages``.
+    """Thin wrapper around :func:`persona_inject.inject_persona_if_enabled`.
 
-    Reads ``(enabled, persona_id)`` from the live resolver when provided
-    (so an admin toggle takes effect on the next inbound message
-    without restarting the channel task), otherwise from the static
-    ``humanlike_enabled`` / ``persona_id`` fields. Silently no-ops when:
-
-    * the gate is off,
-    * ``persona_id`` is None,
-    * the persona store is None,
-    * the persona row is missing or has empty ``system_prompt``.
-
-    Best-effort: any store failure logs a warning and continues with
-    the unmodified request — persona is decorative; chat must keep
-    working when it breaks.
+    Kept as a named QQ-specific helper for ``handle_one_qq`` callers and
+    for the historical test imports — the actual injection logic now
+    lives in :mod:`corlinman_channels.persona_inject` so it can be
+    shared across every humanlike-capable channel (QQ / Telegram /
+    Discord / Slack / Feishu).
     """
-    from types import SimpleNamespace
-
-    enabled = bool(params.humanlike_enabled)
-    persona_id = params.persona_id
-    resolver = params.humanlike_resolver
-    if callable(resolver):
-        try:
-            resolved = resolver()
-            if isinstance(resolved, tuple) and len(resolved) == 2:
-                enabled = bool(resolved[0])
-                persona_id = resolved[1]
-        except Exception as exc:  # noqa: BLE001
-            _log.warning("qq humanlike resolver failed: %s", exc)
-    if not enabled or not persona_id:
-        return
-    store = params.persona_store
-    if store is None:
-        return
-    try:
-        persona = await store.get(persona_id)
-    except Exception as exc:  # noqa: BLE001
-        _log.warning("qq persona lookup failed: %s", exc)
-        return
-    if persona is None:
-        return
-    body = getattr(persona, "system_prompt", "") or ""
-    if not body.strip():
-        return
-    sys_msg = SimpleNamespace(
-        role="system", content=body + "\n\n---\n"
+    await _inject_persona_if_enabled(
+        request,
+        humanlike_enabled=params.humanlike_enabled,
+        persona_id=params.persona_id,
+        persona_store=params.persona_store,
+        humanlike_resolver=params.humanlike_resolver,
+        asset_store=params.asset_store,
+        channel_name="qq",
     )
-    request.messages = [sys_msg, *list(request.messages)]
 
 
 def _build_internal_request(
@@ -1196,6 +1179,17 @@ class TelegramChannelParams:
     model: str = ""
     chat_service: ChatServiceLike | None = None
     base_url: str = "https://api.telegram.org"
+
+    # ---- human-like persona toggle (W7 Persona Studio) -----------------
+    # Mirror of the QQ humanlike fields — see :class:`QqChannelParams`
+    # for the full contract. Off by default; the per-turn injector
+    # silently no-ops when the gate is off or the store is missing.
+    humanlike_enabled: bool = False
+    persona_id: str | None = None
+    persona_store: Any = None
+    humanlike_resolver: Any = None
+    asset_store: Any = None
+
     event_emitter: Any = None
     """W4.1 — optional gateway-wide
     :class:`corlinman_server.gateway.observability.JournalBackedEmitter`.
@@ -1248,13 +1242,14 @@ async def run_telegram_channel(
                 await _bounded_spawn(
                     semaphore,
                     pending,
-                    lambda chat_service=params.chat_service, ev=ev: handle_one_telegram(
+                    lambda chat_service=params.chat_service, ev=ev, p=params: handle_one_telegram(
                         chat_service,
                         ev,
-                        params.model,
+                        p.model,
                         sender,
                         cancel,
-                        event_emitter=params.event_emitter,
+                        event_emitter=p.event_emitter,
+                        params=p,
                     ),
                 )
     finally:
@@ -1422,6 +1417,7 @@ async def handle_one_telegram(
     cancel: asyncio.Event,
     *,
     event_emitter: Any | None = None,
+    params: "TelegramChannelParams | None" = None,
 ) -> None:
     """Run one Telegram chat turn and post the reply via
     :class:`TelegramSender`. Parallel structure to :func:`handle_one_qq`.
@@ -1483,6 +1479,17 @@ async def handle_one_telegram(
             ),
             name="telegram-observability-consumer",
         )
+    request = _build_text_channel_request(inbound, model)
+    if params is not None:
+        await _inject_persona_if_enabled(
+            request,
+            humanlike_enabled=params.humanlike_enabled,
+            persona_id=params.persona_id,
+            persona_store=params.persona_store,
+            humanlike_resolver=params.humanlike_resolver,
+            asset_store=params.asset_store,
+            channel_name="telegram",
+        )
     try:
         try:
             placeholder_id = await sender.send_message(
@@ -1494,7 +1501,9 @@ async def handle_one_telegram(
             # at the end.
             _log.warning("telegram placeholder send failed: %s", exc)
 
-        outcome = await _drive_spinner(spinner, chat_service, inbound, model, cancel)
+        outcome = await _drive_spinner(
+            spinner, chat_service, inbound, model, cancel, request=request
+        )
     finally:
         typing_task.cancel()
         with suppress(asyncio.CancelledError, Exception):
@@ -1736,6 +1745,8 @@ async def _drive_spinner(
     inbound: InboundEvent[Any],
     model: str,
     cancel: asyncio.Event,
+    *,
+    request: Any | None = None,
 ) -> _DriveSpinnerOutcome:
     """Stream ``chat_service.run`` events into ``spinner``.
 
@@ -1753,12 +1764,18 @@ async def _drive_spinner(
     and ``started_at_ms`` records the streaming start so the post-turn
     footer can render ``(elapsed: 12s · 3 tool calls · ~$0.012)`` even
     when the new :class:`JournalBackedEmitter` is not wired.
+
+    W7: ``request`` may be pre-built (and pre-augmented with a persona
+    system_prompt by :func:`_inject_persona_if_enabled`) by the caller;
+    when omitted the legacy unaugmented request is built here so the
+    pre-W7 call sites still work unchanged.
     """
     import time as _time
 
     started_at_ms = int(_time.time() * 1000)
     outcome = _DriveSpinnerOutcome(started_at_ms=started_at_ms)
-    request = _build_text_channel_request(inbound, model)
+    if request is None:
+        request = _build_text_channel_request(inbound, model)
     stream = chat_service.run(request, cancel)
     async for ev in stream:
         kind = _event_kind(ev)
@@ -1851,6 +1868,14 @@ class DiscordChannelParams:
 
     model: str = ""
     chat_service: ChatServiceLike | None = None
+
+    # ---- human-like persona toggle (W7 Persona Studio) -----------------
+    humanlike_enabled: bool = False
+    persona_id: str | None = None
+    persona_store: Any = None
+    humanlike_resolver: Any = None
+    asset_store: Any = None
+
     event_emitter: Any = None
     """W4.1 — see :class:`TelegramChannelParams.event_emitter`."""
 
@@ -1897,13 +1922,14 @@ async def run_discord_channel(
                 await _bounded_spawn(
                     semaphore,
                     pending,
-                    lambda chat_service=params.chat_service, ev=ev: handle_one_discord(
+                    lambda chat_service=params.chat_service, ev=ev, p=params: handle_one_discord(
                         chat_service,
                         ev,
-                        params.model,
+                        p.model,
                         sender,
                         cancel,
-                        event_emitter=params.event_emitter,
+                        event_emitter=p.event_emitter,
+                        params=p,
                     ),
                 )
     finally:
@@ -1978,6 +2004,7 @@ async def handle_one_discord(
     cancel: asyncio.Event,
     *,
     event_emitter: Any | None = None,
+    params: "DiscordChannelParams | None" = None,
 ) -> None:
     """Run one Discord chat turn and post the reply via
     :class:`DiscordSender`. Parallel structure to :func:`handle_one_telegram`.
@@ -2017,6 +2044,17 @@ async def handle_one_discord(
             ),
             name="discord-observability-consumer",
         )
+    request = _build_text_channel_request(inbound, model)
+    if params is not None:
+        await _inject_persona_if_enabled(
+            request,
+            humanlike_enabled=params.humanlike_enabled,
+            persona_id=params.persona_id,
+            persona_store=params.persona_store,
+            humanlike_resolver=params.humanlike_resolver,
+            asset_store=params.asset_store,
+            channel_name="discord",
+        )
     try:
         try:
             placeholder_id = await sender.send_message(
@@ -2025,7 +2063,9 @@ async def handle_one_discord(
         except Exception as exc:  # noqa: BLE001
             _log.warning("discord placeholder send failed: %s", exc)
 
-        outcome = await _drive_spinner(spinner, chat_service, inbound, model, cancel)
+        outcome = await _drive_spinner(
+            spinner, chat_service, inbound, model, cancel, request=request
+        )
     finally:
         typing_task.cancel()
         with suppress(asyncio.CancelledError, Exception):
@@ -2099,6 +2139,14 @@ class SlackChannelParams:
 
     model: str = ""
     chat_service: ChatServiceLike | None = None
+
+    # ---- human-like persona toggle (W7 Persona Studio) -----------------
+    humanlike_enabled: bool = False
+    persona_id: str | None = None
+    persona_store: Any = None
+    humanlike_resolver: Any = None
+    asset_store: Any = None
+
     event_emitter: Any = None
     """W4.1 — see :class:`TelegramChannelParams.event_emitter`."""
 
@@ -2148,13 +2196,14 @@ async def run_slack_channel(
                 await _bounded_spawn(
                     semaphore,
                     pending,
-                    lambda chat_service=params.chat_service, ev=ev: handle_one_slack(
+                    lambda chat_service=params.chat_service, ev=ev, p=params: handle_one_slack(
                         chat_service,
                         ev,
-                        params.model,
+                        p.model,
                         sender,
                         cancel,
-                        event_emitter=params.event_emitter,
+                        event_emitter=p.event_emitter,
+                        params=p,
                     ),
                 )
     finally:
@@ -2208,6 +2257,7 @@ async def handle_one_slack(
     cancel: asyncio.Event,
     *,
     event_emitter: Any | None = None,
+    params: "SlackChannelParams | None" = None,
 ) -> None:
     """Run one Slack chat turn and post the reply via :class:`SlackSender`.
 
@@ -2246,6 +2296,17 @@ async def handle_one_slack(
             ),
             name="slack-observability-consumer",
         )
+    request = _build_text_channel_request(inbound, model)
+    if params is not None:
+        await _inject_persona_if_enabled(
+            request,
+            humanlike_enabled=params.humanlike_enabled,
+            persona_id=params.persona_id,
+            persona_store=params.persona_store,
+            humanlike_resolver=params.humanlike_resolver,
+            asset_store=params.asset_store,
+            channel_name="slack",
+        )
     try:
         try:
             placeholder_ts = await sender.send_message(
@@ -2254,7 +2315,9 @@ async def handle_one_slack(
         except Exception as exc:  # noqa: BLE001
             _log.warning("slack placeholder send failed: %s", exc)
 
-        outcome = await _drive_spinner(spinner, chat_service, inbound, model, cancel)
+        outcome = await _drive_spinner(
+            spinner, chat_service, inbound, model, cancel, request=request
+        )
     finally:
         if observability_task is not None:
             observability_task.cancel()
@@ -2319,6 +2382,14 @@ class FeishuChannelParams:
 
     model: str = ""
     chat_service: ChatServiceLike | None = None
+
+    # ---- human-like persona toggle (W7 Persona Studio) -----------------
+    humanlike_enabled: bool = False
+    persona_id: str | None = None
+    persona_store: Any = None
+    humanlike_resolver: Any = None
+    asset_store: Any = None
+
     event_emitter: Any = None
     """W4.1 — see :class:`TelegramChannelParams.event_emitter`."""
 
@@ -2370,13 +2441,14 @@ async def run_feishu_channel(
                 await _bounded_spawn(
                     semaphore,
                     pending,
-                    lambda chat_service=params.chat_service, ev=ev: handle_one_feishu(
+                    lambda chat_service=params.chat_service, ev=ev, p=params: handle_one_feishu(
                         chat_service,
                         ev,
-                        params.model,
+                        p.model,
                         sender,
                         cancel,
-                        event_emitter=params.event_emitter,
+                        event_emitter=p.event_emitter,
+                        params=p,
                     ),
                 )
     finally:
@@ -2431,6 +2503,7 @@ async def handle_one_feishu(
     cancel: asyncio.Event,
     *,
     event_emitter: Any | None = None,
+    params: "FeishuChannelParams | None" = None,
 ) -> None:
     """Run one Feishu chat turn and post the reply via :class:`FeishuSender`.
 
@@ -2468,6 +2541,17 @@ async def handle_one_feishu(
             ),
             name="feishu-observability-consumer",
         )
+    request = _build_text_channel_request(inbound, model)
+    if params is not None:
+        await _inject_persona_if_enabled(
+            request,
+            humanlike_enabled=params.humanlike_enabled,
+            persona_id=params.persona_id,
+            persona_store=params.persona_store,
+            humanlike_resolver=params.humanlike_resolver,
+            asset_store=params.asset_store,
+            channel_name="feishu",
+        )
     try:
         try:
             placeholder_id = await sender.send_message(
@@ -2476,7 +2560,9 @@ async def handle_one_feishu(
         except Exception as exc:  # noqa: BLE001
             _log.warning("feishu placeholder send failed: %s", exc)
 
-        outcome = await _drive_spinner(spinner, chat_service, inbound, model, cancel)
+        outcome = await _drive_spinner(
+            spinner, chat_service, inbound, model, cancel, request=request
+        )
     finally:
         if observability_task is not None:
             observability_task.cancel()

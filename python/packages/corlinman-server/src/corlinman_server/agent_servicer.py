@@ -98,10 +98,33 @@ from corlinman_agent.coding import (
     resolve_workspace,
 )
 from corlinman_agent.coding._snapshot import snapshot as _snapshot_workspace
+from corlinman_agent.image import (
+    IMAGE_WITH_REFS_TOOL,
+    dispatch_image_with_refs,
+    image_with_refs_tool_schema,
+)
 from corlinman_agent.interactive import (
     ASK_USER_TOOL,
     ask_user_tool_schema,
     dispatch_ask_user,
+)
+from corlinman_agent.persona import (
+    PERSONA_ATTACH_ASSET_FROM_URL_TOOL,
+    PERSONA_CREATE_TOOL,
+    PERSONA_DELETE_TOOL,
+    PERSONA_GET_TOOL,
+    PERSONA_LIST_ASSETS_TOOL,
+    PERSONA_LIST_TOOL,
+    PERSONA_TOOLS,
+    PERSONA_UPDATE_TOOL,
+    dispatch_persona_attach_asset_from_url,
+    dispatch_persona_create,
+    dispatch_persona_delete,
+    dispatch_persona_get,
+    dispatch_persona_list,
+    dispatch_persona_list_assets,
+    dispatch_persona_update,
+    persona_tool_schemas,
 )
 from corlinman_agent.variables import VariableCascade
 from corlinman_agent.web import (
@@ -162,8 +185,9 @@ BUILTIN_TOOLS: frozenset[str] = frozenset(
         CALCULATOR_TOOL,
         SEND_ATTACHMENT_TOOL,
         ASK_USER_TOOL,
+        IMAGE_WITH_REFS_TOOL,
     }
-) | CODING_TOOLS
+) | CODING_TOOLS | PERSONA_TOOLS
 
 
 def _send_attachment_tool_schema() -> dict[str, Any]:
@@ -238,6 +262,8 @@ def _builtin_tool_schemas() -> list[dict[str, Any]]:
         web_fetch_tool_schema(),
         _send_attachment_tool_schema(),
         ask_user_tool_schema(),
+        image_with_refs_tool_schema(),
+        *persona_tool_schemas(),
         *coding_tool_schemas(),
     ]
 
@@ -677,6 +703,17 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # pays for an empty sqlite file.
         self._builtin_agents: AgentCardRegistry | None = None
         self._blackboard_store: BlackboardStore | None = None
+        # W3 persona-tool stores. Lazy-opened on first persona.* /
+        # image_with_refs dispatch so an operator that never uses the
+        # persona surface doesn't pay for the extra sqlite handles.
+        # ``Any`` typing keeps the corlinman-agent → corlinman-server
+        # import direction loose; concrete types are
+        # corlinman_server.persona.PersonaStore /
+        # corlinman_server.persona.PersonaAssetStore.
+        self._persona_store: Any | None = None
+        self._persona_asset_store: Any | None = None
+        self._persona_store_init_done: bool = False
+        self._persona_asset_store_init_done: bool = False
         # v0.7.1 warm pool. Operators can call ``prewarm_providers`` at
         # boot to resolve known aliases before the first user request;
         # the SDK auth handshake then happens off the hot path. The
@@ -1874,6 +1911,69 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 # finalise the reply with the question text and not
                 # call any more tools this turn.
                 return dispatch_ask_user(args_json=event.args_json)
+            if event.tool in PERSONA_TOOLS:
+                persona_store = await self._get_persona_store()
+                persona_asset_store = await self._get_persona_asset_store()
+                if event.tool == PERSONA_LIST_TOOL:
+                    return await dispatch_persona_list(
+                        args_json=event.args_json,
+                        persona_store=persona_store,
+                        asset_store=persona_asset_store,
+                    )
+                if event.tool == PERSONA_GET_TOOL:
+                    return await dispatch_persona_get(
+                        args_json=event.args_json,
+                        persona_store=persona_store,
+                        asset_store=persona_asset_store,
+                    )
+                if event.tool == PERSONA_CREATE_TOOL:
+                    return await dispatch_persona_create(
+                        args_json=event.args_json,
+                        persona_store=persona_store,
+                        asset_store=persona_asset_store,
+                    )
+                if event.tool == PERSONA_UPDATE_TOOL:
+                    return await dispatch_persona_update(
+                        args_json=event.args_json,
+                        persona_store=persona_store,
+                        asset_store=persona_asset_store,
+                    )
+                if event.tool == PERSONA_DELETE_TOOL:
+                    return await dispatch_persona_delete(
+                        args_json=event.args_json,
+                        persona_store=persona_store,
+                        asset_store=persona_asset_store,
+                    )
+                if event.tool == PERSONA_LIST_ASSETS_TOOL:
+                    return await dispatch_persona_list_assets(
+                        args_json=event.args_json,
+                        persona_store=persona_store,
+                        asset_store=persona_asset_store,
+                    )
+                if event.tool == PERSONA_ATTACH_ASSET_FROM_URL_TOOL:
+                    return await dispatch_persona_attach_asset_from_url(
+                        args_json=event.args_json,
+                        persona_store=persona_store,
+                        asset_store=persona_asset_store,
+                    )
+            if event.tool == IMAGE_WITH_REFS_TOOL:
+                # Resolve the bound persona from start.extra when the
+                # channel injected it (W4 channel-side wiring lands
+                # later; today the agent falls back to the explicit
+                # ``persona_id`` arg the model passes in).
+                extra = getattr(start, "extra", None) or {}
+                bound_persona_id: str | None = None
+                if isinstance(extra, dict):
+                    val = extra.get("persona_id")
+                    if isinstance(val, str) and val.strip():
+                        bound_persona_id = val.strip()
+                return await dispatch_image_with_refs(
+                    args_json=event.args_json,
+                    provider=provider,
+                    persona_store=await self._get_persona_store(),
+                    asset_store=await self._get_persona_asset_store(),
+                    bound_persona_id=bound_persona_id,
+                )
             if event.tool == SEND_ATTACHMENT_TOOL:
                 # No-op stub on the agent side. The real upload happens
                 # in the channel handler (handle_one_telegram /
@@ -1964,6 +2064,97 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         data_dir.mkdir(parents=True, exist_ok=True)
         self._blackboard_store = BlackboardStore(data_dir / "blackboard.sqlite")
         return self._blackboard_store
+
+    async def _get_persona_store(self) -> Any | None:
+        """Lazy-open the PersonaStore against the canonical
+        ``<data_dir>/personas.sqlite`` path used by the gateway
+        entrypoint. Returns the cached handle on subsequent calls.
+
+        Failure to open (corlinman-server missing, sqlite I/O error)
+        flips ``_persona_store_init_done`` so we don't retry every
+        dispatch; the dispatcher returns ``persona_store_unavailable``
+        when this getter resolves to ``None``.
+
+        Note: opens a *separate* sqlite connection from the gateway-
+        owned admin state, which is fine for sqlite WAL — both
+        connections see the same on-disk DB, and the agent dispatcher
+        only writes / reads in response to model-issued tool calls so
+        the contention is negligible.
+
+        The companion (gateway-side) async open happens in the
+        entrypoint; this getter is for paths that bypass the gateway
+        (e.g. unit-tested agent servicer with no full app lifecycle).
+        """
+        if self._persona_store is not None:
+            return self._persona_store
+        if self._persona_store_init_done:
+            return None
+        self._persona_store_init_done = True
+        try:
+            from corlinman_server.persona import PersonaStore  # noqa: PLC0415
+
+            data_dir = _resolve_data_dir()
+            data_dir.mkdir(parents=True, exist_ok=True)
+            self._persona_store = await PersonaStore.open(
+                data_dir / "personas.sqlite"
+            )
+            logger.info("agent.persona_store.opened_lazy")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "agent.persona_store.init_failed", error=str(exc)
+            )
+            self._persona_store = None
+        return self._persona_store
+
+    async def _get_persona_asset_store(self) -> Any | None:
+        """Lazy-open the PersonaAssetStore against
+        ``<data_dir>/persona_assets.sqlite`` + ``<data_dir>/personas``,
+        matching the gateway entrypoint's wiring. Returns ``None`` on
+        any open failure so the dispatcher can surface a typed
+        ``persona_asset_store_unavailable`` error."""
+        if self._persona_asset_store is not None:
+            return self._persona_asset_store
+        if self._persona_asset_store_init_done:
+            return None
+        self._persona_asset_store_init_done = True
+        try:
+            from corlinman_server.persona import (  # noqa: PLC0415
+                PersonaAssetStore,
+            )
+
+            data_dir = _resolve_data_dir()
+            data_dir.mkdir(parents=True, exist_ok=True)
+            self._persona_asset_store = await PersonaAssetStore.open(
+                data_dir / "persona_assets.sqlite",
+                data_dir / "personas",
+            )
+            logger.info("agent.persona_asset_store.opened_lazy")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "agent.persona_asset_store.init_failed", error=str(exc)
+            )
+            self._persona_asset_store = None
+        return self._persona_asset_store
+
+    def set_persona_stores(
+        self,
+        *,
+        persona_store: Any | None = None,
+        persona_asset_store: Any | None = None,
+    ) -> None:
+        """Inject pre-opened persona stores (gateway lifecycle path).
+
+        The entrypoint already opens both stores for the admin routes;
+        wiring them through this setter avoids the lazy-open path on
+        the agent side opening a *second* sqlite connection. Tests can
+        also use this to inject mocks without going through the
+        lifecycle code."""
+        if persona_store is not None:
+            self._persona_store = persona_store
+            self._persona_store_init_done = True
+        if persona_asset_store is not None:
+            self._persona_asset_store = persona_asset_store
+            self._persona_asset_store_init_done = True
 
     def _peek_agent_binding(self, start: AgentChatStart) -> AgentCard | None:
         """W-D1 / W2.3: detect which agent the request references so we

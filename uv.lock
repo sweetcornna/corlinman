@@ -725,6 +725,7 @@ dependencies = [
     { name = "prometheus-client" },
     { name = "pydantic" },
     { name = "python-json-logger" },
+    { name = "python-multipart" },
     { name = "structlog" },
     { name = "tomli-w" },
     { name = "uvicorn", extra = ["standard"] },
@@ -775,6 +776,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.10" },
     { name = "pytest-postgresql", marker = "extra == 'test'", specifier = ">=6.0" },
     { name = "python-json-logger", specifier = ">=3.2" },
+    { name = "python-multipart", specifier = ">=0.0.9" },
     { name = "structlog", specifier = ">=25.1" },
     { name = "tomli-w", specifier = ">=1.2.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
@@ -2143,6 +2145,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/f7/ff/3cc9165fd44106973cd7ac9facb674a65ed853494592541d339bdc9a30eb/python_json_logger-4.1.0.tar.gz", hash = "sha256:b396b9e3ed782b09ff9d6e4f1683d46c83ad0d35d2e407c09a9ebbf038f88195", size = 17573, upload-time = "2026-03-29T04:39:56.805Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/27/be/0631a861af4d1c875f096c07d34e9a63639560a717130e7a87cbc82b7e3f/python_json_logger-4.1.0-py3-none-any.whl", hash = "sha256:132994765cf75bf44554be9aa49b06ef2345d23661a96720262716438141b6b2", size = 15021, upload-time = "2026-03-29T04:39:55.266Z" },
+]
+
+[[package]]
+name = "python-multipart"
+version = "0.0.29"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/4e/fe/70bd71a6738b09a0bdf6480ca6436b167469ca4578b2a0efbe390b4b0e70/python_multipart-0.0.29.tar.gz", hash = "sha256:643e93849196645e2dbdd81a0f8829a23123ad7f797a84a364c6fb3563f18904", size = 45678, upload-time = "2026-05-17T17:29:47.654Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8f/cb/769cfc37177252872a45a71f3fbdde9d51b471a3f3c14bfe95dde3407386/python_multipart-0.0.29-py3-none-any.whl", hash = "sha256:2ddcc971cef266225f54f552d8fa10bcfbb1f14446caec199060daac59ff2d69", size = 29640, upload-time = "2026-05-17T17:29:45.69Z" },
 ]
 
 [[package]]

@@ -2338,6 +2338,44 @@ export const en = {
     errDisplayNameRequired: "Display name is required",
     errSummaryRequired: "Summary is required",
     errPromptRequired: "System prompt cannot be empty",
+    // W2 — asset upload zones (emoji + reference packs)
+    assetsSaveFirstHint:
+      "Save the persona first — assets attach to its slug, so we need an id before we can upload.",
+    assetsEmojiTitle: "Emoji pack",
+    assetsEmojiDescription:
+      "Stickers the agent can send via send_attachment. One label per slot — keep them short (happy, angry, sleepy …).",
+    assetsRefsTitle: "Reference images",
+    assetsRefsDescription:
+      "Character立绘 fed into image_with_refs. The first {{cap}} are used by the model; extras stay stored but are ignored.",
+    assetsRefsOverCapHint:
+      "Only the first {{cap}} reference images are passed to image_with_refs. Extras are kept for swapping but are ignored at generation time.",
+    assetsAddEmoji: "+ Add emoji",
+    assetsAddReference: "+ Add reference",
+    assetsLabelPlaceholder: "label",
+    assetsLabelInvalid: "Label must match a–z, 0–9, _, - (1–64 chars)",
+    assetsLabelChangeHintNyi:
+      "Rename: delete then re-upload (rename API lands in a later wave).",
+    assetsDelete: "Delete",
+    assetsDeleteConfirmTitle: "Delete this asset?",
+    assetsDeleteConfirmBody:
+      "The image will be removed from the persona pack. The slot can be re-uploaded later.",
+    assetsLoadFailed: "Could not load assets: {{msg}}",
+    assetsEmpty: "No items yet — drag images here or click \"+\".",
+    assetsDropHere: "Drop image to upload as {{kind}}",
+    assetsUploading: "Uploading…",
+    assetsTotalUsed: "Storage: {{used}} / {{cap}} (200 MiB cap)",
+    assetsUploadSucceeded: "Uploaded {{label}}",
+    assetsDeleteSucceeded: "Deleted {{label}}",
+    assetsUnsupportedMime: "Unsupported file type — use PNG, JPEG, WebP, or GIF",
+    assetsTooLarge: "File too large — max 8 MiB per asset",
+    assetsErrPayloadTooLarge: "File too large — max 8 MiB per asset",
+    assetsErrQuotaExceeded: "Persona is out of storage (200 MiB cap reached)",
+    assetsErrUnsupportedMime:
+      "Unsupported file type — use PNG, JPEG, WebP, or GIF",
+    assetsErrInvalidLabel: "Label rejected by the server (a–z, 0–9, _, -)",
+    assetsErrDuplicateLabel:
+      "An asset with this label already exists — pick a different name or delete the old one first.",
+    assetsErrUploadFailed: "Upload failed: {{msg}}",
   },
 
   // W1.2 — TopNav update bubble (chip that lights up when a newer

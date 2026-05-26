@@ -49,12 +49,36 @@ CREATE TABLE IF NOT EXISTS personas (
     short_summary TEXT NOT NULL DEFAULT '',
     system_prompt TEXT NOT NULL,
     is_builtin    INTEGER NOT NULL DEFAULT 0,
+    owner_user_id TEXT,
     created_at_ms INTEGER NOT NULL,
     updated_at_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_personas_updated_at
     ON personas(updated_at_ms);
+CREATE INDEX IF NOT EXISTS idx_personas_owner
+    ON personas(owner_user_id);
 """
+
+
+async def _migrate_personas_table(conn: aiosqlite.Connection) -> None:
+    """Idempotent migration: add ``owner_user_id`` column to pre-W1
+    schemas. SQLite has no ``ADD COLUMN IF NOT EXISTS``; we PRAGMA-
+    check first and ALTER only when missing.
+
+    Field rationale: nullable for forward-compatibility with the
+    Persona Studio auth migration (see PLAN_PERSONA_STUDIO.md W1).
+    Today no callers populate it; the column rides quietly so a future
+    auth-enforced migration is a one-line UPDATE.
+    """
+    async with conn.execute("PRAGMA table_info(personas)") as cur:
+        cols = {row[1] for row in await cur.fetchall()}
+    if "owner_user_id" not in cols:
+        await conn.execute("ALTER TABLE personas ADD COLUMN owner_user_id TEXT")
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_personas_owner "
+            "ON personas(owner_user_id)"
+        )
+        await conn.commit()
 
 
 @dataclass(frozen=True)
@@ -74,6 +98,7 @@ class Persona:
     is_builtin: bool
     created_at_ms: int
     updated_at_ms: int
+    owner_user_id: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -96,6 +121,10 @@ class PersonaProtected(PersonaError):
 
 
 def _row_to_persona(row: aiosqlite.Row) -> Persona:
+    # ``owner_user_id`` may be absent on a row materialised before the
+    # W1 migration ran (rare — the migration runs at open()) so use
+    # ``.keys()`` to probe; fall back to None for the legacy shape.
+    owner = row["owner_user_id"] if "owner_user_id" in row.keys() else None
     return Persona(
         id=row["id"],
         display_name=row["display_name"],
@@ -104,6 +133,7 @@ def _row_to_persona(row: aiosqlite.Row) -> Persona:
         is_builtin=bool(row["is_builtin"]),
         created_at_ms=int(row["created_at_ms"]),
         updated_at_ms=int(row["updated_at_ms"]),
+        owner_user_id=owner,
     )
 
 
@@ -146,6 +176,7 @@ class PersonaStore:
         await conn.execute("PRAGMA foreign_keys = ON")
         await conn.executescript(_SCHEMA)
         await conn.commit()
+        await _migrate_personas_table(conn)
         self._conn = conn
 
     async def close(self) -> None:
@@ -179,7 +210,7 @@ class PersonaStore:
         async with self._c.execute(
             """
             SELECT id, display_name, short_summary, system_prompt,
-                   is_builtin, created_at_ms, updated_at_ms
+                   is_builtin, owner_user_id, created_at_ms, updated_at_ms
               FROM personas
              ORDER BY is_builtin DESC, updated_at_ms DESC, id ASC
             """,
@@ -192,7 +223,7 @@ class PersonaStore:
         async with self._c.execute(
             """
             SELECT id, display_name, short_summary, system_prompt,
-                   is_builtin, created_at_ms, updated_at_ms
+                   is_builtin, owner_user_id, created_at_ms, updated_at_ms
               FROM personas
              WHERE id = ?
             """,
@@ -237,8 +268,8 @@ class PersonaStore:
                 """
                 INSERT INTO personas (
                     id, display_name, short_summary, system_prompt,
-                    is_builtin, created_at_ms, updated_at_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    is_builtin, owner_user_id, created_at_ms, updated_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     persona.id,
@@ -246,6 +277,7 @@ class PersonaStore:
                     persona.short_summary,
                     persona.system_prompt,
                     1 if builtin else 0,
+                    persona.owner_user_id,
                     now,
                     now,
                 ),
