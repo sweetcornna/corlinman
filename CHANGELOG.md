@@ -4,6 +4,131 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] — 2026-05-26 — Persona Studio + frontend overhaul + QQ/Telegram fixes
+
+> Lands the eight-wave **Persona Studio** initiative
+> ([`docs/PLAN_PERSONA_STUDIO.md`](docs/PLAN_PERSONA_STUDIO.md)) plus a
+> sweep of frontend repairs and prod-channel bug fixes that were
+> blocking real bot traffic.
+>
+> Operators can now define any persona via `/admin/persona` (with
+> drag-drop emoji + reference-image upload) **or** by typing `/persona`
+> in any chat surface to launch a guided wizard. The persona's
+> reference立绘 plug into a new `image_with_refs` tool that drives
+> daily QQ-Zone publishing via the scheduler builtin
+> `qzone.daily_publish`. The Grantley persona ships as the reference
+> implementation (opt-in via "Enable Grantley daily 说说" in
+> `/admin/scheduler/qzone`).
+>
+> The dashboard's old protocol-comparison playground was deleted; the
+> Playground page is now a real system overview + chat that talks to
+> `/v1/chat/completions` with SSE rendering. The Telegram channel page
+> finally shows real numbers (the gateway grew 3 admin routes that
+> were missing on the Python port). QQ added a NapCat account-online
+> probe so the admin UI surfaces "需重新扫码" the moment Tencent kicks
+> the bot.
+
+### Added
+
+- **Persona Studio (8 waves)** — `PersonaStore` + `PersonaAssetStore`
+  with 8 MiB/asset + 200 MiB/persona caps, sha256-keyed dedup;
+  `/admin/personas/{id}/assets` multipart upload + ETag-served fetch +
+  cascade delete; `/admin/persona` editor extended with drag-drop emoji
+  + reference-image sections (en + zh-CN i18n); 7 `persona_*` agent
+  tools (list/get/create/update/delete/list_assets/attach_asset_from_url);
+  new `image_with_refs` tool over OpenAI Responses API + `gpt-image-1`;
+  new `qzone_publish` tool + OneBot HTTP client; `qzone.daily_publish`
+  scheduler builtin + `/admin/scheduler/qzone` admin UI with cron
+  preview + persona dropdown + "Run now"; per-channel humanlike toggle
+  extended from QQ-only to QQ/Telegram/Discord/Slack/Feishu;
+  `compose_persona_emoji_block` injects emoji manifest into the
+  persona system prompt so agents can `send_attachment` flavour
+  stickers; nullable `owner_user_id` column on `personas` for future
+  multi-tenant auth.
+- **`/persona` slash command + wizard skill** — channels router +
+  web/admin chat_bootstrap now recognise `/persona` (+ `/角色` /
+  `/人格` / `配置人格`) and substitute a system-inserted wizard
+  prelude for the trailing user message. New bundled
+  `configure-persona/SKILL.md` walks the agent through create →
+  voice interview → persist → asset hint. `/help` + `/persona-list`
+  shortcuts ride the same registry. Starter-skills seeder grew
+  recursive subtree copy so multi-file skills auto-seed.
+- **Playground page rebuilt** — `/admin/playground` is now a system
+  overview (Plugins/Agents/Personas/Approvals + recent-activity tail
+  via `/admin/logs/stream` SSE) plus a working chat composer that
+  POSTs `/v1/chat/completions` with `stream:true` and renders OpenAI
+  SSE chunks including tool_call chips. The protocol-comparison
+  demo + its mock streams + helper components were deleted.
+- **Telegram admin routes** — three new endpoints under
+  `/admin/channels/telegram/`: `status` (online + message counts +
+  p50/p95 latency + active chats), `messages` (ring buffer of recent
+  inbound + outbound, capped 500), `send` (admin manual push). Backed
+  by `TELEGRAM_HEALTH` + counter hooks fired from `handle_one_telegram`.
+- **QQ account-online probe** — `_qq_probe_account_online` runs every
+  60 s as a background task, fetches NapCat HTTP `/get_login_info`
+  and writes `account_online` / `account_qq` / `account_nickname` into
+  `QQ_HEALTH`. The `/admin/channels/qq` page renders an amber banner
+  "QQ 账号已下线 — 需重新扫码" when `account_online === false`, wired
+  to the existing ScanLoginDialog.
+- **`channels_config` plumbed into `AdminState`** — the
+  `/admin/channels/{qq,telegram}/status` routes finally see the live
+  config the channels are running with (previously always returned
+  `configured: false` because nothing wrote the dict into AdminState).
+
+### Fixed
+
+- **OpenAI tool-name regex** — renamed all 7 persona tools from
+  dotted form (`persona.list`) to underscore (`persona_list`).
+  OpenAI rejects names containing `.` via
+  `^[a-zA-Z0-9_-]+$`, which broke every chat turn the moment Persona
+  Studio was advertised. Updated constants, schemas, dispatchers,
+  bundled skill body, command wizard prelude.
+- **QQ image messages crashed every turn** — the channels-side
+  `Attachment` dataclass carries a `data` field, but
+  `chat_service._attachment_to_proto` reads `a.bytes_` (server-side
+  field name). An inbound `[CQ:image,...]` raised `AttributeError`
+  deep inside the async generator and surfaced as
+  `RuntimeError("generator didn't stop after throw()")`. Added
+  `_to_server_attachment_shape` converter on both QQ and
+  Telegram/Discord/Slack/Feishu request builders.
+- **`send_attachment` resolved relative paths against the gateway
+  cwd, not the agent workspace** — every channel handler used
+  `Path(path_str).exists()` so a `write_file("hello.html")
+  + send_attachment("hello.html")` always failed with
+  "⚠️ 发送文件失败: hello.html 不存在". New
+  `resolve_attachment_path()` joins the path against
+  `<DATA_DIR>/workspace` (the same resolution `write_file` uses).
+- **QQ split-reply spammed `@user` on every chunk** — the group
+  reply builder unconditionally prepended `AtSegment` for every
+  chunk. Telegram's pattern is to anchor only `chunks[0]`; QQ now
+  mirrors that.
+- **`PersonaStore.open` failed on pre-W1 DBs** — `_SCHEMA` referenced
+  the new `owner_user_id` column in a `CREATE INDEX IF NOT EXISTS`
+  clause, which raises "no such column" on a legacy `personas` table.
+  The migration now adds both column + index atomically and the
+  schema script doesn't pre-declare the index.
+- **VPS `ui-static/` was stale across deploys** — `install.sh` +
+  `corlinman-upgrader.sh` never ran `pnpm build` nor placed
+  `ui/out` into `$PREFIX/ui-static`, so admin pages drifted out of
+  sync with the gateway version. Both installer scripts now have a
+  `[ui]` stage that builds + rsyncs the static export, with a
+  `--skip-ui` flag for headless deploys.
+
+### Changed
+
+- **Root version 1.2.0 → 1.6.0** — `pyproject.toml` +
+  `python/packages/corlinman-server/pyproject.toml`. Other workspace
+  packages keep their independent 0.x.x.
+- **`send_attachment` tool description** rewritten so the model knows
+  to reuse its `write_file` path verbatim and that relative paths are
+  resolved against the workspace.
+
+### Notes
+
+- The `[Unreleased]` v1.5.0 / multi-agent / one-click-upgrade blocks
+  below this section pre-date 1.6.0 and remain as historical work
+  logs; their content was already on `main` before 1.6.0 was cut.
+
 ## [Unreleased] — Skill library v1.5.0
 
 > `/admin/skills` goes from a static mock to a live two-tab surface.

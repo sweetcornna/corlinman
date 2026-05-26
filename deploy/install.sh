@@ -63,6 +63,11 @@
 #                     alongside corlinman. Auto-materialises `.env` from
 #                     `deploy/.env.template` if one isn't present; you'll be
 #                     prompted to edit it (QQ_* / OPENAI_API_KEY) and re-run.
+#   --skip-ui         Skip the Next.js UI build + ui-static placement.
+#                     Use for headless deploys (no Node/pnpm) or when the
+#                     UI is served from a separate container. The previous
+#                     ui-static (if any) is preserved untouched. Also via
+#                     CORLINMAN_SKIP_UI=1.
 #   --version <ref>   Git ref / branch / tag to install from (default: main).
 #
 # Environment overrides:
@@ -90,6 +95,7 @@ ENABLE_DOCKER_SANDBOX="${CORLINMAN_ENABLE_DOCKER_SANDBOX:-}"
 ENABLE_ONE_CLICK_UPGRADE="${CORLINMAN_ENABLE_ONE_CLICK_UPGRADE:-}"
 UPGRADE_MODE=""
 WITH_QQ=""
+SKIP_UI="${CORLINMAN_SKIP_UI:-}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -102,6 +108,7 @@ while [[ $# -gt 0 ]]; do
         --enable-one-click-upgrade) ENABLE_ONE_CLICK_UPGRADE="1"; shift ;;
         --upgrade) UPGRADE_MODE="1"; shift ;;
         --with-qq) WITH_QQ="1"; shift ;;
+        --skip-ui) SKIP_UI="1"; shift ;;
         -h|--help)
             # Print the top-of-file usage block (everything between line 2
             # and the first non-`#` line) so all flags including --with-qq
@@ -117,6 +124,65 @@ log()  { printf "\033[1;34m==>\033[0m %s\n" "$*"; }
 warn() { printf "\033[1;33m!\033[0m %s\n" "$*" >&2; }
 die()  { printf "\033[1;31m✗\033[0m %s\n" "$*" >&2; exit 1; }
 require() { command -v "$1" >/dev/null 2>&1 || die "required tool '$1' not on PATH"; }
+
+# ----- UI stage --------------------------------------------------------------
+# Build the Next.js static export (``ui/out``) and place it at
+# ``$PREFIX/ui-static`` — the directory the systemd unit points
+# ``CORLINMAN_UI_DIR`` at. The gateway serves /admin/* from this dir, so
+# without this stage operators end up running yesterday's UI against
+# today's API and every admin page silently drifts (the symptom is
+# stale page content, working endpoints, no error in the logs).
+#
+# Honoured switches:
+#   * ``--skip-ui`` / ``CORLINMAN_SKIP_UI=1`` — headless deploys
+#     (CI smoke, docker-only environments where the UI lives in a
+#     separate container) skip the build entirely. The previous
+#     ui-static is preserved as-is so the gateway keeps serving
+#     whatever it had.
+#
+# Idempotent: re-runs do a clean rsync of ``ui/out/`` → ``ui-static/``
+# with ``--delete`` so stale chunks (e.g. dropped pages like the old
+# /playground/protocol demo) actually disappear.
+build_and_place_ui() {
+    if [[ -n "$SKIP_UI" ]]; then
+        warn "--skip-ui set; leaving $PREFIX/ui-static untouched"
+        return 0
+    fi
+    local ui_src="$PREFIX/repo/ui"
+    if [[ ! -d "$ui_src" ]]; then
+        warn "no ui/ at $ui_src; skipping UI build"
+        return 0
+    fi
+    # Tooling probe. pnpm is the only supported package manager (matches
+    # ui/package.json + the lockfile we ship). corepack on a modern Node
+    # gives us pnpm without a global install — try that first.
+    if ! command -v pnpm >/dev/null 2>&1; then
+        if command -v corepack >/dev/null 2>&1; then
+            log "enabling pnpm via corepack"
+            corepack enable >/dev/null 2>&1 || true
+        fi
+    fi
+    if ! command -v pnpm >/dev/null 2>&1; then
+        warn "pnpm not on PATH and corepack failed — install Node 20+ + pnpm or pass --skip-ui"
+        warn "skipping UI build; $PREFIX/ui-static will not be refreshed"
+        return 0
+    fi
+
+    log "pnpm install --frozen-lockfile (ui)"
+    (cd "$ui_src" && pnpm install --frozen-lockfile) || die "pnpm install failed"
+
+    log "pnpm build (ui)"
+    (cd "$ui_src" && pnpm build) || die "pnpm build failed"
+
+    if [[ ! -d "$ui_src/out" ]]; then
+        die "ui build did not produce ui/out — check next.config (expected output: 'export')"
+    fi
+
+    log "rsync ui/out → $PREFIX/ui-static"
+    sudo mkdir -p "$PREFIX/ui-static"
+    sudo rsync -a --delete "$ui_src/out/" "$PREFIX/ui-static/"
+    log "ui-static refreshed ($(sudo find "$PREFIX/ui-static" -type f | wc -l) files)"
+}
 
 # ----- Health probe -----------------------------------------------------------
 # Polls /health on the configured PORT until it returns 200, up to
@@ -597,6 +663,11 @@ install_native() {
     log "uv sync --all-packages (this can take a few minutes on first install)"
     (cd "$PREFIX/repo" && uv sync --all-packages --frozen --no-dev)
 
+    # Build + place the Next.js static export. Honors --skip-ui /
+    # CORLINMAN_SKIP_UI for headless deploys. Without this step the
+    # gateway serves whatever stale UI happened to be in ui-static/.
+    build_and_place_ui
+
     mkdir -p "$DATA_DIR"
 
     if [[ "$(uname -s)" == "Linux" ]]; then
@@ -611,7 +682,9 @@ After=network.target
 Type=simple
 WorkingDirectory=${PREFIX}/repo
 ExecStart=${uv_path} run corlinman-gateway --config ${DATA_DIR}/config.toml --port ${PORT}
+EnvironmentFile=-${PREFIX}/.env
 Environment=CORLINMAN_DATA_DIR=${DATA_DIR}
+Environment=CORLINMAN_UI_DIR=${PREFIX}/ui-static
 Environment=BIND=0.0.0.0
 Environment=PORT=${PORT}
 Environment=CORLINMAN_RUNTIME_MODE=native
@@ -708,11 +781,23 @@ upgrade_native() {
     log "uv sync --frozen (refreshing venv)"
     (cd "$PREFIX/repo" && uv sync --all-packages --frozen --no-dev)
 
+    # Rebuild + place the UI static export. Without this an upgrade
+    # leaves $PREFIX/ui-static at the previous version while the Python
+    # gateway flips to the new one — every admin page silently drifts.
+    # ``--skip-ui`` keeps the legacy behaviour for headless / docker-
+    # external-UI deployments.
+    build_and_place_ui
+
     if [[ "$(uname -s)" == "Linux" ]] \
         && [[ -f /etc/systemd/system/corlinman.service ]]; then
         log "restarting corlinman.service"
         sudo systemctl restart corlinman.service
         sudo systemctl is-active corlinman.service || warn "service did not return active"
+        # Restart the Python agent too if it's running (post-W5 deployments
+        # have a sibling corlinman-agent.service that owns the gRPC plane).
+        if [[ -f /etc/systemd/system/corlinman-agent.service ]]; then
+            sudo systemctl restart corlinman-agent.service
+        fi
     elif [[ "$(uname -s)" == "Linux" ]] \
         && [[ -f /etc/systemd/system/corlinman-gateway.service ]]; then
         # Older deployments registered the unit as corlinman-gateway.service.
