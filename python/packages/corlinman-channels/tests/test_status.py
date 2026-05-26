@@ -33,6 +33,7 @@ from corlinman_channels._status import (
     format_tool_status,
     parse_ask_user_args,
     parse_send_attachment_args,
+    resolve_attachment_path,
     tool_arg_preview,
     truncate_reply,
 )
@@ -274,6 +275,102 @@ class TestParseSendAttachmentArgs:
     def test_missing_path(self) -> None:
         path, cap, name = parse_send_attachment_args(_Ev(args_json=b"{}"))
         assert path == ""
+
+
+class TestResolveAttachmentPath:
+    """Pin the workspace-aware resolver behaviour.
+
+    Regression: pre-fix every channel did ``Path(path_str).exists()``,
+    which misses the typical ``write_file("hello.html") +
+    send_attachment("hello.html")`` flow because the gateway process
+    cwd is not the workspace. The resolver maps the relative path back
+    to the workspace; these tests pin that contract.
+    """
+
+    def test_relative_path_resolved_against_workspace(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        monkeypatch.setenv("CORLINMAN_AGENT_WORKSPACE", str(tmp_path))
+        (tmp_path / "hello.html").write_text("<p>hi</p>")
+        p = resolve_attachment_path("hello.html")
+        assert p is not None
+        assert p == (tmp_path / "hello.html").resolve()
+
+    def test_relative_subdir_resolved_against_workspace(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        monkeypatch.setenv("CORLINMAN_AGENT_WORKSPACE", str(tmp_path))
+        sub = tmp_path / "out"
+        sub.mkdir()
+        (sub / "report.pdf").write_bytes(b"%PDF-")
+        p = resolve_attachment_path("out/report.pdf")
+        assert p is not None
+        assert p == (sub / "report.pdf").resolve()
+
+    def test_absolute_path_inside_workspace_accepted(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        monkeypatch.setenv("CORLINMAN_AGENT_WORKSPACE", str(tmp_path))
+        f = tmp_path / "thing.txt"
+        f.write_text("ok")
+        p = resolve_attachment_path(str(f.resolve()))
+        assert p == f.resolve()
+
+    def test_absolute_path_outside_workspace_falls_back_to_basename(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        # Model hallucinated /tmp/whatever/hello.html but the real file
+        # lives in the workspace under the same basename — resolver
+        # should still find it instead of failing.
+        monkeypatch.setenv("CORLINMAN_AGENT_WORKSPACE", str(tmp_path))
+        (tmp_path / "hello.html").write_text("<p>hi</p>")
+        p = resolve_attachment_path("/tmp/whatever/hello.html")
+        assert p == (tmp_path / "hello.html").resolve()
+
+    def test_absolute_path_outside_workspace_with_no_match_returns_none(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        # Truly non-existent path — neither the absolute nor the
+        # workspace+basename fallback hit, so resolver returns None.
+        monkeypatch.setenv("CORLINMAN_AGENT_WORKSPACE", str(tmp_path))
+        assert (
+            resolve_attachment_path("/nonexistent/place/does-not-exist.bin")
+            is None
+        )
+
+    def test_absolute_path_existing_anywhere_accepted(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        # Real absolute paths outside the workspace are accepted — the
+        # agent has run_shell so this isn't a new exfiltration vector,
+        # and existing channel tests rely on this behaviour.
+        monkeypatch.setenv(
+            "CORLINMAN_AGENT_WORKSPACE", str(tmp_path / "ws_other")
+        )
+        (tmp_path / "ws_other").mkdir()
+        f = tmp_path / "outside.txt"
+        f.write_text("data")
+        p = resolve_attachment_path(str(f.resolve()))
+        assert p == f.resolve()
+
+    def test_missing_file_returns_none(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        monkeypatch.setenv("CORLINMAN_AGENT_WORKSPACE", str(tmp_path))
+        assert resolve_attachment_path("nope.txt") is None
+
+    def test_empty_input_returns_none(self) -> None:
+        assert resolve_attachment_path("") is None
+        assert resolve_attachment_path("   ") is None
+
+    def test_directory_path_rejected(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        monkeypatch.setenv("CORLINMAN_AGENT_WORKSPACE", str(tmp_path))
+        sub = tmp_path / "out"
+        sub.mkdir()
+        # ``out`` exists as a directory; resolver only returns regular files.
+        assert resolve_attachment_path("out") is None
 
 
 # ---------------------------------------------------------------------------

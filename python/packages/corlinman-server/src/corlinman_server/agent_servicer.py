@@ -173,13 +173,14 @@ def _send_attachment_tool_schema() -> dict[str, Any]:
         "function": {
             "name": SEND_ATTACHMENT_TOOL,
             "description": (
-                "Send a file from the local filesystem back to the user "
+                "Send a file from the agent workspace back to the user "
                 "via the current chat channel (Telegram document/photo/"
-                "voice; QQ private or group file). The file MUST already "
-                "exist — write content to disk with `write_file` first "
-                "if you need to create it. Use this whenever the user "
-                "asks for a file (HTML, PDF, image, audio) instead of "
-                "pasting the content as text."
+                "voice; QQ private or group file; Discord/Slack/Feishu "
+                "file message). The file MUST already exist — write "
+                "content to disk with `write_file` first if you need to "
+                "create it. Use this whenever the user asks for a file "
+                "(HTML, PDF, image, audio) instead of pasting the "
+                "content as text."
             ),
             "parameters": {
                 "type": "object",
@@ -187,9 +188,13 @@ def _send_attachment_tool_schema() -> dict[str, Any]:
                     "path": {
                         "type": "string",
                         "description": (
-                            "Absolute filesystem path of the file to "
-                            "send. The file must be readable by the "
-                            "gateway process."
+                            "Filesystem path of the file to send. "
+                            "Relative paths (e.g. `hello.html`) are "
+                            "resolved against the agent workspace — "
+                            "pass the SAME path you used with "
+                            "`write_file`. Absolute paths must live "
+                            "inside the workspace; arbitrary system "
+                            "paths are rejected."
                         ),
                     },
                     "caption": {

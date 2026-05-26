@@ -35,7 +35,9 @@ re-defining the literals.
 from __future__ import annotations
 
 import json as _json
+import os as _os
 from collections.abc import Awaitable, Callable
+from pathlib import Path as _Path
 from typing import Any
 
 __all__ = [
@@ -59,6 +61,7 @@ __all__ = [
     "format_turn_footer",
     "parse_ask_user_args",
     "parse_send_attachment_args",
+    "resolve_attachment_path",
     "tool_arg_preview",
     "truncate_reply",
     "chunk_reply",
@@ -663,6 +666,76 @@ def parse_send_attachment_args(ev: Any) -> tuple[str, str | None, str | None]:
     if filename is not None and not isinstance(filename, str):
         filename = None
     return (path, caption, filename)
+
+
+def _agent_workspace_root() -> _Path:
+    """Mirror of :func:`corlinman_agent.coding._common.resolve_workspace`.
+
+    Inlined here instead of imported so this package doesn't depend on
+    ``corlinman_agent``'s private module. Keep the env-var fallback chain
+    in lockstep with the agent side or files written by ``write_file``
+    won't be found by :func:`resolve_attachment_path`.
+    """
+    env_ws = _os.environ.get("CORLINMAN_AGENT_WORKSPACE")
+    if env_ws:
+        root = _Path(env_ws)
+    else:
+        data_dir = _os.environ.get("CORLINMAN_DATA_DIR")
+        base = _Path(data_dir) if data_dir else _Path.home() / ".corlinman"
+        root = base / "workspace"
+    return root.resolve()
+
+
+def resolve_attachment_path(path_str: str) -> _Path | None:
+    """Resolve a ``send_attachment`` ``path`` argument to a real file.
+
+    The reasoning loop typically writes files via ``write_file``, which
+    confines paths to the agent workspace (``~/.corlinman/workspace`` by
+    default). Models frequently reuse the same *relative* path when
+    calling ``send_attachment`` — so resolving the path against the
+    process cwd (``Path(path_str)``) almost always misses, even when the
+    file exists in the workspace.
+
+    Resolution order (first hit wins):
+
+    1. **Absolute path that exists on disk** — used as-is. The agent
+       already has ``run_shell`` and could read arbitrary files
+       anyway, so this isn't a new exfiltration vector — and matching
+       the pre-fix permissive behaviour keeps callers that pass
+       absolute paths from regressing.
+    2. **Relative path joined with the workspace root** — fixes the
+       common ``write_file("x.html") + send_attachment("x.html")`` flow
+       where the gateway's cwd ≠ workspace.
+    3. **Workspace + basename** — last-ditch for an absolute path
+       whose dirname is wrong but whose basename matches a workspace
+       file (e.g. model hallucinates ``/tmp/whatever/x.html``).
+
+    Returns the resolved :class:`Path` when a regular file is found,
+    else ``None`` — callers render a friendly status. Empty / blank
+    input also returns ``None`` so the upstream "missing path" branch
+    wins over a confusing "not found" message.
+    """
+    if not path_str or not path_str.strip():
+        return None
+    workspace = _agent_workspace_root()
+    raw = _Path(path_str)
+
+    candidates: list[_Path] = []
+    if raw.is_absolute():
+        candidates.append(raw)
+        candidates.append(workspace / raw.name)
+    else:
+        candidates.append((workspace / raw).resolve())
+        if raw.name and raw.name != path_str:
+            candidates.append(workspace / raw.name)
+
+    for cand in candidates:
+        try:
+            if cand.is_file():
+                return cand
+        except OSError:
+            continue
+    return None
 
 
 # ---------------------------------------------------------------------------

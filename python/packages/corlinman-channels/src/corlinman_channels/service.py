@@ -89,6 +89,9 @@ from corlinman_channels._status import (
     SEND_ATTACHMENT_TOOL as _SEND_ATTACHMENT_TOOL,
 )
 from corlinman_channels._status import (
+    resolve_attachment_path as _resolve_attachment_path,
+)
+from corlinman_channels._status import (
     STATUS_GENERATING as _TG_STATUS_GENERATING,
 )
 from corlinman_channels._status import (
@@ -732,21 +735,19 @@ async def _qq_send_attachment(
     """Upload a file via NapCat extension actions. Returns a status line
     for the placeholder. Best-effort: failures fold into status text.
     """
-    from pathlib import Path
-
     path_str, _caption, filename = _parse_send_attachment_args(ev)
     if not path_str:
         return "⚠️ 发送文件失败: missing `path`"
-    p = Path(path_str)
-    if not p.exists() or not p.is_file():
-        return f"⚠️ 发送文件失败: {p.name} 不存在"
+    p = _resolve_attachment_path(path_str)
+    if p is None:
+        return f"⚠️ 发送文件失败: {Path(path_str).name} 不存在"
     display = filename or p.name
     try:
         if event.message_type == MessageType.GROUP and event.group_id is not None:
             await adapter.send_action(
                 UploadGroupFile(
                     group_id=event.group_id,
-                    file=str(p.resolve()),
+                    file=str(p),
                     name=display,
                 )
             )
@@ -754,13 +755,14 @@ async def _qq_send_attachment(
             await adapter.send_action(
                 UploadPrivateFile(
                     user_id=event.user_id,
-                    file=str(p.resolve()),
+                    file=str(p),
                     name=display,
                 )
             )
     except Exception as exc:  # noqa: BLE001
         _log.warning("qq send_attachment failed: %s", exc)
         return f"⚠️ 发送文件失败: {display} ({exc})"
+    _log.info("qq send_attachment ok path=%s display=%s", p, display)
     return f"📎 已发送文件: {display}"
 
 
@@ -1372,14 +1374,13 @@ async def _telegram_send_attachment(
     Best-effort: any failure is folded into a status line — never raises.
     """
     import mimetypes
-    from pathlib import Path
 
     path_str, caption, filename = _parse_send_attachment_args(ev)
     if not path_str:
         return "⚠️ 发送文件失败: missing `path`"
-    p = Path(path_str)
-    if not p.exists() or not p.is_file():
-        return f"⚠️ 发送文件失败: {p.name} 不存在"
+    p = _resolve_attachment_path(path_str)
+    if p is None:
+        return f"⚠️ 发送文件失败: {Path(path_str).name} 不存在"
     mime, _ = mimetypes.guess_type(p.name)
     mime = mime or "application/octet-stream"
     display = filename or p.name
@@ -1397,6 +1398,7 @@ async def _telegram_send_attachment(
     except Exception as exc:  # noqa: BLE001
         _log.warning("telegram send_attachment failed: %s", exc)
         return f"⚠️ 发送文件失败: {display} ({exc})"
+    _log.info("telegram send_attachment ok path=%s display=%s mime=%s", p, display, mime)
     return f"📎 已发送文件: {display}"
 
 
@@ -1937,9 +1939,9 @@ async def _discord_send_attachment(
     path_str, caption, filename = _parse_send_attachment_args(ev)
     if not path_str:
         return "⚠️ 发送文件失败: missing `path`"
-    p = Path(path_str)
-    if not p.exists() or not p.is_file():
-        return f"⚠️ 发送文件失败: {p.name} 不存在"
+    p = _resolve_attachment_path(path_str)
+    if p is None:
+        return f"⚠️ 发送文件失败: {Path(path_str).name} 不存在"
     display = filename or p.name
     try:
         await sender.send_file(
@@ -1952,6 +1954,7 @@ async def _discord_send_attachment(
     except Exception as exc:  # noqa: BLE001
         _log.warning("discord send_attachment failed: %s", exc)
         return f"⚠️ 发送文件失败: {display} ({exc})"
+    _log.info("discord send_attachment ok path=%s display=%s", p, display)
     return f"📎 已发送文件: {display}"
 
 
@@ -2166,9 +2169,9 @@ async def _slack_send_attachment(
     path_str, caption, filename = _parse_send_attachment_args(ev)
     if not path_str:
         return "⚠️ 发送文件失败: missing `path`"
-    p = Path(path_str)
-    if not p.exists() or not p.is_file():
-        return f"⚠️ 发送文件失败: {p.name} 不存在"
+    p = _resolve_attachment_path(path_str)
+    if p is None:
+        return f"⚠️ 发送文件失败: {Path(path_str).name} 不存在"
     display = filename or p.name
     try:
         await sender.upload_file(
@@ -2181,6 +2184,7 @@ async def _slack_send_attachment(
     except Exception as exc:  # noqa: BLE001
         _log.warning("slack send_attachment failed: %s", exc)
         return f"⚠️ 发送文件失败: {display} ({exc})"
+    _log.info("slack send_attachment ok path=%s display=%s", p, display)
     return f"📎 已发送文件: {display}"
 
 
@@ -2391,9 +2395,9 @@ async def _feishu_send_attachment(
     path_str, _caption, filename = _parse_send_attachment_args(ev)
     if not path_str:
         return "⚠️ 发送文件失败: missing `path`"
-    p = Path(path_str)
-    if not p.exists() or not p.is_file():
-        return f"⚠️ 发送文件失败: {p.name} 不存在"
+    p = _resolve_attachment_path(path_str)
+    if p is None:
+        return f"⚠️ 发送文件失败: {Path(path_str).name} 不存在"
     display = filename or p.name
     try:
         file_key = await sender.upload_file(p, filename=display)
@@ -2403,6 +2407,7 @@ async def _feishu_send_attachment(
     except Exception as exc:  # noqa: BLE001
         _log.warning("feishu send_attachment failed: %s", exc)
         return f"⚠️ 发送文件失败: {display} ({exc})"
+    _log.info("feishu send_attachment ok path=%s display=%s", p, display)
     return f"📎 已发送文件: {display}"
 
 
@@ -2714,9 +2719,9 @@ async def _qq_official_send_attachment(
     path_str, caption, filename = _parse_send_attachment_args(ev)
     if not path_str:
         return "⚠️ 发送文件失败: missing `path`"
-    p = Path(path_str)
-    if not p.exists() or not p.is_file():
-        return f"⚠️ 发送文件失败: {p.name} 不存在"
+    p = _resolve_attachment_path(path_str)
+    if p is None:
+        return f"⚠️ 发送文件失败: {Path(path_str).name} 不存在"
     mime, _ = mimetypes.guess_type(p.name)
     mime = mime or "application/octet-stream"
     display = filename or p.name
@@ -2733,6 +2738,7 @@ async def _qq_official_send_attachment(
     except Exception as exc:  # noqa: BLE001
         _log.warning("qq_official send_attachment failed: %s", exc)
         return f"⚠️ 发送文件失败: {display} ({exc})"
+    _log.info("qq_official send_attachment ok path=%s display=%s", p, display)
     return f"📎 已发送图片: {display}"
 
 
