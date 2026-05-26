@@ -851,6 +851,29 @@ def _mount_routes(
                                 "gateway.starter_skills.seed_failed",
                                 error=str(seed_exc),
                             )
+                        # W6 Persona Studio — drop the bundled persona
+                        # templates (Grantley's daily_job.json today) into
+                        # ``<data_dir>/bundled_personas/`` so the
+                        # ``/admin/scheduler/qzone/templates/{id}/enable``
+                        # route can read them off disk. The seeder is
+                        # idempotent at the per-persona-directory level
+                        # (existing dir wins) so operator edits stick.
+                        # Activation is still strictly opt-in; this only
+                        # makes the JSON file available to the admin
+                        # route.
+                        try:
+                            from corlinman_server.gateway.lifecycle.starter_skills import (
+                                seed_bundled_personas,
+                            )
+
+                            seed_bundled_personas(
+                                Path(data_dir) / "bundled_personas"
+                            )
+                        except Exception as seed_exc:  # pragma: no cover
+                            logger.warning(
+                                "gateway.bundled_personas.seed_failed",
+                                error=str(seed_exc),
+                            )
                     except Exception as exc:  # pragma: no cover
                         logger.warning(
                             "gateway.routes_admin_a.profile_store_init_failed",

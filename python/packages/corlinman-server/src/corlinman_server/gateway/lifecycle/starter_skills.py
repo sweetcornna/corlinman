@@ -219,8 +219,151 @@ def seed_starter_skills(target_dir: Path) -> SeedReport:
     )
 
 
+# ---------------------------------------------------------------------------
+# W6 — bundled persona templates seeding
+# ---------------------------------------------------------------------------
+#
+# Mirrors the starter-skills story above: a curated set of persona
+# directories ships under ``corlinman_server.bundled_personas`` (today
+# just ``grantley/daily_job.json``) and gets copied to
+# ``<DATA_DIR>/bundled_personas/`` on first boot so operators can hand
+# inspect / edit the templates without re-installing the wheel.
+#
+# Key contract: this seeder copies template **files** only — it does
+# NOT register the embedded daily-publish jobs into the live scheduler.
+# A fresh deploy must not start posting to QZone the second it boots;
+# activation goes through ``POST /admin/scheduler/qzone/templates/
+# grantley/enable`` which reads the seeded JSON and registers the job.
+
+
+def _resolve_personas_from_env() -> Path | None:
+    """Honour the ``CORLINMAN_BUNDLED_PERSONAS_DIR`` override.
+
+    Empty / unset / whitespace-only values are treated the same — they
+    do not match any path on disk, so we return ``None`` and let the
+    next strategy run. Mirrors :func:`_resolve_from_env` for the
+    starter-skills bundle.
+    """
+    raw = os.environ.get("CORLINMAN_BUNDLED_PERSONAS_DIR", "").strip()
+    if not raw:
+        return None
+    candidate = Path(raw)
+    if not candidate.is_dir():
+        logger.warning(
+            "bundled_personas.env_dir_missing",
+            path=str(candidate),
+        )
+        return None
+    return candidate
+
+
+def _resolve_personas_from_package() -> Path | None:
+    """Locate the in-wheel bundle via ``importlib.resources``.
+
+    Mirrors :func:`_resolve_from_package` for the starter-skills
+    bundle; the only difference is the package name we resolve.
+    """
+    try:
+        traversable = files("corlinman_server.bundled_personas")
+    except (ModuleNotFoundError, FileNotFoundError, TypeError):
+        return None
+    try:
+        with as_file(traversable) as p:
+            path = Path(p)
+    except (FileNotFoundError, OSError):
+        return None
+    if not path.is_dir():
+        return None
+    return path
+
+
+def bundled_personas_root() -> Path | None:
+    """Resolve the bundled-persona source directory or ``None``.
+
+    Tries the env-var override first, then the in-wheel package data.
+    Returns ``None`` if neither resolves to an existing directory — the
+    caller treats that as "skip seeding" rather than as an error.
+    """
+    return _resolve_personas_from_env() or _resolve_personas_from_package()
+
+
+def seed_bundled_personas(target_dir: Path) -> SeedReport:
+    """Recursively copy bundled persona subdirs into ``target_dir``.
+
+    Each subdirectory of the bundle (skipping dunder dirs) is copied
+    whole — that includes ``daily_job.json``, any future
+    ``SYSTEM_PROMPT.md`` body, and any ``assets/`` payload. The
+    existing-target check happens at the subdirectory level: if
+    ``<target>/<persona_id>/`` already exists we leave it untouched
+    so operator edits stick across reboots. A fresh
+    ``<persona_id>`` directory in the bundle (a new persona shipped
+    with the next gateway release) lands on the next boot.
+
+    The seeder uses :func:`shutil.copytree` so siblings of
+    ``daily_job.json`` ride along — partial copies that strand a
+    referenced asset would silently break the template.
+
+    Returns a :class:`SeedReport` for logging / tests. A missing
+    bundled source (``bundled_personas_root() is None``) yields an
+    empty report with ``source=None`` and is **not** an error.
+    """
+    target = Path(target_dir)
+    source = bundled_personas_root()
+    if source is None:
+        logger.info(
+            "bundled_personas.no_bundle_source",
+            target=str(target),
+        )
+        return SeedReport(source=None, target=target, copied=(), skipped=())
+
+    target.mkdir(parents=True, exist_ok=True)
+
+    copied: list[str] = []
+    skipped: list[str] = []
+
+    for src_dir in sorted(p for p in source.iterdir() if p.is_dir()):
+        # Skip dunder dirs (``__pycache__`` etc.) — they're not personas.
+        if src_dir.name.startswith("_"):
+            continue
+        dst_dir = target / src_dir.name
+        if dst_dir.exists():
+            skipped.append(src_dir.name)
+            continue
+        try:
+            shutil.copytree(
+                src_dir,
+                dst_dir,
+                ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+            )
+        except OSError as exc:  # pragma: no cover — defensive
+            logger.warning(
+                "bundled_personas.copy_failed",
+                src=str(src_dir),
+                dst=str(dst_dir),
+                error=str(exc),
+            )
+            continue
+        copied.append(src_dir.name)
+
+    logger.info(
+        "bundled_personas.seeded",
+        source=str(source),
+        target=str(target),
+        copied=len(copied),
+        skipped=len(skipped),
+    )
+    return SeedReport(
+        source=source,
+        target=target,
+        copied=tuple(copied),
+        skipped=tuple(skipped),
+    )
+
+
 __all__ = [
     "SeedReport",
+    "bundled_personas_root",
     "bundled_skills_root",
+    "seed_bundled_personas",
     "seed_starter_skills",
 ]
