@@ -108,18 +108,18 @@ async def _sse_stream(broadcaster: Any, query: LogStreamQuery):
       an ``event: lag`` frame.
     """
     sub = broadcaster.subscribe()
-    # Send a "subscribed" marker immediately so the UI's `Live` chip can
-    # confirm connectivity within ~1 RTT (otherwise the user stares at
-    # "等待事件..." until the first real log or the 15s keep-alive). This
-    # also forces uvicorn to flush the initial response headers + first
-    # chunk so any output buffering on the path can't silently hold
-    # the entire stream.
-    yield b": connected\n\n"
+    import logging as _stdlib_logging
+    _root = _stdlib_logging.getLogger()
+    _handler_names = [type(h).__name__ for h in _root.handlers]
+    _hb = broadcaster.receiver_count()
+    yield (
+        f": connected handlers={_handler_names} receivers={_hb} "
+        f"root_level={_root.level}\n\n"
+    ).encode()
     # Self-test on first subscribe — fire a log of our own through the
     # stdlib root path so the user sees at least ONE record even if no
     # other code path emits during the session. Doubles as a smoke test
     # for the publish chain.
-    import logging as _stdlib_logging
     _stdlib_logging.getLogger("corlinman.gateway.admin.logs").info(
         "admin_logs.subscribed receiver_count=%d",
         broadcaster.receiver_count(),
