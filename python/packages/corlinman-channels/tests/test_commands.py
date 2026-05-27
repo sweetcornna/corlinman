@@ -121,9 +121,10 @@ class TestPersonaWizardPreludeContract:
         assert "ask_user" in prelude
         assert ("FIRST action" in prelude) or ("first action" in prelude.lower())
 
-    def test_prelude_lists_all_six_stages(self, prelude: str) -> None:
+    def test_prelude_lists_all_seven_stages(self, prelude: str) -> None:
         # Each stage gets a label; the agent must walk them in order.
-        for i in range(1, 7):
+        # W2 added Stage 0 (Character Source) before the existing 1-6.
+        for i in range(0, 7):
             assert f"Stage {i}" in prelude, f"missing Stage {i} marker"
 
     def test_prelude_pins_the_four_review_options(self, prelude: str) -> None:
@@ -145,6 +146,43 @@ class TestPersonaWizardPreludeContract:
         # signal that the builtin is in-play so agents don't invent
         # a fallback.
         assert "web_fetch" in prelude
+
+    # ------------------------------------------------------------------
+    # W2: Stage 0 character-source branching + nuwa distillation
+    # ------------------------------------------------------------------
+
+    def test_prelude_names_both_stage_0_branches(self, prelude: str) -> None:
+        # Stage 0 branches the wizard: public-character (auto research +
+        # distill via huashu-nuwa) vs self-created (existing manual flow).
+        # Both branch labels must be in the prelude so the agent's first
+        # ask_user can offer them as the two fixed options.
+        assert "公众人物" in prelude, "missing 公众人物 branch label"
+        assert "自创角色" in prelude, "missing 自创角色 branch label"
+
+    def test_prelude_lists_research_tools_for_stage_0b(
+        self, prelude: str
+    ) -> None:
+        # Stage 0b researches via web_search + web_fetch for the public
+        # branch. The prelude must surface web_search so the agent knows
+        # the builtin is in-play and doesn't fall back to training-corpus
+        # hallucination (the explicit risk this wave was built to close).
+        assert "web_search" in prelude
+
+    def test_prelude_references_huashu_nuwa_skill(self, prelude: str) -> None:
+        # The distillation framework (identity / mental_models /
+        # expression_dna / anti_patterns / honest_boundaries) lives in
+        # the bundled huashu-nuwa skill (W1). The prelude must name it
+        # so the agent knows where to read the full extraction rubric.
+        assert "huashu-nuwa" in prelude
+
+    def test_prelude_forbids_training_corpus_hallucination(
+        self, prelude: str
+    ) -> None:
+        # The biggest risk in the public branch: agent skips web_search
+        # and fills buckets from training-corpus memory. Lock the red-
+        # line wording into the prelude.
+        assert "禁止" in prelude
+        assert "训练语料" in prelude
 
 
 # ---------------------------------------------------------------------------
