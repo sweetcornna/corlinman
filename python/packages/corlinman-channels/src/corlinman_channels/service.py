@@ -125,6 +125,7 @@ from corlinman_channels._status import (
 )
 from corlinman_channels.commands import (
     CommandContext,
+    apply_command_prelude,
     is_command_admin,
     match_command_with_args,
     run_command_handler,
@@ -1839,6 +1840,55 @@ async def _telegram_try_dispatch_command(
     return True
 
 
+def _telegram_apply_command_prelude(
+    ev: InboundEvent[Any],
+) -> InboundEvent[Any]:
+    """Return ``ev`` with ``text`` swapped for the wizard prelude when the
+    user typed a prelude-only slash command (e.g. ``/persona``).
+
+    The QQ path gets this rewrite for free via :func:`router.dispatch`;
+    Telegram parses InboundEvents directly so it needs a parallel seam.
+    Without it, prelude-only commands reach the agent as the literal
+    ``/persona`` string and (with a Humanlike persona active) degrade
+    into "list current personas" — the exact failure mode this helper
+    exists to prevent.
+
+    Returns ``ev`` unchanged when:
+
+    * ``ev.text`` is empty,
+    * no registered command matches,
+    * the matched spec has a handler (those are dispatched by
+      :func:`_telegram_try_dispatch_command` before this helper runs),
+    * the matched spec has no ``wizard_prelude`` (defensive — current
+      registry validation guarantees prelude OR handler, never neither).
+    """
+    text = (ev.text or "").strip()
+    if not text:
+        return ev
+    # Mirror the @botname stripping in _telegram_try_dispatch_command so
+    # /persona@Cornna_bot matches the same spec as /persona.
+    if text.startswith("/"):
+        head, sep, rest = text.partition(" ")
+        if "@" in head:
+            head = head.split("@", 1)[0]
+            text = f"{head}{sep}{rest}" if sep else head
+    match = match_command_with_args(text)
+    if match is None:
+        return ev
+    spec, _ = match
+    if spec.handler is not None or spec.wizard_prelude is None:
+        return ev
+    from dataclasses import replace as _dc_replace  # noqa: PLC0415 — local seam
+
+    rewritten = apply_command_prelude(text, spec)
+    _log.info(
+        "telegram command_prelude_substituted cmd=%s prelude_len=%d",
+        spec.name,
+        len(rewritten),
+    )
+    return _dc_replace(ev, text=rewritten)
+
+
 async def run_telegram_channel(
     params: TelegramChannelParams,
     cancel: asyncio.Event,
@@ -1887,13 +1937,16 @@ async def run_telegram_channel(
                 # a handler, run it now and reply directly via the
                 # Telegram sender — the agent turn is skipped entirely
                 # (same shape as the QQ dispatch path). Prelude-only
-                # specs (e.g. /persona) fall through to the agent: we
-                # don't have the chat_bootstrap rewrite seam here, so
-                # the wizard path needs a separate integration.
+                # specs (e.g. /persona) keep flowing through to the
+                # agent, but with their text rewritten to the wizard
+                # prelude via _telegram_apply_command_prelude — that
+                # closes the seam the QQ path gets for free from
+                # router.dispatch.
                 if await _telegram_try_dispatch_command(ev, sender):
                     continue
                 if params.chat_service is None:
                     continue
+                ev = _telegram_apply_command_prelude(ev)
                 # R3: bounded fan-out — backpressure flows upstream.
                 await _bounded_spawn(
                     semaphore,

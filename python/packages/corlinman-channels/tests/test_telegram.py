@@ -835,3 +835,74 @@ class TestSetMyCommands:
         assert len(sent_payloads) >= 1
         assert "Available commands" in sent_payloads[0]["text"] \
             or "可用命令" in sent_payloads[0]["text"]
+
+
+class TestTelegramApplyCommandPrelude:
+    """Lock the Telegram prelude-rewrite seam.
+
+    Prelude-only commands (``/persona``) used to slip through the
+    Telegram dispatch helper as literal ``/persona`` text, reaching the
+    agent without the wizard prelude. With a Humanlike persona active
+    (Grantley on prod) the agent then degraded into "list current
+    personas" — exactly the failure mode the rewrite closes.
+
+    These tests pin the helper's contract; if anyone removes the call
+    in ``run_telegram_channel``, ``/persona`` regresses on Telegram.
+    """
+
+    def _ev(self, text: str):
+        from corlinman_channels.common import ChannelBinding, InboundEvent
+
+        binding = ChannelBinding(
+            channel="telegram", account="999",
+            thread="77", sender="77",
+        )
+        return InboundEvent(
+            channel="telegram", binding=binding,
+            text=text, message_id="1",
+        )
+
+    def test_persona_swaps_text_to_wizard_prelude(self) -> None:
+        from corlinman_channels.service import _telegram_apply_command_prelude
+
+        out = _telegram_apply_command_prelude(self._ev("/persona"))
+        assert out.text.startswith("[SYSTEM-INSERTED]"), out.text[:80]
+        assert "ask_user" in out.text
+        # Sanity: the new staged-wizard contract from commands.py
+        # really did reach us.
+        assert "Stage 1" in out.text
+
+    def test_persona_with_at_botname_still_rewrites(self) -> None:
+        # ``/persona@Cornna_bot`` is what BotFather menu picks send
+        # in group chats. The helper must strip the suffix before
+        # matching, same as the handler dispatcher does.
+        from corlinman_channels.service import _telegram_apply_command_prelude
+
+        out = _telegram_apply_command_prelude(self._ev("/persona@Cornna_bot"))
+        assert out.text.startswith("[SYSTEM-INSERTED]")
+        assert "ask_user" in out.text
+
+    def test_handler_only_command_is_passthrough(self) -> None:
+        # ``/whoami`` has a direct handler — the dispatch helper
+        # already replied before this rewrite runs. Don't double-handle.
+        from corlinman_channels.service import _telegram_apply_command_prelude
+
+        ev = self._ev("/whoami")
+        out = _telegram_apply_command_prelude(ev)
+        assert out.text == "/whoami"
+        assert out is ev  # same object — no copy
+
+    def test_non_command_text_is_passthrough(self) -> None:
+        from corlinman_channels.service import _telegram_apply_command_prelude
+
+        ev = self._ev("hello, who are you?")
+        out = _telegram_apply_command_prelude(ev)
+        assert out.text == "hello, who are you?"
+        assert out is ev
+
+    def test_empty_text_is_passthrough(self) -> None:
+        from corlinman_channels.service import _telegram_apply_command_prelude
+
+        ev = self._ev("")
+        out = _telegram_apply_command_prelude(ev)
+        assert out is ev
