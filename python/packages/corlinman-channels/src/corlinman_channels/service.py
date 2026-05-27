@@ -708,8 +708,8 @@ async def _qq_dispatch_loop(
                 _log.debug("qq message filtered by router user=%s text=%r", payload.user_id, payload.raw_message[:80])
                 continue
             _log.info("qq message accepted user=%s text=%r model=%s", payload.user_id, payload.raw_message[:80], params.model)
-            # Command-handler short-circuit (hermes-style direct
-            # execution). When the router matched a command whose spec
+            # Command-handler short-circuit (direct execution path).
+            # When the router matched a command whose spec
             # carries a handler, run it now and reply directly via the
             # adapter — the agent turn is skipped entirely. Specs with
             # only a wizard_prelude fall through to the chat-task path

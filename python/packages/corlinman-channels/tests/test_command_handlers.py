@@ -1,5 +1,5 @@
-"""Tests for the hermes-style direct-handler extension to the
-slash-command registry.
+"""Tests for the corlinman command system's direct-handler extension
+to the slash-command registry.
 
 Covers:
 

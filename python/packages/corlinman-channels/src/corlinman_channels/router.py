@@ -314,7 +314,7 @@ class ChannelRouter:
         #   ``content`` (so the inbox row matches what the user typed)
         #   and ``command_spec`` is populated; the caller invokes the
         #   handler via :func:`run_command_handler` and skips the agent
-        #   turn. This is the hermes-style direct-execution path.
+        #   turn. This is the direct-execution path.
         # * Spec with a ``wizard_prelude`` (and no handler) — ``content``
         #   is rewritten to the prelude as before so the agent turn
         #   produces the reply. Existing wizard flows (e.g. /persona)

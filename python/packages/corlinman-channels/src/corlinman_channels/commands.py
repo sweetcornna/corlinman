@@ -16,10 +16,7 @@ A :class:`CommandSpec` may carry one or both. When both are present
 the router prefers the handler (no LLM cost), while the web playground
 falls back to the prelude (it does not have a direct-send surface).
 
-Inspired by hermes-agent's ``hermes_cli/commands.py`` /
-``gateway/run.py`` split (``CommandDef`` registry + per-command async
-``_handle_<name>_command`` methods); see
-``docs/PLAN_PERSONA_STUDIO.md`` for the prelude lineage and
+See ``docs/PLAN_PERSONA_STUDIO.md`` for the prelude lineage and
 ``docs/PLAN_COMMAND_SYSTEM.md`` (TBD) for the handler extension.
 
 Two surfaces consume this module:
