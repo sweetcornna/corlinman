@@ -47,6 +47,42 @@ def test_bundled_skills_root_resolves_package_data(
     # Spot-check a few canonical bundled skills exist.
     for name in ("plan.md", "test-driven-development.md", "memory.md"):
         assert (root / name).is_file(), f"missing bundled skill: {name}"
+    # W1 third-party bundle: huashu-design / nuwa-skill / darwin-skill
+    # ship as nested <name>/SKILL.md alongside the flat starter skills.
+    for nested in ("huashu-design", "nuwa-skill", "darwin-skill"):
+        assert (root / nested / "SKILL.md").is_file(), (
+            f"missing third-party bundled skill: {nested}/SKILL.md"
+        )
+
+
+def test_bundled_third_party_skills_are_loadable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The 3 third-party skills (huashu-design / nuwa-skill /
+    darwin-skill) must parse cleanly through ``SkillRegistry`` and
+    surface under their declared frontmatter names. This is the
+    regression net against a future re-bundle that drops a stray
+    non-skill ``.md`` into one of the trimmed subdirs — the
+    registry's walk is recursive and treats every ``*.md`` as a
+    skill, so a stray README anywhere under ``huashu-design/`` would
+    crash the loader."""
+    monkeypatch.delenv("CORLINMAN_BUNDLED_SKILLS_DIR", raising=False)
+    from corlinman_skills_registry import SkillRegistry  # noqa: PLC0415
+
+    root = starter_skills.bundled_skills_root()
+    assert root is not None
+    reg = SkillRegistry.load_from_dir(root)
+    names = set(reg.names())
+    # NOTE: nuwa-skill's frontmatter declares ``name: huashu-nuwa``
+    # (it's part of the 花叔 family); the directory name and the
+    # registry key intentionally differ.
+    for expected in ("huashu-design", "huashu-nuwa", "darwin-skill"):
+        assert expected in names, f"{expected} not registered (got: {sorted(names)})"
+        skill = reg.get(expected)
+        assert skill is not None
+        assert skill.description.strip(), (
+            f"{expected} has empty description — won't trigger on user queries"
+        )
 
 
 def test_bundled_skills_root_env_override_wins(
