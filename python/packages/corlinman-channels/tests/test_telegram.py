@@ -730,3 +730,31 @@ class TestCallbackQuerySynthesis:
         # the iterator yields.
         assert ev is not None
         assert ev.text == "manual reply"
+
+
+# ---------------------------------------------------------------------------
+# setMyCommands wiring — BotFather menu population
+# ---------------------------------------------------------------------------
+
+
+class TestSetMyCommands:
+    async def test_connect_posts_set_my_commands(self, tg_script) -> None:
+        """``connect()`` registers the corlinman command registry with
+        BotFather so the Telegram client's ``[/]`` menu populates."""
+        adapter = TelegramAdapter(
+            TelegramConfig(bot_token="TEST", long_poll_timeout=1),
+            http_client=tg_script.client(),
+        )
+        async with adapter:
+            pass
+        assert len(tg_script.set_my_commands_bodies) == 1
+        body = tg_script.set_my_commands_bodies[0]
+        assert "commands" in body
+        names = {c["command"] for c in body["commands"]}
+        # All Telegram-safe builtins should be advertised.
+        assert {"persona", "persona_list", "help", "whoami", "status"} <= names
+        # Names obey the BotFather regex.
+        import re
+        for c in body["commands"]:
+            assert re.match(r"^[a-z0-9_]{1,32}$", c["command"]), c
+            assert isinstance(c["description"], str) and c["description"]

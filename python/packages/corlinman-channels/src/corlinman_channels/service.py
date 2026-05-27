@@ -1758,6 +1758,76 @@ class TelegramChannelParams:
     test environments and pre-W4.1 deployments running unchanged."""
 
 
+async def _telegram_try_dispatch_command(
+    ev: InboundEvent[Any],
+    sender: TelegramSender,
+) -> bool:
+    """Run a handler command for ``ev`` if one matches; else return False.
+
+    Mirrors the QQ dispatch loop's command short-circuit. We hit
+    :func:`match_command_with_args` on the inbound text. When the
+    matched spec carries a handler, we invoke
+    :func:`run_command_handler` and ship the result via the Telegram
+    sender; the caller continues without spawning a chat task. Specs
+    that only have a wizard prelude (e.g. ``/persona``) return
+    ``False`` here so the agent path keeps owning them — adding a
+    rewrite seam for Telegram is a separate piece of work.
+
+    Returns ``True`` iff the command was handled here.
+    """
+    text = (ev.text or "").strip()
+    if not text:
+        return False
+    match = match_command_with_args(text)
+    if match is None:
+        return False
+    spec, args_text = match
+    if spec.handler is None:
+        # Prelude-only spec — let the agent path handle it.
+        return False
+    try:
+        ctx = CommandContext(
+            spec=spec,
+            raw_text=text,
+            args_text=args_text,
+            binding=ev.binding,
+            is_admin=is_command_admin(ev.binding),
+        )
+        result = await run_command_handler(spec, ctx)
+    except Exception as exc:  # noqa: BLE001 — never crash the dispatch loop
+        _log.exception("telegram command handler crashed: %s", exc)
+        return True
+    reply = (result.reply or "").strip()
+    if not reply:
+        return True
+    try:
+        chat_id = int(ev.binding.thread)
+    except ValueError:
+        _log.warning(
+            "telegram command reply skipped: binding.thread is not int chat_id=%r",
+            ev.binding.thread,
+        )
+        return True
+    # Telegram's text limit is 4096 chars; chunk via the existing helper
+    # so /help (which can grow as new commands register) never gets
+    # rejected for being over-cap.
+    chunks = _chunk_for_telegram(reply)
+    try:
+        first = True
+        for chunk in chunks:
+            await sender.send_message(
+                chat_id,
+                chunk,
+                reply_to_message_id=(
+                    int(ev.message_id) if ev.message_id and first else None
+                ),
+            )
+            first = False
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("telegram command reply send failed: %s", exc)
+    return True
+
+
 async def run_telegram_channel(
     params: TelegramChannelParams,
     cancel: asyncio.Event,
@@ -1801,6 +1871,16 @@ async def run_telegram_channel(
                 ev = await _race_iter_or_cancel(iterator, cancel)
                 if ev is None:
                     break
+                # Command-handler short-circuit. When the inbound text
+                # matches a registered slash command whose spec carries
+                # a handler, run it now and reply directly via the
+                # Telegram sender — the agent turn is skipped entirely
+                # (same shape as the QQ dispatch path). Prelude-only
+                # specs (e.g. /persona) fall through to the agent: we
+                # don't have the chat_bootstrap rewrite seam here, so
+                # the wizard path needs a separate integration.
+                if await _telegram_try_dispatch_command(ev, sender):
+                    continue
                 if params.chat_service is None:
                     continue
                 # R3: bounded fan-out — backpressure flows upstream.

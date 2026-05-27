@@ -71,6 +71,7 @@ __all__ = [
     "register_command",
     "run_command_handler",
     "runtime_registry",
+    "telegram_bot_commands",
     "validate_registry",
 ]
 
@@ -306,7 +307,12 @@ COMMAND_REGISTRY: tuple[CommandSpec, ...] = (
     CommandSpec(
         name="persona-list",
         aliases=(
+            # ``/persona-list`` is the canonical Latin form; the
+            # underscore variant exists so the BotFather menu (which
+            # only accepts ``[a-z0-9_]{1,32}`` names) can register it
+            # and round-trip user clicks back to a matching alias.
             "/persona-list",
+            "/persona_list",
             "/角色列表",
             "/人格列表",
         ),
@@ -580,6 +586,72 @@ def _run_command_handler_sync(
             f"{type(res).__name__}, expected CommandResult"
         )
     return res
+
+
+# ---------------------------------------------------------------------------
+# Telegram BotFather command-menu export
+# ---------------------------------------------------------------------------
+
+
+import re as _re  # noqa: E402 — keep regex local to this section
+
+_TG_NAME_RE = _re.compile(r"^[a-z0-9_]{1,32}$")
+
+
+def telegram_bot_commands() -> list[dict[str, str]]:
+    """Return the registry as a Telegram ``setMyCommands`` payload.
+
+    Filters specs to Telegram's command-name rules
+    (``[a-z0-9_]{1,32}``) — so ``persona-list`` (hyphen) is matched
+    via its ``/persona_list`` alias instead of its canonical name.
+    ``admin_only`` commands are excluded; admins still know to type
+    them, but exposing them in every user's menu would be noisy.
+
+    Returns a list of ``{"command": ..., "description": ...}`` dicts
+    sorted by category then primary alias, ready to POST verbatim to
+    the Telegram Bot API.
+    """
+    out: list[dict[str, str]] = []
+    for spec in all_specs():
+        if spec.admin_only:
+            continue
+        chosen: str | None = None
+        # Prefer the canonical name when it matches the regex; else
+        # scan aliases for a ``/``-prefixed Telegram-safe form.
+        if _TG_NAME_RE.match(spec.name):
+            chosen = spec.name
+        else:
+            for alias in spec.aliases:
+                if not alias.startswith("/"):
+                    continue
+                stripped = alias[1:]
+                if _TG_NAME_RE.match(stripped):
+                    chosen = stripped
+                    break
+        if chosen is None:
+            continue
+        # Telegram truncates descriptions at ~256 chars; ours are
+        # short already, but be defensive.
+        out.append({"command": chosen, "description": spec.summary[:256]})
+    # Sort by (category, command) so the BotFather menu has a stable
+    # order across deploys. ``General`` sorts first by convention.
+    by_name = {entry["command"]: entry for entry in out}
+    name_to_spec: dict[str, CommandSpec] = {}
+    for spec in all_specs():
+        for alias in spec.aliases:
+            if alias.startswith("/") and alias[1:] in by_name:
+                name_to_spec[alias[1:]] = spec
+                break
+        if spec.name in by_name:
+            name_to_spec[spec.name] = spec
+
+    def _sort_key(entry: dict[str, str]) -> tuple[int, str, str]:
+        spec = name_to_spec.get(entry["command"])
+        cat = spec.category if spec else "General"
+        return (0 if cat == "General" else 1, cat, entry["command"])
+
+    out.sort(key=_sort_key)
+    return out
 
 
 # ---------------------------------------------------------------------------

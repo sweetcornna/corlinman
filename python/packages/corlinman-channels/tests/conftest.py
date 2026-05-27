@@ -75,6 +75,11 @@ class TelegramScript:
         self.bot_username = bot_username
         self.update_batches: list[list[dict[str, Any]]] = []
         self.calls: list[httpx.Request] = []
+        #: setMyCommands payloads observed during this script's lifetime.
+        #: Populated by :meth:`_handle` whenever the adapter calls the
+        #: BotFather menu-registration endpoint. Tests inspect this to
+        #: assert the registry was advertised correctly.
+        self.set_my_commands_bodies: list[dict[str, Any]] = []
 
     def add_updates(self, updates: list[dict[str, Any]]) -> None:
         """Queue one batch of ``getUpdates`` responses."""
@@ -96,6 +101,14 @@ class TelegramScript:
         if path.endswith("/getUpdates"):
             batch = self.update_batches.pop(0) if self.update_batches else []
             return httpx.Response(200, json={"ok": True, "result": batch})
+        if path.endswith("/setMyCommands"):
+            try:
+                self.set_my_commands_bodies.append(
+                    json.loads(request.content.decode())
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            return httpx.Response(200, json={"ok": True, "result": True})
         return httpx.Response(404, json={"ok": False, "description": "not mocked"})
 
     def transport(self) -> httpx.MockTransport:

@@ -27,6 +27,7 @@ tests substitute an in-process mock without touching the network.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from collections.abc import AsyncIterator, Sequence
 from contextlib import suppress
@@ -393,6 +394,9 @@ def session_key_for(msg: Message) -> str:
 # ===========================================================================
 
 
+_log = logging.getLogger(__name__)
+
+
 @dataclass(slots=True)
 class TelegramConfig:
     """Configuration for :class:`TelegramAdapter`.
@@ -464,12 +468,22 @@ class TelegramAdapter:
         ``getMe`` must succeed before polling begins — otherwise we have
         no way to compute the mention/route gates. A network failure
         here raises :class:`TransportError` so the caller fails fast.
+
+        After ``getMe`` the adapter calls ``setMyCommands`` so the
+        Telegram client's ``[/]`` menu populates with the corlinman
+        slash-command registry. The call is best-effort — Telegram
+        will simply show an empty menu if it fails, which is no worse
+        than the pre-port state.
         """
         if self._reader_task is not None:
             return
         me = await self._get_me()
         self._bot_id = me.id
         self._bot_username = me.username
+        try:
+            await self._set_my_commands()
+        except Exception as exc:  # noqa: BLE001 — never block startup
+            _log.warning("telegram set_my_commands failed: %s", exc)
         self._closed = False
         self._reader_task = asyncio.create_task(
             self._poll_loop(), name="telegram-poll"
@@ -645,6 +659,46 @@ class TelegramAdapter:
         if not isinstance(env, dict):
             raise TransportError("getMe returned non-object result")
         return User.model_validate(env)
+
+    async def _set_my_commands(self) -> None:
+        """POST the corlinman command registry to ``/setMyCommands``.
+
+        Populates the Telegram client's ``[/]`` input-bar menu so users
+        discover available slash commands without typing them. The list
+        comes from
+        :func:`corlinman_channels.commands.telegram_bot_commands`,
+        which already enforces Telegram's name regex + filters
+        ``admin_only`` entries.
+
+        Best-effort: a non-200 response or transport error logs and
+        returns without raising. The bot still functions; the menu is
+        purely a discoverability affordance.
+        """
+        # Local import — keeps a clean dependency direction (the
+        # commands module imports nothing from this file).
+        from corlinman_channels.commands import (  # noqa: PLC0415 — lazy by design
+            telegram_bot_commands,
+        )
+
+        commands = telegram_bot_commands()
+        if not commands:
+            return
+        body = {"commands": commands}
+        try:
+            resp = await self._client.post(
+                self._endpoint("setMyCommands"), json=body
+            )
+        except httpx.HTTPError as exc:
+            _log.warning("telegram setMyCommands transport error: %s", exc)
+            return
+        if resp.status_code >= 400:
+            _log.warning(
+                "telegram setMyCommands rejected status=%d body=%s",
+                resp.status_code,
+                resp.text[:200],
+            )
+            return
+        _log.info("telegram set_my_commands registered=%d", len(commands))
 
     async def _answer_callback_query(self, callback_query_id: str) -> None:
         """Best-effort POST to ``/answerCallbackQuery``.
