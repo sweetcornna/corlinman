@@ -1,8 +1,18 @@
-"""Provider abstraction for reference-conditioned image generation.
+"""Provider abstraction for OpenAI image generation.
 
-Wraps the OpenAI Responses API (``gpt-image-1`` family) so the
-``image_with_refs`` tool can hand a prompt + character refs to the
-provider and get back PNG bytes.
+Wraps the OpenAI Responses API (``gpt-image-1`` family) for two
+sibling tools:
+
+* :func:`generate_with_refs` — reference-conditioned generation used
+  by ``image_with_refs``. The prompt is paired with one or more
+  character reference images, sent as base64 ``data:`` URLs.
+* :func:`generate_plain` — plain generation used by ``image_generate``.
+  Text-only input; no reference image conditioning. Strictly isolated
+  from any persona / asset-store wiring at the dispatcher layer.
+
+Both functions share the same endpoint, credentials resolution,
+aspect-ratio mapping, env config, and response-parsing path via the
+shared :func:`_post_responses_image` helper.
 
 Initial implementation reads the provider's ``api_key`` and (optional)
 ``base_url`` directly off the :class:`CorlinmanProvider` adapter
@@ -45,6 +55,7 @@ logger = structlog.get_logger(__name__)
 __all__ = [
     "ImageGenerationError",
     "ImageProviderUnavailable",
+    "generate_plain",
     "generate_with_refs",
 ]
 
@@ -119,6 +130,128 @@ def _ref_to_data_url(path: Path) -> str:
     return f"data:{mime};base64,{encoded}"
 
 
+def _resolve_runtime_config() -> tuple[str, str, float]:
+    """Return ``(model, quality, timeout_secs)`` from env or defaults.
+
+    Shared by every entry point in this module so the two image tools
+    obey the same ``CORLINMAN_IMAGE_*`` knobs.
+    """
+    model = os.environ.get("CORLINMAN_IMAGE_MODEL") or _DEFAULT_MODEL
+    quality = os.environ.get("CORLINMAN_IMAGE_QUALITY") or _DEFAULT_QUALITY
+    try:
+        timeout = float(
+            os.environ.get("CORLINMAN_IMAGE_TIMEOUT_SECS")
+            or _DEFAULT_TIMEOUT_SECS
+        )
+    except (TypeError, ValueError):
+        timeout = _DEFAULT_TIMEOUT_SECS
+    return model, quality, timeout
+
+
+async def _post_responses_image(
+    *,
+    api_key: str,
+    base_url: str | None,
+    payload: dict[str, Any],
+    timeout: float,
+    transport: httpx.BaseTransport | None,
+) -> bytes:
+    """POST ``payload`` to the Responses endpoint and decode the image.
+
+    Owns the HTTP call, status check, JSON parse, and the two-shape
+    payload extraction (``output[].image_generation_call.result`` and
+    ``data[0].b64_json``). Returns raw PNG bytes; raises
+    :class:`ImageGenerationError` on every non-success path.
+    """
+    root = (base_url or "https://api.openai.com/v1").rstrip("/")
+    endpoint = f"{root}/responses"
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    client_kwargs: dict[str, Any] = {
+        "timeout": timeout,
+        "headers": headers,
+    }
+    if transport is not None:
+        client_kwargs["transport"] = transport
+
+    try:
+        async with httpx.AsyncClient(**client_kwargs) as client:
+            response = await client.post(endpoint, json=payload)
+    except httpx.TimeoutException as exc:
+        raise ImageGenerationError(
+            f"image_generation_timeout: {exc}"
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise ImageGenerationError(
+            f"image_generation_http_error: {exc}"
+        ) from exc
+
+    if response.status_code >= 400:
+        raise ImageGenerationError(
+            f"image_generation_http_status: server returned "
+            f"{response.status_code} — {response.text[:500]}"
+        )
+    try:
+        body = response.json()
+    except ValueError as exc:
+        raise ImageGenerationError(
+            f"image_generation_invalid_json: {exc}"
+        ) from exc
+
+    # The Responses API surfaces image-generation results in two
+    # shapes depending on the model: either as a top-level ``output``
+    # array containing a ``type=image_generation_call`` entry with a
+    # ``result`` (base64 string), or — older / fallback — as a
+    # ``data[].b64_json`` body. Accept either.
+    encoded: str | None = None
+    output = body.get("output")
+    if isinstance(output, list):
+        for entry in output:
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("type") == "image_generation_call":
+                result = entry.get("result")
+                if isinstance(result, str) and result:
+                    encoded = result
+                    break
+            content_arr = entry.get("content")
+            if isinstance(content_arr, list):
+                for part in content_arr:
+                    if (
+                        isinstance(part, dict)
+                        and part.get("type") in ("output_image", "image")
+                    ):
+                        b64 = part.get("b64_json") or part.get("image_data")
+                        if isinstance(b64, str) and b64:
+                            encoded = b64
+                            break
+            if encoded is not None:
+                break
+    if encoded is None:
+        data = body.get("data")
+        if isinstance(data, list) and data:
+            first = data[0]
+            if isinstance(first, dict):
+                b64 = first.get("b64_json")
+                if isinstance(b64, str):
+                    encoded = b64
+
+    if not encoded:
+        raise ImageGenerationError(
+            "image_generation_no_image: response body carried no "
+            "image_generation_call.result or data[0].b64_json"
+        )
+    try:
+        return base64.b64decode(encoded)
+    except (ValueError, TypeError) as exc:
+        raise ImageGenerationError(
+            f"image_generation_invalid_b64: {exc}"
+        ) from exc
+
+
 async def generate_with_refs(
     provider: Any,
     prompt: str,
@@ -169,26 +302,11 @@ async def generate_with_refs(
             f"got {aspect_ratio!r}"
         )
     api_key, base_url = _provider_credentials(provider)
-    model = os.environ.get("CORLINMAN_IMAGE_MODEL") or _DEFAULT_MODEL
-    quality = os.environ.get("CORLINMAN_IMAGE_QUALITY") or _DEFAULT_QUALITY
-    try:
-        timeout = float(
-            os.environ.get("CORLINMAN_IMAGE_TIMEOUT_SECS")
-            or _DEFAULT_TIMEOUT_SECS
-        )
-    except (TypeError, ValueError):
-        timeout = _DEFAULT_TIMEOUT_SECS
+    model, quality, timeout = _resolve_runtime_config()
 
-    # Resolve the endpoint. ``base_url`` on the openai SDK is usually
-    # the API root (``https://api.openai.com/v1``); strip the trailing
-    # slash + append the Responses endpoint. When the provider didn't
-    # carry a base_url we use the canonical OpenAI host.
-    root = (base_url or "https://api.openai.com/v1").rstrip("/")
-    endpoint = f"{root}/responses"
-
-    # Build the Responses API body. The input is a single user message
-    # whose content list mixes the prompt text + one ``input_image`` per
-    # reference path. This matches the multimodal Responses contract.
+    # The input is a single user message whose content list mixes the
+    # prompt text + one ``input_image`` per reference path. Matches the
+    # multimodal Responses contract.
     content: list[dict[str, Any]] = [{"type": "input_text", "text": prompt}]
     for path in ref_paths:
         content.append(
@@ -209,90 +327,83 @@ async def generate_with_refs(
         ],
     }
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
+    return await _post_responses_image(
+        api_key=api_key,
+        base_url=base_url,
+        payload=payload,
+        timeout=timeout,
+        transport=transport,
+    )
+
+
+async def generate_plain(
+    provider: Any,
+    prompt: str,
+    aspect_ratio: Literal["square", "portrait", "landscape"] = "square",
+    *,
+    transport: httpx.BaseTransport | None = None,
+) -> bytes:
+    """Generate a PNG image from ``prompt`` alone — no reference images.
+
+    Sibling of :func:`generate_with_refs`: same endpoint, same model,
+    same env config, but the Responses ``input`` carries only a single
+    ``input_text`` part. Intentionally has no ``ref_paths`` argument —
+    callers that want reference conditioning use the other function.
+
+    Parameters
+    ----------
+    provider
+        A :class:`CorlinmanProvider` adapter — credentials are read off
+        it (see :func:`_provider_credentials`).
+    prompt
+        The text instruction. Caller is responsible for style / voice.
+    aspect_ratio
+        One of ``square`` / ``portrait`` / ``landscape``. Maps to
+        ``1024x1024`` / ``1024x1536`` / ``1536x1024`` respectively.
+    transport
+        Optional :mod:`httpx` test seam.
+
+    Returns
+    -------
+    bytes
+        Raw PNG bytes returned by the OpenAI API (base64-decoded).
+
+    Raises
+    ------
+    ImageProviderUnavailable
+        Provider carries no api_key and ``OPENAI_API_KEY`` is unset.
+    ImageGenerationError
+        OpenAI returned a non-success status or a malformed payload.
+    """
+    if aspect_ratio not in _ASPECT_TO_SIZE:
+        raise ImageGenerationError(
+            f"aspect_ratio must be one of {sorted(_ASPECT_TO_SIZE)}, "
+            f"got {aspect_ratio!r}"
+        )
+    api_key, base_url = _provider_credentials(provider)
+    model, quality, timeout = _resolve_runtime_config()
+
+    payload: dict[str, Any] = {
+        "model": model,
+        "input": [
+            {
+                "role": "user",
+                "content": [{"type": "input_text", "text": prompt}],
+            }
+        ],
+        "tools": [
+            {
+                "type": "image_generation",
+                "size": _ASPECT_TO_SIZE[aspect_ratio],
+                "quality": quality,
+            }
+        ],
     }
 
-    client_kwargs: dict[str, Any] = {
-        "timeout": timeout,
-        "headers": headers,
-    }
-    if transport is not None:
-        client_kwargs["transport"] = transport
-
-    try:
-        async with httpx.AsyncClient(**client_kwargs) as client:
-            response = await client.post(endpoint, json=payload)
-    except httpx.TimeoutException as exc:
-        raise ImageGenerationError(
-            f"image_generation_timeout: {exc}"
-        ) from exc
-    except httpx.HTTPError as exc:
-        raise ImageGenerationError(
-            f"image_generation_http_error: {exc}"
-        ) from exc
-
-    if response.status_code >= 400:
-        raise ImageGenerationError(
-            f"image_generation_http_status: server returned "
-            f"{response.status_code} — {response.text[:500]}"
-        )
-    try:
-        body = response.json()
-    except ValueError as exc:
-        raise ImageGenerationError(
-            f"image_generation_invalid_json: {exc}"
-        ) from exc
-
-    # The Responses API surfaces image-generation results in two
-    # shapes depending on the model: either as a top-level ``output``
-    # array containing a ``type=image_generation_call`` entry with a
-    # ``result`` (base64 string), or — older / fallback — as a
-    # ``data[].b64_json`` body. Accept either.
-    encoded: str | None = None
-    output = body.get("output")
-    if isinstance(output, list):
-        for entry in output:
-            if not isinstance(entry, dict):
-                continue
-            if entry.get("type") == "image_generation_call":
-                result = entry.get("result")
-                if isinstance(result, str) and result:
-                    encoded = result
-                    break
-            # Some SDK versions wrap the b64 string under a ``content``
-            # list, similar to the standard text path. Walk that too.
-            content_arr = entry.get("content")
-            if isinstance(content_arr, list):
-                for part in content_arr:
-                    if (
-                        isinstance(part, dict)
-                        and part.get("type") in ("output_image", "image")
-                    ):
-                        b64 = part.get("b64_json") or part.get("image_data")
-                        if isinstance(b64, str) and b64:
-                            encoded = b64
-                            break
-            if encoded is not None:
-                break
-    if encoded is None:
-        data = body.get("data")
-        if isinstance(data, list) and data:
-            first = data[0]
-            if isinstance(first, dict):
-                b64 = first.get("b64_json")
-                if isinstance(b64, str):
-                    encoded = b64
-
-    if not encoded:
-        raise ImageGenerationError(
-            "image_generation_no_image: response body carried no "
-            "image_generation_call.result or data[0].b64_json"
-        )
-    try:
-        return base64.b64decode(encoded)
-    except (ValueError, TypeError) as exc:
-        raise ImageGenerationError(
-            f"image_generation_invalid_b64: {exc}"
-        ) from exc
+    return await _post_responses_image(
+        api_key=api_key,
+        base_url=base_url,
+        payload=payload,
+        timeout=timeout,
+        transport=transport,
+    )

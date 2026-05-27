@@ -99,8 +99,11 @@ from corlinman_agent.coding import (
 )
 from corlinman_agent.coding._snapshot import snapshot as _snapshot_workspace
 from corlinman_agent.image import (
+    IMAGE_GENERATE_TOOL,
     IMAGE_WITH_REFS_TOOL,
+    dispatch_image_generate,
     dispatch_image_with_refs,
+    image_generate_tool_schema,
     image_with_refs_tool_schema,
 )
 from corlinman_agent.interactive import (
@@ -191,6 +194,7 @@ BUILTIN_TOOLS: frozenset[str] = frozenset(
         SEND_ATTACHMENT_TOOL,
         ASK_USER_TOOL,
         IMAGE_WITH_REFS_TOOL,
+        IMAGE_GENERATE_TOOL,
         QZONE_PUBLISH_TOOL,
     }
 ) | CODING_TOOLS | PERSONA_TOOLS
@@ -269,6 +273,7 @@ def _builtin_tool_schemas() -> list[dict[str, Any]]:
         _send_attachment_tool_schema(),
         ask_user_tool_schema(),
         image_with_refs_tool_schema(),
+        image_generate_tool_schema(),
         qzone_publish_tool_schema(),
         *persona_tool_schemas(),
         *coding_tool_schemas(),
@@ -1980,6 +1985,14 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     persona_store=await self._get_persona_store(),
                     asset_store=await self._get_persona_asset_store(),
                     bound_persona_id=bound_persona_id,
+                )
+            if event.tool == IMAGE_GENERATE_TOOL:
+                # Plain text-to-image: intentionally takes no persona /
+                # asset_store arguments — isolation from image_with_refs
+                # is structural. Never invoked by qzone_publish.
+                return await dispatch_image_generate(
+                    args_json=event.args_json,
+                    provider=provider,
                 )
             if event.tool == QZONE_PUBLISH_TOOL:
                 # W5 — qzone_publish. The dispatcher does its own

@@ -1,21 +1,28 @@
-"""Image-generation builtin — reference-conditioned PNG output.
+"""Image-generation builtins — reference-conditioned + plain output.
 
-Backs PLAN_PERSONA_STUDIO W4. Provides a single ``image_with_refs``
-tool that pulls character references from a persona's reference asset
-bucket, drives the configured image-generation provider (OpenAI
-Responses API + ``gpt-image-1`` today), and returns a path inside the
-agent workspace so the existing ``send_attachment`` resolver delivers
-the PNG to the user without any extra plumbing.
+Two sibling tools share the same OpenAI Responses backend
+(``gpt-image-1``):
+
+* ``image_with_refs`` — generation conditioned on a persona's reference
+  pack. Backs PLAN_PERSONA_STUDIO W4 and is the path :mod:`qzone` uses
+  internally when publishing illustrated 说说 posts.
+* ``image_generate`` — plain text-to-image generation. No persona /
+  asset_store wiring; the agent reaches for it when there is no
+  suitable reference pack to condition on. Intentionally kept
+  **isolated** from :mod:`qzone` so a regression in either flow cannot
+  leak into the other.
 
 Public surface
 --------------
-* :data:`IMAGE_WITH_REFS_TOOL` — wire-stable tool name.
-* :func:`image_with_refs_tool_schema` — OpenAI tool descriptor for the
-  builtin schema injector.
-* :func:`dispatch_image_with_refs` — async dispatcher; takes the
-  active provider + both persona stores, returns a JSON envelope.
-* :func:`generate_with_refs` — lower-level helper a future scheduler
-  builtin (W6 ``qzone.daily_publish``) can call directly without going
+* :data:`IMAGE_WITH_REFS_TOOL`, :data:`IMAGE_GENERATE_TOOL` — wire-
+  stable tool names.
+* :func:`image_with_refs_tool_schema`, :func:`image_generate_tool_schema`
+  — OpenAI tool descriptors for the builtin schema injector.
+* :func:`dispatch_image_with_refs`, :func:`dispatch_image_generate` —
+  async dispatchers; the refs variant takes the persona stores, the
+  plain variant takes only a provider.
+* :func:`generate_with_refs`, :func:`generate_plain` — lower-level
+  provider helpers a scheduler builtin can call directly without going
   through the model-facing tool surface.
 """
 
@@ -29,14 +36,24 @@ from corlinman_agent.image.dispatch import (
 from corlinman_agent.image.generate import (
     ImageGenerationError,
     ImageProviderUnavailable,
+    generate_plain,
     generate_with_refs,
+)
+from corlinman_agent.image.plain import (
+    IMAGE_GENERATE_TOOL,
+    dispatch_image_generate,
+    image_generate_tool_schema,
 )
 
 __all__ = [
+    "IMAGE_GENERATE_TOOL",
     "IMAGE_WITH_REFS_TOOL",
     "ImageGenerationError",
     "ImageProviderUnavailable",
+    "dispatch_image_generate",
     "dispatch_image_with_refs",
+    "generate_plain",
     "generate_with_refs",
+    "image_generate_tool_schema",
     "image_with_refs_tool_schema",
 ]
