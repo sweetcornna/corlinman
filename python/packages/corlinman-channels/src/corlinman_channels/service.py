@@ -126,6 +126,7 @@ from corlinman_channels._status import (
 from corlinman_channels.commands import (
     CommandContext,
     is_command_admin,
+    match_command_with_args,
     run_command_handler,
 )
 from corlinman_channels.common import InboundEvent, TransportError
@@ -1778,6 +1779,16 @@ async def _telegram_try_dispatch_command(
     text = (ev.text or "").strip()
     if not text:
         return False
+    # Telegram appends ``@botname`` to commands sent from the BotFather
+    # menu in groups (e.g. ``/help@Cornna_bot``). Strip the suffix from
+    # the leading token before matching so both forms route to the
+    # same spec. We only touch the first whitespace-delimited token so
+    # ``@mention`` inside args is preserved.
+    if text.startswith("/"):
+        head, sep, rest = text.partition(" ")
+        if "@" in head:
+            head = head.split("@", 1)[0]
+            text = f"{head}{sep}{rest}" if sep else head
     match = match_command_with_args(text)
     if match is None:
         return False

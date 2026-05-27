@@ -758,3 +758,80 @@ class TestSetMyCommands:
         for c in body["commands"]:
             assert re.match(r"^[a-z0-9_]{1,32}$", c["command"]), c
             assert isinstance(c["description"], str) and c["description"]
+
+
+    async def test_dispatch_command_handler_replies(self, tg_script) -> None:
+        """``_telegram_try_dispatch_command`` invokes the handler and
+        ships the reply through the sender. Locks the import + wiring
+        so a missing ``match_command_with_args`` surfaces at test time
+        instead of in prod (this was a real Wave-2 regression)."""
+        import httpx
+        from corlinman_channels.common import ChannelBinding, InboundEvent
+        from corlinman_channels.service import _telegram_try_dispatch_command
+        from corlinman_channels.telegram_send import TelegramSender
+
+        sent_payloads: list[dict[str, object]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("/sendMessage"):
+                import json
+                sent_payloads.append(json.loads(request.content.decode()))
+                return httpx.Response(
+                    200,
+                    json={"ok": True, "result": {"message_id": 999}},
+                )
+            return httpx.Response(404, json={"ok": False})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as cli:
+            sender = TelegramSender(cli, "TEST")
+            binding = ChannelBinding(
+                channel="telegram", account="999",
+                thread="77", sender="77",
+            )
+            ev = InboundEvent(
+                channel="telegram", binding=binding,
+                text="/whoami", message_id="1",
+            )
+            handled = await _telegram_try_dispatch_command(ev, sender)
+        assert handled is True
+        assert len(sent_payloads) == 1
+        assert sent_payloads[0]["chat_id"] == 77
+        # /whoami includes the channel binding fields in the body.
+        body = sent_payloads[0]["text"]
+        assert "telegram" in body and "77" in body
+
+    async def test_dispatch_strips_at_botname_suffix(self, tg_script) -> None:
+        """``/help@Cornna_bot`` (the group-chat menu form) should route
+        the same as ``/help`` (the DM form)."""
+        import httpx
+        from corlinman_channels.common import ChannelBinding, InboundEvent
+        from corlinman_channels.service import _telegram_try_dispatch_command
+        from corlinman_channels.telegram_send import TelegramSender
+
+        sent_payloads: list[dict[str, object]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("/sendMessage"):
+                import json
+                sent_payloads.append(json.loads(request.content.decode()))
+                return httpx.Response(
+                    200,
+                    json={"ok": True, "result": {"message_id": 999}},
+                )
+            return httpx.Response(404, json={"ok": False})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as cli:
+            sender = TelegramSender(cli, "TEST")
+            binding = ChannelBinding(
+                channel="telegram", account="999",
+                thread="-1001", sender="77",
+            )
+            ev = InboundEvent(
+                channel="telegram", binding=binding,
+                text="/help@Cornna_bot", message_id="1",
+            )
+            handled = await _telegram_try_dispatch_command(ev, sender)
+        assert handled is True
+        assert len(sent_payloads) >= 1
+        assert "Available commands" in sent_payloads[0]["text"] \
+            or "可用命令" in sent_payloads[0]["text"]
