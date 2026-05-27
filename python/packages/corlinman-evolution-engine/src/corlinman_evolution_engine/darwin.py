@@ -593,9 +593,20 @@ def _aggregate_report_from_cluster(cluster: SignalCluster) -> str:
     source_path = ""
     total_score: float | None = None
     for sig in cluster.signals:
-        try:
-            payload = json.loads(sig.payload_json or "{}")
-        except (json.JSONDecodeError, TypeError):
+        # ``SignalRow.payload`` is a pre-parsed dict (see
+        # corlinman_evolution_engine.store._row_to_signal). Older mock
+        # signals carry the raw JSON string instead — fall through so
+        # the engine's own tests can still feed scripted payloads.
+        raw_payload = getattr(sig, "payload", None)
+        if isinstance(raw_payload, dict):
+            payload = raw_payload
+        else:
+            raw_json = getattr(sig, "payload_json", None) or "{}"
+            try:
+                payload = json.loads(raw_json)
+            except (json.JSONDecodeError, TypeError):
+                continue
+        if not isinstance(payload, dict):
             continue
         if not source_path:
             source_path = str(payload.get("source_path", ""))
