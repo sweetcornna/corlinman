@@ -422,6 +422,12 @@ def RESTART_REQUIRED_SECTIONS_LOCAL() -> frozenset[str]:
 #: literal — change here and every callsite tracks.
 DEFAULT_UPDATE_CHECK_JOB_NAME: str = "system.update_check"
 
+#: Canonical name of the W3 v2 darwin daily rubric scan. Same naming
+#: convention as ``system.update_check`` — ``<plugin>.<tool>`` — so the
+#: scheduler's :class:`JobAction.run_tool` dispatch picks up the
+#: ``EVOLUTION_DARWIN_CURATE_BUILTIN_NAME`` builtin by string match.
+DEFAULT_EVOLUTION_DARWIN_CURATE_JOB_NAME: str = "evolution.darwin_curate"
+
 
 def _config_has_scheduler_job(cfg: Any | None, name: str) -> bool:
     """``True`` when the loaded config already carries a job by ``name``.
@@ -541,6 +547,69 @@ def _register_default_update_check_job(
     logger.info(
         "gateway.system.update_check_job.registered",
         name=DEFAULT_UPDATE_CHECK_JOB_NAME,
+        cron=cron_expr,
+    )
+
+
+def _register_default_darwin_curate_job(app: Any, cfg: Any | None) -> None:
+    """W3 v2.1 — stash a default ``evolution.darwin_curate`` scheduler
+    job on ``app.state`` alongside the W2.2 update-check job.
+
+    Same operator-override / de-dupe discipline as
+    :func:`_register_default_update_check_job`:
+
+    * Explicit ``[[scheduler.jobs]] name = "evolution.darwin_curate"``
+      already in config → silent no-op so the operator's cron wins.
+    * Otherwise → append a :class:`SchedulerJob` firing daily at
+      ``"0 30 3 * * * *"`` (03:30 UTC, after the update-check window).
+      Action is ``JobAction.run_tool(plugin="evolution",
+      tool="darwin_curate")`` which the scheduler dispatches to the
+      :data:`EVOLUTION_DARWIN_CURATE_BUILTIN_NAME` builtin.
+
+    Log lines use the ``gateway.evolution.darwin_curate_job.*`` prefix
+    so the wiring is greppable across boot logs.
+    """
+    name = DEFAULT_EVOLUTION_DARWIN_CURATE_JOB_NAME
+    if _config_has_scheduler_job(cfg, name):
+        logger.info(
+            "gateway.evolution.darwin_curate_job.skipped_explicit_config",
+            name=name,
+        )
+        return
+
+    # Daily at 03:30 UTC. update_check fires every N hours; darwin
+    # only needs once per day because skill content changes slowly.
+    cron_expr = "0 30 3 * * * *"
+
+    try:
+        from corlinman_server.scheduler import JobAction, SchedulerJob
+
+        job = SchedulerJob(
+            name=name,
+            cron=cron_expr,
+            action=JobAction.run_tool(
+                plugin="evolution",
+                tool="darwin_curate",
+            ),
+        )
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning(
+            "gateway.evolution.darwin_curate_job.build_failed",
+            error=str(exc),
+        )
+        return
+
+    existing = getattr(app.state, "corlinman_default_scheduler_jobs", None)
+    if not isinstance(existing, list):
+        existing = []
+    if any(getattr(j, "name", None) == name for j in existing):
+        return
+    existing.append(job)
+    app.state.corlinman_default_scheduler_jobs = existing
+
+    logger.info(
+        "gateway.evolution.darwin_curate_job.registered",
+        name=name,
         cron=cron_expr,
     )
 
@@ -1403,6 +1472,17 @@ def build_app(
                     "gateway.system.update_checker_init_failed",
                     error=str(exc),
                 )
+
+        # W3 v2.1 — schedule the daily darwin rubric scan in parallel
+        # with the update-check job. Independent best-effort: a
+        # registration failure here must not block the gateway boot.
+        try:
+            _register_default_darwin_curate_job(app, cfg)
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning(
+                "gateway.evolution.darwin_curate_job.init_failed",
+                error=str(exc),
+            )
 
         # W1.3 (one-click upgrade) — wire the audit log + the runtime-
         # mode-appropriate upgrader. Both are best-effort; the

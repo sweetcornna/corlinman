@@ -77,7 +77,9 @@ logger = structlog.get_logger(__name__)
 # ─── Public types ────────────────────────────────────────────────────
 
 
-ReviewKind = Literal["memory", "skill", "combined", "curator", "user-correction"]
+ReviewKind = Literal[
+    "memory", "skill", "combined", "curator", "user-correction", "darwin",
+]
 
 
 # Hard whitelist; the dispatcher refuses anything else. Kept module-level
@@ -143,6 +145,7 @@ _PROMPT_FILES: dict[ReviewKind, str] = {
     "combined": "combined_review.md",
     "curator": "curator_review.md",
     "user-correction": "user_preference_patch.md",
+    "darwin": "darwin_review.md",
 }
 
 
@@ -819,6 +822,7 @@ async def spawn_background_review(
     model: str,
     timeout_seconds: float = 60.0,
     user_correction_text: str | None = None,
+    darwin_input: dict[str, Any] | None = None,
     now: datetime | None = None,
 ) -> BackgroundReviewReport:
     """One-shot LLM call → tool-call dispatcher → write mutations.
@@ -881,6 +885,18 @@ async def spawn_background_review(
     }
     if kind == "user-correction" and user_correction_text:
         user_envelope["user_correction"] = user_correction_text
+    if kind == "darwin" and darwin_input is not None:
+        # W3 v2 — darwin proposals carry their rubric report (markdown)
+        # + the target skill name + the current SKILL.md body so the
+        # LLM has every input it needs in one envelope. We deliberately
+        # do NOT let the LLM Read arbitrary files; the curator picks
+        # the body and the dispatcher will only accept skill_manage
+        # calls targeting that exact name.
+        user_envelope["rubric_report"] = str(darwin_input.get("rubric_report", ""))
+        user_envelope["skill_name"] = str(darwin_input.get("skill_name", ""))
+        user_envelope["current_skill_md"] = str(
+            darwin_input.get("current_skill_md", "")
+        )
 
     user_message = (
         "Conversation snapshot + active skill registry follow as JSON. "

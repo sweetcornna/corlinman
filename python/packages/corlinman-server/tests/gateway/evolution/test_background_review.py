@@ -191,15 +191,33 @@ def test_whitelist_constant_only_skill_manage_and_memory_write() -> None:
 
 
 def test_load_prompt_each_kind_produces_non_empty_string() -> None:
-    for kind in ("memory", "skill", "combined", "curator", "user-correction"):
+    # W3 v2 added "darwin" — every registered ReviewKind must resolve
+    # to a non-empty prompt that mentions the tool_calls contract.
+    for kind in (
+        "memory",
+        "skill",
+        "combined",
+        "curator",
+        "user-correction",
+        "darwin",
+    ):
         body = load_prompt(kind)  # type: ignore[arg-type]
-        assert "Output ONLY tool_calls" in body, kind
         assert "tool_calls" in body, kind
 
 
 def test_load_prompt_unknown_kind_raises() -> None:
     with pytest.raises(ValueError):
         load_prompt("garbage")  # type: ignore[arg-type]
+
+
+def test_darwin_prompt_calls_out_skill_manage_only() -> None:
+    """Darwin must restrict the LLM to a single skill_manage call per
+    invocation. The prompt has to spell out 'one tool call only' so
+    weak models don't emit a flurry of patches."""
+    body = load_prompt("darwin")  # type: ignore[arg-type]
+    assert "skill_manage" in body
+    # Some signal that single-call output is mandated.
+    assert "one tool call" in body.lower() or "exactly one" in body.lower()
 
 
 # ─── Provider-roundtrip tests ────────────────────────────────────────

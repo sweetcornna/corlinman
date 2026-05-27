@@ -43,6 +43,10 @@ run_builtin, _system_update_check_action``) keep working because this
 
 from __future__ import annotations
 
+from corlinman_server.scheduler.builtins.evolution_darwin_curate import (
+    EVOLUTION_DARWIN_CURATE_BUILTIN_NAME,
+    _evolution_darwin_curate_action,
+)
 from corlinman_server.scheduler.builtins.qzone_daily import (
     QZONE_DAILY_BUILTIN_NAME,
     _qzone_daily_publish_action,
@@ -63,7 +67,9 @@ __all__ = [
     "BUILTIN_ACTIONS",
     "BuiltinAction",
     "BuiltinContext",
+    "EVOLUTION_DARWIN_CURATE_BUILTIN_NAME",
     "QZONE_DAILY_BUILTIN_NAME",
+    "_evolution_darwin_curate_action",
     "_qzone_daily_publish_action",
     "_resolve_update_checker",
     "_system_update_check_action",
