@@ -124,6 +124,58 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Enable INFO logging.",
     )
+
+    darwin = sub.add_parser(
+        "darwin-curate",
+        help=(
+            "W3 darwin curator: walk a profile's skills/ directory, "
+            "score each SKILL.md against the structural rubric, and "
+            "emit skill.quality.issue signals for low-scoring skills. "
+            "The next ``run-once`` clusters those signals and the "
+            "DarwinHandler turns them into proposals."
+        ),
+    )
+    darwin.add_argument(
+        "--evolution-db",
+        type=Path,
+        default=Path("/data/evolution.sqlite"),
+        help="Path to evolution.sqlite (default: %(default)s).",
+    )
+    darwin.add_argument(
+        "--skills-dir",
+        type=Path,
+        required=True,
+        help=(
+            "Profile's skills/ directory, e.g. "
+            "/opt/corlinman/data/profiles/default/skills/."
+        ),
+    )
+    darwin.add_argument(
+        "--tenant-id",
+        type=str,
+        default="default",
+        help="Tenant id stamped on emitted signals (default: %(default)s).",
+    )
+    darwin.add_argument(
+        "--threshold",
+        type=float,
+        default=None,
+        help=(
+            "Skills with total rubric score < threshold produce signals. "
+            "When omitted, uses darwin's default (60.0)."
+        ),
+    )
+    darwin.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the curator report as JSON on stdout.",
+    )
+    darwin.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        help="Enable INFO logging.",
+    )
     return parser
 
 
@@ -261,8 +313,76 @@ def main(argv: Sequence[str] | None = None) -> int:
         _print_consolidation_summary(consolidation_summary, as_json=args.json)
         return 0
 
+    if args.command == "darwin-curate":
+        logging.basicConfig(
+            level=logging.INFO if args.verbose else logging.WARNING,
+            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        )
+        darwin_summary = asyncio.run(_run_darwin_curate(args))
+        _print_darwin_summary(darwin_summary, as_json=args.json)
+        return 0
+
     parser.error(f"unknown command: {args.command}")
     return 2  # parser.error exits, but appease type-checkers.
+
+
+async def _run_darwin_curate(args: argparse.Namespace):
+    """Open the evolution store, build a SignalsRepo, drive the curator.
+
+    Kept thin so :func:`main` stays readable. The darwin curator + the
+    SignalsRepo it talks to come from sibling packages — lazy imported
+    here so the CLI's ``run-once`` path doesn't drag the gateway-side
+    types onto its stack.
+    """
+    from corlinman_evolution_engine.darwin import (  # noqa: PLC0415
+        QUALITY_THRESHOLD,
+    )
+    from corlinman_evolution_engine.darwin_curator import (  # noqa: PLC0415
+        run_darwin_curator,
+    )
+    from corlinman_evolution_store.repo import SignalsRepo  # noqa: PLC0415
+    from corlinman_evolution_store.store import (  # noqa: PLC0415
+        EvolutionStore as RootStore,
+    )
+
+    threshold = args.threshold if args.threshold is not None else QUALITY_THRESHOLD
+    async with RootStore(args.evolution_db) as store:
+        signals_repo = SignalsRepo(store.conn)
+        return await run_darwin_curator(
+            skills_dir=args.skills_dir,
+            signals_repo=signals_repo,
+            tenant_id=args.tenant_id,
+            threshold=threshold,
+        )
+
+
+def _print_darwin_summary(report, *, as_json: bool) -> None:
+    """Render the curator report to stdout."""
+    if as_json:
+        import dataclasses  # noqa: PLC0415
+
+        payload = dataclasses.asdict(report)
+        # Convert results list of dataclasses to dicts.
+        payload["results"] = [dataclasses.asdict(r) for r in report.results]
+        print(json.dumps(payload, indent=2))
+        return
+    print(
+        f"darwin-curate complete: scanned={report.skills_scanned} "
+        f"below_threshold={report.skills_below_threshold} "
+        f"signals_emitted={report.signals_emitted} "
+        f"blacklisted={report.skipped_blacklist} "
+        f"unreadable={report.skipped_unreadable} "
+        f"elapsed_ms={report.elapsed_ms}"
+    )
+    for r in report.results:
+        if r.skipped:
+            print(f"  - {r.skill_name}: skipped ({r.skip_reason})")
+            continue
+        print(
+            f"  - {r.skill_name}: {r.total_score:5.1f}/100 "
+            f"issues={r.issue_count} red_lights={r.red_light_count} "
+            f"signals={r.signals_emitted}"
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover

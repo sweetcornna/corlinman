@@ -39,6 +39,7 @@ from corlinman_evolution_engine.agent_card import (
     AgentCardHandler,
 )
 from corlinman_evolution_engine.clustering import SignalCluster, cluster_signals
+from corlinman_evolution_engine.darwin import KIND_DARWIN, DarwinHandler
 from corlinman_evolution_engine.memory_op import KIND_MEMORY_OP, MemoryOpHandler
 from corlinman_evolution_engine.prompt_template import (
     KIND_PROMPT_TEMPLATE,
@@ -80,6 +81,11 @@ DEFAULT_HANDLERS: dict[str, KindHandler] = {
     KIND_MEMORY_OP: MemoryOpHandler(),
     KIND_TAG_REBALANCE: TagRebalanceHandler(),
     KIND_SKILL_UPDATE: SkillUpdateHandler(),
+    # W3 (darwin × hermes): rubric-driven SKILL.md quality review.
+    # Curator (``darwin_curator.run_darwin_curator``) emits
+    # ``skill.quality.issue`` signals; this handler clusters them and
+    # mints proposals carrying the per-skill rubric report.
+    KIND_DARWIN: DarwinHandler(),
     # Phase 4 W1 4-1D: high-risk kinds gated by the docker shadow
     # sandbox (4-1C). The engine still emits the proposals; the
     # ShadowTester decides whether they reach the operator queue.
@@ -130,6 +136,7 @@ class EngineConfig:
         KIND_MEMORY_OP,
         KIND_TAG_REBALANCE,
         KIND_SKILL_UPDATE,
+        KIND_DARWIN,
         KIND_PROMPT_TEMPLATE,
         KIND_TOOL_POLICY,
         KIND_AGENT_CARD,
