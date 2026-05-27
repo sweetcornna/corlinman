@@ -123,6 +123,11 @@ from corlinman_channels._status import (
     truncate_reply,
     try_append_footer,
 )
+from corlinman_channels.commands import (
+    CommandContext,
+    is_command_admin,
+    run_command_handler,
+)
 from corlinman_channels.common import InboundEvent, TransportError
 from corlinman_channels.persona_inject import (
     inject_persona_if_enabled as _inject_persona_if_enabled,
@@ -703,6 +708,57 @@ async def _qq_dispatch_loop(
                 _log.debug("qq message filtered by router user=%s text=%r", payload.user_id, payload.raw_message[:80])
                 continue
             _log.info("qq message accepted user=%s text=%r model=%s", payload.user_id, payload.raw_message[:80], params.model)
+            # Command-handler short-circuit (hermes-style direct
+            # execution). When the router matched a command whose spec
+            # carries a handler, run it now and reply directly via the
+            # adapter — the agent turn is skipped entirely. Specs with
+            # only a wizard_prelude fall through to the chat-task path
+            # below; their content was already rewritten by the router.
+            if (
+                req.command_spec is not None
+                and req.command_spec.handler is not None
+            ):
+                cmd_inbox_id: int | None = None
+                if inbox is not None:
+                    try:
+                        cmd_inbox_id = await inbox.enqueue(
+                            channel="qq",
+                            session_key=req.session_key,
+                            message_id=str(payload.message_id),
+                            user_text=req.content[:1000],
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        _log.warning("qq inbox enqueue (cmd) failed: %s", exc)
+                try:
+                    ctx = CommandContext(
+                        spec=req.command_spec,
+                        raw_text=req.content,
+                        args_text=req.command_args,
+                        binding=req.binding,
+                        is_admin=is_command_admin(req.binding),
+                    )
+                    cmd_result = await run_command_handler(req.command_spec, ctx)
+                except Exception as exc:  # noqa: BLE001 — never crash the loop
+                    _log.exception("qq command handler crashed: %s", exc)
+                    cmd_result = None
+                if cmd_inbox_id is not None and inbox is not None:
+                    try:
+                        await inbox.mark_dispatched(cmd_inbox_id)
+                    except Exception:  # noqa: BLE001
+                        pass
+                if cmd_result is not None and cmd_result.reply:
+                    try:
+                        await adapter.send_action(
+                            _build_reply_action(payload, cmd_result.reply)
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        _log.warning("qq command reply send failed: %s", exc)
+                if cmd_inbox_id is not None and inbox is not None:
+                    try:
+                        await inbox.mark_done(cmd_inbox_id)
+                    except Exception:  # noqa: BLE001
+                        pass
+                continue
             if params.chat_service is None:
                 # No backend wired — drop silently (matches Rust when
                 # the gateway opts not to provide one).

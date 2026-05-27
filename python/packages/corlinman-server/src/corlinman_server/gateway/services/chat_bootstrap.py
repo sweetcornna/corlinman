@@ -97,23 +97,88 @@ _T = TypeVar("_T")
 
 
 def apply_command_substitution(content: str) -> str:
-    """Return the wizard prelude if ``content`` matches a registered
-    slash command, else return ``content`` unchanged.
+    """Return the wizard prelude (or a synthetic relay prelude) when
+    ``content`` matches a registered slash command, else return
+    ``content`` unchanged.
 
-    Thin wrapper around
-    :func:`corlinman_channels.commands.match_command` +
-    :func:`corlinman_channels.commands.apply_command_prelude` so the
-    chat-route handler doesn't import the channels package directly
-    (keeps the dependency direction obvious in code review).
+    Two cases:
+
+    * Spec has a ``wizard_prelude`` (whether or not it also has a
+      handler) → return the prelude. The LLM produces the reply.
+    * Spec has only a ``handler`` → invoke the handler in-process and
+      wrap its reply in a synthetic prelude that asks the LLM to relay
+      the canned text verbatim. This keeps the playground functional
+      for handler-only commands without requiring a separate
+      direct-send path on the web surface. The handler runs sync; async
+      handlers fall back to a polite "(not supported here)" message.
+
+    Thin wrapper around the channels-side helpers so the chat-route
+    handler doesn't import the channels package directly (keeps the
+    dependency direction obvious in code review).
     """
     # Lazy import: avoids pulling the channels stack into module-load
     # time for gateway tests that monkey-patch the chat router.
-    from corlinman_channels.commands import apply_command_prelude, match_command
+    from corlinman_channels.commands import (  # noqa: PLC0415 — lazy by design
+        CommandContext,
+        _run_command_handler_sync,
+        apply_command_prelude,
+        is_command_admin,
+        match_command_with_args,
+    )
+    from corlinman_channels.common import (  # noqa: PLC0415
+        ChannelBinding,
+    )
 
-    spec = match_command(content)
-    if spec is None:
+    match = match_command_with_args(content)
+    if match is None:
         return content
-    return apply_command_prelude(content, spec)
+    spec, args_text = match
+
+    if spec.wizard_prelude is not None:
+        # Prefer the prelude — the LLM produces the reply, matching the
+        # legacy behaviour for /persona and other wizard flows.
+        return apply_command_prelude(content, spec)
+
+    if spec.handler is None:
+        # Should be unreachable thanks to validate_registry, but degrade
+        # safely if a future spec slips through.
+        return content
+
+    # Handler-only spec: run it in-process and ask the LLM to relay.
+    # The playground does not have a separate direct-send surface, so
+    # synthesising a prelude is the cleanest way to keep these commands
+    # functional on the web without a deeper integration. The synthetic
+    # binding makes per-binding handlers stay polite (channel="playground"
+    # signals to handlers that they're running in a non-channel context).
+    synthetic_binding = ChannelBinding(
+        channel="playground",
+        account="web",
+        thread="web",
+        sender="web",
+    )
+    ctx = CommandContext(
+        spec=spec,
+        raw_text=content,
+        args_text=args_text,
+        binding=synthetic_binding,
+        is_admin=is_command_admin(synthetic_binding),
+    )
+    try:
+        result = _run_command_handler_sync(spec, ctx)
+    except Exception as exc:  # noqa: BLE001 — degrade to literal text
+        log.warning(
+            "chat_bootstrap.handler_failed cmd=%s err=%s", spec.name, exc
+        )
+        return content
+    reply = (result.reply or "").strip()
+    if not reply:
+        return content
+    return (
+        "[SYSTEM-INSERTED] The user invoked "
+        f"{spec.aliases[0] if spec.aliases else '/' + spec.name}. "
+        "Reply with the following text verbatim, without any extra "
+        "commentary:\n\n" + reply
+    )
 
 
 def rewrite_trailing_user_message(messages: Sequence[_T]) -> list[_T]:

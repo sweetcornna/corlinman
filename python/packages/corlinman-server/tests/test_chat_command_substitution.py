@@ -60,6 +60,25 @@ class TestApplyCommandSubstitution:
     def test_empty_string_unchanged(self) -> None:
         assert apply_command_substitution("") == ""
 
+    def test_handler_only_command_synthesises_relay_prelude(self) -> None:
+        """Handler-only commands (/whoami, /status) get a synthetic
+        prelude that asks the LLM to relay the handler's output
+        verbatim. This keeps the playground functional for these
+        commands without needing a separate direct-send surface."""
+        out = apply_command_substitution("/whoami")
+        # The synthetic prelude opens with the SYSTEM-INSERTED marker
+        # and includes the handler's output (which lists the binding
+        # fields — playground uses a synthetic 'web' binding).
+        assert out.startswith("[SYSTEM-INSERTED]")
+        assert "/whoami" in out
+        # Synthetic binding's channel is 'playground' / 'web'.
+        assert "playground" in out or "web" in out
+
+    def test_handler_only_unknown_command_returns_literal(self) -> None:
+        # Commands that don't match anything remain untouched.
+        out = apply_command_substitution("/no-such-command")
+        assert out == "/no-such-command"
+
 
 # ---------------------------------------------------------------------------
 # rewrite_trailing_user_message — Pydantic Message variant

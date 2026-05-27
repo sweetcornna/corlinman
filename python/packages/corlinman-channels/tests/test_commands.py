@@ -65,13 +65,20 @@ class TestRegistryShape:
         assert "/help" in spec.aliases
         assert "/帮助" in spec.aliases
 
-    def test_every_spec_has_a_nonempty_wizard_prelude(self) -> None:
+    def test_every_spec_has_at_least_one_delivery_path(self) -> None:
         for spec in COMMAND_REGISTRY:
+            assert spec.wizard_prelude is not None or spec.handler is not None, (
+                f"{spec.name} has neither wizard_prelude nor handler"
+            )
+
+    def test_every_prelude_uses_system_inserted_sentinel(self) -> None:
+        # Sanity-check: every prelude (when present) opens with the
+        # SYSTEM-INSERTED sentinel so the agent can tell injected
+        # commands from genuine user text in mid-conversation debug logs.
+        for spec in COMMAND_REGISTRY:
+            if spec.wizard_prelude is None:
+                continue
             assert spec.wizard_prelude, f"{spec.name} has empty prelude"
-            assert spec.wizard_prelude.strip() == spec.wizard_prelude or True
-            # Sanity-check: every prelude opens with the SYSTEM-INSERTED
-            # sentinel so the agent can tell injected commands from
-            # genuine user text in mid-conversation debug logs.
             assert spec.wizard_prelude.startswith("[SYSTEM-INSERTED]")
 
     def test_command_spec_is_frozen(self) -> None:

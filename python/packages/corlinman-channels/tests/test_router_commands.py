@@ -87,14 +87,23 @@ class TestCommandSubstitution:
         assert req is not None
         assert req.content == _persona_prelude()
 
-    def test_help_command_substitutes(self) -> None:
+    def test_help_command_resolves_to_handler(self) -> None:
+        # /help carries both a handler (channel surface) and a prelude
+        # (web playground fallback). The router prefers the handler, so
+        # ``content`` is left as the literal text and the caller is
+        # expected to invoke run_command_handler.
         router = ChannelRouter(group_keywords={}, self_ids=[100])
         ev = _group_event("/help", [TextSegment(text="/help")])
 
         req = router.dispatch(ev)
 
         assert req is not None
-        assert req.content == _help_prelude()
+        assert req.content == "/help"
+        assert req.command_spec is not None
+        assert req.command_spec.name == "help"
+        assert req.command_spec.handler is not None
+        # Prelude still exists for the playground fallback.
+        assert req.command_spec.wizard_prelude == _help_prelude()
 
     def test_persona_with_args_substitutes(self) -> None:
         router = ChannelRouter(group_keywords={}, self_ids=[100])
@@ -162,3 +171,49 @@ class TestEnableCommandsOptOut:
         # Opt-out → byte-identical to pre-W8 behaviour.
         assert req.content == "/persona"
         assert req.content != _persona_prelude()
+        assert req.command_spec is None
+
+
+# ---------------------------------------------------------------------------
+# Handler commands surface command_spec for the caller to invoke
+# ---------------------------------------------------------------------------
+
+
+class TestHandlerCommandsExposed:
+    def test_whoami_surfaces_spec(self) -> None:
+        router = ChannelRouter(group_keywords={}, self_ids=[100])
+        ev = _group_event("/whoami", [TextSegment(text="/whoami")])
+        req = router.dispatch(ev)
+        assert req is not None
+        # Handler-only spec: content is left as the literal text so the
+        # caller can decide what to do.
+        assert req.content == "/whoami"
+        assert req.command_spec is not None
+        assert req.command_spec.name == "whoami"
+        assert req.command_spec.handler is not None
+        assert req.command_args == ""
+
+    def test_persona_does_not_surface_handler_spec(self) -> None:
+        # /persona is prelude-only — content is still rewritten, and the
+        # command_spec field on the request reflects the matched spec
+        # (so observability layers can see WHICH command fired).
+        router = ChannelRouter(group_keywords={}, self_ids=[100])
+        ev = _group_event("/persona", [TextSegment(text="/persona")])
+        req = router.dispatch(ev)
+        assert req is not None
+        assert req.content == _persona_prelude()
+        assert req.command_spec is not None
+        assert req.command_spec.name == "persona"
+        # Prelude-only spec → no handler.
+        assert req.command_spec.handler is None
+
+    def test_handler_command_with_args_carries_args_text(self) -> None:
+        router = ChannelRouter(group_keywords={}, self_ids=[100])
+        ev = _group_event(
+            "/whoami extra info",
+            [TextSegment(text="/whoami extra info")],
+        )
+        req = router.dispatch(ev)
+        assert req is not None
+        assert req.command_spec is not None
+        assert req.command_args == "extra info"

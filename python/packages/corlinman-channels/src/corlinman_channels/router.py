@@ -28,7 +28,11 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from corlinman_channels.commands import apply_command_prelude, match_command
+from corlinman_channels.commands import (
+    CommandSpec,
+    apply_command_prelude,
+    match_command_with_args,
+)
 from corlinman_channels.common import ChannelBinding
 from corlinman_channels.onebot import (
     AtSegment,
@@ -128,6 +132,17 @@ class RoutedRequest:
     struct yet, so we shape the fields one-for-one and let downstream
     callers lift this into whatever request type the eventual Python
     gateway adopts.
+
+    Command extension
+    -----------------
+    ``command_spec`` is populated when the incoming text matched a
+    registered slash command. The router-side rewrite still happens
+    when the spec carries a ``wizard_prelude`` (``content`` becomes
+    the prelude). When the spec also carries a ``handler``, the
+    caller is expected to invoke
+    :func:`corlinman_channels.commands.run_command_handler` and skip
+    the agent turn entirely. ``command_args`` is the text following
+    the matched alias (``""`` when the user typed only the alias).
     """
 
     binding: ChannelBinding
@@ -135,6 +150,8 @@ class RoutedRequest:
     message_id: str | None = None
     timestamp: int = 0
     mentioned: bool = False
+    command_spec: CommandSpec | None = None
+    command_args: str = ""
 
     @property
     def session_key(self) -> str:
@@ -291,15 +308,36 @@ class ChannelRouter:
                 self._emit_bus_rate_limit(binding, "sender")
                 return None
 
-        # Slash-command substitution (W8). The original literal text is
-        # already on the inbox row written by the calling service, so we
-        # only rewrite the agent-facing ``content`` view — there is no
-        # second copy to clean up downstream.
+        # Slash-command resolution. Two delivery paths:
+        #
+        # * Spec with a ``handler`` — the literal text stays on
+        #   ``content`` (so the inbox row matches what the user typed)
+        #   and ``command_spec`` is populated; the caller invokes the
+        #   handler via :func:`run_command_handler` and skips the agent
+        #   turn. This is the hermes-style direct-execution path.
+        # * Spec with a ``wizard_prelude`` (and no handler) — ``content``
+        #   is rewritten to the prelude as before so the agent turn
+        #   produces the reply. Existing wizard flows (e.g. /persona)
+        #   keep their LLM-driven behaviour byte-identically.
+        #
+        # When a spec carries BOTH a handler and a prelude (e.g. /help),
+        # the handler path wins on this channel surface — the prelude
+        # exists for the web playground via chat_bootstrap.
         content = text
+        command_spec: CommandSpec | None = None
+        command_args = ""
         if enable_commands:
-            spec = match_command(text)
-            if spec is not None:
-                content = apply_command_prelude(text, spec)
+            match = match_command_with_args(text)
+            if match is not None:
+                spec, args_text = match
+                command_spec = spec
+                command_args = args_text
+                if spec.handler is None and spec.wizard_prelude is not None:
+                    # Pure-prelude command — preserve legacy rewrite.
+                    content = apply_command_prelude(text, spec)
+                # Handler-bearing specs leave ``content`` as the literal
+                # text; the caller invokes the handler and posts its
+                # reply via the adapter.
 
         return RoutedRequest(
             binding=binding,
@@ -307,6 +345,8 @@ class ChannelRouter:
             message_id=str(event.message_id),
             timestamp=event.time,
             mentioned=mentioned,
+            command_spec=command_spec,
+            command_args=command_args,
         )
 
     # ------------------------------------------------------------------
