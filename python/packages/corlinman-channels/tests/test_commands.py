@@ -88,6 +88,66 @@ class TestRegistryShape:
 
 
 # ---------------------------------------------------------------------------
+# _PERSONA_WIZARD_PRELUDE — content contract
+# ---------------------------------------------------------------------------
+
+
+class TestPersonaWizardPreludeContract:
+    """Lock the staged-materials wizard contract into the prelude text.
+
+    The previous prelude said only "walk them through configuring a
+    persona using the persona.* tools" — too soft, and agents would
+    open with ``persona_list`` and stop, effectively turning ``/persona``
+    into ``/persona-list``. These assertions are the regression net for
+    that bug.
+    """
+
+    @pytest.fixture
+    def prelude(self) -> str:
+        spec = next(s for s in COMMAND_REGISTRY if s.name == "persona")
+        assert spec.wizard_prelude is not None
+        return spec.wizard_prelude
+
+    def test_prelude_forbids_persona_list_as_opening_action(self, prelude: str) -> None:
+        # The agent must NOT call persona_list as its first action —
+        # that is the exact failure mode that prompted the rewrite.
+        assert "persona_list" in prelude
+        assert ("Do NOT call `persona_list`" in prelude) or (
+            "do not call `persona_list`" in prelude.lower()
+        )
+
+    def test_prelude_requires_ask_user_as_first_action(self, prelude: str) -> None:
+        # First action must be ask_user (the only branch picker).
+        assert "ask_user" in prelude
+        assert ("FIRST action" in prelude) or ("first action" in prelude.lower())
+
+    def test_prelude_lists_all_six_stages(self, prelude: str) -> None:
+        # Each stage gets a label; the agent must walk them in order.
+        for i in range(1, 7):
+            assert f"Stage {i}" in prelude, f"missing Stage {i} marker"
+
+    def test_prelude_pins_the_four_review_options(self, prelude: str) -> None:
+        # The fixed four-option review contract — agent must use
+        # exactly these labels on every stage-end ask_user (Stages 1-5).
+        for opt in ("确认", "补充", "修改", "重做"):
+            assert opt in prelude, f"missing review option: {opt}"
+
+    def test_prelude_defers_persona_create_until_stage_6_confirm(
+        self, prelude: str
+    ) -> None:
+        # No early persist — locks the "no persona_create before Stage 6
+        # confirmation" rule into the visible contract.
+        assert "persona_create" in prelude
+        assert "Stage 6" in prelude
+
+    def test_prelude_names_web_fetch_for_stage_4(self, prelude: str) -> None:
+        # Stage 4 pulls URL summaries via web_fetch; the prelude must
+        # signal that the builtin is in-play so agents don't invent
+        # a fallback.
+        assert "web_fetch" in prelude
+
+
+# ---------------------------------------------------------------------------
 # match_command — exact match
 # ---------------------------------------------------------------------------
 
