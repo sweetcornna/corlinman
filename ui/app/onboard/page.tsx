@@ -1,36 +1,52 @@
 "use client";
 
 /**
- * First-run onboarding page — 2-step wizard (2026-05 reshape).
+ * First-run onboarding wizard — 6-step reshape (2026-05-28).
  *
- * Step 1 (account)  — admin/root force-rotate flow. If the gateway already
- *                     seeded an admin (/admin/me returns 200 with
- *                     must_change_password=true) we skip Step 1 and land
- *                     on Step 2 with a "Using default admin/root" hint
- *                     + a "Customize admin account" escape hatch.
+ * Step order (locked — see docs/PLAN_FIRST_RUN_WIZARD.md):
+ *   1. API config        (skippable, handoff to /admin/credentials)
+ *   2. Change username   (required)
+ *   3. Change password   (required, gated — once past, can't go back to step 2)
+ *   4. Persona           (default / custom / skip)
+ *   5. Image provider    (reuse / separate / skip)
+ *   6. Done              (handoff to /admin)
  *
- * Step 2 (handoff)  — a welcome card that hands the operator off to the
- *                     generic provider-setup surfaces:
- *                       - /admin/credentials → API keys
- *                       - /admin/providers   → custom providers + per-agent models
- *                       - /admin/credentials#oauth → subscription OAuth login (anchor)
- *                     Also exposes a "Use mock provider for now" button
- *                     that POSTs /admin/onboard/finalize-skip and pushes
- *                     the operator at /admin.
- *
- * The newapi-specific wizard steps (probe / channel-pick / atomic finalize)
- * were removed alongside their backend routes — provider setup now lives
- * post-onboard on the three admin pages above.
+ * Gating rules:
+ *   - The step indicator only allows clicking *back* to a completed step,
+ *     never forward to one that hasn't been reached.
+ *   - After step 3 completes, the indicator visually locks steps 1 + 2 so
+ *     the operator can't try to rewind the username change after the
+ *     password rotation (atomicity story for the "先改账号 再改密码" rule).
+ *   - A persona "custom" choice records a deferred `/persona` redirect that
+ *     fires at the end of the wizard so the operator still configures the
+ *     image provider first.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useTranslation } from "react-i18next";
-import { KeyRound, LogIn, Plug } from "lucide-react";
+import {
+  ArrowRight,
+  Check,
+  Image as ImageIcon,
+  KeyRound,
+  Lock,
+  Plug,
+  Sparkles,
+  User,
+} from "lucide-react";
 
-import { getSession, onboard } from "@/lib/auth";
-import { CorlinmanApiError, finalizeSkipOnboard } from "@/lib/api";
+import { getSession } from "@/lib/auth";
+import {
+  CorlinmanApiError,
+  finalizeOnboardAccount,
+  finalizeOnboardImageProvider,
+  finalizeOnboardPassword,
+  finalizeOnboardPersona,
+  type OnboardImageProviderSpec,
+  type OnboardPersonaChoice,
+} from "@/lib/api";
 import { BrandMark } from "@/components/layout/brand-mark";
 import { LanguageToggle } from "@/components/layout/language-toggle";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
@@ -44,10 +60,62 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { cn } from "@/lib/utils";
 
 const MIN_PASSWORD_LEN = 8;
 
-type Step = "account" | "handoff";
+// ---------------------------------------------------------------------------
+// Step machine
+// ---------------------------------------------------------------------------
+
+type StepId = 1 | 2 | 3 | 4 | 5 | 6;
+
+interface StepDef {
+  id: StepId;
+  /** i18n key for the indicator label. */
+  i18nKey: string;
+  /** Fallback used when the locale entry isn't ready yet. */
+  fallback: string;
+  icon: React.ComponentType<{ className?: string }>;
+}
+
+const STEPS: readonly StepDef[] = [
+  { id: 1, i18nKey: "onboard.step.api.title", fallback: "配置 API", icon: Plug },
+  {
+    id: 2,
+    i18nKey: "onboard.step.username.title",
+    fallback: "修改默认账号",
+    icon: User,
+  },
+  {
+    id: 3,
+    i18nKey: "onboard.step.password.title",
+    fallback: "修改默认密码",
+    icon: Lock,
+  },
+  {
+    id: 4,
+    i18nKey: "onboard.step.persona.title",
+    fallback: "助手个性化",
+    icon: Sparkles,
+  },
+  {
+    id: 5,
+    i18nKey: "onboard.step.image.title",
+    fallback: "图片生成 API",
+    icon: ImageIcon,
+  },
+  {
+    id: 6,
+    i18nKey: "auth.onboardFinish",
+    fallback: "完成",
+    icon: Check,
+  },
+] as const;
+
+// ---------------------------------------------------------------------------
+// Page
+// ---------------------------------------------------------------------------
 
 export default function OnboardPage() {
   return (
@@ -96,264 +164,226 @@ function HeroColumn() {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Wizard shell — owns step state + transitions
+// ---------------------------------------------------------------------------
+
 function OnboardWizard() {
   const { t } = useTranslation();
-  const [step, setStep] = useState<Step>("account");
+  const router = useRouter();
 
+  const [step, setStep] = useState<StepId>(1);
+  const [completed, setCompleted] = useState<Set<StepId>>(() => new Set());
   /**
-   * `seededAdmin` = true → /admin/me returned 200 + must_change_password=true.
-   * `seededAdmin` = false → admin is configured but already customized.
-   * `seededAdmin` = null → /admin/me returned 401 (no admin yet); start at
-   *                       Step 1.
+   * Once true, steps 1 + 2 are no longer reachable via the indicator (the
+   * password rotation has happened and rewinding the username flow would be
+   * confusing — the system would happily change it again but operators
+   * read this as a fresh password challenge).
    */
-  const [seededAdmin, setSeededAdmin] = useState<boolean | null>(null);
-  const [meChecked, setMeChecked] = useState(false);
+  const [lockedPastPassword, setLockedPastPassword] = useState(false);
+  /** Deferred redirect from persona step 4 — fires after step 6. */
+  const [pendingRedirect, setPendingRedirect] = useState<string | null>(null);
 
-  // One-shot admin detection. We never re-fetch — the wizard is a single
-  // session and the gateway either has admin or it doesn't.
+  // One-shot session probe — same approach as the legacy onboard page. Lets
+  // us short-circuit when the gateway already has a customized admin.
   const probedRef = useRef(false);
+  const [meChecked, setMeChecked] = useState(false);
   useEffect(() => {
     if (probedRef.current) return;
     probedRef.current = true;
     (async () => {
       try {
-        const me = await getSession();
-        if (me) {
-          const seeded = me.must_change_password === true;
-          setSeededAdmin(seeded);
-          // Skip Step 1 whenever an admin already exists — only difference
-          // is whether we surface the "using default" hint.
-          setStep("handoff");
-        } else {
-          setSeededAdmin(null);
-        }
+        await getSession();
       } catch {
-        // /admin/me hiccup — fall through to the classic flow.
-        setSeededAdmin(null);
+        // Network hiccup — proceed; the first finalize call will surface it.
       } finally {
         setMeChecked(true);
       }
     })();
   }, []);
 
+  const markCompleted = (id: StepId) => {
+    setCompleted((prev) => {
+      if (prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.add(id);
+      return next;
+    });
+  };
+
+  const goTo = (id: StepId) => {
+    // Only allow backward moves to a completed step, never forward beyond
+    // what's been done.
+    if (id === step) return;
+    if (id > step) return;
+    if (lockedPastPassword && id <= 2) return;
+    if (!completed.has(id) && id < step) {
+      // Skipped step (e.g. step 1 if the user clicked "skip API"): treat as
+      // re-entry only if everything *after* it remains incomplete.
+      setStep(id);
+      return;
+    }
+    setStep(id);
+  };
+
+  const advance = (from: StepId) => {
+    markCompleted(from);
+    const nextId = (from + 1) as StepId;
+    setStep(nextId);
+  };
+
+  function handleFinish() {
+    markCompleted(6);
+    if (pendingRedirect) {
+      router.push(pendingRedirect as never);
+      return;
+    }
+    router.push("/admin");
+  }
+
   return (
     <div className="w-full max-w-md space-y-6">
       <div className="space-y-1.5 md:hidden">
         <BrandMark />
       </div>
-      {seededAdmin === true && step !== "account" ? (
-        <div
-          className="rounded-md border border-tp-glass-edge bg-tp-glass-inner px-3 py-2 text-xs text-tp-ink-3"
-          data-testid="onboard-default-admin-hint"
-        >
-          {t("auth.onboardUsingDefaultAdmin")}
-        </div>
-      ) : null}
-      <StepIndicator current={step} />
-      {seededAdmin !== null && step !== "account" ? (
-        <button
-          type="button"
-          onClick={() => setStep("account")}
-          className="text-xs text-tp-ink-3 underline-offset-4 hover:underline"
-          data-testid="onboard-customize-admin"
-        >
-          {t("auth.onboardCustomizeAdmin")}
-        </button>
-      ) : null}
-      {step === "account" && (
-        <AccountStep
-          // If admin was already seeded the wizard treats Step 1 as
-          // optional — let the user back out into Step 2.
-          onSkip={
-            seededAdmin !== null ? () => setStep("handoff") : undefined
-          }
-          onDone={() => setStep("handoff")}
+      <StepIndicator
+        current={step}
+        completed={completed}
+        lockedPastPassword={lockedPastPassword}
+        onGoTo={goTo}
+      />
+
+      {step === 1 && (
+        <ApiConfigStep
+          onSkip={() => advance(1)}
+          onContinue={() => advance(1)}
         />
       )}
-      {step === "handoff" && <HandoffStep />}
+      {step === 2 && <UsernameStep onDone={() => advance(2)} />}
+      {step === 3 && (
+        <PasswordStep
+          onDone={() => {
+            setLockedPastPassword(true);
+            advance(3);
+          }}
+        />
+      )}
+      {step === 4 && (
+        <PersonaStep
+          onDone={(redirect) => {
+            if (redirect) setPendingRedirect(redirect);
+            advance(4);
+          }}
+        />
+      )}
+      {step === 5 && <ImageProviderStep onDone={() => advance(5)} />}
+      {step === 6 && <DoneStep onFinish={handleFinish} />}
+
       <p className="text-center text-xs text-tp-ink-3">
         {t("auth.onboardHint")}
       </p>
-      {/* `meChecked` is observed by tests via data attribute; a no-op DOM hook
-          keeps it side-effect-free in production. */}
       <span hidden data-testid="onboard-me-checked" data-checked={meChecked} />
     </div>
   );
 }
 
-function StepIndicator({ current }: { current: Step }) {
+// ---------------------------------------------------------------------------
+// Step indicator — 6 numbered dots; backward-clickable when completed.
+// ---------------------------------------------------------------------------
+
+function StepIndicator({
+  current,
+  completed,
+  lockedPastPassword,
+  onGoTo,
+}: {
+  current: StepId;
+  completed: Set<StepId>;
+  lockedPastPassword: boolean;
+  onGoTo: (id: StepId) => void;
+}) {
   const { t } = useTranslation();
-  const steps: { key: Step; label: string }[] = [
-    { key: "account", label: t("auth.onboardStepAccount") },
-    { key: "handoff", label: t("auth.onboardStepHandoff") },
-  ];
-  const idx = steps.findIndex((s) => s.key === current);
   return (
-    <ol className="flex items-center gap-2 text-xs">
-      {steps.map((s, i) => (
-        <li key={s.key} className="flex items-center gap-2">
-          <span
-            className={`inline-flex h-6 w-6 items-center justify-center rounded-full border ${
-              i <= idx
-                ? "border-primary bg-primary text-primary-foreground"
-                : "border-tp-glass-edge text-tp-ink-3"
-            }`}
-          >
-            {i + 1}
-          </span>
-          <span
-            className={
-              i === idx ? "font-medium" : "text-tp-ink-3 hidden md:inline"
-            }
-          >
-            {s.label}
-          </span>
-          {i < steps.length - 1 && (
-            <span aria-hidden className="mx-1 text-tp-ink-3">
-              →
-            </span>
-          )}
-        </li>
-      ))}
+    <ol
+      className="flex items-center justify-between gap-1"
+      data-testid="onboard-stepper"
+    >
+      {STEPS.map((s, i) => {
+        const isCurrent = s.id === current;
+        const isDone = completed.has(s.id);
+        const isReachable =
+          isDone &&
+          s.id < current &&
+          !(lockedPastPassword && s.id <= 2);
+        const Icon = s.icon;
+        return (
+          <li key={s.id} className="flex flex-1 items-center">
+            <button
+              type="button"
+              onClick={() => (isReachable ? onGoTo(s.id) : undefined)}
+              disabled={!isReachable}
+              title={t(s.i18nKey, { defaultValue: s.fallback })}
+              aria-current={isCurrent ? "step" : undefined}
+              aria-label={t(s.i18nKey, { defaultValue: s.fallback })}
+              data-testid={`onboard-step-${s.id}`}
+              data-state={
+                isCurrent ? "current" : isDone ? "done" : "pending"
+              }
+              className={cn(
+                "group flex items-center gap-2 rounded-md px-1 py-1 transition-colors",
+                isReachable
+                  ? "cursor-pointer hover:bg-tp-glass-inner"
+                  : "cursor-default",
+              )}
+            >
+              <span
+                className={cn(
+                  "inline-flex h-7 w-7 items-center justify-center rounded-full border text-xs font-semibold",
+                  isCurrent &&
+                    "border-primary bg-primary text-primary-foreground",
+                  !isCurrent &&
+                    isDone &&
+                    "border-primary/60 bg-primary/10 text-primary",
+                  !isCurrent &&
+                    !isDone &&
+                    "border-tp-glass-edge text-tp-ink-3",
+                )}
+              >
+                {isDone && !isCurrent ? (
+                  <Check className="h-3.5 w-3.5" aria-hidden />
+                ) : (
+                  <Icon className="h-3.5 w-3.5" aria-hidden />
+                )}
+              </span>
+              <span
+                className={cn(
+                  "hidden text-xs lg:inline",
+                  isCurrent ? "font-medium" : "text-tp-ink-3",
+                )}
+              >
+                {t(s.i18nKey, { defaultValue: s.fallback })}
+              </span>
+            </button>
+            {i < STEPS.length - 1 ? (
+              <span
+                aria-hidden
+                className={cn(
+                  "mx-1 h-px flex-1",
+                  completed.has(s.id) ? "bg-primary/40" : "bg-tp-glass-edge",
+                )}
+              />
+            ) : null}
+          </li>
+        );
+      })}
     </ol>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Step 1: Account
-// ---------------------------------------------------------------------------
-
-function AccountStep({
-  onDone,
-  onSkip,
-}: {
-  onDone: () => void;
-  /** When admin is already seeded, the wizard exposes a back-out link. */
-  onSkip?: () => void;
-}) {
-  const { t } = useTranslation();
-  const router = useRouter();
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const [confirm, setConfirm] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    setError(null);
-    if (password.length < MIN_PASSWORD_LEN) {
-      setError(t("auth.onboardWeakPassword", { min: MIN_PASSWORD_LEN }));
-      return;
-    }
-    if (password !== confirm) {
-      setError(t("auth.onboardPasswordMismatch"));
-      return;
-    }
-    setSubmitting(true);
-    try {
-      await onboard({ username, password });
-      onDone();
-    } catch (err) {
-      if (err instanceof CorlinmanApiError) {
-        if (err.status === 409) {
-          setError(t("auth.onboardAlreadyConfigured"));
-          setTimeout(() => router.replace("/login"), 1500);
-        } else if (err.status === 422) {
-          setError(t("auth.onboardWeakPassword", { min: MIN_PASSWORD_LEN }));
-        } else {
-          setError(err.message);
-        }
-      } else {
-        setError(String(err));
-      }
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  return (
-    <>
-      <div className="space-y-1">
-        <h1 className="text-xl font-semibold tracking-tight">
-          {t("auth.onboardTitle")}
-        </h1>
-        <p className="text-sm text-tp-ink-3">{t("auth.onboardSubtitle")}</p>
-      </div>
-      <form onSubmit={onSubmit} className="space-y-4">
-        <div className="space-y-2">
-          <Label htmlFor="username">{t("auth.username")}</Label>
-          <Input
-            id="username"
-            name="username"
-            autoComplete="username"
-            required
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            disabled={submitting}
-          />
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="password">{t("auth.password")}</Label>
-          <Input
-            id="password"
-            name="password"
-            type="password"
-            autoComplete="new-password"
-            required
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            disabled={submitting}
-          />
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="confirm">{t("auth.onboardConfirmPassword")}</Label>
-          <Input
-            id="confirm"
-            name="confirm"
-            type="password"
-            autoComplete="new-password"
-            required
-            value={confirm}
-            onChange={(e) => setConfirm(e.target.value)}
-            disabled={submitting}
-          />
-        </div>
-        {error ? (
-          <p
-            role="alert"
-            className="text-sm text-destructive"
-            data-testid="onboard-error"
-          >
-            {error}
-          </p>
-        ) : null}
-        <div className="flex gap-2">
-          {onSkip ? (
-            <Button
-              type="button"
-              variant="outline"
-              onClick={onSkip}
-              data-testid="account-skip"
-            >
-              {t("auth.onboardBack")}
-            </Button>
-          ) : null}
-          <Button
-            type="submit"
-            className="flex-1"
-            disabled={submitting}
-          >
-            {submitting ? t("auth.submitting") : t("auth.onboardSubmit")}
-          </Button>
-        </div>
-      </form>
-    </>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Step 2: Handoff — three provider-setup cards + "use mock provider" escape
+// Step 1 — API config (skippable). Reuses the existing /admin/credentials
+// + /admin/providers + OAuth surfaces. No backend call from this page; the
+// user comes back here when done (we just need them to acknowledge or skip).
 // ---------------------------------------------------------------------------
 
 interface HandoffCardDef {
@@ -364,28 +394,14 @@ interface HandoffCardDef {
   body: string;
 }
 
-function HandoffStep() {
+function ApiConfigStep({
+  onContinue,
+  onSkip,
+}: {
+  onContinue: () => void;
+  onSkip: () => void;
+}) {
   const { t } = useTranslation();
-  const router = useRouter();
-  const [skipping, setSkipping] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function onSkip() {
-    setError(null);
-    setSkipping(true);
-    try {
-      await finalizeSkipOnboard();
-      router.push("/admin");
-    } catch (err) {
-      if (err instanceof CorlinmanApiError) {
-        setError(t("auth.onboardFinalizeError", { detail: err.message }));
-      } else {
-        setError(String(err));
-      }
-      setSkipping(false);
-    }
-  }
-
   const cards: HandoffCardDef[] = [
     {
       href: "/admin/credentials",
@@ -401,20 +417,13 @@ function HandoffStep() {
       title: t("auth.onboardHandoffProvidersTitle"),
       body: t("auth.onboardHandoffProvidersBody"),
     },
-    {
-      href: "/admin/credentials#oauth",
-      testid: "onboard-handoff-oauth",
-      icon: LogIn,
-      title: t("auth.onboardHandoffOAuthTitle"),
-      body: t("auth.onboardHandoffOAuthBody"),
-    },
   ];
 
   return (
     <>
       <div className="space-y-1">
         <h1 className="text-xl font-semibold tracking-tight">
-          {t("auth.onboardHandoffTitle")}
+          {t("onboard.step.api.title", { defaultValue: "配置 API" })}
         </h1>
         <p className="text-sm text-tp-ink-3">
           {t("auth.onboardHandoffSubtitle")}
@@ -439,12 +448,391 @@ function HandoffStep() {
                   size="sm"
                   data-testid={`${c.testid}-go`}
                 >
-                  <Link href={c.href as never}>
+                  <Link
+                    href={c.href as never}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
                     {t("auth.onboardHandoffGo")}
                   </Link>
                 </Button>
               </CardContent>
             </Card>
+          );
+        })}
+      </div>
+      <div className="flex gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          onClick={onSkip}
+          data-testid="onboard-api-skip"
+          className="flex-1"
+        >
+          {t("auth.onboardSkipLlm", { defaultValue: "暂时跳过" })}
+        </Button>
+        <Button
+          type="button"
+          onClick={onContinue}
+          data-testid="onboard-api-continue"
+          className="flex-1"
+        >
+          {t("auth.onboardNext")}
+          <ArrowRight className="ml-1 h-4 w-4" aria-hidden />
+        </Button>
+      </div>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Step 2 — Change username (required).
+// ---------------------------------------------------------------------------
+
+function UsernameStep({ onDone }: { onDone: () => void }) {
+  const { t } = useTranslation();
+  const [newUsername, setNewUsername] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setError(null);
+    if (!newUsername.trim()) {
+      setError(t("account.security.invalidUsername", { defaultValue: "用户名不可为空" }));
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await finalizeOnboardAccount(newUsername.trim());
+      onDone();
+    } catch (err) {
+      if (err instanceof CorlinmanApiError) {
+        if (err.status === 409) {
+          setError(
+            t("onboard.step.username.unchanged", {
+              defaultValue: "新用户名不能与当前用户名相同",
+            }),
+          );
+        } else if (err.status === 422) {
+          setError(t("auth.invalidUsername", { defaultValue: "用户名格式不合法" }));
+        } else {
+          setError(err.message);
+        }
+      } else {
+        setError(String(err));
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <>
+      <div className="space-y-1">
+        <h1 className="text-xl font-semibold tracking-tight">
+          {t("onboard.step.username.title", { defaultValue: "修改默认账号" })}
+        </h1>
+        <p className="text-sm text-tp-ink-3">
+          {t("onboard.step.username.subtitle", {
+            defaultValue: "默认账号是 admin，请改成你自己的用户名。",
+          })}
+        </p>
+      </div>
+      <form onSubmit={onSubmit} className="space-y-4">
+        <div className="space-y-2">
+          <Label htmlFor="new-username">
+            {t("account.security.newUsername", { defaultValue: "新用户名" })}
+          </Label>
+          <Input
+            id="new-username"
+            name="new-username"
+            autoComplete="username"
+            required
+            value={newUsername}
+            onChange={(e) => setNewUsername(e.target.value)}
+            disabled={submitting}
+            data-testid="onboard-username-input"
+          />
+          <p className="text-xs text-tp-ink-3">
+            {t("account.security.usernameRule", {
+              defaultValue: "小写字母、数字、_ 或 -；最多 64 字符",
+            })}
+          </p>
+        </div>
+        {error ? (
+          <p
+            role="alert"
+            className="text-sm text-destructive"
+            data-testid="onboard-error"
+          >
+            {error}
+          </p>
+        ) : null}
+        <Button
+          type="submit"
+          className="w-full"
+          disabled={submitting}
+          data-testid="onboard-username-submit"
+        >
+          {submitting ? t("auth.submitting") : t("auth.onboardNext")}
+        </Button>
+      </form>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Step 3 — Change password (required, gated). Once this completes the
+// indicator locks step 1 + 2.
+// ---------------------------------------------------------------------------
+
+function PasswordStep({ onDone }: { onDone: () => void }) {
+  const { t } = useTranslation();
+  const [oldPassword, setOldPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setError(null);
+    if (newPassword.length < MIN_PASSWORD_LEN) {
+      setError(t("auth.onboardWeakPassword", { min: MIN_PASSWORD_LEN }));
+      return;
+    }
+    if (newPassword !== confirm) {
+      setError(t("auth.onboardPasswordMismatch"));
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await finalizeOnboardPassword(oldPassword, newPassword);
+      onDone();
+    } catch (err) {
+      if (err instanceof CorlinmanApiError) {
+        if (err.status === 401) {
+          setError(t("auth.invalidOldPassword", { defaultValue: "当前密码不正确" }));
+        } else if (err.status === 422) {
+          setError(t("auth.onboardWeakPassword", { min: MIN_PASSWORD_LEN }));
+        } else {
+          setError(err.message);
+        }
+      } else {
+        setError(String(err));
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <>
+      <div className="space-y-1">
+        <h1 className="text-xl font-semibold tracking-tight">
+          {t("onboard.step.password.title", { defaultValue: "修改默认密码" })}
+        </h1>
+        <p className="text-sm text-tp-ink-3">
+          {t("onboard.step.password.subtitle", {
+            defaultValue: "默认密码是 root。请设置一个安全的新密码。",
+          })}
+        </p>
+      </div>
+      <form onSubmit={onSubmit} className="space-y-4">
+        <div className="space-y-2">
+          <Label htmlFor="old-password">
+            {t("account.security.currentPassword", { defaultValue: "当前密码" })}
+          </Label>
+          <Input
+            id="old-password"
+            name="old-password"
+            type="password"
+            autoComplete="current-password"
+            required
+            value={oldPassword}
+            onChange={(e) => setOldPassword(e.target.value)}
+            disabled={submitting}
+            data-testid="onboard-old-password"
+          />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="new-password">
+            {t("account.security.newPassword", { defaultValue: "新密码" })}
+          </Label>
+          <Input
+            id="new-password"
+            name="new-password"
+            type="password"
+            autoComplete="new-password"
+            required
+            value={newPassword}
+            onChange={(e) => setNewPassword(e.target.value)}
+            disabled={submitting}
+            data-testid="onboard-new-password"
+          />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="confirm-password">
+            {t("auth.onboardConfirmPassword")}
+          </Label>
+          <Input
+            id="confirm-password"
+            name="confirm-password"
+            type="password"
+            autoComplete="new-password"
+            required
+            value={confirm}
+            onChange={(e) => setConfirm(e.target.value)}
+            disabled={submitting}
+            data-testid="onboard-confirm-password"
+          />
+        </div>
+        {error ? (
+          <p
+            role="alert"
+            className="text-sm text-destructive"
+            data-testid="onboard-error"
+          >
+            {error}
+          </p>
+        ) : null}
+        <Button
+          type="submit"
+          className="w-full"
+          disabled={submitting}
+          data-testid="onboard-password-submit"
+        >
+          {submitting ? t("auth.submitting") : t("auth.onboardNext")}
+        </Button>
+      </form>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Step 4 — Persona choice (3 cards).
+// ---------------------------------------------------------------------------
+
+interface PersonaCardSpec {
+  choice: OnboardPersonaChoice;
+  testid: string;
+  i18nKey: string;
+  fallback: string;
+  body: string;
+  icon: React.ComponentType<{ className?: string }>;
+}
+
+function PersonaStep({
+  onDone,
+}: {
+  onDone: (redirect: string | null) => void;
+}) {
+  const { t } = useTranslation();
+  const [submitting, setSubmitting] = useState<OnboardPersonaChoice | null>(
+    null,
+  );
+  const [error, setError] = useState<string | null>(null);
+
+  const cards: PersonaCardSpec[] = useMemo(
+    () => [
+      {
+        choice: "default",
+        testid: "onboard-persona-default",
+        i18nKey: "onboard.persona.choice.default",
+        fallback: "使用默认助手 grantley",
+        body: t("onboard.persona.choice.defaultBody", {
+          defaultValue: "使用内置助手 grantley，无需任何额外配置。",
+        }),
+        icon: Sparkles,
+      },
+      {
+        choice: "custom",
+        testid: "onboard-persona-custom",
+        i18nKey: "onboard.persona.choice.custom",
+        fallback: "创建自定义人格",
+        body: t("onboard.persona.choice.customBody", {
+          defaultValue: "通过 /persona 引导式问答创建专属人格（稍后跳转）。",
+        }),
+        icon: User,
+      },
+      {
+        choice: "skip",
+        testid: "onboard-persona-skip",
+        i18nKey: "onboard.persona.choice.skip",
+        fallback: "暂时跳过",
+        body: t("onboard.persona.choice.skipBody", {
+          defaultValue: "稍后再在管理面板中配置人格。",
+        }),
+        icon: ArrowRight,
+      },
+    ],
+    [t],
+  );
+
+  async function pick(choice: OnboardPersonaChoice) {
+    setError(null);
+    setSubmitting(choice);
+    try {
+      const res = await finalizeOnboardPersona(choice);
+      onDone(res.redirect ?? null);
+    } catch (err) {
+      if (err instanceof CorlinmanApiError) {
+        setError(err.message);
+      } else {
+        setError(String(err));
+      }
+      setSubmitting(null);
+    }
+  }
+
+  return (
+    <>
+      <div className="space-y-1">
+        <h1 className="text-xl font-semibold tracking-tight">
+          {t("onboard.step.persona.title", { defaultValue: "助手个性化" })}
+        </h1>
+        <p className="text-sm text-tp-ink-3">
+          {t("onboard.step.persona.subtitle", {
+            defaultValue: "选择如何初始化助手人格。",
+          })}
+        </p>
+      </div>
+      <div className="space-y-3">
+        {cards.map((c) => {
+          const Icon = c.icon;
+          const isLoading = submitting === c.choice;
+          return (
+            <button
+              key={c.choice}
+              type="button"
+              onClick={() => pick(c.choice)}
+              disabled={submitting !== null}
+              data-testid={c.testid}
+              className={cn(
+                "block w-full rounded-lg border border-tp-glass-edge bg-tp-glass-inner p-4 text-left transition-colors",
+                submitting === null && "hover:border-primary/60 hover:bg-primary/5",
+                submitting !== null && submitting !== c.choice && "opacity-50",
+                "disabled:cursor-wait",
+              )}
+            >
+              <div className="flex items-start gap-3">
+                <span className="mt-0.5 inline-flex h-8 w-8 items-center justify-center rounded-md border border-tp-glass-edge bg-background text-tp-ink-3">
+                  <Icon className="h-4 w-4" aria-hidden />
+                </span>
+                <div className="flex-1 space-y-0.5">
+                  <div className="text-sm font-medium">
+                    {t(c.i18nKey, { defaultValue: c.fallback })}
+                  </div>
+                  <div className="text-xs text-tp-ink-3">{c.body}</div>
+                </div>
+                {isLoading ? (
+                  <span className="text-xs text-tp-ink-3">
+                    {t("auth.submitting")}
+                  </span>
+                ) : null}
+              </div>
+            </button>
           );
         })}
       </div>
@@ -457,21 +845,448 @@ function HandoffStep() {
           {error}
         </p>
       ) : null}
-      <div className="rounded-md border border-tp-glass-edge bg-tp-glass-inner p-3">
-        <Button
-          type="button"
-          variant="secondary"
-          className="w-full font-semibold"
-          onClick={onSkip}
-          disabled={skipping}
-          data-testid="onboard-skip-mock"
-        >
-          {skipping ? t("auth.submitting") : t("auth.onboardSkipLlm")}
-        </Button>
-        <p className="mt-2 text-xs text-tp-ink-3">
-          {t("auth.onboardSkipHint")}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Step 5 — Image provider choice (reuse / separate / skip).
+// "Reuse" can 409 with `image_not_supported`; we swap to a fallback card.
+// ---------------------------------------------------------------------------
+
+type ImageSubview = "choices" | "reuseUnsupported" | "separateForm";
+
+function ImageProviderStep({ onDone }: { onDone: () => void }) {
+  const { t } = useTranslation();
+  const [submitting, setSubmitting] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [subview, setSubview] = useState<ImageSubview>("choices");
+
+  async function pickSkip() {
+    setError(null);
+    setSubmitting("skip");
+    try {
+      await finalizeOnboardImageProvider({ choice: "skip" });
+      onDone();
+    } catch (err) {
+      setError(
+        err instanceof CorlinmanApiError ? err.message : String(err),
+      );
+      setSubmitting(null);
+    }
+  }
+
+  async function pickReuse() {
+    setError(null);
+    setSubmitting("reuse");
+    try {
+      // The wizard does not know which provider was just configured in step 1
+      // (the user may have skipped). The backend resolves "current" itself:
+      // we pass an empty string so the server falls back to the active
+      // chat-default provider.
+      await finalizeOnboardImageProvider({
+        choice: "reuse",
+        provider_name: "",
+      });
+      onDone();
+    } catch (err) {
+      if (err instanceof CorlinmanApiError && err.status === 409) {
+        setSubview("reuseUnsupported");
+      } else {
+        setError(
+          err instanceof CorlinmanApiError ? err.message : String(err),
+        );
+      }
+      setSubmitting(null);
+    }
+  }
+
+  async function pickSeparate(spec: OnboardImageProviderSpec) {
+    setError(null);
+    setSubmitting("separate");
+    try {
+      await finalizeOnboardImageProvider({ choice: "separate", spec });
+      onDone();
+    } catch (err) {
+      setError(
+        err instanceof CorlinmanApiError ? err.message : String(err),
+      );
+      setSubmitting(null);
+    }
+  }
+
+  if (subview === "separateForm") {
+    return (
+      <SeparateImageProviderForm
+        submitting={submitting === "separate"}
+        error={error}
+        onCancel={() => {
+          setError(null);
+          setSubview("choices");
+        }}
+        onSubmit={pickSeparate}
+      />
+    );
+  }
+
+  if (subview === "reuseUnsupported") {
+    return (
+      <>
+        <div className="space-y-1">
+          <h1 className="text-xl font-semibold tracking-tight">
+            {t("onboard.step.image.title", { defaultValue: "图片生成 API" })}
+          </h1>
+        </div>
+        <Card data-testid="onboard-image-unsupported">
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-base text-destructive">
+              <span aria-hidden>❌</span>
+              {t("onboard.image.notSupported", {
+                defaultValue: "当前 API 不支持图片生成",
+              })}
+            </CardTitle>
+            <CardDescription>
+              {t("onboard.image.notSupportedHint", {
+                defaultValue:
+                  "你当前的 API 端点未发现图片模型。你可以单独配置一个图片 Provider，或者跳过这一步。",
+              })}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex gap-2 pt-0">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={pickSkip}
+              disabled={submitting !== null}
+              data-testid="onboard-image-unsupported-skip"
+              className="flex-1"
+            >
+              {t("onboard.image.choice.skip", { defaultValue: "跳过" })}
+            </Button>
+            <Button
+              type="button"
+              onClick={() => setSubview("separateForm")}
+              disabled={submitting !== null}
+              data-testid="onboard-image-unsupported-separate"
+              className="flex-1"
+            >
+              {t("onboard.image.choice.separate", {
+                defaultValue: "单独配置",
+              })}
+            </Button>
+          </CardContent>
+        </Card>
+      </>
+    );
+  }
+
+  const cards: {
+    key: string;
+    testid: string;
+    i18nKey: string;
+    fallback: string;
+    body: string;
+    icon: React.ComponentType<{ className?: string }>;
+    onClick: () => void;
+  }[] = [
+    {
+      key: "reuse",
+      testid: "onboard-image-reuse",
+      i18nKey: "onboard.image.choice.reuse",
+      fallback: "复用当前 API",
+      body: t("onboard.image.choice.reuseBody", {
+        defaultValue: "尝试用刚刚配置的 LLM Provider 来生成图片。",
+      }),
+      icon: Plug,
+      onClick: pickReuse,
+    },
+    {
+      key: "separate",
+      testid: "onboard-image-separate",
+      i18nKey: "onboard.image.choice.separate",
+      fallback: "单独配置",
+      body: t("onboard.image.choice.separateBody", {
+        defaultValue: "为图片生成另起一个 Provider（例如 OpenAI gpt-image-1）。",
+      }),
+      icon: ImageIcon,
+      onClick: () => setSubview("separateForm"),
+    },
+    {
+      key: "skip",
+      testid: "onboard-image-skip",
+      i18nKey: "onboard.image.choice.skip",
+      fallback: "跳过",
+      body: t("onboard.image.choice.skipBody", {
+        defaultValue: "稍后再配置图片生成。",
+      }),
+      icon: ArrowRight,
+      onClick: pickSkip,
+    },
+  ];
+
+  return (
+    <>
+      <div className="space-y-1">
+        <h1 className="text-xl font-semibold tracking-tight">
+          {t("onboard.step.image.title", { defaultValue: "图片生成 API" })}
+        </h1>
+        <p className="text-sm text-tp-ink-3">
+          {t("onboard.step.image.subtitle", {
+            defaultValue: "选择如何处理图片生成请求。",
+          })}
         </p>
       </div>
+      <div className="space-y-3">
+        {cards.map((c) => {
+          const Icon = c.icon;
+          const isLoading = submitting === c.key;
+          return (
+            <button
+              key={c.key}
+              type="button"
+              onClick={c.onClick}
+              disabled={submitting !== null}
+              data-testid={c.testid}
+              className={cn(
+                "block w-full rounded-lg border border-tp-glass-edge bg-tp-glass-inner p-4 text-left transition-colors",
+                submitting === null && "hover:border-primary/60 hover:bg-primary/5",
+                submitting !== null && submitting !== c.key && "opacity-50",
+                "disabled:cursor-wait",
+              )}
+            >
+              <div className="flex items-start gap-3">
+                <span className="mt-0.5 inline-flex h-8 w-8 items-center justify-center rounded-md border border-tp-glass-edge bg-background text-tp-ink-3">
+                  <Icon className="h-4 w-4" aria-hidden />
+                </span>
+                <div className="flex-1 space-y-0.5">
+                  <div className="text-sm font-medium">
+                    {t(c.i18nKey, { defaultValue: c.fallback })}
+                  </div>
+                  <div className="text-xs text-tp-ink-3">{c.body}</div>
+                </div>
+                {isLoading ? (
+                  <span className="text-xs text-tp-ink-3">
+                    {t("auth.submitting")}
+                  </span>
+                ) : null}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+      {error ? (
+        <p
+          role="alert"
+          className="text-sm text-destructive"
+          data-testid="onboard-error"
+        >
+          {error}
+        </p>
+      ) : null}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Step 5b — Separate-provider mini form (name + base_url + api_key + model)
+// ---------------------------------------------------------------------------
+
+function SeparateImageProviderForm({
+  submitting,
+  error,
+  onCancel,
+  onSubmit,
+}: {
+  submitting: boolean;
+  error: string | null;
+  onCancel: () => void;
+  onSubmit: (spec: OnboardImageProviderSpec) => void;
+}) {
+  const { t } = useTranslation();
+  const [name, setName] = useState("image");
+  const [baseUrl, setBaseUrl] = useState("https://api.openai.com");
+  const [apiKey, setApiKey] = useState("");
+  const [imageModel, setImageModel] = useState("gpt-image-1");
+  const [localError, setLocalError] = useState<string | null>(null);
+
+  function submit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setLocalError(null);
+    if (!name.trim() || !baseUrl.trim() || !apiKey.trim()) {
+      setLocalError(
+        t("onboard.image.separate.required", {
+          defaultValue: "名称、Base URL、API Key 都不能为空。",
+        }),
+      );
+      return;
+    }
+    onSubmit({
+      name: name.trim(),
+      base_url: baseUrl.trim(),
+      api_key: apiKey,
+      image_model: imageModel.trim() || undefined,
+      image_capable: true,
+      kind: "openai_compatible",
+    });
+  }
+
+  return (
+    <>
+      <div className="space-y-1">
+        <h1 className="text-xl font-semibold tracking-tight">
+          {t("onboard.image.choice.separate", { defaultValue: "单独配置" })}
+        </h1>
+        <p className="text-sm text-tp-ink-3">
+          {t("onboard.image.separate.subtitle", {
+            defaultValue: "为图片生成单独注册一个 OpenAI-compatible Provider。",
+          })}
+        </p>
+      </div>
+      <form onSubmit={submit} className="space-y-4">
+        <div className="space-y-2">
+          <Label htmlFor="image-provider-name">
+            {t("onboard.image.separate.nameLabel", { defaultValue: "名称" })}
+          </Label>
+          <Input
+            id="image-provider-name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            disabled={submitting}
+            required
+            data-testid="onboard-image-separate-name"
+          />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="image-provider-base-url">
+            {t("onboard.image.separate.baseUrlLabel", {
+              defaultValue: "Base URL",
+            })}
+          </Label>
+          <Input
+            id="image-provider-base-url"
+            value={baseUrl}
+            onChange={(e) => setBaseUrl(e.target.value)}
+            disabled={submitting}
+            required
+            data-testid="onboard-image-separate-baseurl"
+          />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="image-provider-api-key">
+            {t("onboard.image.separate.apiKeyLabel", {
+              defaultValue: "API Key",
+            })}
+          </Label>
+          <Input
+            id="image-provider-api-key"
+            type="password"
+            autoComplete="off"
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+            disabled={submitting}
+            required
+            data-testid="onboard-image-separate-apikey"
+          />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="image-provider-model">
+            {t("onboard.image.separate.modelLabel", {
+              defaultValue: "图片模型 ID",
+            })}
+          </Label>
+          <Input
+            id="image-provider-model"
+            value={imageModel}
+            onChange={(e) => setImageModel(e.target.value)}
+            disabled={submitting}
+            placeholder="gpt-image-1"
+            data-testid="onboard-image-separate-model"
+          />
+        </div>
+        {(localError || error) ? (
+          <p
+            role="alert"
+            className="text-sm text-destructive"
+            data-testid="onboard-error"
+          >
+            {localError || error}
+          </p>
+        ) : null}
+        <div className="flex gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={onCancel}
+            disabled={submitting}
+            className="flex-1"
+            data-testid="onboard-image-separate-cancel"
+          >
+            {t("auth.onboardBack")}
+          </Button>
+          <Button
+            type="submit"
+            disabled={submitting}
+            className="flex-1"
+            data-testid="onboard-image-separate-submit"
+          >
+            {submitting ? t("auth.submitting") : t("auth.onboardNext")}
+          </Button>
+        </div>
+      </form>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Step 6 — Done card.
+// ---------------------------------------------------------------------------
+
+function DoneStep({ onFinish }: { onFinish: () => void }) {
+  const { t } = useTranslation();
+  return (
+    <>
+      <div className="space-y-1">
+        <h1 className="text-xl font-semibold tracking-tight">
+          {t("auth.onboardHandoffTitle", { defaultValue: "初始化完成" })}
+        </h1>
+        <p className="text-sm text-tp-ink-3">
+          {t("onboard.done.subtitle", {
+            defaultValue: "首次配置已完成。进入管理面板继续探索功能。",
+          })}
+        </p>
+      </div>
+      <Card data-testid="onboard-done-card">
+        <CardHeader className="pb-2">
+          <div className="flex items-center gap-2">
+            <span
+              className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 text-primary"
+              aria-hidden
+            >
+              <Check className="h-4 w-4" />
+            </span>
+            <CardTitle className="text-base">
+              {t("onboard.done.title", { defaultValue: "你已完成所有步骤" })}
+            </CardTitle>
+          </div>
+          <CardDescription>
+            {t("onboard.done.body", {
+              defaultValue:
+                "之后可在 账户与安全 / 凭证 / 人格 / 系统 中进一步定制。",
+            })}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="pt-0">
+          <Button
+            type="button"
+            onClick={onFinish}
+            className="w-full"
+            data-testid="onboard-finish"
+          >
+            {t("onboard.done.cta", { defaultValue: "进入管理面板" })}
+            <ArrowRight className="ml-1 h-4 w-4" aria-hidden />
+          </Button>
+        </CardContent>
+      </Card>
     </>
   );
 }

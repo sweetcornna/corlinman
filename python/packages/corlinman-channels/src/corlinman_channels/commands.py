@@ -327,6 +327,137 @@ def _render_status(ctx: CommandContext) -> CommandResult:
     )
 
 
+def _render_sethome(ctx: CommandContext) -> CommandResult:
+    """Persist the caller's current binding as their "home channel".
+
+    Sync handler — talks straight to
+    :mod:`corlinman_server.home_channel_store` over a short SQLite
+    connection. The store lives in corlinman-server, which is a soft
+    dep of corlinman-channels (channels can run standalone in tests),
+    so the import is lazy and a missing module degrades to an
+    advisory failure reply instead of crashing the handler.
+
+    On the playground surface (``channel=="playground"``) we still
+    accept the write — the operator can pre-register a home channel
+    from the web admin if they want — but the reply text mentions the
+    synthetic binding so it's obvious where the row landed.
+    """
+    binding = ctx.binding
+    try:
+        from corlinman_server.home_channel_store import (  # noqa: PLC0415
+            resolve_user_id,
+            set_home,
+        )
+    except ImportError as exc:
+        return CommandResult(
+            reply=(
+                "❌ 主聊天窗口设置不可用：corlinman-server 未安装"
+                f" ({exc.name or 'home_channel_store'})。"
+            )
+        )
+
+    user_id = resolve_user_id(binding.channel, binding.sender)
+    try:
+        set_home(
+            user_id,
+            channel=binding.channel,
+            account=binding.account,
+            thread=binding.thread,
+            sender=binding.sender,
+        )
+    except Exception as exc:  # noqa: BLE001 — surface storage errors politely
+        return CommandResult(
+            reply=f"❌ 写入主聊天窗口失败：{exc}",
+        )
+
+    return CommandResult(
+        reply=(
+            "✅ 主聊天窗口已设置："
+            f"{binding.channel}/{binding.thread}. "
+            "重启与重要系统提醒将发送到此处。"
+        )
+    )
+
+
+async def _render_use_default_persona(ctx: CommandContext) -> CommandResult:
+    """Ensure the built-in ``grantley`` persona is seeded + selected.
+
+    First-run-wizard contract D2: confirms the default helper is
+    active so the user can chat immediately without going through
+    the Stage 0–6 custom-persona flow.
+
+    The persona store lives in corlinman-server and the active-
+    persona surface today is the "is row present + ``is_builtin=True``"
+    flag set by :func:`seed_builtin_personas` (see Agent B's owned
+    ``personas.py`` route for the use-default endpoint). Calling the
+    seeder directly is idempotent and matches what the HTTP endpoint
+    does internally — so we go through the in-process path rather
+    than spinning a localhost HTTP call (no auth complications, no
+    extra socket).
+
+    Async because the persona store's ``open`` / ``seed`` are
+    coroutines; the slash-command dispatcher
+    (:func:`run_command_handler`) auto-awaits coroutine handlers, so
+    no change is required at the call site. The synthetic playground
+    fallback in :func:`_run_command_handler_sync` already returns a
+    polite "(requires async surface)" reply for async handlers, so
+    invoking this on the web playground degrades gracefully.
+
+    Falls back to a polite "(not wired)" reply when corlinman-server
+    isn't importable (standalone channel tests).
+    """
+    del ctx  # binding not needed — persona selection is global today
+    try:
+        from corlinman_server.persona import (  # noqa: PLC0415
+            DEFAULT_GRANTLEY_DISPLAY_NAME,
+            DEFAULT_GRANTLEY_ID,
+            PersonaStore,
+            seed_builtin_personas,
+        )
+    except ImportError as exc:
+        return CommandResult(
+            reply=(
+                "❌ 默认人格切换不可用：corlinman-server 未安装"
+                f" ({exc.name or 'persona'})。"
+            )
+        )
+
+    # Resolve the persona DB path the gateway opened at boot —
+    # ``<data_dir>/personas.sqlite``, where ``data_dir`` follows the
+    # same env-var precedence as ``gateway.lifecycle.entrypoint``.
+    raw = os.environ.get("CORLINMAN_DATA_DIR")
+    if raw:
+        data_dir = os.path.abspath(raw)
+    else:
+        try:
+            from pathlib import Path as _Path  # noqa: PLC0415
+
+            data_dir = str(_Path.home() / ".corlinman")
+        except (RuntimeError, OSError):
+            data_dir = ".corlinman"
+
+    from pathlib import Path as _Path  # noqa: PLC0415
+
+    db_path = _Path(data_dir) / "personas.sqlite"
+    try:
+        store = await PersonaStore.open(db_path)
+        try:
+            await seed_builtin_personas(store)
+        finally:
+            await store.close()
+    except Exception as exc:  # noqa: BLE001 — surface storage errors politely
+        return CommandResult(
+            reply=f"❌ 默认人格切换失败：{exc}",
+        )
+
+    return CommandResult(
+        reply=(
+            f"✅ 已切换至默认助手「{DEFAULT_GRANTLEY_DISPLAY_NAME}」"
+            f"（id={DEFAULT_GRANTLEY_ID}）。直接发消息即可对话。"
+        )
+    )
+
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
@@ -392,6 +523,35 @@ COMMAND_REGISTRY: tuple[CommandSpec, ...] = (
         summary="显示机器人当前状态",
         category="Info",
         handler=_render_status,
+    ),
+    # First-run-wizard surface (W3 / docs/PLAN_FIRST_RUN_WIZARD.md
+    # Agent D's slice). ``/sethome`` records the current channel
+    # binding as the user's "main" thread; restart broadcasts and
+    # other important system pings are sent only there.
+    CommandSpec(
+        name="sethome",
+        aliases=(
+            "/sethome",
+            "/主页",
+        ),
+        summary="将当前聊天窗口设为主聊天窗口（重启等系统提醒的接收点）",
+        category="Configuration",
+        handler=_render_sethome,
+    ),
+    # ``/use-default-persona`` is the wizard's "use the built-in
+    # helper" branch — seeds + activates the bundled ``grantley``
+    # persona so a fresh deployment can chat without going through
+    # the Stage 0–6 persona-wizard.
+    CommandSpec(
+        name="use-default-persona",
+        aliases=(
+            "/use-default-persona",
+            "/use_default_persona",
+            "/默认人格",
+        ),
+        summary="使用内置默认助手（grantley）",
+        category="Configuration",
+        handler=_render_use_default_persona,
     ),
 )
 

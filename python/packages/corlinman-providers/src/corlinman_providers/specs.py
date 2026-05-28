@@ -96,6 +96,29 @@ class ProviderSpec(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
     """Provider-level defaults merged below alias-level overrides."""
 
+    image_capable: bool = False
+    """Whether this provider exposes an image-generation surface.
+
+    Operator-asserted (``[providers.<name>] image_capable = true``) or
+    probe-confirmed via :func:`corlinman_providers.capabilities.
+    probe_image_capability`. Read by the easy-setup wizard (Wave 2 —
+    "first-run wizard") and the agent image dispatcher to pick a
+    dedicated image-gen provider in preference to the default chat
+    provider. Backwards-compatible: default ``False`` preserves the
+    behaviour of existing on-disk configs that never set the key.
+    """
+
+    image_model: str | None = None
+    """Preferred image-generation model id for this provider.
+
+    Examples: ``"gpt-image-1"`` (OpenAI), ``"dall-e-3"``,
+    ``"imagen-3.0-generate-001"`` (Google), ``"flux-pro-1.1"``
+    (Replicate / Together). Consumed by the agent image dispatcher
+    when ``image_capable`` is true; falls back to the
+    ``CORLINMAN_IMAGE_MODEL`` env knob and the historical default
+    (``gpt-image-1``) when unset.
+    """
+
     @model_validator(mode="before")
     @classmethod
     def _migrate_legacy_kind(cls, data: Any) -> Any:

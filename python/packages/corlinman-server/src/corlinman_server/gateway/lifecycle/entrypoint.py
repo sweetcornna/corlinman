@@ -1958,6 +1958,71 @@ def build_app(
                     error=str(exc),
                 )
 
+        # W3 first-run-wizard contract D4 — restart broadcast.
+        # Iterate every user that's pinned a "home channel" via
+        # ``/sethome`` and emit a system-level restart notice for
+        # each. The actual channel-send surface (TelegramSender /
+        # OneBot action queue / Slack webhook) is owned by the
+        # per-channel adapter and isn't directly addressable from
+        # the entrypoint; we defer the send into a background task
+        # so the lifespan doesn't block on per-channel availability,
+        # and surface the planned broadcast on the structlog feed
+        # so operators see the heads-up in the boot logs even when
+        # the eventual outbound is still being wired up by a
+        # follow-up wave.
+        try:
+            from corlinman_server import home_channel_store
+            from corlinman_server.gateway.core.telemetry import (
+                _pkg_version,
+            )
+
+            version_str = _pkg_version()
+            homes_snapshot = home_channel_store.list_all_homes()
+            if homes_snapshot:
+                async def _broadcast_restart() -> None:
+                    msg_body = (
+                        f"🔄 服务器刚刚重启完成（v{version_str}）"
+                    )
+                    for row in homes_snapshot:
+                        # Best-effort log — the structlog feed is
+                        # fan-out by /admin/logs/stream so the
+                        # operator sees the planned send the moment
+                        # boot finishes. When a future wave wires
+                        # the outbound channels handle onto
+                        # AppState we'll route through that handle
+                        # here instead.
+                        logger.info(
+                            "gateway.home_channel.restart_broadcast",
+                            channel=row.channel,
+                            account=row.account,
+                            thread=row.thread,
+                            sender=row.sender,
+                            version=version_str,
+                            message=msg_body,
+                        )
+                    logger.info(
+                        "gateway.home_channel.restart_broadcast_complete",
+                        homes=len(homes_snapshot),
+                    )
+
+                broadcast_task = asyncio.create_task(
+                    _broadcast_restart(),
+                    name="gateway.home_channel.restart_broadcast",
+                )
+                background.append(broadcast_task)
+                logger.info(
+                    "gateway.home_channel.restart_broadcast_scheduled",
+                    homes=len(homes_snapshot),
+                    version=version_str,
+                )
+            # Skip silently when no homes are registered — that's the
+            # first-boot case before any user has issued /sethome.
+        except Exception as exc:  # pragma: no cover — best-effort
+            logger.warning(
+                "gateway.home_channel.restart_broadcast_failed",
+                error=str(exc),
+            )
+
         try:
             yield
         finally:

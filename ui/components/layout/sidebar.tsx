@@ -141,13 +141,17 @@ const DEV_ITEMS: NavEntry[] = [
 ];
 
 /**
- * Always-visible "System" entry — /admin/system surfaces version info,
- * update banner, and copy-paste upgrade commands (W2.1). Placed alongside
- * the dev-settings footer link so it's reachable in operator mode too.
+ * Always-visible "Updates" entry — /admin/system surfaces version info,
+ * update banner, and copy-paste upgrade commands (W2.1). The URL keeps the
+ * `/system` slug for back-compat with existing routes/bookmarks; only the
+ * sidebar label is renamed to "更新 / Updates" to make it crystal clear
+ * this is the version-update surface, not a generic settings page (W3
+ * first-run-wizard polish). Placed alongside the dev-settings footer link
+ * so it's reachable in operator mode too.
  */
 const SYSTEM_ENTRY: NavItem = {
   href: "/system",
-  labelKey: "system.sidebarLabel",
+  labelKey: "sidebar.updatesLabel",
   icon: MonitorCog,
 };
 

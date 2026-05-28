@@ -44,12 +44,24 @@ from collections.abc import Iterable, Sequence
 from typing import Any, TypeVar
 
 __all__ = [
+    "FIRST_CHAT_TIP_TEXT",
     "MessageLike",
     "apply_command_substitution",
     "bootstrap",
     "build_chat_service",
+    "maybe_prepend_first_chat_tip",
     "rewrite_trailing_user_message",
 ]
+
+
+# W3 first-run-wizard contract D3 — one-time advisory shown on the
+# *first* user message in a channel/thread, pointing the user at the
+# ``/sethome`` slash command. Centralised so the tests + the entrypoint
+# restart broadcast read the same literal.
+FIRST_CHAT_TIP_TEXT: str = (
+    "💡 提示：使用 /sethome 命令可将当前窗口设为主聊天窗口，"
+    "重启等系统提醒只发到主窗口。"
+)
 
 log = logging.getLogger(__name__)
 
@@ -181,7 +193,108 @@ def apply_command_substitution(content: str) -> str:
     )
 
 
-def rewrite_trailing_user_message(messages: Sequence[_T]) -> list[_T]:
+def maybe_prepend_first_chat_tip(
+    messages: Sequence[_T],
+    *,
+    user_id: str | None,
+    channel: str | None,
+    thread: str | None,
+) -> list[_T]:
+    """Prepend the one-time ``/sethome`` tip to ``messages`` when this
+    is the user's first turn in ``(channel, thread)``.
+
+    W3 first-run-wizard contract D3. Returns a new list:
+
+    * No-op (returns ``list(messages)``) when any of ``user_id`` /
+      ``channel`` / ``thread`` is falsy — the surface didn't hand us
+      enough context to scope the flag (the HTTP /v1/chat/completions
+      route doesn't carry a binding; channel adapters do).
+    * No-op when there is more than one user-role message in the
+      window. We treat ``turn_count <= 1`` as "this is the first
+      turn" — counting the user messages already on the request is
+      the cheapest stand-in for ``SessionSummary.turn_count`` we can
+      get without dragging the session journal into this hot path.
+    * No-op when the home-channel store already has a
+      ``first_chat_tips_shown`` row for this triple, or when the
+      store cannot be imported (standalone deploys / tests).
+    * On the first eligible turn: prepends a system-role message
+      carrying :data:`FIRST_CHAT_TIP_TEXT`, stamps the
+      ``first_chat_tips_shown`` row, and returns the longer list.
+
+    The prepended message is constructed as a tiny dataclass-shaped
+    object with ``role="system"`` + ``content``. The downstream
+    chat-request builder (:func:`ChatRequest` / the channels-side
+    ``SimpleNamespace`` request) reads only those two fields, so the
+    stub fits both surfaces without an explicit type import.
+    """
+    materialised: list[_T] = list(messages)
+    if not user_id or not channel or not thread:
+        return materialised
+
+    user_count = 0
+    for m in materialised:
+        role = getattr(m, "role", None)
+        role_str = str(role) if role is not None else ""
+        if role_str in ("user", "Role.user") or (
+            hasattr(role, "value") and str(getattr(role, "value")) == "user"
+        ):
+            user_count += 1
+    # ``turn_count <= 1`` from the spec — we only fire the tip when
+    # this request has exactly the opening user message (or none yet).
+    # A retry sequence that already carries a full back-and-forth has
+    # turn_count >= 2 and skips the tip.
+    if user_count > 1:
+        return materialised
+
+    # Lazy import: the store lives in the server top-level. A missing
+    # module degrades to a silent skip — channel tests that don't have
+    # the server package available still import this module.
+    try:
+        from corlinman_server import home_channel_store  # noqa: PLC0415
+    except ImportError as exc:
+        log.warning("chat_bootstrap.home_channel_store_missing err=%s", exc)
+        return materialised
+
+    try:
+        if home_channel_store.was_tip_shown(user_id, channel, thread):
+            return materialised
+    except Exception as exc:  # noqa: BLE001 — degrade silently on store errors
+        log.warning("chat_bootstrap.was_tip_shown_failed err=%s", exc)
+        return materialised
+
+    # Stamp the flag BEFORE prepending so a follow-up retry on the
+    # same turn doesn't double-inject if the LLM call fails partway
+    # through. The user gets the tip exactly once per (channel,
+    # thread) even on a retry storm.
+    try:
+        home_channel_store.mark_tip_shown(user_id, channel, thread)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("chat_bootstrap.mark_tip_shown_failed err=%s", exc)
+        return materialised
+
+    # Build the system-message stub. Using ``types.SimpleNamespace``
+    # mirrors the shape ``corlinman_channels.service._build_internal_request``
+    # already uses, and the HTTP ``ChatMessage`` (Pydantic) duck-types
+    # the same two fields. The list type is preserved by keeping
+    # ``_T`` opaque — the caller's downstream consumer just iterates.
+    from types import SimpleNamespace  # noqa: PLC0415
+
+    tip_msg = SimpleNamespace(role="system", content=FIRST_CHAT_TIP_TEXT)
+    log.info(
+        "chat_bootstrap.first_chat_tip_prepended channel=%s thread=%s",
+        channel,
+        thread,
+    )
+    return [tip_msg, *materialised]  # type: ignore[list-item]
+
+
+def rewrite_trailing_user_message(
+    messages: Sequence[_T],
+    *,
+    user_id: str | None = None,
+    channel: str | None = None,
+    thread: str | None = None,
+) -> list[_T]:
     """Return a new list with the trailing user message's content
     rewritten via :func:`apply_command_substitution`, if it matches.
 
@@ -201,6 +314,15 @@ def rewrite_trailing_user_message(messages: Sequence[_T]) -> list[_T]:
     Important: we **only** consider the trailing user message — see the
     module docstring for why retroactive history rewrites would corrupt
     the transcript.
+
+    Binding-context kwargs (``user_id`` / ``channel`` / ``thread``)
+    are forwarded to :func:`maybe_prepend_first_chat_tip` so a channel
+    adapter that has the home-channel context handy can opt into the
+    one-time first-chat tip in the same call. The HTTP
+    ``/v1/chat/completions`` route does not carry a binding and
+    therefore leaves all three as ``None`` — the tip helper degrades
+    to a no-op in that case (matches the contract: the tip is a
+    channel-side affordance, not a web-API artefact).
     """
     # Realise the iterable into a list once so we can do reverse scans
     # and return a fresh container (the caller may mutate / append).
@@ -229,39 +351,54 @@ def rewrite_trailing_user_message(messages: Sequence[_T]) -> list[_T]:
             target_index = i
             break
 
-    if target_index < 0:
-        return result
+    if target_index >= 0:
+        original = result[target_index]
+        content = getattr(original, "content", "") or ""
+        rewritten_content = apply_command_substitution(content)
+        if rewritten_content != content:
+            # Substitute. Try Pydantic's ``model_copy(update=...)``
+            # first (preserves immutability semantics on frozen
+            # models); fall back to a shallow ``copy`` + attribute
+            # set for plain dataclasses / objects.
+            try:
+                copied = original.model_copy(  # type: ignore[attr-defined]
+                    update={"content": rewritten_content}
+                )
+                result[target_index] = copied
+                log.info(
+                    "chat.command_substituted index=%d "
+                    "original_len=%d prelude_len=%d",
+                    target_index,
+                    len(content),
+                    len(rewritten_content),
+                )
+            except AttributeError:
+                import copy as _copy
 
-    original = result[target_index]
-    content = getattr(original, "content", "") or ""
-    rewritten_content = apply_command_substitution(content)
-    if rewritten_content == content:
-        return result
+                copied = _copy.copy(original)
+                try:
+                    copied.content = rewritten_content  # type: ignore[attr-defined]
+                    result[target_index] = copied
+                    log.info(
+                        "chat.command_substituted index=%d "
+                        "original_len=%d prelude_len=%d",
+                        target_index,
+                        len(content),
+                        len(rewritten_content),
+                    )
+                except AttributeError:
+                    # Object doesn't expose a settable ``content`` —
+                    # give up on the rewrite but still let the
+                    # first-chat tip hook run below.
+                    pass
 
-    # Substitute. Try Pydantic's ``model_copy(update=...)`` first
-    # (preserves immutability semantics on frozen models); fall back to a
-    # shallow ``copy`` + attribute set for plain dataclasses / objects.
-    try:
-        copied = original.model_copy(update={"content": rewritten_content})  # type: ignore[attr-defined]
-    except AttributeError:
-        import copy as _copy
-
-        copied = _copy.copy(original)
-        try:
-            copied.content = rewritten_content  # type: ignore[attr-defined]
-        except AttributeError:
-            # Object doesn't expose a settable ``content`` — give up and
-            # return the original list unchanged rather than crash.
-            return result
-
-    result[target_index] = copied
-    log.info(
-        "chat.command_substituted index=%d original_len=%d prelude_len=%d",
-        target_index,
-        len(content),
-        len(rewritten_content),
+    # W3 first-run tip — single call site for the home-channel
+    # advisory. No-op when the caller didn't pass binding context
+    # (the HTTP route case) or when the user has already seen the
+    # tip in this thread.
+    return maybe_prepend_first_chat_tip(
+        result, user_id=user_id, channel=channel, thread=thread
     )
-    return result
 
 
 # Keep an ``Iterable`` import alive for future expansion paths; the

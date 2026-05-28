@@ -57,6 +57,8 @@ __all__ = [
     "ImageProviderUnavailable",
     "generate_plain",
     "generate_with_refs",
+    "resolve_image_provider_name",
+    "resolve_image_provider",
 ]
 
 
@@ -75,6 +77,106 @@ _ASPECT_TO_SIZE: dict[str, str] = {
 _DEFAULT_MODEL: str = "gpt-image-1"
 _DEFAULT_QUALITY: str = "medium"
 _DEFAULT_TIMEOUT_SECS: float = 120.0
+
+
+def resolve_image_provider_name(
+    providers_cfg: dict[str, Any] | None,
+    *,
+    image_provider_name: str | None = None,
+    default_chat_provider: str | None = None,
+) -> str | None:
+    """Pick the provider slot best suited for image generation.
+
+    Resolution order, evaluated against ``providers_cfg`` (a mapping
+    keyed by slot name → ``[providers.<slot>]`` block):
+
+    1. ``image_provider_name``, when supplied AND the named slot exists
+       in ``providers_cfg``. The caller wins outright — they may have
+       set this from a per-channel override or the first-run wizard.
+    2. The first enabled slot whose block carries
+       ``image_capable = True``. Stable insertion order is preserved
+       (Python 3.7+ dict guarantees) so multi-image-capable configs
+       remain deterministic across reloads.
+    3. ``default_chat_provider``, when supplied AND present in the
+       config. The historical fall-through — keeps existing single-
+       provider deployments working without operator action.
+    4. ``None`` — the caller must decide whether to error or fall back
+       to ``OPENAI_API_KEY`` env-only credentials.
+
+    Designed to be cheap + side-effect-free so the agent loop can call
+    it on every tool dispatch.
+
+    Parameters
+    ----------
+    providers_cfg
+        Mapping of slot name to provider config dict. ``None`` / empty
+        mappings short-circuit to ``default_chat_provider``.
+    image_provider_name
+        Caller's explicit pick, e.g. from
+        ``CORLINMAN_IMAGE_PROVIDER`` or a per-channel binding.
+    default_chat_provider
+        The default chat provider's slot name. Used only when no
+        ``image_capable`` slot is found.
+    """
+    cfg = providers_cfg or {}
+    if image_provider_name and image_provider_name in cfg:
+        return image_provider_name
+
+    for name, entry in cfg.items():
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("enabled", True) is False:
+            continue
+        if entry.get("image_capable") is True:
+            return str(name)
+
+    if default_chat_provider and default_chat_provider in cfg:
+        return default_chat_provider
+    return None
+
+
+def resolve_image_provider(
+    *,
+    providers_cfg: dict[str, Any] | None,
+    provider_factory: Any,
+    image_provider_name: str | None = None,
+    default_chat_provider: str | None = None,
+    fallback_provider: Any | None = None,
+) -> Any | None:
+    """Materialise a provider adapter for image generation.
+
+    Thin wrapper around :func:`resolve_image_provider_name` that also
+    builds (or pulls from a cache) the concrete adapter via
+    ``provider_factory(name)``. ``fallback_provider`` is returned when
+    resolution falls through (no config, no match, factory raises) —
+    callers typically pass the active chat provider here so
+    :func:`generate_with_refs` keeps working on legacy deployments that
+    haven't migrated to per-capability slots yet.
+
+    Returns ``None`` only when both resolution and ``fallback_provider``
+    are exhausted; the caller should then raise
+    :class:`ImageProviderUnavailable` itself (the existing dispatchers
+    already do).
+    """
+    name = resolve_image_provider_name(
+        providers_cfg,
+        image_provider_name=image_provider_name,
+        default_chat_provider=default_chat_provider,
+    )
+    if name is None:
+        return fallback_provider
+
+    try:
+        built = provider_factory(name)
+    except Exception as exc:  # noqa: BLE001 — log & fall back
+        logger.warning(
+            "image.resolve_image_provider.factory_failed",
+            provider_name=name,
+            error=str(exc),
+        )
+        return fallback_provider
+
+    return built if built is not None else fallback_provider
 
 
 class ImageGenerationError(RuntimeError):
@@ -130,13 +232,28 @@ def _ref_to_data_url(path: Path) -> str:
     return f"data:{mime};base64,{encoded}"
 
 
-def _resolve_runtime_config() -> tuple[str, str, float]:
+def _resolve_runtime_config(provider: Any = None) -> tuple[str, str, float]:
     """Return ``(model, quality, timeout_secs)`` from env or defaults.
 
     Shared by every entry point in this module so the two image tools
     obey the same ``CORLINMAN_IMAGE_*`` knobs.
+
+    Resolution order for the model id (highest precedence first):
+
+    1. ``CORLINMAN_IMAGE_MODEL`` env var — operator override, beats
+       config so on-the-fly debugging stays cheap.
+    2. ``provider.image_model`` — the operator-asserted preferred model
+       on the picked image provider (Wave 2 first-run wizard). Read
+       defensively (``getattr``) so older callers that pass a non-spec
+       adapter still hit the default.
+    3. The historical default ``"gpt-image-1"``.
     """
-    model = os.environ.get("CORLINMAN_IMAGE_MODEL") or _DEFAULT_MODEL
+    env_model = os.environ.get("CORLINMAN_IMAGE_MODEL")
+    if env_model:
+        model = env_model
+    else:
+        spec_model = getattr(provider, "image_model", None) if provider is not None else None
+        model = str(spec_model) if isinstance(spec_model, str) and spec_model else _DEFAULT_MODEL
     quality = os.environ.get("CORLINMAN_IMAGE_QUALITY") or _DEFAULT_QUALITY
     try:
         timeout = float(
@@ -302,7 +419,7 @@ async def generate_with_refs(
             f"got {aspect_ratio!r}"
         )
     api_key, base_url = _provider_credentials(provider)
-    model, quality, timeout = _resolve_runtime_config()
+    model, quality, timeout = _resolve_runtime_config(provider)
 
     # The input is a single user message whose content list mixes the
     # prompt text + one ``input_image`` per reference path. Matches the
@@ -381,7 +498,7 @@ async def generate_plain(
             f"got {aspect_ratio!r}"
         )
     api_key, base_url = _provider_credentials(provider)
-    model, quality, timeout = _resolve_runtime_config()
+    model, quality, timeout = _resolve_runtime_config(provider)
 
     payload: dict[str, Any] = {
         "model": model,

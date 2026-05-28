@@ -53,6 +53,9 @@ from corlinman_server.gateway.routes_admin_b import (
     evolution as _evolution,
 )
 from corlinman_server.gateway.routes_admin_b import (
+    image_provider as _image_provider,
+)
+from corlinman_server.gateway.routes_admin_b import (
     logs as _logs,
 )
 from corlinman_server.gateway.routes_admin_b import (
@@ -69,6 +72,9 @@ from corlinman_server.gateway.routes_admin_b import (
 )
 from corlinman_server.gateway.routes_admin_b import (
     onboard as _onboard,
+)
+from corlinman_server.gateway.routes_admin_b import (
+    personas as _personas,
 )
 from corlinman_server.gateway.routes_admin_b import (
     plugins as _plugins,
@@ -123,12 +129,14 @@ def build_router() -> APIRouter:
         _credentials,
         _curator,
         _evolution,
+        _image_provider,
         _logs,
         _memory,
         _models,
         _napcat,
         _oauth,
         _onboard,
+        _personas,
         _plugins,
         _providers,
         _rag,

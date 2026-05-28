@@ -2391,11 +2391,21 @@ export const en = {
     },
   },
 
+  // W3 — sidebar-specific labels. Mirrors the zh-CN `sidebar` namespace.
+  sidebar: {
+    updatesLabel: "Updates",
+  },
+
   // W2.1 — /admin/system page (version + update banner + upgrade
   // commands). All keys consumed by `<UpdateBubble>` + the system page.
+  // W3: `pageTitle` / `pageSubtitle` replace the legacy `title` / `subtitle`
+  // on the page header so it reads as "Update management" (not generic
+  // "System"); the old keys are retained for back-compat.
   system: {
     title: "System",
     subtitle: "Version, updates, and upgrade tooling",
+    pageTitle: "Update management",
+    pageSubtitle: "View current version, check for updates, and apply one-click upgrades",
     sidebarLabel: "System",
     version: {
       current: "Current version",
