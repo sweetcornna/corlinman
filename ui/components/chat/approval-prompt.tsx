@@ -1,12 +1,7 @@
 "use client";
 
-/**
- * Inline approval prompt — rendered when the agent emits an
- * `AwaitingApproval` event. Three actions: deny, approve once, always
- * allow (for the session).
- */
-
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 import { Check, ShieldAlert, Shield, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -22,18 +17,26 @@ interface ApprovalPromptProps {
 }
 
 export function ApprovalPrompt({ prompt, onDecide }: ApprovalPromptProps) {
+  const { t } = useTranslation();
   const decided = prompt.decision !== undefined;
+
+  const decisionLabel = prompt.decision === "approved"
+    ? t("chat.approvalDecidedApproved")
+    : t("chat.approvalDecidedDenied");
+  const scopeLabel = prompt.decidedScope === "session"
+    ? t("chat.approvalDecisionScopeSession")
+    : prompt.decidedScope === "always"
+      ? t("chat.approvalDecisionScopeAlways")
+      : t("chat.approvalDecisionScopeOnce");
 
   return (
     <div
       className={cn(
         "my-2 overflow-hidden rounded-md border-2 bg-tp-glass-inner",
-        decided
-          ? "border-tp-glass-edge opacity-70"
-          : "border-tp-amber/60 shadow-sm",
+        decided ? "border-tp-glass-edge opacity-70" : "border-tp-amber/60 shadow-sm",
       )}
       role={decided ? undefined : "alertdialog"}
-      aria-label={`Approval requested for ${prompt.tool}`}
+      aria-label={t("chat.approvalAriaLabel", { tool: prompt.tool })}
       data-testid="approval-prompt"
     >
       <div className="flex items-center gap-2 border-b border-tp-glass-edge px-3 py-2 text-[12px]">
@@ -49,8 +52,8 @@ export function ApprovalPrompt({ prompt, onDecide }: ApprovalPromptProps) {
         </span>
         <span className="ml-auto text-[11px] text-tp-ink-3">
           {decided
-            ? `${prompt.decision === "approved" ? "Approved" : "Denied"} (${prompt.decidedScope ?? "once"})`
-            : "Approval required"}
+            ? t("chat.approvalDecidedSuffix", { decision: decisionLabel, scope: scopeLabel })
+            : t("chat.approvalRequired")}
         </span>
       </div>
       <div className="space-y-2 px-3 py-2 text-[12px]">
@@ -58,7 +61,7 @@ export function ApprovalPrompt({ prompt, onDecide }: ApprovalPromptProps) {
           <div className="text-tp-ink-2 italic">{prompt.reason}</div>
         ) : null}
         <pre className="max-h-[160px] overflow-auto rounded bg-tp-glass-inner/80 p-2 font-mono text-[11px] leading-snug text-tp-ink">
-          {prompt.argsPreviewJson || "(no args)"}
+          {prompt.argsPreviewJson || t("chat.approvalNoArgs")}
         </pre>
         {!decided ? (
           <div className="flex flex-wrap items-center gap-2 pt-1">
@@ -69,7 +72,7 @@ export function ApprovalPrompt({ prompt, onDecide }: ApprovalPromptProps) {
               data-testid="approval-deny"
             >
               <X className="h-3.5 w-3.5" aria-hidden="true" />
-              Deny
+              {t("chat.approvalDeny")}
             </button>
             <button
               type="button"
@@ -78,7 +81,7 @@ export function ApprovalPrompt({ prompt, onDecide }: ApprovalPromptProps) {
               data-testid="approval-once"
             >
               <Check className="h-3.5 w-3.5" aria-hidden="true" />
-              Approve once
+              {t("chat.approvalApproveOnce")}
             </button>
             <button
               type="button"
@@ -87,7 +90,7 @@ export function ApprovalPrompt({ prompt, onDecide }: ApprovalPromptProps) {
               data-testid="approval-session"
             >
               <Shield className="h-3.5 w-3.5" aria-hidden="true" />
-              Always (session)
+              {t("chat.approvalApproveAlways")}
             </button>
           </div>
         ) : null}

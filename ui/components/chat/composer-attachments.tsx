@@ -1,11 +1,7 @@
 "use client";
 
-/**
- * Attachment chip row shown above the composer textarea. Each chip shows
- * filename + size + upload status; click × to remove.
- */
-
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 import {
   AlertCircle,
   Image as ImageIcon,
@@ -32,11 +28,12 @@ export function ComposerAttachments({
   attachments,
   onRemove,
 }: ComposerAttachmentsProps) {
+  const { t } = useTranslation();
   if (attachments.length === 0) return null;
   return (
     <ul
       className="flex flex-wrap gap-1.5 px-3 pt-2"
-      aria-label="pending attachments"
+      aria-label={t("chat.pendingAttachmentsAriaLabel")}
       data-testid="composer-attachments"
     >
       {attachments.map((att) => (
@@ -59,14 +56,12 @@ export function ComposerAttachments({
           )}
           <span className="font-mono">{att.name}</span>
           <span className="text-tp-ink-3">·</span>
-          <span className="font-mono text-tp-ink-3">
-            {formatBytes(att.sizeBytes)}
-          </span>
+          <span className="font-mono text-tp-ink-3">{formatBytes(att.sizeBytes)}</span>
           <button
             type="button"
             onClick={() => onRemove(att.id)}
             className="ml-0.5 rounded p-0.5 text-tp-ink-3 hover:bg-tp-glass-inner hover:text-tp-ink"
-            aria-label={`Remove ${att.name}`}
+            aria-label={t("chat.removeAttachment", { name: att.name })}
           >
             <X className="h-3 w-3" aria-hidden="true" />
           </button>

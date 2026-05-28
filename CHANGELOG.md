@@ -4,6 +4,43 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.3] — 2026-05-28 — Full i18n for the /chat surface (zh-CN ↔ en)
+
+> Every visible string in the chat surface — sidebar, composer,
+> message bubbles, hover toolbars, tool / sub-agent / approval cards,
+> reasoning blocks, artifact panel, search overlay, slash + mention
+> menus — now goes through `useTranslation()`. The page picks up
+> whichever language the operator chose in the language switcher,
+> with no English leaks remaining in default Chinese mode.
+
+### Changed
+
+- New top-level `chat: { … }` block in `ui/lib/locales/en.ts` +
+  `zh-CN.ts` with ~100 keys covering every chat-surface string.
+- 11 chat components rewritten to consume `t("chat.…")` instead of
+  hardcoded English: `empty-state`, `chat-sidebar`, `chat-area`,
+  `composer`, `composer-attachments`, `composer-slash-menu`,
+  `composer-mention-menu`, `message-list`, `message-bubble`,
+  `markdown-message` (code-block actions), `tool-call-card`,
+  `reasoning-block`, `subagent-card`, `approval-prompt`,
+  `conversation-search`, `artifact-panel`.
+- Slash command labels (`/clear`, `/reset`, `/model`, `/persona`),
+  approval scope labels (once / session / always), sub-agent status
+  pills (spawned / running / completed / errored), sidebar recency
+  groupings (Today / Yesterday / Previous 7 / 30 / Older / Pinned /
+  Archived), composer placeholder + send/stop buttons, jump-to-latest
+  pill — all translated.
+- `/chat` toast strings (delete + Undo + error labels) now use
+  `t("chat.deletedToast")`, `t("chat.undo")`, and `t("common.saveFailed")`.
+
+### Tests
+
+- `chat-sidebar.test.tsx` + `artifact-panel.test.tsx` +
+  `message-bubble.test.tsx` updated to assert Chinese strings (since
+  vitest defaults to `zh-CN`).
+- Whole chat suite: 57/57 passing. typecheck clean. `next build`
+  succeeds with `/chat` static-exported.
+
 ## [1.8.2] — 2026-05-28 — Chat composer follows the global default model
 
 > The 1.8.0 chat surface hardcoded `gpt-4o` as the model the composer

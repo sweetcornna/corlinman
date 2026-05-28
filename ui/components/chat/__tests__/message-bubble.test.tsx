@@ -102,7 +102,7 @@ describe("MessageBubble", () => {
         />,
       ),
     );
-    fireEvent.click(screen.getByLabelText("Regenerate response"));
+    fireEvent.click(screen.getByLabelText("重新生成回复"));
     expect(onRegenerate).toHaveBeenCalledOnce();
   });
 

@@ -1,30 +1,18 @@
 "use client";
 
-/**
- * `@`-mention picker — opens as soon as the user types `@` somewhere in
- * the composer textarea. Filters across an agent + skill catalogue and
- * inserts `@name ` into the composer on pick.
- *
- * Mirrors the slash-menu UX so a user already familiar with `/` doesn't
- * have to learn a second pattern.
- */
-
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";
 
 export interface MentionCandidate {
   id: string;
-  /** Name used as the literal mention token (no leading @). */
   name: string;
-  /** Short description shown after the name. */
   description?: string;
-  /** Optional kind hint (agent / skill / persona) for grouping. */
   kind?: "agent" | "skill" | "persona";
 }
 
 interface ComposerMentionMenuProps {
-  /** Free-text query after the `@`. */
   query: string;
   candidates: MentionCandidate[];
   onPick: (c: MentionCandidate) => void;
@@ -37,6 +25,7 @@ export function ComposerMentionMenu({
   onPick,
   onClose,
 }: ComposerMentionMenuProps) {
+  const { t } = useTranslation();
   const q = query.toLowerCase();
   const filtered = React.useMemo(
     () =>
@@ -86,7 +75,7 @@ export function ComposerMentionMenu({
         "border border-tp-glass-edge bg-tp-glass-inner shadow-md",
       )}
       role="listbox"
-      aria-label="Mention candidates"
+      aria-label={t("chat.mentionMenuAriaLabel")}
       data-testid="mention-menu"
     >
       {filtered.map((c, i) => (
@@ -116,11 +105,6 @@ export function ComposerMentionMenu({
   );
 }
 
-/**
- * Find the `@token` the caret is currently sitting inside. Returns null
- * when the caret is outside any active token, or when there's
- * whitespace immediately before the token's `@`.
- */
 export function detectMentionQuery(
   text: string,
   caret: number,
@@ -130,10 +114,8 @@ export function detectMentionQuery(
   while (i >= 0) {
     const ch = text[i];
     if (ch === "@") {
-      // Token must be at start or follow whitespace.
       if (i === 0 || /\s/.test(text[i - 1])) {
         const after = text.slice(i + 1, caret);
-        // Mentions can't contain spaces — abort if we see one.
         if (/\s/.test(after)) return null;
         return { query: after, start: i, end: caret };
       }

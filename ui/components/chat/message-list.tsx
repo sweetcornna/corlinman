@@ -1,12 +1,7 @@
 "use client";
 
-/**
- * Scroll-aware message list. Auto-pins to bottom while streaming, releases
- * pin when the user scrolls up, surfaces a "jump to latest" pill when
- * unpinned.
- */
-
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 import { ArrowDown } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -47,6 +42,7 @@ export function MessageList({
   onOpenArtifact,
   emptyState,
 }: MessageListProps) {
+  const { t } = useTranslation();
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
   const [pinned, setPinned] = React.useState(true);
 
@@ -55,7 +51,6 @@ export function MessageList({
     [messages, pendingMessage],
   );
 
-  /** When new content arrives and we're pinned, scroll to bottom. */
   React.useEffect(() => {
     if (!pinned) return;
     const el = scrollRef.current;
@@ -123,11 +118,11 @@ export function MessageList({
             "border border-tp-glass-edge bg-tp-glass-inner px-3 py-1.5",
             "text-[11px] text-tp-ink shadow-sm transition hover:bg-tp-glass-inner/80",
           )}
-          aria-label="Jump to latest"
+          aria-label={t("chat.jumpToLatestAriaLabel")}
           data-testid="jump-to-bottom"
         >
           <ArrowDown className="h-3.5 w-3.5" aria-hidden="true" />
-          Latest
+          {t("chat.jumpToLatest")}
         </button>
       ) : null}
     </div>

@@ -1,11 +1,7 @@
 "use client";
 
-/**
- * Collapsible tool-call card. Shows tool name, plugin, args (json), result,
- * and run status — surfacing the hermes agent loop into the chat thread.
- */
-
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 import {
   AlertCircle,
   CheckCircle2,
@@ -21,7 +17,6 @@ import type { ToolCallState } from "@/lib/chat/types";
 
 interface ToolCallCardProps {
   tool: ToolCallState;
-  /** Default collapsed state. Caller can toggle by mutating `tool.collapsed`. */
   defaultExpanded?: boolean;
 }
 
@@ -32,6 +27,7 @@ function formatDuration(ms?: number): string {
 }
 
 export function ToolCallCard({ tool, defaultExpanded = false }: ToolCallCardProps) {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = React.useState(defaultExpanded);
 
   const statusIcon =
@@ -88,13 +84,13 @@ export function ToolCallCard({ tool, defaultExpanded = false }: ToolCallCardProp
       </button>
       {expanded ? (
         <div className="border-t border-tp-glass-edge px-2.5 py-2 text-[11px] text-tp-ink">
-          <div className="mb-1 font-mono text-tp-ink-3">args</div>
+          <div className="mb-1 font-mono text-tp-ink-3">{t("chat.toolArgsLabel")}</div>
           <pre className="max-h-[280px] overflow-auto rounded bg-tp-glass-inner/80 p-2 font-mono text-[11px] leading-snug text-tp-ink">
-            {argsPretty || "(empty)"}
+            {argsPretty || t("chat.toolEmpty")}
           </pre>
           {tool.resultPreview ? (
             <>
-              <div className="mt-2 mb-1 font-mono text-tp-ink-3">result</div>
+              <div className="mt-2 mb-1 font-mono text-tp-ink-3">{t("chat.toolResultLabel")}</div>
               <pre className="max-h-[280px] overflow-auto rounded bg-tp-glass-inner/80 p-2 font-mono text-[11px] leading-snug text-tp-ink">
                 {tool.resultPreview}
               </pre>

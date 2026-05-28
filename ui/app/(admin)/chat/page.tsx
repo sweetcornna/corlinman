@@ -13,6 +13,7 @@
 
 import * as React from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { useTranslation } from "react-i18next";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
@@ -73,6 +74,7 @@ export default function ChatPage() {
   const router = useRouter();
   const qc = useQueryClient();
   const search = useSearchParams();
+  const { t } = useTranslation();
   const sessionKey = search?.get("session") ?? null;
   const [collapsed, setCollapsed] = React.useState(false);
 
@@ -160,8 +162,8 @@ export default function ChatPage() {
       } catch (err) {
         toast.error(
           err instanceof CorlinmanApiError
-            ? `Rename failed: ${err.message}`
-            : "Rename failed",
+            ? t("common.saveFailed") + ": " + err.message
+            : t("common.saveFailed"),
         );
       }
     },
@@ -177,7 +179,7 @@ export default function ChatPage() {
         refreshList();
       } catch (err) {
         toast.error(
-          err instanceof CorlinmanApiError ? err.message : "Pin toggle failed",
+          err instanceof CorlinmanApiError ? err.message : t("common.saveFailed"),
         );
       }
     },
@@ -193,7 +195,7 @@ export default function ChatPage() {
         refreshList();
       } catch (err) {
         toast.error(
-          err instanceof CorlinmanApiError ? err.message : "Archive failed",
+          err instanceof CorlinmanApiError ? err.message : t("common.saveFailed"),
         );
       }
     },
@@ -211,13 +213,13 @@ export default function ChatPage() {
           if (key === sessionKey) router.push("/chat");
         } catch (err) {
           toast.error(
-            err instanceof CorlinmanApiError ? err.message : "Delete failed",
+            err instanceof CorlinmanApiError ? err.message : t("common.saveFailed"),
           );
         }
       }, 4500);
-      toast(`Conversation deleted`, {
+      toast(t("chat.deletedToast"), {
         action: {
-          label: "Undo",
+          label: t("chat.undo"),
           onClick: () => {
             cancelled = true;
             window.clearTimeout(timer);

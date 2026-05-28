@@ -1,13 +1,8 @@
 "use client";
 
-/**
- * The right pane of the chat surface. Header (title + model/persona/cost) +
- * message list + composer. Owns the live chat hook per `sessionKey` and
- * the artifact panel.
- */
-
 import * as React from "react";
 import { useRouter } from "next/navigation";
+import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";
 import { ArtifactPanel } from "@/components/chat/artifact-panel";
@@ -32,7 +27,6 @@ interface ChatAreaProps {
   agentId?: string;
   personaId?: string;
   personaLabel?: string;
-  /** Mention candidates surfaced by typing `@` in the composer. */
   mentionCandidates?: MentionCandidate[];
   onOpenModelPicker?: () => void;
   onOpenPersonaPicker?: () => void;
@@ -56,6 +50,7 @@ export function ChatArea({
   onOpenPersonaPicker,
 }: ChatAreaProps) {
   const router = useRouter();
+  const { t } = useTranslation();
   const chat = useChatStream({
     sessionKey,
     model,
@@ -68,11 +63,6 @@ export function ChatArea({
     preview: string;
   } | null>(null);
 
-  // Hydrate the hook from server history. The first effect run after a
-  // sessionKey switch clears the thread; once `initialHistory` resolves
-  // (typically asynchronously via React Query in the parent) we re-hydrate
-  // with the loaded transcript. We key the "already loaded" state on
-  // (sessionKey, length) so a refetch that returns more rows re-applies.
   const hydratedRef = React.useRef<{ key: string; len: number } | null>(null);
   React.useEffect(() => {
     const desiredLen = initialHistory?.length ?? 0;
@@ -105,8 +95,6 @@ export function ChatArea({
     (messageId: string) => {
       const slice = chat.sliceUntil(messageId);
       const newKey = genSessionKey();
-      // Stash the branched history under sessionStorage so the new page
-      // can pick it up on mount. Cheap, no-backend pre-load.
       try {
         sessionStorage.setItem(
           `corlinman:chat:branch:${newKey}`,
@@ -129,10 +117,14 @@ export function ChatArea({
       if (!m) return;
       const preview = m.content.slice(0, 120);
       const authorLabel =
-        m.role === "user" ? "you" : m.role === "assistant" ? "assistant" : "system";
+        m.role === "user"
+          ? t("chat.roleYou")
+          : m.role === "assistant"
+            ? t("chat.roleAssistant")
+            : t("chat.roleSystem");
       setReply({ authorLabel, preview });
     },
-    [chat.messages, chat.pendingMessage],
+    [chat.messages, chat.pendingMessage, t],
   );
 
   const jumpToMessage = React.useCallback((messageId: string) => {
@@ -163,7 +155,7 @@ export function ChatArea({
     conversation?.title ??
     (chat.messages[0]?.role === "user"
       ? chat.messages[0].content.slice(0, 60)
-      : "New conversation");
+      : t("chat.headerNewConversation"));
 
   const { inputTokens, outputTokens, costUsd } = chat.totals;
   const hasUsage = inputTokens + outputTokens > 0 || costUsd > 0;
@@ -173,9 +165,7 @@ export function ChatArea({
       <section className="flex h-full flex-1 flex-col min-w-0" data-testid="chat-area">
         <header className="flex items-center justify-between border-b border-tp-glass-edge bg-tp-glass-inner/30 px-4 py-2">
           <div className="flex min-w-0 flex-col">
-            <h1 className="truncate text-[13px] font-medium text-tp-ink">
-              {title}
-            </h1>
+            <h1 className="truncate text-[13px] font-medium text-tp-ink">{title}</h1>
             <p className="font-mono text-[10px] text-tp-ink-3">{sessionKey}</p>
           </div>
           <div className="flex items-center gap-2 text-[11px] text-tp-ink-3">
@@ -196,7 +186,7 @@ export function ChatArea({
                 )}
                 aria-hidden="true"
               />
-              {chat.isStreaming ? "Streaming" : "Idle"}
+              {chat.isStreaming ? t("chat.statusStreaming") : t("chat.statusIdle")}
             </span>
           </div>
         </header>

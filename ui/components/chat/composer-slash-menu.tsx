@@ -1,14 +1,7 @@
 "use client";
 
-/**
- * Slash-command palette. Opens when the composer text starts with `/`,
- * filtered by what the user has typed after the slash.
- *
- * Built-in commands are surfaced statically; callers can pass extra
- * commands (e.g. dynamic per-skill ones in Wave 2).
- */
-
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";
 
@@ -16,9 +9,7 @@ export interface SlashCommand {
   id: string;
   label: string;
   description?: string;
-  /** Optional arg hint shown next to the label. */
   argHint?: string;
-  /** Returns a replacement string for the composer (defaults to "" to clear). */
   run: () => string | void;
 }
 
@@ -35,6 +26,7 @@ export function ComposerSlashMenu({
   onPick,
   onClose,
 }: ComposerSlashMenuProps) {
+  const { t } = useTranslation();
   const q = query.toLowerCase();
   const filtered = React.useMemo(
     () =>
@@ -87,7 +79,7 @@ export function ComposerSlashMenu({
         "border border-tp-glass-edge bg-tp-glass-inner shadow-md",
       )}
       role="listbox"
-      aria-label="Slash commands"
+      aria-label={t("chat.slashMenuAriaLabel")}
       data-testid="slash-menu"
     >
       {filtered.map((cmd, i) => (

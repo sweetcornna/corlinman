@@ -1,18 +1,7 @@
 "use client";
 
-/**
- * Right-side artifact panel.
- *
- * Tabs across the top (one per open artifact). For previewable kinds
- * (html, svg, mermaid, markdown) the body has a "Preview / Source"
- * sub-toggle.
- *
- * Mermaid + markdown previews are *deferred* to Wave 2.5 — we ship the
- * scaffold + html/svg preview (both safe inside a sandboxed iframe) and
- * surface a "Preview not yet wired" message for mermaid/markdown.
- */
-
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 import { Copy, Download, FileCode, GitFork, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -37,6 +26,7 @@ export function ArtifactPanel({
   onSelect,
   onRemove,
 }: ArtifactPanelProps) {
+  const { t } = useTranslation();
   const active = React.useMemo(
     () => artifacts.find((a) => a.id === activeId) ?? null,
     [artifacts, activeId],
@@ -44,7 +34,6 @@ export function ArtifactPanel({
   const [view, setView] = React.useState<ViewMode>("preview");
 
   React.useEffect(() => {
-    // Default to preview for previewable kinds, source otherwise.
     if (!active) return;
     if (active.kind === "html" || active.kind === "svg") {
       setView("preview");
@@ -59,16 +48,18 @@ export function ArtifactPanel({
     <aside
       className="flex w-[420px] shrink-0 flex-col border-l border-tp-glass-edge bg-tp-glass-inner/30"
       data-testid="artifact-panel"
-      aria-label="Artifacts"
+      aria-label={t("chat.artifactPanelAriaLabel")}
     >
       <header className="flex items-center gap-1 border-b border-tp-glass-edge px-2 py-1.5">
         <FileCode className="h-3.5 w-3.5 text-tp-ink-3" aria-hidden="true" />
-        <span className="text-[12px] font-medium text-tp-ink">Artifacts</span>
+        <span className="text-[12px] font-medium text-tp-ink">
+          {t("chat.artifactPanelTitle")}
+        </span>
         <button
           type="button"
           onClick={onClose}
           className="ml-auto rounded p-1 text-tp-ink-3 hover:bg-tp-glass-inner hover:text-tp-ink"
-          aria-label="Close artifact panel"
+          aria-label={t("chat.artifactPanelClose")}
         >
           <X className="h-3.5 w-3.5" aria-hidden="true" />
         </button>
@@ -76,7 +67,7 @@ export function ArtifactPanel({
 
       <nav
         className="flex items-center gap-1 overflow-x-auto border-b border-tp-glass-edge px-2 py-1"
-        aria-label="Artifact tabs"
+        aria-label={t("chat.artifactTabsAriaLabel")}
       >
         {artifacts.map((a) => (
           <button
@@ -109,7 +100,7 @@ export function ArtifactPanel({
                 }
               }}
               className="ml-0.5 hidden h-3 w-3 cursor-pointer items-center justify-center rounded text-tp-ink-3 hover:bg-tp-glass-inner hover:text-tp-err group-hover:inline-flex"
-              aria-label={`Remove ${a.title}`}
+              aria-label={t("chat.artifactRemove", { title: a.title })}
             >
               <X className="h-2.5 w-2.5" aria-hidden="true" />
             </span>
@@ -123,14 +114,16 @@ export function ArtifactPanel({
             {active.kind === "html" || active.kind === "svg" ? (
               <>
                 <ViewToggle
-                  label="Preview"
+                  label={t("chat.artifactPreview")}
                   active={view === "preview"}
                   onClick={() => setView("preview")}
+                  testId="artifact-view-preview"
                 />
                 <ViewToggle
-                  label="Source"
+                  label={t("chat.artifactSource")}
                   active={view === "source"}
                   onClick={() => setView("source")}
+                  testId="artifact-view-source"
                 />
               </>
             ) : null}
@@ -144,7 +137,7 @@ export function ArtifactPanel({
                 type="button"
                 onClick={() => copy(active.source)}
                 className="rounded p-1 text-tp-ink-3 hover:bg-tp-glass-inner hover:text-tp-ink"
-                aria-label="Copy source"
+                aria-label={t("chat.artifactCopySource")}
               >
                 <Copy className="h-3 w-3" aria-hidden="true" />
               </button>
@@ -154,7 +147,7 @@ export function ArtifactPanel({
                   download(active.source, suggestedFilename(active))
                 }
                 className="rounded p-1 text-tp-ink-3 hover:bg-tp-glass-inner hover:text-tp-ink"
-                aria-label="Download source"
+                aria-label={t("chat.artifactDownloadSource")}
               >
                 <Download className="h-3 w-3" aria-hidden="true" />
               </button>
@@ -168,7 +161,7 @@ export function ArtifactPanel({
           >
             {view === "preview" && active.kind === "html" ? (
               <iframe
-                title={`Preview of ${active.title}`}
+                title={t("chat.artifactIframeTitle", { title: active.title })}
                 className="h-full w-full border-0 bg-white"
                 sandbox="allow-scripts allow-same-origin"
                 srcDoc={active.source}
@@ -177,19 +170,13 @@ export function ArtifactPanel({
             ) : view === "preview" && active.kind === "svg" ? (
               <div
                 className="flex h-full w-full items-center justify-center overflow-auto bg-tp-glass-inner/20 p-4"
-                // SVG is rendered via dangerouslySetInnerHTML inside a
-                // sandboxed iframe-equivalent — but SVG doesn't need an
-                // iframe; we sanitise upstream when the user supplies it.
-                // For MVP we trust the assistant-emitted SVG (same trust
-                // level as the rendered markdown).
                 dangerouslySetInnerHTML={{ __html: active.source }}
                 data-testid="artifact-svg"
               />
             ) : view === "preview" &&
               (active.kind === "mermaid" || active.kind === "markdown") ? (
               <div className="p-3 text-[12px] text-tp-ink-3">
-                Preview for {active.kind} is not yet wired. Use the Source
-                tab.
+                {t("chat.artifactPreviewDeferred", { kind: active.kind })}
               </div>
             ) : (
               <pre className="overflow-auto px-3 py-2 font-mono text-[11px] leading-relaxed text-tp-ink">
@@ -199,16 +186,18 @@ export function ArtifactPanel({
           </div>
 
           <footer className="flex items-center justify-between border-t border-tp-glass-edge px-2 py-1 text-[10px] text-tp-ink-3">
-            <span className="font-mono">{active.source.length} chars</span>
+            <span className="font-mono">
+              {t("chat.artifactCharCount", { n: active.source.length })}
+            </span>
             <span className="inline-flex items-center gap-1">
               <GitFork className="h-3 w-3" aria-hidden="true" />
-              from msg {active.messageId.slice(0, 6)}
+              {t("chat.artifactFromMessage", { short: active.messageId.slice(0, 6) })}
             </span>
           </footer>
         </>
       ) : (
         <div className="flex flex-1 items-center justify-center px-3 text-center text-[12px] text-tp-ink-3">
-          Open a code block from the chat to preview it here.
+          {t("chat.artifactEmptyMain")}
         </div>
       )}
     </aside>
@@ -219,10 +208,12 @@ function ViewToggle({
   label,
   active,
   onClick,
+  testId,
 }: {
   label: string;
   active: boolean;
   onClick: () => void;
+  testId: string;
 }) {
   return (
     <button
@@ -232,7 +223,7 @@ function ViewToggle({
         "rounded px-1.5 py-0.5 text-[11px]",
         active ? "bg-tp-amber/20 text-tp-ink" : "text-tp-ink-3 hover:bg-tp-glass-inner",
       )}
-      data-testid={`artifact-view-${label.toLowerCase()}`}
+      data-testid={testId}
       data-active={active ? "true" : undefined}
     >
       {label}

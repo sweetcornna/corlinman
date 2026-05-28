@@ -35,7 +35,7 @@ describe("ChatSidebar", () => {
         onDelete={vi.fn()}
       />,
     );
-    expect(screen.getByText(/no conversations yet/i)).toBeInTheDocument();
+    expect(screen.getByText("暂无对话")).toBeInTheDocument();
   });
 
   it("groups conversations by recency and surfaces Pinned first", () => {
@@ -57,10 +57,10 @@ describe("ChatSidebar", () => {
         onDelete={vi.fn()}
       />,
     );
-    expect(screen.getByText("Pinned")).toBeInTheDocument();
-    expect(screen.getByText("Today")).toBeInTheDocument();
-    expect(screen.getByText("Yesterday")).toBeInTheDocument();
-    expect(screen.getByText("Archived")).toBeInTheDocument();
+    expect(screen.getByText("已置顶")).toBeInTheDocument();
+    expect(screen.getByText("今天")).toBeInTheDocument();
+    expect(screen.getByText("昨天")).toBeInTheDocument();
+    expect(screen.getByText("已归档")).toBeInTheDocument();
   });
 
   it("calls onNew when the New chat button is clicked", () => {

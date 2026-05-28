@@ -1,11 +1,7 @@
 "use client";
 
-/**
- * Collapsible "thinking" block for Claude extended-thinking / o1 reasoning
- * traces. Default-collapsed; subtle styling so it doesn't dominate the bubble.
- */
-
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 import { Brain, ChevronDown, ChevronRight } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -16,6 +12,7 @@ interface ReasoningBlockProps {
 }
 
 export function ReasoningBlock({ text, streaming }: ReasoningBlockProps) {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = React.useState(false);
   return (
     <div
@@ -37,9 +34,11 @@ export function ReasoningBlock({ text, streaming }: ReasoningBlockProps) {
         )}
         <Brain className="h-3 w-3" aria-hidden="true" />
         <span className="italic">
-          {streaming ? "Thinking…" : "Thought process"}
+          {streaming ? t("chat.reasoningStreaming") : t("chat.reasoningTitle")}
         </span>
-        <span className="ml-auto font-mono">{text.length} chars</span>
+        <span className="ml-auto font-mono">
+          {t("chat.reasoningCharCount", { n: text.length })}
+        </span>
       </button>
       {expanded ? (
         <div className="border-t border-tp-glass-edge px-2.5 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-tp-ink-2 italic">

@@ -1,20 +1,7 @@
 "use client";
 
-/**
- * One message bubble. Hosts:
- *
- *   - role-styled container (user right, assistant/system left)
- *   - reasoning block (top)
- *   - markdown content
- *   - tool-call cards
- *   - sub-agent cards
- *   - approval prompts
- *   - hover toolbar (copy / regenerate / retry)
- *
- * Attachments are rendered inline at the top of the bubble.
- */
-
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 import {
   Bot,
   Copy,
@@ -49,15 +36,10 @@ interface MessageBubbleProps {
     decision: ApprovalDecision,
     scope: ApprovalScope,
   ) => void;
-  /** User message editing — saves a new content + truncates history. */
   onEdit?: (messageId: string, newContent: string) => void;
-  /** Fork conversation from this message. */
   onBranch?: (messageId: string) => void;
-  /** Quote-reply: prefill the composer with a quoted reference. */
   onReply?: (messageId: string) => void;
-  /** Push a code block from the markdown body into the artifact panel. */
   onOpenArtifact?: (language: string, source: string) => void;
-  /** When >1 versions exist for the same logical turn, render a switcher. */
   versionIndex?: number;
   versionCount?: number;
   onPrevVersion?: () => void;
@@ -85,6 +67,7 @@ export function MessageBubble({
   onPrevVersion,
   onNextVersion,
 }: MessageBubbleProps) {
+  const { t } = useTranslation();
   const isUser = message.role === "user";
   const isAssistant = message.role === "assistant";
   const isSystem = message.role === "system";
@@ -120,6 +103,12 @@ export function MessageBubble({
     setEditing(false);
   }, [draft, message.id, message.content, onEdit]);
 
+  const roleLabel = isUser
+    ? t("chat.roleYou")
+    : isAssistant
+      ? t("chat.roleAssistant")
+      : t("chat.roleSystem");
+
   return (
     <li
       className={cn(
@@ -149,9 +138,7 @@ export function MessageBubble({
           ) : (
             <Bot className="h-3 w-3" aria-hidden="true" />
           )}
-          <span className="font-medium">
-            {isUser ? "You" : isAssistant ? "Assistant" : "System"}
-          </span>
+          <span className="font-medium">{roleLabel}</span>
           <span aria-hidden="true">·</span>
           <time
             dateTime={new Date(message.createdAt).toISOString()}
@@ -172,18 +159,14 @@ export function MessageBubble({
         <div
           className={cn(
             "relative rounded-lg border px-3 py-2 text-[13px] leading-relaxed",
-            isUser &&
-              "border-tp-amber/40 bg-tp-amber/10 text-tp-ink",
-            isAssistant &&
-              "border-tp-glass-edge bg-tp-glass-inner text-tp-ink",
-            isSystem &&
-              "border-dashed border-tp-glass-edge bg-tp-glass-inner/40 text-tp-ink-2 italic",
+            isUser && "border-tp-amber/40 bg-tp-amber/10 text-tp-ink",
+            isAssistant && "border-tp-glass-edge bg-tp-glass-inner text-tp-ink",
+            isSystem && "border-dashed border-tp-glass-edge bg-tp-glass-inner/40 text-tp-ink-2 italic",
             message.error && "border-tp-err/50",
           )}
         >
-          {/* attachments */}
           {message.attachments && message.attachments.length > 0 ? (
-            <ul className="mb-2 flex flex-wrap gap-1.5" aria-label="attachments">
+            <ul className="mb-2 flex flex-wrap gap-1.5" aria-label={t("chat.attachmentsAriaLabel")}>
               {message.attachments.map((att) => (
                 <li
                   key={att.id}
@@ -200,15 +183,10 @@ export function MessageBubble({
             </ul>
           ) : null}
 
-          {/* reasoning (above main content) */}
           {message.reasoning ? (
-            <ReasoningBlock
-              text={message.reasoning}
-              streaming={Boolean(message.pending)}
-            />
+            <ReasoningBlock text={message.reasoning} streaming={Boolean(message.pending)} />
           ) : null}
 
-          {/* main content */}
           {isAssistant ? (
             <MarkdownMessage
               content={message.content || (message.pending ? "" : "")}
@@ -242,7 +220,7 @@ export function MessageBubble({
                   className="rounded px-2 py-0.5 text-tp-ink-3 hover:bg-tp-glass-inner hover:text-tp-ink"
                   data-testid="bubble-edit-cancel"
                 >
-                  Cancel
+                  {t("chat.editCancel")}
                 </button>
                 <button
                   type="button"
@@ -250,7 +228,7 @@ export function MessageBubble({
                   className="rounded border border-tp-amber/60 bg-tp-amber/20 px-2 py-0.5 text-tp-ink hover:bg-tp-amber/30"
                   data-testid="bubble-edit-save"
                 >
-                  Save &amp; re-run
+                  {t("chat.editSaveRerun")}
                 </button>
               </div>
             </div>
@@ -260,17 +238,8 @@ export function MessageBubble({
             </div>
           )}
 
-          {/* tool calls */}
-          {message.toolCalls?.map((tc) => (
-            <ToolCallCard key={tc.callId} tool={tc} />
-          ))}
-
-          {/* sub-agents */}
-          {message.subagents?.map((sa) => (
-            <SubagentCard key={sa.childSessionKey} subagent={sa} />
-          ))}
-
-          {/* approvals */}
+          {message.toolCalls?.map((tc) => <ToolCallCard key={tc.callId} tool={tc} />)}
+          {message.subagents?.map((sa) => <SubagentCard key={sa.childSessionKey} subagent={sa} />)}
           {message.approvals?.map((ap) => (
             <ApprovalPrompt
               key={ap.callId}
@@ -283,7 +252,6 @@ export function MessageBubble({
             />
           ))}
 
-          {/* error */}
           {message.error ? (
             <div
               className="mt-2 rounded border border-tp-err/40 bg-tp-err/10 px-2 py-1 text-[11px] text-tp-err"
@@ -294,7 +262,6 @@ export function MessageBubble({
           ) : null}
         </div>
 
-        {/* hover toolbar (visible on hover, opacity transition) */}
         {(isAssistant || isUser) && message.content && !editing ? (
           <div
             className={cn(
@@ -307,21 +274,21 @@ export function MessageBubble({
               type="button"
               onClick={handleCopy}
               className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-tp-glass-inner"
-              aria-label={copied ? "Copied" : "Copy message"}
+              aria-label={copied ? t("chat.copied") : t("chat.copy")}
             >
               <Copy className="h-3 w-3" aria-hidden="true" />
-              {copied ? "Copied" : "Copy"}
+              {copied ? t("chat.copied") : t("chat.copy")}
             </button>
             {isUser && onEdit ? (
               <button
                 type="button"
                 onClick={handleStartEdit}
                 className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-tp-glass-inner"
-                aria-label="Edit message"
+                aria-label={t("chat.editAriaLabel")}
                 data-testid="bubble-edit-trigger"
               >
                 <Pencil className="h-3 w-3" aria-hidden="true" />
-                Edit
+                {t("chat.edit")}
               </button>
             ) : null}
             {isAssistant && onRegenerate ? (
@@ -329,10 +296,10 @@ export function MessageBubble({
                 type="button"
                 onClick={onRegenerate}
                 className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-tp-glass-inner"
-                aria-label="Regenerate response"
+                aria-label={t("chat.regenerateAriaLabel")}
               >
                 <RefreshCcw className="h-3 w-3" aria-hidden="true" />
-                Regenerate
+                {t("chat.regenerate")}
               </button>
             ) : null}
             {onBranch ? (
@@ -340,11 +307,11 @@ export function MessageBubble({
                 type="button"
                 onClick={() => onBranch(message.id)}
                 className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-tp-glass-inner"
-                aria-label="Branch conversation here"
+                aria-label={t("chat.branchAriaLabel")}
                 data-testid="bubble-branch"
               >
                 <GitFork className="h-3 w-3" aria-hidden="true" />
-                Branch
+                {t("chat.branch")}
               </button>
             ) : null}
             {onReply ? (
@@ -352,11 +319,11 @@ export function MessageBubble({
                 type="button"
                 onClick={() => onReply(message.id)}
                 className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-tp-glass-inner"
-                aria-label="Reply with quote"
+                aria-label={t("chat.replyAriaLabel")}
                 data-testid="bubble-reply"
               >
                 <CornerUpLeft className="h-3 w-3" aria-hidden="true" />
-                Reply
+                {t("chat.reply")}
               </button>
             ) : null}
             {versionCount && versionCount > 1 ? (
@@ -369,7 +336,7 @@ export function MessageBubble({
                   onClick={onPrevVersion}
                   className="text-tp-ink-3 hover:text-tp-ink disabled:opacity-30"
                   disabled={versionIndex === 0}
-                  aria-label="Previous version"
+                  aria-label={t("chat.versionPrev")}
                 >
                   ‹
                 </button>
@@ -381,7 +348,7 @@ export function MessageBubble({
                   onClick={onNextVersion}
                   className="text-tp-ink-3 hover:text-tp-ink disabled:opacity-30"
                   disabled={(versionIndex ?? 0) === versionCount - 1}
-                  aria-label="Next version"
+                  aria-label={t("chat.versionNext")}
                 >
                   ›
                 </button>

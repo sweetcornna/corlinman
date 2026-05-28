@@ -1,27 +1,7 @@
 "use client";
 
-/**
- * Chat composer.
- *
- * Layout:
- *
- *   ┌───────────────────────────────────────────────────────┐
- *   │ [attachment chips row]                                │
- *   │ [auto-grow textarea ........................]         │
- *   │ [📎 attach] [model picker] [persona]   [Stop/Send →]  │
- *   └───────────────────────────────────────────────────────┘
- *
- * Key affordances:
- *
- *   - Enter sends; Shift+Enter inserts newline
- *   - Paste image / drag-drop file → adds to attachments
- *   - `/` at the start opens the slash-command menu (built-ins:
- *     /clear, /model, /persona, /reset)
- *   - "Stop" replaces "Send" while streaming and aborts the run
- *   - Model + persona pickers shown as compact pills (controlled by parent)
- */
-
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 import {
   Bot,
   Paperclip,
@@ -56,13 +36,10 @@ interface ComposerProps {
   onStop: () => void;
   onOpenModelPicker?: () => void;
   onOpenPersonaPicker?: () => void;
-  /** Extra slash commands beyond the built-ins (Wave 2: per-skill). */
   extraSlashCommands?: SlashCommand[];
   onSlashClear?: () => void;
   placeholder?: string;
-  /** Candidates for the `@`-mention picker (agents, skills, personas). */
   mentionCandidates?: MentionCandidate[];
-  /** Quoted reply context shown above the textarea. Pass null to clear. */
   replyContext?: { authorLabel: string; preview: string } | null;
   onClearReply?: () => void;
 }
@@ -84,6 +61,7 @@ export function Composer({
   replyContext,
   onClearReply,
 }: ComposerProps) {
+  const { t } = useTranslation();
   const [text, setText] = React.useState("");
   const [caret, setCaret] = React.useState(0);
   const [attachments, setAttachments] = React.useState<ChatAttachment[]>([]);
@@ -91,7 +69,6 @@ export function Composer({
   const taRef = React.useRef<HTMLTextAreaElement | null>(null);
   const fileRef = React.useRef<HTMLInputElement | null>(null);
 
-  // ── auto-grow textarea ────────────────────────────────────────────
   React.useEffect(() => {
     const el = taRef.current;
     if (!el) return;
@@ -99,11 +76,9 @@ export function Composer({
     el.style.height = Math.min(el.scrollHeight, MAX_TEXTAREA_PX) + "px";
   }, [text]);
 
-  // ── slash menu ────────────────────────────────────────────────────
   const slashOpen = text.startsWith("/");
   const slashQuery = slashOpen ? text.slice(1) : "";
 
-  // ── @-mention menu ─────────────────────────────────────────────────
   const mention = React.useMemo(
     () =>
       mentionCandidates && mentionCandidates.length > 0
@@ -116,8 +91,8 @@ export function Composer({
     () => [
       {
         id: "clear",
-        label: "Clear the current draft",
-        description: "Clear composer text and attachments",
+        label: t("chat.slashClear"),
+        description: t("chat.slashClearDesc"),
         run: () => {
           setAttachments([]);
           return "";
@@ -125,8 +100,8 @@ export function Composer({
       },
       {
         id: "reset",
-        label: "Reset conversation",
-        description: "Clear the visible thread (does not delete on server)",
+        label: t("chat.slashReset"),
+        description: t("chat.slashResetDesc"),
         run: () => {
           onSlashClear?.();
           return "";
@@ -134,9 +109,9 @@ export function Composer({
       },
       {
         id: "model",
-        label: "Change model",
-        argHint: "<name>",
-        description: "Open the model picker",
+        label: t("chat.slashModel"),
+        argHint: t("chat.slashArgPlaceholder"),
+        description: t("chat.slashModelDesc"),
         run: () => {
           onOpenModelPicker?.();
           return "";
@@ -144,16 +119,16 @@ export function Composer({
       },
       {
         id: "persona",
-        label: "Change persona",
-        argHint: "<name>",
-        description: "Open the persona picker",
+        label: t("chat.slashPersona"),
+        argHint: t("chat.slashArgPlaceholder"),
+        description: t("chat.slashPersonaDesc"),
         run: () => {
           onOpenPersonaPicker?.();
           return "";
         },
       },
     ],
-    [onSlashClear, onOpenModelPicker, onOpenPersonaPicker],
+    [t, onSlashClear, onOpenModelPicker, onOpenPersonaPicker],
   );
 
   const allSlashCommands = React.useMemo(
@@ -161,7 +136,6 @@ export function Composer({
     [builtinSlashCommands, extraSlashCommands],
   );
 
-  // ── attachment helpers ────────────────────────────────────────────
   const addFiles = React.useCallback(async (files: FileList | File[]) => {
     const items = Array.from(files);
     const next: ChatAttachment[] = [];
@@ -186,8 +160,6 @@ export function Composer({
         }
       }
       next.push(att);
-      // For MVP we inline tiny images via data URLs into remoteUrl. Wave 2
-      // swaps this for a real /admin/uploads endpoint.
       if (!err && kind === "image" && file.size < 1024 * 1024) {
         try {
           att.remoteUrl = await fileToDataUrl(file);
@@ -203,19 +175,18 @@ export function Composer({
     setAttachments((prev) => [...prev, ...next]);
   }, []);
 
-  // ── handlers ──────────────────────────────────────────────────────
   const handleSend = React.useCallback(() => {
-    const t = text.trim();
-    if (!t && attachments.length === 0) return;
+    const v = text.trim();
+    if (!v && attachments.length === 0) return;
     if (isStreaming) return;
-    onSend(t, attachments);
+    onSend(v, attachments);
     setText("");
     setAttachments([]);
   }, [text, attachments, isStreaming, onSend]);
 
   const handleKeyDown = React.useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-      if (slashOpen) return; // slash menu owns navigation
+      if (slashOpen) return;
       if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
         e.preventDefault();
         handleSend();
@@ -252,14 +223,11 @@ export function Composer({
     [addFiles],
   );
 
-  const handlePickSlash = React.useCallback(
-    (cmd: SlashCommand) => {
-      const replacement = cmd.run();
-      setText(typeof replacement === "string" ? replacement : "");
-      taRef.current?.focus();
-    },
-    [],
-  );
+  const handlePickSlash = React.useCallback((cmd: SlashCommand) => {
+    const replacement = cmd.run();
+    setText(typeof replacement === "string" ? replacement : "");
+    taRef.current?.focus();
+  }, []);
 
   const handlePickMention = React.useCallback(
     (c: MentionCandidate) => {
@@ -269,7 +237,6 @@ export function Composer({
       const insert = `@${c.name} `;
       const next = `${before}${insert}${after}`;
       setText(next);
-      // Move caret past the inserted token on the next tick.
       const newCaret = before.length + insert.length;
       window.requestAnimationFrame(() => {
         const el = taRef.current;
@@ -283,7 +250,6 @@ export function Composer({
     [text, mention],
   );
 
-  // ── render ────────────────────────────────────────────────────────
   return (
     <div
       className={cn(
@@ -316,7 +282,7 @@ export function Composer({
             type="button"
             onClick={onClearReply}
             className="rounded p-1 text-tp-ink-3 hover:bg-tp-glass-inner hover:text-tp-ink"
-            aria-label="Clear reply context"
+            aria-label={t("chat.composerReplyClear")}
             data-testid="composer-reply-clear"
           >
             ×
@@ -332,7 +298,6 @@ export function Composer({
       />
 
       <div className="relative mx-auto flex max-w-3xl items-end gap-2 px-3 pt-2 pb-2">
-        {/* hidden file input */}
         <input
           ref={fileRef}
           type="file"
@@ -349,7 +314,7 @@ export function Composer({
           type="button"
           onClick={() => fileRef.current?.click()}
           className="rounded p-1.5 text-tp-ink-3 hover:bg-tp-glass-inner hover:text-tp-ink"
-          aria-label="Attach files"
+          aria-label={t("chat.composerAttach")}
           data-testid="composer-attach"
         >
           <Paperclip className="h-4 w-4" aria-hidden="true" />
@@ -370,8 +335,6 @@ export function Composer({
               candidates={mentionCandidates}
               onPick={handlePickMention}
               onClose={() => {
-                // Insert a space to break out of the mention without closing
-                // the composer.
                 setText(text + " ");
               }}
             />
@@ -398,7 +361,7 @@ export function Composer({
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
             rows={1}
-            placeholder={placeholder ?? "Message…  (Enter to send, Shift+Enter for newline, / for commands, @ for mentions)"}
+            placeholder={placeholder ?? t("chat.composerPlaceholder")}
             className={cn(
               "w-full resize-none rounded-md border border-tp-glass-edge bg-tp-glass-inner",
               "px-3 py-2 text-[13px] text-tp-ink placeholder:text-tp-ink-3",
@@ -408,14 +371,13 @@ export function Composer({
           />
         </div>
 
-        {/* model + persona pills */}
         <div className="flex flex-col gap-1 self-end">
           <button
             type="button"
             onClick={onOpenModelPicker}
             className="inline-flex items-center gap-1 rounded border border-tp-glass-edge bg-tp-glass-inner px-1.5 py-0.5 text-[10px] text-tp-ink-2 hover:text-tp-ink"
             data-testid="composer-model"
-            aria-label="Change model"
+            aria-label={t("chat.composerModelAriaLabel")}
           >
             <Bot className="h-3 w-3" aria-hidden="true" />
             {modelLabel}
@@ -426,7 +388,7 @@ export function Composer({
               onClick={onOpenPersonaPicker}
               className="inline-flex items-center gap-1 rounded border border-tp-glass-edge bg-tp-glass-inner px-1.5 py-0.5 text-[10px] text-tp-ink-2 hover:text-tp-ink"
               data-testid="composer-persona"
-              aria-label="Change persona"
+              aria-label={t("chat.composerPersonaAriaLabel")}
             >
               <Sparkles className="h-3 w-3" aria-hidden="true" />
               {personaLabel}
@@ -443,10 +405,10 @@ export function Composer({
               "border-tp-err/40 bg-tp-err/10 text-tp-ink hover:bg-tp-err/20",
             )}
             data-testid="composer-stop"
-            aria-label="Stop generating"
+            aria-label={t("chat.composerStopAriaLabel")}
           >
             <Square className="h-3.5 w-3.5" aria-hidden="true" />
-            Stop
+            {t("chat.composerStop")}
           </button>
         ) : (
           <button
@@ -459,10 +421,10 @@ export function Composer({
               "disabled:cursor-not-allowed disabled:opacity-50",
             )}
             data-testid="composer-send"
-            aria-label="Send message"
+            aria-label={t("chat.composerSendAriaLabel")}
           >
             <Send className="h-3.5 w-3.5" aria-hidden="true" />
-            Send
+            {t("chat.composerSend")}
           </button>
         )}
       </div>

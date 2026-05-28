@@ -99,7 +99,7 @@ describe("ArtifactPanel", () => {
         onRemove={vi.fn()}
       />,
     );
-    fireEvent.click(screen.getByLabelText("Close artifact panel"));
+    fireEvent.click(screen.getByLabelText("关闭工件面板"));
     expect(onClose).toHaveBeenCalledOnce();
   });
 

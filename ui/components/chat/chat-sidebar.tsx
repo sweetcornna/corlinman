@@ -1,16 +1,9 @@
 "use client";
 
-/**
- * Conversation list shown on the left of /chat. Groups conversations by
- * recency, supports fuzzy search, pin / archive / rename / delete.
- *
- * The "delete with undo toast" mechanic is handled by the parent page —
- * this component just exposes the action.
- */
-
 import * as React from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useTranslation } from "react-i18next";
 import {
   Archive,
   ArchiveRestore,
@@ -40,7 +33,7 @@ interface ChatSidebarProps {
 }
 
 interface GroupedConversation {
-  label: string;
+  labelKey: string;
   rows: ChatConversation[];
 }
 
@@ -76,13 +69,13 @@ function groupConversations(
   }
 
   return [
-    { label: "Pinned", rows: pinned },
-    { label: "Today", rows: today },
-    { label: "Yesterday", rows: yesterday },
-    { label: "Previous 7 days", rows: week },
-    { label: "Previous 30 days", rows: month },
-    { label: "Older", rows: older },
-    { label: "Archived", rows: archived },
+    { labelKey: "chat.groupPinned", rows: pinned },
+    { labelKey: "chat.groupToday", rows: today },
+    { labelKey: "chat.groupYesterday", rows: yesterday },
+    { labelKey: "chat.group7Days", rows: week },
+    { labelKey: "chat.group30Days", rows: month },
+    { labelKey: "chat.groupOlder", rows: older },
+    { labelKey: "chat.groupArchived", rows: archived },
   ].filter((g) => g.rows.length > 0);
 }
 
@@ -109,6 +102,7 @@ export function ChatSidebar({
   collapsed,
   onToggleCollapsed,
 }: ChatSidebarProps) {
+  const { t } = useTranslation();
   const [query, setQuery] = React.useState("");
   const [renamingKey, setRenamingKey] = React.useState<string | null>(null);
   const [renameValue, setRenameValue] = React.useState("");
@@ -135,7 +129,7 @@ export function ChatSidebar({
           type="button"
           onClick={onToggleCollapsed}
           className="rounded p-1.5 text-tp-ink-3 hover:bg-tp-glass-inner hover:text-tp-ink"
-          aria-label="Expand sidebar"
+          aria-label={t("chat.expandSidebar")}
         >
           <ChevronRight className="h-4 w-4" aria-hidden="true" />
         </button>
@@ -143,7 +137,7 @@ export function ChatSidebar({
           type="button"
           onClick={onNew}
           className="rounded p-1.5 text-tp-ink-3 hover:bg-tp-glass-inner hover:text-tp-ink"
-          aria-label="New chat"
+          aria-label={t("chat.newChat")}
         >
           <MessageSquarePlus className="h-4 w-4" aria-hidden="true" />
         </button>
@@ -168,14 +162,14 @@ export function ChatSidebar({
           data-testid="chat-sidebar-new"
         >
           <MessageSquarePlus className="h-3.5 w-3.5" aria-hidden="true" />
-          New chat
+          {t("chat.newChat")}
         </button>
         {onToggleCollapsed ? (
           <button
             type="button"
             onClick={onToggleCollapsed}
             className="rounded p-1.5 text-tp-ink-3 hover:bg-tp-glass-inner hover:text-tp-ink"
-            aria-label="Collapse sidebar"
+            aria-label={t("chat.collapseSidebar")}
           >
             <ChevronLeft className="h-4 w-4" aria-hidden="true" />
           </button>
@@ -188,7 +182,7 @@ export function ChatSidebar({
           type="search"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search…"
+          placeholder={t("chat.searchPlaceholder")}
           className="flex-1 bg-transparent text-[12px] text-tp-ink placeholder:text-tp-ink-3 focus:outline-none"
           data-testid="chat-sidebar-search"
         />
@@ -197,13 +191,13 @@ export function ChatSidebar({
       <nav className="flex-1 overflow-y-auto px-1 py-2" aria-label="conversations">
         {grouped.length === 0 ? (
           <div className="px-2 py-6 text-center text-[12px] text-tp-ink-3">
-            No conversations yet
+            {t("chat.noConversations")}
           </div>
         ) : null}
         {grouped.map((group) => (
-          <div key={group.label} className="mb-2">
+          <div key={group.labelKey} className="mb-2">
             <div className="px-2 pb-1 text-[10px] font-medium text-tp-ink-3 uppercase tracking-wider">
-              {group.label}
+              {t(group.labelKey)}
             </div>
             <ul className="flex flex-col gap-0.5">
               {group.rows.map((c) => (
@@ -264,9 +258,11 @@ function SidebarRow({
   onDelete,
 }: SidebarRowProps) {
   const router = useRouter();
+  const { t } = useTranslation();
 
-  const title = conv.title ?? `Session ${conv.sessionKey.slice(0, 8)}`;
-  const subtitle = `${conv.messageCount} msg · ${formatRelative(conv.lastMessageAt)}`;
+  const fallbackTitle = `Session ${conv.sessionKey.slice(0, 8)}`;
+  const title = conv.title ?? fallbackTitle;
+  const subtitle = `${t("chat.sessionRowSubtitleMsg", { count: conv.messageCount })} · ${formatRelative(conv.lastMessageAt, t)}`;
 
   return (
     <li
@@ -302,7 +298,6 @@ function SidebarRow({
           href={`/chat?session=${encodeURIComponent(conv.sessionKey)}`}
           className="flex flex-1 flex-col overflow-hidden"
           onClick={(e) => {
-            // Allow ⌘/Ctrl+click to bypass the rename UX.
             if (e.metaKey || e.ctrlKey) return;
             router.push(`/chat?session=${encodeURIComponent(conv.sessionKey)}`);
           }}
@@ -317,21 +312,17 @@ function SidebarRow({
       {!renaming ? (
         <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
           <RowAction
-            label={conv.pinned ? "Unpin" : "Pin"}
+            label={conv.pinned ? t("chat.unpin") : t("chat.pin")}
             onClick={onTogglePin}
             Icon={conv.pinned ? PinOff : Pin}
           />
+          <RowAction label={t("chat.rename")} onClick={onStartRename} Icon={Pencil} />
           <RowAction
-            label="Rename"
-            onClick={onStartRename}
-            Icon={Pencil}
-          />
-          <RowAction
-            label={conv.archived ? "Unarchive" : "Archive"}
+            label={conv.archived ? t("chat.unarchive") : t("chat.archive")}
             onClick={onToggleArchive}
             Icon={conv.archived ? ArchiveRestore : Archive}
           />
-          <RowAction label="Delete" onClick={onDelete} Icon={Trash2} danger />
+          <RowAction label={t("chat.delete")} onClick={onDelete} Icon={Trash2} danger />
         </div>
       ) : null}
     </li>
@@ -369,10 +360,10 @@ function RowAction({
   );
 }
 
-function formatRelative(ms: number): string {
+function formatRelative(ms: number, t: (key: string, opts?: Record<string, unknown>) => string): string {
   const diff = Date.now() - ms;
-  if (diff < 60_000) return "just now";
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
-  return `${Math.floor(diff / 86_400_000)}d ago`;
+  if (diff < 60_000) return t("chat.relativeJustNow");
+  if (diff < 3_600_000) return t("chat.relativeMinutes", { n: Math.floor(diff / 60_000) });
+  if (diff < 86_400_000) return t("chat.relativeHours", { n: Math.floor(diff / 3_600_000) });
+  return t("chat.relativeDays", { n: Math.floor(diff / 86_400_000) });
 }

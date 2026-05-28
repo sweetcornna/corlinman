@@ -1,15 +1,7 @@
 "use client";
 
-/**
- * In-conversation search overlay (Cmd/Ctrl+F).
- *
- * Lightweight client-side text search across the rendered messages.
- * Surfaces matches with prev/next navigation and the current-match
- * counter. Doesn't highlight in-place yet (that requires reaching into
- * MarkdownMessage); for MVP we scroll the matching bubble into view.
- */
-
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 import { ChevronDown, ChevronUp, Search, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -17,10 +9,7 @@ import type { ChatMessage } from "@/lib/chat/types";
 
 interface ConversationSearchProps {
   messages: ChatMessage[];
-  /** Called with the message id of the current match so the parent can
-   *  scroll the bubble into view. */
   onJump: (messageId: string) => void;
-  /** Bind to a window listener so Cmd/Ctrl+F opens the overlay. */
   bindHotkey?: boolean;
 }
 
@@ -29,12 +18,12 @@ export function ConversationSearch({
   onJump,
   bindHotkey,
 }: ConversationSearchProps) {
+  const { t } = useTranslation();
   const [open, setOpen] = React.useState(false);
   const [query, setQuery] = React.useState("");
   const [active, setActive] = React.useState(0);
   const inputRef = React.useRef<HTMLInputElement | null>(null);
 
-  // Cmd+F opens; Escape closes.
   React.useEffect(() => {
     if (!bindHotkey) return;
     const handleKey = (e: KeyboardEvent) => {
@@ -74,7 +63,7 @@ export function ConversationSearch({
         "rounded-md border border-tp-glass-edge bg-tp-glass-inner px-1.5 py-1 text-[12px] shadow-md",
       )}
       role="search"
-      aria-label="Search this conversation"
+      aria-label={t("chat.searchOverlayAriaLabel")}
       data-testid="conversation-search"
     >
       <Search className="h-3.5 w-3.5 text-tp-ink-3" aria-hidden="true" />
@@ -96,7 +85,7 @@ export function ConversationSearch({
             );
           }
         }}
-        placeholder="Search in conversation"
+        placeholder={t("chat.searchPlaceholderConversation")}
         className="w-48 bg-transparent text-tp-ink placeholder:text-tp-ink-3 focus:outline-none"
         data-testid="conversation-search-input"
       />
@@ -118,7 +107,7 @@ export function ConversationSearch({
         }
         disabled={matches.length === 0}
         className="rounded p-0.5 text-tp-ink-3 hover:bg-tp-glass-inner hover:text-tp-ink disabled:opacity-30"
-        aria-label="Previous match"
+        aria-label={t("chat.searchPrevAriaLabel")}
       >
         <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" />
       </button>
@@ -131,7 +120,7 @@ export function ConversationSearch({
         }
         disabled={matches.length === 0}
         className="rounded p-0.5 text-tp-ink-3 hover:bg-tp-glass-inner hover:text-tp-ink disabled:opacity-30"
-        aria-label="Next match"
+        aria-label={t("chat.searchNextAriaLabel")}
       >
         <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
       </button>
@@ -139,7 +128,7 @@ export function ConversationSearch({
         type="button"
         onClick={() => setOpen(false)}
         className="rounded p-0.5 text-tp-ink-3 hover:bg-tp-glass-inner hover:text-tp-ink"
-        aria-label="Close search"
+        aria-label={t("chat.searchCloseAriaLabel")}
         data-testid="conversation-search-close"
       >
         <X className="h-3.5 w-3.5" aria-hidden="true" />

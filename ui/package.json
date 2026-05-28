@@ -1,6 +1,6 @@
 {
   "name": "@corlinman/admin",
-  "version": "1.8.2",
+  "version": "1.8.3",
   "private": true,
   "description": "corlinman Admin UI — Next.js 15 + React 19 + shadcn/ui.",
   "scripts": {
