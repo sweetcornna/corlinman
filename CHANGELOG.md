@@ -4,6 +4,38 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.11] — 2026-05-28 — Fix: follow GitHub redirects after repo transfer
+
+> The corlinman repo was transferred `ymylive/corlinman` →
+> `sweetcornna/corlinman` in 2026-05. GitHub responds to every API
+> request against the old owner with a `301` to the canonical numeric
+> repo id. Two consumers silently broke on this:
+>
+> 1. `update_checker` — `httpx.AsyncClient` defaults to
+>    `follow_redirects=False`, so every poll hit the 301 branch
+>    (`update_check.unexpected_status` in the gateway log) and the
+>    on-disk cache was never refreshed. The `/admin/system` page kept
+>    showing whatever `latest_tag` was current at the moment of the
+>    rename — observed on prod as "最新版本 1.8.1" displayed against
+>    `current = 1.8.10`.
+> 2. `corlinman-upgrader.sh` — `curl -fsS` (no `-L`) on the
+>    `/releases?per_page=100` whitelist check returned the
+>    `{"message":"Moved Permanently"}` stub instead of the JSON array.
+>    `jq` then exits non-zero on `.[]`, the script writes
+>    `tag_not_in_releases`, and the one-click upgrade refuses to start
+>    even though the tag exists at the new location.
+
+### Fixed
+
+- `UpdateChecker._client()` now constructs `httpx.AsyncClient(
+  follow_redirects=True, ...)`.
+- `SystemUpdateCheckConfig.repo` default flipped to
+  `"sweetcornna/corlinman"`. Saves one redirect on every poll and keeps
+  the cache fresh even on hosts whose corporate proxy strips 3xx.
+- `deploy/corlinman-upgrader.sh` — `curl -fsSL` (added `-L`) on the
+  release whitelist; default `UPGRADER_REPO_OWNER` flipped to
+  `sweetcornna`.
+
 ## [1.8.10] — 2026-05-28 — Fix: one-click native upgrader can find uv/pnpm
 
 > User report: clicking "升级到 v1.8.x" on the admin /system page wrote

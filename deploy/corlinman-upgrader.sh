@@ -31,7 +31,7 @@ set -euo pipefail
 
 DATA_DIR="${CORLINMAN_DATA_DIR:-/opt/corlinman/data}"
 INSTALL_PREFIX="${INSTALL_PREFIX:-/opt/corlinman}"
-REPO_OWNER="${UPGRADER_REPO_OWNER:-ymylive}"
+REPO_OWNER="${UPGRADER_REPO_OWNER:-sweetcornna}"
 REPO_NAME="${UPGRADER_REPO_NAME:-corlinman}"
 
 # When invoked from corlinman-upgrader.service (User=root, systemd's
@@ -203,7 +203,12 @@ write_status "$REQUEST_ID" "running"
 # UPGRADER_SKIP_TAG_CHECK env is set we trust the regex alone.
 if [[ -z "${UPGRADER_SKIP_TAG_CHECK:-}" ]]; then
     RELEASES_URL="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases?per_page=100"
-    if ! curl -fsS -m 15 "$RELEASES_URL" \
+    # ``-L`` matters: GitHub 301s old owner paths after a transfer/rename
+    # and without it curl returns the redirect-stub JSON body, which jq
+    # tries to iterate as an array and dies with "Cannot iterate over
+    # object" — surfacing as ``tag_not_in_releases`` even though the tag
+    # exists at the new location.
+    if ! curl -fsSL -m 15 "$RELEASES_URL" \
             | jq -e --arg t "$TAG" '.[] | select(.tag_name==$t)' >/dev/null 2>&1; then
         fail "$REQUEST_ID" "tag_not_in_releases"
     fi

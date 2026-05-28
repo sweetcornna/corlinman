@@ -109,7 +109,12 @@ class SystemUpdateCheckConfig:
     enabled: bool = True
     interval_hours: int = _DEFAULT_INTERVAL_HOURS
     include_prereleases: bool = False
-    repo: str = "ymylive/corlinman"
+    # The repo was transferred ymylive → sweetcornna in 2026-05.
+    # ``follow_redirects=True`` on the httpx client handles requests sent
+    # to the old owner, but defaulting to the canonical owner saves one
+    # redirect on every poll and works even on hosts whose corporate
+    # proxy strips 3xx.
+    repo: str = "sweetcornna/corlinman"
     github_token: str | None = None
 
     @classmethod
@@ -234,7 +239,17 @@ class UpdateChecker:
 
     def _client(self) -> httpx.AsyncClient:
         if self._http_client is None:
-            self._http_client = httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SECONDS)
+            # ``follow_redirects=True`` is non-negotiable: GitHub serves a
+            # 301 from ``/repos/{old_owner}/...`` to
+            # ``/repositories/{numeric_id}/...`` after a transfer/rename
+            # (this repo went ymylive → sweetcornna in 2026-05). Without
+            # it the poll always returns 301 → ``unexpected_status`` →
+            # cache is never refreshed → UI freezes on whatever
+            # ``latest_tag`` was current at the moment of the rename.
+            self._http_client = httpx.AsyncClient(
+                timeout=_HTTP_TIMEOUT_SECONDS,
+                follow_redirects=True,
+            )
         return self._http_client
 
     # ------------------------------------------------------------------
