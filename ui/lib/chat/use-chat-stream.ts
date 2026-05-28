@@ -273,6 +273,24 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
         },
       });
 
+      // Defensive: if the page somehow renders us without a session
+      // key (the conditional guard in /chat/page.tsx should prevent
+      // this, but defensive belt-and-braces) generate one on the fly
+      // so the journal never gets an empty key. Empty keys collapse
+      // every web turn into a single un-resumable aggregate row in
+      // /admin/sessions, which is the bug we're guarding against.
+      let effectiveSessionKey = (args.sessionKey ?? "").trim();
+      if (!effectiveSessionKey) {
+        const r = Math.random().toString(36).slice(2, 10);
+        effectiveSessionKey = `corlinman:${Date.now().toString(36)}:${r}`;
+        if (typeof console !== "undefined") {
+          console.warn(
+            "useChatStream: missing sessionKey arg; generated fallback",
+            effectiveSessionKey,
+          );
+        }
+      }
+
       // Build the OpenAI-compatible request body.
       const messagesPayload: ChatCompletionMessage[] = [];
       if (args.systemPrompt) {
@@ -292,7 +310,7 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
         // Pin the conversation id at the top level — the gateway's
         // ChatRequest pydantic model reads it from there, not from
         // the metadata bag.
-        session_key: args.sessionKey,
+        session_key: effectiveSessionKey,
         ...((args.agentId || args.personaId) && {
           metadata: {
             ...(args.agentId ? { agent_id: args.agentId } : {}),

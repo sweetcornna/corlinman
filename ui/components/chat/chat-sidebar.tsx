@@ -107,12 +107,21 @@ export function ChatSidebar({
   const [renamingKey, setRenamingKey] = React.useState<string | null>(null);
   const [renameValue, setRenameValue] = React.useState("");
 
+  // Hide legacy rows whose session_key is empty — they were created
+  // before v1.8.5 fixed session_key threading and aren't individually
+  // resumable (they all collapsed into a single aggregate row). They
+  // still live in the journal for audit; the sidebar just stops trying
+  // to route to them.
+  const navigable = React.useMemo(
+    () => conversations.filter((c) => c.sessionKey.trim().length > 0),
+    [conversations],
+  );
   const filtered = React.useMemo(() => {
-    if (!query) return conversations;
-    return conversations.filter((c) =>
+    if (!query) return navigable;
+    return navigable.filter((c) =>
       fuzzyMatch(query, c.title ?? c.sessionKey),
     );
-  }, [conversations, query]);
+  }, [navigable, query]);
 
   const grouped = React.useMemo(
     () => groupConversations(filtered, Date.now()),

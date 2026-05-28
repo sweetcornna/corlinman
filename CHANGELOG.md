@@ -4,6 +4,40 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.7] — 2026-05-28 — Fix: legacy empty-session_key rows in sidebar + defensive fallback
+
+> User report: clicking a row in the chat sidebar opens the
+> conversation view with no messages. The journal still holds the
+> pre-1.8.5 turns that were written under `session_key=""` (when the
+> `metadata.session_key` plumbing bug meant every web chat aggregated
+> into a single un-resumable row); the sidebar was rendering that
+> aggregate as a normal row, but clicking it routed to
+> `/chat?session=` with an empty value, which falls through to the
+> empty state because `<ChatArea>`'s render guard treats it as
+> "no session selected".
+
+### Fixed
+
+- **`ChatSidebar` hides legacy empty-`session_key` rows** — the
+  journal still keeps them for audit, but they're un-clickable so
+  surfacing them in the sidebar just confused operators. Once 1.8.5
+  shipped, all new turns get proper keys so this filter only ever
+  hides the legacy aggregate.
+
+### Added
+
+- **Defensive `useChatStream` fallback** — if `args.sessionKey` is
+  ever empty/undefined (the page-level conditional already prevents
+  this, but belt-and-braces), the hook now synthesises a fresh
+  `corlinman:{ts}:{rand}` key on the fly and warns to the console.
+  Guarantees the journal never receives an empty key from a frontend
+  turn, regardless of how the page was navigated to.
+
+### Tests
+
+- Chat suite 58/58 passing; typecheck clean; `next build` succeeds
+  with `/chat` at 23.5 kB.
+
 ## [1.8.6] — 2026-05-28 — Chat model picker (LLM + image, with custom names)
 
 > Operators can now pick the chat composer's LLM model and the image
