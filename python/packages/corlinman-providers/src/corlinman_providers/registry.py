@@ -268,7 +268,9 @@ class ProviderRegistry:
                     f"provider {alias.provider!r}"
                 )
             spec = self._specs.get(alias.provider)
-            provider_params: dict[str, Any] = dict(spec.params) if spec else {}
+            provider_params: dict[str, Any] = (
+                _runtime_params(spec.params) if spec else {}
+            )
             merged = _merge_params(provider_params, alias.params)
             return provider, alias.model, merged
 
@@ -280,7 +282,7 @@ class ProviderRegistry:
             hinted = self._providers.get(provider_hint)
             spec = self._specs.get(provider_hint)
             if hinted is not None and spec is not None:
-                return hinted, alias_or_model, dict(spec.params)
+                return hinted, alias_or_model, _runtime_params(spec.params)
 
         # Configured-provider fallback — raw model id. This keeps config-driven
         # deployments on their declared base_url/api_key even when callers use
@@ -291,7 +293,7 @@ class ProviderRegistry:
             if provider is None or cls is None:
                 continue
             if cls.supports(alias_or_model):
-                return provider, alias_or_model, dict(spec.params)
+                return provider, alias_or_model, _runtime_params(spec.params)
 
         # Legacy fallback — raw model id.
         for prefix, cls in MODEL_PREFIX_DEFAULTS:
@@ -314,9 +316,14 @@ def _merge_params(
     half. Shallow merge — nested dicts are replaced, not deep-merged, to
     keep semantics obvious.
     """
-    merged: dict[str, Any] = dict(provider_params)
-    merged.update(alias_params)
+    merged: dict[str, Any] = _runtime_params(provider_params)
+    merged.update(_runtime_params(alias_params))
     return merged
+
+
+def _runtime_params(params: Mapping[str, Any]) -> dict[str, Any]:
+    """Return provider request params with config-only metadata removed."""
+    return {k: v for k, v in params.items() if k != "custom"}
 
 
 # ---- Legacy module-level singleton (kept for backward compat) --------------

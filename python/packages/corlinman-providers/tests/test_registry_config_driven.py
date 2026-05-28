@@ -109,6 +109,58 @@ def test_resolve_via_alias_returns_merged_params() -> None:
     assert merged["top_p"] == pytest.approx(0.95)
 
 
+def test_provider_spec_accepts_api_key_value_shape() -> None:
+    """Admin-authored ``api_key = { value = ... }`` builds at runtime."""
+    spec = ProviderSpec.model_validate(
+        {
+            "name": "custom",
+            "kind": "openai_compatible",
+            "api_key": {"value": "sk-test"},
+            "base_url": "https://relay.example/v1",
+        }
+    )
+
+    assert spec.api_key == "sk-test"
+
+
+def test_provider_spec_accepts_api_key_env_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Env-shaped API keys are resolved before adapter construction."""
+    monkeypatch.setenv("CORLINMAN_TEST_PROVIDER_KEY", "sk-from-env")
+
+    spec = ProviderSpec.model_validate(
+        {
+            "name": "custom",
+            "kind": "openai_compatible",
+            "api_key": {"env": "CORLINMAN_TEST_PROVIDER_KEY"},
+            "base_url": "https://relay.example/v1",
+        }
+    )
+
+    assert spec.api_key == "sk-from-env"
+
+
+def test_resolve_filters_custom_metadata_from_runtime_params() -> None:
+    """``params.custom`` is an admin marker, not an upstream request arg."""
+    spec = _spec(
+        "relay",
+        ProviderKind.OPENAI_COMPATIBLE,
+        base_url="https://relay.example/v1",
+        params={"custom": True, "temperature": 0.2},
+    )
+    reg = ProviderRegistry([spec])
+    aliases = {
+        "chat-default": AliasEntry(
+            provider="relay",
+            model="gpt-5.2-chat-latest",
+            params={"custom": True, "top_p": 0.95},
+        )
+    }
+
+    _, _, merged = reg.resolve(alias_or_model="chat-default", aliases=aliases)
+
+    assert merged == {"temperature": 0.2, "top_p": 0.95}
+
+
 def test_resolve_legacy_prefix_fallback() -> None:
     """Raw model id not in aliases matches the legacy prefix table."""
     reg = ProviderRegistry([])  # no specs!

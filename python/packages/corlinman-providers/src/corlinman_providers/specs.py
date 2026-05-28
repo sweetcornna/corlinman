@@ -11,6 +11,7 @@ Authoritative reference: ``/tmp/corlinman-feature-c-contract.md`` §1 + §2.
 
 from __future__ import annotations
 
+import os
 from enum import StrEnum
 from typing import Any
 
@@ -121,7 +122,7 @@ class ProviderSpec(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _migrate_legacy_kind(cls, data: Any) -> Any:
+    def _normalise_config_shape(cls, data: Any) -> Any:
         """Silently rewrite ``kind = "newapi"`` to ``kind = "openai_compatible"``.
 
         The newapi-specific admin surface was removed (see ``CHANGELOG.md``
@@ -136,6 +137,7 @@ class ProviderSpec(BaseModel):
         """
         if not isinstance(data, dict):
             return data
+        data = dict(data)
         kind = data.get("kind")
         if kind == "newapi":
             slot = str(data.get("name") or "<unnamed>")
@@ -151,9 +153,20 @@ class ProviderSpec(BaseModel):
                         "/admin/credentials + /admin/providers"
                     ),
                 )
-            # Copy so we never mutate the caller's input dict.
-            data = dict(data)
             data["kind"] = ProviderKind.OPENAI_COMPATIBLE.value
+        api_key = data.get("api_key")
+        if isinstance(api_key, dict):
+            if "value" in api_key:
+                data["api_key"] = str(api_key.get("value") or "") or None
+            elif "env" in api_key:
+                env_name = str(api_key.get("env") or "")
+                default = api_key.get("default")
+                value = os.environ.get(env_name) if env_name else None
+                if value is None and default is not None:
+                    value = str(default)
+                data["api_key"] = value
+            else:
+                data["api_key"] = None
         return data
 
 

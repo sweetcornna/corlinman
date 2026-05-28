@@ -13,7 +13,7 @@ services:
     # Set to `local` after a local `docker buildx build -t corlinman:local`
     # to skip GHCR entirely; the build: block below still works as a
     # fallback when `docker compose pull` 404s.
-    image: ghcr.io/ymylive/corlinman:${CORLINMAN_TAG:-latest}
+    image: ghcr.io/sweetcornna/corlinman:${CORLINMAN_TAG:-latest}
     build:
       context: ../../
       dockerfile: docker/Dockerfile
