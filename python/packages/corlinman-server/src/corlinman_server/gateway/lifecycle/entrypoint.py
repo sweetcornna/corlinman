@@ -1279,6 +1279,53 @@ def build_app(
             admin_a_state.config_path = seeded.config_path
             admin_a_state.must_change_password = seeded.must_change_password
 
+        # R1-001 security fix: open the multi-tenant ``tenants.sqlite``
+        # admin DB and rebind it onto the api-key middleware state
+        # installed during ``build_app``. Without this rebind the
+        # middleware fails closed (401 ``admin_db_not_configured``);
+        # rebinding lets minted tenant API keys actually authenticate
+        # against ``/v1/*``. Also stamped onto ``admin_a_state.admin_db``
+        # so the existing ``/admin/api-keys`` + ``/admin/tenants`` admin
+        # routes (gated by the admin-auth + UI cookie path) can mint /
+        # list keys against the same handle. Best-effort: a missing
+        # ``tenants.sqlite`` (e.g. read-only data dir) leaves the
+        # middleware in its fail-closed state — the gateway still boots
+        # but ``/v1/*`` returns 401 ``admin_db_not_configured`` until
+        # the operator fixes the data dir. Closed in the lifespan-exit
+        # ``finally`` block below.
+        if resolved_data_dir is not None:
+            try:
+                from corlinman_server.tenancy import AdminDb
+
+                _admin_db = await AdminDb.open(
+                    resolved_data_dir / "tenants.sqlite"
+                )
+            except Exception as exc:  # pragma: no cover — defensive
+                logger.warning(
+                    "gateway.admin_db.open_failed",
+                    path=str(resolved_data_dir / "tenants.sqlite"),
+                    error=str(exc),
+                )
+                _admin_db = None
+
+            if _admin_db is not None:
+                # Rebind onto the middleware state so the live AdminDb
+                # is what every ``/v1/*`` request gets verified against.
+                api_key_state = getattr(
+                    app.state, "api_key_auth", None
+                )
+                if api_key_state is not None:
+                    api_key_state.admin_db = _admin_db
+                if admin_a_state is not None:
+                    admin_a_state.admin_db = _admin_db
+                # Stash on app.state so the teardown finally-block (and
+                # any future code) can resolve it without a second open.
+                app.state.corlinman_admin_db = _admin_db
+                logger.info(
+                    "gateway.admin_db.opened",
+                    path=str(resolved_data_dir / "tenants.sqlite"),
+                )
+
         # Open the persona store (async) + seed builtin Grantley on
         # first boot. Best-effort — failure leaves persona_store=None
         # and the /admin/personas + /admin/channels/qq/humanlike routes
@@ -2098,6 +2145,33 @@ def build_app(
                 app.state.corlinman_clawhub_client = None
                 app.state.corlinman_skill_install_store = None
 
+            # R1-001 teardown: close the AdminDb sqlite handle opened
+            # above so the WAL file is checkpointed and tests don't
+            # leak file descriptors between cases. Idempotent —
+            # ``AdminDb.close`` already suppresses its own errors.
+            admin_db_handle = getattr(
+                app.state, "corlinman_admin_db", None
+            )
+            if admin_db_handle is not None:
+                with suppress(Exception):
+                    await admin_db_handle.close()
+                app.state.corlinman_admin_db = None
+                # Unbind from the middleware state too so a second
+                # request after teardown gets the explicit
+                # ``admin_db_not_configured`` 401 instead of crashing
+                # on a closed sqlite connection. Best-effort —
+                # post-teardown requests are unusual.
+                api_key_state = getattr(
+                    app.state, "api_key_auth", None
+                )
+                if api_key_state is not None:
+                    api_key_state.admin_db = None
+                admin_a_state_after = getattr(
+                    app.state, "corlinman_admin_a_state", None
+                )
+                if admin_a_state_after is not None:
+                    admin_a_state_after.admin_db = None
+
     app = FastAPI(lifespan=_lifespan)
     app.state.corlinman_state = state
     # ``get_app_state`` (gateway.core.state) + the runtime route handlers
@@ -2135,12 +2209,24 @@ def build_app(
             logger.warning("gateway.cors.middleware_missing", error=str(exc))
 
     # Middleware before routes — order matters for ASGI stack walks.
-    middleware = _lazy_import("corlinman_server.gateway.middleware")
-    if middleware is not None:
-        install = getattr(middleware, "install", None)
-        if install is not None:
+    #
+    # R1-001 security fix: install the ``/v1/*`` API-key gate at app
+    # construction time. The middleware ships with ``admin_db=None`` (it
+    # fails closed → 401 ``admin_db_not_configured``); the lifespan
+    # below rebinds the real :class:`AdminDb` handle onto
+    # ``app.state.api_key_auth.admin_db`` once the on-disk
+    # ``tenants.sqlite`` is opened. Installing here (synchronously) is
+    # mandatory because ``app.add_middleware`` is rejected once
+    # FastAPI has started serving — we can't defer the install into
+    # the lifespan even though the admin DB open itself must be async.
+    middleware_mod = _lazy_import("corlinman_server.gateway.middleware")
+    if middleware_mod is not None:
+        install_api_key = getattr(
+            middleware_mod, "install_api_key_middleware", None
+        )
+        if install_api_key is not None:
             try:
-                install(app, state)
+                install_api_key(app, admin_db=None)
             except Exception as exc:  # pragma: no cover — sibling-owned
                 logger.warning(
                     "gateway.middleware.install_failed", error=str(exc)
