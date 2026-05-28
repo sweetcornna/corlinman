@@ -22,7 +22,7 @@ import { expect, test, type Page, type Route } from "@playwright/test";
 import { pinLocaleEn } from "./helpers/auth";
 
 const TEST_TIMEOUT_MS = 10_000;
-const SESSION_KEY = "web:test:abc";
+const SESSION_KEY = "corlinman:test:abc";
 
 // Minimal /admin/me stub so the layout doesn't bounce to /login.
 async function stubAuth(page: Page): Promise<void> {

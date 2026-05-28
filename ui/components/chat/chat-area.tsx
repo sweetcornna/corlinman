@@ -40,7 +40,7 @@ interface ChatAreaProps {
 
 function genSessionKey(): string {
   const r = Math.random().toString(36).slice(2, 10);
-  return `web:${Date.now().toString(36)}:${r}`;
+  return `corlinman:${Date.now().toString(36)}:${r}`;
 }
 
 export function ChatArea({
@@ -109,7 +109,7 @@ export function ChatArea({
       // can pick it up on mount. Cheap, no-backend pre-load.
       try {
         sessionStorage.setItem(
-          `chat:branch:${newKey}`,
+          `corlinman:chat:branch:${newKey}`,
           JSON.stringify(slice),
         );
       } catch {

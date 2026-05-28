@@ -23,7 +23,7 @@ import type { ChatConversation } from "@/lib/chat/types";
 
 function genSessionKey(): string {
   const r = Math.random().toString(36).slice(2, 10);
-  return `web:${Date.now().toString(36)}:${r}`;
+  return `corlinman:${Date.now().toString(36)}:${r}`;
 }
 
 export default function ChatPage() {

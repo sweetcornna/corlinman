@@ -1,7 +1,7 @@
 # 计划：In-App Chat（hermes 驱动的全功能聊天前端）
 
 > 综合 4 路深度调研（hermes 后端 / channels 系统 / UI 架构 / 参考产品基线）后产出。
-> 目标：在 admin UI 内交付一个对标 Claude.ai 体验、且与 telegram/qq 等渠道功能对齐的聊天窗口，最终也成为 channels 抽象下的一个 "web" 通道。
+> 目标：在 admin UI 内交付一个对标 Claude.ai 体验、且与 telegram/qq 等渠道功能对齐的聊天窗口，最终也成为 channels 抽象下的一个 "corlinman" 通道。
 
 ---
 
@@ -10,7 +10,7 @@
 **目标**
 - 在 `/chat` 路径上线一个生产级聊天前端，端到端驱动 hermes-style agent（流式 token、工具卡、子 agent、审批）。
 - 一期就能替代 playground 当主用，二期补齐 artifact / 分支 / 编辑 / 语音 / 斜杠命令。
-- 三期把它作为 channels 抽象下的 **WebChannel**，与 telegram / qq / discord 共享路由层；附带把 telegram 缺失功能（编辑/删除/置顶/搜索/已读回执）一并补齐。
+- 三期把它作为 channels 抽象下的 **CorlinmanChannel**，与 telegram / qq / discord 共享路由层；附带把 telegram 缺失功能（编辑/删除/置顶/搜索/已读回执）一并补齐。
 
 **非目标（明确推迟）**
 - 多用户群聊 / 多人协作编辑（无产品需求信号）
@@ -46,7 +46,7 @@
 ### 1.2 与 channels 抽象的关系
 
 - **Wave 1–2**：聊天前端**不**走 channels 层，直接走 hermes 服务（更简单）。
-- **Wave 3**：在 `python/packages/corlinman-channels` 新增 `WebChannel`（实现 `Channel` Protocol），把浏览器消息映射为 `InboundEvent` + `ChannelBinding("web", account, thread, sender)`。这样路由 / keyword filter / 多账号开关一视同仁，且 telegram 已有的 admin 观测面板可直接为 web 通道复用。
+- **Wave 3**：在 `python/packages/corlinman-channels` 新增 `CorlinmanChannel`（实现 `Channel` Protocol），把浏览器消息映射为 `InboundEvent` + `ChannelBinding("corlinman", account, thread, sender)`。这样路由 / keyword filter / 多账号开关一视同仁，且 telegram 已有的 admin 观测面板可直接为 corlinman 通道复用。
 
 ### 1.3 复用 vs 新建（来自 UI 调研）
 
@@ -141,12 +141,12 @@ ui/lib/chat/use-chat-stream.ts  # React hook：发消息 + 订阅富事件
 - [ ] 折叠超长消息（>N 行）
 - [ ] PWA 安装清单 + service worker offline shell
 
-### Wave 3 — WebChannel 后端集成（P1）
+### Wave 3 — CorlinmanChannel 后端集成（P1）
 
 - [ ] `python/packages/corlinman-channels/src/corlinman_channels/web.py`：实现 `Channel` Protocol，把浏览器 inbound 转 `InboundEvent`，把 hermes outbound 走回 SSE 推到浏览器
-- [ ] `/api/channels/web/*`：`POST /send`、`GET /events` (SSE)、`POST /typing`、`POST /edit/{msg_id}`、`POST /delete/{msg_id}`、`POST /react/{msg_id}`
-- [ ] `ChannelBinding("web", account=tenant_id, thread=session_key, sender=user_id)` 桥接
-- [ ] 前端切到 web-channel 路径（通过 feature flag 灰度），保留旧路径回滚
+- [ ] `/api/channels/corlinman/*`：`POST /send`、`GET /events` (SSE)、`POST /typing`、`POST /edit/{msg_id}`、`POST /delete/{msg_id}`、`POST /react/{msg_id}`
+- [ ] `ChannelBinding("corlinman", account=tenant_id, thread=session_key, sender=user_id)` 桥接
+- [ ] 前端切到 corlinman-channel 路径（通过 feature flag 灰度），保留旧路径回滚
 - [ ] admin 观测：复用 `ui/app/(admin)/channels/telegram/page.tsx` 模式，做 `channels/web/page.tsx` 后台观测页
 
 ### Wave 4 — Telegram 对齐 + 同步打磨（P1+ / P2 混合）
@@ -172,7 +172,7 @@ ui/lib/chat/use-chat-stream.ts  # React hook：发消息 + 订阅富事件
 | `/v1/chat/completions` 与 hermes 事件流时序不对齐 | UI 双流合并可能错位 | `EventEnvelope.sequence` 单调；`event-merger.ts` 用 turn_id + seq 做主键合流；token 流仅作 fast-path，权威以富事件为准 |
 | 大量历史会话渲染卡顿 | 体验崩塌 | 引入 `react-virtuoso` 虚拟化（200+ 消息时启用） |
 | 文件上传体积 / 安全 | 后端漏洞 | 复用现有 `Attachment` 通道，前端限制 50MB + MIME 白名单；服务端单独评审 |
-| Wave 3 web-channel 与现有路由层冲突 | 旧 telegram/qq 受影响 | feature flag 隔离；新通道默认 off；e2e 覆盖回归 |
+| Wave 3 corlinman-channel 与现有路由层冲突 | 旧 telegram/qq 受影响 | feature flag 隔离；新通道默认 off；e2e 覆盖回归 |
 | 工作量大，单 PR 难评审 | review 拖延 | 每 wave 独立 PR；wave 内若超 80 文件再拆子 PR |
 
 ---
@@ -205,7 +205,7 @@ ui/lib/chat/use-chat-stream.ts  # React hook：发消息 + 订阅富事件
 ## 7. 待用户决策的开放问题
 
 1. **范围切片**：是按上方"4 波 → Wave 1 先上线"逐波交付（推荐），还是一次性把 Wave 1+2 打包？
-2. **是否做 Wave 3 WebChannel**：如果定位仅为"内部 admin 用聊天"，可以永远不做（前端直连 hermes 已足）；如果要"作为渠道与 telegram 同档"，则 Wave 3 必做。
+2. **是否做 Wave 3 CorlinmanChannel**：如果定位仅为"内部 admin 用聊天"，可以永远不做（前端直连 hermes 已足）；如果要"作为渠道与 telegram 同档"，则 Wave 3 必做。
 3. **代码高亮库选型**：`shiki`（精细、体积大）vs `react-syntax-highlighter + prism`（轻、够用）。倾向 shiki。
 4. **语音输入实现**：浏览器内 Whisper（@huggingface/transformers，离线大）vs 调后端 STT 端点（依赖外部 provider）。倾向后端，Wave 2 决策。
 5. **跨标签同步用 BroadcastChannel** 还是后端推送即足够？倾向 BroadcastChannel 配合 SSE。

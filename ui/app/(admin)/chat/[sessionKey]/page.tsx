@@ -26,9 +26,9 @@ const DEFAULT_MODEL = "gpt-4o";
 function pickBranchedHistory(sessionKey: string): ChatMessage[] | null {
   if (typeof window === "undefined") return null;
   try {
-    const raw = sessionStorage.getItem(`chat:branch:${sessionKey}`);
+    const raw = sessionStorage.getItem(`corlinman:chat:branch:${sessionKey}`);
     if (!raw) return null;
-    sessionStorage.removeItem(`chat:branch:${sessionKey}`);
+    sessionStorage.removeItem(`corlinman:chat:branch:${sessionKey}`);
     return JSON.parse(raw) as ChatMessage[];
   } catch {
     return null;
@@ -58,7 +58,7 @@ function transcriptToChatMessages(
 
 function genSessionKey(): string {
   const r = Math.random().toString(36).slice(2, 10);
-  return `web:${Date.now().toString(36)}:${r}`;
+  return `corlinman:${Date.now().toString(36)}:${r}`;
 }
 
 export default function ChatSessionPage() {

@@ -12,7 +12,7 @@ vi.mock("next/navigation", () => ({
 
 function mk(overrides: Partial<ChatConversation>): ChatConversation {
   return {
-    sessionKey: "web:1",
+    sessionKey: "corlinman:1",
     title: "Conv",
     pinned: false,
     archived: false,
