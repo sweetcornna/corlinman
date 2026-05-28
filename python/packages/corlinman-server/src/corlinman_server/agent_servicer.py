@@ -1149,6 +1149,10 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             # don't need the supplement path).
             if start.session_key:
                 self._active_loops[start.session_key] = loop
+                # Mirror into the process-level registry so the admin
+                # ``POST /admin/sessions/{key}/cancel`` route can find
+                # this loop without a handle to the servicer instance.
+                _register_active_loop(start.session_key, loop)
 
             async for event in loop.run(start):
                 if isinstance(event, TokenEvent):
@@ -1486,6 +1490,11 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 existing = self._active_loops.get(start.session_key)
                 if existing is loop:
                     self._active_loops.pop(start.session_key, None)
+                # Mirror the pop into the module-level cancel registry.
+                # Compare-and-pop semantics live inside
+                # ``_unregister_active_loop`` so a fresh turn that
+                # arrived after this handler exited isn't clobbered.
+                _unregister_active_loop(start.session_key, loop)
             inbound_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await inbound_task
@@ -2843,6 +2852,98 @@ def _apply_merged_params(start: AgentChatStart, params: Mapping[str, Any]) -> No
             continue
         extra[key] = value
     start.extra = extra
+
+
+# ---------------------------------------------------------------------------
+# Process-level active-loop registry — powers the
+# ``POST /admin/sessions/{key}/cancel`` admin route.
+#
+# The gRPC servicer's ``_active_loops`` map is an instance attribute. The
+# admin HTTP route lives outside the servicer (no shared
+# ``AdminState`` handle today), so we mirror writes into a module-level
+# weak registry. Weak refs prevent the registry from pinning a
+# ``ReasoningLoop`` alive past the handler's ``finally`` — the entry
+# disappears naturally once the servicer drops its own reference.
+#
+# Concurrency: CPython asyncio is single-threaded, so the dict mutation
+# is safe without a lock. Two RPCs for the same session_key are
+# serialised by the per-session asyncio.Lock in ``_session_locks``, so
+# the second writer always observes the first's clear.
+# ---------------------------------------------------------------------------
+
+# weakref.WeakValueDictionary kept out of the typing graph so a Python
+# without ``weakref`` (CPython without weakref support is hypothetical)
+# wouldn't break import; we degrade to a plain dict in that case.
+import weakref as _weakref  # noqa: E402 — module-level placement is intentional
+
+_ACTIVE_LOOPS_BY_SESSION: "_weakref.WeakValueDictionary[str, ReasoningLoop]" = (
+    _weakref.WeakValueDictionary()
+)
+
+
+def _register_active_loop(session_key: str, loop: ReasoningLoop) -> None:
+    """Mirror an ``_active_loops`` insert into the process-level registry.
+
+    Called by the servicer's Chat handler right after it pins the loop
+    under its own ``_active_loops`` map. Safe to call with an empty
+    ``session_key`` — the registry skips the write so a one-shot HTTP
+    caller (no session_key) never collides with a real session.
+    """
+    if not session_key:
+        return
+    _ACTIVE_LOOPS_BY_SESSION[session_key] = loop
+
+
+def _unregister_active_loop(session_key: str, loop: ReasoningLoop) -> None:
+    """Mirror an ``_active_loops`` pop. Compare-and-pop so a fresh turn
+    that started after the original handler exited isn't accidentally
+    cleared.
+    """
+    if not session_key:
+        return
+    existing = _ACTIVE_LOOPS_BY_SESSION.get(session_key)
+    if existing is loop:
+        # WeakValueDictionary.pop returns the entry; ignore + suppress
+        # KeyError so a concurrent eviction (loop already GC'd) is a
+        # silent no-op.
+        with contextlib.suppress(KeyError):
+            _ACTIVE_LOOPS_BY_SESSION.pop(session_key)
+
+
+def cancel_session(
+    session_key: str, *, reason: str = "admin_abort"
+) -> tuple[str, str | None]:
+    """Look up the active loop for ``session_key`` and cancel it.
+
+    Returns ``(status, turn_id)`` where ``status`` is one of:
+
+    * ``"cancelled"``   — the loop was registered and ``cancel()`` fired.
+    * ``"not_running"`` — no loop is active for ``session_key``.
+
+    ``turn_id`` is the loop's current turn_id (``str(int)``) when
+    available, ``None`` otherwise — handy for the admin route to echo
+    back so the UI can correlate the cancel with the SSE stream's last
+    event.
+
+    The function is sync (callable from any context) — ``cancel()``
+    itself is sync and schedules its async ``Cancelling`` emit on the
+    running loop when one is present.
+    """
+    loop = _ACTIVE_LOOPS_BY_SESSION.get(session_key) if session_key else None
+    if loop is None:
+        return ("not_running", None)
+    try:
+        loop.cancel(reason=reason)
+    except Exception as exc:  # noqa: BLE001 — defensive
+        logger.warning(
+            "agent.servicer.cancel_failed",
+            session_key=session_key,
+            error=str(exc),
+        )
+        return ("not_running", None)
+    turn_id_attr = getattr(loop, "_turn_id", None)
+    turn_id_str = str(turn_id_attr) if turn_id_attr else None
+    return ("cancelled", turn_id_str)
 
 
 def _error_frame(reason: str, message: str) -> agent_pb2.ServerFrame:

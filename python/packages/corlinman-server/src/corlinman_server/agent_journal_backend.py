@@ -131,6 +131,20 @@ class SessionSummary:
     ``last_status`` is the ``status`` of the most-recent turn — one of
     ``"in_progress" | "completed" | "errored"`` so the UI can render an
     appropriate badge.
+
+    Session-meta fields (in-app chat MVP):
+
+    * ``title`` — operator-supplied display label (``None`` until set
+      via ``PATCH /admin/sessions/{key}``).
+    * ``pinned`` — sticky ordering for the sidebar; pinned sessions
+      sort above unpinned regardless of ``last_seen_at_ms``. Defaults
+      to ``False`` for every legacy session that pre-dates the
+      ``session_meta`` table.
+    * ``archived`` — operator hint to hide the session from the
+      default listing. Defaults to ``False``. The list endpoint still
+      returns archived sessions today (the UI decides whether to
+      filter them); a future ``?archived=...`` query param can opt
+      out without a wire change.
     """
 
     session_key: str
@@ -140,6 +154,9 @@ class SessionSummary:
     message_count: int
     last_user_text: str | None
     last_status: str | None
+    title: str | None = None
+    pinned: bool = False
+    archived: bool = False
 
 
 @runtime_checkable
@@ -323,6 +340,35 @@ class JournalBackend(Protocol):
         """
         ...
 
+    async def session_exists(self, session_key: str) -> bool:
+        """Return ``True`` when at least one ``turns`` row exists for
+        ``session_key``. Used by ``PATCH /admin/sessions/{key}`` to
+        decide between 404 (no such session) and an empty-meta upsert.
+        """
+        ...
+
+    async def update_session_meta(
+        self,
+        session_key: str,
+        *,
+        title: str | None = None,
+        pinned: bool | None = None,
+        archived: bool | None = None,
+    ) -> SessionSummary | None:
+        """Upsert the operator-supplied metadata for ``session_key``.
+
+        Each field is independently optional — ``None`` means "leave
+        the existing value alone" (the SQL is a partial UPDATE rather
+        than a full row replace). Backends MUST refuse to create a
+        meta row for a session_key that has no journaled turns and
+        return ``None`` so the route surfaces a 404.
+
+        Returns the freshly-refreshed :class:`SessionSummary` (same
+        shape :meth:`list_session_summaries` emits) so the route can
+        echo the post-update state back without a second round-trip.
+        """
+        ...
+
     # ------------------------------------------------------------------
     # W1.2 — turn events timeline (admin observability).
     #
@@ -465,6 +511,27 @@ CREATE INDEX IF NOT EXISTS idx_turn_events_turn
 
 CREATE INDEX IF NOT EXISTS idx_turn_events_timestamp
     ON turn_events(timestamp_ms);
+"""
+
+# In-app chat MVP — operator-supplied per-session metadata. Kept in a
+# sibling table (not on ``turns``) so updating ``title`` / ``pinned`` /
+# ``archived`` doesn't fan out across N turn rows and so legacy reads
+# that ignore the columns continue to work unchanged. One row per
+# session_key; LEFT JOIN'd from ``list_session_summaries`` with
+# COALESCE defaults so sessions without a meta row still render.
+_SESSION_META_SCHEMA = """
+CREATE TABLE IF NOT EXISTS session_meta (
+    session_key TEXT PRIMARY KEY,
+    title       TEXT,
+    pinned      INTEGER NOT NULL DEFAULT 0
+                        CHECK (pinned IN (0, 1)),
+    archived    INTEGER NOT NULL DEFAULT 0
+                        CHECK (archived IN (0, 1)),
+    updated_at_ms INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_session_meta_pinned
+    ON session_meta(pinned DESC);
 """
 
 # Per-turn aggregate columns the UI surfaces (elapsed, cost, tool count,
@@ -656,6 +723,14 @@ class SqliteJournalBackend:
             # ``PRAGMA table_info`` gate because SQLite < 3.35 doesn't
             # support ``ADD COLUMN IF NOT EXISTS`` and we still target it.
             await conn.executescript(_TURN_EVENTS_SCHEMA)
+            await conn.commit()
+            # In-app chat MVP — operator-supplied session metadata
+            # (title / pinned / archived). Sibling table, additive: a
+            # gateway that hasn't been redeployed will simply ignore
+            # the column (its list query doesn't reference it). The
+            # CREATE statements carry ``IF NOT EXISTS`` so re-running
+            # on a fresh DB is a no-op.
+            await conn.executescript(_SESSION_META_SCHEMA)
             await conn.commit()
             # Refresh the ``turns`` column set after running the script
             # (the script doesn't touch ``turns``, but we re-read to keep
@@ -1220,6 +1295,14 @@ class SqliteJournalBackend:
                 # correlated subquery keeps the query a single round
                 # trip; an alternative window-function form is
                 # equivalent on SQLite >= 3.25 but more verbose.
+                #
+                # In-app chat MVP — LEFT JOIN ``session_meta`` so the
+                # operator-supplied title / pinned / archived ride along
+                # in the same scan. COALESCE on pinned/archived so
+                # sessions that pre-date the meta table (or simply have
+                # no row yet) sort as unpinned + unarchived. ORDER BY
+                # ``pinned_sort DESC, last_seen DESC`` keeps pinned
+                # sessions on top regardless of recency.
                 "SELECT t.session_key, "
                 "       MIN(t.started_at_ms) AS first_seen, "
                 "       MAX(t.started_at_ms) AS last_seen, "
@@ -1235,10 +1318,14 @@ class SqliteJournalBackend:
                 "       (SELECT status FROM turns "
                 "        WHERE session_key = t.session_key "
                 "        ORDER BY started_at_ms DESC LIMIT 1) "
-                "                            AS last_status "
+                "                            AS last_status, "
+                "       sm.title             AS meta_title, "
+                "       COALESCE(sm.pinned, 0)   AS pinned_sort, "
+                "       COALESCE(sm.archived, 0) AS archived_sort "
                 "FROM turns t "
+                "LEFT JOIN session_meta sm ON sm.session_key = t.session_key "
                 "GROUP BY t.session_key "
-                "ORDER BY last_seen DESC "
+                "ORDER BY pinned_sort DESC, last_seen DESC "
                 "LIMIT ?",
                 (int(limit),),
             )
@@ -1264,6 +1351,9 @@ class SqliteJournalBackend:
                     message_count=int(r[4]),
                     last_user_text=preview,
                     last_status=str(r[6]) if r[6] is not None else None,
+                    title=str(r[7]) if r[7] is not None else None,
+                    pinned=bool(r[8]),
+                    archived=bool(r[9]),
                 )
             )
         return out
@@ -1306,6 +1396,116 @@ class SqliteJournalBackend:
                     )
             return 0
         return int(n)
+
+    async def session_exists(self, session_key: str) -> bool:
+        """Cheap existence probe — used by ``PATCH /admin/sessions/{key}``
+        to short-circuit the upsert with a 404 when the key is unknown.
+
+        We restrict the lookup to ``turns`` (not ``session_meta``) so a
+        stale meta row left behind by a mis-fired PATCH cannot resurrect
+        a deleted session. ``session_meta`` follows the lifecycle of the
+        underlying turns; ``delete_session`` does NOT touch it (no need
+        — deleting all turns makes the LEFT JOIN drop the row, and the
+        PK conflict-free upsert path tolerates a stale row).
+        """
+        if not session_key:
+            return False
+        try:
+            cur = await self._c.execute(
+                "SELECT 1 FROM turns WHERE session_key = ? LIMIT 1",
+                (session_key,),
+            )
+            row = await cur.fetchone()
+            await cur.close()
+        except aiosqlite.Error as exc:
+            logger.warning("agent.journal.session_exists_failed", error=str(exc))
+            return False
+        return row is not None
+
+    async def update_session_meta(
+        self,
+        session_key: str,
+        *,
+        title: str | None = None,
+        pinned: bool | None = None,
+        archived: bool | None = None,
+    ) -> SessionSummary | None:
+        """Upsert title/pinned/archived for ``session_key`` and return the
+        refreshed :class:`SessionSummary`.
+
+        ``None`` for any field means "leave it alone" — the SQL is a
+        partial UPDATE rather than a full row replace. Implemented via
+        ``INSERT ... ON CONFLICT(session_key) DO UPDATE SET ...
+        COALESCE(?, col)`` so first-touch INSERTs and subsequent
+        partial UPDATEs share one statement.
+
+        Returns ``None`` when ``session_exists`` is False — the caller
+        maps that to a 404. The exists-probe + upsert is two round
+        trips; for an admin-only surface that's fine and avoids the
+        race between an upsert that succeeds and a session that was
+        concurrently deleted (the second case is benign — the meta row
+        is harmless if the session is gone, and ``list_session_summaries``
+        drops it via the inner join on ``turns``).
+        """
+        if not await self.session_exists(session_key):
+            return None
+        # All-None body would be a no-op; the route layer enforces "at
+        # least one field" with a 422, but we still tolerate the call
+        # so a PATCH that flips back the only changed field can be a
+        # no-op without erroring.
+        title_param = title  # may be None (== leave alone) or str
+        pinned_param: int | None = (
+            None if pinned is None else (1 if pinned else 0)
+        )
+        archived_param: int | None = (
+            None if archived is None else (1 if archived else 0)
+        )
+        now_ms = int(time.time() * 1000)
+        try:
+            await self._c.execute(
+                # First-touch INSERT: every field defaults to the
+                # supplied value (or NULL/0 when the caller didn't
+                # touch it). Subsequent UPDATE: COALESCE keeps the
+                # existing value when the caller passed ``None``.
+                "INSERT INTO session_meta "
+                "(session_key, title, pinned, archived, updated_at_ms) "
+                "VALUES (?, ?, COALESCE(?, 0), COALESCE(?, 0), ?) "
+                "ON CONFLICT(session_key) DO UPDATE SET "
+                "    title         = COALESCE(?, session_meta.title), "
+                "    pinned        = COALESCE(?, session_meta.pinned), "
+                "    archived      = COALESCE(?, session_meta.archived), "
+                "    updated_at_ms = ?",
+                (
+                    session_key,
+                    title_param,
+                    pinned_param,
+                    archived_param,
+                    now_ms,
+                    title_param,
+                    pinned_param,
+                    archived_param,
+                    now_ms,
+                ),
+            )
+            await self._c.commit()
+        except aiosqlite.Error as exc:
+            logger.warning(
+                "agent.journal.update_session_meta_failed",
+                error=str(exc),
+                session_key=session_key,
+            )
+            return None
+        # Re-aggregate so the response matches what the list endpoint
+        # would emit on the next call. Fetching the whole list and
+        # filtering is the simplest path that re-uses the same
+        # serialisation; for typical (< 200 sessions) the cost is
+        # negligible. A future optimisation could push a WHERE clause
+        # into the aggregate query.
+        summaries = await self.list_session_summaries(limit=10_000)
+        for s in summaries:
+            if s.session_key == session_key:
+                return s
+        return None
 
     async def mark_stale_in_progress_as_errored(
         self, older_than_seconds: int | None = None

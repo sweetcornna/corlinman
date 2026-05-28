@@ -380,6 +380,7 @@ export const zhCN = {
     hooks: "Hooks",
     nodes: "节点",
     playground: "Playground",
+    chat: "聊天",
     tenants: "租户",
     profiles: "Profile",
     sessions: "会话",

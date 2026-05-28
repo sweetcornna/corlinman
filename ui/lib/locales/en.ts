@@ -395,6 +395,7 @@ export const en = {
     hooks: "Hooks",
     nodes: "Nodes",
     playground: "Playground",
+    chat: "Chat",
     tenants: "Tenants",
     profiles: "Profiles",
     sessions: "Sessions",

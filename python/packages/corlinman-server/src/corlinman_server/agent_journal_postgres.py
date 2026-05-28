@@ -115,6 +115,24 @@ CREATE TABLE IF NOT EXISTS journal_turn_messages (
     tool_calls_json TEXT,
     PRIMARY KEY (turn_id, seq)
 );
+
+-- In-app chat MVP — operator-supplied session metadata. Sibling table
+-- (not a column on ``journal_turns``) so updating title/pinned/archived
+-- doesn't fan out across N turn rows. ``ADD COLUMN IF NOT EXISTS`` lets
+-- a future field land without a fresh migration file. ``ON DELETE`` is
+-- deliberately omitted — the session_meta row outlives a session wipe
+-- so an accidentally-deleted session that gets recreated keeps its
+-- title/pinned flag (operators see this as a feature, not a leak).
+CREATE TABLE IF NOT EXISTS journal_session_meta (
+    session_key   TEXT    PRIMARY KEY,
+    title         TEXT,
+    pinned        BOOLEAN NOT NULL DEFAULT FALSE,
+    archived      BOOLEAN NOT NULL DEFAULT FALSE,
+    updated_at_ms BIGINT  NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS journal_session_meta_pinned_idx
+    ON journal_session_meta(pinned DESC);
 """
 
 
@@ -589,6 +607,14 @@ class PostgresJournalBackend:
                     # DESC); ``agg`` collapses every row of that
                     # session_key into a single bucket. The join binds
                     # the two for the final row shape.
+                    #
+                    # In-app chat MVP — LEFT JOIN
+                    # ``journal_session_meta`` so operator-supplied
+                    # title/pinned/archived ride along. COALESCE on the
+                    # boolean columns so sessions without a meta row
+                    # sort as unpinned + unarchived. ``ORDER BY pinned
+                    # DESC, last_seen DESC`` keeps pinned sessions on
+                    # top regardless of recency.
                     "WITH latest AS ( "
                     "    SELECT DISTINCT ON (session_key) "
                     "           session_key, user_text, status "
@@ -609,11 +635,15 @@ class PostgresJournalBackend:
                     ") "
                     "SELECT a.session_key, a.first_seen, a.last_seen, "
                     "       a.turn_count, mc.message_count, "
-                    "       l.user_text, l.status "
+                    "       l.user_text, l.status, "
+                    "       sm.title AS meta_title, "
+                    "       COALESCE(sm.pinned, FALSE)   AS meta_pinned, "
+                    "       COALESCE(sm.archived, FALSE) AS meta_archived "
                     "FROM agg a "
                     "JOIN latest l USING (session_key) "
                     "JOIN msg_counts mc USING (session_key) "
-                    "ORDER BY a.last_seen DESC "
+                    "LEFT JOIN journal_session_meta sm USING (session_key) "
+                    "ORDER BY meta_pinned DESC, a.last_seen DESC "
                     "LIMIT $1",
                     int(limit),
                 )
@@ -639,6 +669,13 @@ class PostgresJournalBackend:
                     last_status=(
                         str(r["status"]) if r["status"] is not None else None
                     ),
+                    title=(
+                        str(r["meta_title"])
+                        if r["meta_title"] is not None
+                        else None
+                    ),
+                    pinned=bool(r["meta_pinned"]),
+                    archived=bool(r["meta_archived"]),
                 )
             )
         return out
@@ -668,6 +705,82 @@ class PostgresJournalBackend:
             )
             return 0
         return len(rows)
+
+    async def session_exists(self, session_key: str) -> bool:
+        """Cheap existence probe — used by ``PATCH /admin/sessions/{key}``
+        to short-circuit the upsert with a 404 when the key is unknown.
+
+        Scoped to ``journal_turns`` (not the meta table) so a stale meta
+        row left behind by a mis-fired PATCH cannot resurrect a deleted
+        session. See the SQLite peer's docstring for the lifecycle
+        rationale.
+        """
+        if not session_key:
+            return False
+        try:
+            async with self._p.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT 1 FROM journal_turns "
+                    "WHERE session_key = $1 LIMIT 1",
+                    session_key,
+                )
+        except Exception as exc:
+            logger.warning(
+                "agent.journal.session_exists_failed", error=str(exc)
+            )
+            return False
+        return row is not None
+
+    async def update_session_meta(
+        self,
+        session_key: str,
+        *,
+        title: str | None = None,
+        pinned: bool | None = None,
+        archived: bool | None = None,
+    ) -> SessionSummary | None:
+        """Upsert title/pinned/archived for ``session_key``.
+
+        Same partial-update semantics as the SQLite peer: ``None`` for
+        any field means "leave it alone" (COALESCE inside the ON
+        CONFLICT update). First-touch INSERTs default booleans to
+        FALSE / title to NULL.
+        """
+        if not await self.session_exists(session_key):
+            return None
+        pinned_param = pinned  # None or bool — asyncpg binds nulls natively
+        archived_param = archived
+        now_ms = _now_ms()
+        try:
+            async with self._p.acquire() as conn:
+                await conn.execute(
+                    "INSERT INTO journal_session_meta "
+                    "(session_key, title, pinned, archived, updated_at_ms) "
+                    "VALUES ($1, $2, COALESCE($3, FALSE), "
+                    "        COALESCE($4, FALSE), $5) "
+                    "ON CONFLICT (session_key) DO UPDATE SET "
+                    "    title         = COALESCE($2, journal_session_meta.title), "
+                    "    pinned        = COALESCE($3, journal_session_meta.pinned), "
+                    "    archived      = COALESCE($4, journal_session_meta.archived), "
+                    "    updated_at_ms = $5",
+                    session_key,
+                    title,
+                    pinned_param,
+                    archived_param,
+                    now_ms,
+                )
+        except Exception as exc:
+            logger.warning(
+                "agent.journal.update_session_meta_failed",
+                error=str(exc),
+                session_key=session_key,
+            )
+            return None
+        summaries = await self.list_session_summaries(limit=10_000)
+        for s in summaries:
+            if s.session_key == session_key:
+                return s
+        return None
 
     async def mark_stale_in_progress_as_errored(
         self, older_than_seconds: int | None = None

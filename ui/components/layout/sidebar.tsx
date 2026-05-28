@@ -22,6 +22,7 @@ import {
   Leaf,
   LogOut,
   MessageCircle,
+  MessageSquareText,
   MessagesSquare,
   MonitorCog,
   Network,
@@ -85,6 +86,7 @@ type NavEntry = NavItem | NavGroup;
  * channels / scheduler / identity).
  */
 const OPERATOR_ITEMS: NavEntry[] = [
+  { href: "/chat", labelKey: "nav.chat", icon: MessageSquareText },
   { href: "/playground", labelKey: "nav.playground", icon: Beaker },
   { href: "/approvals", labelKey: "nav.approvals", icon: ClipboardCheck },
   { href: "/sessions", labelKey: "nav.sessions", icon: MessagesSquare },
