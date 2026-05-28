@@ -1347,6 +1347,10 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     seq += 1
                 elif isinstance(event, ErrorEvent):
                     # T4.4: stamp the turn errored so the breadcrumb sticks.
+                    # R1-002: capture the row id BEFORE the in-branch
+                    # ``journal_turn_id = None`` clear so the ``TurnErrored``
+                    # hook below carries the real id instead of ``None``.
+                    local_turn_id = journal_turn_id
                     if journal is not None and journal_turn_id is not None:
                         try:
                             await journal.error_turn(
@@ -1367,7 +1371,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                         await self._emit_hook_event(
                             HookEvent.TurnErrored(
                                 session_key_=start.session_key or "",
-                                turn_id=journal_turn_id,
+                                turn_id=local_turn_id,
                                 reason=event.reason,
                                 message=event.message,
                             )
@@ -1387,6 +1391,10 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     # T4.1: journal the assistant's final reply + flip
                     # the turn to completed. Skip the assistant append
                     # when there is no text (pure tool-call turns).
+                    # R1-002: capture the row id BEFORE the in-branch
+                    # ``journal_turn_id = None`` clear so the ``TurnComplete``
+                    # hook below carries the real id instead of ``None``.
+                    local_turn_id = journal_turn_id
                     if journal is not None and journal_turn_id is not None:
                         try:
                             final_text = "".join(reply_parts)
@@ -1426,7 +1434,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                         await self._emit_hook_event(
                             HookEvent.TurnComplete(
                                 session_key_=start.session_key or "",
-                                turn_id=journal_turn_id,
+                                turn_id=local_turn_id,
                                 finish_reason=event.finish_reason or "",
                                 usage=dict(event.usage) if event.usage else None,
                                 duration_ms=int(
@@ -1446,6 +1454,10 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             # T4.4: stamp the turn errored so a follow-up Chat RPC can
             # find the breakage instead of seeing a phantom in_progress
             # row. Best-effort.
+            # R1-002: capture the row id BEFORE the in-branch
+            # ``journal_turn_id = None`` clear so the ``TurnErrored``
+            # hook below carries the real id instead of ``None``.
+            local_turn_id = journal_turn_id
             if journal is not None and journal_turn_id is not None:
                 try:
                     await journal.error_turn(
@@ -1464,7 +1476,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 await self._emit_hook_event(
                     HookEvent.TurnErrored(
                         session_key_=start.session_key or "",
-                        turn_id=journal_turn_id,
+                        turn_id=local_turn_id,
                         reason="unknown",
                         message=str(exc),
                     )
