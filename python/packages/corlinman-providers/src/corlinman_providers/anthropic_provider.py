@@ -315,6 +315,14 @@ class AnthropicProvider:
             raise
         except Exception as exc:
             raise _map_anthropic_error(exc, model=model) from exc
+        finally:
+            # Always release the underlying httpx pool. The SDK's
+            # ``messages.stream`` context manager closes the stream but
+            # the surrounding ``AsyncAnthropic`` client owns its own
+            # connection pool that only releases on ``client.close()``.
+            # Without this every chat call leaks a pool entry — see
+            # audit R1-003.
+            await _safe_close(client)
 
     async def embed(
         self,
@@ -329,6 +337,26 @@ class AnthropicProvider:
     def supports(cls, model: str) -> bool:
         """Claim any model id starting with ``claude-``."""
         return model.startswith("claude-")
+
+
+async def _safe_close(client: Any) -> None:
+    """Best-effort ``await client.close()`` that never masks the real exception.
+
+    Mirrors the OpenAI provider's helper. ``AsyncAnthropic.close()`` is
+    async + idempotent; a close-time error stays in the log so the
+    operator can investigate, but never bubbles up into the chat-stream
+    flow (which would mask the original error). Test doubles without a
+    ``close`` attribute no-op.
+    """
+    close = getattr(client, "close", None)
+    if close is None:
+        return
+    try:
+        result = close()
+        if hasattr(result, "__await__"):
+            await result
+    except Exception as exc:  # pragma: no cover — defensive close-path guard
+        logger.warning("anthropic.client_close_failed", error=str(exc))
 
 
 def _split_system(messages: Sequence[Any]) -> tuple[str | None, list[dict[str, Any]]]:

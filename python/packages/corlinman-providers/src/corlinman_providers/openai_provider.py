@@ -173,18 +173,28 @@ class OpenAIProvider:
             propagate verbatim (a partial-stream retry would duplicate
             tokens). The client is constructed inside the closure so the
             second attempt picks up the refreshed ``self._api_key``.
+
+            Lifecycle: if ``create()`` raises we close the client here
+            before re-raising — otherwise a 401-then-retry path would
+            leak the abandoned first client's httpx pool (the retry
+            inside :func:`with_401_recovery` builds a fresh client for
+            the second attempt). On success the caller in ``chat_stream``
+            owns the close via a ``try/finally`` around the iteration.
             """
             client_ = self._make_client()
             try:
                 stream_ = await client_.chat.completions.create(**kwargs)
             except CorlinmanError:
+                await _safe_close(client_)
                 raise
             except Exception as exc:
+                await _safe_close(client_)
                 raise _map_openai_error(exc, model=model, provider=self.name) from exc
             return client_, stream_
 
+        client: Any = None
         try:
-            _client, stream = await with_401_recovery(
+            client, stream = await with_401_recovery(
                 _open, refresh=self._refresh_credential, provider=self.name
             )
             async for chunk in stream:
@@ -249,6 +259,14 @@ class OpenAIProvider:
             raise
         except Exception as exc:
             raise _map_openai_error(exc, model=model, provider=self.name) from exc
+        finally:
+            # Always release the httpx pool, regardless of which exit
+            # path (success, mapped CorlinmanError, mid-stream raw exc,
+            # or generator ``aclose()`` from a cancelled caller) we took.
+            # Without this every chat call leaks a pool entry — see
+            # audit R1-003.
+            if client is not None:
+                await _safe_close(client)
 
         yield ProviderChunk(kind="done", finish_reason=finish_reason)
 
@@ -271,6 +289,27 @@ class OpenAIProvider:
             or model.startswith("o3-")
             or model == "gpt-3.5-turbo"
         )
+
+
+async def _safe_close(client: Any) -> None:
+    """Best-effort ``await client.close()`` that never masks the real exception.
+
+    The vendor SDK exposes ``AsyncOpenAI.close()`` (an async, idempotent
+    call that drains the underlying ``httpx.AsyncClient``). We never let
+    a close-time error bubble up — if the network is already broken,
+    the close attempt may itself fail and we'd rather surface the
+    original chat-stream error than a confusing close-failure trace.
+    Test doubles that omit ``close`` cause a quiet no-op.
+    """
+    close = getattr(client, "close", None)
+    if close is None:
+        return
+    try:
+        result = close()
+        if hasattr(result, "__await__"):
+            await result
+    except Exception as exc:  # pragma: no cover — defensive close-path guard
+        logger.warning("openai.client_close_failed", error=str(exc))
 
 
 def _normalise_message(m: Any) -> dict[str, Any]:
