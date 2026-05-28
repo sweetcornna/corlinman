@@ -266,6 +266,15 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
 
       // Subscribe to journal events. We don't await here — events arrive
       // asynchronously alongside the token stream.
+      //
+      // Close any prior live stream first. If the user re-sends (or
+      // `editAndRerun` fires) while the previous turn is still in-flight
+      // — or during the 500ms grace window in the `finally` block below
+      // — `closeLiveRef.current` still points at the previous turn's
+      // EventSource. Reassigning without closing first leaks that
+      // EventSource and keeps a second `onEvent` consumer reducing into
+      // a stale `pendingMessage` until the page unmounts (R1-005).
+      closeLiveRef.current?.();
       closeLiveRef.current = openLiveEventStream(args.sessionKey, {
         onEvent: (live) => {
           const chatEvent = liveEventToChatEvent(live);
