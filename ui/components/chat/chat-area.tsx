@@ -68,16 +68,23 @@ export function ChatArea({
     preview: string;
   } | null>(null);
 
-  // Hydrate the hook from server history once per sessionKey.
-  const hydratedKeyRef = React.useRef<string | null>(null);
+  // Hydrate the hook from server history. The first effect run after a
+  // sessionKey switch clears the thread; once `initialHistory` resolves
+  // (typically asynchronously via React Query in the parent) we re-hydrate
+  // with the loaded transcript. We key the "already loaded" state on
+  // (sessionKey, length) so a refetch that returns more rows re-applies.
+  const hydratedRef = React.useRef<{ key: string; len: number } | null>(null);
   React.useEffect(() => {
-    if (hydratedKeyRef.current === sessionKey) return;
-    if (initialHistory && initialHistory.length > 0) {
-      chat.hydrate(initialHistory);
-    } else {
-      chat.hydrate([]);
+    const desiredLen = initialHistory?.length ?? 0;
+    if (
+      hydratedRef.current &&
+      hydratedRef.current.key === sessionKey &&
+      hydratedRef.current.len === desiredLen
+    ) {
+      return;
     }
-    hydratedKeyRef.current = sessionKey;
+    chat.hydrate(initialHistory ?? []);
+    hydratedRef.current = { key: sessionKey, len: desiredLen };
   }, [sessionKey, initialHistory, chat]);
 
   const handlePickSuggestion = React.useCallback(

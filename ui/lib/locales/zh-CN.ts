@@ -2096,6 +2096,7 @@ export const zhCN = {
     colLastSeenAt: "上次活跃",
     colActions: "操作",
     replay: "重放",
+    continueInChat: "继续聊天",
     delete: "删除",
     deleteAriaLabel: "删除会话 {{key}}",
     deleteConfirmTitle: "确认删除此会话?",

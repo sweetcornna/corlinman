@@ -2141,6 +2141,7 @@ export const en = {
     colLastSeenAt: "Last seen",
     colActions: "Actions",
     replay: "Replay",
+    continueInChat: "Continue",
     delete: "Delete",
     deleteAriaLabel: "Delete session {{key}}",
     deleteConfirmTitle: "Delete this session?",

@@ -16,6 +16,7 @@ import {
   patchChatSession,
 } from "@/lib/api/chat";
 import { CorlinmanApiError } from "@/lib/api";
+import { replaySession, type TranscriptMessage } from "@/lib/api/sessions";
 import { ChatArea } from "@/components/chat/chat-area";
 import { ChatSidebar } from "@/components/chat/chat-sidebar";
 import type { ChatConversation, ChatMessage } from "@/lib/chat/types";
@@ -32,6 +33,27 @@ function pickBranchedHistory(sessionKey: string): ChatMessage[] | null {
   } catch {
     return null;
   }
+}
+
+/** Convert a journal TranscriptMessage into a ChatMessage so existing
+ *  sessions can be resumed in the /chat surface. The journal only
+ *  surfaces flattened user/assistant/system text (tool calls are
+ *  encoded inside assistant content); for resume we just need enough
+ *  context to keep the conversation coherent. */
+function transcriptToChatMessages(
+  transcript: TranscriptMessage[],
+): ChatMessage[] {
+  return transcript.map((m, i) => {
+    const created = Number.isFinite(Date.parse(m.ts))
+      ? Date.parse(m.ts)
+      : Date.now() - (transcript.length - i) * 1000;
+    return {
+      id: `hist_${i}_${created}`,
+      role: m.role,
+      content: m.content,
+      createdAt: created,
+    };
+  });
 }
 
 function genSessionKey(): string {
@@ -66,6 +88,28 @@ export default function ChatSessionPage() {
     const h = pickBranchedHistory(sessionKey);
     if (h && h.length > 0) setBranchedHistory(h);
   }, [sessionKey]);
+
+  // Fetch on-server transcript when no branched history is staged. Allows
+  // operators to click into any existing session (telegram/qq/web) and
+  // keep talking. Stable on the sessionKey, so navigating between rows
+  // refetches per row.
+  const transcriptQuery = useQuery({
+    queryKey: ["chat", "transcript", sessionKey],
+    queryFn: async () => {
+      const out = await replaySession(sessionKey, { mode: "transcript" });
+      if (out.kind === "ok") return out.replay.transcript;
+      return [] as TranscriptMessage[];
+    },
+    enabled: Boolean(sessionKey) && branchedHistory === undefined,
+    staleTime: 30_000,
+  });
+
+  const initialHistory: ChatMessage[] | undefined = React.useMemo(() => {
+    if (branchedHistory && branchedHistory.length > 0) return branchedHistory;
+    const t = transcriptQuery.data;
+    if (!t) return undefined;
+    return transcriptToChatMessages(t);
+  }, [branchedHistory, transcriptQuery.data]);
 
   const refreshList = React.useCallback(() => {
     void qc.invalidateQueries({ queryKey: ["chat", "sessions"] });
@@ -171,7 +215,7 @@ export default function ChatSessionPage() {
         sessionKey={sessionKey}
         model={DEFAULT_MODEL}
         conversation={active}
-        initialHistory={branchedHistory}
+        initialHistory={initialHistory}
       />
     </>
   );

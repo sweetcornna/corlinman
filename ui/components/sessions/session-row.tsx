@@ -1,7 +1,8 @@
 "use client";
 
+import Link from "next/link";
 import { useTranslation } from "react-i18next";
-import { Play, Trash2 } from "lucide-react";
+import { MessageSquareText, Play, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { TableCell, TableRow } from "@/components/ui/table";
@@ -65,6 +66,21 @@ export function SessionRow({ session, onReplay, onDelete }: SessionRowProps) {
       <SessionCostCells sessionKey={session.session_key} />
       <TableCell className="pr-4 text-right">
         <div className="inline-flex items-center gap-1.5">
+          <Button
+            asChild
+            type="button"
+            variant="outline"
+            size="sm"
+            data-testid={`session-continue-${session.session_key}`}
+          >
+            <Link
+              href={`/chat/${encodeURIComponent(session.session_key)}`}
+              aria-label={`${t("sessions.continueInChat")} ${session.session_key}`}
+            >
+              <MessageSquareText className="h-3.5 w-3.5" aria-hidden="true" />
+              {t("sessions.continueInChat")}
+            </Link>
+          </Button>
           <Button
             type="button"
             variant="outline"
