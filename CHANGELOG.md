@@ -4,6 +4,25 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.2] — 2026-05-28 — Chat composer follows the global default model
+
+> The 1.8.0 chat surface hardcoded `gpt-4o` as the model the composer
+> sent to `/v1/chat/completions`. That ignored the global default set
+> in `/admin/models` — confusing for operators who'd already picked a
+> production-grade alias there. This release wires the chat page to
+> the same `models.default` field every other surface reads.
+
+### Changed
+
+- `/chat` composer model now resolves from
+  `fetchModels().default` (the same alias surfaced by
+  `/admin/models`). React Query caches the value with a 60s stale
+  window so a default-model swap in `/admin/models` propagates to the
+  next composer turn without reloading the page. `gpt-4o` stays as a
+  silent fallback for the (rare) case where no global default has
+  been configured yet, so the surface is still usable on a fresh
+  install.
+
 ## [1.8.1] — 2026-05-28 — Hotfix: static-export compatibility for /chat
 
 > Build-only hotfix: 1.8.0 shipped `/chat/[sessionKey]` as a Next.js

@@ -21,14 +21,14 @@ import {
   listChatSessions,
   patchChatSession,
 } from "@/lib/api/chat";
-import { CorlinmanApiError } from "@/lib/api";
+import { CorlinmanApiError, fetchModels } from "@/lib/api";
 import { replaySession, type TranscriptMessage } from "@/lib/api/sessions";
 import { ChatArea } from "@/components/chat/chat-area";
 import { ChatSidebar } from "@/components/chat/chat-sidebar";
 import { ChatEmptyState } from "@/components/chat/empty-state";
 import type { ChatConversation, ChatMessage } from "@/lib/chat/types";
 
-const DEFAULT_MODEL = "gpt-4o";
+const FALLBACK_MODEL = "gpt-4o"; // used only when /admin/models returns no global default
 
 function genSessionKey(): string {
   const r = Math.random().toString(36).slice(2, 10);
@@ -81,6 +81,18 @@ export default function ChatPage() {
     queryFn: listChatSessions,
     refetchInterval: 30_000,
   });
+
+  // Resolve the live global-default model (the same alias /admin/models
+  // surfaces as ``models.default`` in the gateway config). Picked up live so
+  // operators editing the default in /admin/models see it reflected on the
+  // next composer turn without reloading the chat page.
+  const { data: modelsData } = useQuery({
+    queryKey: ["chat", "default-model"],
+    queryFn: fetchModels,
+    staleTime: 60_000,
+  });
+  const activeModel: string =
+    (modelsData?.default && modelsData.default.trim()) || FALLBACK_MODEL;
 
   const active = React.useMemo(
     () =>
@@ -234,7 +246,7 @@ export default function ChatPage() {
       {sessionKey ? (
         <ChatArea
           sessionKey={sessionKey}
-          model={DEFAULT_MODEL}
+          model={activeModel}
           conversation={active}
           initialHistory={initialHistory}
         />

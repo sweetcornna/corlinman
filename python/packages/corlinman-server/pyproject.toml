@@ -1,6 +1,6 @@
 [project]
 name = "corlinman-server"
-version = "1.8.1"
+version = "1.8.2"
 description = "grpc.aio server entrypoint for the corlinman Python AI plane."
 requires-python = ">=3.12"
 readme = "README.md"
