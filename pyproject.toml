@@ -1,6 +1,6 @@
 [project]
 name = "corlinman"
-version = "1.8.8"
+version = "1.8.9"
 description = "Python AI plane for corlinman (LLM providers, agent reasoning)"
 requires-python = ">=3.12"
 readme = "README.md"

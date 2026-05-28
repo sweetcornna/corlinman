@@ -589,21 +589,19 @@ async def _replay_from_journal(
     transcript: list[dict[str, Any]] = []
     try:
         journal = await AgentJournal.open(path)
-        # Recent turns first; reverse to chronological for replay.
-        turn_ids = await journal.get_session_turn_ids(session_key, limit=500)
-        if not turn_ids:
+        # Pull all turns for this session at once so we have per-turn
+        # ``started_at_ms`` for synthesising the per-message ts. The
+        # facade returns most-recent-first; we replay in chronological
+        # order so the UI bubble order is correct.
+        turn_rows = await journal.list_session_turns(session_key, limit=500)
+        if not turn_rows:
             return None
-        # Stable per-turn timestamps — the journal stores per-message
-        # ordering via ``seq`` but not an explicit ts column on each
-        # message. We synthesise an ISO ts from ``turns.started_at_ms``
-        # so the client always has *some* time to render.
-        for tid in reversed(turn_ids):
-            turn_meta_rows = await journal.list_session_turns(
-                session_key, limit=1, before_turn_id=str(tid + 1)
-            )
-            started_at_ms: int | None = None
-            if turn_meta_rows:
-                started_at_ms = int(turn_meta_rows[0].get("started_at_ms") or 0)
+        for turn_row in reversed(turn_rows):
+            try:
+                tid = int(turn_row.get("turn_id"))
+            except (TypeError, ValueError):
+                continue
+            started_at_ms = int(turn_row.get("started_at_ms") or 0)
             ts_iso = (
                 datetime.fromtimestamp(started_at_ms / 1000.0, tz=timezone.utc)
                 .isoformat()
@@ -611,20 +609,23 @@ async def _replay_from_journal(
                 if started_at_ms
                 else ""
             )
-            msgs = await journal.load_messages(int(tid))
+            # ``_load_messages`` is semi-private but stable — it's the
+            # facade method ``find_resumable_turn`` uses too. Returns
+            # messages in seq order with role + content + tool fields.
+            msgs = await journal._load_messages(tid)
             for m in msgs:
                 role = str(m.get("role") or "")
-                content = m.get("content")
-                if content is None:
-                    # Tool-result rows are JSON-encoded in `content`;
-                    # raw assistant messages with only tool_calls are
-                    # empty-string content. Keep them as empty strings
-                    # so the seq is preserved.
-                    content = ""
-                # Only surface user/assistant/system in the transcript;
-                # bare ``tool`` rows are noisy for a chat UI resume.
+                # Only surface conversational roles in the resume
+                # transcript; bare ``tool`` result rows are noisy
+                # for a chat UI bubble list.
                 if role not in {"user", "assistant", "system"}:
                     continue
+                content = m.get("content")
+                if content is None:
+                    # Assistant messages with only tool_calls have
+                    # empty content — keep them as empty strings so
+                    # the seq is preserved and the bubble renders.
+                    content = ""
                 transcript.append(
                     {"role": role, "content": str(content), "ts": ts_iso}
                 )

@@ -4,6 +4,26 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.9] — 2026-05-28 — Fix: journal-backed replay uses real facade methods
+
+> v1.8.8 added the journal-backed replay path but called
+> `AgentJournal.load_messages` which doesn't exist on the facade
+> (the public method is the underscored `_load_messages`). The
+> defensive try/except in `_replay_from_journal` swallowed the
+> AttributeError and returned None, so the replay endpoint still
+> 404'd. This release wires it to the actual facade surface
+> (`list_session_turns` + `_load_messages`) and verifies end-to-end
+> on the deployment journal.
+
+### Fixed
+
+- `_replay_from_journal` now calls `journal.list_session_turns(key, limit=500)`
+  to get all turn metadata (including `started_at_ms`) in one pass,
+  then `journal._load_messages(tid)` per turn for the actual
+  message rows. Reverses to chronological order, filters to
+  user/assistant/system roles, synthesises ISO ts from the turn's
+  start time.
+
 ## [1.8.8] — 2026-05-28 — Fix: /admin/sessions/.../replay now reads from the actual journal
 
 > User report: clicking a sidebar row surfaced "未找到该会话 — not in
