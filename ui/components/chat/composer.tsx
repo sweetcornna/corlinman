@@ -4,6 +4,7 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 import {
   Bot,
+  Image as ImageIcon,
   Paperclip,
   Send,
   Sparkles,
@@ -36,6 +37,11 @@ interface ComposerProps {
   onStop: () => void;
   onOpenModelPicker?: () => void;
   onOpenPersonaPicker?: () => void;
+  /** Optional image-model pill — when both `imageModelLabel` and
+   *  `onOpenImageModelPicker` are provided, a second pill appears next
+   *  to the LLM model pill. */
+  imageModelLabel?: string;
+  onOpenImageModelPicker?: () => void;
   extraSlashCommands?: SlashCommand[];
   onSlashClear?: () => void;
   placeholder?: string;
@@ -54,6 +60,8 @@ export function Composer({
   onStop,
   onOpenModelPicker,
   onOpenPersonaPicker,
+  imageModelLabel,
+  onOpenImageModelPicker,
   extraSlashCommands,
   onSlashClear,
   placeholder,
@@ -392,6 +400,18 @@ export function Composer({
             >
               <Sparkles className="h-3 w-3" aria-hidden="true" />
               {personaLabel}
+            </button>
+          ) : null}
+          {imageModelLabel && onOpenImageModelPicker ? (
+            <button
+              type="button"
+              onClick={onOpenImageModelPicker}
+              className="inline-flex items-center gap-1 rounded border border-tp-glass-edge bg-tp-glass-inner px-1.5 py-0.5 text-[10px] text-tp-ink-2 hover:text-tp-ink"
+              data-testid="composer-image-model"
+              aria-label={t("chat.modelPicker.titleImage")}
+            >
+              <ImageIcon className="h-3 w-3" aria-hidden="true" />
+              {imageModelLabel}
             </button>
           ) : null}
         </div>

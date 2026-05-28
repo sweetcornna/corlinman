@@ -24,6 +24,7 @@ import {
 } from "@/lib/api/chat";
 import { CorlinmanApiError, fetchModels } from "@/lib/api";
 import { replaySession, type TranscriptMessage } from "@/lib/api/sessions";
+import { ChatModelPicker, type ModelPickerKind } from "@/components/chat/chat-model-picker";
 import { ChatArea } from "@/components/chat/chat-area";
 import { ChatSidebar } from "@/components/chat/chat-sidebar";
 import { ChatEmptyState } from "@/components/chat/empty-state";
@@ -93,8 +94,44 @@ export default function ChatPage() {
     queryFn: fetchModels,
     staleTime: 60_000,
   });
-  const activeModel: string =
+  const globalDefault: string =
     (modelsData?.default && modelsData.default.trim()) || FALLBACK_MODEL;
+
+  // Per-operator model overrides — persisted to localStorage so the
+  // selection survives reloads / tab switches. An empty/unset override
+  // means "follow the upstream default" (LLM = global default, image =
+  // gpt-image-2). The composer pills + the popover picker both write
+  // through these setters.
+  const [llmOverride, setLlmOverride] = React.useState<string | null>(null);
+  const [imageOverride, setImageOverride] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      setLlmOverride(localStorage.getItem("corlinman:chat:llm-model"));
+      setImageOverride(localStorage.getItem("corlinman:chat:image-model"));
+    } catch {
+      /* ignore */
+    }
+  }, []);
+  const persistOverride = React.useCallback(
+    (key: "llm-model" | "image-model", value: string) => {
+      try {
+        localStorage.setItem(`corlinman:chat:${key}`, value);
+      } catch {
+        /* ignore */
+      }
+    },
+    [],
+  );
+
+  const activeModel: string =
+    (llmOverride && llmOverride.trim()) || globalDefault;
+  const activeImageModel: string =
+    (imageOverride && imageOverride.trim()) || "gpt-image-2";
+
+  const [pickerOpen, setPickerOpen] = React.useState<ModelPickerKind | null>(
+    null,
+  );
 
   const active = React.useMemo(
     () =>
@@ -257,6 +294,21 @@ export default function ChatPage() {
           <ChatEmptyState onPick={handlePickSuggestion} />
         </section>
       )}
+      <ChatModelPicker
+        open={pickerOpen !== null}
+        onClose={() => setPickerOpen(null)}
+        kind={pickerOpen ?? "llm"}
+        current={pickerOpen === "image" ? activeImageModel : activeModel}
+        onPick={(model) => {
+          if (pickerOpen === "image") {
+            setImageOverride(model);
+            persistOverride("image-model", model);
+          } else {
+            setLlmOverride(model);
+            persistOverride("llm-model", model);
+          }
+        }}
+      />
     </>
   );
 }

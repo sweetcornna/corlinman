@@ -4,6 +4,40 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.6] — 2026-05-28 — Chat model picker (LLM + image, with custom names)
+
+> Operators can now pick the chat composer's LLM model and the image
+> model the agent should hand off to image-generation tools. Both
+> default to upstream-probed values; both accept a free-text custom
+> name for models the registry hasn't caught up to.
+
+### Added
+
+- **`ChatModelPicker` dialog** (`ui/components/chat/chat-model-picker.tsx`)
+  — `kind="llm"` lists every alias in `/admin/models` + every model
+  probed from each enabled provider via
+  `/admin/providers/{name}/models`; `kind="image"` lists every
+  image-capable provider's `image_model` config + their probed
+  models, with `gpt-image-2` as the silent fallback. Both surfaces
+  include a free-text input at the top so the operator can type any
+  model name not in the list.
+- **Image-model pill on the composer** — new optional pill next to
+  the LLM and persona pills; clicking opens the image-model picker.
+- **Per-operator overrides persisted to localStorage** — selections
+  land under `corlinman:chat:llm-model` and `corlinman:chat:image-model`;
+  empty values fall back to the upstream default (LLM = global
+  `models.default`, image = `gpt-image-2`). The composer pills always
+  reflect the effective value.
+- i18n keys: `chat.modelPicker.{titleLLM, titleImage, currentBadge,
+  defaultBadge, aliasBadge, customLabel, customPlaceholder,
+  useCustom, filterPlaceholder, listAriaLabel, emptyList}` —
+  en + zh-CN.
+
+### Tests
+
+- Chat suite 58/58 passing; typecheck clean; `next build` succeeds
+  with `/chat` at 23.4 kB (+3 kB for the picker dialog).
+
 ## [1.8.5] — 2026-05-28 — Fix: session_key was being dropped; spurious "network error" on stream end
 
 > User report: every finished turn briefly flashed a "network error"

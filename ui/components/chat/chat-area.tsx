@@ -30,6 +30,8 @@ interface ChatAreaProps {
   mentionCandidates?: MentionCandidate[];
   onOpenModelPicker?: () => void;
   onOpenPersonaPicker?: () => void;
+  imageModelLabel?: string;
+  onOpenImageModelPicker?: () => void;
 }
 
 function genSessionKey(): string {
@@ -48,6 +50,8 @@ export function ChatArea({
   mentionCandidates,
   onOpenModelPicker,
   onOpenPersonaPicker,
+  imageModelLabel,
+  onOpenImageModelPicker,
 }: ChatAreaProps) {
   const router = useRouter();
   const { t } = useTranslation();
@@ -215,6 +219,8 @@ export function ChatArea({
           modelLabel={model}
           personaLabel={personaLabel}
           mentionCandidates={mentionCandidates}
+          imageModelLabel={imageModelLabel}
+          onOpenImageModelPicker={onOpenImageModelPicker}
           replyContext={reply}
           onClearReply={() => setReply(null)}
           onSend={(text, attachments) => {
