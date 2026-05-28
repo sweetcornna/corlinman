@@ -1168,6 +1168,154 @@ export function finalizeSkipOnboard(): Promise<{
   });
 }
 
+// ---------------------------------------------------------------------------
+// First-run wizard finalize endpoints (Agent B contract — PLAN_FIRST_RUN_WIZARD.md)
+//
+// The wizard chains six sequential steps. Steps 2–5 each call exactly one of
+// the endpoints below. Backend definitions live in:
+//   python/.../gateway/routes_admin_b/onboard.py
+//
+// All endpoints require a valid admin session cookie; we simply forward the
+// already-set cookie via the shared `apiFetch` helper.
+// ---------------------------------------------------------------------------
+
+/**
+ * `POST /admin/onboard/finalize-account` (B1).
+ *
+ * Wizard Step 2: rotate the default admin username. Body carries only the
+ * new username — the gateway trusts the authed session for the password.
+ *
+ * Errors:
+ *   - 409 `username_unchanged` if the candidate equals the current username.
+ *   - 422 `invalid_username` on malformed input (lowercase + alnum + `_-`).
+ */
+export interface OnboardFinalizeAccountResponse {
+  status: string;
+  username: string;
+}
+
+export function finalizeOnboardAccount(
+  new_username: string,
+): Promise<OnboardFinalizeAccountResponse> {
+  return apiFetch<OnboardFinalizeAccountResponse>(
+    "/admin/onboard/finalize-account",
+    { method: "POST", body: { new_username } },
+  );
+}
+
+/**
+ * `POST /admin/onboard/finalize-password` (B2).
+ *
+ * Wizard Step 3: rotate the default admin password. Thin wrapper over the
+ * existing `auth.change_password` service — but additionally clears the
+ * `must_change_password` seed flag on success.
+ *
+ * Errors:
+ *   - 401 `invalid_old_password`
+ *   - 422 `weak_password`
+ */
+export interface OnboardFinalizePasswordResponse {
+  status: string;
+  must_change_password: boolean;
+}
+
+export function finalizeOnboardPassword(
+  old_password: string,
+  new_password: string,
+): Promise<OnboardFinalizePasswordResponse> {
+  return apiFetch<OnboardFinalizePasswordResponse>(
+    "/admin/onboard/finalize-password",
+    { method: "POST", body: { old_password, new_password } },
+  );
+}
+
+/**
+ * `POST /admin/onboard/finalize-persona` (B3).
+ *
+ * Wizard Step 4: pick how to seed the operator's primary persona.
+ *   - "skip":    do nothing.
+ *   - "default": ensure built-in `grantley` persona exists and is active.
+ *   - "custom":  response contains `{ redirect: "/persona" }`; the UI is
+ *                expected to defer the navigation until the rest of the
+ *                wizard has finished.
+ */
+export type OnboardPersonaChoice = "skip" | "default" | "custom";
+
+export interface OnboardFinalizePersonaResponse {
+  status: string;
+  choice: OnboardPersonaChoice;
+  redirect?: string;
+}
+
+export function finalizeOnboardPersona(
+  choice: OnboardPersonaChoice,
+): Promise<OnboardFinalizePersonaResponse> {
+  return apiFetch<OnboardFinalizePersonaResponse>(
+    "/admin/onboard/finalize-persona",
+    { method: "POST", body: { choice } },
+  );
+}
+
+/**
+ * `POST /admin/onboard/finalize-image-provider` (B4).
+ *
+ * Wizard Step 5: choose the image-generation backend.
+ *   - `{ choice: "skip" }`
+ *   - `{ choice: "reuse", provider_name }` — probe current provider; on miss
+ *     the server replies 409 with `{ supported: false, hint }`.
+ *   - `{ choice: "separate", spec }` — register a new provider that
+ *     advertises `image_capable = true`.
+ *
+ * Returns `{ status, image_provider }` on success.
+ */
+export type OnboardImageChoice = "skip" | "reuse" | "separate";
+
+/**
+ * Lightweight provider-spec payload accepted by the "separate" branch of the
+ * image-provider step. Mirrors a subset of {@link ProviderUpsert} plus the
+ * extra image-only knobs (`image_capable`, `image_model`) introduced by
+ * Agent C.
+ */
+export interface OnboardImageProviderSpec {
+  name: string;
+  base_url: string;
+  api_key: string;
+  image_model?: string;
+  /** Forwarded for forward-compat; the server fills this in if omitted. */
+  image_capable?: boolean;
+  /**
+   * The wizard always targets OpenAI-compatible endpoints for the
+   * "separate" branch; the field is still threaded in case the backend
+   * later supports more shapes.
+   */
+  kind?: ProviderKind;
+}
+
+export type OnboardImageProviderBody =
+  | { choice: "skip" }
+  | { choice: "reuse"; provider_name: string }
+  | { choice: "separate"; spec: OnboardImageProviderSpec };
+
+export interface OnboardFinalizeImageProviderResponse {
+  status: string;
+  image_provider: string;
+}
+
+/** Returned in the body of 409 when the probe says the provider can't draw. */
+export interface OnboardImageNotSupported {
+  supported: false;
+  hint: string;
+}
+
+export function finalizeOnboardImageProvider(
+  body: OnboardImageProviderBody,
+): Promise<OnboardFinalizeImageProviderResponse> {
+  return apiFetch<OnboardFinalizeImageProviderResponse>(
+    "/admin/onboard/finalize-image-provider",
+    { method: "POST", body },
+  );
+}
+
 // --- profiles (W3.1 + W3.2) -------------------------------------------------
 //
 // CRUD over `/admin/profiles`. The wire shape is defined by

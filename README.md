@@ -2,7 +2,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/ymylive/corlinman/ci.yml?branch=main&label=CI)](https://github.com/ymylive/corlinman/actions)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.2.0-brightgreen)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.7.0-brightgreen)](CHANGELOG.md)
 [![Docs](https://img.shields.io/badge/docs-architecture-informational)](docs/architecture.md)
 
 **A self-hosted intelligent-agent platform.** Give a language model durable
@@ -14,6 +14,23 @@ govern with human-in-the-loop approvals.
 
 > _Live deployment reference: <https://corlinman.cornna.xyz>._
 > _中文介绍章节见文末 ["中文速览"](#中文速览)。_
+
+---
+
+## 🚀 一键安装最新版本
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh | bash
+```
+
+升级到最新版本（保留所有数据）：
+
+```bash
+bash deploy/install.sh --upgrade
+```
+
+完整说明（preflight、health gate、China mirrors、QQ sidecar、native vs docker）见
+下面的 [Quickstart](#quickstart-60-seconds) 与 [Install paths](#install-paths) 两节。
 
 ---
 
@@ -57,11 +74,8 @@ Sunday morning without reverse-engineering twenty repos — that's corlinman.
 
 ## Quickstart (60 seconds)
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh | bash
-```
-
-The one-liner does the rest:
+Use the [one-line installer at the top of this README](#-一键安装最新版本).
+Behind the scenes that single command does the rest:
 
 1. **Preflight** — checks disk (≥ 5 GB), RAM (≥ 1 GB), port `6005`, docker version, required tools. Bails early with a clear `✗ port 6005 held by PID …` if anything's off.
 2. **Image** — `docker pull ghcr.io/ymylive/corlinman:latest` (multi-arch amd64/arm64, ~30 s). Falls back to a local `docker buildx build` if the registry is unreachable.

@@ -179,14 +179,17 @@ export default function SystemPage() {
 
   return (
     <div className="space-y-6" data-testid="system-page">
-      {/* Header */}
+      {/* Header — W3: uses `pageTitle`/`pageSubtitle` so the page reads as
+          "更新管理 / Update management" (a clear version-update surface),
+          not generic "System". The sidebar entry is now "更新 / Updates"
+          (see `sidebar.tsx`), so the page title should match. */}
       <header className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="space-y-1">
           <h1 className="text-2xl font-semibold tracking-tight text-tp-ink">
-            {t("system.title")}
+            {t("system.pageTitle")}
           </h1>
           <p className="max-w-2xl text-sm text-tp-ink-3">
-            {t("system.subtitle")}
+            {t("system.pageSubtitle")}
           </p>
         </div>
         <Button

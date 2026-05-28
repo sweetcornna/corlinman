@@ -4,6 +4,78 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] — 2026-05-28 — First-run wizard + 主聊天窗口 + image-provider probe
+
+> Lands the **first-run wizard initiative**
+> ([`docs/PLAN_FIRST_RUN_WIZARD.md`](docs/PLAN_FIRST_RUN_WIZARD.md))
+> shipped by 6 parallel agents: a 6-step onboarding flow (API config →
+> rename admin → change default password → persona choice → image API →
+> done) that gates step order so the username-then-password change can
+> never race; a `/sethome` slash command that pins a channel as the
+> operator's home so server-restart heartbeats only fire there; a
+> non-destructive image-capability probe that lets the wizard reuse
+> an OpenAI-compatible chat endpoint as the image provider when it
+> actually supports `/v1/images/generations`; and a sidebar rename
+> ("系统" → "更新") that finally tells the truth about what the page
+> does. The README now leads with the one-line installer command so
+> newcomers don't have to scroll for it.
+
+### Added
+
+- **First-run wizard (6 steps, 6 agents, single PR)** — new admin
+  endpoints `POST /admin/onboard/finalize-account`,
+  `finalize-password`, `finalize-persona`, `finalize-image-provider`
+  + `POST /admin/personas/use-default`; rewritten
+  `ui/app/onboard/page.tsx` with strict forward-gating (clicking the
+  indicator can never fast-forward past an uncompleted step) and an
+  atomicity lock that disables "back to username" once the password
+  step succeeds; persona step offers three cards (default `grantley` /
+  custom `/persona` wizard / skip), image step offers reuse-current /
+  configure-separate / skip, with a 409 fallback when the current
+  provider doesn't support image generation. Persona skill grew a
+  Stage -1 entry gate so most operators can opt out of the 7-stage
+  voice interview in one click. ([`docs/PLAN_FIRST_RUN_WIZARD.md`])
+- **`/sethome` + home-channel store** — new `home_channel_store`
+  SQLite module (tables `home_channels`, `first_chat_tips_shown`);
+  channel-side `/sethome` (`/主页`) handler pins the active
+  `ChannelBinding` as the operator's home channel; first-chat tip
+  injection in `chat_bootstrap` shows the hint exactly once per
+  `(user_id, channel, thread)`; `/use-default-persona` (`/默认人格`)
+  slash command seeds + selects `grantley` without entering the
+  wizard; lifecycle entrypoint queues a "server restarted" heartbeat
+  to every registered home channel on boot (best-effort, logged via
+  `/admin/logs/stream`).
+- **Image-provider capability probe** — new
+  `corlinman_providers.capabilities.probe_image_capability` runs a
+  non-destructive two-stage check (`GET /v1/models` regex scan first,
+  `HEAD /v1/images/generations` fallback) and never calls the actual
+  generation endpoint; new admin route
+  `POST /admin/providers/{name}/probe-image` returns
+  `{supported, evidence, models}`; `ProviderSpec` grew optional
+  `image_capable` + `image_model` fields with full TOML
+  backward-compat; `corlinman_agent.image.generate` now prefers a
+  provider with `image_capable=true` and falls back to the chat
+  default only when none is marked.
+- **Sidebar "系统" → "更新"** — admin sidebar entry relabelled with new
+  i18n keys `sidebar.updatesLabel`, `system.pageTitle`,
+  `system.pageSubtitle` (zh-CN + en); `/system` route unchanged so
+  bookmarks survive; page header copy tightened to describe version
+  + upgrade actions, not generic "system settings".
+- **One-command install prominence** — README + `docs/quickstart.md`
+  now lead with a 🚀 callout for
+  `curl -fsSL …/deploy/install.sh | bash` + `--upgrade`; version badge
+  bumped to 1.7.0.
+
+### Changed
+
+- `routes_admin_b/__init__.py` now mounts `personas` and
+  `image_provider` sub-routers alongside the existing 20.
+
+### Tests
+
+- 199 `routes_admin_b` + 625 channels + 81 lifecycle/chat
+  substitution + 281 providers tests green; UI `tsc --noEmit` clean.
+
 ## [1.6.0] — 2026-05-26 — Persona Studio + frontend overhaul + QQ/Telegram fixes
 
 > Lands the eight-wave **Persona Studio** initiative

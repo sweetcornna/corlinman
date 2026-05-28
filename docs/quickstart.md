@@ -8,6 +8,29 @@ state fits in sixty seconds if you accept the defaults.
 
 ---
 
+## 🚀 一键安装最新版本
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh | bash
+```
+
+升级到最新版本（保留所有数据）：
+
+```bash
+bash deploy/install.sh --upgrade
+```
+
+The single script auto-detects three modes: **Docker** (default — pulls
+`ghcr.io/ymylive/corlinman:latest`, multi-arch amd64/arm64; pass
+`--mode docker` to force), **Native** (uv + systemd; pass `--mode native`
+to force, no container runtime required), and **Upgrade** (`--upgrade`
+re-detects the installed mode, pulls/rebuilds the new image or re-syncs
+the venv, restarts the service, re-probes `/health`, and **never touches
+your data dir**). Append `--china` for Tsinghua PyPI + gh-proxy +
+DaoCloud mirrors. Source: [`deploy/install.sh`](../deploy/install.sh).
+
+---
+
 ## Prerequisites
 
 Pick one:

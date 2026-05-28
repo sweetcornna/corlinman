@@ -28,14 +28,18 @@ allowed-tools:
 # Configure Persona —— 分阶段材料收集向导
 
 这个 skill 的核心契约：**materials-first（材料中心）+ 每阶段必须用户确认**。
-它不是「列出已有 persona 的功能」，也不是「一次性表单」；它是一个 **7 阶段**
-（Stage 0-6）材料采集流程，每个阶段都以一个**审阅 ask_user**作为闸门，用户没
-点「确认」就不能进入下一阶段。
+它不是「列出已有 persona 的功能」，也不是「一次性表单」；它是一个 **8 阶段**
+（Stage -1, 0, 1-6）材料采集流程，每个采集阶段都以一个**审阅 ask_user**作为
+闸门，用户没点「确认」就不能进入下一阶段。
 
-Stage 0 是 W2 加入的新阶段，决定后续走「公众人物自动调研」还是「自创角色手动
-配置」两条路径。自创角色保持现有 Stage 1-6 不变；公众人物会用 `web_search` +
-`web_fetch` 调研后按 `huashu-nuwa` skill 的提炼框架蒸馏出 5 个 bucket，预填
-Stage 1-3 的 buffer，**每阶段仍走四选项审阅闸门**。
+Stage -1 是 first-run wizard 加入的入口闸门，三选一询问「使用默认 grantley /
+自定义人格 / 跳过」；选「默认」或「跳过」就**直接结束**，根本不进入 Stage 0。
+只有选「自定义人格」才会落入 Stage 0+ 的完整向导。
+
+Stage 0 是 W2 加入的分支节点，决定后续走「公众人物自动调研」还是「自创角色
+手动配置」两条路径。自创角色保持现有 Stage 1-6 不变；公众人物会用
+`web_search` + `web_fetch` 调研后按 `huashu-nuwa` skill 的提炼框架蒸馏出 5 个
+bucket，预填 Stage 1-3 的 buffer，**每阶段仍走四选项审阅闸门**。
 
 ## 何时启用
 
@@ -76,6 +80,47 @@ ask_user({
 
 任何阶段都不允许把多条问题合并成单个 ask_user；voice 访谈那一类多轮问询也是
 一个问题一个 ask_user。
+
+---
+
+## Stage -1 — 询问默认助手风格（first-run wizard 入口闸门）
+
+**这是整个 wizard 的第一动作**，必须在 Stage 0 之前执行。在询问任何其他问题
+之前（包括 Stage 0 的"公众人物 vs 自创角色"二选一），先用 `ask_user` 询问用户
+是否想直接用默认 `grantley` 助手风格、自定义人格、还是跳过。
+
+### 采集
+
+**第一动作**：ask_user 三选一，决定后续流程。
+
+```
+ask_user({
+  "question": "想要使用默认助手风格（grantley），还是自定义一个人格？",
+  "options": ["使用默认 grantley", "自定义人格", "跳过"],
+  "multiple": false
+})
+```
+
+### 分支处理
+
+- **使用默认 grantley** → 调用 use-default-persona 流程（`POST
+  /admin/personas/use-default`，或下发 `/use-default-persona` 指令让
+  channel handler 路由）；用一句话向用户确认（例：「✅ 已为你启用默认助手
+  风格 grantley，可以开始聊天了。」），**整个 wizard 在此结束，不进入
+  Stage 0**。
+- **跳过** → 礼貌道别（例：「好的，本次不配置人格。需要时随时可以再说
+  /persona 重新启动这个向导。」），**整个 wizard 在此结束，不进入 Stage 0**。
+- **自定义人格** → 照常进入 **Stage 0**（公众人物 vs 自创角色二选一），后续
+  6 个阶段 + 审阅闸门完全按原契约走。
+
+### 注意
+
+- Stage -1 **本身不需要审阅 ask_user**——三个选项本身就是用户的最终决定，
+  不存在「补充 / 修改 / 重做」。这与 Stage 0 自创分支不需要单独审阅是同一
+  理由（用户的选择即确认）。
+- Stage -1 是 first-run wizard 的快捷出口：约 80% 的新用户会选「默认
+  grantley」直接结束，避免被 7 个阶段的材料采集吓退。只有明确想自定义的
+  操作员才会落入 Stage 0+。
 
 ---
 

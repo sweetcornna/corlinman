@@ -2337,11 +2337,23 @@ export const zhCN = {
     },
   },
 
+  // W3 — sidebar-specific labels. Currently only the "更新" entry uses
+  // this namespace; future sidebar-only labels (group names, section
+  // headings) should land here instead of bleeding into feature namespaces.
+  sidebar: {
+    updatesLabel: "更新",
+  },
+
   // W2.1 — /admin/system page (version + update banner + upgrade
   // commands). All keys consumed by `<UpdateBubble>` + the system page.
+  // W3: `pageTitle` / `pageSubtitle` replace the legacy `title` / `subtitle`
+  // on the page header so it reads as "更新管理" (not generic "系统"); the
+  // old keys are retained for any out-of-tree consumers we haven't migrated.
   system: {
     title: "系统",
     subtitle: "版本、更新与升级工具",
+    pageTitle: "更新管理",
+    pageSubtitle: "查看当前版本、检查新版本、应用一键升级",
     sidebarLabel: "系统",
     version: {
       current: "当前版本",
