@@ -4,6 +4,38 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.8] — 2026-05-28 — Fix: /admin/sessions/.../replay now reads from the actual journal
+
+> User report: clicking a sidebar row surfaced "未找到该会话 — not in
+> sessions database, may have been cleaned up". Root cause: the
+> `/admin/sessions` listing reads from
+> `<data_dir>/agent_journal.sqlite` (where every `/v1/chat/completions`
+> turn lands), but `/admin/sessions/{key}/replay` was reading from a
+> different file, `<data_dir>/sessions.sqlite`, which the OpenAI-compat
+> path never writes to and is empty on this deployment. So every
+> session listed in the sidebar would 404 when clicked.
+
+### Fixed
+
+- `_replay_for_request` now tries a new `_replay_from_journal` path
+  first: it opens `agent_journal.sqlite` via the existing
+  `AgentJournal` facade, pulls every `turn_id` for the requested
+  `session_key`, calls `load_messages` per turn, filters to
+  user/assistant/system roles, synthesises per-turn ISO timestamps
+  from `turns.started_at_ms`, and returns a `ReplayOutput`-shaped
+  dict that drops straight into `_replay_to_dict`. Falls back to
+  the legacy `sessions.sqlite` store when the journal has nothing
+  for the key (covers operators with pre-port history).
+- `_replay_to_dict` passes dict inputs through unchanged so the
+  journal path doesn't need to fabricate the legacy dataclasses.
+
+### Tests
+
+- `routes_admin_a` pytest suite: **76 passed**.
+- Removed pre-existing stale `python/packages/corlinman-embedding/`
+  directory (empty `src/` + `tests/` with no `pyproject.toml`)
+  unblocking `uv lock` / `uv run pytest`.
+
 ## [1.8.7] — 2026-05-28 — Fix: legacy empty-session_key rows in sidebar + defensive fallback
 
 > User report: clicking a row in the chat sidebar opens the

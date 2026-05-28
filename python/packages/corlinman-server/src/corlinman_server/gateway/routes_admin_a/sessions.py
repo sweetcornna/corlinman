@@ -40,6 +40,7 @@ Tenant resolution mirrors :mod:`api_keys`:
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -553,6 +554,113 @@ async def _wipe_memory_for_session(state: AdminState, session_key: str) -> None:
         )
 
 
+
+async def _replay_from_journal(
+    data_dir: Path, tenant: TenantId, session_key: str, mode: ReplayMode
+) -> dict[str, Any] | None:
+    """Reconstruct a replay-shaped JSON payload from the per-turn journal.
+
+    The legacy ``corlinman_replay`` module reads from
+    ``<data_dir>/sessions.sqlite``, which the OpenAI-compat
+    ``/v1/chat/completions`` path never writes to — all real chat
+    history is in ``agent_journal.sqlite/turn_messages``. This helper
+    joins ``turns`` + ``turn_messages`` for the requested ``session_key``
+    and produces the same JSON shape ``_replay_to_dict`` would emit,
+    so the route handler can use it as a drop-in replacement for the
+    legacy replay when the legacy store is empty / missing the key.
+
+    Returns ``None`` on any infrastructure failure (no journal, import
+    error, etc.) so the caller can fall back to the legacy path.
+    Returns ``{...}`` with an empty ``transcript`` when the session
+    really has no messages — the caller decides whether to 404 or
+    return an empty dump.
+    """
+    try:
+        from corlinman_server.agent_journal import AgentJournal
+    except ImportError as exc:  # pragma: no cover — defensive
+        logger.debug("admin.sessions.journal_import_failed", error=str(exc))
+        return None
+
+    path = _journal_path(data_dir)
+    if not path.exists():
+        return None
+
+    journal: Any | None = None
+    transcript: list[dict[str, Any]] = []
+    try:
+        journal = await AgentJournal.open(path)
+        # Recent turns first; reverse to chronological for replay.
+        turn_ids = await journal.get_session_turn_ids(session_key, limit=500)
+        if not turn_ids:
+            return None
+        # Stable per-turn timestamps — the journal stores per-message
+        # ordering via ``seq`` but not an explicit ts column on each
+        # message. We synthesise an ISO ts from ``turns.started_at_ms``
+        # so the client always has *some* time to render.
+        for tid in reversed(turn_ids):
+            turn_meta_rows = await journal.list_session_turns(
+                session_key, limit=1, before_turn_id=str(tid + 1)
+            )
+            started_at_ms: int | None = None
+            if turn_meta_rows:
+                started_at_ms = int(turn_meta_rows[0].get("started_at_ms") or 0)
+            ts_iso = (
+                datetime.fromtimestamp(started_at_ms / 1000.0, tz=timezone.utc)
+                .isoformat()
+                .replace("+00:00", "Z")
+                if started_at_ms
+                else ""
+            )
+            msgs = await journal.load_messages(int(tid))
+            for m in msgs:
+                role = str(m.get("role") or "")
+                content = m.get("content")
+                if content is None:
+                    # Tool-result rows are JSON-encoded in `content`;
+                    # raw assistant messages with only tool_calls are
+                    # empty-string content. Keep them as empty strings
+                    # so the seq is preserved.
+                    content = ""
+                # Only surface user/assistant/system in the transcript;
+                # bare ``tool`` rows are noisy for a chat UI resume.
+                if role not in {"user", "assistant", "system"}:
+                    continue
+                transcript.append(
+                    {"role": role, "content": str(content), "ts": ts_iso}
+                )
+    except Exception as exc:  # noqa: BLE001 — degrade silently
+        logger.debug(
+            "admin.sessions.journal_replay_failed",
+            error=str(exc),
+            session_key=session_key,
+        )
+        return None
+    finally:
+        if journal is not None:
+            try:
+                await journal.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    if not transcript:
+        return None
+
+    return {
+        "session_key": session_key,
+        "mode": ("rerun" if mode == ReplayMode.RERUN else "transcript"),
+        "transcript": transcript,
+        "summary": {
+            "message_count": len(transcript),
+            "tenant_id": tenant.as_str(),
+            **(
+                {"rerun_diff": "not_implemented_yet"}
+                if mode == ReplayMode.RERUN
+                else {}
+            ),
+        },
+    }
+
+
 async def _replay_for_request(
     state: AdminState,
     data_dir: Path,
@@ -560,6 +668,15 @@ async def _replay_for_request(
     session_key: str,
     mode: ReplayMode,
 ) -> Any:
+    # Primary path: read from the per-turn journal where the live
+    # /v1/chat/completions path actually writes. Falls back to the
+    # legacy sessions.sqlite store if the journal has no messages
+    # for this key (covers operators with pre-port history still
+    # only in the legacy file).
+    primary = await _replay_from_journal(data_dir, tenant, session_key, mode)
+    if primary is not None:
+        return primary
+
     rep_tenant = _to_replay_tenant(tenant)
     if _should_use_flat_legacy_sessions(state, tenant):
         return await _replay_flat_legacy_session(
@@ -581,7 +698,10 @@ def _parse_mode(raw: str | None) -> ReplayMode:
 
 def _replay_to_dict(out: Any) -> dict[str, Any]:
     """Serialise a :class:`ReplayOutput` to the same JSON shape the Rust
-    side emits."""
+    side emits. Dict inputs (from the journal-backed replay path) are
+    passed through unchanged — they already match the wire shape."""
+    if isinstance(out, dict):
+        return out
     summary = {
         "message_count": out.summary.message_count,
         "tenant_id": out.summary.tenant_id,
