@@ -12,7 +12,9 @@ import { useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { ArtifactPanel } from "@/components/chat/artifact-panel";
 import { Composer } from "@/components/chat/composer";
+import type { MentionCandidate } from "@/components/chat/composer-mention-menu";
 import { ChatEmptyState } from "@/components/chat/empty-state";
+import { ConversationSearch } from "@/components/chat/conversation-search";
 import { MessageList } from "@/components/chat/message-list";
 import { useChatStream } from "@/lib/chat/use-chat-stream";
 import {
@@ -30,6 +32,8 @@ interface ChatAreaProps {
   agentId?: string;
   personaId?: string;
   personaLabel?: string;
+  /** Mention candidates surfaced by typing `@` in the composer. */
+  mentionCandidates?: MentionCandidate[];
   onOpenModelPicker?: () => void;
   onOpenPersonaPicker?: () => void;
 }
@@ -47,6 +51,7 @@ export function ChatArea({
   agentId,
   personaId,
   personaLabel,
+  mentionCandidates,
   onOpenModelPicker,
   onOpenPersonaPicker,
 }: ChatAreaProps) {
@@ -58,6 +63,10 @@ export function ChatArea({
     personaId,
   });
   const arts = useArtifacts();
+  const [reply, setReply] = React.useState<{
+    authorLabel: string;
+    preview: string;
+  } | null>(null);
 
   // Hydrate the hook from server history once per sessionKey.
   const hydratedKeyRef = React.useRef<string | null>(null);
@@ -103,6 +112,26 @@ export function ChatArea({
     },
     [chat, router],
   );
+
+  const handleReply = React.useCallback(
+    (messageId: string) => {
+      const all = chat.pendingMessage
+        ? [...chat.messages, chat.pendingMessage]
+        : chat.messages;
+      const m = all.find((x) => x.id === messageId);
+      if (!m) return;
+      const preview = m.content.slice(0, 120);
+      const authorLabel =
+        m.role === "user" ? "you" : m.role === "assistant" ? "assistant" : "system";
+      setReply({ authorLabel, preview });
+    },
+    [chat.messages, chat.pendingMessage],
+  );
+
+  const jumpToMessage = React.useCallback((messageId: string) => {
+    const el = document.getElementById(`chat-msg-${messageId}`);
+    el?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, []);
 
   const handleOpenArtifact = React.useCallback(
     (language: string, source: string) => {
@@ -165,7 +194,12 @@ export function ChatArea({
           </div>
         </header>
 
-        <div className="flex-1 overflow-hidden">
+        <div className="relative flex-1 overflow-hidden">
+          <ConversationSearch
+            messages={chat.messages}
+            onJump={jumpToMessage}
+            bindHotkey
+          />
           <MessageList
             messages={chat.messages}
             pendingMessage={chat.pendingMessage}
@@ -173,6 +207,7 @@ export function ChatArea({
             onApprove={chat.approve}
             onEdit={handleEdit}
             onBranch={handleBranch}
+            onReply={handleReply}
             onOpenArtifact={handleOpenArtifact}
             emptyState={<ChatEmptyState onPick={handlePickSuggestion} />}
           />
@@ -182,8 +217,15 @@ export function ChatArea({
           isStreaming={chat.isStreaming}
           modelLabel={model}
           personaLabel={personaLabel}
+          mentionCandidates={mentionCandidates}
+          replyContext={reply}
+          onClearReply={() => setReply(null)}
           onSend={(text, attachments) => {
-            void chat.sendMessage(text, attachments);
+            const finalText = reply
+              ? `> ${reply.authorLabel}: ${reply.preview}\n\n${text}`
+              : text;
+            void chat.sendMessage(finalText, attachments);
+            setReply(null);
           }}
           onStop={() => {
             void chat.stop();

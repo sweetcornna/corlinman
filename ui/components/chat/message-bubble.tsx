@@ -18,6 +18,7 @@ import * as React from "react";
 import {
   Bot,
   Copy,
+  CornerUpLeft,
   GitFork,
   Image as ImageIcon,
   Paperclip,
@@ -52,6 +53,8 @@ interface MessageBubbleProps {
   onEdit?: (messageId: string, newContent: string) => void;
   /** Fork conversation from this message. */
   onBranch?: (messageId: string) => void;
+  /** Quote-reply: prefill the composer with a quoted reference. */
+  onReply?: (messageId: string) => void;
   /** Push a code block from the markdown body into the artifact panel. */
   onOpenArtifact?: (language: string, source: string) => void;
   /** When >1 versions exist for the same logical turn, render a switcher. */
@@ -75,6 +78,7 @@ export function MessageBubble({
   onApprove,
   onEdit,
   onBranch,
+  onReply,
   onOpenArtifact,
   versionIndex,
   versionCount,
@@ -125,6 +129,8 @@ export function MessageBubble({
       data-testid="chat-bubble"
       data-role={message.role}
       data-pending={message.pending ? "true" : undefined}
+      data-message-id={message.id}
+      id={`chat-msg-${message.id}`}
     >
       <div
         className={cn(
@@ -339,6 +345,18 @@ export function MessageBubble({
               >
                 <GitFork className="h-3 w-3" aria-hidden="true" />
                 Branch
+              </button>
+            ) : null}
+            {onReply ? (
+              <button
+                type="button"
+                onClick={() => onReply(message.id)}
+                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-tp-glass-inner"
+                aria-label="Reply with quote"
+                data-testid="bubble-reply"
+              >
+                <CornerUpLeft className="h-3 w-3" aria-hidden="true" />
+                Reply
               </button>
             ) : null}
             {versionCount && versionCount > 1 ? (

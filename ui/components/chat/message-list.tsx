@@ -29,6 +29,7 @@ interface MessageListProps {
   ) => void;
   onEdit?: (messageId: string, newContent: string) => void;
   onBranch?: (messageId: string) => void;
+  onReply?: (messageId: string) => void;
   onOpenArtifact?: (language: string, source: string) => void;
   emptyState?: React.ReactNode;
 }
@@ -42,6 +43,7 @@ export function MessageList({
   onApprove,
   onEdit,
   onBranch,
+  onReply,
   onOpenArtifact,
   emptyState,
 }: MessageListProps) {
@@ -105,6 +107,7 @@ export function MessageList({
               onApprove={onApprove}
               onEdit={m.role === "user" ? onEdit : undefined}
               onBranch={onBranch}
+              onReply={onReply}
               onOpenArtifact={onOpenArtifact}
             />
           ))}

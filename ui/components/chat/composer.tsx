@@ -39,6 +39,11 @@ import {
 } from "@/lib/api/chat";
 import { ComposerAttachments } from "@/components/chat/composer-attachments";
 import {
+  ComposerMentionMenu,
+  detectMentionQuery,
+  type MentionCandidate,
+} from "@/components/chat/composer-mention-menu";
+import {
   ComposerSlashMenu,
   type SlashCommand,
 } from "@/components/chat/composer-slash-menu";
@@ -55,6 +60,11 @@ interface ComposerProps {
   extraSlashCommands?: SlashCommand[];
   onSlashClear?: () => void;
   placeholder?: string;
+  /** Candidates for the `@`-mention picker (agents, skills, personas). */
+  mentionCandidates?: MentionCandidate[];
+  /** Quoted reply context shown above the textarea. Pass null to clear. */
+  replyContext?: { authorLabel: string; preview: string } | null;
+  onClearReply?: () => void;
 }
 
 const MAX_TEXTAREA_PX = 220;
@@ -70,8 +80,12 @@ export function Composer({
   extraSlashCommands,
   onSlashClear,
   placeholder,
+  mentionCandidates,
+  replyContext,
+  onClearReply,
 }: ComposerProps) {
   const [text, setText] = React.useState("");
+  const [caret, setCaret] = React.useState(0);
   const [attachments, setAttachments] = React.useState<ChatAttachment[]>([]);
   const [isDraggingOver, setIsDraggingOver] = React.useState(false);
   const taRef = React.useRef<HTMLTextAreaElement | null>(null);
@@ -88,6 +102,15 @@ export function Composer({
   // ── slash menu ────────────────────────────────────────────────────
   const slashOpen = text.startsWith("/");
   const slashQuery = slashOpen ? text.slice(1) : "";
+
+  // ── @-mention menu ─────────────────────────────────────────────────
+  const mention = React.useMemo(
+    () =>
+      mentionCandidates && mentionCandidates.length > 0
+        ? detectMentionQuery(text, caret)
+        : null,
+    [text, caret, mentionCandidates],
+  );
 
   const builtinSlashCommands = React.useMemo<SlashCommand[]>(
     () => [
@@ -238,6 +261,28 @@ export function Composer({
     [],
   );
 
+  const handlePickMention = React.useCallback(
+    (c: MentionCandidate) => {
+      if (!mention) return;
+      const before = text.slice(0, mention.start);
+      const after = text.slice(mention.end);
+      const insert = `@${c.name} `;
+      const next = `${before}${insert}${after}`;
+      setText(next);
+      // Move caret past the inserted token on the next tick.
+      const newCaret = before.length + insert.length;
+      window.requestAnimationFrame(() => {
+        const el = taRef.current;
+        if (el) {
+          el.focus();
+          el.setSelectionRange(newCaret, newCaret);
+          setCaret(newCaret);
+        }
+      });
+    },
+    [text, mention],
+  );
+
   // ── render ────────────────────────────────────────────────────────
   return (
     <div
@@ -256,6 +301,29 @@ export function Composer({
       onDrop={handleDrop}
       data-testid="composer"
     >
+      {replyContext ? (
+        <div
+          className="flex items-center gap-2 border-b border-tp-glass-edge bg-tp-glass-inner/60 px-3 py-1.5 text-[11px]"
+          data-testid="composer-reply"
+        >
+          <span className="rounded bg-tp-amber/20 px-1 py-0 font-mono text-tp-ink">
+            ↩ {replyContext.authorLabel}
+          </span>
+          <span className="flex-1 truncate text-tp-ink-2">
+            {replyContext.preview}
+          </span>
+          <button
+            type="button"
+            onClick={onClearReply}
+            className="rounded p-1 text-tp-ink-3 hover:bg-tp-glass-inner hover:text-tp-ink"
+            aria-label="Clear reply context"
+            data-testid="composer-reply-clear"
+          >
+            ×
+          </button>
+        </div>
+      ) : null}
+
       <ComposerAttachments
         attachments={attachments}
         onRemove={(id) =>
@@ -296,14 +364,41 @@ export function Composer({
               onClose={() => setText("")}
             />
           ) : null}
+          {!slashOpen && mention && mentionCandidates ? (
+            <ComposerMentionMenu
+              query={mention.query}
+              candidates={mentionCandidates}
+              onPick={handlePickMention}
+              onClose={() => {
+                // Insert a space to break out of the mention without closing
+                // the composer.
+                setText(text + " ");
+              }}
+            />
+          ) : null}
           <textarea
             ref={taRef}
             value={text}
-            onChange={(e) => setText(e.target.value)}
+            onChange={(e) => {
+              setText(e.target.value);
+              setCaret(e.target.selectionStart ?? e.target.value.length);
+            }}
+            onKeyUp={(e) =>
+              setCaret(
+                (e.currentTarget.selectionStart ??
+                  e.currentTarget.value.length) as number,
+              )
+            }
+            onClick={(e) =>
+              setCaret(
+                (e.currentTarget.selectionStart ??
+                  e.currentTarget.value.length) as number,
+              )
+            }
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
             rows={1}
-            placeholder={placeholder ?? "Message…  (Enter to send, Shift+Enter for newline, / for commands)"}
+            placeholder={placeholder ?? "Message…  (Enter to send, Shift+Enter for newline, / for commands, @ for mentions)"}
             className={cn(
               "w-full resize-none rounded-md border border-tp-glass-edge bg-tp-glass-inner",
               "px-3 py-2 text-[13px] text-tp-ink placeholder:text-tp-ink-3",
