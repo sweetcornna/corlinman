@@ -209,6 +209,13 @@ from corlinman_channels.wechat_official import (
     parse_wechat_xml,
     verify_signature,
 )
+from corlinman_channels.corlinman import (
+    DEFAULT_ACCOUNT as WEB_DEFAULT_ACCOUNT,
+    CORLINMAN_CHANNEL_ENV_FLAG,
+    CorlinmanChannel,
+    CorlinmanOutboundFrame,
+    corlinman_channel_enabled,
+)
 from corlinman_channels.wechat_official_send import (
     WeChatOfficialSender,
     split_for_send,
@@ -241,7 +248,12 @@ __all__ = [  # noqa: RUF022 — grouped by subsystem for human readability.
     "ChannelRegistry",
     "QqChannel",
     "TelegramChannel",
+    "CORLINMAN_CHANNEL_ENV_FLAG",
+    "WEB_DEFAULT_ACCOUNT",
+    "CorlinmanChannel",
+    "CorlinmanOutboundFrame",
     "spawn_all",
+    "corlinman_channel_enabled",
     # Rate limit
     "GC_INTERVAL",
     "GC_STALE_AFTER",
