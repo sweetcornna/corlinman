@@ -34,6 +34,33 @@ INSTALL_PREFIX="${INSTALL_PREFIX:-/opt/corlinman}"
 REPO_OWNER="${UPGRADER_REPO_OWNER:-ymylive}"
 REPO_NAME="${UPGRADER_REPO_NAME:-corlinman}"
 
+# When invoked from corlinman-upgrader.service (User=root, systemd's
+# restrictive default PATH) install.sh's `require uv` died because uv
+# lives at /root/.local/bin/uv. Older units (≤ v1.8.9) shipped without
+# the PATH override now emitted by install.sh; this in-script probe
+# patches them at runtime so the helper doesn't need a unit rewrite to
+# recover. Idempotent for newer units where PATH is already set.
+for _path_candidate in \
+    /root/.local/bin \
+    "${INSTALL_PREFIX}/.local/bin" \
+    /usr/local/lib/node_modules/.bin; do
+    if [[ -d "$_path_candidate" ]]; then
+        case ":$PATH:" in
+            *":$_path_candidate:"*) ;;
+            *) PATH="${_path_candidate}:${PATH}" ;;
+        esac
+    fi
+done
+for _path_candidate in /home/*/.local/bin; do
+    [[ -d "$_path_candidate" ]] || continue
+    case ":$PATH:" in
+        *":$_path_candidate:"*) ;;
+        *) PATH="${_path_candidate}:${PATH}" ;;
+    esac
+done
+unset _path_candidate
+export PATH
+
 REQUEST_FILE="${DATA_DIR}/.upgrade-request"
 STATUS_FILE="${DATA_DIR}/.upgrade-status"
 PROCESSED_FILE="${DATA_DIR}/.upgrade-request.processed"

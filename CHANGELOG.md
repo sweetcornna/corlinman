@@ -4,6 +4,36 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.10] — 2026-05-28 — Fix: one-click native upgrader can find uv/pnpm
+
+> User report: clicking "升级到 v1.8.x" on the admin /system page wrote
+> the request file, the systemd helper fired, but the upgrade always
+> ended in `install_sh_exit_1` with no clear reason in the UI. Root
+> cause: `corlinman-upgrader.service` runs as `User=root` with systemd's
+> restrictive default `PATH` (`/usr/local/sbin:/usr/local/bin:/usr/sbin:
+> /usr/bin:/sbin:/bin`), which excludes `/root/.local/bin` where `uv`
+> actually lives. `install.sh`'s `require uv` therefore died before the
+> repo was even fetched. The same gap silently skipped the UI rebuild
+> (no pnpm on PATH).
+>
+> Existing deployments need one manual upgrade (per `docs/deploy/...`
+> runbook) to land the new scripts. From v1.8.10 onward the one-click
+> flow completes end-to-end.
+
+### Fixed
+
+- `install.sh` now calls `augment_path` before any `require` check —
+  prepends `$HOME/.local/bin`, `/root/.local/bin`, every
+  `/home/*/.local/bin`, and `/usr/local/lib/node_modules/.bin` to PATH
+  when they exist. Idempotent; no-op when PATH already contains them.
+- `corlinman-upgrader.sh` performs the same probe at the top of the
+  script (before invoking `install.sh`), so older units that pre-date
+  the new `Environment=PATH=` line still recover at runtime.
+- `install_native()` writes
+  `Environment=PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:
+  /usr/sbin:/usr/bin:/sbin:/bin` into the freshly emitted
+  `corlinman-upgrader.service` — canonical fix for new installs.
+
 ## [1.8.9] — 2026-05-28 — Fix: journal-backed replay uses real facade methods
 
 > v1.8.8 added the journal-backed replay path but called

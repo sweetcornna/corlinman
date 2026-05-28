@@ -125,6 +125,39 @@ warn() { printf "\033[1;33m!\033[0m %s\n" "$*" >&2; }
 die()  { printf "\033[1;31m✗\033[0m %s\n" "$*" >&2; exit 1; }
 require() { command -v "$1" >/dev/null 2>&1 || die "required tool '$1' not on PATH"; }
 
+# ----- PATH augmentation -----------------------------------------------------
+# install.sh is called both interactively (where ~/.bashrc has already
+# pulled ~/.local/bin into PATH) and from `corlinman-upgrader.service`
+# (User=root, systemd's restrictive default PATH = /usr/local/sbin:
+# /usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin — no ~/.local/bin).
+# In the latter case `require uv` fired `die` even though uv was happily
+# installed at /root/.local/bin/uv, leaving operators with a cryptic
+# "required tool 'uv' not on PATH" in the upgrader log and a one-click
+# upgrade that never completes. Probe the well-known locations and add
+# whichever exist to PATH before any `require` runs.
+augment_path() {
+    local d
+    for d in "$HOME/.local/bin" /root/.local/bin /usr/local/lib/node_modules/.bin; do
+        [[ -d "$d" ]] || continue
+        case ":$PATH:" in
+            *":$d:"*) ;;
+            *) PATH="$d:$PATH" ;;
+        esac
+    done
+    # Match *every* home dir's .local/bin so sudo-from-non-root flows
+    # (e.g. ubuntu user with passwordless sudo) still find uv.
+    local home_local
+    for home_local in /home/*/.local/bin; do
+        [[ -d "$home_local" ]] || continue
+        case ":$PATH:" in
+            *":$home_local:"*) ;;
+            *) PATH="$home_local:$PATH" ;;
+        esac
+    done
+    export PATH
+}
+augment_path
+
 # ----- UI stage --------------------------------------------------------------
 # Build the Next.js static export (``ui/out``) and place it at
 # ``$PREFIX/ui-static`` — the directory the systemd unit points
@@ -706,6 +739,12 @@ EOF
         #   * TimeoutStartSec=600 hard cap
         # See deploy/corlinman-upgrader.sh for the full safety story.
         log "writing one-click upgrader units"
+        # PATH explicitly extends systemd's restrictive default so
+        # `require uv` (and pnpm lookups in build_and_place_ui) find tools
+        # installed under /root/.local/bin or the install user's
+        # ~/.local/bin without depending on the operator's interactive
+        # shell config. Without this the upgrader silently failed with
+        # "required tool 'uv' not on PATH" (see CHANGELOG v1.8.10).
         sudo tee /etc/systemd/system/corlinman-upgrader.service >/dev/null <<EOF
 [Unit]
 Description=corlinman one-shot upgrader
@@ -717,6 +756,7 @@ Type=oneshot
 User=root
 Environment=CORLINMAN_DATA_DIR=${DATA_DIR}
 Environment=INSTALL_PREFIX=${PREFIX}
+Environment=PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/bin/bash ${PREFIX}/repo/deploy/corlinman-upgrader.sh
 StandardOutput=journal
 StandardError=journal
