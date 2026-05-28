@@ -90,6 +90,11 @@ class SessionSummaryOut(BaseModel):
     sourced from the per-turn journal (the new primary path); they stay
     ``None`` for rows coming from the legacy ``sessions.sqlite``
     fallback so the UI gracefully renders a placeholder.
+
+    ``title`` / ``pinned`` / ``archived`` are operator-supplied metadata
+    persisted via ``PATCH /admin/sessions/{key}`` (in-app chat MVP).
+    Defaults: ``title=None``, ``pinned=False``, ``archived=False`` —
+    legacy rows with no ``session_meta`` entry round-trip unchanged.
     """
 
     session_key: str
@@ -97,6 +102,34 @@ class SessionSummaryOut(BaseModel):
     message_count: int
     last_user_text: str | None = None
     last_status: str | None = None
+    title: str | None = None
+    pinned: bool = False
+    archived: bool = False
+
+
+class SessionPatchBody(BaseModel):
+    """``PATCH /admin/sessions/{key}`` body.
+
+    Every field is optional — the route requires at least one to be
+    present (returns 422 otherwise via :meth:`_require_nonempty`).
+    """
+
+    title: str | None = None
+    pinned: bool | None = None
+    archived: bool | None = None
+
+
+class SessionCancelOut(BaseModel):
+    """``POST /admin/sessions/{key}/cancel`` response.
+
+    ``status``:
+        * ``"cancelled"``   — an active loop was found + cancel fired.
+        * ``"not_running"`` — the session exists but has no in-progress turn.
+    ``turn_id`` is the id of the cancelled turn (when known), else ``None``.
+    """
+
+    status: str
+    turn_id: str | None = None
 
 
 class SessionsListOut(BaseModel):
@@ -311,9 +344,109 @@ async def _list_from_journal(
             message_count=s.message_count,
             last_user_text=s.last_user_text,
             last_status=s.last_status,
+            # In-app chat MVP — operator metadata pulled from the
+            # ``session_meta`` table via the same LEFT JOIN that powers
+            # the pinned-first ordering. Defaults to (None, False,
+            # False) when no meta row exists yet.
+            title=s.title,
+            pinned=s.pinned,
+            archived=s.archived,
         )
         for s in summaries
     ]
+
+
+async def _session_exists_in_journal(
+    data_dir: Path, session_key: str
+) -> bool:
+    """Cheap existence probe — returns ``True`` iff the journal has at
+    least one turn for ``session_key``. Used by the cancel + patch
+    routes to surface a 404 instead of silently no-opping on a typoed
+    key. Returns ``False`` when the journal is unavailable (the route
+    layer prefers a 404 to a 503 here — the operator's already lost).
+    """
+    try:
+        from corlinman_server.agent_journal import AgentJournal
+    except ImportError:  # pragma: no cover — defensive
+        return False
+    path = _journal_path(data_dir)
+    if not path.exists():
+        return False
+    journal: Any | None = None
+    try:
+        journal = await AgentJournal.open(path)
+        return await journal.session_exists(session_key)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "admin.sessions.session_exists_failed",
+            error=str(exc),
+            session_key=session_key,
+        )
+        return False
+    finally:
+        if journal is not None:
+            try:
+                await journal.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+async def _update_session_meta_in_journal(
+    data_dir: Path,
+    session_key: str,
+    *,
+    title: str | None,
+    pinned: bool | None,
+    archived: bool | None,
+) -> "SessionSummaryOut | None":
+    """Upsert ``session_meta`` for ``session_key`` and project the result
+    back into a :class:`SessionSummaryOut`.
+
+    Returns ``None`` when the session has no journaled turns OR the
+    journal is unavailable — both map to a 404 at the route layer so
+    the client gets one consistent error envelope.
+    """
+    try:
+        from corlinman_server.agent_journal import AgentJournal
+    except ImportError:  # pragma: no cover — defensive
+        return None
+    path = _journal_path(data_dir)
+    if not path.exists():
+        return None
+    journal: Any | None = None
+    try:
+        journal = await AgentJournal.open(path)
+        summary = await journal.update_session_meta(
+            session_key,
+            title=title,
+            pinned=pinned,
+            archived=archived,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "admin.sessions.update_meta_failed",
+            error=str(exc),
+            session_key=session_key,
+        )
+        return None
+    finally:
+        if journal is not None:
+            try:
+                await journal.close()
+            except Exception:  # noqa: BLE001
+                pass
+    if summary is None:
+        return None
+    return SessionSummaryOut(
+        session_key=summary.session_key,
+        last_message_at=summary.last_seen_at_ms,
+        message_count=summary.message_count,
+        last_user_text=summary.last_user_text,
+        last_status=summary.last_status,
+        title=summary.title,
+        pinned=summary.pinned,
+        archived=summary.archived,
+    )
 
 
 async def _delete_from_journal(
@@ -579,6 +712,122 @@ def router() -> APIRouter:
         return DeleteAllOut(deleted=deleted)
 
     @r.post(
+        "/admin/sessions/{session_key}/cancel",
+        response_model=SessionCancelOut,
+        summary="Cancel the in-progress turn (if any) for a session",
+    )
+    async def cancel_handler(
+        session_key: str,
+        state: Annotated[AdminState, Depends(get_admin_state)],
+    ) -> SessionCancelOut:
+        """Stop the in-flight :class:`ReasoningLoop` for ``session_key``.
+
+        Looks up the loop via the process-level
+        :func:`corlinman_server.agent_servicer.cancel_session` registry
+        (mirrored from the servicer's instance-level ``_active_loops``
+        map at the same insertion/deletion points so admin HTTP doesn't
+        need a handle to the servicer instance).
+
+        Response:
+
+        * ``cancelled``     — a loop was found and ``cancel()`` fired.
+        * ``not_running``   — the session_key exists but no in-progress
+                              turn is registered. Falls through to 200
+                              (not an error — the client polled at the
+                              wrong instant).
+        * 404 ``not_found`` — the session has no journaled turns and no
+                              active loop; the key was likely typoed.
+        """
+        if state.sessions_disabled:
+            raise _sessions_disabled()
+
+        # Import lazily so the routes module stays importable in test
+        # contexts that stub out the servicer.
+        try:
+            from corlinman_server.agent_servicer import cancel_session
+        except ImportError:  # pragma: no cover — defensive
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={"error": "cancel_unavailable"},
+            ) from None
+
+        # First, see if there's an active loop — even before the journal
+        # check. A live loop with no journaled turns yet (the row is
+        # written before the first message append) is still cancellable.
+        result, turn_id = cancel_session(session_key, reason="admin_abort")
+        if result == "cancelled":
+            logger.info(
+                "admin.sessions.cancelled",
+                session_key=session_key,
+                turn_id=turn_id,
+            )
+            return SessionCancelOut(status="cancelled", turn_id=turn_id)
+
+        # No active loop — distinguish "session exists but is idle"
+        # (200 not_running) from "session never existed" (404). We
+        # only consult the journal here, so the happy path above
+        # avoids a sqlite open per cancel.
+        data_dir = _resolve_data_dir(state)
+        if await _session_exists_in_journal(data_dir, session_key):
+            return SessionCancelOut(status="not_running", turn_id=None)
+        raise _session_not_found(session_key)
+
+    @r.patch(
+        "/admin/sessions/{session_key}",
+        response_model=SessionSummaryOut,
+        summary="Update session metadata (title / pinned / archived)",
+    )
+    async def patch_handler(
+        session_key: str,
+        body: SessionPatchBody,
+        state: Annotated[AdminState, Depends(get_admin_state)],
+    ) -> SessionSummaryOut:
+        """Upsert operator-supplied metadata for ``session_key``.
+
+        Body is :class:`SessionPatchBody` — every field is optional and
+        ``None`` means "leave it alone". Requires at least one field
+        present; an all-None body returns 422 ``empty_patch`` so a
+        client that forgot to populate the body doesn't silently no-op.
+        """
+        if state.sessions_disabled:
+            raise _sessions_disabled()
+        # 422 when the body is technically valid (all Optional fields)
+        # but carries no actionable change — surfacing this loudly
+        # catches a buggy client.
+        if (
+            body.title is None
+            and body.pinned is None
+            and body.archived is None
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "error": "empty_patch",
+                    "message": (
+                        "at least one of title / pinned / archived is required"
+                    ),
+                },
+            )
+        data_dir = _resolve_data_dir(state)
+        updated = await _update_session_meta_in_journal(
+            data_dir,
+            session_key,
+            title=body.title,
+            pinned=body.pinned,
+            archived=body.archived,
+        )
+        if updated is None:
+            raise _session_not_found(session_key)
+        logger.info(
+            "admin.sessions.meta_updated",
+            session_key=session_key,
+            title_set=body.title is not None,
+            pinned=body.pinned,
+            archived=body.archived,
+        )
+        return updated
+
+    @r.post(
         "/admin/sessions/{session_key}/replay",
         summary="Deterministic replay of a session",
     )
@@ -622,6 +871,8 @@ def router() -> APIRouter:
 __all__ = [
     "DeleteAllOut",
     "ReplayBody",
+    "SessionCancelOut",
+    "SessionPatchBody",
     "SessionSummaryOut",
     "SessionsListOut",
     "router",

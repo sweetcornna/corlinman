@@ -300,6 +300,33 @@ class AgentJournal:
         """
         return await self._backend.delete_session(session_key)
 
+    async def session_exists(self, session_key: str) -> bool:
+        """Cheap existence probe powering the ``PATCH /admin/sessions/{key}``
+        404 branch — see :meth:`JournalBackend.session_exists`."""
+        return await self._backend.session_exists(session_key)
+
+    async def update_session_meta(
+        self,
+        session_key: str,
+        *,
+        title: str | None = None,
+        pinned: bool | None = None,
+        archived: bool | None = None,
+    ) -> SessionSummary | None:
+        """Upsert title/pinned/archived for ``session_key`` and return
+        the refreshed :class:`SessionSummary`, or ``None`` when the
+        session has no journaled turns (route → 404).
+
+        See :meth:`JournalBackend.update_session_meta` for the
+        partial-update semantics (None means "leave alone").
+        """
+        return await self._backend.update_session_meta(
+            session_key,
+            title=title,
+            pinned=pinned,
+            archived=archived,
+        )
+
     # ------------------------------------------------------------------
     # W1.2 — turn events timeline (admin observability).
     #

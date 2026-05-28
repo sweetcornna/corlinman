@@ -194,10 +194,25 @@ class ChannelRegistry:
     @classmethod
     def builtin(cls) -> ChannelRegistry:
         """Registry pre-populated with the built-in adapters:
-        ``qq`` → ``telegram``."""
+        ``qq`` → ``telegram`` (+ ``web`` when the env flag is set).
+
+        :class:`~corlinman_channels.web.CorlinmanChannel` is gated behind the
+        ``CORLINMAN_CHANNEL_ENABLED`` environment variable so Wave 3
+        ships dark — operators who don't opt in keep the pre-port
+        ``[qq, telegram]`` ordering bit-for-bit. When the flag is on we
+        append the corlinman channel at the end so the prior log / metric
+        ordering stays stable for the always-enabled adapters.
+        """
         r = cls()
         r.push(QqChannel())
         r.push(TelegramChannel())
+        # Lazy import — keeps :mod:`channel` standalone-importable even if
+        # ``web`` ever grows transport-level dependencies (today it has
+        # none beyond stdlib).
+        from corlinman_channels.corlinman import CorlinmanChannel, corlinman_channel_enabled
+
+        if corlinman_channel_enabled():
+            r.push(CorlinmanChannel())
         return r
 
     def push(self, ch: Channel) -> None:

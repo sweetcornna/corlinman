@@ -1,0 +1,378 @@
+"use client";
+
+/**
+ * Conversation list shown on the left of /chat. Groups conversations by
+ * recency, supports fuzzy search, pin / archive / rename / delete.
+ *
+ * The "delete with undo toast" mechanic is handled by the parent page —
+ * this component just exposes the action.
+ */
+
+import * as React from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import {
+  Archive,
+  ArchiveRestore,
+  ChevronLeft,
+  ChevronRight,
+  MessageSquarePlus,
+  Pencil,
+  Pin,
+  PinOff,
+  Search,
+  Trash2,
+} from "lucide-react";
+
+import { cn } from "@/lib/utils";
+import type { ChatConversation } from "@/lib/chat/types";
+
+interface ChatSidebarProps {
+  conversations: ChatConversation[];
+  activeSessionKey: string | null;
+  onNew: () => void;
+  onRename: (sessionKey: string, title: string) => void;
+  onTogglePin: (sessionKey: string) => void;
+  onToggleArchive: (sessionKey: string) => void;
+  onDelete: (sessionKey: string) => void;
+  collapsed?: boolean;
+  onToggleCollapsed?: () => void;
+}
+
+interface GroupedConversation {
+  label: string;
+  rows: ChatConversation[];
+}
+
+const MS_PER_DAY = 86_400_000;
+
+function groupConversations(
+  conversations: ChatConversation[],
+  now: number,
+): GroupedConversation[] {
+  const pinned: ChatConversation[] = [];
+  const today: ChatConversation[] = [];
+  const yesterday: ChatConversation[] = [];
+  const week: ChatConversation[] = [];
+  const month: ChatConversation[] = [];
+  const older: ChatConversation[] = [];
+  const archived: ChatConversation[] = [];
+
+  for (const c of conversations) {
+    if (c.archived) {
+      archived.push(c);
+      continue;
+    }
+    if (c.pinned) {
+      pinned.push(c);
+      continue;
+    }
+    const ageDays = (now - c.lastMessageAt) / MS_PER_DAY;
+    if (ageDays < 1) today.push(c);
+    else if (ageDays < 2) yesterday.push(c);
+    else if (ageDays < 7) week.push(c);
+    else if (ageDays < 30) month.push(c);
+    else older.push(c);
+  }
+
+  return [
+    { label: "Pinned", rows: pinned },
+    { label: "Today", rows: today },
+    { label: "Yesterday", rows: yesterday },
+    { label: "Previous 7 days", rows: week },
+    { label: "Previous 30 days", rows: month },
+    { label: "Older", rows: older },
+    { label: "Archived", rows: archived },
+  ].filter((g) => g.rows.length > 0);
+}
+
+function fuzzyMatch(needle: string, hay: string): boolean {
+  if (!needle) return true;
+  const n = needle.toLowerCase();
+  const h = hay.toLowerCase();
+  let i = 0;
+  for (const ch of h) {
+    if (ch === n[i]) i += 1;
+    if (i === n.length) return true;
+  }
+  return false;
+}
+
+export function ChatSidebar({
+  conversations,
+  activeSessionKey,
+  onNew,
+  onRename,
+  onTogglePin,
+  onToggleArchive,
+  onDelete,
+  collapsed,
+  onToggleCollapsed,
+}: ChatSidebarProps) {
+  const [query, setQuery] = React.useState("");
+  const [renamingKey, setRenamingKey] = React.useState<string | null>(null);
+  const [renameValue, setRenameValue] = React.useState("");
+
+  const filtered = React.useMemo(() => {
+    if (!query) return conversations;
+    return conversations.filter((c) =>
+      fuzzyMatch(query, c.title ?? c.sessionKey),
+    );
+  }, [conversations, query]);
+
+  const grouped = React.useMemo(
+    () => groupConversations(filtered, Date.now()),
+    [filtered],
+  );
+
+  if (collapsed) {
+    return (
+      <aside
+        className="flex w-12 flex-col items-center gap-2 border-r border-tp-glass-edge bg-tp-glass-inner/30 py-3"
+        data-testid="chat-sidebar-collapsed"
+      >
+        <button
+          type="button"
+          onClick={onToggleCollapsed}
+          className="rounded p-1.5 text-tp-ink-3 hover:bg-tp-glass-inner hover:text-tp-ink"
+          aria-label="Expand sidebar"
+        >
+          <ChevronRight className="h-4 w-4" aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          onClick={onNew}
+          className="rounded p-1.5 text-tp-ink-3 hover:bg-tp-glass-inner hover:text-tp-ink"
+          aria-label="New chat"
+        >
+          <MessageSquarePlus className="h-4 w-4" aria-hidden="true" />
+        </button>
+      </aside>
+    );
+  }
+
+  return (
+    <aside
+      className="flex w-64 flex-col border-r border-tp-glass-edge bg-tp-glass-inner/30"
+      data-testid="chat-sidebar"
+    >
+      <div className="flex items-center gap-1 border-b border-tp-glass-edge px-2 py-2">
+        <button
+          type="button"
+          onClick={onNew}
+          className={cn(
+            "flex flex-1 items-center justify-center gap-1.5 rounded-md",
+            "border border-tp-amber/50 bg-tp-amber/20 px-2 py-1.5 text-[12px] text-tp-ink",
+            "hover:bg-tp-amber/30",
+          )}
+          data-testid="chat-sidebar-new"
+        >
+          <MessageSquarePlus className="h-3.5 w-3.5" aria-hidden="true" />
+          New chat
+        </button>
+        {onToggleCollapsed ? (
+          <button
+            type="button"
+            onClick={onToggleCollapsed}
+            className="rounded p-1.5 text-tp-ink-3 hover:bg-tp-glass-inner hover:text-tp-ink"
+            aria-label="Collapse sidebar"
+          >
+            <ChevronLeft className="h-4 w-4" aria-hidden="true" />
+          </button>
+        ) : null}
+      </div>
+
+      <div className="flex items-center gap-1.5 border-b border-tp-glass-edge px-2 py-2">
+        <Search className="h-3.5 w-3.5 text-tp-ink-3" aria-hidden="true" />
+        <input
+          type="search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search…"
+          className="flex-1 bg-transparent text-[12px] text-tp-ink placeholder:text-tp-ink-3 focus:outline-none"
+          data-testid="chat-sidebar-search"
+        />
+      </div>
+
+      <nav className="flex-1 overflow-y-auto px-1 py-2" aria-label="conversations">
+        {grouped.length === 0 ? (
+          <div className="px-2 py-6 text-center text-[12px] text-tp-ink-3">
+            No conversations yet
+          </div>
+        ) : null}
+        {grouped.map((group) => (
+          <div key={group.label} className="mb-2">
+            <div className="px-2 pb-1 text-[10px] font-medium text-tp-ink-3 uppercase tracking-wider">
+              {group.label}
+            </div>
+            <ul className="flex flex-col gap-0.5">
+              {group.rows.map((c) => (
+                <SidebarRow
+                  key={c.sessionKey}
+                  conv={c}
+                  active={c.sessionKey === activeSessionKey}
+                  renaming={renamingKey === c.sessionKey}
+                  renameValue={renameValue}
+                  onStartRename={() => {
+                    setRenamingKey(c.sessionKey);
+                    setRenameValue(c.title ?? "");
+                  }}
+                  onConfirmRename={(v) => {
+                    onRename(c.sessionKey, v);
+                    setRenamingKey(null);
+                  }}
+                  onCancelRename={() => setRenamingKey(null)}
+                  onRenameValueChange={setRenameValue}
+                  onTogglePin={() => onTogglePin(c.sessionKey)}
+                  onToggleArchive={() => onToggleArchive(c.sessionKey)}
+                  onDelete={() => onDelete(c.sessionKey)}
+                />
+              ))}
+            </ul>
+          </div>
+        ))}
+      </nav>
+    </aside>
+  );
+}
+
+interface SidebarRowProps {
+  conv: ChatConversation;
+  active: boolean;
+  renaming: boolean;
+  renameValue: string;
+  onStartRename: () => void;
+  onConfirmRename: (v: string) => void;
+  onCancelRename: () => void;
+  onRenameValueChange: (v: string) => void;
+  onTogglePin: () => void;
+  onToggleArchive: () => void;
+  onDelete: () => void;
+}
+
+function SidebarRow({
+  conv,
+  active,
+  renaming,
+  renameValue,
+  onStartRename,
+  onConfirmRename,
+  onCancelRename,
+  onRenameValueChange,
+  onTogglePin,
+  onToggleArchive,
+  onDelete,
+}: SidebarRowProps) {
+  const router = useRouter();
+
+  const title = conv.title ?? `Session ${conv.sessionKey.slice(0, 8)}`;
+  const subtitle = `${conv.messageCount} msg · ${formatRelative(conv.lastMessageAt)}`;
+
+  return (
+    <li
+      className={cn(
+        "group relative flex items-center gap-1 rounded px-2 py-1.5 text-[12px]",
+        active
+          ? "bg-tp-amber/20 text-tp-ink"
+          : "text-tp-ink-2 hover:bg-tp-glass-inner hover:text-tp-ink",
+      )}
+      data-testid="chat-sidebar-row"
+      data-active={active ? "true" : undefined}
+      data-session-key={conv.sessionKey}
+    >
+      {conv.pinned ? (
+        <Pin className="h-3 w-3 shrink-0 text-tp-amber" aria-hidden="true" />
+      ) : null}
+
+      {renaming ? (
+        <input
+          autoFocus
+          value={renameValue}
+          onChange={(e) => onRenameValueChange(e.target.value)}
+          onBlur={() => onConfirmRename(renameValue)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") onConfirmRename(renameValue);
+            if (e.key === "Escape") onCancelRename();
+          }}
+          className="flex-1 rounded border border-tp-amber bg-tp-glass-inner px-1 py-0.5 text-[12px] text-tp-ink focus:outline-none"
+          data-testid="chat-rename-input"
+        />
+      ) : (
+        <Link
+          href={`/chat/${encodeURIComponent(conv.sessionKey)}`}
+          className="flex flex-1 flex-col overflow-hidden"
+          onClick={(e) => {
+            // Allow ⌘/Ctrl+click to bypass the rename UX.
+            if (e.metaKey || e.ctrlKey) return;
+            router.push(`/chat/${encodeURIComponent(conv.sessionKey)}`);
+          }}
+        >
+          <span className="truncate" title={title}>
+            {title}
+          </span>
+          <span className="truncate text-[10px] text-tp-ink-3">{subtitle}</span>
+        </Link>
+      )}
+
+      {!renaming ? (
+        <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+          <RowAction
+            label={conv.pinned ? "Unpin" : "Pin"}
+            onClick={onTogglePin}
+            Icon={conv.pinned ? PinOff : Pin}
+          />
+          <RowAction
+            label="Rename"
+            onClick={onStartRename}
+            Icon={Pencil}
+          />
+          <RowAction
+            label={conv.archived ? "Unarchive" : "Archive"}
+            onClick={onToggleArchive}
+            Icon={conv.archived ? ArchiveRestore : Archive}
+          />
+          <RowAction label="Delete" onClick={onDelete} Icon={Trash2} danger />
+        </div>
+      ) : null}
+    </li>
+  );
+}
+
+function RowAction({
+  label,
+  onClick,
+  Icon,
+  danger,
+}: {
+  label: string;
+  onClick: () => void;
+  Icon: React.ComponentType<{ className?: string; "aria-hidden"?: boolean }>;
+  danger?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        onClick();
+      }}
+      className={cn(
+        "rounded p-1 text-tp-ink-3 hover:bg-tp-glass-inner",
+        danger ? "hover:text-tp-err" : "hover:text-tp-ink",
+      )}
+      aria-label={label}
+      title={label}
+    >
+      <Icon className="h-3 w-3" aria-hidden />
+    </button>
+  );
+}
+
+function formatRelative(ms: number): string {
+  const diff = Date.now() - ms;
+  if (diff < 60_000) return "just now";
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+  return `${Math.floor(diff / 86_400_000)}d ago`;
+}

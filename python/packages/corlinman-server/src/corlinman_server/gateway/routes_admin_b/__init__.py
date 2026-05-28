@@ -97,6 +97,9 @@ from corlinman_server.gateway.routes_admin_b import (
 from corlinman_server.gateway.routes_admin_b import (
     system as _system,
 )
+from corlinman_server.gateway.routes_admin_b import (
+    corlinman_channel as _corlinman_channel,
+)
 from corlinman_server.gateway.routes_admin_b.state import AdminState, set_admin_state
 
 __all__ = [
@@ -135,6 +138,7 @@ def build_router() -> APIRouter:
         _skills,
         _subagents,
         _system,
+        _corlinman_channel,
     ):
         root.include_router(mod.router())
     return root

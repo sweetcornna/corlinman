@@ -204,6 +204,21 @@ class AdminState:
     clawhub_client: Any | None = None
     skill_install_store: Any | None = None
 
+    # -- W3 (in-app chat): CorlinmanChannel singleton --------------------------
+    #
+    # ``corlinman_channel`` is the :class:`~corlinman_channels.web.CorlinmanChannel`
+    # instance the gateway lifecycle constructs once at boot (only when
+    # ``CORLINMAN_CHANNEL_ENABLED=1``) and shares with both the
+    # channel registry's ``spawn_all`` task AND the
+    # ``/api/channels/corlinman/*`` HTTP routes. The HTTP layer talks to the
+    # same instance the chat-service dispatch loop holds, so a browser
+    # POST → :meth:`CorlinmanChannel.ingest` and an assistant token →
+    # :meth:`CorlinmanChannel.send` meet on the same per-session queues.
+    # ``None`` keeps the routes' typed 503 ``corlinman_channel_disabled``
+    # envelope live so a gateway booted with the flag off still serves
+    # cleanly.
+    corlinman_channel: Any | None = None
+
 
 _state: AdminState | None = None
 
