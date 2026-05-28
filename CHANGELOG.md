@@ -4,6 +4,203 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] — 2026-05-28 — In-app /chat surface + corlinman channel
+
+> Lands a **Claude.ai-grade conversation window** at `/admin/chat`
+> driven by the existing hermes agent backend, plus the supporting
+> `corlinman` channel so the web chat sits as a first-class member of
+> the channels abstraction (sibling of telegram / qq / discord). Every
+> existing session — telegram, qq, scheduled persona runs — can now be
+> resumed in the browser with one click from `/admin/sessions` and the
+> full historical transcript pre-loaded.
+>
+> The conversation surface is deliberately built on the *existing* live
+> event stream (`/admin/sessions/{key}/events/live` SSE) merged with
+> the OpenAI-compatible `/v1/chat/completions` token stream — so tool
+> calls, sub-agent spawns, reasoning blocks, and approval prompts all
+> render inline with the assistant turn without any new wire protocol.
+>
+> Naming convention is now uniform — every new identifier uses the
+> `corlinman_*` prefix; the placeholder `web*` names the design doc
+> proposed were renamed end-to-end before release.
+
+### Added
+
+- **In-app `/chat` surface** — Next.js admin route at `/admin/chat`
+  (collapsed sidebar on the left, resizable artifact panel on the
+  right). Conversations grouped by recency (Pinned / Today / Yesterday
+  / Previous 7 / 30 / Older / Archived); fuzzy search; rename / pin /
+  archive / delete-with-undo-toast.
+- **Streaming UX with hermes-loop awareness** — token-by-token render
+  with a smooth cursor; collapsible Claude-style reasoning blocks;
+  tool-call cards (running / ok / error with args + result panes);
+  nested sub-agent cards; inline approval prompts (Deny / Approve once
+  / Always-session) wired to `POST /v1/chat/completions/{turn_id}/approve`.
+  Stop button aborts the stream and posts `cancel`; Retry replays the
+  last user message.
+- **Composer (Cursor / Claude.ai parity)** — auto-grow textarea, Enter
+  to send, Shift+Enter newline, paste / drag-drop file attachments
+  (50 MB cap, image / pdf / audio / video / document MIME allowlist);
+  `/` slash commands (`/clear`, `/reset`, `/model`, `/persona`);
+  `@`-mention picker for agents / skills; reply-with-quote chip above
+  the textarea; model + persona pills; send ↔ stop button swap.
+- **Artifact panel** — code blocks ≥ 25 lines (or `html` / `svg` /
+  `mermaid` / `markdown`) auto-surface as artifacts with tabs across
+  the top, sandboxed iframe preview for HTML, inline SVG render,
+  source view, version history when the same id is re-emitted, copy +
+  download per artifact.
+- **Message-level actions** — hover toolbar on every bubble: copy,
+  regenerate (assistant), edit-in-place (user) → drops history after
+  the edited message and re-runs the turn, branch fork → opens a new
+  session pre-loaded with the slice up to that message, reply quote,
+  jump-to-message via `id="chat-msg-{id}"`.
+- **Token + cost meter** — header chip aggregates input/output tokens
+  + estimated cost across all completed assistant turns of the
+  session.
+- **In-conversation search** — Cmd / Ctrl + F overlay, Enter / Shift +
+  Enter walks next / prev match, Esc closes; scrolls the matching
+  bubble into view.
+- **"Continue" from sessions list** — new action on every row of
+  `/admin/sessions` routes to `/admin/chat/{sessionKey}` and the
+  `replaySession(mode=transcript)` call auto-hydrates the full
+  conversation history before the composer accepts input. Operators
+  can pick up any telegram / qq / scheduled chat in the browser.
+- **`CorlinmanChannel` (channels-abstraction citizen)** — new module
+  `corlinman_channels.corlinman` implementing the `Channel` Protocol
+  (id `"corlinman"`, display name "Corlinman Chat"). Owns per-session
+  `asyncio.Queue[CorlinmanOutboundFrame]` queues so a browser POST →
+  `ingest()` and an assistant token → `send()` meet on the same
+  thread. Registered into `ChannelRegistry.builtin()` iff
+  `CORLINMAN_CHANNEL_ENABLED=1` (default off; legacy `[qq, telegram]`
+  ordering preserved bit-for-bit when the flag is off).
+- **`/api/channels/corlinman/*` (6 endpoints)** — `POST /send`,
+  `GET /events` (SSE), `POST /typing`, plus Wave 4 stubs
+  `POST /edit/{msg_id}`, `DELETE /delete/{msg_id}`,
+  `POST /react/{msg_id}` returning typed 503 (`edit_not_supported`)
+  so the frontend can degrade cleanly.
+- **`POST /admin/sessions/{key}/cancel`** — calls
+  `ReasoningLoop.cancel()` on the active loop registered via a
+  `WeakValueDictionary` in `agent_servicer`; returns
+  `{status: "cancelled" | "not_running" | "unknown_session", turn_id}`.
+- **`PATCH /admin/sessions/{key}`** — `{title?, pinned?, archived?}`,
+  returns the refreshed `SessionSummaryOut`. Sort order now is
+  `pinned DESC, last_seen DESC`.
+- **`session_meta` side table** — SQLite + Postgres backends gain a
+  new `journal_session_meta` table (additive `CREATE TABLE IF NOT
+  EXISTS`, zero `ALTER` on existing tables; LEFT JOIN with COALESCE
+  defaults so pre-meta sessions round-trip unchanged).
+- **i18n** — `nav.chat` ("Chat" / "聊天") and
+  `sessions.continueInChat` ("Continue" / "继续聊天") added to en +
+  zh-CN bundles.
+
+### Changed
+
+- **Sidebar nav order** — "Chat" inserted as the top operator entry,
+  above the existing Playground / Approvals / Sessions rows.
+- **Naming convention** — every new identifier across both planes
+  uses the `corlinman_*` prefix (`CorlinmanChannel`,
+  `corlinman_channel_enabled`, `CORLINMAN_CHANNEL_ENV_FLAG`,
+  `/api/channels/corlinman/*`, `ChannelBinding("corlinman", …)`,
+  session-key prefix `corlinman:{ts}:{rand}`,
+  `sessionStorage` namespace `corlinman:chat:branch:{key}`); aligns
+  the chat surface with the rest of the project.
+
+### Tests
+
+- **Python**: 47 new tests for `CorlinmanChannel` + route layer (34
+  channel unit + 13 route); 21 new tests for the session cancel +
+  PATCH endpoints; whole channels suite 693 passed, `routes_admin_a/b`
+  suites combined 947 passed.
+- **Frontend**: 57 new Vitest tests across the chat tree
+  (`event-merger` × 13, `message-bubble` × 6, `composer` × 6,
+  `chat-sidebar` × 6, `artifacts` × 7, `artifact-panel` × 6,
+  `composer-mention-menu` × 8, `conversation-search` × 3) + 2 for the
+  `SessionRow` "Continue" action.
+- **E2E**: new `chat-mvp.spec.ts` (Playwright, stubs-only) covering
+  the golden path — list / new chat / send + stream / tool-card / slash
+  menu / sidebar collapse.
+
+### Plan
+
+[`docs/PLAN_IN_APP_CHAT.md`](docs/PLAN_IN_APP_CHAT.md) — full design
+document with the 4-wave breakdown, architecture decisions, file
+structure, and risk register that drove this release.
+
+
+## [1.7.0] — 2026-05-28 — First-run wizard + 主聊天窗口 + image-provider probe
+
+> Lands the **first-run wizard initiative**
+> ([`docs/PLAN_FIRST_RUN_WIZARD.md`](docs/PLAN_FIRST_RUN_WIZARD.md))
+> shipped by 6 parallel agents: a 6-step onboarding flow (API config →
+> rename admin → change default password → persona choice → image API →
+> done) that gates step order so the username-then-password change can
+> never race; a `/sethome` slash command that pins a channel as the
+> operator's home so server-restart heartbeats only fire there; a
+> non-destructive image-capability probe that lets the wizard reuse
+> an OpenAI-compatible chat endpoint as the image provider when it
+> actually supports `/v1/images/generations`; and a sidebar rename
+> ("系统" → "更新") that finally tells the truth about what the page
+> does. The README now leads with the one-line installer command so
+> newcomers don't have to scroll for it.
+
+### Added
+
+- **First-run wizard (6 steps, 6 agents, single PR)** — new admin
+  endpoints `POST /admin/onboard/finalize-account`,
+  `finalize-password`, `finalize-persona`, `finalize-image-provider`
+  + `POST /admin/personas/use-default`; rewritten
+  `ui/app/onboard/page.tsx` with strict forward-gating (clicking the
+  indicator can never fast-forward past an uncompleted step) and an
+  atomicity lock that disables "back to username" once the password
+  step succeeds; persona step offers three cards (default `grantley` /
+  custom `/persona` wizard / skip), image step offers reuse-current /
+  configure-separate / skip, with a 409 fallback when the current
+  provider doesn't support image generation. Persona skill grew a
+  Stage -1 entry gate so most operators can opt out of the 7-stage
+  voice interview in one click. ([`docs/PLAN_FIRST_RUN_WIZARD.md`])
+- **`/sethome` + home-channel store** — new `home_channel_store`
+  SQLite module (tables `home_channels`, `first_chat_tips_shown`);
+  channel-side `/sethome` (`/主页`) handler pins the active
+  `ChannelBinding` as the operator's home channel; first-chat tip
+  injection in `chat_bootstrap` shows the hint exactly once per
+  `(user_id, channel, thread)`; `/use-default-persona` (`/默认人格`)
+  slash command seeds + selects `grantley` without entering the
+  wizard; lifecycle entrypoint queues a "server restarted" heartbeat
+  to every registered home channel on boot (best-effort, logged via
+  `/admin/logs/stream`).
+- **Image-provider capability probe** — new
+  `corlinman_providers.capabilities.probe_image_capability` runs a
+  non-destructive two-stage check (`GET /v1/models` regex scan first,
+  `HEAD /v1/images/generations` fallback) and never calls the actual
+  generation endpoint; new admin route
+  `POST /admin/providers/{name}/probe-image` returns
+  `{supported, evidence, models}`; `ProviderSpec` grew optional
+  `image_capable` + `image_model` fields with full TOML
+  backward-compat; `corlinman_agent.image.generate` now prefers a
+  provider with `image_capable=true` and falls back to the chat
+  default only when none is marked.
+- **Sidebar "系统" → "更新"** — admin sidebar entry relabelled with new
+  i18n keys `sidebar.updatesLabel`, `system.pageTitle`,
+  `system.pageSubtitle` (zh-CN + en); `/system` route unchanged so
+  bookmarks survive; page header copy tightened to describe version
+  + upgrade actions, not generic "system settings".
+- **One-command install prominence** — README + `docs/quickstart.md`
+  now lead with a 🚀 callout for
+  `curl -fsSL …/deploy/install.sh | bash` + `--upgrade`; version badge
+  bumped to 1.7.0.
+
+### Changed
+
+- `routes_admin_b/__init__.py` now mounts `personas` and
+  `image_provider` sub-routers alongside the existing 20.
+
+### Tests
+
+- 199 `routes_admin_b` + 625 channels + 81 lifecycle/chat
+  substitution + 281 providers tests green; UI `tsc --noEmit` clean.
+
+
+
 ## [1.6.0] — 2026-05-26 — Persona Studio + frontend overhaul + QQ/Telegram fixes
 
 > Lands the eight-wave **Persona Studio** initiative

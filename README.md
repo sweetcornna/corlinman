@@ -350,6 +350,15 @@ A channel is any producer of `ChatRequest`. corlinman ships with:
 - **Discord / Slack / Feishu** — text channels with the same routing +
   rate-limit + chat-service plumbing as QQ + Telegram (no status
   spinner yet — Telegram only).
+- **Corlinman (in-app `/chat`)** — Claude.ai-grade conversation window
+  at `/admin/chat` driven by the same hermes loop as every other
+  channel. Implemented as a first-class `Channel` Protocol member
+  (`corlinman_channels.corlinman.CorlinmanChannel`, id `"corlinman"`),
+  gated by `CORLINMAN_CHANNEL_ENABLED=1` so existing telegram/qq
+  deployments stay bit-for-bit identical until you flip it on. Owns
+  per-session `asyncio.Queue` so a browser `POST` and an assistant
+  token stream meet on the same thread. Exposes
+  `/api/channels/corlinman/{send,events,typing,edit,delete,react}`.
 - **Scheduler** — `croniter`-driven cron runner that fires an agent at a
   cron expression with a canned prompt template (for daily digests,
   alerting bots, etc.).
@@ -406,6 +415,42 @@ prefix in `registry.py`, and you're in the agent loop. See
 ---
 
 ## Admin UI
+
+### In-app `/chat`
+
+The headline operator surface (added in 1.8.0). Renders a Claude.ai-grade
+conversation window driven by the existing hermes agent backend:
+
+- **Streaming with full loop visibility** — token-by-token assistant
+  text, collapsible Claude-style reasoning blocks, tool-call cards
+  (running / ok / error with args + result panes), nested sub-agent
+  cards, inline approval prompts (Deny / Approve once / Always-session).
+- **Composer** — multiline auto-grow textarea, Enter to send / Shift+Enter
+  newline, drag-drop + paste file attachments (50 MB cap), `/` slash
+  commands (`/clear`, `/reset`, `/model`, `/persona`), `@`-mention
+  picker for agents and skills, reply-with-quote chip above the
+  textarea, model + persona pills.
+- **Conversation sidebar** — time-grouped list (Pinned / Today /
+  Yesterday / Previous 7 / 30 / Older / Archived), fuzzy search,
+  rename / pin / archive / delete-with-undo.
+- **Artifact panel** — code blocks (≥ 25 lines or `html`/`svg`/
+  `mermaid`/`markdown`) surface in a resizable side panel with
+  sandboxed iframe preview for HTML, inline SVG render, source view,
+  version history, copy + download.
+- **Message-level actions** — copy, regenerate, edit-in-place for user
+  messages (re-runs the turn after truncating history), branch fork
+  into a new session pre-loaded with the slice up to that point,
+  reply-quote, jump-to-message.
+- **Token + cost meter** — header chip aggregates input/output tokens +
+  estimated cost across the entire session.
+- **In-conversation search** — Cmd / Ctrl + F overlay walks matches with
+  Enter / Shift+Enter.
+- **Resume any session** — `/admin/sessions` now exposes a "Continue"
+  button per row that routes to `/admin/chat/{sessionKey}` and
+  auto-hydrates the full historical transcript via `replaySession()`
+  before the composer accepts input. Telegram / qq / scheduled
+  persona runs are all resumable in the browser.
+
 
 A Next.js 15 static-export bundle served by nginx (or directly from the
 gateway at `/`). **Tidepool** design system — warm-amber glass with
