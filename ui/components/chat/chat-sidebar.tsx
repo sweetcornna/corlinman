@@ -131,7 +131,10 @@ export function ChatSidebar({
   if (collapsed) {
     return (
       <aside
-        className="flex w-12 flex-col items-center gap-2 border-r border-tp-glass-edge bg-tp-glass-inner/30 py-3"
+        className={cn(
+          "flex w-12 shrink-0 flex-col items-center gap-2 overflow-hidden",
+          "rounded-xl border border-tp-glass-edge bg-tp-glass py-3 shadow-tp-panel",
+        )}
         data-testid="chat-sidebar-collapsed"
       >
         <button
@@ -156,7 +159,10 @@ export function ChatSidebar({
 
   return (
     <aside
-      className="flex w-64 flex-col border-r border-tp-glass-edge bg-tp-glass-inner/30"
+      className={cn(
+        "flex w-64 shrink-0 flex-col overflow-hidden",
+        "rounded-xl border border-tp-glass-edge bg-tp-glass shadow-tp-panel",
+      )}
       data-testid="chat-sidebar"
     >
       <div className="flex items-center gap-1 border-b border-tp-glass-edge px-2 py-2">

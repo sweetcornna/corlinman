@@ -4,6 +4,41 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.13] — 2026-05-28 — Fix: glass-card backdrop covers every chat pane
+
+> Follow-up to v1.8.12. The glass-card backdrop was only painting on
+> the message list **after** there were messages — the empty `/chat`
+> landing (左 sidebar + 右「开始一段新对话」) and the live header /
+> composer were still sitting directly on the dark oil-painting
+> wallpaper, which is the screen the user lands on every time they
+> open the surface.
+
+### Fixed
+
+- `app/(admin)/chat/layout.tsx` — the two-column flex shell now
+  carries `gap-3 sm:gap-4 p-3 sm:p-4` so each pane reads as its own
+  card against the wallpaper.
+- `components/chat/chat-sidebar.tsx` — both the expanded and the
+  collapsed `<aside>` use `rounded-xl border border-tp-glass-edge
+  bg-tp-glass shadow-tp-panel overflow-hidden` (was a faint
+  `bg-tp-glass-inner/30` + right border that effectively dissolved
+  into the wallpaper).
+- `components/chat/chat-area.tsx` — the chat column `<section>` is
+  now wrapped in the same glass-card class set, with the outer
+  flex container gaining `gap-3 sm:gap-4` so the artifact panel
+  (when open) reads as its own neighbour card.
+- `components/chat/artifact-panel.tsx` — promoted from
+  `bg-tp-glass-inner/30 + border-l` to the full glass card so the
+  visual language stays consistent across all three panes.
+- `app/(admin)/chat/page.tsx` — the empty-state `<section>` (the
+  "开始一段新对话" landing) is now a glass card too, so the screen
+  you see before picking a session has the same readable backdrop
+  as a live conversation.
+- `components/chat/message-list.tsx` — reverted the inner card I
+  shipped in v1.8.12; it would have layered a second card inside
+  the now-card chat-area section. The scroll container is back to
+  the plain `relative h-full` it was pre-v1.8.12.
+
 ## [1.8.12] — 2026-05-28 — Fix: provider enable now wires /chat end-to-end
 
 > User report: enabling an `openai_compatible` provider in

@@ -83,57 +83,48 @@ export function MessageList({
   }
 
   return (
-    <div className="h-full p-3 sm:p-4" data-testid="message-list-wrap">
+    <div className="relative h-full">
       <div
-        className={cn(
-          "relative h-full overflow-hidden rounded-xl",
-          "border border-tp-glass-edge bg-tp-glass shadow-tp-panel",
-        )}
+        ref={scrollRef}
+        onScroll={handleScroll}
+        className="h-full overflow-y-auto px-4 py-4"
+        data-testid="message-list"
+        aria-live="polite"
       >
-        <div
-          ref={scrollRef}
-          onScroll={handleScroll}
-          className="h-full overflow-y-auto px-4 py-4"
-          data-testid="message-list"
-          aria-live="polite"
-        >
-          <ol className="mx-auto flex max-w-3xl flex-col gap-4">
-            {all.map((m) => (
-              <MessageBubble
-                key={m.id}
-                message={m}
-                onRegenerate={
-                  m.role === "assistant" && !m.pending
-                    ? onRegenerate
-                    : undefined
-                }
-                onApprove={onApprove}
-                onEdit={m.role === "user" ? onEdit : undefined}
-                onBranch={onBranch}
-                onReply={onReply}
-                onOpenArtifact={onOpenArtifact}
-              />
-            ))}
-          </ol>
-        </div>
-
-        {!pinned ? (
-          <button
-            type="button"
-            onClick={jumpToBottom}
-            className={cn(
-              "absolute right-4 bottom-4 inline-flex items-center gap-1.5 rounded-full",
-              "border border-tp-glass-edge bg-tp-glass-inner px-3 py-1.5",
-              "text-[11px] text-tp-ink shadow-sm transition hover:bg-tp-glass-inner/80",
-            )}
-            aria-label={t("chat.jumpToLatestAriaLabel")}
-            data-testid="jump-to-bottom"
-          >
-            <ArrowDown className="h-3.5 w-3.5" aria-hidden="true" />
-            {t("chat.jumpToLatest")}
-          </button>
-        ) : null}
+        <ol className="mx-auto flex max-w-3xl flex-col gap-4">
+          {all.map((m) => (
+            <MessageBubble
+              key={m.id}
+              message={m}
+              onRegenerate={
+                m.role === "assistant" && !m.pending ? onRegenerate : undefined
+              }
+              onApprove={onApprove}
+              onEdit={m.role === "user" ? onEdit : undefined}
+              onBranch={onBranch}
+              onReply={onReply}
+              onOpenArtifact={onOpenArtifact}
+            />
+          ))}
+        </ol>
       </div>
+
+      {!pinned ? (
+        <button
+          type="button"
+          onClick={jumpToBottom}
+          className={cn(
+            "absolute right-4 bottom-4 inline-flex items-center gap-1.5 rounded-full",
+            "border border-tp-glass-edge bg-tp-glass-inner px-3 py-1.5",
+            "text-[11px] text-tp-ink shadow-sm transition hover:bg-tp-glass-inner/80",
+          )}
+          aria-label={t("chat.jumpToLatestAriaLabel")}
+          data-testid="jump-to-bottom"
+        >
+          <ArrowDown className="h-3.5 w-3.5" aria-hidden="true" />
+          {t("chat.jumpToLatest")}
+        </button>
+      ) : null}
     </div>
   );
 }

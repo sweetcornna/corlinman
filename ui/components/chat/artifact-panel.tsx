@@ -46,7 +46,7 @@ export function ArtifactPanel({
 
   return (
     <aside
-      className="flex w-[420px] shrink-0 flex-col border-l border-tp-glass-edge bg-tp-glass-inner/30"
+      className="flex w-[420px] shrink-0 flex-col overflow-hidden rounded-xl border border-tp-glass-edge bg-tp-glass shadow-tp-panel"
       data-testid="artifact-panel"
       aria-label={t("chat.artifactPanelAriaLabel")}
     >

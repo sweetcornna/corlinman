@@ -16,7 +16,7 @@ export default function ChatLayout({
 }) {
   return (
     <div
-      className="flex h-[calc(100dvh-4rem)] min-h-0 w-full overflow-hidden"
+      className="flex h-[calc(100dvh-4rem)] min-h-0 w-full gap-3 overflow-hidden p-3 sm:gap-4 sm:p-4"
       data-testid="chat-layout"
     >
       {children}

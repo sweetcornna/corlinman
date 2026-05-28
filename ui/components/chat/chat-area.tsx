@@ -165,8 +165,14 @@ export function ChatArea({
   const hasUsage = inputTokens + outputTokens > 0 || costUsd > 0;
 
   return (
-    <div className="flex h-full flex-1 min-w-0">
-      <section className="flex h-full flex-1 flex-col min-w-0" data-testid="chat-area">
+    <div className="flex h-full min-w-0 flex-1 gap-3 sm:gap-4">
+      <section
+        className={cn(
+          "flex h-full min-w-0 flex-1 flex-col overflow-hidden",
+          "rounded-xl border border-tp-glass-edge bg-tp-glass shadow-tp-panel",
+        )}
+        data-testid="chat-area"
+      >
         <header className="flex items-center justify-between border-b border-tp-glass-edge bg-tp-glass-inner/30 px-4 py-2">
           <div className="flex min-w-0 flex-col">
             <h1 className="truncate text-[13px] font-medium text-tp-ink">{title}</h1>
