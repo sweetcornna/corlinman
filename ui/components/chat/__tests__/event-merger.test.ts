@@ -50,7 +50,7 @@ describe("chunkToChatEvents", () => {
     });
   });
 
-  it("emits turn-complete on finish_reason", () => {
+  it("emits tools-settle + turn-complete on finish_reason", () => {
     const chunk: ChatCompletionChunk = {
       choices: [
         { index: 0, delta: {}, finish_reason: "stop" },
@@ -59,12 +59,41 @@ describe("chunkToChatEvents", () => {
     const events = chunkToChatEvents(chunk, TURN);
     expect(events).toEqual([
       {
+        kind: "tools-settle",
+        turnId: TURN,
+        sequence: -1,
+        finishReason: "stop",
+      },
+      {
         kind: "turn-complete",
         turnId: TURN,
         sequence: -1,
         usage: { finishReason: "stop" },
       },
     ]);
+  });
+
+  it("captures function.name as tool-running on the first chunk", () => {
+    const chunk: ChatCompletionChunk = {
+      choices: [
+        {
+          index: 0,
+          delta: {
+            tool_calls: [
+              { index: 0, id: "call_abc", type: "function", function: { name: "shell" } },
+            ],
+          },
+        },
+      ],
+    };
+    const events = chunkToChatEvents(chunk, TURN);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      kind: "tool-running",
+      callId: "call_abc",
+      toolName: "shell",
+      argsJson: "",
+    });
   });
 
   it("prefers corlinman.turn_id over fallback", () => {

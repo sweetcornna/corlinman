@@ -61,7 +61,7 @@ export interface ChatUsage {
   walltimeMs?: number;
 }
 
-export type ToolCallStatus = "running" | "ok" | "error" | "cancelled";
+export type ToolCallStatus = "running" | "ok" | "error" | "cancelled" | "settled";
 
 export interface ToolCallState {
   callId: string;
@@ -224,6 +224,16 @@ export type ChatEvent =
       turnId: string;
       sequence: number;
       error: string;
+    }
+  | {
+      // Emitted on stream end. Any "running" tools should adopt a
+      // stable terminal state (no more spinner). Used for the OpenAI-
+      // compat path where /v1/chat/completions doesn't carry the
+      // journal ToolStateCompleted that hermes' gRPC path emits.
+      kind: "tools-settle";
+      turnId: string;
+      sequence: number;
+      finishReason: string;
     };
 
 /** Re-export for ergonomic imports. */

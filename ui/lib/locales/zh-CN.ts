@@ -2218,6 +2218,12 @@ export const zhCN = {
     mdCodeBlockCopy: "复制",
     mdCodeBlockCopied: "已复制",
     mdCodeBlockCopyAriaLabel: "复制代码",
+    bubbleToggleToolsCollapse: "折叠工具调用",
+    bubbleToggleToolsExpand: "展开工具调用",
+    bubbleToolsCollapsedSummary_one: "已隐藏 {{n}} 个工具调用",
+    bubbleToolsCollapsedSummary_other: "已隐藏 {{n}} 个工具调用",
+    bubbleSubagentsCollapsedSummary_one: "已隐藏 {{n}} 个子 agent",
+    bubbleSubagentsCollapsedSummary_other: "已隐藏 {{n}} 个子 agent",
   },
   sessions: {
     title: "会话",

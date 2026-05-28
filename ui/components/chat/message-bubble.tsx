@@ -4,10 +4,13 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 import {
   Bot,
+  ChevronDown,
+  ChevronRight,
   Copy,
   CornerUpLeft,
   GitFork,
   Image as ImageIcon,
+  Menu,
   Paperclip,
   Pencil,
   RefreshCcw,
@@ -74,6 +77,18 @@ export function MessageBubble({
   const [copied, setCopied] = React.useState(false);
   const [editing, setEditing] = React.useState(false);
   const [draft, setDraft] = React.useState(message.content);
+  const [toolsCollapsed, setToolsCollapsed] = React.useState(false);
+
+  // Bulk collapse switches on automatically when the assistant fires
+  // many tool calls — keeps the bubble compact during long agent loops.
+  // The user can re-expand any time via the hamburger.
+  const toolCount = message.toolCalls?.length ?? 0;
+  const subagentCount = message.subagents?.length ?? 0;
+  React.useEffect(() => {
+    if (toolCount + subagentCount >= 8 && !message.pending) {
+      setToolsCollapsed(true);
+    }
+  }, [toolCount, subagentCount, message.pending]);
 
   React.useEffect(() => {
     if (!editing) setDraft(message.content);
@@ -238,8 +253,55 @@ export function MessageBubble({
             </div>
           )}
 
-          {message.toolCalls?.map((tc) => <ToolCallCard key={tc.callId} tool={tc} />)}
-          {message.subagents?.map((sa) => <SubagentCard key={sa.childSessionKey} subagent={sa} />)}
+          {(toolCount > 0 || subagentCount > 0) && (
+            <div className="mt-2 flex items-center gap-1 text-[11px] text-tp-ink-3">
+              <button
+                type="button"
+                onClick={() => setToolsCollapsed((v) => !v)}
+                className="inline-flex items-center gap-1 rounded border border-tp-glass-edge px-1.5 py-0.5 hover:bg-tp-glass-inner hover:text-tp-ink"
+                aria-label={
+                  toolsCollapsed
+                    ? t("chat.bubbleToggleToolsExpand")
+                    : t("chat.bubbleToggleToolsCollapse")
+                }
+                aria-expanded={!toolsCollapsed}
+                data-testid="bubble-tools-toggle"
+              >
+                <Menu className="h-3 w-3" aria-hidden="true" />
+                {toolsCollapsed ? (
+                  <ChevronRight className="h-3 w-3" aria-hidden="true" />
+                ) : (
+                  <ChevronDown className="h-3 w-3" aria-hidden="true" />
+                )}
+                {toolsCollapsed
+                  ? toolCount > 0
+                    ? t("chat.bubbleToolsCollapsedSummary", {
+                        count: toolCount,
+                        n: toolCount,
+                      })
+                    : t("chat.bubbleSubagentsCollapsedSummary", {
+                        count: subagentCount,
+                        n: subagentCount,
+                      })
+                  : null}
+              </button>
+              {toolsCollapsed && toolCount > 0 && subagentCount > 0 ? (
+                <span className="font-mono text-tp-ink-3">
+                  ·{" "}
+                  {t("chat.bubbleSubagentsCollapsedSummary", {
+                    count: subagentCount,
+                    n: subagentCount,
+                  })}
+                </span>
+              ) : null}
+            </div>
+          )}
+          {!toolsCollapsed && message.toolCalls?.map((tc) => (
+            <ToolCallCard key={tc.callId} tool={tc} />
+          ))}
+          {!toolsCollapsed && message.subagents?.map((sa) => (
+            <SubagentCard key={sa.childSessionKey} subagent={sa} />
+          ))}
           {message.approvals?.map((ap) => (
             <ApprovalPrompt
               key={ap.callId}

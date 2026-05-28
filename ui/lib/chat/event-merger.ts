@@ -51,8 +51,23 @@ export function chunkToChatEvents(
     if (delta.tool_calls) {
       for (const tc of delta.tool_calls) {
         const callId = tc.id ?? `idx-${tc.index}`;
+        const name = tc.function?.name;
         const argsDelta = tc.function?.arguments ?? "";
-        if (argsDelta) {
+        // OpenAI streaming tool_calls deltas: the first chunk for a
+        // given tool carries `function.name` + (usually empty) args; all
+        // subsequent chunks carry only `function.arguments`. Without
+        // capturing the name chunk the card stays "(pending)" forever.
+        if (name) {
+          events.push({
+            kind: "tool-running",
+            turnId,
+            sequence: -1,
+            callId,
+            toolName: name,
+            argsJson: argsDelta,
+            startedAtMs: Date.now(),
+          });
+        } else if (argsDelta) {
           events.push({
             kind: "tool-input-delta",
             turnId,
@@ -64,6 +79,17 @@ export function chunkToChatEvents(
       }
     }
     if (choice.finish_reason) {
+      // OpenAI-compat /v1/chat/completions doesn't emit per-tool
+      // ToolStateCompleted via the journal SSE (only the hermes gRPC
+      // path does). On stream end we surface a synthetic settle event
+      // so any "running" tools stop spinning and adopt a stable visual
+      // state.
+      events.push({
+        kind: "tools-settle",
+        turnId,
+        sequence: -1,
+        finishReason: choice.finish_reason,
+      });
       events.push({
         kind: "turn-complete",
         turnId,

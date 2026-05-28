@@ -196,6 +196,17 @@ function applyEvent(draft: ChatMessage, ev: ChatEvent): void {
       draft.error = ev.error;
       draft.pending = false;
       break;
+    case "tools-settle":
+      // OpenAI-compat stream-end: any tool still "running" gets
+      // demoted to "settled" so the UI stops spinning. Tools that
+      // already received a journal-driven ToolStateCompleted stay
+      // "ok"/"error".
+      if (draft.toolCalls && draft.toolCalls.length > 0) {
+        for (const tc of draft.toolCalls) {
+          if (tc.status === "running") tc.status = "settled";
+        }
+      }
+      break;
   }
 }
 

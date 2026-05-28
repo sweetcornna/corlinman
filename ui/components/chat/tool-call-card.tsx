@@ -37,6 +37,8 @@ export function ToolCallCard({ tool, defaultExpanded = false }: ToolCallCardProp
       <CheckCircle2 className="h-3.5 w-3.5 text-tp-ok" />
     ) : tool.status === "error" ? (
       <XCircle className="h-3.5 w-3.5 text-tp-err" />
+    ) : tool.status === "settled" ? (
+      <CheckCircle2 className="h-3.5 w-3.5 text-tp-ink-3" />
     ) : (
       <AlertCircle className="h-3.5 w-3.5 text-tp-ink-3" />
     );

@@ -2262,6 +2262,12 @@ export const en = {
     mdCodeBlockCopy: "Copy",
     mdCodeBlockCopied: "Copied",
     mdCodeBlockCopyAriaLabel: "Copy code",
+    bubbleToggleToolsCollapse: "Collapse tool calls",
+    bubbleToggleToolsExpand: "Expand tool calls",
+    bubbleToolsCollapsedSummary_one: "{{n}} tool call hidden",
+    bubbleToolsCollapsedSummary_other: "{{n}} tool calls hidden",
+    bubbleSubagentsCollapsedSummary_one: "{{n}} sub-agent hidden",
+    bubbleSubagentsCollapsedSummary_other: "{{n}} sub-agents hidden",
   },
   sessions: {
     title: "Sessions",

@@ -4,6 +4,55 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.4] — 2026-05-28 — Fix: tool calls stuck "(pending)" + collapsible tool list
+
+> User report: an assistant turn that fires many tool calls renders
+> them all as `(pending)` with a spinning indicator that never
+> resolves. Two underlying bugs and a missing UI affordance.
+
+### Fixed
+
+- **Tool name never appeared** — `chunkToChatEvents` skipped the
+  first `/v1/chat/completions` chunk for every tool call because it
+  only carries `function.name` (with empty `arguments`); the previous
+  `if (argsDelta)` guard dropped it. The card was created later with
+  the placeholder `"(pending)"` and never updated. Now: when
+  `function.name` is present, we emit a `tool-running` event with
+  the real tool name immediately; subsequent arg-only chunks still
+  go through `tool-input-delta`.
+- **Spinner spun forever** — the OpenAI-compatible
+  `/v1/chat/completions` path doesn't emit the journal
+  `ToolStateCompleted` event the hermes gRPC path does, so the
+  reducer never had a signal to stop the spinner. New synthetic
+  `tools-settle` event is now emitted alongside `turn-complete`
+  whenever `finish_reason` arrives; the reducer demotes every
+  still-`running` tool to a new `"settled"` status (neutral check
+  icon, no spinner). Tools that get a journal-driven `ToolStateCompleted`
+  keep their `"ok"` / `"error"` terminal status.
+
+### Added
+
+- **Hamburger collapse on the message bubble** — when an assistant
+  message renders ≥ 1 tool call or sub-agent card, a small `Menu`
+  hamburger appears under the message content. Clicking it hides
+  every tool/sub-agent card and replaces the strip with a localised
+  summary (`已隐藏 12 个工具调用` / `12 tool calls hidden`); clicking
+  again expands. Auto-collapses on assistant messages with ≥ 8
+  combined tool + sub-agent cards once streaming completes, so long
+  agent loops don't drown the bubble.
+- i18n keys: `chat.bubbleToggleToolsCollapse`,
+  `chat.bubbleToggleToolsExpand`,
+  `chat.bubbleToolsCollapsedSummary` (one/other),
+  `chat.bubbleSubagentsCollapsedSummary` (one/other) — en + zh-CN.
+
+### Tests
+
+- Updated `event-merger.test.ts`: the `finish_reason` case now
+  asserts both events (`tools-settle` + `turn-complete`); new test
+  covers the `function.name` first-chunk case → `tool-running`.
+- Chat suite 58/58 passing; typecheck clean; `next build` succeeds
+  with `/chat` at 20.3 kB.
+
 ## [1.8.3] — 2026-05-28 — Full i18n for the /chat surface (zh-CN ↔ en)
 
 > Every visible string in the chat surface — sidebar, composer,
