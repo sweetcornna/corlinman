@@ -28,7 +28,11 @@ import { ChatModelPicker, type ModelPickerKind } from "@/components/chat/chat-mo
 import { ChatArea } from "@/components/chat/chat-area";
 import { ChatSidebar } from "@/components/chat/chat-sidebar";
 import { ChatEmptyState } from "@/components/chat/empty-state";
-import type { ChatConversation, ChatMessage } from "@/lib/chat/types";
+import type {
+  ChatConversation,
+  ChatMessage,
+  ToolCallState,
+} from "@/lib/chat/types";
 
 const FALLBACK_MODEL = "gpt-4o"; // used only when /admin/models returns no global default
 
@@ -54,7 +58,11 @@ function pickBranchedHistory(sessionKey: string): ChatMessage[] | null {
 }
 
 /** Map journal TranscriptMessage[] → ChatMessage[] so existing sessions
- *  (telegram / qq / scheduled) resume cleanly in /chat. */
+ *  (telegram / qq / scheduled) resume cleanly in /chat. Assistant rows
+ *  with `tool_calls` rehydrate into ToolCallState[] so the bubble can
+ *  render the historical tool invocations + their results (paired by
+ *  the replay endpoint) — without this, tool-only assistant turns
+ *  render as empty bubbles. */
 function transcriptToChatMessages(
   transcript: TranscriptMessage[],
 ): ChatMessage[] {
@@ -62,11 +70,20 @@ function transcriptToChatMessages(
     const created = Number.isFinite(Date.parse(m.ts))
       ? Date.parse(m.ts)
       : Date.now() - (transcript.length - i) * 1000;
+    const rawTcs = m.tool_calls ?? [];
+    const toolCalls: ToolCallState[] = rawTcs.map((tc, j) => ({
+      callId: tc.id?.trim() ? tc.id : `hist_${i}_${j}`,
+      toolName: tc.function?.name ?? "(unknown)",
+      argsJson: tc.function?.arguments ?? "{}",
+      status: tc.result !== undefined ? "settled" : "ok",
+      resultPreview: tc.result,
+    }));
     return {
       id: `hist_${i}_${created}`,
       role: m.role,
       content: m.content,
       createdAt: created,
+      toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
     };
   });
 }

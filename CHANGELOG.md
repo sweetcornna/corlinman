@@ -4,6 +4,77 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.12] — 2026-05-28 — Fix: provider enable now wires /chat end-to-end
+
+> User report: enabling an `openai_compatible` provider in
+> `/admin/providers` (with `key: literal` + base_url pointing at a
+> private relay like `https://cdnapi.cornna.xyz`) showed up as 「已启用」
+> on the admin card and probing `/v1/models` returned a healthy list,
+> but `/chat` still refused to produce any response. Multiple users
+> hit this.
+>
+> Root cause was a **double bug** in the model → provider resolution chain:
+>
+> 1. `routes_admin_b/providers.upsert_provider` only persisted the
+>    `[providers.<name>]` block. It never touched `[models]`, so
+>    `models.default` stayed empty.
+> 2. `OpenAICompatibleProvider.supports()` is intentionally hardcoded
+>    to `return False` — the OpenAI-compatible adapter only resolves
+>    via an explicit `[models.aliases.*]` entry, never via the legacy
+>    `MODEL_PREFIX_DEFAULTS` prefix scan.
+>
+> Combined effect: the chat composer fell back to its `FALLBACK_MODEL
+> = "gpt-4o"`, `ProviderRegistry.resolve` skipped the user's enabled
+> provider (because `.supports()` rejected `gpt-4o`), landed in the
+> legacy prefix branch, and instantiated a default `OpenAIProvider`
+> pointing at `api.openai.com` with **no API key** — the user's
+> literal key was never reached. The same dead-end blocked every
+> subagent / scheduled-job code path that resolves a model through
+> the registry, so "前端配 apikey 后全部功能均可用" was effectively
+> false until both legs were fixed.
+
+### Fixed
+
+- `routes_admin_b/providers.upsert_provider` and `patch_provider`
+  now call a new `_autobind_default_alias` after persisting an
+  enabled provider. When `models.default` is empty, it probes the
+  provider for `/v1/models`, picks a sensible model id (preferring
+  well-known ones like `gpt-4o-mini` / `claude-3-5-haiku-latest`
+  over the alphabetical first), writes
+  `[models.aliases.<name>] = { provider, model, params }`, and
+  sets `models.default = <name>`. Probe failure falls back to a
+  per-kind default model. Idempotent — an existing `models.default`
+  is never clobbered.
+- `routes_admin_a/sessions._replay_from_journal` now passes
+  `tool_calls` through on assistant messages and folds the
+  matching `role="tool"` row's content back onto the originating
+  call's `result` field. Without this, tool-only assistant turns
+  rehydrated as empty bubbles on session resume — visible as a
+  column of timestamp-only ghost bubbles in the `/chat` history.
+- `ui/lib/api/sessions.ts` — `TranscriptMessage` gains the
+  optional `tool_calls?: TranscriptToolCall[]` field; new
+  `TranscriptToolCall` type mirrors the OpenAI shape plus an
+  optional `result` slot.
+- `ui/app/(admin)/chat/page.tsx` — `transcriptToChatMessages`
+  rehydrates `tool_calls` into `ToolCallState[]` (status
+  `settled` when a `result` is present, `ok` otherwise) so the
+  bubble renders historical tool invocations + their outputs.
+- `ui/components/chat/message-list.tsx` — the scroll container is
+  now wrapped in a `bg-tp-glass + border-tp-glass-edge +
+  shadow-tp-panel` rounded card with `p-3 sm:p-4` outer breathing
+  room, so the conversation reads against the dark navy oil-paint
+  wallpaper instead of dissolving into it.
+
+### Tests
+
+- `tests/gateway/routes_admin_b/test_providers_autobind_default.py`
+  — 5 cases: enable → autobind from probed list, existing
+  `models.default` preserved, probe failure → kind fallback,
+  PATCH-enable triggers autobind, disabled upsert skips autobind.
+- `tests/test_sessions_replay_tool_calls.py` — pins the journal →
+  replay → transcript `tool_calls` passthrough, including the
+  tool-result fold.
+
 ## [1.8.11] — 2026-05-28 — Fix: follow GitHub redirects after repo transfer
 
 > The corlinman repo was transferred `ymylive/corlinman` →

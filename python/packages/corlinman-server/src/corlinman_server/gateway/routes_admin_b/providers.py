@@ -32,11 +32,14 @@ import re
 import time
 from typing import Any
 
+import structlog
 from corlinman_providers.specs import list_supported_kinds
 from fastapi import APIRouter, Depends
 from fastapi import Path as FPath
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
+
+logger = structlog.get_logger(__name__)
 
 from corlinman_server.gateway.routes_admin_b.onboard import _write_config_atomic
 from corlinman_server.gateway.routes_admin_b.state import (
@@ -647,6 +650,124 @@ async def _query_provider_models(
 
 
 # ---------------------------------------------------------------------------
+# Auto-bind default alias on enable
+#
+# Enabling a provider in /admin/providers used to leave ``[models]`` empty,
+# which made /chat fall back to the legacy ``MODEL_PREFIX_DEFAULTS`` table
+# and silently route to the public OpenAI endpoint with no key — i.e. the
+# operator's freshly-keyed provider was never reached. Auto-binding the
+# first enabled provider as ``models.default`` (via a self-named alias)
+# closes that gap so "enable provider → start chatting" works.
+# ---------------------------------------------------------------------------
+
+
+_KIND_DEFAULT_MODEL: dict[str, str] = {
+    "openai": "gpt-4o-mini",
+    "openai_compatible": "gpt-4o-mini",
+    "mistral": "mistral-small-latest",
+    "cohere": "command-r-08-2024",
+    "together": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+    "groq": "llama-3.3-70b-versatile",
+    "replicate": "meta/meta-llama-3-70b-instruct",
+    "qwen": "qwen-plus",
+    "glm": "glm-4-flash",
+    "deepseek": "deepseek-chat",
+    "anthropic": "claude-3-5-haiku-latest",
+    "google": "gemini-2.0-flash",
+    "codex": "gpt-4o",
+    "mock": "mock",
+}
+
+
+# When a probe returns a giant catalog (relays often surface 100+ ids),
+# prefer a well-known model over the alphabetically-first one so the
+# default isn't something obscure like ``ada-001``.
+_PREFERRED_DEFAULT_MODELS: tuple[str, ...] = (
+    "gpt-4o-mini",
+    "gpt-4o",
+    "claude-3-5-sonnet-latest",
+    "claude-3-5-haiku-latest",
+    "deepseek-chat",
+    "qwen-plus",
+    "glm-4-flash",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
+)
+
+
+def _pick_default_model(kind: str, probed_ids: list[str]) -> str | None:
+    for pref in _PREFERRED_DEFAULT_MODELS:
+        if pref in probed_ids:
+            return pref
+        for mid in probed_ids:
+            if mid.startswith(pref):
+                return mid
+    if probed_ids:
+        return probed_ids[0]
+    return _KIND_DEFAULT_MODEL.get(kind)
+
+
+async def _autobind_default_alias(
+    cfg: dict[str, Any],
+    provider_name: str,
+    entry: dict[str, Any],
+) -> dict[str, Any]:
+    """Populate ``models.default`` so /chat can reach a freshly-enabled provider.
+
+    Idempotent: returns ``cfg`` unchanged when ``models.default`` is already
+    set. Otherwise probes the provider for its model list, picks a sensible
+    default, writes ``models.aliases.<provider_name>`` pointing back at the
+    provider, and sets ``models.default = <provider_name>``. Mutates and
+    returns ``cfg``; the caller persists.
+    """
+    models_cfg = dict(cfg.get("models") or {})
+    if str(models_cfg.get("default") or "").strip():
+        return cfg
+
+    kind = str(entry.get("kind") or "openai_compatible").lower()
+    probed_ids: list[str] = []
+    try:
+        result = await _query_provider_models(provider_name, cfg)
+        if result.get("ok"):
+            raw = result.get("models")
+            if isinstance(raw, list):
+                probed_ids = [str(m) for m in raw if isinstance(m, str) and m]
+    except Exception as exc:  # noqa: BLE001 — fall back to kind default
+        logger.debug(
+            "admin.providers.autobind_probe_failed",
+            provider=provider_name,
+            error=str(exc),
+        )
+
+    picked = _pick_default_model(kind, probed_ids)
+    if not picked:
+        logger.info(
+            "admin.providers.autobind_skipped_no_model",
+            provider=provider_name,
+            kind=kind,
+        )
+        return cfg
+
+    aliases = dict(models_cfg.get("aliases") or {})
+    aliases[provider_name] = {
+        "provider": provider_name,
+        "model": picked,
+        "params": {},
+    }
+    models_cfg["aliases"] = aliases
+    models_cfg["default"] = provider_name
+    cfg["models"] = models_cfg
+    logger.info(
+        "admin.providers.autobind_default",
+        provider=provider_name,
+        alias=provider_name,
+        model=picked,
+        probed=len(probed_ids),
+    )
+    return cfg
+
+
+# ---------------------------------------------------------------------------
 # Router
 # ---------------------------------------------------------------------------
 
@@ -699,6 +820,8 @@ def router() -> APIRouter:
                 existing["params"] = {}
             providers[body.name] = existing
             cfg["providers"] = providers
+            if bool(existing.get("enabled", True)):
+                cfg = await _autobind_default_alias(cfg, body.name, existing)
             err = await _persist(state, cfg)
             if err is not None:
                 return err
@@ -732,6 +855,8 @@ def router() -> APIRouter:
                 entry["params"] = body.params
             providers[name] = entry
             cfg["providers"] = providers
+            if bool(entry.get("enabled", True)):
+                cfg = await _autobind_default_alias(cfg, name, entry)
             err = await _persist(state, cfg)
             if err is not None:
                 return err

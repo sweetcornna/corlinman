@@ -587,6 +587,11 @@ async def _replay_from_journal(
 
     journal: Any | None = None
     transcript: list[dict[str, Any]] = []
+    # Map a tool_call_id back to (transcript_idx, tool_call_idx) so a
+    # later ``role="tool"`` row's content can be folded into the
+    # originating assistant message's tool_calls[…].result. Without
+    # this the UI shows tool calls without their results on resume.
+    tc_lookup: dict[str, tuple[int, int]] = {}
     try:
         journal = await AgentJournal.open(path)
         # Pull all turns for this session at once so we have per-turn
@@ -615,20 +620,51 @@ async def _replay_from_journal(
             msgs = await journal._load_messages(tid)
             for m in msgs:
                 role = str(m.get("role") or "")
-                # Only surface conversational roles in the resume
-                # transcript; bare ``tool`` result rows are noisy
-                # for a chat UI bubble list.
-                if role not in {"user", "assistant", "system"}:
-                    continue
-                content = m.get("content")
-                if content is None:
-                    # Assistant messages with only tool_calls have
-                    # empty content — keep them as empty strings so
-                    # the seq is preserved and the bubble renders.
-                    content = ""
-                transcript.append(
-                    {"role": role, "content": str(content), "ts": ts_iso}
-                )
+                if role in {"user", "assistant", "system"}:
+                    content = m.get("content")
+                    if content is None:
+                        # Assistant messages with only tool_calls have
+                        # empty content — keep them as empty strings so
+                        # the seq is preserved and the bubble renders.
+                        content = ""
+                    entry: dict[str, Any] = {
+                        "role": role,
+                        "content": str(content),
+                        "ts": ts_iso,
+                    }
+                    raw_tcs = m.get("tool_calls")
+                    if role == "assistant" and isinstance(raw_tcs, list) and raw_tcs:
+                        # Pass tool_calls through in their OpenAI shape so
+                        # the chat UI can rehydrate ToolCallCards on
+                        # session resume.
+                        normalised: list[dict[str, Any]] = []
+                        for tc in raw_tcs:
+                            if isinstance(tc, dict):
+                                normalised.append(dict(tc))
+                        if normalised:
+                            entry["tool_calls"] = normalised
+                            midx = len(transcript)
+                            for j, tc in enumerate(normalised):
+                                tcid = tc.get("id")
+                                if isinstance(tcid, str) and tcid:
+                                    tc_lookup[tcid] = (midx, j)
+                    transcript.append(entry)
+                elif role == "tool":
+                    # Fold the tool result back onto the originating
+                    # assistant message's tool_call so the bubble
+                    # shows both invocation + result on reload.
+                    tcid = m.get("tool_call_id")
+                    if isinstance(tcid, str) and tcid in tc_lookup:
+                        midx, jidx = tc_lookup[tcid]
+                        tcs = transcript[midx].get("tool_calls")
+                        if (
+                            isinstance(tcs, list)
+                            and 0 <= jidx < len(tcs)
+                            and isinstance(tcs[jidx], dict)
+                        ):
+                            res = m.get("content")
+                            if res is not None:
+                                tcs[jidx]["result"] = str(res)
     except Exception as exc:  # noqa: BLE001 — degrade silently
         logger.debug(
             "admin.sessions.journal_replay_failed",

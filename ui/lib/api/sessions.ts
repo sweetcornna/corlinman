@@ -49,12 +49,26 @@ export type ReplayMode = "transcript" | "rerun";
 
 export type TranscriptRole = "user" | "assistant" | "system";
 
+/** OpenAI-shaped tool_call as it round-trips through the journal. The
+ *  optional `result` field is filled in by the replay endpoint by
+ *  pairing the matching `role="tool"` row to its originating call so
+ *  the chat UI can show both invocation + result on session resume. */
+export interface TranscriptToolCall {
+  id?: string;
+  type?: string;
+  function?: { name?: string; arguments?: string };
+  result?: string;
+}
+
 /** One message in a replay's `transcript` array. */
 export interface TranscriptMessage {
   role: TranscriptRole;
   content: string;
   /** RFC-3339 / ISO-8601 string. */
   ts: string;
+  /** Present on assistant messages that issued tool calls. Empty / absent
+   *  for plain text turns. */
+  tool_calls?: TranscriptToolCall[];
 }
 
 /** Summary block on a replay response. */
