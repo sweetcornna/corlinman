@@ -14,6 +14,7 @@
  */
 
 import * as React from "react";
+import { useQueryClient } from "@tanstack/react-query";
 
 import {
   cancelChatSession,
@@ -223,6 +224,7 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
     text: string;
     attachments?: ChatAttachment[];
   } | null>(null);
+  const qc = useQueryClient();
 
   const hydrate = React.useCallback((history: ChatMessage[]) => {
     setMessages(history);
@@ -287,15 +289,21 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
         model: args.model,
         stream: true,
         messages: messagesPayload,
-        metadata: {
-          session_key: args.sessionKey,
-          ...(args.agentId ? { agent_id: args.agentId } : {}),
-          ...(args.personaId ? { persona_id: args.personaId } : {}),
-        },
+        // Pin the conversation id at the top level — the gateway's
+        // ChatRequest pydantic model reads it from there, not from
+        // the metadata bag.
+        session_key: args.sessionKey,
+        ...((args.agentId || args.personaId) && {
+          metadata: {
+            ...(args.agentId ? { agent_id: args.agentId } : {}),
+            ...(args.personaId ? { persona_id: args.personaId } : {}),
+          },
+        }),
         ...(args.tools ? { tools: args.tools } : {}),
       };
 
       abortRef.current = new AbortController();
+      let finishReceived = false;
 
       try {
         for await (const chunk of streamChatCompletions(
@@ -307,11 +315,19 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
             draft.turnId = chunk.corlinman.turn_id;
           }
           for (const ev of chunkToChatEvents(chunk, turnId)) {
+            if (ev.kind === "turn-complete") finishReceived = true;
             reduceEvent(ev);
           }
         }
       } catch (err) {
-        if ((err as DOMException)?.name === "AbortError") {
+        // OpenAI-compat servers don't always close the SSE cleanly
+        // after `data: [DONE]` — the reader may then throw a "network
+        // error" / "TypeError" even though the turn finished
+        // successfully. If we already observed a finish_reason chunk,
+        // swallow the error rather than surface a misleading toast.
+        if (finishReceived) {
+          // intentional no-op
+        } else if ((err as DOMException)?.name === "AbortError") {
           reduceEvent({
             kind: "turn-errored",
             turnId: draft.turnId ?? draft.id,
@@ -337,6 +353,10 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
           }
           return null;
         });
+        // Refresh the sidebar conversation list so the just-finished
+        // turn is reflected immediately (refetchInterval would catch
+        // it eventually; this makes the UX feel live).
+        void qc.invalidateQueries({ queryKey: ["chat", "sessions"] });
         // Live stream stays open briefly so trailing events can land, then
         // close on the next tick.
         const close = closeLiveRef.current;

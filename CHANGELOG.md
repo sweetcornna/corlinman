@@ -4,6 +4,47 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.5] — 2026-05-28 — Fix: session_key was being dropped; spurious "network error" on stream end
+
+> User report: every finished turn briefly flashed a "network error"
+> banner, and the sidebar's old conversations couldn't be re-opened.
+> Two upstream bugs.
+
+### Fixed
+
+- **`session_key` silently dropped → every web turn landed under
+  `session_key=""` in the journal** — the frontend sent the
+  per-conversation id inside `metadata.session_key`, but the
+  gateway's `ChatRequest` pydantic model only reads `session_key` at
+  the top level (the `metadata` bag is `extra="allow"` and is
+  silently discarded on the way to the reasoning loop). The journal
+  then stored every web turn against the empty string, so
+  `/admin/sessions` only showed one giant aggregated row and clicking
+  it routed to an unmatchable empty session. Fix: move `session_key`
+  to the top level of `ChatCompletionRequest`; only `agent_id` /
+  `persona_id` stay in metadata.
+- **"Network error" toast at the end of each turn** — some
+  OpenAI-compat servers (including ours, under load) close the SSE
+  connection abruptly after sending `data: [DONE]`. The fetch
+  ReadableStream reader then throws a TypeError; we were surfacing
+  that as `turn-errored` even though the model finished successfully.
+  Fix: track a `finishReceived` flag during the for-await loop; if
+  we already processed a `finish_reason` chunk, swallow any
+  subsequent read errors as the expected post-completion close.
+
+### Added
+
+- **Sidebar refresh on turn completion** — `useChatStream` now grabs
+  the React Query client and invalidates the
+  `["chat", "sessions"]` query as soon as a turn commits, so a
+  freshly-created conversation appears in the sidebar instantly
+  instead of waiting for the 30 s polling interval to tick.
+
+### Tests
+
+- Chat suite 58/58 passing; typecheck clean; `next build` succeeds
+  with `/chat` at 20.4 kB.
+
 ## [1.8.4] — 2026-05-28 — Fix: tool calls stuck "(pending)" + collapsible tool list
 
 > User report: an assistant turn that fires many tool calls renders

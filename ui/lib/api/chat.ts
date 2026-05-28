@@ -54,9 +54,17 @@ export interface ChatCompletionRequest {
   model: string;
   messages: ChatCompletionMessage[];
   stream: true;
-  /** Hermes-specific metadata. The gateway pulls `session_key` /
-   *  `persona_id` / `agent_id` out of here before delegating to the
-   *  reasoning loop. */
+  /**
+   * Pinned conversation id. Sent at the top level (not inside
+   * `metadata`) because the gateway's `ChatRequest` pydantic model
+   * accepts it there; the metadata bag is `extra="allow"` and is
+   * silently dropped on the way to the reasoning loop. Without this
+   * field every web turn lands in the journal under an empty
+   * session_key, which breaks the /admin/sessions sidebar.
+   */
+  session_key?: string;
+  /** Hermes extension: agent / persona binding. The gateway reads
+   *  these from the metadata bag. */
   metadata?: Record<string, string>;
   temperature?: number;
   max_tokens?: number;
