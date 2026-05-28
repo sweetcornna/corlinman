@@ -160,18 +160,32 @@ export function ArtifactPanel({
             data-view={view}
           >
             {view === "preview" && active.kind === "html" ? (
+              // Model output is untrusted. `allow-scripts` enables demo
+              // interactivity, but we MUST NOT also grant
+              // `allow-same-origin` — together they neutralise the
+              // sandbox vs. the parent's origin (cookies, fetch to /api,
+              // etc.). Without `allow-same-origin`, the iframe's
+              // document.origin is the opaque "null" origin and the
+              // operator's `corlinman_session` cookie stays out of reach.
               <iframe
                 title={t("chat.artifactIframeTitle", { title: active.title })}
                 className="h-full w-full border-0 bg-white"
-                sandbox="allow-scripts allow-same-origin"
+                sandbox="allow-scripts"
                 srcDoc={active.source}
                 data-testid="artifact-iframe-html"
               />
             ) : view === "preview" && active.kind === "svg" ? (
-              <div
-                className="flex h-full w-full items-center justify-center overflow-auto bg-tp-glass-inner/20 p-4"
-                dangerouslySetInnerHTML={{ __html: active.source }}
-                data-testid="artifact-svg"
+              // SVG accepts <script> and event-handler attributes. Render
+              // it inside a fully locked-down iframe (no sandbox flags at
+              // all) instead of dangerouslySetInnerHTML, so any embedded
+              // script can neither execute in this origin nor reach the
+              // parent DOM.
+              <iframe
+                title={t("chat.artifactIframeTitle", { title: active.title })}
+                className="h-full w-full border-0 bg-tp-glass-inner/20"
+                sandbox=""
+                srcDoc={active.source}
+                data-testid="artifact-iframe-svg"
               />
             ) : view === "preview" &&
               (active.kind === "mermaid" || active.kind === "markdown") ? (

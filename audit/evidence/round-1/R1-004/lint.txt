@@ -1,0 +1,40 @@
+
+./app/(admin)/chat/page.tsx
+224:5  Warning: React Hook React.useCallback has a missing dependency: 't'. Either include it or remove the dependency array.  react-hooks/exhaustive-deps
+240:5  Warning: React Hook React.useCallback has a missing dependency: 't'. Either include it or remove the dependency array.  react-hooks/exhaustive-deps
+256:5  Warning: React Hook React.useCallback has a missing dependency: 't'. Either include it or remove the dependency array.  react-hooks/exhaustive-deps
+286:5  Warning: React Hook React.useCallback has a missing dependency: 't'. Either include it or remove the dependency array.  react-hooks/exhaustive-deps
+
+./app/(admin)/persona/page.test.tsx
+60:10  Warning: '_p' is defined but never used.  @typescript-eslint/no-unused-vars
+65:10  Warning: '_id' is defined but never used.  @typescript-eslint/no-unused-vars
+65:23  Warning: '_patch' is defined but never used.  @typescript-eslint/no-unused-vars
+70:10  Warning: '_id' is defined but never used.  @typescript-eslint/no-unused-vars
+75:10  Warning: '_payload' is defined but never used.  @typescript-eslint/no-unused-vars
+
+./components/chat/artifact-panel.tsx
+43:6  Warning: React Hook React.useEffect has a missing dependency: 'active'. Either include it or remove the dependency array.  react-hooks/exhaustive-deps
+
+./components/credentials/env-var-row.tsx
+35:3  Warning: 'Check' is defined but never used.  @typescript-eslint/no-unused-vars
+44:10  Warning: 'Badge' is defined but never used.  @typescript-eslint/no-unused-vars
+
+./components/layout/sidebar.tsx
+29:3  Warning: 'Plug' is defined but never used.  @typescript-eslint/no-unused-vars
+
+./components/playground/agent-picker.tsx
+111:9  Warning: The 'agents' logical expression could make the dependencies of useMemo Hook (at line 121) change on every render. To fix this, wrap the initialization of 'agents' in its own useMemo() Hook.  react-hooks/exhaustive-deps
+
+./components/skills/install-progress-modal.tsx
+115:21  Warning: 'prev' is defined but never used.  @typescript-eslint/no-unused-vars
+
+./lib/chat/event-merger.ts
+167:3  Warning: '_kind' is defined but never used.  @typescript-eslint/no-unused-vars
+
+./lib/chat/use-chat-stream.ts
+394:5  Warning: React Hook React.useCallback has a missing dependency: 'qc'. Either include it or remove the dependency array.  react-hooks/exhaustive-deps
+
+./lib/sessions/store.ts
+589:3  Warning: '_timestamp_ms' is defined but never used.  @typescript-eslint/no-unused-vars
+
+info  - Need to disable some ESLint rules? Learn more here: https://nextjs.org/docs/app/api-reference/config/eslint#disabling-rules

@@ -1,0 +1,4 @@
+
+> @corlinman/admin@1.8.13 typecheck /Users/cornna/project/corlinman/ui
+> tsc --noEmit
+

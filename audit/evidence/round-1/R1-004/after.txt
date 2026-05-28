@@ -1,0 +1,10 @@
+
+ RUN  v3.2.4 /Users/cornna/project/corlinman/ui
+
+ ✓ components/chat/__tests__/artifact-panel-xss.test.tsx (3 tests) 48ms
+
+ Test Files  1 passed (1)
+      Tests  3 passed (3)
+   Start at  23:27:23
+   Duration  766ms (transform 77ms, setup 127ms, collect 129ms, tests 48ms, environment 217ms, prepare 49ms)
+

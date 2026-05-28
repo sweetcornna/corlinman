@@ -73,7 +73,7 @@ describe("ArtifactPanel", () => {
     expect(screen.getByTestId("artifact-iframe-html")).toBeInTheDocument();
   });
 
-  it("renders svg inline for svg kind", () => {
+  it("renders sandboxed iframe for svg kind (XSS hardening, R1-004)", () => {
     render(
       <ArtifactPanel
         artifacts={[mk({ id: "s", kind: "svg", language: "svg", source: "<svg/>" })]}
@@ -84,7 +84,9 @@ describe("ArtifactPanel", () => {
         onRemove={vi.fn()}
       />,
     );
-    expect(screen.getByTestId("artifact-svg")).toBeInTheDocument();
+    const frame = screen.getByTestId("artifact-iframe-svg") as HTMLIFrameElement;
+    expect(frame).toBeInTheDocument();
+    expect(frame.getAttribute("sandbox")).toBe("");
   });
 
   it("close button fires onClose", () => {

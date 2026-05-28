@@ -1,0 +1,100 @@
+              [36m<path[39m
+                [33md[39m=[32m"M15 13v2"[39m
+              [36m/>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M9 13v2"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [36m<span[39m
+              [33mclass[39m=[32m"font-mono font-semibold text-amber-900 dark:text-amber-200"[39m
+              [33mdata-testid[39m=[32m"subagent-agent-id"[39m
+            [36m>[39m
+              [0mresearcher[0m
+            [36m</span>[39m
+            [36m<span[39m
+              [33mclass[39m=[32m"shrink-0 rounded-sm bg-amber-200/30 px-1.5 py-0.5 font-mono text-[10px] opacity-70 dark:bg-amber-700/20"[39m
+            [36m>[39m
+              [0mdepth[0m
+              [0m [0m
+              [0m1[0m
+            [36m</span>[39m
+            [36m<span[39m
+              [33mclass[39m=[32m"ml-auto inline-flex shrink-0 items-center gap-1 rounded-sm px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide bg-emerald-200/40 text-emerald-900 dark:bg-emerald-700/30 dark:text-emerald-200"[39m
+              [33mdata-testid[39m=[32m"subagent-status-badge"[39m
+            [36m>[39m
+              [36m<svg[39m
+                [33maria-hidden[39m=[32m"true"[39m
+                [33mclass[39m=[32m"lucide lucide-circle-check size-2.5"[39m
+                [33mfill[39m=[32m"none"[39m
+                [33mheight[39m=[32m"24"[39m
+                [33mstroke[39m=[32m"currentColor"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+                [33mstroke-width[39m=[32m"2"[39m
+                [33mviewBox[39m=[32m"0 0 24 24"[39m
+                [33mwidth[39m=[32m"24"[39m
+                [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+              [36m>[39m
+                [36m<circle[39m
+                  [33mcx[39m=[32m"12"[39m
+                  [33mcy[39m=[32m"12"[39m
+                  [33mr[39m=[32m"10"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"m9 12 2 2 4-4"[39m
+                [36m/>[39m
+              [36m</svg>[39m
+              [0mcompleted[0m
+            [36m</span>[39m
+          [36m</button>[39m
+          [36m<div[39m
+            [33mclass[39m=[32m"px-3 pb-1 pt-0 text-[11px] italic text-amber-800/70 dark:text-amber-200/60"[39m
+            [33mtitle[39m=[32m"Look up the W3.2 spec and summarise risks."[39m
+          [36m>[39m
+            [36m<span[39m
+              [33mclass[39m=[32m"not-italic opacity-60"[39m
+            [36m>[39m
+              [0mprompt[0m
+              [0m:[0m
+            [36m</span>[39m
+            [0m [0m
+            [0mLook up the W3.2 spec and summarise risks.[0m
+          [36m</div>[39m
+          [36m<div[39m
+            [33mclass[39m=[32m"px-3 pb-2 text-[11px] text-amber-700/60 dark:text-amber-200/50"[39m
+          [36m>[39m
+            [36m<span[39m
+              [33mdata-testid[39m=[32m"subagent-collapsed-summary"[39m
+            [36m>[39m
+              [0m1[0m
+              [0m [0m
+              [0mevent[0m
+              [0m · 400ms[0m
+            [36m</span>[39m
+          [36m</div>[39m
+        [36m</div>[39m
+      [36m</div>[39m
+    [36m</div>[39m
+  [36m</div>[39m
+[36m</body>[39m
+ ❯ Object.getElementError ../node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/config.js:37:19
+ ❯ ../node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/query-helpers.js:76:38
+ ❯ ../node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/query-helpers.js:52:17
+ ❯ ../node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/query-helpers.js:95:19
+ ❯ components/sessions/__tests__/subagent-tree.test.tsx:224:27
+    222| 
+    223|     // Footer reflects the completion payload.
+    224|     const footer = screen.getByTestId("subagent-footer");
+       |                           ^
+    225|     expect(footer).toHaveTextContent("stop");
+    226|     // tool_calls_made surfaces as "2 tools".
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/7]⎯
+
+
+ Test Files  3 failed | 95 passed (98)
+      Tests  7 failed | 796 passed | 2 skipped (805)
+   Start at  23:30:07
+   Duration  10.89s (transform 3.72s, setup 15.35s, collect 30.63s, tests 25.28s, environment 45.53s, prepare 6.79s)
+
+ ELIFECYCLE  Test failed. See above for more details.

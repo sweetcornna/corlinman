@@ -1,0 +1,69 @@
+
+ RUN  v3.2.4 /Users/cornna/project/corlinman/ui
+
+ ❯ components/chat/__tests__/artifact-panel-xss.test.tsx (3 tests | 3 failed) 44ms
+   × ArtifactPanel — XSS hardening (R1-004) > SEC-002: SVG artifact must NOT execute inline scripts or event handlers in the parent origin 29ms
+     → expected 1 to be +0 // Object.is equality
+   × ArtifactPanel — XSS hardening (R1-004) > SEC-003: HTML artifact iframe sandbox must not combine allow-scripts with allow-same-origin 11ms
+     → expected true to be false // Object.is equality
+   × ArtifactPanel — XSS hardening (R1-004) > SEC-002 (defence in depth): SVG preview route must also be sandboxed when scripts could be present 4ms
+     → expected null not to be null
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  components/chat/__tests__/artifact-panel-xss.test.tsx > ArtifactPanel — XSS hardening (R1-004) > SEC-002: SVG artifact must NOT execute inline scripts or event handlers in the parent origin
+AssertionError: expected 1 to be +0 // Object.is equality
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- 0[39m
+[31m+ 1[39m
+
+ ❯ components/chat/__tests__/artifact-panel-xss.test.tsx:66:34
+     64|       '[data-testid="artifact-panel"] script',
+     65|     );
+     66|     expect(inlineScripts.length).toBe(0);
+       |                                  ^
+     67| 
+     68|     // And SVG event-handler attributes (onload, onerror, …) must not …
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯
+
+ FAIL  components/chat/__tests__/artifact-panel-xss.test.tsx > ArtifactPanel — XSS hardening (R1-004) > SEC-003: HTML artifact iframe sandbox must not combine allow-scripts with allow-same-origin
+AssertionError: expected true to be false // Object.is equality
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- false[39m
+[31m+ true[39m
+
+ ❯ components/chat/__tests__/artifact-panel-xss.test.tsx:106:41
+    104|     // for the parent's origin (the iframe can read parent cookies, hit
+    105|     // /api endpoints with the session cookie, etc.).
+    106|     expect(hasScripts && hasSameOrigin).toBe(false);
+       |                                         ^
+    107| 
+    108|     // We should also be denying the loosest other escape hatches.
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/3]⎯
+
+ FAIL  components/chat/__tests__/artifact-panel-xss.test.tsx > ArtifactPanel — XSS hardening (R1-004) > SEC-002 (defence in depth): SVG preview route must also be sandboxed when scripts could be present
+AssertionError: expected null not to be null
+ ❯ components/chat/__tests__/artifact-panel-xss.test.tsx:138:27
+    136|       | HTMLIFrameElement
+    137|       | null;
+    138|     expect(svgIframe).not.toBeNull();
+       |                           ^
+    139|     const sandbox = svgIframe!.getAttribute("sandbox");
+    140|     // The SVG branch shouldn't grant same-origin either.
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/3]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  3 failed (3)
+   Start at  23:26:52
+   Duration  1.19s (transform 94ms, setup 158ms, collect 164ms, tests 44ms, environment 321ms, prepare 51ms)
+
