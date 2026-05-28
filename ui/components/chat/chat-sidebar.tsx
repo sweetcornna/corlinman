@@ -299,12 +299,12 @@ function SidebarRow({
         />
       ) : (
         <Link
-          href={`/chat/${encodeURIComponent(conv.sessionKey)}`}
+          href={`/chat?session=${encodeURIComponent(conv.sessionKey)}`}
           className="flex flex-1 flex-col overflow-hidden"
           onClick={(e) => {
             // Allow ⌘/Ctrl+click to bypass the rename UX.
             if (e.metaKey || e.ctrlKey) return;
-            router.push(`/chat/${encodeURIComponent(conv.sessionKey)}`);
+            router.push(`/chat?session=${encodeURIComponent(conv.sessionKey)}`);
           }}
         >
           <span className="truncate" title={title}>

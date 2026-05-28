@@ -38,7 +38,7 @@ describe("SessionRow", () => {
     const link = screen.getByTestId(`session-continue-${SESSION.session_key}`);
     expect(link.tagName).toBe("A");
     expect(link.getAttribute("href")).toBe(
-      `/chat/${encodeURIComponent(SESSION.session_key)}`,
+      `/chat?session=${encodeURIComponent(SESSION.session_key)}`,
     );
   });
 

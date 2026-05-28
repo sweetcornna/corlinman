@@ -115,7 +115,7 @@ export function ChatArea({
       } catch {
         /* ignore */
       }
-      router.push(`/chat/${encodeURIComponent(newKey)}#branched=1`);
+      router.push(`/chat?session=${encodeURIComponent(newKey)}&branched=1`);
     },
     [chat, router],
   );

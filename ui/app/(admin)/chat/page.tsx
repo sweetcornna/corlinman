@@ -1,13 +1,18 @@
 "use client";
 
 /**
- * /chat root page. Renders the conversation sidebar; the right pane shows
- * an empty state until a session is selected (or the user starts a new one,
- * which routes to /chat/[sessionKey]).
+ * `/admin/chat` — single page that renders the conversation sidebar +
+ * either an empty state (no `?session=` query param) or the full
+ * `<ChatArea>` once a session is selected.
+ *
+ * Uses a query string instead of a dynamic route segment because
+ * `next.config.ts` ships `output: "export"`, which forbids arbitrary
+ * dynamic paths without a `generateStaticParams()` enumeration — mirrors
+ * the pattern used by `/admin/sessions/detail`.
  */
 
 import * as React from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
@@ -17,18 +22,58 @@ import {
   patchChatSession,
 } from "@/lib/api/chat";
 import { CorlinmanApiError } from "@/lib/api";
+import { replaySession, type TranscriptMessage } from "@/lib/api/sessions";
+import { ChatArea } from "@/components/chat/chat-area";
 import { ChatSidebar } from "@/components/chat/chat-sidebar";
 import { ChatEmptyState } from "@/components/chat/empty-state";
-import type { ChatConversation } from "@/lib/chat/types";
+import type { ChatConversation, ChatMessage } from "@/lib/chat/types";
+
+const DEFAULT_MODEL = "gpt-4o";
 
 function genSessionKey(): string {
   const r = Math.random().toString(36).slice(2, 10);
   return `corlinman:${Date.now().toString(36)}:${r}`;
 }
 
+function chatHref(sessionKey: string): string {
+  return `/chat?session=${encodeURIComponent(sessionKey)}`;
+}
+
+function pickBranchedHistory(sessionKey: string): ChatMessage[] | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = sessionStorage.getItem(`corlinman:chat:branch:${sessionKey}`);
+    if (!raw) return null;
+    sessionStorage.removeItem(`corlinman:chat:branch:${sessionKey}`);
+    return JSON.parse(raw) as ChatMessage[];
+  } catch {
+    return null;
+  }
+}
+
+/** Map journal TranscriptMessage[] → ChatMessage[] so existing sessions
+ *  (telegram / qq / scheduled) resume cleanly in /chat. */
+function transcriptToChatMessages(
+  transcript: TranscriptMessage[],
+): ChatMessage[] {
+  return transcript.map((m, i) => {
+    const created = Number.isFinite(Date.parse(m.ts))
+      ? Date.parse(m.ts)
+      : Date.now() - (transcript.length - i) * 1000;
+    return {
+      id: `hist_${i}_${created}`,
+      role: m.role,
+      content: m.content,
+      createdAt: created,
+    };
+  });
+}
+
 export default function ChatPage() {
   const router = useRouter();
   const qc = useQueryClient();
+  const search = useSearchParams();
+  const sessionKey = search?.get("session") ?? null;
   const [collapsed, setCollapsed] = React.useState(false);
 
   const { data: conversations } = useQuery<ChatConversation[]>({
@@ -37,19 +82,68 @@ export default function ChatPage() {
     refetchInterval: 30_000,
   });
 
-  const handleNew = React.useCallback(() => {
-    const key = genSessionKey();
-    router.push(`/chat/${encodeURIComponent(key)}`);
-  }, [router]);
+  const active = React.useMemo(
+    () =>
+      sessionKey
+        ? (conversations?.find((c) => c.sessionKey === sessionKey) ?? null)
+        : null,
+    [conversations, sessionKey],
+  );
+
+  // Branched history handoff (one-shot per sessionKey).
+  const [branchedHistory, setBranchedHistory] = React.useState<
+    ChatMessage[] | undefined
+  >(undefined);
+  React.useEffect(() => {
+    if (!sessionKey) {
+      setBranchedHistory(undefined);
+      return;
+    }
+    const h = pickBranchedHistory(sessionKey);
+    if (h && h.length > 0) setBranchedHistory(h);
+  }, [sessionKey]);
+
+  // Fetch server-side transcript when no branched history is staged.
+  const transcriptQuery = useQuery({
+    queryKey: ["chat", "transcript", sessionKey ?? ""],
+    queryFn: async () => {
+      if (!sessionKey) return [] as TranscriptMessage[];
+      const out = await replaySession(sessionKey, { mode: "transcript" });
+      if (out.kind === "ok") return out.replay.transcript;
+      return [] as TranscriptMessage[];
+    },
+    enabled: Boolean(sessionKey) && branchedHistory === undefined,
+    staleTime: 30_000,
+  });
+
+  const initialHistory: ChatMessage[] | undefined = React.useMemo(() => {
+    if (branchedHistory && branchedHistory.length > 0) return branchedHistory;
+    const t = transcriptQuery.data;
+    if (!t) return undefined;
+    return transcriptToChatMessages(t);
+  }, [branchedHistory, transcriptQuery.data]);
 
   const refreshList = React.useCallback(() => {
     void qc.invalidateQueries({ queryKey: ["chat", "sessions"] });
   }, [qc]);
 
+  const handleNew = React.useCallback(() => {
+    const key = genSessionKey();
+    router.push(chatHref(key));
+  }, [router]);
+
+  const handlePickSuggestion = React.useCallback(
+    (text: string) => {
+      const key = genSessionKey();
+      router.push(`${chatHref(key)}&prompt=${encodeURIComponent(text)}`);
+    },
+    [router],
+  );
+
   const handleRename = React.useCallback(
-    async (sessionKey: string, title: string) => {
+    async (key: string, title: string) => {
       try {
-        await patchChatSession(sessionKey, { title: title || null });
+        await patchChatSession(key, { title: title || null });
         refreshList();
       } catch (err) {
         toast.error(
@@ -63,17 +157,15 @@ export default function ChatPage() {
   );
 
   const handleTogglePin = React.useCallback(
-    async (sessionKey: string) => {
-      const conv = conversations?.find((c) => c.sessionKey === sessionKey);
+    async (key: string) => {
+      const conv = conversations?.find((c) => c.sessionKey === key);
       if (!conv) return;
       try {
-        await patchChatSession(sessionKey, { pinned: !conv.pinned });
+        await patchChatSession(key, { pinned: !conv.pinned });
         refreshList();
       } catch (err) {
         toast.error(
-          err instanceof CorlinmanApiError
-            ? err.message
-            : "Pin toggle failed",
+          err instanceof CorlinmanApiError ? err.message : "Pin toggle failed",
         );
       }
     },
@@ -81,17 +173,15 @@ export default function ChatPage() {
   );
 
   const handleToggleArchive = React.useCallback(
-    async (sessionKey: string) => {
-      const conv = conversations?.find((c) => c.sessionKey === sessionKey);
+    async (key: string) => {
+      const conv = conversations?.find((c) => c.sessionKey === key);
       if (!conv) return;
       try {
-        await patchChatSession(sessionKey, { archived: !conv.archived });
+        await patchChatSession(key, { archived: !conv.archived });
         refreshList();
       } catch (err) {
         toast.error(
-          err instanceof CorlinmanApiError
-            ? err.message
-            : "Archive toggle failed",
+          err instanceof CorlinmanApiError ? err.message : "Archive failed",
         );
       }
     },
@@ -99,20 +189,17 @@ export default function ChatPage() {
   );
 
   const handleDelete = React.useCallback(
-    (sessionKey: string) => {
-      // Optimistic deletion with undo. We schedule the real delete after
-      // the toast's grace window; if the user clicks Undo we cancel.
+    (key: string) => {
       let cancelled = false;
       const timer = window.setTimeout(async () => {
         if (cancelled) return;
         try {
-          await deleteChatSession(sessionKey);
+          await deleteChatSession(key);
           refreshList();
+          if (key === sessionKey) router.push("/chat");
         } catch (err) {
           toast.error(
-            err instanceof CorlinmanApiError
-              ? err.message
-              : "Delete failed",
+            err instanceof CorlinmanApiError ? err.message : "Delete failed",
           );
         }
       }, 4500);
@@ -128,14 +215,14 @@ export default function ChatPage() {
         duration: 4500,
       });
     },
-    [refreshList],
+    [refreshList, router, sessionKey],
   );
 
   return (
     <>
       <ChatSidebar
         conversations={conversations ?? []}
-        activeSessionKey={null}
+        activeSessionKey={sessionKey}
         onNew={handleNew}
         onRename={handleRename}
         onTogglePin={handleTogglePin}
@@ -144,14 +231,18 @@ export default function ChatPage() {
         collapsed={collapsed}
         onToggleCollapsed={() => setCollapsed((v) => !v)}
       />
-      <section className="flex flex-1 items-center justify-center p-6">
-        <ChatEmptyState onPick={(text) => {
-          // Picking a suggestion on the root page starts a new conversation
-          // with that prompt pre-loaded via the URL hash.
-          const key = genSessionKey();
-          router.push(`/chat/${encodeURIComponent(key)}#prompt=${encodeURIComponent(text)}`);
-        }} />
-      </section>
+      {sessionKey ? (
+        <ChatArea
+          sessionKey={sessionKey}
+          model={DEFAULT_MODEL}
+          conversation={active}
+          initialHistory={initialHistory}
+        />
+      ) : (
+        <section className="flex flex-1 items-center justify-center p-6">
+          <ChatEmptyState onPick={handlePickSuggestion} />
+        </section>
+      )}
     </>
   );
 }

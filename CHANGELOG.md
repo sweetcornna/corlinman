@@ -4,6 +4,32 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.1] — 2026-05-28 — Hotfix: static-export compatibility for /chat
+
+> Build-only hotfix: 1.8.0 shipped `/chat/[sessionKey]` as a Next.js
+> dynamic route, which `output: "export"` rejects without a build-time
+> `generateStaticParams()` enumeration. The fix folds the dynamic
+> segment into a query string — `/chat?session=…` — mirroring the
+> existing pattern used by `/admin/sessions/detail`, so `pnpm build`
+> succeeds and the UI ships as static assets again.
+
+### Fixed
+
+- `/chat` static export — merged `/chat/[sessionKey]/page.tsx` into the
+  root `/chat/page.tsx`; the page now reads the active session key
+  from `useSearchParams("session")`. All navigation that previously
+  pushed `/chat/${key}` now pushes `/chat?session=${key}` (sidebar
+  rows, sessions-row "Continue" link, branch fork in `chat-area`,
+  empty-state suggestion picks, e2e fixture URLs). Tests adjusted in
+  step (`session-row.test.tsx` and `chat-mvp.spec.ts`).
+
+### Unchanged
+
+- Backend / API contracts (`/admin/sessions/{key}/cancel`,
+  `PATCH /admin/sessions/{key}`, `/api/channels/corlinman/*`),
+  `CorlinmanChannel`, session metadata schema, and every chat surface
+  feature from 1.8.0.
+
 ## [1.8.0] — 2026-05-28 — In-app /chat surface + corlinman channel
 
 > Lands a **Claude.ai-grade conversation window** at `/admin/chat`

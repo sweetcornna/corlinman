@@ -74,7 +74,7 @@ export function SessionRow({ session, onReplay, onDelete }: SessionRowProps) {
             data-testid={`session-continue-${session.session_key}`}
           >
             <Link
-              href={`/chat/${encodeURIComponent(session.session_key)}`}
+              href={`/chat?session=${encodeURIComponent(session.session_key)}`}
               aria-label={`${t("sessions.continueInChat")} ${session.session_key}`}
             >
               <MessageSquareText className="h-3.5 w-3.5" aria-hidden="true" />

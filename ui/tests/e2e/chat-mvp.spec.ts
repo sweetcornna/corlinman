@@ -5,7 +5,7 @@
  * regressions surface fast:
  *
  *   1. Sidebar renders the existing conversations (stubbed GET /admin/sessions).
- *   2. Clicking "New chat" navigates to /chat/[sessionKey].
+ *   2. Clicking "New chat" navigates to /chat?session=…
  *   3. The composer sends a message and the streamed assistant reply is
  *      rendered token-by-token, plus a tool-call card from the live SSE
  *      stream.
@@ -167,7 +167,7 @@ test.describe("/chat MVP", () => {
     test.setTimeout(TEST_TIMEOUT_MS);
     await page.goto("/chat");
     await page.getByTestId("chat-sidebar-new").click();
-    await expect(page).toHaveURL(/\/chat\/[^/?#]+$/);
+    await expect(page).toHaveURL(/\/chat\?session=/);
     await expect(page.getByTestId("chat-area")).toBeVisible();
     await expect(page.getByTestId("composer")).toBeVisible();
   });
@@ -176,7 +176,7 @@ test.describe("/chat MVP", () => {
     page,
   }) => {
     test.setTimeout(TEST_TIMEOUT_MS);
-    await page.goto(`/chat/${encodeURIComponent(SESSION_KEY)}`);
+    await page.goto(`/chat?session=${encodeURIComponent(SESSION_KEY)}`);
     await expect(page.getByTestId("composer-textarea")).toBeVisible();
     await page.getByTestId("composer-textarea").fill("read foo.py please");
     await page.getByTestId("composer-send").click();
@@ -200,7 +200,7 @@ test.describe("/chat MVP", () => {
 
   test("slash menu opens when input begins with /", async ({ page }) => {
     test.setTimeout(TEST_TIMEOUT_MS);
-    await page.goto(`/chat/${encodeURIComponent(SESSION_KEY)}`);
+    await page.goto(`/chat?session=${encodeURIComponent(SESSION_KEY)}`);
     await page.getByTestId("composer-textarea").fill("/cle");
     await expect(page.getByTestId("slash-menu")).toBeVisible();
     await expect(page.getByTestId("slash-menu")).toContainText("/clear");
