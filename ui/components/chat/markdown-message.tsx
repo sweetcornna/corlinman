@@ -19,7 +19,7 @@
 import * as React from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
-import { Check, Copy } from "lucide-react";
+import { Check, Copy, ExternalLink } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
@@ -28,12 +28,16 @@ interface MarkdownMessageProps {
   /** Add a thin cursor caret at the end of the content (streaming UX). */
   streaming?: boolean;
   className?: string;
+  /** Invoked when the user clicks "Open in panel" on a code block. The
+   *  parent decides whether to mount an artifact for it. */
+  onOpenArtifact?: (lang: string, source: string) => void;
 }
 
 export function MarkdownMessage({
   content,
   streaming,
   className,
+  onOpenArtifact,
 }: MarkdownMessageProps) {
   const components: Components = React.useMemo(
     () => ({
@@ -152,7 +156,10 @@ export function MarkdownMessage({
         }
         const lang = c?.slice("language-".length) || "";
         return (
-          <CodeBlock language={lang}>
+          <CodeBlock
+            language={lang}
+            onOpenArtifact={onOpenArtifact}
+          >
             {String(children).replace(/\n$/, "")}
           </CodeBlock>
         );
@@ -184,9 +191,13 @@ export function MarkdownMessage({
 interface CodeBlockProps {
   language: string;
   children: string;
+  onOpenArtifact?: (lang: string, source: string) => void;
 }
 
-function CodeBlock({ language, children }: CodeBlockProps) {
+const ARTIFACT_AUTO_LANGS = new Set(["html", "svg", "mermaid"]);
+const ARTIFACT_LINE_THRESHOLD = 25;
+
+function CodeBlock({ language, children, onOpenArtifact }: CodeBlockProps) {
   const [copied, setCopied] = React.useState(false);
   const copy = React.useCallback(() => {
     void navigator.clipboard?.writeText(children).then(() => {
@@ -195,6 +206,15 @@ function CodeBlock({ language, children }: CodeBlockProps) {
     });
   }, [children]);
 
+  const lineCount = React.useMemo(
+    () => children.split("\n").length,
+    [children],
+  );
+  const showArtifactCta =
+    Boolean(onOpenArtifact) &&
+    (ARTIFACT_AUTO_LANGS.has(language.toLowerCase()) ||
+      lineCount >= ARTIFACT_LINE_THRESHOLD);
+
   return (
     <div
       className="my-2 overflow-hidden rounded-md border border-tp-glass-edge bg-tp-glass-inner"
@@ -202,19 +222,33 @@ function CodeBlock({ language, children }: CodeBlockProps) {
     >
       <div className="flex items-center justify-between border-b border-tp-glass-edge bg-tp-glass-inner/60 px-2 py-1 text-[11px] text-tp-ink-3">
         <span className="font-mono">{language || "text"}</span>
-        <button
-          type="button"
-          onClick={copy}
-          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-tp-ink-3 transition hover:bg-tp-glass-inner hover:text-tp-ink"
-          aria-label={copied ? "Copied" : "Copy code"}
-        >
-          {copied ? (
-            <Check className="h-3 w-3" aria-hidden="true" />
-          ) : (
-            <Copy className="h-3 w-3" aria-hidden="true" />
-          )}
-          {copied ? "Copied" : "Copy"}
-        </button>
+        <div className="flex items-center gap-1">
+          {showArtifactCta ? (
+            <button
+              type="button"
+              onClick={() => onOpenArtifact?.(language, children)}
+              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-tp-ink-3 transition hover:bg-tp-glass-inner hover:text-tp-ink"
+              aria-label="Open in side panel"
+              data-testid="md-codeblock-open-artifact"
+            >
+              <ExternalLink className="h-3 w-3" aria-hidden="true" />
+              Open
+            </button>
+          ) : null}
+          <button
+            type="button"
+            onClick={copy}
+            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-tp-ink-3 transition hover:bg-tp-glass-inner hover:text-tp-ink"
+            aria-label={copied ? "Copied" : "Copy code"}
+          >
+            {copied ? (
+              <Check className="h-3 w-3" aria-hidden="true" />
+            ) : (
+              <Copy className="h-3 w-3" aria-hidden="true" />
+            )}
+            {copied ? "Copied" : "Copy"}
+          </button>
+        </div>
       </div>
       <pre className="overflow-x-auto px-3 py-2 font-mono text-[12px] leading-relaxed text-tp-ink">
         <code>{children}</code>

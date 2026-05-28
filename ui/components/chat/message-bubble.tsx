@@ -18,8 +18,10 @@ import * as React from "react";
 import {
   Bot,
   Copy,
+  GitFork,
   Image as ImageIcon,
   Paperclip,
+  Pencil,
   RefreshCcw,
   User,
 } from "lucide-react";
@@ -46,6 +48,17 @@ interface MessageBubbleProps {
     decision: ApprovalDecision,
     scope: ApprovalScope,
   ) => void;
+  /** User message editing — saves a new content + truncates history. */
+  onEdit?: (messageId: string, newContent: string) => void;
+  /** Fork conversation from this message. */
+  onBranch?: (messageId: string) => void;
+  /** Push a code block from the markdown body into the artifact panel. */
+  onOpenArtifact?: (language: string, source: string) => void;
+  /** When >1 versions exist for the same logical turn, render a switcher. */
+  versionIndex?: number;
+  versionCount?: number;
+  onPrevVersion?: () => void;
+  onNextVersion?: () => void;
 }
 
 function formatTime(ms: number): string {
@@ -60,11 +73,24 @@ export function MessageBubble({
   onCopy,
   onRegenerate,
   onApprove,
+  onEdit,
+  onBranch,
+  onOpenArtifact,
+  versionIndex,
+  versionCount,
+  onPrevVersion,
+  onNextVersion,
 }: MessageBubbleProps) {
   const isUser = message.role === "user";
   const isAssistant = message.role === "assistant";
   const isSystem = message.role === "system";
   const [copied, setCopied] = React.useState(false);
+  const [editing, setEditing] = React.useState(false);
+  const [draft, setDraft] = React.useState(message.content);
+
+  React.useEffect(() => {
+    if (!editing) setDraft(message.content);
+  }, [editing, message.content]);
 
   const handleCopy = React.useCallback(() => {
     if (!message.content) return;
@@ -74,6 +100,21 @@ export function MessageBubble({
       onCopy?.(message.content);
     });
   }, [message.content, onCopy]);
+
+  const handleStartEdit = React.useCallback(() => {
+    setDraft(message.content);
+    setEditing(true);
+  }, [message.content]);
+
+  const handleSaveEdit = React.useCallback(() => {
+    const next = draft.trim();
+    if (!next || next === message.content) {
+      setEditing(false);
+      return;
+    }
+    onEdit?.(message.id, next);
+    setEditing(false);
+  }, [draft, message.id, message.content, onEdit]);
 
   return (
     <li
@@ -166,7 +207,47 @@ export function MessageBubble({
             <MarkdownMessage
               content={message.content || (message.pending ? "" : "")}
               streaming={Boolean(message.pending && !message.toolCalls?.length)}
+              onOpenArtifact={onOpenArtifact}
             />
+          ) : editing && isUser ? (
+            <div className="flex flex-col gap-1.5" data-testid="bubble-edit">
+              <textarea
+                autoFocus
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                    e.preventDefault();
+                    handleSaveEdit();
+                  }
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    setEditing(false);
+                  }
+                }}
+                rows={Math.min(8, Math.max(2, draft.split("\n").length))}
+                className="w-full resize-none rounded border border-tp-amber bg-tp-glass-inner px-2 py-1 text-[13px] text-tp-ink focus:outline-none"
+                data-testid="bubble-edit-input"
+              />
+              <div className="flex items-center justify-end gap-1.5 text-[11px]">
+                <button
+                  type="button"
+                  onClick={() => setEditing(false)}
+                  className="rounded px-2 py-0.5 text-tp-ink-3 hover:bg-tp-glass-inner hover:text-tp-ink"
+                  data-testid="bubble-edit-cancel"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveEdit}
+                  className="rounded border border-tp-amber/60 bg-tp-amber/20 px-2 py-0.5 text-tp-ink hover:bg-tp-amber/30"
+                  data-testid="bubble-edit-save"
+                >
+                  Save &amp; re-run
+                </button>
+              </div>
+            </div>
           ) : (
             <div className="whitespace-pre-wrap break-words">
               {message.content}
@@ -208,7 +289,7 @@ export function MessageBubble({
         </div>
 
         {/* hover toolbar (visible on hover, opacity transition) */}
-        {(isAssistant || isUser) && message.content ? (
+        {(isAssistant || isUser) && message.content && !editing ? (
           <div
             className={cn(
               "flex items-center gap-1 text-[11px] text-tp-ink-3",
@@ -225,6 +306,18 @@ export function MessageBubble({
               <Copy className="h-3 w-3" aria-hidden="true" />
               {copied ? "Copied" : "Copy"}
             </button>
+            {isUser && onEdit ? (
+              <button
+                type="button"
+                onClick={handleStartEdit}
+                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-tp-glass-inner"
+                aria-label="Edit message"
+                data-testid="bubble-edit-trigger"
+              >
+                <Pencil className="h-3 w-3" aria-hidden="true" />
+                Edit
+              </button>
+            ) : null}
             {isAssistant && onRegenerate ? (
               <button
                 type="button"
@@ -235,6 +328,46 @@ export function MessageBubble({
                 <RefreshCcw className="h-3 w-3" aria-hidden="true" />
                 Regenerate
               </button>
+            ) : null}
+            {onBranch ? (
+              <button
+                type="button"
+                onClick={() => onBranch(message.id)}
+                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-tp-glass-inner"
+                aria-label="Branch conversation here"
+                data-testid="bubble-branch"
+              >
+                <GitFork className="h-3 w-3" aria-hidden="true" />
+                Branch
+              </button>
+            ) : null}
+            {versionCount && versionCount > 1 ? (
+              <span
+                className="ml-1 inline-flex items-center gap-1 rounded border border-tp-glass-edge px-1.5 py-0.5 font-mono"
+                data-testid="bubble-version-switcher"
+              >
+                <button
+                  type="button"
+                  onClick={onPrevVersion}
+                  className="text-tp-ink-3 hover:text-tp-ink disabled:opacity-30"
+                  disabled={versionIndex === 0}
+                  aria-label="Previous version"
+                >
+                  ‹
+                </button>
+                <span>
+                  {(versionIndex ?? 0) + 1}/{versionCount}
+                </span>
+                <button
+                  type="button"
+                  onClick={onNextVersion}
+                  className="text-tp-ink-3 hover:text-tp-ink disabled:opacity-30"
+                  disabled={(versionIndex ?? 0) === versionCount - 1}
+                  aria-label="Next version"
+                >
+                  ›
+                </button>
+              </span>
             ) : null}
           </div>
         ) : null}

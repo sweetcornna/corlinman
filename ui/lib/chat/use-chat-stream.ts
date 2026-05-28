@@ -63,6 +63,23 @@ export interface UseChatStreamResult {
     decision: ApprovalDecision,
     scope?: ApprovalScope,
   ) => Promise<void>;
+  /**
+   * Replace a user message's content and re-run from that point — drops
+   * every message after `messageId`, then triggers a new turn with the
+   * updated user content.
+   */
+  editAndRerun: (messageId: string, newContent: string) => Promise<void>;
+  /**
+   * Returns the slice of messages up to and including `messageId` so the
+   * caller can branch into a new conversation pre-loaded with that
+   * history. Does not mutate state.
+   */
+  sliceUntil: (messageId: string) => ChatMessage[];
+  /**
+   * Aggregated input/output tokens + estimated cost across all completed
+   * assistant turns in this session.
+   */
+  totals: { inputTokens: number; outputTokens: number; costUsd: number };
 }
 
 function genId(): string {
@@ -364,6 +381,58 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
     }
   }, [args.sessionKey]);
 
+  const editAndRerun = React.useCallback(
+    async (messageId: string, newContent: string) => {
+      // Locate the message + every subsequent message gets dropped.
+      let edited: ChatMessage | null = null;
+      setMessages((prev) => {
+        const idx = prev.findIndex((m) => m.id === messageId);
+        if (idx < 0) {
+          return prev;
+        }
+        const next: ChatMessage = {
+          ...prev[idx],
+          content: newContent,
+          createdAt: Date.now(),
+        };
+        edited = next;
+        return [...prev.slice(0, idx), next];
+      });
+      const editedUser = edited as ChatMessage | null;
+      if (!editedUser) return;
+      lastUserMessageRef.current = {
+        text: newContent,
+        attachments: editedUser.attachments,
+      };
+      // Wait a tick so the messages state is observed by runTurn closure.
+      await Promise.resolve();
+      await runTurn(editedUser);
+    },
+    [runTurn],
+  );
+
+  const sliceUntil = React.useCallback(
+    (messageId: string): ChatMessage[] => {
+      const idx = messages.findIndex((m) => m.id === messageId);
+      if (idx < 0) return messages;
+      return messages.slice(0, idx + 1);
+    },
+    [messages],
+  );
+
+  const totals = React.useMemo(() => {
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let costUsd = 0;
+    for (const m of messages) {
+      if (m.role !== "assistant" || !m.usage) continue;
+      inputTokens += m.usage.inputTokens ?? 0;
+      outputTokens += m.usage.outputTokens ?? 0;
+      costUsd += m.usage.estimatedCostUsd ?? 0;
+    }
+    return { inputTokens, outputTokens, costUsd };
+  }, [messages]);
+
   const approve = React.useCallback(
     async (
       turnId: string,
@@ -409,5 +478,8 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
     stop,
     hydrate,
     approve,
+    editAndRerun,
+    sliceUntil,
+    totals,
   };
 }

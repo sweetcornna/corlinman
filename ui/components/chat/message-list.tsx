@@ -27,6 +27,9 @@ interface MessageListProps {
     decision: ApprovalDecision,
     scope: ApprovalScope,
   ) => void;
+  onEdit?: (messageId: string, newContent: string) => void;
+  onBranch?: (messageId: string) => void;
+  onOpenArtifact?: (language: string, source: string) => void;
   emptyState?: React.ReactNode;
 }
 
@@ -37,6 +40,9 @@ export function MessageList({
   pendingMessage,
   onRegenerate,
   onApprove,
+  onEdit,
+  onBranch,
+  onOpenArtifact,
   emptyState,
 }: MessageListProps) {
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
@@ -97,6 +103,9 @@ export function MessageList({
                 m.role === "assistant" && !m.pending ? onRegenerate : undefined
               }
               onApprove={onApprove}
+              onEdit={m.role === "user" ? onEdit : undefined}
+              onBranch={onBranch}
+              onOpenArtifact={onOpenArtifact}
             />
           ))}
         </ol>

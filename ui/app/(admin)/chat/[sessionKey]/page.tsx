@@ -18,9 +18,21 @@ import {
 import { CorlinmanApiError } from "@/lib/api";
 import { ChatArea } from "@/components/chat/chat-area";
 import { ChatSidebar } from "@/components/chat/chat-sidebar";
-import type { ChatConversation } from "@/lib/chat/types";
+import type { ChatConversation, ChatMessage } from "@/lib/chat/types";
 
 const DEFAULT_MODEL = "gpt-4o";
+
+function pickBranchedHistory(sessionKey: string): ChatMessage[] | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = sessionStorage.getItem(`chat:branch:${sessionKey}`);
+    if (!raw) return null;
+    sessionStorage.removeItem(`chat:branch:${sessionKey}`);
+    return JSON.parse(raw) as ChatMessage[];
+  } catch {
+    return null;
+  }
+}
 
 function genSessionKey(): string {
   const r = Math.random().toString(36).slice(2, 10);
@@ -44,6 +56,16 @@ export default function ChatSessionPage() {
     () => conversations?.find((c) => c.sessionKey === sessionKey) ?? null,
     [conversations, sessionKey],
   );
+
+  // Pick up branched history (set by the branch action on a previous page)
+  // exactly once per sessionKey mount.
+  const [branchedHistory, setBranchedHistory] = React.useState<
+    ChatMessage[] | undefined
+  >(undefined);
+  React.useEffect(() => {
+    const h = pickBranchedHistory(sessionKey);
+    if (h && h.length > 0) setBranchedHistory(h);
+  }, [sessionKey]);
 
   const refreshList = React.useCallback(() => {
     void qc.invalidateQueries({ queryKey: ["chat", "sessions"] });
@@ -149,6 +171,7 @@ export default function ChatSessionPage() {
         sessionKey={sessionKey}
         model={DEFAULT_MODEL}
         conversation={active}
+        initialHistory={branchedHistory}
       />
     </>
   );
