@@ -18,11 +18,17 @@
  *   - the status badge ends up "completed" (post-completed event)
  *   - the finish-reason + tool count footer renders
  *   - the child's "Hello world" text node renders inside the tree
+ *
+ * NOTE: completed subagent trees default-collapsed (see SubagentTree's
+ * docstring — finished work shouldn't dominate the timeline), so the
+ * body content (footer + child parts) lives behind the header toggle.
+ * The test expands the tree before asserting on that body content,
+ * mirroring how an operator drills into a finished child run.
  */
 
 import * as React from "react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { I18nextProvider } from "react-i18next";
 
 import { i18next, initI18n } from "@/lib/i18n";
@@ -213,12 +219,18 @@ describe("SubagentTree", () => {
     expect(tree).toHaveAttribute("data-status", "complete");
     expect(tree).toHaveAttribute("data-depth", "1");
 
-    // Header surfaces the child agent id + status badge.
+    // Header surfaces the child agent id + status badge — visible
+    // whether the tree is expanded or collapsed.
     expect(screen.getByTestId("subagent-agent-id")).toHaveTextContent(
       "researcher",
     );
     const badge = screen.getByTestId("subagent-status-badge");
     expect(badge).toHaveTextContent(/completed/i);
+
+    // A finished child run starts collapsed (its body shouldn't dominate
+    // the timeline). Expand it via the header toggle to read the footer +
+    // bubbled child parts.
+    fireEvent.click(within(tree).getByRole("button"));
 
     // Footer reflects the completion payload.
     const footer = screen.getByTestId("subagent-footer");

@@ -1,20 +1,31 @@
 /**
- * Onboarding page tests — 2-step wizard (2026-05 reshape).
+ * Onboarding page tests — 6-step first-run wizard.
  *
- * Covered:
- *   1. When `/admin/me` returns 401 (no admin yet) the wizard starts at
- *      Step 1 (account) with three fields.
- *   2. Mismatched passwords surface an inline error without hitting the
- *      onboard endpoint.
- *   3. Submitting matching credentials calls POST /admin/onboard and
- *      advances to Step 2 (handoff) with three provider-setup cards.
- *   4. When `/admin/me` returns 200 with `must_change_password=true` the
- *      wizard skips Step 1, lands on Step 2, and renders the
- *      "Using default admin/root" hint.
- *   5. The Step-2 skip button POSTs `/admin/onboard/finalize-skip` and
- *      pushes the operator at `/admin`.
+ * Contract: docs/PLAN_FIRST_RUN_WIZARD.md (2026-05-28 reshape). The wizard
+ * chains six sequential steps; the indicator gates forward motion and (once
+ * the password rotation lands) locks steps 1 + 2.
  *
- * Locale stays zh-CN (matches login + account/security suites).
+ *   1. API config        (skippable, hands off to /admin/credentials + providers)
+ *   2. Change username   (POST /admin/onboard/finalize-account)
+ *   3. Change password   (POST /admin/onboard/finalize-password, gated)
+ *   4. Persona           (POST /admin/onboard/finalize-persona — default/custom/skip)
+ *   5. Image provider    (POST /admin/onboard/finalize-image-provider)
+ *   6. Done              (router.push("/admin") — or a deferred /persona redirect)
+ *
+ * Covered here:
+ *   1. After the /admin/me probe settles the wizard renders Step 1 (API
+ *      config) with the two handoff cards + skip / next buttons.
+ *   2. A mismatched password on Step 3 surfaces an inline error WITHOUT
+ *      calling finalize-password.
+ *   3. The Step-2 username form POSTs finalize-account with the new username
+ *      and advances to Step 3 (password).
+ *   4. The full happy path walks all six steps and pushes the operator at
+ *      /admin, calling each finalize endpoint exactly once.
+ *   5. A persona "custom" choice records a deferred /persona redirect that
+ *      fires at the end of the wizard (after the image step), not immediately.
+ *
+ * Locale stays zh-CN (matches login + account/security suites): "下一步" is
+ * the shared "next" CTA, "两次密码不一致" the mismatch error.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -44,11 +55,51 @@ function stubFetch(
   );
 }
 
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
 /** Most tests want a default unauth `/admin/me` reply. */
 function unauthMeHandler(): Response {
-  return new Response(JSON.stringify({ detail: "unauthorized" }), {
-    status: 401,
-    headers: { "content-type": "application/json" },
+  return jsonResponse({ detail: "unauthorized" }, 401);
+}
+
+const fetchMock = () => globalThis.fetch as ReturnType<typeof vi.fn>;
+
+/** Find the init of the (first) fetch call whose URL ends with `suffix`. */
+function callTo(suffix: string): RequestInit | undefined {
+  const hit = fetchMock().mock.calls.find((c) => String(c[0]).endsWith(suffix));
+  return hit?.[1] as RequestInit | undefined;
+}
+
+/**
+ * Drive the wizard from the freshly-mounted Step 1 to the start of Step 3
+ * (password). Step 1 is skipped, Step 2 (username) is submitted with a valid
+ * value. The caller must have already stubbed `/admin/me` +
+ * `/admin/onboard/finalize-account`.
+ */
+async function advanceToPasswordStep() {
+  // Step 1 → skip the API config handoff.
+  await waitFor(() => {
+    expect(screen.getByTestId("onboard-api-skip")).toBeInTheDocument();
+  });
+  fireEvent.click(screen.getByTestId("onboard-api-skip"));
+
+  // Step 2 → submit a new username.
+  await waitFor(() => {
+    expect(screen.getByTestId("onboard-username-input")).toBeInTheDocument();
+  });
+  fireEvent.change(screen.getByTestId("onboard-username-input"), {
+    target: { value: "alice" },
+  });
+  fireEvent.click(screen.getByTestId("onboard-username-submit"));
+
+  // Step 3 → password form is now mounted.
+  await waitFor(() => {
+    expect(screen.getByTestId("onboard-confirm-password")).toBeInTheDocument();
   });
 }
 
@@ -62,18 +113,15 @@ describe("OnboardPage", () => {
     vi.unstubAllGlobals();
   });
 
-  it("starts at Step 1 when /admin/me returns 401 (no admin yet)", async () => {
+  it("renders Step 1 (API config handoff) once /admin/me settles", async () => {
     stubFetch((url) => {
       if (url.includes("/admin/me")) return unauthMeHandler();
-      return new Response(JSON.stringify({ status: "ok" }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
+      return jsonResponse({ status: "ok" });
     });
 
     render(<OnboardPage />);
     // Wait for the /admin/me probe to settle so the wizard renders the
-    // resolved step (not the optimistic "account" mount).
+    // resolved step rather than the optimistic pre-probe mount.
     await waitFor(() => {
       expect(screen.getByTestId("onboard-me-checked")).toHaveAttribute(
         "data-checked",
@@ -81,181 +129,237 @@ describe("OnboardPage", () => {
       );
     });
 
-    expect(screen.getByLabelText("用户名")).toBeInTheDocument();
-    expect(screen.getByLabelText("密码")).toBeInTheDocument();
-    expect(screen.getByLabelText("确认密码")).toBeInTheDocument();
+    // Step 1 is the API-config handoff: two provider-setup cards + a
+    // skip / continue button pair. No account form here anymore.
+    expect(screen.getByTestId("onboard-handoff-cards")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "创建管理员" }),
+      screen.getByTestId("onboard-handoff-credentials"),
     ).toBeInTheDocument();
+    expect(screen.getByTestId("onboard-handoff-providers")).toBeInTheDocument();
+    expect(screen.getByTestId("onboard-api-skip")).toBeInTheDocument();
+    expect(screen.getByTestId("onboard-api-continue")).toBeInTheDocument();
+    // The stepper exposes all six steps with step 1 current.
+    expect(screen.getByTestId("onboard-step-1")).toHaveAttribute(
+      "data-state",
+      "current",
+    );
+    expect(screen.getByTestId("onboard-step-6")).toBeInTheDocument();
   });
 
-  it("surfaces an inline mismatch error without calling onboard", async () => {
+  it("surfaces an inline mismatch error on Step 3 without calling finalize-password", async () => {
     stubFetch((url) => {
       if (url.includes("/admin/me")) return unauthMeHandler();
-      return new Response(JSON.stringify({ status: "ok" }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
+      if (url.includes("/admin/onboard/finalize-account")) {
+        return jsonResponse({ status: "ok", username: "alice" });
+      }
+      if (url.includes("/admin/onboard/finalize-password")) {
+        // Should never be reached for a client-side mismatch.
+        return jsonResponse({ status: "ok", must_change_password: false });
+      }
+      return jsonResponse({ status: "ok" });
     });
 
     render(<OnboardPage />);
-    await waitFor(() => {
-      expect(screen.getByLabelText("用户名")).toBeInTheDocument();
-    });
+    await advanceToPasswordStep();
 
-    // Clear the call log so we can assert no /admin/onboard POST happens.
-    (globalThis.fetch as ReturnType<typeof vi.fn>).mockClear();
+    // Clear the call log so we can assert finalize-password never fires.
+    fetchMock().mockClear();
 
-    fireEvent.change(screen.getByLabelText("用户名"), {
-      target: { value: "alice" },
+    fireEvent.change(screen.getByTestId("onboard-old-password"), {
+      target: { value: "root" },
     });
-    fireEvent.change(screen.getByLabelText("密码"), {
-      target: { value: "abcdefgh" },
+    fireEvent.change(screen.getByTestId("onboard-new-password"), {
+      target: { value: "goodpassphrase" },
     });
-    fireEvent.change(screen.getByLabelText("确认密码"), {
-      target: { value: "different" },
+    fireEvent.change(screen.getByTestId("onboard-confirm-password"), {
+      target: { value: "different-one" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "创建管理员" }));
+    fireEvent.click(screen.getByTestId("onboard-password-submit"));
 
     await waitFor(() => {
       expect(screen.getByTestId("onboard-error")).toHaveTextContent(
         "两次密码不一致",
       );
     });
-    const fetchMock = globalThis.fetch as ReturnType<typeof vi.fn>;
-    // The mount-time /admin/me is the only fetch — onboard POST never fires.
-    for (const call of fetchMock.mock.calls) {
-      expect(String(call[0])).not.toContain("/admin/onboard");
+    // The mismatch is caught client-side — no finalize-password POST.
+    for (const call of fetchMock().mock.calls) {
+      expect(String(call[0])).not.toContain("/admin/onboard/finalize-password");
     }
-    expect(replaceMock).not.toHaveBeenCalled();
+    // Still on Step 3 — no advance to persona.
+    expect(screen.queryByTestId("onboard-persona-default")).toBeNull();
   });
 
-  it("calls /admin/onboard and advances to the handoff step on success", async () => {
+  it("Step 2 POSTs finalize-account and advances to the password step", async () => {
     stubFetch((url) => {
       if (url.includes("/admin/me")) return unauthMeHandler();
-      return new Response(JSON.stringify({ status: "ok" }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
+      if (url.includes("/admin/onboard/finalize-account")) {
+        return jsonResponse({ status: "ok", username: "alice" });
+      }
+      return jsonResponse({ status: "ok" });
     });
 
     render(<OnboardPage />);
     await waitFor(() => {
-      expect(screen.getByLabelText("用户名")).toBeInTheDocument();
+      expect(screen.getByTestId("onboard-api-skip")).toBeInTheDocument();
     });
-    const fetchMock = globalThis.fetch as ReturnType<typeof vi.fn>;
-    fetchMock.mockClear();
+    fireEvent.click(screen.getByTestId("onboard-api-skip"));
 
-    fireEvent.change(screen.getByLabelText("用户名"), {
+    await waitFor(() => {
+      expect(screen.getByTestId("onboard-username-input")).toBeInTheDocument();
+    });
+    fetchMock().mockClear();
+
+    fireEvent.change(screen.getByTestId("onboard-username-input"), {
       target: { value: "alice" },
     });
-    fireEvent.change(screen.getByLabelText("密码"), {
-      target: { value: "goodpassphrase" },
-    });
-    fireEvent.change(screen.getByLabelText("确认密码"), {
-      target: { value: "goodpassphrase" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "创建管理员" }));
+    fireEvent.click(screen.getByTestId("onboard-username-submit"));
 
-    // No redirect after step 1 — wizard advances to step 2 (handoff)
-    // with the three provider-setup cards.
+    // Advances to Step 3 (password) — no redirect mid-wizard.
     await waitFor(() => {
       expect(
-        screen.getByTestId("onboard-handoff-cards"),
+        screen.getByTestId("onboard-confirm-password"),
       ).toBeInTheDocument();
     });
-    expect(
-      screen.getByTestId("onboard-handoff-credentials"),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByTestId("onboard-handoff-providers"),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByTestId("onboard-handoff-oauth"),
-    ).toBeInTheDocument();
-    expect(screen.getByTestId("onboard-skip-mock")).toBeInTheDocument();
     expect(replaceMock).not.toHaveBeenCalled();
-    const onboardCall = fetchMock.mock.calls.find((c) =>
-      String(c[0]).endsWith("/admin/onboard"),
-    );
-    expect(onboardCall).toBeTruthy();
-    expect(onboardCall![1]).toMatchObject({
+    expect(pushMock).not.toHaveBeenCalled();
+
+    const accountInit = callTo("/admin/onboard/finalize-account");
+    expect(accountInit).toBeTruthy();
+    expect(accountInit).toMatchObject({
       method: "POST",
-      body: JSON.stringify({ username: "alice", password: "goodpassphrase" }),
+      body: JSON.stringify({ new_username: "alice" }),
     });
   });
 
-  it("skips Step 1 + shows the default-admin hint when must_change_password=true", async () => {
+  it("walks all six steps and pushes /admin on finish", async () => {
+    const seen: string[] = [];
     stubFetch((url) => {
-      if (url.includes("/admin/me")) {
-        return new Response(
-          JSON.stringify({
-            user: "admin",
-            created_at: "2026-05-17T00:00:00Z",
-            expires_at: "2026-05-24T00:00:00Z",
-            must_change_password: true,
-          }),
-          { status: 200, headers: { "content-type": "application/json" } },
-        );
+      if (url.includes("/admin/me")) return unauthMeHandler();
+      if (url.includes("/admin/onboard/finalize-account")) {
+        seen.push("account");
+        return jsonResponse({ status: "ok", username: "alice" });
       }
-      return new Response("", { status: 404 });
+      if (url.includes("/admin/onboard/finalize-password")) {
+        seen.push("password");
+        return jsonResponse({ status: "ok", must_change_password: false });
+      }
+      if (url.includes("/admin/onboard/finalize-persona")) {
+        seen.push("persona");
+        return jsonResponse({ status: "ok", choice: "default" });
+      }
+      if (url.includes("/admin/onboard/finalize-image-provider")) {
+        seen.push("image");
+        return jsonResponse({ status: "ok", image_provider: "mock" });
+      }
+      return jsonResponse({ status: "ok" });
     });
 
     render(<OnboardPage />);
+    await advanceToPasswordStep();
 
-    // The hint only appears once the /admin/me probe resolves.
+    // Step 3 → password.
+    fireEvent.change(screen.getByTestId("onboard-old-password"), {
+      target: { value: "root" },
+    });
+    fireEvent.change(screen.getByTestId("onboard-new-password"), {
+      target: { value: "goodpassphrase" },
+    });
+    fireEvent.change(screen.getByTestId("onboard-confirm-password"), {
+      target: { value: "goodpassphrase" },
+    });
+    fireEvent.click(screen.getByTestId("onboard-password-submit"));
+
+    // Step 4 → persona (pick default).
     await waitFor(() => {
-      expect(
-        screen.getByTestId("onboard-default-admin-hint"),
-      ).toBeInTheDocument();
+      expect(screen.getByTestId("onboard-persona-default")).toBeInTheDocument();
     });
-    // We should be on Step 2 (handoff), not Step 1 (account).
-    expect(
-      screen.getByTestId("onboard-handoff-cards"),
-    ).toBeInTheDocument();
-    expect(screen.queryByLabelText("确认密码")).toBeNull();
-    // And the "Customize admin account" escape hatch is reachable.
-    expect(
-      screen.getByTestId("onboard-customize-admin"),
-    ).toBeInTheDocument();
-  });
+    fireEvent.click(screen.getByTestId("onboard-persona-default"));
 
-  it("clicking Skip → mock provider hits finalize-skip + pushes /admin", async () => {
-    let skipCalls = 0;
-    stubFetch((url) => {
-      if (url.includes("/admin/me")) {
-        return new Response(
-          JSON.stringify({
-            user: "admin",
-            created_at: "2026-05-17T00:00:00Z",
-            expires_at: "2026-05-24T00:00:00Z",
-            must_change_password: true,
-          }),
-          { status: 200, headers: { "content-type": "application/json" } },
-        );
-      }
-      if (url.includes("/admin/onboard/finalize-skip")) {
-        skipCalls++;
-        return new Response(
-          JSON.stringify({ status: "ok", mode: "mock" }),
-          { status: 200, headers: { "content-type": "application/json" } },
-        );
-      }
-      return new Response("", { status: 404 });
-    });
-
-    render(<OnboardPage />);
+    // Step 5 → image provider (skip).
     await waitFor(() => {
-      expect(screen.getByTestId("onboard-skip-mock")).toBeInTheDocument();
+      expect(screen.getByTestId("onboard-image-skip")).toBeInTheDocument();
     });
+    fireEvent.click(screen.getByTestId("onboard-image-skip"));
 
-    fireEvent.click(screen.getByTestId("onboard-skip-mock"));
-
+    // Step 6 → done.
     await waitFor(() => {
-      expect(skipCalls).toBe(1);
+      expect(screen.getByTestId("onboard-finish")).toBeInTheDocument();
     });
+    fireEvent.click(screen.getByTestId("onboard-finish"));
+
     await waitFor(() => {
       expect(pushMock).toHaveBeenCalledWith("/admin");
     });
+    expect(seen).toEqual(["account", "password", "persona", "image"]);
+
+    const passwordInit = callTo("/admin/onboard/finalize-password");
+    expect(passwordInit).toMatchObject({
+      method: "POST",
+      body: JSON.stringify({
+        old_password: "root",
+        new_password: "goodpassphrase",
+      }),
+    });
+  });
+
+  it("defers a persona 'custom' redirect until the wizard finishes", async () => {
+    stubFetch((url) => {
+      if (url.includes("/admin/me")) return unauthMeHandler();
+      if (url.includes("/admin/onboard/finalize-account")) {
+        return jsonResponse({ status: "ok", username: "alice" });
+      }
+      if (url.includes("/admin/onboard/finalize-password")) {
+        return jsonResponse({ status: "ok", must_change_password: false });
+      }
+      if (url.includes("/admin/onboard/finalize-persona")) {
+        return jsonResponse({
+          status: "ok",
+          choice: "custom",
+          redirect: "/persona",
+        });
+      }
+      if (url.includes("/admin/onboard/finalize-image-provider")) {
+        return jsonResponse({ status: "ok", image_provider: "mock" });
+      }
+      return jsonResponse({ status: "ok" });
+    });
+
+    render(<OnboardPage />);
+    await advanceToPasswordStep();
+
+    fireEvent.change(screen.getByTestId("onboard-old-password"), {
+      target: { value: "root" },
+    });
+    fireEvent.change(screen.getByTestId("onboard-new-password"), {
+      target: { value: "goodpassphrase" },
+    });
+    fireEvent.change(screen.getByTestId("onboard-confirm-password"), {
+      target: { value: "goodpassphrase" },
+    });
+    fireEvent.click(screen.getByTestId("onboard-password-submit"));
+
+    // Step 4 → persona: pick "custom" (records a deferred /persona redirect).
+    await waitFor(() => {
+      expect(screen.getByTestId("onboard-persona-custom")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByTestId("onboard-persona-custom"));
+
+    // The redirect is deferred — we land on Step 5 (image), not /persona.
+    await waitFor(() => {
+      expect(screen.getByTestId("onboard-image-skip")).toBeInTheDocument();
+    });
+    expect(pushMock).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId("onboard-image-skip"));
+
+    // Step 6 → finishing now fires the deferred /persona redirect, NOT /admin.
+    await waitFor(() => {
+      expect(screen.getByTestId("onboard-finish")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByTestId("onboard-finish"));
+
+    await waitFor(() => {
+      expect(pushMock).toHaveBeenCalledWith("/persona");
+    });
+    expect(pushMock).not.toHaveBeenCalledWith("/admin");
   });
 });

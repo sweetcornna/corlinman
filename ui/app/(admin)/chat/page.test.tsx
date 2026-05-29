@@ -104,7 +104,7 @@ vi.mock("@/lib/api/sessions", async () => {
             session_key: SESSION_KEY,
             mode: "transcript",
             transcript: [],
-            summary: {},
+            summary: { message_count: 0, tenant_id: "default" },
           },
         }) as ReplayResult,
     ),

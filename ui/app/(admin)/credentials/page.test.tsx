@@ -192,6 +192,13 @@ describe("CredentialsPage", () => {
 
     await screen.findByTestId("credentials-provider-anthropic");
 
+    // Anthropic is unconfigured + disabled, so its card renders collapsed
+    // by default (hermes-EnvPage scannability UX). Expand it before the
+    // per-field Add control is reachable.
+    fireEvent.click(
+      screen.getByTestId("credentials-provider-anthropic-toggle-expand"),
+    );
+
     fireEvent.click(screen.getByTestId("cred-anthropic-api_key-add"));
     const input = screen.getByTestId(
       "cred-anthropic-api_key-input",
