@@ -11,9 +11,12 @@ below pin the *boundary* (Protocol conformance + env-driven selection).
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from pathlib import Path
+from typing import Any
 
+import aiosqlite
 import pytest
 from corlinman_server.agent_journal import AgentJournal
 from corlinman_server.agent_journal_backend import (
@@ -24,6 +27,7 @@ from corlinman_server.agent_journal_backend import (
     PostgresJournalBackend,
     RedisJournalBackend,
     SqliteJournalBackend,
+    TURN_COMPLETED,
     open_backend_from_env,
 )
 
@@ -233,5 +237,117 @@ async def test_open_backend_from_env_returns_journal_backend(
     try:
         assert isinstance(backend, JournalBackend)
         assert isinstance(backend, SqliteJournalBackend)
+    finally:
+        await backend.close()
+
+
+# ---------------------------------------------------------------------------
+# B3 — cross-session transaction safety on the SHARED connection.
+#
+# ``SqliteJournalBackend`` keeps ONE ``aiosqlite.Connection`` for every
+# session, but mixes transaction models on it: ``append_messages`` wraps
+# its inserts in an explicit ``BEGIN IMMEDIATE`` / ``COMMIT`` envelope,
+# while ``complete_turn`` / ``error_turn`` / ``append_event`` do a bare
+# autocommit ``execute()`` + ``commit()``. ``commit()`` is connection-
+# *global*: if session A is mid-``BEGIN IMMEDIATE`` (awaiting between its
+# INSERTs) and session B fires a bare ``commit()`` on the same connection,
+# B's commit flushes A's partial rows and ends A's transaction — so a
+# subsequent failure in A's batch can no longer roll the batch back.
+# ``append_messages`` documents all-or-nothing atomicity; that guarantee
+# is broken under concurrent multi-session load.
+# ---------------------------------------------------------------------------
+
+
+async def test_append_messages_atomic_under_concurrent_commit(
+    tmp_path: Path,
+) -> None:
+    """A's batch must stay all-or-nothing even when session B commits on
+    the same shared connection mid-batch.
+
+    Reproduction of the interleaving the per-session servicer lock does
+    NOT prevent (it only serialises the SAME session):
+
+    * A (``append_messages`` on turn ``tid_a``) executes ``BEGIN
+      IMMEDIATE`` + its first INSERT, then yields control.
+    * B (``complete_turn`` on its own turn ``tid_b``) runs a bare
+      ``commit()`` while A is parked.
+    * A resumes and its second INSERT fails (we inject an error to stand
+      in for any mid-batch failure).
+
+    Correct behaviour: A's whole batch rolls back → ZERO of A's rows
+    survive. Buggy behaviour: B's connection-global commit already
+    durably flushed A's first row, so it survives the rollback → A's
+    documented atomicity is broken.
+    """
+    backend = await SqliteJournalBackend.open(tmp_path / "j.sqlite")
+    try:
+        tid_a = await backend.begin_turn("sess-A", "task-A")
+        tid_b = await backend.begin_turn("sess-B", "task-B")
+        assert tid_a is not None and tid_b is not None
+
+        conn = backend._c  # type: ignore[attr-defined]
+        original_execute = conn.execute
+        insert_count = {"n": 0}
+
+        async def hooked_execute(sql: str, *args: Any, **kwargs: Any) -> Any:
+            # Only A inserts into turn_messages in this test.
+            if "INSERT INTO turn_messages" in sql:
+                insert_count["n"] += 1
+                if insert_count["n"] == 1:
+                    # First INSERT lands inside A's BEGIN IMMEDIATE. Yield
+                    # the event loop so B gets a chance to run its bare
+                    # commit() while A's transaction is (logically) open.
+                    # Under the fix, A holds the write lock here so B is
+                    # parked on the lock and can't commit until A finishes;
+                    # under the bug, B's commit interleaves and flushes
+                    # this partial row.
+                    result = await original_execute(sql, *args, **kwargs)
+                    await asyncio.sleep(0)
+                    return result
+                # Second INSERT — inject a failure to stand in for any
+                # mid-batch error. A correct envelope rolls the whole
+                # batch back; the bug has already committed row 1 via B.
+                raise aiosqlite.OperationalError("injected mid-batch failure")
+            return await original_execute(sql, *args, **kwargs)
+
+        conn.execute = hooked_execute  # type: ignore[method-assign]
+
+        async def session_a() -> None:
+            await backend.append_messages(
+                tid_a,
+                [
+                    {"role": "user", "content": "A-msg-1"},
+                    {"role": "assistant", "content": "A-msg-2"},
+                ],
+            )
+
+        async def session_b() -> None:
+            # Complete B's turn concurrently — a bare execute() + commit()
+            # on the shared connection. Yield first so A reaches its open
+            # transaction before B issues the commit.
+            await asyncio.sleep(0)
+            await backend.complete_turn(tid_b)
+
+        try:
+            await asyncio.gather(session_a(), session_b())
+        finally:
+            conn.execute = original_execute  # type: ignore[method-assign]
+
+        # A's batch failed mid-flight. With correct all-or-nothing
+        # atomicity NEITHER of A's rows should survive. The bug lets B's
+        # connection-global commit persist A's first row before the
+        # rollback fires.
+        a_msgs = await backend.load_messages(tid_a)
+        assert a_msgs == [], (
+            "append_messages atomicity violated: A's partial batch leaked "
+            f"past a mid-batch failure because session B's commit flushed "
+            f"it on the shared connection — got {a_msgs!r}"
+        )
+        # B's own write must still have landed — the lock serialises, it
+        # doesn't drop work.
+        b_status = await backend.list_session_turns("sess-B")
+        assert b_status and b_status[0]["status"] == TURN_COMPLETED, (
+            f"session B's complete_turn was lost — got {b_status!r}"
+        )
     finally:
         await backend.close()

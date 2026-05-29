@@ -25,6 +25,7 @@ Selection happens in :meth:`AgentJournal.open_from_env`; the
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
@@ -665,11 +666,27 @@ class SqliteJournalBackend:
     so concurrent sessions read+write without serializing on the writer.
     """
 
-    __slots__ = ("_path", "_conn")
+    __slots__ = ("_path", "_conn", "_write_lock")
 
     def __init__(self, path: Path) -> None:
         self._path = path
         self._conn: aiosqlite.Connection | None = None
+        # B3: every session shares ONE aiosqlite connection, but the write
+        # methods mix transaction models on it — explicit
+        # ``BEGIN IMMEDIATE`` / ``COMMIT`` envelopes (append_messages,
+        # delete_session, append_events_batch) alongside bare autocommit
+        # ``execute()`` + ``commit()`` (complete_turn, error_turn,
+        # append_event, ...). Because ``commit()`` is connection-*global*,
+        # a bare commit from session B mid-flight would flush — and end —
+        # session A's open transaction, breaking append_messages'
+        # documented all-or-nothing atomicity. The per-session servicer
+        # lock only serialises the SAME session, so this lock serialises
+        # ALL backend writes regardless of session: no two coroutines can
+        # interleave a transaction on the shared connection. Reads are
+        # left lock-free (they don't commit). Tradeoff: writes no longer
+        # overlap, but a chat-turn journal's write volume is low and
+        # correctness wins.
+        self._write_lock = asyncio.Lock()
 
     @classmethod
     async def open(cls, path: Path) -> SqliteJournalBackend:
@@ -809,33 +826,34 @@ class SqliteJournalBackend:
         """
         conn = self._c
         ts = int(time.time() * 1000)
-        for offset in range(0, 20):
-            tid = ts + offset
-            try:
-                await conn.execute(
-                    "INSERT INTO turns (turn_id, session_key, status, "
-                    "started_at_ms, user_text, user_id, channel, "
-                    "pending_question_json) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        tid,
-                        session_key or "",
-                        TURN_IN_PROGRESS,
-                        ts,
-                        user_text,
-                        user_id,
-                        channel or "",
-                        pending_question_json,
-                    ),
-                )
-                await conn.commit()
-                return tid
-            except aiosqlite.IntegrityError:
-                # PK collision — the next ms is almost certainly free.
-                # ``commit`` is not reached on the failed INSERT, so
-                # sqlite auto-aborts the statement and no rollback is
-                # needed.
-                continue
+        async with self._write_lock:
+            for offset in range(0, 20):
+                tid = ts + offset
+                try:
+                    await conn.execute(
+                        "INSERT INTO turns (turn_id, session_key, status, "
+                        "started_at_ms, user_text, user_id, channel, "
+                        "pending_question_json) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            tid,
+                            session_key or "",
+                            TURN_IN_PROGRESS,
+                            ts,
+                            user_text,
+                            user_id,
+                            channel or "",
+                            pending_question_json,
+                        ),
+                    )
+                    await conn.commit()
+                    return tid
+                except aiosqlite.IntegrityError:
+                    # PK collision — the next ms is almost certainly free.
+                    # ``commit`` is not reached on the failed INSERT, so
+                    # sqlite auto-aborts the statement and no rollback is
+                    # needed.
+                    continue
         # Vanishingly unlikely; fall through with a tagged turn_id.
         return ts
 
@@ -866,23 +884,29 @@ class SqliteJournalBackend:
         """
         ended_at_ms = int(time.time() * 1000)
         conn = self._c
-        try:
-            # First flip the status. Single statement keeps the legacy
-            # write semantics intact — a caller racing with a parallel
-            # ``error_turn`` still sees one terminal status win.
-            await conn.execute(
-                "UPDATE turns SET status = ?, ended_at_ms = ? "
-                "WHERE turn_id = ? AND status = ?",
-                (TURN_COMPLETED, ended_at_ms, turn_id, TURN_IN_PROGRESS),
-            )
-            await conn.commit()
-            # Then compute + write the W1.2 aggregates. We compute them
-            # post-status-flip so a concurrent reader hitting the row
-            # between our two writes sees a consistent in-progress→
-            # completed transition (just without the aggregates yet).
-            await self._populate_turn_aggregates(turn_id)
-        except aiosqlite.Error as exc:
-            logger.warning("agent.journal.complete_failed", error=str(exc))
+        # B3: hold the shared-connection write lock across the bare
+        # ``commit()`` here so it can't flush another session's open
+        # ``BEGIN IMMEDIATE`` transaction mid-flight.
+        async with self._write_lock:
+            try:
+                # First flip the status. Single statement keeps the legacy
+                # write semantics intact — a caller racing with a parallel
+                # ``error_turn`` still sees one terminal status win.
+                await conn.execute(
+                    "UPDATE turns SET status = ?, ended_at_ms = ? "
+                    "WHERE turn_id = ? AND status = ?",
+                    (TURN_COMPLETED, ended_at_ms, turn_id, TURN_IN_PROGRESS),
+                )
+                await conn.commit()
+                # Then compute + write the W1.2 aggregates. We compute them
+                # post-status-flip so a concurrent reader hitting the row
+                # between our two writes sees a consistent in-progress→
+                # completed transition (just without the aggregates yet).
+                # ``_populate_turn_aggregates`` is lock-free: it runs under
+                # the lock we already hold (asyncio.Lock is not reentrant).
+                await self._populate_turn_aggregates(turn_id)
+            except aiosqlite.Error as exc:
+                logger.warning("agent.journal.complete_failed", error=str(exc))
 
     async def _populate_turn_aggregates(self, turn_id: int) -> None:
         """Fill the W1.2 aggregate columns for ``turn_id``.
@@ -891,6 +915,12 @@ class SqliteJournalBackend:
         late-arriving cost update without re-flipping the status. Best
         effort throughout — any read failure leaves the columns at their
         last value (or NULL for a fresh row) and logs a warning.
+
+        B3: this method does NOT take ``_write_lock`` itself — it issues a
+        bare ``commit()`` and so MUST only be called by a caller that
+        already holds the lock (today: :meth:`complete_turn`).
+        ``asyncio.Lock`` is not reentrant, so acquiring it here would
+        deadlock under that caller.
         """
         conn = self._c
         try:
@@ -957,21 +987,23 @@ class SqliteJournalBackend:
             )
 
     async def error_turn(self, turn_id: int, error: str) -> None:
-        try:
-            await self._c.execute(
-                "UPDATE turns SET status = ?, ended_at_ms = ?, error = ? "
-                "WHERE turn_id = ? AND status = ?",
-                (
-                    TURN_ERRORED,
-                    int(time.time() * 1000),
-                    error[:1000],
-                    turn_id,
-                    TURN_IN_PROGRESS,
-                ),
-            )
-            await self._c.commit()
-        except aiosqlite.Error as exc:
-            logger.warning("agent.journal.error_failed", error=str(exc))
+        # B3: serialise the bare commit() against in-flight transactions.
+        async with self._write_lock:
+            try:
+                await self._c.execute(
+                    "UPDATE turns SET status = ?, ended_at_ms = ?, error = ? "
+                    "WHERE turn_id = ? AND status = ?",
+                    (
+                        TURN_ERRORED,
+                        int(time.time() * 1000),
+                        error[:1000],
+                        turn_id,
+                        TURN_IN_PROGRESS,
+                    ),
+                )
+                await self._c.commit()
+            except aiosqlite.Error as exc:
+                logger.warning("agent.journal.error_failed", error=str(exc))
 
     # ------------------------------------------------------------------
     # Message append
@@ -1015,42 +1047,46 @@ class SqliteJournalBackend:
                     "agent.journal.append_serialize_failed", error=str(exc)
                 )
                 return
-        try:
-            await conn.execute("BEGIN IMMEDIATE")
-            cur = await conn.execute(
-                "SELECT COALESCE(MAX(seq), -1) + 1 FROM turn_messages "
-                "WHERE turn_id = ?",
-                (turn_id,),
-            )
-            row = await cur.fetchone()
-            await cur.close()
-            next_seq = int(row[0]) if row is not None else 0
-            await conn.execute(
-                "INSERT INTO turn_messages (turn_id, seq, role, content, "
-                "tool_call_id, tool_calls_json) VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    turn_id,
-                    next_seq,
-                    role,
-                    content,
-                    tool_call_id,
-                    tool_calls_text,
-                ),
-            )
-            await conn.commit()
-        except aiosqlite.Error as exc:
-            logger.warning("agent.journal.append_failed", error=str(exc))
-            # L5: only roll back when sqlite still has the tx open;
-            # blindly issuing ROLLBACK on a connection that already
-            # auto-aborted raises and corrupts subsequent writes.
-            if conn.in_transaction:
-                try:
-                    await conn.rollback()
-                except aiosqlite.Error as rb_exc:
-                    logger.warning(
-                        "agent.journal.append_rollback_failed",
-                        error=str(rb_exc),
-                    )
+        # B3: hold the shared-connection write lock for the whole
+        # BEGIN IMMEDIATE..COMMIT envelope so no other session's bare
+        # commit() can flush our partial inserts mid-transaction.
+        async with self._write_lock:
+            try:
+                await conn.execute("BEGIN IMMEDIATE")
+                cur = await conn.execute(
+                    "SELECT COALESCE(MAX(seq), -1) + 1 FROM turn_messages "
+                    "WHERE turn_id = ?",
+                    (turn_id,),
+                )
+                row = await cur.fetchone()
+                await cur.close()
+                next_seq = int(row[0]) if row is not None else 0
+                await conn.execute(
+                    "INSERT INTO turn_messages (turn_id, seq, role, content, "
+                    "tool_call_id, tool_calls_json) VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        turn_id,
+                        next_seq,
+                        role,
+                        content,
+                        tool_call_id,
+                        tool_calls_text,
+                    ),
+                )
+                await conn.commit()
+            except aiosqlite.Error as exc:
+                logger.warning("agent.journal.append_failed", error=str(exc))
+                # L5: only roll back when sqlite still has the tx open;
+                # blindly issuing ROLLBACK on a connection that already
+                # auto-aborted raises and corrupts subsequent writes.
+                if conn.in_transaction:
+                    try:
+                        await conn.rollback()
+                    except aiosqlite.Error as rb_exc:
+                        logger.warning(
+                            "agent.journal.append_rollback_failed",
+                            error=str(rb_exc),
+                        )
 
     async def append_messages(
         self,
@@ -1102,42 +1138,50 @@ class SqliteJournalBackend:
             prepared.append((role, content, tool_call_id, tool_calls_text))
         if not prepared:
             return
-        try:
-            await conn.execute("BEGIN IMMEDIATE")
-            cur = await conn.execute(
-                "SELECT COALESCE(MAX(seq), -1) + 1 FROM turn_messages "
-                "WHERE turn_id = ?",
-                (turn_id,),
-            )
-            row = await cur.fetchone()
-            await cur.close()
-            next_seq = int(row[0]) if row is not None else 0
-            for role, content, tool_call_id, tool_calls_text in prepared:
-                await conn.execute(
-                    "INSERT INTO turn_messages (turn_id, seq, role, "
-                    "content, tool_call_id, tool_calls_json) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
-                    (
-                        turn_id,
-                        next_seq,
-                        role,
-                        content,
-                        tool_call_id,
-                        tool_calls_text,
-                    ),
+        # B3: hold the shared-connection write lock for the whole
+        # BEGIN IMMEDIATE..COMMIT envelope. This is the documented
+        # all-or-nothing batch — without the lock another session's bare
+        # commit() flushes our partial inserts (commit is connection-
+        # global) and the batch is no longer atomic.
+        async with self._write_lock:
+            try:
+                await conn.execute("BEGIN IMMEDIATE")
+                cur = await conn.execute(
+                    "SELECT COALESCE(MAX(seq), -1) + 1 FROM turn_messages "
+                    "WHERE turn_id = ?",
+                    (turn_id,),
                 )
-                next_seq += 1
-            await conn.commit()
-        except aiosqlite.Error as exc:
-            logger.warning("agent.journal.append_batch_failed", error=str(exc))
-            if conn.in_transaction:
-                try:
-                    await conn.rollback()
-                except aiosqlite.Error as rb_exc:
-                    logger.warning(
-                        "agent.journal.append_rollback_failed",
-                        error=str(rb_exc),
+                row = await cur.fetchone()
+                await cur.close()
+                next_seq = int(row[0]) if row is not None else 0
+                for role, content, tool_call_id, tool_calls_text in prepared:
+                    await conn.execute(
+                        "INSERT INTO turn_messages (turn_id, seq, role, "
+                        "content, tool_call_id, tool_calls_json) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (
+                            turn_id,
+                            next_seq,
+                            role,
+                            content,
+                            tool_call_id,
+                            tool_calls_text,
+                        ),
                     )
+                    next_seq += 1
+                await conn.commit()
+            except aiosqlite.Error as exc:
+                logger.warning(
+                    "agent.journal.append_batch_failed", error=str(exc)
+                )
+                if conn.in_transaction:
+                    try:
+                        await conn.rollback()
+                    except aiosqlite.Error as rb_exc:
+                        logger.warning(
+                            "agent.journal.append_rollback_failed",
+                            error=str(rb_exc),
+                        )
 
     # ------------------------------------------------------------------
     # Resume
@@ -1373,28 +1417,32 @@ class SqliteJournalBackend:
         if not session_key:
             return 0
         conn = self._c
-        try:
-            await conn.execute("BEGIN IMMEDIATE")
-            cur = await conn.execute(
-                "DELETE FROM turns WHERE session_key = ?",
-                (session_key,),
-            )
-            n = cur.rowcount or 0
-            await cur.close()
-            await conn.commit()
-        except aiosqlite.Error as exc:
-            logger.warning(
-                "agent.journal.delete_session_failed", error=str(exc)
-            )
-            if conn.in_transaction:
-                try:
-                    await conn.rollback()
-                except aiosqlite.Error as rb_exc:
-                    logger.warning(
-                        "agent.journal.delete_session_rollback_failed",
-                        error=str(rb_exc),
-                    )
-            return 0
+        # B3: hold the shared-connection write lock for the whole
+        # BEGIN IMMEDIATE..COMMIT envelope (DELETE + ON DELETE CASCADE)
+        # so no other session's bare commit() can flush it half-applied.
+        async with self._write_lock:
+            try:
+                await conn.execute("BEGIN IMMEDIATE")
+                cur = await conn.execute(
+                    "DELETE FROM turns WHERE session_key = ?",
+                    (session_key,),
+                )
+                n = cur.rowcount or 0
+                await cur.close()
+                await conn.commit()
+            except aiosqlite.Error as exc:
+                logger.warning(
+                    "agent.journal.delete_session_failed", error=str(exc)
+                )
+                if conn.in_transaction:
+                    try:
+                        await conn.rollback()
+                    except aiosqlite.Error as rb_exc:
+                        logger.warning(
+                            "agent.journal.delete_session_rollback_failed",
+                            error=str(rb_exc),
+                        )
+                return 0
         return int(n)
 
     async def session_exists(self, session_key: str) -> bool:
@@ -1461,40 +1509,45 @@ class SqliteJournalBackend:
             None if archived is None else (1 if archived else 0)
         )
         now_ms = int(time.time() * 1000)
-        try:
-            await self._c.execute(
-                # First-touch INSERT: every field defaults to the
-                # supplied value (or NULL/0 when the caller didn't
-                # touch it). Subsequent UPDATE: COALESCE keeps the
-                # existing value when the caller passed ``None``.
-                "INSERT INTO session_meta "
-                "(session_key, title, pinned, archived, updated_at_ms) "
-                "VALUES (?, ?, COALESCE(?, 0), COALESCE(?, 0), ?) "
-                "ON CONFLICT(session_key) DO UPDATE SET "
-                "    title         = COALESCE(?, session_meta.title), "
-                "    pinned        = COALESCE(?, session_meta.pinned), "
-                "    archived      = COALESCE(?, session_meta.archived), "
-                "    updated_at_ms = ?",
-                (
-                    session_key,
-                    title_param,
-                    pinned_param,
-                    archived_param,
-                    now_ms,
-                    title_param,
-                    pinned_param,
-                    archived_param,
-                    now_ms,
-                ),
-            )
-            await self._c.commit()
-        except aiosqlite.Error as exc:
-            logger.warning(
-                "agent.journal.update_session_meta_failed",
-                error=str(exc),
-                session_key=session_key,
-            )
-            return None
+        # B3: serialise the bare commit() against in-flight transactions
+        # on the shared connection. The surrounding reads
+        # (``session_exists`` above, ``list_session_summaries`` below)
+        # stay outside the lock — they don't commit.
+        async with self._write_lock:
+            try:
+                await self._c.execute(
+                    # First-touch INSERT: every field defaults to the
+                    # supplied value (or NULL/0 when the caller didn't
+                    # touch it). Subsequent UPDATE: COALESCE keeps the
+                    # existing value when the caller passed ``None``.
+                    "INSERT INTO session_meta "
+                    "(session_key, title, pinned, archived, updated_at_ms) "
+                    "VALUES (?, ?, COALESCE(?, 0), COALESCE(?, 0), ?) "
+                    "ON CONFLICT(session_key) DO UPDATE SET "
+                    "    title         = COALESCE(?, session_meta.title), "
+                    "    pinned        = COALESCE(?, session_meta.pinned), "
+                    "    archived      = COALESCE(?, session_meta.archived), "
+                    "    updated_at_ms = ?",
+                    (
+                        session_key,
+                        title_param,
+                        pinned_param,
+                        archived_param,
+                        now_ms,
+                        title_param,
+                        pinned_param,
+                        archived_param,
+                        now_ms,
+                    ),
+                )
+                await self._c.commit()
+            except aiosqlite.Error as exc:
+                logger.warning(
+                    "agent.journal.update_session_meta_failed",
+                    error=str(exc),
+                    session_key=session_key,
+                )
+                return None
         # Re-aggregate so the response matches what the list endpoint
         # would emit on the next call. Fetching the whole list and
         # filtering is the simplest path that re-uses the same
@@ -1525,25 +1578,27 @@ class SqliteJournalBackend:
             cutoff = now_ms - RESUME_MAX_AGE_MS
         else:
             cutoff = now_ms - max(0, int(older_than_seconds)) * 1000
-        try:
-            cur = await self._c.execute(
-                "UPDATE turns SET status = ?, ended_at_ms = ?, "
-                "error = COALESCE(error, ?) "
-                "WHERE status = ? AND started_at_ms < ?",
-                (
-                    TURN_ERRORED,
-                    now_ms,
-                    "abandoned: gateway restart left turn in_progress",
-                    TURN_IN_PROGRESS,
-                    cutoff,
-                ),
-            )
-            await self._c.commit()
-            n = cur.rowcount or 0
-            await cur.close()
-        except aiosqlite.Error as exc:
-            logger.warning("agent.journal.sweep_failed", error=str(exc))
-            return 0
+        # B3: serialise the bare commit() against in-flight transactions.
+        async with self._write_lock:
+            try:
+                cur = await self._c.execute(
+                    "UPDATE turns SET status = ?, ended_at_ms = ?, "
+                    "error = COALESCE(error, ?) "
+                    "WHERE status = ? AND started_at_ms < ?",
+                    (
+                        TURN_ERRORED,
+                        now_ms,
+                        "abandoned: gateway restart left turn in_progress",
+                        TURN_IN_PROGRESS,
+                        cutoff,
+                    ),
+                )
+                await self._c.commit()
+                n = cur.rowcount or 0
+                await cur.close()
+            except aiosqlite.Error as exc:
+                logger.warning("agent.journal.sweep_failed", error=str(exc))
+                return 0
         if n:
             logger.info("agent.journal.swept_stale", count=n)
         return int(n)
@@ -1574,16 +1629,22 @@ class SqliteJournalBackend:
         except ValueError as exc:
             logger.warning("agent.journal.append_event_skipped", error=str(exc))
             return
-        try:
-            await self._c.execute(
-                "INSERT OR IGNORE INTO turn_events "
-                "(turn_id, sequence, event_type, payload_json, timestamp_ms) "
-                "VALUES (?, ?, ?, ?, ?)",
-                row,
-            )
-            await self._c.commit()
-        except aiosqlite.Error as exc:
-            logger.warning("agent.journal.append_event_failed", error=str(exc))
+        # B3: serialise the bare commit() against in-flight transactions
+        # on the shared connection.
+        async with self._write_lock:
+            try:
+                await self._c.execute(
+                    "INSERT OR IGNORE INTO turn_events "
+                    "(turn_id, sequence, event_type, payload_json, "
+                    "timestamp_ms) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    row,
+                )
+                await self._c.commit()
+            except aiosqlite.Error as exc:
+                logger.warning(
+                    "agent.journal.append_event_failed", error=str(exc)
+                )
 
     async def append_events_batch(self, envelopes: Sequence[Any]) -> None:
         """Batch-insert ``envelopes`` in a single transaction.
@@ -1612,27 +1673,32 @@ class SqliteJournalBackend:
         if not prepared:
             return
         conn = self._c
-        try:
-            await conn.execute("BEGIN IMMEDIATE")
-            await conn.executemany(
-                "INSERT OR IGNORE INTO turn_events "
-                "(turn_id, sequence, event_type, payload_json, timestamp_ms) "
-                "VALUES (?, ?, ?, ?, ?)",
-                prepared,
-            )
-            await conn.commit()
-        except aiosqlite.Error as exc:
-            logger.warning(
-                "agent.journal.append_events_batch_failed", error=str(exc)
-            )
-            if conn.in_transaction:
-                try:
-                    await conn.rollback()
-                except aiosqlite.Error as rb_exc:
-                    logger.warning(
-                        "agent.journal.append_events_rollback_failed",
-                        error=str(rb_exc),
-                    )
+        # B3: hold the shared-connection write lock for the whole
+        # BEGIN IMMEDIATE..COMMIT envelope so no other session's bare
+        # commit() can flush these inserts mid-transaction.
+        async with self._write_lock:
+            try:
+                await conn.execute("BEGIN IMMEDIATE")
+                await conn.executemany(
+                    "INSERT OR IGNORE INTO turn_events "
+                    "(turn_id, sequence, event_type, payload_json, "
+                    "timestamp_ms) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    prepared,
+                )
+                await conn.commit()
+            except aiosqlite.Error as exc:
+                logger.warning(
+                    "agent.journal.append_events_batch_failed", error=str(exc)
+                )
+                if conn.in_transaction:
+                    try:
+                        await conn.rollback()
+                    except aiosqlite.Error as rb_exc:
+                        logger.warning(
+                            "agent.journal.append_events_rollback_failed",
+                            error=str(rb_exc),
+                        )
 
     async def load_events(self, turn_id: str | int) -> list[dict[str, Any]]:
         """Load every event for ``turn_id`` in ``sequence ASC`` order.
@@ -1912,16 +1978,18 @@ class SqliteJournalBackend:
             sets.append("cost_status = ?")
             params.append(str(cost_status))
         params.append(turn_id)
-        try:
-            await self._c.execute(
-                f"UPDATE turns SET {', '.join(sets)} WHERE turn_id = ?",
-                tuple(params),
-            )
-            await self._c.commit()
-        except aiosqlite.Error as exc:
-            logger.warning(
-                "agent.journal.update_turn_cost_failed", error=str(exc)
-            )
+        # B3: serialise the bare commit() against in-flight transactions.
+        async with self._write_lock:
+            try:
+                await self._c.execute(
+                    f"UPDATE turns SET {', '.join(sets)} WHERE turn_id = ?",
+                    tuple(params),
+                )
+                await self._c.commit()
+            except aiosqlite.Error as exc:
+                logger.warning(
+                    "agent.journal.update_turn_cost_failed", error=str(exc)
+                )
 
     async def list_resumable_in_progress(
         self, *, window_ms: int = RESUME_MAX_AGE_MS
