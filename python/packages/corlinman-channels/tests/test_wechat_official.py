@@ -184,6 +184,48 @@ class TestParseXml:
         with pytest.raises(ValueError):
             parse_wechat_xml(b"<other></other>")
 
+    def test_billion_laughs_entity_expansion_rejected(self) -> None:
+        """Entity-expansion (billion-laughs) DoS payloads MUST raise.
+
+        WeChat tokens are low-entropy shared secrets; once a token leaks
+        an attacker can mint a valid signature and POST an XML bomb that
+        the receiver expands into gigabytes of memory. The stdlib
+        ``xml.etree.ElementTree`` is documented vulnerable — this test
+        pins the hardening (``defusedxml`` or equivalent) so a regression
+        to the stdlib parser fails CI loudly.
+        """
+        # Small but exponential entity expansion. With stdlib ET this
+        # silently expands; with defusedxml it raises EntitiesForbidden
+        # (a ValueError subclass via our re-raise).
+        payload = (
+            b"<?xml version=\"1.0\"?>\n"
+            b"<!DOCTYPE lolz [\n"
+            b'  <!ENTITY lol "lol">\n'
+            b'  <!ENTITY lol2 "&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;">\n'
+            b'  <!ENTITY lol3 "&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;">\n'
+            b'  <!ENTITY lol4 "&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;">\n'
+            b"]>\n"
+            b"<xml><Content>&lol4;</Content></xml>"
+        )
+        with pytest.raises(ValueError):
+            parse_wechat_xml(payload)
+
+    def test_external_entity_reference_rejected(self) -> None:
+        """External-entity (XXE) payloads MUST raise.
+
+        Even without local file access, allowing external entities lets
+        an attacker turn the WeChat webhook into an SSRF probe (the
+        parser would dereference ``SYSTEM`` URIs against operator-side
+        intranet hosts). defusedxml refuses these by default.
+        """
+        payload = (
+            b"<?xml version=\"1.0\"?>\n"
+            b'<!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>\n'
+            b"<xml><Content>&xxe;</Content></xml>"
+        )
+        with pytest.raises(ValueError):
+            parse_wechat_xml(payload)
+
 
 class TestBuildInboundEvent:
     def test_text(self) -> None:

@@ -69,6 +69,13 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from xml.etree import ElementTree as ET
 
+# ``defusedxml`` re-exports the same ``ParseError`` as the stdlib but
+# refuses entity expansion / external entities — the only piece we need
+# from it is the parse entrypoint. The stdlib ``ET`` is still used for
+# serialisation (``tostring``) and the ``ParseError`` symbol, which are
+# not attack-controlled.
+from defusedxml.ElementTree import fromstring as _xml_fromstring
+
 from corlinman_channels.common import (
     Attachment,
     AttachmentKind,
@@ -202,8 +209,18 @@ def parse_wechat_xml(body: bytes) -> dict[str, str]:
     if not body:
         return {}
     try:
-        root = ET.fromstring(body)
-    except ET.ParseError as exc:
+        # ``defusedxml`` parser — rejects DOCTYPE entity expansion and
+        # external-entity references (XXE / billion-laughs) that the
+        # stdlib parser silently accepts. WeChat envelopes are flat
+        # ``<xml>``-rooted documents with no legitimate DOCTYPE, so the
+        # hardening has zero false positives on real traffic.
+        root = _xml_fromstring(body)
+    except (ET.ParseError, ValueError) as exc:
+        # ``defusedxml`` raises subclasses of ``ValueError`` (e.g.
+        # ``EntitiesForbidden``, ``DTDForbidden``) on hostile payloads,
+        # alongside the stdlib ``ParseError`` for plain malformed XML.
+        # Both collapse into the 400-mappable ``ValueError`` contract
+        # the webhook caller already handles.
         raise ValueError(f"wechat xml parse failed: {exc}") from exc
     if root.tag != "xml":
         raise ValueError(f"wechat xml root is {root.tag!r}, expected 'xml'")
