@@ -116,10 +116,13 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Enable pnpm 9
+      - name: Enable pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 9
+          # No `version:` here — pnpm/action-setup@v4 errors ("Multiple
+          # versions of pnpm specified") when a version input AND the root
+          # package.json `packageManager` field both pin pnpm. Let the action
+          # honor `packageManager: pnpm@10.x`, the single source of truth.
           run_install: false
 
       - name: Get pnpm store dir
@@ -151,10 +154,13 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Enable pnpm 9
+      - name: Enable pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 9
+          # No `version:` here — pnpm/action-setup@v4 errors ("Multiple
+          # versions of pnpm specified") when a version input AND the root
+          # package.json `packageManager` field both pin pnpm. Let the action
+          # honor `packageManager: pnpm@10.x`, the single source of truth.
           run_install: false
 
       - name: Get pnpm store dir
@@ -186,10 +192,13 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Enable pnpm 9
+      - name: Enable pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 9
+          # No `version:` here — pnpm/action-setup@v4 errors ("Multiple
+          # versions of pnpm specified") when a version input AND the root
+          # package.json `packageManager` field both pin pnpm. Let the action
+          # honor `packageManager: pnpm@10.x`, the single source of truth.
           run_install: false
 
       - name: Get pnpm store dir
