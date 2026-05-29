@@ -1909,6 +1909,8 @@ export interface AgentBinding {
   model: string | null;
   /** Pinned provider slot name. Null = let the resolver pick. */
   provider: string | null;
+  /** Whether chat should show reasoning/tool/subagent trajectory. */
+  show_action_trace: boolean;
 }
 
 export interface AgentBindingsResponse {
@@ -1920,6 +1922,7 @@ export interface AgentBindingsResponse {
 export interface AgentBindingPatch {
   model: string | null;
   provider: string | null;
+  show_action_trace: boolean;
 }
 
 /** GET — list every agent's parsed model+provider binding. */
@@ -1933,7 +1936,13 @@ export async function listAgentBindings(): Promise<AgentBindingsResponse> {
 export async function setAgentModelBinding(
   name: string,
   patch: AgentBindingPatch,
-): Promise<{ status: string; name: string; model: string | null; provider: string | null }> {
+): Promise<{
+  status: string;
+  name: string;
+  model: string | null;
+  provider: string | null;
+  show_action_trace: boolean;
+}> {
   return apiFetch(`/admin/agent-bindings/${encodeURIComponent(name)}`, {
     method: "PATCH",
     body: patch,

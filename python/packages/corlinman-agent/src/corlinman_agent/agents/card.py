@@ -65,6 +65,10 @@ class AgentCard:
         ``provider_hint`` so the resolver can prefer this specific
         provider when ambiguity exists. ``None`` keeps the legacy
         resolution chain untouched.
+    show_action_trace
+        Whether the chat UI should expose this agent's reasoning/tool/
+        subagent trajectory. Defaults to ``True`` so existing cards keep
+        their current operator-visible trace surface.
     source
         Which tier of the stacked-directory loader this card came from.
         ``"built-in"`` is the repo's ``agents/`` dir, ``"user"`` is
@@ -83,6 +87,7 @@ class AgentCard:
     source_path: Path | None = None
     model: str | None = None
     provider: str | None = None
+    show_action_trace: bool = True
     source: AgentSource = "built-in"
 
 

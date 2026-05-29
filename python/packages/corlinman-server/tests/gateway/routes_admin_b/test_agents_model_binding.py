@@ -60,6 +60,7 @@ system_prompt: |
   Polish the draft.
 model: claude-sonnet-4-6
 provider: anthropic
+show_action_trace: false
 tools_allowed:
   - file.read
 """
@@ -116,11 +117,13 @@ def test_get_lists_every_agent_with_binding_fields(client: TestClient) -> None:
     researcher = next(a for a in payload["agents"] if a["name"] == "researcher")
     assert researcher["model"] is None
     assert researcher["provider"] is None
+    assert researcher["show_action_trace"] is True
     assert "research assistant" in researcher["description"] or True
 
     editor = next(a for a in payload["agents"] if a["name"] == "editor")
     assert editor["model"] == "claude-sonnet-4-6"
     assert editor["provider"] == "anthropic"
+    assert editor["show_action_trace"] is False
 
 
 def test_get_returns_empty_list_when_dir_missing(tmp_path: Path) -> None:
@@ -169,7 +172,11 @@ def test_patch_sets_model_when_field_missing(
     """First write on researcher inserts model+provider after description."""
     resp = client.patch(
         "/admin/agent-bindings/researcher",
-        json={"model": "gpt-4o-mini", "provider": "openai"},
+        json={
+            "model": "gpt-4o-mini",
+            "provider": "openai",
+            "show_action_trace": False,
+        },
     )
     assert resp.status_code == 200, resp.text
     assert resp.json() == {
@@ -177,6 +184,7 @@ def test_patch_sets_model_when_field_missing(
         "name": "researcher",
         "model": "gpt-4o-mini",
         "provider": "openai",
+        "show_action_trace": False,
     }
 
     on_disk = yaml.safe_load(
@@ -184,6 +192,7 @@ def test_patch_sets_model_when_field_missing(
     )
     assert on_disk["model"] == "gpt-4o-mini"
     assert on_disk["provider"] == "openai"
+    assert on_disk["show_action_trace"] is False
     # Unrelated keys survive untouched.
     assert on_disk["name"] == "researcher"
     assert on_disk["variables"]["citation_style"] == "inline-link"
@@ -199,7 +208,11 @@ def test_patch_inserts_new_fields_after_description(
     """Position-sensitive: model+provider should land right after description."""
     client.patch(
         "/admin/agent-bindings/researcher",
-        json={"model": "qwen3-coder", "provider": "qwen"},
+        json={
+            "model": "qwen3-coder",
+            "provider": "qwen",
+            "show_action_trace": False,
+        },
     )
     raw = (data_dir / "agents" / "researcher.yaml").read_text(encoding="utf-8")
     # Parse the file keeping yaml's insertion-order semantics.
@@ -208,8 +221,10 @@ def test_patch_inserts_new_fields_after_description(
     desc_idx = keys.index("description")
     model_idx = keys.index("model")
     provider_idx = keys.index("provider")
+    trace_idx = keys.index("show_action_trace")
     assert model_idx == desc_idx + 1
     assert provider_idx == desc_idx + 2
+    assert trace_idx == desc_idx + 3
 
 
 def test_patch_updates_existing_binding_in_place(
@@ -223,7 +238,11 @@ def test_patch_updates_existing_binding_in_place(
 
     resp = client.patch(
         "/admin/agent-bindings/editor",
-        json={"model": "claude-opus-4-7", "provider": "anthropic"},
+        json={
+            "model": "claude-opus-4-7",
+            "provider": "anthropic",
+            "show_action_trace": True,
+        },
     )
     assert resp.status_code == 200
 
@@ -232,8 +251,12 @@ def test_patch_updates_existing_binding_in_place(
     )
     assert updated["model"] == "claude-opus-4-7"
     assert updated["provider"] == "anthropic"
-    # Field order is preserved — same key list, same positions.
-    assert list(updated.keys()) == original_keys
+    assert "show_action_trace" not in updated
+    # Field order for retained fields is preserved; restoring the default
+    # action-trace behaviour drops the explicit false override.
+    assert list(updated.keys()) == [
+        key for key in original_keys if key != "show_action_trace"
+    ]
 
 
 def test_patch_clears_binding_with_null_values(
@@ -242,7 +265,7 @@ def test_patch_clears_binding_with_null_values(
     """Sending null model+provider drops the keys entirely."""
     resp = client.patch(
         "/admin/agent-bindings/editor",
-        json={"model": None, "provider": None},
+        json={"model": None, "provider": None, "show_action_trace": True},
     )
     assert resp.status_code == 200
 
@@ -251,6 +274,7 @@ def test_patch_clears_binding_with_null_values(
     )
     assert "model" not in updated
     assert "provider" not in updated
+    assert "show_action_trace" not in updated
     # Other keys still present.
     assert updated["name"] == "editor"
     assert "system_prompt" in updated
@@ -262,7 +286,7 @@ def test_patch_empty_string_treated_as_clear(
     """Empty string from a UI text field should clear, not store ``""``."""
     resp = client.patch(
         "/admin/agent-bindings/editor",
-        json={"model": "", "provider": ""},
+        json={"model": "", "provider": "", "show_action_trace": True},
     )
     assert resp.status_code == 200
 
@@ -294,7 +318,7 @@ def test_patch_preserves_unknown_top_level_keys(
     # we restrict the patched-doc test to round-trip via raw yaml.
     resp = client.patch(
         "/admin/agent-bindings/withextras",
-        json={"model": "mock", "provider": None},
+        json={"model": "mock", "provider": None, "show_action_trace": False},
     )
     assert resp.status_code == 200
 
@@ -303,6 +327,31 @@ def test_patch_preserves_unknown_top_level_keys(
     assert updated["x_nested"] == {"a": 1, "b": "two"}
     assert updated["model"] == "mock"
     assert "provider" not in updated
+    assert updated["show_action_trace"] is False
+
+
+def test_patch_can_disable_action_trace_without_model_binding(
+    client: TestClient, data_dir: Path
+) -> None:
+    resp = client.patch(
+        "/admin/agent-bindings/researcher",
+        json={"model": None, "provider": None, "show_action_trace": False},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {
+        "status": "ok",
+        "name": "researcher",
+        "model": None,
+        "provider": None,
+        "show_action_trace": False,
+    }
+
+    updated = yaml.safe_load(
+        (data_dir / "agents" / "researcher.yaml").read_text(encoding="utf-8")
+    )
+    assert "model" not in updated
+    assert "provider" not in updated
+    assert updated["show_action_trace"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -313,7 +362,11 @@ def test_patch_preserves_unknown_top_level_keys(
 def test_patch_404_when_agent_missing(client: TestClient) -> None:
     resp = client.patch(
         "/admin/agent-bindings/nonexistent",
-        json={"model": "gpt-4o-mini", "provider": "openai"},
+        json={
+            "model": "gpt-4o-mini",
+            "provider": "openai",
+            "show_action_trace": True,
+        },
     )
     assert resp.status_code == 404
     body = resp.json()
@@ -323,7 +376,7 @@ def test_patch_404_when_agent_missing(client: TestClient) -> None:
 def test_patch_rejects_path_traversal(client: TestClient) -> None:
     resp = client.patch(
         "/admin/agent-bindings/..%2Fetc%2Fpasswd",
-        json={"model": None, "provider": None},
+        json={"model": None, "provider": None, "show_action_trace": True},
     )
     # Either FastAPI normalises and the dot-dot makes _validate fail,
     # or the route doesn't match (404). Both are fine; we just need to
@@ -337,7 +390,7 @@ def test_patch_atomic_write_does_not_leave_tmp_file(
     """Successful PATCH must clean up the .new staging file."""
     resp = client.patch(
         "/admin/agent-bindings/editor",
-        json={"model": "mock", "provider": "mock"},
+        json={"model": "mock", "provider": "mock", "show_action_trace": True},
     )
     assert resp.status_code == 200
     tmp = data_dir / "agents" / "editor.yaml.new"
@@ -350,9 +403,14 @@ def test_patch_then_get_round_trip_matches(
     """After a PATCH the binding shows up on the next GET."""
     client.patch(
         "/admin/agent-bindings/researcher",
-        json={"model": "deepseek-chat", "provider": "deepseek"},
+        json={
+            "model": "deepseek-chat",
+            "provider": "deepseek",
+            "show_action_trace": False,
+        },
     )
     payload = client.get("/admin/agent-bindings").json()
     researcher = next(a for a in payload["agents"] if a["name"] == "researcher")
     assert researcher["model"] == "deepseek-chat"
     assert researcher["provider"] == "deepseek"
+    assert researcher["show_action_trace"] is False

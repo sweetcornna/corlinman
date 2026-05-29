@@ -76,6 +76,23 @@ def test_card_with_model_and_provider_parses(tmp_path: Path) -> None:
     assert card.provider == "anthropic"
 
 
+def test_card_with_action_trace_disabled_parses(tmp_path: Path) -> None:
+    body = _BASE.format(name="quiet") + "show_action_trace: false\n"
+    _write(tmp_path / "quiet.yaml", body)
+    reg = AgentCardRegistry.load_from_dir(tmp_path)
+    card = reg.get("quiet")
+    assert card is not None
+    assert card.show_action_trace is False
+
+
+def test_card_defaults_to_showing_action_trace(tmp_path: Path) -> None:
+    _write(tmp_path / "visible.yaml", _BASE.format(name="visible"))
+    reg = AgentCardRegistry.load_from_dir(tmp_path)
+    card = reg.get("visible")
+    assert card is not None
+    assert card.show_action_trace is True
+
+
 def test_card_with_non_string_model_raises(tmp_path: Path) -> None:
     """Stray int / bool in ``model:`` must be rejected at load time."""
     body = _BASE.format(name="bad_model") + "model: 123\n"
@@ -89,4 +106,11 @@ def test_card_with_non_string_provider_raises(tmp_path: Path) -> None:
     body = _BASE.format(name="bad_prov") + "provider: 42\n"
     path = _write(tmp_path / "bad_prov.yaml", body)
     with pytest.raises(AgentCardLoadError, match="provider must be a string"):
+        _load_card(path)
+
+
+def test_card_with_non_bool_action_trace_raises(tmp_path: Path) -> None:
+    body = _BASE.format(name="bad_trace") + "show_action_trace: nope\n"
+    path = _write(tmp_path / "bad_trace.yaml", body)
+    with pytest.raises(AgentCardLoadError, match="show_action_trace must be a boolean"):
         _load_card(path)

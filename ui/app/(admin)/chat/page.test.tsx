@@ -85,6 +85,8 @@ vi.mock("@/lib/api", async () => {
     ...actual,
     fetchModels: () => fetchModelsMock(),
     fetchProviders: () => fetchProvidersMock(),
+    listAgents: vi.fn(async () => []),
+    listAgentBindings: vi.fn(async () => ({ agents: [] })),
     getProviderModels: vi.fn(async () => ({ models: [] })),
   };
 });

@@ -52,6 +52,7 @@ def test_full_frontmatter_populates_every_field(tmp_path: Path) -> None:
 description: Heavyweight test card.
 model: claude-sonnet-4-6
 provider: anthropic
+show_action_trace: false
 tools:
   - read_file
   - web_search
@@ -74,6 +75,7 @@ body content.
 
     assert card.model == "claude-sonnet-4-6"
     assert card.provider == "anthropic"
+    assert card.show_action_trace is False
     assert card.tools_allowed == ["read_file", "web_search"]
     assert card.skill_refs == ["test-driven-development"]
     # ``5`` stringified — keeps the expander's substitution type-safe.

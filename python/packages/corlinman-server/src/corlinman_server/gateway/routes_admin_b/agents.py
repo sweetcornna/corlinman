@@ -1,4 +1,4 @@
-"""``/admin/agents/bindings*`` — per-agent model+provider binding.
+"""``/admin/agents/bindings*`` — per-agent model/provider/UI binding.
 
 Wave W-D2 of ``docs/PLAN_PROVIDER_AUTH.md``. The W-D1 wave landed the
 backend contract: :class:`corlinman_agent.agents.AgentCard` now carries
@@ -21,24 +21,27 @@ Routes:
 
 * ``GET   /admin/agents/bindings`` →
   ``{"agents": [{"name": str, "description": str,
-                  "model": str|null, "provider": str|null}]}``
+                  "model": str|null, "provider": str|null,
+                  "show_action_trace": bool}]}``
   Reads every ``*.yaml`` / ``*.yml`` under ``<data_dir>/agents/``
   through :class:`AgentCardRegistry.load_from_dir`. The card parser is
   the single source of truth for what "binding" means — we never peek
   at the yaml independently for the GET path.
 
 * ``PATCH /admin/agents/{name}/binding`` body
-  ``{"model": str | null, "provider": str | null}`` → ``{"status":
-  "ok", ...}``. Writes back to the on-disk yaml via an atomic
+  ``{"model": str | null, "provider": str | null,
+     "show_action_trace": bool}`` → ``{"status": "ok", ...}``.
+  Writes back to the on-disk yaml via an atomic
   ``tmpfile + os.replace`` swap. Unrecognised top-level yaml keys are
   treated as opaque and round-tripped untouched; field order is
   preserved by walking the original document (PyYAML dicts already
   preserve insertion order under Python 3.7+).
 
 The endpoint never accepts arbitrary new top-level keys via the body —
-the binding shape is locked to ``model`` + ``provider`` to keep this
-surface narrow. Operators wanting to edit other yaml fields go through
-``/admin/agents/{name}`` in routes_admin_a (Monaco editor).
+the binding shape is locked to ``model`` + ``provider`` +
+``show_action_trace`` to keep this surface narrow. Operators wanting to
+edit other yaml fields go through ``/admin/agents/{name}`` in
+routes_admin_a (Monaco editor).
 
 Path-traversal defence mirrors ``routes_admin_a/agents.py``: the
 ``name`` segment must be a bare stem (no ``/``, ``\\``, or ``..``).
@@ -75,6 +78,7 @@ class AgentBindingOut(BaseModel):
     description: str
     model: str | None = None
     provider: str | None = None
+    show_action_trace: bool = True
 
 
 class AgentBindingsResponse(BaseModel):
@@ -95,6 +99,7 @@ class AgentBindingPatch(BaseModel):
 
     model: str | None = None
     provider: str | None = None
+    show_action_trace: bool | None = None
 
 
 class StatusOk(BaseModel):
@@ -102,6 +107,7 @@ class StatusOk(BaseModel):
     name: str
     model: str | None = None
     provider: str | None = None
+    show_action_trace: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -189,12 +195,35 @@ def _load_yaml_doc(path: Path) -> dict[str, Any]:
     return raw
 
 
+def _effective_show_action_trace(doc: dict[str, Any]) -> bool:
+    """Return the effective action-trace flag for a raw yaml document.
+
+    The card loader uses the same default: absent means visible. We
+    validate here as well so PATCH cannot return a shape the loader
+    would later reject.
+    """
+    value = doc.get("show_action_trace")
+    if value is None:
+        return True
+    if not isinstance(value, bool):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error": "yaml_invalid_field",
+                "field": "show_action_trace",
+                "message": "show_action_trace must be a boolean",
+            },
+        )
+    return value
+
+
 def _apply_binding(
     doc: dict[str, Any],
     model: str | None,
     provider: str | None,
+    show_action_trace: bool | None,
 ) -> dict[str, Any]:
-    """Return a new dict with ``model`` / ``provider`` updated in place.
+    """Return a new dict with model/provider/action-trace fields updated.
 
     Field-order preservation rules:
 
@@ -204,9 +233,11 @@ def _apply_binding(
       after ``description`` (the closest established neighbour); this
       keeps freshly-written files looking like the sample
       ``agents/researcher.yaml`` we ship with.
-    * If the new value is ``None`` we drop the key entirely — empty
+    * If a model/provider value is ``None`` we drop the key entirely — empty
       strings are unidiomatic for "no binding" and would round-trip as
       ``model: ''`` in yaml.
+    * ``show_action_trace`` defaults to ``True``. ``False`` is written
+      explicitly; ``True`` removes the key and falls back to the default.
 
     All other keys are passed through untouched — we explicitly do not
     canonicalise / re-sort / re-flow them.
@@ -214,35 +245,43 @@ def _apply_binding(
     # Dicts preserve insertion order under 3.7+, so walking the old doc
     # and building a new one gives us deterministic round-trip.
     out: dict[str, Any] = {}
-    inserted_model = False
-    inserted_provider = False
-    pending: list[tuple[str, str | None]] = []
+    pending: list[tuple[str, str | bool | None]] = []
     # We delay inserting newly-added fields until just after
     # ``description`` so they land in a predictable spot.
     if "model" not in doc and model is not None:
         pending.append(("model", model))
     if "provider" not in doc and provider is not None:
         pending.append(("provider", provider))
+    if (
+        "show_action_trace" not in doc
+        and show_action_trace is not None
+        and show_action_trace is False
+    ):
+        pending.append(("show_action_trace", False))
 
     for key, value in doc.items():
         if key == "model":
-            inserted_model = True
             if model is None:
                 # Drop the key (skip the write).
                 continue
             out[key] = model
             continue
         if key == "provider":
-            inserted_provider = True
             if provider is None:
                 continue
             out[key] = provider
             continue
+        if key == "show_action_trace":
+            if show_action_trace is None:
+                out[key] = value
+                continue
+            if show_action_trace is True:
+                continue
+            out[key] = False
+            continue
         out[key] = value
         if key == "description" and pending:
             for pk, pv in pending:
-                # ``pv`` cannot be None here (we filtered above) but the
-                # explicit guard keeps mypy / readers honest.
                 if pv is not None:
                     out[pk] = pv
             pending = []
@@ -253,10 +292,6 @@ def _apply_binding(
         if pv is not None:
             out[pk] = pv
 
-    # Edge case: ``model`` / ``provider`` was never in the doc *and*
-    # the body sets it to None — nothing to do.
-    _ = inserted_model
-    _ = inserted_provider
     return out
 
 
@@ -342,6 +377,7 @@ def router() -> APIRouter:
                     description=card.description,
                     model=card.model,
                     provider=card.provider,
+                    show_action_trace=card.show_action_trace,
                 )
             )
         return AgentBindingsResponse(agents=rows)
@@ -368,10 +404,21 @@ def router() -> APIRouter:
             # the dispatcher would happily ship an empty model id).
             new_model = body.model if body.model else None
             new_provider = body.provider if body.provider else None
-            new_doc = _apply_binding(doc, new_model, new_provider)
+            new_doc = _apply_binding(
+                doc,
+                new_model,
+                new_provider,
+                body.show_action_trace,
+            )
+            effective_show_action_trace = _effective_show_action_trace(new_doc)
             _atomic_write_yaml(path, new_doc)
 
-        return StatusOk(name=name, model=new_model, provider=new_provider)
+        return StatusOk(
+            name=name,
+            model=new_model,
+            provider=new_provider,
+            show_action_trace=effective_show_action_trace,
+        )
 
     return r
 
