@@ -56,7 +56,12 @@ function formatTime(ms: number): string {
     : d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 }
 
-export function MessageBubble({
+// Memoised so a streaming `pendingMessage` delta (which re-renders the whole
+// `MessageList`) does not re-render — and re-parse the markdown of — every
+// settled historical bubble. Settled messages keep a stable object identity
+// and all callback props are `useCallback`-stable at the consumer, so the
+// default shallow prop comparison is sufficient (see R4-D5).
+export const MessageBubble = React.memo(function MessageBubble({
   message,
   onCopy,
   onRegenerate,
@@ -421,4 +426,4 @@ export function MessageBubble({
       </div>
     </li>
   );
-}
+});
