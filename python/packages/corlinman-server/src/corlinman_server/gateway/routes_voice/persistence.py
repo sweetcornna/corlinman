@@ -13,11 +13,14 @@ This Python iter ships:
   into ``voice_sessions.end_reason``).
 * The :class:`VoiceSessionStart` / :class:`VoiceSessionEnd` /
   :class:`VoiceSessionRow` dataclasses.
-* The :class:`VoiceSessionStore` Protocol + an in-memory implementation
-  (:class:`MemoryVoiceSessionStore`) suitable for tests. The SQLite
-  swap mirrors the Rust ``SqliteVoiceSessionStore`` and is left as a
-  follow-up (the schema string :data:`VOICE_SCHEMA_SQL` is included so
-  the iter-7+ SQLite adapter has a one-stop drop-in).
+* The :class:`VoiceSessionStore` Protocol + two implementations: the
+  in-memory :class:`MemoryVoiceSessionStore` (tests) and the
+  durable :class:`SqliteVoiceSessionStore` (production), the latter
+  mirroring the Rust ``SqliteVoiceSessionStore`` over an ``aiosqlite``
+  connection. Both honour the same insert / update / fetch contract;
+  the schema string :data:`VOICE_SCHEMA_SQL` is the shared DDL applied
+  on first open so the same physical ``voice_sessions.sqlite`` file is
+  interoperable across both gateways.
 * :func:`audio_path_for` / :func:`tts_audio_path_for` for opt-in audio
   retention path resolution.
 * :class:`VoiceTranscriptSink` Protocol + :class:`MemoryTranscriptSink`
@@ -37,7 +40,9 @@ import os
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Final, Protocol, runtime_checkable
+from typing import Any, Final, Protocol, runtime_checkable
+
+import aiosqlite
 
 VOICE_SCHEMA_SQL: Final[str] = """
 CREATE TABLE IF NOT EXISTS voice_sessions (
@@ -226,6 +231,230 @@ class MemoryVoiceSessionStore:
         return matching
 
 
+VOICE_SESSIONS_DB_FILENAME: Final[str] = "voice_sessions.sqlite"
+"""Filename of the SQLite database under the gateway data dir. The store
+opens ``<data_dir>/voice_sessions.sqlite`` — a sibling of the other
+per-gateway stores (``agent_journal.sqlite`` / ``home_channels.sqlite``)."""
+
+
+# Read-shape column order shared by every SELECT so the row projection in
+# :meth:`SqliteVoiceSessionStore._row_from_record` stays a single source
+# of truth. Matches the :class:`VoiceSessionRow` field order 1:1.
+_VOICE_ROW_COLUMNS: Final[str] = (
+    "id, tenant_id, session_key, agent_id, provider_alias, started_at, "
+    "ended_at, duration_secs, audio_path, transcript_text, end_reason"
+)
+
+
+class SqliteVoiceSessionStore:
+    """Durable :class:`VoiceSessionStore` over a dedicated ``aiosqlite``
+    connection at ``<data_dir>/voice_sessions.sqlite``.
+
+    This is the production swap for :class:`MemoryVoiceSessionStore`;
+    it honours the same insert / update / fetch contract so
+    :func:`~corlinman_server.gateway.routes_voice.mod.run_voice_session`
+    can write a ``voice_sessions`` row on every connect without caring
+    which backing store is wired.
+
+    Concurrency (R5-B3 lesson)
+    --------------------------
+    The agent-journal backend learned the hard way that sharing ONE
+    ``aiosqlite`` connection across concurrent sessions while mixing
+    autocommit ``execute()`` + ``commit()`` against explicit
+    ``BEGIN IMMEDIATE`` envelopes lets a bare ``commit()`` from one
+    coroutine flush — and end — another coroutine's open transaction
+    (``commit()`` is connection-*global*). This store sidesteps that
+    entirely:
+
+    * It owns its OWN dedicated connection (not shared with any other
+      store), and
+    * every write (``record_start`` / ``record_end``) is a single
+      ``execute()`` + ``commit()`` guarded by an :class:`asyncio.Lock`,
+      so no two writes can interleave a transaction on the connection.
+
+    Reads (``fetch`` / ``list_for_session``) are left lock-free — they
+    issue no ``commit()`` and so can't disturb an in-flight write.
+    Crash-safety: each record commits before returning, so a gateway
+    crash never loses an already-acknowledged row.
+    """
+
+    __slots__ = ("_conn", "_path", "_write_lock")
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._conn: aiosqlite.Connection | None = None
+        # One lock guarding ALL writes on this store's dedicated
+        # connection. See the class docstring (R5-B3): a single
+        # connection + one write lock means no bare commit() can flush a
+        # concurrent write's transaction. Reads stay lock-free.
+        self._write_lock = asyncio.Lock()
+
+    @classmethod
+    async def open(cls, path: Path) -> SqliteVoiceSessionStore:
+        """Open (and bootstrap) the store at ``path``.
+
+        Mirrors :meth:`SqliteJournalBackend.open`: construct, then run
+        the idempotent ``_open`` that creates the parent dir, applies the
+        WAL / busy-timeout pragmas, and runs :data:`VOICE_SCHEMA_SQL`
+        (``CREATE TABLE IF NOT EXISTS``) so re-opening an existing file is
+        a no-op.
+        """
+        store = cls(path)
+        await store._open()
+        return store
+
+    @classmethod
+    async def open_under_data_dir(
+        cls, data_dir: Path | str
+    ) -> SqliteVoiceSessionStore:
+        """Open the canonical ``<data_dir>/voice_sessions.sqlite`` store."""
+        return await cls.open(Path(data_dir) / VOICE_SESSIONS_DB_FILENAME)
+
+    async def _open(self) -> None:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        conn = await aiosqlite.connect(self._path)
+        try:
+            await conn.execute("PRAGMA journal_mode = WAL")
+            await conn.execute("PRAGMA synchronous = NORMAL")
+            await conn.execute("PRAGMA busy_timeout = 5000")
+            await conn.executescript(VOICE_SCHEMA_SQL)
+            await conn.commit()
+        except Exception:
+            await conn.close()
+            raise
+        self._conn = conn
+
+    async def close(self) -> None:
+        """Release the underlying connection. Idempotent."""
+        if self._conn is not None:
+            await self._conn.close()
+            self._conn = None
+
+    @property
+    def path(self) -> Path:
+        """Filesystem path of the backing SQLite file (test/debug only)."""
+        return self._path
+
+    @property
+    def _c(self) -> aiosqlite.Connection:
+        if self._conn is None:
+            raise RuntimeError(
+                "SqliteVoiceSessionStore not opened — call open() first"
+            )
+        return self._conn
+
+    async def record_start(self, start: VoiceSessionStart) -> None:
+        """Insert the session-start row.
+
+        The ``end_reason`` placeholder is ``graceful`` (matching
+        :class:`MemoryVoiceSessionStore`) so a row that's never finalised
+        — gateway crash between start and end — still carries a valid
+        ``NOT NULL`` ``end_reason``. ``INSERT OR REPLACE`` keeps the open
+        idempotent against a re-used session id.
+        """
+        async with self._write_lock:
+            try:
+                await self._c.execute(
+                    "INSERT OR REPLACE INTO voice_sessions "
+                    "(id, tenant_id, session_key, agent_id, provider_alias, "
+                    "started_at, ended_at, duration_secs, audio_path, "
+                    "transcript_text, end_reason) "
+                    "VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?)",
+                    (
+                        start.id,
+                        start.tenant_id,
+                        start.session_key,
+                        start.agent_id,
+                        start.provider_alias,
+                        start.started_at,
+                        VoiceEndReason.GRACEFUL.value,
+                    ),
+                )
+                await self._c.commit()
+            except aiosqlite.Error as exc:  # pragma: no cover — defensive
+                raise VoiceStoreSqlError(str(exc)) from exc
+
+    async def record_end(self, end: VoiceSessionEnd) -> None:
+        """UPDATE the start row in place with the session-end fields.
+
+        Guard: if no row with ``end.id`` exists, raise
+        :class:`VoiceStoreRowMissingError` — identical behaviour to
+        :class:`MemoryVoiceSessionStore`, defending against
+        double-finalisation / finalising a session that never started.
+        """
+        async with self._write_lock:
+            try:
+                cur = await self._c.execute(
+                    "UPDATE voice_sessions SET "
+                    "ended_at = ?, duration_secs = ?, audio_path = ?, "
+                    "transcript_text = ?, end_reason = ? WHERE id = ?",
+                    (
+                        end.ended_at,
+                        end.duration_secs,
+                        end.audio_path,
+                        end.transcript_text,
+                        end.end_reason.value,
+                        end.id,
+                    ),
+                )
+                if cur.rowcount == 0:
+                    # No row matched — roll back the (empty) UPDATE so the
+                    # connection is left clean, then signal the miss.
+                    await self._c.rollback()
+                    raise VoiceStoreRowMissingError(end.id)
+                await self._c.commit()
+            except aiosqlite.Error as exc:  # pragma: no cover — defensive
+                raise VoiceStoreSqlError(str(exc)) from exc
+
+    async def fetch(self, id: str) -> VoiceSessionRow | None:
+        """Read one row by id, or ``None`` when absent. Lock-free read."""
+        cur = await self._c.execute(
+            f"SELECT {_VOICE_ROW_COLUMNS} FROM voice_sessions WHERE id = ?",
+            (id,),
+        )
+        row = await cur.fetchone()
+        await cur.close()
+        if row is None:
+            return None
+        return self._row_from_record(row)
+
+    async def list_for_session(
+        self, tenant_id: str, session_key: str
+    ) -> list[VoiceSessionRow]:
+        """Every row for a (tenant, session_key), most-recent first.
+
+        ``ORDER BY started_at DESC`` matches the in-memory store's sort
+        so callers see the same ordering regardless of backend.
+        """
+        cur = await self._c.execute(
+            f"SELECT {_VOICE_ROW_COLUMNS} FROM voice_sessions "
+            "WHERE tenant_id = ? AND session_key = ? "
+            "ORDER BY started_at DESC",
+            (tenant_id, session_key),
+        )
+        rows = await cur.fetchall()
+        await cur.close()
+        return [self._row_from_record(r) for r in rows]
+
+    @staticmethod
+    def _row_from_record(record: Any) -> VoiceSessionRow:
+        """Project a raw SQLite tuple (in :data:`_VOICE_ROW_COLUMNS`
+        order) onto a :class:`VoiceSessionRow`."""
+        return VoiceSessionRow(
+            id=str(record[0]),
+            tenant_id=str(record[1]),
+            session_key=str(record[2]),
+            agent_id=None if record[3] is None else str(record[3]),
+            provider_alias=str(record[4]),
+            started_at=int(record[5]),
+            ended_at=None if record[6] is None else int(record[6]),
+            duration_secs=None if record[7] is None else int(record[7]),
+            audio_path=None if record[8] is None else str(record[8]),
+            transcript_text=None if record[9] is None else str(record[9]),
+            end_reason=str(record[10]),
+        )
+
+
 # ---------------------------------------------------------------------------
 # Audio retention path helpers — pure, no I/O
 # ---------------------------------------------------------------------------
@@ -370,8 +599,10 @@ class MemoryTranscriptSink:
 
 __all__ = [
     "VOICE_SCHEMA_SQL",
+    "VOICE_SESSIONS_DB_FILENAME",
     "MemoryTranscriptSink",
     "MemoryVoiceSessionStore",
+    "SqliteVoiceSessionStore",
     "TranscriptedTurn",
     "VoiceEndReason",
     "VoicePathError",

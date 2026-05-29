@@ -151,39 +151,129 @@ def test_registry_key_wins_over_env(
 # ---------------------------------------------------------------------------
 
 
-def test_build_voice_state_returns_none_without_voice_section() -> None:
-    state = build_voice_state_from_app(_FakeAppState(config={"providers": {}}))
+async def test_build_voice_state_returns_none_without_voice_section() -> None:
+    state = await build_voice_state_from_app(
+        _FakeAppState(config={"providers": {}})
+    )
     assert state is None
 
 
-def test_build_voice_state_with_mock_provider() -> None:
+async def _close_state_store(state: VoiceState | None) -> None:
+    """Close the wired SqliteVoiceSessionStore (if any) so its aiosqlite
+    worker thread doesn't outlive the test event loop and emit a spurious
+    "Event loop is closed" warning at teardown."""
+    if state is None:
+        return
+    store = state.session_store
+    close = getattr(store, "close", None)
+    if callable(close):
+        await close()
+
+
+async def test_build_voice_state_with_mock_provider(tmp_path: Path) -> None:
     config = {
         "voice": {"enabled": True, "provider_alias": "openai"},
         "providers": {},
     }
-    state = build_voice_state_from_app(
-        _FakeAppState(config=config, data_dir="/tmp/voice-data")
+    data_dir = tmp_path / "voice-data"
+    state = await build_voice_state_from_app(
+        _FakeAppState(config=config, data_dir=str(data_dir))
     )
-    assert isinstance(state, VoiceState)
-    assert isinstance(state.provider, MockVoiceProvider)
-    assert state.data_dir == Path("/tmp/voice-data")
-    cfg = state.config_loader()
-    assert cfg.enabled is True
-    assert cfg.provider_alias == "openai"
+    try:
+        assert isinstance(state, VoiceState)
+        assert isinstance(state.provider, MockVoiceProvider)
+        assert state.data_dir == data_dir
+        cfg = state.config_loader()
+        assert cfg.enabled is True
+        assert cfg.provider_alias == "openai"
+    finally:
+        await _close_state_store(state)
 
 
-def test_build_voice_state_with_real_provider() -> None:
+async def test_build_voice_state_with_real_provider(tmp_path: Path) -> None:
     config = {
         "voice": {"enabled": True, "provider_alias": "openai"},
         "providers": {"openai": {"kind": "openai", "api_key": "sk-key"}},
     }
-    state = build_voice_state_from_app(_FakeAppState(config=config))
-    assert isinstance(state, VoiceState)
-    assert isinstance(state.provider, OpenAIRealtimeProvider)
+    state = await build_voice_state_from_app(
+        _FakeAppState(config=config, data_dir=str(tmp_path))
+    )
+    try:
+        assert isinstance(state, VoiceState)
+        assert isinstance(state.provider, OpenAIRealtimeProvider)
+    finally:
+        await _close_state_store(state)
 
 
-def test_build_voice_state_defaults_data_dir() -> None:
+async def test_build_voice_state_defaults_data_dir(tmp_path: Path) -> None:
     config = {"voice": {"enabled": False}, "providers": {}}
-    state = build_voice_state_from_app(_FakeAppState(config=config))
-    assert state is not None
-    assert state.data_dir == Path(".")
+    state = await build_voice_state_from_app(
+        _FakeAppState(config=config, data_dir=str(tmp_path))
+    )
+    try:
+        assert state is not None
+        assert state.data_dir == tmp_path
+    finally:
+        await _close_state_store(state)
+
+
+async def test_build_voice_state_wires_sqlite_session_store(
+    tmp_path: Path,
+) -> None:
+    """REPRODUCE-FIRST: today ``build_voice_state_from_app`` leaves
+    ``session_store=None`` so completed voice sessions are never
+    persisted. After wiring, the resolved state must carry a real
+    :class:`SqliteVoiceSessionStore` (durable) — while the transcript
+    bridge stays unset (its merge-semantics design is a follow-up)."""
+    from corlinman_server.gateway.routes_voice.persistence import (
+        SqliteVoiceSessionStore,
+    )
+
+    config = {
+        "voice": {"enabled": True, "provider_alias": "openai"},
+        "providers": {},
+    }
+    state = await build_voice_state_from_app(
+        _FakeAppState(config=config, data_dir=str(tmp_path))
+    )
+    try:
+        assert isinstance(state, VoiceState)
+        assert state.session_store is not None, (
+            "build_voice_state_from_app must wire a durable session store so "
+            "voice sessions are persisted in production"
+        )
+        assert isinstance(state.session_store, SqliteVoiceSessionStore)
+        # The transcript→chat bridge stays deferred (separate
+        # merge-semantics design); the session-store half is independent
+        # and lands now.
+        assert state.transcript_sink is None
+        # The store opened the canonical file under the resolved data dir.
+        assert (tmp_path / "voice_sessions.sqlite").exists()
+    finally:
+        await _close_state_store(state)
+    await state.session_store.close()
+
+
+async def test_build_voice_state_caches_store_across_connects(
+    tmp_path: Path,
+) -> None:
+    """The durable store must be opened ONCE and reused across ``/voice``
+    connects — opening a fresh aiosqlite connection per connect would leak
+    a thread + fd under connect churn. Two builds on the SAME AppState must
+    share one store instance."""
+    app = _FakeAppState(
+        config={
+            "voice": {"enabled": True, "provider_alias": "openai"},
+            "providers": {},
+        },
+        data_dir=str(tmp_path),
+    )
+    first = await build_voice_state_from_app(app)
+    second = await build_voice_state_from_app(app)
+    assert first is not None and second is not None
+    assert first.session_store is not None
+    assert first.session_store is second.session_store, (
+        "build_voice_state_from_app must reuse one cached SqliteVoiceSessionStore "
+        "across connects, not open a new connection per connect"
+    )
+    await first.session_store.close()

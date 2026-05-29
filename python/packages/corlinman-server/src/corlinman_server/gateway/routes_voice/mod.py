@@ -87,6 +87,7 @@ from corlinman_server.gateway.routes_voice.framing import (
     parse_client_control,
 )
 from corlinman_server.gateway.routes_voice.persistence import (
+    SqliteVoiceSessionStore,
     VoiceEndReason,
     VoiceSessionEnd,
     VoiceSessionStart,
@@ -394,13 +395,28 @@ def resolve_voice_provider(app_state: Any) -> VoiceProvider:
     return OpenAIRealtimeProvider(api_key=api_key)
 
 
-def build_voice_state_from_app(app_state: Any) -> VoiceState | None:
+async def build_voice_state_from_app(app_state: Any) -> VoiceState | None:
     """Build a :class:`VoiceState` from the live gateway ``AppState``.
 
     Called once per ``/voice`` connection when :func:`router` was mounted
     without an explicit state (the gateway mount path). Reads the
     ``[voice]`` config section, selects the provider via
-    :func:`resolve_voice_provider`, and threads the gateway ``data_dir``.
+    :func:`resolve_voice_provider`, threads the gateway ``data_dir``, and
+    opens the durable :class:`SqliteVoiceSessionStore` so completed
+    sessions are persisted to ``<data_dir>/voice_sessions.sqlite``.
+
+    The session store open is **best-effort / non-fatal**: an open failure
+    (bad data dir, locked file, missing sqlite) is logged and the state
+    degrades to ``session_store=None`` — exactly the way
+    :func:`resolve_voice_provider` degrades to the mock — so a persistence
+    problem never crashes the route or the gateway boot. The session still
+    runs; it just isn't recorded.
+
+    The transcript→chat bridge is intentionally left unset
+    (``transcript_sink=None``): merging voice turns into chat sessions has
+    separate merge-semantics design questions and is tracked as a
+    follow-up (see ``ARCH_DEBT`` NEW-fhfunc-4). The session-store half is
+    independent and lands here.
 
     Returns ``None`` when the runtime carries no usable config — the
     route then falls back to the ``voice_disabled`` stub close, exactly
@@ -419,11 +435,43 @@ def build_voice_state_from_app(app_state: Any) -> VoiceState | None:
         cfg_model = VoiceRouterConfig.model_validate(voice_cfg, from_attributes=True)
 
     data_dir = getattr(app_state, "data_dir", None)
+    resolved_data_dir = Path(data_dir) if data_dir is not None else Path(".")
     provider = resolve_voice_provider(app_state)
+
+    # Durable session persistence — opened ONCE and cached on the AppState so
+    # repeated /voice connects reuse a single connection (no per-connect
+    # fd/thread leak). Best-effort, mirroring the provider degradation: an open
+    # failure logs + falls back to None (the route still runs, just unrecorded)
+    # and is retried on the next connect.
+    session_store: VoiceSessionStore | None = getattr(
+        app_state, "_voice_session_store", None
+    )
+    if session_store is None:
+        try:
+            session_store = await SqliteVoiceSessionStore.open_under_data_dir(
+                resolved_data_dir
+            )
+        except Exception:  # noqa: BLE001 — persistence open is best-effort
+            logger.warning(
+                "voice: SqliteVoiceSessionStore open failed; sessions will not "
+                "be persisted",
+                exc_info=True,
+            )
+            session_store = None
+        else:
+            try:
+                app_state._voice_session_store = session_store
+            except (AttributeError, TypeError):
+                # AppState may be slotted/frozen — fall back to per-connect open.
+                pass
+
     return VoiceState(
         config_loader=lambda: cfg_model,
         provider=provider,
-        data_dir=Path(data_dir) if data_dir is not None else Path("."),
+        data_dir=resolved_data_dir,
+        session_store=session_store,
+        # transcript_sink left None — the transcript→chat bridge is a
+        # separate follow-up (NEW-fhfunc-4 bridge half).
     )
 
 
@@ -469,7 +517,7 @@ def router(state: VoiceState | None = None) -> APIRouter:
             corlinman = getattr(app_state, "corlinman", None)
             if corlinman is not None:
                 try:
-                    live_state = build_voice_state_from_app(corlinman)
+                    live_state = await build_voice_state_from_app(corlinman)
                 except Exception:  # noqa: BLE001 — degrade to the stub
                     logger.exception(
                         "voice: failed to resolve VoiceState from AppState"
