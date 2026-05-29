@@ -81,14 +81,27 @@ the default config above works as-is.
 
 ## Shadow gating (W1-A)
 
-Phase 3 wave 1-A adds a second scheduled subprocess — the Rust
-`corlinman-shadow-tester` binary — that runs 30 minutes after the
-engine. Anything the engine filed as `pending` with `risk = medium |
-high` gets claimed, shadow-tested against an in-process eval set, and
-flipped to `shadow_done` (with `shadow_metrics`,
+> **Reality check (Python port).** Shadow gating is **NOT wired** in the
+> current gateway. The `corlinman-shadow-tester` package exists and
+> exposes `ShadowRunner` (`runner.py:87`), but it has **no console-script
+> entrypoint, no CLI `main`, and is not registered as a scheduler job**
+> by `corlinman-server`; the `corlinman-evolution-engine` never imports or
+> calls `ShadowRunner` either (its handler docstrings claiming the
+> ShadowTester "routes high-risk kinds through the shadow stage" overstate
+> — the engine only emits proposals). No proposal is ever flipped to
+> `shadow_done` at runtime. The section below describes the *intended*
+> design; see ARCH_DEBT (evolution self-evolution spec) for the missing
+> wiring. The cron block is a template, not an active job.
+
+Phase 3 wave 1-A *was designed to* add a second scheduled subprocess — the
+`corlinman-shadow-tester` runner — that runs 30 minutes after the
+engine. The intent: anything the engine files as `pending` with
+`risk = medium | high` is claimed, shadow-tested against an in-process
+eval set, and flipped to `shadow_done` (with `shadow_metrics`,
 `baseline_metrics_json`, and `eval_run_id` populated) before the
-operator approval UI ever surfaces it. Low-risk proposals bypass shadow
-entirely and stay on the original `pending → approved` path.
+operator approval UI surfaces it; low-risk proposals bypass shadow
+entirely and stay on the original `pending → approved` path. None of
+this runs today (see the reality-check banner above).
 
 ```toml
 [[scheduler.jobs]]

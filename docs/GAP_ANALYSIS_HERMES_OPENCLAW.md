@@ -20,7 +20,7 @@
 | MCP | 有代码(`corlinman-mcp-server` 包 + `gateway/mcp/`)**但未接入 agent 工具面** | 原生 MCP client + sampling | MCP client(stdio+HTTP),并暴露 memory MCP server |
 | 记忆 / RAG | `corlinman-embedding` 已接(`/v1/embeddings`、admin rag/memory 路由);`tagmemo`/`episodes` 包存在;`about_tag` resolver —— 部分接通 | 4 层(skills / FTS5 / Honcho / MEMORY.md),8 个 provider | 3 层 markdown + BM25+向量混合检索,4 个后端,dreaming 整理 |
 | Agent 编排 | 推理循环 + subagent(blackboard / runner) | kanban + cron + 委派 | coordinator-worker、Lobster 工作流、Agent Teams |
-| 自进化 | evolution proposer + curator 在;**apply/rollback = 501 占位** | 技能自创建 + 离线 GEPA 优化器 | 技能自扩展 |
+| 自进化 | evolution proposer + curator 在;**apply/rollback 现已接 `EvolutionApplier`,但仅记账(写 history,从不改 skill/prompt/kb;`metrics_baseline={}` 使 auto-rollback fail-safe 跳过;monitor 无 driver)** | 技能自创建 + 离线 GEPA 优化器 | 技能自扩展 |
 | 语音 / 多模态 | `/v1/voice` 路由已挂载,但**只有 MockVoiceProvider,无真实适配器** | 推到说话、10 TTS、本地 Whisper | 14 TTS、Whisper、Talk Mode、唤醒词 |
 | Hooks | `corlinman-hooks` 包 | 6 个生命周期 hook | 事件总线,18ms hook |
 | Skills | 16 个内置 + 首启自动播种 | 118 内置 + agentskills.io | 5700+ ClawHub |
@@ -39,7 +39,7 @@
 
 | 项 | 缺口实测证据 | 验收 |
 | --- | --- | --- |
-| **P6** evolution apply/rollback | `routes_admin_b/evolution.py:210 status_code=501` "apply/rollback are read-only stubs" | 提案可 apply / rollback,落库 |
+| **P6** evolution apply/rollback | `routes_admin_b/evolution.py:210 status_code=501` "apply/rollback are read-only stubs" | 提案可 apply / rollback,落库 ⚠️ **仅落库(记账)**:`apply_proposal`(`routes_admin_b/evolution.py:769`)接 `corlinman_auto_rollback.EvolutionApplier`,写 history 行 + intent-log,但**不改任何 skill/prompt 文件或 kb.sqlite**;`metrics_baseline={}` 使 auto-rollback 失效(ARCH_DEBT NEW-fhB-1 / NEW-fhfunc-3) |
 | **P7** 语音真实 provider | `routes_voice/provider.py:1` "trait surface + a mock";无 OpenAI Realtime 适配器 | `/v1/voice` 接真实 realtime 语音 |
 | **P8** Bedrock / Azure provider | `market_providers.py:122/142` `raise NotImplementedError` | 两家 provider 真实可用(SigV4 / deployment 路由) |
 | **P10** 频道广度 | `corlinman-channels` 仅 `run_qq_channel` / `run_telegram_channel` | 新增高优先频道(Discord / Slack / 飞书…)收发通 |
@@ -67,7 +67,7 @@
 
 | 波 | parcel | 状态 |
 | --- | --- | --- |
-| A1 | P6(evolution apply/rollback)+ P8(Bedrock/Azure provider) | ✅ |
+| A1 | P6(evolution apply/rollback)+ P8(Bedrock/Azure provider) | ⚠️ P8 ✅;P6 **仅记账**(见下方遗留收尾 + ARCH_DEBT NEW-fhB-1 / NEW-fhfunc-3) |
 | A2 | P11(配置热重载)+ P7(OpenAI Realtime 语音) | ✅ |
 | B1 | P14+P16(MCP 接入 + 执行器补全)+ P10(Discord/Slack/Feishu)+ MCP 启动装配 | ✅ |
 | B2 | P15(web_fetch/web_search/calculator 内置工具)+ P17(OTel span 埋点) | ✅ |
@@ -79,3 +79,14 @@
 遗留收尾(已知,非阻断):P6 applier 是"状态机 + 审计",真实内容变更(引擎
 提示 / 技能文件)需把 kb/fs 句柄穿过 `AdminState`;P15 新内置工具需在 agent
 card 的 `tools_allowed` 里登记后 persona 才会发起调用。
+
+> **修正(诚实对齐)**:P6 的 `POST /admin/evolution/{id}/apply` 走的是
+> `corlinman_auto_rollback.EvolutionApplier`,它**只写 intent-log + history 行,
+> 从不改动任何 skill/prompt 文件或 `kb.sqlite`**;并且 history 行的
+> `metrics_baseline` 恒为 `{}`(`applier.py:279`)。该空基线会让
+> `AutoRollbackMonitor`(NEW-fhB-1)的 `MetricSnapshot.from_dict({})` 抛
+> `ValueError` → fail-safe 跳过,因此 apply→monitor→rollback 整条链是**死的**。
+> 此外 `AutoRollbackMonitor` 在 gateway 内**没有任何运行时 driver**
+> (`cli/main.py:191` 的 `rollback run-once` 仍是 STUB,scheduler/lifespan 均未注册),
+> 见 ARCH_DEBT NEW-fhfunc-3。注意:让 agent 自我变更 skill/prompt 文件属**高风险**
+> 能力,落地前需产品决策。

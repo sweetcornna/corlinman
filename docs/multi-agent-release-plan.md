@@ -155,6 +155,15 @@ Hard caps in v0.7.0 to keep blast radius small:
 
 ### 2.2 Self-evolution mutations
 
+> **Status note:** this is a *release plan* (future tense). As of the
+> current Python gateway none of the shadow / auto-rollback wiring below
+> is live: `apply` is bookkeeping-only (writes history + an empty
+> `metrics_baseline={}`, mutates no skill/prompt/kb), the
+> `AutoRollbackMonitor` has no runtime driver, and `ShadowRunner` is
+> never invoked. See ARCH_DEBT (evolution self-evolution spec). The table
+> and "new plumbing" below describe the intended target, not shipped
+> behaviour.
+
 Enable all 6 kinds but gate the destructive ones:
 
 | Kind | Default in v0.7.0 | Notes |

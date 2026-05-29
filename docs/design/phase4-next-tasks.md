@@ -16,9 +16,9 @@
 
 **Section C (Wave 3)**: ✅ **fully closed** — all 4 streams (C1 MCP server, C2 plugin adapter, C3 Canvas Host, C4 Swift macOS client) shipped iter 1-10 and acceptance-passed. Branches `phase4-w3-{c1,c2,c3,c4}` on origin.
 
-**Section D (Wave 4)**: ✅ **fully closed** — all 4 streams (D1 episodic memory, D2 goal hierarchies, D3 subagent runtime, D4 voice alpha) shipped iter 1-10 and acceptance-passed. Branches `phase4-w4-{d1,d2,d3,d4}` on origin.
+**Section D (Wave 4)**: the Rust/Python primitives for all 4 streams (D1 episodic memory, D2 goal hierarchies, D3 subagent runtime, D4 voice alpha) were built iter 1-10 on branches `phase4-w4-{d1,d2,d3,d4}`, but the **runtime wiring into the live Python gateway is incomplete** — see ARCH_DEBT NEW-fhfunc-4 (voice persistence) and NEW-fhfunc-5 (goals). Specifically: the `corlinman-goals` package is not imported by `corlinman-server` (no runtime/admin/agent driver), and `build_voice_state_from_app` leaves `session_store`/`transcript_sink` `None` (no `SqliteVoiceSessionStore` exists), so voice-session rows and the transcript→chat bridge never run. Treat the per-stream "✅" rows below as *primitive built*, not *wired into the gateway*.
 
-**Phase 4 in numbers (Wave 3+4)**: 8 stream branches × 10 iters = **80 iters delivered**, **89 commits** across the implementation phase, **~12000+ LOC** of Rust + Python + Swift + TypeScript, **~1000+ new tests**, **8 design docs** (~3540 LOC). Roadmap §4 acceptance criteria all green: Claude Desktop replay (C1) · Canvas code-block round-trip (C3) · Swift demo contract (C4) · `{{episodes.last_week}}` recalls "operator approved skill_update for web_search that fixed timeout" (D1) · `{{goals.weekly}}` produces 4-item distilled list (D2) · subagent fan-out 0.330× serial vs <0.7 threshold (D3) · voice E2E happy-path with tool approval pause (D4).
+**Phase 4 in numbers (Wave 3+4)**: 8 stream branches × 10 iters = **80 iters delivered**, **89 commits** across the implementation phase, **~12000+ LOC** of Rust + Python + Swift + TypeScript, **~1000+ new tests**, **8 design docs** (~3540 LOC). Roadmap §4 acceptance criteria were demonstrated *at the primitive/branch level* (Claude Desktop replay (C1) · Canvas code-block round-trip (C3) · Swift demo contract (C4) · `{{episodes.last_week}}` recalls "operator approved skill_update for web_search that fixed timeout" (D1) · `{{goals.weekly}}` produces 4-item distilled list (D2) · subagent fan-out 0.330× serial vs <0.7 threshold (D3) · voice E2E happy-path with tool approval pause (D4)). NOTE: the D2 (`{{goals.*}}`) and D4 (voice persistence) acceptance ran against the package primitives in isolation; in the shipped Python gateway the `corlinman-goals` package and the voice `SqliteVoiceSessionStore`/transcript bridge are **not wired** (ARCH_DEBT NEW-fhfunc-5 / NEW-fhfunc-4), so these placeholders do not produce live data end-to-end.
 
 | Task | Status | Tests | Commits |
 |---|---|---|---|
@@ -29,9 +29,9 @@
 | ↳ iter 4 4 meta apply handlers | ✅ | 13 | `674462e` |
 | ↳ iter 5 operator capability gate | ✅ | 5 | `e9b0784` `81bbbb0` (boot) |
 | ↳ iter 6+7 UI (meta_pending tab + double-confirm) | ✅ | 3 | `193c764` |
-| **B2** Cross-channel identity (4-2B) | ✅ full stack | 36+13+3 | `e05be35` → `e903fa2` + `399adb7` |
+| **B2** Cross-channel identity (4-2B) | ⚠️ primitive + admin only (NOT wired at ingest) | 36+13+3 | `e05be35` → `e903fa2` + `399adb7` |
 | ↳ iters 1-4 primitive crate | ✅ | 36 | `e05be35` `63756c5` `5d07c84` `8eb2fca` `8bed667` |
-| ↳ iter 5 chat-path resolution | ✅ | 3 | `66d24b1` |
+| ↳ iter 5 chat-path resolution | ⚠️ NOT in the Python port | 3 | `66d24b1` |
 | ↳ iter 6 admin REST routes | ✅ | 13 | `5815263` |
 | ↳ iter 7 admin UI page | ✅ | — | `e903fa2` |
 | ↳ iter 8 HookEvent.user_id propagation | ✅ | — | `399adb7` |
@@ -88,7 +88,7 @@ Phase 4 promises. Per `phase4-roadmap.md` §4 Wave 2.
 | # | Task | Estimate | Concept |
 |---|---|---|---|
 | **B1** ✅ | **4-2A Meta proposal kinds** [done `193c764`] — new `EvolutionKind` variants `engine_config` / `engine_prompt` / `observer_filter` / `cluster_threshold`. Engine improves the engine that improves it. Strict one-level recursion guard (semantic via `trace_id` descent + per-`(tenant, kind)` cooldown), operator-only via `[admin] meta_approver_users` capability list, double-confirm UI on `engine_prompt`. `meta_grace_window_hours = 24` as a peer field on the rollback config. Routes to a separate `meta_pending` admin tab. Detailed plan: `docs/design/phase4-w2-b1-design.md` (10 iters). | 7-9d | Self-improvement core. Highest risk; requires `auto_rollback` window tightened (24h vs the default 72h). |
-| **B2** ✅ | **4-2B Cross-channel `UserIdentityResolver`** [done `e05be35`→`e903fa2`+`399adb7`] — `user_identity.sqlite` schema; verification phrase exchange protocol (operator triggers from one channel, user pastes in the other); merged trait state via SQL union with confidence-weighted dedup. Primitive crate at 29 unit tests; iters 5-8 integration (gateway middleware + admin REST + admin UI + HookEvent attribution). Detailed plan: `docs/design/phase4-w2-b2-design.md`. | 6-8d | Same human across QQ + Telegram + native iOS = same `user_id`. |
+| **B2** ⚠️ | **4-2B Cross-channel `UserIdentityResolver`** [primitive + admin only — NOT wired at message ingest in the Python port, see ARCH_DEBT NEW-fhfunc-6] — `user_identity.sqlite` schema; verification phrase exchange protocol (operator triggers from one channel, user pastes in the other); merged trait state via SQL union with confidence-weighted dedup. Primitive crate at 29 unit tests; admin REST + admin UI ship, but the gateway-middleware "iter 5 chat-path resolution" that would unify identities at ingest is **not present** in `corlinman-server` (`UserIdentityResolver` is only consumed by `routes_admin_a/identity.py`). Detailed plan: `docs/design/phase4-w2-b2-design.md`. | 6-8d | Goal: same human across QQ + Telegram + native iOS = same `user_id` — **not yet realised at ingest**. |
 | **B3** ✅ | **4-2C Per-tenant evolution federation (opt-in)** [done `f2dd619`→`c4ec474`] — operator-flagged `share-with-tenants` `skill_update` proposals get rebroadcast as proposals to opted-in tenants; receiving tenant must approve as if local. Detailed plan: `docs/design/phase4-w2-b3-design.md` (10 iters, two-clause loop prevention, asymmetric opt-in). | 5-7d | Tenant A's lessons benefit tenant B without auto-propagating. |
 | **B4** ✅ | **4-2D Trajectory replay** [done `90411db` + rerun `bb28bb8`] — `corlinman replay <session_id>` reconstructs a past session deterministically; useful for debugging plus offline replay against new prompts before live deploy. Shipped: `corlinman-replay` crate, `corlinman replay` CLI, `/admin/sessions` + `/admin/sessions/:key/replay` gateway routes, operator UI page + dialog. **Rerun mode landed `bb28bb8`** (was deferred to W2.5; landed early). | 4-5d | Independent / no upstream deps; good warm-up task. |
 
@@ -184,7 +184,7 @@ docs: `phase4-w4-{d1,d2,d3,d4}-design.md`. Branches on origin: `phase4-w4-{d1,d2
 | Task | Status | Final HEAD | Branch |
 |---|---|---|---|
 | **D1** 4-4A Episodic memory | ✅ iter 1-10 | `7c7a611` | `phase4-w4-d1` |
-| **D2** 4-4B Goal hierarchies | ✅ iter 1-10 | `70a0518` | `phase4-w4-d2` |
+| **D2** 4-4B Goal hierarchies | ⚠️ primitive only — `corlinman-goals` NOT imported/driven by `corlinman-server` (ARCH_DEBT NEW-fhfunc-5) | `70a0518` | `phase4-w4-d2` |
 | **D3** 4-4C Subagent delegation runtime | ✅ iter 1-10 | `cabef63` | `phase4-w4-d3` |
 | **D4** 4-4D Voice surface (alpha) | ✅ iter 1-10 | `a95bc33` | `phase4-w4-d4` |
 
@@ -244,7 +244,7 @@ docs: `phase4-w4-{d1,d2,d3,d4}-design.md`. Branches on origin: `phase4-w4-{d1,d2
 | 3 | cost-gating primitives | `81d3789` |
 | 4 | provider trait + `MockEchoProvider` | `d1e6b7c` |
 | 5 | OpenAI Realtime adapter (env-gated) | `2d76a15` |
-| 6 | `voice_sessions` SQLite persistence + transcript sink | `7d87a9e` |
+| 6 | `voice_sessions` SQLite persistence + transcript sink ⚠️ NOT wired in Python port — only `MemoryVoiceSessionStore` exists; no `SqliteVoiceSessionStore`, and `build_voice_state_from_app` leaves `session_store`/`transcript_sink` `None` (ARCH_DEBT NEW-fhfunc-4) | `7d87a9e` |
 | 7 | tool-approval pause bridge | `b427afc` |
 | 8 | budget enforcer + 1-Hz checkpoint ticker | `5d7b60e` |
 | 9 | handler hot-path bridge | `169d0e4` |

@@ -286,9 +286,13 @@ Each numbered item is a single bounded iteration (~30 min - 2 hours):
    tightly coupled. Crockford-base32 phrase format. 9 new tests
    covering happy unify, fresh-bind, expired, already-consumed,
    GC sweep, and generator format.
-5. ✅ **Gateway integration** [done `66d24b1`] — `ChatState.identity_store`
-   added; `handle_chat` calls `resolve_or_create` after session_key
-   resolution. 3 unit tests cover the `parse_session_key` splitter.
+5. ⚠️ **Gateway integration** [Rust-only, `66d24b1` — NOT ported to the Python
+   gateway; see ARCH_DEBT NEW-fhfunc-6] — in Rust, `ChatState.identity_store`
+   was added and `handle_chat` called `resolve_or_create` after session_key
+   resolution (3 unit tests cover the `parse_session_key` splitter). The
+   shipped Python `corlinman-server` does **not** do this: `UserIdentityResolver`
+   is only consumed by the admin route `routes_admin_a/identity.py`, so
+   cross-channel identities are never unified at message ingest.
 6. ✅ **Admin REST routes** [done `5815263`] — `/admin/identity` list,
    `/admin/identity/:user_id` detail, `/admin/identity/:user_id/issue-phrase`
    POST, `/admin/identity/merge` POST. 13 admin tests + 4 new
@@ -303,7 +307,10 @@ Each numbered item is a single bounded iteration (~30 min - 2 hours):
    attribution becomes possible. Pairs with the Phase 4 W1.5 A1
    `tenant_id` propagation that already shipped.
 
-**Status snapshot (2026-05-01)**: iters 1-7 done. Identity primitive
+**Status snapshot (2026-05-01)**: iters 1-7 done **in Rust**; in the shipped
+Python port only the primitive package + admin REST/UI surface landed — the
+ingest-time chat-path resolution (iter 5) is NOT wired (ARCH_DEBT
+NEW-fhfunc-6). Identity primitive
 crate at 36 unit tests including operator merge_users + issue_phrase
 hoisted to trait. Gateway has chat-path resolution (iter 5,
 `66d24b1`) + admin REST surface (iter 6, `5815263`) + UI page
