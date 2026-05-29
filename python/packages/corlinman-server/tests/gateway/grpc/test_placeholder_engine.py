@@ -428,3 +428,147 @@ def test_build_default_engine_no_data_dir_returns_null_engine() -> None:
     back to an echo-only engine."""
     engine = build_default_engine(SimpleNamespace())  # no data_dir
     assert engine is not None
+
+
+# ===========================================================================
+# G8: {{persona.*}} / {{user.*}} / {{goals.*}} wire-up
+#
+# The three resolver classes expose ``resolve(self, key, id: str)`` —
+# the per-agent / per-user id, NOT the engine's ``PlaceholderCtx``. The
+# engine only ever calls ``resolve(key, ctx)``. Before this landed,
+# ``build_default_engine`` never registered these namespaces, so the
+# tokens leaked verbatim into the prompt. These tests put STUB stores on
+# the engine input (``state``) — the same forward-compatible probe the
+# ``memory`` namespace uses — and prove the adapter maps ctx→id and the
+# namespaces resolve once a store is reachable.
+# ===========================================================================
+
+
+class _StubPersonaResolverStore:
+    """Mirror of ``corlinman_persona`` resolver: ``resolve(key, agent_id)``.
+
+    Resolves ``mood`` from a per-agent dict; unknown agents / keys → "".
+    """
+
+    def __init__(self, by_agent: dict[str, dict[str, str]]) -> None:
+        self._by_agent = by_agent
+
+    async def resolve(self, key: str, agent_id: str) -> str:
+        return self._by_agent.get(agent_id, {}).get(key, "")
+
+
+class _StubUserModelResolverStore:
+    """Mirror of ``corlinman_user_model`` resolver: ``resolve(key, user_id)``.
+
+    The real resolver keys on ``user.interests`` etc.; the stub keys on
+    the post-prefix remainder it actually receives from the engine
+    (``interests``, ``name``).
+    """
+
+    def __init__(self, by_user: dict[str, dict[str, str]]) -> None:
+        self._by_user = by_user
+
+    async def resolve(self, key: str, user_id: str) -> str:
+        if not user_id:
+            return ""
+        return self._by_user.get(user_id, {}).get(key, "")
+
+
+class _StubGoalsResolverStore:
+    """Mirror of ``corlinman_goals`` resolver: ``resolve(key, agent_id)``."""
+
+    def __init__(self, by_agent: dict[str, dict[str, str]]) -> None:
+        self._by_agent = by_agent
+
+    async def resolve(self, key: str, agent_id: str) -> str:
+        if not agent_id:
+            return ""
+        return self._by_agent.get(agent_id, {}).get(key, "")
+
+
+def _g8_state(tmp_path: Path) -> SimpleNamespace:
+    """An AppState carrying a data dir + stub persona/user/goals resolvers
+    on the documented attribute names ``build_default_engine`` probes."""
+    return SimpleNamespace(
+        data_dir=tmp_path,
+        persona_resolver=_StubPersonaResolverStore(
+            {"agent-x": {"mood": "curious"}}
+        ),
+        user_model_resolver=_StubUserModelResolverStore(
+            {"user-1": {"interests": "rust, sqlite", "name": "Nova"}}
+        ),
+        goals_resolver=_StubGoalsResolverStore(
+            {"agent-x": {"weekly": "- ship the port: score 8 — on track"}}
+        ),
+    )
+
+
+async def test_g8_persona_user_goals_leak_without_wiring(tmp_path: Path) -> None:
+    """REPRODUCE: today a NullEngine (no stores on state) echoes the three
+    tokens back verbatim — they surface in ``unresolved_keys``."""
+    from corlinman_server.gateway.grpc.placeholder import collect_unresolved
+
+    # No stores published → echo-only fallback (the pre-G8 behaviour for
+    # these namespaces).
+    null_state = SimpleNamespace(data_dir=tmp_path)
+    engine = build_default_engine(null_state)
+    ctx = PlaceholderCtx(
+        "sess",
+        metadata={"agent_id": "agent-x", "user_id": "user-1"},
+    )
+    template = "{{persona.mood}} {{user.interests}} {{goals.weekly}}"
+    try:
+        rendered = await engine.render(template, ctx)
+        unresolved = collect_unresolved(rendered)
+        # All three leak verbatim — no resolver registered.
+        assert "persona.mood" in unresolved
+        assert "user.interests" in unresolved
+        assert "goals.weekly" in unresolved
+    finally:
+        await _close_engine_resolvers(engine)
+
+
+async def test_g8_persona_user_goals_resolve_when_stores_present(
+    tmp_path: Path,
+) -> None:
+    """AFTER: with stub stores on the engine input, the adapter maps
+    ctx→id and the three namespaces resolve to their source values and
+    drop out of ``unresolved_keys``."""
+    from corlinman_server.gateway.grpc.placeholder import collect_unresolved
+
+    engine = build_default_engine(_g8_state(tmp_path))
+    ctx = PlaceholderCtx(
+        "sess",
+        metadata={"agent_id": "agent-x", "user_id": "user-1"},
+    )
+    template = "{{persona.mood}} {{user.interests}} {{goals.weekly}}"
+    try:
+        rendered = await engine.render(template, ctx)
+        assert "curious" in rendered
+        assert "rust, sqlite" in rendered
+        assert "ship the port: score 8" in rendered
+        # None of the three leak verbatim anymore.
+        assert "{{persona.mood}}" not in rendered
+        assert "{{user.interests}}" not in rendered
+        assert "{{goals.weekly}}" not in rendered
+        unresolved = collect_unresolved(rendered)
+        assert "persona.mood" not in unresolved
+        assert "user.interests" not in unresolved
+        assert "goals.weekly" not in unresolved
+    finally:
+        await _close_engine_resolvers(engine)
+
+
+async def test_g8_adapter_maps_ctx_metadata_to_id(tmp_path: Path) -> None:
+    """The adapter must hand the resolver the id pulled from
+    ``ctx.metadata`` (``agent_id`` for persona, ``user_id`` for user).
+    A missing id → empty source lookup → token consumed (not leaked)."""
+    engine = build_default_engine(_g8_state(tmp_path))
+    # ctx with NO agent_id/user_id → the adapter passes "" → stub returns
+    # "" → token resolves to empty string (consumed, not echoed verbatim).
+    ctx = PlaceholderCtx("sess", metadata={})
+    try:
+        rendered = await engine.render("[{{persona.mood}}]", ctx)
+        assert rendered == "[]"
+    finally:
+        await _close_engine_resolvers(engine)

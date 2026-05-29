@@ -501,6 +501,76 @@ class _NullEngine:
         return self
 
 
+# ─── ctx→id resolver adapter ──────────────────────────────────────────
+
+
+# Metadata keys the render ctx carries the per-agent / per-user id under.
+# Mirrors the ``tenant_id`` key the episodes resolver already reads off
+# ``ctx.metadata`` — the gateway middleware stamps these the same way.
+AGENT_ID_METADATA_KEY: str = "agent_id"
+USER_ID_METADATA_KEY: str = "user_id"
+
+
+@runtime_checkable
+class _IdResolverLike(Protocol):
+    """A resolver whose ``resolve`` takes ``(key, id: str)`` rather than
+    ``(key, ctx)`` — the shape of ``corlinman_persona.PersonaResolver``,
+    ``corlinman_user_model.UserModelResolver`` and
+    ``corlinman_goals.GoalsResolver``."""
+
+    async def resolve(self, key: str, id_: str) -> str: ...
+
+
+class _CtxIdResolverAdapter:
+    """Adapt a ``resolve(key, id: str)`` resolver to the engine's
+    :class:`DynamicResolverLike` ``resolve(key, ctx)`` surface.
+
+    The persona / user_model / goals resolvers were written for a caller
+    that already knows the agent / user id (the future context
+    assembler). The engine, however, only hands a resolver the
+    :class:`PlaceholderCtx`; the per-agent / per-user id lives in
+    ``ctx.metadata`` under :data:`AGENT_ID_METADATA_KEY` /
+    :data:`USER_ID_METADATA_KEY` (exactly how episodes reads
+    ``ctx.metadata["tenant_id"]``).
+
+    This adapter pulls the id from the ctx metadata and forwards the call,
+    so no resolver has to learn about ``PlaceholderCtx`` and this file
+    owns the single mapping point. A missing id resolves with the empty
+    string, which every wrapped resolver treats as a "no data" lookup
+    (returning ``""``) rather than raising — so the token is consumed,
+    not leaked verbatim.
+    """
+
+    __slots__ = ("_inner", "_id_key")
+
+    def __init__(self, inner: _IdResolverLike, *, id_key: str) -> None:
+        self._inner = inner
+        self._id_key = id_key
+
+    async def resolve(self, key: str, ctx: PlaceholderCtx) -> str:
+        metadata = getattr(ctx, "metadata", None) or {}
+        id_ = metadata.get(self._id_key, "") if isinstance(metadata, dict) else ""
+        return await self._inner.resolve(key, id_)
+
+
+def _resolve_state_attr(state: Any, *attrs: str) -> Any | None:
+    """Probe ``state`` (then its ``extras`` bag) for the first populated
+    attribute in ``attrs``. Mirrors :func:`_resolve_memory_host`'s
+    forward-compatible probe so a sibling boot path can attach a resolver
+    under any of the documented names without touching this file."""
+    for attr in attrs:
+        value = getattr(state, attr, None)
+        if value is not None:
+            return value
+    extras = getattr(state, "extras", None)
+    if isinstance(extras, dict):
+        for attr in attrs:
+            value = extras.get(attr)
+            if value is not None:
+                return value
+    return None
+
+
 # ─── Default engine factory (boot ↔ test shared path) ─────────────────
 
 
@@ -550,6 +620,16 @@ def build_default_engine(state: Any) -> PlaceholderEngineLike:
       (per-tenant async ``LocalSqliteHost.open`` + the agent-brain
       namespace layout), so it is skipped with a clear warning. See the
       module docstring / R4-F2 report for what finishing it needs.
+    * ``persona`` / ``user`` / ``goals`` — registered through
+      :class:`_CtxIdResolverAdapter` *only when* a store-backed resolver
+      is published on ``state`` (``persona_resolver`` /
+      ``user_model_resolver`` / ``goals_resolver``). Those resolvers wrap
+      an already-opened async store; this synchronous builder can't open
+      one and none is published on the gateway ``AppState`` today, so the
+      namespaces are deferred-with-warning until a boot path attaches the
+      resolver. The adapter (which maps the engine ctx → the per-agent /
+      per-user id each resolver needs) is wired and exercised by the G8
+      acceptance tests with stub stores on ``state``.
     """
     data_dir = _resolve_state_data_dir(state)
     if data_dir is None:
@@ -598,6 +678,50 @@ def build_default_engine(state: Any) -> PlaceholderEngineLike:
             "(MemoryResolver needs a corlinman_memory_host.MemoryHost; "
             "none is published on AppState — episodes registered only)"
         )
+
+    # --- PERSONA / USER / GOALS (need a pre-opened store on state) ------
+    # Unlike episodes (which builds itself from just ``data_dir`` and opens
+    # connections lazily inside ``resolve``), these three resolvers wrap an
+    # already-opened async store (``await PersonaStore.open_or_create`` etc.).
+    # ``build_default_engine`` is synchronous, so it can neither open them
+    # here nor reach them: no persona/user/goals store is published on the
+    # gateway ``AppState`` this builder receives (``persona_store`` lives on
+    # a *different* ``AdminState``, and no user/goals store is constructed
+    # anywhere reachable). Wiring them from production therefore needs new
+    # async plumbing through entrypoint/app-state — NOT a contained wire-up.
+    #
+    # So we register them only when a resolver IS published on state
+    # (probed the same forward-compatible way as ``memory_host``). The
+    # adapter maps the engine ctx → the agent/user id each resolver wants,
+    # so the moment a boot path attaches a store-backed resolver under any
+    # of the documented attribute names, the namespace lights up without
+    # touching this file again. See followups for the entrypoint plumbing.
+    for namespace, attrs, id_key in (
+        ("persona", ("persona_resolver",), AGENT_ID_METADATA_KEY),
+        ("user", ("user_model_resolver", "user_resolver"), USER_ID_METADATA_KEY),
+        ("goals", ("goals_resolver",), AGENT_ID_METADATA_KEY),
+    ):
+        inner = _resolve_state_attr(state, *attrs)
+        if inner is None:
+            log.warning(
+                "gateway.grpc.placeholder.%s_resolver_unavailable "
+                "reason=no_resolver_on_state "
+                "(needs a store-backed resolver published on AppState; "
+                "none is — namespace deferred)",
+                namespace,
+            )
+            continue
+        try:
+            engine.register_namespace(
+                namespace, _CtxIdResolverAdapter(inner, id_key=id_key)
+            )
+            registered.append(namespace)
+        except Exception as exc:  # best-effort: must not crash boot
+            log.warning(
+                "gateway.grpc.placeholder.%s_resolver_unavailable error=%s",
+                namespace,
+                exc,
+            )
 
     if not registered:
         # Nothing wired — keep the previous echo-only behaviour rather
