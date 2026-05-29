@@ -79,6 +79,145 @@ async def test_insert_episode_round_trip(db_path: Path) -> None:
     assert rt.importance_score == pytest.approx(0.91)
 
 
+async def test_insert_episodes_batch_single_commit(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Persisting K episodes via :meth:`insert_episodes` issues ONE commit.
+
+    PERF-008: the per-row ``insert_episode`` does one ``commit()`` (one
+    fsync) per row. The batch path must wrap all K rows in a single
+    transaction with a single commit so a busy distillation pass doesn't
+    pay K fsyncs. Spy on ``conn.commit`` to pin the count.
+    """
+    episodes = [
+        Episode(
+            id=new_episode_id(),
+            tenant_id="tenant-batch",
+            started_at=1_700_000_000_000 + i,
+            ended_at=1_700_000_000_500 + i,
+            kind=EpisodeKind.CONVERSATION,
+            summary_text=f"chat {i}",
+            source_session_keys=[f"sess-{i}"],
+            source_signal_ids=[i],
+            source_history_ids=[],
+            importance_score=0.5,
+            distilled_by="default-summary",
+            distilled_at=1_700_000_001_000 + i,
+        )
+        for i in range(5)
+    ]
+
+    async with EpisodesStore(db_path) as store:
+        commit_calls = 0
+        real_commit = store.conn.commit
+
+        async def _counting_commit() -> None:
+            nonlocal commit_calls
+            commit_calls += 1
+            await real_commit()
+
+        monkeypatch.setattr(store.conn, "commit", _counting_commit)
+
+        await store.insert_episodes(episodes)
+
+        # Single transaction → single commit, regardless of K.
+        assert commit_calls == 1
+
+        cursor = await store.conn.execute("SELECT COUNT(*) FROM episodes")
+        count_row = await cursor.fetchone()
+        await cursor.close()
+    assert count_row == (5,)
+
+
+async def test_insert_episodes_batch_round_trips_all_rows(db_path: Path) -> None:
+    """All K batched rows land with the right fields, in input order.
+
+    Correctness companion to the single-commit test — pins row shape,
+    ordering, and the JSON source-id encoding so the batch path stays
+    behaviourally identical to the per-row insert.
+    """
+    episodes = [
+        Episode(
+            id=f"EID{i:023d}",  # 26-char ULID-ish width, sortable by index
+            tenant_id="tenant-batch",
+            started_at=10 + i,
+            ended_at=20 + i,
+            kind=EpisodeKind.INCIDENT if i % 2 else EpisodeKind.CONVERSATION,
+            summary_text=f"summary {i}",
+            source_session_keys=[f"sess-{i}", "shared"],
+            source_signal_ids=[i, i + 100],
+            source_history_ids=[i + 1000],
+            embedding=bytes([i]) if i else None,
+            embedding_dim=1 if i else None,
+            importance_score=0.1 * i,
+            distilled_by="provider-x",
+            distilled_at=30 + i,
+        )
+        for i in range(4)
+    ]
+
+    async with EpisodesStore(db_path) as store:
+        await store.insert_episodes(episodes)
+        cursor = await store.conn.execute(
+            "SELECT id FROM episodes ORDER BY id"
+        )
+        id_rows = await cursor.fetchall()
+        await cursor.close()
+
+        round_tripped = [
+            await store.find_episode_by_natural_key(
+                tenant_id="tenant-batch",
+                started_at=ep.started_at,
+                ended_at=ep.ended_at,
+                kind=ep.kind,
+            )
+            for ep in episodes
+        ]
+
+    assert [r[0] for r in id_rows] == [ep.id for ep in episodes]
+    for ep, rt in zip(episodes, round_tripped, strict=True):
+        assert rt is not None
+        assert rt.id == ep.id
+        assert rt.kind == ep.kind
+        assert rt.summary_text == ep.summary_text
+        assert rt.source_session_keys == ep.source_session_keys
+        assert rt.source_signal_ids == ep.source_signal_ids
+        assert rt.source_history_ids == ep.source_history_ids
+        assert rt.embedding == ep.embedding
+        assert rt.embedding_dim == ep.embedding_dim
+        assert rt.importance_score == pytest.approx(ep.importance_score)
+        assert rt.distilled_by == ep.distilled_by
+        assert rt.distilled_at == ep.distilled_at
+
+
+async def test_insert_episodes_empty_list_is_noop(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty batch writes nothing and issues no commit/executemany.
+
+    Guards against an empty distillation pass paying for an empty
+    transaction or tripping ``executemany`` on a zero-row sequence.
+    """
+    async with EpisodesStore(db_path) as store:
+        commit_calls = 0
+        real_commit = store.conn.commit
+
+        async def _counting_commit() -> None:
+            nonlocal commit_calls
+            commit_calls += 1
+            await real_commit()
+
+        monkeypatch.setattr(store.conn, "commit", _counting_commit)
+
+        await store.insert_episodes([])
+
+        assert commit_calls == 0
+        cursor = await store.conn.execute("SELECT COUNT(*) FROM episodes")
+        row = await cursor.fetchone()
+        await cursor.close()
+    assert row == (0,)
+
+
 async def test_natural_key_returns_none_when_kind_differs(db_path: Path) -> None:
     """Same window but different kind → distinct episode.
 

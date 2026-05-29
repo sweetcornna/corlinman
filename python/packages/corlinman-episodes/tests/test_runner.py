@@ -163,6 +163,82 @@ async def test_happy_path_writes_one_episode(
     assert "sess-A" in sess_keys
 
 
+async def test_runner_batches_bundle_inserts_into_one_commit(
+    episodes_db: Path,
+    sources: SourcePaths,
+    sessions_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PERF-008: the runner persists a pass's episodes in ONE commit.
+
+    Seed several distinct conversations so the join yields several
+    bundles, each minting one episode. The pre-fix runner called
+    ``insert_episode`` (one fsync) per bundle → N commits for the
+    episode writes. The fixed runner routes the bundle's episodes
+    through the batch path → a single commit for all episode inserts,
+    independent of bundle count.
+
+    We count commits on the *episode-insert* surface only by spying on
+    :meth:`EpisodesStore.insert_episodes` / ``insert_episode`` and the
+    raw ``conn.commit``; the run-log open/finish each still commit
+    (that's a separate, low-frequency path PERF-008 doesn't touch), so
+    we assert on the delta around the persist call rather than the
+    grand total.
+    """
+    base_ms = 9_000_000
+    # Three separate sessions → three CONVERSATION bundles.
+    for n in range(3):
+        _seed_minimal_conversation(
+            sessions_db=sessions_db,
+            session_key=f"sess-{n}",
+            base_ms=base_ms + n * 10_000,
+        )
+
+    from corlinman_episodes import runner as runner_mod
+
+    # Spy on the store-level persist commit count by wrapping the
+    # _distill_and_persist call and counting commits inside it.
+    orig_persist = runner_mod._distill_and_persist
+    persist_commit_counts: list[int] = []
+
+    async def _wrapped_persist(*, store: EpisodesStore, **kwargs: object):  # type: ignore[no-untyped-def]
+        commits = 0
+        real_commit = store.conn.commit
+
+        async def _counting_commit() -> None:
+            nonlocal commits
+            commits += 1
+            await real_commit()
+
+        monkeypatch.setattr(store.conn, "commit", _counting_commit)
+        try:
+            return await orig_persist(store=store, **kwargs)  # type: ignore[arg-type]
+        finally:
+            persist_commit_counts.append(commits)
+            monkeypatch.setattr(store.conn, "commit", real_commit)
+
+    monkeypatch.setattr(runner_mod, "_distill_and_persist", _wrapped_persist)
+
+    summary = await episodes_run_once(
+        config=_config(),
+        episodes_db=episodes_db,
+        sources=sources,
+        summary_provider=make_constant_provider("a chat"),
+        now_ms=base_ms + 120_000,
+    )
+
+    assert summary.status == RUN_STATUS_OK
+    assert summary.episodes_written == 3
+    # The persist phase that wrote 3 episodes committed exactly once.
+    assert persist_commit_counts == [1]
+
+    async with EpisodesStore(episodes_db) as store:
+        cursor = await store.conn.execute("SELECT COUNT(*) FROM episodes")
+        row = await cursor.fetchone()
+        await cursor.close()
+    assert row == (3,)
+
+
 async def test_apply_history_promotes_kind_to_evolution(
     episodes_db: Path,
     sources: SourcePaths,

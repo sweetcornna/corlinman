@@ -348,6 +348,19 @@ class EpisodesStore:
 
     # ---- Episodes CRUD ---------------------------------------------------
 
+    #: ``INSERT`` shared by the single-row and batch paths so they can't
+    #: drift on column order. Both feed the same per-row tuple built by
+    #: :func:`_episode_insert_params`.
+    _INSERT_EPISODE_SQL = (
+        "INSERT INTO episodes "
+        "(id, tenant_id, started_at, ended_at, kind, summary_text, "
+        " source_session_keys, source_signal_ids, source_history_ids, "
+        " embedding, embedding_dim, importance_score, "
+        " last_referenced_at, distilled_by, distilled_at, "
+        " schema_version) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    )
+
     async def insert_episode(self, episode: Episode) -> None:
         """Insert one ``episodes`` row.
 
@@ -357,33 +370,28 @@ class EpisodesStore:
         are JSON-encoded inline — the design doc accepts the storage
         cost since rowcount stays low (a few thousand per tenant per
         year at most).
+
+        Implemented as a 1-element :meth:`insert_episodes` so the
+        single-row and batch paths share one INSERT + commit contract.
         """
-        await self.conn.execute(
-            """INSERT INTO episodes
-                 (id, tenant_id, started_at, ended_at, kind, summary_text,
-                  source_session_keys, source_signal_ids, source_history_ids,
-                  embedding, embedding_dim, importance_score,
-                  last_referenced_at, distilled_by, distilled_at,
-                  schema_version)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                episode.id,
-                episode.tenant_id,
-                int(episode.started_at),
-                int(episode.ended_at),
-                str(episode.kind),
-                episode.summary_text,
-                json.dumps(list(episode.source_session_keys)),
-                json.dumps([int(x) for x in episode.source_signal_ids]),
-                json.dumps([int(x) for x in episode.source_history_ids]),
-                episode.embedding,
-                episode.embedding_dim,
-                float(episode.importance_score),
-                episode.last_referenced_at,
-                episode.distilled_by,
-                int(episode.distilled_at),
-                int(episode.schema_version),
-            ),
+        await self.insert_episodes([episode])
+
+    async def insert_episodes(self, episodes: list[Episode]) -> None:
+        """Insert ``episodes`` rows in ONE transaction with ONE commit.
+
+        PERF-008: the distillation runner persists every episode in a
+        bundle through here so a pass pays a single fsync instead of one
+        per row. Uses ``executemany`` over the shared
+        :attr:`_INSERT_EPISODE_SQL` so row shape / column order stay
+        identical to the single-row path; insertion order matches the
+        input sequence, and an empty list is a no-op (no commit, no
+        ``executemany`` on a zero-row sequence).
+        """
+        if not episodes:
+            return
+        await self.conn.executemany(
+            self._INSERT_EPISODE_SQL,
+            [_episode_insert_params(ep) for ep in episodes],
         )
         await self.conn.commit()
 
@@ -677,6 +685,34 @@ class EpisodesStore:
 # ---------------------------------------------------------------------------
 # Row decoders (private)
 # ---------------------------------------------------------------------------
+
+
+def _episode_insert_params(episode: Episode) -> tuple[Any, ...]:
+    """Bind-param tuple for one ``episodes`` row.
+
+    Shared by :meth:`EpisodesStore.insert_episode` (1-element) and
+    :meth:`EpisodesStore.insert_episodes` (batch ``executemany``) so the
+    single-row and batch writers can't drift on coercion or column
+    order. Column order matches :attr:`EpisodesStore._INSERT_EPISODE_SQL`.
+    """
+    return (
+        episode.id,
+        episode.tenant_id,
+        int(episode.started_at),
+        int(episode.ended_at),
+        str(episode.kind),
+        episode.summary_text,
+        json.dumps(list(episode.source_session_keys)),
+        json.dumps([int(x) for x in episode.source_signal_ids]),
+        json.dumps([int(x) for x in episode.source_history_ids]),
+        episode.embedding,
+        episode.embedding_dim,
+        float(episode.importance_score),
+        episode.last_referenced_at,
+        episode.distilled_by,
+        int(episode.distilled_at),
+        int(episode.schema_version),
+    )
 
 
 def _decode_int_list(raw: str) -> list[int]:

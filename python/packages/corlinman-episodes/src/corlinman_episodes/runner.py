@@ -17,7 +17,9 @@ single pass over ``[window_start, window_end)`` does:
      c. ``distill`` → ``DistilledSummary`` via injected provider.
      d. Natural-key probe — skip if a half-flushed prior run already
         wrote this ``(tenant, started, ended, kind)``.
-     e. ``insert_episode`` with ``embedding=NULL``.
+     e. Build the ``Episode`` (``embedding=NULL``) and stage it.
+   Then ``insert_episodes`` — one batched write for the whole pass
+   (single transaction + commit, PERF-008) instead of one fsync/row.
 7. ``finish_run`` — stamp ``status='ok'`` + ``episodes_written``.
 
 The runner is the iter-4 surface; iter 5 layers the second-pass
@@ -301,9 +303,15 @@ async def _distill_and_persist(
 
     Returns ``(written, reused)`` — ``reused`` counts bundles whose
     natural-key probe already had a row from a prior crashed pass.
+
+    PERF-008: episodes are accumulated in bundle order and persisted
+    via a single :meth:`EpisodesStore.insert_episodes` batch at the end
+    of the pass, so the whole bundle set costs one fsync instead of one
+    per row. The natural-key probe and LLM distill still run per-bundle
+    in order; only the on-disk write is batched.
     """
-    written = 0
     reused = 0
+    to_insert: list[Episode] = []
     for bundle in bundles:
         kind = classify(bundle)
         importance = score(bundle, kind)
@@ -330,25 +338,31 @@ async def _distill_and_persist(
             max_messages_per_call=config.max_messages_per_call,
         )
 
-        episode = Episode(
-            id=new_episode_id(ts_ms=bundle.ended_at),
-            tenant_id=tenant_id,
-            started_at=bundle.started_at,
-            ended_at=bundle.ended_at,
-            kind=kind,
-            summary_text=summary.summary_text,
-            source_session_keys=_session_keys(bundle),
-            source_signal_ids=[s.id for s in bundle.signals],
-            source_history_ids=[h.id for h in bundle.history],
-            embedding=None,
-            embedding_dim=None,
-            importance_score=importance,
-            distilled_by=summary.distilled_by,
-            distilled_at=_now_ms(),
+        to_insert.append(
+            Episode(
+                id=new_episode_id(ts_ms=bundle.ended_at),
+                tenant_id=tenant_id,
+                started_at=bundle.started_at,
+                ended_at=bundle.ended_at,
+                kind=kind,
+                summary_text=summary.summary_text,
+                source_session_keys=_session_keys(bundle),
+                source_signal_ids=[s.id for s in bundle.signals],
+                source_history_ids=[h.id for h in bundle.history],
+                embedding=None,
+                embedding_dim=None,
+                importance_score=importance,
+                distilled_by=summary.distilled_by,
+                distilled_at=_now_ms(),
+            )
         )
-        await store.insert_episode(episode)
-        written += 1
-    return written, reused
+
+    # Single batched write for the whole pass — one transaction, one
+    # commit. ``insert_episodes`` is a no-op on an empty list (every
+    # bundle deduped away), so we don't pay a commit for a reuse-only
+    # pass.
+    await store.insert_episodes(to_insert)
+    return len(to_insert), reused
 
 
 def _session_keys(bundle: SourceBundle) -> list[str]:
