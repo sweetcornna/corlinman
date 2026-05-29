@@ -409,12 +409,26 @@ async def run_subprocess(
 # ---------------------------------------------------------------------------
 
 
-async def dispatch(spec: JobSpec, bus: HookBus) -> None:
+async def dispatch(spec: JobSpec, bus: HookBus, app_state: object | None = None) -> None:
     """Run a single firing of ``spec`` and emit the matching hook event.
 
     Public so an admin "fire now" endpoint can reuse it later (the Rust
     crate exposes the same surface for the same reason); the per-job
     tick loop calls this on every wake.
+
+    R3-002: ``run_tool`` firings are routed to the live
+    :data:`~corlinman_server.scheduler.builtins.BUILTIN_ACTIONS` registry
+    by the ``"<plugin>.<tool>"`` key. The admin "fire now" route
+    (``gateway/routes_admin_b/scheduler.py``) calls ``run_builtin()``
+    directly, so the manual path always worked; the bug was that the
+    scheduler tick loop dropped every default ``run_tool`` job into the
+    ``unsupported_action`` branch without ever consulting the registry.
+
+    ``app_state`` is threaded through into the :class:`BuiltinContext`
+    each builtin reads off — it stays ``None`` for unit tests and the
+    builtins gracefully degrade (``checker_unavailable`` etc.). The
+    tick-loop wiring can pass a live ``app.state`` here once the
+    scheduler is owned by the gateway lifecycle.
     """
     run_id = uuid.uuid4().hex
     if spec.action.kind == "subprocess":
@@ -435,10 +449,80 @@ async def dispatch(spec: JobSpec, bus: HookBus) -> None:
         await _emit_outcome(bus, spec.name, run_id, outcome)
         return
 
-    # run_agent / run_tool: not yet implemented end-to-end. Surface as
-    # an EngineRunFailed with error_kind "unsupported_action" so the
-    # gateway's evolution observer sees the failure on the bus rather
-    # than a silent drop.
+    if spec.action.kind == "run_tool":
+        # Local import keeps the builtins package out of the scheduler
+        # module's import-time graph (the builtins themselves import
+        # gateway-side handles which would otherwise pull a circular
+        # dependency at runner.py module load).
+        from corlinman_server.scheduler.builtins import (
+            BUILTIN_ACTIONS,
+            BuiltinContext,
+            run_builtin,
+        )
+
+        plugin = spec.action.plugin
+        tool = spec.action.tool
+        if plugin is None or tool is None:
+            _logger.warning(
+                "scheduler: run_tool action missing plugin/tool fields",
+                extra={"job": spec.name, "run_id": run_id, "plugin": plugin, "tool": tool},
+            )
+            await _emit_failed(bus, run_id, "unsupported_action", None)
+            return
+
+        builtin_name = f"{plugin}.{tool}"
+        if builtin_name not in BUILTIN_ACTIONS:
+            _logger.warning(
+                "scheduler: run_tool action has no registered builtin",
+                extra={"job": spec.name, "run_id": run_id, "builtin_name": builtin_name},
+            )
+            await _emit_failed(bus, run_id, "unsupported_action", None)
+            return
+
+        _logger.info(
+            "scheduler: run_tool job firing",
+            extra={"job": spec.name, "run_id": run_id, "builtin_name": builtin_name},
+        )
+        started = time.monotonic()
+        ctx = BuiltinContext(app_state=app_state, run_id=run_id, name=spec.name)
+        # ``run_builtin`` is documented as never-raising — it wraps any
+        # exception into a ``{"ok": False, "reason": ...}`` envelope. Use
+        # it (rather than calling the action directly) so the contract
+        # stays in one place.
+        result = await run_builtin(builtin_name, ctx)
+        duration_ms = int((time.monotonic() - started) * 1000)
+        if isinstance(result, dict) and bool(result.get("ok")):
+            event: HookEvent = HookEvent.EngineRunCompleted(
+                run_id=run_id, proposals_generated=0, duration_ms=duration_ms
+            )
+        else:
+            reason = (result or {}).get("reason") if isinstance(result, dict) else None
+            _logger.error(
+                "scheduler: run_tool builtin reported failure",
+                extra={
+                    "job": spec.name,
+                    "run_id": run_id,
+                    "builtin_name": builtin_name,
+                    "reason": reason,
+                },
+            )
+            event = HookEvent.EngineRunFailed(
+                run_id=run_id, error_kind="builtin_not_ok", exit_code=None
+            )
+        try:
+            await bus.emit(event)
+        except Exception as exc:  # noqa: BLE001 - any emit failure is non-fatal
+            _logger.warning(
+                "scheduler: hook emit failed",
+                extra={"job": spec.name, "run_id": run_id, "error": str(exc)},
+            )
+        return
+
+    # run_agent: not yet implemented end-to-end (no agent-runner
+    # registry exists yet, unlike the run_tool BUILTIN_ACTIONS path).
+    # Surface as an EngineRunFailed with error_kind "unsupported_action"
+    # so the gateway's evolution observer sees the failure on the bus
+    # rather than a silent drop.
     _logger.warning(
         "scheduler: action kind not yet implemented; skipping fire",
         extra={"job": spec.name, "run_id": run_id, "kind": spec.action.kind},

@@ -1,0 +1,37 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.13.12, pytest-9.0.3, pluggy-1.6.0
+rootdir: /Users/cornna/project/corlinman
+configfile: pyproject.toml
+plugins: syrupy-5.2.0, cov-7.1.0, hypothesis-6.154.1, asyncio-1.4.0, respx-0.23.1, anyio-4.13.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 10 items
+
+python/packages/corlinman-server/tests/scheduler/test_dispatch.py ...... [ 60%]
+.FFF                                                                     [100%]
+
+=================================== FAILURES ===================================
+__________ test_dispatch_run_tool_routes_to_builtin_actions_registry ___________
+python/packages/corlinman-server/tests/scheduler/test_dispatch.py:208: in test_dispatch_run_tool_routes_to_builtin_actions_registry
+    assert call_count == 1, (
+E   AssertionError: BUILTIN_ACTIONS['system.update_check'] should fire exactly once; got 0
+E   assert 0 == 1
+------------------------------ Captured log call -------------------------------
+WARNING  corlinman_server.scheduler:runner.py:442 scheduler: action kind not yet implemented; skipping fire
+_______ test_dispatch_run_tool_evolution_darwin_curate_routes_to_builtin _______
+python/packages/corlinman-server/tests/scheduler/test_dispatch.py:253: in test_dispatch_run_tool_evolution_darwin_curate_routes_to_builtin
+    assert call_count == 1
+E   assert 0 == 1
+------------------------------ Captured log call -------------------------------
+WARNING  corlinman_server.scheduler:runner.py:442 scheduler: action kind not yet implemented; skipping fire
+_________ test_dispatch_run_tool_builtin_returning_not_ok_emits_failed _________
+python/packages/corlinman-server/tests/scheduler/test_dispatch.py:290: in test_dispatch_run_tool_builtin_returning_not_ok_emits_failed
+    assert evt.error_kind != "unsupported_action"
+E   AssertionError: assert 'unsupported_action' != 'unsupported_action'
+E    +  where 'unsupported_action' = _EngineRunFailed(run_id='1dd751ab45e64d6d865473514ea1e21d', error_kind='unsupported_action', exit_code=None).error_kind
+------------------------------ Captured log call -------------------------------
+WARNING  corlinman_server.scheduler:runner.py:442 scheduler: action kind not yet implemented; skipping fire
+=========================== short test summary info ============================
+FAILED python/packages/corlinman-server/tests/scheduler/test_dispatch.py::test_dispatch_run_tool_routes_to_builtin_actions_registry
+FAILED python/packages/corlinman-server/tests/scheduler/test_dispatch.py::test_dispatch_run_tool_evolution_darwin_curate_routes_to_builtin
+FAILED python/packages/corlinman-server/tests/scheduler/test_dispatch.py::test_dispatch_run_tool_builtin_returning_not_ok_emits_failed
+========================= 3 failed, 7 passed in 1.30s ==========================

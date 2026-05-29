@@ -1,0 +1,12 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.13.12, pytest-9.0.3, pluggy-1.6.0
+rootdir: /Users/cornna/project/corlinman
+configfile: pyproject.toml
+plugins: syrupy-5.2.0, cov-7.1.0, hypothesis-6.154.1, asyncio-1.4.0, respx-0.23.1, anyio-4.13.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 10 items
+
+python/packages/corlinman-server/tests/scheduler/test_dispatch.py ...... [ 60%]
+....                                                                     [100%]
+
+============================== 10 passed in 1.24s ==============================

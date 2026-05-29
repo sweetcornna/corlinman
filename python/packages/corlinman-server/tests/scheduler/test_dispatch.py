@@ -146,21 +146,145 @@ async def test_cancel_stops_job_loop_promptly() -> None:
     await asyncio.wait_for(handle.join_all(), timeout=2.0)
 
 
-@pytest.mark.parametrize(
-    "bad_action",
-    [
-        JobAction.run_agent(prompt="x"),
-        JobAction.run_tool(plugin="p", tool="t", args=None),
-    ],
-)
-async def test_both_unsupported_actions_emit_failed(bad_action: JobAction) -> None:
-    """Both ``RunAgent`` and ``RunTool`` go down the unsupported branch.
-    Parametrising the case keeps the two paths covered without a second
-    near-identical test function."""
+async def test_unknown_run_tool_emits_unsupported_action() -> None:
+    """``RunTool`` whose ``plugin.tool`` is not in :data:`BUILTIN_ACTIONS`
+    must still fall through to ``unsupported_action`` — the bus surfaces
+    a misconfigured cron rather than silently dropping it. Mirrors the
+    Rust ``RunTool`` fallback for unknown registry keys."""
     bus = HookBus(16)
     sub = bus.subscribe(HookPriority.NORMAL)
-    spec = _spec_for(bad_action)
+    spec = _spec_for(JobAction.run_tool(plugin="unknown_plugin", tool="ghost_tool"))
     await dispatch(spec, bus)
     evt = await _next_event(sub)
     assert isinstance(evt, HookEvent.EngineRunFailed)
     assert evt.error_kind == "unsupported_action"
+
+
+async def test_dispatch_run_tool_routes_to_builtin_actions_registry() -> None:
+    """R3-002 regression: ``JobAction.run_tool(plugin="system",
+    tool="update_check")`` is the exact shape ``entrypoint.py`` registers
+    for the default ``system.update_check`` cron job. Dispatch MUST route
+    it to :data:`BUILTIN_ACTIONS` and emit :class:`HookEvent.EngineRunCompleted`,
+    not :class:`HookEvent.EngineRunFailed(error_kind="unsupported_action")`.
+
+    Before the fix this assertion failed because ``dispatch()`` lumped
+    every ``run_tool`` firing into the unsupported-action branch — the
+    nightly update-check + darwin-curate cron jobs were silently never
+    running on production while the admin "fire now" route (which calls
+    ``run_builtin()`` directly) masked the bug.
+    """
+    from corlinman_server.scheduler.builtins import (
+        BUILTIN_ACTIONS,
+        BuiltinContext,
+    )
+
+    bus = HookBus(16)
+    sub = bus.subscribe(HookPriority.NORMAL)
+
+    call_count = 0
+    captured_ctx: list[BuiltinContext] = []
+
+    async def _stub_action(context: BuiltinContext) -> dict[str, object]:
+        nonlocal call_count
+        call_count += 1
+        captured_ctx.append(context)
+        return {"ok": True}
+
+    # Monkeypatch the registry in-place; restore afterwards so other
+    # tests in the suite see the real builtin. (The registry is module
+    # global; ``register_builtin`` uses last-in-wins semantics.)
+    previous = BUILTIN_ACTIONS.get("system.update_check")
+    BUILTIN_ACTIONS["system.update_check"] = _stub_action
+    try:
+        spec = _spec_for(JobAction.run_tool(plugin="system", tool="update_check"))
+        await dispatch(spec, bus)
+        evt = await _next_event(sub)
+    finally:
+        if previous is None:
+            BUILTIN_ACTIONS.pop("system.update_check", None)
+        else:
+            BUILTIN_ACTIONS["system.update_check"] = previous
+
+    assert call_count == 1, (
+        f"BUILTIN_ACTIONS['system.update_check'] should fire exactly once; got {call_count}"
+    )
+    assert not isinstance(evt, HookEvent.EngineRunFailed) or evt.error_kind != "unsupported_action", (
+        f"run_tool dispatch must not emit unsupported_action when the builtin exists; got {evt!r}"
+    )
+    assert isinstance(evt, HookEvent.EngineRunCompleted), (
+        f"successful run_tool dispatch should emit EngineRunCompleted; got {evt!r}"
+    )
+
+
+async def test_dispatch_run_tool_evolution_darwin_curate_routes_to_builtin() -> None:
+    """Second R3-002 regression: the ``evolution.darwin_curate`` default
+    job (entrypoint.py:590) must also reach the registry. Parametrising
+    over both default jobs would hide which one regresses, so they get
+    distinct tests."""
+    from corlinman_server.scheduler.builtins import (
+        BUILTIN_ACTIONS,
+        BuiltinContext,
+    )
+
+    bus = HookBus(16)
+    sub = bus.subscribe(HookPriority.NORMAL)
+
+    call_count = 0
+
+    async def _stub_action(context: BuiltinContext) -> dict[str, object]:
+        nonlocal call_count
+        call_count += 1
+        return {"ok": True}
+
+    previous = BUILTIN_ACTIONS.get("evolution.darwin_curate")
+    BUILTIN_ACTIONS["evolution.darwin_curate"] = _stub_action
+    try:
+        spec = _spec_for(
+            JobAction.run_tool(plugin="evolution", tool="darwin_curate")
+        )
+        await dispatch(spec, bus)
+        evt = await _next_event(sub)
+    finally:
+        if previous is None:
+            BUILTIN_ACTIONS.pop("evolution.darwin_curate", None)
+        else:
+            BUILTIN_ACTIONS["evolution.darwin_curate"] = previous
+
+    assert call_count == 1
+    assert isinstance(evt, HookEvent.EngineRunCompleted), (
+        f"evolution.darwin_curate dispatch should emit EngineRunCompleted; got {evt!r}"
+    )
+
+
+async def test_dispatch_run_tool_builtin_returning_not_ok_emits_failed() -> None:
+    """When the registered builtin returns ``{"ok": False, ...}`` the
+    bus should see ``EngineRunFailed`` (not Completed) so operators
+    notice the degraded run. Mirrors the admin "fire now" route's own
+    ok-vs-error handling."""
+    from corlinman_server.scheduler.builtins import (
+        BUILTIN_ACTIONS,
+        BuiltinContext,
+    )
+
+    bus = HookBus(16)
+    sub = bus.subscribe(HookPriority.NORMAL)
+
+    async def _stub_action(context: BuiltinContext) -> dict[str, object]:
+        return {"ok": False, "reason": "checker_unavailable"}
+
+    previous = BUILTIN_ACTIONS.get("system.update_check")
+    BUILTIN_ACTIONS["system.update_check"] = _stub_action
+    try:
+        spec = _spec_for(JobAction.run_tool(plugin="system", tool="update_check"))
+        await dispatch(spec, bus)
+        evt = await _next_event(sub)
+    finally:
+        if previous is None:
+            BUILTIN_ACTIONS.pop("system.update_check", None)
+        else:
+            BUILTIN_ACTIONS["system.update_check"] = previous
+
+    assert isinstance(evt, HookEvent.EngineRunFailed)
+    # error_kind reflects "builtin reported non-ok" rather than a
+    # transport/unknown failure — distinct from unsupported_action.
+    assert evt.error_kind != "unsupported_action"

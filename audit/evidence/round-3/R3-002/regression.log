@@ -1,0 +1,41 @@
+=== scheduler/ ===
+============================= test session starts ==============================
+platform darwin -- Python 3.13.12, pytest-9.0.3, pluggy-1.6.0
+rootdir: /Users/cornna/project/corlinman
+configfile: pyproject.toml
+plugins: syrupy-5.2.0, cov-7.1.0, hypothesis-6.154.1, asyncio-1.4.0, respx-0.23.1, anyio-4.13.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 56 items
+
+python/packages/corlinman-server/tests/scheduler/test_cron.py .......    [ 12%]
+python/packages/corlinman-server/tests/scheduler/test_dispatch.py ...... [ 23%]
+....                                                                     [ 30%]
+python/packages/corlinman-server/tests/scheduler/test_jobs.py .....      [ 39%]
+python/packages/corlinman-server/tests/scheduler/test_persistence.py ... [ 44%]
+....                                                                     [ 51%]
+python/packages/corlinman-server/tests/scheduler/test_qzone_daily.py ... [ 57%]
+.........                                                                [ 73%]
+python/packages/corlinman-server/tests/scheduler/test_subprocess.py .... [ 80%]
+.                                                                        [ 82%]
+python/packages/corlinman-server/tests/scheduler/test_system_update_check_job.py . [ 83%]
+........                                                                 [ 98%]
+python/packages/corlinman-server/tests/scheduler/test_tick_loop_integration.py . [100%]
+
+============================= 56 passed in 17.39s ==============================
+
+=== corlinman-server/ full ===
+python/packages/corlinman-server/tests/gateway/routes_admin_a/test_auth_must_change.py: 4 warnings
+python/packages/corlinman-server/tests/gateway/routes_admin_a/test_username.py: 12 warnings
+  /Users/cornna/project/corlinman/.venv/lib/python3.13/site-packages/starlette/testclient.py:445: DeprecationWarning: Setting per-request cookies=<...> is being deprecated, because the expected behaviour on cookie persistence is ambiguous. Set cookies directly on the client instance instead.
+    return super().request(
+
+python/packages/corlinman-server/tests/gateway/routes_admin_a/test_profiles.py: 2 warnings
+python/packages/corlinman-server/tests/gateway/routes_admin_a/test_sessions_patch.py: 2 warnings
+python/packages/corlinman-server/tests/gateway/routes_admin_a/test_username.py: 6 warnings
+python/packages/corlinman-server/tests/gateway/routes_admin_b/test_agents_model_binding.py: 1 warning
+python/packages/corlinman-server/tests/gateway/routes_admin_b/test_curator_routes.py: 1 warning
+  /Users/cornna/project/corlinman/.venv/lib/python3.13/site-packages/fastapi/routing.py:328: DeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+    return await dependant.call(**values)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========== 1425 passed, 1 skipped, 28 warnings in 103.21s (0:01:43) ===========
