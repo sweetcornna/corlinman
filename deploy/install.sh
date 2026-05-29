@@ -57,12 +57,18 @@
 #                     root-equivalent on the host — opt-in only. Native
 #                     installs always land the corlinman-upgrader.{path,
 #                     service} units; no flag needed there.
-#   --with-qq         Docker mode only. Layer
-#                     `docker/compose/docker-compose.qq.yml` on top of the
-#                     base compose file so the NapCat QQ sidecar comes up
-#                     alongside corlinman. Auto-materialises `.env` from
-#                     `deploy/.env.template` if one isn't present; you'll be
-#                     prompted to edit it (QQ_* / OPENAI_API_KEY) and re-run.
+#   --with-qq         Enable the QQ (NapCat) channel. ON BY DEFAULT now, so
+#                     this flag is accepted but a no-op (kept for scripts that
+#                     pass it explicitly). docker mode layers
+#                     `docker/compose/docker-compose.qq.yml` so the NapCat
+#                     sidecar comes up alongside corlinman (auto-materialises
+#                     `.env` from `deploy/.env.template` on first run; you'll
+#                     be prompted to edit QQ_* / OPENAI_API_KEY and re-run).
+#                     native mode provisions a pinned NapCat AppImage + a
+#                     `corlinman-napcat.service` systemd unit.
+#   --without-qq      Opt out of QQ/NapCat entirely. docker brings up only the
+#                     base compose stack; native skips the AppImage download
+#                     and the corlinman-napcat.service unit.
 #   --skip-ui         Skip the Next.js UI build + ui-static placement.
 #                     Use for headless deploys (no Node/pnpm) or when the
 #                     UI is served from a separate container. The previous
@@ -81,6 +87,11 @@
 #                        Empty = no proxy (direct github.com — works on some CN
 #                        BGP networks including Tencent Cloud Tianjin).
 #   CN_DOCKER_MIRROR     override Docker Hub mirror (default docker.m.daocloud.io)
+#   NAPCAT_VERSION       NapCat release tag to pin (default v4.18.4). Used for
+#                        both the docker image and the native AppImage so the
+#                        two stay matched. Override to roll forward/back.
+#   CORLINMAN_WITH_QQ    set to "" to default QQ off (same as --without-qq);
+#                        "1" forces it on (the default).
 
 set -euo pipefail
 
@@ -94,8 +105,16 @@ USE_CHINA=""
 ENABLE_DOCKER_SANDBOX="${CORLINMAN_ENABLE_DOCKER_SANDBOX:-}"
 ENABLE_ONE_CLICK_UPGRADE="${CORLINMAN_ENABLE_ONE_CLICK_UPGRADE:-}"
 UPGRADE_MODE=""
-WITH_QQ=""
+# QQ (NapCat) is ON BY DEFAULT in both docker and native mode. docker layers
+# the NapCat sidecar (docker-compose.qq.yml); native provisions a pinned
+# NapCat AppImage + corlinman-napcat.service. Opt out with --without-qq.
+WITH_QQ="${CORLINMAN_WITH_QQ:-1}"
 SKIP_UI="${CORLINMAN_SKIP_UI:-}"
+# Pinned NapCat release. Matched across the docker image
+# (mlikiowa/napcat-docker:$NAPCAT_VERSION) and the native AppImage
+# (github.com/NapNeko/NapCatAppImageBuild release $NAPCAT_VERSION). Known-good
+# stable verified 2026-05-22; override via the NAPCAT_VERSION env var.
+NAPCAT_VERSION="${NAPCAT_VERSION:-v4.18.4}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -107,7 +126,8 @@ while [[ $# -gt 0 ]]; do
         --enable-docker-sandbox) ENABLE_DOCKER_SANDBOX="1"; shift ;;
         --enable-one-click-upgrade) ENABLE_ONE_CLICK_UPGRADE="1"; shift ;;
         --upgrade) UPGRADE_MODE="1"; shift ;;
-        --with-qq) WITH_QQ="1"; shift ;;
+        --with-qq) WITH_QQ="1"; shift ;;        # explicit (now the default)
+        --without-qq) WITH_QQ=""; shift ;;      # opt out of NapCat / QQ
         --skip-ui) SKIP_UI="1"; shift ;;
         -h|--help)
             # Print the top-of-file usage block (everything between line 2
@@ -664,15 +684,20 @@ install_docker() {
 
 ⚠️  edit $env_path with QQ_* / OPENAI_API_KEY then re-run:
       cd $PREFIX/repo/docker/compose && \\
-        CORLINMAN_TAG=local docker compose -f docker-compose.yml -f docker-compose.qq.yml --profile qq up -d
+        CORLINMAN_TAG=local NAPCAT_VERSION=${NAPCAT_VERSION} docker compose -f docker-compose.yml -f docker-compose.qq.yml --profile qq up -d
 
 EOF
             return 0
         fi
 
-        log "starting (with-qq overlay)"
+        # Pass NAPCAT_VERSION explicitly: the napcat image tag is a compose
+        # variable interpolated from the compose project dir (docker/compose),
+        # not from $PREFIX/repo/.env (which is the *container* env_file). The
+        # compose file defaults to the same pin, so this only matters when an
+        # operator overrides NAPCAT_VERSION in the environment.
+        log "starting (with-qq overlay, napcat=${NAPCAT_VERSION})"
         (cd "$PREFIX/repo/docker/compose" && \
-            CORLINMAN_TAG=local docker compose \
+            CORLINMAN_TAG=local NAPCAT_VERSION="$NAPCAT_VERSION" docker compose \
                 -f docker-compose.yml \
                 -f docker-compose.qq.yml \
                 --profile qq up -d)
@@ -760,6 +785,18 @@ EOF
 # (/etc/systemd/system/corlinman.service.d/*.conf), which this never touches.
 write_gateway_unit() {
     log "writing systemd unit (corlinman.service)"
+    # When QQ is on, point the gateway at the loopback NapCat the
+    # corlinman-napcat.service unit provisions: CORLINMAN_NAPCAT_URL for the
+    # admin scan-login REST flow + QQ_WS_URL for the OneBot v11 message bus.
+    # Emitted as explicit Environment= defaults so a fresh native install
+    # resolves NapCat with zero manual config. EnvironmentFile=-$PREFIX/.env is
+    # listed LAST below, and systemd lets a later directive override an earlier
+    # one for the same key — so an operator's .env QQ_WS_URL/CORLINMAN_NAPCAT_URL
+    # still wins over these defaults.
+    local qq_env=""
+    if [[ -n "$WITH_QQ" ]]; then
+        qq_env=$'Environment=CORLINMAN_NAPCAT_URL=http://127.0.0.1:6099\nEnvironment=QQ_WS_URL=ws://127.0.0.1:3001'
+    fi
     sudo tee /etc/systemd/system/corlinman.service >/dev/null <<EOF
 [Unit]
 Description=corlinman gateway (Python)
@@ -771,13 +808,14 @@ User=${SERVICE_USER}
 Group=${SERVICE_USER}
 WorkingDirectory=${PREFIX}/repo
 ExecStart=${PREFIX}/repo/.venv/bin/corlinman-gateway --config ${DATA_DIR}/config.toml --port ${PORT}
-EnvironmentFile=-${PREFIX}/.env
 Environment=HOME=${DATA_DIR}
 Environment=CORLINMAN_DATA_DIR=${DATA_DIR}
 Environment=CORLINMAN_UI_DIR=${PREFIX}/ui-static
 Environment=BIND=0.0.0.0
 Environment=PORT=${PORT}
 Environment=CORLINMAN_RUNTIME_MODE=native
+${qq_env}
+EnvironmentFile=-${PREFIX}/.env
 Restart=on-failure
 RestartSec=5
 
@@ -829,6 +867,180 @@ WantedBy=multi-user.target
 EOF
 }
 
+# ----- NapCat (native QQ) provisioning ---------------------------------------
+# QQ on native installs is a pinned NapCat AppImage supervised by its own
+# systemd unit (corlinman-napcat.service) — NOT a gateway subprocess. NapCat
+# upstream ships an AppImage per release in NapNeko/NapCatAppImageBuild; the
+# asset filename embeds an unpredictable per-release QQ build number
+# (e.g. QQ-44343_NapCat-v4.18.4-amd64.AppImage), so we resolve the concrete
+# download URL from the GitHub release API by arch instead of constructing it.
+#
+# Linux-only. QQ is optional: a download/verify failure WARNS and returns
+# non-zero but never aborts the whole install (the rest of corlinman still
+# comes up; the operator can retry NapCat or run --without-qq).
+
+# Map `uname -m` → the AppImage arch suffix NapCat publishes (amd64 / arm64).
+# Echoes the suffix on success; empty on an unsupported arch.
+napcat_arch_suffix() {
+    case "$(uname -m)" in
+        x86_64|amd64)  echo "amd64" ;;
+        aarch64|arm64) echo "arm64" ;;
+        *)             echo "" ;;
+    esac
+}
+
+# Download the pinned NapCat AppImage for the host arch into $PREFIX/napcat/.
+# Idempotent: if the pinned AppImage is already present and non-trivially
+# sized, skip the re-download. Echoes the absolute AppImage path on stdout for
+# write_napcat_unit to consume; returns non-zero (with a warning) on any
+# failure so the caller can degrade gracefully.
+download_napcat_appimage() {
+    local arch
+    arch="$(napcat_arch_suffix)"
+    if [[ -z "$arch" ]]; then
+        warn "NapCat: unsupported arch '$(uname -m)' (need x86_64/aarch64) — skipping QQ provisioning"
+        return 1
+    fi
+
+    local napcat_dir="$PREFIX/napcat"
+    local dest="$napcat_dir/NapCat-${NAPCAT_VERSION}-${arch}.AppImage"
+    sudo mkdir -p "$napcat_dir"
+    # Let the install user own the dir for the download; the unit runs the
+    # AppImage as SERVICE_USER (state lives under $DATA_DIR, see write_napcat_unit).
+    sudo chown "$(id -u):$(id -g)" "$napcat_dir" 2>/dev/null || true
+
+    # Idempotent skip: a previously-downloaded pinned AppImage (>10MiB so we
+    # don't trust a truncated/HTML error body left from a prior failed run).
+    if [[ -f "$dest" ]]; then
+        local existing_sz
+        existing_sz=$(wc -c < "$dest" 2>/dev/null || echo 0)
+        if [[ "$existing_sz" =~ ^[0-9]+$ && "$existing_sz" -gt 10485760 ]]; then
+            chmod +x "$dest" 2>/dev/null || true
+            log "NapCat: AppImage already present ($dest, $((existing_sz / 1024 / 1024)) MiB) — skipping download"
+            echo "$dest"
+            return 0
+        fi
+        rm -f "$dest"
+    fi
+
+    # Resolve the concrete asset URL from the release API (the filename carries
+    # an unpredictable QQ build number we can't synthesize). Honour --china via
+    # GITHUB_RAW/GITHUB_CLONE_BASE: the asset lives on github.com release
+    # downloads, so reuse the clone proxy prefix when set.
+    local api="https://api.github.com/repos/NapNeko/NapCatAppImageBuild/releases/tags/${NAPCAT_VERSION}"
+    log "NapCat: resolving AppImage URL for ${NAPCAT_VERSION} (${arch})"
+    local asset_url=""
+    asset_url=$(curl -fsSL -m 30 "$api" 2>/dev/null \
+        | grep -oE '"browser_download_url":[[:space:]]*"[^"]*"' \
+        | sed -E 's/.*"(https?:[^"]*)".*/\1/' \
+        | grep -E "${arch}\.AppImage$" \
+        | head -n1 || true)
+    if [[ -z "$asset_url" ]]; then
+        warn "NapCat: could not resolve a ${arch} AppImage for ${NAPCAT_VERSION} from $api"
+        warn "NapCat: QQ will be unavailable on native until this is fixed (check NAPCAT_VERSION / network); the rest of the install continues."
+        return 1
+    fi
+    # Route the download through the CN proxy prefix when --china stripped the
+    # bare github.com base (GITHUB_CLONE_BASE becomes <proxy>/https://github.com).
+    if [[ "$GITHUB_CLONE_BASE" != "https://github.com" && "$asset_url" == https://github.com/* ]]; then
+        asset_url="${GITHUB_CLONE_BASE%/https://github.com}/${asset_url}"
+    fi
+
+    log "NapCat: downloading AppImage → $dest"
+    local tmp="${dest}.part"
+    if ! curl -fL -m 600 -o "$tmp" "$asset_url" 2>/dev/null; then
+        rm -f "$tmp"
+        warn "NapCat: AppImage download failed ($asset_url) — QQ unavailable on native; rest of install continues."
+        return 1
+    fi
+
+    # Size sanity check: the AppImage is ~180-200 MiB; anything under 10 MiB is
+    # a proxy error page / truncated transfer, not a real binary.
+    local sz
+    sz=$(wc -c < "$tmp" 2>/dev/null || echo 0)
+    if [[ ! "$sz" =~ ^[0-9]+$ || "$sz" -lt 10485760 ]]; then
+        rm -f "$tmp"
+        warn "NapCat: downloaded AppImage is only ${sz} bytes (expected >10MiB) — treating as a failed download; QQ unavailable on native."
+        return 1
+    fi
+    mv "$tmp" "$dest"
+    chmod +x "$dest"
+    log "NapCat: AppImage ready ($dest, $((sz / 1024 / 1024)) MiB)"
+    echo "$dest"
+    return 0
+}
+
+# Write /etc/systemd/system/corlinman-napcat.service. Modeled on
+# write_gateway_unit: runs as the unprivileged SERVICE_USER, HOME +
+# WorkingDirectory under $DATA_DIR, state under $DATA_DIR/.napcat/{app,ntqq}
+# (mirrors the docker volume layout in docker-compose.qq.yml), reads the shared
+# $PREFIX/.env (EnvironmentFile=- so a missing file is non-fatal), restarts on
+# failure. $1 = absolute AppImage path. Idempotent — regenerated on every
+# install/upgrade so unit changes reach existing native QQ installs.
+write_napcat_unit() {
+    local appimage="$1"
+    local napcat_state="$DATA_DIR/.napcat"
+    log "writing systemd unit (corlinman-napcat.service)"
+    # State dirs owned by SERVICE_USER (the unit runs as it and writes here).
+    sudo mkdir -p "$napcat_state/app" "$napcat_state/ntqq"
+    sudo chown -R "$SERVICE_USER:$SERVICE_USER" "$napcat_state" \
+        || warn "could not chown $napcat_state to $SERVICE_USER"
+    sudo tee /etc/systemd/system/corlinman-napcat.service >/dev/null <<EOF
+[Unit]
+Description=corlinman NapCat (QQ / OneBot v11)
+After=network.target
+PartOf=corlinman.service
+
+[Service]
+Type=simple
+User=${SERVICE_USER}
+Group=${SERVICE_USER}
+WorkingDirectory=${DATA_DIR}
+ExecStart=${appimage}
+EnvironmentFile=-${PREFIX}/.env
+Environment=HOME=${DATA_DIR}
+Environment=NAPCAT_UID=
+Environment=NAPCAT_GID=
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+# Provision + start NapCat on a native install. Best-effort: a failed AppImage
+# download warns and returns 0 (QQ is optional — never block the gateway).
+# Called from _apply_native_ref so upgrades re-provision + regenerate the unit.
+install_native_qq() {
+    [[ "$(uname -s)" == "Linux" ]] || { warn "NapCat native provisioning is Linux-only; skipping QQ on $(uname -s)"; return 0; }
+    local appimage
+    if ! appimage="$(download_napcat_appimage)"; then
+        return 0
+    fi
+    write_napcat_unit "$appimage"
+    sudo systemctl daemon-reload
+    sudo systemctl enable corlinman-napcat.service >/dev/null 2>&1 \
+        || warn "could not enable corlinman-napcat.service"
+    sudo systemctl restart corlinman-napcat.service \
+        || warn "could not start corlinman-napcat.service — check 'systemctl status corlinman-napcat'"
+    log "NapCat: corlinman-napcat.service $(systemctl is-active corlinman-napcat 2>/dev/null || echo '?')"
+}
+
+# Tear down a previously-provisioned NapCat unit when QQ is turned off
+# (--without-qq) on a re-run/upgrade. Stops + disables + removes the unit but
+# LEAVES the AppImage binary and $DATA_DIR/.napcat state in place so flipping
+# QQ back on doesn't force a re-scan / re-download. Idempotent.
+teardown_native_qq() {
+    [[ "$(uname -s)" == "Linux" ]] || return 0
+    if [[ -f /etc/systemd/system/corlinman-napcat.service ]]; then
+        log "QQ off (--without-qq): stopping + removing corlinman-napcat.service (state preserved)"
+        sudo systemctl disable --now corlinman-napcat.service 2>/dev/null || true
+        sudo rm -f /etc/systemd/system/corlinman-napcat.service
+        sudo systemctl daemon-reload
+    fi
+}
+
 # Single source of truth for the systemd unit set. Writes EVERY unit from its
 # canonical definition + daemon-reloads, and migrates a legacy install that
 # registered the gateway under the old `corlinman-gateway.service` name.
@@ -870,6 +1082,15 @@ _apply_native_ref() {
         sudo systemctl restart corlinman.service || return 1
         if [[ -f /etc/systemd/system/corlinman-agent.service ]]; then
             sudo systemctl restart corlinman-agent.service || true
+        fi
+        # NapCat / QQ: provision (or tear down) on every apply so the unit +
+        # AppImage converge to the current release + WITH_QQ choice. Best-effort
+        # — install_native_qq never returns non-zero (QQ is optional), so a QQ
+        # hiccup can't fail an upgrade or trigger a rollback.
+        if [[ -n "$WITH_QQ" ]]; then
+            install_native_qq
+        else
+            teardown_native_qq
         fi
     fi
     return 0
@@ -942,6 +1163,15 @@ install_native() {
         write_systemd_units
         sudo systemctl start corlinman.service
         log "service status: $(systemctl is-active corlinman)"
+
+        # NapCat / QQ (on by default). Best-effort: a download failure warns
+        # but never aborts the gateway install (QQ is optional). --without-qq
+        # skips provisioning and removes any prior NapCat unit.
+        if [[ -n "$WITH_QQ" ]]; then
+            install_native_qq
+        else
+            teardown_native_qq
+        fi
     fi
 
     local prefix=""
@@ -1081,11 +1311,10 @@ main() {
         fi
         return
     fi
-    # --with-qq only makes sense in docker mode (NapCat ships as a docker
-    # image; the native path has no equivalent).
-    if [[ -n "$WITH_QQ" && "$MODE" != "docker" ]]; then
-        die "--with-qq requires --mode docker (got --mode=$MODE)"
-    fi
+    # QQ (NapCat) is supported in BOTH modes now: docker layers the NapCat
+    # sidecar compose overlay; native provisions a pinned NapCat AppImage +
+    # corlinman-napcat.service. The old "--with-qq requires --mode docker"
+    # hard reject is gone — install_native handles QQ via install_native_qq().
     # Fresh install: validate the host BEFORE any side effects (git clone,
     # docker pull, sudo writes) so half-installed leftovers don't survive a
     # missing prerequisite.

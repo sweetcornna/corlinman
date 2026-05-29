@@ -238,6 +238,7 @@ def _build_discord_params(
     *,
     persona_store: Any = None,
     asset_store: Any = None,
+    on_sender_ready: Any = None,
 ) -> Any:
     """Build :class:`corlinman_channels.DiscordChannelParams` from the
     ``[channels.discord]`` config table.
@@ -247,6 +248,10 @@ def _build_discord_params(
     off the structural ``config``; the dict from the loader satisfies that.
     The ``bot_token`` may also be supplied via the ``DISCORD_BOT_TOKEN``
     env var so the standard deployment works without hand-editing TOML.
+
+    ``on_sender_ready`` mirrors the Telegram admin-send hook: the gateway
+    passes it so ``POST /admin/channels/discord/send`` can reach the live
+    :class:`DiscordSender`.
     """
     from corlinman_channels import DiscordChannelParams
 
@@ -265,6 +270,7 @@ def _build_discord_params(
         persona_store=persona_store,
         humanlike_resolver=_humanlike_resolver(dc_cfg),
         asset_store=asset_store,
+        on_sender_ready=on_sender_ready,
     )
 
 
@@ -275,6 +281,7 @@ def _build_slack_params(
     *,
     persona_store: Any = None,
     asset_store: Any = None,
+    on_sender_ready: Any = None,
 ) -> Any:
     """Build :class:`corlinman_channels.SlackChannelParams` from the
     ``[channels.slack]`` config table.
@@ -283,6 +290,10 @@ def _build_slack_params(
     ``allowed_channel_ids`` / ``keyword_filter`` / ``respond_to_all`` /
     ``api_base`` off the structural ``config``. Both tokens may also be
     supplied via ``SLACK_APP_TOKEN`` / ``SLACK_BOT_TOKEN`` env vars.
+
+    ``on_sender_ready`` mirrors the Telegram admin-send hook: the gateway
+    passes it so ``POST /admin/channels/slack/send`` can reach the live
+    :class:`SlackSender`.
     """
     from corlinman_channels import SlackChannelParams
 
@@ -304,6 +315,7 @@ def _build_slack_params(
         persona_store=persona_store,
         humanlike_resolver=_humanlike_resolver(sl_cfg),
         asset_store=asset_store,
+        on_sender_ready=on_sender_ready,
     )
 
 
@@ -390,6 +402,7 @@ def _build_feishu_params(
     *,
     persona_store: Any = None,
     asset_store: Any = None,
+    on_sender_ready: Any = None,
 ) -> Any:
     """Build :class:`corlinman_channels.FeishuChannelParams` from the
     ``[channels.feishu]`` config table.
@@ -398,6 +411,10 @@ def _build_feishu_params(
     ``allowed_chat_ids`` / ``keyword_filter`` / ``respond_to_all`` /
     ``api_base`` off the structural ``config``. The credentials may also
     be supplied via ``FEISHU_APP_ID`` / ``FEISHU_APP_SECRET`` env vars.
+
+    ``on_sender_ready`` mirrors the Telegram admin-send hook: the gateway
+    passes it so ``POST /admin/channels/feishu/send`` can reach the live
+    :class:`FeishuSender`.
     """
     from corlinman_channels import FeishuChannelParams
 
@@ -419,6 +436,7 @@ def _build_feishu_params(
         persona_store=persona_store,
         humanlike_resolver=_humanlike_resolver(fs_cfg),
         asset_store=asset_store,
+        on_sender_ready=on_sender_ready,
     )
 
 
@@ -485,6 +503,9 @@ def build_channel_tasks(
     persona_store: Any = None,
     asset_store: Any = None,
     telegram_on_sender_ready: Any = None,
+    discord_on_sender_ready: Any = None,
+    slack_on_sender_ready: Any = None,
+    feishu_on_sender_ready: Any = None,
 ) -> list[asyncio.Task[Any]]:
     """Build (but the caller owns scheduling) the channel background
     tasks for every enabled channel in ``channels_cfg``.
@@ -578,6 +599,7 @@ def build_channel_tasks(
                 dc_cfg, model, chat_service,
                 persona_store=persona_store,
                 asset_store=asset_store,
+                on_sender_ready=discord_on_sender_ready,
             )
             task = asyncio.create_task(
                 _run_channel(
@@ -611,6 +633,7 @@ def build_channel_tasks(
                 sl_cfg, model, chat_service,
                 persona_store=persona_store,
                 asset_store=asset_store,
+                on_sender_ready=slack_on_sender_ready,
             )
             task = asyncio.create_task(
                 _run_channel(
@@ -675,6 +698,7 @@ def build_channel_tasks(
                 fs_cfg, model, chat_service,
                 persona_store=persona_store,
                 asset_store=asset_store,
+                on_sender_ready=feishu_on_sender_ready,
             )
             task = asyncio.create_task(
                 _run_channel(
@@ -834,17 +858,25 @@ def bootstrap(state: Any) -> list[asyncio.Task[Any]]:
     # messages through the same HTTPS surface the chat path uses. The
     # callback runs in the channel task at start-up; missing admin_a
     # state silently disables the wiring.
-    def _telegram_on_sender_ready(sender: Any) -> None:
-        target = admin_a_state
-        if target is None:
-            return
-        try:
-            target.telegram_sender = sender
-        except (AttributeError, TypeError):  # pragma: no cover — defensive
-            logger.debug(
-                "gateway.channels.telegram_sender_attach_failed",
-                state_type=type(target).__name__,
-            )
+    # Generic factory: build a callback that parks the live sender on the
+    # named ``AdminState`` slot. Mirrors the Telegram wiring for the
+    # Discord / Slack / Feishu channels so their admin send routes can
+    # reach the live sender. Null-safe when admin_a state is absent.
+    def _sender_attacher(attr: str) -> Any:
+        def _on_sender_ready(sender: Any) -> None:
+            target = admin_a_state
+            if target is None:
+                return
+            try:
+                setattr(target, attr, sender)
+            except (AttributeError, TypeError):  # pragma: no cover — defensive
+                logger.debug(
+                    "gateway.channels.sender_attach_failed",
+                    attr=attr,
+                    state_type=type(target).__name__,
+                )
+
+        return _on_sender_ready
 
     try:
         tasks = build_channel_tasks(
@@ -854,7 +886,10 @@ def bootstrap(state: Any) -> list[asyncio.Task[Any]]:
             cancel=cancel,
             persona_store=persona_store,
             asset_store=asset_store,
-            telegram_on_sender_ready=_telegram_on_sender_ready,
+            telegram_on_sender_ready=_sender_attacher("telegram_sender"),
+            discord_on_sender_ready=_sender_attacher("discord_sender"),
+            slack_on_sender_ready=_sender_attacher("slack_sender"),
+            feishu_on_sender_ready=_sender_attacher("feishu_sender"),
         )
     except Exception as exc:  # pragma: no cover — defensive umbrella
         logger.warning("gateway.channels.bootstrap_failed", error=str(exc))

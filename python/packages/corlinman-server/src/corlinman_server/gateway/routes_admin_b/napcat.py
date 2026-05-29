@@ -47,6 +47,16 @@ from corlinman_server.gateway.routes_admin_b.state import (
 ACCOUNTS_FILE = "qq-accounts.json"
 NAPCAT_TIMEOUT = 6.0
 
+# Loopback default for the NapCat webui + scan-login HTTP API. Both supported
+# deploy modes land NapCat here from the gateway's point of view:
+#   * docker — docker-compose.qq.yml sets CORLINMAN_NAPCAT_URL=http://napcat:6099
+#     (in-network DNS), so the env wins and this default is never used.
+#   * native — install.sh provisions a NapCat AppImage + corlinman-napcat.service
+#     listening on 127.0.0.1:6099 and exports CORLINMAN_NAPCAT_URL to match; this
+#     default keeps the scan-login UI working even if that export is missing
+#     (e.g. a hand-rolled native install) instead of a confusing immediate 503.
+DEFAULT_NAPCAT_URL = "http://127.0.0.1:6099"
+
 
 # ---------------------------------------------------------------------------
 # Wire shapes
@@ -110,13 +120,28 @@ def _now_ms() -> int:
 
 
 def _resolve_napcat_url(cfg: dict[str, Any]) -> tuple[str | None, str | None]:
-    """Return ``(url, access_token)`` or ``(None, _)`` when not configured."""
+    """Return ``(url, access_token)``.
+
+    Resolution order:
+
+    1. ``[channels.qq].napcat_url`` from config.
+    2. ``CORLINMAN_NAPCAT_URL`` env (set by docker-compose.qq.yml /
+       the native systemd unit).
+    3. ``DEFAULT_NAPCAT_URL`` (``http://127.0.0.1:6099``) — the loopback NapCat
+       both deploy modes provision, so a native install with QQ on resolves
+       without any manual config. ``url`` is therefore never ``None`` now; the
+       ``None`` arm is kept for callers/tests that pass an explicit override.
+
+    If NapCat is genuinely unreachable at the resolved URL, the
+    ``_NapcatClient`` raises a typed ``napcat_unreachable`` (503) on first call
+    — distinct from the old "not configured" 503, and the correct signal.
+    """
     qq = ((cfg.get("channels") or {}).get("qq")) or {}
     url = qq.get("napcat_url")
     if not url or not str(url).strip():
         url = os.environ.get("CORLINMAN_NAPCAT_URL")
     if not url or not str(url).strip():
-        return None, None
+        url = DEFAULT_NAPCAT_URL
     url = str(url).rstrip("/")
     access_token: str | None = None
     sec = qq.get("napcat_access_token")
@@ -364,6 +389,10 @@ def router() -> APIRouter:
         cfg = dict(config_snapshot())
         url, token = _resolve_napcat_url(cfg)
         path = _accounts_path(state, cfg)
+        # Defensive: _resolve_napcat_url now falls back to DEFAULT_NAPCAT_URL so
+        # this arm is unreachable in the normal flow (a missing/down NapCat
+        # surfaces as a typed napcat_unreachable 503 on first call instead).
+        # Kept as a guard so an explicit None override still yields a clean 503.
         if url is None:
             return None, JSONResponse(
                 status_code=503,

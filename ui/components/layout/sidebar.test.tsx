@@ -152,6 +152,26 @@ describe("Sidebar", () => {
     expect(screen.getByRole("link", { name: /Telegram$/ })).toBeInTheDocument();
   });
 
+  it("exposes all 7 channel leaves when the group is expanded", () => {
+    render(<Sidebar />);
+    const toggle = screen.getByTestId("sidebar-group-toggle-channels");
+    fireEvent.click(toggle);
+    // QQ + Telegram + Discord + Slack + Feishu + WeChat Official + QQ Official.
+    expect(screen.getByRole("link", { name: /^QQ$/ })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Telegram$/ })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Discord/i })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Slack/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: /Feishu|飞书/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: /WeChat Official|微信公众号/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: /QQ Official|QQ 官方/i }),
+    ).toBeInTheDocument();
+  });
+
   it("Enter / Space on the toggle flips expanded", () => {
     render(<Sidebar />);
     const toggle = screen.getByTestId("sidebar-group-toggle-channels");

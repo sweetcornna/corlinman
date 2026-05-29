@@ -146,7 +146,16 @@ export function ChannelEnableSwitch({
 }
 
 function labelFor(channel: ChannelName): string {
-  return channel === "qq" ? "QQ channel" : "Telegram channel";
+  const labels: Record<ChannelName, string> = {
+    qq: "QQ channel",
+    telegram: "Telegram channel",
+    discord: "Discord channel",
+    slack: "Slack channel",
+    feishu: "Feishu channel",
+    wechat_official: "WeChat Official channel",
+    qq_official: "QQ Official channel",
+  };
+  return labels[channel] ?? `${channel} channel`;
 }
 
 export default ChannelEnableSwitch;

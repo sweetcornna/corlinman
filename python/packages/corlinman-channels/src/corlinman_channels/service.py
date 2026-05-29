@@ -973,17 +973,52 @@ async def _qq_send_attachment(
     event: MessageEvent,
     ev: Any,
 ) -> str:
-    """Upload a file via NapCat extension actions. Returns a status line
-    for the placeholder. Best-effort: failures fold into status text.
+    """Ship a file the agent produced through the QQ channel.
+
+    WS-1 task 1 — routes by MIME so the user sees the right thing:
+
+    * **image / emoji** (``image/*``) → an inline :class:`ImageSegment`
+      sent via :class:`SendGroupMsg` / :class:`SendPrivateMsg`. NapCat
+      reads the ``file://`` URL off the local path so the picture lands
+      *in the chat* (a sticker / emoji rendered inline) instead of being
+      buried in the group's file area. Mirrors the Telegram handler's
+      ``send_photo`` branch.
+    * **everything else** → :class:`UploadGroupFile` /
+      :class:`UploadPrivateFile` (the OneBot file-share extension) so a
+      true document lands in the QQ file panel.
+
+    Returns a status line for the summary block. Best-effort: failures
+    fold into status text rather than raising.
     """
-    path_str, _caption, filename = _parse_send_attachment_args(ev)
+    path_str, caption, filename = _parse_send_attachment_args(ev)
     if not path_str:
         return "⚠️ 发送文件失败: missing `path`"
     p = _resolve_attachment_path(path_str)
     if p is None:
         return f"⚠️ 发送文件失败: {Path(path_str).name} 不存在"
     display = filename or p.name
+    # MIME-sniff the resolved file. ``image/*`` → inline image segment;
+    # anything else → file-share upload.
+    mime, _ = mimetypes.guess_type(p.name)
+    is_image = bool(mime and mime.startswith("image/"))
     try:
+        if is_image:
+            # NapCat resolves a ``file://`` URL against its own (same-host)
+            # filesystem; an absolute path also works on most builds, but
+            # the ``file://`` form is the documented one for local media.
+            image_url = p.as_uri()
+            text = caption or ""
+            action = _build_reply_action(
+                event,
+                text,
+                # No @mention prefix for a bare image — the picture is the
+                # payload; a leading "@user" on an empty caption is noise.
+                prepend_at_mention=bool(text),
+                image_urls=[image_url],
+            )
+            await adapter.send_action(action)
+            _log.info("qq send_attachment inline-image path=%s mime=%s", p, mime)
+            return f"📎 已发送图片: {display}"
         if event.message_type == MessageType.GROUP and event.group_id is not None:
             await adapter.send_action(
                 UploadGroupFile(
@@ -1003,7 +1038,7 @@ async def _qq_send_attachment(
     except Exception as exc:  # noqa: BLE001
         _log.warning("qq send_attachment failed: %s", exc)
         return f"⚠️ 发送文件失败: {display} ({exc})"
-    _log.info("qq send_attachment ok path=%s display=%s", p, display)
+    _log.info("qq send_attachment ok path=%s display=%s mime=%s", p, display, mime)
     return f"📎 已发送文件: {display}"
 
 
@@ -1430,10 +1465,20 @@ def _to_server_attachment_shape(att: Any) -> Any:
 
 
 def _build_reply_action(
-    event: MessageEvent, body: str, *, prepend_at_mention: bool = True
+    event: MessageEvent,
+    body: str,
+    *,
+    prepend_at_mention: bool = True,
+    image_urls: list[str] | None = None,
 ) -> Action:
-    """Build a ``SendGroupMsg`` / ``SendPrivateMsg`` action with a
-    single text segment.
+    """Build a ``SendGroupMsg`` / ``SendPrivateMsg`` action.
+
+    The message carries a text segment (when ``body`` is non-empty) plus
+    one :class:`ImageSegment` per entry in ``image_urls`` — WS-1 task 1's
+    inline media-send path. The image segments are appended on BOTH the
+    group and private branches, and the OneBot wire layer
+    (``_segment_to_wire``) already serializes them, so an image reply
+    lands inline in the chat.
 
     Group messages prepend an ``@sender`` so the reply is clearly
     addressed (matches qqBot.js / Rust). When a long reply is split
@@ -1443,6 +1488,9 @@ def _build_reply_action(
     and Tencent's anti-spam may rate-limit. Telegram does the
     equivalent by only setting ``reply_to_message_id`` on chunk[0].
     """
+    from corlinman_channels.onebot import ImageSegment
+
+    image_segs = [ImageSegment(url=u) for u in (image_urls or []) if u]
     if event.message_type == MessageType.GROUP:
         from corlinman_channels.onebot import AtSegment
 
@@ -1450,14 +1498,19 @@ def _build_reply_action(
         segments: list[Any] = []
         if prepend_at_mention:
             segments.append(AtSegment(qq=str(event.user_id)))
-            segments.append(TextSegment(text=f" {body}"))
-        else:
+            # Keep the body text only when there is one — an inline image
+            # with no caption shouldn't ship a bare " " text segment.
+            if body:
+                segments.append(TextSegment(text=f" {body}"))
+        elif body:
             segments.append(TextSegment(text=body))
+        segments.extend(image_segs)
         return SendGroupMsg(group_id=gid, message=segments)
-    return SendPrivateMsg(
-        user_id=event.user_id,
-        message=[TextSegment(text=body)],
-    )
+    pm_segments: list[Any] = []
+    if body:
+        pm_segments.append(TextSegment(text=body))
+    pm_segments.extend(image_segs)
+    return SendPrivateMsg(user_id=event.user_id, message=pm_segments)
 
 
 # ---------------------------------------------------------------------------
@@ -1718,6 +1771,152 @@ def _telegram_reset_state_for_tests() -> None:
     _TELEGRAM_DAY_KEY = None
     _TELEGRAM_LATENCIES.clear()
     _TELEGRAM_ACTIVE_CHATS.clear()
+
+
+# ---------------------------------------------------------------------------
+# Discord / Slack / Feishu health + recent-message snapshots
+# ---------------------------------------------------------------------------
+#
+# Parallel to :data:`TELEGRAM_HEALTH` / :data:`TELEGRAM_RECENT_MESSAGES`
+# but simpler: these channels expose a flat ``received`` / ``sent`` /
+# ``errors`` counter triple + an ``online`` flag derived from a sliding
+# "last event within N minutes" window. The admin status routes read the
+# health dict directly and the messages route reads the recent buffer.
+#
+# Each health snapshot carries:
+#   online: bool             — saw an inbound within the freshness window
+#   last_event_at_ms: int|None — wallclock of the most recent inbound
+#   received: int            — lifetime inbound count
+#   sent: int                — lifetime successful outbound count
+#   errors: int              — lifetime outbound failure count
+#
+# Recent-message entries mirror the Telegram shape so the frontend can
+# render them with one component: id / kind / chat_id / chat_title /
+# from_username / content / timestamp_ms / routing / mention_reason.
+
+#: A channel is "online" when an inbound landed within the last 5 minutes
+#: — same window as Telegram so the admin banner is consistent.
+_CHANNEL_HEALTH_WINDOW_MS: int = 5 * 60 * 1000
+
+
+def _new_channel_health() -> dict[str, Any]:
+    return {
+        "online": False,
+        "last_event_at_ms": None,
+        "received": 0,
+        "sent": 0,
+        "errors": 0,
+    }
+
+
+DISCORD_HEALTH: dict[str, Any] = _new_channel_health()
+SLACK_HEALTH: dict[str, Any] = _new_channel_health()
+FEISHU_HEALTH: dict[str, Any] = _new_channel_health()
+
+DISCORD_RECENT_MESSAGES: collections.deque[dict[str, Any]] = collections.deque(
+    maxlen=500
+)
+SLACK_RECENT_MESSAGES: collections.deque[dict[str, Any]] = collections.deque(
+    maxlen=500
+)
+FEISHU_RECENT_MESSAGES: collections.deque[dict[str, Any]] = collections.deque(
+    maxlen=500
+)
+
+
+def _channel_refresh_online(health: dict[str, Any], now_ms: int | None = None) -> None:
+    """Recompute the ``online`` flag from ``last_event_at_ms`` against the
+    freshness window. Called on every record + on every ``/status`` read so
+    the admin UI never shows a stale online flag."""
+    if now_ms is None:
+        now_ms = int(time.time() * 1000)
+    last = health.get("last_event_at_ms")
+    if isinstance(last, int):
+        health["online"] = (now_ms - last) <= _CHANNEL_HEALTH_WINDOW_MS
+    else:
+        health["online"] = False
+
+
+def _channel_record_inbound(
+    health: dict[str, Any],
+    recent: collections.deque[dict[str, Any]],
+    inbound: InboundEvent[Any],
+    *,
+    now_ms: int | None = None,
+) -> None:
+    """Record an accepted inbound event for a Discord/Slack/Feishu channel.
+
+    Bumps ``received``, stamps ``last_event_at_ms`` + ``online``, and
+    appends a normalized recent-message dict. Best-effort: any exception is
+    logged and swallowed so a counter bug never breaks the chat path."""
+    try:
+        if now_ms is None:
+            now_ms = int(time.time() * 1000)
+        health["received"] = int(health.get("received", 0)) + 1
+        health["last_event_at_ms"] = now_ms
+        chat_id = str(inbound.binding.thread)
+        recent.append(
+            {
+                "id": str(inbound.message_id)
+                if inbound.message_id is not None
+                else f"{inbound.channel}-{now_ms}",
+                "kind": "group" if not inbound.mentioned else "mention",
+                "chat_id": chat_id,
+                "chat_title": None,
+                "from_username": str(inbound.binding.sender) or None,
+                "content": inbound.text,
+                "timestamp_ms": now_ms,
+                "routing": "queued",
+                "mention_reason": "mention" if inbound.mentioned else "none",
+            }
+        )
+        _channel_refresh_online(health, now_ms)
+    except Exception as exc:  # noqa: BLE001 — never block chat
+        _log.debug("_channel_record_inbound failed: %s", exc)
+
+
+def _channel_record_sent(health: dict[str, Any], *, now_ms: int | None = None) -> None:
+    """Record a successful outbound send: bump ``sent`` and flip the most
+    recent matching ``queued`` entry to ``responded`` is left to the caller;
+    here we only bump the counter. Best-effort."""
+    try:
+        health["sent"] = int(health.get("sent", 0)) + 1
+        _channel_refresh_online(health, now_ms)
+    except Exception as exc:  # noqa: BLE001 — never block chat
+        _log.debug("_channel_record_sent failed: %s", exc)
+
+
+def _channel_record_error(health: dict[str, Any]) -> None:
+    """Record an outbound failure: bump ``errors``. Best-effort."""
+    try:
+        health["errors"] = int(health.get("errors", 0)) + 1
+    except Exception as exc:  # noqa: BLE001 — never block chat
+        _log.debug("_channel_record_error failed: %s", exc)
+
+
+def _channel_mark_responded(
+    recent: collections.deque[dict[str, Any]], chat_id: str
+) -> None:
+    """Flip the most recent ``queued`` entry for ``chat_id`` to
+    ``responded`` so the admin feed reflects the live routing decision —
+    parallel to :func:`telegram_record_reply_sent`. Best-effort."""
+    try:
+        for entry in reversed(recent):
+            if entry.get("chat_id") == chat_id and entry.get("routing") == "queued":
+                entry["routing"] = "responded"
+                break
+    except Exception as exc:  # noqa: BLE001 — never block chat
+        _log.debug("_channel_mark_responded failed: %s", exc)
+
+
+def _channel_reset_state_for_tests(
+    health: dict[str, Any], recent: collections.deque[dict[str, Any]]
+) -> None:
+    """Test-only helper: clear a Discord/Slack/Feishu health snapshot +
+    recent buffer back to a known baseline. Not part of the public
+    surface."""
+    health.update(_new_channel_health())
+    recent.clear()
 
 
 @dataclass(slots=True)
@@ -2603,6 +2802,11 @@ class DiscordChannelParams:
     event_emitter: Any = None
     """W4.1 — see :class:`TelegramChannelParams.event_emitter`."""
 
+    on_sender_ready: Any = None
+    """Admin send hook — see :class:`TelegramChannelParams.on_sender_ready`.
+    Called with the live :class:`DiscordSender` at channel start so the
+    ``POST /admin/channels/discord/send`` route can reach it."""
+
 
 async def run_discord_channel(
     params: DiscordChannelParams,
@@ -2631,6 +2835,13 @@ async def run_discord_channel(
     adapter = DiscordAdapter(dc_cfg)
     send_client = httpx.AsyncClient()
     sender = DiscordSender(send_client, dc_cfg.bot_token, base=dc_cfg.rest_base)
+    # Admin send hook: hand the live sender to the bootstrapper so the
+    # admin send route can reach it. Best-effort — see Telegram.
+    if params.on_sender_ready is not None:
+        try:
+            params.on_sender_ready(sender)
+        except Exception as exc:  # noqa: BLE001 — never block the channel
+            _log.warning("discord on_sender_ready callback failed: %s", exc)
     semaphore = asyncio.Semaphore(_channel_max_concurrency("DISCORD"))
     pending: set[asyncio.Task[None]] = set()
     try:
@@ -2640,6 +2851,9 @@ async def run_discord_channel(
                 ev = await _race_iter_or_cancel(iterator, cancel)
                 if ev is None:
                     break
+                # Admin health: record every accepted inbound so
+                # /admin/channels/discord/{status,messages} see real data.
+                _channel_record_inbound(DISCORD_HEALTH, DISCORD_RECENT_MESSAGES, ev)
                 chat_service = params.chat_service
                 if chat_service is None:
                     continue
@@ -2842,7 +3056,12 @@ async def handle_one_discord(
             await sender.send_message(
                 channel_id, chunk, reply_to_message_id=reply_to
             )
+        # Admin health: count a successful outbound + mark the inbound
+        # entry responded.
+        _channel_record_sent(DISCORD_HEALTH)
+        _channel_mark_responded(DISCORD_RECENT_MESSAGES, channel_id)
     except Exception as exc:  # noqa: BLE001
+        _channel_record_error(DISCORD_HEALTH)
         _log.warning("discord final emit failed: %s", exc)
 
 
@@ -2876,6 +3095,11 @@ class SlackChannelParams:
     event_emitter: Any = None
     """W4.1 — see :class:`TelegramChannelParams.event_emitter`."""
 
+    on_sender_ready: Any = None
+    """Admin send hook — see :class:`TelegramChannelParams.on_sender_ready`.
+    Called with the live :class:`SlackSender` at channel start so the
+    ``POST /admin/channels/slack/send`` route can reach it."""
+
 
 async def run_slack_channel(
     params: SlackChannelParams,
@@ -2907,6 +3131,13 @@ async def run_slack_channel(
     adapter = SlackAdapter(sl_cfg)
     send_client = httpx.AsyncClient()
     sender = SlackSender(send_client, sl_cfg.bot_token, base=sl_cfg.api_base)
+    # Admin send hook: hand the live sender to the bootstrapper so the
+    # admin send route can reach it. Best-effort — see Telegram.
+    if params.on_sender_ready is not None:
+        try:
+            params.on_sender_ready(sender)
+        except Exception as exc:  # noqa: BLE001 — never block the channel
+            _log.warning("slack on_sender_ready callback failed: %s", exc)
     semaphore = asyncio.Semaphore(_channel_max_concurrency("SLACK"))
     pending: set[asyncio.Task[None]] = set()
     try:
@@ -2916,6 +3147,9 @@ async def run_slack_channel(
                 ev = await _race_iter_or_cancel(iterator, cancel)
                 if ev is None:
                     break
+                # Admin health: record every accepted inbound so
+                # /admin/channels/slack/{status,messages} see real data.
+                _channel_record_inbound(SLACK_HEALTH, SLACK_RECENT_MESSAGES, ev)
                 chat_service = params.chat_service
                 if chat_service is None:
                     continue
@@ -3087,7 +3321,12 @@ async def handle_one_slack(
             await sender.send_message(channel, chunks[0], thread_ts=thread_ts)
         for chunk in chunks[1:]:
             await sender.send_message(channel, chunk, thread_ts=thread_ts)
+        # Admin health: count a successful outbound + mark the inbound
+        # entry responded.
+        _channel_record_sent(SLACK_HEALTH)
+        _channel_mark_responded(SLACK_RECENT_MESSAGES, channel)
     except Exception as exc:  # noqa: BLE001
+        _channel_record_error(SLACK_HEALTH)
         _log.warning("slack final emit failed: %s", exc)
 
 
@@ -3120,6 +3359,11 @@ class FeishuChannelParams:
 
     event_emitter: Any = None
     """W4.1 — see :class:`TelegramChannelParams.event_emitter`."""
+
+    on_sender_ready: Any = None
+    """Admin send hook — see :class:`TelegramChannelParams.on_sender_ready`.
+    Called with the live :class:`FeishuSender` at channel start so the
+    ``POST /admin/channels/feishu/send`` route can reach it."""
 
 
 async def run_feishu_channel(
@@ -3154,6 +3398,13 @@ async def run_feishu_channel(
     # The sender needs a fresh tenant_access_token per call; the adapter
     # owns the token lifecycle, so hand it the adapter's refresh hook.
     sender = FeishuSender(send_client, adapter._refresh_token, api_base=fs_cfg.api_base)
+    # Admin send hook: hand the live sender to the bootstrapper so the
+    # admin send route can reach it. Best-effort — see Telegram.
+    if params.on_sender_ready is not None:
+        try:
+            params.on_sender_ready(sender)
+        except Exception as exc:  # noqa: BLE001 — never block the channel
+            _log.warning("feishu on_sender_ready callback failed: %s", exc)
     semaphore = asyncio.Semaphore(_channel_max_concurrency("FEISHU"))
     pending: set[asyncio.Task[None]] = set()
     try:
@@ -3163,6 +3414,9 @@ async def run_feishu_channel(
                 ev = await _race_iter_or_cancel(iterator, cancel)
                 if ev is None:
                     break
+                # Admin health: record every accepted inbound so
+                # /admin/channels/feishu/{status,messages} see real data.
+                _channel_record_inbound(FEISHU_HEALTH, FEISHU_RECENT_MESSAGES, ev)
                 chat_service = params.chat_service
                 if chat_service is None:
                     continue
@@ -3338,7 +3592,12 @@ async def handle_one_feishu(
             await sender.send_message(
                 chat_id, chunk, reply_to_message_id=reply_to
             )
+        # Admin health: count a successful outbound + mark the inbound
+        # entry responded.
+        _channel_record_sent(FEISHU_HEALTH)
+        _channel_mark_responded(FEISHU_RECENT_MESSAGES, chat_id)
     except Exception as exc:  # noqa: BLE001
+        _channel_record_error(FEISHU_HEALTH)
         _log.warning("feishu final emit failed: %s", exc)
 
 

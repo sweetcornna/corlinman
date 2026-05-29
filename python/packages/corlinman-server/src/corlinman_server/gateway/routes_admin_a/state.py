@@ -125,6 +125,20 @@ class AdminState:
     # corlinman-channels in the dependency graph at type-check time.
     telegram_sender: Any | None = None
 
+    # Live :class:`corlinman_channels.DiscordSender` /
+    # :class:`SlackSender` / :class:`FeishuSender` instances for the
+    # active Discord / Slack / Feishu channels. Wired by
+    # ``channels_runtime.bootstrap`` when each channel starts so the
+    # matching ``POST /admin/channels/{discord,slack,feishu}/send`` admin
+    # action can post a test message via the same surface the chat path
+    # uses. ``None`` while the channel is disabled / not yet started — the
+    # send route then returns 503 ``{channel}_disabled``. Typed loose with
+    # ``Any`` to keep this dataclass importable without corlinman-channels
+    # in the dependency graph at type-check time.
+    discord_sender: Any | None = None
+    slack_sender: Any | None = None
+    feishu_sender: Any | None = None
+
     # -- /admin/identity --------------------------------------------
     #
     # ``corlinman_identity.IdentityStore`` (protocol) instance. ``None``

@@ -14,9 +14,13 @@
 
 services:
   napcat:
-    # Community-maintained NapCat docker image (MLikiowa). Pin a concrete
-    # tag on a production deploy; `latest` tracks the edge channel.
-    image: mlikiowa/napcat-docker:latest
+    # Community-maintained NapCat docker image (MLikiowa). Pinned to a
+    # concrete known-good stable tag (NapCat v4.18.4, 2026-05-22) instead
+    # of `latest` (which tracks the edge channel and can break prod on a
+    # silent upstream bump). Override with NAPCAT_VERSION in .env to roll
+    # forward/back — keep it matched to the native AppImage pin in
+    # deploy/install.sh.
+    image: mlikiowa/napcat-docker:${NAPCAT_VERSION:-v4.18.4}
     container_name: corlinman-napcat
     profiles: ["qq"]
     restart: unless-stopped

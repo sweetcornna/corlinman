@@ -2401,7 +2401,21 @@ def build_app(
                         "/v1/",
                         "/memory/",
                         "/canvas/",
-                        "/channels/",
+                        # Gate the specific legacy webhook alias, NOT the bare
+                        # ``/channels/`` prefix. The bare prefix also matches the
+                        # static UI page routes (``/channels/qq``,
+                        # ``/channels/telegram``, … and the per-channel admin
+                        # pages), which a browser fetches without a bearer — so a
+                        # bare prefix returned 401 ``missing_authorization`` for
+                        # every channel admin page *before* the static UI mount
+                        # was reached (the user-visible "channel pages cannot be
+                        # accessed" bug). The only real bearer API under
+                        # ``/channels/`` is the Telegram webhook legacy alias
+                        # (gateway/routes/channels.py); keep that protected. The
+                        # canonical ``/v1/channels/...`` stays gated by ``/v1/``
+                        # above, and the in-app channel API lives under
+                        # ``/api/channels/*`` (its own admin-session auth).
+                        "/channels/telegram/webhook",
                         "/plugin-callback/",
                     ),
                 )

@@ -202,6 +202,34 @@ class RecordSegment:
 
 
 @dataclass(slots=True)
+class VideoSegment:
+    """``{"type": "video", "data": {"url": ..., "file": ...}}``.
+
+    NapCat / gocq surface short-video messages as a ``video`` segment.
+    ``file`` is the upstream filename (when present) so the normalized
+    :class:`Attachment` can carry it through to the agent.
+    """
+
+    url: str = ""
+    file: str | None = None
+
+
+@dataclass(slots=True)
+class FileSegment:
+    """``{"type": "file", "data": {"url": ..., "file": ...}}``.
+
+    NapCat OneBot v11 extension — an inbound shared document. ``url`` is
+    the download URL NapCat resolved; ``file`` is the display name.
+    Older clients ship the document via a ``file`` segment with only the
+    name (no url); we skip those in :func:`segments_to_attachments` the
+    same way we skip url-less images.
+    """
+
+    url: str = ""
+    file: str | None = None
+
+
+@dataclass(slots=True)
 class ForwardSegment:
     """``{"type": "forward", "data": {"id": ...}}``."""
 
@@ -216,7 +244,7 @@ class OtherSegment:
     raw: dict[str, Any]
 
 
-#: Tagged-union over the seven understood segments plus :class:`OtherSegment`.
+#: Tagged-union over the understood segments plus :class:`OtherSegment`.
 MessageSegment = (
     TextSegment
     | AtSegment
@@ -224,6 +252,8 @@ MessageSegment = (
     | ReplySegment
     | FaceSegment
     | RecordSegment
+    | VideoSegment
+    | FileSegment
     | ForwardSegment
     | OtherSegment
 )
@@ -236,6 +266,8 @@ _SEGMENT_PARSERS: dict[str, Callable[[dict[str, Any]], MessageSegment]] = {
     "reply": lambda d: ReplySegment(id=str(d.get("id", ""))),
     "face": lambda d: FaceSegment(id=str(d.get("id", ""))),
     "record": lambda d: RecordSegment(url=str(d.get("url", ""))),
+    "video": lambda d: VideoSegment(url=str(d.get("url", "")), file=d.get("file")),
+    "file": lambda d: FileSegment(url=str(d.get("url", "")), file=d.get("file")),
     "forward": lambda d: ForwardSegment(id=str(d.get("id", ""))),
 }
 
@@ -340,10 +372,12 @@ def segments_to_text(segments: Iterable[MessageSegment]) -> str:
 
 
 def segments_to_attachments(segments: Iterable[MessageSegment]) -> list[Attachment]:
-    """Pull image / voice attachments out of a segment list.
+    """Pull image / voice / video / file attachments out of a segment list.
 
     Skips segments with empty URLs (gocq sometimes ships an empty ``url``
-    on offline media). Matches the Rust ``segments_to_attachments`` filter.
+    on offline media). Matches the Rust ``segments_to_attachments`` filter,
+    extended to cover NapCat ``video`` + ``file`` segments so QQ inbound
+    media parity matches Telegram's photo / voice / video / document.
     """
     out: list[Attachment] = []
     for seg in segments:
@@ -362,6 +396,27 @@ def segments_to_attachments(segments: Iterable[MessageSegment]) -> list[Attachme
                     kind=AttachmentKind.AUDIO,
                     url=seg.url,
                     mime="audio/*",
+                )
+            )
+        elif isinstance(seg, VideoSegment) and seg.url:
+            out.append(
+                Attachment(
+                    kind=AttachmentKind.VIDEO,
+                    url=seg.url,
+                    mime="video/*",
+                    file_name=seg.file,
+                )
+            )
+        elif isinstance(seg, FileSegment) and seg.url:
+            out.append(
+                Attachment(
+                    kind=AttachmentKind.DOCUMENT,
+                    url=seg.url,
+                    # QQ doesn't expose a precise content type for shared
+                    # files; leave it generic so the proto builder routes
+                    # it to the FILE branch.
+                    mime="application/octet-stream",
+                    file_name=seg.file,
                 )
             )
     return out
@@ -489,6 +544,16 @@ def _segment_to_wire(seg: MessageSegment) -> dict[str, Any]:
         return {"type": "face", "data": {"id": seg.id}}
     if isinstance(seg, RecordSegment):
         return {"type": "record", "data": {"url": seg.url}}
+    if isinstance(seg, VideoSegment):
+        vdata: dict[str, Any] = {"url": seg.url}
+        if seg.file is not None:
+            vdata["file"] = seg.file
+        return {"type": "video", "data": vdata}
+    if isinstance(seg, FileSegment):
+        fdata: dict[str, Any] = {"url": seg.url}
+        if seg.file is not None:
+            fdata["file"] = seg.file
+        return {"type": "file", "data": fdata}
     if isinstance(seg, ForwardSegment):
         return {"type": "forward", "data": {"id": seg.id}}
     # OtherSegment falls through to its raw form.
@@ -685,6 +750,17 @@ class OneBotAdapter:
         :attr:`last_status_online`. Used for ``account_checked_at_ms``
         in the admin status route."""
         return self._last_status_online_at_ms
+
+    @property
+    def outbound_queue_depth(self) -> int:
+        """Number of outbound actions buffered but not yet sent.
+
+        Sum of the front re-queue buffer (transient-failure retries) and
+        the main outbound queue. The QQ health watcher snapshots this so
+        the admin status route can surface send backpressure — a steadily
+        rising depth means NapCat is rejecting / slow to accept sends.
+        """
+        return len(self._outbound_front) + self._outbound_q.qsize()
 
     @property
     def url(self) -> str:
@@ -1000,6 +1076,7 @@ __all__ = [
     "AtSegment",
     "Event",
     "FaceSegment",
+    "FileSegment",
     "ForwardNode",
     "ForwardSegment",
     "ImageSegment",
@@ -1023,6 +1100,7 @@ __all__ = [
     "UnknownEvent",
     "UploadGroupFile",
     "UploadPrivateFile",
+    "VideoSegment",
     "action_to_wire",
     "is_mentioned",
     "parse_event",

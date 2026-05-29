@@ -130,6 +130,69 @@ class TelegramSendOut(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Discord / Slack / Feishu + WeChat-Official / QQ-Official wire shapes
+# ---------------------------------------------------------------------------
+#
+# Uniform admin surface for the five channels that previously had zero
+# admin endpoints. Discord / Slack / Feishu expose status + messages +
+# send; the webhook-/credential-only channels (wechat_official /
+# qq_official) expose status only.
+
+
+class ChannelStatusOut(BaseModel):
+    """Status envelope for Discord / Slack / Feishu (traffic-bearing)."""
+
+    configured: bool = False
+    enabled: bool = False
+    online: bool = False
+    last_event_at_ms: int | None = None
+    received: int = 0
+    sent: int = 0
+    errors: int = 0
+    error_message: str | None = None
+    # NON-SECRET config only — bot/app id, allowed targets, keyword
+    # filter. Never tokens / secrets. Values are str or list[str].
+    config_keys: dict[str, str | list[str]] = Field(default_factory=dict)
+
+
+class ChannelConfigStatusOut(BaseModel):
+    """Status envelope for WeChat-Official / QQ-Official (config-only)."""
+
+    configured: bool = False
+    enabled: bool = False
+    online: bool = False
+    last_event_at_ms: int | None = None
+    error_message: str | None = None
+    config_keys: dict[str, str | list[str]] = Field(default_factory=dict)
+
+
+class ChannelMessagesOut(BaseModel):
+    messages: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ChannelSendBody(BaseModel):
+    """Send body — accepts ``target_id`` / ``chat_id`` / ``channel_id``
+    interchangeably so the frontend can use whichever name reads best per
+    channel. At least one must be non-empty (validated in the handler)."""
+
+    target_id: str | None = None
+    chat_id: str | None = None
+    channel_id: str | None = None
+    text: str = Field(..., min_length=1)
+
+    def resolve_target(self) -> str | None:
+        for v in (self.target_id, self.chat_id, self.channel_id):
+            if v:
+                return v
+        return None
+
+
+class ChannelSendOut(BaseModel):
+    ok: bool
+    message_id: str
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -167,6 +230,115 @@ def _telegram_is_enabled(state: AdminState) -> bool:
     if tg is None:
         return False
     return bool(tg.get("enabled", False))
+
+
+# ---------------------------------------------------------------------------
+# Generic channel helpers (Discord / Slack / Feishu / *-official)
+# ---------------------------------------------------------------------------
+
+
+def _channel_config(state: AdminState, name: str) -> dict[str, Any] | None:
+    """Borrow the ``[channels.<name>]`` subsection of the config dict.
+    ``None`` when the section is missing — the status route then surfaces
+    a ``configured=False`` envelope."""
+    if state.channels_config is None:
+        return None
+    section = state.channels_config.get(name)
+    if not isinstance(section, dict):
+        return None
+    return section
+
+
+# Per-channel NON-SECRET config keys to surface. NEVER includes tokens /
+# secrets (``bot_token`` / ``app_token`` / ``app_secret`` / ``token``).
+# ``id_keys`` are plain string ids; ``list_keys`` are list[str].
+_CHANNEL_CONFIG_KEYS: dict[str, dict[str, list[str]]] = {
+    "discord": {
+        "id_keys": [],
+        "list_keys": ["allowed_channel_ids", "keyword_filter"],
+        "bool_keys": ["respond_to_all"],
+    },
+    "slack": {
+        "id_keys": [],
+        "list_keys": ["allowed_channel_ids", "keyword_filter"],
+        "bool_keys": ["respond_to_all"],
+    },
+    "feishu": {
+        "id_keys": ["app_id"],
+        "list_keys": ["allowed_chat_ids", "keyword_filter"],
+        "bool_keys": ["respond_to_all"],
+    },
+    "wechat_official": {
+        "id_keys": ["app_id"],
+        "list_keys": [],
+        "bool_keys": [],
+    },
+    "qq_official": {
+        "id_keys": ["app_id"],
+        "list_keys": ["intents"],
+        "bool_keys": ["sandbox"],
+    },
+}
+
+
+def _non_secret_config_keys(
+    name: str, section: dict[str, Any]
+) -> dict[str, str | list[str]]:
+    """Project a channel config section down to the NON-SECRET keys for
+    the named channel. Tokens / secrets are never read here."""
+    spec = _CHANNEL_CONFIG_KEYS.get(name, {})
+    out: dict[str, str | list[str]] = {}
+    for key in spec.get("id_keys", []):
+        val = section.get(key)
+        if val is not None:
+            out[key] = str(val)
+    for key in spec.get("list_keys", []):
+        val = section.get(key)
+        if isinstance(val, list):
+            out[key] = [str(v) for v in val]
+    for key in spec.get("bool_keys", []):
+        if key in section:
+            out[key] = str(bool(section.get(key)))
+    return out
+
+
+def _channel_health(name: str) -> dict[str, Any]:
+    """Best-effort import of the live health snapshot for a channel.
+    Empty dict when corlinman-channels isn't installed."""
+    try:
+        from corlinman_channels import service as _svc
+
+        attr = {
+            "discord": "DISCORD_HEALTH",
+            "slack": "SLACK_HEALTH",
+            "feishu": "FEISHU_HEALTH",
+        }.get(name)
+        if attr is None:
+            return {}
+        _svc._channel_refresh_online(getattr(_svc, attr))
+        return dict(getattr(_svc, attr))
+    except Exception:  # noqa: BLE001 — degrade silently
+        return {}
+
+
+def _channel_recent(name: str, limit: int) -> list[dict[str, Any]]:
+    """Best-effort import of the recent-message buffer for a channel,
+    newest first, capped at ``limit``."""
+    try:
+        from corlinman_channels import service as _svc
+
+        attr = {
+            "discord": "DISCORD_RECENT_MESSAGES",
+            "slack": "SLACK_RECENT_MESSAGES",
+            "feishu": "FEISHU_RECENT_MESSAGES",
+        }.get(name)
+        if attr is None:
+            return []
+        snapshot = list(getattr(_svc, attr))
+        snapshot.sort(key=lambda m: m.get("timestamp_ms", 0), reverse=True)
+        return [dict(m) for m in snapshot[:limit]]
+    except Exception:  # noqa: BLE001 — degrade gracefully
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -466,10 +638,148 @@ def router() -> APIRouter:
             return TelegramSendOut(status="error", error=str(exc))
         return TelegramSendOut(status="ok", message_id=int(message_id))
 
+    # -- Discord / Slack / Feishu (status + messages + send) --------
+    #
+    # Registered via a factory loop so the three traffic-bearing channels
+    # share one implementation. The send route reaches the live sender
+    # parked on ``AdminState.<name>_sender`` by channels_runtime.bootstrap.
+
+    def _register_traffic_channel(name: str, sender_attr: str) -> None:
+        # ``name`` / ``sender_attr`` are captured by closure (NOT default
+        # args) so they never leak into the public OpenAPI schema as query
+        # params.
+        @r.get(
+            f"/admin/channels/{name}/status",
+            response_model=ChannelStatusOut,
+            summary=f"Snapshot of the {name} channel + traffic counters",
+            name=f"{name}_status",
+        )
+        async def _status(
+            state: Annotated[AdminState, Depends(get_admin_state)],
+        ) -> ChannelStatusOut:
+            section = _channel_config(state, name)
+            if section is None:
+                return ChannelStatusOut(configured=False, enabled=False)
+            health = _channel_health(name)
+            return ChannelStatusOut(
+                configured=True,
+                enabled=bool(section.get("enabled", False)),
+                online=bool(health.get("online", False)),
+                last_event_at_ms=health.get("last_event_at_ms"),
+                received=int(health.get("received", 0) or 0),
+                sent=int(health.get("sent", 0) or 0),
+                errors=int(health.get("errors", 0) or 0),
+                error_message=None,
+                config_keys=_non_secret_config_keys(name, section),
+            )
+
+        @r.get(
+            f"/admin/channels/{name}/messages",
+            response_model=ChannelMessagesOut,
+            summary=f"Recent inbound + outbound {name} messages",
+            name=f"{name}_messages",
+        )
+        async def _messages(
+            state: Annotated[AdminState, Depends(get_admin_state)],
+            limit: Annotated[int, Query(ge=1, le=200)] = 20,
+        ) -> ChannelMessagesOut:
+            return ChannelMessagesOut(messages=_channel_recent(name, limit))
+
+        @r.post(
+            f"/admin/channels/{name}/send",
+            response_model=ChannelSendOut,
+            summary=f"Send a test message via the live {name} channel",
+            name=f"{name}_send",
+        )
+        async def _send(
+            body: ChannelSendBody,
+            state: Annotated[AdminState, Depends(get_admin_state)],
+        ) -> ChannelSendOut:
+            target = body.resolve_target()
+            if not target:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "error": "missing_target",
+                        "message": (
+                            "one of target_id / chat_id / channel_id is required"
+                        ),
+                    },
+                )
+            section = _channel_config(state, name)
+            enabled = bool(section.get("enabled", False)) if section else False
+            sender = getattr(state, sender_attr, None)
+            if not enabled or sender is None:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail={
+                        "error": f"{name}_disabled",
+                        "message": (
+                            f"[channels.{name}] is missing/disabled or the "
+                            "live sender is not wired; enable it in config.toml "
+                            "and restart the gateway"
+                        ),
+                    },
+                )
+            try:
+                message_id = await sender.send_message(target, body.text)
+            except Exception as exc:  # noqa: BLE001 — surface inline
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail={"error": "send_failed", "message": str(exc)},
+                ) from exc
+            return ChannelSendOut(ok=True, message_id=str(message_id))
+
+    for _ch, _attr in (
+        ("discord", "discord_sender"),
+        ("slack", "slack_sender"),
+        ("feishu", "feishu_sender"),
+    ):
+        _register_traffic_channel(_ch, _attr)
+
+    # -- WeChat-Official / QQ-Official (config-only status) ---------
+    #
+    # No live in-process traffic counters / sender for these webhook-/
+    # credential-only channels — the status route surfaces config presence
+    # + the enabled flag only. ``online`` stays ``False`` (no health
+    # watcher) so the admin page renders a neutral "configured but not
+    # observed" state.
+
+    def _register_config_channel(name: str) -> None:
+        # ``name`` captured by closure — see _register_traffic_channel.
+        @r.get(
+            f"/admin/channels/{name}/status",
+            response_model=ChannelConfigStatusOut,
+            summary=f"Snapshot of the {name} channel configuration",
+            name=f"{name}_status",
+        )
+        async def _status(
+            state: Annotated[AdminState, Depends(get_admin_state)],
+        ) -> ChannelConfigStatusOut:
+            section = _channel_config(state, name)
+            if section is None:
+                return ChannelConfigStatusOut(configured=False, enabled=False)
+            return ChannelConfigStatusOut(
+                configured=True,
+                enabled=bool(section.get("enabled", False)),
+                online=False,
+                last_event_at_ms=None,
+                error_message=None,
+                config_keys=_non_secret_config_keys(name, section),
+            )
+
+    for _ch in ("wechat_official", "qq_official"):
+        _register_config_channel(_ch)
+
     return r
 
 
 __all__ = [
+    "ChannelConfigStatusOut",
+    "ChannelMessagesOut",
+    "ChannelSendBody",
+    "ChannelSendOut",
+    "ChannelStatusOut",
     "KeywordsBody",
     "KeywordsOut",
     "StatusOut",

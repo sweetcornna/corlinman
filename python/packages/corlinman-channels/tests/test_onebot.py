@@ -19,6 +19,7 @@ from corlinman_channels.common import AttachmentKind, ConfigError, TransportErro
 from corlinman_channels.onebot import (
     AtSegment,
     FaceSegment,
+    FileSegment,
     ImageSegment,
     MessageEvent,
     MessageType,
@@ -31,6 +32,7 @@ from corlinman_channels.onebot import (
     SendGroupMsg,
     TextSegment,
     UnknownEvent,
+    VideoSegment,
     action_to_wire,
     is_mentioned,
     parse_event,
@@ -105,6 +107,8 @@ class TestSegments:
             ({"type": "reply", "data": {"id": "42"}}, ReplySegment),
             ({"type": "face", "data": {"id": "1"}}, FaceSegment),
             ({"type": "record", "data": {"url": "https://y"}}, RecordSegment),
+            ({"type": "video", "data": {"url": "https://v", "file": "v.mp4"}}, VideoSegment),
+            ({"type": "file", "data": {"url": "https://f", "file": "doc.pdf"}}, FileSegment),
         ],
     )
     def test_seven_segment_types(self, payload: dict[str, Any], expected_cls: type) -> None:
@@ -116,9 +120,11 @@ class TestSegments:
         assert isinstance(ev.message[0], expected_cls)
 
     def test_unknown_segment_collapses_to_other(self) -> None:
+        # ``poke`` is a genuinely unmodeled segment type — ``video`` and
+        # ``file`` are now first-class (see TestSegmentHelpers).
         ev = parse_event({"post_type": "message", "message_type": "private",
                           "self_id": 1, "user_id": 1, "message_id": 1,
-                          "message": [{"type": "video", "data": {"url": "x"}}], "time": 0})
+                          "message": [{"type": "poke", "data": {"id": "x"}}], "time": 0})
         assert isinstance(ev, MessageEvent)
         assert isinstance(ev.message[0], OtherSegment)
 
@@ -153,6 +159,32 @@ class TestSegmentHelpers:
         assert atts[0].url == "https://cdn/img.jpg"
         assert atts[0].file_name == "img.jpg"
         assert atts[1].kind == AttachmentKind.AUDIO
+
+    def test_attachments_cover_video_and_file(self) -> None:
+        """WS-1 task 2 — QQ inbound now captures video + file segments so
+        media parity matches Telegram's photo/voice/video/document."""
+        segs = [
+            TextSegment(text="see this"),
+            VideoSegment(url="https://cdn/clip.mp4", file="clip.mp4"),
+            FileSegment(url="https://cdn/report.pdf", file="report.pdf"),
+        ]
+        atts = segments_to_attachments(segs)
+        assert len(atts) == 2
+        assert atts[0].kind == AttachmentKind.VIDEO
+        assert atts[0].url == "https://cdn/clip.mp4"
+        assert atts[0].file_name == "clip.mp4"
+        assert atts[1].kind == AttachmentKind.DOCUMENT
+        assert atts[1].url == "https://cdn/report.pdf"
+        assert atts[1].file_name == "report.pdf"
+
+    def test_attachments_skip_empty_url_video_and_file(self) -> None:
+        # url-less video/file segments (offline media, name-only file
+        # shares) are skipped the same way as url-less images.
+        segs = [
+            VideoSegment(url="", file="x.mp4"),
+            FileSegment(url="", file="x.pdf"),
+        ]
+        assert segments_to_attachments(segs) == []
 
     def test_attachments_skip_empty_urls(self) -> None:
         segs = [ImageSegment(url="", file=None)]
@@ -219,6 +251,42 @@ class TestActionToWire:
         assert s["params"]["name"] == "x.pdf"
         # ``folder`` is omitted when not set.
         assert "folder" not in s["params"]
+
+    def test_image_segment_serializes_inline(self) -> None:
+        """WS-1 task 1 — an outbound image segment serializes to the
+        OneBot ``image`` wire form so inline media-send lands."""
+        a = SendGroupMsg(
+            group_id=7,
+            message=[
+                TextSegment(text="here"),
+                ImageSegment(url="https://cdn/pic.png", file="pic.png"),
+            ],
+        )
+        s = action_to_wire(a)
+        img = s["params"]["message"][1]
+        assert img["type"] == "image"
+        assert img["data"]["url"] == "https://cdn/pic.png"
+        assert img["data"]["file"] == "pic.png"
+
+    def test_video_and_file_segments_serialize(self) -> None:
+        from corlinman_channels.onebot import SendPrivateMsg
+
+        a = SendPrivateMsg(
+            user_id=3,
+            message=[
+                VideoSegment(url="https://cdn/clip.mp4", file="clip.mp4"),
+                FileSegment(url="https://cdn/doc.pdf"),
+            ],
+        )
+        s = action_to_wire(a)
+        vid, fil = s["params"]["message"]
+        assert vid["type"] == "video"
+        assert vid["data"]["url"] == "https://cdn/clip.mp4"
+        assert vid["data"]["file"] == "clip.mp4"
+        assert fil["type"] == "file"
+        assert fil["data"]["url"] == "https://cdn/doc.pdf"
+        # ``file`` omitted when not set.
+        assert "file" not in fil["data"]
 
 
 # ---------------------------------------------------------------------------

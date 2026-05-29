@@ -6,6 +6,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import { useTranslation } from "react-i18next";
 import {
+  AtSign,
   Beaker,
   Bot,
   Boxes,
@@ -18,10 +19,12 @@ import {
   FileTerminal,
   Fingerprint,
   GitFork,
+  Hash,
   KeyRound,
   Leaf,
   LogOut,
   MessageCircle,
+  MessageSquare,
   MessageSquareText,
   MessagesSquare,
   MonitorCog,
@@ -78,7 +81,8 @@ type NavEntry = NavItem | NavGroup;
 
 /**
  * Visible-by-default Operator surface. 9 page entries (with Channels as a
- * collapsible group exposing QQ + Telegram leaves) + the always-visible
+ * collapsible group exposing 7 channel leaves — QQ, Telegram, Discord,
+ * Slack, Feishu, WeChat-Official, QQ-Official) + the always-visible
  * Developer Settings link at the bottom — 10 sidebar rows total.
  *
  * Order: top-down by frequency of use during a normal operator shift
@@ -116,6 +120,31 @@ const OPERATOR_ITEMS: NavEntry[] = [
         href: "/channels/telegram",
         labelKey: "nav.channelTelegram",
         icon: Send,
+      },
+      {
+        href: "/channels/discord",
+        labelKey: "nav.channelDiscord",
+        icon: Hash,
+      },
+      {
+        href: "/channels/slack",
+        labelKey: "nav.channelSlack",
+        icon: AtSign,
+      },
+      {
+        href: "/channels/feishu",
+        labelKey: "nav.channelFeishu",
+        icon: MessageSquareText,
+      },
+      {
+        href: "/channels/wechat_official",
+        labelKey: "nav.channelWechatOfficial",
+        icon: MessageSquare,
+      },
+      {
+        href: "/channels/qq_official",
+        labelKey: "nav.channelQqOfficial",
+        icon: Bot,
       },
     ],
   },

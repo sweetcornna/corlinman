@@ -389,7 +389,14 @@ export function fetchConfigSchema(): Promise<unknown> {
 // than touching anything else.
 // ---------------------------------------------------------------------------
 
-export type ChannelName = "qq" | "telegram";
+export type ChannelName =
+  | "qq"
+  | "telegram"
+  | "discord"
+  | "slack"
+  | "feishu"
+  | "wechat_official"
+  | "qq_official";
 
 /** Read the current `enabled` flag for a channel from a TOML string. */
 export function readChannelEnabled(toml: string, channel: ChannelName): boolean {

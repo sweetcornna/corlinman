@@ -555,6 +555,104 @@ class TestHandleOneQq:
         assert uploads[0].file.endswith("doc.pdf")
 
     @pytest.mark.asyncio
+    async def test_send_attachment_image_sends_inline_segment(
+        self, tmp_path: Any
+    ) -> None:
+        """WS-1 task 1 — an ``image/*`` send_attachment must ship an inline
+        ImageSegment (SendPrivateMsg with an image), NOT an UploadPrivateFile,
+        so the picture lands in the chat instead of the file panel."""
+        import asyncio
+        import json
+
+        from corlinman_channels.onebot import (
+            ImageSegment,
+            UploadPrivateFile,
+        )
+
+        f = tmp_path / "sticker.png"
+        f.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+        args = json.dumps({"path": str(f), "filename": "sticker.png"})
+        svc = _ScriptedChatService([
+            _Ev(
+                kind="tool_call",
+                plugin="send_attachment",
+                tool="send_attachment",
+                args_json=args.encode("utf-8"),
+            ),
+            _Ev(kind="token_delta", text="here you go"),
+            _Ev(kind="done"),
+        ])
+        ev = _qq_private_event(user_id=20002)
+        binding = ChannelBinding.qq_private(999, 20002)
+        req = RoutedRequest(binding=binding, content="send the sticker")
+        adapter = _FakeOneBotAdapter()
+
+        await handle_one_qq(svc, req, ev, "m", adapter, asyncio.Event())  # type: ignore[arg-type]
+
+        # No file-share upload for an image.
+        assert not [a for a in adapter.sent if isinstance(a, UploadPrivateFile)]
+        # An inline image segment landed (the dedicated image send PLUS
+        # the final text reply are both SendPrivateMsg).
+        image_msgs = [
+            a
+            for a in adapter.sent
+            if isinstance(a, SendPrivateMsg)
+            and any(isinstance(s, ImageSegment) for s in a.message)
+        ]
+        assert image_msgs, (
+            "expected a SendPrivateMsg carrying an ImageSegment; got "
+            f"{[type(a).__name__ for a in adapter.sent]}"
+        )
+        seg = next(s for s in image_msgs[0].message if isinstance(s, ImageSegment))
+        assert seg.url.startswith("file://")
+        assert seg.url.endswith("sticker.png")
+
+    @pytest.mark.asyncio
+    async def test_send_attachment_image_group_inline_segment(
+        self, tmp_path: Any
+    ) -> None:
+        """Group path mirrors private: image → inline ImageSegment in a
+        SendGroupMsg, no UploadGroupFile."""
+        import asyncio
+        import json
+
+        from corlinman_channels.onebot import (
+            ImageSegment,
+            UploadGroupFile,
+        )
+
+        f = tmp_path / "pic.jpg"
+        f.write_bytes(b"\xff\xd8\xff\xe0fake-jpeg")
+        args = json.dumps({"path": str(f)})
+        svc = _ScriptedChatService([
+            _Ev(
+                kind="tool_call",
+                plugin="send_attachment",
+                tool="send_attachment",
+                args_json=args.encode("utf-8"),
+            ),
+            _Ev(kind="done"),
+        ])
+        ev = _sample_group_event()
+        binding = ChannelBinding.qq_group(ev.self_id, ev.group_id or 0, ev.user_id)
+        req = RoutedRequest(binding=binding, content="show the pic")
+        adapter = _FakeOneBotAdapter()
+
+        await handle_one_qq(svc, req, ev, "m", adapter, asyncio.Event())  # type: ignore[arg-type]
+
+        assert not [a for a in adapter.sent if isinstance(a, UploadGroupFile)]
+        image_msgs = [
+            a
+            for a in adapter.sent
+            if isinstance(a, SendGroupMsg)
+            and any(isinstance(s, ImageSegment) for s in a.message)
+        ]
+        assert image_msgs, (
+            "expected a SendGroupMsg carrying an ImageSegment; got "
+            f"{[type(a).__name__ for a in adapter.sent]}"
+        )
+
+    @pytest.mark.asyncio
     async def test_input_status_pulse_fires_until_cancelled(self) -> None:
         """NapCat-only ``set_input_status`` pulse must re-fire on its
         interval and stop on cancel.set(). Private chats only."""
