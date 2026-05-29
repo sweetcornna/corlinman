@@ -21,6 +21,7 @@ import pytest
 from corlinman_server.system.upgrader import (
     DockerUpgrader,
     UpgradeAlreadyRunning,
+    UpgradeRequest,
     UpgradeStateStore,
 )
 from corlinman_server.system.upgrader.docker_upgrader import (
@@ -499,6 +500,44 @@ async def test_progress_unknown_request_id_is_empty(
     upg = _make_upgrader(store, FakeDockerClient())
     snaps = [s async for s in upg.progress("nope")]
     assert snaps == []
+
+
+async def test_progress_loop_exits_on_stalled(
+    store: UpgradeStateStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression for #R3-005.
+
+    ``stalled`` is terminal (helper wrote ``finished_at`` and stopped).
+    The progress async generator MUST return — otherwise every SSE
+    observer leaks a task at the 500 ms tick until disconnect.
+    """
+    monkeypatch.setattr(
+        "corlinman_server.system.upgrader.docker_upgrader._PROGRESS_POLL_SECONDS",
+        0.02,
+    )
+    upg = _make_upgrader(store, FakeDockerClient())
+    req = UpgradeRequest(
+        request_id="req-stalled",
+        tag="v1.2.0",
+        requested_at=0,
+        requested_by="ops",
+        mode="docker",
+    )
+    await store.begin(req)
+    await store.update(
+        req.request_id,
+        state="stalled",
+        phase="stalled",
+        finished_at=1,
+    )
+
+    async def drain() -> list[Any]:
+        return [s async for s in upg.progress(req.request_id)]
+
+    snaps = await asyncio.wait_for(drain(), timeout=1.0)
+    assert snaps, "expected at least one snapshot before terminal"
+    assert snaps[-1].state == "stalled"
 
 
 # ---------------------------------------------------------------------------

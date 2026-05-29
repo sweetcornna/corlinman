@@ -367,6 +367,53 @@ async def test_progress_yields_snapshots_and_terminates(
         nu._PROGRESS_POLL_SECONDS = original_progress
 
 
+@pytest.mark.asyncio
+async def test_progress_loop_exits_on_stalled(
+    tmp_path: Path, store: UpgradeStateStore
+) -> None:
+    """Regression for #R3-005.
+
+    A status with ``state="stalled"`` is terminal (helper wrote
+    ``finished_at`` and stopped). The progress async generator MUST
+    return, not poll forever — otherwise every SSE observer leaks a
+    task + bytes at the 500 ms tick.
+    """
+    original_progress = nu._PROGRESS_POLL_SECONDS
+    nu._PROGRESS_POLL_SECONDS = 0.02
+    try:
+        upgrader = nu.NativeUpgrader(
+            store=store,
+            data_dir=tmp_path,
+            unit_path=tmp_path / "u.service",
+            path_unit_path=tmp_path / "u.path",
+            stall_timeout_s=999,
+            overall_timeout_s=999,
+        )
+        req = UpgradeRequest(
+            request_id="req-stalled",
+            tag="v1.2.0",
+            requested_at=int(time.time() * 1000),
+            requested_by="ops",
+            mode="native",
+        )
+        await store.begin(req)
+        await store.update(
+            req.request_id,
+            state="stalled",
+            phase="stalled",
+            finished_at=int(time.time() * 1000),
+        )
+
+        async def drain() -> list[UpgradeStatus]:
+            return [s async for s in upgrader.progress(req.request_id)]
+
+        snaps = await asyncio.wait_for(drain(), timeout=1.0)
+        assert snaps, "expected at least one snapshot before terminal"
+        assert snaps[-1].state == "stalled"
+    finally:
+        nu._PROGRESS_POLL_SECONDS = original_progress
+
+
 # ---------------------------------------------------------------------------
 # Test helpers
 # ---------------------------------------------------------------------------

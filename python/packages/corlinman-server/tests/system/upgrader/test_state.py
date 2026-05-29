@@ -14,6 +14,7 @@ import pytest
 from corlinman_server.system.upgrader.state import (
     UpgradeRequest,
     UpgradeStateStore,
+    UpgradeStatus,
 )
 
 
@@ -186,3 +187,27 @@ async def test_append_log_unknown_request_noop(tmp_path: Path) -> None:
     store = UpgradeStateStore(tmp_path / ".upgrade-state.json")
     # Must not raise.
     await store.append_log("ghost", "data")
+
+
+def test_is_terminal_includes_stalled() -> None:
+    """Regression for #R3-005.
+
+    ``stalled`` means the helper wrote ``finished_at`` and stopped
+    progressing — there is nothing more to observe. The progress SSE
+    generators in both ``NativeUpgrader`` and ``DockerUpgrader`` use
+    :meth:`UpgradeStatus.is_terminal` as their loop-exit condition, so
+    ``stalled`` MUST count as terminal or those generators poll forever
+    (500 ms tick, leaking the WS / task per observer).
+    """
+    status = UpgradeStatus(
+        request_id="r",
+        tag="v1",
+        state="stalled",
+        phase="stalled",
+        started_at=1,
+        finished_at=2,
+    )
+    assert status.is_terminal() is True
+    # ``is_in_flight`` semantics ("still occupying a slot") is unchanged
+    # and intentional — operators still see stalled in current_in_flight.
+    assert status.is_in_flight() is True

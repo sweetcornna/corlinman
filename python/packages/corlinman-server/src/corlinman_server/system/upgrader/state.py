@@ -105,7 +105,7 @@ class UpgradeStatus:
         return asdict(self)
 
     def is_terminal(self) -> bool:
-        return self.state in ("succeeded", "failed")
+        return self.state in ("succeeded", "failed", "stalled")
 
     def is_in_flight(self) -> bool:
         return self.state in ("queued", "running", "stalled")
