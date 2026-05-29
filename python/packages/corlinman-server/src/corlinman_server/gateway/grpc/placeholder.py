@@ -44,12 +44,21 @@ from corlinman_grpc._generated.corlinman.v1 import (
 )
 
 __all__ = [
+    "DEFAULT_MAX_DEPTH",
+    "DEFAULT_NAMESPACE",
     "DEFAULT_RUST_SOCKET",
     "ENV_RUST_SOCKET",
+    "RESERVED_NAMESPACES",
+    "CycleError",
+    "DepthExceededError",
+    "DynamicResolverLike",
     "PlaceholderCtx",
+    "PlaceholderEngine",
     "PlaceholderEngineLike",
     "PlaceholderError",
     "PlaceholderService",
+    "ResolverError",
+    "build_default_engine",
     "collect_unresolved",
     "encode_error",
     "serve",
@@ -78,6 +87,32 @@ respects when set."""
 # unresolved-key scan finds the same tokens the engine would have tried
 # to expand.
 _TOKEN_RE: re.Pattern[str] = re.compile(r"\{\{([^{}]*?)\}\}")
+
+
+# Mirrors :rust:`corlinman_core::placeholder` module constants 1:1.
+
+DEFAULT_NAMESPACE: str = "default"
+"""Namespace assumed when a token has no ``.`` separator (``{{today}}``
+is looked up as ``default.today``). Matches the Rust
+``DEFAULT_NAMESPACE``."""
+
+DEFAULT_MAX_DEPTH: int = 4
+"""Default maximum recursive expansion depth. Matches the Rust
+``DEFAULT_MAX_DEPTH = 4``."""
+
+RESERVED_NAMESPACES: tuple[str, ...] = (
+    "var",
+    "sar",
+    "tar",
+    "agent",
+    "session",
+    "tool",
+    "vector",
+    "skill",
+    "episodes",
+)
+"""Namespace prefixes reserved by the corlinman runtime. Verbatim port of
+the Rust ``RESERVED_NAMESPACES`` slice (informational, not exclusive)."""
 
 
 # ─── Engine protocol (PlaceholderEngine port stub) ───────────────────
@@ -147,6 +182,231 @@ class PlaceholderEngineLike(Protocol):
     async def render(self, template: str, ctx: PlaceholderCtx) -> str: ...
 
     def clone_with_max_depth(self, max_depth: int) -> PlaceholderEngineLike: ...
+
+
+@runtime_checkable
+class DynamicResolverLike(Protocol):
+    """Structural surface a namespace resolver must satisfy.
+
+    Mirrors the Rust ``DynamicResolver`` trait. The ``key`` is the token
+    body *after* the namespace prefix (e.g. ``{{weather.beijing}}`` with
+    a resolver on ``weather`` gets ``key = "beijing"``). The ``ctx`` is
+    accepted positionally for parity with the engine; resolvers that
+    don't consult it (memory) still accept it. Duck-typed: any object
+    with an ``async resolve(self, key, ctx) -> str`` is accepted.
+    """
+
+    async def resolve(self, key: str, ctx: PlaceholderCtx) -> str: ...
+
+
+# ─── Engine ───────────────────────────────────────────────────────────
+
+
+class PlaceholderEngine:
+    """Faithful Python port of :rust:`corlinman_core::placeholder::\
+PlaceholderEngine`.
+
+    Static values are resolved first (O(1) dict lookup, keyed by the full
+    ``namespace.name``); if absent, the token's namespace is matched
+    against a dynamic resolver registry. Values produced by resolvers (or
+    static entries) are themselves re-scanned for ``{{…}}`` tokens up to
+    :attr:`max_depth`; an in-flight key set guards against cycles.
+
+    The class satisfies :class:`PlaceholderEngineLike` so
+    :class:`PlaceholderService` accepts it directly.
+    """
+
+    __slots__ = ("_dynamic", "_max_depth", "_values")
+
+    def __init__(
+        self,
+        *,
+        values: dict[str, str] | None = None,
+        dynamic: dict[str, DynamicResolverLike] | None = None,
+        max_depth: int = DEFAULT_MAX_DEPTH,
+    ) -> None:
+        self._values: dict[str, str] = dict(values or {})
+        self._dynamic: dict[str, DynamicResolverLike] = dict(dynamic or {})
+        self._max_depth = int(max_depth)
+
+    # ---- introspection ---------------------------------------------------
+
+    @property
+    def max_depth(self) -> int:
+        """Current recursion ceiling. Mirrors the Rust ``max_depth``."""
+        return self._max_depth
+
+    @property
+    def namespaces(self) -> tuple[str, ...]:
+        """Registered dynamic namespaces (debug / boot logging)."""
+        return tuple(self._dynamic.keys())
+
+    @staticmethod
+    def is_reserved_namespace(prefix: str) -> bool:
+        """Whether ``prefix`` is one of the reserved runtime namespaces.
+        Mirrors :rust:`PlaceholderEngine::is_reserved_namespace`."""
+        return prefix in RESERVED_NAMESPACES
+
+    def __repr__(self) -> str:  # pragma: no cover — debug only
+        return (
+            f"PlaceholderEngine(values={len(self._values)}, "
+            f"dynamic_namespaces={list(self._dynamic)}, "
+            f"max_depth={self._max_depth})"
+        )
+
+    # ---- builders --------------------------------------------------------
+
+    def with_max_depth(self, max_depth: int) -> PlaceholderEngine:
+        """Builder: override the recursion ceiling *in place* and return
+        ``self``. Depth 0 disables recursive expansion (single pass).
+        Mirrors the Rust ``with_max_depth`` consuming builder."""
+        self._max_depth = int(max_depth)
+        return self
+
+    def with_static(self, key: str, value: str) -> PlaceholderEngine:
+        """Register a static ``namespace.name`` entry (or bare ``name``).
+        Builder-style; returns ``self``. Mirrors Rust ``with_static``."""
+        self._values[key] = str(value)
+        return self
+
+    def with_dynamic(
+        self, namespace: str, resolver: DynamicResolverLike
+    ) -> PlaceholderEngine:
+        """Builder-style sibling of :meth:`register_namespace`. Mirrors
+        the Rust ``with_dynamic``."""
+        self._dynamic[namespace] = resolver
+        return self
+
+    def register_namespace(
+        self, prefix: str, resolver: DynamicResolverLike
+    ) -> DynamicResolverLike | None:
+        """Register (or replace) a dynamic resolver for ``prefix``.
+
+        Returns the previous resolver if one was registered. Mirrors the
+        Rust ``register_namespace`` ``HashMap::insert`` return.
+        """
+        previous = self._dynamic.get(prefix)
+        self._dynamic[prefix] = resolver
+        return previous
+
+    def clone_with_max_depth(self, max_depth: int) -> PlaceholderEngine:
+        """Clone this engine's registrations with a different recursion
+        ceiling. Shares the same resolver instances + static values
+        (shallow copy of the registries) so callers don't rebuild the
+        registry. Mirrors the Rust ``clone_with_max_depth``."""
+        return PlaceholderEngine(
+            values=self._values,
+            dynamic=self._dynamic,
+            max_depth=max_depth,
+        )
+
+    # ---- render ----------------------------------------------------------
+
+    async def render(self, template: str, ctx: PlaceholderCtx) -> str:
+        """Render ``template``, replacing each ``{{namespace.name}}``
+        token. Resolved values are re-scanned for placeholders up to
+        :attr:`max_depth`; cycles raise :class:`CycleError`. Unknown
+        tokens are returned verbatim. Mirrors the Rust ``render``."""
+        in_flight: set[str] = set()
+        return await self._render_inner(template, ctx, in_flight, 0)
+
+    async def _render_inner(
+        self,
+        template: str,
+        ctx: PlaceholderCtx,
+        in_flight: set[str],
+        depth: int,
+    ) -> str:
+        """Internal recursive render. Keeps the ``in_flight`` / ``depth``
+        invariants inside the class. Mirrors the Rust ``render_inner``."""
+        if depth > self._max_depth:
+            raise DepthExceededError(depth)
+
+        # Fast path: no ``{{`` at all → skip the regex + allocation. Same
+        # short-circuit as the Rust impl.
+        if "{{" not in template:
+            return template
+
+        out: list[str] = []
+        cursor = 0
+        # Collect matches up-front so we can ``await`` inside the loop
+        # without holding the iterator across an await point (mirrors the
+        # Rust ``find_iter().collect()`` dance).
+        for match in list(_TOKEN_RE.finditer(template)):
+            out.append(template[cursor : match.start()])
+            raw = match.group(0)
+            body = match.group(1).strip()
+
+            if not body:
+                # Empty ``{{}}`` / ``{{ }}`` preserved verbatim.
+                out.append(raw)
+                cursor = match.end()
+                continue
+
+            value = await self._resolve_once(body, ctx)
+            if value is None:
+                # Unknown token → preserve verbatim.
+                out.append(raw)
+            elif "{{" in value and self._max_depth > 0:
+                # Recurse only when the resolved value still contains a
+                # token AND recursion is enabled. Cycle guard keyed on the
+                # token body, exactly like the Rust in-flight ``HashSet``.
+                if body in in_flight:
+                    raise CycleError(body)
+                in_flight.add(body)
+                try:
+                    expanded = await self._render_inner(
+                        value, ctx, in_flight, depth + 1
+                    )
+                finally:
+                    in_flight.discard(body)
+                out.append(expanded)
+            else:
+                out.append(value)
+            cursor = match.end()
+
+        out.append(template[cursor:])
+        return "".join(out)
+
+    async def _resolve_once(
+        self, body: str, ctx: PlaceholderCtx
+    ) -> str | None:
+        """Resolve a single trimmed token body (one hop, no recursion).
+        Returns ``None`` for unknown tokens so the caller preserves the
+        original text. Mirrors the Rust ``resolve_once`` order:
+        static → split on first ``.`` → synthesised ``default.<name>`` →
+        dynamic resolver → ``None``."""
+        # Phase 1: flat static lookup (legacy full-key form).
+        static = self._values.get(body)
+        if static is not None:
+            return static
+
+        # Split into (namespace, key) on the first ``.`` only; a bare
+        # token becomes (default, body).
+        ns_split = body.split(".", 1)
+        if len(ns_split) == 2:
+            namespace, key = ns_split[0], ns_split[1]
+        else:
+            namespace, key = DEFAULT_NAMESPACE, body
+            # Phase 1b: synthesised ``default.<name>`` form.
+            synth = f"{DEFAULT_NAMESPACE}.{body}"
+            synth_value = self._values.get(synth)
+            if synth_value is not None:
+                return synth_value
+
+        # Phase 2: dynamic namespace resolver.
+        resolver = self._dynamic.get(namespace)
+        if resolver is not None:
+            try:
+                return await resolver.resolve(key, ctx)
+            except PlaceholderError:
+                # Already the documented error shape — re-raise untouched.
+                raise
+            except Exception as exc:  # wrap any other raise into ResolverError
+                raise ResolverError(namespace, str(exc)) from exc
+
+        # Unknown → preserve verbatim.
+        return None
 
 
 # ─── Service ──────────────────────────────────────────────────────────
@@ -239,6 +499,143 @@ class _NullEngine:
 
     def clone_with_max_depth(self, max_depth: int) -> _NullEngine:
         return self
+
+
+# ─── Default engine factory (boot ↔ test shared path) ─────────────────
+
+
+def _resolve_state_data_dir(state: Any) -> Path | None:
+    """Pull the per-tenant data root off the gateway ``AppState``.
+
+    The real ``AppState`` (and the degraded fallback) carry ``data_dir``;
+    the env-driven layout also stamps it. We probe the documented
+    attribute names in order so this stays robust across the AppState
+    shape — ``data_dir`` is the canonical one (stamped in
+    ``entrypoint._build_state``).
+    """
+    for attr in ("data_dir", "resolved_data_dir"):
+        value = getattr(state, attr, None)
+        if value:
+            return Path(value)
+    # Free-form extras bag fallback.
+    extras = getattr(state, "extras", None)
+    if isinstance(extras, dict):
+        value = extras.get("data_dir") or extras.get("resolved_data_dir")
+        if value:
+            return Path(value)
+    return None
+
+
+def build_default_engine(state: Any) -> PlaceholderEngineLike:
+    """Construct the production :class:`PlaceholderEngine` for the gateway,
+    registering the resolvers reachable from ``state``.
+
+    This is the single shared path the server boot
+    (:func:`serve_placeholder_in_background`) and the acceptance tests both
+    use, so the test exercises exactly what production runs.
+
+    Resolver construction is **best-effort**: a failure to build any one
+    resolver is logged and skipped rather than crashing boot. If nothing
+    can be wired (e.g. no data dir), we fall back to a :class:`_NullEngine`
+    so the gRPC seam still serves (every token round-trips through
+    ``unresolved_keys``), exactly the previous behaviour.
+
+    Currently wired:
+
+    * ``episodes`` — :class:`EpisodesResolver` rooted at the per-tenant
+      data dir. Always registered when a data dir is resolvable.
+    * ``memory``   — :class:`MemoryResolver` requires a
+      :class:`corlinman_memory_host.MemoryHost`. No host is published on
+      the gateway ``AppState`` today and constructing one is non-trivial
+      (per-tenant async ``LocalSqliteHost.open`` + the agent-brain
+      namespace layout), so it is skipped with a clear warning. See the
+      module docstring / R4-F2 report for what finishing it needs.
+    """
+    data_dir = _resolve_state_data_dir(state)
+    if data_dir is None:
+        log.warning(
+            "gateway.grpc.placeholder.no_data_dir "
+            "(falling back to echo-only NullEngine)"
+        )
+        return _NullEngine()
+
+    engine = PlaceholderEngine()
+    registered: list[str] = []
+
+    # --- EPISODES (trivial: needs only the per-tenant data dir) ---------
+    try:
+        from corlinman_server.gateway.placeholder.episodes_stub import (
+            EpisodesResolver,
+        )
+
+        engine.register_namespace("episodes", EpisodesResolver(data_dir))
+        registered.append("episodes")
+    except Exception as exc:  # best-effort: must not crash boot
+        log.warning(
+            "gateway.grpc.placeholder.episodes_resolver_unavailable error=%s",
+            exc,
+        )
+
+    # --- MEMORY (best-effort: needs a MemoryHost we don't have on state) -
+    memory_host = _resolve_memory_host(state)
+    if memory_host is not None:
+        try:
+            from corlinman_server.gateway.placeholder.memory_stub import (
+                MemoryResolver,
+            )
+
+            engine.register_namespace("memory", MemoryResolver(memory_host))
+            registered.append("memory")
+        except Exception as exc:  # best-effort: must not crash boot
+            log.warning(
+                "gateway.grpc.placeholder.memory_resolver_unavailable error=%s",
+                exc,
+            )
+    else:
+        log.warning(
+            "gateway.grpc.placeholder.memory_resolver_unavailable "
+            "reason=no_memory_host_on_state "
+            "(MemoryResolver needs a corlinman_memory_host.MemoryHost; "
+            "none is published on AppState — episodes registered only)"
+        )
+
+    if not registered:
+        # Nothing wired — keep the previous echo-only behaviour rather
+        # than serving a useless empty real engine.
+        log.warning(
+            "gateway.grpc.placeholder.no_resolvers "
+            "(falling back to echo-only NullEngine)"
+        )
+        return _NullEngine()
+
+    log.info(
+        "gateway.grpc.placeholder.engine_built namespaces=%s data_dir=%s",
+        registered,
+        data_dir,
+    )
+    return engine
+
+
+def _resolve_memory_host(state: Any) -> Any | None:
+    """Probe the gateway ``AppState`` for an already-constructed
+    :class:`MemoryHost`.
+
+    No such handle is published on the main gateway ``AppState`` today
+    (only ``routes_admin_b`` carries a ``memory_host`` on a *different*
+    state object). We probe the documented attribute names so that if a
+    sibling boot path later attaches one, ``{{memory.*}}`` lights up
+    automatically without touching this file again.
+    """
+    for attr in ("memory_host",):
+        value = getattr(state, attr, None)
+        if value is not None:
+            return value
+    extras = getattr(state, "extras", None)
+    if isinstance(extras, dict):
+        value = extras.get("memory_host")
+        if value is not None:
+            return value
+    return None
 
 
 # ─── Helpers (pure) ───────────────────────────────────────────────────

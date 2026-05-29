@@ -57,6 +57,7 @@ from corlinman_server.gateway.grpc.placeholder import (
     DEFAULT_RUST_SOCKET,
     ENV_RUST_SOCKET,
     PlaceholderService,
+    build_default_engine,
 )
 from corlinman_server.gateway.grpc.placeholder import (
     serve as serve_placeholder,
@@ -82,6 +83,7 @@ __all__ = [
     "PlaceholderService",
     "ServicePluginDispatcher",
     "agent_inproc_enabled",
+    "build_default_engine",
     "build_registry_invoker",
     "invoke_mcp_plugin",
     "invoke_service_plugin",
@@ -107,19 +109,40 @@ def serve_placeholder_in_background(
 
     Binds the ``Placeholder`` service onto ``$CORLINMAN_UDS_PATH``
     (default :data:`~corlinman_server.gateway.grpc.placeholder.\
-DEFAULT_RUST_SOCKET`), wrapping :meth:`PlaceholderService.\
-with_empty_engine` — every ``{{token}}`` round-trips through
-    ``unresolved_keys`` until the real ``PlaceholderEngine`` port lands.
+DEFAULT_RUST_SOCKET`), wrapping a real :class:`PlaceholderEngine` built
+    by :func:`~corlinman_server.gateway.grpc.placeholder.\
+build_default_engine` from ``state``. That registers the
+    ``{{episodes.*}}`` resolver (and ``{{memory.*}}`` when a
+    :class:`MemoryHost` is available on the state). Engine construction is
+    best-effort — if no resolver can be wired (e.g. no data dir) it falls
+    back to an echo-only engine so every ``{{token}}`` round-trips through
+    ``unresolved_keys`` rather than crashing boot.
 
     Returns the spawned :class:`asyncio.Task` (registered + cancelled by
     the lifespan). A bind failure inside :func:`serve_placeholder` is
     non-fatal — it logs and the task completes early.
     """
     socket_path = os.environ.get(ENV_RUST_SOCKET, DEFAULT_RUST_SOCKET)
-    service = PlaceholderService.with_empty_engine()
+    try:
+        engine = build_default_engine(state)
+    except Exception as exc:  # never let engine wiring crash boot
+        _log.warning(
+            "gateway.grpc.placeholder.engine_build_failed",
+            error=str(exc),
+        )
+        engine = None
+    service = (
+        PlaceholderService(engine)
+        if engine is not None
+        else PlaceholderService.with_empty_engine()
+    )
     task = asyncio.create_task(
         serve_placeholder(socket_path, service, cancel),
         name="gateway.grpc.placeholder_server",
     )
-    _log.info("gateway.grpc.placeholder.spawned", socket=socket_path)
+    _log.info(
+        "gateway.grpc.placeholder.spawned",
+        socket=socket_path,
+        namespaces=list(getattr(engine, "namespaces", ()) or ()),
+    )
     return task
