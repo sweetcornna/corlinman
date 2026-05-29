@@ -4,6 +4,46 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.1] — 2026-05-29 — Channel subsystem completion
+
+> Fixes the "Telegram/QQ channel pages cannot be accessed" report, completes
+> the QQ (OneBot/NapCat) channel, bundles NapCat into the installer by default,
+> and surfaces every built channel in the admin UI.
+
+### Fixed
+- **Channel admin pages returned 401.** The api-key middleware listed a bare
+  `/channels/` in `protected_prefixes`, which matched the static UI page routes
+  (`/channels/qq`, `/channels/telegram`) and rejected unauthenticated browser
+  loads *before* the static mount — so only the channel pages were unreachable
+  while every other admin page loaded. Narrowed the prefix to the one real
+  bearer API there (`/channels/telegram/webhook`); the canonical
+  `/v1/channels/...` stays gated by `/v1/`. Locked by
+  `tests/gateway/lifecycle/test_ui_static_serving.py`.
+
+### Added
+- **QQ / OneBot channel completed** — inline image/emoji send, video/file
+  inbound, direct `/help` `/whoami` `/status` command handlers, per-send
+  health counters, and a real `POST /admin/channels/qq/reconnect` (was a 501
+  stub).
+- **NapCat bundled by default** — docker brings up the pinned
+  `mlikiowa/napcat-docker:${NAPCAT_VERSION:-v4.18.4}` sidecar by default
+  (`--without-qq` to opt out); native installs download a pinned NapCat
+  AppImage and register a `corlinman-napcat.service` systemd unit.
+- **All 7 channels surfaced in the admin UI** — added Discord, Slack, Feishu
+  (full inbox: status + recent messages + test-send) and WeChat-Official,
+  QQ-Official (config + status), each with a uniform
+  `GET/POST /admin/channels/{name}/…` admin API, sidebar nav, en/zh i18n, and
+  page tests. Added the previously-missing `channels/qq/page.test.tsx`.
+- **Build-time route guard** — `ui/scripts/assert-routes-built.mjs` fails the
+  UI build if any required route HTML is missing or identical to `404.html`,
+  preventing a stale bundle from silently shipping pages-missing.
+
+### Notes
+- Known follow-ups: Slack `files.upload` wiring unaudited; QQ numeric health
+  counters not yet surfaced in the QQ UI stats row; the native NapCat
+  provisioning in `install.sh` is best-effort (a failed AppImage download warns
+  but does not block the gateway upgrade) and has not been exercised on a host.
+
 ## [1.10.0] — 2026-05-29 — Audit rounds 4–9 + CI greening + durable voice sessions
 
 > ~50 commits since v1.9.0 (`c53b19a`..`d953fe7`) across **Rounds 4
