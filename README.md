@@ -56,8 +56,9 @@ What you get out of the box:
   Docker sandboxing for untrusted code and a human-approval gate for
   dangerous actions.
 - **Memory that survives conversations.** Per-session message history in
-  SQLite; a hybrid-retrieval knowledge base (HNSW + BM25 + RRF fusion) with
-  optional cross-encoder rerank for agent-grade RAG, not a glorified grep.
+  SQLite; a SQLite FTS5 (BM25) knowledge base today, with HNSW dense
+  vectors + RRF fusion + cross-encoder rerank on the roadmap
+  (see [`docs/PLAN_PORT_COMPLETION.md`](docs/PLAN_PORT_COMPLETION.md)).
 - **Channels are first-class agent I/O.** Production adapters for QQ
   (OneBot v11) and Telegram, a scheduler for cron-driven tasks, an
   OpenAI-compatible HTTP/SSE endpoint for your own clients.
@@ -141,12 +142,12 @@ For multi-agent setups, deeper provider config, and the self-evolution curator, 
    Side-bus:
      • corlinman-channels ── QQ / OneBot v11 · Telegram ──▶ internal ChatRequest
      • corlinman-server.scheduler ── croniter ───────────▶ gateway AppState
-     • corlinman-embedding.vector ─ HNSW (usearch) + SQLite FTS5 ──▶ /admin/rag
+     • corlinman-embedding.vector ─ SQLite FTS5 (BM25) ──────────▶ /admin/rag
 ```
 
 One language, one process. **corlinman is a pure Python stack:** FastAPI +
 uvicorn gateway, `grpc.aio` for the agent sidecar, `docker-py` for plugin
-sandboxes, `watchdog`-driven hot reload, `usearch-python` for vector
+sandboxes, `watchdog`-driven hot reload, SQLite FTS5 (BM25) for keyword
 search, structlog, signal-correct shutdown. The agent reasoning loop, all
 LLM provider SDKs (anthropic, openai, google-genai, etc.), embedding,
 plugin runtime, channel adapters, CLI and gateway all live under
@@ -335,11 +336,13 @@ Two layers of persistence, both auditable:
 - **Conversation memory.** Per-session append-only message history in
   SQLite (`sessions.sqlite`), trimmed to a configurable message cap,
   keyed by channel binding or client-supplied `session_key`.
-- **Knowledge memory (RAG).** Hybrid retrieval over a usearch HNSW index
-  (dense vectors) and SQLite FTS5 BM25 (keyword), fused with Reciprocal
-  Rank Fusion. Optional cross-encoder rerank (`bge-reranker-v2-m3` by
-  default) on top. Filter by tag, debug-query from the admin UI, rebuild
-  from source via the CLI.
+- **Knowledge memory (RAG).** Retrieval today: SQLite FTS5 (BM25)
+  keyword search via `/admin/rag` (stats, debug-query, FTS5 rebuild;
+  see `corlinman_server/gateway/routes_admin_b/rag.py`). Filter by tag,
+  debug-query from the admin UI, rebuild from source via the CLI. HNSW
+  dense vectors + Reciprocal Rank Fusion + cross-encoder rerank
+  (`bge-reranker-v2-m3`) are on the roadmap — see
+  [`docs/PLAN_PORT_COMPLETION.md`](docs/PLAN_PORT_COMPLETION.md).
 
 Neither is a black box: every chunk has a `source_path`, every message
 has a timestamp, every retrieval scores through the UI.
@@ -419,7 +422,12 @@ and the permission gate all key on the same `session_key`.
 | Qwen       |  ✅  |    ✅     |     ✅     |    n/a     | production   |
 | GLM        |  ✅  |    ✅     |     ✅     |    n/a     | production   |
 | _OpenAI-compatible_ (local vLLM, Ollama, SiliconFlow, any gateway speaking the spec) |  ✅  | ✅ | ✅ | ✅ | works via `providers.openai.base_url` |
-| **newapi** ([QuantumNous/new-api](https://github.com/QuantumNous/new-api)) | ✅ | ✅ | ✅ | ✅ | sidecar pools LLM + embedding + audio TTS channels behind one URL; managed via `/admin/newapi` and the onboard wizard. MIT licence. |
+
+> **Migrating from newapi**: existing `kind: newapi` entries are silently
+> routed through the `openai_compatible` adapter (migration shim in
+> `corlinman_providers/specs.py`); set `kind: openai_compatible` in new
+> configs. The dedicated `/admin/newapi` surface and onboard wizard
+> integration have been removed.
 
 Custom providers are a ~200-line Python class: subclass
 `corlinman_providers.base.CorlinmanProvider`, register a model-name
@@ -745,13 +753,13 @@ MIT. See [`LICENSE`](LICENSE).
 
 - **一个 agent 循环，多家 provider**：在 Anthropic / OpenAI / Google / DeepSeek / Qwen / GLM 上跑 OpenAI 标准 tool_call 语义；配置热重载、按模型别名路由。
 - **真工具，不是 prompt 模板**：同步 / 异步 / 常驻三种插件类型，统一 JSON-RPC 2.0 stdio 或 gRPC 通信，可选 Docker 沙箱 + 人工审批闸。
-- **跨会话的记忆**：SQLite 会话历史 + HNSW/BM25 混合检索（RRF 融合 + 可选 cross-encoder rerank），RAG 是智能体内置能力而非外挂。
+- **跨会话的记忆**：SQLite 会话历史 + SQLite FTS5（BM25）关键词检索经 `/admin/rag` 暴露；HNSW 稠密向量 + RRF 融合 + cross-encoder rerank 在路线图上（见 [`docs/PLAN_PORT_COMPLETION.md`](docs/PLAN_PORT_COMPLETION.md)）。
 - **通道作为一等公民**：QQ (OneBot v11) / Telegram / Discord / Slack / Feishu / 定时任务 / OpenAI 兼容 HTTP/SSE 并行接入，共享同一 agent 循环。Telegram 端有实时「正在输入...」指示器 + 工具调用流式状态条 + `send_attachment` 文件发送工具；QQ 通过 NapCat 扩展拿到同样的输入状态 + 文件上传能力。
-- **严肃的运维面板**：**Tidepool** 暖橙玻璃风格 Next.js 管理界面（日 / 夜双主题，插件 / 知识库 / 日志 / 审批 / 配置 / 调度器 / 模型路由），OTel + Prometheus 埋点，21 项 `doctor` 体检。
+- **严肃的运维面板**：**Tidepool** 暖橙玻璃风格 Next.js 管理界面（日 / 夜双主题，插件 / 知识库 / 日志 / 审批 / 配置 / 调度器 / 模型路由），OTel + Prometheus 埋点，9 项 `doctor` 体检。
 
 **在线 demo**：<https://corlinman.cornna.xyz>
 
-**架构**：纯 Python 单语言栈 —— FastAPI/uvicorn gateway + grpc.aio agent sidecar + 插件 runtime + 向量引擎（usearch）+ CLI + provider SDK + reasoning loop + embedding 全部在 `python/packages/` 下，共享一个 venv；W3C `traceparent` 贯穿全链路。
+**架构**：纯 Python 单语言栈 —— FastAPI/uvicorn gateway + grpc.aio agent sidecar + 插件 runtime + SQLite FTS5（BM25）检索 + CLI + provider SDK + reasoning loop + embedding 全部在 `python/packages/` 下，共享一个 venv；W3C `traceparent` 贯穿全链路。
 
 **快速开始**（60 秒）：
 
