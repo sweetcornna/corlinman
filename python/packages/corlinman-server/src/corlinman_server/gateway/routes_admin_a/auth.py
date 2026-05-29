@@ -541,6 +541,27 @@ async def _persist_admin_credentials(
     state.admin_password_hash = hashed
     state.must_change_password = bool(must_change_password)
 
+    # SEC-007: keep the admin-B mirror of ``must_change_password`` in
+    # sync so the shared ``_auth_shim`` gate stops firing the moment a
+    # rotation lands. Reach for the live singleton (not the default
+    # fallback ``get_admin_state`` returns) so test fixtures that mount
+    # only the admin-A router don't accidentally touch an unrelated
+    # admin-B :class:`AdminState`. Best-effort — admin-B may not be on
+    # the import path in some test trees, in which case the boot-time
+    # sync in ``lifecycle/entrypoint.py`` is the only writer and that's
+    # fine: the test fixture either installed an admin-B state with
+    # ``must_change_password=False`` (in which case there's nothing to
+    # do) or it didn't install one at all (in which case the gate has
+    # no admin-B routes to govern).
+    try:
+        from corlinman_server.gateway.routes_admin_b import state as _admin_b_state
+    except Exception:  # pragma: no cover — admin_b not on path
+        _admin_b_state = None  # type: ignore[assignment]
+    if _admin_b_state is not None:
+        b_state = getattr(_admin_b_state, "_state", None)
+        if b_state is not None and hasattr(b_state, "must_change_password"):
+            b_state.must_change_password = bool(must_change_password)
+
     if state.config_path is None:
         # No on-disk config to update — mirrors the Rust 503 only if the
         # *caller* expects a persisted state, otherwise we just leave

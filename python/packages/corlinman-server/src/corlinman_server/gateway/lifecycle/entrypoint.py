@@ -1279,6 +1279,16 @@ def build_app(
             admin_a_state.config_path = seeded.config_path
             admin_a_state.must_change_password = seeded.must_change_password
 
+        # SEC-007: mirror the seeded ``must_change_password`` flag onto the
+        # admin-B state so the shared ``_auth_shim`` gate fires uniformly
+        # across both route bundles. Admin-B's state owns its own copy
+        # (rather than reaching back into the admin-A singleton) so test
+        # fixtures that mount admin-B in isolation can't accidentally
+        # inherit a leftover must_change flag from a sibling test.
+        if admin_b_state is not None and seeded is not None:
+            if hasattr(admin_b_state, "must_change_password"):
+                admin_b_state.must_change_password = seeded.must_change_password
+
         # R1-001 security fix: open the multi-tenant ``tenants.sqlite``
         # admin DB and rebind it onto the api-key middleware state
         # installed during ``build_app``. Without this rebind the

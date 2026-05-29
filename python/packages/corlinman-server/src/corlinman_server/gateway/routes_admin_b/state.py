@@ -78,6 +78,13 @@ class AdminState:
     admin_username: str | None = None
     admin_password_hash: str | None = None
     session_store: Any | None = None
+    # SEC-007: mirrors :attr:`routes_admin_a.AdminState.must_change_password`.
+    # Synced from the seeded admin state by ``lifecycle/entrypoint.py`` at
+    # boot, and again whenever ``/admin/password`` rotates and clears the
+    # flag. The ``_auth_shim`` reads this directly so admin-B routes don't
+    # depend on the admin-A module-level singleton (which would create
+    # cross-bundle test pollution).
+    must_change_password: bool = False
 
     # Allowed-tenants set for federation middleware.
     allowed_tenants: frozenset[str] = frozenset()

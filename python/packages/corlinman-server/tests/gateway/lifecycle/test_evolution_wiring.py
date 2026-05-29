@@ -35,8 +35,38 @@ from fastapi.testclient import TestClient
 
 
 def _admin_headers() -> dict[str, str]:
-    token = base64.b64encode(b"admin:root").decode("ascii")
+    """Default Basic-auth header against the rotated admin password.
+
+    These tests use :func:`_rotate_admin_password` to flip the seeded
+    ``must_change_password`` flag before hitting any protected route —
+    SEC-007 introduced a 403 gate against the first-boot ``admin/root``
+    credentials, so a Basic-auth header that still presents the seeded
+    password short-circuits with ``password_change_required`` before the
+    underlying handler runs. Tests that want to assert the handler's
+    behavior must rotate first.
+    """
+    token = base64.b64encode(b"admin:rotated-pass-1").decode("ascii")
     return {"Authorization": f"Basic {token}"}
+
+
+def _rotate_admin_password(client: TestClient) -> None:
+    """Clear ``must_change_password`` on the seeded admin so subsequent
+    requests with :func:`_admin_headers` reach the real handler. Logs in
+    with the seeded ``admin/root``, posts a fresh password via
+    ``/admin/password``, and asserts the rotation took. The rotation is
+    an SEC-007 prerequisite for any test that wants to exercise an
+    admin-gated handler with the default-seeded credentials."""
+    login = client.post(
+        "/admin/login", json={"username": "admin", "password": "root"}
+    )
+    assert login.status_code == 200, login.text
+    cookie_jar = login.cookies
+    rotated = client.post(
+        "/admin/password",
+        json={"old_password": "root", "new_password": "rotated-pass-1"},
+        cookies=dict(cookie_jar),
+    )
+    assert rotated.status_code == 200, rotated.text
 
 
 # ---------------------------------------------------------------------------
@@ -78,9 +108,14 @@ def test_lifespan_opens_evolution_store_and_attaches_repos(tmp_path: Path) -> No
 def test_curator_profiles_route_no_longer_returns_503(tmp_path: Path) -> None:
     """The headline win — ``/admin/curator/profiles`` returned 503
     ``curator_state_repo_missing`` before W5.0. With the lifespan
-    wiring in place it returns 200 and includes the default profile."""
+    wiring in place it returns 200 and includes the default profile.
+
+    SEC-007: rotate the seeded ``must_change_password`` flag before
+    calling the protected route — otherwise the auth shim short-circuits
+    every non-rotation admin route with 403 ``password_change_required``."""
     app = build_app(config_path=None, data_dir=tmp_path)
     with TestClient(app) as client:
+        _rotate_admin_password(client)
         resp = client.get("/admin/curator/profiles", headers=_admin_headers())
         assert resp.status_code == 200, resp.text
         body = resp.json()
@@ -193,8 +228,12 @@ def test_bad_data_dir_does_not_crash_gateway(
         assert resp.status_code == 200
 
         # Store handle is absent → curator routes return their typed
-        # 503 envelope rather than crashing the request.
+        # 503 envelope rather than crashing the request. SEC-007: rotate
+        # away from the seeded admin/root credentials so the auth shim
+        # doesn't short-circuit with a 403 before the curator handler
+        # runs.
         assert getattr(app.state, "_evolution_store", None) is None
+        _rotate_admin_password(client)
         resp = client.get("/admin/curator/profiles", headers=_admin_headers())
         assert resp.status_code == 503
         assert resp.json()["detail"]["error"] == "curator_state_repo_missing"
