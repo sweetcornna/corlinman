@@ -192,6 +192,51 @@ async def test_parallel_tool_calls_by_index(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 @pytest.mark.asyncio
+async def test_late_tool_call_id_is_promoted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """BUG-006: some OpenAI-compatible servers send the tool-call ``id`` only
+    in a later chunk — the FIRST delta carries name/args with ``id=None``.
+
+    The finally-emitted tool_call (start + end) must use the real late id
+    (``call_real``), NOT the synthetic ``call_0`` placeholder; otherwise the
+    id the model must echo in the tool result is wrong and multi-round tool
+    calling breaks against those servers.
+    """
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    _patch_openai(
+        monkeypatch,
+        [
+            # First delta: no id yet, only name + an args prefix.
+            _delta_tool_chunk(index=0, tc_id=None, name="FooPlugin", arguments=""),
+            # Later delta: the real id arrives (plus more args).
+            _delta_tool_chunk(index=0, tc_id="call_real", arguments='{"q":'),
+            _delta_tool_chunk(index=0, arguments='"hi"}'),
+            _finish_chunk("tool_calls"),
+        ],
+    )
+    prov = OpenAIProvider()
+    chunks: list[ProviderChunk] = []
+    async for c in prov.chat_stream(model="gpt-4o-mini", messages=[{"role": "user", "content": "go"}]):
+        chunks.append(c)
+
+    starts = [c for c in chunks if c.kind == "tool_call_start"]
+    ends = [c for c in chunks if c.kind == "tool_call_end"]
+    deltas = [c for c in chunks if c.kind == "tool_call_delta"]
+
+    # Exactly one logical tool call — promotion must not double-open it.
+    assert len(ends) == 1
+    # The terminal end (the id the model echoes back) must be the real id.
+    assert ends[0].tool_call_id == "call_real"
+    # The promoted start carries the real id and keeps the tool name.
+    assert starts[-1].tool_call_id == "call_real"
+    assert starts[-1].tool_name == "FooPlugin"
+    # No emitted frame may keep the synthetic placeholder id.
+    assert all(c.tool_call_id != "call_0" for c in starts + ends + deltas)
+    # Args buffer is preserved across the promotion.
+    assert [d.arguments_delta for d in deltas] == ['{"q":', '"hi"}']
+    assert chunks[-1].finish_reason == "tool_calls"
+
+
+@pytest.mark.asyncio
 async def test_supports_matches_gpt_and_o_series() -> None:
     assert OpenAIProvider.supports("gpt-4o-mini")
     assert OpenAIProvider.supports("o1-mini")

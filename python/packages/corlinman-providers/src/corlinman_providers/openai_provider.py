@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncIterator, Sequence
+from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
 import structlog
@@ -48,6 +49,29 @@ from corlinman_providers.specs import ProviderKind, ProviderSpec
 
 logger = structlog.get_logger(__name__)
 
+# Placeholder ``api_key`` used only to satisfy the openai SDK constructor when
+# the real credential travels in a custom auth header (``auth_kind="header"``).
+# It is deliberately NOT a real secret so the SDK's mandatory bearer never
+# leaks the credential — see :meth:`OpenAIProvider._make_client`.
+_HEADER_AUTH_SENTINEL = "header-auth-no-bearer"
+
+
+@dataclass(slots=True)
+class _ToolCallState:
+    """Per-index streaming state for one in-progress tool call.
+
+    ``started`` flips ``True`` the moment we emit ``tool_call_start`` — which
+    only happens once we hold a real ``id`` (or, as a last resort, at finish
+    under the synthetic id). While ``started`` is ``False`` we buffer argument
+    fragments in ``pending_args`` and the name in ``name`` so a late ``id`` can
+    be promoted without splitting the call or losing its args (BUG-006).
+    """
+
+    call_id: str
+    started: bool
+    name: str = ""
+    pending_args: list[str] = field(default_factory=list)
+
 
 class OpenAIProvider:
     """OpenAI adapter (and base for OpenAI-compatible endpoints)."""
@@ -61,9 +85,16 @@ class OpenAIProvider:
         api_key: str | None = None,
         base_url: str | None = None,
         env_key: str = "OPENAI_API_KEY",
+        default_headers: dict[str, str] | None = None,
     ) -> None:
         self._api_key = api_key or os.environ.get(env_key) or None
         self._base_url = base_url
+        # Static headers forwarded on every request. Used by declarative
+        # providers whose ``auth_kind == "header"`` carry their credential in
+        # a custom header (e.g. ``X-API-Key``) instead of ``Authorization:
+        # Bearer`` — see :func:`declarative._build_inner`. ``None`` keeps the
+        # historic bearer-only behaviour.
+        self._default_headers = default_headers
         # Remember the env-var name so the reactive 401 path can re-read
         # the (possibly rotated) secret without bounding adapter
         # instances to a specific env name. ``Azure`` subclass overrides
@@ -129,6 +160,16 @@ class OpenAIProvider:
         client_kwargs: dict[str, Any] = {"api_key": self._api_key}
         if self._base_url:
             client_kwargs["base_url"] = self._base_url
+        if self._default_headers:
+            # Custom-header auth: the real credential rides in the declared
+            # header (already baked into ``_default_headers``). The openai SDK
+            # *requires* a truthy ``api_key`` to construct, so feed it a
+            # non-credential sentinel rather than the real key — the resulting
+            # ``Authorization: Bearer`` then carries the sentinel, never the
+            # secret. Gateways keyed on the custom header ignore it.
+            client_kwargs["default_headers"] = dict(self._default_headers)
+            if not self._api_key:
+                client_kwargs["api_key"] = _HEADER_AUTH_SENTINEL
         return AsyncOpenAI(**client_kwargs)
 
     async def chat_stream(
@@ -141,7 +182,10 @@ class OpenAIProvider:
         max_tokens: int | None = None,
         extra: dict[str, Any] | None = None,
     ) -> AsyncIterator[ProviderChunk]:
-        if not self._api_key:
+        # Custom-header auth carries the credential in ``_default_headers``
+        # rather than ``_api_key``, so a missing ``_api_key`` is only an error
+        # when no header credential is configured either.
+        if not self._api_key and not self._default_headers:
             raise RuntimeError(f"API key missing for provider {self.name}")
 
         kwargs: dict[str, Any] = {
@@ -158,9 +202,17 @@ class OpenAIProvider:
         if extra:
             kwargs.update(extra)
 
-        # index → (call_id, emitted_start). We emit `tool_call_start` at most
-        # once per index and always close with `tool_call_end`.
-        open_calls: dict[int, tuple[str, bool]] = {}
+        # index → per-call streaming state. We emit `tool_call_start` at most
+        # once per index (with the *real* id) and always close with
+        # `tool_call_end`. When the first delta for an index arrives without
+        # an `id` (some OpenAI-compatible servers send it only in a later
+        # chunk), we hold the `start` back — buffering name + args — until the
+        # real id arrives, then emit `start` once and flush the buffer. This
+        # avoids splitting a single call across a synthetic + real id (see
+        # BUG-006); the downstream reasoning loop keys all state by
+        # `tool_call_id`, so a late promotion via a second `start` would
+        # orphan the args accumulated under the synthetic id.
+        open_calls: dict[int, _ToolCallState] = {}
         finish_reason = "stop"
 
         async def _open() -> tuple[Any, Any]:
@@ -218,39 +270,84 @@ class OpenAIProvider:
                         fn_name = getattr(fn, "name", None) if fn else None
                         fn_args = getattr(fn, "arguments", None) if fn else None
 
-                        # First sighting of this index → open the call.
-                        if idx not in open_calls:
-                            call_id = tc_id or f"call_{idx}"
-                            open_calls[idx] = (call_id, True)
+                        # First sighting of this index → open the call. If the
+                        # real id is already present we can emit `start` now;
+                        # otherwise hold it back (started=False) under a
+                        # synthetic id and wait for the late id to arrive.
+                        state = open_calls.get(idx)
+                        if state is None:
+                            state = _ToolCallState(
+                                call_id=tc_id or f"call_{idx}",
+                                started=tc_id is not None,
+                            )
+                            if fn_name:
+                                state.name = fn_name
+                            open_calls[idx] = state
+                            if state.started:
+                                yield ProviderChunk(
+                                    kind="tool_call_start",
+                                    tool_call_id=state.call_id,
+                                    tool_name=state.name,
+                                )
+                        elif tc_id and not state.started:
+                            # Late id arrived → promote the synthetic id to the
+                            # real one, emit the deferred `start`, then flush
+                            # any args buffered before the id appeared.
+                            state.call_id = tc_id
+                            if fn_name and not state.name:
+                                state.name = fn_name
+                            state.started = True
                             yield ProviderChunk(
                                 kind="tool_call_start",
-                                tool_call_id=call_id,
-                                tool_name=fn_name or "",
+                                tool_call_id=state.call_id,
+                                tool_name=state.name,
                             )
-                        elif tc_id and not open_calls[idx][1]:
-                            # Late id — shouldn't happen in practice, guard
-                            # anyway so we always emit `start` before `delta`.
-                            open_calls[idx] = (tc_id, True)
-                            yield ProviderChunk(
-                                kind="tool_call_start",
-                                tool_call_id=tc_id,
-                                tool_name=fn_name or "",
-                            )
+                            for buffered in state.pending_args:
+                                yield ProviderChunk(
+                                    kind="tool_call_delta",
+                                    tool_call_id=state.call_id,
+                                    arguments_delta=buffered,
+                                )
+                            state.pending_args.clear()
+                        elif fn_name and not state.name:
+                            # Name can also dribble in across deltas.
+                            state.name = fn_name
 
-                        call_id = open_calls[idx][0]
                         if fn_args:
-                            yield ProviderChunk(
-                                kind="tool_call_delta",
-                                tool_call_id=call_id,
-                                arguments_delta=fn_args,
-                            )
+                            if state.started:
+                                yield ProviderChunk(
+                                    kind="tool_call_delta",
+                                    tool_call_id=state.call_id,
+                                    arguments_delta=fn_args,
+                                )
+                            else:
+                                # No real id yet — buffer until promotion so we
+                                # never emit a delta under the synthetic id.
+                                state.pending_args.append(fn_args)
 
                 if finish is not None:
                     # Close any still-open tool calls before the terminal done.
-                    for call_id, _ in open_calls.values():
+                    for state in open_calls.values():
+                        if not state.started:
+                            # The real id never arrived — emit the deferred
+                            # `start` (under the synthetic id) + flush the
+                            # buffer rather than silently dropping the call.
+                            yield ProviderChunk(
+                                kind="tool_call_start",
+                                tool_call_id=state.call_id,
+                                tool_name=state.name,
+                            )
+                            for buffered in state.pending_args:
+                                yield ProviderChunk(
+                                    kind="tool_call_delta",
+                                    tool_call_id=state.call_id,
+                                    arguments_delta=buffered,
+                                )
+                            state.pending_args.clear()
+                            state.started = True
                         yield ProviderChunk(
                             kind="tool_call_end",
-                            tool_call_id=call_id,
+                            tool_call_id=state.call_id,
                         )
                     open_calls.clear()
                     finish_reason = _map_finish_reason(finish)

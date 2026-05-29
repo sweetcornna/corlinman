@@ -12,7 +12,9 @@ Coverage matches the three acceptance criteria from the task:
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
+import pytest
 import structlog
 from corlinman_providers import (
     DeclarativeProvider,
@@ -59,6 +61,101 @@ def test_declarative_provider_constructs_and_lists_models() -> None:
     assert ids == {"moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k"}
     # Inner adapter is an OpenAIProvider for an openai_compatible spec.
     assert isinstance(provider._inner, OpenAIProvider)
+
+
+def _built_request_headers(client: Any) -> Any:
+    """Build a dummy chat request through the real openai SDK client and
+    return its final outgoing (case-insensitive ``httpx.Headers``) — the
+    faithful view of what auth would actually hit the wire."""
+    from openai._models import FinalRequestOptions
+
+    opts = FinalRequestOptions.construct(
+        method="post", url="/chat/completions", json_data={"model": "m"}
+    )
+    return client._build_request(opts).headers
+
+
+def test_header_auth_sends_custom_header_not_bearer() -> None:
+    """auth_kind="header" must put the api_key in the declared custom header
+    (e.g. X-API-Key) and NOT leak the real secret as Authorization: Bearer.
+
+    We build a real request through the openai SDK and inspect the final
+    outgoing headers — the credential must appear under X-API-Key, and any
+    Authorization header must not carry the real secret.
+    """
+    secret = "sk-secret-123"
+    spec = DeclarativeProviderSpec(
+        id="customhdr",
+        name="Custom Header Gateway",
+        base_url="https://gateway.invalid/v1",
+        auth_kind="header",
+        auth_config={"env_var": "CUSTOMHDR_API_KEY", "header_name": "X-API-Key"},
+        request_format="openai_compatible",
+        models={"default": ModelSpec(id="m", context_length=8192)},
+    )
+    provider = DeclarativeProvider(spec, api_key=secret)
+    assert isinstance(provider._inner, OpenAIProvider)
+
+    client = provider._inner._make_client()
+    headers = _built_request_headers(client)
+
+    assert headers.get("X-API-Key") == secret
+    # The real secret must NOT leak as a bearer credential.
+    assert secret not in (headers.get("Authorization") or "")
+
+
+def test_header_auth_honours_value_prefix() -> None:
+    """A declared ``value_prefix`` (e.g. "Token ") is prepended to the key."""
+    spec = DeclarativeProviderSpec(
+        id="prefixhdr",
+        name="Prefixed Header Gateway",
+        base_url="https://gateway.invalid/v1",
+        auth_kind="header",
+        auth_config={
+            "env_var": "PREFIXHDR_API_KEY",
+            "header_name": "X-Auth",
+            "value_prefix": "Token ",
+        },
+        request_format="openai_compatible",
+        models={"default": ModelSpec(id="m", context_length=8192)},
+    )
+    provider = DeclarativeProvider(spec, api_key="abc")
+    client = provider._inner._make_client()
+    headers = _built_request_headers(client)
+
+    assert headers.get("X-Auth") == "Token abc"
+
+
+def test_header_auth_missing_header_name_raises() -> None:
+    """auth_kind='header' without a header_name is a misconfig → loud failure,
+    not a silent unauthenticated request."""
+    spec = DeclarativeProviderSpec(
+        id="nohdr",
+        name="No Header Name",
+        base_url="https://gateway.invalid/v1",
+        auth_kind="header",
+        auth_config={"env_var": "NOHDR_API_KEY"},
+        request_format="openai_compatible",
+        models={"default": ModelSpec(id="m", context_length=8192)},
+    )
+    with pytest.raises(ValueError, match="header_name"):
+        DeclarativeProvider(spec, api_key="abc")
+
+
+def test_query_param_auth_raises_clear_error() -> None:
+    """auth_kind="query_param" is not yet supported by the inner client — it
+    must fail loudly at build time rather than silently bearer-authing."""
+    spec = DeclarativeProviderSpec(
+        id="qp",
+        name="Query Param Gateway",
+        base_url="https://gateway.invalid/v1",
+        auth_kind="query_param",
+        auth_config={"env_var": "QP_API_KEY", "param_name": "api_key"},
+        request_format="openai_compatible",
+        models={"default": ModelSpec(id="m", context_length=8192)},
+    )
+    with pytest.raises(ValueError, match="query_param auth not yet supported"):
+        DeclarativeProvider(spec, api_key="sk-secret")
 
 
 def test_registry_conflict_prefers_classbased_and_warns() -> None:

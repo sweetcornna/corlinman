@@ -94,9 +94,12 @@ class DeclarativeProviderSpec:
     * ``query_param``    → ``{"env_var": "...", "param_name": "api_key"}``
     * ``none``           → ``{}``
 
-    Currently only ``bearer_api_key`` and ``none`` are honoured at runtime;
-    the others are accepted so operators can declare them today without a
-    schema migration when we add support (see TODO in :class:`DeclarativeProvider`).
+    Honoured at runtime for ``request_format == "openai_compatible"``:
+    ``bearer_api_key``, ``none``, and ``header`` (the key is sent in the
+    declared ``header_name`` with an optional ``value_prefix``).
+    ``query_param`` is accepted by the loader but rejected at build time —
+    the inner OpenAI-wire client can't carry request-query auth, so it raises
+    rather than silently bearer-authing (see :meth:`DeclarativeProvider._build_inner`).
     """
 
     request_format: RequestFormat
@@ -219,12 +222,17 @@ class DeclarativeProvider:
     ) -> CorlinmanProvider:
         """Dispatch ``request_format`` to the matching vendor adapter.
 
-        TODO: ``header`` / ``query_param`` auth kinds currently ignore the
-        declared header/param names — :class:`OpenAIProvider` forwards the
-        key as ``Authorization: Bearer`` via the OpenAI SDK. Providers
-        that require a custom auth header still work if the gateway
-        also honours Bearer; otherwise a follow-up lands a custom
-        ``httpx`` client path here.
+        Auth wiring (``openai_compatible`` only):
+
+        * ``bearer_api_key`` / ``none`` → the key is forwarded as
+          ``Authorization: Bearer`` (or omitted) via the OpenAI SDK.
+        * ``header`` → the key is sent in the declared custom header
+          (``auth_config.header_name``, optional ``value_prefix``) instead of
+          as a bearer; the inner :class:`OpenAIProvider` is given
+          ``default_headers`` and no bearer api_key.
+        * ``query_param`` → not yet supported by the inner OpenAI-wire client;
+          we raise here rather than silently bearer-authing so the operator
+          knows their declared auth shape isn't honoured.
 
         Note: vendor adapters declare ``name`` as ``ClassVar[str]`` while
         the :class:`CorlinmanProvider` Protocol declares an instance
@@ -234,6 +242,21 @@ class DeclarativeProvider:
         ``runtime_checkable``.
         """
         if spec.request_format == "openai_compatible":
+            if spec.auth_kind == "header":
+                return cast(
+                    CorlinmanProvider,
+                    OpenAIProvider(
+                        api_key=None,
+                        base_url=spec.base_url,
+                        default_headers=_build_custom_auth_headers(spec, api_key),
+                    ),
+                )
+            if spec.auth_kind == "query_param":
+                raise ValueError(
+                    f"{spec.id}: query_param auth not yet supported by the "
+                    "openai_compatible inner client (the OpenAI SDK has no "
+                    "request-query auth hook); use bearer_api_key or header."
+                )
             return cast(
                 CorlinmanProvider,
                 OpenAIProvider(api_key=api_key, base_url=spec.base_url),
@@ -259,6 +282,35 @@ class DeclarativeProvider:
         # Literal type keeps the compiler honest; runtime check guards
         # malformed TOML that bypasses the Literal via an untyped load.
         raise ValueError(f"unknown request_format: {spec.request_format!r}")
+
+
+def _build_custom_auth_headers(
+    spec: DeclarativeProviderSpec,
+    api_key: str | None,
+) -> dict[str, str]:
+    """Build the ``default_headers`` mapping for ``auth_kind == "header"``.
+
+    Reads ``header_name`` (required) and optional ``value_prefix`` from
+    ``spec.auth_config`` and emits ``{header_name: f"{value_prefix}{api_key}"}``.
+    Raises ``ValueError`` on a missing/blank ``header_name`` or a missing
+    ``api_key`` so the misconfiguration surfaces at build time rather than as
+    a silent unauthenticated request.
+    """
+    header_name = spec.auth_config.get("header_name")
+    if not isinstance(header_name, str) or not header_name:
+        raise ValueError(
+            f"{spec.id}: auth_kind='header' requires a non-empty "
+            "auth_config.header_name"
+        )
+    if not api_key:
+        raise ValueError(
+            f"{spec.id}: auth_kind='header' requires an api_key (set "
+            f"{spec.auth_config.get('env_var') or 'the configured env_var'})"
+        )
+    prefix = spec.auth_config.get("value_prefix", "")
+    if not isinstance(prefix, str):
+        prefix = ""
+    return {header_name: f"{prefix}{api_key}"}
 
 
 # ---- TOML loading ---------------------------------------------------------
