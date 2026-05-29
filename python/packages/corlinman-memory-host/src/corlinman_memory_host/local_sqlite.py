@@ -269,6 +269,27 @@ class _SqliteStore:
             rows = await cur.fetchall()
         return [int(r["id"]) for r in rows]
 
+    async def recent_chunk_ids_by_namespace(
+        self, namespace: str, limit: int
+    ) -> list[int]:
+        """Return the newest ``limit`` chunk ids in ``namespace``, newest first.
+
+        Recency is inferred from ``id`` (higher = newer), the same
+        convention :meth:`filter_chunk_ids_by_namespace` relies on. The
+        ordering + bound live in SQL so the work stays O(limit) rather than
+        scanning the whole namespace — the conversational-recall hot path
+        calls this once per turn.
+        """
+        if limit <= 0:
+            return []
+        sql = (
+            "SELECT id FROM chunks "
+            "WHERE namespace = ? ORDER BY id DESC LIMIT ?"
+        )
+        async with self._conn.execute(sql, (namespace, limit)) as cur:
+            rows = await cur.fetchall()
+        return [int(r["id"]) for r in rows]
+
     async def search_bm25_with_filter(
         self,
         text: str,
@@ -611,15 +632,18 @@ class LocalSqliteHost(MemoryHost):
         if limit <= 0 or not namespace.strip():
             return []
         try:
-            ids = await self._store.filter_chunk_ids_by_namespace([namespace])
+            # Newest ``limit`` ids, already newest-first (id DESC). The
+            # ordering + bound live in SQL so this is O(limit), not a full
+            # namespace scan — recent() runs once per conversational turn.
+            recent_ids = await self._store.recent_chunk_ids_by_namespace(
+                namespace, limit
+            )
         except aiosqlite.Error as exc:
             raise MemoryHostError(
                 f"LocalSqliteHost: recent namespace scan: {exc}"
             ) from exc
-        if not ids:
+        if not recent_ids:
             return []
-        # ids come back ASC — the tail is the newest. Hydrate newest-first.
-        recent_ids = list(reversed(ids[-limit:]))
         try:
             chunks = await self._store.query_chunks_by_ids(recent_ids)
         except aiosqlite.Error as exc:

@@ -242,3 +242,65 @@ async def test_get_unknown_id_returns_none(host: LocalSqliteHost) -> None:
 async def test_empty_query_is_empty_result(host: LocalSqliteHost) -> None:
     hits = await host.query(MemoryQuery(text="", top_k=3))
     assert hits == []
+
+
+async def test_recent_returns_newest_n_with_decaying_scores_over_large_namespace(
+    host: LocalSqliteHost,
+) -> None:
+    """recent() over a big namespace still returns only the newest N,
+    newest-first, with rank-decayed scores."""
+    n = 50
+    for i in range(n):
+        await host.upsert(MemoryDoc(content=f"turn {i}", namespace="sess-big"))
+
+    limit = 8
+    hits = await host.recent("sess-big", limit)
+
+    # Newest `limit` docs, newest-first: turn 49 .. turn 42.
+    assert [h.content for h in hits] == [f"turn {i}" for i in range(49, 41, -1)]
+    assert all(h.metadata["namespace"] == "sess-big" for h in hits)
+    assert all(h.source == "local-kb" for h in hits)
+    # score decays by rank: 1.0 - rank/limit.
+    assert [h.score for h in hits] == [1.0 - (rank / limit) for rank in range(limit)]
+
+
+async def test_recent_does_not_full_scan_the_namespace(
+    host: LocalSqliteHost,
+) -> None:
+    """recent() must push ORDER BY + LIMIT into SQL, not pull every id in
+    the namespace and slice the tail. We spy on the store: the full-scan
+    ``filter_chunk_ids_by_namespace`` must NOT be hit on the recall path,
+    and the bounded recency query must be called with the limit."""
+    n = 50
+    for i in range(n):
+        await host.upsert(MemoryDoc(content=f"turn {i}", namespace="sess-bounded"))
+
+    store = host.store
+    full_scan_calls: list[list[str]] = []
+    orig_filter = store.filter_chunk_ids_by_namespace
+
+    async def spy_filter(namespaces: list[str]) -> list[int]:
+        full_scan_calls.append(list(namespaces))
+        return await orig_filter(namespaces)
+
+    bounded_calls: list[tuple[str, int]] = []
+    orig_recent = store.recent_chunk_ids_by_namespace
+
+    async def spy_recent(namespace: str, limit: int) -> list[int]:
+        bounded_calls.append((namespace, limit))
+        return await orig_recent(namespace, limit)
+
+    store.filter_chunk_ids_by_namespace = spy_filter  # type: ignore[method-assign]
+    store.recent_chunk_ids_by_namespace = spy_recent  # type: ignore[method-assign]
+    try:
+        limit = 8
+        hits = await host.recent("sess-bounded", limit)
+    finally:
+        store.filter_chunk_ids_by_namespace = orig_filter  # type: ignore[method-assign]
+        store.recent_chunk_ids_by_namespace = orig_recent  # type: ignore[method-assign]
+
+    assert len(hits) == limit
+    # The full-namespace scan must be gone from the recall path.
+    assert full_scan_calls == []
+    # The bounded query carries the limit so work doesn't scale with N.
+    assert bounded_calls == [("sess-bounded", limit)]
