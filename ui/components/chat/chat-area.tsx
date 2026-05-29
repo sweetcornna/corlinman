@@ -11,6 +11,7 @@ import type { MentionCandidate } from "@/components/chat/composer-mention-menu";
 import { ChatEmptyState } from "@/components/chat/empty-state";
 import { ConversationSearch } from "@/components/chat/conversation-search";
 import { MessageList } from "@/components/chat/message-list";
+import { AgentPicker } from "@/components/playground/agent-picker";
 import { useChatStream } from "@/lib/chat/use-chat-stream";
 import {
   deriveArtifactKind,
@@ -32,6 +33,8 @@ interface ChatAreaProps {
   onOpenPersonaPicker?: () => void;
   imageModelLabel?: string;
   onOpenImageModelPicker?: () => void;
+  onAgentChange?: (agentId: string | null) => void;
+  showActionTrace?: boolean;
 }
 
 function genSessionKey(): string {
@@ -52,6 +55,8 @@ export function ChatArea({
   onOpenPersonaPicker,
   imageModelLabel,
   onOpenImageModelPicker,
+  onAgentChange,
+  showActionTrace = true,
 }: ChatAreaProps) {
   const router = useRouter();
   const { t } = useTranslation();
@@ -178,7 +183,14 @@ export function ChatArea({
             <h1 className="truncate text-[13px] font-medium text-tp-ink">{title}</h1>
             <p className="font-mono text-[10px] text-tp-ink-3">{sessionKey}</p>
           </div>
-          <div className="flex items-center gap-2 text-[11px] text-tp-ink-3">
+          <div className="flex shrink-0 items-center gap-2 text-[11px] text-tp-ink-3">
+            {onAgentChange ? (
+              <AgentPicker
+                value={agentId ?? null}
+                onChange={onAgentChange}
+                className="hidden sm:flex"
+              />
+            ) : null}
             {hasUsage ? (
               <span
                 className="inline-flex items-center gap-1 rounded border border-tp-glass-edge bg-tp-glass-inner px-1.5 py-0.5 font-mono"
@@ -216,6 +228,7 @@ export function ChatArea({
             onBranch={handleBranch}
             onReply={handleReply}
             onOpenArtifact={handleOpenArtifact}
+            showActionTrace={showActionTrace}
             emptyState={<ChatEmptyState onPick={handlePickSuggestion} />}
           />
         </div>

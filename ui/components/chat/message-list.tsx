@@ -27,6 +27,7 @@ interface MessageListProps {
   onReply?: (messageId: string) => void;
   onOpenArtifact?: (language: string, source: string) => void;
   emptyState?: React.ReactNode;
+  showActionTrace?: boolean;
 }
 
 const NEAR_BOTTOM_PX = 60;
@@ -41,6 +42,7 @@ export function MessageList({
   onReply,
   onOpenArtifact,
   emptyState,
+  showActionTrace = true,
 }: MessageListProps) {
   const { t } = useTranslation();
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
@@ -104,6 +106,7 @@ export function MessageList({
               onBranch={onBranch}
               onReply={onReply}
               onOpenArtifact={onOpenArtifact}
+              showActionTrace={showActionTrace}
             />
           ))}
         </ol>

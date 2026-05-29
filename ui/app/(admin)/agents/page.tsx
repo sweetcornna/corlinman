@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
 import {
   Table,
   TableBody,
@@ -36,8 +37,8 @@ import {
  *
  * W-D2 extension: a "Model" column with an inline `<select>` whose options
  * come from `/admin/models` aliases (the same list the chat surface offers).
- * The provider column is read-only — operators pin the provider via the
- * yaml field today; future iterations will lift this into a paired select. */
+ * The provider column is read-only, and the action-trace column controls
+ * whether chat exposes reasoning/tool/subagent trajectory for that agent. */
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -65,11 +66,13 @@ function ModelSelect({
   current,
   options,
   provider,
+  showActionTrace,
 }: {
   agentName: string;
   current: string | null;
   options: string[];
   provider: string | null;
+  showActionTrace: boolean;
 }) {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
@@ -91,6 +94,7 @@ function ModelSelect({
       await setAgentModelBinding(agentName, {
         model: incoming,
         provider, // preserve the existing provider pin
+        show_action_trace: showActionTrace,
       });
       toast.success(t("agents.modelSaved", { defaultValue: "Model updated" }));
       await queryClient.invalidateQueries({
@@ -143,6 +147,64 @@ function ModelSelect({
         </option>
       ))}
     </select>
+  );
+}
+
+function ActionTraceSwitch({
+  agentName,
+  model,
+  provider,
+  checked,
+}: {
+  agentName: string;
+  model: string | null;
+  provider: string | null;
+  checked: boolean;
+}) {
+  const queryClient = useQueryClient();
+  const { t } = useTranslation();
+  const [saving, setSaving] = useState(false);
+
+  const commit = async (next: boolean) => {
+    if (next === checked) return;
+    setSaving(true);
+    try {
+      await setAgentModelBinding(agentName, {
+        model,
+        provider,
+        show_action_trace: next,
+      });
+      toast.success(
+        t("agents.actionTraceSaved", {
+          defaultValue: "Action trace preference updated",
+        }),
+      );
+      await queryClient.invalidateQueries({
+        queryKey: ["admin", "agent-bindings"],
+      });
+    } catch (err) {
+      toast.error(
+        `${t("agents.actionTraceSaveFailed", { defaultValue: "Failed to update action trace" })}: ${(err as Error).message}`,
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Switch
+      checked={checked}
+      disabled={saving}
+      onCheckedChange={(next) => {
+        void commit(next);
+      }}
+      aria-label={t("agents.actionTraceAriaLabel", {
+        defaultValue: "Show action trace for agent",
+        agent: agentName,
+      })}
+      data-testid={`agent-action-trace-${agentName}`}
+      className="h-6 w-11"
+    />
   );
 }
 
@@ -283,6 +345,9 @@ export default function AgentsPage() {
               <TableHead className="w-32">
                 {t("agents.colProvider", { defaultValue: "Provider" })}
               </TableHead>
+              <TableHead className="w-28">
+                {t("agents.colActionTrace", { defaultValue: "Trace" })}
+              </TableHead>
               <TableHead className="w-32">{t("agents.colBytes")}</TableHead>
               <TableHead className="w-56">
                 {t("agents.colLastModified")}
@@ -294,7 +359,7 @@ export default function AgentsPage() {
             {query.isPending ? (
               Array.from({ length: 3 }).map((_, i) => (
                 <TableRow key={`sk-${i}`} className="border-b border-tp-glass-edge">
-                  {Array.from({ length: 8 }).map((_, j) => (
+                  {Array.from({ length: 9 }).map((_, j) => (
                     <TableCell key={j} className={j === 0 ? "pl-4" : undefined}>
                       <Skeleton className="h-4 w-24" />
                     </TableCell>
@@ -304,7 +369,7 @@ export default function AgentsPage() {
             ) : query.isError ? (
               <TableRow>
                 <TableCell
-                  colSpan={8}
+                  colSpan={9}
                   className="py-10 text-center text-sm text-destructive"
                 >
                   {t("agents.loadFailed")}: {(query.error as Error).message}
@@ -313,7 +378,7 @@ export default function AgentsPage() {
             ) : !query.data || query.data.length === 0 ? (
               <TableRow>
                 <TableCell
-                  colSpan={8}
+                  colSpan={9}
                   className="py-10 text-center text-sm text-tp-ink-3"
                 >
                   {t("agents.empty")}
@@ -323,6 +388,7 @@ export default function AgentsPage() {
               query.data.map((a) => {
                 const binding = bindingByName.get(a.name) ?? null;
                 const provider = binding?.provider ?? null;
+                const showActionTrace = binding?.show_action_trace ?? true;
                 const source: AgentSummary["source"] = a.source ?? "user";
                 const isBuiltIn = source === "built-in";
                 // Trim long descriptions to keep the row a single line —
@@ -374,6 +440,7 @@ export default function AgentsPage() {
                           current={binding?.model ?? null}
                           options={modelOptions}
                           provider={provider}
+                          showActionTrace={showActionTrace}
                         />
                       )}
                     </TableCell>
@@ -382,6 +449,18 @@ export default function AgentsPage() {
                         <span className="italic text-tp-ink-3">
                           {t("agents.providerAuto", { defaultValue: "(auto)" })}
                         </span>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      {bindingsQuery.isPending ? (
+                        <Skeleton className="h-6 w-11 rounded-full" />
+                      ) : (
+                        <ActionTraceSwitch
+                          agentName={a.name}
+                          model={binding?.model ?? null}
+                          provider={provider}
+                          checked={showActionTrace}
+                        />
                       )}
                     </TableCell>
                     <TableCell className="font-mono text-xs">

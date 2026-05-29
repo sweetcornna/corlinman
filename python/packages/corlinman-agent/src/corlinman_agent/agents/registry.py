@@ -65,6 +65,27 @@ def _as_optional_str(value: object, field_name: str, path: Path) -> str | None:
     return value
 
 
+def _as_optional_bool(
+    value: object,
+    field_name: str,
+    path: Path,
+    *,
+    default: bool,
+) -> bool:
+    """Coerce an optional yaml boolean field.
+
+    ``None`` / missing yields ``default``; anything else must already be
+    a YAML boolean. This deliberately rejects strings like ``"false"``
+    so typoed frontmatter cannot silently flip operator-facing UI
+    behaviour.
+    """
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        raise AgentCardLoadError(path, f"{field_name} must be a boolean")
+    return value
+
+
 def _as_str_dict(value: object, field_name: str, path: Path) -> dict[str, str]:
     """Coerce the ``variables:`` mapping. Values are stringified
     (yaml may parse ``"15"`` as an int) to keep the expander's
@@ -132,6 +153,12 @@ def _load_card(path: Path, *, source: AgentSource = "built-in") -> AgentCard:
     # / absent keeps the pre-W-D1 dispatch path (request-body-driven routing).
     model = _as_optional_str(raw.get("model"), "model", path)
     provider = _as_optional_str(raw.get("provider"), "provider", path)
+    show_action_trace = _as_optional_bool(
+        raw.get("show_action_trace"),
+        "show_action_trace",
+        path,
+        default=True,
+    )
 
     return AgentCard(
         name=name,
@@ -143,6 +170,7 @@ def _load_card(path: Path, *, source: AgentSource = "built-in") -> AgentCard:
         source_path=path,
         model=model,
         provider=provider,
+        show_action_trace=show_action_trace,
         source=source,
     )
 

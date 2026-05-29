@@ -47,6 +47,7 @@ interface MessageBubbleProps {
   versionCount?: number;
   onPrevVersion?: () => void;
   onNextVersion?: () => void;
+  showActionTrace?: boolean;
 }
 
 function formatTime(ms: number): string {
@@ -74,6 +75,7 @@ export const MessageBubble = React.memo(function MessageBubble({
   versionCount,
   onPrevVersion,
   onNextVersion,
+  showActionTrace = true,
 }: MessageBubbleProps) {
   const { t } = useTranslation();
   const isUser = message.role === "user";
@@ -89,6 +91,7 @@ export const MessageBubble = React.memo(function MessageBubble({
   // The user can re-expand any time via the hamburger.
   const toolCount = message.toolCalls?.length ?? 0;
   const subagentCount = message.subagents?.length ?? 0;
+  const shouldShowActionTrace = showActionTrace !== false;
   React.useEffect(() => {
     if (toolCount + subagentCount >= 8 && !message.pending) {
       setToolsCollapsed(true);
@@ -203,7 +206,7 @@ export const MessageBubble = React.memo(function MessageBubble({
             </ul>
           ) : null}
 
-          {message.reasoning ? (
+          {shouldShowActionTrace && message.reasoning ? (
             <ReasoningBlock text={message.reasoning} streaming={Boolean(message.pending)} />
           ) : null}
 
@@ -258,7 +261,7 @@ export const MessageBubble = React.memo(function MessageBubble({
             </div>
           )}
 
-          {(toolCount > 0 || subagentCount > 0) && (
+          {shouldShowActionTrace && (toolCount > 0 || subagentCount > 0) && (
             <div className="mt-2 flex items-center gap-1 text-[11px] text-tp-ink-3">
               <button
                 type="button"
@@ -301,10 +304,10 @@ export const MessageBubble = React.memo(function MessageBubble({
               ) : null}
             </div>
           )}
-          {!toolsCollapsed && message.toolCalls?.map((tc) => (
+          {shouldShowActionTrace && !toolsCollapsed && message.toolCalls?.map((tc) => (
             <ToolCallCard key={tc.callId} tool={tc} />
           ))}
-          {!toolsCollapsed && message.subagents?.map((sa) => (
+          {shouldShowActionTrace && !toolsCollapsed && message.subagents?.map((sa) => (
             <SubagentCard key={sa.childSessionKey} subagent={sa} />
           ))}
           {message.approvals?.map((ap) => (

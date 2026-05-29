@@ -22,7 +22,13 @@ import {
   listChatSessions,
   patchChatSession,
 } from "@/lib/api/chat";
-import { CorlinmanApiError, fetchModels } from "@/lib/api";
+import {
+  CorlinmanApiError,
+  fetchModels,
+  listAgentBindings,
+  type AgentBinding,
+  type AgentBindingsResponse,
+} from "@/lib/api";
 import { replaySession, type TranscriptMessage } from "@/lib/api/sessions";
 import { ChatModelPicker, type ModelPickerKind } from "@/components/chat/chat-model-picker";
 import { ChatArea } from "@/components/chat/chat-area";
@@ -121,11 +127,13 @@ export default function ChatPage() {
   // through these setters.
   const [llmOverride, setLlmOverride] = React.useState<string | null>(null);
   const [imageOverride, setImageOverride] = React.useState<string | null>(null);
+  const [activeAgent, setActiveAgent] = React.useState<string | null>(null);
   React.useEffect(() => {
     if (typeof window === "undefined") return;
     try {
       setLlmOverride(localStorage.getItem("corlinman:chat:llm-model"));
       setImageOverride(localStorage.getItem("corlinman:chat:image-model"));
+      setActiveAgent(localStorage.getItem("corlinman:chat:agent-id"));
     } catch {
       /* ignore */
     }
@@ -140,11 +148,41 @@ export default function ChatPage() {
     },
     [],
   );
+  const persistAgent = React.useCallback((agentId: string | null) => {
+    setActiveAgent(agentId);
+    try {
+      if (agentId) {
+        localStorage.setItem("corlinman:chat:agent-id", agentId);
+      } else {
+        localStorage.removeItem("corlinman:chat:agent-id");
+      }
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
   const activeModel: string =
     (llmOverride && llmOverride.trim()) || globalDefault;
   const activeImageModel: string =
     (imageOverride && imageOverride.trim()) || "gpt-image-2";
+
+  const bindingsQuery = useQuery<AgentBindingsResponse>({
+    queryKey: ["admin", "agent-bindings"],
+    queryFn: () => listAgentBindings(),
+    staleTime: 30_000,
+  });
+
+  const bindingByName = React.useMemo(() => {
+    const m = new Map<string, AgentBinding>();
+    for (const b of bindingsQuery.data?.agents ?? []) {
+      m.set(b.name, b);
+    }
+    return m;
+  }, [bindingsQuery.data]);
+
+  const showActionTrace = activeAgent
+    ? (bindingByName.get(activeAgent)?.show_action_trace ?? true)
+    : true;
 
   const [pickerOpen, setPickerOpen] = React.useState<ModelPickerKind | null>(
     null,
@@ -305,6 +343,9 @@ export default function ChatPage() {
           model={activeModel}
           conversation={active}
           initialHistory={initialHistory}
+          agentId={activeAgent ?? undefined}
+          onAgentChange={persistAgent}
+          showActionTrace={showActionTrace}
           onOpenModelPicker={() => setPickerOpen("llm")}
         />
       ) : (

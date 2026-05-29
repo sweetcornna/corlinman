@@ -77,6 +77,43 @@ describe("MessageBubble", () => {
     ).toBe("read_file");
   });
 
+  it("hides reasoning, tool calls, and subagents when action trace is disabled", () => {
+    render(
+      ulWrap(
+        <MessageBubble
+          showActionTrace={false}
+          message={makeMsg({
+            role: "assistant",
+            content: "done",
+            reasoning: "private reasoning",
+            toolCalls: [
+              {
+                callId: "c1",
+                toolName: "read_file",
+                argsJson: '{"path":"x"}',
+                status: "ok",
+              },
+            ],
+            subagents: [
+              {
+                childSessionKey: "child_1",
+                childAgentId: "researcher",
+                depth: 1,
+                status: "completed",
+              },
+            ],
+          })}
+        />,
+      ),
+    );
+
+    expect(screen.queryByTestId("reasoning-block")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("tool-call-card")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("subagent-card")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("bubble-tools-toggle")).not.toBeInTheDocument();
+    expect(screen.getByText("done")).toBeInTheDocument();
+  });
+
   it("shows error envelope when set", () => {
     render(
       ulWrap(

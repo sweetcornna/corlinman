@@ -51,6 +51,7 @@ import yaml  # type: ignore[import-untyped]
 from corlinman_agent.agents.card import AgentCard, AgentSource
 from corlinman_agent.agents.registry import (
     AgentCardLoadError,
+    _as_optional_bool,
     _as_optional_str,
     _as_str_dict,
     _as_str_list,
@@ -63,6 +64,7 @@ _KNOWN_KEYS = {
     "description",
     "model",
     "provider",
+    "show_action_trace",
     "tools",
     "skills",
     "variables",
@@ -203,6 +205,12 @@ def parse_markdown_card(
 
     model = _as_optional_str(fm.get("model"), "model", source_path)
     provider = _as_optional_str(fm.get("provider"), "provider", source_path)
+    show_action_trace = _as_optional_bool(
+        fm.get("show_action_trace"),
+        "show_action_trace",
+        source_path,
+        default=True,
+    )
 
     return AgentCard(
         name=name,
@@ -214,6 +222,7 @@ def parse_markdown_card(
         source_path=source_path,
         model=model,
         provider=provider,
+        show_action_trace=show_action_trace,
         source=source,
     )
 
