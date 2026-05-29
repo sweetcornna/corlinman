@@ -31,6 +31,7 @@ Swift) working through the port.
 from __future__ import annotations
 
 import asyncio
+import secrets
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -68,8 +69,14 @@ def _now_ms() -> int:
 
 
 def _new_session_id() -> str:
-    """``cs_`` + 8 lowercase hex chars. Matches the Rust id shape."""
-    return "cs_" + uuid.uuid4().hex[:8]
+    """``cs_`` + 192 bits of base64url-encoded entropy (~32 chars).
+
+    The id is the sole credential gating the SSE event stream and
+    the cross-session frame-push endpoint, so it must meet the
+    NIST SP 800-63B unguessable-session-id bar (>=128 bits). The
+    old Rust-parity 32-bit form was brute-forceable; see R2-005.
+    """
+    return "cs_" + secrets.token_urlsafe(24)
 
 
 @dataclass(slots=True)
