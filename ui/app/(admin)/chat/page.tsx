@@ -305,6 +305,7 @@ export default function ChatPage() {
           model={activeModel}
           conversation={active}
           initialHistory={initialHistory}
+          onOpenModelPicker={() => setPickerOpen("llm")}
         />
       ) : (
         <section
