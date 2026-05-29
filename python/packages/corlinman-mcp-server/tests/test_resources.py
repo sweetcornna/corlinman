@@ -32,14 +32,16 @@ def _adapter(hosts: dict | None = None, skills: StubSkillRegistry | None = None)
 
 @pytest.mark.asyncio
 async def test_list_returns_skills_and_memory_uris():
+    # Memory hosts are tenant-keyed; scope the session to that tenant.
     hosts = {"kb": StubMemoryHost("kb", {"1": "first", "2": "second"})}
     skills = StubSkillRegistry(
         [StubSkill(name="foo", description="foo desc", body_markdown="Body F")]
     )
     adapter = _adapter(hosts, skills)
-    res = await adapter.list_resources(
-        ResourcesListParams(cursor=None), SessionContext.permissive()
+    ctx = SessionContext(
+        resources_allowed=["*"], prompts_allowed=["*"], tenant_id="kb"
     )
+    res = await adapter.list_resources(ResourcesListParams(cursor=None), ctx)
     uris = [r.uri for r in res.resources]
     assert "corlinman://memory/kb/1" in uris
     assert "corlinman://memory/kb/2" in uris
@@ -55,21 +57,18 @@ async def test_list_paginates_with_server_issued_cursor():
         .with_page_size(50)
         .with_memory_list_limit(200)
     )
-    p1 = await adapter.list_resources(
-        ResourcesListParams(cursor=None), SessionContext.permissive()
-    )
+    ctx = SessionContext(resources_allowed=["*"], tenant_id="kb")
+    p1 = await adapter.list_resources(ResourcesListParams(cursor=None), ctx)
     assert len(p1.resources) == 50
     assert p1.next_cursor == "50"
 
     p2 = await adapter.list_resources(
-        ResourcesListParams(cursor=p1.next_cursor), SessionContext.permissive()
+        ResourcesListParams(cursor=p1.next_cursor), ctx
     )
     assert len(p2.resources) == 50
     assert p2.next_cursor == "100"
 
-    p3 = await adapter.list_resources(
-        ResourcesListParams(cursor="100"), SessionContext.permissive()
-    )
+    p3 = await adapter.list_resources(ResourcesListParams(cursor="100"), ctx)
     assert len(p3.resources) == 50
     assert p3.next_cursor is None
 
@@ -118,9 +117,10 @@ async def test_read_skill_returns_body_markdown_verbatim():
 async def test_read_memory_routes_to_named_host():
     hosts = {"kb": StubMemoryHost("kb", {"42": "memory body"})}
     adapter = _adapter(hosts)
+    ctx = SessionContext(resources_allowed=["*"], tenant_id="kb")
     res = await adapter.read_resource(
         ResourcesReadParams(uri="corlinman://memory/kb/42"),
-        SessionContext.permissive(),
+        ctx,
     )
     assert isinstance(res.contents[0], TextResourceContent)
     assert res.contents[0].text == "memory body"
@@ -159,12 +159,14 @@ async def test_read_unknown_uri_returns_invalid_params():
 async def test_read_unknown_memory_id_returns_invalid_params():
     hosts = {"kb": StubMemoryHost("kb", {"1": "x"})}
     adapter = _adapter(hosts)
+    ctx = SessionContext(resources_allowed=["*"], tenant_id="kb")
     with pytest.raises(McpInvalidParamsError) as exc:
         await adapter.read_resource(
             ResourcesReadParams(uri="corlinman://memory/kb/9999"),
-            SessionContext.permissive(),
+            ctx,
         )
     assert exc.value.jsonrpc_code() == -32602
+    assert "unknown memory id" in exc.value.message
 
 
 @pytest.mark.asyncio
@@ -183,6 +185,9 @@ async def test_read_disallowed_scheme_returns_invalid_params():
 
 @pytest.mark.asyncio
 async def test_read_isolates_hosts_by_name():
+    # Each session is scoped to a single tenant; the same adapter (full
+    # tenant-keyed map) serves both, but a session only ever resolves
+    # its own tenant's host.
     hosts = {
         "alpha": StubMemoryHost("alpha", {"1": "ALPHA"}),
         "beta": StubMemoryHost("beta", {"1": "BETA"}),
@@ -190,11 +195,11 @@ async def test_read_isolates_hosts_by_name():
     adapter = _adapter(hosts)
     alpha = await adapter.read_resource(
         ResourcesReadParams(uri="corlinman://memory/alpha/1"),
-        SessionContext.permissive(),
+        SessionContext(resources_allowed=["*"], tenant_id="alpha"),
     )
     beta = await adapter.read_resource(
         ResourcesReadParams(uri="corlinman://memory/beta/1"),
-        SessionContext.permissive(),
+        SessionContext(resources_allowed=["*"], tenant_id="beta"),
     )
     assert isinstance(alpha.contents[0], TextResourceContent)
     assert isinstance(beta.contents[0], TextResourceContent)
@@ -221,6 +226,49 @@ async def test_handle_routes_through_capability_adapter():
         await adapter.handle(
             "resources/bogus", None, SessionContext.permissive()
         )
+
+
+@pytest.mark.asyncio
+async def test_read_rejects_cross_tenant_memory_host():
+    # IDOR repro: the adapter is given the FULL tenant-keyed host map
+    # (the C1 wiring passes the same map to every token; cross-tenant
+    # scoping is meant to be enforced by ctx.tenant_id). A token scoped
+    # to tenant_a must NOT be able to read tenant_b's memory by name.
+    hosts = {
+        "tenant_a": StubMemoryHost("tenant_a", {"x": "A-SECRET"}),
+        "tenant_b": StubMemoryHost("tenant_b", {"x": "B-SECRET"}),
+    }
+    adapter = _adapter(hosts)
+    ctx = SessionContext(resources_allowed=["memory"], tenant_id="tenant_a")
+
+    with pytest.raises(McpInvalidParamsError) as exc:
+        await adapter.read_resource(
+            ResourcesReadParams(uri="corlinman://memory/tenant_b/x"),
+            ctx,
+        )
+    assert exc.value.jsonrpc_code() == -32602
+
+    # Own tenant still reads fine.
+    own = await adapter.read_resource(
+        ResourcesReadParams(uri="corlinman://memory/tenant_a/x"),
+        ctx,
+    )
+    assert isinstance(own.contents[0], TextResourceContent)
+    assert own.contents[0].text == "A-SECRET"
+
+
+@pytest.mark.asyncio
+async def test_list_only_enumerates_own_tenant_memory():
+    hosts = {
+        "tenant_a": StubMemoryHost("tenant_a", {"x": "A-SECRET"}),
+        "tenant_b": StubMemoryHost("tenant_b", {"x": "B-SECRET"}),
+    }
+    adapter = _adapter(hosts)
+    ctx = SessionContext(resources_allowed=["memory"], tenant_id="tenant_a")
+    res = await adapter.list_resources(ResourcesListParams(cursor=None), ctx)
+    uris = [r.uri for r in res.resources]
+    assert any(u.startswith("corlinman://memory/tenant_a/") for u in uris)
+    assert not any(u.startswith("corlinman://memory/tenant_b/") for u in uris)
 
 
 def test_parse_uri_recognises_three_schemes_and_rejects_others():

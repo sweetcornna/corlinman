@@ -54,6 +54,22 @@ DEFAULT_PAGE_SIZE: int = 100
 DEFAULT_MEMORY_LIST_LIMIT: int = 50
 """Soft cap on memory hits returned per host during enumeration."""
 
+DEFAULT_TENANT_ID: str = "default"
+"""Effective tenant id when a :class:`SessionContext` carries ``None``.
+Kept in lockstep with :data:`corlinman_mcp_server.auth.DEFAULT_TENANT_ID`
+so a directly-constructed context (no auth layer) still scopes
+deterministically."""
+
+
+def _effective_tenant(ctx: SessionContext) -> str:
+    """Resolve the tenant a session is scoped to. The memory-host map is
+    tenant-keyed, so this is the only key a token may read/list. ``None``
+    or empty falls back to :data:`DEFAULT_TENANT_ID` (mirrors
+    ``TokenAcl.effective_tenant``)."""
+    if ctx.tenant_id:
+        return ctx.tenant_id
+    return DEFAULT_TENANT_ID
+
 
 # ---------------------------------------------------------------------
 # Parsed URI
@@ -224,9 +240,14 @@ class ResourcesAdapter:
         """Enumerate all visible resources, then page-slice."""
         all_resources: list[Resource] = []
 
-        # 1) Memory hosts (alphabetical thanks to sorted dict).
+        # 1) Memory hosts — scoped to the session's tenant. The host map
+        # is tenant-keyed, so a token may only enumerate the single host
+        # belonging to its own tenant (cross-tenant IDOR guard).
         if ctx.allows_resource_scheme("memory"):
-            for name, host in self._memory_hosts.items():
+            tenant = _effective_tenant(ctx)
+            host = self._memory_hosts.get(tenant)
+            scoped_hosts = [(tenant, host)] if host is not None else []
+            for name, host in scoped_hosts:
                 probe = MemoryQuery(
                     text="*",
                     top_k=self._memory_list_limit,
@@ -322,6 +343,16 @@ class ResourcesAdapter:
             )
 
         if isinstance(parsed, _MemoryUri):
+            # The memory-host map is tenant-keyed and the URI ``<host>``
+            # segment names that tenant. A token may only resolve its own
+            # tenant's host: reject any other host as "unknown" rather
+            # than leaking whether a foreign tenant exists (IDOR guard).
+            tenant = _effective_tenant(ctx)
+            if parsed.host != tenant:
+                raise McpInvalidParamsError(
+                    f"unknown memory host '{parsed.host}'",
+                    data={"uri": params.uri},
+                )
             host = self._memory_hosts.get(parsed.host)
             if host is None:
                 raise McpInvalidParamsError(
