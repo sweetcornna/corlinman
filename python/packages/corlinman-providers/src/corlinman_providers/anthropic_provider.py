@@ -19,6 +19,7 @@ stabilised in the 0.40+ line; we use ``event.type`` string tags rather than
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
@@ -442,6 +443,18 @@ def _split_system(messages: Sequence[Any]) -> tuple[str | None, list[dict[str, A
     in-place: ``image_url`` → ``{"type": "image", "source": {...}}``.
     Non-text system messages carrying list content collapse into
     concatenated text (Anthropic's system parameter is a string).
+
+    Tool-calling turns (OpenAI shape, fed back by the reasoning loop /
+    ``agent_servicer.feed_tool_result``) are translated to Anthropic's
+    vendor blocks (audit B1):
+
+    * an assistant message carrying ``tool_calls`` →
+      ``{"type": "tool_use", "id": ..., "name": ..., "input": {...}}``
+      blocks (preceded by any text content), so the call survives the
+      round-trip instead of collapsing to an empty assistant turn;
+    * a ``role="tool"`` message →
+      ``{"role": "user", "content": [{"type": "tool_result",
+      "tool_use_id": ..., "content": ...}]}``.
     """
     system_parts: list[str] = []
     chat: list[dict[str, Any]] = []
@@ -452,16 +465,76 @@ def _split_system(messages: Sequence[Any]) -> tuple[str | None, list[dict[str, A
             text = _content_to_text(content)
             if text:
                 system_parts.append(text)
+        elif role == "tool":
+            # OpenAI tool result → Anthropic user-turn tool_result block.
+            chat.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": _get(m, "tool_call_id") or "",
+                            "content": content if isinstance(content, str) else (content or ""),
+                        }
+                    ],
+                }
+            )
         else:
-            # Anthropic requires role in {"user", "assistant"}; collapse "tool" for now.
-            anth_role = "user" if role in ("user", "tool") else "assistant"
+            tool_calls = _get(m, "tool_calls")
+            if tool_calls:
+                # Assistant tool-call turn → text (if any) + tool_use blocks.
+                blocks: list[dict[str, Any]] = []
+                text = _content_to_text(content)
+                if text:
+                    blocks.append({"type": "text", "text": text})
+                blocks.extend(_tool_calls_to_anthropic_blocks(tool_calls))
+                chat.append({"role": "assistant", "content": blocks})
+                continue
+            # Anthropic requires role in {"user", "assistant"}.
+            anth_role = "user" if role == "user" else "assistant"
             if isinstance(content, list):
-                blocks = _parts_to_anthropic_blocks(content)
-                chat.append({"role": anth_role, "content": blocks})
+                content_blocks = _parts_to_anthropic_blocks(content)
+                chat.append({"role": anth_role, "content": content_blocks})
             else:
                 chat.append({"role": anth_role, "content": content or ""})
     system = "\n\n".join(system_parts) if system_parts else None
     return system, chat
+
+
+def _tool_calls_to_anthropic_blocks(tool_calls: Any) -> list[dict[str, Any]]:
+    """Translate OpenAI-shape ``tool_calls`` into Anthropic ``tool_use`` blocks.
+
+    Each OpenAI entry is ``{"id": ..., "type": "function", "function":
+    {"name": ..., "arguments": <json string>}}`` (the exact shape emitted
+    by ``reasoning_loop._extend_with_tool_round``). Anthropic's
+    ``tool_use`` block carries the arguments as a parsed ``input`` dict, so
+    we ``json.loads`` the arguments string and fall back to ``{}`` on a
+    malformed / empty payload rather than failing the whole request.
+    """
+    blocks: list[dict[str, Any]] = []
+    if not isinstance(tool_calls, list):
+        return blocks
+    for tc in tool_calls:
+        if not isinstance(tc, dict):
+            continue
+        fn = tc.get("function") or {}
+        raw_args = fn.get("arguments")
+        if isinstance(raw_args, dict):
+            args: Any = raw_args
+        else:
+            try:
+                args = json.loads(raw_args) if raw_args else {}
+            except (ValueError, TypeError):
+                args = {}
+        blocks.append(
+            {
+                "type": "tool_use",
+                "id": tc.get("id") or "",
+                "name": fn.get("name") or "",
+                "input": args,
+            }
+        )
+    return blocks
 
 
 def _content_to_text(content: Any) -> str:

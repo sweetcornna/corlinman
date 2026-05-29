@@ -289,6 +289,152 @@ def test_split_system_drops_unsupported_file_part() -> None:
     assert content == [{"type": "text", "text": "transcript:"}]
 
 
+def test_split_system_translates_tool_calls_to_anthropic_blocks() -> None:
+    """An assistant turn carrying OpenAI-shape ``tool_calls`` becomes a
+    ``tool_use`` content block, and the following ``role="tool"`` message
+    becomes a user turn with a ``tool_result`` block (audit B1).
+
+    Before the fix the assistant turn collapsed to
+    ``{"role":"assistant","content":""}`` (tool_calls dropped) and the
+    tool result became a bare ``{"role":"user","content":"res"}`` — which
+    Anthropic rejects (empty assistant content + orphan tool_result),
+    breaking every multi-round tool call.
+    """
+    _, chat = _split_system(
+        [
+            {"role": "system", "content": "be helpful"},
+            {"role": "user", "content": "go"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "f", "arguments": '{"x":1}'},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "res"},
+        ]
+    )
+    assert [m["role"] for m in chat] == ["user", "assistant", "user"]
+
+    # Assistant turn → tool_use block (no empty-string content).
+    assistant_content = chat[1]["content"]
+    assert isinstance(assistant_content, list)
+    tool_use = [b for b in assistant_content if b.get("type") == "tool_use"]
+    assert tool_use == [
+        {"type": "tool_use", "id": "call_1", "name": "f", "input": {"x": 1}}
+    ]
+
+    # Tool result → user turn with a tool_result block.
+    result_content = chat[2]["content"]
+    assert result_content == [
+        {"type": "tool_result", "tool_use_id": "call_1", "content": "res"}
+    ]
+
+
+def test_split_system_tool_call_with_text_keeps_both_blocks() -> None:
+    """An assistant turn with both text and tool_calls emits a text block
+    *and* a tool_use block."""
+    _, chat = _split_system(
+        [
+            {
+                "role": "assistant",
+                "content": "let me check",
+                "tool_calls": [
+                    {
+                        "id": "call_9",
+                        "type": "function",
+                        "function": {"name": "lookup", "arguments": "{}"},
+                    }
+                ],
+            },
+        ]
+    )
+    content = chat[0]["content"]
+    assert content == [
+        {"type": "text", "text": "let me check"},
+        {"type": "tool_use", "id": "call_9", "name": "lookup", "input": {}},
+    ]
+
+
+def test_split_system_tool_call_malformed_arguments_falls_back_to_empty_input() -> None:
+    """Malformed ``arguments`` JSON does not crash — input falls back to {}."""
+    _, chat = _split_system(
+        [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_bad",
+                        "type": "function",
+                        "function": {"name": "f", "arguments": "{not json"},
+                    }
+                ],
+            },
+        ]
+    )
+    tool_use = chat[0]["content"]
+    assert tool_use == [
+        {"type": "tool_use", "id": "call_bad", "name": "f", "input": {}}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_tool_round_sends_anthropic_tool_blocks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end: a multi-round tool exchange reaches the SDK as
+    ``tool_use`` / ``tool_result`` blocks, not an empty assistant turn
+    (audit B1 live path: feed_tool_result → chat_stream)."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    captured: dict[str, Any] = {}
+
+    class _CapturingMessages:
+        def stream(self, **kwargs: Any) -> _FakeStream:
+            captured.update(kwargs)
+            return _FakeStream([_text_event("ok")], stop_reason="end_turn")
+
+    class _CapturingClient:
+        def __init__(self) -> None:
+            self.messages = _CapturingMessages()
+
+    _patch_anthropic(monkeypatch, _CapturingClient())
+
+    prov = AnthropicProvider()
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "go"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "f", "arguments": '{"x":1}'},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "res"},
+    ]
+    async for _ in prov.chat_stream(model="claude-sonnet-4-5", messages=messages):
+        pass
+
+    sent = captured["messages"]
+    assert [m["role"] for m in sent] == ["user", "assistant", "user"]
+    assert {"type": "tool_use", "id": "call_1", "name": "f", "input": {"x": 1}} in (
+        sent[1]["content"]
+    )
+    assert sent[2]["content"] == [
+        {"type": "tool_result", "tool_use_id": "call_1", "content": "res"}
+    ]
+    assert sent[1]["content"] != ""  # NOT an empty assistant turn
+
+
 @pytest.mark.asyncio
 async def test_chat_stream_with_image_url_part(monkeypatch: pytest.MonkeyPatch) -> None:
     """End-to-end: multipart user content reaches the SDK with Anthropic

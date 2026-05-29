@@ -36,6 +36,8 @@ from corlinman_providers import (
 )
 from corlinman_providers.failover import TimeoutError as ProviderTimeoutError
 
+from corlinman_providers.bedrock_provider import _build_anthropic_body
+
 from .test_aws_eventstream import encode_message
 
 # --------------------------------------------------------------------------
@@ -270,6 +272,55 @@ async def test_system_message_lifted_and_tools_normalised(
         "type": "object",
         "properties": {},
     }
+
+
+def test_build_anthropic_body_translates_tool_round_to_vendor_blocks() -> None:
+    """An assistant ``tool_calls`` turn + ``role="tool"`` result translate
+    into Anthropic ``tool_use`` / ``tool_result`` content blocks (audit B1).
+
+    Before the fix the assistant turn collapsed to
+    ``{"role":"assistant","content":""}`` (tool_calls lost) and the tool
+    result became a bare ``{"role":"user","content":"res"}`` — which
+    Bedrock/Anthropic rejects, breaking every multi-round tool call.
+    """
+    body = _build_anthropic_body(
+        messages=[
+            {"role": "system", "content": "be brief"},
+            {"role": "user", "content": "go"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "f", "arguments": '{"x":1}'},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "res"},
+        ],
+        tools=None,
+        temperature=None,
+        max_tokens=None,
+        extra=None,
+    )
+    chat = body["messages"]
+    assert [m["role"] for m in chat] == ["user", "assistant", "user"]
+
+    assistant_content = chat[1]["content"]
+    assert isinstance(assistant_content, list)
+    assert {
+        "type": "tool_use",
+        "id": "call_1",
+        "name": "f",
+        "input": {"x": 1},
+    } in assistant_content
+    assert chat[1]["content"] != ""  # NOT an empty assistant turn
+
+    assert chat[2]["content"] == [
+        {"type": "tool_result", "tool_use_id": "call_1", "content": "res"}
+    ]
 
 
 # --------------------------------------------------------------------------
