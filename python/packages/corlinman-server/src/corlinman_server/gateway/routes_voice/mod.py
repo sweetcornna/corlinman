@@ -117,6 +117,7 @@ __all__ = [
     "DEFAULT_TICK_INTERVAL_SECONDS",
     "VoiceRouterConfig",
     "VoiceState",
+    "WS_TOKEN_SUBPROTOCOL_PREFIX",
     "build_voice_state_from_app",
     "resolve_voice_provider",
     "router",
@@ -1222,29 +1223,62 @@ def _resolve_auth_state(
     return None
 
 
+WS_TOKEN_SUBPROTOCOL_PREFIX: str = "corlinman.voice.token."
+"""Prefix for the browser-compatible token-carrying subprotocol.
+
+The browser ``WebSocket`` API cannot set request headers, so a browser
+client passes its tenant API key as a *second* offered subprotocol —
+``new WebSocket(url, ["corlinman.voice.v1", "corlinman.voice.token." +
+token])``. The server reads the token off this entry but echoes back
+only the canonical :data:`SUBPROTOCOL` (never the token entry), so the
+secret rides the ``Sec-WebSocket-Protocol`` request header — which
+uvicorn's access log does NOT record — instead of the query string,
+which is logged verbatim on every connect. See R5-S1 / the
+``?api_key=`` leak this replaces.
+"""
+
+
 def _extract_ws_token(websocket: WebSocket) -> str | None:
     """Pull the bearer token a WebSocket client supplied.
 
     Header path first — ``Authorization: Bearer <token>`` then
     ``X-API-Key`` — reusing :func:`extract_bearer_token` so the WS gate
-    accepts exactly the same headers the HTTP gate does. As a browser
-    fallback (the WebSocket API can't set request headers), a
-    ``?api_key=`` / ``?token=`` query parameter is also honoured, the
-    convention documented for the gateway's other WS surface
-    (``/logstream``).
+    accepts exactly the same headers the HTTP gate does. As a
+    browser-compatible fallback (the WebSocket API can't set request
+    headers), a token offered via the ``Sec-WebSocket-Protocol``
+    subprotocol list as ``corlinman.voice.token.<token>`` is honoured —
+    the standard, browser-settable WS auth channel that, unlike a
+    query-string parameter, does NOT land in uvicorn's access log.
+
+    The query string is deliberately NOT consulted: uvicorn logs the
+    full path-with-query on every WS accept (and on the 4401 deny path,
+    which accepts before close), so a ``?api_key=`` fallback would write
+    the tenant key verbatim to the access log on every connect.
     """
     token = extract_bearer_token(websocket)
     if token:
         return token
-    params = getattr(websocket, "query_params", None)
-    if params is not None:
-        for key in ("api_key", "token", "access_token"):
-            try:
-                raw = params.get(key)
-            except Exception:  # noqa: BLE001 — duck-typed query mapping
-                raw = None
-            if raw and str(raw).strip():
-                return str(raw).strip()
+    return _extract_subprotocol_token(
+        websocket.headers.get("sec-websocket-protocol")
+    )
+
+
+def _extract_subprotocol_token(header: str | None) -> str | None:
+    """Extract a ``corlinman.voice.token.<token>`` value from the
+    comma-separated ``Sec-WebSocket-Protocol`` offer list.
+
+    The first token-carrying entry wins; the canonical
+    :data:`SUBPROTOCOL` entry and any blanks are skipped. Returns
+    ``None`` when no token entry is present.
+    """
+    if not header:
+        return None
+    for raw in header.split(","):
+        entry = raw.strip()
+        if entry.startswith(WS_TOKEN_SUBPROTOCOL_PREFIX):
+            token = entry[len(WS_TOKEN_SUBPROTOCOL_PREFIX):].strip()
+            if token:
+                return token
     return None
 
 

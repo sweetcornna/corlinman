@@ -27,6 +27,7 @@ from corlinman_server.gateway.routes_voice.framing import SUBPROTOCOL
 from corlinman_server.gateway.routes_voice.mod import (
     CLOSE_CODE_AUTH_DENIED,
     CLOSE_CODE_NORMAL,
+    WS_TOKEN_SUBPROTOCOL_PREFIX,
     VoiceRouterConfig,
     VoiceState,
     run_voice_session,
@@ -228,14 +229,20 @@ async def test_valid_token_via_authorization_header_connects(
     assert ws.close_code == CLOSE_CODE_NORMAL
 
 
-async def test_valid_token_via_query_param_connects(
+async def test_valid_token_via_subprotocol_connects(
     admin_db_with_key, tmp_path: Path
 ) -> None:
+    """A browser passes the key as a second offered subprotocol
+    (``new WebSocket(url, ["corlinman.voice.v1", "corlinman.voice.token."
+    + token])``). The token rides the ``Sec-WebSocket-Protocol`` header —
+    which uvicorn does NOT log — not the query string. The handshake must
+    authenticate, and the server must echo back ONLY the canonical
+    subprotocol so the token never leaks into the upgrade response."""
     db, token = admin_db_with_key
     auth_state = ApiKeyAuthState(admin_db=db)
 
     ws = FakeWebSocket(
-        query_params={"api_key": token},
+        subprotocol=f"{SUBPROTOCOL}, {WS_TOKEN_SUBPROTOCOL_PREFIX}{token}",
         api_key_auth=auth_state,
     )
     ws.queue_text(json.dumps({"type": "start", "session_key": "sk-ok"}))
@@ -248,6 +255,45 @@ async def test_valid_token_via_query_param_connects(
 
     assert any(c.get("type") == "started" for c in ws.sent_control)
     assert ws.close_code == CLOSE_CODE_NORMAL
+    # The accepted subprotocol echoed on the upgrade response must be the
+    # canonical token only — never the secret-bearing token subprotocol.
+    assert ws.accepted_subprotocol == SUBPROTOCOL
+    assert WS_TOKEN_SUBPROTOCOL_PREFIX not in (ws.accepted_subprotocol or "")
+
+
+async def test_query_param_token_is_not_honored(
+    admin_db_with_key, tmp_path: Path
+) -> None:
+    """A token on the query string (``?api_key=``) must NOT authenticate.
+
+    R5-S1 added a ``?api_key=`` / ``?token=`` / ``?access_token=`` query
+    fallback; uvicorn (entrypoint default ``access_log=True``) logs the
+    full path-with-query on every WS accept AND on the 4401 deny path, so
+    that fallback wrote the tenant key verbatim to the access log on every
+    connect. The fix removes it: a valid token presented ONLY on the
+    query string must be rejected so nothing secret can ride the query
+    string."""
+    db, token = admin_db_with_key
+    auth_state = ApiKeyAuthState(admin_db=db)
+
+    for key in ("api_key", "token", "access_token"):
+        ws = FakeWebSocket(
+            query_params={key: token},
+            api_key_auth=auth_state,
+        )
+        ws.queue_text(json.dumps({"type": "start", "session_key": "sk-attack"}))
+
+        await asyncio.wait_for(
+            run_voice_session(
+                ws, _voice_state(auth_state=auth_state, data_dir=tmp_path)
+            ),
+            timeout=5.0,
+        )
+
+        assert not any(
+            c.get("type") == "started" for c in ws.sent_control
+        ), f"query-string token (?{key}=) authenticated — the leak vector is still live"
+        assert ws.close_code == CLOSE_CODE_AUTH_DENIED
 
 
 async def test_tenant_bound_to_authenticated_key_not_spoofed_header(
