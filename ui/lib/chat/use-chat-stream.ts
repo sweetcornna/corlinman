@@ -249,9 +249,18 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
     });
   }, []);
 
-  /** Run one turn end-to-end: open both streams, merge, settle. */
+  /**
+   * Run one turn end-to-end: open both streams, merge, settle.
+   *
+   * `baseHistory`, when provided, is the explicit list of prior messages
+   * the request body should be built from (e.g. the truncated history from
+   * `editAndRerun`). When omitted we fall back to the hook's `messages`
+   * state. Relying on the closure's `messages` alone is unsafe for callers
+   * that mutate state and immediately re-run, since the freshly-mutated
+   * state is not yet committed into this `useCallback`'s captured value.
+   */
   const runTurn = React.useCallback(
-    async (userMsg: ChatMessage) => {
+    async (userMsg: ChatMessage, baseHistory?: ChatMessage[]) => {
       // Open the assistant draft.
       const draft: ChatMessage = {
         id: genId(),
@@ -305,7 +314,8 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
       if (args.systemPrompt) {
         messagesPayload.push({ role: "system", content: args.systemPrompt });
       }
-      for (const m of messages) {
+      const history = baseHistory ?? messages;
+      for (const m of history) {
         if (m.role === "user" || m.role === "assistant" || m.role === "system") {
           messagesPayload.push({ role: m.role, content: m.content });
         }
@@ -441,32 +451,36 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
 
   const editAndRerun = React.useCallback(
     async (messageId: string, newContent: string) => {
-      // Locate the message + every subsequent message gets dropped.
-      let edited: ChatMessage | null = null;
-      setMessages((prev) => {
-        const idx = prev.findIndex((m) => m.id === messageId);
-        if (idx < 0) {
-          return prev;
-        }
-        const next: ChatMessage = {
-          ...prev[idx],
-          content: newContent,
-          createdAt: Date.now(),
-        };
-        edited = next;
-        return [...prev.slice(0, idx), next];
-      });
-      const editedUser = edited as ChatMessage | null;
-      if (!editedUser) return;
+      // Locate the message; everything from it onward gets dropped. We
+      // compute the truncated history synchronously from the current
+      // `messages` rather than reading a value captured inside a
+      // `setMessages` updater — that updater runs lazily (and may be
+      // batched), so its captured value is not reliably available here,
+      // and `runTurn`'s closure over `messages` would otherwise still
+      // hold the PRE-truncation history.
+      const idx = messages.findIndex((m) => m.id === messageId);
+      if (idx < 0) return;
+      const editedUser: ChatMessage = {
+        ...messages[idx],
+        content: newContent,
+        createdAt: Date.now(),
+      };
+      // History the rerun request must be built from: everything strictly
+      // before the edited message. The edited user message itself is
+      // appended by `runTurn`, so it is intentionally excluded here.
+      const truncatedHistory = messages.slice(0, idx);
+      // Reflect the truncation in the UI: drop the edited message and
+      // everything after it, then re-add the edited user message.
+      setMessages([...truncatedHistory, editedUser]);
       lastUserMessageRef.current = {
         text: newContent,
         attachments: editedUser.attachments,
       };
-      // Wait a tick so the messages state is observed by runTurn closure.
-      await Promise.resolve();
-      await runTurn(editedUser);
+      // Pass the truncated history explicitly so the request body is built
+      // from it, not from the stale closure's `messages`.
+      await runTurn(editedUser, truncatedHistory);
     },
-    [runTurn],
+    [messages, runTurn],
   );
 
   const sliceUntil = React.useCallback(
