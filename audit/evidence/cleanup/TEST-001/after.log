@@ -1,0 +1,24 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.13.12, pytest-9.0.3, pluggy-1.6.0 -- /Users/cornna/project/corlinman/.venv/bin/python3
+cachedir: .pytest_cache
+hypothesis profile 'default'
+rootdir: /Users/cornna/project/corlinman
+configfile: pyproject.toml
+plugins: syrupy-5.2.0, cov-7.1.0, hypothesis-6.154.1, asyncio-1.4.0, respx-0.23.1, anyio-4.13.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 12 items
+
+python/packages/corlinman-server/tests/gateway/routes/test_chat_approve.py::test_returns_503_when_resolver_unwired PASSED [  8%]
+python/packages/corlinman-server/tests/gateway/routes/test_chat_approve.py::test_default_state_is_unwired PASSED [ 16%]
+python/packages/corlinman-server/tests/gateway/routes/test_chat_approve.py::test_returns_400_when_call_id_is_blank PASSED [ 25%]
+python/packages/corlinman-server/tests/gateway/routes/test_chat_approve.py::test_returns_400_when_call_id_is_empty_string PASSED [ 33%]
+python/packages/corlinman-server/tests/gateway/routes/test_chat_approve.py::test_returns_400_when_deny_without_deny_message PASSED [ 41%]
+python/packages/corlinman-server/tests/gateway/routes/test_chat_approve.py::test_returns_400_when_deny_message_is_whitespace_only PASSED [ 50%]
+python/packages/corlinman-server/tests/gateway/routes/test_chat_approve.py::test_returns_404_when_resolver_raises_not_found PASSED [ 58%]
+python/packages/corlinman-server/tests/gateway/routes/test_chat_approve.py::test_returns_500_when_resolver_raises_generic_exception PASSED [ 66%]
+python/packages/corlinman-server/tests/gateway/routes/test_chat_approve.py::test_returns_200_on_approve_and_forwards_decision PASSED [ 75%]
+python/packages/corlinman-server/tests/gateway/routes/test_chat_approve.py::test_returns_200_on_deny_and_forwards_reason PASSED [ 83%]
+python/packages/corlinman-server/tests/gateway/routes/test_chat_approve.py::test_call_id_is_stripped_before_forwarding PASSED [ 91%]
+python/packages/corlinman-server/tests/gateway/routes/test_chat_approve.py::test_scope_omitted_returns_null_scope PASSED [100%]
+
+============================== 12 passed in 0.28s ==============================
