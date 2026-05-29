@@ -279,33 +279,35 @@ async def _connection_loop(
 
     # Step 5: reader loop — dispatch incoming frames.
     try:
-        async for raw in ws:
-            if isinstance(raw, bytes):
-                # We don't speak binary on this protocol; ignore.
-                continue
-            try:
-                frame = WsToolMessage.from_json(raw)
-            except (ValueError, json.JSONDecodeError) as err:
-                _LOG.warning(
-                    "wstool: bad frame from runner_id=%s: %s", runner_id, err
-                )
-                continue
-            _handle_runner_frame(state, conn, missed, frame)
-    except ConnectionClosed:
-        pass
-
-    # Step 6: cleanup. Fail in-flight requests, purge registrations,
-    # stop writer + heartbeat tasks.
-    conn.fail_pending()
-    state.deregister_runner(runner_id)
-    # Ask writer to drain + exit.
-    with contextlib.suppress(asyncio.QueueFull):
-        outbox.put_nowait(OUTBOX_CLOSE)
-    for task in (heartbeat_task, writer_task):
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await task
-    _LOG.info("wstool: runner disconnected runner_id=%s", runner_id)
+        try:
+            async for raw in ws:
+                if isinstance(raw, bytes):
+                    # We don't speak binary on this protocol; ignore.
+                    continue
+                try:
+                    frame = WsToolMessage.from_json(raw)
+                except (ValueError, json.JSONDecodeError) as err:
+                    _LOG.warning(
+                        "wstool: bad frame from runner_id=%s: %s", runner_id, err
+                    )
+                    continue
+                _handle_runner_frame(state, conn, missed, frame)
+        except ConnectionClosed:
+            pass
+    finally:
+        # Step 6: cleanup. Runs even on an unexpected exception so the
+        # runner is always deregistered + in-flight waiters fail instead
+        # of hanging (and the writer/heartbeat tasks don't leak).
+        conn.fail_pending()
+        state.deregister_runner(runner_id)
+        # Ask writer to drain + exit.
+        with contextlib.suppress(asyncio.QueueFull):
+            outbox.put_nowait(OUTBOX_CLOSE)
+        for task in (heartbeat_task, writer_task):
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+        _LOG.info("wstool: runner disconnected runner_id=%s", runner_id)
 
 
 async def _writer_loop(ws: ServerConnection, outbox: asyncio.Queue[object]) -> None:

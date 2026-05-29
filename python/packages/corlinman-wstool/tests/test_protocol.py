@@ -61,6 +61,29 @@ def test_unknown_kind_raises() -> None:
         WsToolMessage.from_dict({"kind": "no_such_thing"})
 
 
+def test_well_formed_frame_with_extra_field_raises_value_error() -> None:
+    """A frame with a known kind but an unexpected field is a protocol
+    error, not a programming error — ``from_dict`` must raise ``ValueError``
+    so the reader loops (which only catch ValueError/JSONDecodeError) treat
+    it as a bad frame instead of letting a TypeError escape.
+    """
+    import pytest
+
+    with pytest.raises(ValueError):
+        WsToolMessage.from_dict({"kind": "pong", "extra": 1})
+
+
+def test_well_formed_frame_with_missing_field_raises_value_error() -> None:
+    """A frame with a known kind but a missing required field is likewise a
+    protocol error and must surface as ``ValueError``.
+    """
+    import pytest
+
+    with pytest.raises(ValueError):
+        # ``result`` requires a ``payload`` field; omit it.
+        WsToolMessage.from_dict({"kind": "result", "request_id": "r1", "ok": True})
+
+
 def test_url_builder_appends_path_once() -> None:
     from corlinman_wstool.client import build_connect_url
 

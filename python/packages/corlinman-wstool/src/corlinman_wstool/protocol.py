@@ -246,7 +246,18 @@ class WsToolMessage(_WsToolMessageBase):
         if variant is _Accept and "supported_tools" in kwargs:
             raw = kwargs["supported_tools"] or []
             kwargs["supported_tools"] = [ToolAdvert.from_dict(t) for t in raw]
-        return variant(**kwargs)
+        # A well-formed-JSON frame can still carry an unexpected or missing
+        # field for its declared ``kind``. ``variant(**kwargs)`` raises
+        # ``TypeError`` for that, which reader loops do NOT catch (they
+        # only handle ``ValueError``/``JSONDecodeError`` as protocol
+        # errors). Re-raise as ``ValueError`` so a single bad frame is
+        # handled as a protocol error instead of crashing the loop.
+        try:
+            return variant(**kwargs)
+        except TypeError as err:
+            raise ValueError(
+                f"malformed {kind!r} frame: {err}"
+            ) from err
 
     @classmethod
     def from_json(cls, raw: str) -> _WsToolMessageBase:
