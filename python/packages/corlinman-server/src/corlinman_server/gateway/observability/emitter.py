@@ -24,6 +24,17 @@ afterwards so a slow subscriber doesn't keep events out of the durable
 store, and a journal write failure doesn't deny live observers the
 event the agent already produced.
 
+**Batched durable writes (G5).** The reasoning loop emits one
+streaming delta per token chunk; persisting each with its own
+``append_event`` cost one ``commit()`` per row under the backend's
+global write-lock. We instead buffer the high-frequency,
+non-correctness-gating delta events per-turn and flush them via
+``append_events_batch`` (one commit per batch) on a size threshold, on
+any important event (which is flushed *behind* the buffered deltas to
+keep the journal ordered), and always at turn end. Only the durable
+write is deferred — the realtime fan-out still fires for every event
+immediately, so live SSE is unaffected. See :meth:`_persist`.
+
 **Per-session fan-out.** Subscribers are scoped to a single
 ``session_key``. The set is keyed by string so a client watching
 session X never receives session Y events. Lookup happens under an
@@ -54,7 +65,10 @@ from corlinman_agent.events import (
     Event,
     EventEmitter,
     EventEnvelope,
+    ReasoningDelta,
     SubagentEvent,
+    TextDelta,
+    ToolInputDelta,
 )
 
 logger = structlog.get_logger(__name__)
@@ -67,6 +81,36 @@ logger = structlog.get_logger(__name__)
 DEFAULT_QUEUE_MAXSIZE: int = 512
 
 
+# G5 — per-token sync-commit hot path. The reasoning loop emits one
+# streaming delta per token chunk; persisting each with its own
+# ``append_event`` cost one ``commit()`` per row under the backend's
+# global write-lock (~6ms each per the backend note), so a 200-token
+# reply serialized ~200 commits against every other session. We buffer
+# only the *high-frequency, non-gating* delta events and flush them in
+# batches via ``append_events_batch`` (one ``BEGIN IMMEDIATE``/``COMMIT``
+# for the whole batch).
+#
+# Only these delta types are deferrable. Everything else — turn
+# lifecycle, tool frames, block boundaries, subagent frames, cancel —
+# is "important": a subscriber / the cost+resume logic must see it
+# promptly, so it is never buffered. When an important event arrives we
+# first flush any deltas buffered ahead of it (to keep the journal
+# strictly ordered), then persist the important event itself.
+_DEFERRABLE_EVENT_TYPES: tuple[type, ...] = (
+    TextDelta,
+    ReasoningDelta,
+    ToolInputDelta,
+)
+
+# Flush a turn's delta buffer once it reaches this many events even if no
+# important/terminal event has arrived yet. Bounds both the unflushed
+# (crash-window) event count and per-batch memory; small enough that a
+# crash loses at most this many of the lowest-value (re-derivable from
+# the realtime stream) delta events, large enough to collapse ~an order
+# of magnitude of commits on a normal reply.
+DEFAULT_FLUSH_THRESHOLD: int = 32
+
+
 class JournalBackedEmitter:
     """Tee :class:`EventEnvelope` to the journal and to live subscribers.
 
@@ -75,14 +119,43 @@ class JournalBackedEmitter:
     the gateway lifecycle wires one at boot and threads it through.
     """
 
-    def __init__(self, journal: Any) -> None:
+    def __init__(
+        self,
+        journal: Any,
+        *,
+        flush_threshold: int = DEFAULT_FLUSH_THRESHOLD,
+    ) -> None:
         """Wrap ``journal`` (typically an
         :class:`corlinman_server.agent_journal.AgentJournal`).
 
         Typed loosely so a test can hand in a duck-typed stub exposing
-        just ``append_event(envelope)``.
+        just ``append_event(envelope)``. If the journal also exposes
+        ``append_events_batch(envelopes)`` (the W1.2 backend API), the
+        emitter buffers high-frequency streaming deltas and flushes them
+        one batch / one commit instead of one commit per token; a journal
+        without that method falls back to per-event ``append_event``
+        (correct, just not batched).
+
+        ``flush_threshold`` caps how many delta events sit unflushed in a
+        turn's buffer before a size-triggered flush — bounding both the
+        crash window and per-batch memory.
         """
         self._journal = journal
+        # Whether the journal supports the batch write API. Cached at
+        # construction so the hot path doesn't re-probe every emit.
+        self._has_batch_api: bool = callable(
+            getattr(journal, "append_events_batch", None)
+        )
+        self._flush_threshold = max(1, flush_threshold)
+        # turn_id -> ordered list of buffered deferrable envelopes awaiting
+        # a batch flush. Keyed per-turn (not global) because the emitter
+        # is shared across every session/turn; flushing turn A must not
+        # entangle turn B's still-open buffer, and each turn's final flush
+        # is driven by its own terminal event. Guarded by ``_buffer_lock``
+        # so two emits for the same turn can't lose/duplicate a buffered
+        # event or double-flush.
+        self._delta_buffers: dict[str, list[EventEnvelope]] = defaultdict(list)
+        self._buffer_lock = asyncio.Lock()
         # session_key -> set of queues. ``set`` so unsubscribe is O(1)
         # and so a single client opening two SSE streams against the
         # same session gets two distinct entries (Queue identity is the
@@ -109,16 +182,20 @@ class JournalBackedEmitter:
         Conforms to :class:`corlinman_agent.events.EventEmitter`: never
         raises on the hot path. Logs at WARN on a journal write failure
         and at WARN on a subscriber queue overflow.
+
+        Durable-write batching (G5): high-frequency streaming deltas
+        (:data:`_DEFERRABLE_EVENT_TYPES`) are buffered per-turn and
+        flushed via :meth:`_flush_turn` in batches — on the size
+        threshold, on an important/terminal event, and always at turn
+        end. Important events flush the turn's buffered deltas *first*
+        so the journal stays strictly ordered, then persist themselves.
+        Only the *durable write* is deferred — the realtime fan-out
+        below still happens for every event the instant it is emitted,
+        so live SSE subscribers see every token immediately.
         """
-        # (1) durable write first — replay is the source of truth.
-        try:
-            await self._journal.append_event(envelope)
-        except Exception:  # noqa: BLE001 — never bubble up
-            logger.exception(
-                "emitter.journal_write_failed",
-                turn_id=envelope.turn_id,
-                sequence=envelope.sequence,
-            )
+        # (1) durable write — batched for deltas, prompt for everything
+        # that gates correctness (turn lifecycle, tool frames, ...).
+        await self._persist(envelope)
 
         # (2) snapshot subscribers under the lock; deliver outside it
         # so a slow consumer can't stall the producer holding the lock.
@@ -140,6 +217,98 @@ class JournalBackedEmitter:
                         "to catch up from the journal"
                     ),
                 )
+
+    # ------------------------------------------------------------------
+    # Durable-write path (G5 batching)
+    # ------------------------------------------------------------------
+
+    async def _persist(self, envelope: EventEnvelope) -> None:
+        """Route ``envelope`` to the durable store with delta batching.
+
+        Deferrable deltas accumulate in the turn's buffer (flushed once
+        it crosses :attr:`_flush_threshold`). Any other event is
+        "important": flush the turn's buffered deltas to preserve order,
+        then persist the important event itself (and, when it is a
+        turn-terminal event, drop the empty per-turn buffer so the dict
+        can't grow without bound under session churn).
+
+        Falls back to per-event ``append_event`` when the journal has no
+        batch API — correctness over throughput for legacy stubs.
+        """
+        is_deferrable = self._has_batch_api and isinstance(
+            envelope.event, _DEFERRABLE_EVENT_TYPES
+        )
+
+        if is_deferrable:
+            async with self._buffer_lock:
+                buf = self._delta_buffers[envelope.turn_id]
+                buf.append(envelope)
+                if len(buf) >= self._flush_threshold:
+                    await self._flush_locked(envelope.turn_id)
+            return
+
+        # Important / non-deferrable event. Flush whatever deltas were
+        # buffered before it (order preservation), then persist it
+        # promptly via its own write.
+        async with self._buffer_lock:
+            await self._flush_locked(envelope.turn_id)
+            if self._is_terminal(envelope.event):
+                # Turn is over — reap the (now-empty) buffer entry.
+                self._delta_buffers.pop(envelope.turn_id, None)
+        await self._append_event_safely(envelope)
+
+    async def _flush_locked(self, turn_id: str) -> None:
+        """Flush ``turn_id``'s buffered deltas in one batch. Caller MUST
+        hold :attr:`_buffer_lock`. No-op when the buffer is empty.
+
+        The buffer slice is swapped out *before* the await so a
+        concurrent emit for the same turn (which also needs the lock,
+        so this is serialized) never sees a half-flushed list, and a
+        batch-write failure is logged but never re-raised (hot-path
+        contract). On failure the events are dropped from the durable
+        store — the realtime stream already delivered them and the
+        client can resync via Last-Event-ID, mirroring the existing
+        ``append_event`` failure posture.
+        """
+        buf = self._delta_buffers.get(turn_id)
+        if not buf:
+            return
+        batch = buf
+        # Reset to a fresh empty buffer for this turn before awaiting.
+        self._delta_buffers[turn_id] = []
+        try:
+            await self._journal.append_events_batch(batch)
+        except Exception:  # noqa: BLE001 — never bubble up on the hot path
+            logger.exception(
+                "emitter.journal_batch_write_failed",
+                turn_id=turn_id,
+                count=len(batch),
+            )
+
+    async def _append_event_safely(self, envelope: EventEnvelope) -> None:
+        """Single-shot durable write — replay is the source of truth.
+
+        Used for important/non-deferrable events and as the fallback
+        when the journal exposes no batch API. Never raises.
+        """
+        try:
+            await self._journal.append_event(envelope)
+        except Exception:  # noqa: BLE001 — never bubble up
+            logger.exception(
+                "emitter.journal_write_failed",
+                turn_id=envelope.turn_id,
+                sequence=envelope.sequence,
+            )
+
+    @staticmethod
+    def _is_terminal(event: Event) -> bool:
+        """Whether ``event`` ends the turn (final flush + buffer reap).
+
+        Matched by class name so this stays correct even if the import
+        of the event union shifts; the gateway only ever emits one of
+        these two terminal events per turn.
+        """
+        return type(event).__name__ in ("TurnComplete", "TurnErrored")
 
     async def emit_event(
         self,
@@ -321,4 +490,9 @@ class BubbleEmitter:
         await self.emit(inner)
 
 
-__all__ = ["JournalBackedEmitter", "BubbleEmitter", "DEFAULT_QUEUE_MAXSIZE"]
+__all__ = [
+    "JournalBackedEmitter",
+    "BubbleEmitter",
+    "DEFAULT_QUEUE_MAXSIZE",
+    "DEFAULT_FLUSH_THRESHOLD",
+]
