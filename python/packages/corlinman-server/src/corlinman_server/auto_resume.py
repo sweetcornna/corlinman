@@ -72,8 +72,35 @@ _CHANNEL_HAS_OWN_DRAIN = frozenset({"qq", "qq_official", "wechat_official"})
 
 # Channels whose upstream events are consumed before the crash and
 # therefore WILL NOT redeliver. The scanner enqueues a synthesized
-# inbox row so the channel's next dispatch poll picks the user_text up.
+# inbox row tagged with the channel.
+#
+# IMPORTANT — the enqueue is only HALF the contract. A row is only
+# truly "resumed" once a dispatch loop in
+# ``corlinman_channels.service`` drains pending rows for that channel
+# and re-runs them through the chat RPC. Today only ``qq`` has such a
+# drainer (``service._try_open_inbox`` + ``_qq_dispatch_loop`` call
+# ``inbox.list_pending(channel="qq")``); telegram/discord/slack/feishu
+# ``run_*_channel`` loops do NOT poll the inbox. So a synthesized row
+# for those channels sits ``pending`` forever.
+#
+# We still enqueue (the write is idempotent and forward-compatible —
+# the day a per-channel drainer lands, the row is already waiting), but
+# we must NOT count it as a successful resume, or the boot scan reports
+# a false-positive: "N turns resumed" when in fact nothing will consume
+# them. ``_CHANNEL_HAS_BOOT_REPLAY_DRAIN`` is the subset of
+# replay-enqueue channels that a drainer actually exists for; only
+# those increment ``resumed``. The rest increment ``enqueued_no_drain``
+# and log a warning so operators are told the truth.
 _CHANNEL_NEEDS_BOOT_REPLAY = frozenset({"telegram", "discord", "slack", "feishu"})
+
+# Subset of :data:`_CHANNEL_NEEDS_BOOT_REPLAY` for which a real inbox
+# drain loop exists in ``corlinman_channels.service``. Empty today —
+# none of the boot-replay channels are drained (only ``qq``, which is
+# in :data:`_CHANNEL_HAS_OWN_DRAIN`, not here). When a per-channel
+# drainer is wired (e.g. a ``_telegram_dispatch_loop`` that calls
+# ``inbox.list_pending(channel="telegram")``), add its channel id here
+# and the boot scan will start counting it as a genuine resume.
+_CHANNEL_HAS_BOOT_REPLAY_DRAIN: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -89,7 +116,16 @@ class ResumeScanReport:
     found: int
     """Rows the scan saw within the recency window."""
     resumed: int
-    """Rows re-enqueued into the inbox for cross-channel boot-replay."""
+    """Rows genuinely resumed — a synthesized inbox row was enqueued
+    AND a dispatch loop exists for that channel that will drain it. This
+    count is honest: it only includes channels in
+    :data:`_CHANNEL_HAS_BOOT_REPLAY_DRAIN`."""
+    enqueued_no_drain: int
+    """Rows where a synthesized inbox row WAS enqueued but NO dispatch
+    loop drains that channel (telegram/discord/slack/feishu today). The
+    row is parked ``pending`` and will only be picked up once a drainer
+    is wired. NOT counted as ``resumed`` — surfacing this separately is
+    what keeps the boot scan from claiming a false-positive success."""
     skipped: int
     """Rows for channels that handle their own re-delivery (QQ etc.)
     or HTTP turns where no re-delivery path exists."""
@@ -242,6 +278,7 @@ class AgentResumeService:
             turns = []
 
         resumed = 0
+        enqueued_no_drain = 0
         skipped = 0
         for turn in turns:
             channel = (turn.channel or "").lower()
@@ -282,7 +319,26 @@ class AgentResumeService:
                     skipped += 1
                     continue
                 if await self._dispatcher.replay(turn):
-                    resumed += 1
+                    if channel in _CHANNEL_HAS_BOOT_REPLAY_DRAIN:
+                        # A dispatch loop exists for this channel; the
+                        # synthesized row WILL be drained on next poll.
+                        # This is a genuine resume.
+                        resumed += 1
+                    else:
+                        # Row enqueued, but NO drainer polls this
+                        # channel's inbox (see _CHANNEL_NEEDS_BOOT_REPLAY
+                        # docstring). Do NOT report it as resumed — that
+                        # would be a false-positive. Park + warn so the
+                        # operator knows the message is waiting on a
+                        # drainer that doesn't exist yet.
+                        enqueued_no_drain += 1
+                        logger.warning(
+                            "agent.resume.enqueued_no_drain",
+                            session=turn.session_key,
+                            channel=channel,
+                            turn_id=turn.turn_id,
+                            reason="no_dispatch_loop_drains_this_channel",
+                        )
                 else:
                     skipped += 1
                 continue
@@ -301,6 +357,7 @@ class AgentResumeService:
             "agent.resume.scan_complete",
             found=len(turns),
             resumed=resumed,
+            enqueued_no_drain=enqueued_no_drain,
             skipped=skipped,
             window_minutes=window_minutes,
         )
@@ -308,6 +365,7 @@ class AgentResumeService:
         return ResumeScanReport(
             found=len(turns),
             resumed=resumed,
+            enqueued_no_drain=enqueued_no_drain,
             skipped=skipped,
             swept=swept,
             window_ms=self._window_ms,
@@ -374,6 +432,7 @@ __all__ = [
 # without poking module privates.
 CHANNEL_HAS_OWN_DRAIN: frozenset[str] = _CHANNEL_HAS_OWN_DRAIN
 CHANNEL_NEEDS_BOOT_REPLAY: frozenset[str] = _CHANNEL_NEEDS_BOOT_REPLAY
+CHANNEL_HAS_BOOT_REPLAY_DRAIN: frozenset[str] = _CHANNEL_HAS_BOOT_REPLAY_DRAIN
 
 
 def _iter_unsupported_channels(turns: Iterable[InProgressTurn]) -> list[str]:

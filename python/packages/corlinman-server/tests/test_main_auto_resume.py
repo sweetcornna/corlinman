@@ -90,23 +90,30 @@ async def test_qq_channel_is_skipped_because_inbox_drainer_owns_it(
     assert scan_logs[0]["skipped"] == 1
 
 
-async def test_telegram_channel_enqueues_resume_inbox_row(
+async def test_telegram_channel_enqueues_but_does_not_claim_resumed(
     journal: AgentJournal, inbox: Inbox
 ) -> None:
-    """Telegram consumed its update before the crash — the scanner must
-    enqueue a synthesized pending row so the next dispatch poll
-    re-delivers the user_text."""
+    """Telegram consumed its update before the crash. The scanner
+    enqueues a synthesized pending row (idempotent + forward-compatible
+    for when a drainer lands) — BUT no dispatch loop in
+    ``corlinman_channels.service`` drains the telegram inbox today, so
+    the scan must NOT report it as ``resumed``. It is surfaced under the
+    honest ``enqueued_no_drain`` count instead, with a warning log."""
     tid = await journal.begin_turn(
         "tg|chat:42", "please continue", channel="telegram"
     )
     assert tid is not None
 
-    report = await run_boot_auto_resume(journal, inbox)
+    with structlog.testing.capture_logs() as captured:
+        report = await run_boot_auto_resume(journal, inbox)
 
     assert report.found == 1
-    assert report.resumed == 1
+    # Honest accounting: NOT counted as resumed — nothing drains it.
+    assert report.resumed == 0
+    assert report.enqueued_no_drain == 1
     assert report.skipped == 0
 
+    # The row is still parked in the inbox (forward-compatible).
     pending = await inbox.list_pending(channel="telegram")
     assert len(pending) == 1
     row = pending[0]
@@ -116,18 +123,34 @@ async def test_telegram_channel_enqueues_resume_inbox_row(
     assert row.status == INBOX_PENDING
     assert row.message_id == f"resume:{tid}"
 
+    # A warning tells operators the message is parked, not resumed.
+    warn = [
+        r for r in captured if r.get("event") == "agent.resume.enqueued_no_drain"
+    ]
+    assert len(warn) == 1
+    assert warn[0]["channel"] == "telegram"
 
-async def test_discord_channel_enqueues_resume_inbox_row(
+    # The scan_complete totals reflect the honest split.
+    scan = next(
+        r for r in captured if r.get("event") == "agent.resume.scan_complete"
+    )
+    assert scan["resumed"] == 0
+    assert scan["enqueued_no_drain"] == 1
+
+
+async def test_discord_channel_enqueues_but_does_not_claim_resumed(
     journal: AgentJournal, inbox: Inbox
 ) -> None:
-    """Discord follows the same path as Telegram (no native redelivery)."""
+    """Discord follows the same path as Telegram (no native redelivery
+    AND no inbox drainer) — enqueued but not counted as resumed."""
     tid = await journal.begin_turn(
         "disc|guild:1|chan:2", "doing the thing", channel="discord"
     )
     assert tid is not None
 
     report = await run_boot_auto_resume(journal, inbox)
-    assert report.resumed == 1
+    assert report.resumed == 0
+    assert report.enqueued_no_drain == 1
 
     pending = await inbox.list_pending(channel="discord")
     assert len(pending) == 1
@@ -170,10 +193,12 @@ async def test_mixed_channels_partition_correctly(
 
     report = await run_boot_auto_resume(journal, inbox)
     assert report.found == 3
-    assert report.resumed == 1  # telegram
+    # telegram is enqueued but not drained -> not resumed, distinct count.
+    assert report.resumed == 0
+    assert report.enqueued_no_drain == 1  # telegram
     assert report.skipped == 2  # qq + http
 
-    # Only Telegram landed in the inbox.
+    # Only Telegram landed in the inbox (parked, awaiting a drainer).
     all_pending = await inbox.list_pending()
     assert {p.channel for p in all_pending} == {"telegram"}
     assert all_pending[0].user_text == "tg-text"
@@ -227,7 +252,9 @@ async def test_scan_complete_log_carries_window_minutes(
     )
     assert scan["window_minutes"] == 5
     assert scan["found"] == 1
-    assert scan["resumed"] == 1
+    # telegram has no drainer -> not resumed, surfaced under no_drain.
+    assert scan["resumed"] == 0
+    assert scan["enqueued_no_drain"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -314,8 +341,10 @@ async def test_service_run_returns_typed_report(
     report = await run_boot_auto_resume(journal, inbox)
     assert isinstance(report, ResumeScanReport)
     assert report.found == 2
-    assert report.resumed == 1  # only telegram
-    assert report.skipped == 1
+    # telegram enqueued-but-not-drained; qq owns its own drain.
+    assert report.resumed == 0
+    assert report.enqueued_no_drain == 1  # telegram
+    assert report.skipped == 1  # qq
     assert report.window_ms == DEFAULT_RESUME_WINDOW_MS
     # Turns tuple round-trips so callers can introspect.
     assert len(report.turns) == 2
@@ -344,3 +373,71 @@ async def test_replay_idempotent_under_double_boot(
     # chat handler de-duplicates via journal resume.
     assert len(pending) == 2
     assert {p.user_text for p in pending} == {"text"}
+
+
+# ---------------------------------------------------------------------------
+# Honesty regression: enqueue-without-drain must not be reported as resumed
+# ---------------------------------------------------------------------------
+
+
+def test_no_boot_replay_channel_has_a_real_drain_in_channels_service() -> None:
+    """Ground truth for the honesty fix: ``CHANNEL_HAS_BOOT_REPLAY_DRAIN``
+    must only list channels that a dispatch loop actually drains in
+    ``corlinman_channels.service``. Today that set is empty because the
+    service only polls ``inbox.list_pending(channel="qq")`` — no
+    telegram/discord/slack/feishu drain exists. If someone later wires a
+    drainer they must (a) add the channel id to the set AND (b) update
+    this assertion, which forces the two to stay in lockstep.
+    """
+    import inspect
+
+    from corlinman_channels import service as channels_service
+    from corlinman_server.auto_resume import (
+        CHANNEL_HAS_BOOT_REPLAY_DRAIN,
+        CHANNEL_NEEDS_BOOT_REPLAY,
+    )
+
+    src = inspect.getsource(channels_service)
+    for channel in CHANNEL_HAS_BOOT_REPLAY_DRAIN:
+        # Every channel we claim is drainable must have a matching
+        # list_pending poll in the channels service.
+        assert (
+            f'list_pending(channel="{channel}"' in src
+        ), f"{channel} claimed drainable but no drainer in channels.service"
+
+    # And no boot-replay channel we DON'T list as drainable should have a
+    # drainer either (otherwise we are under-counting genuine resumes).
+    for channel in CHANNEL_NEEDS_BOOT_REPLAY - CHANNEL_HAS_BOOT_REPLAY_DRAIN:
+        assert (
+            f'list_pending(channel="{channel}"' not in src
+        ), f"{channel} has a drainer but is not in CHANNEL_HAS_BOOT_REPLAY_DRAIN"
+
+
+async def test_genuine_resume_counted_when_channel_has_drainer(
+    journal: AgentJournal, inbox: Inbox, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Forward-compat: the day a per-channel drainer is wired and its
+    channel is added to ``_CHANNEL_HAS_BOOT_REPLAY_DRAIN``, the scan must
+    count it as a genuine ``resumed`` (and NOT under ``enqueued_no_drain``).
+    Simulate that future state by extending the set for this test only.
+    """
+    import corlinman_server.auto_resume as ar
+
+    monkeypatch.setattr(
+        ar, "_CHANNEL_HAS_BOOT_REPLAY_DRAIN", frozenset({"telegram"})
+    )
+
+    await journal.begin_turn("tg|chat:9", "resume me", channel="telegram")
+
+    with structlog.testing.capture_logs() as captured:
+        report = await run_boot_auto_resume(journal, inbox)
+
+    assert report.found == 1
+    assert report.resumed == 1
+    assert report.enqueued_no_drain == 0
+
+    # No false "parked" warning when the channel is genuinely drainable.
+    warn = [
+        r for r in captured if r.get("event") == "agent.resume.enqueued_no_drain"
+    ]
+    assert warn == []
