@@ -202,6 +202,7 @@ class HookBus:
         "_cancel",
         "_capacity",
         "_next_token_id",
+        "_pending_tasks",
         "_subscribers",
     )
 
@@ -224,6 +225,15 @@ class HookBus:
         # single :meth:`emit` call.
         self._callable_subs: dict[int, tuple[HookPredicate, HookSubscriber]] = {}
         self._next_token_id = itertools.count(1)
+        # Strong-ref holder for fire-and-forget tasks scheduled from
+        # :meth:`_fanout_callables_sync`. asyncio only weakly references
+        # tasks (see
+        # https://docs.python.org/3/library/asyncio-task.html#asyncio.create_task);
+        # without this, a busy loop can GC a scheduled async subscriber
+        # mid-flight and silently drop the hook delivery. Same idiom
+        # used in ``corlinman_channels.service`` and
+        # ``native_upgrader`` (R2-003).
+        self._pending_tasks: set[asyncio.Task[None]] = set()
 
     @property
     def capacity(self) -> int:
@@ -460,7 +470,9 @@ class HookBus:
                         except Exception:  # noqa: BLE001
                             pass
                     continue
-                loop.create_task(self._await_isolated(result))
+                t = loop.create_task(self._await_isolated(result))
+                self._pending_tasks.add(t)
+                t.add_done_callback(self._pending_tasks.discard)
 
     @staticmethod
     async def _await_isolated(awaitable: Awaitable[Any]) -> None:

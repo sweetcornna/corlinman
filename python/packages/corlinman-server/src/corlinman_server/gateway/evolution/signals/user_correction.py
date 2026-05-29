@@ -56,6 +56,15 @@ __all__ = [
 log = logging.getLogger(__name__)
 
 
+# Strong-ref holder for fire-and-forget tasks. asyncio only weakly
+# references tasks (see
+# https://docs.python.org/3/library/asyncio-task.html#asyncio.create_task);
+# without this, a busy event loop can GC a task mid-flight and silently
+# drop the user-correction signal. Same idiom used in
+# ``corlinman_channels.service`` and ``native_upgrader`` (R2-003).
+_dispatch_tasks: set[asyncio.Task[None]] = set()
+
+
 # ─── Heuristic patterns ──────────────────────────────────────────────
 #
 # Ordered by specificity (most specific first). Each tuple is
@@ -358,7 +367,9 @@ async def _handle_event(
         # Dispatch to the downstream applier as fire-and-forget so the
         # insert path returns quickly even if the LLM call is slow.
         try:
-            asyncio.create_task(_safe_invoke(on_signal, signal))
+            t = asyncio.create_task(_safe_invoke(on_signal, signal))
+            _dispatch_tasks.add(t)
+            t.add_done_callback(_dispatch_tasks.discard)
         except RuntimeError:
             # No running loop — happens in odd shutdown ordering. Fall
             # back to a direct ``await``: we've already inserted the
@@ -441,7 +452,7 @@ def register_user_correction_listener(
             # Fire-and-forget so a slow insert never backs up the
             # subscription queue.
             try:
-                asyncio.create_task(
+                t = asyncio.create_task(
                     _handle_event(
                         event,
                         signals_repo=signals_repo,
@@ -449,6 +460,8 @@ def register_user_correction_listener(
                         target_resolver=target_resolver,
                     )
                 )
+                _dispatch_tasks.add(t)
+                t.add_done_callback(_dispatch_tasks.discard)
             except RuntimeError:
                 # No loop (shouldn't happen given we're inside one) —
                 # degrade to inline.

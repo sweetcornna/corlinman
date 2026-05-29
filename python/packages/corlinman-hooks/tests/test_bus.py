@@ -420,3 +420,42 @@ def test_event_to_dict_skips_none_optionals() -> None:
     assert isinstance(back, HookEvent.MessageReceived)
     assert back.session_key_ == "s1"
     assert back.user_id is None
+
+
+def test_hookbus_holds_strong_refs_to_fire_and_forget_tasks() -> None:
+    """R2-003: ``HookBus`` must keep a strong reference to every task it
+    schedules in :meth:`emit_nonblocking` (via ``loop.create_task``).
+
+    asyncio only weakly references tasks
+    (https://docs.python.org/3/library/asyncio-task.html#asyncio.create_task):
+    "Save a reference to the result of this function, to avoid a task
+    disappearing mid-execution." Bare ``loop.create_task(...)`` whose
+    return value is dropped can be garbage-collected mid-flight under
+    load, silently dropping hook deliveries.
+
+    This is a *structural* test — it inspects the source for the
+    documented fix idiom (per-instance ``set`` + ``add_done_callback``)
+    rather than trying to provoke the GC race, which is inherently
+    flaky in CI. Same idiom already used in
+    ``corlinman_channels/service.py`` and ``native_upgrader.py``.
+    """
+    import inspect as _inspect
+
+    from corlinman_hooks import bus as _bus_mod
+
+    bus = HookBus(capacity=4)
+    # Per-instance set must exist on the bus and be a ``set``.
+    assert hasattr(bus, "_pending_tasks"), (
+        "HookBus must hold a strong-ref set for fire-and-forget tasks"
+    )
+    assert isinstance(getattr(bus, "_pending_tasks"), set)
+
+    src = _inspect.getsource(_bus_mod.HookBus._fanout_callables_sync)
+    assert "_pending_tasks.add(" in src, (
+        "_fanout_callables_sync must add scheduled tasks to _pending_tasks "
+        "(see R2-003)"
+    )
+    assert "add_done_callback(self._pending_tasks.discard)" in src, (
+        "_fanout_callables_sync must discard tasks from _pending_tasks on "
+        "completion (see R2-003)"
+    )

@@ -298,3 +298,51 @@ async def test_no_target_resolver_yields_null_target(
             await listener
         except (asyncio.CancelledError, BaseException):
             pass
+
+
+def test_user_correction_module_holds_strong_refs_to_fire_and_forget_tasks() -> None:
+    """R2-003: the user-correction listener must keep strong refs to the
+    fire-and-forget tasks it schedules from ``_loop`` and ``_handle_event``.
+
+    asyncio only weakly references tasks
+    (https://docs.python.org/3/library/asyncio-task.html#asyncio.create_task):
+    bare ``asyncio.create_task(...)`` whose return value is dropped can
+    be garbage-collected mid-flight under load, silently dropping the
+    user-correction signal insert / applier dispatch.
+
+    Structural test — inspects the source for the documented fix idiom
+    (module-level ``set`` + ``add_done_callback``) rather than trying
+    to provoke the GC race. Same idiom already used in
+    ``corlinman_channels/service.py`` and ``native_upgrader.py``.
+    """
+    import inspect as _inspect
+
+    from corlinman_server.gateway.evolution.signals import user_correction as _uc
+
+    # Module-level set must exist (handlers are module-level functions).
+    assert hasattr(_uc, "_dispatch_tasks"), (
+        "user_correction must hold a module-level strong-ref set for "
+        "fire-and-forget tasks (see R2-003)"
+    )
+    assert isinstance(_uc._dispatch_tasks, set)
+
+    # Both fire-and-forget sites must add+discard against the set.
+    handle_src = _inspect.getsource(_uc._handle_event)
+    assert "_dispatch_tasks.add(" in handle_src, (
+        "_handle_event must add scheduled tasks to _dispatch_tasks "
+        "(see R2-003)"
+    )
+    assert "add_done_callback(_dispatch_tasks.discard)" in handle_src, (
+        "_handle_event must discard tasks from _dispatch_tasks on "
+        "completion (see R2-003)"
+    )
+
+    register_src = _inspect.getsource(_uc.register_user_correction_listener)
+    assert "_dispatch_tasks.add(" in register_src, (
+        "register_user_correction_listener inner loop must add scheduled "
+        "tasks to _dispatch_tasks (see R2-003)"
+    )
+    assert "add_done_callback(_dispatch_tasks.discard)" in register_src, (
+        "register_user_correction_listener inner loop must discard tasks "
+        "from _dispatch_tasks on completion (see R2-003)"
+    )
