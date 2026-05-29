@@ -36,6 +36,18 @@ surface them up-front):
 - **Embedding bindings reference a name, not a kind.** `[embedding].provider`
   must match a `[providers.*]` key. The referenced provider must be
   embedding-capable (see the table below).
+
+  > **⚠️ Not wired yet (config-only).** The `[embedding]` block is parsed,
+  > seeded by onboarding, and surfaced under `/admin/embedding`, but **no
+  > embedder is constructed at runtime**: every provider's `.embed()` raises
+  > `NotImplementedError`, the episodes retrieval path is recency + BM25 only
+  > (no cosine / dense retrieval; the stored embedding BLOB is never read),
+  > and the `corlinman_embedding.EmbeddingRouter` these bindings nominally
+  > target does not exist. Setting `enabled = true` here does **not** turn on
+  > semantic/dense retrieval. Tracked in
+  > [`audit/ARCH_DEBT.md`](../audit/ARCH_DEBT.md) (`C4-EMB`). The "Embedding"
+  > column below records *vendor capability*, not what the gateway wires
+  > today.
 - **`[models.aliases.<name>].provider` references a name, too.** The full
   form pins an alias to one specific entry, useful when two entries could
   serve the same model id (e.g. `gpt-4o` via OpenAI and via OpenRouter).
@@ -160,9 +172,11 @@ model = "anthropic/claude-haiku-4-5-20251001"
 provider = "openrouter"
 ```
 
-OpenRouter handles every chat call against any upstream model id;
-OpenAI handles RAG embeddings directly so you control the embedding
-dimension and don't pay OpenRouter's overhead on it.
+OpenRouter handles every chat call against any upstream model id. The
+`[embedding]` block records the *intended* embedding provider/dimension
+for when dense retrieval is wired (see the not-wired-yet note in §1); it
+is inert today — embeddings are not generated and retrieval stays on
+BM25 + recency.
 
 ### "I want a fully local stack" — Ollama for both
 
@@ -183,8 +197,9 @@ enabled = true
 default = "llama3.2:3b"
 ```
 
-`ollama serve` running on the host supplies both completions and
-embeddings; no external network calls.
+`ollama serve` running on the host supplies completions with no
+external network calls. The `[embedding]` block is recorded but inert
+(see §1) — Ollama is not yet called for embeddings.
 
 ### "I want a CN-resident stack" — SiliconFlow
 
@@ -205,9 +220,10 @@ enabled = true
 default = "Qwen/Qwen2.5-72B-Instruct"
 ```
 
-Both completions and embeddings stay on SiliconFlow's mainland-friendly
-infrastructure. Pair with `[rag.rerank]` pointing at the same `api_base`
-for a fully CN-resident retrieval stack.
+Completions stay on SiliconFlow's mainland-friendly infrastructure. The
+`[embedding]` (and `[rag.rerank]`) blocks record the intended CN-resident
+retrieval stack for when dense retrieval is wired (see §1); they are inert
+today — only BM25 + recency retrieval is live.
 
 ### "I want a fast model for one alias" — Groq alongside OpenAI
 

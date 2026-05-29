@@ -11,7 +11,7 @@ corlinman 只有 **3 种插件类型**，对应 `manifest.toml` 里的 `plugin_t
 | plugin_type | 协议 | 典型用途 | 何时用 |
 | --- | --- | --- | --- |
 | `sync` | JSON-RPC 2.0 over stdio | 一次调用返一次结果 | 默认选它（90% 场景） |
-| `async` | JSON-RPC 2.0 stdio + HTTP callback | 首次返 `task_id`，任务后台跑完 POST 回 gateway | 单次超过 30s 的任务 |
+| `async` | JSON-RPC 2.0 stdio + HTTP callback | 首次返 `task_id`，任务后台跑完 POST 回 gateway | 单次超过 30s 的任务 ⚠️ **回调链未接通，见 §5** |
 | `service` | gRPC on `$CORLINMAN_PLUGIN_ADDR` | 长驻进程，gateway 启动时 spawn 并连入 | 需要持久化状态、fan-in 流量、反向调 gateway |
 
 **绝大多数插件写 `sync`**。其他两种有协议扩展，本文主要讲 `sync`；`async` 在 §5、`service` 在 §6 各自说明。
@@ -226,6 +226,12 @@ corlinman plugins invoke hello-python.greet --args '{"name":"Ada"}'
 
 ## 5. Async 插件
 
+> **⚠️ 异步回调链当前是 no-op，不要依赖。** `task_id`/HTTP-callback 的"延迟交付"路径**尚未接通**：
+> - 回调路由 `POST /v1/plugins/callback/{task_id}`（注意是这个路径，**不是**下面历史示例里的 `/plugin-callback/...`）**永远返回 501** —— 因为 `GatewayState.plugin_async_tasks` 从未被赋值（entrypoint 不构造 `AsyncTaskRegistry`）。
+> - 即使返回了 `task_id`，`plugin_invoker` 也**不会把它 park 到任何 registry**：`accepted_for_later` 仅被原样透传给模型（`{"status":"accepted","task_id":...}`），没有可被唤醒的 future。
+>
+> 实际行为：插件返 `task_id` → 模型看到一个 `accepted` 字符串，仅此而已；后续 callback 无法把结果送回 Agent loop。生产插件请用 `sync`（必要时调大 `timeout_ms`）或 `service`。布线缺口记于 [`audit/ARCH_DEBT.md`](../audit/ARCH_DEBT.md)（`C4-PLUGIN-ASYNC`）。下文描述的是*目标*协议，非当前已生效行为。
+
 `plugin_type = "async"` 时，`tools/call` 响应可以直接返 `content`（同步完成），也可以返 `task_id`（后台异步）：
 
 ```jsonc
@@ -342,7 +348,7 @@ corlinman plugins doctor               # 整体健康检查
 A: `corlinman plugins doctor` 看 manifest 解析 / origin 冲突 / 文件权限。
 
 **Q: 插件执行超时**  
-A: `manifest.toml` 的 `communication.timeout_ms` 调大；若真是 long-running 改成 `plugin_type = "async"`。
+A: `manifest.toml` 的 `communication.timeout_ms` 调大。真正的 long-running 任务目前只能用 `service` 插件 —— `async` 的回调链尚未接通（见 §5），其 `task_id` 结果无法送回。
 
 **Q: 沙箱里装不上 Python 包**  
 A: 沙箱 `network = "none"` 时 pip 不能下载；在插件根目录先 `pip install --target=./vendor` 把依赖打包，manifest 里设 `binds = ["./vendor:/workspace/vendor:ro"]`，main.py 开头 `sys.path.insert(0, "/workspace/vendor")`。

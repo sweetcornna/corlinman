@@ -2,11 +2,21 @@
 
 **Status**: Design (pre-implementation) · **Owner**: TBD · **Created**: 2026-05-08 · **Estimate**: 5-7d
 
+> **⚠️ Reality check (as of HEAD): the `/mcp` server is NOT bound.** The
+> Python port ships `build_mcp_server` (`corlinman_server.gateway.mcp.server`)
+> but it has **zero non-test callers** — the gateway entrypoint wires only
+> the MCP *client* (`McpClientManager`, the `kind = "mcp"` outbound plugin
+> direction). No `/mcp` WebSocket route is mounted, so you **cannot** point
+> Claude Desktop at `ws://gateway/mcp` yet. Everything below describes the
+> *intended* design; the route + auth gate are still unbound. The bind/mount
+> wiring is tracked in [`audit/ARCH_DEBT.md`](../../audit/ARCH_DEBT.md)
+> (`C4-MCP-SERVER`).
+
 > A new `corlinman-mcp` crate hosts a Model Context Protocol server
-> mounted at `/mcp` on the gateway. Claude Desktop (and any MCP
-> 2024-11-05 client) connects, lists corlinman tools / resources /
-> prompts, and invokes them. Server-only here; the plugin-adapter
-> direction (`kind = "mcp"` corlinman tool) is C2.
+> intended to be mounted at `/mcp` on the gateway. Once bound, Claude
+> Desktop (and any MCP 2024-11-05 client) would connect, list corlinman
+> tools / resources / prompts, and invoke them. Server-only here; the
+> plugin-adapter direction (`kind = "mcp"` corlinman tool) is C2.
 
 Design seed for the iterations that follow. Pins the JSON-RPC schema,
 the WebSocket transport, the auth gate, the three capability adapters
@@ -26,10 +36,11 @@ framed over stdio or HTTP+SSE/WebSocket, with a fixed vocabulary
 Roadmap row 4-3A (`phase4-roadmap.md:280`) pins the acceptance
 criterion: "tested against Claude Desktop's MCP client."
 
-C1 lets the operator point Desktop at `ws://gateway/mcp?token=…` and
-every manifest-declared tool, every loaded skill, and the configured
-memory hosts surface as native Claude capabilities — no per-surface
-adapter. C2 is the inverse: any MCP-stdio server becomes a corlinman
+C1 is *designed* to let the operator point Desktop at
+`ws://gateway/mcp?token=…` so that every manifest-declared tool, every
+loaded skill, and the configured memory hosts surface as native Claude
+capabilities — no per-surface adapter. (Not yet bound — see the reality
+check above.) C2 is the inverse: any MCP-stdio server becomes a corlinman
 plugin via `kind = "mcp"`. C1 ships the wire + schema crate C2
 reuses.
 
