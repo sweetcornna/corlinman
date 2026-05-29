@@ -20,6 +20,7 @@ the original bug.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -124,3 +125,73 @@ def test_health_endpoint_remains_unauthenticated(tmp_path: Path) -> None:
     with _client(tmp_path) as client:
         resp = client.get("/health")
     assert resp.status_code == 200, resp.text
+
+
+# ---------------------------------------------------------------------------
+# R2-001: legacy aliases of the canonical /v1/* routes were sneaking past the
+# gate. The route registry mounts the same handlers under both ``/v1/...``
+# AND a legacy bare prefix (e.g. ``/memory/upsert``, ``/canvas/render``,
+# ``/plugin-callback/{id}``). R1-001 only added ``/v1/`` to
+# ``DEFAULT_PROTECTED_PREFIXES`` so an unauthenticated attacker could still
+# wipe memory docs, render canvas content, subscribe to canvas SSE streams
+# (exfiltrating live operator output), and poison parked agent loops via
+# fake plugin callbacks — all by addressing the alias path. Extend the gate.
+# ---------------------------------------------------------------------------
+
+
+def _assert_unauthorized(resp: Any, route: str) -> None:
+    """Shared assertion shape for the R2-001 alias-gate tests."""
+    assert resp.status_code == 401, (
+        f"expected 401 from unauthenticated {route}; "
+        f"got {resp.status_code}: {resp.text[:200]!r}"
+    )
+    body = resp.json()
+    assert body.get("error") == "unauthorized", body
+    assert body.get("reason") in {
+        "missing_authorization",
+        "admin_db_not_configured",
+    }, body
+
+
+def test_legacy_memory_upsert_alias_requires_auth(tmp_path: Path) -> None:
+    """``POST /memory/upsert`` is a legacy alias of ``/v1/memory/upsert``
+    that lets an unauthenticated caller write into the per-tenant memory
+    store. The api-key gate must cover it."""
+    with _client(tmp_path) as client:
+        resp = client.post(
+            "/memory/upsert",
+            json={"content": "attacker-injected", "namespace": "default"},
+        )
+    _assert_unauthorized(resp, "/memory/upsert")
+
+
+def test_legacy_canvas_render_alias_requires_auth(tmp_path: Path) -> None:
+    """``POST /canvas/render`` runs the Canvas Renderer (HTML/template
+    composition + I/O). Unauthenticated access is a sandbox + DoS amplifier
+    plus a vector for forcing renderer-side fetches."""
+    with _client(tmp_path) as client:
+        resp = client.post("/canvas/render", json={"kind": "noop"})
+    _assert_unauthorized(resp, "/canvas/render")
+
+
+def test_legacy_canvas_session_events_alias_requires_auth(
+    tmp_path: Path,
+) -> None:
+    """``GET /canvas/session/{id}/events`` is the SSE stream of rendered
+    LLM output for an active operator session. Unauthenticated subscription
+    is a live-stream exfiltration channel for any guessed session id."""
+    with _client(tmp_path) as client:
+        resp = client.get("/canvas/session/cs_anything/events")
+    _assert_unauthorized(resp, "/canvas/session/<id>/events")
+
+
+def test_legacy_plugin_callback_alias_requires_auth(tmp_path: Path) -> None:
+    """``POST /plugin-callback/{task_id}`` is the alias of
+    ``/v1/plugins/callback/{task_id}``. Even though the ``task_id`` itself
+    is the per-task one-shot credential (and SEC-106 tracks tightening
+    that), gating the prefix is defence-in-depth: an attacker who can
+    enumerate / guess task ids loses the ability to inject fake tool
+    results into parked agent loops just by hitting the alias."""
+    with _client(tmp_path) as client:
+        resp = client.post("/plugin-callback/anything", json={})
+    _assert_unauthorized(resp, "/plugin-callback/<task_id>")

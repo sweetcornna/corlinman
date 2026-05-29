@@ -2225,8 +2225,29 @@ def build_app(
             middleware_mod, "install_api_key_middleware", None
         )
         if install_api_key is not None:
+            # R2-001 security fix: extend the protected-prefix list to
+            # cover the legacy bare aliases that ``gateway/routes/*`` mount
+            # alongside the canonical ``/v1/...`` paths (e.g. ``/memory/upsert``
+            # mirrors ``/v1/memory/upsert``; same for canvas, channels, and
+            # the plugin callback). R1-001 only added ``/v1/`` so an
+            # unauthenticated attacker could still hit the alias and wipe
+            # memory docs, render canvas content, subscribe to canvas SSE
+            # streams (exfiltrating live operator output), or poison parked
+            # agent loops via fake plugin callbacks. ``/wechat/*`` is
+            # intentionally excluded — it carries its own vendor-signed
+            # nonce/timestamp envelope that does not use bearer tokens.
             try:
-                install_api_key(app, admin_db=None)
+                install_api_key(
+                    app,
+                    admin_db=None,
+                    protected_prefixes=(
+                        "/v1/",
+                        "/memory/",
+                        "/canvas/",
+                        "/channels/",
+                        "/plugin-callback/",
+                    ),
+                )
             except Exception as exc:  # pragma: no cover — sibling-owned
                 logger.warning(
                     "gateway.middleware.install_failed", error=str(exc)
