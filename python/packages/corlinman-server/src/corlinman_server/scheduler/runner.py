@@ -612,17 +612,49 @@ class SchedulerHandle:
     await them after flipping the cancel event.
     """
 
-    __slots__ = ("_cancel", "_tasks")
+    __slots__ = ("_app_state", "_bus", "_cancel", "_specs", "_tasks")
 
-    def __init__(self, tasks: list[asyncio.Task[None]], cancel: asyncio.Event) -> None:
+    def __init__(
+        self,
+        tasks: list[asyncio.Task[None]],
+        cancel: asyncio.Event,
+        *,
+        specs: Mapping[str, JobSpec] | None = None,
+        bus: HookBus | None = None,
+        app_state: object | None = None,
+    ) -> None:
         self._tasks = tasks
         self._cancel = cancel
+        # ``specs``/``bus``/``app_state`` back the out-of-band
+        # :meth:`trigger` ("fire now") path; the per-job tick loops keep
+        # their own references, so a handle built without them (e.g. a
+        # unit test that only inspects ``tasks``) still works.
+        self._specs: dict[str, JobSpec] = dict(specs) if specs else {}
+        self._bus = bus
+        self._app_state = app_state
 
     @property
     def tasks(self) -> list[asyncio.Task[None]]:
         """The per-job tick tasks. Read-only for inspection; tests use
         this to assert "spawn returned N tasks for N parseable jobs"."""
         return list(self._tasks)
+
+    async def trigger(self, name: str) -> None:
+        """Fire job ``name`` immediately, out-of-band of its cron.
+
+        The admin "fire now" route (``routes_admin_b/scheduler.py``)
+        probes ``hasattr(sched, "trigger")`` and prefers this path. It
+        reuses the same :func:`dispatch` call the tick loop runs, so a
+        manual trigger and a scheduled firing are byte-identical
+        (same ``app_state``, same hook event on the bus).
+
+        Raises :class:`KeyError` if no job by that name is registered;
+        the route turns that into a typed error envelope.
+        """
+        spec = self._specs.get(name)
+        if spec is None or self._bus is None:
+            raise KeyError(name)
+        await dispatch(spec, self._bus, self._app_state)
 
     @property
     def cancel_event(self) -> asyncio.Event:
@@ -676,7 +708,12 @@ async def _sleep_until(deadline: float, cancel: asyncio.Event) -> bool:
     return cancel_task in done
 
 
-async def _run_job_loop(spec: JobSpec, bus: HookBus, cancel: asyncio.Event) -> None:
+async def _run_job_loop(
+    spec: JobSpec,
+    bus: HookBus,
+    cancel: asyncio.Event,
+    app_state: object | None = None,
+) -> None:
     """Per-job tick loop. Mirrors Rust ``runtime::run_job_loop``.
 
     Responsibilities:
@@ -730,13 +767,14 @@ async def _run_job_loop(spec: JobSpec, bus: HookBus, cancel: asyncio.Event) -> N
                 "scheduler: cancelled before fire; exiting", extra={"job": spec.name}
             )
             return
-        await dispatch(spec, bus)
+        await dispatch(spec, bus, app_state)
 
 
 def spawn(
     cfg: SchedulerConfig,
     bus: HookBus,
     cancel: asyncio.Event | None = None,
+    app_state: object | None = None,
 ) -> SchedulerHandle:
     """Spawn one tick task per ``cfg.jobs`` entry.
 
@@ -744,6 +782,12 @@ def spawn(
     Jobs whose cron fails to parse are dropped with a warning; the
     rest of the scheduler continues. A config with zero parseable
     jobs returns a handle with an empty task list (no-op scheduler).
+
+    ``app_state`` is threaded into every firing via :func:`dispatch`
+    so ``run_tool`` builtins (``system.update_check`` /
+    ``evolution.darwin_curate``) read a live ``app.state`` instead of
+    degrading to ``checker_unavailable``. It stays ``None`` for unit
+    tests; the gateway lifespan passes ``app.state``.
 
     Mirrors the Rust :func:`spawn` 1:1 except for one Python-flavour
     convenience: ``cancel`` is optional — when omitted we make a
@@ -754,16 +798,21 @@ def spawn(
     if cancel is None:
         cancel = asyncio.Event()
     tasks: list[asyncio.Task[None]] = []
+    specs: dict[str, JobSpec] = {}
     for job in cfg.jobs:
         spec = JobSpec.from_config(job)
         if spec is None:
             continue
+        specs[job.name] = spec
         tasks.append(
             asyncio.create_task(
-                _run_job_loop(spec, bus, cancel), name=f"scheduler-{job.name}"
+                _run_job_loop(spec, bus, cancel, app_state),
+                name=f"scheduler-{job.name}",
             )
         )
-    return SchedulerHandle(tasks=tasks, cancel=cancel)
+    return SchedulerHandle(
+        tasks=tasks, cancel=cancel, specs=specs, bus=bus, app_state=app_state
+    )
 
 
 __all__ = [

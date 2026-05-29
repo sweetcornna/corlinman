@@ -629,6 +629,111 @@ def list_default_scheduler_jobs(app: Any) -> list[Any]:
     return []
 
 
+def _scheduler_job_from_config_entry(entry: Any) -> Any | None:
+    """Convert one ``[[scheduler.jobs]]`` config entry into a runtime
+    :class:`SchedulerJob`, or ``None`` for a misshapen entry.
+
+    R4-F1: operator-defined scheduler jobs were *display-only* in the
+    Python port — the admin route rendered them but nothing converted
+    them into runtime specs. This bridges the loaded-config shape (dict
+    *or* dataclass, read via :func:`_extract_section`) into the
+    :class:`SchedulerJob` the runtime spawns. Best-effort: one bad entry
+    returns ``None`` and is skipped rather than aborting boot.
+    """
+    name = _extract_section(entry, "name")
+    cron = _extract_section(entry, "cron")
+    if not isinstance(name, str) or not name:
+        return None
+    if not isinstance(cron, str) or not cron:
+        return None
+    try:
+        from corlinman_server.scheduler import JobAction, SchedulerJob
+    except Exception:  # pragma: no cover — defensive
+        return None
+
+    action_obj = _extract_section(entry, "action")
+    kind = _extract_section(action_obj, "type") or _extract_section(action_obj, "kind")
+    if kind is None and isinstance(action_obj, dict):
+        # Nested-key discriminant form: ``action = { subprocess = {...} }``.
+        for key in ("subprocess", "run_tool", "run_agent"):
+            if key in action_obj:
+                kind = key
+                break
+
+    try:
+        if kind == "subprocess":
+            command = _extract_section(action_obj, "command")
+            if not isinstance(command, str) or not command:
+                return None
+            raw_args = _extract_section(action_obj, "args")
+            args = (
+                tuple(str(a) for a in raw_args)
+                if isinstance(raw_args, (list, tuple))
+                else ()
+            )
+            raw_timeout = _extract_section(action_obj, "timeout_secs")
+            timeout = int(raw_timeout) if isinstance(raw_timeout, int) else 600
+            action = JobAction.subprocess(
+                command=command, args=args, timeout_secs=timeout
+            )
+        elif kind == "run_tool":
+            plugin = _extract_section(action_obj, "plugin")
+            tool = _extract_section(action_obj, "tool")
+            if not isinstance(plugin, str) or not isinstance(tool, str):
+                return None
+            action = JobAction.run_tool(
+                plugin=plugin, tool=tool, args=_extract_section(action_obj, "args")
+            )
+        elif kind == "run_agent":
+            prompt = _extract_section(action_obj, "prompt")
+            if not isinstance(prompt, str) or not prompt:
+                return None
+            action = JobAction.run_agent(prompt=prompt)
+        else:
+            return None
+    except Exception:  # pragma: no cover — defensive
+        return None
+
+    tz = _extract_section(entry, "timezone")
+    return SchedulerJob(
+        name=name, cron=cron, action=action, timezone=tz if isinstance(tz, str) else None
+    )
+
+
+def _effective_scheduler_config(app: Any, cfg: Any | None) -> Any:
+    """Assemble the :class:`SchedulerConfig` the lifespan spawns.
+
+    Merges, de-duped by name (first writer wins):
+
+    1. operator ``[[scheduler.jobs]]`` from the loaded config; then
+    2. the auto-registered defaults on
+       ``app.state.corlinman_default_scheduler_jobs`` (the registration
+       helpers only add a default when the config does *not* already
+       declare it, so there is no overlap to resolve).
+    """
+    from corlinman_server.scheduler import SchedulerConfig
+
+    jobs: list[Any] = []
+    seen: set[str] = set()
+
+    section = _extract_section(cfg, "scheduler")
+    raw_jobs = _extract_section(section, "jobs")
+    if isinstance(raw_jobs, (list, tuple)):
+        for entry in raw_jobs:
+            job = _scheduler_job_from_config_entry(entry)
+            if job is not None and job.name not in seen:
+                jobs.append(job)
+                seen.add(job.name)
+
+    for job in list_default_scheduler_jobs(app):
+        jname = getattr(job, "name", None)
+        if isinstance(jname, str) and jname and jname not in seen:
+            jobs.append(job)
+            seen.add(jname)
+
+    return SchedulerConfig(jobs=tuple(jobs))
+
+
 # ---------------------------------------------------------------------------
 # AppState bridge
 # ---------------------------------------------------------------------------
@@ -2079,6 +2184,48 @@ def build_app(
                 "gateway.home_channel.restart_broadcast_failed",
                 error=str(exc),
             )
+
+        # R4-F1 (CRITICAL): actually spawn the scheduler runtime.
+        #
+        # Rounds 1-3 fixed dispatch() routing (R3-002) but nothing ever
+        # called ``scheduler.runner.spawn()``, so the per-job tick loops
+        # were never created and the default cron jobs
+        # (``system.update_check`` / ``evolution.darwin_curate``) never
+        # fired — the prior FINAL_REPORT's "default jobs actually run"
+        # claim was false. We build the effective job set (operator
+        # ``[[scheduler.jobs]]`` + auto-registered defaults) and spawn it
+        # under the shared ``cancel`` event so the lifespan-exit
+        # ``finally`` cancels + awaits the tick tasks. The handle is
+        # published on ``app.state`` + ``admin_b_state`` so the admin
+        # "fire now" route triggers a job out-of-band via
+        # ``SchedulerHandle.trigger()``. ``app.state`` is threaded into
+        # every firing so ``run_tool`` builtins read a live state.
+        try:
+            sched_cfg = _effective_scheduler_config(app, cfg)
+            if sched_cfg.jobs:
+                from corlinman_hooks import HookBus
+
+                from corlinman_server.scheduler import spawn as _spawn_scheduler
+
+                sched_bus = getattr(app.state, "hook_bus", None)
+                if sched_bus is None:
+                    sched_bus = HookBus(capacity=256)
+                    app.state.hook_bus = sched_bus
+                scheduler_handle = _spawn_scheduler(
+                    sched_cfg, sched_bus, cancel, app_state=app.state
+                )
+                background.extend(scheduler_handle.tasks)
+                app.state.corlinman_scheduler_handle = scheduler_handle
+                if admin_b_state is not None:
+                    admin_b_state.scheduler = scheduler_handle
+                logger.info(
+                    "gateway.scheduler.spawned",
+                    jobs=[j.name for j in sched_cfg.jobs],
+                )
+            else:
+                logger.info("gateway.scheduler.no_jobs")
+        except Exception as exc:  # pragma: no cover — best-effort
+            logger.warning("gateway.scheduler.spawn_failed", error=str(exc))
 
         try:
             yield
