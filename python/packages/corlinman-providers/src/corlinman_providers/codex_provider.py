@@ -191,6 +191,29 @@ def _is_token_invalidated(exc: BaseException) -> bool:
     return "token_invalidated" in msg or "token has been invalidated" in msg
 
 
+async def _safe_close(client: Any) -> None:
+    """Best-effort ``await client.close()`` that never masks the real exception.
+
+    Mirrors the OpenAI / Anthropic providers' helper (audit R1-003). The
+    Codex backend is driven through an ``AsyncOpenAI`` client whose
+    ``close()`` is async + idempotent and drains the underlying
+    ``httpx.AsyncClient`` pool — the ``responses.stream(...)`` CM only
+    closes the response, not the owning client's pool. A close-time error
+    stays in the log but never bubbles up into the chat-stream flow
+    (which would mask the original error). Test doubles without a
+    ``close`` attribute no-op.
+    """
+    close = getattr(client, "close", None)
+    if close is None:
+        return
+    try:
+        result = close()
+        if hasattr(result, "__await__"):
+            await result
+    except Exception as exc:  # pragma: no cover — defensive close-path guard
+        logger.warning("codex.client_close_failed", error=str(exc))
+
+
 async def _open_stream_and_first_event(
     client: Any, kwargs: dict[str, Any]
 ) -> tuple[Any, Any] | None:
@@ -326,268 +349,290 @@ class CodexProvider:
         """
         await self._ensure_fresh()
         client = self._make_client()
-
-        # Extract system prompt as instructions (Responses API uses "instructions"
-        # instead of a system role message).
-        instructions = ""
-        payload_messages: list[Any] = list(messages)
-        if payload_messages:
-            first = payload_messages[0]
-            first_role = (
-                first.get("role") if isinstance(first, dict)
-                else getattr(first, "role", None)
-            )
-            if first_role == "system":
-                instructions = (
-                    first.get("content") if isinstance(first, dict)
-                    else getattr(first, "content", "")
-                ) or ""
-                payload_messages = payload_messages[1:]
-
-        kwargs: dict[str, Any] = {
-            "model": model,
-            "instructions": instructions,
-            "input": _messages_to_responses_input(payload_messages),
-            "store": False,
-            "reasoning": {"effort": "medium", "summary": "auto"},
-            "include": ["reasoning.encrypted_content"],
-        }
-        # NOTE: Codex backend rejects temperature and max_output_tokens — omit.
-
-        if tools:
-            kwargs["tools"] = [
-                {
-                    "type": "function",
-                    "name": t["function"]["name"],
-                    "description": t["function"].get("description", ""),
-                    "parameters": t["function"].get("parameters", {}),
-                }
-                for t in tools
-                if isinstance(t, dict) and "function" in t
-            ]
-            kwargs["tool_choice"] = "auto"
-
-        # T3.5: prompt cache hint. The Responses API supports
-        # ``prompt_cache_key`` — when the Codex backend honours it,
-        # consecutive turns sharing a key reuse the cached prompt prefix.
-        # Off by default since we cannot probe support without trying;
-        # enable with ``CORLINMAN_CODEX_PROMPT_CACHE=1`` and pass the
-        # cache key via ``extra={"prompt_cache_key": "<session>"}`` from
-        # the caller (the agent servicer threads ``session_key`` in).
-        # If the backend rejects the parameter the request fails clearly
-        # with a 400 (T1.2's classifier won't retry, by design).
-        if extra and isinstance(extra, dict):
-            cache_key = extra.get("prompt_cache_key")
-            if (
-                cache_key
-                and os.environ.get(
-                    "CORLINMAN_CODEX_PROMPT_CACHE", ""
-                ).strip().lower()
-                in ("1", "true", "yes", "on")
-            ):
-                kwargs["prompt_cache_key"] = str(cache_key)
-
-        # --- Open phase with retry --------------------------------------
-        # `_open_stream_once` enters the `responses.stream(...)` context
-        # manager and pulls the first event. If either step raises a
-        # transient error (429 / 5xx / connection blip), with_retry
-        # backs off and tries again. We hand back the still-open CM
-        # *and* the first event so we don't lose it. If the first event
-        # already triggered a yield, we couldn't safely retry — which is
-        # why the retry boundary is precisely first-event, not later.
-
-        def _on_retry(attempt: int, delay: float, exc: BaseException) -> None:
-            logger.warning(
-                "codex.retry",
-                attempt=attempt,
-                delay=round(delay, 3),
-                reason=type(exc).__name__,
-                error=str(exc)[:200],
-            )
-
+        # Hand ownership of the httpx pool to a try/finally so EVERY exit
+        # path — success, early return, mid-stream error, generator
+        # ``aclose()`` from a cancelled caller — closes the client. The
+        # ``responses.stream(...)`` CM only closes the response, not the
+        # owning client's pool; without this every Codex chat turn leaks a
+        # pool entry (audit R4-D2, same class as R1-003). The token-recovery
+        # path rebinds ``client`` after closing the first one (below), so the
+        # ``finally`` always closes whichever client is live at exit.
         try:
-            open_result = await with_retry(
-                lambda: _open_stream_and_first_event(client, kwargs),
-                retryable=partial(default_retryable_codex, background=background),
-                on_retry=_on_retry,
-            )
-        except Exception as exc:
-            # Reactive token recovery: when the Codex server has actively
-            # invalidated the access_token (independent of JWT exp), refresh
-            # with the still-valid refresh_token, persist, and retry the open
-            # ONCE. Distinct from with_retry's generic backoff because
-            # ``default_retryable_codex`` correctly treats 401 as terminal
-            # for the generic case — we only re-attempt after we've fixed
-            # the credential.
-            if _is_token_invalidated(exc):
-                logger.warning("codex.token_invalidated_detected")
-                recovered = await self._attempt_token_recovery()
-                if recovered:
-                    client = self._make_client()
-                    try:
-                        open_result = await with_retry(
-                            lambda: _open_stream_and_first_event(client, kwargs),
-                            retryable=partial(
-                                default_retryable_codex, background=background
-                            ),
-                            on_retry=_on_retry,
-                        )
-                    except Exception as exc2:
+            # Extract system prompt as instructions (Responses API uses
+            # "instructions" instead of a system role message).
+            instructions = ""
+            payload_messages: list[Any] = list(messages)
+            if payload_messages:
+                first = payload_messages[0]
+                first_role = (
+                    first.get("role") if isinstance(first, dict)
+                    else getattr(first, "role", None)
+                )
+                if first_role == "system":
+                    instructions = (
+                        first.get("content") if isinstance(first, dict)
+                        else getattr(first, "content", "")
+                    ) or ""
+                    payload_messages = payload_messages[1:]
+
+            kwargs: dict[str, Any] = {
+                "model": model,
+                "instructions": instructions,
+                "input": _messages_to_responses_input(payload_messages),
+                "store": False,
+                "reasoning": {"effort": "medium", "summary": "auto"},
+                "include": ["reasoning.encrypted_content"],
+            }
+            # NOTE: Codex backend rejects temperature and max_output_tokens — omit.
+
+            if tools:
+                kwargs["tools"] = [
+                    {
+                        "type": "function",
+                        "name": t["function"]["name"],
+                        "description": t["function"].get("description", ""),
+                        "parameters": t["function"].get("parameters", {}),
+                    }
+                    for t in tools
+                    if isinstance(t, dict) and "function" in t
+                ]
+                kwargs["tool_choice"] = "auto"
+
+            # T3.5: prompt cache hint. The Responses API supports
+            # ``prompt_cache_key`` — when the Codex backend honours it,
+            # consecutive turns sharing a key reuse the cached prompt prefix.
+            # Off by default since we cannot probe support without trying;
+            # enable with ``CORLINMAN_CODEX_PROMPT_CACHE=1`` and pass the
+            # cache key via ``extra={"prompt_cache_key": "<session>"}`` from
+            # the caller (the agent servicer threads ``session_key`` in).
+            # If the backend rejects the parameter the request fails clearly
+            # with a 400 (T1.2's classifier won't retry, by design).
+            if extra and isinstance(extra, dict):
+                cache_key = extra.get("prompt_cache_key")
+                if (
+                    cache_key
+                    and os.environ.get(
+                        "CORLINMAN_CODEX_PROMPT_CACHE", ""
+                    ).strip().lower()
+                    in ("1", "true", "yes", "on")
+                ):
+                    kwargs["prompt_cache_key"] = str(cache_key)
+
+            # --- Open phase with retry --------------------------------------
+            # `_open_stream_once` enters the `responses.stream(...)` context
+            # manager and pulls the first event. If either step raises a
+            # transient error (429 / 5xx / connection blip), with_retry
+            # backs off and tries again. We hand back the still-open CM
+            # *and* the first event so we don't lose it. If the first event
+            # already triggered a yield, we couldn't safely retry — which is
+            # why the retry boundary is precisely first-event, not later.
+
+            def _on_retry(attempt: int, delay: float, exc: BaseException) -> None:
+                logger.warning(
+                    "codex.retry",
+                    attempt=attempt,
+                    delay=round(delay, 3),
+                    reason=type(exc).__name__,
+                    error=str(exc)[:200],
+                )
+
+            try:
+                open_result = await with_retry(
+                    lambda: _open_stream_and_first_event(client, kwargs),
+                    retryable=partial(default_retryable_codex, background=background),
+                    on_retry=_on_retry,
+                )
+            except Exception as exc:
+                # Reactive token recovery: when the Codex server has actively
+                # invalidated the access_token (independent of JWT exp), refresh
+                # with the still-valid refresh_token, persist, and retry the open
+                # ONCE. Distinct from with_retry's generic backoff because
+                # ``default_retryable_codex`` correctly treats 401 as terminal
+                # for the generic case — we only re-attempt after we've fixed
+                # the credential.
+                if _is_token_invalidated(exc):
+                    logger.warning("codex.token_invalidated_detected")
+                    recovered = await self._attempt_token_recovery()
+                    if recovered:
+                        # Close the stale client BEFORE rebuilding — the
+                        # first client (built with the invalidated token)
+                        # would otherwise leak its httpx pool while the
+                        # second takes over (audit R4-D2).
+                        await _safe_close(client)
+                        client = self._make_client()
+                        try:
+                            open_result = await with_retry(
+                                lambda: _open_stream_and_first_event(client, kwargs),
+                                retryable=partial(
+                                    default_retryable_codex, background=background
+                                ),
+                                on_retry=_on_retry,
+                            )
+                        except Exception as exc2:
+                            logger.warning(
+                                "codex.stream_open_failed_after_recovery",
+                                error=str(exc2),
+                            )
+                            yield ProviderChunk(kind="done", finish_reason="error")
+                            return
+                    else:
                         logger.warning(
-                            "codex.stream_open_failed_after_recovery",
-                            error=str(exc2),
+                            "codex.stream_open_failed",
+                            error=str(exc),
+                            recovery="failed",
                         )
                         yield ProviderChunk(kind="done", finish_reason="error")
                         return
                 else:
-                    logger.warning(
-                        "codex.stream_open_failed",
-                        error=str(exc),
-                        recovery="failed",
-                    )
+                    logger.warning("codex.stream_open_failed", error=str(exc))
                     yield ProviderChunk(kind="done", finish_reason="error")
                     return
-            else:
-                logger.warning("codex.stream_open_failed", error=str(exc))
-                yield ProviderChunk(kind="done", finish_reason="error")
+
+            if open_result is None:
+                # Stream opened but produced zero events (e.g. immediate
+                # close). Surface a stop done — nothing to retry against.
+                yield ProviderChunk(kind="done", finish_reason="stop")
                 return
 
-        if open_result is None:
-            # Stream opened but produced zero events (e.g. immediate
-            # close). Surface a stop done — nothing to retry against.
-            yield ProviderChunk(kind="done", finish_reason="stop")
-            return
+            stream_cm, first_event = open_result
 
-        stream_cm, first_event = open_result
+            # item_id (fc_…) → call_id (call_…). Arg-delta events carry only
+            # item_id; the call_id needed for the function_call_output
+            # round-trip lives on the output_item.added event.
+            call_ids: dict[str, str] = {}
+            # call_id → whether any argument delta was streamed for it. Lets
+            # us fall back to the full arguments on output_item.done when the
+            # backend ships args in one shot instead of streaming fragments.
+            args_streamed: dict[str, bool] = {}
+            saw_tool_call = False
+            # T1.4: capture token accounting from the ``response.completed``
+            # event so the terminal ``done`` chunk can carry it back to the
+            # reasoning loop → DoneEvent → server-side cost meter. Stays
+            # ``None`` when the upstream omits usage (e.g. mid-stream
+            # errors, retry that bailed pre-completion).
+            captured_usage: dict[str, int] | None = None
 
-        # item_id (fc_…) → call_id (call_…). Arg-delta events carry only
-        # item_id; the call_id needed for the function_call_output
-        # round-trip lives on the output_item.added event.
-        call_ids: dict[str, str] = {}
-        # call_id → whether any argument delta was streamed for it. Lets
-        # us fall back to the full arguments on output_item.done when the
-        # backend ships args in one shot instead of streaming fragments.
-        args_streamed: dict[str, bool] = {}
-        saw_tool_call = False
-        # T1.4: capture token accounting from the ``response.completed``
-        # event so the terminal ``done`` chunk can carry it back to the
-        # reasoning loop → DoneEvent → server-side cost meter. Stays
-        # ``None`` when the upstream omits usage (e.g. mid-stream
-        # errors, retry that bailed pre-completion).
-        captured_usage: dict[str, int] | None = None
+            async def _process_event(event: Any) -> AsyncIterator[ProviderChunk]:
+                """Translate one Responses-API event into ProviderChunks.
 
-        async def _process_event(event: Any) -> AsyncIterator[ProviderChunk]:
-            """Translate one Responses-API event into ProviderChunks.
-
-            Inner generator so the first-event we already pulled and the
-            remaining events go through identical processing.
-            """
-            event_type = getattr(event, "type", "")
-            if "output_text.delta" in event_type:
-                delta = getattr(event, "delta", "")
-                if delta:
-                    yield ProviderChunk(kind="token", text=delta)
-            elif event_type == "response.output_item.added":
-                item = getattr(event, "item", None)
-                if item is not None and getattr(item, "type", "") == "function_call":
-                    item_id = getattr(item, "id", "") or ""
-                    call_id = getattr(item, "call_id", "") or item_id
-                    name = getattr(item, "name", "") or ""
-                    call_ids[item_id] = call_id
-                    args_streamed[call_id] = False
-                    yield ProviderChunk(
-                        kind="tool_call_start",
-                        tool_call_id=call_id,
-                        tool_name=name,
-                    )
-            elif event_type == "response.function_call_arguments.delta":
-                item_id = getattr(event, "item_id", "") or ""
-                call_id = call_ids.get(item_id, item_id)
-                delta = getattr(event, "delta", "") or ""
-                if delta:
-                    args_streamed[call_id] = True
-                    yield ProviderChunk(
-                        kind="tool_call_delta",
-                        tool_call_id=call_id,
-                        arguments_delta=delta,
-                    )
-            elif event_type == "response.output_item.done":
-                item = getattr(event, "item", None)
-                if item is not None and getattr(item, "type", "") == "function_call":
-                    item_id = getattr(item, "id", "") or ""
+                Inner generator so the first-event we already pulled and the
+                remaining events go through identical processing.
+                """
+                event_type = getattr(event, "type", "")
+                if "output_text.delta" in event_type:
+                    delta = getattr(event, "delta", "")
+                    if delta:
+                        yield ProviderChunk(kind="token", text=delta)
+                elif event_type == "response.output_item.added":
+                    item = getattr(event, "item", None)
+                    if item is not None and getattr(item, "type", "") == "function_call":
+                        item_id = getattr(item, "id", "") or ""
+                        call_id = getattr(item, "call_id", "") or item_id
+                        name = getattr(item, "name", "") or ""
+                        call_ids[item_id] = call_id
+                        args_streamed[call_id] = False
+                        yield ProviderChunk(
+                            kind="tool_call_start",
+                            tool_call_id=call_id,
+                            tool_name=name,
+                        )
+                elif event_type == "response.function_call_arguments.delta":
+                    item_id = getattr(event, "item_id", "") or ""
                     call_id = call_ids.get(item_id, item_id)
-                    # Backend shipped args in one shot — replay them
-                    # as a single delta so the loop can aggregate.
-                    if not args_streamed.get(call_id):
-                        full_args = getattr(item, "arguments", "") or ""
-                        if full_args:
-                            yield ProviderChunk(
-                                kind="tool_call_delta",
-                                tool_call_id=call_id,
-                                arguments_delta=str(full_args),
-                            )
-                    yield ProviderChunk(
-                        kind="tool_call_end",
-                        tool_call_id=call_id,
-                    )
+                    delta = getattr(event, "delta", "") or ""
+                    if delta:
+                        args_streamed[call_id] = True
+                        yield ProviderChunk(
+                            kind="tool_call_delta",
+                            tool_call_id=call_id,
+                            arguments_delta=delta,
+                        )
+                elif event_type == "response.output_item.done":
+                    item = getattr(event, "item", None)
+                    if item is not None and getattr(item, "type", "") == "function_call":
+                        item_id = getattr(item, "id", "") or ""
+                        call_id = call_ids.get(item_id, item_id)
+                        # Backend shipped args in one shot — replay them
+                        # as a single delta so the loop can aggregate.
+                        if not args_streamed.get(call_id):
+                            full_args = getattr(item, "arguments", "") or ""
+                            if full_args:
+                                yield ProviderChunk(
+                                    kind="tool_call_delta",
+                                    tool_call_id=call_id,
+                                    arguments_delta=str(full_args),
+                                )
+                        yield ProviderChunk(
+                            kind="tool_call_end",
+                            tool_call_id=call_id,
+                        )
 
-        terminated_early = False
-        try:
-            # ``stream_cm`` is already entered (by _open_stream_and_first_event)
-            # so we drive the inner async iterator directly and close the
-            # CM in the finally block. The first event we already pulled
-            # goes through the same _process_event path as the rest.
-            stream_iter = stream_cm._cm_iter  # set by _open_stream_and_first_event
-
-            # First event.
-            if _is_terminal_event(first_event):
-                _log_terminal(first_event)
-                yield ProviderChunk(kind="done", finish_reason="error")
-                terminated_early = True
-            else:
-                if getattr(first_event, "type", "") == "response.completed":
-                    captured_usage = _extract_usage(first_event) or captured_usage
-                async for chunk in _process_event(first_event):
-                    if chunk.kind == "tool_call_start":
-                        saw_tool_call = True
-                    yield chunk
-
-                # Remaining events.
-                if not terminated_early:
-                    async for event in stream_iter:
-                        if _is_terminal_event(event):
-                            _log_terminal(event)
-                            yield ProviderChunk(kind="done", finish_reason="error")
-                            terminated_early = True
-                            break
-                        if getattr(event, "type", "") == "response.completed":
-                            # Last-writer-wins: a streamed response only
-                            # carries one completed event, but be defensive.
-                            captured_usage = _extract_usage(event) or captured_usage
-                        async for chunk in _process_event(event):
-                            if chunk.kind == "tool_call_start":
-                                saw_tool_call = True
-                            yield chunk
-        except Exception as exc:
-            logger.warning("codex.stream_error", error=str(exc))
-            yield ProviderChunk(kind="done", finish_reason="error")
-            return
-        finally:
-            # The original `async with` would have called __aexit__ for
-            # us; since we manually entered above, we mirror that here.
+            terminated_early = False
             try:
-                await stream_cm.__aexit__(None, None, None)
-            except Exception:  # noqa: BLE001 — exit failures must not mask the result
-                pass
+                # ``stream_cm`` is already entered (by _open_stream_and_first_event)
+                # so we drive the inner async iterator directly and close the
+                # CM in the finally block. The first event we already pulled
+                # goes through the same _process_event path as the rest.
+                stream_iter = stream_cm._cm_iter  # set by _open_stream_and_first_event
 
-        if terminated_early:
-            return
+                # First event.
+                if _is_terminal_event(first_event):
+                    _log_terminal(first_event)
+                    yield ProviderChunk(kind="done", finish_reason="error")
+                    terminated_early = True
+                else:
+                    if getattr(first_event, "type", "") == "response.completed":
+                        captured_usage = _extract_usage(first_event) or captured_usage
+                    async for chunk in _process_event(first_event):
+                        if chunk.kind == "tool_call_start":
+                            saw_tool_call = True
+                        yield chunk
 
-        yield ProviderChunk(
-            kind="done",
-            finish_reason="tool_calls" if saw_tool_call else "stop",
-            usage=captured_usage,
-        )
+                    # Remaining events.
+                    if not terminated_early:
+                        async for event in stream_iter:
+                            if _is_terminal_event(event):
+                                _log_terminal(event)
+                                yield ProviderChunk(kind="done", finish_reason="error")
+                                terminated_early = True
+                                break
+                            if getattr(event, "type", "") == "response.completed":
+                                # Last-writer-wins: a streamed response only
+                                # carries one completed event, but be defensive.
+                                captured_usage = _extract_usage(event) or captured_usage
+                            async for chunk in _process_event(event):
+                                if chunk.kind == "tool_call_start":
+                                    saw_tool_call = True
+                                yield chunk
+            except Exception as exc:
+                logger.warning("codex.stream_error", error=str(exc))
+                yield ProviderChunk(kind="done", finish_reason="error")
+                return
+            finally:
+                # The original `async with` would have called __aexit__ for
+                # us; since we manually entered above, we mirror that here.
+                try:
+                    await stream_cm.__aexit__(None, None, None)
+                except Exception:  # noqa: BLE001 — exit failures must not mask the result
+                    pass
+
+            if terminated_early:
+                return
+
+            yield ProviderChunk(
+                kind="done",
+                finish_reason="tool_calls" if saw_tool_call else "stop",
+                usage=captured_usage,
+            )
+        finally:
+            # Always release the underlying httpx pool, regardless of which
+            # exit path (success, early return, mid-stream error, or
+            # generator ``aclose()`` from a cancelled caller) we took.
+            # ``client`` is whichever client is live at exit — the
+            # token-recovery path closes + rebinds it above, so a single
+            # close here covers the recovered client too. Without this
+            # every Codex chat call leaks a pool entry — audit R4-D2.
+            await _safe_close(client)
 
     # ------------------------------------------------------------------
     # Internal
