@@ -47,6 +47,10 @@ from fastapi import APIRouter, WebSocket
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
+from corlinman_server.gateway.middleware.auth import (
+    ApiKeyAuthState,
+    extract_bearer_token,
+)
 from corlinman_server.gateway.routes_voice.approval import (
     APPROVAL_DENIED_TEXT,
     ApprovalDecisionKind,
@@ -104,6 +108,7 @@ from corlinman_server.gateway.routes_voice.provider import (
 )
 
 __all__ = [
+    "CLOSE_CODE_AUTH_DENIED",
     "CLOSE_CODE_NORMAL",
     "CLOSE_CODE_PROTOCOL_ERROR",
     "CLOSE_CODE_PROVIDER_ERROR",
@@ -138,6 +143,14 @@ CLOSE_CODE_VOICE_DISABLED: int = 4000
 moment the upgrade completed. Pre-upgrade this is surfaced as an HTTP
 503; mid-upgrade only used if a hot-reload flips the flag between
 accept and the budget check."""
+
+CLOSE_CODE_AUTH_DENIED: int = 4401
+"""Application-level close code: the WebSocket handshake carried no
+valid tenant API key. The HTTP :class:`ApiKeyAuthMiddleware` cannot run
+for WebSocket scopes, so the ``/v1/voice`` handler enforces the same
+:meth:`AdminDb.verify_api_key` check itself and closes with this
+``4401`` (the WS analogue of HTTP 401) before any provider session is
+opened or any per-tenant budget is touched."""
 
 CLOSE_CODE_PROVIDER_ERROR: int = 4003
 """Application-level close code: the upstream provider failed to start
@@ -217,6 +230,17 @@ class VoiceState:
     The default :attr:`tenant_resolver` reads the ``X-Tenant-Id``
     header; if absent it falls back to ``config.default_tenant``. Wire
     a custom resolver to thread the session-token-derived tenant.
+
+    :attr:`auth_state` carries the :class:`ApiKeyAuthState` the
+    WebSocket handshake authenticates against. When it (or the runtime's
+    ``app.state.api_key_auth``) resolves an :class:`AdminDb`, the handler
+    requires a valid tenant API key before accepting the upgrade and
+    derives the tenant from the authenticated key — the spoofable
+    ``X-Tenant-Id`` header is ignored once a key is bound. When no auth
+    state is resolvable at all (the direct unit-test driver, which builds
+    a :class:`VoiceState` by hand and drives an in-memory socket), the
+    handler skips the key check so those tests keep exercising the pump
+    surface; the production router always wires :attr:`auth_state`.
     """
 
     config_loader: ConfigLoader
@@ -227,12 +251,26 @@ class VoiceState:
     approval_queue: Any | None = None
     data_dir: Path = field(default_factory=lambda: Path("."))
     tenant_resolver: Callable[[WebSocket, VoiceRouterConfig], str] | None = None
+    auth_state: ApiKeyAuthState | None = None
     tick_interval_seconds: float = DEFAULT_TICK_INTERVAL_SECONDS
     start_timeout_seconds: float = DEFAULT_START_TIMEOUT_SECONDS
 
-    def resolve_tenant(self, websocket: WebSocket, cfg: VoiceRouterConfig) -> str:
-        """Pick the tenant slug for this connection. Default = header
-        wins over the config-supplied fallback."""
+    def resolve_tenant(
+        self,
+        websocket: WebSocket,
+        cfg: VoiceRouterConfig,
+        authenticated_tenant: str | None = None,
+    ) -> str:
+        """Pick the tenant slug for this connection.
+
+        Precedence: the authenticated key's tenant (when a key was
+        verified on the handshake) wins over everything else — it is the
+        only non-spoofable source. Falling back, a custom
+        :attr:`tenant_resolver` runs, then the ``X-Tenant-Id`` header,
+        then ``config.default_tenant``.
+        """
+        if authenticated_tenant is not None and authenticated_tenant.strip():
+            return authenticated_tenant.strip()
         if self.tenant_resolver is not None:
             return self.tenant_resolver(websocket, cfg)
         raw = websocket.headers.get("x-tenant-id")
@@ -527,8 +565,25 @@ async def run_voice_session(
         )
         return
 
+    # ---- handshake authentication (pre-accept, pre-budget) ------------
+    # The HTTP ApiKeyAuthMiddleware never runs for WebSocket scopes, so
+    # we enforce the same tenant-API-key check here BEFORE accepting the
+    # upgrade, touching any per-tenant budget, or opening a billable
+    # provider session.
+    allowed, authenticated_tenant = await _authenticate_ws(state, websocket)
+    if not allowed:
+        logger.warning("voice: handshake auth denied; closing 4401")
+        await websocket.accept(subprotocol=accepted_subprotocol)
+        await websocket.close(
+            code=CLOSE_CODE_AUTH_DENIED, reason="unauthorized"
+        )
+        return
+
     # ---- per-tenant daily budget gate ---------------------------------
-    tenant = state.resolve_tenant(websocket, cfg)
+    # When a key was verified the tenant is bound to it — the spoofable
+    # X-Tenant-Id header is ignored so a caller can't mint/exhaust
+    # another tenant's budget.
+    tenant = state.resolve_tenant(websocket, cfg, authenticated_tenant)
     cost_cfg = cfg.to_cost_config()
     now = now_unix_secs()
     day_epoch = utc_day_epoch(now)
@@ -1143,6 +1198,101 @@ async def _pump_ticker(
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _resolve_auth_state(
+    state: VoiceState, websocket: WebSocket
+) -> ApiKeyAuthState | None:
+    """Resolve the :class:`ApiKeyAuthState` to authenticate against.
+
+    Prefers the explicitly-wired :attr:`VoiceState.auth_state`; otherwise
+    falls back to ``websocket.app.state.api_key_auth`` (the same instance
+    the HTTP :class:`ApiKeyAuthMiddleware` publishes at boot). Returns
+    ``None`` only when neither is present — the direct unit-test driver,
+    where the in-memory socket has no ``app`` and the test builds a
+    :class:`VoiceState` without an ``auth_state``.
+    """
+    if state.auth_state is not None:
+        return state.auth_state
+    app = getattr(websocket, "app", None)
+    app_state = getattr(app, "state", None)
+    candidate = getattr(app_state, "api_key_auth", None)
+    if isinstance(candidate, ApiKeyAuthState):
+        return candidate
+    return None
+
+
+def _extract_ws_token(websocket: WebSocket) -> str | None:
+    """Pull the bearer token a WebSocket client supplied.
+
+    Header path first — ``Authorization: Bearer <token>`` then
+    ``X-API-Key`` — reusing :func:`extract_bearer_token` so the WS gate
+    accepts exactly the same headers the HTTP gate does. As a browser
+    fallback (the WebSocket API can't set request headers), a
+    ``?api_key=`` / ``?token=`` query parameter is also honoured, the
+    convention documented for the gateway's other WS surface
+    (``/logstream``).
+    """
+    token = extract_bearer_token(websocket)
+    if token:
+        return token
+    params = getattr(websocket, "query_params", None)
+    if params is not None:
+        for key in ("api_key", "token", "access_token"):
+            try:
+                raw = params.get(key)
+            except Exception:  # noqa: BLE001 — duck-typed query mapping
+                raw = None
+            if raw and str(raw).strip():
+                return str(raw).strip()
+    return None
+
+
+async def _authenticate_ws(
+    state: VoiceState, websocket: WebSocket
+) -> tuple[bool, str | None]:
+    """Authenticate the WebSocket handshake against the tenant API-key
+    store, mirroring :class:`ApiKeyAuthMiddleware`.
+
+    Returns ``(allowed, authenticated_tenant)``:
+
+    * ``(True, None)`` — no auth state is resolvable at all (the direct
+      unit-test driver). The caller proceeds without a key check.
+    * ``(True, "<tenant-slug>")`` — a valid key was verified; the caller
+      must bind the session to this tenant.
+    * ``(False, None)`` — auth is required (an :class:`ApiKeyAuthState`
+      is wired) but the key was missing / invalid / unverifiable. The
+      caller must close :data:`CLOSE_CODE_AUTH_DENIED` without opening a
+      provider session.
+    """
+    auth_state = _resolve_auth_state(state, websocket)
+    if auth_state is None:
+        # No gate wired (direct unit-test driver). Production always
+        # publishes ``app.state.api_key_auth`` at boot.
+        return True, None
+
+    if auth_state.admin_db is None:
+        # Fail closed — same posture as the HTTP middleware when the
+        # protected route has nothing to verify against.
+        logger.warning("voice: auth required but no admin_db configured; denying")
+        return False, None
+
+    token = _extract_ws_token(websocket)
+    if token is None:
+        logger.debug("voice: handshake missing api key; denying")
+        return False, None
+
+    try:
+        row = await auth_state.admin_db.verify_api_key(token)
+    except Exception:  # noqa: BLE001 — surface as auth-denied, log details
+        logger.warning("voice: api key verification raised; denying", exc_info=True)
+        return False, None
+
+    if row is None:
+        logger.debug("voice: handshake api key invalid/revoked; denying")
+        return False, None
+
+    return True, str(row.tenant_id)
 
 
 class _StartTimeout(Exception):

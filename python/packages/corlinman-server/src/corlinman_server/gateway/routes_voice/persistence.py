@@ -33,10 +33,11 @@ When ``retain_audio = true``, the gateway writes raw PCM-16 to
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Final, Protocol, runtime_checkable
 
 
@@ -232,13 +233,59 @@ class MemoryVoiceSessionStore:
 # ---------------------------------------------------------------------------
 
 
+class VoicePathError(ValueError):
+    """Raised when a ``tenant_id`` / ``session_id`` carries a path
+    component that would escape ``data_dir/tenants`` (``..`` / a path
+    separator / an absolute or drive-anchored value). The audio-path
+    helpers reject rather than silently slugify so two distinct unsafe
+    inputs can never collapse onto the same on-disk path."""
+
+
+def _validate_path_segment(name: str, value: str) -> str:
+    """Validate a single user-supplied path segment.
+
+    Rejects anything that could traverse out of the per-tenant tree:
+    empty / whitespace-only values, ``.`` / ``..``, path separators
+    (POSIX *or* Windows), and absolute / drive-anchored values. Returns
+    the value unchanged on success so the resolved path is guaranteed to
+    stay one directory deep under ``data_dir/tenants``.
+    """
+    if not value or not value.strip():
+        raise VoicePathError(f"voice {name} must be a non-empty path segment")
+    if value in (".", ".."):
+        raise VoicePathError(f"voice {name} {value!r} is a path-traversal segment")
+    # Reject every separator flavour plus the NUL byte regardless of host
+    # OS — the on-disk layout must be identical across platforms and a
+    # backslash is a separator on Windows.
+    if any(sep and sep in value for sep in (os.sep, os.altsep, "/", "\\", "\x00")):
+        raise VoicePathError(
+            f"voice {name} {value!r} contains a path separator"
+        )
+    # Defence in depth: a single segment must not parse as anything with
+    # parents / a drive / a root on either path flavour.
+    for flavour in (PurePosixPath, PureWindowsPath):
+        parsed = flavour(value)
+        if parsed.is_absolute() or parsed.drive or parsed.root or len(parsed.parts) != 1:
+            raise VoicePathError(
+                f"voice {name} {value!r} is not a single path segment"
+            )
+    return value
+
+
 def audio_path_for(data_dir: Path | str, tenant_id: str, session_id: str) -> Path:
     """Per-session inbound PCM-16 path under the per-tenant tree.
 
     Pure: returns a :class:`Path`. The caller (audio writer or
     retention sweeper) is responsible for ``mkdir`` and per-session
     file handles.
+
+    ``tenant_id`` / ``session_id`` are validated as single path segments
+    (see :func:`_validate_path_segment`) so a traversal value like
+    ``../../etc`` can never escape ``data_dir/tenants``. Raises
+    :class:`VoicePathError` on an unsafe segment.
     """
+    tenant_id = _validate_path_segment("tenant_id", tenant_id)
+    session_id = _validate_path_segment("session_id", session_id)
     return Path(data_dir) / "tenants" / tenant_id / "voice" / f"{session_id}.pcm"
 
 
@@ -248,7 +295,12 @@ def tts_audio_path_for(
     """TTS sibling path for retained assistant audio. Lives next to
     the inbound PCM under the same per-tenant tree so the retention
     sweeper can match both with one glob.
+
+    Validates ``tenant_id`` / ``session_id`` identically to
+    :func:`audio_path_for`; raises :class:`VoicePathError` on traversal.
     """
+    tenant_id = _validate_path_segment("tenant_id", tenant_id)
+    session_id = _validate_path_segment("session_id", session_id)
     return Path(data_dir) / "tenants" / tenant_id / "voice" / f"{session_id}.tts.pcm"
 
 
@@ -331,6 +383,7 @@ __all__ = [
     "MemoryVoiceSessionStore",
     "audio_path_for",
     "tts_audio_path_for",
+    "VoicePathError",
     "TranscriptedTurn",
     "VoiceTranscriptSink",
     "MemoryTranscriptSink",
