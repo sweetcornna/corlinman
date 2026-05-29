@@ -28,12 +28,13 @@ import { useTranslation } from "react-i18next";
 import { Coins, Clock, Repeat, Wrench, History, Info } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { GATEWAY_BASE_URL } from "@/lib/api";
 
 // TODO: depends on W2.1 loadSessionCost export — once `@/lib/api` exports
 // `loadSessionCost(key)` switch to importing it and delete `_loadCostInline`.
 async function _loadCostInline(key: string): Promise<SessionCostResponse> {
   const res = await fetch(
-    `/admin/sessions/${encodeURIComponent(key)}/cost`,
+    `${GATEWAY_BASE_URL}/admin/sessions/${encodeURIComponent(key)}/cost`,
     { credentials: "include" },
   );
   if (!res.ok) throw new Error(`cost fetch failed: ${res.status}`);

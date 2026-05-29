@@ -24,6 +24,7 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";
+import { GATEWAY_BASE_URL } from "@/lib/api";
 import { TableCell } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -36,7 +37,7 @@ import {
 // `loadSessionCost(key)` switch to importing it and delete this inline fetch.
 async function _loadCostInline(key: string): Promise<SessionCostResponse> {
   const res = await fetch(
-    `/admin/sessions/${encodeURIComponent(key)}/cost`,
+    `${GATEWAY_BASE_URL}/admin/sessions/${encodeURIComponent(key)}/cost`,
     { credentials: "include" },
   );
   if (!res.ok) throw new Error(`cost fetch failed: ${res.status}`);

@@ -2532,7 +2532,7 @@ export function streamUpgradeEvents(
   const qs = new URLSearchParams();
   if (opts?.lastEventId) qs.set("last_event_id", opts.lastEventId);
   const suffix = qs.toString() ? `?${qs}` : "";
-  const url = `/admin/system/upgrade/${encodeURIComponent(request_id)}/events${suffix}`;
+  const url = `${GATEWAY_BASE_URL}/admin/system/upgrade/${encodeURIComponent(request_id)}/events${suffix}`;
   return new EventSource(url, { withCredentials: true });
 }
 
