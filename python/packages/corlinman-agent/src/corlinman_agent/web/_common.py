@@ -263,8 +263,8 @@ def _ip_is_unsafe(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> str | 
     return None
 
 
-def is_safe_host(url: str) -> None:
-    """Validate that ``url`` is safe to dial.
+def is_safe_host(url: str) -> list[str]:
+    """Validate that ``url`` is safe to dial and return the validated IP(s).
 
     Raises :class:`WebFetchUnsafeHostError` when:
 
@@ -275,7 +275,14 @@ def is_safe_host(url: str) -> None:
       DNS pinning attacks ("evil.example.com → 10.0.0.5") cannot
       bypass the guard.
 
-    No return value on success.
+    On success returns the list of validated IP-literal strings the host
+    resolved to (a single-element list for a literal-IP URL). Callers
+    that dial the host MUST pin the connection to one of these exact IPs
+    (see :func:`pin_transport`) so no second, unvalidated DNS lookup can
+    race the guard's — a DNS-rebind attacker who answers the guard with a
+    public IP and the connect with an internal one is otherwise able to
+    bypass the check entirely (SEC-012). Callers that only need the
+    boolean verdict (e.g. filtering result URLs) may ignore the return.
 
     Override: setting ``CORLINMAN_WEB_FETCH_ALLOW_PRIVATE=1`` skips the
     IP-classification check (scheme + metadata are still enforced) so
@@ -311,13 +318,13 @@ def is_safe_host(url: str) -> None:
                 f"cloud metadata endpoint {host} is always denied"
             )
         if allow_private:
-            return
+            return [str(literal)]
         reason = _ip_is_unsafe(literal)
         if reason is not None:
             raise WebFetchUnsafeHostError(
                 f"host {host} resolves to {reason} address {literal}"
             )
-        return
+        return [str(literal)]
 
     # DNS path: resolve every address record and check each one. A single
     # unsafe address denies the whole request — there is no point dialing
@@ -327,6 +334,7 @@ def is_safe_host(url: str) -> None:
     except socket.gaierror as exc:
         raise WebFetchUnsafeHostError(f"dns resolution failed: {exc}") from exc
 
+    validated: list[str] = []
     seen: set[str] = set()
     for info in infos:
         sockaddr = info[4]
@@ -351,11 +359,111 @@ def is_safe_host(url: str) -> None:
                 f"host {host} resolves to cloud metadata endpoint {addr}"
             )
         if allow_private:
+            validated.append(str(addr))
             continue
         reason = _ip_is_unsafe(addr)
         if reason is not None:
             raise WebFetchUnsafeHostError(
                 f"host {host} resolves to {reason} address {addr}"
             )
-    if not seen:
+        validated.append(str(addr))
+    if not validated:
         raise WebFetchUnsafeHostError(f"host {host} resolved to no addresses")
+    return validated
+
+
+# ---------------------------------------------------------------------------
+# DNS-rebind pin (SEC-012)
+# ---------------------------------------------------------------------------
+
+
+def _bracket_if_ipv6(ip: str) -> str:
+    """Wrap a bare IPv6 literal in ``[...]`` for use in a ``Host`` header /
+    authority. IPv4 and already-bracketed values pass through unchanged."""
+    if ":" in ip and not ip.startswith("["):
+        return f"[{ip}]"
+    return ip
+
+
+class PinnedTransport(httpx.AsyncBaseTransport):
+    """Wrap an inner transport and dial a *pinned* IP, never re-resolving.
+
+    The SSRF guard (:func:`is_safe_host`) resolves and classifies a host's
+    IPs but the connection layer would otherwise resolve the hostname a
+    *second* time — a DNS-rebind attacker answers the guard's lookup with a
+    public IP and the connect's lookup with an internal one, bypassing the
+    guard (SEC-012). This transport closes that TOCTOU window: it rewrites
+    each outgoing request to dial ``pinned_ip`` directly (so the socket
+    opens to the validated address, with no further DNS) while preserving:
+
+    * the original ``Host`` header (virtual-host routing); and
+    * the TLS ``sni_hostname`` / ``server_hostname`` (so HTTPS cert
+      validation still happens against the *hostname*, not the IP).
+
+    The pin is per-request and keyed on the request's own host, so it is
+    safe to reuse across redirect hops: each hop is independently
+    re-validated and re-pinned by the caller before the request is built.
+    """
+
+    def __init__(
+        self,
+        inner: httpx.AsyncBaseTransport,
+        *,
+        expected_host: str,
+        pinned_ip: str,
+    ) -> None:
+        self._inner = inner
+        # Lower-cased hostname the pin applies to; other hosts (should not
+        # occur, but be conservative) pass through unmodified.
+        self._expected_host = expected_host.lower()
+        self._pinned_ip = pinned_ip
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        original_host = request.url.host
+        if original_host.lower() != self._expected_host:
+            # Not the host we validated — do not pin (defensive; the caller
+            # builds a fresh transport per hop so this should not happen).
+            return await self._inner.handle_async_request(request)
+
+        # Preserve the authority for the Host header + TLS SNI before we
+        # rewrite the URL host to the pinned IP.
+        is_default_port = request.url.port is None
+        port = request.url.port
+        host_authority = _bracket_if_ipv6(original_host)
+        if not is_default_port:
+            host_authority = f"{host_authority}:{port}"
+
+        request.url = request.url.copy_with(host=self._pinned_ip)
+        request.headers["Host"] = host_authority
+        # TLS validates the cert against the original hostname, not the IP.
+        request.extensions = {
+            **request.extensions,
+            "sni_hostname": original_host,
+        }
+        return await self._inner.handle_async_request(request)
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+
+def pin_transport(
+    inner: httpx.AsyncBaseTransport | None,
+    *,
+    host: str,
+    pinned_ip: str,
+) -> httpx.AsyncBaseTransport:
+    """Build a :class:`PinnedTransport` that dials ``pinned_ip`` for ``host``.
+
+    ``inner`` is the underlying transport — ``None`` in production (we
+    construct the default :class:`httpx.AsyncHTTPTransport`), or an
+    injected :class:`httpx.MockTransport` in tests.
+    """
+    base = inner if inner is not None else httpx.AsyncHTTPTransport()
+    return PinnedTransport(base, expected_host=host, pinned_ip=pinned_ip)
+
+
+def _url_host(url: str) -> str | None:
+    """Best-effort hostname extraction for pinning decisions."""
+    import urllib.parse
+
+    return urllib.parse.urlparse(url).hostname

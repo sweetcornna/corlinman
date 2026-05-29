@@ -45,9 +45,11 @@ import structlog
 from corlinman_agent.web._common import (
     WebArgsInvalidError,
     WebFetchUnsafeHostError,
+    _url_host,
     decode_args,
     is_safe_host,
     make_client,
+    pin_transport,
 )
 
 logger = structlog.get_logger(__name__)
@@ -280,12 +282,41 @@ async def dispatch_web_search(
 
     try:
         # The search backend hits a fixed, hard-coded endpoint
-        # (``html.duckduckgo.com`` or ``serpapi.com``). Following
-        # redirects against a known public host is safe; the SSRF
-        # surface here is the search-result URL list, not the
-        # request-to-backend transport. Keep redirects on for
-        # compatibility with DDG's canonicalisation 30x's.
-        async with make_client(transport=transport, follow_redirects=True) as client:
+        # (``html.duckduckgo.com`` or ``serpapi.com``). Validate + PIN the
+        # backend host so a DNS-rebind against that hostname cannot redirect
+        # the backend request itself to an internal address between the
+        # guard's lookup and the connect's (SEC-012); the SSRF surface here
+        # is both the search-result URL list (filtered in ``_parse_*``) AND
+        # the request-to-backend transport. Redirects stay on for
+        # compatibility with DDG's canonicalisation 30x's — they target the
+        # same pinned host.
+        endpoint = _SERPAPI_ENDPOINT if backend == "serpapi" else _DDG_ENDPOINT
+        backend_host = _url_host(endpoint) or ""
+        backend_transport: httpx.BaseTransport | None = transport
+        if backend in ("ddg", "serpapi"):
+            try:
+                backend_ips = is_safe_host(endpoint)
+            except WebFetchUnsafeHostError as exc:
+                logger.warning(
+                    "web_search.unsafe_backend",
+                    backend=backend,
+                    endpoint=endpoint,
+                    reason=str(exc),
+                )
+                return json.dumps(
+                    {
+                        "query": query,
+                        "backend": backend,
+                        "results": [],
+                        "error": f"search_unavailable: unsafe_backend: {exc}",
+                    }
+                )
+            backend_transport = pin_transport(
+                transport, host=backend_host, pinned_ip=backend_ips[0]
+            )
+        async with make_client(
+            transport=backend_transport, follow_redirects=True
+        ) as client:
             if backend == "serpapi":
                 results = await _search_serpapi(query, max_results, client)
             elif backend == "ddg":

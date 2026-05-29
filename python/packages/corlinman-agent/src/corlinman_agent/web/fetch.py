@@ -34,12 +34,14 @@ import structlog
 from corlinman_agent.web._common import (
     WebArgsInvalidError,
     WebFetchUnsafeHostError,
+    _url_host,
     decode_args,
     extract_title,
     html_to_text,
     is_safe_host,
     looks_like_html,
     make_client,
+    pin_transport,
 )
 
 logger = structlog.get_logger(__name__)
@@ -153,24 +155,42 @@ async def dispatch_web_fetch(
     # SSRF guard: refuse to dial private / loopback / link-local /
     # multicast / metadata addresses BEFORE we open the client. This
     # catches both literal-IP URLs (http://10.0.0.1) and hostnames whose
-    # DNS resolves to internal addresses. We re-check on every redirect
-    # below so a public site that 302s to http://169.254.169.254 cannot
-    # smuggle credentials out of the cloud metadata service.
+    # DNS resolves to internal addresses. The guard returns the validated
+    # IP(s); we PIN the connection to one of them so the socket cannot be
+    # re-resolved to a different (internal) address between the check and
+    # the connect (DNS-rebind TOCTOU, SEC-012). We re-validate AND re-pin
+    # on every redirect hop below so a public site that 302s to
+    # http://169.254.169.254 cannot smuggle credentials out of the cloud
+    # metadata service.
     try:
-        is_safe_host(url)
+        validated_ips = is_safe_host(url)
     except WebFetchUnsafeHostError as exc:
         logger.warning("web_fetch.unsafe_host", url=url, reason=str(exc))
         return json.dumps({"url": url, "error": f"unsafe_host: {exc}"})
 
     try:
-        async with make_client(transport=transport, follow_redirects=False) as client:
-            current_url = url
-            redirects = 0
-            while True:
+        current_url = url
+        pinned_ip = validated_ips[0]
+        redirects = 0
+        while True:
+            host = _url_host(current_url) or ""
+            # One pinned client per hop: the socket dials the validated IP
+            # for this hop's host while Host header + TLS SNI stay the
+            # hostname (HTTPS cert validation + vhost routing preserved).
+            hop_transport = pin_transport(
+                transport, host=host, pinned_ip=pinned_ip
+            )
+            async with make_client(
+                transport=hop_transport, follow_redirects=False
+            ) as client:
                 async with client.stream("GET", current_url) as response:
-                    final_url = str(response.url)
+                    # Report the LOGICAL url for this hop, not ``response.url``
+                    # — the pin rewrites the request's URL host to the dialed
+                    # IP, so ``response.url`` would leak the pinned IP into the
+                    # envelope instead of the hostname the caller requested.
+                    final_url = current_url
                     status = response.status_code
-                    # Manual redirect handling — re-validate each hop.
+                    # Manual redirect handling — re-validate + re-pin each hop.
                     if status in (301, 302, 303, 307, 308):
                         location = response.headers.get("location")
                         if not location:
@@ -204,7 +224,7 @@ async def dispatch_web_fetch(
                                 }
                             )
                         try:
-                            is_safe_host(next_url)
+                            next_ips = is_safe_host(next_url)
                         except WebFetchUnsafeHostError as exc:
                             logger.warning(
                                 "web_fetch.unsafe_redirect",
@@ -222,6 +242,7 @@ async def dispatch_web_fetch(
                             )
                         redirects += 1
                         current_url = next_url
+                        pinned_ip = next_ips[0]
                         continue
                     content_type = response.headers.get("content-type")
                     # Stream the body so an oversized response is bounded.

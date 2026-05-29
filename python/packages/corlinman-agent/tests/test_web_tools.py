@@ -52,6 +52,11 @@ def _fake_dns_for_test_hosts(monkeypatch: pytest.MonkeyPatch) -> None:
             host.endswith(".example.com")
             or host.endswith(".example")
             or host == "example.com"
+            # Search backends are validated + pinned now; map them to the
+            # public test ip so the guard passes and the request reaches the
+            # MockTransport (keeps the suite hermetic — no real DNS).
+            or host == "html.duckduckgo.com"
+            or host == "serpapi.com"
         ):
             return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (_PUBLIC_TEST_IP, 0))]
         return real(host, *args, **kw)
@@ -267,7 +272,9 @@ def test_web_search_parses_ddg_results(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("CORLINMAN_WEB_SEARCH_API_KEY", raising=False)
 
     def handler(request: httpx.Request) -> httpx.Response:
-        assert "duckduckgo.com" in str(request.url)
+        # Backend is pinned to the validated IP, so the original host now
+        # lives in the Host header (the URL host is the dialed IP).
+        assert "duckduckgo.com" in request.headers.get("host", "")
         return httpx.Response(200, text=_DDG_HTML)
 
     out = json.loads(
@@ -361,7 +368,9 @@ def test_web_search_serpapi_backend(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("CORLINMAN_WEB_SEARCH_BACKEND", raising=False)
 
     def handler(request: httpx.Request) -> httpx.Response:
-        assert "serpapi.com" in str(request.url)
+        # Backend pinned: host moves to the Host header, the api_key stays
+        # in the (preserved) query string.
+        assert "serpapi.com" in request.headers.get("host", "")
         assert "secret-key" in str(request.url)
         return httpx.Response(
             200,
@@ -551,11 +560,14 @@ def test_web_fetch_rejects_hostname_that_resolves_to_private_ip(
 def test_web_fetch_rejects_redirect_to_internal_host() -> None:
     """A public site that 302s to an internal address must be refused at
     the redirect stage; the guard re-validates every hop."""
-    visited: list[str] = []
+    # Now that the connection is pinned to the validated IP (SEC-012),
+    # the transport sees the dialed IP as the URL host and the original
+    # hostname in the Host header — branch on the (stable) request path.
+    visited_hosts: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        visited.append(str(request.url))
-        if "public" in str(request.url):
+        visited_hosts.append(request.headers.get("host", ""))
+        if request.url.path == "/start":
             return httpx.Response(
                 302, headers={"location": "http://127.0.0.1/secret"}
             )
@@ -571,9 +583,10 @@ def test_web_fetch_rejects_redirect_to_internal_host() -> None:
     )
     assert out["error"].startswith("unsafe_redirect:"), out
     # We only ever dialed the first (public) URL. The 127.0.0.1 leg was
-    # blocked before any socket was opened.
-    assert len(visited) == 1
-    assert "public" in visited[0]
+    # blocked before any socket was opened. The Host header carried the
+    # original public hostname (pinning preserves it).
+    assert len(visited_hosts) == 1
+    assert visited_hosts[0] == "public.example.com"
 
 
 def test_web_fetch_follows_safe_redirect_chain() -> None:
@@ -598,6 +611,8 @@ def test_web_fetch_follows_safe_redirect_chain() -> None:
     )
     assert out["status"] == 200
     assert out["text"] == "ok-body"
+    # final_url must report the LOGICAL hostname URL, not the pinned IP.
+    assert out["final_url"] == "https://example.com/final"
 
 
 def test_web_fetch_refuses_too_many_redirects() -> None:
@@ -680,3 +695,280 @@ def test_web_search_drops_unsafe_result_urls(
     urls = [r["url"] for r in out["results"]]
     assert "https://safe.example.com/page" in urls
     assert all("10.0.0.7" not in u and "169.254" not in u for u in urls), urls
+
+
+# ---------------------------------------------------------------------------
+# SEC-012 — DNS-rebind TOCTOU on web_fetch / web_search
+# ---------------------------------------------------------------------------
+#
+# The guard resolves the host and classifies the IPs, but the *connection*
+# then re-resolves the hostname independently. A rebinding attacker answers
+# the guard's lookup with a public IP and the connect's lookup with an
+# internal IP. The fix is to pin the validated IP for the actual socket so
+# no second, unvalidated resolution happens.
+
+
+def _rebinding_getaddrinfo_factory(host: str, public_ip: str, internal_ip: str):
+    """Build a ``getaddrinfo`` stub that answers ``host`` with ``public_ip``
+    on its FIRST lookup (the guard) and ``internal_ip`` on every lookup
+    thereafter (the connect's re-resolution) — the classic DNS-rebind
+    race. All other hosts fall through to the real resolver."""
+    real = socket.getaddrinfo
+    state = {"calls": 0}
+
+    def _fake(h: str, *args, **kw):  # type: ignore[no-untyped-def]
+        if h == host:
+            state["calls"] += 1
+            ip = public_ip if state["calls"] == 1 else internal_ip
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 0))]
+        return real(h, *args, **kw)
+
+    return _fake, state
+
+
+def _resolving_transport(
+    connected_to: list[str],
+    body: str = "REACHED",
+) -> httpx.MockTransport:
+    """A transport that faithfully models real httpx: if the request URL
+    still carries a *hostname* (the guard did not pin an IP) it re-resolves
+    that hostname via ``socket.getaddrinfo`` and records the IP it would
+    open a socket to. If the URL already carries an IP literal (pinned),
+    it records that IP verbatim — no second resolution."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        host = request.url.host
+        try:
+            import ipaddress as _ip
+
+            _ip.ip_address(host)
+            connected_to.append(host)  # already an IP literal — pinned
+        except ValueError:
+            # Hostname survived to the transport → independent re-resolution.
+            infos = socket.getaddrinfo(host, None)
+            connected_to.append(infos[0][4][0])
+        return httpx.Response(
+            200, text=body, headers={"content-type": "text/plain"}
+        )
+
+    return httpx.MockTransport(handler)
+
+
+def test_web_fetch_pins_validated_ip_against_dns_rebind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SEC-012: the guard validates a PUBLIC ip, then a rebinding resolver
+    flips ``rebind.test`` to 127.0.0.1 for the connect. The connection MUST
+    reach the validated public ip (pinned) — never the internal one."""
+    public_ip = _PUBLIC_TEST_IP
+    internal_ip = "127.0.0.1"
+    fake, state = _rebinding_getaddrinfo_factory(
+        "rebind.test", public_ip, internal_ip
+    )
+
+    from corlinman_agent.web import _common as wc
+
+    monkeypatch.setattr(wc.socket, "getaddrinfo", fake)
+
+    connected_to: list[str] = []
+    out = json.loads(
+        asyncio.run(
+            dispatch_web_fetch(
+                args_json=json.dumps({"url": "http://rebind.test/page"}),
+                transport=_resolving_transport(connected_to),
+            )
+        )
+    )
+
+    # The body must come back from the validated public ip, and the socket
+    # must have been opened to that exact ip — not the rebound internal one.
+    assert connected_to == [public_ip], (
+        f"TOCTOU: connection reached {connected_to!r}, "
+        f"expected pin to {public_ip!r}"
+    )
+    assert out["status"] == 200
+    assert out["text"] == "REACHED"
+
+
+def test_web_fetch_pins_validated_ip_on_each_redirect_hop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SEC-012: re-validation + re-pin must apply on every redirect hop, not
+    just the initial request. A public redirect target that rebinds to an
+    internal ip on its second lookup must still be pinned to the validated
+    public ip."""
+    public_ip = _PUBLIC_TEST_IP
+    internal_ip = "169.254.169.254"
+    fake, state = _rebinding_getaddrinfo_factory(
+        "hop2.test", public_ip, internal_ip
+    )
+
+    from corlinman_agent.web import _common as wc
+
+    monkeypatch.setattr(wc.socket, "getaddrinfo", fake)
+
+    connected_to: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        host = request.url.host
+        import ipaddress as _ip
+
+        try:
+            _ip.ip_address(host)
+            connected_to.append(host)
+        except ValueError:
+            connected_to.append(socket.getaddrinfo(host, None)[0][4][0])
+        if path == "/start":
+            return httpx.Response(
+                302, headers={"location": "http://hop2.test/final"}
+            )
+        return httpx.Response(
+            200, text="HOP-OK", headers={"content-type": "text/plain"}
+        )
+
+    # First hop is a normal public host (the autouse fixture maps
+    # *.example.com to the public test ip); the redirect target rebinds.
+    out = json.loads(
+        asyncio.run(
+            dispatch_web_fetch(
+                args_json=json.dumps({"url": "http://start.example.com/start"}),
+                transport=httpx.MockTransport(handler),
+            )
+        )
+    )
+
+    assert out["status"] == 200
+    assert out["text"] == "HOP-OK"
+    # The redirect hop must have landed on the validated public ip, never
+    # the rebound metadata endpoint.
+    assert internal_ip not in connected_to, (
+        f"TOCTOU on redirect hop: reached {connected_to!r}"
+    )
+    assert connected_to[-1] == public_ip, connected_to
+
+
+def test_web_fetch_pinned_request_preserves_host_and_sni(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The pin must keep TLS SNI + the Host header bound to the original
+    hostname so HTTPS cert validation and virtual-host routing still work
+    — only the dialed IP changes."""
+    from corlinman_agent.web import _common as wc
+
+    def fake(host: str, *args, **kw):  # type: ignore[no-untyped-def]
+        if host == "secure.test":
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (_PUBLIC_TEST_IP, 0))]
+        return socket.getaddrinfo(host, *args, **kw)
+
+    monkeypatch.setattr(wc.socket, "getaddrinfo", fake)
+
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["host_header"] = request.headers.get("host")
+        seen["sni"] = request.extensions.get("sni_hostname")
+        seen["url_host"] = request.url.host
+        return httpx.Response(
+            200, text="ok", headers={"content-type": "text/plain"}
+        )
+
+    out = json.loads(
+        asyncio.run(
+            dispatch_web_fetch(
+                args_json=json.dumps({"url": "https://secure.test/x"}),
+                transport=httpx.MockTransport(handler),
+            )
+        )
+    )
+    assert out["status"] == 200
+    # Socket dials the validated ip; Host + SNI stay the original hostname.
+    assert seen["url_host"] == _PUBLIC_TEST_IP
+    assert seen["host_header"] == "secure.test"
+    assert seen["sni"] == "secure.test"
+
+
+def test_web_fetch_pins_ipv6_validated_address(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """IPv6 must not break: a host that resolves to a public IPv6 address is
+    pinned to that bracketed literal, with Host + SNI kept as the hostname."""
+    public_v6 = "2606:2800:220:1:248:1893:25c8:1946"  # example.com, public
+    from corlinman_agent.web import _common as wc
+
+    def fake(host: str, *args, **kw):  # type: ignore[no-untyped-def]
+        if host == "v6.test":
+            return [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", (public_v6, 0, 0, 0))]
+        return socket.getaddrinfo(host, *args, **kw)
+
+    monkeypatch.setattr(wc.socket, "getaddrinfo", fake)
+
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url_host"] = request.url.host
+        seen["host_header"] = request.headers.get("host")
+        seen["sni"] = request.extensions.get("sni_hostname")
+        return httpx.Response(
+            200, text="v6-ok", headers={"content-type": "text/plain"}
+        )
+
+    out = json.loads(
+        asyncio.run(
+            dispatch_web_fetch(
+                args_json=json.dumps({"url": "https://v6.test/x"}),
+                transport=httpx.MockTransport(handler),
+            )
+        )
+    )
+    assert out["status"] == 200
+    assert seen["url_host"] == public_v6
+    # Host header brackets the v6 literal would be wrong — it must carry the
+    # hostname; SNI likewise.
+    assert seen["host_header"] == "v6.test"
+    assert seen["sni"] == "v6.test"
+
+
+def test_web_search_pins_validated_backend_ip_against_rebind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SEC-012: the DDG backend host is validated to a PUBLIC ip; a rebind
+    that flips it to an internal ip on the connect's re-resolution must not
+    win — the backend request is pinned to the validated public ip."""
+    monkeypatch.setenv("CORLINMAN_WEB_SEARCH_BACKEND", "ddg")
+    monkeypatch.delenv("CORLINMAN_WEB_SEARCH_API_KEY", raising=False)
+
+    public_ip = _PUBLIC_TEST_IP
+    internal_ip = "127.0.0.1"
+    fake, _state = _rebinding_getaddrinfo_factory(
+        "html.duckduckgo.com", public_ip, internal_ip
+    )
+    from corlinman_agent.web import _common as wc
+
+    monkeypatch.setattr(wc.socket, "getaddrinfo", fake)
+
+    connected_to: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        host = request.url.host
+        import ipaddress as _ip
+
+        try:
+            _ip.ip_address(host)
+            connected_to.append(host)
+        except ValueError:
+            connected_to.append(socket.getaddrinfo(host, None)[0][4][0])
+        # Backend host preserved in the Host header.
+        assert "duckduckgo.com" in request.headers.get("host", "")
+        return httpx.Response(200, text=_DDG_HTML)
+
+    out = json.loads(
+        asyncio.run(
+            dispatch_web_search(
+                args_json=json.dumps({"query": "x"}),
+                transport=httpx.MockTransport(handler),
+            )
+        )
+    )
+    assert connected_to == [public_ip], connected_to
+    assert len(out["results"]) == 2
