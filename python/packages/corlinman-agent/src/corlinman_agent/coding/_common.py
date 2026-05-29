@@ -101,7 +101,7 @@ def resolve_workspace(explicit: str | os.PathLike[str] | None = None) -> Path:
 
 def resolve_in_workspace(
     workspace: Path,
-    rel: str,
+    rel: object,
     *,
     for_write: bool = False,
 ) -> Path:

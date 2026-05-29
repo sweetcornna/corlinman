@@ -364,7 +364,7 @@ class DispatchContext:
     emitter: EventEmitter | None = None
 
 
-async def dispatch_with_observability[T](
+async def dispatch_with_observability(
     ctx: DispatchContext,
     *,
     tool_call_id: str,

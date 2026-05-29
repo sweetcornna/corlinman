@@ -20,11 +20,11 @@ import asyncio
 import contextlib
 import json
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlparse
 
 import websockets
-from websockets.asyncio.server import ServerConnection
+from websockets.asyncio.server import Server, ServerConnection
 from websockets.datastructures import Headers
 from websockets.exceptions import ConnectionClosed
 from websockets.http11 import Response
@@ -99,7 +99,7 @@ class WsToolServer:
 
     def __init__(self, cfg: WsToolConfig, hook_bus: HookBus | None = None) -> None:
         self.state = ServerState(cfg, hook_bus)
-        self._server: websockets.server.Server | None = None
+        self._server: Server | None = None
         self._bound_host: str | None = None
         self._bound_port: int | None = None
 
@@ -459,8 +459,9 @@ async def invoke_once(
     cancel_task = asyncio.create_task(_wait_cancel())
     try:
         try:
+            wait_set: set[asyncio.Future[Any]] = {waiter, cancel_task}
             done, _pending = await asyncio.wait(
-                {waiter, cancel_task},
+                wait_set,
                 timeout=timeout_s,
                 return_when=asyncio.FIRST_COMPLETED,
             )

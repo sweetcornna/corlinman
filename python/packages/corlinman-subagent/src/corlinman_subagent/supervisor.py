@@ -460,7 +460,12 @@ class Supervisor:
 
         if self._hook_bus is not None:
             from corlinman_hooks import HookEvent  # noqa: PLC0415
+            from corlinman_hooks.event import _HookEventBase  # noqa: PLC0415
 
+            # The two branches build distinct variant dataclasses that share
+            # only the ``_HookEventBase`` supertype; annotate so mypy unifies
+            # them instead of pinning ``event`` to the first branch's type.
+            event: _HookEventBase
             if result.finish_reason is FinishReason.TIMEOUT:
                 event = HookEvent.SubagentTimedOut(
                     parent_session_key=parent_ctx.parent_session_key,

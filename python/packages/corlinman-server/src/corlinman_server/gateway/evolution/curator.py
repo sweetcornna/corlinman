@@ -29,6 +29,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import structlog
 from corlinman_evolution_store import (
@@ -209,7 +210,7 @@ def _classify_transition(
     return None
 
 
-def _split_body(source_path) -> str:
+def _split_body(source_path: Path) -> str:
     """Re-read the SKILL.md body so the round-trip write doesn't lose
     handcrafted Markdown when the curator only meant to flip a state
     flag.

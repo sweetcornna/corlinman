@@ -291,7 +291,10 @@ async def _sse_iter(
     backlog = await store.pending()
     for rec in backlog:
         seen_pending.add(rec.call_id)
-        payload = {"kind": "pending", "approval": _record_to_out(rec).model_dump()}
+        payload: dict[str, Any] = {
+            "kind": "pending",
+            "approval": _record_to_out(rec).model_dump(),
+        }
         yield _sse_frame(payload)
 
     while True:

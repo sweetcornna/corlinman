@@ -185,7 +185,9 @@ async def run_uvicorn(server: GatewayServer) -> ShutdownReason:
     # gateway exits cleanly on SIGTERM. uvicorn's own signal handler
     # interferes with the asyncio one we use, so we suppress it via
     # the install_signal_handlers flag and drive shutdown manually.
-    uv.install_signal_handlers = lambda *_a, **_kw: None  # type: ignore[assignment]
+    # Older uvicorn exposed ``install_signal_handlers`` as an instance hook;
+    # we stub it out so uvicorn doesn't fight the asyncio signal handler.
+    uv.install_signal_handlers = lambda *_a, **_kw: None  # type: ignore[attr-defined]  # uvicorn lacks this in its types
 
     serve_task = asyncio.create_task(uv.serve(), name="gateway.uvicorn.serve")
     signal_task = asyncio.create_task(wait_for_signal(), name="gateway.shutdown.signal")

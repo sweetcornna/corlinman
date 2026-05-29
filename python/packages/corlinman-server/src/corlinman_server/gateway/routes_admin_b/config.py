@@ -24,7 +24,7 @@ State requirements:
 from __future__ import annotations
 
 import hashlib
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
@@ -81,7 +81,8 @@ def _toml_dumps(cfg: dict[str, Any]) -> str:
         return tomli_w.dumps(cfg)
     except ImportError:  # pragma: no cover
         import toml  # type: ignore  # noqa: PLC0415
-        return toml.dumps(cfg)
+        # ``toml`` ships no type stubs; its return is dynamically typed.
+        return cast("str", toml.dumps(cfg))
 
 
 def _toml_loads(text: str) -> dict[str, Any]:
@@ -90,7 +91,8 @@ def _toml_loads(text: str) -> dict[str, Any]:
         return tomllib.loads(text)
     except ImportError:  # pragma: no cover — py<3.11
         import toml  # type: ignore  # noqa: PLC0415
-        return toml.loads(text)
+        # ``toml`` ships no type stubs; its return is dynamically typed.
+        return cast("dict[str, Any]", toml.loads(text))
 
 
 def _hash8(text: str) -> str:
@@ -103,7 +105,7 @@ def _redact(cfg: Any) -> Any:
     only ``api_key.value`` / ``admin.password_hash`` style fields are
     redacted; ``api_key.env`` references stay readable."""
     if isinstance(cfg, dict):
-        out = {}
+        out: dict[str, Any] = {}
         for k, v in cfg.items():
             if k == "api_key" and isinstance(v, dict) and "value" in v:
                 out[k] = {**v, "value": REDACTED_SENTINEL}

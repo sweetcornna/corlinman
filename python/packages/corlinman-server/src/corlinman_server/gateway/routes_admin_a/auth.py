@@ -19,7 +19,7 @@ import datetime as _dt
 import re
 import threading
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
@@ -183,7 +183,7 @@ def _ensure_session_store(state: AdminState) -> AdminSessionStore:
         # Bootstrapper handed us a foreign session-store impl. Trust
         # it — the test harness may swap in a mock. Caller is on the
         # hook for the API shape.
-        return store  # type: ignore[return-value]
+        return cast("AdminSessionStore", store)
     return store
 
 

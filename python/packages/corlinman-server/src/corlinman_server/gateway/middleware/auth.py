@@ -38,7 +38,11 @@ from typing import Any
 
 import structlog
 from fastapi import Depends, HTTPException, Request, status
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.base import (
+    BaseHTTPMiddleware,
+    RequestResponseEndpoint,
+)
+from starlette.requests import HTTPConnection
 from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp
 
@@ -74,13 +78,16 @@ class ApiKeyAuthState:
 # ---------------------------------------------------------------------------
 
 
-def extract_bearer_token(request: Request) -> str | None:
+def extract_bearer_token(request: HTTPConnection) -> str | None:
     """Pull the bearer token out of ``Authorization`` / ``X-API-Key``.
 
     Order: ``Authorization: Bearer <token>`` first (mirrors the Rust
     precedence + the rest of the Python codebase), then ``X-API-Key``
     as a curl / SDK fallback. Returns ``None`` if neither header carries
     a usable token.
+
+    Accepts any :class:`~starlette.requests.HTTPConnection` (both
+    :class:`Request` and :class:`WebSocket`) since it only reads headers.
     """
 
     auth = request.headers.get("authorization")
@@ -162,7 +169,7 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(
         self,
         request: Request,
-        call_next: Any,
+        call_next: RequestResponseEndpoint,
     ) -> Response:
         # Re-resolve so boot can rebind the state after install.
         state = _resolve_state(request) or self._state

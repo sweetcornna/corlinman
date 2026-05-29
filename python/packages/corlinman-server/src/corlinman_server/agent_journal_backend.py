@@ -32,7 +32,7 @@ import time
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
 
 import aiosqlite
 import structlog
@@ -2210,14 +2210,18 @@ async def open_backend_from_env(
                 f"{ENV_BACKEND}=postgres requires {ENV_POSTGRES_DSN} to be set"
             )
         postgres_cls = _load_postgres_backend_cls()
-        return await postgres_cls.open(dsn)
+        # Loaded dynamically (``type[Any]``); the postgres backend
+        # implements the JournalBackend protocol.
+        return cast("JournalBackend", await postgres_cls.open(dsn))
     if kind == "redis":
         url = e.get(ENV_REDIS_URL, "").strip()
         if not url:
             raise RuntimeError(
                 f"{ENV_BACKEND}=redis requires {ENV_REDIS_URL} to be set"
             )
-        return await RedisJournalBackend.open(url)
+        # Stub: ``open`` raises NotImplementedError, so this return is a
+        # dead path; cast to satisfy the protocol return type.
+        return cast("JournalBackend", await RedisJournalBackend.open(url))
     raise RuntimeError(
         f"unknown {ENV_BACKEND}={kind!r}; expected one of: sqlite, postgres, redis"
     )

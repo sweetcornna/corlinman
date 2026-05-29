@@ -461,7 +461,7 @@ def _attachment_to_proto(a: ApiAttachment) -> agent_pb2.Attachment:
     )
 
 
-def _role_to_proto(role: ApiRole) -> common_pb2.Role.ValueType:
+def _role_to_proto(role: ApiRole) -> common_pb2.Role:
     if role == ApiRole.USER:
         return common_pb2.USER
     if role == ApiRole.ASSISTANT:

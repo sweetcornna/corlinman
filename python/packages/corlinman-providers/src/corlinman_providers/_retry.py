@@ -126,8 +126,10 @@ def _compute_delay(
     """
     if override > 0:
         return min(override, max_delay)
-    backoff = base_delay * (2 ** (attempt - 1))
-    backoff = min(backoff, max_delay)
+    # ``2 ** (attempt - 1)`` with a non-literal int exponent widens to Any
+    # (mypy's int.__pow__ overload accounts for negative exponents); coerce
+    # back to float so the function's declared return type holds.
+    backoff = min(base_delay * float(2 ** (attempt - 1)), max_delay)
     return random.random() * backoff
 
 

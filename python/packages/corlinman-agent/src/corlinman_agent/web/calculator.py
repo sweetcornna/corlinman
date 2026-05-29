@@ -21,6 +21,7 @@ from __future__ import annotations
 import ast
 import json
 import operator
+from collections.abc import Callable
 from typing import Any
 
 import structlog
@@ -33,7 +34,7 @@ logger = structlog.get_logger(__name__)
 CALCULATOR_TOOL: str = "calculator"
 
 #: Allowed binary operators → their implementation.
-_BIN_OPS = {
+_BIN_OPS: dict[type[ast.operator], Callable[..., Any]] = {
     ast.Add: operator.add,
     ast.Sub: operator.sub,
     ast.Mult: operator.mul,
@@ -44,7 +45,7 @@ _BIN_OPS = {
 }
 
 #: Allowed unary operators.
-_UNARY_OPS = {
+_UNARY_OPS: dict[type[ast.unaryop], Callable[..., Any]] = {
     ast.UAdd: operator.pos,
     ast.USub: operator.neg,
 }
@@ -131,7 +132,15 @@ def _evaluate(expression: str) -> int | float:
         tree = ast.parse(expression, mode="eval")
     except SyntaxError as exc:
         raise _UnsafeExpressionError(f"syntax error: {exc.msg}") from exc
-    return _eval_node(tree)
+    result = _eval_node(tree)
+    # _eval_node returns Any (it walks dynamic AST values), but the
+    # allowlist guarantees only numeric literals + arithmetic operators
+    # reach here, so the result is always an int or float.
+    if not isinstance(result, (int, float)):
+        raise _UnsafeExpressionError(
+            f"non-numeric result {type(result).__name__}"
+        )
+    return result
 
 
 def dispatch_calculator(*, args_json: bytes | str) -> str:

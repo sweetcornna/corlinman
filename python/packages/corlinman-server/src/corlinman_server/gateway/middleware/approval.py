@@ -55,7 +55,10 @@ from corlinman_providers.plugins.approval import (
     ApprovalStore,
 )
 from fastapi import Depends, HTTPException, Request, status
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.base import (
+    BaseHTTPMiddleware,
+    RequestResponseEndpoint,
+)
 from starlette.responses import Response
 from starlette.types import ASGIApp
 
@@ -469,7 +472,7 @@ class ApprovalMiddleware(BaseHTTPMiddleware):
     async def dispatch(
         self,
         request: Request,
-        call_next: Any,
+        call_next: RequestResponseEndpoint,
     ) -> Response:
         state = (
             getattr(request.app.state, "approval", None)

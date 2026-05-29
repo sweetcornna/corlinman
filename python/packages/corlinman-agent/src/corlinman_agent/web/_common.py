@@ -165,7 +165,7 @@ def looks_like_html(content_type: str | None, body: str) -> bool:
 
 def make_client(
     *,
-    transport: httpx.BaseTransport | None = None,
+    transport: httpx.AsyncBaseTransport | None = None,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
     follow_redirects: bool = False,
 ) -> httpx.AsyncClient:
@@ -340,7 +340,10 @@ def is_safe_host(url: str) -> list[str]:
         sockaddr = info[4]
         if not sockaddr:
             continue
-        ip_str = sockaddr[0]
+        # sockaddr[0] is the address string for both AF_INET
+        # (str, int) and AF_INET6 (str, int, int, int) tuples; the
+        # stub types it as ``str | int`` so narrow before use.
+        ip_str = str(sockaddr[0])
         # Strip IPv6 zone-id suffix if present.
         ip_str = ip_str.split("%", 1)[0]
         if ip_str in seen:

@@ -2272,12 +2272,12 @@ def build_app(
 
             # W1.1 teardown: release the httpx client held by the
             # update checker. Safe when none was wired.
-            update_checker = getattr(
+            update_checker_handle = getattr(
                 app.state, "corlinman_update_checker", None
             )
-            if update_checker is not None:
+            if update_checker_handle is not None:
                 try:
-                    await update_checker.aclose()
+                    await update_checker_handle.aclose()
                 except Exception as exc:  # pragma: no cover — defensive
                     logger.warning(
                         "gateway.system.update_checker_close_failed",
@@ -2288,12 +2288,12 @@ def build_app(
             # W1.3 (skill hub) teardown: release the httpx client + any
             # TTL cache file handles held by the ClawHubClient. Safe when
             # none was wired (a degraded boot or W1.1 not landed yet).
-            clawhub_client = getattr(
+            clawhub_client_handle = getattr(
                 app.state, "corlinman_clawhub_client", None
             )
-            if clawhub_client is not None:
+            if clawhub_client_handle is not None:
                 try:
-                    await clawhub_client.aclose()
+                    await clawhub_client_handle.aclose()
                 except Exception as exc:  # pragma: no cover — defensive
                     logger.warning(
                         "gateway.skill_hub.client_close_failed",
@@ -2464,9 +2464,10 @@ def build_app(
                 from starlette.exceptions import (
                     HTTPException as StarletteHTTPException,
                 )
+                from starlette.types import Scope
 
                 class _NextStaticFiles(StaticFiles):
-                    async def get_response(self, path: str, scope: dict[str, object]):
+                    async def get_response(self, path: str, scope: Scope):
                         leaf = path.rsplit("/", 1)[-1]
                         if path and not path.endswith("/") and "." not in leaf:
                             try:

@@ -180,8 +180,9 @@ def load_server_specs(config: Any) -> list[McpServerSpec]:
         return []
 
     specs: list[McpServerSpec] = []
+    items: list[tuple[Any, Any]]
     if isinstance(raw, dict):
-        items = raw.items()
+        items = list(raw.items())
     elif isinstance(raw, (list, tuple)):
         items = []
         for entry in raw:

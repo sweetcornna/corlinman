@@ -536,7 +536,10 @@ async def _upload_one_image(
     result = _parse_upload_response(raw)
     if not result.get("ok"):
         raise QZoneError(str(result.get("error", "unknown upload error")))
-    return result["pic"]
+    pic = result["pic"]
+    # _parse_upload_response sets "pic" to a dict on the ok path, but the
+    # value is typed Any (parsed from untyped JSON) — narrow before return.
+    return pic if isinstance(pic, dict) else {}
 
 
 async def _qzone_publish_post(

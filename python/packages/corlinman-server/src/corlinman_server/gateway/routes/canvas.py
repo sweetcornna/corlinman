@@ -163,10 +163,10 @@ class CanvasState:
                         if sess.expires_at_ms <= now:
                             expired.append(sid)
                     for sid in expired:
-                        sess = self._sessions.pop(sid, None)
-                        if sess is None:
+                        popped = self._sessions.pop(sid, None)
+                        if popped is None:
                             continue
-                        for q in sess.subscribers:
+                        for q in popped.subscribers:
                             try:
                                 q.put_nowait(None)
                             except asyncio.QueueFull:  # pragma: no cover — unbounded queue
@@ -285,7 +285,7 @@ def router(state: CanvasState) -> APIRouter:
                 )
             except ImportError:
                 CanvasError = Exception  # type: ignore[assignment, misc]
-                CanvasPresentPayload = None  # type: ignore[assignment]
+                CanvasPresentPayload = None  # type: ignore[assignment, misc]
 
             if CanvasPresentPayload is not None and isinstance(payload, dict):
                 try:

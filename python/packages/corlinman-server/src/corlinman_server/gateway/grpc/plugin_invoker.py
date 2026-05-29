@@ -45,7 +45,7 @@ import contextlib
 import json
 import os
 import time
-from typing import Any
+from typing import Any, cast
 
 import structlog
 from corlinman_grpc.agent_client import ToolInvocation
@@ -465,9 +465,13 @@ def _error_reason_label(error: Any) -> str:
     if reason is None:
         return ""
     try:
-        return error.DESCRIPTOR.fields_by_name["reason"].enum_type.values_by_number[
-            int(reason)
-        ].name
+        # protobuf descriptor reflection is dynamically typed.
+        return cast(
+            "str",
+            error.DESCRIPTOR.fields_by_name["reason"]
+            .enum_type.values_by_number[int(reason)]
+            .name,
+        )
     except Exception:
         return str(reason)
 

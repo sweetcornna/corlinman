@@ -334,9 +334,12 @@ async def _sweep_expired_phrases(self: SqliteIdentityStore) -> int:
 # Bind onto SqliteIdentityStore
 # ---------------------------------------------------------------------------
 
-SqliteIdentityStore.issue_phrase = _issue_phrase  # type: ignore[attr-defined]
-SqliteIdentityStore.redeem_phrase = _redeem_phrase  # type: ignore[attr-defined]
-SqliteIdentityStore.sweep_expired_phrases = _sweep_expired_phrases  # type: ignore[attr-defined]
+# ``method-assign``: the methods are declared on the class under
+# ``TYPE_CHECKING`` (see ``store.py``); binding the real impls here is the
+# intentional runtime half of that dynamic boundary.
+SqliteIdentityStore.issue_phrase = _issue_phrase  # type: ignore[method-assign]
+SqliteIdentityStore.redeem_phrase = _redeem_phrase  # type: ignore[method-assign]
+SqliteIdentityStore.sweep_expired_phrases = _sweep_expired_phrases  # type: ignore[method-assign]
 
 
 __all__ = [

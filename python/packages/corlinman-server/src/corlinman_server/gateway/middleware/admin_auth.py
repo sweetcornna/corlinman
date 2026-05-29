@@ -35,12 +35,16 @@ sibling) returns, packaged into an :class:`AdminPrincipal`.
 from __future__ import annotations
 
 import base64
+import binascii
 from dataclasses import dataclass, field
 from typing import Any
 
 import structlog
 from fastapi import Depends, HTTPException, Request, status
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.base import (
+    BaseHTTPMiddleware,
+    RequestResponseEndpoint,
+)
 from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp
 
@@ -112,7 +116,7 @@ def parse_basic(header_value: str) -> tuple[str, str] | None:
     rest = header_value[6:].strip()
     try:
         decoded = base64.b64decode(rest, validate=True)
-    except (ValueError, base64.binascii.Error):
+    except (ValueError, binascii.Error):
         return None
     try:
         s = decoded.decode("utf-8")
@@ -336,7 +340,7 @@ class AdminAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(
         self,
         request: Request,
-        call_next: Any,
+        call_next: RequestResponseEndpoint,
     ) -> Response:
         state = _resolve_state(request) or self._state
 

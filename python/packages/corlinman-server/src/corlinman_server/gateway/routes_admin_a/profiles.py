@@ -32,7 +32,7 @@ from __future__ import annotations
 import datetime as _dt
 import os
 import tempfile
-from typing import Annotated
+from typing import Annotated, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, Field
@@ -155,7 +155,8 @@ def _profile_store(state: AdminState) -> ProfileStore:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={"error": "profile_store_missing"},
         )
-    return store
+    # AdminState holds the store as ``Any`` to avoid import coupling.
+    return cast("ProfileStore", store)
 
 
 # ---------------------------------------------------------------------------

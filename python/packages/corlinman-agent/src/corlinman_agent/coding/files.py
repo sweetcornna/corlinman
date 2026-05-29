@@ -493,8 +493,8 @@ def dispatch_edit_file(
                 updated = text[:start] + new + text[end:]
             tier = tier_name
             break
-        if updated is None:
-            return _err({"path": raw.get("path"), "error": "old_string_not_found"})
+    if updated is None:
+        return _err({"path": raw.get("path"), "error": "old_string_not_found"})
 
     try:
         # S3: open with O_NOFOLLOW. The earlier resolve_in_workspace

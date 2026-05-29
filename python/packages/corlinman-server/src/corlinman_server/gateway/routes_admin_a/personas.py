@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import inspect
 import re
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, cast
 
 from fastapi import (
     APIRouter,
@@ -178,7 +178,8 @@ def _persona_store(state: AdminState) -> PersonaStore:
                 "message": "gateway booted without a persona store",
             },
         )
-    return store
+    # AdminState holds the store as ``Any`` to avoid import coupling.
+    return cast("PersonaStore", store)
 
 
 def _asset_store(state: AdminState) -> PersonaAssetStore:
@@ -191,7 +192,8 @@ def _asset_store(state: AdminState) -> PersonaAssetStore:
                 "message": "gateway booted without a persona asset store",
             },
         )
-    return store
+    # AdminState holds the store as ``Any`` to avoid import coupling.
+    return cast("PersonaAssetStore", store)
 
 
 async def _require_persona(

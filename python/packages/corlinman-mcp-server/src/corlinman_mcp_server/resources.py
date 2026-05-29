@@ -15,7 +15,7 @@ URI scheme                                    Source             List  Read
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 import structlog
@@ -26,6 +26,7 @@ from .bridges import (
     MemoryQuery,
     NullPersonaProvider,
     PersonaSnapshotProvider,
+    SkillEntry,
     SkillRegistry,
 )
 from .errors import (
@@ -423,7 +424,7 @@ class ResourcesAdapter:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _iter_skills(self) -> Iterable:
+    def _iter_skills(self) -> Iterator[SkillEntry]:
         """Iterate the skill registry tolerantly. The registry can be
         any object exposing ``__iter__`` or an explicit ``iter()`` method
         (matching :class:`corlinman_skills_registry.SkillRegistry`)."""

@@ -320,7 +320,10 @@ def persist_codex_credential(
                 data = {}
         except (OSError, json.JSONDecodeError):
             data = {}
-        tokens = data.get("tokens") if isinstance(data.get("tokens"), dict) else {}
+        existing_tokens = data.get("tokens")
+        tokens: dict[str, Any] = (
+            existing_tokens if isinstance(existing_tokens, dict) else {}
+        )
         tokens["access_token"] = cred.access_token
         if cred.refresh_token:
             tokens["refresh_token"] = cred.refresh_token
@@ -349,7 +352,9 @@ def _extract_chatgpt_account_id(access_token: str) -> str | None:
             return None
         pad = parts[1] + "=" * (-len(parts[1]) % 4)
         claims = json.loads(base64.urlsafe_b64decode(pad))
-        return claims.get("https://api.openai.com/auth", {}).get("chatgpt_account_id")
+        auth = claims.get("https://api.openai.com/auth", {})
+        account_id = auth.get("chatgpt_account_id") if isinstance(auth, dict) else None
+        return account_id if isinstance(account_id, str) else None
     except Exception:  # noqa: BLE001
         return None
 

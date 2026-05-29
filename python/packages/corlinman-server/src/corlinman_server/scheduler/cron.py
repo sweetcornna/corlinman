@@ -159,7 +159,8 @@ def next_after(schedule: Schedule, now: datetime) -> datetime | None:
         # ``get_next(datetime)`` returns the next firing strictly after
         # the base time — matches the Rust ``Schedule::after(&now).next()``
         # contract (strictly-after, not at-or-after).
-        nxt = it.get_next(datetime)
+        # croniter ships no type stubs; ``get_next`` returns a datetime.
+        nxt: datetime = it.get_next(datetime)
     except (CroniterBadCronError, ValueError, StopIteration):
         # croniter raises on impossible schedules (e.g. day-of-month
         # 31 in a 30-day month combined with a month-only filter).

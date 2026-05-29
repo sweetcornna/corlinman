@@ -335,7 +335,8 @@ class DockerSandbox(DockerRunner):
             ) from err
 
         try:
-            client = await asyncio.to_thread(docker.from_env)
+            # docker SDK ships no type stubs; from_env is dynamically defined.
+            client = await asyncio.to_thread(docker.from_env)  # type: ignore[attr-defined]
             await asyncio.to_thread(client.ping)
         except Exception as err:
             raise SandboxRuntimeError(f"docker connect/ping: {err}") from err

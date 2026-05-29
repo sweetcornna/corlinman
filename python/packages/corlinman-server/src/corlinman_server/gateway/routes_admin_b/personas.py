@@ -27,7 +27,7 @@ exactly once per request.
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, cast
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -137,7 +137,8 @@ async def ensure_default_persona_active() -> str:
                 ),
             },
         )
-    return row.id
+    # ``store`` is resolved via getattr (typed ``Any``); the row's id is a str.
+    return cast("str", row.id)
 
 
 # ---------------------------------------------------------------------------

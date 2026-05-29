@@ -140,7 +140,8 @@ def _manifest_to_dict(manifest: Any) -> dict[str, Any]:
         return dict(manifest)
     if hasattr(manifest, "model_dump"):
         try:
-            return manifest.model_dump()
+            dumped: dict[str, Any] = manifest.model_dump()
+            return dumped
         except Exception:  # noqa: BLE001
             pass
     try:

@@ -531,11 +531,14 @@ async def _store_merge_users(
 # store module focused on lifecycle while the resolver module owns the
 # query surface — mirrors the Rust split between ``store.rs`` (the
 # handle) and ``resolver.rs`` (the trait impl).
-SqliteIdentityStore.resolve_or_create = _store_resolve_or_create  # type: ignore[attr-defined]
-SqliteIdentityStore.lookup = _store_lookup  # type: ignore[attr-defined]
-SqliteIdentityStore.aliases_for = _store_aliases_for  # type: ignore[attr-defined]
-SqliteIdentityStore.list_users = _store_list_users  # type: ignore[attr-defined]
-SqliteIdentityStore.merge_users = _store_merge_users  # type: ignore[attr-defined]
+# ``method-assign``: the methods are declared on the class under
+# ``TYPE_CHECKING`` (see ``store.py``); binding the real impls here is the
+# intentional runtime half of that dynamic boundary.
+SqliteIdentityStore.resolve_or_create = _store_resolve_or_create  # type: ignore[method-assign]
+SqliteIdentityStore.lookup = _store_lookup  # type: ignore[method-assign]
+SqliteIdentityStore.aliases_for = _store_aliases_for  # type: ignore[method-assign]
+SqliteIdentityStore.list_users = _store_list_users  # type: ignore[method-assign]
+SqliteIdentityStore.merge_users = _store_merge_users  # type: ignore[method-assign]
 
 
 __all__ = [

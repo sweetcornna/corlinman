@@ -531,7 +531,7 @@ class DockerUpgrader:
                 container = await asyncio.to_thread(
                     client.containers.get, self._container_name
                 )
-                attrs = await asyncio.to_thread(lambda c=container: c.attrs)
+                attrs = await asyncio.to_thread(getattr, container, "attrs")
             except Exception:  # noqa: BLE001 — container may be mid-recreate
                 await asyncio.sleep(_HEALTH_POLL_SECONDS)
                 continue

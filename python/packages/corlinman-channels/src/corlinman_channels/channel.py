@@ -77,7 +77,7 @@ class ChannelError(Exception):
     """
 
     @staticmethod
-    def unsupported(operation: str) -> ChannelError:
+    def unsupported(operation: str) -> UnsupportedError:
         """Factory matching Rust ``ChannelError::Unsupported(op)``.
 
         Returns a :class:`UnsupportedError` (the existing

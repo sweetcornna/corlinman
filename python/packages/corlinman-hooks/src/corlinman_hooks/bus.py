@@ -29,7 +29,7 @@ import weakref
 from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, overload
 
 from corlinman_hooks.error import Closed, HookCancelledError, Lagged
 from corlinman_hooks.priority import CancelToken, HookPriority
@@ -257,6 +257,16 @@ class HookBus:
         """Drop dead weak refs from ``priority``'s subscriber list."""
         live = [ref for ref in self._subscribers[priority] if ref() is not None]
         self._subscribers[priority] = live
+
+    @overload
+    def subscribe(self, priority_or_predicate: HookPriority) -> HookSubscription: ...
+
+    @overload
+    def subscribe(
+        self,
+        priority_or_predicate: HookPredicate,
+        subscriber: HookSubscriber,
+    ) -> SubscriptionToken: ...
 
     def subscribe(
         self,

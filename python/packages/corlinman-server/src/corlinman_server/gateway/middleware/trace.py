@@ -22,7 +22,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.base import (
+    BaseHTTPMiddleware,
+    RequestResponseEndpoint,
+)
 from starlette.requests import Request
 from starlette.responses import Response
 
@@ -37,7 +40,9 @@ class TraceMiddleware(BaseHTTPMiddleware):
     bounded; unmatched paths fall back to the raw URI path.
     """
 
-    async def dispatch(self, request: Request, call_next: Any) -> Response:
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
         response = await call_next(request)
         route = _route_template(request)
         status = str(response.status_code)

@@ -47,6 +47,7 @@ import sqlite3
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import structlog
 
@@ -250,7 +251,8 @@ class ProfileStore:
             "FROM profiles WHERE slug = ?",
             (slug,),
         )
-        return cursor.fetchone()
+        row: tuple[Any, ...] | None = cursor.fetchone()
+        return row
 
     # ---- CRUD ---------------------------------------------------------------
 

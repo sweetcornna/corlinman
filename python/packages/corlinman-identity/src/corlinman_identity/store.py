@@ -11,11 +11,24 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import aiosqlite
 
 from corlinman_identity.error import OpenError, StorageError
 from corlinman_identity.tenancy import TenantIdLike, tenant_db_path
+
+if TYPE_CHECKING:
+    # Type-only imports for the resolver / verification method surface
+    # bolted onto :class:`SqliteIdentityStore` at import time. Pulled in
+    # only under ``TYPE_CHECKING`` to keep the runtime import graph
+    # acyclic — ``resolver`` and ``verification`` both import this module.
+    from corlinman_identity.types import (
+        ChannelAlias,
+        UserId,
+        UserSummary,
+        VerificationPhrase,
+    )
 
 # ---------------------------------------------------------------------------
 # Schema — three tables; matches the Rust ``SCHEMA_SQL`` 1:1.
@@ -218,6 +231,59 @@ class SqliteIdentityStore:
         connection. The resolver and verification modules acquire this
         around their ``BEGIN..COMMIT`` blocks."""
         return self._tx_lock
+
+    # ------------------------------------------------------------------
+    # Resolver / verification surface (attached at import time)
+    # ------------------------------------------------------------------
+    #
+    # The query methods below are bound onto the class at import time by
+    # :mod:`corlinman_identity.resolver` and
+    # :mod:`corlinman_identity.verification` (mirroring the Rust split
+    # between ``store.rs`` and ``resolver.rs``). Runtime assignment is
+    # invisible to mypy, so we declare the real signatures here under
+    # ``TYPE_CHECKING`` — no runtime cost, but callers get the proper
+    # types instead of ``attr-defined`` errors.
+    if TYPE_CHECKING:
+
+        async def resolve_or_create(
+            self,
+            channel: str,
+            channel_user_id: str,
+            display_name_hint: str | None = ...,
+        ) -> UserId: ...
+
+        async def lookup(
+            self, channel: str, channel_user_id: str
+        ) -> UserId | None: ...
+
+        async def aliases_for(self, user_id: UserId) -> list[ChannelAlias]: ...
+
+        async def list_users(
+            self, limit: int, offset: int
+        ) -> list[UserSummary]: ...
+
+        async def merge_users(
+            self,
+            into_user_id: UserId,
+            from_user_id: UserId,
+            decided_by: str,
+        ) -> UserId: ...
+
+        async def issue_phrase(
+            self,
+            user_id: UserId,
+            channel: str,
+            channel_user_id: str,
+        ) -> VerificationPhrase: ...
+
+        async def redeem_phrase(
+            self,
+            phrase: str,
+            redeemed_on_channel: str,
+            redeemed_on_channel_user_id: str,
+        ) -> UserId: ...
+
+        async def sweep_expired_phrases(self) -> int: ...
 
 
 __all__ = [

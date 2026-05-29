@@ -64,7 +64,7 @@ log = logging.getLogger(__name__)
 # adapter-side string back onto the proto enum. Anything we don't
 # recognise falls through to ``UNKNOWN`` — a future error class can't
 # crash the frame translation.
-_REASON_TO_PROTO: dict[str, common_pb2.FailoverReason.ValueType] = {
+_REASON_TO_PROTO: dict[str, common_pb2.FailoverReason] = {
     "billing": common_pb2.BILLING,
     "rate_limit": common_pb2.RATE_LIMIT,
     "auth": common_pb2.AUTH,
@@ -79,7 +79,7 @@ _REASON_TO_PROTO: dict[str, common_pb2.FailoverReason.ValueType] = {
 }
 
 
-def _reason_to_proto(reason: str | None) -> common_pb2.FailoverReason.ValueType:
+def _reason_to_proto(reason: str | None) -> common_pb2.FailoverReason:
     """Map a ``CorlinmanError.reason`` string onto the proto enum.
 
     Unknown / missing reasons collapse to ``UNKNOWN`` so an exception
@@ -229,10 +229,10 @@ class DirectProviderBackend:
             else:
                 # Stream finished on its own — re-await to surface any
                 # exception ``_consume`` may have raised.
-                exc = stream_task.exception()
-                if exc is not None:
-                    log.info("direct_backend.stream_error err=%s", exc)
-                    await rx.put(_error_frame(exc))
+                stream_exc = stream_task.exception()
+                if stream_exc is not None:
+                    log.info("direct_backend.stream_error err=%s", stream_exc)
+                    await rx.put(_error_frame(stream_exc))
         except Exception as exc:  # noqa: BLE001 — last-ditch guard
             log.warning("direct_backend.pump_failed err=%s", exc)
             with contextlib.suppress(Exception):
@@ -385,7 +385,12 @@ class DirectProviderBackend:
         if self._registry is None:
             raise RuntimeError("no ProviderRegistry wired")
         aliases = _alias_entries(self._models_config)
-        return self._registry.resolve(model, aliases=aliases)
+        # ``_registry`` is typed ``Any`` (loose coupling at boot); the
+        # underlying ``ProviderRegistry.resolve`` returns this triple.
+        resolved: tuple[Any, str, dict[str, Any]] = self._registry.resolve(
+            model, aliases=aliases
+        )
+        return resolved
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────

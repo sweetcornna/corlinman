@@ -113,7 +113,7 @@ class UserIdentityResolver:
     ) -> UserId:
         """Resolve-or-create. See
         :meth:`SqliteIdentityStore.resolve_or_create`."""
-        return await self._store.resolve_or_create(  # type: ignore[no-any-return]
+        return await self._store.resolve_or_create(
             channel, channel_user_id, display_name_hint
         )
 
@@ -121,17 +121,17 @@ class UserIdentityResolver:
         self, channel: str, channel_user_id: str
     ) -> UserId | None:
         """Look up without minting."""
-        return await self._store.lookup(channel, channel_user_id)  # type: ignore[no-any-return]
+        return await self._store.lookup(channel, channel_user_id)
 
     async def aliases_for(self, user_id: UserId) -> list[ChannelAlias]:
         """Every alias bound to ``user_id``."""
-        return await self._store.aliases_for(user_id)  # type: ignore[no-any-return]
+        return await self._store.aliases_for(user_id)
 
     async def list_users(
         self, limit: int = 50, offset: int = 0
     ) -> list[UserSummary]:
         """Paginated user list."""
-        return await self._store.list_users(limit, offset)  # type: ignore[no-any-return]
+        return await self._store.list_users(limit, offset)
 
     # ------------------------------------------------------------------
     # Linking (operator-driven merge)
@@ -146,7 +146,7 @@ class UserIdentityResolver:
     ) -> UserId:
         """Operator-driven manual merge. See
         :meth:`SqliteIdentityStore.merge_users`."""
-        return await self._store.merge_users(  # type: ignore[no-any-return]
+        return await self._store.merge_users(
             into_user_id, from_user_id, decided_by
         )
 
@@ -168,7 +168,7 @@ class UserIdentityResolver:
         Operators that don't want the auto-echo (e.g. they'd rather
         copy-paste the phrase manually) pass ``echo=False``.
         """
-        phrase = await self._store.issue_phrase(  # type: ignore[no-any-return]
+        phrase = await self._store.issue_phrase(
             user_id, channel, channel_user_id
         )
         if echo:
@@ -184,14 +184,14 @@ class UserIdentityResolver:
         channel_user_id: str,
     ) -> UserId:
         """Redeem a phrase the human just pasted on ``channel``."""
-        return await self._store.redeem_phrase(  # type: ignore[no-any-return]
+        return await self._store.redeem_phrase(
             phrase, channel, channel_user_id
         )
 
     async def sweep_expired_phrases(self) -> int:
         """GC expired, unconsumed phrases. See
         :meth:`SqliteIdentityStore.sweep_expired_phrases`."""
-        return await self._store.sweep_expired_phrases()  # type: ignore[no-any-return]
+        return await self._store.sweep_expired_phrases()
 
 
 __all__ = [

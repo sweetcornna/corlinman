@@ -604,8 +604,11 @@ async def _replay_from_journal(
         if not turn_rows:
             return None
         for turn_row in reversed(turn_rows):
+            raw_turn_id = turn_row.get("turn_id")
+            if raw_turn_id is None:
+                continue
             try:
-                tid = int(turn_row.get("turn_id"))
+                tid = int(raw_turn_id)
             except (TypeError, ValueError):
                 continue
             started_at_ms = int(turn_row.get("started_at_ms") or 0)

@@ -36,7 +36,7 @@ partially-installed gateway still imports this module.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -46,6 +46,9 @@ from corlinman_server.gateway.routes_admin_b.state import (
     get_admin_state,
     require_admin,
 )
+
+if TYPE_CHECKING:
+    from corlinman_evolution_store import SignalsRepo
 
 # ---------------------------------------------------------------------------
 # Wire shapes
@@ -377,7 +380,9 @@ async def _run_curator_now(
             profile_slug=slug,
             registry=registry,
             curator_repo=curator_repo,
-            signals_repo=signals_repo,
+            # Best-effort handle resolved via getattr; the noop stub
+            # duck-types the only method the curator calls (``insert``).
+            signals_repo=cast("SignalsRepo", signals_repo),
             force=True,  # the UI invocation always forces a pass
             dry_run=dry_run,
         )

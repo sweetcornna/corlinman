@@ -90,12 +90,12 @@ def _reap_expired() -> None:
         if now - sess.started_at > _SESSION_MAX_IDLE_S:
             expired.append(sid)
     for sid in expired:
-        sess = _sessions.pop(sid, None)
-        if sess is None:
+        popped = _sessions.pop(sid, None)
+        if popped is None:
             continue
-        if sess.proc.returncode is None:
+        if popped.proc.returncode is None:
             try:
-                sess.proc.kill()
+                popped.proc.kill()
             except ProcessLookupError:
                 pass
         logger.info("claude_login_session_expired", session_id=sid)

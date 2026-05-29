@@ -12,7 +12,7 @@ import os
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, get_args
+from typing import Any, cast, get_args
 
 import yaml
 
@@ -279,11 +279,17 @@ def render_skill_frontmatter(skill: Skill) -> str:
     # ``sort_keys=False`` honours our explicit insertion order;
     # ``default_flow_style=False`` keeps the block-style layout (one key per
     # line) that matches the existing fixtures.
-    return yaml.safe_dump(
-        doc,
-        sort_keys=False,
-        default_flow_style=False,
-        allow_unicode=True,
+    # PyYAML ships no type stubs (yaml is treated as ``Any``), so the
+    # call is untyped; with ``stream=None`` ``safe_dump`` returns ``str``
+    # at runtime, so narrowing the dynamic boundary here is sound.
+    return cast(
+        "str",
+        yaml.safe_dump(
+            doc,
+            sort_keys=False,
+            default_flow_style=False,
+            allow_unicode=True,
+        ),
     )
 
 

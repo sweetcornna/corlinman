@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:  # pragma: no cover — only for type checkers
     from fastapi import Request
@@ -143,7 +143,8 @@ def get_app_state(request: Request) -> AppState:
             "AppState missing from app.state.corlinman — "
             "did the gateway boot call build_app() with a state argument?"
         )
-    return state
+    # Stashed on ``app.state`` (an untyped namespace) at boot time.
+    return cast("AppState", state)
 
 
 __all__ = ["AppState", "get_app_state"]

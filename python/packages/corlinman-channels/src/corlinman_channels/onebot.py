@@ -40,7 +40,7 @@ import asyncio
 import json
 import logging
 from collections import deque
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterator, Callable, Iterable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -229,7 +229,7 @@ MessageSegment = (
 )
 
 #: Segment "type" → constructor table for :func:`_parse_segment`.
-_SEGMENT_PARSERS: dict[str, Any] = {
+_SEGMENT_PARSERS: dict[str, Callable[[dict[str, Any]], MessageSegment]] = {
     "text": lambda d: TextSegment(text=str(d.get("text", ""))),
     "at": lambda d: AtSegment(qq=str(d.get("qq", ""))),
     "image": lambda d: ImageSegment(url=str(d.get("url", "")), file=d.get("file")),
@@ -262,6 +262,8 @@ def parse_event(raw: dict[str, Any]) -> Event:
     post_type = raw.get("post_type")
     if post_type == "message":
         msg_type_raw = raw.get("message_type")
+        if not isinstance(msg_type_raw, str):
+            return UnknownEvent(raw=raw)
         try:
             msg_type = MessageType(msg_type_raw)
         except ValueError:

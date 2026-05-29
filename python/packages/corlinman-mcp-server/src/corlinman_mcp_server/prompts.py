@@ -15,10 +15,10 @@ Skill field                   MCP ``Prompt`` field
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterator
 
 from .adapters import SessionContext
-from .bridges import SkillRegistry
+from .bridges import SkillEntry, SkillRegistry
 from .errors import (
     McpInvalidParamsError,
     McpMethodNotFoundError,
@@ -135,7 +135,7 @@ class PromptsAdapter:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _iter_skills(self) -> Iterable:
+    def _iter_skills(self) -> Iterator[SkillEntry]:
         if hasattr(self._skills, "iter") and callable(self._skills.iter):
             return self._skills.iter()
         return iter(self._skills)

@@ -201,8 +201,8 @@ def _maybe_configure_provider(cfg: dict[str, Any]) -> bool:
     kinds = _supported_kinds()
     click.echo("")
     click.echo("Built-in provider kinds:")
-    for idx, kind in enumerate(kinds, start=1):
-        click.echo(f"  [{idx}] {kind}")
+    for idx, kind_name in enumerate(kinds, start=1):
+        click.echo(f"  [{idx}] {kind_name}")
     click.echo("")
 
     while True:

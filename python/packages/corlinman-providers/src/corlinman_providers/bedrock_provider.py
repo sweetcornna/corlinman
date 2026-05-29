@@ -228,6 +228,10 @@ class BedrockProvider:
                 "AWS region missing for Bedrock provider: set params.region "
                 "(or AWS_REGION / AWS_DEFAULT_REGION)"
             )
+        # Bind to a local so the narrowed (non-None) type survives into the
+        # ``_open`` closure below — mypy does not propagate attribute narrowing
+        # across nested-function boundaries.
+        region = self._region
         if not _is_anthropic_model(model):
             raise FormatError(
                 f"Bedrock adapter currently supports only Anthropic-on-Bedrock "
@@ -273,7 +277,7 @@ class BedrockProvider:
                 credentials=credentials,
                 method="POST",
                 service=_SERVICE,
-                region=self._region,
+                region=region,
                 host=host,
                 path=path,
                 body=body_bytes,

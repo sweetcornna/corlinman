@@ -238,7 +238,7 @@ class VoiceApprovalBridge:
         try:
             from corlinman_providers.plugins import ApprovalRequest
         except ImportError:  # pragma: no cover — providers package unavailable
-            ApprovalRequest = None  # type: ignore[assignment]
+            ApprovalRequest = None  # type: ignore[assignment, misc]
 
         args_preview = _args_preview(args_json)
         if ApprovalRequest is not None:
@@ -268,7 +268,7 @@ class VoiceApprovalBridge:
         wait_task = asyncio.ensure_future(
             self._queue.enqueue_and_wait(request, timeout=self._timeout_seconds)
         )
-        cancel_task: asyncio.Task[None] | None = None
+        cancel_task: asyncio.Task[bool] | None = None
         if cancel is not None:
             cancel_task = asyncio.ensure_future(cancel.wait())
 

@@ -149,7 +149,10 @@ def apply_command_substitution(content: str) -> str:
     if spec.wizard_prelude is not None:
         # Prefer the prelude — the LLM produces the reply, matching the
         # legacy behaviour for /persona and other wizard flows.
-        return apply_command_prelude(content, spec)
+        # ``corlinman_channels`` ships no py.typed marker, so the call is
+        # seen as untyped; the function's own signature returns ``str``.
+        prelude: str = apply_command_prelude(content, spec)
+        return prelude
 
     if spec.handler is None:
         # Should be unreachable thanks to validate_registry, but degrade
@@ -193,7 +196,7 @@ def apply_command_substitution(content: str) -> str:
     )
 
 
-def maybe_prepend_first_chat_tip[T](
+def maybe_prepend_first_chat_tip(
     messages: Sequence[_T],
     *,
     user_id: str | None,
@@ -234,9 +237,12 @@ def maybe_prepend_first_chat_tip[T](
     user_count = 0
     for m in materialised:
         role = getattr(m, "role", None)
-        role_str = str(role) if role is not None else ""
+        if role is None:
+            continue
+        role_str = str(role)
+        role_value = getattr(role, "value", None)
         if role_str in ("user", "Role.user") or (
-            hasattr(role, "value") and str(role.value) == "user"
+            role_value is not None and str(role_value) == "user"
         ):
             user_count += 1
     # ``turn_count <= 1`` from the spec — we only fire the tip when
@@ -288,7 +294,7 @@ def maybe_prepend_first_chat_tip[T](
     return [tip_msg, *materialised]  # type: ignore[list-item]
 
 
-def rewrite_trailing_user_message[T](
+def rewrite_trailing_user_message(
     messages: Sequence[_T],
     *,
     user_id: str | None = None,

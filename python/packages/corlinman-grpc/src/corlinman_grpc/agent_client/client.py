@@ -285,7 +285,10 @@ class ChatStream:
     # -- receive half -------------------------------------------------------
 
     def __aiter__(self) -> AsyncIterator[agent_pb2.ServerFrame]:
-        return self._call.__aiter__()
+        # grpc.aio ships no py.typed marker, so the call is untyped (Any) to
+        # mypy; the runtime iterator yields ServerFrame (same boundary as
+        # next_classified's read()).
+        return self._call.__aiter__()  # type: ignore[no-any-return]
 
     async def next_classified(self) -> agent_pb2.ServerFrame | None:
         """Read the next :class:`agent_pb2.ServerFrame`, raising

@@ -29,7 +29,12 @@ from fastapi import APIRouter, Request, status
 from fastapi.responses import JSONResponse, Response
 
 if TYPE_CHECKING:
-    from corlinman_memory_host import MemoryHost
+    from corlinman_memory_host import (
+        MemoryDoc,
+        MemoryHost,
+        MemoryHostError,
+        MemoryQuery,
+    )
 
 __all__ = ["MemoryState", "router"]
 
@@ -41,7 +46,9 @@ class MemoryState:
     host: MemoryHost
 
 
-def _lazy_imports() -> tuple[type, type, type]:
+def _lazy_imports() -> tuple[
+    type[MemoryDoc], type[MemoryHostError], type[MemoryQuery]
+]:
     """Resolve the W2 :mod:`corlinman_memory_host` types lazily.
 
     Keeping the import here means a server boot without the W2
@@ -78,7 +85,8 @@ def _hit_to_json(hit: Any) -> dict[str, Any]:
     tests may inject plain dicts — accept either.
     """
     if hasattr(hit, "to_json"):
-        return hit.to_json()
+        result: dict[str, Any] = hit.to_json()
+        return result
     if isinstance(hit, dict):
         return hit
     return {

@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import functools
 import logging
 import mimetypes
 import os
@@ -242,13 +243,19 @@ class ChatServiceLike(Protocol):
     to satisfy this shape (modulo the event field names — see
     :func:`_event_kind`)."""
 
-    async def run(
+    def run(
         self,
         request: Any,
         cancel: asyncio.Event,
     ) -> AsyncIterator[Any]:
         """Run one chat turn. Yields events until done. ``cancel.set()``
-        should cause the iterator to terminate ASAP."""
+        should cause the iterator to terminate ASAP.
+
+        Declared as a plain (non-``async``) method returning an
+        ``AsyncIterator`` because implementations are async-generator
+        functions: calling ``run(...)`` returns the iterator directly,
+        so callers ``async for`` over it without an intermediate
+        ``await``."""
         ...
 
 
@@ -1388,7 +1395,7 @@ def _to_server_attachment_shape(att: Any) -> Any:
     """
     from types import SimpleNamespace
 
-    kind_raw = getattr(att, "kind", None)
+    kind_raw: Any = getattr(att, "kind", None)
     kind_str = (
         str(kind_raw.value) if hasattr(kind_raw, "value") else str(kind_raw or "")
     ).lower()
@@ -1941,21 +1948,23 @@ async def run_telegram_channel(
                 # router.dispatch.
                 if await _telegram_try_dispatch_command(ev, sender):
                     continue
-                if params.chat_service is None:
+                chat_service = params.chat_service
+                if chat_service is None:
                     continue
                 ev = _telegram_apply_command_prelude(ev)
                 # R3: bounded fan-out — backpressure flows upstream.
                 await _bounded_spawn(
                     semaphore,
                     pending,
-                    lambda chat_service=params.chat_service, ev=ev, p=params: handle_one_telegram(
+                    functools.partial(
+                        handle_one_telegram,
                         chat_service,
                         ev,
-                        p.model,
+                        params.model,
                         sender,
                         cancel,
-                        event_emitter=p.event_emitter,
-                        params=p,
+                        event_emitter=params.event_emitter,
+                        params=params,
                     ),
                 )
     finally:
@@ -2631,20 +2640,22 @@ async def run_discord_channel(
                 ev = await _race_iter_or_cancel(iterator, cancel)
                 if ev is None:
                     break
-                if params.chat_service is None:
+                chat_service = params.chat_service
+                if chat_service is None:
                     continue
                 # R3: bounded fan-out — backpressure flows upstream.
                 await _bounded_spawn(
                     semaphore,
                     pending,
-                    lambda chat_service=params.chat_service, ev=ev, p=params: handle_one_discord(
+                    functools.partial(
+                        handle_one_discord,
                         chat_service,
                         ev,
-                        p.model,
+                        params.model,
                         sender,
                         cancel,
-                        event_emitter=p.event_emitter,
-                        params=p,
+                        event_emitter=params.event_emitter,
+                        params=params,
                     ),
                 )
     finally:
@@ -2905,20 +2916,22 @@ async def run_slack_channel(
                 ev = await _race_iter_or_cancel(iterator, cancel)
                 if ev is None:
                     break
-                if params.chat_service is None:
+                chat_service = params.chat_service
+                if chat_service is None:
                     continue
                 # R3: bounded fan-out — backpressure flows upstream.
                 await _bounded_spawn(
                     semaphore,
                     pending,
-                    lambda chat_service=params.chat_service, ev=ev, p=params: handle_one_slack(
+                    functools.partial(
+                        handle_one_slack,
                         chat_service,
                         ev,
-                        p.model,
+                        params.model,
                         sender,
                         cancel,
-                        event_emitter=p.event_emitter,
-                        params=p,
+                        event_emitter=params.event_emitter,
+                        params=params,
                     ),
                 )
     finally:
@@ -3150,20 +3163,22 @@ async def run_feishu_channel(
                 ev = await _race_iter_or_cancel(iterator, cancel)
                 if ev is None:
                     break
-                if params.chat_service is None:
+                chat_service = params.chat_service
+                if chat_service is None:
                     continue
                 # R3: bounded fan-out — backpressure flows upstream.
                 await _bounded_spawn(
                     semaphore,
                     pending,
-                    lambda chat_service=params.chat_service, ev=ev, p=params: handle_one_feishu(
+                    functools.partial(
+                        handle_one_feishu,
                         chat_service,
                         ev,
-                        p.model,
+                        params.model,
                         sender,
                         cancel,
-                        event_emitter=p.event_emitter,
-                        params=p,
+                        event_emitter=params.event_emitter,
+                        params=params,
                     ),
                 )
     finally:
@@ -3411,12 +3426,14 @@ async def run_qq_official_channel(
                 ev = await _race_iter_or_cancel(iterator, cancel)
                 if ev is None:
                     break
-                if params.chat_service is None:
+                chat_service = params.chat_service
+                if chat_service is None:
                     continue
                 await _bounded_spawn(
                     semaphore,
                     pending,
-                    lambda chat_service=params.chat_service, ev=ev: handle_one_qq_official(
+                    functools.partial(
+                        handle_one_qq_official,
                         chat_service,
                         ev,
                         params.model,
@@ -3835,7 +3852,8 @@ async def run_wechat_official_channel(
         inbound and that it respects the channel concurrency cap so a
         burst of subscribers doesn't fan out unbounded tasks.
         """
-        if params.chat_service is None:
+        chat_service = params.chat_service
+        if chat_service is None:
             # No backend wired (degraded). Resolve the future with the
             # empty string so the webhook returns an empty 200 promptly
             # instead of waiting the full passive deadline.
@@ -3845,7 +3863,8 @@ async def run_wechat_official_channel(
         await _bounded_spawn(
             semaphore,
             pending,
-            lambda chat_service=params.chat_service: handle_one_wechat_official(
+            functools.partial(
+                handle_one_wechat_official,
                 chat_service,
                 inbound,
                 params.model,
@@ -4099,7 +4118,10 @@ async def _race_iter_or_cancel(
     fires first. Equivalent of Rust ``tokio::select! { recv() => ...,
     cancelled() => break }``.
     """
-    next_task = asyncio.create_task(iterator.__anext__())
+    async def _anext() -> Any:
+        return await iterator.__anext__()
+
+    next_task = asyncio.create_task(_anext())
     cancel_task = asyncio.create_task(cancel.wait())
     done, pending = await asyncio.wait(
         {next_task, cancel_task}, return_when=asyncio.FIRST_COMPLETED

@@ -368,7 +368,7 @@ def file_server_handler(server: FileServer) -> FileServerHandler:
 
 
 # Tell the static checker the handler implements the ToolHandler protocol.
-_: ToolHandler = FileServerHandler.__new__(FileServerHandler)  # type: ignore[assignment]
+_protocol_check: ToolHandler = FileServerHandler.__new__(FileServerHandler)  # type: ignore[assignment]
 
 
 # ---------------------------------------------------------------------------

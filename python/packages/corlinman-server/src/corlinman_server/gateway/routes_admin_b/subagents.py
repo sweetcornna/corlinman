@@ -29,7 +29,7 @@ import json
 import time
 from collections.abc import AsyncIterator
 from dataclasses import asdict
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -122,7 +122,8 @@ def _resolve_dispatcher(
     # Duck-typed acceptance — tests pass a fake exposing the same
     # ``dispatch_async`` / ``kill`` / ``store`` surface.
     if hasattr(dispatcher, "dispatch_async") or hasattr(dispatcher, "store"):
-        return dispatcher  # type: ignore[return-value]
+        # Duck-typed boundary: tests pass a fake exposing the same surface.
+        return cast("AsyncSubagentDispatcher", dispatcher)
     return None
 
 
@@ -130,13 +131,14 @@ def _resolve_store(state: AdminState) -> SubagentTaskStore | None:
     """Resolve the store directly off state, or via the dispatcher."""
     store = getattr(state, "subagent_store", None)
     if store is not None and hasattr(store, "get"):
-        return store  # type: ignore[return-value]
+        # Duck-typed boundary: tests pass a fake exposing ``get``.
+        return cast("SubagentTaskStore", store)
     dispatcher = _resolve_dispatcher(state)
     if dispatcher is None:
         return None
     inner = getattr(dispatcher, "store", None)
     if inner is not None and hasattr(inner, "get"):
-        return inner  # type: ignore[no-any-return]
+        return cast("SubagentTaskStore", inner)
     return None
 
 

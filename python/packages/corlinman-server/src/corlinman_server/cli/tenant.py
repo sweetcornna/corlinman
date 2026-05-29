@@ -68,7 +68,9 @@ def _hash_password(password: str) -> str:
     try:
         from passlib.hash import argon2
 
-        return argon2.using(type="ID").hash(password)
+        # passlib ships no type stubs; ``hash`` returns ``str`` at runtime.
+        hashed: str = argon2.using(type="ID").hash(password)
+        return hashed
     except ImportError:
         click.echo(
             "error: argon2id not available — install `argon2-cffi` or `passlib`",

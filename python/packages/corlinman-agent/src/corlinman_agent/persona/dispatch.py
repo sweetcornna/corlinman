@@ -298,22 +298,14 @@ async def dispatch_persona_create(
         return _err("persona_store_unavailable", str(exc))
 
     args = _decode(args_json)
-    pid = (args.get("id") or "").strip() if isinstance(args.get("id"), str) else ""
-    display = (
-        args.get("display_name").strip()
-        if isinstance(args.get("display_name"), str)
-        else ""
-    )
-    summary = (
-        args.get("short_summary").strip()
-        if isinstance(args.get("short_summary"), str)
-        else ""
-    )
-    prompt = (
-        args.get("system_prompt")
-        if isinstance(args.get("system_prompt"), str)
-        else ""
-    )
+    raw_id = args.get("id")
+    pid = raw_id.strip() if isinstance(raw_id, str) else ""
+    raw_display = args.get("display_name")
+    display = raw_display.strip() if isinstance(raw_display, str) else ""
+    raw_summary = args.get("short_summary")
+    summary = raw_summary.strip() if isinstance(raw_summary, str) else ""
+    raw_prompt = args.get("system_prompt")
+    prompt = raw_prompt if isinstance(raw_prompt, str) else ""
     if not pid or not display or not prompt:
         return _err(
             "invalid_args",
@@ -479,16 +471,13 @@ async def dispatch_persona_attach_asset_from_url(
         return _err("persona_store_unavailable", str(exc))
 
     args = _decode(args_json)
-    pid = (
-        args.get("persona_id").strip()
-        if isinstance(args.get("persona_id"), str)
-        else ""
-    )
+    raw_pid = args.get("persona_id")
+    pid = raw_pid.strip() if isinstance(raw_pid, str) else ""
     kind = args.get("kind")
-    label = (
-        args.get("label").strip() if isinstance(args.get("label"), str) else ""
-    )
-    url = args.get("url").strip() if isinstance(args.get("url"), str) else ""
+    raw_label = args.get("label")
+    label = raw_label.strip() if isinstance(raw_label, str) else ""
+    raw_url = args.get("url")
+    url = raw_url.strip() if isinstance(raw_url, str) else ""
     file_name_raw = args.get("file_name")
     file_name = (
         file_name_raw.strip()

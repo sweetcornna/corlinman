@@ -20,6 +20,10 @@ from .discovery import (
 )
 from .manifest import PluginManifest
 
+# Alias the builtin so annotations on methods declared *after* the ``list``
+# method below still resolve to the type, not the shadowing method object.
+_List = list
+
 
 @dataclass
 class PluginEntry:
@@ -143,10 +147,10 @@ class PluginRegistry:
     def get(self, name: str) -> PluginEntry | None:
         return self._entries.get(name)
 
-    def diagnostics(self) -> list[Diagnostic]:
+    def diagnostics(self) -> _List[Diagnostic]:
         return list(self._diagnostics)
 
-    def roots(self) -> list[SearchRoot]:
+    def roots(self) -> _List[SearchRoot]:
         return list(self._roots)
 
     def __len__(self) -> int:
@@ -168,7 +172,7 @@ class PluginRegistry:
         async with self._lock:
             return self._entries.pop(name, None)
 
-    async def set_diagnostics(self, diags: list[Diagnostic]) -> None:
+    async def set_diagnostics(self, diags: _List[Diagnostic]) -> None:
         async with self._lock:
             self._diagnostics = list(diags)
 

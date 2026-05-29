@@ -20,7 +20,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 import httpx
 
@@ -254,7 +254,7 @@ async def download_to_media_dir(
     file = await http.get_file(file_id)
     file_path = file.file_path
     if not file_path:
-        raise MediaError.NoFilePath()
+        raise MediaNoFilePathError()
 
     # Derive extension from the resolved ``file_path``.
     ext = Path(file_path).suffix.lstrip(".")
@@ -270,12 +270,14 @@ async def download_to_media_dir(
 
     written = 0
     try:
-        stream = http.download_stream(file_path)
         # ``download_stream`` may be either a coroutine returning an
-        # iterator (HttpxTelegramHttp) or a direct generator (test
-        # fakes). Normalize.
+        # iterator (HttpxTelegramHttp, defined ``async def``) or a
+        # direct async iterator (test fakes). The static Protocol
+        # return type can only describe one shape, so treat the call
+        # result dynamically and normalize below.
+        stream: Any = http.download_stream(file_path)
         if hasattr(stream, "__await__"):
-            stream = await stream  # type: ignore[assignment]
+            stream = await stream
         # Open for writing inside a try/except so a partial download
         # gets cleaned up on cap-overflow.
         with target.open("wb") as f_out:
@@ -289,7 +291,7 @@ async def download_to_media_dir(
                         target.unlink(missing_ok=True)
                     except OSError:
                         pass
-                    raise MediaError.TooLarge()
+                    raise MediaTooLargeError()
                 f_out.write(chunk)
     except OSError as exc:
         raise MediaIoError(str(exc)) from exc

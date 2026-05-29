@@ -129,7 +129,7 @@ def _to_rfc3339_z(dt: Any) -> str:
     try:
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=UTC)
-        iso = dt.isoformat()
+        iso: str = dt.isoformat()
         if iso.endswith("+00:00"):
             return iso[:-6] + "Z"
         return iso

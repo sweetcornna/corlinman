@@ -425,7 +425,8 @@ def _assert_safe_probe_host(base_url: str) -> None:
             # DNS failure: let the dial proceed and surface the real
             # connection error — do not fail-closed on resolution hiccups.
             return
-        candidates = [info[4][0] for info in infos]
+        # getaddrinfo sockaddr[0] is the host string for both IPv4/IPv6.
+        candidates = [str(info[4][0]) for info in infos]
 
     for raw in candidates:
         # Strip any IPv6 zone id (e.g. ``fe80::1%eth0``) before parsing.

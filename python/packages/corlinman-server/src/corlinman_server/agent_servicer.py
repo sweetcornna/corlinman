@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import json
 import os
 import sys
@@ -509,6 +510,16 @@ def _mock_resolver(_model: str) -> Any:
 # normalises both shapes to the new triple.
 _ResolvedTriple = tuple[CorlinmanProvider, str, dict[str, Any]]
 _ResolverCallable = Callable[..., Any]
+
+
+def _const_factory[T](value: T) -> Callable[[], T]:
+    """Return a zero-arg factory that yields ``value``.
+
+    Snapshots ``value`` at call time so a deferred consumer (e.g. the
+    runner pool's pre-warm factory) doesn't capture a later mutation of
+    the source variable inside a loop.
+    """
+    return lambda: value
 
 
 # T1.4: keys aggregated by ``_CostMeter``. The first two are the durable
@@ -1237,8 +1248,12 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                             tool_call_id=event.call_id,
                             tool_name=event.tool,
                             args_json=event.args_json,
-                            invoke=lambda event=event: self._dispatch_builtin(
-                                event, start, provider, file_state
+                            invoke=functools.partial(
+                                self._dispatch_builtin,
+                                event,
+                                start,
+                                provider,
+                                file_state,
                             ),
                             summarise_result=_summarise,
                         )
@@ -1553,7 +1568,11 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 )
                 continue
             key = (name, upstream_model)
-            self._provider_pool.prewarm(key, lambda p=provider: p)
+            # Snapshot this iteration's ``provider`` into a fresh closure
+            # so the deferred pool factory doesn't see the loop's final
+            # binding. ``_const_factory`` types cleanly where a
+            # default-arg lambda confuses mypy's inference.
+            self._provider_pool.prewarm(key, _const_factory(provider))
             logger.info(
                 "agent.chat.prewarm_succeeded",
                 model=name,

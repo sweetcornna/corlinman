@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import MutableMapping
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, Request
 from fastapi.responses import PlainTextResponse, Response
@@ -96,7 +96,8 @@ def build_wechat_router() -> APIRouter:
                 f"no wechat bot registered as {bot_name!r}",
                 status_code=404,
             )
-        return await adapter.handle_webhook(request)
+        # Registry holds duck-typed bot adapters (``MutableMapping[str, Any]``).
+        return cast("Response", await adapter.handle_webhook(request))
 
     @api.get("/{bot_name}")
     async def wechat_verify(bot_name: str, request: Request) -> Response:

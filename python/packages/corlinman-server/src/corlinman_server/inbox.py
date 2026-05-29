@@ -21,6 +21,7 @@ and writing their inbound events through.
 from __future__ import annotations
 
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -318,7 +319,7 @@ class Inbox:
         return int(n)
 
 
-def _row_to_entry(row: tuple) -> InboxEntry:
+def _row_to_entry(row: Sequence[Any]) -> InboxEntry:
     return InboxEntry(
         id=int(row[0]),
         channel=str(row[1]),

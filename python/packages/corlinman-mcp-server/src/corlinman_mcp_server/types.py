@@ -13,7 +13,14 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    field_validator,
+    model_serializer,
+)
 
 JSONRPC_VERSION: Literal["2.0"] = "2.0"
 """JSON-RPC 2.0 protocol version literal. Required on every frame."""
@@ -62,8 +69,8 @@ class JsonRpcError(BaseModel):
     data: JsonValue | None = None
 
     @model_serializer(mode="wrap")
-    def _serialize(self, handler) -> dict[str, Any]:
-        out = handler(self)
+    def _serialize(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        out: dict[str, Any] = handler(self)
         if self.data is None:
             out.pop("data", None)
         return out
@@ -100,8 +107,8 @@ class JsonRpcRequest(BaseModel):
         return v
 
     @model_serializer(mode="wrap")
-    def _serialize(self, handler) -> dict[str, Any]:
-        out = handler(self)
+    def _serialize(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        out: dict[str, Any] = handler(self)
         # JSON-RPC distinguishes "missing id" (notification) from
         # "id: null" — preserve that on the wire. We use a sentinel
         # marker on the model: id stored as None always means notification.
@@ -214,8 +221,8 @@ class ClientCapabilities(BaseModel):
     experimental: JsonValue | None = None
 
     @model_serializer(mode="wrap")
-    def _serialize(self, handler) -> dict[str, Any]:
-        out = handler(self)
+    def _serialize(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        out: dict[str, Any] = handler(self)
         for k in ("sampling", "roots", "experimental"):
             if out.get(k) is None:
                 out.pop(k, None)
@@ -414,8 +421,8 @@ class ResourcesListParams(BaseModel):
     cursor: str | None = None
 
     @model_serializer(mode="wrap")
-    def _serialize(self, handler) -> dict[str, Any]:
-        out = handler(self)
+    def _serialize(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        out: dict[str, Any] = handler(self)
         if self.cursor is None:
             out.pop("cursor", None)
         return out

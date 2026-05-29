@@ -23,10 +23,10 @@ from collections.abc import Awaitable, Callable
 from typing import Protocol
 
 import websockets
-from websockets.client import ClientConnection
+from websockets.asyncio.client import ClientConnection
 from websockets.exceptions import ConnectionClosed
 
-from corlinman_wstool.protocol import ToolAdvert, WsToolMessage
+from corlinman_wstool.protocol import ToolAdvert, WsToolMessage, _WsToolMessageBase
 from corlinman_wstool.types import AcceptInfo, ToolError
 
 __all__ = [
@@ -319,7 +319,7 @@ class WsToolRunner:
         async def _runner() -> None:
             try:
                 result = await handler.invoke(tool, args, sink, cancel_evt)
-                frame = WsToolMessage.Result(
+                frame: _WsToolMessageBase = WsToolMessage.Result(
                     request_id=request_id, ok=True, payload=result
                 )
             except ToolError as err:

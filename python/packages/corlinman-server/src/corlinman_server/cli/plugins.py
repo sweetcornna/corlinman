@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import sys
+from typing import Any, cast
 
 import click
 
@@ -116,7 +117,8 @@ def list_cmd(as_json: bool, source: str | None, enabled: bool) -> None:  # noqa:
                 return int(r())
             if isinstance(r, int):
                 return r
-            return int(origin)  # type: ignore[arg-type]
+            # Duck-typed enum fallback — origin is an IntEnum-like value.
+            return int(cast("Any", origin))
         min_rank = _rank(min_origin)
         rows = [e for e in rows if _rank(e.origin) >= min_rank]
 
@@ -179,7 +181,12 @@ def inspect_cmd(name: str, as_json: bool) -> None:
         try:
             from dataclasses import asdict, is_dataclass
 
-            payload = asdict(entry.manifest) if is_dataclass(entry.manifest) else dict(entry.manifest.__dict__)
+            payload = (
+                asdict(entry.manifest)
+                if is_dataclass(entry.manifest)
+                and not isinstance(entry.manifest, type)
+                else dict(entry.manifest.__dict__)
+            )
         except Exception:  # noqa: BLE001
             payload = {"name": entry.manifest.name}
         echo_json(payload, pretty=False)
@@ -307,7 +314,7 @@ def _origin_str(origin: object) -> str:
     return str(origin)
 
 
-def _tools(manifest: object) -> list[object]:
+def _tools(manifest: object) -> list[Any]:
     caps = getattr(manifest, "capabilities", None)
     if caps is None:
         return []

@@ -15,7 +15,7 @@ in-process.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -298,7 +298,9 @@ class SkillRegistry(Protocol):
 
     def get(self, name: str) -> SkillEntry | None: ...
 
-    def __iter__(self) -> Iterable[SkillEntry]: ...
+    def iter(self) -> Iterator[SkillEntry]: ...
+
+    def __iter__(self) -> Iterator[SkillEntry]: ...
 
 
 # Synonym so callers can pass a callable in place of a registry when

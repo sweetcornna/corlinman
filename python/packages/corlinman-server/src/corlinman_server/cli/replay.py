@@ -154,7 +154,7 @@ def _print_human(out: object) -> None:
 
 def _print_json(out: object) -> None:
     try:
-        payload = asdict(out)  # type: ignore[arg-type]
+        payload = asdict(out)  # type: ignore[call-overload]  # out is a slots dataclass at runtime
     except TypeError:
         # ReplayOutput is a slots dataclass — asdict should always work,
         # but fall back to attribute scrape just in case.

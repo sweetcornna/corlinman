@@ -146,7 +146,7 @@ async def _sse_stream(broadcaster: Any, query: LogStreamQuery):
             if not isinstance(item, dict):
                 from dataclasses import asdict, is_dataclass
 
-                if is_dataclass(item):
+                if is_dataclass(item) and not isinstance(item, type):
                     item = asdict(item)
                 else:
                     # Some object types (proto messages, custom records)

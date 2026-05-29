@@ -381,10 +381,10 @@ def router() -> APIRouter:
     async def qrcode():
         state = get_admin_state()
         client, err, _path = _build_client(state)
-        if err is not None:
+        if err is not None or client is None:
             return err
         try:
-            async with client:  # type: ignore[union-attr]
+            async with client:
                 return await client.request_qrcode()
         except NapcatError as exc:
             return exc.response()
@@ -393,10 +393,10 @@ def router() -> APIRouter:
     async def qrcode_status(token: str = Query("")):
         state = get_admin_state()
         client, err, path = _build_client(state)
-        if err is not None:
+        if err is not None or client is None:
             return err
         try:
-            async with client:  # type: ignore[union-attr]
+            async with client:
                 out = await client.check_status()
         except NapcatError as exc:
             return exc.response()
@@ -433,10 +433,10 @@ def router() -> APIRouter:
             )
         state = get_admin_state()
         client, err, path = _build_client(state)
-        if err is not None:
+        if err is not None or client is None:
             return err
         try:
-            async with client:  # type: ignore[union-attr]
+            async with client:
                 out = await client.quick_login(body.uin)
         except NapcatError as exc:
             return exc.response()

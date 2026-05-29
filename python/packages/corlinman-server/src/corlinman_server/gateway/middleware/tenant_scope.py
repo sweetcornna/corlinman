@@ -37,7 +37,10 @@ from urllib.parse import parse_qsl, unquote
 
 import structlog
 from fastapi import Depends, HTTPException, Request, status
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.base import (
+    BaseHTTPMiddleware,
+    RequestResponseEndpoint,
+)
 from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp
 
@@ -174,7 +177,7 @@ class TenantScopeMiddleware(BaseHTTPMiddleware):
     async def dispatch(
         self,
         request: Request,
-        call_next: Any,
+        call_next: RequestResponseEndpoint,
     ) -> Response:
         state = _resolve_state(request) or self._state
 

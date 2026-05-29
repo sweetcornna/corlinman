@@ -252,7 +252,7 @@ async def _search_serpapi(
 async def dispatch_web_search(
     *,
     args_json: bytes | str,
-    transport: httpx.BaseTransport | None = None,
+    transport: httpx.AsyncBaseTransport | None = None,
 ) -> str:
     """Translate one ``web_search`` tool call into a JSON envelope.
 
@@ -292,7 +292,7 @@ async def dispatch_web_search(
         # same pinned host.
         endpoint = _SERPAPI_ENDPOINT if backend == "serpapi" else _DDG_ENDPOINT
         backend_host = _url_host(endpoint) or ""
-        backend_transport: httpx.BaseTransport | None = transport
+        backend_transport: httpx.AsyncBaseTransport | None = transport
         if backend in ("ddg", "serpapi"):
             try:
                 backend_ips = is_safe_host(endpoint)

@@ -51,9 +51,10 @@ from corlinman_hooks import HookBus, HookEvent
 from corlinman_server.scheduler.cron import Schedule, next_after, parse
 
 if TYPE_CHECKING:
-    # Typing-only: a hook bus type alias; we import for symmetry with
-    # the Rust ``Arc<HookBus>`` signature.
-    pass
+    # Typing-only: the common base of every ``HookEvent`` variant — the
+    # ``HookEvent.EngineRun*`` constructors return concrete variant types
+    # (siblings of ``HookEvent``), and ``HookBus.emit`` accepts the base.
+    from corlinman_hooks.event import _HookEventBase
 
 _logger = logging.getLogger("corlinman_server.scheduler")
 
@@ -493,7 +494,7 @@ async def dispatch(spec: JobSpec, bus: HookBus, app_state: object | None = None)
         result = await run_builtin(builtin_name, ctx)
         duration_ms = int((time.monotonic() - started) * 1000)
         if isinstance(result, dict) and bool(result.get("ok")):
-            event: HookEvent = HookEvent.EngineRunCompleted(
+            event: _HookEventBase = HookEvent.EngineRunCompleted(
                 run_id=run_id, proposals_generated=0, duration_ms=duration_ms
             )
         else:
@@ -546,7 +547,7 @@ async def _emit_outcome(bus: HookBus, job: str, run_id: str, outcome: Subprocess
         )
         # Wave 2-B doesn't parse engine stdout for a proposals count
         # yet; report 0 so the schema is honoured (Rust does the same).
-        event = HookEvent.EngineRunCompleted(
+        event: _HookEventBase = HookEvent.EngineRunCompleted(
             run_id=run_id, proposals_generated=0, duration_ms=duration_ms
         )
     elif outcome.kind is SubprocessOutcomeKind.NON_ZERO_EXIT:

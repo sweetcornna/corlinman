@@ -651,7 +651,7 @@ async def _emit_subagent_completed(
             parent_session_key,
             SubagentCompleted(
                 child_session_key=result.child_session_key,
-                finish_reason=result.finish_reason.as_str(),
+                finish_reason=result.finish_reason.value,
                 tool_calls_made=len(result.tool_calls_made),
                 elapsed_ms=result.elapsed_ms,
                 summary=_truncate(result.output_text, 1024),

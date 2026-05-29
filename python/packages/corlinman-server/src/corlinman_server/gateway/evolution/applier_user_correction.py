@@ -166,6 +166,9 @@ class UserCorrectionApplier:
         text = payload.get("text") or ""
         kind = payload.get("kind") or "unknown"
 
+        if weight is None:
+            log.debug("user_correction_applier.skipped reason=missing_weight")
+            return None
         try:
             weight_f = float(weight)
         except (TypeError, ValueError):

@@ -129,7 +129,7 @@ def _parse_args(args_json: bytes | str) -> tuple[str, int]:
 async def dispatch_web_fetch(
     *,
     args_json: bytes | str,
-    transport: httpx.BaseTransport | None = None,
+    transport: httpx.AsyncBaseTransport | None = None,
 ) -> str:
     """Translate one ``web_fetch`` tool call into a JSON envelope.
 

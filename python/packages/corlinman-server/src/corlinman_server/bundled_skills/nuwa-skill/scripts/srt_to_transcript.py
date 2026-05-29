@@ -39,7 +39,7 @@ def clean_srt(content: str) -> str:
             texts.append(line)
 
     # 去重（自动字幕常有连续重复行）
-    deduped = []
+    deduped: list[str] = []
     for text in texts:
         if not deduped or text != deduped[-1]:
             deduped.append(text)
