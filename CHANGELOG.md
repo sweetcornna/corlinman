@@ -4,6 +4,221 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.0] — 2026-05-29 — Security batch + reliability sweep
+
+> Twenty-two commits since v1.8.13, produced by a four-round audit loop
+> (3 perpetual rounds + an on-demand cleanup pass). **Five critical**
+> issues closed including two RCE-class authorization gaps, one
+> supply-chain hijack window, one scheduler default-job failure, and
+> two zero-coverage critical-path test holes. Twelve additional high-
+> severity bugs / sec gaps closed. No API or behavior breakage.
+> Operators on 1.8.x should upgrade.
+>
+> Full audit trail in `audit/` (ISSUES.md, PROGRESS.md, FINAL_REPORT.md,
+> evidence/{round-1,2,3,cleanup}/).
+
+### Security
+
+- **(critical) Unauthenticated /v1/* RCE closed.** `install_api_key_middleware`
+  was defined in `gateway/middleware/auth.py` but never installed — the
+  boot path probed for an `install` symbol that didn't exist, so the
+  middleware was silently skipped and every `/v1/chat/completions`
+  request was accepted without auth. Combined with the agent servicer
+  auto-injecting `run_shell` into the default builtin tool set, an
+  unauthenticated POST that nudged the model into shell execution was
+  unauth RCE on the default `0.0.0.0:8080` bind. Now installed at
+  `build_app` time with the real `AdminDb` rebound during lifespan;
+  fail-closed with `401 admin_db_not_configured` when the DB can't
+  open. `/health` is left unauthenticated. (#R1-001)
+- **(critical) /canvas, /memory, /channels, /plugin-callback gated.**
+  R1-001 closed `/v1/*` but the route registry mounts the same routes
+  under legacy aliases that the api-key middleware never saw. Unauth
+  callers could wipe memory docs, render canvas, subscribe to canvas
+  SSE streams (exfil rendered LLM output), and poison parked agent
+  loops via `/plugin-callback/{task_id}` (fake tool results). The
+  api-key gate now covers all four prefixes alongside `/v1/`. The
+  WeChat vendor webhook keeps its own signature-based auth and stays
+  outside the bearer gate. (#R2-001)
+- **(critical) Supply-chain hijack window closed.** `deploy/install.sh`
+  and `.github/workflows/release-image.yml` still referenced the
+  `ymylive/corlinman` namespace (repo was transferred to `sweetcornna`;
+  GitHub redirect masked the divergence). Anyone re-registering
+  `ymylive` on github.com or claiming it on ghcr.io would have controlled
+  the install one-liner and the release Docker image for every fresh
+  deploy. Retargeted at `sweetcornna/corlinman` across install, release
+  workflow, upgrader, and docs. Operator follow-up to occupy the
+  abandoned namespace is tracked in `audit/ARCH_DEBT.md`. (#R3-003)
+- **(critical) gRPC agent refuses public bind.** `resolve_agent_bind`
+  returned env-supplied bind values verbatim with no host validation —
+  an operator setting `CORLINMAN_PY_ADDR=0.0.0.0:50051` exposed the
+  unauthenticated Agent gRPC surface (and its `run_shell` / `write_file` /
+  `apply_patch` tools) to anyone on the network. Now refuses non-loopback
+  binds unless the operator also sets `CORLINMAN_GRPC_AGENT_ALLOW_PUBLIC=1`
+  (with a structlog warning on every public-bind resolution for audit).
+  Raises `GrpcAgentBindError` with actionable remediation message on
+  refusal. (#SEC-204)
+- **(high) Server-side `must_change_password` enforcement.** The
+  seeded `admin/root` first-boot credentials had `must_change_password=True`
+  but only the UI cookie flow consulted the flag; every `/admin/*` route
+  accepted Basic admin/root regardless. With the default `0.0.0.0` bind
+  that opened a real first-boot takeover window. `_auth_shim` now 403s
+  every protected admin route with `password_change_required` while the
+  flag is set; only the rotation + introspection allowlist (login /
+  logout / me / password / username / onboard / onboard/finalize) may
+  run. The flag is mirrored onto admin-B state so both bundles fire
+  uniformly. (#SEC-007)
+- **(high) artifact-panel XSS hardening.** SVG artifacts were rendered
+  via `dangerouslySetInnerHTML` (executes `<script>` and event handlers
+  in the admin origin with operator session cookies). HTML iframe
+  previews used `sandbox="allow-scripts allow-same-origin"` on srcDoc
+  (defeats sandbox isolation for same-origin scripts). Any LLM output
+  including a crafted `<svg onload=…>` or HTML payload was stored XSS
+  with admin-API access. SVG now renders inside an empty-sandbox iframe;
+  HTML iframe sandbox no longer includes `allow-same-origin`. (#R1-004)
+- **(high) WeChat XML parser hardened against billion-laughs DoS.**
+  `parse_wechat_xml` used stdlib `xml.etree.ElementTree.fromstring`,
+  vulnerable to entity-expansion bombs against attacker-controlled
+  webhook bodies (vendor signature is a low-entropy shared token —
+  once leaked, attacker can mint signed bomb payloads). Swapped to
+  `defusedxml.ElementTree.fromstring`; widened the catch to
+  `(ET.ParseError, ValueError)` so `EntitiesForbidden` / `DTDForbidden`
+  collapse into the existing 400 contract. New dep: `defusedxml>=0.7.1`
+  on `corlinman-channels`. (#R2-004)
+- **(high) Canvas session-id entropy raised 32 → 192 bits.**
+  `_new_session_id` returned `"cs_" + uuid.uuid4().hex[:8]` (32 bits)
+  guarding `GET /v1/canvas/session/{id}/events` (SSE — operator output
+  exfil) and `POST /v1/canvas/frame` (push frames into another session).
+  With TTL=600s and ≥1 active session, a fan-out scanner could land on
+  a live id within minutes. Switched to `secrets.token_urlsafe(24)` =
+  192-bit ids (NIST SP 800-63B recommendation). Ids are ephemeral so
+  no migration needed. (#R2-005)
+
+### Fixed
+
+- **(critical) Scheduler default cron jobs actually run now.**
+  `scheduler.runner.dispatch()` routed `kind="run_tool"` and
+  `kind="run_agent"` to `_emit_failed("unsupported_action")` instead of
+  the live `BUILTIN_ACTIONS` registry. The two default jobs
+  (`system.update_check` + `evolution.darwin_curate` registered in
+  `entrypoint.py`) silently never fired since the v1.8.0 cron port;
+  the admin "fire now" route worked because it bypassed dispatch — so
+  the bug shipped green. dispatch() now resolves
+  `BUILTIN_ACTIONS[f"{plugin}.{tool}"]`, awaits `run_builtin(...)`, and
+  emits `EngineRunCompleted` (`ok=True`) or `EngineRunFailed(error_kind=
+  "builtin_not_ok")` (`ok=False`). Unknown plugins/tools still emit
+  `unsupported_action` legitimately. (#R3-002)
+- HookEvent emissions in `agent_servicer.py` were passing `turn_id=None`
+  to `TurnComplete` / `TurnErrored` across three branches because
+  `journal_turn_id` was cleared *before* the constructor call (the
+  null-then-use pattern was repeated identically in all three sites).
+  Hook subscribers saw `turn_id=None` for every successful turn, every
+  error-event turn, and every catch-all exception. Now captured into a
+  local before the consume-clear. (#R1-002)
+- Provider clients leaked per chat turn. `AsyncOpenAI(...)` and
+  `AsyncAnthropic(...)` were constructed inline in `chat_stream` with no
+  `await client.close()` on any path — httpx connection pool grew
+  unbounded per turn until fd exhaustion. Now wrapped in `try/finally`
+  with `_safe_close`; 401-recovery on OpenAI explicitly closes the stale
+  client before the retry mints a fresh one. Inherited fix covers
+  Azure / OpenAI-compatible / DeepSeek / Qwen / GLM / Mistral / Cohere /
+  Together / Groq / Replicate. (#R1-003)
+- `useChatStream` leaked an EventSource per rapid resend. The live-stream
+  close-ref was reassigned without invoking the prior close fn, so a
+  second send during an in-flight turn (or `editAndRerun` during the
+  500ms grace window) left the first SSE consumer reducing into a stale
+  `pendingMessage` until page unmount. Now `closeLiveRef.current?.()` runs
+  before reassignment. (#R1-005)
+- `Inbox.increment_retry` had a SELECT-then-UPDATE race — two concurrent
+  retry calls both read `retries=0`, both wrote `1`, lost one increment,
+  so the row never reached `_MAX_RETRIES` and retried forever instead
+  of flipping to `'dead'`. Rewritten as a single atomic `UPDATE … SET
+  retries = retries + 1, status = CASE WHEN retries + 1 >= ? THEN 'dead'
+  ELSE 'pending' END … RETURNING retries`. (#R2-002)
+- Follow-up to the above: the atomic UPDATE had no status guard, so a
+  stray `increment_retry` against an already-`done` or `dead` row would
+  resurrect it back to `'pending'` (the boot drainer or a replayed
+  signal could then redeliver an already-processed message). Added
+  `AND status IN ('pending','dispatched')` to the WHERE clause; the
+  existing `if row is None: return -1` no-op return tells callers the
+  update was a no-op. (#R3-001)
+- Fire-and-forget `asyncio.create_task` calls in
+  `gateway/evolution/signals/user_correction.py` and `corlinman_hooks/bus.py`
+  held no strong reference to the spawned tasks — per CPython asyncio
+  docs, the runtime keeps only weak refs and tasks can be GC'd
+  mid-execution under load, silently dropping signal handler dispatches.
+  Applied the existing `set[Task]` + `add_done_callback(set.discard)`
+  idiom already used in `channels/service.py` and `native_upgrader.py`.
+  (#R2-003)
+- Subagent dispatcher cap was advertised "per-tenant" in docstring,
+  exception name, and config field but actually counted in-flight
+  subagents across all tenants — one noisy tenant could starve every
+  other tenant's dispatches. Added `tenant_id` to `SubagentRequest`
+  (default `"default"` so existing callers keep working), threaded
+  through from `parent_ctx.tenant_id` in `tool_wrapper.py`, and
+  filtered the snapshot via `count_in_flight_for_tenant`. Aligns with
+  the supervisor's authoritative per-tenant ceiling. (#R3-004)
+- `UpgradeStatus.is_terminal()` excluded `"stalled"` while
+  `is_in_flight()` included it. Both `NativeUpgrader.progress` and
+  `DockerUpgrader.progress` used `is_terminal()` as the SSE loop exit
+  condition, so a stalled upgrade left the progress generator polling
+  every 500ms forever — leaking task + WS bytes per observer until the
+  client disconnected. One-line fix: `is_terminal()` now includes
+  `"stalled"`; `is_in_flight()` semantics ("still occupying a slot")
+  preserved. (#R3-005)
+
+### Tests
+
+- New `tests/gateway/routes/test_chat_approve.py` covers all five
+  branches of the per-turn approval handler (503 approvals_disabled,
+  400 invalid_request × 2, 404 resolver miss, 500 resolver exception,
+  200 approve, 200 deny, call_id strip + scope passthrough). The
+  handler shipped with zero direct tests before this commit. (#TEST-001)
+- New `tests/gateway/routes/test_chat_streaming.py` covers the
+  client-disconnect cancel propagation branch in `/v1/chat/completions`
+  by driving the raw ASGI protocol and asserting the scripted
+  `ChatService` observes `cancel.set()` mid-stream. The disconnect
+  branch (the only thing that stops billing upstream tokens after the
+  user closes their tab) was previously unexercised. (#TEST-002)
+- New `tests/test_failover.py` (47 cases) covers the
+  `CorlinmanError` hierarchy in isolation. New
+  `tests/test_anthropic_provider_error_mapping.py` (15 cases) covers
+  Anthropic vendor HTTP status → mapped exception class via respx
+  stubs, including the `BadRequest` message discrimination paths and
+  `Retry-After` header handling. Discovered (filed in audit, not fixed
+  here): Anthropic + OpenAI mappers both drop the `Retry-After` header
+  so `RateLimitError.retry_after_ms` is always `None`. (#TEST-003)
+- New `ui/lib/sse.test.ts` (9 cases) + `ui/lib/sessions/__tests__/event-stream.test.ts`
+  (12 cases) cover the SSE wrapper backoff schedule, retry-counter
+  reset on first message, disposed-flag race, URL composition with /
+  without `since`, malformed-frame handling, and reconnect schedule
+  delegation. Both wrappers shipped with zero direct tests despite
+  carrying every chat / log / approval stream. (#TEST-004 #TEST-005)
+- New `tests/gateway/grpc/test_agent_server.py` (13 cases) +
+  `tests/gateway/routes_admin_a/test_must_change_blocks_admin_routes.py`
+  (10 cases) cover the SEC-204 and SEC-007 fixes respectively. Updated
+  `tests/gateway/lifecycle/test_evolution_wiring.py` (5 cases) to
+  rotate the seeded password before hitting protected admin routes
+  under the new gate.
+
+### Docs
+
+- README no longer lists `newapi` as a production provider — the entire
+  `corlinman-newapi-client` package was deleted, `/admin/newapi*`
+  routes are gone, and `ProviderKind.NEWAPI` was removed. A short
+  migration footnote points operators at the silent
+  `kind: newapi → openai_compatible` shim in `corlinman_providers.specs`.
+  (#QUAL-001)
+- README RAG section downgraded to BM25-only reality. Earlier claims
+  about a "usearch HNSW index", "Reciprocal Rank Fusion", and "optional
+  cross-encoder rerank (`bge-reranker-v2-m3`)" were all aspirational —
+  zero matches in `python/packages/**/src/`. Now described as "SQLite
+  FTS5 (BM25) today; HNSW + RRF + cross-encoder rerank on the roadmap"
+  with a link to `docs/PLAN_PORT_COMPLETION.md`. Chinese section
+  mirrored. (#QUAL-004)
+- Bonus: Chinese `doctor` count corrected `21 项 → 9 项` to match
+  the actual `doctor.py` check registry. (#QUAL-005)
+- Version badge bumped 1.7.0 → 1.9.0. (#QUAL-002)
+
 ## [1.8.13] — 2026-05-28 — Fix: glass-card backdrop covers every chat pane
 
 > Follow-up to v1.8.12. The glass-card backdrop was only painting on
