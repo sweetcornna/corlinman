@@ -799,12 +799,22 @@ class SqliteJournalBackend:
 
         ``turn_id`` is wall-clock ms — uniqueness across one process is
         good enough for a chat-turn store. Two inserts in the same ms
-        collide on the PK; we retry with ms+1 on
-        :class:`aiosqlite.IntegrityError`.
+        collide on the PK; we retry with ms+offset (offset in
+        ``range(0, 20)``) on :class:`aiosqlite.IntegrityError`.
 
-        L5: the retry only catches ``IntegrityError`` — narrowed from
-        the previous broad ``aiosqlite.Error`` so a corrupted DB or I/O
-        error surfaces as a real exception instead of looping silently.
+        BUG-010: if all 20 ms+offset candidates are taken the method does
+        NOT fall back to returning a colliding/uninserted id. Instead it
+        allocates strictly above ``MAX(turn_id)`` and retries until a row
+        this call actually inserts lands, so the returned id ALWAYS
+        corresponds to a row created by this call. The previous fall-through
+        ``return ts`` handed back the id that collided on iteration 0 — the
+        caller then mutated a different pre-existing turn (cross-turn
+        corruption).
+
+        L5: the per-candidate retry only catches ``IntegrityError`` —
+        narrowed from the previous broad ``aiosqlite.Error`` so a corrupted
+        DB or I/O error surfaces as a real exception instead of looping
+        silently.
 
         S4 — ``user_id`` is stored so a later
         ``find_resumable_turn`` can scope its match by sender. ``None``
@@ -826,36 +836,72 @@ class SqliteJournalBackend:
         """
         conn = self._c
         ts = int(time.time() * 1000)
+
+        async def _try_insert(tid: int) -> bool:
+            """INSERT one in-progress row at ``tid``; True iff it landed.
+
+            ``started_at_ms`` is always ``ts`` (the wall-clock arrival
+            time) regardless of which candidate ``tid`` won, so the
+            collision-avoidance bump only perturbs the PK, never the
+            recorded turn-start time. Returns False on PK collision so the
+            caller can try the next candidate; any other ``aiosqlite``
+            error propagates (a corrupted DB / I/O fault must not be
+            silently retried into an infinite loop).
+            """
+            try:
+                await conn.execute(
+                    "INSERT INTO turns (turn_id, session_key, status, "
+                    "started_at_ms, user_text, user_id, channel, "
+                    "pending_question_json) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        tid,
+                        session_key or "",
+                        TURN_IN_PROGRESS,
+                        ts,
+                        user_text,
+                        user_id,
+                        channel or "",
+                        pending_question_json,
+                    ),
+                )
+                await conn.commit()
+                return True
+            except aiosqlite.IntegrityError:
+                # PK collision — ``commit`` is not reached on the failed
+                # INSERT, so sqlite auto-aborts the statement and no
+                # rollback is needed; the next candidate is almost
+                # certainly free.
+                return False
+
         async with self._write_lock:
+            # Fast path: same-ms callers collide on the PK, so walk a small
+            # ms+offset window first — cheap and keeps turn_ids close to the
+            # arrival time for the common (low-contention) case.
             for offset in range(0, 20):
-                tid = ts + offset
-                try:
-                    await conn.execute(
-                        "INSERT INTO turns (turn_id, session_key, status, "
-                        "started_at_ms, user_text, user_id, channel, "
-                        "pending_question_json) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                        (
-                            tid,
-                            session_key or "",
-                            TURN_IN_PROGRESS,
-                            ts,
-                            user_text,
-                            user_id,
-                            channel or "",
-                            pending_question_json,
-                        ),
-                    )
-                    await conn.commit()
+                if await _try_insert(ts + offset):
+                    return ts + offset
+            # BUG-010: the ms+offset window is exhausted (every id in
+            # ``ts..ts+19`` was already taken). The previous code returned
+            # ``ts`` here — an id that ALREADY collided and that this call
+            # NEVER inserted — so the caller's complete_turn/append would
+            # mutate a DIFFERENT existing turn (cross-turn corruption).
+            # Instead, allocate strictly above the current high-water mark
+            # and keep retrying until a row this call actually inserts
+            # lands. We hold ``_write_lock`` throughout, so MAX(turn_id) is
+            # stable between the SELECT and the INSERT and the loop
+            # terminates: each pass either inserts or someone else's id is
+            # already above ours, in which case the next MAX is higher.
+            while True:
+                cur = await conn.execute(
+                    "SELECT COALESCE(MAX(turn_id), ?) + 1 FROM turns",
+                    (ts,),
+                )
+                row = await cur.fetchone()
+                await cur.close()
+                tid = int(row[0]) if row is not None else ts + 20
+                if await _try_insert(tid):
                     return tid
-                except aiosqlite.IntegrityError:
-                    # PK collision — the next ms is almost certainly free.
-                    # ``commit`` is not reached on the failed INSERT, so
-                    # sqlite auto-aborts the statement and no rollback is
-                    # needed.
-                    continue
-        # Vanishingly unlikely; fall through with a tagged turn_id.
-        return ts
 
     async def complete_turn(self, turn_id: int) -> None:
         """Stamp ``turn_id`` as completed and populate W1.2 aggregate columns.
@@ -1323,50 +1369,76 @@ class SqliteJournalBackend:
         """Aggregate ``turns`` by ``session_key`` for the
         ``/admin/sessions`` UI.
 
-        The aggregate is computed in a single SQL statement using a
-        ``GROUP BY session_key`` with a correlated subquery for the
-        most-recent turn's ``user_text`` + ``status`` so the listing
-        scales to thousands of turns without round-tripping each
-        session_key from Python.
+        PERF-006: the aggregate is computed with grouped CTEs + a window
+        function rather than per-grouped-row correlated subqueries. The
+        previous form recomputed ``message_count`` / ``last_user_text`` /
+        ``last_status`` with three correlated scalar subqueries for EVERY
+        session row — O(sessions × turns × msgs). This rewrite does a
+        single grouped pass for the counts (``msg_counts`` CTE) and a
+        single windowed pass to pick the most-recent turn per session
+        (``last_turn`` CTE, ``ROW_NUMBER() OVER (PARTITION BY
+        session_key ORDER BY started_at_ms DESC, turn_id DESC)``), then
+        joins them to the outer ``turns`` aggregate.
+
+        The RESULT is identical to the old form: same columns, same
+        last-turn tie-break (``started_at_ms DESC, turn_id DESC`` so the
+        newest turn — and, on a same-ms tie, the larger ``turn_id`` —
+        wins BOTH ``last_user_text`` and ``last_status`` from the SAME
+        row, never a cross-column mix), and the same ``message_count``
+        semantics (every ``turn_messages`` row across the session's
+        turns).
+
+        In-app chat MVP — LEFT JOIN ``session_meta`` so the
+        operator-supplied title / pinned / archived ride along in the
+        same scan. COALESCE on pinned/archived so sessions that pre-date
+        the meta table (or simply have no row yet) sort as unpinned +
+        unarchived. ORDER BY ``pinned_sort DESC, last_seen DESC`` keeps
+        pinned sessions on top regardless of recency.
         """
         if limit <= 0:
             return []
         try:
             cur = await self._c.execute(
-                # The outer aggregate gives us the counts; the
-                # subquery (``last_turn``) pins the *most recent* turn's
-                # user_text + status for the preview column. Using a
-                # correlated subquery keeps the query a single round
-                # trip; an alternative window-function form is
-                # equivalent on SQLite >= 3.25 but more verbose.
+                # ``msg_counts``: one grouped pass over turn_messages
+                # joined to turns gives the per-session message total
+                # (INNER JOIN so only real turn rows count; sessions with
+                # zero messages simply don't appear here and fall back to
+                # 0 via the LEFT JOIN + COALESCE below).
                 #
-                # In-app chat MVP — LEFT JOIN ``session_meta`` so the
-                # operator-supplied title / pinned / archived ride along
-                # in the same scan. COALESCE on pinned/archived so
-                # sessions that pre-date the meta table (or simply have
-                # no row yet) sort as unpinned + unarchived. ORDER BY
-                # ``pinned_sort DESC, last_seen DESC`` keeps pinned
-                # sessions on top regardless of recency.
+                # ``last_turn``: one windowed pass tags each turn with its
+                # rank within the session by (started_at_ms DESC, turn_id
+                # DESC); rn = 1 is the single most-recent turn, so its
+                # user_text + status come from ONE row (no cross-column
+                # mix on a same-ms tie).
+                "WITH msg_counts AS ("
+                "    SELECT t.session_key AS session_key, "
+                "           COUNT(*)      AS message_count "
+                "    FROM turn_messages tm "
+                "    JOIN turns t ON t.turn_id = tm.turn_id "
+                "    GROUP BY t.session_key"
+                "), "
+                "last_turn AS ("
+                "    SELECT session_key, user_text, status, "
+                "           ROW_NUMBER() OVER ("
+                "               PARTITION BY session_key "
+                "               ORDER BY started_at_ms DESC, turn_id DESC"
+                "           ) AS rn "
+                "    FROM turns"
+                ") "
                 "SELECT t.session_key, "
                 "       MIN(t.started_at_ms) AS first_seen, "
                 "       MAX(t.started_at_ms) AS last_seen, "
                 "       COUNT(*)             AS turn_count, "
-                "       (SELECT COUNT(*) FROM turn_messages tm "
-                "        WHERE tm.turn_id IN (SELECT turn_id FROM turns "
-                "                             WHERE session_key = t.session_key)) "
-                "                            AS message_count, "
-                "       (SELECT user_text FROM turns "
-                "        WHERE session_key = t.session_key "
-                "        ORDER BY started_at_ms DESC, turn_id DESC LIMIT 1) "
-                "                            AS last_user_text, "
-                "       (SELECT status FROM turns "
-                "        WHERE session_key = t.session_key "
-                "        ORDER BY started_at_ms DESC, turn_id DESC LIMIT 1) "
-                "                            AS last_status, "
+                "       COALESCE(mc.message_count, 0) AS message_count, "
+                "       lt.user_text         AS last_user_text, "
+                "       lt.status            AS last_status, "
                 "       sm.title             AS meta_title, "
                 "       COALESCE(sm.pinned, 0)   AS pinned_sort, "
                 "       COALESCE(sm.archived, 0) AS archived_sort "
                 "FROM turns t "
+                "LEFT JOIN msg_counts mc ON mc.session_key = t.session_key "
+                "LEFT JOIN last_turn lt "
+                "       ON lt.session_key = t.session_key AND lt.rn = 1 "
                 "LEFT JOIN session_meta sm ON sm.session_key = t.session_key "
                 "GROUP BY t.session_key "
                 "ORDER BY pinned_sort DESC, last_seen DESC "
