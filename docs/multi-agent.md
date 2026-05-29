@@ -168,9 +168,26 @@ Semantics:
 
 ## Background dispatch
 
-When `run_in_background: true`, the tool returns the moment the
-supervisor has admitted the request — the child runs detached and the
-parent can resume its turn:
+> **Status (as of v1.9.x): NOT YET IMPLEMENTED.** Setting
+> `run_in_background: true` currently returns a clean rejection envelope
+> (`finish_reason=REJECTED`, `error="run_in_background_not_implemented"`)
+> and the spawn does **not** run detached — use the default (synchronous,
+> foreground) spawn instead. The gateway ships an `AsyncSubagentDispatcher`
+> + persistent task store, but the dispatcher's `run_child_factory` is not
+> wired to a real child runner, and `agent_servicer` does not yet thread
+> the dispatcher into the spawn tool path. A complete implementation also
+> needs: the parent-side tool snapshot + model + depth + `max_wall_seconds`
+> persisted onto `SubagentRequest` (today only metadata is stored, so a
+> background child cannot inherit the parent's tools and would be
+> pure-LLM-only); the `start_turn_for_subagent_notification` journal helper
+> (missing from every backend, so the "synthetic user msg" below is
+> currently a no-op); routing through the Rust supervisor so all three
+> R3-004 caps apply; and a boot-time sweep to reconcile orphaned
+> `running` rows after a restart. Tracked in `audit/ARCH_DEBT.md`.
+
+The intended design (once implemented): when `run_in_background: true`,
+the tool returns the moment the supervisor has admitted the request — the
+child runs detached and the parent can resume its turn:
 
 ```
 main model                gateway                 child loop
