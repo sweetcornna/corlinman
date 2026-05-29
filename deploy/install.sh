@@ -174,6 +174,48 @@ secure_root_executed_scripts() {
     done
 }
 
+# ----- Runtime path ownership model (native Linux) ---------------------------
+# The native gateway runs as the unprivileged SERVICE_USER but must be able to
+# *execute* the venv entrypoint and *read/write* its data + UI export. Three
+# distinct ownership tiers, chosen so neither the de-privileged gateway nor the
+# root upgrader is broken:
+#
+#   * DATA_DIR, ui-static  → SERVICE_USER:SERVICE_USER (runtime read/write).
+#   * $PREFIX/repo/.venv   → root:SERVICE_USER, group read+exec, NOT group
+#                            write. The gateway runs .venv/bin/corlinman-gateway
+#                            and the ROOT upgrader runs .venv/bin/python
+#                            (deploy/corlinman-upgrader.sh §6); owning it
+#                            root:SERVICE_USER lets the corlinman user execute
+#                            the interpreter without being able to rewrite it,
+#                            so the root-executed python can't be tampered with
+#                            (no LPE). This is the same reason
+#                            secure_root_executed_scripts re-owns the two .sh
+#                            files to root — the venv interpreter is the third
+#                            root-executed artifact and gets the same treatment.
+#
+# Idempotent: safe to call on fresh install and on every upgrade (after the
+# `uv sync` that rewrites .venv root-owned).
+chown_runtime_paths() {
+    [[ "$(uname -s)" == "Linux" ]] || return 0
+    log "chowning runtime paths (data+ui → $SERVICE_USER; .venv → root:$SERVICE_USER)"
+    sudo chown -R "$SERVICE_USER:$SERVICE_USER" "$DATA_DIR" \
+        || warn "could not chown $DATA_DIR to $SERVICE_USER"
+    if [[ -d "$PREFIX/ui-static" ]]; then
+        sudo chown -R "$SERVICE_USER:$SERVICE_USER" "$PREFIX/ui-static" \
+            || warn "could not chown $PREFIX/ui-static to $SERVICE_USER"
+    fi
+    # The venv is executed by BOTH the unprivileged gateway and the root
+    # upgrader, so own it root:SERVICE_USER (group can read+exec, not write)
+    # and strip group/other write so the unprivileged user can't rewrite the
+    # interpreter the root upgrader runs.
+    if [[ -d "$PREFIX/repo/.venv" ]]; then
+        sudo chown -R "root:$SERVICE_USER" "$PREFIX/repo/.venv" \
+            || warn "could not chown $PREFIX/repo/.venv to root:$SERVICE_USER"
+        sudo chmod -R g-w,o-w "$PREFIX/repo/.venv" \
+            || warn "could not strip group/other write from $PREFIX/repo/.venv"
+    fi
+}
+
 # ----- PATH augmentation -----------------------------------------------------
 # install.sh is called both interactively (where ~/.bashrc has already
 # pulled ~/.local/bin into PATH) and from `corlinman-upgrader.service`
@@ -761,20 +803,22 @@ install_native() {
     mkdir -p "$DATA_DIR"
 
     if [[ "$(uname -s)" == "Linux" ]]; then
-        # Create the unprivileged service account and hand it the runtime-
-        # writable paths BEFORE writing the unit that runs as it. The gateway
-        # owns its DATA_DIR (config.toml, sqlite, uploads) and reads the
-        # ui-static export, so both must be readable/writable by SERVICE_USER.
+        # Create the unprivileged service account and hand it the runtime
+        # paths the de-privileged gateway needs BEFORE writing the unit that
+        # runs as it.
         ensure_service_user
-        log "chowning runtime paths to $SERVICE_USER"
-        sudo chown -R "$SERVICE_USER:$SERVICE_USER" "$DATA_DIR" \
-            || warn "could not chown $DATA_DIR to $SERVICE_USER"
-        [[ -d "$PREFIX/ui-static" ]] \
-            && sudo chown -R "$SERVICE_USER:$SERVICE_USER" "$PREFIX/ui-static" \
-            || true
+        chown_runtime_paths
 
         log "writing systemd unit"
-        local uv_path; uv_path="$(command -v uv)"
+        # Invoke the venv-resident console-script directly rather than
+        # `$(command -v uv) run corlinman-gateway`. On a root install
+        # `command -v uv` is /root/.local/bin/uv (under /root, mode 0700) —
+        # the corlinman service user gets EACCES on it — and `uv run` also
+        # needs a writable ~/.cache/uv that a homeless system user lacks. The
+        # console-script entry point is generated into the venv by
+        # `uv sync` (corlinman-gateway = ...:main in corlinman-server's
+        # pyproject [project.scripts]), so the venv bin is self-contained and
+        # only depends on paths chown_runtime_paths made SERVICE_USER-readable.
         sudo tee /etc/systemd/system/corlinman.service >/dev/null <<EOF
 [Unit]
 Description=corlinman gateway (Python)
@@ -785,8 +829,9 @@ Type=simple
 User=${SERVICE_USER}
 Group=${SERVICE_USER}
 WorkingDirectory=${PREFIX}/repo
-ExecStart=${uv_path} run corlinman-gateway --config ${DATA_DIR}/config.toml --port ${PORT}
+ExecStart=${PREFIX}/repo/.venv/bin/corlinman-gateway --config ${DATA_DIR}/config.toml --port ${PORT}
 EnvironmentFile=-${PREFIX}/.env
+Environment=HOME=${DATA_DIR}
 Environment=CORLINMAN_DATA_DIR=${DATA_DIR}
 Environment=CORLINMAN_UI_DIR=${PREFIX}/ui-static
 Environment=BIND=0.0.0.0
@@ -898,6 +943,18 @@ upgrade_native() {
     # ``--skip-ui`` keeps the legacy behaviour for headless / docker-
     # external-UI deployments.
     build_and_place_ui
+
+    # Re-establish the ownership invariant the de-privileged gateway depends
+    # on. `uv sync` above rewrote $PREFIX/repo/.venv (root-owned, since the
+    # upgrader runs as root) and build_and_place_ui rsynced a fresh ui-static;
+    # without re-chowning, the corlinman service can't execute the venv
+    # entrypoint or read the UI and crash-loops after the restart below.
+    # ensure_service_user covers hosts upgraded from a pre-S3 install that
+    # never created the account. No-op on Darwin / docker-external-UI.
+    if [[ "$(uname -s)" == "Linux" ]]; then
+        ensure_service_user
+        chown_runtime_paths
+    fi
 
     if [[ "$(uname -s)" == "Linux" ]] \
         && [[ -f /etc/systemd/system/corlinman.service ]]; then
