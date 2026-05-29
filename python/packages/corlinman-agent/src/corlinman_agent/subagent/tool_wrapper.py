@@ -925,6 +925,7 @@ async def _dispatch_via_background(
         description=parsed.description,
         requested_at=int(_time.time() * 1000),
         requested_by=None,
+        tenant_id=parent_ctx.tenant_id,
     )
 
     try:

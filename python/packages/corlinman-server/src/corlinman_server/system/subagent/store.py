@@ -100,6 +100,12 @@ class SubagentRequest:
     description: str | None
     requested_at: int  # epoch ms
     requested_by: str | None
+    #: Tenant the request belongs to. Used by the dispatcher's per-tenant
+    #: quota check (see :class:`AsyncSubagentDispatcher`) so a noisy
+    #: tenant cannot starve other tenants at the surface refusal layer.
+    #: Defaults to ``"default"`` so callers in single-tenant deployments
+    #: and persisted rows from before this field existed keep working.
+    tenant_id: str = "default"
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)
@@ -209,6 +215,7 @@ class SubagentTaskStore:
                         description=raw_req.get("description"),
                         requested_at=int(raw_req["requested_at"]),
                         requested_by=raw_req.get("requested_by"),
+                        tenant_id=str(raw_req.get("tenant_id") or "default"),
                     )
                 except (KeyError, TypeError, ValueError):
                     continue
@@ -356,6 +363,25 @@ class SubagentTaskStore:
                 SubagentStatus(**asdict(status))
                 for status in self._statuses.values()
             ]
+
+    async def count_in_flight_for_tenant(self, tenant_id: str) -> int:
+        """Return the count of in-flight statuses owned by ``tenant_id``.
+
+        Used by :class:`AsyncSubagentDispatcher` for its per-tenant
+        surface refusal so a noisy tenant can't starve other tenants
+        (R3-004 — :class:`SubagentStatus` itself doesn't carry the
+        tenant; we cross-reference the :class:`SubagentRequest` row
+        which does).
+        """
+        async with self._lock:
+            count = 0
+            for rid, status in self._statuses.items():
+                if not status.is_in_flight():
+                    continue
+                req = self._requests.get(rid)
+                if req is not None and req.tenant_id == tenant_id:
+                    count += 1
+            return count
 
     async def append_log(self, request_id: str, chunk: str) -> None:
         """Append ``chunk`` to ``log_tail``, trimming to the last 4 kB.

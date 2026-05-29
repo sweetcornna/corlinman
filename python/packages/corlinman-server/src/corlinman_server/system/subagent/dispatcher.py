@@ -82,12 +82,16 @@ class TenantQuotaExceeded(Exception):
     on the dispatcher.
     """
 
-    def __init__(self, *, active: int, ceiling: int) -> None:
+    def __init__(
+        self, *, active: int, ceiling: int, tenant_id: str = "default"
+    ) -> None:
         super().__init__(
-            f"subagent tenant quota exceeded: {active}/{ceiling} active"
+            f"subagent tenant quota exceeded for {tenant_id!r}: "
+            f"{active}/{ceiling} active"
         )
         self.active = active
         self.ceiling = ceiling
+        self.tenant_id = tenant_id
 
 
 # ---------------------------------------------------------------------------
@@ -289,15 +293,19 @@ class AsyncSubagentDispatcher:
         is already full.
         """
         async with self._lock:
-            active = sum(
-                1
-                for status in await _snapshot(self._store)
-                if status.is_in_flight()
-            )
+            # R3-004: per-tenant scope — the supervisor enforces the cap
+            # per-tenant (see corlinman_subagent.supervisor.try_acquire)
+            # and this dispatcher's surface refusal must agree, otherwise
+            # one noisy tenant fills the cap and starves every other
+            # tenant's dispatches with a misleading "tenant quota
+            # exceeded" error that lies about which tenant owns the
+            # active rows.
+            active = await self._store.count_in_flight_for_tenant(req.tenant_id)
             if active >= self._max_concurrent_per_tenant:
                 raise TenantQuotaExceeded(
                     active=active,
                     ceiling=self._max_concurrent_per_tenant,
+                    tenant_id=req.tenant_id,
                 )
 
             seeded = await self._store.begin(req)

@@ -329,6 +329,103 @@ async def test_max_concurrent_per_tenant_enforced(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_tenant_quota_is_scoped_per_tenant(tmp_path: Path) -> None:
+    """Regression for R3-004 — the cap is documented + named per-tenant,
+    and the supervisor enforces it per-tenant. A noisy tenant must not
+    starve other tenants at the dispatcher's surface refusal.
+    """
+    store = SubagentTaskStore(tmp_path / ".subagent-state.json")
+    gates: list[asyncio.Event] = []
+
+    async def factory(req: SubagentRequest) -> _FakeTaskResult:
+        gate = asyncio.Event()
+        gates.append(gate)
+        await gate.wait()
+        return _FakeTaskResult(output_text="ok", finish_reason="stop")
+
+    dispatcher = AsyncSubagentDispatcher(
+        store=store,
+        run_child_factory=factory,
+        max_concurrent_per_tenant=2,
+    )
+
+    # Tenant A fills its per-tenant cap.
+    await dispatcher.dispatch_async(
+        SubagentRequest(
+            request_id="A1",
+            parent_session_key="sess-A",
+            parent_agent_id="agent-a",
+            subagent_type="researcher",
+            goal="g",
+            description=None,
+            requested_at=int(time.time() * 1000),
+            requested_by=None,
+            tenant_id="tenant-A",
+        )
+    )
+    await dispatcher.dispatch_async(
+        SubagentRequest(
+            request_id="A2",
+            parent_session_key="sess-A",
+            parent_agent_id="agent-a",
+            subagent_type="researcher",
+            goal="g",
+            description=None,
+            requested_at=int(time.time() * 1000),
+            requested_by=None,
+            tenant_id="tenant-A",
+        )
+    )
+
+    # A third request for tenant A is refused — its own cap is full.
+    with pytest.raises(TenantQuotaExceeded):
+        await dispatcher.dispatch_async(
+            SubagentRequest(
+                request_id="A3",
+                parent_session_key="sess-A",
+                parent_agent_id="agent-a",
+                subagent_type="researcher",
+                goal="g",
+                description=None,
+                requested_at=int(time.time() * 1000),
+                requested_by=None,
+                tenant_id="tenant-A",
+            )
+        )
+
+    # Tenant B has 0 in flight — its dispatch MUST succeed even though
+    # tenant A has filled its own (per-tenant) ceiling.
+    status_b = await dispatcher.dispatch_async(
+        SubagentRequest(
+            request_id="B1",
+            parent_session_key="sess-B",
+            parent_agent_id="agent-b",
+            subagent_type="researcher",
+            goal="g",
+            description=None,
+            requested_at=int(time.time() * 1000),
+            requested_by=None,
+            tenant_id="tenant-B",
+        )
+    )
+    assert status_b.state == "running"
+
+    # Drain — release factory gates so tasks finish cleanly.
+    for g in gates:
+        g.set()
+    for _ in range(100):
+        in_flight = False
+        for rid in ("A1", "A2", "B1"):
+            row = await store.get(rid)
+            if row is not None and row.is_in_flight():
+                in_flight = True
+                break
+        if not in_flight:
+            break
+        await asyncio.sleep(0.01)
+
+
+@pytest.mark.asyncio
 async def test_terminal_writes_synthetic_notification(tmp_path: Path) -> None:
     store = SubagentTaskStore(tmp_path / ".subagent-state.json")
     journal = _FakeJournal()
