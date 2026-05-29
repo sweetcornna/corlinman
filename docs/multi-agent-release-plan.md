@@ -96,7 +96,7 @@ follow-up tasks scoped tightly.
   `aarch64-linux-gnu`, `x86_64-linux-gnu` exist through v0.6.4+.
   `deploy/install.sh` supports `--mode docker` and `--mode native`.
 - `docker/Dockerfile:55-69` — cargo-chef recipe caching is in place.
-  ghcr.io/ymylive/corlinman will be published per tag + `:latest` once
+  ghcr.io/sweetcornna/corlinman will be published per tag + `:latest` once
   `.github/workflows/release-image.yml` ships (see PLAN_DEPLOY_UX.md task B).
   Until then the docker mode falls back to a local `buildx` build.
 
@@ -215,15 +215,15 @@ Three changes, smallest blast radius first:
 
 1. **Split the runtime image.** Today `runtime` carries `python:3.12-slim`
    + nodejs + venv + rust binaries (~ 350 MB). Split into:
-   - `ghcr.io/ymylive/corlinman-base:<py-version>` — python + node + uv,
+   - `ghcr.io/sweetcornna/corlinman-base:<py-version>` — python + node + uv,
      bumped only when language toolchains move. Built and pushed once
      per quarter.
-   - `ghcr.io/ymylive/corlinman:<tag>` — `FROM corlinman-base`, just the
+   - `ghcr.io/sweetcornna/corlinman:<tag>` — `FROM corlinman-base`, just the
      application bits. Per-tag pull drops to ~80 MB.
 2. **Pre-bake the venv as a named layer.** Currently the venv is
    `COPY`-ed wholesale (Dockerfile:147). Move it to its own `FROM scratch
    AS venv` and `COPY --from=venv` so it cache-hits across Rust-only
-   changes. Bonus: lets us publish `ghcr.io/ymylive/corlinman-venv:<lock-hash>`
+   changes. Bonus: lets us publish `ghcr.io/sweetcornna/corlinman-venv:<lock-hash>`
    that local dev can `docker pull` instead of running `uv sync` (~3 min
    on a clean clone).
 3. **Cache hint for cargo-chef.** Add `--mount=type=cache,target=/usr/local/cargo/registry`
@@ -321,11 +321,11 @@ on cold (already true today, just regressed-test it).
    ghcr as `corlinman-base:py3.12-node20`.
 2. Rewrite `docker/Dockerfile` to `FROM corlinman-base`. Move the venv
    into its own multi-stage so `--cache-from
-   ghcr.io/ymylive/corlinman-venv:<uv.lock-hash>` works.
+   ghcr.io/sweetcornna/corlinman-venv:<uv.lock-hash>` works.
 3. Add `--mount=type=cache` to cargo-chef step.
 4. CI matrix: build base image only when `pyproject.toml` or `uv.lock`
    changes; otherwise reuse the published one.
-5. Smoke: `time docker pull ghcr.io/ymylive/corlinman:0.7.0-rc1`
+5. Smoke: `time docker pull ghcr.io/sweetcornna/corlinman:0.7.0-rc1`
    on a clean Docker host should be ≤ 15 s.
 
 **Acceptance:** clean-clone `docker compose up` finishes in ≤ 90 s

@@ -375,11 +375,11 @@ action = { type = "subprocess", command = "corlinman-user-model", args = ["disti
 # when `[evolution.shadow].sandbox_kind = "docker"`; the default
 # `in_process` mode reads neither this section nor the `image` tag.
 # The image is built from `docker/Dockerfile.shadow-sandbox` and
-# pinned to `ghcr.io/ymylive/corlinman-sandbox:v1` once published;
+# pinned to `ghcr.io/sweetcornna/corlinman-sandbox:v1` once published;
 # operators running before that publish must override `image` to a
 # locally-built tag (e.g. `corlinman-sandbox:dev`).
 [evolution.shadow.sandbox]
-image         = "ghcr.io/ymylive/corlinman-sandbox:v1"
+image         = "ghcr.io/sweetcornna/corlinman-sandbox:v1"
 network       = "none"
 mem_mb        = 512
 timeout_secs  = 60
@@ -610,7 +610,7 @@ interval_hours = 6
 include_prereleases = false
 
 # Source GitHub repo to poll. Override if you've forked corlinman.
-repo = "ymylive/corlinman"
+repo = "sweetcornna/corlinman"
 
 # Optional GitHub PAT. Unauthenticated requests are throttled to 60/hr
 # per IP; ETag caching keeps cost low so this is rarely needed for a

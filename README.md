@@ -1,6 +1,6 @@
 # corlinman
 
-[![CI](https://img.shields.io/github/actions/workflow/status/ymylive/corlinman/ci.yml?branch=main&label=CI)](https://github.com/ymylive/corlinman/actions)
+[![CI](https://img.shields.io/github/actions/workflow/status/sweetcornna/corlinman/ci.yml?branch=main&label=CI)](https://github.com/sweetcornna/corlinman/actions)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/version-1.7.0-brightgreen)](CHANGELOG.md)
 [![Docs](https://img.shields.io/badge/docs-architecture-informational)](docs/architecture.md)
@@ -20,7 +20,7 @@ govern with human-in-the-loop approvals.
 ## 🚀 一键安装最新版本
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/sweetcornna/corlinman/main/deploy/install.sh | bash
 ```
 
 升级到最新版本（保留所有数据）：
@@ -78,7 +78,7 @@ Use the [one-line installer at the top of this README](#-一键安装最新版�
 Behind the scenes that single command does the rest:
 
 1. **Preflight** — checks disk (≥ 5 GB), RAM (≥ 1 GB), port `6005`, docker version, required tools. Bails early with a clear `✗ port 6005 held by PID …` if anything's off.
-2. **Image** — `docker pull ghcr.io/ymylive/corlinman:latest` (multi-arch amd64/arm64, ~30 s). Falls back to a local `docker buildx build` if the registry is unreachable.
+2. **Image** — `docker pull ghcr.io/sweetcornna/corlinman:latest` (multi-arch amd64/arm64, ~30 s). Falls back to a local `docker buildx build` if the registry is unreachable.
 3. **Boot** — `docker compose up -d` with the bundled compose file.
 4. **Health gate** — polls `/health` until 200 (≤ 60 s; override with `CORLINMAN_HEALTH_TIMEOUT`).
 5. **Done** — prints the URL to open and the seed credentials:
@@ -164,8 +164,8 @@ Two ways in. **Humans pick the one-liner;** **AI agents read [`deploy/AI_DEPLOY.
 
 | Path | One-liner | Notes |
 | --- | --- | --- |
-| **Docker (recommended)** | `curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh \| bash -s -- --mode docker` | Pulls `ghcr.io/ymylive/corlinman:latest` (multi-arch amd64+arm64), falls back to a local build if the registry is unreachable. Needs Docker Engine 24+ with the compose v2 plugin. |
-| **Native (uv + systemd)** | `curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh \| bash -s -- --mode native` | Installs `uv`, clones the repo to `/opt/corlinman/repo`, syncs the workspace, registers a systemd unit. No container runtime needed. |
+| **Docker (recommended)** | `curl -fsSL https://raw.githubusercontent.com/sweetcornna/corlinman/main/deploy/install.sh \| bash -s -- --mode docker` | Pulls `ghcr.io/sweetcornna/corlinman:latest` (multi-arch amd64+arm64), falls back to a local build if the registry is unreachable. Needs Docker Engine 24+ with the compose v2 plugin. |
+| **Native (uv + systemd)** | `curl -fsSL https://raw.githubusercontent.com/sweetcornna/corlinman/main/deploy/install.sh \| bash -s -- --mode native` | Installs `uv`, clones the repo to `/opt/corlinman/repo`, syncs the workspace, registers a systemd unit. No container runtime needed. |
 | **In-place upgrade** | `bash deploy/install.sh --upgrade` (any mode) | Auto-detects docker vs native, pulls/rebuilds the new image or re-syncs the venv, restarts the service, re-probes `/health`. Never touches `$DATA_DIR`. Re-run with `--version vX.Y.Z` to pin a specific release tag. |
 | **🇨🇳 China network** | append ` --china` to either fresh-install command above | Switches PyPI → Tsinghua, Docker Hub → DaoCloud, github.com → gh-proxy.com, npm → npmmirror. Auto-enabled when `pypi.org` TTFB > 3s. See [China-region deployment](#-china-region-deployment) below. |
 | **🤖 QQ bot sidecar** | append ` --with-qq` to the docker fresh-install command | Layers `docker-compose.qq.yml` so NapCat (OneBot v11) boots alongside corlinman. The installer materialises `.env` from `deploy/.env.template` on first run and prompts you to fill in `QQ_*` / `OPENAI_API_KEY` before re-running. Docker mode only — NapCat is a container. |
@@ -215,7 +215,7 @@ restarts the gateway.
 # 例：用阿里云 PyPI + 自己自建的 docker registry mirror
 CN_PIP_INDEX=https://mirrors.aliyun.com/pypi/simple/ \
 CN_DOCKER_MIRROR=https://your.mirror/ \
-  curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh \
+  curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/sweetcornna/corlinman/main/deploy/install.sh \
     | bash -s -- --mode docker --china
 ```
 
@@ -228,7 +228,7 @@ CN_DOCKER_MIRROR=https://your.mirror/ \
 
 **真离线场景**（VPS 没有外网）：先在能联网的机器上 `docker save` 镜像 +
 `uv pip download` 全部 wheel 到本地仓库，scp 过去再装。`docker save
-ghcr.io/ymylive/corlinman:dev | ssh vps "docker load"` 是最快的搬运姿势。
+ghcr.io/sweetcornna/corlinman:dev | ssh vps "docker load"` 是最快的搬运姿势。
 
 ### For AI agents — prompt-driven deploy
 
@@ -253,7 +253,7 @@ is mostly orchestration + verification, not babysitting the bash.
 ```bash
 # Container path — pull the prebuilt image (or set CORLINMAN_TAG=local
 # to force a local build via the bundled compose file).
-git clone https://github.com/ymylive/corlinman && cd corlinman
+git clone https://github.com/sweetcornna/corlinman && cd corlinman
 docker compose -f docker/compose/docker-compose.yml pull
 docker compose -f docker/compose/docker-compose.yml up -d
 
@@ -757,13 +757,13 @@ MIT. See [`LICENSE`](LICENSE).
 
 ```bash
 # 一行装好，全自动 preflight → 拉镜像 → 启动 → 等 /health 200 → 打印 URL
-curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/sweetcornna/corlinman/main/deploy/install.sh | bash
 
 # 国内网络加 --china（清华 PyPI / gh-proxy / DaoCloud），TTFB > 3 秒会自动开
-curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh | bash -s -- --china
+curl -fsSL https://raw.githubusercontent.com/sweetcornna/corlinman/main/deploy/install.sh | bash -s -- --china
 
 # 想顺便起 NapCat QQ 机器人就再加 --with-qq（docker 模式）
-curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh | bash -s -- --china --with-qq
+curl -fsSL https://raw.githubusercontent.com/sweetcornna/corlinman/main/deploy/install.sh | bash -s -- --china --with-qq
 ```
 
 装完打开 `http://<服务器>:6005/login`，用 `admin` / `root` 登录后会被

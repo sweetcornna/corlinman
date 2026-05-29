@@ -1,0 +1,64 @@
+deploy/AI_DEPLOY.md:33:   or container based on `ghcr.io/ymylive/corlinman:v0.*`), record it for the
+deploy/AI_DEPLOY.md:57:ssh USER@HOST 'curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh \
+deploy/AI_DEPLOY.md:62:- Tries `docker pull ghcr.io/ymylive/corlinman:latest` first (multi-arch image
+deploy/AI_DEPLOY.md:79:ssh USER@HOST 'curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh \
+deploy/AI_DEPLOY.md:90:ssh USER@HOST 'curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh \
+deploy/corlinman-upgrader.sh:9:#   * The target tag MUST exist in https://api.github.com/repos/ymylive/corlinman/releases
+deploy/install.sh:6:#   curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh | bash
+deploy/install.sh:9:#   curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh \
+deploy/install.sh:13:#   curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh \
+deploy/install.sh:17:#   curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh \
+deploy/install.sh:92:REPO="ymylive/corlinman"
+deploy/install.sh:548:        # makes `image: ghcr.io/ymylive/corlinman:local` — point docker at
+docker/compose/docker-compose.yml:16:    image: ghcr.io/ymylive/corlinman:${CORLINMAN_TAG:-latest}
+.github/workflows/release-image.yml:45:          images: ghcr.io/ymylive/corlinman
+docs/config.example.toml:378:# pinned to `ghcr.io/ymylive/corlinman-sandbox:v1` once published;
+docs/config.example.toml:382:image         = "ghcr.io/ymylive/corlinman-sandbox:v1"
+docs/config.example.toml:613:repo = "ymylive/corlinman"
+docs/quickstart.md:14:curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh | bash
+docs/quickstart.md:24:`ghcr.io/ymylive/corlinman:latest`, multi-arch amd64/arm64; pass
+docs/quickstart.md:53:git clone https://github.com/ymylive/corlinman && cd corlinman
+docs/quickstart.md:70:git clone https://github.com/ymylive/corlinman && cd corlinman
+docs/PLAN_ONE_CLICK_UPGRADE.md:28:- Gateway calls `docker.from_env().images.pull('ghcr.io/ymylive/corlinman:v1.2.1')` then triggers compose-equivalent recreate via the Docker API.
+docs/PLAN_ONE_CLICK_UPGRADE.md:34:- Helper has a *whitelisted* surface: it only accepts upgrade requests for tags that exist in `ymylive/corlinman` releases.
+docs/PLAN_ONE_CLICK_UPGRADE.md:41:4. **Tag whitelist** — only tags that exist in the `ymylive/corlinman` GitHub releases list. Upgrader script re-validates before calling install.sh.
+docs/PLAN_ONE_CLICK_UPGRADE.md:70:  2. `images.pull("ghcr.io/ymylive/corlinman", tag=target)` — stream layers, emit progress
+docs/PLAN_ONE_CLICK_UPGRADE.md:103:- Validates tag against `https://api.github.com/repos/ymylive/corlinman/releases` (cached for 10 min in `/var/cache/corlinman/upgrader-tag-cache.json`)
+docs/PLAN_DEPLOY_UX.md:19:| **Prebuilt image** | `docker-compose.yml:12` references `ghcr.io/ymylive/corlinman:dev` — **never pushed**. release-notes-v0.1.0.md:27 explicitly says "planned for 0.1.1 once a docker-equipped build host is available" | Every first install rebuilds locally (15-20 min); `docker compose pull` 404s |
+docs/PLAN_DEPLOY_UX.md:37:   ↓ docker pull ghcr.io/ymylive/corlinman:v1.1.x  (~30s, prebuilt multi-arch)
+docs/PLAN_DEPLOY_UX.md:63:- `docker/compose/docker-compose.yml:12` — change `image: ghcr.io/ymylive/corlinman:dev` → `image: ghcr.io/ymylive/corlinman:${CORLINMAN_TAG:-latest}` so `docker compose pull` lands on a real tag once task B ships.
+docs/PLAN_DEPLOY_UX.md:79:- `.github/workflows/release-image.yml` (new) — triggers on `push: tags: v*` and `push: branches: main`. Matrix-builds `linux/amd64,linux/arm64` via `docker/build-push-action@v6`. Pushes to `ghcr.io/ymylive/corlinman`. Tag schedule:
+docs/PLAN_DEPLOY_UX.md:83:- `deploy/install.sh` docker path — `docker pull ghcr.io/ymylive/corlinman:${REF}`; on pull failure (404/network) fall through to the existing local build.
+docs/PLAN_DEPLOY_UX.md:88:1. CI green on a test tag → `docker manifest inspect ghcr.io/ymylive/corlinman:vX.Y.Z` shows amd64+arm64
+docs/PLAN_DEPLOY_UX.md:184:- `deploy/install.sh` — wherever it logs "see config template", replace with a pointer to `https://github.com/ymylive/corlinman/blob/main/docs/config.example.toml`.
+docs/PLAN_DEPLOY_UX.md:287:- [ ] OK to push real images to `ghcr.io/ymylive/corlinman` (uses Anthropic's GHCR quota — minimal)?
+docs/roadmap.md:444:- `docker build -t ghcr.io/ymylive/corlinman:0.1.0 -f docker/Dockerfile .`
+docs/roadmap.md:445:- `docker build -t ghcr.io/ymylive/corlinman:0.1.0-ml --build-arg FEATURES=ml ...`
+docs/release-notes-v0.1.0.md:27:**Build from source.** A prebuilt docker image on `ghcr.io/ymylive/corlinman`
+docs/release-notes-v0.1.0.md:31:git clone https://github.com/ymylive/corlinman
+docs/release-notes-v0.1.0.md:57:  `ghcr.io/ymylive/corlinman:0.1.0` will ship with 0.1.1.
+docs/PLAN_AUTO_UPDATE.md:157:- **GitHub API:** `/repos/ymylive/corlinman/releases/latest` with `If-None-Match` header; respect `X-RateLimit-Remaining`
+docs/system-updates.md:17:`api.github.com/repos/ymylive/corlinman/releases/latest` with a stored
+docs/system-updates.md:46:repo = "ymylive/corlinman"
+docs/system-updates.md:55:| `repo` | `ymylive/corlinman` | Override only if you maintain a fork with its own release cadence. |
+docs/multi-agent-release-plan.md:99:  ghcr.io/ymylive/corlinman will be published per tag + `:latest` once
+docs/multi-agent-release-plan.md:218:   - `ghcr.io/ymylive/corlinman-base:<py-version>` — python + node + uv,
+docs/multi-agent-release-plan.md:221:   - `ghcr.io/ymylive/corlinman:<tag>` — `FROM corlinman-base`, just the
+docs/multi-agent-release-plan.md:226:   changes. Bonus: lets us publish `ghcr.io/ymylive/corlinman-venv:<lock-hash>`
+docs/multi-agent-release-plan.md:324:   ghcr.io/ymylive/corlinman-venv:<uv.lock-hash>` works.
+docs/multi-agent-release-plan.md:328:5. Smoke: `time docker pull ghcr.io/ymylive/corlinman:0.7.0-rc1`
+docs/design/phase4-next-tasks.md:6:> (PR [#1](https://github.com/ymylive/corlinman/pull/1), 16 commits).
+docs/design/agent-brain-memory-curator-task-plan.md:5:目标仓库：`ymylive/corlinman`  
+docs/design/phase4-roadmap.md:194:### Wave 1 outcome (closed 2026-04-30, PR [#1](https://github.com/ymylive/corlinman/pull/1))
+docs/design/phase4-roadmap.md:352:image = "ghcr.io/ymylive/corlinman-sandbox:v1"
+README.md:3:[![CI](https://img.shields.io/github/actions/workflow/status/ymylive/corlinman/ci.yml?branch=main&label=CI)](https://github.com/ymylive/corlinman/actions)
+README.md:23:curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh | bash
+README.md:81:2. **Image** — `docker pull ghcr.io/ymylive/corlinman:latest` (multi-arch amd64/arm64, ~30 s). Falls back to a local `docker buildx build` if the registry is unreachable.
+README.md:167:| **Docker (recommended)** | `curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh \| bash -s -- --mode docker` | Pulls `ghcr.io/ymylive/corlinman:latest` (multi-arch amd64+arm64), falls back to a local build if the registry is unreachable. Needs Docker Engine 24+ with the compose v2 plugin. |
+README.md:168:| **Native (uv + systemd)** | `curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh \| bash -s -- --mode native` | Installs `uv`, clones the repo to `/opt/corlinman/repo`, syncs the workspace, registers a systemd unit. No container runtime needed. |
+README.md:218:  curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh \
+README.md:231:ghcr.io/ymylive/corlinman:dev | ssh vps "docker load"` 是最快的搬运姿势。
+README.md:256:git clone https://github.com/ymylive/corlinman && cd corlinman
+README.md:760:curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh | bash
+README.md:763:curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh | bash -s -- --china
+README.md:766:curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh | bash -s -- --china --with-qq

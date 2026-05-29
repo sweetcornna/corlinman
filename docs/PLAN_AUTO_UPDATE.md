@@ -154,7 +154,7 @@ export async function getUpgradeCommands(): Promise<UpgradeCommands>;
   - `python/packages/corlinman-server/pyproject.toml` — same bump
   - Tests: `tests/system/test_update_checker.py` (mock httpx, ETag flow, 304 path, prerelease exclusion, version compare edge cases), `tests/gateway/routes_admin_b/test_system_routes.py`
 - **Hermes pattern:** `hermes_cli/banner.py:124-267` cache file + tuple compare adapted to ETag + `packaging.version.Version`
-- **GitHub API:** `/repos/ymylive/corlinman/releases/latest` with `If-None-Match` header; respect `X-RateLimit-Remaining`
+- **GitHub API:** `/repos/sweetcornna/corlinman/releases/latest` with `If-None-Match` header; respect `X-RateLimit-Remaining`
 - **Deps:** none
 - **Validation:** 
   - Mock GitHub → 200 with newer tag → `available=True`, body parsed

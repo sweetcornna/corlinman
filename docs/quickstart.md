@@ -11,7 +11,7 @@ state fits in sixty seconds if you accept the defaults.
 ## 🚀 一键安装最新版本
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/sweetcornna/corlinman/main/deploy/install.sh | bash
 ```
 
 升级到最新版本（保留所有数据）：
@@ -21,7 +21,7 @@ bash deploy/install.sh --upgrade
 ```
 
 The single script auto-detects three modes: **Docker** (default — pulls
-`ghcr.io/ymylive/corlinman:latest`, multi-arch amd64/arm64; pass
+`ghcr.io/sweetcornna/corlinman:latest`, multi-arch amd64/arm64; pass
 `--mode docker` to force), **Native** (uv + systemd; pass `--mode native`
 to force, no container runtime required), and **Upgrade** (`--upgrade`
 re-detects the installed mode, pulls/rebuilds the new image or re-syncs
@@ -50,7 +50,7 @@ external embedding service. corlinman boots from a single
 ### Docker (recommended)
 
 ```bash
-git clone https://github.com/ymylive/corlinman && cd corlinman
+git clone https://github.com/sweetcornna/corlinman && cd corlinman
 docker compose -f docker/compose/docker-compose.yml up -d
 ```
 
@@ -67,7 +67,7 @@ docker compose -f docker/compose/docker-compose.yml \
 ### Native (from source)
 
 ```bash
-git clone https://github.com/ymylive/corlinman && cd corlinman
+git clone https://github.com/sweetcornna/corlinman && cd corlinman
 ./scripts/dev-setup.sh                              # deps + proto + hooks
 uv sync --all-packages --frozen
 pnpm -C ui install && pnpm -C ui build

@@ -6,7 +6,7 @@
 # service unit) so it can invoke install.sh and systemctl. The blast
 # radius is constrained to:
 #
-#   * The target tag MUST exist in https://api.github.com/repos/ymylive/corlinman/releases
+#   * The target tag MUST exist in https://api.github.com/repos/sweetcornna/corlinman/releases
 #   * The tag MUST match a strict semver regex (no `;`, `&&`, shell metas)
 #   * The target tag MUST be > current installed version (no downgrade)
 #     unless UPGRADER_ALLOW_DOWNGRADE=1 is exported (CI / emergency

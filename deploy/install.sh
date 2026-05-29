@@ -3,18 +3,18 @@
 #
 # Usage (any one of):
 #   # Fresh install (default: docker mode, latest main)
-#   curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/sweetcornna/corlinman/main/deploy/install.sh | bash
 #
 #   # Fresh native install pinned to a release tag
-#   curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh \
+#   curl -fsSL https://raw.githubusercontent.com/sweetcornna/corlinman/main/deploy/install.sh \
 #     | bash -s -- --mode native --version v1.1.0
 #
 #   # In-place upgrade of an existing native deployment (preserves data)
-#   curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh \
+#   curl -fsSL https://raw.githubusercontent.com/sweetcornna/corlinman/main/deploy/install.sh \
 #     | bash -s -- --upgrade
 #
 #   # China-region (auto-detected, or force with --china)
-#   curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh \
+#   curl -fsSL https://raw.githubusercontent.com/sweetcornna/corlinman/main/deploy/install.sh \
 #     | bash -s -- --mode native --china
 #
 # Modes:
@@ -89,7 +89,7 @@ REF="${CORLINMAN_VERSION:-main}"
 PREFIX="${CORLINMAN_PREFIX:-/opt/corlinman}"
 DATA_DIR="${CORLINMAN_DATA_DIR:-${PREFIX}/data}"
 PORT="${CORLINMAN_PORT:-6005}"
-REPO="ymylive/corlinman"
+REPO="sweetcornna/corlinman"
 USE_CHINA=""
 ENABLE_DOCKER_SANDBOX="${CORLINMAN_ENABLE_DOCKER_SANDBOX:-}"
 ENABLE_ONE_CLICK_UPGRADE="${CORLINMAN_ENABLE_ONE_CLICK_UPGRADE:-}"
@@ -545,7 +545,7 @@ install_docker() {
         # The canonical compose file picks the image via ${CORLINMAN_TAG};
         # we just built / pulled and tagged corlinman:local, so we point at
         # that and skip the GHCR roundtrip a second time. CORLINMAN_TAG=local
-        # makes `image: ghcr.io/ymylive/corlinman:local` — point docker at
+        # makes `image: ghcr.io/sweetcornna/corlinman:local` — point docker at
         # the matching local tag.
         docker tag corlinman:local "ghcr.io/${REPO}:local" >/dev/null 2>&1 || true
 

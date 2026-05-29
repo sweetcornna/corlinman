@@ -25,20 +25,20 @@ Replaces the v1.2.0 "copy-paste upgrade command" UX. The copy-paste flow stays a
 **Docker path (Docker SDK over `/var/run/docker.sock`):**
 - Mount socket read-write (NOT `:ro`) into the gateway container.
 - Gateway adds the `corlinman` system user to the host's `docker` group, OR runs `chmod g+rw /var/run/docker.sock` via an entrypoint trick. (Need to pick — see §1.3.)
-- Gateway calls `docker.from_env().images.pull('ghcr.io/ymylive/corlinman:v1.2.1')` then triggers compose-equivalent recreate via the Docker API.
+- Gateway calls `docker.from_env().images.pull('ghcr.io/sweetcornna/corlinman:v1.2.1')` then triggers compose-equivalent recreate via the Docker API.
 - Same machinery as Watchtower / Portainer; well-trodden.
 
 **Native path (file-watched privileged helper):**
 - New systemd unit `corlinman-upgrader.service` (Type=oneshot, User=root) + `corlinman-upgrader.path` (PathChanged=`$DATA_DIR/.upgrade-request`).
 - Gateway writes a JSON request file → systemd fires the upgrader → upgrader validates the tag, calls `install.sh --upgrade --version vX.Y.Z`, writes a status JSON the gateway polls.
-- Helper has a *whitelisted* surface: it only accepts upgrade requests for tags that exist in `ymylive/corlinman` releases.
+- Helper has a *whitelisted* surface: it only accepts upgrade requests for tags that exist in `sweetcornna/corlinman` releases.
 
 ### 0.2 Safety posture (user-confirmed)
 
 1. **Session cookie required** — same admin auth that gates every other `/admin/*` mutation.
 2. **Confirm dialog typing the exact tag** — user types `v1.2.1` into a text field; button stays disabled until match. Prevents click-throughs and AI-assisted misclicks.
 3. **No downgrade allowed** by default — `Version(target) > Version(current)` enforced server-side. Override via `?allow_downgrade=true` query param + explicit confirm — used only by emergency rollback.
-4. **Tag whitelist** — only tags that exist in the `ymylive/corlinman` GitHub releases list. Upgrader script re-validates before calling install.sh.
+4. **Tag whitelist** — only tags that exist in the `sweetcornna/corlinman` GitHub releases list. Upgrader script re-validates before calling install.sh.
 5. **Single in-flight upgrade** — `POST /admin/system/upgrade` returns 409 if a status JSON shows `state=running`.
 6. **Structured audit log** — every request + state transition appended to `$DATA_DIR/system-audit.log` (JSONL). Visible on the `/admin/system` page.
 
@@ -67,7 +67,7 @@ Files:
   ```
 - `docker_upgrader.py` — uses `docker` Python SDK:
   1. `client = docker.from_env(timeout=120)` (will auto-pick `/var/run/docker.sock`)
-  2. `images.pull("ghcr.io/ymylive/corlinman", tag=target)` — stream layers, emit progress
+  2. `images.pull("ghcr.io/sweetcornna/corlinman", tag=target)` — stream layers, emit progress
   3. Find the corlinman container, capture old image id
   4. Recreate via `container.stop() → containers.run(...)` mirroring the compose service spec, OR easier: shell-out to `docker compose -f /app/compose/corlinman.yml up -d --no-deps corlinman` (compose CLI is in the runtime image after this round). The compose-CLI fallback keeps env/volume parity with the operator's compose file at zero extra plumbing.
   5. Wait for new container to be healthy (check the existing HEALTHCHECK status with a 60s timeout)
@@ -100,7 +100,7 @@ Three new files written by `install.sh install_native()`:
 **`deploy/corlinman-upgrader.sh`** (new, ships in the repo):
 - Reads `$CORLINMAN_DATA_DIR/.upgrade-request`
 - Validates schema (json fields, request_id is uuid-shaped, tag matches semver regex)
-- Validates tag against `https://api.github.com/repos/ymylive/corlinman/releases` (cached for 10 min in `/var/cache/corlinman/upgrader-tag-cache.json`)
+- Validates tag against `https://api.github.com/repos/sweetcornna/corlinman/releases` (cached for 10 min in `/var/cache/corlinman/upgrader-tag-cache.json`)
 - Writes `.upgrade-status state=running`
 - Calls `bash $INSTALL_PREFIX/repo/deploy/install.sh --upgrade --version <tag>`
 - Captures last 4kB of combined stdout+stderr → `.upgrade-status.log_excerpt`

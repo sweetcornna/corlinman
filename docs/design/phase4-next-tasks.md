@@ -3,7 +3,7 @@
 **Status**: ✅ **Phase 4 fully closed** · **Owner**: TBD · **Last revised**: 2026-05-09 (Wave 3+4 close-out)
 
 > Operational task list following Phase 4 Wave 1's closure
-> (PR [#1](https://github.com/ymylive/corlinman/pull/1), 16 commits).
+> (PR [#1](https://github.com/sweetcornna/corlinman/pull/1), 16 commits).
 > Companion to `phase4-roadmap.md` — the roadmap is the strategic
 > picture, this doc is the tactical pick-up list.
 

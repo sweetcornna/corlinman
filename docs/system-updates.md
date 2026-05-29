@@ -14,7 +14,7 @@ misbehaves.
 ## How it works
 
 On a fixed interval (default 6h) the gateway hits
-`api.github.com/repos/ymylive/corlinman/releases/latest` with a stored
+`api.github.com/repos/sweetcornna/corlinman/releases/latest` with a stored
 `If-None-Match: <etag>`. GitHub answers `200 OK` + a body the first
 time, then `304 Not Modified` (with no body, no rate-limit cost) until a
 new release tag goes out. The handler parses the response, compares the
@@ -43,7 +43,7 @@ The feature ships enabled with sensible defaults. The full stanza
 enabled = true
 interval_hours = 6
 include_prereleases = false
-repo = "ymylive/corlinman"
+repo = "sweetcornna/corlinman"
 # github_token = { env = "CORLINMAN_GITHUB_TOKEN" }
 ```
 
@@ -52,7 +52,7 @@ repo = "ymylive/corlinman"
 | `enabled` | `true` | Master switch. `false` skips GitHub polls entirely (see [Air-gapped deployments](#air-gapped-deployments)). |
 | `interval_hours` | `6` | Background poll cadence. The UI's "Check now" button bypasses this and is server-side rate-limited to 1/min. |
 | `include_prereleases` | `false` | When `true`, `vX.Y.Z-rc.N` tags count as upgrade targets. |
-| `repo` | `ymylive/corlinman` | Override only if you maintain a fork with its own release cadence. |
+| `repo` | `sweetcornna/corlinman` | Override only if you maintain a fork with its own release cadence. |
 | `github_token` | unset | Optional PAT, read from env. Unauthenticated requests are throttled to 60/hr/IP; ETag caching keeps single-instance deploys well under that. Multi-instance setups should authenticate (see [GitHub rate limits](#github-rate-limits)). |
 
 ---

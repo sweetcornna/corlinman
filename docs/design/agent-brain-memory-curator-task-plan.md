@@ -2,7 +2,7 @@
 
 状态：草案  
 分支：`feat/agent-brain-memory-curator`  
-目标仓库：`ymylive/corlinman`  
+目标仓库：`sweetcornna/corlinman`  
 日期：2026-05-10
 
 ## 1. 总目标

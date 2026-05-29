@@ -16,7 +16,7 @@ Three parallel Explore passes confirmed:
 | Area | Reality | Pain |
 |---|---|---|
 | **Entrypoints** | `install.sh` (modern, full) + `server-bootstrap.sh` (stale QQ-only) coexist | Two scripts; bootstrap referenced nowhere except its own header — safe to delete |
-| **Prebuilt image** | `docker-compose.yml:12` references `ghcr.io/ymylive/corlinman:dev` — **never pushed**. release-notes-v0.1.0.md:27 explicitly says "planned for 0.1.1 once a docker-equipped build host is available" | Every first install rebuilds locally (15-20 min); `docker compose pull` 404s |
+| **Prebuilt image** | `docker-compose.yml:12` references `ghcr.io/sweetcornna/corlinman:dev` — **never pushed**. release-notes-v0.1.0.md:27 explicitly says "planned for 0.1.1 once a docker-equipped build host is available" | Every first install rebuilds locally (15-20 min); `docker compose pull` 404s |
 | **CI** | `.github/workflows/ci.yml` lint/test only — no docker build job | No image pipeline at all |
 | **Preflight** | `install.sh` jumps straight into `git clone` / `uv sync` — no disk/RAM/port/tool checks | Half-installed leftovers when prerequisites missing |
 | **First boot** | `install.sh` echoes `:6005/onboard`; `docs/quickstart.md` says `:6005/login`; `admin_seed.py` seeds `admin/root`; `/onboard` wizard exists; `/admin/me` returns `must_change_password` ✓ | Three sources of truth disagree on the user's first click |
@@ -34,7 +34,7 @@ Three parallel Explore passes confirmed:
 ```
 curl -fsSL https://corlinman.io/install.sh | bash
    ↓ preflight (~2s):  disk ✓  ram ✓  port 6005 free ✓  docker 24+ ✓
-   ↓ docker pull ghcr.io/ymylive/corlinman:v1.1.x  (~30s, prebuilt multi-arch)
+   ↓ docker pull ghcr.io/sweetcornna/corlinman:v1.1.x  (~30s, prebuilt multi-arch)
    ↓ docker compose up -d  (~10s)
    ↓ poll /health until {"status":"ok"}  (~15s)
    ↓ print: open http://<HOST>:6005/login   admin / root
@@ -60,7 +60,7 @@ agents can pick them up.
 - `deploy/install.sh` — add `--with-qq` flag; chain `docker-compose.qq.yml` when set. Inside docker_install(), drop the `corlinman.yml` override pattern; instead reuse `docker/compose/docker-compose.yml` from the cloned repo and layer overlays via `-f`.
 - `deploy/install.sh` — auto-materialize `.env` from `deploy/.env.template` if user passes `--with-qq` (NapCat needs OPENAI / GEMINI / QQ vars).
 - `deploy/server-bootstrap.sh` — **delete**.
-- `docker/compose/docker-compose.yml:12` — change `image: ghcr.io/ymylive/corlinman:dev` → `image: ghcr.io/ymylive/corlinman:${CORLINMAN_TAG:-latest}` so `docker compose pull` lands on a real tag once task B ships.
+- `docker/compose/docker-compose.yml:12` — change `image: ghcr.io/sweetcornna/corlinman:dev` → `image: ghcr.io/sweetcornna/corlinman:${CORLINMAN_TAG:-latest}` so `docker compose pull` lands on a real tag once task B ships.
 - `README.md:130-167`, `deploy/AI_DEPLOY.md:43,51`, `docs/quickstart.md:30`, `docs/multi-agent-release-plan.md:97,99,341` — sweep refs.
 
 **Deps:** task #2 (plan approved)
@@ -76,16 +76,16 @@ agents can pick them up.
 
 **Owner:** DevOps Automator
 **Files:**
-- `.github/workflows/release-image.yml` (new) — triggers on `push: tags: v*` and `push: branches: main`. Matrix-builds `linux/amd64,linux/arm64` via `docker/build-push-action@v6`. Pushes to `ghcr.io/ymylive/corlinman`. Tag schedule:
+- `.github/workflows/release-image.yml` (new) — triggers on `push: tags: v*` and `push: branches: main`. Matrix-builds `linux/amd64,linux/arm64` via `docker/build-push-action@v6`. Pushes to `ghcr.io/sweetcornna/corlinman`. Tag schedule:
   - `vX.Y.Z`, `vX.Y`, `vX`, `latest` — only on tag pushes
   - `main-${{ github.sha }}` and `edge` — on main pushes
 - `docker/Dockerfile:33,57` — add `--mount=type=cache,target=/root/.cache/uv` and `--mount=type=cache,target=/var/cache/apt`. Same for pnpm in ui-builder.
-- `deploy/install.sh` docker path — `docker pull ghcr.io/ymylive/corlinman:${REF}`; on pull failure (404/network) fall through to the existing local build.
+- `deploy/install.sh` docker path — `docker pull ghcr.io/sweetcornna/corlinman:${REF}`; on pull failure (404/network) fall through to the existing local build.
 - `docs/multi-agent-release-plan.md:99` — fix the false claim once the workflow is green.
 
 **Deps:** task #2
 **Validation:**
-1. CI green on a test tag → `docker manifest inspect ghcr.io/ymylive/corlinman:vX.Y.Z` shows amd64+arm64
+1. CI green on a test tag → `docker manifest inspect ghcr.io/sweetcornna/corlinman:vX.Y.Z` shows amd64+arm64
 2. `bash deploy/install.sh --mode docker --version vX.Y.Z` pulls instead of building (timer < 90s)
 3. Cold cache → `docker buildx build` measured at < 5 min for incremental Python deps
 **ETA:** 5h
@@ -181,7 +181,7 @@ agents can pick them up.
 **Files:**
 - `deploy/config.toml.template` — **delete**. The argon2 hash + `must_change_password = true` block is now redundant with `admin_seed.py:218`. The QQ/Telegram/embedding blocks belong in `docs/config.example.toml`.
 - `docs/config.example.toml` — verify it already covers QQ + Telegram + evolution + embedding stanzas; if not, port from the deleted template.
-- `deploy/install.sh` — wherever it logs "see config template", replace with a pointer to `https://github.com/ymylive/corlinman/blob/main/docs/config.example.toml`.
+- `deploy/install.sh` — wherever it logs "see config template", replace with a pointer to `https://github.com/sweetcornna/corlinman/blob/main/docs/config.example.toml`.
 - `docs/release-notes-ap1.0.0.md:141` — drop the line referencing the deleted file (or note its deletion).
 
 **Deps:** task #2, task #3 (after server-bootstrap.sh is gone there are no consumers)
@@ -284,7 +284,7 @@ Wave 2 (depends B):    Task D          Task E
 ## 6. Decision points before kickoff
 
 - [ ] Plan accepted as-is, or trim to subset (e.g. drop G "init CLI" if 6h is too much)?
-- [ ] OK to push real images to `ghcr.io/ymylive/corlinman` (uses Anthropic's GHCR quota — minimal)?
+- [ ] OK to push real images to `ghcr.io/sweetcornna/corlinman` (uses Anthropic's GHCR quota — minimal)?
 - [ ] OK to delete `deploy/server-bootstrap.sh` and `deploy/config.toml.template`?
 - [ ] Default GHCR tag in compose: `latest` (rolling) or `v1.1.x` (pinned)? Recommend `latest` for `install.sh` default but pinned for prod.
 

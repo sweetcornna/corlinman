@@ -1,0 +1,4 @@
+install.sh: OK
+corlinman-upgrader.sh: OK
+release-image.yml: OK
+docker-compose.yml: OK

@@ -191,7 +191,7 @@ needs new code.
 - 4-1D itself (the W2-C unblocker) — unchanged, still gated on 4-1C
   finishing
 
-### Wave 1 outcome (closed 2026-04-30, PR [#1](https://github.com/ymylive/corlinman/pull/1))
+### Wave 1 outcome (closed 2026-04-30, PR [#1](https://github.com/sweetcornna/corlinman/pull/1))
 
 16 atomic commits land the full Wave 1 surface end-to-end. Wave 1
 acceptance is met:
@@ -349,7 +349,7 @@ default = "default"  # legacy single-tenant compat
 
 [evolution.shadow.sandbox]
 kind = "docker"   # 'in_process' | 'docker'
-image = "ghcr.io/ymylive/corlinman-sandbox:v1"
+image = "ghcr.io/sweetcornna/corlinman-sandbox:v1"
 network = "none"
 mem_mb = 512
 timeout_secs = 60

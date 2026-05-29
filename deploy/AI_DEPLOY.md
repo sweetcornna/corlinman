@@ -30,7 +30,7 @@ mechanism (SSH key path or ssh-agent), and the deployment mode (`docker` or
    your report helps you reason about borderline cases.
 2. Check existing service: `ssh USER@HOST 'systemctl is-active corlinman 2>/dev/null; docker ps --filter name=corlinman --format "{{.Names}}: {{.Status}}" 2>/dev/null'`.
 3. If a Rust-era corlinman is running (binary at `/opt/corlinman/bin/corlinman-gateway`
-   or container based on `ghcr.io/ymylive/corlinman:v0.*`), record it for the
+   or container based on `ghcr.io/sweetcornna/corlinman:v0.*`), record it for the
    stop-and-replace step.
 4. **If `corlinman` is already running on the same major version**, skip to
    **Phase 2.5 (Upgrade)** instead of a fresh install. The data dir is
@@ -54,12 +54,12 @@ docker or the user wants systemd-managed Python.
 
 #### `--mode docker`
 ```bash
-ssh USER@HOST 'curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh \
+ssh USER@HOST 'curl -fsSL https://raw.githubusercontent.com/sweetcornna/corlinman/main/deploy/install.sh \
   | bash -s -- --mode docker'
 ```
 The script:
 - Preflights the host (disk / RAM / port 6005 / docker 24+ / required tools).
-- Tries `docker pull ghcr.io/ymylive/corlinman:latest` first (multi-arch image
+- Tries `docker pull ghcr.io/sweetcornna/corlinman:latest` first (multi-arch image
   shipped by `.github/workflows/release-image.yml`). On 404/network failure
   falls back to a local `docker buildx build` — slower but always works.
 - Brings up `docker/compose/docker-compose.yml` with `CORLINMAN_TAG=latest`.
@@ -76,7 +76,7 @@ NapCat sidecar and materializes `.env` from `deploy/.env.template`.
 
 #### `--mode native`
 ```bash
-ssh USER@HOST 'curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh \
+ssh USER@HOST 'curl -fsSL https://raw.githubusercontent.com/sweetcornna/corlinman/main/deploy/install.sh \
   | bash -s -- --mode native'
 ```
 Same `--china` flag. Native mode does not need docker but does install `uv`,
@@ -87,7 +87,7 @@ of native install too.
 ### Phase 2.5 — In-place upgrade (if Phase 0 detected an existing install)
 
 ```bash
-ssh USER@HOST 'curl -fsSL https://raw.githubusercontent.com/ymylive/corlinman/main/deploy/install.sh \
+ssh USER@HOST 'curl -fsSL https://raw.githubusercontent.com/sweetcornna/corlinman/main/deploy/install.sh \
   | bash -s -- --upgrade --version vX.Y.Z'
 ```
 The `--upgrade` flag auto-detects docker vs native from the live state on the
