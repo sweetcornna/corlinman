@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as _dt
+import hmac
 import re
 import threading
 from pathlib import Path
@@ -58,6 +59,14 @@ DEFAULT_SESSION_TTL_SECS = 86_400
 # in the server package's deps. Constructed once at module import time
 # so we don't pay the parameter setup cost per call.
 _HASHER = PasswordHasher()
+
+# SEC-011: a precomputed argon2 hash of a throwaway secret. When the
+# submitted username doesn't match the configured admin we still run
+# :func:`argon2_verify` against THIS hash (never the real one) so the
+# total verify cost is identical whether or not the username was
+# correct — denying the attacker a timing oracle on the username.
+# Computed once at import (the params dominate, the input is irrelevant).
+_DUMMY_PASSWORD_HASH = _HASHER.hash("corlinman-timing-equalizer")
 
 # Module-level fallback lock used by the onboard + password routes when
 # the AdminState doesn't carry one. Both routes hold it across the
@@ -147,14 +156,43 @@ def argon2_verify(password: str, encoded: str) -> bool:
         return False
 
 
-def _set_cookie_header(token: str, max_age_seconds: int) -> str:
+def _request_is_https(request: Request) -> bool:
+    """True iff the request reached us over TLS.
+
+    Honours the upstream-TLS-termination deploy: a reverse proxy that
+    terminates TLS forwards ``X-Forwarded-Proto: https`` over a plain
+    loopback hop, so the raw ``request.url.scheme`` is ``http`` there.
+    We trust the forwarded header (the proxy is part of the trust
+    boundary in the documented deploy) and fall back to the connection
+    scheme for the direct-TLS case."""
+    forwarded = request.headers.get("x-forwarded-proto")
+    if forwarded is not None:
+        # The header can carry a comma-separated proxy chain; the
+        # client-facing (left-most) hop is what matters.
+        first = forwarded.split(",", 1)[0].strip().lower()
+        if first == "https":
+            return True
+    return request.url.scheme == "https"
+
+
+def _set_cookie_header(token: str, max_age_seconds: int, *, secure: bool) -> str:
     """Build the ``Set-Cookie`` header value matching the Rust
     ``set_cookie_header`` — ``HttpOnly``, ``SameSite=Strict``,
-    ``Path=/``, no ``Secure`` flag (TLS terminates upstream)."""
-    return (
+    ``Path=/``.
+
+    SEC-009: the ``Secure`` flag is appended **only** when the request
+    arrived over https (``secure=True``). The documented deploy
+    terminates TLS upstream and forwards plain http on the loopback
+    hop, so unconditionally setting ``Secure`` would silently drop the
+    cookie there; we add it conditionally so https deploys are hardened
+    while http-only local/dev keeps working."""
+    header = (
         f"{SESSION_COOKIE_NAME}={token}; "
         f"HttpOnly; SameSite=Strict; Path=/; Max-Age={max_age_seconds}"
     )
+    if secure:
+        header += "; Secure"
+    return header
 
 
 def _clear_cookie_header() -> str:
@@ -254,22 +292,31 @@ def router() -> APIRouter:
     )
     async def login(
         body: LoginRequest,
+        request: Request,
         response: Response,
         state: Annotated[AdminState, Depends(get_admin_state)],
     ) -> LoginResponse:
         if state.admin_username is None or state.admin_password_hash is None:
             raise _service_unavailable("admin_not_configured")
 
-        if body.username != state.admin_username or not argon2_verify(
-            body.password, state.admin_password_hash
-        ):
+        # SEC-011: constant-time username compare + ALWAYS run the argon2
+        # verify (against the real hash on a username match, the dummy
+        # hash otherwise) so the response time can't leak whether the
+        # username was correct. Combine the two booleans at the end — no
+        # early-out on the username.
+        username_ok = hmac.compare_digest(body.username, state.admin_username)
+        verify_hash = state.admin_password_hash if username_ok else _DUMMY_PASSWORD_HASH
+        password_ok = argon2_verify(body.password, verify_hash)
+        if not (username_ok and password_ok):
             raise _unauthorized("invalid_credentials")
 
         store = _ensure_session_store(state)
         token = store.create(body.username)
         max_age = store.ttl_seconds() if hasattr(store, "ttl_seconds") else state.session_ttl_seconds
 
-        response.headers["set-cookie"] = _set_cookie_header(token, max_age)
+        response.headers["set-cookie"] = _set_cookie_header(
+            token, max_age, secure=_request_is_https(request)
+        )
         return LoginResponse(token=token, expires_in=max_age)
 
     @r.post(

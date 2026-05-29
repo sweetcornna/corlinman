@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hmac
 from typing import Any
 
 from fastapi import HTTPException, Request, status
@@ -145,6 +146,22 @@ def _verify_password(password: str, password_hash: str) -> bool:
     return argon2_verify(password, password_hash)
 
 
+def _dummy_password_hash() -> str | None:
+    """SEC-011: the throwaway argon2 hash to verify against when the
+    Basic-auth username doesn't match, so the verify cost is constant
+    regardless of username correctness. Sourced from ``auth.py`` so the
+    argon2 params match the real hashes exactly. ``None`` if the module
+    isn't importable (then the caller skips the equalizing verify — the
+    request is already failing on ``admin_not_configured`` in that case)."""
+    try:
+        from corlinman_server.gateway.routes_admin_a.auth import (
+            _DUMMY_PASSWORD_HASH,
+        )
+    except ImportError:
+        return None
+    return _DUMMY_PASSWORD_HASH
+
+
 def authenticate_admin_request(request: Request, state: Any | None = None) -> Any:
     """Validate an admin request against the supplied state.
 
@@ -189,9 +206,20 @@ def authenticate_admin_request(request: Request, state: Any | None = None) -> An
             raise _unauthorized("malformed_authorization")
 
         username, password = parsed
-        if username != admin_username or not _verify_password(
-            password, admin_password_hash
-        ):
+        # SEC-011: constant-time username compare + ALWAYS run the argon2
+        # verify (against the real hash on a match, a dummy hash otherwise)
+        # so response time can't leak whether the username was correct.
+        # Combine the booleans at the end — no early-out on the username.
+        username_ok = hmac.compare_digest(username, admin_username)
+        verify_hash = admin_password_hash if username_ok else _dummy_password_hash()
+        if verify_hash is None:
+            # auth.py not importable → no dummy hash available. Fall back
+            # to verifying against the real hash so the path still runs
+            # (a non-matching username can't succeed because we AND with
+            # ``username_ok`` below).
+            verify_hash = admin_password_hash
+        password_ok = _verify_password(password, verify_hash)
+        if not (username_ok and password_ok):
             raise _unauthorized("invalid_credentials")
 
         request.state.admin_user = username
