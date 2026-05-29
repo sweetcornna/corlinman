@@ -304,3 +304,106 @@ async def test_recent_does_not_full_scan_the_namespace(
     assert full_scan_calls == []
     # The bounded query carries the limit so work doesn't scale with N.
     assert bounded_calls == [("sess-bounded", limit)]
+
+
+def _composite_namespace_index_sql(rows: list) -> str | None:
+    """Return the DDL of the first ``chunks`` index that leads on
+    ``namespace`` then ``id`` (a covering index for the bounded recency
+    query), or ``None`` if no such index exists. Name-agnostic on purpose:
+    the structural guarantee is the indexed columns, not the index name."""
+    for row in rows:
+        sql = row["sql"]
+        if sql is None:
+            continue
+        normalized = "".join(sql.lower().split())
+        if "on chunks".replace(" ", "") in normalized and "(namespace,id)" in normalized:
+            return str(sql)
+    return None
+
+
+async def test_chunks_has_composite_namespace_id_index_after_open(
+    host: LocalSqliteHost,
+) -> None:
+    """The bounded recency query ``WHERE namespace = ? ORDER BY id DESC
+    LIMIT ?`` (and the BM25 namespace pre-filter) must be backed by a
+    composite ``chunks(namespace, id)`` index rather than a backward table
+    scan. Assert the index exists after the store is opened. (#R7-P1
+    followup.)
+
+    The bare ``namespace``-only / no index world makes SQLite emit
+    ``SCAN chunks`` for this query; the composite index turns it into a
+    covering range scan. This test is the structural guard for that.
+    """
+    conn = host.store._conn
+    async with conn.execute(
+        "SELECT name, sql FROM sqlite_master "
+        "WHERE type = 'index' AND tbl_name = 'chunks'"
+    ) as cur:
+        rows = list(await cur.fetchall())
+
+    index_sql = _composite_namespace_index_sql(rows)
+    assert index_sql is not None, (
+        "expected a composite chunks(namespace, id) index to back the "
+        f"bounded recency query; found indexes: {[r['name'] for r in rows]}"
+    )
+
+
+async def test_recency_query_uses_index_not_table_scan(
+    host: LocalSqliteHost,
+) -> None:
+    """The recency query plan must be an index (covering) range scan, not
+    a full ``SCAN chunks``. This is the performance guarantee the composite
+    namespace index exists to provide (#R7-P1 followup)."""
+    await host.upsert(MemoryDoc(content="row", namespace="sess-plan"))
+
+    conn = host.store._conn
+    async with conn.execute(
+        "EXPLAIN QUERY PLAN "
+        "SELECT id FROM chunks WHERE namespace = ? ORDER BY id DESC LIMIT ?",
+        ("sess-plan", 5),
+    ) as cur:
+        plan = [str(tuple(r)[-1]).upper() for r in await cur.fetchall()]
+
+    detail = " ".join(plan)
+    assert "USING" in detail and "INDEX" in detail, (
+        f"recency query should use an index range scan, got plan: {plan}"
+    )
+    assert "SCAN CHUNKS" not in detail, (
+        f"recency query must not full-scan the chunks table, got plan: {plan}"
+    )
+
+
+async def test_index_survives_reopen_of_existing_db(tmp_path: Path) -> None:
+    """The composite index is created with ``IF NOT EXISTS`` and the schema
+    is (re)applied on every open, so an existing DB picks it up on the next
+    open. Open, close, reopen the same on-disk DB and confirm the index is
+    present and ``recent()``/``query()`` still return correct results
+    (regression)."""
+    db = tmp_path / "kb.sqlite"
+
+    h1 = await LocalSqliteHost.open("local-kb", db)
+    try:
+        await h1.upsert(MemoryDoc(content="first turn", namespace="sess"))
+        await h1.upsert(MemoryDoc(content="second turn", namespace="sess"))
+    finally:
+        await h1.close()
+
+    h2 = await LocalSqliteHost.open("local-kb", db)
+    try:
+        conn = h2.store._conn
+        async with conn.execute(
+            "SELECT name, sql FROM sqlite_master "
+            "WHERE type = 'index' AND tbl_name = 'chunks'"
+        ) as cur:
+            rows = list(await cur.fetchall())
+        assert _composite_namespace_index_sql(rows) is not None
+
+        # recent() regression: newest-first, namespace-scoped.
+        recent = await h2.recent("sess", 2)
+        assert [h.content for h in recent] == ["second turn", "first turn"]
+
+        # query() regression: BM25 still matches on content.
+        hits = await h2.query(MemoryQuery(text="second", top_k=5))
+        assert [h.content for h in hits] == ["second turn"]
+    finally:
+        await h2.close()
