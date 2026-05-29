@@ -20,10 +20,12 @@ from corlinman_agent_brain.models import (
 )
 from corlinman_agent_brain.risk_classifier import (
     WriteDecision,
+    _contains_hard_secret,
     _contains_sensitive_content,
     classify_risk,
     classify_risk_batch,
     decide_write_action,
+    redact_sensitive,
 )
 
 
@@ -130,19 +132,34 @@ class TestClassifyRisk:
         risk = classify_risk(low_risk_candidate, config)
         assert risk == RiskLevel.LOW
 
-    def test_high_risk_sensitive_summary(
+    def test_blocked_risk_secret_summary(
         self, sensitive_candidate: MemoryCandidate, config: CuratorConfig
     ) -> None:
+        # A hard secret (API key) in the summary must escalate to BLOCKED so the
+        # candidate is never written to the vault under any policy.
         risk = classify_risk(sensitive_candidate, config)
-        assert risk == RiskLevel.HIGH
+        assert risk == RiskLevel.BLOCKED
 
-    def test_high_risk_sensitive_evidence(self, config: CuratorConfig) -> None:
+    def test_blocked_risk_secret_evidence(self, config: CuratorConfig) -> None:
         cand = MemoryCandidate(
             candidate_id="c1",
             topic="Setup",
             kind=MemoryKind.PROJECT_CONTEXT,
             summary="Normal summary.",
             evidence=["user said: password=hunter2secret"],
+            confidence=0.9,
+        )
+        risk = classify_risk(cand, config)
+        assert risk == RiskLevel.BLOCKED
+
+    def test_high_risk_pii_summary(self, config: CuratorConfig) -> None:
+        # Soft-sensitive PII (email / phone) is HIGH (drafted + redacted), not
+        # BLOCKED.
+        cand = MemoryCandidate(
+            candidate_id="c-pii",
+            topic="Contact",
+            kind=MemoryKind.PROJECT_CONTEXT,
+            summary="Reach the owner at jane.doe@example.com for access.",
             confidence=0.9,
         )
         risk = classify_risk(cand, config)
@@ -300,3 +317,117 @@ class TestDecideWriteAction:
             low_risk_candidate, WritePolicy.SEMI_AUTO, config)
         assert len(decision.reason) > 0
         assert isinstance(decision, WriteDecision)
+
+
+class TestSecretWriteIsBlocked:
+    """Regression guard: a secret-bearing candidate must never be auto-written.
+
+    Reproduces the original defect where classify_risk returned HIGH for hard
+    secrets and decide_write_action(AUTO) returned 'auto_write', causing the
+    secret to be persisted in cleartext to the on-disk vault.
+    """
+
+    def test_sk_live_summary_blocked_under_auto(
+        self, sensitive_candidate: MemoryCandidate, config: CuratorConfig
+    ) -> None:
+        sensitive_candidate.risk = classify_risk(sensitive_candidate, config)
+        assert sensitive_candidate.risk == RiskLevel.BLOCKED
+        decision = decide_write_action(
+            sensitive_candidate, WritePolicy.AUTO, config)
+        assert decision.action == "block"
+        assert decision.risk == RiskLevel.BLOCKED
+
+    def test_github_pat_summary_blocked_under_auto(self, config: CuratorConfig) -> None:
+        cand = MemoryCandidate(
+            candidate_id="cand-ghp",
+            topic="CI token setup",
+            kind=MemoryKind.PROJECT_CONTEXT,
+            summary="Use token ghp_abcdefghijklmnopqrstuvwxyz1234567890 for CI.",
+            confidence=0.95,
+        )
+        cand.risk = classify_risk(cand, config)
+        assert cand.risk == RiskLevel.BLOCKED
+        decision = decide_write_action(cand, WritePolicy.AUTO, config)
+        assert decision.action == "block"
+
+    def test_secret_blocked_under_every_policy(
+        self, sensitive_candidate: MemoryCandidate, config: CuratorConfig
+    ) -> None:
+        sensitive_candidate.risk = classify_risk(sensitive_candidate, config)
+        for policy in (WritePolicy.AUTO, WritePolicy.SEMI_AUTO, WritePolicy.DRAFT_FIRST):
+            decision = decide_write_action(sensitive_candidate, policy, config)
+            assert decision.action == "block", f"policy {policy} did not block"
+
+
+class TestAutoPolicyEnforcesRiskCeiling:
+    """AUTO policy must honor auto_write_max_risk (default 'low')."""
+
+    def test_high_risk_pii_drafts_under_auto(self, config: CuratorConfig) -> None:
+        cand = MemoryCandidate(
+            candidate_id="cand-pii",
+            topic="Contact",
+            kind=MemoryKind.PROJECT_CONTEXT,
+            summary="Owner email is jane.doe@example.com.",
+            confidence=0.95,
+            risk=RiskLevel.HIGH,
+        )
+        decision = decide_write_action(cand, WritePolicy.AUTO, config)
+        assert decision.action == "draft"
+        assert decision.risk == RiskLevel.HIGH
+
+    def test_medium_risk_drafts_under_auto(self, config: CuratorConfig) -> None:
+        cand = MemoryCandidate(
+            candidate_id="cand-med",
+            topic="Maybe",
+            kind=MemoryKind.CONCEPT,
+            summary="Uncertain note.",
+            confidence=0.2,
+            risk=RiskLevel.MEDIUM,
+        )
+        decision = decide_write_action(cand, WritePolicy.AUTO, config)
+        assert decision.action == "draft"
+
+    def test_low_risk_auto_writes_under_auto(
+        self, low_risk_candidate: MemoryCandidate, config: CuratorConfig
+    ) -> None:
+        decision = decide_write_action(
+            low_risk_candidate, WritePolicy.AUTO, config)
+        assert decision.action == "auto_write"
+
+
+class TestRedactSensitive:
+    def test_redacts_email_when_flag_set(self, config: CuratorConfig) -> None:
+        out = redact_sensitive("ping jane.doe@example.com please", config)
+        assert "jane.doe@example.com" not in out
+        assert "[REDACTED]" in out
+
+    def test_redacts_api_key_when_flag_set(self, config: CuratorConfig) -> None:
+        out = redact_sensitive(
+            "key sk-live-abc123def456ghi789jkl012mno345", config)
+        assert "sk-live-abc123def456ghi789jkl012mno345" not in out
+        assert "[REDACTED]" in out
+
+    def test_redacts_phone_when_flag_set(self, config: CuratorConfig) -> None:
+        out = redact_sensitive("call +1 415-555-0199 now", config)
+        assert "415-555-0199" not in out
+        assert "[REDACTED]" in out
+
+    def test_no_redaction_when_flags_disabled(self) -> None:
+        from dataclasses import replace
+
+        cfg = replace(
+            CuratorConfig(),
+            redact_emails=False,
+            redact_phone_numbers=False,
+            redact_api_keys=False,
+        )
+        text = "ping jane.doe@example.com"
+        assert redact_sensitive(text, cfg) == text
+
+    def test_clean_text_unchanged(self, config: CuratorConfig) -> None:
+        text = "Use Rust for the MemoryHost implementation"
+        assert redact_sensitive(text, config) == text
+
+    def test_hard_secret_helper(self) -> None:
+        assert _contains_hard_secret("ghp_abcdefghijklmnopqrstuvwxyz1234567890")
+        assert not _contains_hard_secret("jane.doe@example.com")

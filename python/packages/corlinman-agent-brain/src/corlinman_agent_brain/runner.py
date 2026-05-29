@@ -34,6 +34,7 @@ from corlinman_agent_brain.models import (
 from corlinman_agent_brain.risk_classifier import (
     classify_risk_batch,
     decide_write_action,
+    redact_sensitive,
 )
 from corlinman_agent_brain.serialization import now_iso
 from corlinman_agent_brain.session_reader import read_session_by_id
@@ -126,6 +127,11 @@ class CuratorPipeline:
                 provider=self._extract,
             )
             classify_risk_batch(candidates, self._config)
+            # Scrub sensitive substrings (emails / phones / API keys) from the
+            # candidate text per the redact_* config flags AFTER risk has been
+            # classified, so nothing downstream (link planning, vault writes,
+            # index sync) ever sees PII or credentials in cleartext.
+            _redact_candidates(candidates, self._config)
             plan = await plan_links(candidates, self._retrieve, self._config)
             plan_by_candidate = {entry.candidate_id: entry for entry in plan.entries}
 
@@ -362,6 +368,22 @@ def _append_unique(existing: list[str], additions: list[str]) -> list[str]:
             out.append(item)
             seen.add(item)
     return out
+
+
+def _redact_candidates(
+    candidates: list[MemoryCandidate], config: CuratorConfig
+) -> None:
+    """Scrub sensitive substrings from each candidate's summary and evidence.
+
+    Mutates candidates in place. Applies the redact_* sanitization pass so that
+    emails / phone numbers / API keys are replaced with ``[REDACTED]`` before any
+    node is constructed and persisted to the vault.
+    """
+    for candidate in candidates:
+        candidate.summary = redact_sensitive(candidate.summary, config)
+        candidate.evidence = [
+            redact_sensitive(item, config) for item in candidate.evidence
+        ]
 
 
 def _write_policy(config: CuratorConfig) -> WritePolicy:

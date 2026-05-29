@@ -225,6 +225,23 @@ async def high_confidence_update_provider(*, prompt: str) -> str:
     )
 
 
+async def pii_update_provider(*, prompt: str) -> str:
+    return json.dumps(
+        [
+            {
+                "topic": "Project owner contact",
+                "kind": "project_context",
+                "summary": "The project owner can be reached at owner@example.com.",
+                "evidence": ["contact owner@example.com"],
+                "confidence": 0.95,
+                "tags": ["project", "contact"],
+                "discard": False,
+                "discard_reason": "",
+            }
+        ]
+    )
+
+
 async def high_risk_update_provider(*, prompt: str) -> str:
     return json.dumps(
         [
@@ -450,9 +467,12 @@ async def test_high_confidence_update_modifies_existing_node(
 
 
 @pytest.mark.asyncio
-async def test_high_risk_update_goes_to_review_without_touching_target(
+async def test_secret_candidate_is_blocked_and_never_written(
     tmp_path: Path, sessions_db: Path
 ) -> None:
+    # A hard secret (password=...) classifies as BLOCKED, so the candidate is
+    # refused under every policy and NO cleartext secret reaches the vault --
+    # not the existing node, not the inbox, nowhere on disk.
     vault_root = tmp_path / "vault"
     config = CuratorConfig(write_policy="semi_auto")
     existing = _node()
@@ -470,7 +490,64 @@ async def test_high_risk_update_goes_to_review_without_touching_target(
 
     assert report.run.status == "ok"
     assert report.run.nodes_updated == []
+    assert report.run.nodes_created == []
+    assert report.nodes_written == 0
+    # Existing node untouched.
     assert existing_result.path.read_text(encoding="utf-8") == before
-    inbox_files = list((vault_root / "inbox").glob("*.md"))
-    assert len(inbox_files) == 1
-    assert "database password" in inbox_files[0].read_text(encoding="utf-8")
+    # No new file (including inbox) created for the blocked candidate.
+    assert list((vault_root / "inbox").glob("*.md")) == []
+    # The secret string appears in NO file under the vault.
+    for path in vault_root.rglob("*.md"):
+        assert "supersecret" not in path.read_text(encoding="utf-8")
+    # Block was recorded in the decision log.
+    assert any("blocked" in entry for entry in report.run.decision_log)
+
+
+@pytest.mark.asyncio
+async def test_secret_blocked_under_auto_policy(
+    tmp_path: Path, sessions_db: Path
+) -> None:
+    # Reproduces the original defect: under AUTO a secret-bearing candidate was
+    # auto-written to the vault in cleartext. It must now be blocked.
+    vault_root = tmp_path / "vault"
+    config = CuratorConfig(write_policy="auto")
+
+    report = await curate_session(
+        session_id="sess-1",
+        sessions_db=sessions_db,
+        vault_root=vault_root,
+        config=config,
+        extraction_provider=high_risk_update_provider,
+        retrieval_provider=NullRetrievalProvider(),
+    )
+
+    assert report.run.status == "ok"
+    assert report.nodes_written == 0
+    assert not vault_root.exists() or not any(vault_root.rglob("*.md"))
+
+
+@pytest.mark.asyncio
+async def test_pii_candidate_is_redacted_before_write(
+    tmp_path: Path, sessions_db: Path
+) -> None:
+    # Soft-sensitive PII (email) is HIGH (not blocked) but must be scrubbed by
+    # the redact_* pass so no cleartext PII reaches the vault file.
+    vault_root = tmp_path / "vault"
+    config = CuratorConfig(write_policy="auto")
+
+    report = await curate_session(
+        session_id="sess-1",
+        sessions_db=sessions_db,
+        vault_root=vault_root,
+        config=config,
+        extraction_provider=pii_update_provider,
+        retrieval_provider=NullRetrievalProvider(),
+    )
+
+    assert report.run.status == "ok"
+    written = list(vault_root.rglob("*.md"))
+    assert len(written) == 1
+    content = written[0].read_text(encoding="utf-8")
+    # Email is scrubbed; placeholder present; HIGH risk drafted under AUTO.
+    assert "owner@example.com" not in content
+    assert "[REDACTED]" in content
