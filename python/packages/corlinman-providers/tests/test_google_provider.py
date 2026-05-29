@@ -43,12 +43,19 @@ class _FakeClient:
 
 def _patch_google(monkeypatch: pytest.MonkeyPatch, chunks: list[Any]) -> list[dict[str, Any]]:
     calls: list[dict[str, Any]] = []
+    # Reuse the real ``google.genai.types`` module so the structured
+    # multimodal Part/Content construction is exercised against the actual
+    # SDK types; only the network-touching ``Client`` is replaced.
+    from google.genai import types as real_types
+
     google_mod = ModuleType("google")
     genai_mod = ModuleType("google.genai")
     genai_mod.Client = lambda **_: _FakeClient(chunks, calls)  # type: ignore[attr-defined]
+    genai_mod.types = real_types  # type: ignore[attr-defined]
     google_mod.genai = genai_mod  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "google", google_mod)
     monkeypatch.setitem(sys.modules, "google.genai", genai_mod)
+    monkeypatch.setitem(sys.modules, "google.genai.types", real_types)
     return calls
 
 
@@ -139,6 +146,82 @@ async def test_chat_stream_emits_tool_call_chunks(monkeypatch: pytest.MonkeyPatc
             ]
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_content_parts_become_structured_multimodal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OpenAI content-parts (text + image_url) must reach Gemini as real
+    structured parts, never a repr-flattened Python list inside a string.
+
+    Reproduces the multimodal-garbling bug: ``_inject_attachments`` produces
+    a content-parts ``list`` and the old prompt builder embedded its repr
+    into ``f"{role}: {content}"``, so the image was never sent as a part.
+    """
+    calls = _patch_google(monkeypatch, [_text_chunk("ok")])
+
+    data_url = "data:image/png;base64,aGVsbG8="  # b"hello"
+    prov = GoogleProvider(api_key="test-key")
+    async for _ in prov.chat_stream(
+        model="gemini-2.0-flash",
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "describe this"},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ],
+            }
+        ],
+    ):
+        pass
+
+    contents = calls[0]["contents"]
+
+    # Regression guard: the Python-list repr must never leak into a flat
+    # string handed to the SDK.
+    flat = repr(contents)
+    assert "'type': 'image_url'" not in flat
+    assert "'type': 'text'" not in flat
+
+    # The request must carry one structured user turn whose parts are a real
+    # text part + a real inline image part (bytes decoded from the data URL).
+    assert len(contents) == 1
+    turn = contents[0]
+    assert turn.role == "user"
+    assert len(turn.parts) == 2
+    text_part, image_part = turn.parts
+    assert text_part.text == "describe this"
+    assert text_part.inline_data is None
+    assert image_part.text is None
+    assert image_part.inline_data is not None
+    assert image_part.inline_data.mime_type == "image/png"
+    assert image_part.inline_data.data == b"hello"
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_string_history_maps_roles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Plain-string multi-turn history maps to structured Content turns with
+    correct user/model roles (no flat ``role: content`` concatenation)."""
+    calls = _patch_google(monkeypatch, [_text_chunk("ok")])
+
+    prov = GoogleProvider(api_key="test-key")
+    async for _ in prov.chat_stream(
+        model="gemini-2.0-flash",
+        messages=[
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+            {"role": "user", "content": "again"},
+        ],
+    ):
+        pass
+
+    contents = calls[0]["contents"]
+    assert [turn.role for turn in contents] == ["user", "model", "user"]
+    assert [turn.parts[0].text for turn in contents] == ["hi", "hello", "again"]
 
 
 @pytest.mark.asyncio

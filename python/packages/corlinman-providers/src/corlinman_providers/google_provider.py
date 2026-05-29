@@ -15,6 +15,8 @@ in one ``Part`` once, so the unified streaming translation is:
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import os
 from collections.abc import AsyncIterator, Sequence
@@ -89,17 +91,17 @@ class GoogleProvider:
             raise RuntimeError("API key missing: set GOOGLE_API_KEY")
 
         from google import genai  # type: ignore[import-not-found]
+        from google.genai import types  # type: ignore[import-not-found]
 
-        # Gemini wants a single flat prompt; join any history into one
-        # string for the text-only path. Multi-turn + roles are in the
-        # TODO above.
-        prompt_parts: list[str] = []
-        for m in messages:
-            role = _get(m, "role") or "user"
-            content = _get(m, "content") or ""
-            if content:
-                prompt_parts.append(f"{role}: {content}")
-        prompt = "\n".join(prompt_parts)
+        # Translate the unified message list into Gemini's structured
+        # ``Content`` turns. ``content`` may be a plain string (text-only
+        # callers) or an OpenAI-shaped content-parts list (``[{"type":
+        # "text", ...}, {"type": "image_url", ...}]`` produced by
+        # ``reasoning_loop._inject_attachments``). Building real ``Part``
+        # objects keeps images as inline media instead of repr-flattening
+        # the list into a string, and maps roles so multi-turn history
+        # round-trips (Gemini uses ``user`` / ``model``).
+        contents = _build_contents(messages, types)
 
         config: dict[str, Any] = {}
         if temperature is not None:
@@ -122,7 +124,7 @@ class GoogleProvider:
             try:
                 return await client.aio.models.generate_content_stream(
                     model=model,
-                    contents=prompt,
+                    contents=contents,
                     # google-genai accepts a plain dict at runtime but declares
                     # a stricter ``GenerateContentConfig | GenerateContentConfigDict``
                     # in its stubs; M3 will switch to the typed config builder.
@@ -194,6 +196,90 @@ def _get_any(obj: Any, *keys: str) -> Any:
         if value is not None:
             return value
     return None
+
+
+def _gemini_role(role: str | None) -> str:
+    """Map a unified message role to a Gemini ``Content`` role.
+
+    Gemini only recognises ``user`` and ``model``. ``system`` turns are
+    folded into the ``user`` stream (the dedicated system-instruction
+    config slot is wired separately via ``system_prompt`` in ``extra``);
+    everything that isn't an explicit user turn (assistant / tool) maps to
+    ``model`` so multi-turn history keeps alternating correctly.
+    """
+    if role in (None, "user", "system"):
+        return "user"
+    return "model"
+
+
+def _build_contents(messages: Sequence[Any], types: Any) -> list[Any]:
+    """Translate unified messages into structured Gemini ``Content`` turns.
+
+    Each turn's ``content`` is either a plain string (one text part) or an
+    OpenAI-shaped content-parts list. ``image_url`` parts become real inline
+    image ``Part``s (``data:`` URLs are decoded to bytes; remote URLs use
+    ``Part.from_uri``); text parts become text ``Part``s. Empty turns are
+    dropped so we never hand Gemini a content-less ``Content``.
+    """
+    contents: list[Any] = []
+    for m in messages:
+        role = _gemini_role(_get(m, "role"))
+        content = _get(m, "content")
+        parts = _content_to_parts(content, types)
+        if parts:
+            contents.append(types.Content(role=role, parts=parts))
+    return contents
+
+
+def _content_to_parts(content: Any, types: Any) -> list[Any]:
+    """Build a list of Gemini ``Part`` objects from unified message content."""
+    if content is None:
+        return []
+    if isinstance(content, str):
+        return [types.Part.from_text(text=content)] if content else []
+    if not isinstance(content, list):
+        text = str(content)
+        return [types.Part.from_text(text=text)] if text else []
+
+    parts: list[Any] = []
+    for raw in content:
+        if not isinstance(raw, dict):
+            continue
+        ptype = raw.get("type")
+        if ptype == "text":
+            text = raw.get("text") or ""
+            if text:
+                parts.append(types.Part.from_text(text=text))
+        elif ptype == "image_url":
+            url = (raw.get("image_url") or {}).get("url") or ""
+            part = _image_part_from_url(url, types)
+            if part is not None:
+                parts.append(part)
+        # Unknown / unsupported part types (e.g. generic "file") are skipped:
+        # Gemini's text+image vocabulary doesn't represent them here, and
+        # dropping beats failing the whole request.
+    return parts
+
+
+def _image_part_from_url(url: str, types: Any) -> Any | None:
+    """Build a Gemini image ``Part`` from an OpenAI ``image_url`` value.
+
+    ``data:<mime>;base64,<payload>`` URIs are decoded to inline bytes
+    (``Part.from_bytes``); remote ``http(s)`` URLs are passed through as a
+    file-URI part. Returns ``None`` for an empty or malformed url so the
+    caller skips it rather than emitting a junk part.
+    """
+    if not url:
+        return None
+    if url.startswith("data:") and ";base64," in url:
+        header, b64 = url.split(",", 1)
+        mime = header[5:].split(";", 1)[0] or "image/jpeg"
+        try:
+            data = base64.b64decode(b64)
+        except (binascii.Error, ValueError):
+            return None
+        return types.Part.from_bytes(data=data, mime_type=mime)
+    return types.Part.from_uri(file_uri=url)
 
 
 def _iter_function_calls(chunk: Any) -> list[Any]:
