@@ -237,13 +237,48 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
     if (!dedupRef.current.shouldEmit(ev.turnId, ev.sequence)) return;
     setPendingMessage((prev) => {
       if (!prev) return prev;
-      const next: ChatMessage = {
-        ...prev,
-        toolCalls: prev.toolCalls ? prev.toolCalls.map((t) => ({ ...t })) : undefined,
-        subagents: prev.subagents ? prev.subagents.map((s) => ({ ...s, events: s.events ? [...s.events] : [] })) : undefined,
-        approvals: prev.approvals ? prev.approvals.map((a) => ({ ...a })) : undefined,
-        usage: prev.usage ? { ...prev.usage } : undefined,
-      };
+      // PERF-010: clone ONLY the sub-structure the incoming event actually
+      // mutates and reuse the references for everything else. The old code
+      // deep-copied toolCalls/subagents (incl. each nested events array)/
+      // approvals/usage on *every* event — so a pure token-content delta
+      // re-allocated the whole tool/subagent graph and forced every
+      // downstream card to re-render. We always spread `prev` into a fresh
+      // top-level object (React needs a new reference), but the untouched
+      // array/object branches stay reference-equal.
+      const next: ChatMessage = { ...prev };
+      switch (ev.kind) {
+        case "tool-input-delta":
+        case "tool-running":
+        case "tool-completed":
+        case "tools-settle":
+          // These mutate (or append to) `toolCalls`. Clone the array and its
+          // elements so `applyEvent`'s in-place mutations don't touch `prev`.
+          next.toolCalls = prev.toolCalls
+            ? prev.toolCalls.map((t) => ({ ...t }))
+            : undefined;
+          break;
+        case "subagent-spawned":
+        case "subagent-event":
+        case "subagent-completed":
+          // These mutate `subagents` (and a subagent's nested `events`).
+          next.subagents = prev.subagents
+            ? prev.subagents.map((s) => ({
+                ...s,
+                events: s.events ? [...s.events] : [],
+              }))
+            : undefined;
+          break;
+        case "awaiting-approval":
+          next.approvals = prev.approvals
+            ? prev.approvals.map((a) => ({ ...a }))
+            : undefined;
+          break;
+        case "turn-complete":
+          next.usage = prev.usage ? { ...prev.usage } : undefined;
+          break;
+        // text-delta / reasoning-delta / turn-start / turn-errored only
+        // touch scalar fields already covered by the `...prev` spread.
+      }
       applyEvent(next, ev);
       return next;
     });

@@ -57,11 +57,20 @@ export function ChatModelPicker({
   const { t } = useTranslation();
   const [custom, setCustom] = React.useState("");
   const [filter, setFilter] = React.useState("");
+  // PERF-012: number of provider probes allowed to run so far. We probe
+  // providers sequentially (one in-flight at a time) instead of fanning out
+  // one concurrent HTTP probe per enabled provider the instant the popover
+  // opens. Provider i's query is gated until provider i-1 has settled, which
+  // advances this cursor. Starts at 1 so exactly one probe begins on open.
+  const [probeCursor, setProbeCursor] = React.useState(0);
 
   React.useEffect(() => {
     if (open) {
       setCustom("");
       setFilter("");
+      setProbeCursor(1);
+    } else {
+      setProbeCursor(0);
     }
   }, [open]);
 
@@ -91,13 +100,33 @@ export function ChatModelPicker({
   }, [providersQ.data, kind]);
 
   const probeQueries = useQueries({
-    queries: enabledProviders.map((p) => ({
+    queries: enabledProviders.map((p, i) => ({
       queryKey: ["chat-picker", "provider-models", p.name],
       queryFn: () => getProviderModels(p.name),
       staleTime: 120_000,
-      enabled: open,
+      // Sequential gate: only providers whose index is below the cursor may
+      // probe. Each settled probe advances the cursor (effect below), so at
+      // most one probe is ever in flight rather than an N-at-once burst.
+      enabled: open && i < probeCursor,
     })),
   });
+
+  // Advance the probe cursor once the current in-flight provider probe has
+  // settled (success or error). A query that is `enabled: false` reports
+  // fetchStatus "idle" and is treated as not-yet-settled, so the cursor only
+  // moves forward when the *enabled* leading probe finishes.
+  const lastProbe =
+    probeCursor > 0 ? probeQueries[probeCursor - 1] : undefined;
+  const lastProbeSettled =
+    lastProbe != null &&
+    lastProbe.fetchStatus === "idle" &&
+    (lastProbe.isSuccess || lastProbe.isError);
+  React.useEffect(() => {
+    if (!open) return;
+    if (probeCursor >= enabledProviders.length) return;
+    if (probeCursor > 0 && !lastProbeSettled) return;
+    setProbeCursor((c) => Math.min(c + 1, enabledProviders.length));
+  }, [open, probeCursor, enabledProviders.length, lastProbeSettled]);
 
   // ── option list ─────────────────────────────────────────────────────
   const options: ModelOption[] = React.useMemo(() => {
