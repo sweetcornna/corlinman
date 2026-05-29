@@ -350,19 +350,16 @@ async def test_400_bad_request_discriminates_by_message(
 async def test_429_with_retry_after_header(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A 429 response with a ``retry-after`` header is still mapped to
-    :class:`RateLimitError`.
+    """A 429 response with a ``retry-after`` header is mapped to
+    :class:`RateLimitError` with ``retry_after_ms`` extracted from the
+    header.
 
-    NB (discovered while writing this test, recorded in
-    ``audit/evidence/cleanup/TEST-003/discovered.md``): the Anthropic
-    mapper does *not* extract the ``retry-after`` header into
-    ``RateLimitError.retry_after_ms``. The field is left at its
-    default ``None`` even when the upstream told us exactly how long to
-    wait. This test pins the *current* shipped behaviour so a future
-    fix (which should set ``retry_after_ms`` from the header) breaks
-    here loudly — at which point this assertion should be updated to
-    ``assert err.retry_after_ms == 7000`` and the discovered.md note
-    can be removed.
+    Fixed under audit R4-D3 (previously TEST-003 discovered.md): the
+    Anthropic mapper now reads the ``retry-after`` delta-seconds header
+    off ``exc.response.headers`` and converts it to milliseconds, so the
+    Rust agent client's backoff layer can honour the vendor-suggested
+    wait instead of falling back to the generic ``DEFAULT_SCHEDULE``.
+    The fixture sends ``retry-after: 7`` → ``retry_after_ms == 7000``.
     """
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-key")
     _suppress_sdk_retries(monkeypatch)
@@ -385,13 +382,11 @@ async def test_429_with_retry_after_header(
     err = exc_info.value
     assert err.status_code == 429
     assert err.provider == "anthropic"
-    # ===== Pin current behaviour: header is NOT extracted =====
-    # See discovered.md — the mapper drops ``retry-after`` on the floor.
-    assert err.retry_after_ms is None, (
-        "Anthropic mapper currently drops the Retry-After header. "
-        "If this assertion starts failing, the mapper now extracts the "
-        "header (good!) and this test should be updated to assert the "
-        "extracted value."
+    # ===== R4-D3 fix: header IS extracted (delta-seconds → ms) =====
+    # ``retry-after: 7`` (7 delta-seconds) → 7000 ms.
+    assert err.retry_after_ms == 7000, (
+        "Anthropic mapper must extract the Retry-After header "
+        "(7 delta-seconds → 7000 ms) into RateLimitError.retry_after_ms."
     )
 
 

@@ -8,7 +8,11 @@ SDK's heavy HTTP transport.
 
 from __future__ import annotations
 
+import json
+import os
+import time
 from collections.abc import AsyncIterator
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -333,3 +337,120 @@ async def test_chat_stream_with_image_url_part(monkeypatch: pytest.MonkeyPatch) 
         "type": "image",
         "source": {"type": "url", "url": "https://cdn/pic.png"},
     }
+
+
+# ---------------------------------------------------------------------------
+# OAuth credential read caching (audit R4-D4 / PERF-003)
+# ---------------------------------------------------------------------------
+#
+# ``_resolve_oauth_token`` runs once per request on the async hot path.
+# Before the fix it called ``load_anthropic_credential`` — a blocking
+# ``path.read_text()`` + ``json.loads()`` — on EVERY request. The fix
+# memoises the parsed credential keyed on the file's ``(mtime_ns, size)``
+# and only re-reads when that key changes (``stat()`` is far cheaper than
+# read+parse). These two tests pin the contract: (1) repeated resolves
+# against an unchanged file read the file exactly once; (2) rewriting the
+# file (new mtime) invalidates the cache and forces a fresh read so a
+# token refresh is still picked up.
+
+
+def _write_oauth_credential(
+    data_dir: Path, *, access_token: str, expires_at_ms: int | None
+) -> Path:
+    """Write a minimal Anthropic OAuth credential JSON under ``data_dir``."""
+    path = data_dir / ".oauth" / "anthropic.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "provider": "anthropic",
+                "access_token": access_token,
+                "refresh_token": None,
+                "expires_at_ms": expires_at_ms,
+                "scope": None,
+                "obtained_at_ms": int(time.time() * 1000),
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_oauth_credential_read_once_across_repeated_resolves(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Repeated ``_resolve_oauth_token`` calls against an UNCHANGED file
+    perform the expensive read+parse exactly once (audit R4-D4)."""
+    import corlinman_providers.anthropic_provider as ap_mod
+
+    # Far-future expiry so the refresh-on-use branch never fires (it would
+    # otherwise rewrite the file and legitimately invalidate the cache).
+    _write_oauth_credential(
+        tmp_path, access_token="oauth-tok-1", expires_at_ms=int(time.time() * 1000) + 3_600_000
+    )
+
+    real_load = ap_mod.load_anthropic_credential
+    calls = {"n": 0}
+
+    def _counting_load(data_dir: Path) -> Any:
+        calls["n"] += 1
+        return real_load(data_dir)
+
+    monkeypatch.setattr(ap_mod, "load_anthropic_credential", _counting_load)
+
+    prov = AnthropicProvider(data_dir=tmp_path)
+    tokens = [prov._resolve_oauth_token() for _ in range(5)]
+
+    assert tokens == ["oauth-tok-1"] * 5
+    assert calls["n"] == 1, (
+        f"expected the credential file to be read+parsed once across 5 "
+        f"resolves, but load_anthropic_credential ran {calls['n']} times"
+    )
+
+
+def test_oauth_credential_reread_when_file_mtime_changes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Rewriting the credential file (new mtime) invalidates the memo so
+    the next resolve re-reads it — keeping token-refresh correct (audit
+    R4-D4)."""
+    import corlinman_providers.anthropic_provider as ap_mod
+
+    far_future = int(time.time() * 1000) + 3_600_000
+    cred_path = _write_oauth_credential(
+        tmp_path, access_token="oauth-tok-1", expires_at_ms=far_future
+    )
+
+    real_load = ap_mod.load_anthropic_credential
+    calls = {"n": 0}
+
+    def _counting_load(data_dir: Path) -> Any:
+        calls["n"] += 1
+        return real_load(data_dir)
+
+    monkeypatch.setattr(ap_mod, "load_anthropic_credential", _counting_load)
+
+    prov = AnthropicProvider(data_dir=tmp_path)
+
+    # First resolve populates the memo from disk.
+    assert prov._resolve_oauth_token() == "oauth-tok-1"
+    assert calls["n"] == 1
+
+    # Second resolve, file unchanged → served from memo, no extra read.
+    assert prov._resolve_oauth_token() == "oauth-tok-1"
+    assert calls["n"] == 1
+
+    # Rewrite the file with a new token and bump the mtime so the
+    # (mtime_ns, size) cache key changes. ``os.utime`` guarantees a
+    # distinct mtime even on coarse-grained filesystems where two quick
+    # writes could otherwise share a timestamp.
+    _write_oauth_credential(tmp_path, access_token="oauth-tok-2", expires_at_ms=far_future)
+    st = cred_path.stat()
+    os.utime(cred_path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+
+    # Third resolve sees the new mtime → re-reads → returns the new token.
+    assert prov._resolve_oauth_token() == "oauth-tok-2"
+    assert calls["n"] == 2, (
+        "a changed file mtime must invalidate the memo and trigger exactly "
+        "one fresh read"
+    )

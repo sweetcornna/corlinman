@@ -341,6 +341,44 @@ def _map_finish_reason(reason: str | None) -> str:
     return "stop"
 
 
+def _retry_after_ms_from_exc(exc: Exception) -> int | None:
+    """Extract the ``Retry-After`` header off a vendor 429 as milliseconds.
+
+    The OpenAI SDK preserves the upstream header on
+    ``exc.response.headers`` (key ``retry-after``). Per RFC 9110 the value
+    is either delta-seconds (an integer) or an HTTP-date. We honour the
+    delta-seconds form (converted to ms); the HTTP-date form is rare in
+    practice and parsing it would require a clock-skew tolerance we don't
+    want to design here, so it is ignored gracefully (returns ``None``,
+    letting the failover layer fall back to its default backoff schedule).
+    Mirrors ``_retry._retry_after_or_backoff`` but returns ms for
+    :attr:`failover.RateLimitError.retry_after_ms`.
+    """
+    response = getattr(exc, "response", None)
+    headers: Any = getattr(response, "headers", None) if response is not None else None
+    if headers is None:
+        # The SDK sometimes attaches headers directly on the exception.
+        headers = getattr(exc, "headers", None)
+    if headers is None or not hasattr(headers, "get"):
+        return None
+
+    try:
+        raw = headers.get("retry-after") or headers.get("Retry-After")
+    except Exception:  # defensive: tolerate odd header mappings
+        return None
+    if raw is None:
+        return None
+
+    try:
+        seconds = float(str(raw).strip())
+    except (TypeError, ValueError):
+        # HTTP-date form (or anything unparseable) — ignore gracefully.
+        return None
+    if seconds < 0:
+        return None
+    return int(seconds * 1000)
+
+
 def _map_openai_error(exc: Exception, *, model: str, provider: str) -> CorlinmanError:
     """Coerce any OpenAI SDK exception into a :class:`CorlinmanError` subtype."""
     try:
@@ -360,7 +398,12 @@ def _map_openai_error(exc: Exception, *, model: str, provider: str) -> Corlinman
 
     ctx: dict[str, Any] = {"provider": provider, "model": model}
     if isinstance(exc, OaRateLimit):
-        return RateLimitError(str(exc), status_code=429, **ctx)
+        return RateLimitError(
+            str(exc),
+            status_code=429,
+            retry_after_ms=_retry_after_ms_from_exc(exc),
+            **ctx,
+        )
     if isinstance(exc, APITimeoutError):
         return TimeoutError(str(exc), **ctx)
     if isinstance(exc, AuthenticationError):
@@ -381,7 +424,12 @@ def _map_openai_error(exc: Exception, *, model: str, provider: str) -> Corlinman
         if status in (503, 529):
             return OverloadedError(str(exc), status_code=status, **ctx)
         if status == 429:
-            return RateLimitError(str(exc), status_code=status, **ctx)
+            return RateLimitError(
+                str(exc),
+                status_code=status,
+                retry_after_ms=_retry_after_ms_from_exc(exc),
+                **ctx,
+            )
         if status in (401, 403):
             return AuthError(str(exc), status_code=status, **ctx)
         if status == 404:

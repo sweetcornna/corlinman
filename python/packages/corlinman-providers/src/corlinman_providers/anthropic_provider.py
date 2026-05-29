@@ -27,6 +27,7 @@ from typing import Any, ClassVar, Literal
 import structlog
 
 from corlinman_providers._anthropic_oauth import (
+    AnthropicOAuthCredential,
     load_anthropic_credential,
     refresh_anthropic_token,
     save_anthropic_credential,
@@ -97,6 +98,19 @@ class AnthropicProvider:
     ) -> None:
         self._spec_api_key = api_key
         self._data_dir = data_dir
+        # mtime-keyed memo of the parsed OAuth credential (audit R4-D4 /
+        # PERF-003). ``_resolve_oauth_token`` runs per request on the
+        # async hot path; without this cache it did a blocking
+        # ``path.read_text()`` + ``json.loads()`` every call. We instead
+        # ``stat()`` the file (far cheaper) and only re-read + parse when
+        # the file's identity changes. The cache key is
+        # ``(st_mtime_ns, st_size)``; a token refresh rewrites the file
+        # via ``os.replace`` (atomic, new inode/mtime) so the key changes
+        # and the cache invalidates automatically. ``None`` marks "no key
+        # computed yet" — distinct from the cached value which may itself
+        # be ``None`` (a malformed/absent file that parsed to nothing).
+        self._cred_cache_key: tuple[int, int] | None = None
+        self._cred_cache_value: AnthropicOAuthCredential | None = None
 
     @classmethod
     def build(
@@ -153,12 +167,57 @@ class AnthropicProvider:
 
         return None, "api_key"
 
+    def _credential_file_path(self) -> Path:
+        """Path of the OAuth credential file under ``data_dir``."""
+        # Mirrors ``_anthropic_oauth._credential_path`` (kept local to
+        # avoid coupling to that module's private symbol). The layout is
+        # part of the stored contract and does not change.
+        assert self._data_dir is not None  # guarded by the caller
+        return Path(self._data_dir) / ".oauth" / "anthropic.json"
+
+    def _load_credential_cached(self) -> AnthropicOAuthCredential | None:
+        """Return the parsed OAuth credential, re-reading only on change.
+
+        ``stat()`` is far cheaper than ``read_text()`` + ``json.loads()``;
+        we key the memo on ``(st_mtime_ns, st_size)`` and only fall
+        through to :func:`load_anthropic_credential` (the expensive
+        read + parse) when that key changes. A missing file resets the
+        cache and returns ``None``.
+
+        Threading note: the memo is a pair of plain instance attributes
+        updated without a lock. That's deliberate — the worst a
+        concurrent async caller can observe is a stale-but-valid
+        credential or a redundant re-read, both idempotent. Holding a
+        lock across the blocking refresh would be worse than the rare
+        duplicate stat/read it would prevent.
+        """
+        path = self._credential_file_path()
+        try:
+            st = path.stat()
+        except OSError:
+            # File absent or unreadable — drop any stale memo so a later
+            # (re)appearance triggers a fresh read.
+            self._cred_cache_key = None
+            self._cred_cache_value = None
+            return None
+
+        key = (st.st_mtime_ns, st.st_size)
+        if key == self._cred_cache_key:
+            return self._cred_cache_value
+
+        # File is new/changed since we last parsed it — read + parse once
+        # and memo the result against the observed key.
+        cred = load_anthropic_credential(self._data_dir)  # type: ignore[arg-type]
+        self._cred_cache_key = key
+        self._cred_cache_value = cred
+        return cred
+
     def _resolve_oauth_token(self) -> str | None:
         """Read the OAuth file (if any) and refresh if near-expiry."""
         if self._data_dir is None:
             return None
 
-        cred = load_anthropic_credential(self._data_dir)
+        cred = self._load_credential_cached()
         if cred is None:
             return None
 
@@ -181,6 +240,18 @@ class AnthropicProvider:
                     save_anthropic_credential(self._data_dir, new_cred)
                 except OSError as exc:
                     logger.warning("anthropic.oauth_save_failed", error=str(exc))
+                # Prime the memo with the freshly-written credential keyed
+                # on the post-write stat, so the next request reuses it
+                # without re-reading the file we just wrote. If the stat
+                # fails for any reason, drop the key so the next call
+                # re-reads from disk (correctness over the perf shortcut).
+                try:
+                    st = self._credential_file_path().stat()
+                    self._cred_cache_key = (st.st_mtime_ns, st.st_size)
+                    self._cred_cache_value = new_cred
+                except OSError:
+                    self._cred_cache_key = None
+                    self._cred_cache_value = None
                 cred = new_cred
         return cred.access_token
 
@@ -493,6 +564,44 @@ def _map_stop_reason(reason: str | None) -> str:
     return mapping.get(reason or "", "stop")
 
 
+def _retry_after_ms_from_exc(exc: Exception) -> int | None:
+    """Extract the ``Retry-After`` header off a vendor 429 as milliseconds.
+
+    The Anthropic SDK preserves the upstream header on
+    ``exc.response.headers`` (key ``retry-after``). Per RFC 9110 the value
+    is either delta-seconds (an integer) or an HTTP-date. We honour the
+    delta-seconds form (converted to ms); the HTTP-date form is rare in
+    practice and parsing it would require a clock-skew tolerance we don't
+    want to design here, so it is ignored gracefully (returns ``None``,
+    letting the failover layer fall back to its default backoff schedule).
+    Mirrors ``_retry._retry_after_or_backoff`` but returns ms for
+    :attr:`failover.RateLimitError.retry_after_ms`.
+    """
+    response = getattr(exc, "response", None)
+    headers: Any = getattr(response, "headers", None) if response is not None else None
+    if headers is None:
+        # The SDK sometimes attaches headers directly on the exception.
+        headers = getattr(exc, "headers", None)
+    if headers is None or not hasattr(headers, "get"):
+        return None
+
+    try:
+        raw = headers.get("retry-after") or headers.get("Retry-After")
+    except Exception:  # defensive: tolerate odd header mappings
+        return None
+    if raw is None:
+        return None
+
+    try:
+        seconds = float(str(raw).strip())
+    except (TypeError, ValueError):
+        # HTTP-date form (or anything unparseable) — ignore gracefully.
+        return None
+    if seconds < 0:
+        return None
+    return int(seconds * 1000)
+
+
 def _map_anthropic_error(exc: Exception, *, model: str) -> CorlinmanError:
     """Coerce any vendor SDK exception into a :class:`CorlinmanError` subtype."""
     # Late import keeps module safe when anthropic isn't installed.
@@ -513,7 +622,12 @@ def _map_anthropic_error(exc: Exception, *, model: str) -> CorlinmanError:
 
     ctx: dict[str, Any] = {"provider": "anthropic", "model": model}
     if isinstance(exc, AnthRateLimit):
-        return RateLimitError(str(exc), status_code=429, **ctx)
+        return RateLimitError(
+            str(exc),
+            status_code=429,
+            retry_after_ms=_retry_after_ms_from_exc(exc),
+            **ctx,
+        )
     if isinstance(exc, APITimeoutError):
         return TimeoutError(str(exc), **ctx)
     if isinstance(exc, AuthenticationError):
@@ -534,7 +648,12 @@ def _map_anthropic_error(exc: Exception, *, model: str) -> CorlinmanError:
         if status == 503 or status == 529:
             return OverloadedError(str(exc), status_code=status, **ctx)
         if status == 429:
-            return RateLimitError(str(exc), status_code=status, **ctx)
+            return RateLimitError(
+                str(exc),
+                status_code=status,
+                retry_after_ms=_retry_after_ms_from_exc(exc),
+                **ctx,
+            )
         if status in (401, 403):
             return AuthError(str(exc), status_code=status, **ctx)
         if status == 404:
