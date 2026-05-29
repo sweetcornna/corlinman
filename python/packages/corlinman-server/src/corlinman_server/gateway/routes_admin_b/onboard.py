@@ -655,10 +655,10 @@ def router() -> APIRouter:
                         "message": "choice=reuse requires provider_name",
                     },
                 )
-            # Probe via Agent C's capabilities module. If it's not yet
-            # importable we fall back to a permissive "supported=True"
-            # stub — Agent C is building this in parallel, and a
-            # missing module shouldn't brick the wizard.
+            # Probe the slot via corlinman_providers.capabilities. The
+            # except branches below stay permissive (supported=True) only
+            # for the defensive case where the module/symbol is somehow
+            # unavailable — a missing probe shouldn't brick the wizard.
             supported: bool = True
             evidence: str = "stub:capabilities_module_pending"
             try:
@@ -668,8 +668,9 @@ def router() -> APIRouter:
 
                 probe = getattr(_cap, "probe_image_capability", None)
                 if probe is None:
-                    # TODO: Agent C — module landed but probe symbol
-                    # missing. Treat as a permissive stub for now.
+                    # Defensive: the module is present but the symbol is
+                    # gone (shouldn't happen — capabilities.py exports it).
+                    # Stay permissive so the wizard can move forward.
                     supported = True
                     evidence = "stub:probe_symbol_missing"
                 else:
@@ -686,7 +687,10 @@ def router() -> APIRouter:
                                 "name": body.provider_name,
                             },
                         )
-                    result = probe(entry)
+                    # ``probe_image_capability`` is ``async def`` and
+                    # returns the ``{supported, evidence, models}`` wire
+                    # shape — mirror image_provider.py's awaited usage.
+                    result = await probe(entry)
                     # Tolerate either a dict or a dataclass return shape.
                     if isinstance(result, dict):
                         supported = bool(result.get("supported", False))
@@ -706,10 +710,10 @@ def router() -> APIRouter:
                             )
                         )
             except ImportError:
-                # TODO: Agent C — capabilities module not yet importable.
-                # Permissive stub so the wizard can move forward; the
-                # operator can flip the toggle later via the providers
-                # admin surface.
+                # Defensive: corlinman_providers.capabilities should always
+                # import in this workspace. If it somehow can't, stay
+                # permissive so the wizard can move forward; the operator can
+                # flip the toggle later via the providers admin surface.
                 supported = True
                 evidence = "stub:capabilities_module_missing"
             except HTTPException:
