@@ -34,6 +34,7 @@ Tokens are never echoed back to the client and never logged.
 
 from __future__ import annotations
 
+import hmac
 import os
 import json
 import time
@@ -160,6 +161,25 @@ def _require_data_dir(state: AdminState) -> Path | JSONResponse:
     if state.data_dir is None:
         return _bad("data_dir_unset", status=503)
     return state.data_dir
+
+
+def _check_state(received: str | None, expected: str) -> JSONResponse | None:
+    """Validate the CSRF ``state`` echoed back in the OAuth callback.
+
+    The legitimate UI (``ui/components/admin/oauth-login-modal.tsx``)
+    always submits a non-empty ``state`` — it refuses to call ``/submit``
+    otherwise and the wire type marks ``state`` non-optional. So we
+    REQUIRE the callback state to match the per-session value minted at
+    ``/start``: a missing/empty state is treated the same as a mismatch
+    (R4-D1). ``state`` is a CSRF secret, so the comparison is
+    constant-time via :func:`hmac.compare_digest`.
+
+    Returns a 400 ``state_mismatch`` response on failure, or ``None`` when
+    the state is valid.
+    """
+    if not received or not expected or not hmac.compare_digest(received, expected):
+        return _bad("state_mismatch", status=400)
+    return None
 
 
 def _anthropic_status_row(state: AdminState) -> ProviderStatus:
@@ -365,12 +385,11 @@ def router() -> APIRouter:
         if record is None or record.get("provider") != "xai" or record.get("flow") != "pkce":
             return _bad("unknown_session", status=404)
 
-        # State guard: if the caller echoes the CSRF state back, require
-        # it match what we minted. Hermes mirrors this at
-        # ``_xai_oauth_loopback_login`` line 5381.
-        expected_state = record.get("state", "")
-        if body.state is not None and body.state and body.state != expected_state:
-            return _bad("state_mismatch", status=400)
+        # CSRF state guard: the callback state MUST equal the per-session
+        # value minted at /start. Absent-or-mismatched is rejected (R4-D1).
+        bad_state = _check_state(body.state, record.get("state", ""))
+        if bad_state is not None:
+            return bad_state
 
         token_endpoint = record.get("token_endpoint", "")
         verifier = record.get("code_verifier", "")
@@ -487,12 +506,10 @@ def router() -> APIRouter:
             or record.get("flow") != "pkce"
         ):
             return _bad("unknown_session", status=404)
-        if (
-            body.state is not None
-            and body.state
-            and body.state != record.get("state", "")
-        ):
-            return _bad("state_mismatch", status=400)
+        # CSRF state guard: reject absent-or-mismatched (R4-D1).
+        bad_state = _check_state(body.state, record.get("state", ""))
+        if bad_state is not None:
+            return bad_state
         try:
             tokens = await codex_pkce.exchange_code(
                 code=body.code,
@@ -582,12 +599,10 @@ def router() -> APIRouter:
             or record.get("flow") != "pkce"
         ):
             return _bad("unknown_session", status=404)
-        if (
-            body.state is not None
-            and body.state
-            and body.state != record.get("state", "")
-        ):
-            return _bad("state_mismatch", status=400)
+        # CSRF state guard: reject absent-or-mismatched (R4-D1).
+        bad_state = _check_state(body.state, record.get("state", ""))
+        if bad_state is not None:
+            return bad_state
         try:
             tokens = await gemini_pkce.exchange_code(
                 code=body.code,

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import secrets
 import time
 import urllib.parse
@@ -150,6 +151,18 @@ async def exchange_code(
     code, callback_state = _parse_code_input(code_input)
     if not code:
         raise OAuthExchangeError("empty authorization code")
+    # CSRF state guard (R4-D1): Anthropic's callback echoes the minted
+    # state as the ``#state`` suffix, so when the callback carries a state
+    # it MUST equal the per-session ``expected_state`` — a mismatch means
+    # the code was minted against a different (attacker-controlled)
+    # session and is rejected. ``state`` is a CSRF secret so the compare
+    # is constant-time. A genuinely bare code (no ``#state`` suffix) falls
+    # back to ``expected_state``: an operator pasting just the code is not
+    # an attacker substituting a forged state.
+    if callback_state is not None and not hmac.compare_digest(
+        callback_state, expected_state
+    ):
+        raise OAuthExchangeError("state mismatch")
     state_to_send = callback_state or expected_state
 
     body = {

@@ -89,7 +89,10 @@ async def test_exchange_code_success() -> None:
         out = await anthropic_pkce.exchange_code(
             code_input="abcdef#state-xyz",
             code_verifier="verifier-123",
-            expected_state="fallback-state",
+            # R4-D1: the callback state must MATCH the minted state, so a
+            # successful exchange carries equal values. (Anthropic mints
+            # state == verifier and the callback echoes it back.)
+            expected_state="state-xyz",
             client=client,
         )
 
@@ -98,7 +101,7 @@ async def test_exchange_code_success() -> None:
     assert isinstance(body, dict)
     assert body["grant_type"] == "authorization_code"
     assert body["code"] == "abcdef"
-    # Callback state wins over the expected_state fallback when present.
+    # Validated callback state is what gets forwarded to the token endpoint.
     assert body["state"] == "state-xyz"
     assert body["code_verifier"] == "verifier-123"
     assert body["client_id"] == anthropic_pkce.ANTHROPIC_OAUTH_CLIENT_ID
