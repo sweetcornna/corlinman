@@ -128,6 +128,62 @@ async def test_list_session_summaries_returns_typed_dataclass(
         summaries[0].session_key = "mutated"  # type: ignore[misc]
 
 
+async def test_list_session_summaries_same_ms_preview_not_mixed(
+    journal: AgentJournal,
+) -> None:
+    """R4-D6: two turns in ONE session with IDENTICAL ``started_at_ms``
+    must not produce a preview row that mixes columns from different
+    turns.
+
+    ``begin_turn`` stores ``started_at_ms = ts`` unchanged, so two turns
+    created in the same millisecond share ``started_at_ms`` while still
+    getting distinct, strictly-increasing ``turn_id`` values (the PK
+    collision retry bumps only ``turn_id``). The two independent
+    correlated subqueries that build ``last_user_text`` and
+    ``last_status`` only ``ORDER BY started_at_ms DESC`` — with no
+    tie-breaker SQLite may resolve each subquery to a *different* one of
+    the tied turns, yielding a (user_text, status) pair that belongs to
+    neither real turn.
+
+    Insert the two turns directly so the shared ``started_at_ms`` is
+    deterministic (``begin_turn`` reads the wall clock fresh each call).
+    The newest turn — the one with the larger ``turn_id`` — must win
+    BOTH columns, so the observed pair must equal exactly one of the two
+    real turns' pairs, never a cross-product mix.
+    """
+    conn = journal.backend._c  # type: ignore[attr-defined]
+    same_ts = 5_000
+    # Older turn: smaller turn_id, completed.
+    await conn.execute(
+        "INSERT INTO turns (turn_id, session_key, status, started_at_ms, "
+        "user_text) VALUES (?, ?, ?, ?, ?)",
+        (1_000, "sess-tie", "completed", same_ts, "OLDER user text"),
+    )
+    # Newer turn: larger turn_id, in_progress — the deterministic winner.
+    await conn.execute(
+        "INSERT INTO turns (turn_id, session_key, status, started_at_ms, "
+        "user_text) VALUES (?, ?, ?, ?, ?)",
+        (1_001, "sess-tie", "in_progress", same_ts, "NEWER user text"),
+    )
+    await conn.commit()
+
+    older_pair = ("OLDER user text", "completed")
+    newer_pair = ("NEWER user text", "in_progress")
+
+    summaries = await journal.list_session_summaries()
+    assert len(summaries) == 1
+    s = summaries[0]
+    observed = (s.last_user_text, s.last_status)
+
+    # The pair must come from ONE turn, never a column-mix of the two.
+    assert observed in (older_pair, newer_pair), (
+        f"preview mixed columns from two turns: {observed!r} is neither "
+        f"{older_pair!r} nor {newer_pair!r}"
+    )
+    # And with a turn_id tie-breaker the newest turn wins deterministically.
+    assert observed == newer_pair
+
+
 # ---------------------------------------------------------------------------
 # delete_session
 # ---------------------------------------------------------------------------
