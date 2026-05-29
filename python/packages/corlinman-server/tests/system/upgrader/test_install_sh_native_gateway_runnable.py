@@ -187,31 +187,83 @@ def test_venv_chowned_so_service_user_can_execute_it() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_upgrade_native_reestablishes_ownership() -> None:
+def test_upgrade_native_migrates_all_units_via_convergence() -> None:
+    """v1.10.0+ robust updater: an upgrade must CONVERGE the box to the
+    release's declared state, not just restart the old unit. upgrade_native
+    delegates to _apply_native_ref, which (re)writes the FULL systemd unit set
+    via write_systemd_units → write_gateway_unit + write_upgrader_units. This
+    chain is what carries the v1.10 de-privileging (and any future unit change)
+    to existing installs. Verify the whole call graph + that the emitted unit
+    is the hardened form."""
     text = _read_install_sh()
-    body = _extract_function_body(text, "upgrade_native")
+    up = _extract_function_body(text, "upgrade_native")
+    assert "_apply_native_ref" in up, (
+        f"upgrade_native must converge via _apply_native_ref.\n{up}"
+    )
+    apply_body = _extract_function_body(text, "_apply_native_ref")
+    assert "write_systemd_units" in apply_body, (
+        "_apply_native_ref must (re)write the systemd units so unit changes "
+        f"converge on upgrade.\n{apply_body}"
+    )
+    units = _extract_function_body(text, "write_systemd_units")
+    assert "write_gateway_unit" in units and "write_upgrader_units" in units, (
+        f"write_systemd_units must emit BOTH the gateway + upgrader units.\n{units}"
+    )
+    assert "daemon-reload" in units, (
+        f"write_systemd_units must daemon-reload so rewritten units take effect.\n{units}"
+    )
+    # The gateway unit the chain emits must be the hardened form.
+    helper = _extract_function_body(text, "write_gateway_unit")
+    assert "User=${SERVICE_USER}" in helper
+    assert "/.venv/bin/corlinman-gateway" in helper
+    assert "command -v uv" not in helper
+
+
+def test_upgrade_native_rolls_back_on_failed_health() -> None:
+    """Robust updater: a release that fails to come up healthy must NOT leave
+    the box down. upgrade_native records the previous commit, and on a failed
+    wait_for_health resets --hard back to it and re-applies (same convergence
+    logic) so the box ends up healthy on the previous version."""
+    text = _read_install_sh()
+    up = _extract_function_body(text, "upgrade_native")
+    assert "before_sha" in up and "rev-parse HEAD" in up, (
+        f"upgrade_native must capture the previous commit as a rollback target.\n{up}"
+    )
+    assert "wait_for_health" in up, (
+        f"upgrade_native must verify /health before declaring success.\n{up}"
+    )
+    # Rollback = reset --hard back to before_sha + re-converge.
+    assert re.search(r"reset --hard \"?\$\{?before_sha", up), (
+        f"upgrade_native must `git reset --hard $before_sha` on failure (rollback).\n{up}"
+    )
+    # The rollback re-applies via the same convergence helper (it appears twice:
+    # once for the upgrade, once for the rollback).
+    assert up.count("_apply_native_ref") >= 2, (
+        "rollback must re-converge via _apply_native_ref so the reverted box is "
+        f"fully restored (venv + units + restart), not left half-applied.\n{up}"
+    )
+
+
+def test_apply_native_ref_reestablishes_ownership() -> None:
+    text = _read_install_sh()
+    body = _extract_function_body(text, "_apply_native_ref")
 
     # `uv sync` rewrites .venv root-owned; build_and_place_ui rewrites
-    # ui-static. upgrade_native must re-chown the runtime paths to SERVICE_USER
-    # (and ensure the service user exists) so the corlinman service still
-    # starts after a one-click upgrade.
+    # ui-static. The convergence helper must re-chown the runtime paths to
+    # SERVICE_USER (and ensure the service user exists) so the corlinman
+    # service still starts after a one-click upgrade.
     assert "ensure_service_user" in body, (
-        "upgrade_native never calls ensure_service_user — a host upgraded from "
-        "a pre-S3 install would have no corlinman account when the restarted "
-        f"unit tries to run as it.\n{body}"
+        "_apply_native_ref never calls ensure_service_user — a host upgraded "
+        "from a pre-S3 install would have no corlinman account when the "
+        f"restarted unit tries to run as it.\n{body}"
     )
-    # The actual re-chown is delegated to the shared chown_runtime_paths helper
-    # (single source of truth for the ownership model, also used by
-    # install_native). upgrade_native must call it after uv sync /
-    # build_and_place_ui.
     assert "chown_runtime_paths" in body, (
-        "upgrade_native runs `uv sync` (rewrites .venv root-owned) + "
+        "_apply_native_ref runs `uv sync` (rewrites .venv root-owned) + "
         "build_and_place_ui (rewrites ui-static) but never calls "
         "chown_runtime_paths — the de-privileged gateway can't start after a "
         f"one-click upgrade.\n{body}"
     )
-    # And the helper it delegates to must actually re-own the venv (executed by
-    # the gateway) and the data/ui paths.
+    # And the helper it delegates to must actually re-own the venv + data/ui.
     helper = _extract_function_body(text, "chown_runtime_paths")
     assert re.search(r"\.venv", helper) and "chown" in helper, (
         "chown_runtime_paths must re-establish ownership of $PREFIX/repo/.venv "

@@ -751,6 +751,130 @@ EOF
 }
 
 # ----- Native path ------------------------------------------------------------
+# Write the gateway systemd unit. Factored out of install_native so
+# upgrade_native can MIGRATE an older unit to the current hardened form on
+# every upgrade — pre-1.10 installs shipped a root-running unit with an
+# `ExecStart=$(command -v uv) run …` line; without rewriting it on upgrade,
+# the User=corlinman / venv-console-script hardening (v1.10.0) would never
+# reach existing operators. Operator customizations belong in a drop-in
+# (/etc/systemd/system/corlinman.service.d/*.conf), which this never touches.
+write_gateway_unit() {
+    log "writing systemd unit (corlinman.service)"
+    sudo tee /etc/systemd/system/corlinman.service >/dev/null <<EOF
+[Unit]
+Description=corlinman gateway (Python)
+After=network.target
+
+[Service]
+Type=simple
+User=${SERVICE_USER}
+Group=${SERVICE_USER}
+WorkingDirectory=${PREFIX}/repo
+ExecStart=${PREFIX}/repo/.venv/bin/corlinman-gateway --config ${DATA_DIR}/config.toml --port ${PORT}
+EnvironmentFile=-${PREFIX}/.env
+Environment=HOME=${DATA_DIR}
+Environment=CORLINMAN_DATA_DIR=${DATA_DIR}
+Environment=CORLINMAN_UI_DIR=${PREFIX}/ui-static
+Environment=BIND=0.0.0.0
+Environment=PORT=${PORT}
+Environment=CORLINMAN_RUNTIME_MODE=native
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+# Write the one-click upgrader helper units (the root one-shot + its path
+# watcher). Factored out alongside write_gateway_unit so upgrade_native
+# regenerates them too — a future change to the upgrader unit (PATH, timeout,
+# hardening) then reaches existing installs on the next upgrade instead of
+# being stuck at whatever shipped when the box was first installed.
+write_upgrader_units() {
+    log "writing one-click upgrader units"
+    # PATH explicitly extends systemd's restrictive default so `require uv`
+    # (and pnpm lookups in build_and_place_ui) find tools under
+    # /root/.local/bin without depending on the operator's interactive shell.
+    sudo tee /etc/systemd/system/corlinman-upgrader.service >/dev/null <<EOF
+[Unit]
+Description=corlinman one-shot upgrader
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Environment=CORLINMAN_DATA_DIR=${DATA_DIR}
+Environment=INSTALL_PREFIX=${PREFIX}
+Environment=PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/bin/bash ${PREFIX}/repo/deploy/corlinman-upgrader.sh
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=corlinman-upgrader
+TimeoutStartSec=600
+EOF
+
+    sudo tee /etc/systemd/system/corlinman-upgrader.path >/dev/null <<EOF
+[Unit]
+Description=Watch for corlinman upgrade requests
+After=corlinman-upgrader.service
+
+[Path]
+PathChanged=${DATA_DIR}/.upgrade-request
+Unit=corlinman-upgrader.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+# Single source of truth for the systemd unit set. Writes EVERY unit from its
+# canonical definition + daemon-reloads, and migrates a legacy install that
+# registered the gateway under the old `corlinman-gateway.service` name.
+# Called by BOTH install_native and upgrade_native so the unit topology always
+# converges to what the current release declares — no matter what the box
+# shipped with originally.
+write_systemd_units() {
+    [[ "$(uname -s)" == "Linux" ]] || return 0
+    write_gateway_unit
+    write_upgrader_units
+    # Migrate the legacy unit name (≤ early builds used corlinman-gateway.service).
+    if [[ -f /etc/systemd/system/corlinman-gateway.service ]]; then
+        log "migrating legacy corlinman-gateway.service → corlinman.service"
+        sudo systemctl disable --now corlinman-gateway.service 2>/dev/null || true
+        sudo rm -f /etc/systemd/system/corlinman-gateway.service
+    fi
+    sudo systemctl daemon-reload
+    # Ensure boot-persistence (idempotent — no-op if already enabled).
+    sudo systemctl enable corlinman.service >/dev/null 2>&1 || true
+    sudo systemctl enable corlinman-upgrader.path >/dev/null 2>&1 \
+        || warn "could not enable corlinman-upgrader.path — one-click upgrade falls back to copy-paste"
+}
+
+# Converge the installed runtime to the repo state currently checked out at
+# $PREFIX/repo: refresh the venv (picks up any new/changed deps from the ref's
+# uv.lock), rebuild+place the UI, re-establish ownership, (re)write all systemd
+# units, and restart. Idempotent + version-agnostic — reused for BOTH the
+# upgrade-apply and the rollback-apply, so a failed release is reverted by the
+# exact same convergence logic. Returns non-zero if any step errors.
+_apply_native_ref() {
+    log "uv sync --all-packages --frozen (refreshing venv)"
+    (cd "$PREFIX/repo" && uv sync --all-packages --frozen --no-dev) || return 1
+    build_and_place_ui || return 1
+    if [[ "$(uname -s)" == "Linux" ]]; then
+        ensure_service_user
+        chown_runtime_paths
+        write_systemd_units
+        log "restarting corlinman.service"
+        sudo systemctl restart corlinman.service || return 1
+        if [[ -f /etc/systemd/system/corlinman-agent.service ]]; then
+            sudo systemctl restart corlinman-agent.service || true
+        fi
+    fi
+    return 0
+}
+
 install_native() {
     require curl
     require git
@@ -809,94 +933,14 @@ install_native() {
         ensure_service_user
         chown_runtime_paths
 
-        log "writing systemd unit"
-        # Invoke the venv-resident console-script directly rather than
-        # `$(command -v uv) run corlinman-gateway`. On a root install
-        # `command -v uv` is /root/.local/bin/uv (under /root, mode 0700) —
-        # the corlinman service user gets EACCES on it — and `uv run` also
-        # needs a writable ~/.cache/uv that a homeless system user lacks. The
-        # console-script entry point is generated into the venv by
-        # `uv sync` (corlinman-gateway = ...:main in corlinman-server's
-        # pyproject [project.scripts]), so the venv bin is self-contained and
-        # only depends on paths chown_runtime_paths made SERVICE_USER-readable.
-        sudo tee /etc/systemd/system/corlinman.service >/dev/null <<EOF
-[Unit]
-Description=corlinman gateway (Python)
-After=network.target
-
-[Service]
-Type=simple
-User=${SERVICE_USER}
-Group=${SERVICE_USER}
-WorkingDirectory=${PREFIX}/repo
-ExecStart=${PREFIX}/repo/.venv/bin/corlinman-gateway --config ${DATA_DIR}/config.toml --port ${PORT}
-EnvironmentFile=-${PREFIX}/.env
-Environment=HOME=${DATA_DIR}
-Environment=CORLINMAN_DATA_DIR=${DATA_DIR}
-Environment=CORLINMAN_UI_DIR=${PREFIX}/ui-static
-Environment=BIND=0.0.0.0
-Environment=PORT=${PORT}
-Environment=CORLINMAN_RUNTIME_MODE=native
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-        # --- one-click upgrader helper units (W1.2) -----------------------
-        # PathChanged= watcher fires the one-shot upgrader.service whenever
-        # the gateway atomically writes $DATA_DIR/.upgrade-request. The
-        # upgrader runs as root (it has to call systemctl) but is locked
-        # down by:
-        #   * exec-only-one-command (corlinman-upgrader.sh)
-        #   * strict tag regex + live GitHub releases whitelist in the
-        #     script itself
-        #   * TimeoutStartSec=600 hard cap
-        # See deploy/corlinman-upgrader.sh for the full safety story.
-        log "writing one-click upgrader units"
-        # PATH explicitly extends systemd's restrictive default so
-        # `require uv` (and pnpm lookups in build_and_place_ui) find tools
-        # installed under /root/.local/bin or the install user's
-        # ~/.local/bin without depending on the operator's interactive
-        # shell config. Without this the upgrader silently failed with
-        # "required tool 'uv' not on PATH" (see CHANGELOG v1.8.10).
-        sudo tee /etc/systemd/system/corlinman-upgrader.service >/dev/null <<EOF
-[Unit]
-Description=corlinman one-shot upgrader
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-User=root
-Environment=CORLINMAN_DATA_DIR=${DATA_DIR}
-Environment=INSTALL_PREFIX=${PREFIX}
-Environment=PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ExecStart=/bin/bash ${PREFIX}/repo/deploy/corlinman-upgrader.sh
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=corlinman-upgrader
-TimeoutStartSec=600
-EOF
-
-        sudo tee /etc/systemd/system/corlinman-upgrader.path >/dev/null <<EOF
-[Unit]
-Description=Watch for corlinman upgrade requests
-After=corlinman-upgrader.service
-
-[Path]
-PathChanged=${DATA_DIR}/.upgrade-request
-Unit=corlinman-upgrader.service
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-        sudo systemctl daemon-reload
-        sudo systemctl enable --now corlinman
-        sudo systemctl enable --now corlinman-upgrader.path \
-            || warn "could not enable corlinman-upgrader.path — one-click upgrade will fall back to copy-paste"
+        # (Re)write the full systemd unit set from canonical definitions +
+        # daemon-reload + enable (shared with upgrade_native so the unit
+        # topology always converges to what the release declares). The gateway
+        # runs the venv console-script directly as the unprivileged
+        # SERVICE_USER; the one-click upgrader path-watcher fires the root
+        # one-shot upgrader. See write_gateway_unit / write_upgrader_units.
+        write_systemd_units
+        sudo systemctl start corlinman.service
         log "service status: $(systemctl is-active corlinman)"
     fi
 
@@ -911,8 +955,13 @@ EOF
 }
 
 # ----- Upgrade path (native deployments only) --------------------------------
-# Idempotent: pulls REF into the existing repo, refreshes the venv, restarts
-# the systemd unit. Never rewrites config.toml or touches $DATA_DIR.
+# Robust + version-agnostic. Records the current commit, converges the runtime
+# to the new ref via _apply_native_ref (venv + UI + ownership + ALL systemd
+# units + restart), then verifies /health. If the new release fails to come up
+# healthy on Linux it is AUTOMATICALLY ROLLED BACK to the previous commit (same
+# convergence logic) so a bad release never leaves the box down. Never rewrites
+# config.toml or touches $DATA_DIR. Designed so any future release — new deps,
+# changed units, new ownership model — upgrades cleanly without script changes.
 upgrade_native() {
     require git
     require uv
@@ -920,68 +969,45 @@ upgrade_native() {
         || die "no existing native install at $PREFIX/repo — run install.sh without --upgrade for a fresh install"
 
     log "upgrading $PREFIX/repo to ref=$REF"
-    # Shallow fetch of the requested ref into FETCH_HEAD. Tags only land
-    # as a local ref when --tags is passed (and even then a shallow clone
-    # may not import the tag object), so we never `git checkout <tag>` —
-    # we reset --hard FETCH_HEAD directly, which points at whatever the
-    # fetched ref resolved to (branch tip, tag commit, or arbitrary SHA).
+    # Shallow fetch of the requested ref into FETCH_HEAD; reset --hard onto it
+    # (works for a branch tip, tag commit, or SHA — tags need not land locally).
     git -C "$PREFIX/repo" fetch --depth 1 origin "$REF"
-    # Detect the resolved commit before we touch the worktree so the summary
-    # at the end can show before/after SHAs.
-    local before_sha
-    before_sha="$(git -C "$PREFIX/repo" rev-parse --short HEAD)"
+    # Full SHA of the CURRENT commit captured BEFORE the reset — this is the
+    # rollback target. It stays in the object DB after the reset, so a later
+    # `git reset --hard $before_sha` can revert the worktree if the new ref
+    # fails to come up.
+    local before_sha after_sha
+    before_sha="$(git -C "$PREFIX/repo" rev-parse HEAD)"
     git -C "$PREFIX/repo" reset --hard FETCH_HEAD
-    local after_sha
-    after_sha="$(git -C "$PREFIX/repo" rev-parse --short HEAD)"
+    after_sha="$(git -C "$PREFIX/repo" rev-parse HEAD)"
 
-    log "uv sync --frozen (refreshing venv)"
-    (cd "$PREFIX/repo" && uv sync --all-packages --frozen --no-dev)
-
-    # Rebuild + place the UI static export. Without this an upgrade
-    # leaves $PREFIX/ui-static at the previous version while the Python
-    # gateway flips to the new one — every admin page silently drifts.
-    # ``--skip-ui`` keeps the legacy behaviour for headless / docker-
-    # external-UI deployments.
-    build_and_place_ui
-
-    # Re-establish the ownership invariant the de-privileged gateway depends
-    # on. `uv sync` above rewrote $PREFIX/repo/.venv (root-owned, since the
-    # upgrader runs as root) and build_and_place_ui rsynced a fresh ui-static;
-    # without re-chowning, the corlinman service can't execute the venv
-    # entrypoint or read the UI and crash-loops after the restart below.
-    # ensure_service_user covers hosts upgraded from a pre-S3 install that
-    # never created the account. No-op on Darwin / docker-external-UI.
-    if [[ "$(uname -s)" == "Linux" ]]; then
-        ensure_service_user
-        chown_runtime_paths
-    fi
-
-    if [[ "$(uname -s)" == "Linux" ]] \
-        && [[ -f /etc/systemd/system/corlinman.service ]]; then
-        log "restarting corlinman.service"
-        sudo systemctl restart corlinman.service
-        sudo systemctl is-active corlinman.service || warn "service did not return active"
-        # Restart the Python agent too if it's running (post-W5 deployments
-        # have a sibling corlinman-agent.service that owns the gRPC plane).
-        if [[ -f /etc/systemd/system/corlinman-agent.service ]]; then
-            sudo systemctl restart corlinman-agent.service
-        fi
-    elif [[ "$(uname -s)" == "Linux" ]] \
-        && [[ -f /etc/systemd/system/corlinman-gateway.service ]]; then
-        # Older deployments registered the unit as corlinman-gateway.service.
-        log "restarting corlinman-gateway.service (legacy unit name)"
-        sudo systemctl restart corlinman-gateway.service
-    else
-        warn "no systemd unit found — restart corlinman manually"
-    fi
-
-    local prefix=""
-    wait_for_health || prefix="⚠️  health probe timed out —"
-    print_success "journalctl -u corlinman -f" "$prefix"
-    cat <<EOF
-   upgraded:       $before_sha → $after_sha (ref=$REF)
+    # Apply the new ref + verify health. On non-Linux there is no managed
+    # service to health-check, so a clean apply is success. On Linux a failed
+    # /health (service down / crash-loop) triggers the rollback below.
+    if _apply_native_ref \
+        && { [[ "$(uname -s)" != "Linux" ]] || wait_for_health; }; then
+        print_success "journalctl -u corlinman -f"
+        cat <<EOF
+   upgraded:       ${before_sha:0:9} → ${after_sha:0:9} (ref=$REF)
 
 EOF
+        return 0
+    fi
+
+    if [[ "$(uname -s)" != "Linux" ]]; then
+        die "upgrade applied but health could not be verified on this OS — check the service manually"
+    fi
+
+    # --- automatic rollback ---------------------------------------------------
+    warn "release ${REF} (${after_sha:0:9}) failed to come up healthy — rolling back to ${before_sha:0:9}"
+    git -C "$PREFIX/repo" reset --hard "$before_sha"
+    if _apply_native_ref && wait_for_health; then
+        warn "ROLLED BACK to ${before_sha:0:9}; the box is healthy on the previous version"
+        # Exit non-zero so the one-click upgrader records the failed upgrade
+        # (the box itself is fine — it is running the previous release).
+        die "upgrade to ${REF} (${after_sha:0:9}) failed its health check and was rolled back to ${before_sha:0:9} — inspect 'journalctl -u corlinman' before retrying"
+    fi
+    die "upgrade to ${after_sha:0:9} FAILED and rollback to ${before_sha:0:9} ALSO failed to come up healthy — manual intervention required ('journalctl -u corlinman')"
 }
 
 # ----- Upgrade path (docker deployments) -------------------------------------

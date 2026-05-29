@@ -4,6 +4,465 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.0] — 2026-05-29 — Audit rounds 4–9 + CI greening + durable voice sessions
+
+> ~50 commits since v1.9.0 (`c53b19a`..`d953fe7`) across **Rounds 4
+> through 9** of the audit loop, a dedicated **CI-greening pass**, and a
+> **voice-store feature**. v1.9.0 was tagged before Round 4, so this
+> release bundles all of it. The headline: the entire Python CI gate
+> (**ruff + mypy + import-linter**) is **green for the first time** —
+> and greening it was not cosmetic, it surfaced and fixed genuine latent
+> bugs (dangling asyncio tasks, an exception-silencing `finally`, loop
+> closures) that 1176 lint errors had buried. Other highlights: an
+> **unauthenticated `/v1/voice` WebSocket** closed (and its token moved
+> off the query string); **Anthropic/Bedrock multi-round + parallel tool
+> calling** fixed; a deploy **privilege-escalation** hardening plus the
+> **Critical native-install startup regression** it briefly introduced,
+> now fixed; the scheduler's default cron jobs finally **spawn and fire**;
+> a real **placeholder engine**; journal/identity **transaction
+> serialization**; provider client-leak / 429 / retry fixes; a web-fetch
+> **DNS-rebind** close; admin-provider **SSRF** guard; **agent-brain
+> secret-blocking**; an MCP **cross-tenant IDOR** fix; and a durable
+> **SQLite voice session store**. ~190 new tests; the full uv-workspace
+> suite now runs **4553 passed / 4 skipped** (from the 4363 baseline),
+> with **0 regressions** across the whole arc. **No data migration
+> required. Operators on 1.9.x should upgrade** (see Upgrade notes for
+> the few behavior changes). Full audit trail in `audit/` (ISSUES.md,
+> PROGRESS.md, FINAL_REPORT.md, evidence/{round-4..9}/).
+>
+> 自 v1.9.0 起约 50 个提交（`c53b19a`..`d953fe7`），覆盖审计循环的
+> **第 4 至第 9 轮**、一次专门的 **CI 转绿** 以及一个**语音存储功能**。
+> v1.9.0 在第 4 轮之前打的标签，所以本次发布把这些全部打包。重点：
+> 整条 Python CI 门禁（**ruff + mypy + import-linter**）**首次全绿**——
+> 而且转绿不是表面功夫，它暴露并修复了被 1176 条 lint 错误掩盖的真实
+> 潜伏 bug（游离的 asyncio 任务、吞掉异常的 `finally`、循环闭包）。
+> 其它重点：关闭了**未鉴权的 `/v1/voice` WebSocket**（令牌移出查询串）；
+> 修复 **Anthropic/Bedrock 多轮 + 并行工具调用**；部署侧**提权**加固，
+> 以及它一度引入、现已修复的 **Critical 原生安装启动回归**；调度器的
+> 默认 cron 任务终于会**被拉起并触发**；真正的**占位符引擎**；日志 /
+> 身份的**事务串行化**；provider 客户端泄漏 / 429 / 重试修复；web-fetch
+> **DNS rebind** 关闭；admin-provider **SSRF** 防护；**agent-brain 密钥
+> 拦截**；MCP **跨租户 IDOR** 修复；以及一个持久化的 **SQLite 语音会话
+> 存储**。新增约 190 个测试；完整 uv-workspace 测试套件现为 **4553 通过
+> / 4 跳过**（基线 4363），整段过程 **0 回归**。**无需数据迁移，1.9.x
+> 的运维者应当升级**（少数行为变更见「升级须知」）。完整审计记录见
+> `audit/`（ISSUES.md、PROGRESS.md、FINAL_REPORT.md、evidence/{round-4..9}/）。
+
+### Security / 安全
+
+- **(critical) Unauthenticated `/v1/voice` WebSocket closed.** The
+  api-key gate is a `BaseHTTPMiddleware`, which never sees the WebSocket
+  ASGI scope — so the realtime voice handshake at `/v1/voice` opened a
+  provider session (and billed audio) for any unauthenticated caller,
+  with the tenant taken from a spoofable `X-Tenant-Id` header. The
+  handshake now authenticates inline (reusing `verify_api_key`), closes
+  with `4401` before any provider session opens on a missing/invalid
+  key, and binds the tenant to the verified key — not a header. Retained
+  audio paths now sanitize `tenant_id`/`session_id` against `../`
+  traversal. (#R5-S1 #R5-S2)
+  — **（critical）关闭未鉴权的 `/v1/voice` WebSocket。** api-key 门禁是
+  `BaseHTTPMiddleware`，看不到 WebSocket 的 ASGI scope——于是 `/v1/voice`
+  的实时语音握手会为任意未鉴权调用方打开 provider 会话（并产生音频计费），
+  且租户来自可伪造的 `X-Tenant-Id` 头。握手现在内联鉴权（复用
+  `verify_api_key`），令牌缺失/无效时在打开任何 provider 会话之前以
+  `4401` 关闭，并把租户绑定到已验证的密钥而非请求头；保留音频路径会对
+  `tenant_id`/`session_id` 做 `../` 穿越清洗。
+- **(high, regression-sec) Voice WS token no longer travels on the query
+  string.** R5-S1's fix accepted the token via `?api_key=…`, which leaks
+  the key into gateway/proxy access logs. The token is now carried via
+  the `Sec-WebSocket-Protocol` subprotocol
+  (`corlinman.voice.token.<token>`) or an `Authorization` / `X-API-Key`
+  header; the query-string fallback was removed. (#R6-REG3)
+  — **（high，回归-安全）语音 WS 令牌不再走查询串。** R5-S1 的修复曾经接受
+  `?api_key=…`，会把密钥泄漏进 gateway/代理的访问日志。令牌现在通过
+  `Sec-WebSocket-Protocol` 子协议（`corlinman.voice.token.<token>`）或
+  `Authorization` / `X-API-Key` 头传递；查询串回退已移除。
+- **(high) OAuth callback-state validation enforced on all 4 PKCE
+  flows.** The xai / codex / gemini / anthropic OAuth submit handlers
+  validated the returned `state` only conditionally (or not at all),
+  leaving a CSRF window on the credential-binding step. All four now
+  require + constant-time-compare the state (reject-present-mismatch for
+  the anthropic bare-code fallback). A test that had encoded the bug was
+  corrected. (#R4-D1)
+  — **（high）四条 PKCE 流程全部强制校验 OAuth callback state。** xai /
+  codex / gemini / anthropic 的 OAuth 提交处理器此前只有条件性（或根本不）
+  校验返回的 `state`，凭据绑定步骤存在 CSRF 窗口。四者现在都强制校验并
+  常量时间比较（anthropic 裸 code 回退采用「出现即不许不匹配」）；一个把
+  bug 编进断言的测试已被纠正。
+- **(high) agent-brain blocks secrets before they reach the vault.** The
+  memory curator auto-wrote candidate memories straight into the vault,
+  including ones bearing API keys / tokens. It now classifies risk and
+  marks secret-bearing candidates `BLOCKED`, enforcing
+  `auto_write_max_risk` before any write. (#R6-SEC-brain)
+  — **（high）agent-brain 在写入 vault 前拦截密钥。** 记忆策展器此前会把
+  候选记忆（包括携带 API key / token 的）直接写进 vault；现在会做风险分级，
+  把携密候选标记为 `BLOCKED`，并在任何写入前强制执行 `auto_write_max_risk`。
+- **(high) MCP per-token tenant scoping (cross-tenant IDOR).** MCP
+  resource `list` / `read` did not scope to the calling token's tenant —
+  any token could enumerate and read another tenant's memory resources.
+  Now scoped per-token. Latent until `/mcp` is bound, fixed pre-emptively.
+  (#R6-SEC-mcp)
+  — **（high）MCP 按令牌做租户隔离（跨租户 IDOR）。** MCP 资源 `list` /
+  `read` 此前不按调用令牌的租户限定——任意令牌都能枚举并读取其他租户的
+  记忆资源。现已按令牌隔离。该问题在 `/mcp` 绑定前为潜伏态，已提前修复。
+- **(medium) web-fetch DNS-rebind TOCTOU closed.** The agent's web-fetch
+  SSRF guard resolved DNS, validated the IP, then let httpx re-resolve on
+  connect — a rebind could swap in a private/metadata IP between the two.
+  The validated IP is now pinned for the actual connection. (#R7-SEC012)
+  — **（medium）关闭 web-fetch 的 DNS rebind TOCTOU。** agent web-fetch 的
+  SSRF 防护此前先解析 DNS、校验 IP，再让 httpx 在连接时重新解析——两步之间
+  rebind 可换入内网/元数据 IP。现在把已校验的 IP 钉定到实际连接上。
+- **(medium) admin-provider probe SSRF guard.** The admin provider-probe
+  now blocks cloud-metadata and link-local targets while still allowing
+  loopback/private hosts (so self-hosted Ollama/vLLM relays keep working).
+  A first, blanket `is_safe_host` attempt was dropped because it broke
+  those relays; this is the surgical replacement. (#R7-SEC008)
+  — **（medium）admin-provider 探测 SSRF 防护。** admin provider 探测现在
+  屏蔽云元数据与链路本地地址，同时仍放行回环/私网主机（自托管 Ollama/vLLM
+  中继照常可用）。第一版「一刀切」的 `is_safe_host` 因会打断这些中继而被
+  撤回，这是精修后的替代实现。
+- **(low) Constant-time admin username compare + conditional Secure
+  cookie.** Admin login now compares the username via
+  `hmac.compare_digest` with an always-run argon2 verify (kills the
+  timing oracle that distinguished valid vs invalid usernames); the
+  session cookie sets `Secure` when served over https. (#R9-SEC011 #R9-SEC009)
+  — **（low）admin 用户名常量时间比较 + 条件性 Secure cookie。** admin 登录
+  现以 `hmac.compare_digest` 比较用户名并始终运行一次 argon2 校验（消除区分
+  有效/无效用户名的时序侧信道）；会话 cookie 在 https 下设置 `Secure`。
+
+### Fixed / 修复
+
+- **(critical, regression) Native gateway runs as the unprivileged
+  service user again.** R5-S3 hardened the deploy but left the systemd
+  `ExecStart` pointing at root's `uv` with no `HOME`, so the gateway
+  would not start on a native systemd box (which is how prod runs). The
+  unit now invokes the venv console-script directly, sets `HOME`, and
+  fixes `.venv` ownership to `root:corlinman`; the upgrade path keeps the
+  ownership invariant. (#R6-REG1)
+  — **（critical，回归）原生 gateway 重新以非特权服务用户运行。** R5-S3
+  加固了部署，却把 systemd `ExecStart` 指向了 root 的 `uv` 且无 `HOME`，
+  导致 gateway 在原生 systemd 机器上无法启动（生产正是这种部署）。该 unit
+  现在直接调用 venv 控制台脚本、设置 `HOME`，并把 `.venv` 所有权修正为
+  `root:corlinman`；升级路径保持所有权不变式。
+- **(high) Anthropic/Bedrock emit `tool_use`/`tool_result` on multi-round
+  tool input.** Both adapters dropped `tool_calls` when rebuilding the
+  request after the first tool round, so every post-first-tool turn
+  failed. They now emit the correct vendor blocks. (#R5-B1)
+  — **（high）Anthropic/Bedrock 在多轮工具输入时发出 `tool_use`/`tool_result`。**
+  两个适配器此前在第一轮工具之后重建请求时丢掉了 `tool_calls`，导致首轮
+  工具之后的每一轮都失败；现在会发出正确的厂商块。
+- **(high, regression) Parallel tool results coalesced into one Anthropic
+  user turn.** R5-B1 fixed single-tool rounds but broke *parallel* tool
+  rounds — multiple `tool_result` blocks were split across turns, which
+  Anthropic/Bedrock reject. They now coalesce into a single user turn.
+  (#R6-REG2)
+  — **（high，回归）并行工具结果合并进一个 Anthropic user turn。** R5-B1
+  修好了单工具轮次却弄坏了**并行**工具轮次——多个 `tool_result` 块被拆到
+  不同轮次，Anthropic/Bedrock 会拒绝。现在它们会合并进单个 user turn。
+- **(critical) Scheduler runtime is spawned in the lifespan so default
+  cron jobs actually fire.** `scheduler.runner.spawn()` had **zero
+  production callers** — v1.9.0's dispatch-routing fix was necessary but
+  not sufficient: the tick loops were never created, so the default jobs
+  (`system.update_check`, `evolution.darwin_curate`) never ran. The
+  runtime is now spawned in the lifespan with `app_state` threaded
+  through, and `SchedulerHandle.trigger()` is completed. Real-run
+  verified: a booted gateway spawned 3 tick tasks and fired a per-second
+  job 3× in 2.6s. (#R4-F1)
+  — **（critical）调度器运行时在 lifespan 中拉起，默认 cron 任务真正触发。**
+  `scheduler.runner.spawn()` 此前**没有任何生产调用方**——v1.9.0 的 dispatch
+  路由修复必要但不充分：tick 循环从未被创建，默认任务（`system.update_check`、
+  `evolution.darwin_curate`）从未运行。运行时现在在 lifespan 中拉起并贯穿
+  `app_state`，`SchedulerHandle.trigger()` 也补全。实跑验证：启动后的 gateway
+  拉起 3 个 tick 任务，一个每秒任务在 2.6 秒内触发 3 次。
+- **Real `PlaceholderEngine` ported + `{{episodes.*}}` resolver wired.**
+  `{{memory.*}}` / `{{episodes.*}}` placeholders had been bound to a
+  `_NullEngine`, so the tokens echoed unresolved. The real engine
+  (depth/cycle/dispatch parity) is now ported and `build_default_engine`
+  registers an `EpisodesResolver`; `{{episodes.recent}}` resolves against
+  the episodes DB. `{{memory.*}}` auto-activates when a `MemoryHost` is
+  published. (#R4-F2)
+  — **移植真正的 `PlaceholderEngine` + 接线 `{{episodes.*}}` 解析器。**
+  `{{memory.*}}` / `{{episodes.*}}` 占位符此前绑定到 `_NullEngine`，令牌原样
+  回显。现在移植了真引擎（深度/环/分发对齐），`build_default_engine` 注册
+  `EpisodesResolver`；`{{episodes.recent}}` 会对接 episodes DB 解析。
+  `{{memory.*}}` 在发布 `MemoryHost` 后自动激活。
+- **persona/user/goals placeholder resolver seam added.** A resolver
+  adapter + seam for `{{persona.*}}` / `{{user.*}}` / `{{goals.*}}` is now
+  wired into `build_default_engine`; the entrypoint id-stamping plumbing
+  is spec'd in `ARCH_DEBT.md`. (#R6-G8)
+  — **新增 persona/user/goals 占位符解析器接缝。** `{{persona.*}}` /
+  `{{user.*}}` / `{{goals.*}}` 的解析适配器与接缝已接入 `build_default_engine`；
+  entrypoint 的 id 标注管线在 `ARCH_DEBT.md` 中给出规格。
+- **(high) Journal writes serialized on the shared SQLite connection.**
+  A bare `commit()` on the shared connection could flush another session's
+  open `BEGIN IMMEDIATE` transaction, corrupting atomicity.
+  `SqliteJournalBackend` writes are now serialized (non-reentrant-safe).
+  (#R5-B3)
+  — **（high）日志写入在共享 SQLite 连接上串行化。** 共享连接上的裸
+  `commit()` 可能 flush 掉另一会话已打开的 `BEGIN IMMEDIATE` 事务，破坏原子性。
+  `SqliteJournalBackend` 的写入现已串行化（非重入安全）。
+- **(high) Identity store holds `tx_lock` on single-statement writes.**
+  A recurrence of the R5-B3 class in the identity store
+  (`_issue_phrase` / `_sweep`) could leave orphan rows under async
+  interleave; both now hold `tx_lock`. (#R6-CONC)
+  — **（high）身份存储在单语句写入时持有 `tx_lock`。** 身份存储
+  （`_issue_phrase` / `_sweep`）中 R5-B3 同类问题的复发，在异步交错下可能
+  留下孤儿行；两者现在都持有 `tx_lock`。
+- **(high) `list_session_summaries` correlated-subquery → window + turn_id
+  fallthrough fixed.** The session-summary query scanned
+  O(sessions × turns × msgs) via a correlated subquery, and `begin_turn`
+  could fabricate a colliding `turn_id` after 20 collisions. Rewritten as
+  a window function with a collision-free insert. (#R7-PERF006 #R7-BUG010)
+  — **（high）`list_session_summaries` 关联子查询改窗口函数 + turn_id 兜底
+  修复。** 会话摘要查询此前用关联子查询扫描 O(会话 × 轮次 × 消息)，且
+  `begin_turn` 在 20 次碰撞后可能伪造一个碰撞的 `turn_id`。重写为窗口函数
+  + 无碰撞插入。
+- **`list_session_summaries` previews no longer mix same-millisecond
+  turns.** Tie-broke the summary subqueries on `turn_id DESC` so previews
+  from two turns landing on the same millisecond don't interleave columns.
+  (#R4-D6)
+  — **`list_session_summaries` 预览不再混淆同毫秒轮次。** 摘要子查询按
+  `turn_id DESC` 做平局判定，使落在同一毫秒的两个轮次的预览不再串列。
+- **HookEvent `turn_id` preserved across all branches** — carried over
+  from the v1.9.0 batch context for completeness of the journal-correlation
+  fix (`agent_servicer.py`). (#R1-002 follow-through)
+  — **HookEvent `turn_id` 在所有分支中保留**——延续日志关联修复的上下文
+  （`agent_servicer.py`）。
+- **Provider client lifecycle / 429 / declarative-auth fixes.**
+  - The codex path constructed an `AsyncOpenAI` client per `chat_stream`
+    and never closed it; now closed on every success/error/cancel path
+    (the R1-003 leak fix had missed codex). (#R4-D2)
+    — codex 路径此前每次 `chat_stream` 都新建 `AsyncOpenAI` 客户端且从不关闭；
+    现在在每条 成功/错误/取消 路径上关闭（R1-003 的泄漏修复漏掉了 codex）。
+  - 429 `Retry-After` is now extracted into `RateLimitError.retry_after_ms`
+    on both the OpenAI and Anthropic mappers (was always `None`). (#R4-D3)
+    — 429 的 `Retry-After` 现在在 OpenAI 与 Anthropic 两个映射器上提取进
+    `RateLimitError.retry_after_ms`（此前恒为 `None`）。
+  - Anthropic OAuth credential reads are now mtime-cached (was a sync
+    read+parse per request). (#R4-D4)
+    — Anthropic OAuth 凭据读取现在按 mtime 缓存（此前每请求同步读+解析一次）。
+  - Late-streamed OpenAI tool-call ids are promoted via `_ToolCallState`
+    (BUG-006); declarative `auth_kind="header"` is honored for the
+    openai/anthropic/gemini wire formats, and `auth_kind="query_param"`
+    now raises an explicit "not yet supported" error instead of silently
+    sending a bearer token. (#R7-B1 #R7-B2)
+    — 晚到的流式 OpenAI tool-call id 经 `_ToolCallState` 提升（BUG-006）；
+    声明式 `auth_kind="header"` 在 openai/anthropic/gemini 三种线格式下被遵守，
+    而 `auth_kind="query_param"` 现在显式抛出「尚不支持」错误，而不再静默地
+    发送 bearer 令牌。
+  - GoogleProvider sends real multimodal parts instead of a list `repr`.
+    (#R6-BUG-google)
+    — GoogleProvider 发送真实的多模态 parts，而非列表的 `repr`。
+- **(high) `wstool` malformed frame no longer crashes the reader / leaks
+  the runner.** `from_dict` raised `TypeError` (instead of `ValueError`)
+  on a malformed frame, crashing the reader and leaking the runner; the
+  reader is now cleaned up in a `finally`. (#R6-BUG-wstool)
+  — **（high）`wstool` 畸形帧不再使 reader 崩溃 / 泄漏 runner。**
+  `from_dict` 在畸形帧上抛 `TypeError`（而非 `ValueError`），导致 reader
+  崩溃并泄漏 runner；reader 现在在 `finally` 中清理。
+- **auto-resume stops reporting false-positive 'resumed' for undrained
+  channels.** (#R7-AR)
+  — **auto-resume 不再为未排空的通道误报 'resumed'。**
+- **UI GATEWAY_BASE_URL prefix on session-cost + upgrade-SSE fetchers.**
+  Both fetchers omitted the configured `GATEWAY_BASE_URL`, so they hit the
+  wrong origin behind a sub-path deployment. (#R6-BUG-ui)
+  — **UI 在 session-cost 与 upgrade-SSE 取数器上补 GATEWAY_BASE_URL 前缀。**
+  两个取数器此前漏掉了配置的 `GATEWAY_BASE_URL`，在子路径部署下会打到错误的 origin。
+- **onboard image-provider `reuse` awaits the async probe** (was always
+  returning 409). **chat model-picker open handler wired** (the picker was
+  unreachable). **edit-and-rerun sends truncated history** instead of a
+  stale closure. (#R5-C1 #R5-C2 #R5-B2)
+  — **onboard 的图像 provider `reuse` 现在 await 异步探测**（此前恒返回 409）；
+  **接线了 chat 模型选择器的打开处理器**（此前不可达）；**编辑并重跑发送截断
+  后的历史**而非陈旧闭包。
+
+### Performance / 性能
+
+- **(high) `O(K²)→O(K)` streaming tool-call arg assembler.** The
+  direct-backend assembled streamed tool-call argument fragments via
+  repeated string `+=`; switched to list-append + `join` (~2s → ~6ms for
+  4k fragments). (#R5-P1)
+  — **（high）流式 tool-call 参数装配从 `O(K²)` 降到 `O(K)`。** direct-backend
+  此前用反复的字符串 `+=` 装配流式 tool-call 参数片段；改为 list 追加 +
+  `join`（4k 片段下约 2s → 约 6ms）。
+- **(high) Batch streaming-delta journal writes off the hot path.** The
+  observability emitter committed to SQLite per streamed token; writes are
+  now batched off the hot path. (#R6-PERF)
+  — **（high）把流式 delta 的日志写入批处理、移出热路径。** 可观测性 emitter
+  此前每个流式 token 都向 SQLite commit；写入现已批处理并移出热路径。
+- **(high) Bound `PersistentSubagentStore` terminal retention.** Terminal
+  subagent records grew unbounded (memory/disk + O(N) write-amplification);
+  capped at 512. (#R5-P3)
+  — **（high）限制 `PersistentSubagentStore` 终态保留量。** 终态子代理记录
+  此前无界增长（内存/磁盘 + O(N) 写放大）；上限设为 512。
+- **(high) `React.memo` on `MessageBubble`.** Streaming deltas re-parsed
+  every settled markdown bubble on each event; memoizing stops the
+  re-parse storm. (#R4-D5)
+  — **（high）给 `MessageBubble` 加 `React.memo`。** 流式 delta 此前在每个
+  事件上重解析所有已定型的 markdown 气泡；memo 后止住了重解析风暴。
+- **(high) Memory-host conversational recall bounded by SQL `LIMIT`.** Was
+  a full-namespace scan; now `O(limit)`. (#R7-P1)
+  — **（high）记忆主机的会话召回由 SQL `LIMIT` 限定。** 此前为整命名空间扫描；
+  现在为 `O(limit)`。
+- **(medium) Episode inserts batched into one transaction/commit.**
+  (#R7-PERF008)
+  — **（medium）episode 插入合并进单个事务/commit。**
+- **(medium) Chat-UI: selective `reduceEvent` clone + no all-provider probe
+  fan-out.** The reducer deep-cloned the whole pending message per event,
+  and the model-picker fanned out N parallel provider probes on open; both
+  trimmed. (#R7-PERF010 #R7-PERF012)
+  — **（medium）Chat-UI：`reduceEvent` 选择性克隆 + 取消全 provider 探测扇出。**
+  reducer 此前每事件深拷贝整条待定消息，模型选择器打开时并行扇出 N 个 provider
+  探测；两者均已收敛。
+
+### CI & Quality / CI 与质量
+
+- **(high) py-ruff greened: 1176 → 0.** Safe + reviewed-unsafe autofix
+  (~700 fixes across ~300 files) + config-align to the codebase's real
+  conventions (dropped the never-enforced `N`/`SIM` families; ignored
+  CJK-unicode / `E402` / `A002` / `A004` / FastAPI-`Depends`-`B008` /
+  `B017` / StrEnum-`UP042` / `UP046`-`047`; excluded `audit/`) — **and
+  fixed the real bugs the noise hid**: 3 dangling asyncio tasks (RUF006),
+  a `return`-in-`finally` that silenced exceptions (B012), 2 loop closures
+  (B023), 2 dataclass-default calls (RUF009), a stray import (F401).
+  (#R8-ruff)
+  — **（high）py-ruff 转绿：1176 → 0。** 安全 + 复核过的非安全 autofix
+  （约 300 文件约 700 处）+ 配置对齐到代码库真实约定（移除从未强制的
+  `N`/`SIM` 家族；忽略 CJK-unicode / `E402` / `A002` / `A004` /
+  FastAPI-`Depends`-`B008` / `B017` / StrEnum-`UP042` / `UP046`-`047`；
+  排除 `audit/`）——**并修复了被噪声掩盖的真实 bug**：3 个游离 asyncio
+  任务（RUF006）、1 个吞异常的 `return`-in-`finally`（B012）、2 个循环闭包
+  （B023）、2 个 dataclass 默认值调用（RUF009）、1 个多余导入（F401）。
+- **(high) py-mypy greened: 166 → 0** (471 files Success). Per-package
+  root-cause fixes (no-any-return narrowing, None-guards,
+  `RequestResponseEndpoint`/`HTTPConnection`/`Scope` annotations,
+  `functools.partial` loop-var binding); the net `type: ignore` count
+  *dropped* (~10 total, each with a `[code]` + reason on a genuine stub
+  gap or intentional runtime monkey-patch). (#R8-mypy)
+  — **（high）py-mypy 转绿：166 → 0**（471 文件 Success）。逐包根因修复
+  （no-any-return 收窄、None 守卫、`RequestResponseEndpoint`/`HTTPConnection`/
+  `Scope` 注解、`functools.partial` 循环变量绑定）；净 `type: ignore` 数量
+  *下降*（共约 10 个，每个都带 `[code]` + 理由，对应真实 stub 缺口或刻意的
+  运行时 monkey-patch）。
+- **(high) import-linter layering guard re-enabled + now gating.** A
+  phantom `corlinman_embedding` root package had been aborting the whole
+  layering contract (silently disabling the guard); removing it re-enabled
+  the contract, which caught 3 real `agent→server` upward imports
+  (grandfathered + filed). `boundary-check` is now part of the `gate`
+  needs. (#R5-Q1)
+  — **（high）重新启用 import-linter 分层守卫并纳入门禁。** 一个幻影
+  `corlinman_embedding` 根包此前会让整条分层契约 abort（静默禁用守卫）；
+  移除后契约重新生效，捕获了 3 处真实的 `agent→server` 向上导入（已祖父化
+  并归档）。`boundary-check` 现已纳入 `gate` 的 needs。
+- The previously-lying `docs/ci-status.md` was corrected to match reality.
+  Dead code removed (`session_query.py`, a Rust-era `sessions.sqlite`
+  reader). (#R5-Q1 #R7-QUAL007)
+  — 此前失实的 `docs/ci-status.md` 已更正为实情；删除死代码
+  （`session_query.py`，Rust 时代的 `sessions.sqlite` 读取器）。
+
+### Features / 功能
+
+- **Durable SQLite voice session store.** New `SqliteVoiceSessionStore`
+  persists voice sessions across restarts (the session half of the voice
+  persistence work). R5-B3-concurrency-safe (dedicated connection + lock),
+  opened-once-and-cached (no per-connect leak), real-run verified via the
+  live `/v1/voice` route. The transcript→chat bridge stays deferred (it
+  needs a merge-semantics design decision). (#R9-voice-store)
+  — **持久化 SQLite 语音会话存储。** 新增 `SqliteVoiceSessionStore`，跨重启
+  持久化语音会话（语音持久化工作中的会话部分）。R5-B3 并发安全（专用连接
+  + 锁）、一次性打开并缓存（无每次连接的泄漏），并经实时 `/v1/voice` 路由
+  实跑验证。转写→聊天的桥接仍延后（需要合并语义的设计决策）。
+
+### Tests / 测试
+
+- **~190 new tests; full uv-workspace suite 4553 passed / 4 skipped**
+  (from the 4363 baseline; 0 regressions across the arc). New coverage
+  includes: 31 production-route tests (canvas / channels / memory /
+  wechat_webhook / plugin_callback) + a memory namespace-index guard
+  (#R9-TEST007); MCP `token_config_to_acl` + server-build (#R6-TEST-mcp);
+  `home_channel_store` + admin-session TTL/gc (#R6-TEST-stores); voice
+  money/quota — `cost.py` + `budget.py` (#R6-TEST-voice); plus the
+  per-fix regression tests above (voice-WS 4401, Anthropic parallel
+  tools, scheduler spawn, journal serialization, secret-block, etc.).
+  — **新增约 190 个测试；完整 uv-workspace 套件 4553 通过 / 4 跳过**
+  （基线 4363；整段 0 回归）。新增覆盖包括：31 个生产路由测试（canvas /
+  channels / memory / wechat_webhook / plugin_callback）+ 记忆命名空间索引
+  守卫（#R9-TEST007）；MCP `token_config_to_acl` + server-build
+  （#R6-TEST-mcp）；`home_channel_store` + admin-session TTL/gc
+  （#R6-TEST-stores）；语音计费/配额——`cost.py` + `budget.py`
+  （#R6-TEST-voice）；以及上述各项修复的回归测试（语音 WS 4401、Anthropic
+  并行工具、调度器拉起、日志串行化、密钥拦截等）。
+
+### Docs / 文档
+
+- Reality-aligned docs (the audit's "align the risky features, don't build
+  them blind" stance): `run_in_background` marked not-yet-implemented
+  (#R4-F3); evolution apply/rollback, goals, identity-ingest, and voice
+  persistence aligned to reality + spec'd in `ARCH_DEBT.md` (#R6-C-align,
+  #R5-C4); the `/nodes` page shows an honest "not available" panel instead
+  of a silently-empty mock table (#R5-C3).
+  — 与实情对齐的文档（审计「对齐有风险的功能、不盲目实现」的立场）：
+  `run_in_background` 标记为尚未实现（#R4-F3）；evolution apply/rollback、
+  goals、identity-ingest、语音持久化均对齐实情并在 `ARCH_DEBT.md` 给出规格
+  （#R6-C-align、#R5-C4）；`/nodes` 页面显示诚实的「不可用」面板，而非静默
+  空白的 mock 表（#R5-C3）。
+
+### Upgrade notes / 升级须知
+
+**No data migration required. Operators on 1.9.x should upgrade.** A few
+behavior changes operators should know:
+**无需数据迁移，1.9.x 的运维者应当升级。** 运维者需要知道的少数行为变更：
+
+1. **Native systemd installs auto-migrate on upgrade.** The gateway now
+   runs as an unprivileged `corlinman` user (was root) via the venv
+   console-script. `install.sh --upgrade` and the one-click updater
+   regenerate + reload the systemd unit automatically — **no manual
+   action**. If you customized the unit, move your overrides into a
+   systemd drop-in (`/etc/systemd/system/corlinman.service.d/*.conf`) so
+   the regenerated unit doesn't clobber them.
+   — **原生 systemd 安装在升级时自动迁移。** gateway 现在通过 venv 控制台
+   脚本以非特权 `corlinman` 用户（此前为 root）运行。`install.sh --upgrade`
+   与一键更新器会**自动**重生并重载 systemd unit——**无需人工操作**。若你
+   定制过该 unit，请把覆盖项放进 systemd drop-in
+   （`/etc/systemd/system/corlinman.service.d/*.conf`），以免重生的 unit
+   覆盖它们。
+2. **Voice WebSocket clients must move the token off the query string.**
+   The `/v1/voice` token must now be sent via the `Sec-WebSocket-Protocol`
+   subprotocol (`corlinman.voice.token.<token>`) or an `Authorization` /
+   `X-API-Key` header. The `?api_key=` query-string fallback was removed
+   (it leaked the key into access logs). Browser clients:
+   `new WebSocket(url, ["corlinman.voice.v1", "corlinman.voice.token." + token])`.
+   — **语音 WebSocket 客户端必须把令牌移出查询串。** `/v1/voice` 令牌现在
+   必须通过 `Sec-WebSocket-Protocol` 子协议
+   （`corlinman.voice.token.<token>`）或 `Authorization` / `X-API-Key` 头
+   发送。`?api_key=` 查询串回退已移除（它会把密钥泄漏进访问日志）。浏览器
+   客户端：`new WebSocket(url, ["corlinman.voice.v1", "corlinman.voice.token." + token])`。
+3. **Custom declarative providers — auth_kind behavior tightened.**
+   `auth_kind="header"` now correctly sends the key in the declared header
+   (openai/anthropic/gemini wire formats). `auth_kind="query_param"` now
+   raises an explicit "not yet supported" error instead of silently sending
+   a bearer token — if you relied on the old (broken) bearer behavior,
+   switch to `header`.
+   — **自定义声明式 provider —— auth_kind 行为收紧。**
+   `auth_kind="header"` 现在会把密钥正确地放进声明的请求头
+   （openai/anthropic/gemini 线格式）。`auth_kind="query_param"` 现在显式抛出
+   「尚不支持」错误，而不再静默发送 bearer 令牌——若你依赖旧的（错误的）
+   bearer 行为，请改用 `header`。
+4. **agent-brain memory curator now blocks secret-bearing candidates.**
+   Candidate memories that carry API keys / tokens are marked `BLOCKED` and
+   no longer auto-written to the vault. If you depended on secrets landing
+   in memory, that path is intentionally closed.
+   — **agent-brain 记忆策展器现在拦截携密候选。** 携带 API key / token 的
+   候选记忆会被标记为 `BLOCKED`，不再自动写入 vault。若你曾依赖密钥落入
+   记忆，该路径已被有意关闭。
+5. **CI: the required `gate` check is now green.** The `N`/`SIM` ruff
+   families were dropped and several false-positive rules ignored (see
+   `pyproject.toml`); import-linter is re-enabled and gating. Contributors'
+   local `ruff` / `mypy` should now pass clean against the aligned config.
+   — **CI：必需的 `gate` 检查现已全绿。** 移除了 `N`/`SIM` ruff 家族并忽略了
+   若干误报规则（见 `pyproject.toml`）；import-linter 已重新启用并纳入门禁。
+   贡献者本地的 `ruff` / `mypy` 现在应当能在对齐后的配置下干净通过。
+
 ## [1.9.0] — 2026-05-29 — Security batch + reliability sweep
 
 > Twenty-two commits since v1.8.13, produced by a four-round audit loop
