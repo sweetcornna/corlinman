@@ -358,6 +358,86 @@ _OPENAI_COMPATIBLE_KINDS: frozenset[str] = frozenset(
 
 
 # ---------------------------------------------------------------------------
+# SEC-008 — narrow SSRF guard for the model-discovery probe.
+#
+# ``_query_provider_models`` dials the operator-supplied ``base_url`` with the
+# API key in an ``Authorization: Bearer`` header. A base_url pointing at the
+# cloud-metadata endpoint would exfiltrate that key (and could pull instance
+# credentials). We block ONLY link-local + cloud-metadata targets:
+#
+#   * IPv4 ``169.254.0.0/16`` (link-local, incl. 169.254.169.254 metadata)
+#   * IPv6 ``fe80::/10`` link-local
+#   * the GCP/Azure metadata hostnames (``metadata.google.internal`` etc.)
+#   * any scheme other than http/https
+#
+# Loopback (127.0.0.0/8, ::1) and RFC1918 private ranges (10/8, 172.16/12,
+# 192.168/16) are INTENTIONALLY allowed: admins legitimately point this at
+# self-hosted LLM relays (Ollama / vLLM) on localhost or the LAN, and the
+# host is operator-trusted. A prior blanket private/loopback block was
+# reverted because it broke those local relays — keep this surgical.
+# ---------------------------------------------------------------------------
+
+# Metadata hostnames that never resolve to a link-local literal but still
+# front instance-metadata services; blocked by name.
+_BLOCKED_METADATA_HOSTS: frozenset[str] = frozenset(
+    {"metadata.google.internal", "metadata.goog"}
+)
+
+
+class _UnsafeHost(Exception):
+    """Raised when a probe target resolves to a blocked metadata/link-local host."""
+
+
+def _assert_safe_probe_host(base_url: str) -> None:
+    """Reject link-local / cloud-metadata probe targets (SEC-008).
+
+    Raises :class:`_UnsafeHost` (message becomes ``unsafe_host: <reason>``)
+    when ``base_url`` uses a non-http(s) scheme, names a known metadata
+    host, or resolves to a link-local address (IPv4 169.254.0.0/16 or IPv6
+    fe80::/10). Loopback and RFC1918 private addresses are allowed on
+    purpose — see the module comment above.
+    """
+    import ipaddress
+    import socket
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(base_url)
+    if parts.scheme not in ("http", "https"):
+        raise _UnsafeHost(f"scheme {parts.scheme!r} not allowed (expected http/https)")
+    host = parts.hostname
+    if not host:
+        raise _UnsafeHost("missing host")
+
+    if host.lower() in _BLOCKED_METADATA_HOSTS:
+        raise _UnsafeHost(f"cloud-metadata host {host!r} blocked")
+
+    # If the host is a literal IP, check it directly; otherwise resolve and
+    # reject if ANY resolved address is link-local (defends against DNS
+    # answers that point at the metadata range).
+    candidates: list[str] = []
+    try:
+        ipaddress.ip_address(host)
+        candidates.append(host)
+    except ValueError:
+        try:
+            infos = socket.getaddrinfo(host, parts.port or None)
+        except OSError:
+            # DNS failure: let the dial proceed and surface the real
+            # connection error — do not fail-closed on resolution hiccups.
+            return
+        candidates = [info[4][0] for info in infos]
+
+    for raw in candidates:
+        # Strip any IPv6 zone id (e.g. ``fe80::1%eth0``) before parsing.
+        try:
+            ip = ipaddress.ip_address(raw.split("%", 1)[0])
+        except ValueError:
+            continue
+        if ip.is_link_local:
+            raise _UnsafeHost(f"link-local/metadata address {raw} blocked")
+
+
+# ---------------------------------------------------------------------------
 # W1.1 — test / models / kinds endpoints
 #
 # The legacy `_query_provider_models` helper above returns ``models``
@@ -614,6 +694,19 @@ async def _query_provider_models(
             api_key = ""
         raw_base = entry_dict.get("base_url") or "https://api.openai.com"
         base_url = str(raw_base).rstrip("/")
+
+    # SEC-008: refuse to dial cloud-metadata / link-local targets with the
+    # api key attached. Loopback/private are intentionally allowed (local
+    # relays). Rejected before any outbound request is made.
+    try:
+        _assert_safe_probe_host(base_url)
+    except _UnsafeHost as exc:
+        return {
+            "ok": False,
+            "models": [],
+            "latency_ms": 0,
+            "error": f"unsafe_host: {exc}",
+        }
 
     url = base_url.rstrip("/") + "/v1/models"
     headers: dict[str, str] = {}
