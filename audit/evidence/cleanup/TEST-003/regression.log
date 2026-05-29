@@ -1,0 +1,54 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.13.12, pytest-9.0.3, pluggy-1.6.0
+rootdir: /Users/cornna/project/corlinman
+configfile: pyproject.toml
+plugins: syrupy-5.2.0, cov-7.1.0, hypothesis-6.154.1, asyncio-1.4.0, respx-0.23.1, anyio-4.13.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 352 items
+
+python/packages/corlinman-providers/tests/plugins/test_approval.py ..... [  1%]
+...                                                                      [  2%]
+python/packages/corlinman-providers/tests/plugins/test_async_task.py ... [  3%]
+....                                                                     [  4%]
+python/packages/corlinman-providers/tests/plugins/test_discovery.py .... [  5%]
+...                                                                      [  6%]
+python/packages/corlinman-providers/tests/plugins/test_lifecycle.py .... [  7%]
+.                                                                        [  7%]
+python/packages/corlinman-providers/tests/plugins/test_manifest.py ..... [  9%]
+........................                                                 [ 15%]
+python/packages/corlinman-providers/tests/plugins/test_registry.py ....  [ 17%]
+python/packages/corlinman-providers/tests/plugins/test_sandbox.py ...... [ 18%]
+................s                                                        [ 23%]
+python/packages/corlinman-providers/tests/test_anthropic_oauth_credential.py . [ 23%]
+......                                                                   [ 25%]
+python/packages/corlinman-providers/tests/test_anthropic_provider.py ... [ 26%]
+..........                                                               [ 29%]
+python/packages/corlinman-providers/tests/test_anthropic_provider_error_mapping.py . [ 29%]
+..............                                                           [ 33%]
+python/packages/corlinman-providers/tests/test_auth_refresh.py ......... [ 36%]
+........                                                                 [ 38%]
+python/packages/corlinman-providers/tests/test_aws_eventstream.py .....  [ 39%]
+python/packages/corlinman-providers/tests/test_aws_sigv4.py ....         [ 40%]
+python/packages/corlinman-providers/tests/test_azure_provider.py ....... [ 42%]
+.                                                                        [ 43%]
+python/packages/corlinman-providers/tests/test_bedrock_provider.py ..... [ 44%]
+........                                                                 [ 46%]
+python/packages/corlinman-providers/tests/test_codex_provider.py ....... [ 48%]
+...............................................                          [ 62%]
+python/packages/corlinman-providers/tests/test_declarative.py ...        [ 63%]
+python/packages/corlinman-providers/tests/test_failover.py ............. [ 66%]
+..................................                                       [ 76%]
+python/packages/corlinman-providers/tests/test_google_provider.py ...    [ 77%]
+python/packages/corlinman-providers/tests/test_mock_provider.py ........ [ 79%]
+.....                                                                    [ 80%]
+python/packages/corlinman-providers/tests/test_openai_provider_tool_stream.py . [ 81%]
+....                                                                     [ 82%]
+python/packages/corlinman-providers/tests/test_provider_client_lifecycle.py . [ 82%]
+.......                                                                  [ 84%]
+python/packages/corlinman-providers/tests/test_registry_config_driven.py . [ 84%]
+.....................                                                    [ 90%]
+python/packages/corlinman-providers/tests/test_retry.py ................ [ 95%]
+............                                                             [ 98%]
+python/packages/corlinman-providers/tests/test_smoke.py ....             [100%]
+
+======================== 351 passed, 1 skipped in 1.29s ========================
