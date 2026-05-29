@@ -1,8 +1,17 @@
 /**
  * Empty data stubs for `/nodes` page (B4 prototype).
  *
- * TODO(B4-BE3): swap to `apiFetch<Runner[]>("/wstool/runners")` once
- * the gateway exposes the runner registry + SSE stream.
+ * HONEST-ALIGN (R5): `fetchRunnersMock` is NOT wired into the page anymore —
+ * it always returned `[]` and the gateway exposes no runner-registry endpoint,
+ * so polling it just rendered a misleading "empty registry" state. The page now
+ * shows an explicit "not yet available" panel (see `app/(admin)/nodes/page.tsx`).
+ * The `Runner` type + `summariseRunners` are retained because the topology /
+ * side-rail / detail-drawer components in `@/components/nodes/*` still type
+ * against them and will be re-wired once the backend lands.
+ *
+ * TODO(R5): swap to `apiFetch<Runner[]>("/v1/wstool/runners")` once the gateway
+ * exposes the runner registry (registry.py `runner_count` / `runners`). See
+ * `audit/ARCH_DEBT.md` → "R5 — /nodes runner registry".
  */
 
 export type RunnerHealth = "healthy" | "degraded" | "offline";

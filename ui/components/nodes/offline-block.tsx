@@ -63,4 +63,41 @@ export function EmptyBlock() {
   );
 }
 
+/**
+ * Honest "not yet available" panel for `/nodes`.
+ *
+ * The runner registry has NO backend endpoint (there is no
+ * `GET /wstool/runners` route in the gateway), so the topology can never
+ * populate. Rather than poll an always-empty mock and render the generic
+ * "No runners registered" empty state — which falsely implies a working but
+ * idle registry — we state plainly that the feature is not wired yet.
+ *
+ * Copy is intentionally inlined (not i18n keys): no existing translation
+ * string truthfully describes "no backend endpoint exists", and the i18n
+ * resources are out of scope for this change. See ARCH_DEBT.md "R5 — /nodes
+ * runner registry" for the real fix (gateway route + i18n strings).
+ */
+export function NotImplementedBlock() {
+  return (
+    <GlassPanel
+      variant="soft"
+      className="flex flex-col items-center gap-2 p-8 text-center"
+      data-testid="nodes-not-implemented-block"
+    >
+      <div className="font-mono text-[11px] uppercase tracking-[0.12em] text-tp-ink-4">
+        Not available
+      </div>
+      <div className="text-[14px] font-medium text-tp-ink">
+        Node / runner registry is not yet available
+      </div>
+      <p className="max-w-prose text-[13px] text-tp-ink-3">
+        This view has no backend endpoint yet — the gateway does not expose the
+        WebSocket tool runner registry. It will light up once a{" "}
+        <code className="font-mono text-tp-ink-2">GET /v1/wstool/runners</code>{" "}
+        route ships and is wired here.
+      </p>
+    </GlassPanel>
+  );
+}
+
 export default OfflineBlock;
