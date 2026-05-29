@@ -174,8 +174,17 @@ class Inbox:
                 "UPDATE inbox SET retries = retries + 1, "
                 "status = CASE WHEN retries + 1 >= ? THEN ? ELSE ? END, "
                 "updated_at_ms = ?, error = COALESCE(?, error) "
-                "WHERE id = ? RETURNING retries",
-                (_MAX_RETRIES, INBOX_DEAD, INBOX_PENDING, now_ms, error, inbox_id),
+                "WHERE id = ? AND status IN (?, ?) RETURNING retries",
+                (
+                    _MAX_RETRIES,
+                    INBOX_DEAD,
+                    INBOX_PENDING,
+                    now_ms,
+                    error,
+                    inbox_id,
+                    INBOX_PENDING,
+                    INBOX_DISPATCHED,
+                ),
             )
             row = await cur.fetchone()
             await cur.close()

@@ -119,6 +119,7 @@ async def test_increment_retry_is_atomic_under_concurrency(inbox: Inbox) -> None
     counter stuck below ``_MAX_RETRIES`` so the row never reached
     ``dead`` and the message kept retrying forever.
     """
+    start_ms = int(time.time() * 1000)
     iid = await inbox.enqueue(channel="qq", session_key="s1", user_text="x")
     await asyncio.gather(
         inbox.increment_retry(iid, error="race-a"),
@@ -126,6 +127,42 @@ async def test_increment_retry_is_atomic_under_concurrency(inbox: Inbox) -> None
     )
     recent = await inbox.list_recent(limit=1)
     assert recent[0].retries == 2
+    # The atomic UPDATE must also preserve the error and timestamp writes
+    # — a future refactor that drops COALESCE(?, error) or updated_at_ms
+    # would silently corrupt audit data without these asserts (#R3-001).
+    assert recent[0].error in {"race-a", "race-b"}
+    assert recent[0].updated_at_ms >= start_ms
+
+
+async def test_increment_retry_does_not_resurrect_done(inbox: Inbox) -> None:
+    """A stray ``increment_retry`` on an already-``done`` row must be a
+    no-op — otherwise the atomic UPDATE flips the row back to ``pending``
+    with ``retries=1`` and the boot drainer redelivers an already-
+    processed message (#R3-001).
+    """
+    iid = await inbox.enqueue(channel="qq", session_key="s1", user_text="x")
+    await inbox.mark_done(iid)
+    r = await inbox.increment_retry(iid, error="stray")
+    assert r == -1  # no-op signal for callers
+    recent = await inbox.list_recent(limit=1)
+    assert recent[0].status == INBOX_DONE
+    assert recent[0].retries == 0
+    assert recent[0].error is None
+
+
+async def test_increment_retry_does_not_resurrect_dead(inbox: Inbox) -> None:
+    """Same guard for the terminal ``dead`` status — once given up on,
+    a retry attempt must not reset retries and flip the row back to
+    ``pending`` (#R3-001).
+    """
+    iid = await inbox.enqueue(channel="qq", session_key="s1", user_text="x")
+    await inbox.mark_dead(iid, error="poison")
+    r = await inbox.increment_retry(iid, error="stray")
+    assert r == -1
+    recent = await inbox.list_recent(limit=1)
+    assert recent[0].status == INBOX_DEAD
+    assert recent[0].retries == 0
+    assert recent[0].error == "poison"
 
 
 async def test_increment_retry_flips_to_dead_atomically(inbox: Inbox) -> None:
