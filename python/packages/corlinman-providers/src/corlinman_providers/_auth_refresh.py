@@ -40,7 +40,7 @@ logger = structlog.get_logger(__name__)
 T = TypeVar("T")
 
 
-async def with_401_recovery(
+async def with_401_recovery[T](
     call: Callable[[], Awaitable[T]],
     *,
     refresh: Callable[[], Awaitable[bool]],

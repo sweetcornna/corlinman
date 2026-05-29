@@ -17,7 +17,6 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-
 from corlinman_server.system.upgrader import (
     DockerUpgrader,
     UpgradeAlreadyRunning,
@@ -27,7 +26,6 @@ from corlinman_server.system.upgrader import (
 from corlinman_server.system.upgrader.docker_upgrader import (
     _HEALTH_TIMEOUT_SECONDS,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fakes
@@ -101,8 +99,7 @@ class FakeAPIClient:
             raise self.pull_error
         # Optionally embed an error event in the stream to exercise the
         # mid-stream failure path.
-        for event in self.pull_events:
-            yield event
+        yield from self.pull_events
 
 
 class FakeContainersAPI:

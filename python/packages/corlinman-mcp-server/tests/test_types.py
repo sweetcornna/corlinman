@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 
 import pytest
-
 from corlinman_mcp_server import (
     JSONRPC_VERSION,
     MCP_PROTOCOL_VERSION,

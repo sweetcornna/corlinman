@@ -13,10 +13,9 @@ because the gateway's config schema mandates it).
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
-
 from corlinman_server.scheduler.cron import (
     CronParseError,
     Schedule,
@@ -31,7 +30,7 @@ def test_parses_seven_field_cron() -> None:
     so the next firing is always within the next 24h regardless of when
     the test runs."""
     s = parse("0 0 3 * * * *")
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     nxt = next_after(s, now)
     assert nxt is not None, "daily cron should have a next firing"
     assert nxt > now
@@ -51,7 +50,7 @@ def test_parses_five_field_posix_cron() -> None:
     must also parse — the gateway's TOML configs are 7-field today, but
     tests / admin tooling sometimes pass 5-field strings."""
     s = parse("0 3 * * *")  # daily 3am, 5-field
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     assert next_after(s, now) is not None
 
 
@@ -60,7 +59,7 @@ def test_parses_six_field_with_seconds() -> None:
     natively calls ``second_at_beginning=True``. Used in tests that want
     a per-second cron without the 7-field year column."""
     s = parse("* * * * * *")  # every second
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     nxt = next_after(s, now)
     assert nxt is not None
     # The next firing is within 2s of "now" — generous bound for CI
@@ -74,7 +73,7 @@ def test_next_after_is_strictly_after_now() -> None:
     on a firing, the returned datetime is the *next* one."""
     s = parse("0 0 3 * * * *")
     # Pick a deterministic "now" exactly on a firing (today, 03:00:00).
-    today = datetime.now(tz=timezone.utc).replace(
+    today = datetime.now(tz=UTC).replace(
         hour=3, minute=0, second=0, microsecond=0
     )
     nxt = next_after(s, today)

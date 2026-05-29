@@ -20,17 +20,16 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
-
 from corlinman_providers import AnthropicProvider
 
 
 class _CaptureAnthropic:
     """Stand-in for ``anthropic.AsyncAnthropic`` that records its kwargs."""
 
-    last_kwargs: dict[str, Any] = {}
+    last_kwargs: ClassVar[dict[str, Any]] = {}
 
     def __init__(self, **kwargs: Any) -> None:
         _CaptureAnthropic.last_kwargs = kwargs
@@ -39,12 +38,12 @@ class _CaptureAnthropic:
 
 
 class _StreamHolder:
-    def stream(self, **_: Any) -> "_FakeStream":
+    def stream(self, **_: Any) -> _FakeStream:
         return _FakeStream()
 
 
 class _FakeStream:
-    async def __aenter__(self) -> "_FakeStream":
+    async def __aenter__(self) -> _FakeStream:
         return self
 
     async def __aexit__(self, *_: Any) -> None:

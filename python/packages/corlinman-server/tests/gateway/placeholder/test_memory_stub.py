@@ -13,7 +13,6 @@ import pytest
 mh_mod = pytest.importorskip("corlinman_memory_host")
 
 from corlinman_memory_host import MemoryHit, MemoryHost, MemoryQuery  # noqa: E402
-
 from corlinman_server.gateway.placeholder.memory_stub import (  # noqa: E402
     DEFAULT_MEMORY_NAMESPACE,
     DEFAULT_TOP_K,

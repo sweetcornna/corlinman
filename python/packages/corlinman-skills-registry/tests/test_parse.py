@@ -9,7 +9,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from corlinman_skills_registry.errors import MissingFieldError, YamlParseError
 from corlinman_skills_registry.parse import parse_skill, split_frontmatter
 

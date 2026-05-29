@@ -25,7 +25,6 @@ from typing import Any
 
 import httpx
 import pytest
-
 from corlinman_channels.common import ConfigError, InboundEvent
 from corlinman_channels.discord import (
     DiscordAdapter,

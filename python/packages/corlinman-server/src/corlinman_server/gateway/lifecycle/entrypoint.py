@@ -849,7 +849,7 @@ def _build_state(cfg: Any | None, data_dir: Path) -> Any:
                                 logger_dict = getattr(
                                     _logging.Logger.manager, "loggerDict", {}
                                 )
-                                for name, lg in list(logger_dict.items()):
+                                for _name, lg in list(logger_dict.items()):
                                     if not isinstance(lg, _logging.Logger):
                                         continue
                                     if any(

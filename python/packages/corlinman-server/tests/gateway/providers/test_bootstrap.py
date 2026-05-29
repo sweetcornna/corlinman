@@ -8,7 +8,6 @@ P0 loader produces (see ``docs/contracts/runtime-wiring.md`` §1.1).
 from __future__ import annotations
 
 from corlinman_providers.registry import ProviderRegistry
-
 from corlinman_server.gateway.core.state import AppState
 from corlinman_server.gateway.providers import (
     RegistryModelSource,

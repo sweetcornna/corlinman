@@ -27,9 +27,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from corlinman_server.gateway.lifecycle import starter_skills
-
 
 # ---------------------------------------------------------------------------
 # bundled_skills_root

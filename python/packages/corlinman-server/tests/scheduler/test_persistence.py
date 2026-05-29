@@ -96,7 +96,7 @@ async def test_record_outcome_failure_maps_error_kind(tmp_path: Path) -> None:
                 None,
             ),
         ]
-        for i, (outcome, expected_error_kind, expected_exit_code) in enumerate(cases):
+        for i, (outcome, _expected_error_kind, _expected_exit_code) in enumerate(cases):
             await store.record_outcome(
                 job_name="j",
                 run_id=f"r-{i}",
@@ -117,7 +117,10 @@ async def test_record_outcome_failure_maps_error_kind(tmp_path: Path) -> None:
         for r in rows:
             if r.outcome_kind != "non_zero_exit":
                 assert r.exit_code is None
-        _ = expected_error_kind, expected_exit_code  # asserted via the set above
+        # The expected error_kind / exit_code per case are asserted
+        # collectively via the ``error_kinds`` set and ``non_zero``
+        # row checks above, so the per-case tuple fields are unused
+        # in the loop body (hence the ``_`` prefix).
     finally:
         await store.close()
 

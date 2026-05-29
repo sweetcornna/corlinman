@@ -51,18 +51,17 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import yaml  # type: ignore[import-untyped]
+from corlinman_agent.agents import AgentCardRegistry
+from corlinman_agent.agents.registry import AgentCardLoadError
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from corlinman_agent.agents import AgentCardRegistry
-from corlinman_agent.agents.registry import AgentCardLoadError
 from corlinman_server.gateway.routes_admin_b.state import (
     AdminState,
     get_admin_state,
     require_admin,
 )
-
 
 # ---------------------------------------------------------------------------
 # Wire models

@@ -5,8 +5,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import aiosqlite
-import pytest
 from corlinman_evolution_store import (
     EvolutionKind,
     EvolutionProposal,
@@ -16,11 +14,9 @@ from corlinman_evolution_store import (
     ProposalId,
     ProposalsRepo,
 )
-
-from corlinman_shadow_tester.eval import EvalCase, ExpectedOutcome, ProposalSpec
+from corlinman_shadow_tester.eval import EvalCase
 from corlinman_shadow_tester.runner import ShadowRunner
 from corlinman_shadow_tester.simulator import SimulatorOutput
-
 
 # ---------------------------------------------------------------------------
 # Helpers

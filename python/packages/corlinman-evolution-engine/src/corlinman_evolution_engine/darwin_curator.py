@@ -29,7 +29,6 @@ Design notes:
 from __future__ import annotations
 
 import logging
-import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -131,7 +130,7 @@ def _iter_skill_files(skills_dir: Path) -> list[tuple[str, Path]]:
 async def run_darwin_curator(
     *,
     skills_dir: Path,
-    signals_repo: "SignalsRepo",
+    signals_repo: SignalsRepo,
     tenant_id: str = "default",
     threshold: float = QUALITY_THRESHOLD,
     blacklist: frozenset[str] = DEFAULT_SKILL_BLACKLIST,
@@ -268,7 +267,7 @@ async def run_darwin_curator(
 
 async def _emit_signals_for_skill(
     *,
-    signals_repo: "SignalsRepo",
+    signals_repo: SignalsRepo,
     rubric: RubricReport,
     tenant_id: str,
     observed_at: int,

@@ -33,7 +33,6 @@ from corlinman_server.gateway.routes_admin_b.state import (
     require_admin,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers — keep them module-level so unit tests can import them without
 # materialising the FastAPI router.
@@ -93,7 +92,7 @@ class _ProviderShim:
     objects).
     """
 
-    __slots__ = ("name", "api_key", "base_url")
+    __slots__ = ("api_key", "base_url", "name")
 
     def __init__(self, name: str, api_key: str, base_url: str | None) -> None:
         self.name = name

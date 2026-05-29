@@ -65,10 +65,10 @@ from corlinman_server.scheduler.builtins.system_update_check import (
 
 __all__ = [
     "BUILTIN_ACTIONS",
-    "BuiltinAction",
-    "BuiltinContext",
     "EVOLUTION_DARWIN_CURATE_BUILTIN_NAME",
     "QZONE_DAILY_BUILTIN_NAME",
+    "BuiltinAction",
+    "BuiltinContext",
     "_evolution_darwin_curate_action",
     "_qzone_daily_publish_action",
     "_resolve_update_checker",

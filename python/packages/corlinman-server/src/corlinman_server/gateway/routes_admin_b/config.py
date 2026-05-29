@@ -191,7 +191,9 @@ async def _rewrite_py_config(state: AdminState, cfg: dict[str, Any]) -> None:
     if state.py_config_path is None:
         return
     try:
-        from corlinman_server.gateway.lifecycle import write_py_config  # type: ignore  # noqa: PLC0415
+        from corlinman_server.gateway.lifecycle import (
+            write_py_config,  # type: ignore  # noqa: PLC0415
+        )
     except ImportError:
         return
     res = write_py_config(cfg, state.py_config_path)

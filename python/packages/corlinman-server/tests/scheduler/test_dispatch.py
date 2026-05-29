@@ -20,9 +20,7 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
 from corlinman_hooks import HookBus, HookEvent, HookPriority, Lagged
-
 from corlinman_server.scheduler import (
     JobAction,
     JobSpec,

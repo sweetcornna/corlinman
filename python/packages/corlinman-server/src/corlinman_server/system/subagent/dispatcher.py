@@ -172,7 +172,7 @@ class AsyncSubagentDispatcher:
         store: SubagentTaskStore,
         run_child_factory: RunChildFactory,
         journal: Any | None = None,
-        audit_log: "SystemAuditLog | None" = None,
+        audit_log: SystemAuditLog | None = None,
         max_concurrent_per_tenant: int = DEFAULT_MAX_CONCURRENT_PER_TENANT,
     ) -> None:
         """Construct a dispatcher.

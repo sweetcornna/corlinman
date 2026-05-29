@@ -180,7 +180,7 @@ class OpenAIRealtimeSession:
                 connect(url, additional_headers=headers),
                 timeout=_CONNECT_TIMEOUT_SECONDS,
             )
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             raise OpenAIRealtimeConnectError(
                 "openai realtime connect timed out"
             ) from exc

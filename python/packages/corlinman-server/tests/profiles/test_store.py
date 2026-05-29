@@ -16,7 +16,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from corlinman_server.profiles import (
     Profile,
     ProfileExists,
@@ -29,7 +28,6 @@ from corlinman_server.profiles import (
     profile_skills_dir,
     profile_soul_path,
 )
-
 
 # ---------------------------------------------------------------------------
 # paths.ensure_profile_dirs

@@ -31,6 +31,8 @@ import structlog
 
 from corlinman_server.gateway.core.metrics import (
     encode as encode_metrics,
+)
+from corlinman_server.gateway.core.metrics import (
     init as init_metrics,
 )
 from corlinman_server.gateway.core.shutdown import ShutdownReason, wait_for_signal
@@ -201,7 +203,7 @@ async def run_uvicorn(server: GatewayServer) -> ShutdownReason:
     if serve_task not in done:
         try:
             await asyncio.wait_for(serve_task, timeout=30.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             uv.force_exit = True
             await serve_task
 

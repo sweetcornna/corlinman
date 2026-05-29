@@ -813,7 +813,7 @@ def router() -> APIRouter:
                             aiter_obj.__anext__(),
                             timeout=_UPGRADE_SSE_HEARTBEAT_SECONDS,
                         )
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         yield b": keepalive\n\n"
                         continue
                     except StopAsyncIteration:
@@ -847,7 +847,7 @@ def router() -> APIRouter:
                     f"id: {request_id}:{sequence}\n"
                     f"event: status\n"
                     f"data: {err_payload}\n\n"
-                ).encode("utf-8")
+                ).encode()
 
         return StreamingResponse(
             _generate(),

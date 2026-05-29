@@ -15,13 +15,11 @@ from dataclasses import dataclass
 from typing import Any
 
 import pytest
-
 from corlinman_server.gateway.services.grpc_backend import (
     DEFAULT_AGENT_ENDPOINT,
     chat_backend_mode,
     resolve_agent_target,
 )
-
 
 # ---------------------------------------------------------------------------
 # Minimal state stand-in

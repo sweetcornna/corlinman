@@ -21,7 +21,7 @@ the assertions stay deterministic.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -35,24 +35,22 @@ from corlinman_evolution_store import (
     EvolutionStore,
     SignalsRepo,
 )
-from corlinman_skills_registry import SkillRegistry
-from corlinman_skills_registry.parse import parse_skill
-from corlinman_skills_registry.usage import SkillUsage, write_usage
-
 from corlinman_server.gateway.evolution import (
     CuratorReport,
     CuratorTransition,
     apply_lifecycle_transitions,
     maybe_run_curator,
 )
-
+from corlinman_skills_registry import SkillRegistry
+from corlinman_skills_registry.parse import parse_skill
+from corlinman_skills_registry.usage import SkillUsage, write_usage
 
 # ---------------------------------------------------------------------------
 # Fixture helpers
 # ---------------------------------------------------------------------------
 
 
-UTC = timezone.utc
+UTC = UTC
 FIXED_NOW = datetime(2026, 5, 17, 12, 0, 0, tzinfo=UTC)
 
 

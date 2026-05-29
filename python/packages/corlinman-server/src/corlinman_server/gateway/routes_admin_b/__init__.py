@@ -44,6 +44,9 @@ from corlinman_server.gateway.routes_admin_b import (
     config as _config,
 )
 from corlinman_server.gateway.routes_admin_b import (
+    corlinman_channel as _corlinman_channel,
+)
+from corlinman_server.gateway.routes_admin_b import (
     credentials as _credentials,
 )
 from corlinman_server.gateway.routes_admin_b import (
@@ -102,9 +105,6 @@ from corlinman_server.gateway.routes_admin_b import (
 )
 from corlinman_server.gateway.routes_admin_b import (
     system as _system,
-)
-from corlinman_server.gateway.routes_admin_b import (
-    corlinman_channel as _corlinman_channel,
 )
 from corlinman_server.gateway.routes_admin_b.state import AdminState, set_admin_state
 

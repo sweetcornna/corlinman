@@ -10,7 +10,6 @@ import json
 
 import pytest
 import websockets
-
 from corlinman_mcp_server import (
     McpServer,
     McpServerConfig,

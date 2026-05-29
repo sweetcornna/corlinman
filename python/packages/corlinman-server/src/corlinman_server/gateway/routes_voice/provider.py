@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Final, Protocol, runtime_checkable
 
 DEFAULT_PROVIDER_CHANNEL_CAPACITY: Final[int] = 64
@@ -325,12 +325,12 @@ class MockVoiceProvider:
 
 __all__ = [
     "DEFAULT_PROVIDER_CHANNEL_CAPACITY",
+    "MockVoiceProvider",
+    "MockVoiceProviderSession",
     "ProviderCommand",
     "ProviderEndReason",
     "VoiceEvent",
-    "VoiceSessionStartParams",
     "VoiceProvider",
     "VoiceProviderSession",
-    "MockVoiceProvider",
-    "MockVoiceProviderSession",
+    "VoiceSessionStartParams",
 ]

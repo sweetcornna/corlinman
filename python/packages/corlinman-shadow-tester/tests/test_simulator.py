@@ -10,7 +10,6 @@ from pathlib import Path
 import aiosqlite
 import pytest
 from corlinman_evolution_store import EvolutionKind, EvolutionRisk
-
 from corlinman_shadow_tester.eval import EvalCase, ExpectedOutcome, ProposalSpec
 from corlinman_shadow_tester.simulator import (
     InvalidTargetError,
@@ -19,7 +18,6 @@ from corlinman_shadow_tester.simulator import (
     SkillUpdateSimulator,
     parse_merge_target,
 )
-
 
 # ---------------------------------------------------------------------------
 # parse_merge_target

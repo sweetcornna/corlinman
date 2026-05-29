@@ -26,7 +26,6 @@ from pathlib import Path
 
 from corlinman_server.gateway.oauth.storage import OAuthCredential
 
-
 CLAUDE_CODE_CREDENTIALS_DEFAULT_PATH: Path = Path.home() / ".claude" / ".credentials.json"
 
 

@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -730,15 +730,15 @@ class DarwinHandler:
 # import a single module.
 __all__ = [
     "DEFAULT_SKILL_BLACKLIST",
-    "DarwinHandler",
-    "DarwinScorer",
-    "DimensionScore",
     "EVENT_SKILL_QUALITY_ISSUE",
     "KIND_DARWIN",
     "MIN_BODY_CHARS",
     "QUALITY_THRESHOLD",
     "RUNTIME_RED_LIGHT_MAX_PENALTY",
     "RUNTIME_RED_LIGHT_PENALTY",
+    "DarwinHandler",
+    "DarwinScorer",
+    "DimensionScore",
     "RubricReport",
     "issue_signals_for_report",
 ]

@@ -554,4 +554,4 @@ def _print_human(reports: list[CheckReport]) -> None:
     click.echo(f"{fails} fail, {warns} warn, {oks} ok")
 
 
-__all__ = ["doctor", "CheckReport"]
+__all__ = ["CheckReport", "doctor"]

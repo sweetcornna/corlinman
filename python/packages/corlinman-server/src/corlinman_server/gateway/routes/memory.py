@@ -140,7 +140,7 @@ def router(state: MemoryState) -> APIRouter:
 
     async def _get_doc(id: str) -> Response:  # noqa: A002 — match Rust naming
         try:
-            _, MemoryHostError, _ = _lazy_imports()
+            _, _MemoryHostError, _ = _lazy_imports()
             hit = await state.host.get(id)
         except Exception as exc:  # noqa: BLE001
             return _storage_error(exc)
@@ -153,7 +153,7 @@ def router(state: MemoryState) -> APIRouter:
 
     async def _delete_doc(id: str) -> Response:  # noqa: A002
         try:
-            _, MemoryHostError, _ = _lazy_imports()
+            _, _MemoryHostError, _ = _lazy_imports()
             await state.host.delete(id)
         except Exception as exc:  # noqa: BLE001
             return _storage_error(exc)
@@ -161,7 +161,7 @@ def router(state: MemoryState) -> APIRouter:
 
     async def _health() -> Response:
         try:
-            _, MemoryHostError, _ = _lazy_imports()
+            _, _MemoryHostError, _ = _lazy_imports()
             health = await state.host.health()
         except Exception as exc:  # noqa: BLE001
             return _storage_error(exc)

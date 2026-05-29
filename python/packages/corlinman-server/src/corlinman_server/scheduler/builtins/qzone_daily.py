@@ -290,7 +290,7 @@ async def _drive_chat_turn(
 
     try:
         await asyncio.wait_for(_consume(), timeout=max(1.0, deadline - time.monotonic()))
-    except asyncio.TimeoutError:
+    except TimeoutError:
         cancel.set()
         return {
             **base,

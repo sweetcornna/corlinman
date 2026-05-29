@@ -21,7 +21,7 @@ from typing import Protocol
 
 import structlog
 
-from .adapters import CapabilityAdapter, SessionContext
+from .adapters import SessionContext
 from .bridges import (
     CancellationToken,
     PluginInput,
@@ -124,7 +124,7 @@ class _ProgressSinkAdapter:
     """Bridge from a runtime :class:`ProgressSink` callback onto the
     adapter's :class:`ProgressBridge`."""
 
-    __slots__ = ("_token", "_bridge")
+    __slots__ = ("_bridge", "_token")
 
     def __init__(self, token: str, bridge: ProgressBridge) -> None:
         self._token = token
@@ -329,7 +329,7 @@ class ToolsAdapter:
                 self._runtime.execute(plugin_input, sink, cancel),
                 timeout=timeout_s,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             cancel.cancel()
             log.warning(
                 "tools/call: deadline exceeded",
@@ -396,11 +396,11 @@ def _uuid_like() -> str:
 
 
 __all__ = [
-    "CollectingProgressBridge",
     "DEFAULT_DEADLINE_MS",
     "MCP_PROGRESS_NOTIFICATION",
     "METHOD_CALL",
     "METHOD_LIST",
+    "CollectingProgressBridge",
     "NullProgressBridge",
     "ProgressBridge",
     "ProgressEvent",

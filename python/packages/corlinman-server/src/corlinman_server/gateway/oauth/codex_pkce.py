@@ -33,7 +33,7 @@ import os
 import secrets
 import time
 import urllib.parse
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
 
@@ -245,7 +245,7 @@ def write_auth_json(tokens: dict[str, Any]) -> Path:
             "access_token": tokens["access_token"],
         },
         "OPENAI_API_KEY": None,
-        "last_refresh": datetime.now(timezone.utc).isoformat(),
+        "last_refresh": datetime.now(UTC).isoformat(),
     }
     if tokens.get("refresh_token"):
         payload["tokens"]["refresh_token"] = tokens["refresh_token"]

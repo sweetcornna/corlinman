@@ -15,7 +15,6 @@ from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
-
 from corlinman_server.cli.doctor import (
     _check_port_bindable,
     _resolve_port,

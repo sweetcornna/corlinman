@@ -24,7 +24,6 @@ import asyncio
 from typing import Any
 
 import pytest
-
 from corlinman_agent.events import (
     EventEnvelope,
     MockEventEmitter,

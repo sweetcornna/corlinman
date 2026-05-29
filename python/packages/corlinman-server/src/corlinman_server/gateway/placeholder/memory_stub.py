@@ -89,7 +89,7 @@ class MemoryResolver:
 
     def __init__(
         self,
-        host: "MemoryHost",
+        host: MemoryHost,
         *,
         namespace: str = DEFAULT_MEMORY_NAMESPACE,
         top_k: int = DEFAULT_TOP_K,
@@ -102,7 +102,7 @@ class MemoryResolver:
         self._top_k = max(1, int(top_k))
 
     @property
-    def host(self) -> "MemoryHost":
+    def host(self) -> MemoryHost:
         return self._host
 
     @property
@@ -113,11 +113,11 @@ class MemoryResolver:
     def top_k(self) -> int:
         return self._top_k
 
-    def with_namespace(self, namespace: str) -> "MemoryResolver":
+    def with_namespace(self, namespace: str) -> MemoryResolver:
         """Builder-style override (matches the Rust ``with_namespace``)."""
         return MemoryResolver(self._host, namespace=namespace, top_k=self._top_k)
 
-    def with_top_k(self, top_k: int) -> "MemoryResolver":
+    def with_top_k(self, top_k: int) -> MemoryResolver:
         return MemoryResolver(self._host, namespace=self._namespace, top_k=top_k)
 
     async def resolve(self, key: str, ctx: Any | None = None) -> str:
@@ -164,7 +164,7 @@ class MemoryResolver:
         )
 
 
-def _render_hits(hits: "list[MemoryHit]") -> str:
+def _render_hits(hits: list[MemoryHit]) -> str:
     """Format hits as ``- <content> (<source>:<id>)`` lines.
 
     Single-shot string concat instead of ``"\\n".join`` so a hit with

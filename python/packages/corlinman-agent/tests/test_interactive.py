@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 
 import pytest
-
 from corlinman_agent.interactive import (
     ASK_USER_TOOL,
     ask_user_tool_schema,

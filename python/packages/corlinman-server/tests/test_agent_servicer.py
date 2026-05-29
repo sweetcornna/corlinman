@@ -6,7 +6,7 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, ClassVar
 
 import grpc
 import grpc.aio
@@ -1078,7 +1078,6 @@ async def test_lock_for_empty_session_gets_fresh_lock_each_call() -> None:
 
 async def test_recent_errored_turns_returns_empty_when_no_journal() -> None:
     """Servicer.recent_errored_turns() returns [] when the journal can't open."""
-    import os
 
     servicer = CorlinmanAgentServicer(provider_resolver=lambda _m: _FakeProvider([]))
     # Force the journal open path: empty session is fine — fixtures don't care.
@@ -1119,7 +1118,7 @@ class _CapturingLoop:
     immediately with a ``DoneEvent``. Used to assert the messages the
     handler hands the loop without driving a real provider."""
 
-    captured_starts: list[Any] = []
+    captured_starts: ClassVar[list[Any]] = []
 
     def __init__(
         self,
@@ -1557,6 +1556,7 @@ def test_session_lock_cache_evicts_unheld_locks_at_cap() -> None:
 def test_session_lock_cache_pins_held_locks() -> None:
     """A held lock cannot be evicted (the in-flight RPC still needs it)."""
     import asyncio
+
     from corlinman_server.agent_servicer import _SessionLockCache
 
     cap = 100
@@ -1603,8 +1603,8 @@ def test_session_cache_cap_env_override(monkeypatch: pytest.MonkeyPatch) -> None
     """``CORLINMAN_MAX_SESSION_CACHE`` raises the cap."""
     from corlinman_server.agent_servicer import (
         _CostMeter,
-        _SessionLockCache,
         _session_cache_cap,
+        _SessionLockCache,
     )
 
     monkeypatch.setenv("CORLINMAN_MAX_SESSION_CACHE", "256")

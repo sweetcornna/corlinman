@@ -32,9 +32,10 @@ failures, with the report's ``error`` field populated.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 import structlog
 from corlinman_evolution_store import EVENT_USER_CORRECTION, EvolutionSignal
@@ -59,7 +60,7 @@ SpawnFn = Callable[..., Awaitable[BackgroundReviewReport]]
 
 def _utc_now() -> datetime:
     """Module-private clock; replaced in tests via dataclass injection."""
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class UserCorrectionApplier:

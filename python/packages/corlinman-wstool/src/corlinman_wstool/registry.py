@@ -69,11 +69,11 @@ class ServerState:
     """
 
     __slots__ = (
+        "_seq_iter",
         "cfg",
         "hook_bus",
         "runners",
         "tool_index",
-        "_seq_iter",
     )
 
     def __init__(self, cfg: WsToolConfig, hook_bus: HookBus | None) -> None:

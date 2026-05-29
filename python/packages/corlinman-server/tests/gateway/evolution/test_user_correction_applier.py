@@ -16,7 +16,7 @@ Covers the routing contract documented on the class:
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -30,7 +30,6 @@ from corlinman_server.gateway.evolution.background_review import (
     BackgroundReviewReport,
 )
 from corlinman_skills_registry import SkillRegistry
-
 
 # ─── Fixtures ────────────────────────────────────────────────────────
 
@@ -214,7 +213,7 @@ async def test_rate_limit_suppresses_second_call(
     base_signal: EvolutionSignal,
 ) -> None:
     """Two rapid signals in the same (profile, session) → second is None."""
-    now = datetime(2026, 5, 17, 12, 0, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 5, 17, 12, 0, 0, tzinfo=UTC)
     times = iter([now, now + timedelta(seconds=1)])
 
     def _now() -> datetime:
@@ -238,7 +237,7 @@ async def test_rate_limit_does_not_cross_sessions(
     base_signal: EvolutionSignal,
 ) -> None:
     """A signal from a different session is not gated by the prior."""
-    now = datetime(2026, 5, 17, 12, 0, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 5, 17, 12, 0, 0, tzinfo=UTC)
     times = iter([now, now])
 
     def _now() -> datetime:
@@ -272,7 +271,7 @@ async def test_rate_limit_window_expiry(
     base_signal: EvolutionSignal,
 ) -> None:
     """After ``rate_limit_seconds`` have passed, a follow-up fires."""
-    base_time = datetime(2026, 5, 17, 12, 0, 0, tzinfo=timezone.utc)
+    base_time = datetime(2026, 5, 17, 12, 0, 0, tzinfo=UTC)
     times = iter([base_time, base_time + timedelta(seconds=120)])
 
     def _now() -> datetime:
@@ -297,7 +296,7 @@ async def test_null_session_id_falls_back_to_global_bucket(
 ) -> None:
     """Two signals with ``session_id=None`` share the ``"global"`` bucket."""
     base_signal.session_id = None
-    now = datetime(2026, 5, 17, 12, 0, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 5, 17, 12, 0, 0, tzinfo=UTC)
     times = iter([now, now + timedelta(seconds=1)])
 
     def _now() -> datetime:
@@ -437,8 +436,8 @@ async def test_spawn_invoked_with_user_correction_kind(
         return BackgroundReviewReport(
             profile_slug=kwargs["profile_slug"],
             kind="user-correction",
-            started_at=datetime.now(timezone.utc),
-            finished_at=datetime.now(timezone.utc),
+            started_at=datetime.now(UTC),
+            finished_at=datetime.now(UTC),
             writes=[],
             error=None,
         )
@@ -471,7 +470,7 @@ async def test_rate_limit_marked_even_on_spawn_failure(
     async def _bad_spawn(**kwargs: Any) -> BackgroundReviewReport:
         raise RuntimeError("spawn exploded")
 
-    now = datetime(2026, 5, 17, 12, 0, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 5, 17, 12, 0, 0, tzinfo=UTC)
     times = iter([now, now + timedelta(seconds=1)])
 
     def _now() -> datetime:

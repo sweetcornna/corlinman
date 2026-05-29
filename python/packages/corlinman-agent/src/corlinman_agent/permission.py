@@ -188,7 +188,7 @@ class PermissionGate:
     - otherwise the gate's ``default_action`` (constructor arg) decides.
     """
 
-    __slots__ = ("_rules", "_default", "_strict")
+    __slots__ = ("_default", "_rules", "_strict")
 
     def __init__(
         self,

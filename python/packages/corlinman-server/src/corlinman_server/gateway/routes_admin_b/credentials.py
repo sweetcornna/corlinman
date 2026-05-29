@@ -439,8 +439,7 @@ def router() -> APIRouter:
                 # "field never existed" race.
                 return Response(status_code=204)
             block = dict(existing)
-            if key in block:
-                del block[key]
+            block.pop(key, None)
 
             # If the primary field went away, flip enabled to false but
             # keep the block as a stub so the UI keeps showing it.

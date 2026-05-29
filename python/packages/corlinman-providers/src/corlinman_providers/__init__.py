@@ -43,6 +43,7 @@ from corlinman_providers.registry import MODEL_PREFIX_DEFAULTS, ProviderRegistry
 from corlinman_providers.specs import AliasEntry, EmbeddingSpec, ProviderKind, ProviderSpec
 
 __all__ = [
+    "MOCK_PREAMBLE",
     "MODEL_PREFIX_DEFAULTS",
     "AliasEntry",
     "AnthropicProvider",
@@ -61,7 +62,6 @@ __all__ = [
     "FormatError",
     "GLMProvider",
     "GoogleProvider",
-    "MOCK_PREAMBLE",
     "MockProvider",
     "ModelNotFoundError",
     "ModelSpec",

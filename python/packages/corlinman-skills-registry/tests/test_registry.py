@@ -12,13 +12,11 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-
 from corlinman_skills_registry import (
     DuplicateNameError,
     MissingFieldError,
     SkillRegistry,
 )
-
 
 MakeDir = Callable[[list[tuple[str, str]]], Path]
 

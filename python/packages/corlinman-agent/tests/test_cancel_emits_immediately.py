@@ -25,7 +25,6 @@ import time
 from typing import Any
 
 import pytest
-
 from corlinman_agent.events import (
     Cancelling,
     EventEnvelope,

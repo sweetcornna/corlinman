@@ -34,8 +34,10 @@ import json
 import logging
 import re
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Pattern
+from re import Pattern
+from typing import Any
 
 from corlinman_evolution_store import (
     EVENT_USER_CORRECTION,

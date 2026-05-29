@@ -9,7 +9,6 @@ import asyncio
 import contextlib
 
 import pytest
-
 from corlinman_wstool import Unsupported
 
 from .conftest import EchoHandler, Harness, simple_advert, spawn_runner

@@ -169,11 +169,11 @@ class EpisodesResolver:
     """
 
     __slots__ = (
-        "_root",
-        "_top_n",
+        "_fixed_now_ms",
         "_pools",
         "_pools_lock",
-        "_fixed_now_ms",
+        "_root",
+        "_top_n",
     )
 
     def __init__(
@@ -200,12 +200,12 @@ class EpisodesResolver:
     def top_n(self) -> int:
         return self._top_n
 
-    def with_top_n(self, top_n: int) -> "EpisodesResolver":
+    def with_top_n(self, top_n: int) -> EpisodesResolver:
         return EpisodesResolver(
             self._root, top_n=top_n, fixed_now_ms=self._fixed_now_ms
         )
 
-    def with_fixed_now_ms(self, now_ms: int) -> "EpisodesResolver":
+    def with_fixed_now_ms(self, now_ms: int) -> EpisodesResolver:
         return EpisodesResolver(
             self._root, top_n=self._top_n, fixed_now_ms=now_ms
         )
@@ -514,9 +514,9 @@ def _truncate_summary(text: str) -> str:
 __all__ = [
     "DEFAULT_TENANT_SLUG",
     "DEFAULT_TOP_N",
-    "EpisodeBrief",
-    "EpisodesResolver",
     "SUMMARY_CHAR_CAP",
     "TENANT_METADATA_KEY",
     "VALID_KINDS",
+    "EpisodeBrief",
+    "EpisodesResolver",
 ]

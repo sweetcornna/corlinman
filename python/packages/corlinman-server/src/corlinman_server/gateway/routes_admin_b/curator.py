@@ -35,8 +35,8 @@ partially-installed gateway still imports this module.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any, Annotated, Literal
+from datetime import UTC, datetime
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -194,9 +194,9 @@ def _iso(dt: datetime | None) -> str | None:
     if dt is None:
         return None
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
     # Drop subsecond precision for stable readable strings.
-    return dt.astimezone(timezone.utc).isoformat()
+    return dt.astimezone(UTC).isoformat()
 
 
 def _profile_store(state: AdminState):

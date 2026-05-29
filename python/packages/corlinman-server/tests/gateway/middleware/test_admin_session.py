@@ -17,10 +17,9 @@ the assignment (no flaky reliance on the background loop's tick).
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
-
 from corlinman_server.gateway.middleware import admin_session as admin_session_mod
 from corlinman_server.gateway.middleware.admin_session import AdminSessionStore
 
@@ -35,7 +34,7 @@ class _Clock:
 
     def __init__(self) -> None:
         # A fixed base so the test is deterministic regardless of host time.
-        self._base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        self._base = datetime(2026, 1, 1, tzinfo=UTC)
         self.offset = 0.0
 
     def now(self, tz: timezone | None = None) -> datetime:

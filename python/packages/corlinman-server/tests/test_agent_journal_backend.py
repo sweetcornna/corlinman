@@ -23,11 +23,11 @@ from corlinman_server.agent_journal_backend import (
     ENV_BACKEND,
     ENV_POSTGRES_DSN,
     ENV_REDIS_URL,
+    TURN_COMPLETED,
     JournalBackend,
     PostgresJournalBackend,
     RedisJournalBackend,
     SqliteJournalBackend,
-    TURN_COMPLETED,
     open_backend_from_env,
 )
 

@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
+from corlinman_server.gateway.routes import health
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-
-from corlinman_server.gateway.routes import health
 
 
 def _client(state: health.HealthState | None = None) -> TestClient:

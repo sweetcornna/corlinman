@@ -15,7 +15,6 @@ import contextlib
 from typing import Any
 
 import pytest
-
 from corlinman_wstool import (
     Disconnected,
     ProgressSink,

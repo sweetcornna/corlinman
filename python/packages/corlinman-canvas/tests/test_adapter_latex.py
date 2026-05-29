@@ -14,7 +14,6 @@ not ``katex-rs`` (HTML+MathML). The Rust assertions are still satisfied:
 from __future__ import annotations
 
 import pytest
-
 from corlinman_canvas import (
     AdapterError,
     ArtifactKind,

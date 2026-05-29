@@ -27,8 +27,6 @@ import logging
 from collections.abc import AsyncIterator
 from typing import Any, Protocol, runtime_checkable
 
-from corlinman_server import telemetry
-
 from corlinman_grpc._generated.corlinman.v1 import (
     agent_pb2,
     common_pb2,
@@ -40,9 +38,15 @@ from corlinman_grpc.agent_client import (
     ToolExecutor,
 )
 from corlinman_grpc.agent_client.types import FailoverReason as GrpcFailoverReason
+
+from corlinman_server import telemetry
 from corlinman_server.gateway_api import (
     Attachment as ApiAttachment,
+)
+from corlinman_server.gateway_api import (
     AttachmentKind as ApiAttachmentKind,
+)
+from corlinman_server.gateway_api import (
     ChannelBinding,
     ChatEventStream,
     ChatServiceBase,
@@ -50,11 +54,14 @@ from corlinman_server.gateway_api import (
     ErrorEvent,
     InternalChatError,
     InternalChatRequest,
-    Message as ApiMessage,
-    Role as ApiRole,
     TokenDeltaEvent,
     ToolCallEvent,
     ToolResultEvent,
+)
+from corlinman_server.gateway_api import (
+    Role as ApiRole,
+)
+from corlinman_server.gateway_api import (
     Usage as ApiUsage,
 )
 

@@ -12,7 +12,6 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 import pytest
-
 from corlinman_grpc._generated.corlinman.v1 import agent_pb2, common_pb2
 from corlinman_server.gateway.services import (
     ChatService,
@@ -28,7 +27,6 @@ from corlinman_server.gateway_api import (
     TokenDeltaEvent,
     ToolCallEvent,
 )
-
 
 # ─── scripted providers ──────────────────────────────────────────────
 

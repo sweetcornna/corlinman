@@ -24,7 +24,6 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 
-import pytest
 from corlinman_identity import SqliteIdentityStore
 from corlinman_identity.error import StorageError
 

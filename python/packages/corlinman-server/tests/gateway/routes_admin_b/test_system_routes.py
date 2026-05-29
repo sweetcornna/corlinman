@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
 
 import pytest
 from corlinman_server.gateway.routes_admin_b import system as system_routes
@@ -25,7 +24,6 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from ._admin_auth import authenticated_test_client, configure_admin_auth
-
 
 # ---------------------------------------------------------------------------
 # Stub checker that records calls

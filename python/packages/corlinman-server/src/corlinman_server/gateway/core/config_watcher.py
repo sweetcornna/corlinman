@@ -42,9 +42,10 @@ import signal as _signal
 import sys
 import threading
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 import structlog
 
@@ -407,7 +408,7 @@ class ConfigWatcher:
         assert self._stop_event is not None
         try:
             while not self._stop_event.is_set():
-                done, _ = await asyncio.wait(
+                _done, _ = await asyncio.wait(
                     {
                         asyncio.create_task(self._pending_event.wait()),
                         asyncio.create_task(self._stop_event.wait()),
@@ -547,11 +548,11 @@ def _stamp_last_reload() -> None:
 
 
 __all__ = [
-    "ConfigWatcher",
     "DEFAULT_DEBOUNCE_SECONDS",
     "DEFAULT_SECTIONS",
+    "RESTART_REQUIRED_SECTIONS",
+    "ConfigWatcher",
     "ReloadHook",
     "ReloadReport",
-    "RESTART_REQUIRED_SECTIONS",
     "diff_sections",
 ]

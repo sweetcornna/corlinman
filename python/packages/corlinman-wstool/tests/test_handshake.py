@@ -11,9 +11,8 @@ import asyncio
 
 import pytest
 import websockets
-from websockets.exceptions import InvalidStatus
-
 from corlinman_wstool.protocol import WsToolMessage
+from websockets.exceptions import InvalidStatus
 
 from .conftest import Harness, simple_advert
 

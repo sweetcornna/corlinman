@@ -44,7 +44,7 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -93,35 +93,32 @@ from corlinman_channels._status import (
     SEND_ATTACHMENT_TOOL as _SEND_ATTACHMENT_TOOL,
 )
 from corlinman_channels._status import (
-    resolve_attachment_path as _resolve_attachment_path,
-)
-from corlinman_channels._status import (
-    STATUS_GENERATING as _TG_STATUS_GENERATING,
-)
-from corlinman_channels._status import (
-    TODO_WRITE_TOOL as _TODO_WRITE_TOOL,
-)
-from corlinman_channels._status import (
-    STATUS_REASONING_PREFIX as _TG_STATUS_REASONING_PREFIX,
-)
-from corlinman_channels._status import (
     STATUS_THINKING as _TG_STATUS_THINKING,
 )
 from corlinman_channels._status import (
     TEXT_LIMIT as _TELEGRAM_TEXT_LIMIT,
 )
 from corlinman_channels._status import (
-    TRUNCATION_MARKER,
+    TODO_WRITE_TOOL as _TODO_WRITE_TOOL,
+)
+from corlinman_channels._status import (
     MutableSpinner,
-    format_tool_result as _format_tool_result,
-    format_tool_status as _format_tool_status,
-    format_turn_footer,
-    parse_ask_user_args as _parse_ask_user_args,
-    parse_send_attachment_args as _parse_send_attachment_args,
-    tool_arg_preview as _tool_arg_preview,
     chunk_reply,
+    format_turn_footer,
     truncate_reply,
     try_append_footer,
+)
+from corlinman_channels._status import (
+    parse_ask_user_args as _parse_ask_user_args,
+)
+from corlinman_channels._status import (
+    parse_send_attachment_args as _parse_send_attachment_args,
+)
+from corlinman_channels._status import (
+    resolve_attachment_path as _resolve_attachment_path,
+)
+from corlinman_channels._status import (
+    tool_arg_preview as _tool_arg_preview,
 )
 from corlinman_channels.commands import (
     CommandContext,
@@ -131,9 +128,6 @@ from corlinman_channels.commands import (
     run_command_handler,
 )
 from corlinman_channels.common import InboundEvent, TransportError
-from corlinman_channels.persona_inject import (
-    inject_persona_if_enabled as _inject_persona_if_enabled,
-)
 from corlinman_channels.discord import (
     DEFAULT_GATEWAY_URL,
     DEFAULT_REST_BASE,
@@ -161,6 +155,9 @@ from corlinman_channels.onebot import (
     TextSegment,
     UploadGroupFile,
     UploadPrivateFile,
+)
+from corlinman_channels.persona_inject import (
+    inject_persona_if_enabled as _inject_persona_if_enabled,
 )
 from corlinman_channels.qq_official import (
     DEFAULT_INTENTS as QQ_OFFICIAL_DEFAULT_INTENTS,
@@ -485,7 +482,7 @@ async def _qq_health_watcher(
         try:
             await asyncio.wait_for(cancel.wait(), timeout=probe_s)
             return  # cancel fired during the wait
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass
 
         now_ms = int(time.time() * 1000)
@@ -818,7 +815,7 @@ async def _qq_run_one(
     *,
     inbox: Any,
     inbox_id: int | None,
-    params: "QqChannelParams | None" = None,
+    params: QqChannelParams | None = None,
 ) -> None:
     """Wrapper that releases the per-channel semaphore in ``finally`` —
     keeps concurrency-control bookkeeping out of the public
@@ -1019,7 +1016,7 @@ async def _pulse(
             try:
                 await asyncio.wait_for(cancel.wait(), timeout=interval_s)
                 return
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
     except asyncio.CancelledError:
         return
@@ -1063,7 +1060,7 @@ async def handle_one_qq(
     *,
     inbox: Any = None,
     inbox_id: int | None = None,
-    params: "QqChannelParams | None" = None,
+    params: QqChannelParams | None = None,
 ) -> None:
     """Run one chat turn and post the reply back through the adapter.
 
@@ -1302,7 +1299,7 @@ async def handle_one_qq(
 
 
 async def _qq_inject_persona_if_enabled(
-    request: Any, params: "QqChannelParams"
+    request: Any, params: QqChannelParams
 ) -> None:
     """Thin wrapper around :func:`persona_inject.inject_persona_if_enabled`.
 
@@ -1522,7 +1519,7 @@ _TELEGRAM_ACTIVE_WINDOW_MS: int = 24 * 60 * 60 * 1000
 
 def _telegram_utc_day_key(ts_ms: int) -> str:
     """``YYYY-MM-DD`` for a UTC midnight bucket."""
-    return datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+    return datetime.fromtimestamp(ts_ms / 1000, tz=UTC).strftime("%Y-%m-%d")
 
 
 def _telegram_recompute_aggregates(now_ms: int | None = None) -> None:
@@ -1566,7 +1563,7 @@ def _telegram_recompute_aggregates(now_ms: int | None = None) -> None:
                 return int(samples[0])
             # Nearest-rank percentile — cheap + stable for a 200-sample
             # window. Matches what most ops dashboards expect.
-            idx = max(0, min(len(samples) - 1, int(round(p * (len(samples) - 1)))))
+            idx = max(0, min(len(samples) - 1, round(p * (len(samples) - 1))))
             return int(samples[idx])
 
         TELEGRAM_HEALTH["latency_p50_ms"] = _pct(0.50)
@@ -2126,7 +2123,7 @@ async def handle_one_telegram(
     cancel: asyncio.Event,
     *,
     event_emitter: Any | None = None,
-    params: "TelegramChannelParams | None" = None,
+    params: TelegramChannelParams | None = None,
 ) -> None:
     """Run one Telegram chat turn and post the reply via
     :class:`TelegramSender`. Parallel structure to :func:`handle_one_qq`.
@@ -2722,7 +2719,7 @@ async def handle_one_discord(
     cancel: asyncio.Event,
     *,
     event_emitter: Any | None = None,
-    params: "DiscordChannelParams | None" = None,
+    params: DiscordChannelParams | None = None,
 ) -> None:
     """Run one Discord chat turn and post the reply via
     :class:`DiscordSender`. Parallel structure to :func:`handle_one_telegram`.
@@ -2975,7 +2972,7 @@ async def handle_one_slack(
     cancel: asyncio.Event,
     *,
     event_emitter: Any | None = None,
-    params: "SlackChannelParams | None" = None,
+    params: SlackChannelParams | None = None,
 ) -> None:
     """Run one Slack chat turn and post the reply via :class:`SlackSender`.
 
@@ -3221,7 +3218,7 @@ async def handle_one_feishu(
     cancel: asyncio.Event,
     *,
     event_emitter: Any | None = None,
-    params: "FeishuChannelParams | None" = None,
+    params: FeishuChannelParams | None = None,
 ) -> None:
     """Run one Feishu chat turn and post the reply via :class:`FeishuSender`.
 

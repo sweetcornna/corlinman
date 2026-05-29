@@ -17,7 +17,6 @@ from typing import Any
 
 from corlinman_agent.skills import RefreshDelta, SkillRegistry
 
-
 _SKILL_MD_TEMPLATE = (
     "---\n"
     "name: {name}\n"

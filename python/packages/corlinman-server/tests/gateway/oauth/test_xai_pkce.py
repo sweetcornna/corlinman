@@ -28,9 +28,7 @@ from pathlib import Path
 
 import httpx
 import pytest
-
 from corlinman_server.gateway.oauth import xai_pkce
-
 
 # ---------------------------------------------------------------------------
 # PKCE primitives
@@ -143,7 +141,7 @@ async def test_discover_rejects_non_xai_endpoints() -> None:
 
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport) as client:
-        with pytest.raises(xai_pkce.OAuthExchangeError, match="not under x.ai"):
+        with pytest.raises(xai_pkce.OAuthExchangeError, match=r"not under x\.ai"):
             await xai_pkce.discover_endpoints(client=client)
 
 

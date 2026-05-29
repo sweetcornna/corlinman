@@ -23,7 +23,7 @@ from __future__ import annotations
 import asyncio
 import base64
 from collections.abc import Iterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -72,7 +72,7 @@ def _seed_flat_sessions(
                         SessionMessage(
                             role=SessionRole.from_str(role),
                             content=content,
-                            ts=datetime.now(timezone.utc),
+                            ts=datetime.now(UTC),
                         ),
                     )
         finally:

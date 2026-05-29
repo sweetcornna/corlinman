@@ -21,7 +21,6 @@ Invariants we still pin:
 from __future__ import annotations
 
 import pytest
-
 from corlinman_canvas import (
     ArtifactKind,
     BodyTooLarge,

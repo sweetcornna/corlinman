@@ -30,10 +30,10 @@ import re
 from pathlib import Path
 from typing import Annotated, Literal, cast
 
+from corlinman_agent.agents import AgentCardRegistry
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from corlinman_agent.agents import AgentCardRegistry
 from corlinman_server.gateway.routes_admin_a._auth_shim import (
     require_admin_dependency,
 )
@@ -41,7 +41,6 @@ from corlinman_server.gateway.routes_admin_a.state import (
     AdminState,
     get_admin_state,
 )
-
 
 # Mirrors the Claude Code stem rule + the existing Rust path traversal
 # defence: lowercase ASCII start, alnum + ``_`` + ``-`` allowed.
@@ -137,7 +136,7 @@ def _system_time_to_rfc3339(mtime_seconds: float) -> str | None:
     string in UTC, or ``None`` on overflow."""
     try:
         return (
-            _dt.datetime.fromtimestamp(mtime_seconds, tz=_dt.timezone.utc)
+            _dt.datetime.fromtimestamp(mtime_seconds, tz=_dt.UTC)
             .isoformat()
             .replace("+00:00", "Z")
         )

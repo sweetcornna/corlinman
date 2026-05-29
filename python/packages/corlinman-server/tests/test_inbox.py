@@ -8,7 +8,6 @@ from pathlib import Path
 
 import aiosqlite
 import pytest
-
 from corlinman_server.inbox import (
     INBOX_DEAD,
     INBOX_DISPATCHED,

@@ -51,7 +51,7 @@ import asyncio
 import contextlib
 import json
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -69,7 +69,7 @@ def utcnow_iso() -> str:
     Mirrors what the JS UI's ``new Date().toISOString()`` produces so a
     round-trip through the wire keeps lexicographic-sortable ordering.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     # ``isoformat`` would give ``+00:00``; the UI canonicalises ``Z``.
     return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
 
@@ -273,5 +273,7 @@ async def open_audit_log(path: Path):
     try:
         yield log
     finally:
-        # Reserved — placeholder for future rotation flush.
-        return
+        # Reserved — placeholder for future rotation flush. A bare
+        # ``return`` here would swallow any exception raised inside the
+        # ``with`` body (B012); use ``pass`` so the exception propagates.
+        pass

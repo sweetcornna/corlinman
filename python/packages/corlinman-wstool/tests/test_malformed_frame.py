@@ -17,7 +17,6 @@ import asyncio
 
 import pytest
 import websockets
-
 from corlinman_wstool import Disconnected
 from corlinman_wstool.protocol import WsToolMessage
 from corlinman_wstool.server import _connection_loop

@@ -98,7 +98,7 @@ def test_upsert_enable_autobinds_default_from_probed_models(
     config_path.write_text("", encoding="utf-8")
     _stub_probe(monkeypatch, ["claude-3", "gpt-4o-mini", "z-model"])
 
-    for state, client in _with_state(config_path):
+    for _state, client in _with_state(config_path):
         resp = client.post(
             "/admin/providers",
             json={
@@ -170,7 +170,7 @@ def test_upsert_probe_failure_falls_back_to_kind_default(
     config_path.write_text("", encoding="utf-8")
     _stub_probe(monkeypatch, None)  # probe fails → kind default kicks in
 
-    for state, client in _with_state(config_path):
+    for _state, client in _with_state(config_path):
         resp = client.post(
             "/admin/providers",
             json={
@@ -222,7 +222,7 @@ def test_upsert_disabled_does_not_autobind(
     config_path.write_text("", encoding="utf-8")
     _stub_probe(monkeypatch, ["gpt-4o-mini"])
 
-    for state, client in _with_state(config_path):
+    for _state, client in _with_state(config_path):
         resp = client.post(
             "/admin/providers",
             json={

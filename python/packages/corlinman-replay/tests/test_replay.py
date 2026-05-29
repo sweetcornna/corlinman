@@ -5,10 +5,10 @@ Each test maps 1:1 to a ``#[tokio::test]`` in the Rust source.
 
 from __future__ import annotations
 
+from datetime import UTC
 from pathlib import Path
 
 import pytest
-
 from corlinman_replay import (
     ReplayMode,
     SessionRole,
@@ -92,16 +92,16 @@ async def test_list_sessions_groups_by_key_ordered_by_last_ts_desc(
         older = make_message(SessionRole.USER, "old-1", offset_seconds=0)
         older2 = make_message(SessionRole.ASSISTANT, "old-2", offset_seconds=1)
         # Force "older" timestamps by shifting back from the base.
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        older.ts = datetime(2024, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
-        older2.ts = datetime(2024, 1, 1, 0, 0, 1, tzinfo=timezone.utc)
+        older.ts = datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
+        older2.ts = datetime(2024, 1, 1, 0, 0, 1, tzinfo=UTC)
         await store.append("session-old", older)
         await store.append("session-old", older2)
 
         # Newer session: one message.
         newer = make_message(SessionRole.USER, "new-1", offset_seconds=0)
-        newer.ts = datetime(2030, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        newer.ts = datetime(2030, 1, 1, 0, 0, 0, tzinfo=UTC)
         await store.append("session-new", newer)
     finally:
         await store.close()

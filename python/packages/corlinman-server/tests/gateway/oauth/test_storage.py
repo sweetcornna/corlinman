@@ -22,7 +22,6 @@ import stat
 from pathlib import Path
 
 import pytest
-
 from corlinman_server.gateway.oauth.storage import (
     OAuthCredential,
     delete_credential,

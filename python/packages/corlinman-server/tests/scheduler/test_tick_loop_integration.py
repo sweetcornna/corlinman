@@ -18,7 +18,6 @@ import asyncio
 
 import pytest
 from corlinman_hooks import Closed, HookBus, HookEvent, HookPriority, Lagged
-
 from corlinman_server.scheduler import (
     JobAction,
     SchedulerConfig,
@@ -59,7 +58,7 @@ async def test_per_second_cron_fires_multiple_times_in_five_seconds() -> None:
                 return count
             try:
                 evt = await asyncio.wait_for(sub.recv(), timeout=min(0.5, remaining))
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
             except Lagged:
                 # Slow subscriber — bus advanced, keep counting on

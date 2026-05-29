@@ -193,7 +193,7 @@ def apply_command_substitution(content: str) -> str:
     )
 
 
-def maybe_prepend_first_chat_tip(
+def maybe_prepend_first_chat_tip[T](
     messages: Sequence[_T],
     *,
     user_id: str | None,
@@ -236,7 +236,7 @@ def maybe_prepend_first_chat_tip(
         role = getattr(m, "role", None)
         role_str = str(role) if role is not None else ""
         if role_str in ("user", "Role.user") or (
-            hasattr(role, "value") and str(getattr(role, "value")) == "user"
+            hasattr(role, "value") and str(role.value) == "user"
         ):
             user_count += 1
     # ``turn_count <= 1`` from the spec — we only fire the tip when
@@ -288,7 +288,7 @@ def maybe_prepend_first_chat_tip(
     return [tip_msg, *materialised]  # type: ignore[list-item]
 
 
-def rewrite_trailing_user_message(
+def rewrite_trailing_user_message[T](
     messages: Sequence[_T],
     *,
     user_id: str | None = None,
@@ -347,7 +347,7 @@ def rewrite_trailing_user_message(
         # ``Role.USER.value`` is the string ``"user"`` so ``str(role)``
         # yields ``"user"`` on the StrEnum, but be defensive about the
         # ``Role.<NAME>`` repr form some test stubs use.
-        if hasattr(role, "value") and str(getattr(role, "value")) == "user":
+        if hasattr(role, "value") and str(role.value) == "user":
             target_index = i
             break
 

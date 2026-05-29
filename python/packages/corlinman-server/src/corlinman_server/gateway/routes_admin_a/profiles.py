@@ -128,7 +128,7 @@ def _iso(dt: _dt.datetime) -> str:
     route module taking a dep on a private helper. The format must stay
     in sync.
     """
-    return dt.astimezone(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
+    return dt.astimezone(_dt.UTC).isoformat().replace("+00:00", "Z")
 
 
 def _to_out(profile: Profile) -> ProfileOut:

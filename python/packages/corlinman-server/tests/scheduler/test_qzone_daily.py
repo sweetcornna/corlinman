@@ -29,7 +29,6 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-
 from corlinman_server.gateway_api.types import (
     DoneEvent,
     ErrorEvent,
@@ -45,7 +44,6 @@ from corlinman_server.scheduler.builtins import (
 from corlinman_server.scheduler.builtins.qzone_daily import (
     QZONE_DAILY_BUILTIN_NAME,
 )
-
 
 # ---------------------------------------------------------------------------
 # Stubs

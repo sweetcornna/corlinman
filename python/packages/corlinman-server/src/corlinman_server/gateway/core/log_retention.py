@@ -151,7 +151,7 @@ class LogRetentionTask:
             while not self._stop_event.is_set():
                 try:
                     await asyncio.wait_for(self._stop_event.wait(), timeout=self.interval)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     pass  # interval elapsed; sweep once below
                 if self._stop_event.is_set():
                     break
@@ -172,7 +172,7 @@ class LogRetentionTask:
 
 
 __all__ = [
-    "LogRetentionTask",
     "SWEEP_INTERVAL_SECONDS",
+    "LogRetentionTask",
     "sweep_once",
 ]

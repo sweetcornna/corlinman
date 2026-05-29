@@ -32,16 +32,82 @@ from typing import Any
 import grpc
 import structlog
 from corlinman_agent.agents import AgentCard, AgentCardRegistry, AgentExpander
+from corlinman_agent.coding import (
+    APPLY_PATCH_TOOL,
+    CODING_TOOLS,
+    EDIT_FILE_TOOL,
+    LIST_FILES_TOOL,
+    READ_FILE_TOOL,
+    REVERT_CHANGES_TOOL,
+    RUN_SHELL_TOOL,
+    SEARCH_FILES_TOOL,
+    TODO_WRITE_TOOL,
+    WRITE_FILE_TOOL,
+    FileState,
+    TodoStore,
+    coding_tool_schemas,
+    dispatch_apply_patch,
+    dispatch_edit_file,
+    dispatch_list_files,
+    dispatch_read_file,
+    dispatch_revert_changes,
+    dispatch_run_shell,
+    dispatch_search_files,
+    dispatch_todo_write,
+    dispatch_write_file,
+    render_todo_block,
+    resolve_workspace,
+)
+from corlinman_agent.coding._snapshot import snapshot as _snapshot_workspace
 from corlinman_agent.context_assembler import ContextAssembler, PlaceholderError
 from corlinman_agent.hooks import LoggingHookEmitter
+from corlinman_agent.image import (
+    IMAGE_GENERATE_TOOL,
+    IMAGE_WITH_REFS_TOOL,
+    dispatch_image_generate,
+    dispatch_image_with_refs,
+    image_generate_tool_schema,
+    image_with_refs_tool_schema,
+)
+from corlinman_agent.interactive import (
+    ASK_USER_TOOL,
+    ask_user_tool_schema,
+    dispatch_ask_user,
+)
 from corlinman_agent.permission import (
-    ALLOW as _PERM_ALLOW,
     DENY as _PERM_DENY,
+)
+from corlinman_agent.permission import (
     LOG as _PERM_LOG,
+)
+from corlinman_agent.permission import (
     PermissionContext,
     PermissionGate,
 )
+from corlinman_agent.persona import (
+    PERSONA_ATTACH_ASSET_FROM_URL_TOOL,
+    PERSONA_CREATE_TOOL,
+    PERSONA_DELETE_TOOL,
+    PERSONA_GET_TOOL,
+    PERSONA_LIST_ASSETS_TOOL,
+    PERSONA_LIST_TOOL,
+    PERSONA_TOOLS,
+    PERSONA_UPDATE_TOOL,
+    dispatch_persona_attach_asset_from_url,
+    dispatch_persona_create,
+    dispatch_persona_delete,
+    dispatch_persona_get,
+    dispatch_persona_list,
+    dispatch_persona_list_assets,
+    dispatch_persona_update,
+    persona_tool_schemas,
+)
 from corlinman_agent.placeholder_client import PlaceholderClient
+from corlinman_agent.qzone import (
+    QZONE_PUBLISH_TOOL,
+    dispatch_qzone_publish,
+    qzone_publish_tool_schema,
+)
 from corlinman_agent.reasoning_loop import (
     Attachment as AgentAttachment,
 )
@@ -71,69 +137,6 @@ from corlinman_agent.subagent.blackboard import (
     dispatch_blackboard_read,
     dispatch_blackboard_write,
 )
-from corlinman_agent.coding import (
-    APPLY_PATCH_TOOL,
-    CODING_TOOLS,
-    EDIT_FILE_TOOL,
-    FileState,
-    LIST_FILES_TOOL,
-    READ_FILE_TOOL,
-    REVERT_CHANGES_TOOL,
-    RUN_SHELL_TOOL,
-    SEARCH_FILES_TOOL,
-    TODO_WRITE_TOOL,
-    WRITE_FILE_TOOL,
-    TodoStore,
-    coding_tool_schemas,
-    dispatch_apply_patch,
-    dispatch_edit_file,
-    dispatch_list_files,
-    dispatch_read_file,
-    dispatch_revert_changes,
-    dispatch_run_shell,
-    dispatch_search_files,
-    dispatch_todo_write,
-    dispatch_write_file,
-    render_todo_block,
-    resolve_workspace,
-)
-from corlinman_agent.coding._snapshot import snapshot as _snapshot_workspace
-from corlinman_agent.image import (
-    IMAGE_GENERATE_TOOL,
-    IMAGE_WITH_REFS_TOOL,
-    dispatch_image_generate,
-    dispatch_image_with_refs,
-    image_generate_tool_schema,
-    image_with_refs_tool_schema,
-)
-from corlinman_agent.interactive import (
-    ASK_USER_TOOL,
-    ask_user_tool_schema,
-    dispatch_ask_user,
-)
-from corlinman_agent.persona import (
-    PERSONA_ATTACH_ASSET_FROM_URL_TOOL,
-    PERSONA_CREATE_TOOL,
-    PERSONA_DELETE_TOOL,
-    PERSONA_GET_TOOL,
-    PERSONA_LIST_ASSETS_TOOL,
-    PERSONA_LIST_TOOL,
-    PERSONA_TOOLS,
-    PERSONA_UPDATE_TOOL,
-    dispatch_persona_attach_asset_from_url,
-    dispatch_persona_create,
-    dispatch_persona_delete,
-    dispatch_persona_get,
-    dispatch_persona_list,
-    dispatch_persona_list_assets,
-    dispatch_persona_update,
-    persona_tool_schemas,
-)
-from corlinman_agent.qzone import (
-    QZONE_PUBLISH_TOOL,
-    dispatch_qzone_publish,
-    qzone_publish_tool_schema,
-)
 from corlinman_agent.variables import VariableCascade
 from corlinman_agent.web import (
     CALCULATOR_TOOL,
@@ -154,15 +157,18 @@ from corlinman_providers.specs import AliasEntry
 from corlinman_server.agent_journal import (
     AgentJournal,
     ResumeData,
-    TURN_IN_PROGRESS,
 )
 from corlinman_server.gateway.services.chat_service import (
     _BUILTIN_OBSERVATION_PREFIX,
 )
 from corlinman_server.runner_pool import (
     DispatchContext as _DispatchCtx,
+)
+from corlinman_server.runner_pool import (
     PoolStats,
     RunnerPool,
+)
+from corlinman_server.runner_pool import (
     dispatch_with_observability as _dispatch_with_obs,
 )
 
@@ -1231,7 +1237,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                             tool_call_id=event.call_id,
                             tool_name=event.tool,
                             args_json=event.args_json,
-                            invoke=lambda: self._dispatch_builtin(
+                            invoke=lambda event=event: self._dispatch_builtin(
                                 event, start, provider, file_state
                             ),
                             summarise_result=_summarise,
@@ -2888,7 +2894,7 @@ def _apply_merged_params(start: AgentChatStart, params: Mapping[str, Any]) -> No
 # wouldn't break import; we degrade to a plain dict in that case.
 import weakref as _weakref  # noqa: E402 — module-level placement is intentional
 
-_ACTIVE_LOOPS_BY_SESSION: "_weakref.WeakValueDictionary[str, ReasoningLoop]" = (
+_ACTIVE_LOOPS_BY_SESSION: _weakref.WeakValueDictionary[str, ReasoningLoop] = (
     _weakref.WeakValueDictionary()
 )
 

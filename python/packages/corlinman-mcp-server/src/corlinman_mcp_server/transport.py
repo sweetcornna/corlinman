@@ -20,22 +20,18 @@ import asyncio
 import json
 import urllib.parse
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable
 
 import structlog
-import websockets
 from websockets.asyncio.server import ServerConnection
 from websockets.asyncio.server import serve as ws_serve
 from websockets.datastructures import Headers
 from websockets.exceptions import ConnectionClosed
 from websockets.http11 import Request, Response
 
-from .adapters import SessionContext
 from .auth import TokenAcl, resolve_token
 from .dispatch import (
     AdapterDispatcher,
     FrameHandler,
-    ServerInfo,
     StubMethodNotFoundHandler,
 )
 from .errors import (

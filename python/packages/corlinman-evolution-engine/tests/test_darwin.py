@@ -11,23 +11,17 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from corlinman_evolution_engine.darwin import (
     DEFAULT_SKILL_BLACKLIST,
     EVENT_SKILL_QUALITY_ISSUE,
     KIND_DARWIN,
-    QUALITY_THRESHOLD,
     DarwinHandler,
     DarwinScorer,
-    RubricReport,
     issue_signals_for_report,
 )
 from corlinman_evolution_engine.darwin_curator import (
-    DarwinCuratorReport,
-    SkillScanResult,
     run_darwin_curator,
 )
-
 
 # ---------------------------------------------------------------------------
 # Sample SKILL.md content used across tests
@@ -230,8 +224,8 @@ def _signal_row(
     Done as a SimpleNamespace rather than the real dataclass so we don't
     require the store package to import-mock its way in.
     """
-    from types import SimpleNamespace
     import json as _json
+    from types import SimpleNamespace
 
     return SimpleNamespace(
         id=id,

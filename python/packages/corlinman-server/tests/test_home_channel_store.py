@@ -17,7 +17,6 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-
 from corlinman_server.home_channel_store import (
     HomeChannelRow,
     default_db_path,
@@ -143,7 +142,7 @@ def test_resethome_same_binding_is_idempotent_but_bumps_timestamp(
     db_path: Path,
 ) -> None:
     uid = "telegram:7"
-    kwargs = dict(channel="telegram", account="bot", thread="dm-7", sender="7")
+    kwargs = {"channel": "telegram", "account": "bot", "thread": "dm-7", "sender": "7"}
     set_home(uid, **kwargs, db_path=db_path, now_ms=100)
     set_home(uid, **kwargs, db_path=db_path, now_ms=500)
 

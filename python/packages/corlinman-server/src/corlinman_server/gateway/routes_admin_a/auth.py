@@ -167,7 +167,7 @@ def _clear_cookie_header() -> str:
 
 def _iso(dt: _dt.datetime) -> str:
     """RFC-3339 / ISO-8601 UTC string."""
-    return dt.astimezone(_dt.timezone.utc).isoformat().replace("+00:00", "Z")
+    return dt.astimezone(_dt.UTC).isoformat().replace("+00:00", "Z")
 
 
 def _ensure_session_store(state: AdminState) -> AdminSessionStore:

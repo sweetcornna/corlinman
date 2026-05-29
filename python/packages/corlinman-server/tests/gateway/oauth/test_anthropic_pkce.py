@@ -25,7 +25,6 @@ import urllib.parse
 
 import httpx
 import pytest
-
 from corlinman_server.gateway.oauth import anthropic_pkce
 
 
@@ -245,13 +244,14 @@ async def test_refresh_token_requires_non_empty_input() -> None:
 async def test_refresh_when_expired_triggers_refresh_path() -> None:
     """Integration-style: a stored credential that is expired triggers
     a refresh and saves the rotated tokens."""
+    import time
+    from pathlib import Path
+
     from corlinman_server.gateway.oauth.storage import (
         OAuthCredential,
         load_credential,
         save_credential,
     )
-    import time
-    from pathlib import Path
 
     tmp = Path(__import__("tempfile").mkdtemp())
     try:

@@ -52,6 +52,7 @@ __all__ = [
     "TODO_WRITE_TOOL",
     "TRUNCATION_MARKER",
     "MutableSpinner",
+    "chunk_reply",
     "format_ask_user",
     "format_elapsed_ms",
     "format_todo_list",
@@ -64,7 +65,6 @@ __all__ = [
     "resolve_attachment_path",
     "tool_arg_preview",
     "truncate_reply",
-    "chunk_reply",
     "try_append_footer",
 ]
 

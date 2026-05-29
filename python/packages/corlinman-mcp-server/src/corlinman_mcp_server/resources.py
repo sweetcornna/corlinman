@@ -15,12 +15,12 @@ URI scheme                                    Source             List  Read
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable
 
 import structlog
 
-from .adapters import CapabilityAdapter, SessionContext
+from .adapters import SessionContext
 from .bridges import (
     MemoryHost,
     MemoryQuery,

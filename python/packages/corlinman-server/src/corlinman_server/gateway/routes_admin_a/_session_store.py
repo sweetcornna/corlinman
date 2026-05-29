@@ -66,7 +66,7 @@ class AdminSessionStore:
         """Mint a fresh token for ``user``. Returns the opaque token
         string the caller stamps into the ``Set-Cookie`` header."""
         token = uuid.uuid4().hex
-        now = _dt.datetime.now(tz=_dt.timezone.utc)
+        now = _dt.datetime.now(tz=_dt.UTC)
         with self._lock:
             self._sessions[token] = SessionRow(
                 user=user, created_at=now, last_used=now
@@ -87,7 +87,7 @@ class AdminSessionStore:
         eviction; the row is removed from the map so future calls see
         it as unknown.
         """
-        now = _dt.datetime.now(tz=_dt.timezone.utc)
+        now = _dt.datetime.now(tz=_dt.UTC)
         with self._lock:
             row = self._sessions.get(token)
             if row is None:

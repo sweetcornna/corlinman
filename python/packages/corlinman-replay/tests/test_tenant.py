@@ -10,7 +10,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from corlinman_replay import (
     DEFAULT_TENANT_ID,
     TenantId,

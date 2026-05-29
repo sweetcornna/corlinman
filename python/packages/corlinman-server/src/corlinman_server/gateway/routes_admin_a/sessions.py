@@ -40,14 +40,11 @@ Tenant resolution mirrors :mod:`api_keys`:
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from pydantic import BaseModel, Field
-
 from corlinman_replay import (
     ReplayError,
     ReplayMode,
@@ -56,12 +53,17 @@ from corlinman_replay import (
     SqliteSessionStore,
     StoreLoadError,
     StoreOpenError,
-    list_sessions as replay_list_sessions,
-    replay as replay_fn,
     replay_from_messages,
-    sessions_db_path,
 )
 from corlinman_replay import TenantId as ReplayTenantId
+from corlinman_replay import (
+    list_sessions as replay_list_sessions,
+)
+from corlinman_replay import (
+    replay as replay_fn,
+)
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from pydantic import BaseModel, Field
 
 from corlinman_server.gateway.routes_admin_a._auth_shim import (
     require_admin_dependency,
@@ -399,7 +401,7 @@ async def _update_session_meta_in_journal(
     title: str | None,
     pinned: bool | None,
     archived: bool | None,
-) -> "SessionSummaryOut | None":
+) -> SessionSummaryOut | None:
     """Upsert ``session_meta`` for ``session_key`` and project the result
     back into a :class:`SessionSummaryOut`.
 
@@ -608,7 +610,7 @@ async def _replay_from_journal(
                 continue
             started_at_ms = int(turn_row.get("started_at_ms") or 0)
             ts_iso = (
-                datetime.fromtimestamp(started_at_ms / 1000.0, tz=timezone.utc)
+                datetime.fromtimestamp(started_at_ms / 1000.0, tz=UTC)
                 .isoformat()
                 .replace("+00:00", "Z")
                 if started_at_ms

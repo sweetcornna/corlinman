@@ -8,11 +8,10 @@ root.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-
 from corlinman_replay import (
     SessionMessage,
     SessionRole,
@@ -49,7 +48,7 @@ def make_message(role: SessionRole, content: str, *, offset_seconds: int = 0) ->
     so the RFC-3339 round-trip check in the transcript test stays
     stable across runs.
     """
-    base = datetime(2026, 4, 30, 12, 0, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 4, 30, 12, 0, 0, tzinfo=UTC)
     return SessionMessage(
         role=role,
         content=content,

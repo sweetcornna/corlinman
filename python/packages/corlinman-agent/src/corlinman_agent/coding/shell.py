@@ -169,7 +169,7 @@ def _preexec_apply_rlimits() -> None:
         if rlim_id is None:
             return
         try:
-            cur_soft, cur_hard = resource.getrlimit(rlim_id)
+            _cur_soft, cur_hard = resource.getrlimit(rlim_id)
             # Cannot raise hard limit without privilege; respect it.
             new_hard = (
                 min(hard, cur_hard)
@@ -178,7 +178,7 @@ def _preexec_apply_rlimits() -> None:
             )
             new_soft = min(soft, new_hard)
             resource.setrlimit(rlim_id, (new_soft, new_hard))
-        except (ValueError, OSError, resource.error):  # type: ignore[attr-defined]
+        except (ValueError, OSError):  # type: ignore[attr-defined]
             # Kernel refused or limit unsupported — every other limit
             # still applies. Swallow rather than blow the spawn.
             pass
@@ -310,7 +310,7 @@ async def dispatch_run_shell(
 
     try:
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         _kill_process_group()
         try:
             await proc.wait()

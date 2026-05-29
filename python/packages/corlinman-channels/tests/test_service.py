@@ -1268,7 +1268,7 @@ class TestHandleOneTelegram:
         assert labels == ["yes", "no", "let me think"]
         # callback_data echoes the label (so the inbound flow gets a
         # meaningful synthesized text on press).
-        for row, label in zip(kb, labels):
+        for row, label in zip(kb, labels, strict=False):
             assert row[0]["callback_data"] == label
 
     @pytest.mark.asyncio
@@ -2261,7 +2261,6 @@ class TestHandleOneSlack:
     async def test_post_typing_is_noop_stub(self) -> None:
         """Slack has no per-thread typing indicator — post_typing must
         return without raising and without mutating state visibly."""
-        import asyncio
 
         sender = _FakeSlackSender()
         # Direct call must not raise.
@@ -2551,7 +2550,11 @@ class TestQqDispatchConcurrencyCap:
         from corlinman_channels.common import ChannelBinding, InboundEvent
         from corlinman_channels.onebot import (
             MessageEvent as _ME,
+        )
+        from corlinman_channels.onebot import (
             MessageType as _MT,
+        )
+        from corlinman_channels.onebot import (
             TextSegment as _TS,
         )
         from corlinman_channels.router import ChannelRouter
@@ -2631,7 +2634,7 @@ class TestQqDispatchConcurrencyCap:
                         # actually parking the dispatch loop.
                         try:
                             await asyncio.wait_for(gate.wait(), timeout=0.25)
-                        except asyncio.TimeoutError:
+                        except TimeoutError:
                             pass
                         from types import SimpleNamespace
                         yield SimpleNamespace(kind="token_delta", text="ok")
@@ -2697,14 +2700,18 @@ class TestQqDispatchInboxLocalScope:
     ) -> None:
         import asyncio
 
+        from corlinman_channels import service as _service_mod
         from corlinman_channels.common import ChannelBinding, InboundEvent
         from corlinman_channels.onebot import (
             MessageEvent as _ME,
+        )
+        from corlinman_channels.onebot import (
             MessageType as _MT,
+        )
+        from corlinman_channels.onebot import (
             TextSegment as _TS,
         )
         from corlinman_channels.router import ChannelRouter
-        from corlinman_channels import service as _service_mod
         from corlinman_channels.service import (
             QqChannelParams,
             _qq_dispatch_loop,

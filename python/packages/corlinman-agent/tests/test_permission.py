@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from corlinman_agent.permission import (
     ALLOW,
     DENY,

@@ -20,7 +20,6 @@ from corlinman_server.scheduler.builtins import (
 )
 from corlinman_server.system import UpdateStatus
 
-
 # ---------------------------------------------------------------------------
 # Stubs
 # ---------------------------------------------------------------------------

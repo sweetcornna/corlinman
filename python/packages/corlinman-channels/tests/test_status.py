@@ -273,7 +273,7 @@ class TestParseSendAttachmentArgs:
         assert name is None
 
     def test_missing_path(self) -> None:
-        path, cap, name = parse_send_attachment_args(_Ev(args_json=b"{}"))
+        path, _cap, _name = parse_send_attachment_args(_Ev(args_json=b"{}"))
         assert path == ""
 
 

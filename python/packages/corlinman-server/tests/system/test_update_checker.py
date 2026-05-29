@@ -22,12 +22,10 @@ from pathlib import Path
 import httpx
 import pytest
 import respx
-
 from corlinman_server.system import (
     SystemUpdateCheckConfig,
     UpdateChecker,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -284,7 +282,6 @@ async def test_poll_force_bypasses_ttl(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_version_compare_strips_leading_v(tmp_path: Path) -> None:
     """``v1.2.0`` must compare as ``1.2.0`` against current ``1.1.2``."""
-    import importlib.metadata as md
 
     # Override the pinned env var for this case so we can probe a
     # different current version.

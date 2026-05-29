@@ -35,7 +35,6 @@ import re
 import secrets
 import time
 from dataclasses import dataclass, field
-from typing import Dict, Optional
 
 import structlog
 
@@ -76,7 +75,7 @@ class LaunchResult:
     url: str
 
 
-_sessions: Dict[str, LaunchedSession] = {}
+_sessions: dict[str, LaunchedSession] = {}
 
 
 def _reap_expired() -> None:
@@ -128,7 +127,7 @@ async def launch_claude_login() -> LaunchResult:
     assert proc.stdout is not None
     deadline = time.time() + _LAUNCH_READ_TIMEOUT_S
     chunks: list[str] = []
-    url: Optional[str] = None
+    url: str | None = None
 
     while time.time() < deadline:
         remaining = max(0.05, deadline - time.time())
@@ -136,7 +135,7 @@ async def launch_claude_login() -> LaunchResult:
             line_bytes = await asyncio.wait_for(
                 proc.stdout.readline(), timeout=remaining
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             break
         if not line_bytes:
             # EOF — CLI exited before printing a URL. Could be already
@@ -223,7 +222,7 @@ async def submit_code(session_id: str, code: str) -> None:
 
     try:
         await asyncio.wait_for(proc.wait(), timeout=_SUBMIT_WAIT_TIMEOUT_S)
-    except asyncio.TimeoutError as exc:
+    except TimeoutError as exc:
         try:
             proc.kill()
         except ProcessLookupError:
@@ -240,7 +239,7 @@ async def submit_code(session_id: str, code: str) -> None:
     if proc.stdout is not None:
         try:
             tail = await asyncio.wait_for(proc.stdout.read(), timeout=2.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             tail = b""
 
     rc = proc.returncode

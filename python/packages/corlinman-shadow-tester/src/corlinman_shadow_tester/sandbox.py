@@ -204,7 +204,7 @@ class DockerBackend:
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
                 proc.communicate(), timeout=self.timeout_secs
             )
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             proc.kill()
             try:
                 await proc.wait()

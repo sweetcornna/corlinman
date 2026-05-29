@@ -89,6 +89,8 @@ async def _run(
         SessionNotFoundError,
         TenantId,
         TenantIdError,
+    )
+    from corlinman_replay import (
         replay as replay_fn,
     )
 

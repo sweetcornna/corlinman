@@ -29,8 +29,10 @@ from .cache import (
     CacheKey,
     RenderCache,
     canonical_json_bytes,
-    key_for as cache_key_for,
     key_to_hex,
+)
+from .cache import (
+    key_for as cache_key_for,
 )
 from .protocol import (
     AdapterError,

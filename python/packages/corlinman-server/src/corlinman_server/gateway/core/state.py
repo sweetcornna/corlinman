@@ -59,7 +59,7 @@ class AppState:
     # lock); the path is the file the watcher reloads from.
     config: Any = None  # currently published Config snapshot
     config_path: Path | None = None
-    config_watcher: "ConfigWatcher | None" = None
+    config_watcher: ConfigWatcher | None = None
 
     # Tenancy stack — boot wires these from corlinman_server.tenancy.
     admin_db: Any = None
@@ -84,7 +84,7 @@ class AppState:
 
     # Logging fan-out. Populated by gateway boot once the broadcaster
     # task is spawned; routes/middleware pull a subscription off it.
-    log_broadcaster: "LogBroadcaster | None" = None
+    log_broadcaster: LogBroadcaster | None = None
 
     # Free-form bag for sibling-agent extensions (chat backend, eval
     # surface, etc.). Keep this minimal — anything load-bearing gets a
@@ -94,18 +94,18 @@ class AppState:
     # ---- convenience factories ----------------------------------------------
 
     @classmethod
-    def empty(cls) -> "AppState":
+    def empty(cls) -> AppState:
         """Construct a blank state. Mirrors the Rust ``AppState::empty``
         convenience used by tests / stubs that don't need any plugins."""
         return cls()
 
-    def with_log_broadcaster(self, broadcaster: "LogBroadcaster") -> "AppState":
+    def with_log_broadcaster(self, broadcaster: LogBroadcaster) -> AppState:
         """Fluent: attach a log broadcaster. Returns ``self`` so callers
         can chain after construction."""
         self.log_broadcaster = broadcaster
         return self
 
-    def with_config(self, config: Any, path: Path) -> "AppState":
+    def with_config(self, config: Any, path: Path) -> AppState:
         """Fluent: attach a live config + the on-disk path it loaded
         from. Either field is allowed to be ``None`` at the call site,
         but in practice they always travel together."""
@@ -113,13 +113,13 @@ class AppState:
         self.config_path = path
         return self
 
-    def with_approval_gate(self, gate: Any) -> "AppState":
+    def with_approval_gate(self, gate: Any) -> AppState:
         """Fluent: attach an approval gate. Mirrors Rust
         ``AppState::with_approval_gate``."""
         self.approval_gate = gate
         return self
 
-    def with_tenancy(self, admin_db: Any, tenant_pool: Any) -> "AppState":
+    def with_tenancy(self, admin_db: Any, tenant_pool: Any) -> AppState:
         """Fluent: attach the tenancy stack so admin middleware can
         verify ``Authorization`` / cookie credentials against the per-
         tenant admin tables."""
@@ -128,7 +128,7 @@ class AppState:
         return self
 
 
-def get_app_state(request: "Request") -> AppState:
+def get_app_state(request: Request) -> AppState:
     """FastAPI dependency: pull the ``AppState`` out of ``app.state``.
 
     Routes declare ``state: AppState = Depends(get_app_state)`` and get

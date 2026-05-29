@@ -12,7 +12,6 @@ from types import SimpleNamespace
 
 import aiosqlite
 import pytest
-
 from corlinman_server.gateway.placeholder.episodes_stub import (
     DEFAULT_TENANT_SLUG,
     DEFAULT_TOP_N,

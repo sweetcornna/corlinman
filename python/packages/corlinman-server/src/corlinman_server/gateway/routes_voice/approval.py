@@ -39,7 +39,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Final, Protocol, runtime_checkable
 
 from corlinman_server.gateway.routes_voice.framing import ServerControl
@@ -275,7 +275,7 @@ class VoiceApprovalBridge:
         decision_kind: str
         try:
             wait_for = {wait_task} | ({cancel_task} if cancel_task is not None else set())
-            done, pending = await asyncio.wait(
+            done, _pending = await asyncio.wait(
                 wait_for, return_when=asyncio.FIRST_COMPLETED
             )
 
@@ -312,7 +312,7 @@ class VoiceApprovalBridge:
 
             try:
                 decision_raw = wait_task.result()
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning(
                     "voice: approval timed out: approval_id=%s tool=%s",
                     approval_id,
@@ -417,10 +417,10 @@ def _args_preview(args_json: Any) -> str:
 
 
 __all__ = [
-    "VOICE_TOOL_PLUGIN",
-    "APPROVAL_RESUME_TEXT",
     "APPROVAL_DENIED_TEXT",
+    "APPROVAL_RESUME_TEXT",
     "APPROVAL_TIMEOUT_TEXT",
+    "VOICE_TOOL_PLUGIN",
     "ApprovalDecisionKind",
     "ApprovalOutcome",
     "VoiceApprovalBridge",

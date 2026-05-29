@@ -80,7 +80,7 @@ class InboxEntry:
 class Inbox:
     """Async SQLite-backed durable queue for inbound chat messages."""
 
-    __slots__ = ("_path", "_conn")
+    __slots__ = ("_conn", "_path")
 
     def __init__(self, path: Path) -> None:
         self._path = path

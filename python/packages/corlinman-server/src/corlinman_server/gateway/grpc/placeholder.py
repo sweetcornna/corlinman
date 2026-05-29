@@ -34,8 +34,9 @@ import contextlib
 import logging
 import os
 import re
+from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 import grpc
 from corlinman_grpc._generated.corlinman.v1 import (
@@ -127,7 +128,7 @@ class PlaceholderCtx:
     constructed and tested without a hard dep on the (unported) engine.
     """
 
-    __slots__ = ("session_key", "model_name", "metadata")
+    __slots__ = ("metadata", "model_name", "session_key")
 
     def __init__(
         self,
@@ -541,7 +542,7 @@ class _CtxIdResolverAdapter:
     not leaked verbatim.
     """
 
-    __slots__ = ("_inner", "_id_key")
+    __slots__ = ("_id_key", "_inner")
 
     def __init__(self, inner: _IdResolverLike, *, id_key: str) -> None:
         self._inner = inner

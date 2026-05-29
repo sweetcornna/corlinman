@@ -17,9 +17,6 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest_asyncio
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
-
 from corlinman_agent.events import EventEnvelope, TurnComplete
 from corlinman_server.agent_journal import AgentJournal
 from corlinman_server.gateway.routes_admin_b import sessions_cost
@@ -28,7 +25,8 @@ from corlinman_server.gateway.routes_admin_b.state import (
     require_admin,
     set_admin_state,
 )
-
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 # ---------------------------------------------------------------------------
 # Fixtures

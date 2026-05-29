@@ -89,7 +89,9 @@ def _resolve_broadcaster(state: AdminState) -> Any | None:
         return state.log_broadcast
     # Lazy import — sibling parallel agent provides this module.
     try:
-        from corlinman_server.gateway.core import log_broadcast as _lb  # type: ignore  # noqa: PLC0415
+        from corlinman_server.gateway.core import (
+            log_broadcast as _lb,  # type: ignore  # noqa: PLC0415
+        )
     except ImportError:
         return None
     return getattr(_lb, "DEFAULT_BROADCASTER", None)
@@ -125,7 +127,7 @@ async def _sse_stream(broadcaster: Any, query: LogStreamQuery):
             try:
                 next_item_co = sub.__anext__() if hasattr(sub, "__anext__") else sub.recv()
                 item = await asyncio.wait_for(next_item_co, timeout=KEEPALIVE_INTERVAL)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 # Keep-alive heartbeat — SSE comment line.
                 yield b": keep-alive\n\n"
                 last_emit = asyncio.get_running_loop().time()

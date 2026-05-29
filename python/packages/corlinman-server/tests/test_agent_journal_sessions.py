@@ -10,7 +10,6 @@ import asyncio
 from pathlib import Path
 
 import pytest
-
 from corlinman_server.agent_journal import AgentJournal, SessionSummary
 from corlinman_server.agent_journal_backend import SESSION_SUMMARY_PREVIEW_LEN
 
@@ -86,7 +85,7 @@ async def test_list_session_summaries_carries_last_status(
     t_done = await journal.begin_turn("sess-done", "first")
     await journal.complete_turn(t_done)
     await asyncio.sleep(0.01)
-    t_open = await journal.begin_turn("sess-done", "second")
+    await journal.begin_turn("sess-done", "second")
 
     summaries = await journal.list_session_summaries()
     assert len(summaries) == 1

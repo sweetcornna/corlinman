@@ -9,14 +9,12 @@ crate ships.
 
 from __future__ import annotations
 
-import asyncio
 import copy
 import json
 from pathlib import Path
 
 import pytest
 import websockets
-
 from corlinman_mcp_server import (
     AdapterDispatcher,
     McpServer,
@@ -107,7 +105,7 @@ async def test_desktop_fixture_replay_matches_every_server_frame():
     server = McpServer(cfg, dispatcher)
     s = await server.bind(host="127.0.0.1", port=0)
     try:
-        port = list(s.sockets)[0].getsockname()[1]
+        port = next(iter(s.sockets)).getsockname()[1]
         url = f"ws://127.0.0.1:{port}/mcp?token=desktop-token"
         async with websockets.connect(url) as ws:
             fixture_path = Path(__file__).parent / "fixtures" / "desktop_2024_11_05.json"

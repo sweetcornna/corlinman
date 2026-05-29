@@ -16,7 +16,6 @@ import grpc
 import grpc.aio
 import pytest
 from corlinman_grpc import agent_pb2, agent_pb2_grpc
-from corlinman_server import main as _main
 from corlinman_server.shutdown import GracefulShutdown
 
 
@@ -28,9 +27,12 @@ async def test_shutdown_event_resolves_with_reason() -> None:
         await asyncio.sleep(0)
         s.request("SIGTERM")
 
-    _trigger_task = asyncio.create_task(trigger())
+    trigger_task = asyncio.create_task(trigger())
     reason = await asyncio.wait_for(s.wait(), timeout=1.0)
     assert reason == "SIGTERM"
+    # Hold a strong reference until the task finishes so it cannot be
+    # garbage-collected mid-flight, and surface any error it raised.
+    await trigger_task
 
 
 @pytest.mark.asyncio

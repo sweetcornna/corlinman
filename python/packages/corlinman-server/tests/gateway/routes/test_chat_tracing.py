@@ -21,11 +21,8 @@ import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 
-import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
-
 import corlinman_server.telemetry as telemetry_mod
+import pytest
 from corlinman_server.gateway.routes.chat import (
     ChatState,
     ModelRedirect,
@@ -37,9 +34,9 @@ from corlinman_server.gateway_api import (
     InternalChatError,
     InternalChatRequest,
     TokenDeltaEvent,
-    ToolCallEvent,
 )
-
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 # ─── Minimal stub backend (ChatBackend protocol) ─────────────────────────────
 
@@ -192,7 +189,7 @@ def in_memory_tracer():
 
 
 def test_chat_nonstream_emits_route_and_service_spans(in_memory_tracer) -> None:
-    provider, exporter = in_memory_tracer
+    _provider, exporter = in_memory_tracer
     service = _make_scripted_events_service(_simple_events())
     app = _make_app(service)
     client = TestClient(app)
@@ -227,7 +224,7 @@ def test_chat_nonstream_emits_route_and_service_spans(in_memory_tracer) -> None:
 
 
 def test_chat_stream_emits_route_span_with_stream_true(in_memory_tracer) -> None:
-    provider, exporter = in_memory_tracer
+    _provider, exporter = in_memory_tracer
     service = _StubChatService(_simple_events())
     app = _make_app(service)
     client = TestClient(app)
@@ -253,7 +250,7 @@ def test_chat_error_backend_sets_error_attributes_on_service_span(in_memory_trac
     service = _make_scripted_events_service(
         [ErrorEvent(error=InternalChatError(reason="timeout", message="timed out"))]
     )
-    provider, exporter = in_memory_tracer
+    _provider, exporter = in_memory_tracer
     app = _make_app(service)
     client = TestClient(app)
     body = {
@@ -271,7 +268,7 @@ def test_chat_error_backend_sets_error_attributes_on_service_span(in_memory_trac
 
 
 def test_bad_request_sets_status_400_on_route_span(in_memory_tracer) -> None:
-    provider, exporter = in_memory_tracer
+    _provider, exporter = in_memory_tracer
     service = _StubChatService(_simple_events())
     app = _make_app(service)
     client = TestClient(app)
@@ -321,7 +318,7 @@ def test_span_helper_propagates_exceptions_and_sets_status(in_memory_tracer) -> 
     """Exceptions inside span() are re-raised and the span is marked ERROR."""
     _provider, exporter = in_memory_tracer
     with pytest.raises(ValueError, match="boom"):
-        with telemetry_mod.span("test.exc") as s:
+        with telemetry_mod.span("test.exc"):
             raise ValueError("boom")
 
     spans = exporter.get_finished_spans()

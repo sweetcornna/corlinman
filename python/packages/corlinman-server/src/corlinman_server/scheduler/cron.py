@@ -38,7 +38,7 @@ returns a ``Result``; the Python equivalent raises (per the project's
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from croniter import CroniterBadCronError, croniter
 
@@ -134,7 +134,7 @@ def parse(expr: str) -> Schedule:
         # ``croniter`` raises CroniterBadCronError on bad input; we
         # also defensively catch ValueError because some malformed
         # inputs surface as that on older croniter versions.
-        croniter(normalised, datetime.now(tz=timezone.utc), second_at_beginning=has_seconds)
+        croniter(normalised, datetime.now(tz=UTC), second_at_beginning=has_seconds)
     except (CroniterBadCronError, ValueError) as exc:
         raise CronParseError(expr, exc) from exc
     return Schedule(_expr=normalised, _has_seconds=has_seconds)
@@ -153,7 +153,7 @@ def next_after(schedule: Schedule, now: datetime) -> datetime | None:
     ``DateTime<Utc>`` so this matches its assumed timezone.
     """
     if now.tzinfo is None:
-        now = now.replace(tzinfo=timezone.utc)
+        now = now.replace(tzinfo=UTC)
     try:
         it = croniter(schedule._expr, now, second_at_beginning=schedule._has_seconds)
         # ``get_next(datetime)`` returns the next firing strictly after
@@ -167,5 +167,5 @@ def next_after(schedule: Schedule, now: datetime) -> datetime | None:
     # croniter sometimes returns a naive datetime when the base is
     # naive; we coerced above so this branch is defensive.
     if nxt.tzinfo is None:
-        nxt = nxt.replace(tzinfo=timezone.utc)
+        nxt = nxt.replace(tzinfo=UTC)
     return nxt

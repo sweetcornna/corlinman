@@ -57,8 +57,8 @@ __all__ = [
     "ImageProviderUnavailable",
     "generate_plain",
     "generate_with_refs",
-    "resolve_image_provider_name",
     "resolve_image_provider",
+    "resolve_image_provider_name",
 ]
 
 

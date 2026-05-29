@@ -41,6 +41,7 @@ gateway startup with no useful context.
 from __future__ import annotations
 
 import contextlib
+import importlib.util
 import json
 import time
 from collections.abc import AsyncIterator, Sequence
@@ -177,13 +178,11 @@ class PostgresJournalBackend:
         is deferred to here so the module itself stays importable in
         environments that never select the Postgres backend.
         """
-        try:
-            import asyncpg
-        except ImportError as exc:
+        if importlib.util.find_spec("asyncpg") is None:
             raise RuntimeError(
                 "postgres backend selected but asyncpg is not installed; "
                 "pip install corlinman-server[postgres]"
-            ) from exc
+            )
 
         backend = cls(dsn)
         await backend._open()

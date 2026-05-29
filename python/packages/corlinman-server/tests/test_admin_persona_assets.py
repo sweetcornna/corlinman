@@ -34,7 +34,6 @@ from corlinman_server.persona import (
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-
 _PNG = bytes.fromhex(
     "89504E470D0A1A0A0000000D49484452000000010000000108020000009077"
     "53DE"
@@ -232,7 +231,6 @@ def test_serve_404_for_wrong_persona_owner(client: TestClient) -> None:
     # Seed a second persona, upload asset to the FIRST, then try to
     # serve through the SECOND's URL — must 404 to prevent path
     # confusion.
-    import time as _t
 
     asyncio.run(
         _create_persona(client, "bobby")

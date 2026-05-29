@@ -10,8 +10,8 @@
 如果不指定输出文件，默认输出到 input_transcript.txt
 """
 
-import sys
 import re
+import sys
 from pathlib import Path
 
 

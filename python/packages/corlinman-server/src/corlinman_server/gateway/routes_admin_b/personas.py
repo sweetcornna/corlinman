@@ -34,7 +34,6 @@ from pydantic import BaseModel
 
 from corlinman_server.gateway.routes_admin_b.state import require_admin
 
-
 # ---------------------------------------------------------------------------
 # Wire shapes
 # ---------------------------------------------------------------------------

@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import os
 import time as _time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -49,7 +49,6 @@ from corlinman_server.tenancy import (
     TenantIdError,
     tenant_root_dir,
 )
-
 
 # ---------------------------------------------------------------------------
 # argon2 helper — mirror of the CLI's :func:`hash_password`.
@@ -130,7 +129,7 @@ def _format_created_at_ms(ms: int) -> str:
     to ``str(ms)`` for timestamps outside any sane range (matches the
     Rust ``format_created_at_ms`` fallback)."""
     try:
-        dt = datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc)
+        dt = datetime.fromtimestamp(ms / 1000.0, tz=UTC)
         iso = dt.isoformat()
         if iso.endswith("+00:00"):
             return iso[:-6] + "Z"
@@ -164,7 +163,7 @@ def _is_valid_segment_name(s: str) -> bool:
         return False
     if s.startswith(".") or s.endswith(".") or ".." in s:
         return False
-    return all(c.islower() and c.isascii() or c.isdigit() or c in "_." for c in s)
+    return all((c.islower() and c.isascii()) or c.isdigit() or c in "_." for c in s)
 
 
 def _is_valid_agent_name(s: str) -> bool:

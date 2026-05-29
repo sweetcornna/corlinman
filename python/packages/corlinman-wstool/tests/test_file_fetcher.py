@@ -12,7 +12,6 @@ from pathlib import Path
 
 import httpx
 import pytest
-
 from corlinman_wstool import (
     DiskFileServer,
     FileFetcher,

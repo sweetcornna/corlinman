@@ -13,16 +13,13 @@ from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
-
 from corlinman_server.cli.init import (
     _atomic_write_toml,
     _load_existing,
     _resolve_config_path,
     _supported_kinds,
-    init,
 )
 from corlinman_server.cli.main import cli
-
 
 # ---------------------------------------------------------------------------
 # Unit-level: helper functions

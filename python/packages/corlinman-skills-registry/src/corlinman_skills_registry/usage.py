@@ -25,11 +25,10 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-
 
 USAGE_FILENAME = ".usage.json"
 
@@ -93,7 +92,7 @@ class SkillUsage:
             if value is None:
                 return None
             if isinstance(value, datetime):
-                return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+                return value if value.tzinfo else value.replace(tzinfo=UTC)
             if not isinstance(value, str):
                 return None
             try:
@@ -101,7 +100,7 @@ class SkillUsage:
             except (TypeError, ValueError):
                 return None
             if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=timezone.utc)
+                parsed = parsed.replace(tzinfo=UTC)
             return parsed
 
         return cls(
@@ -183,7 +182,7 @@ def write_usage(skill_dir: Path | str, usage: SkillUsage) -> None:
 
 def _utcnow() -> datetime:
     """Current UTC time as a timezone-aware datetime."""
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _ensure_created(usage: SkillUsage, now: datetime) -> None:
@@ -236,8 +235,8 @@ def bump_patch(skill_dir: Path | str, *, now: datetime | None = None) -> SkillUs
 
 
 __all__ = [
-    "SkillUsage",
     "USAGE_FILENAME",
+    "SkillUsage",
     "bump_patch",
     "bump_use",
     "bump_view",

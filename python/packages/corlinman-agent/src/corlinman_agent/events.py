@@ -30,9 +30,9 @@ from __future__ import annotations
 import time
 from collections import defaultdict
 from collections.abc import Mapping
-from dataclasses import dataclass, field, fields, is_dataclass
+from dataclasses import dataclass, fields, is_dataclass
 from threading import Lock
-from typing import Any, Literal, Protocol, Union
+from typing import Any, Literal, Protocol
 
 # --------------------------------------------------------------------------
 # Event payload dataclasses (the discriminated union)
@@ -159,7 +159,7 @@ class SubagentEvent:
     is a complete child :class:`EventEnvelope`."""
 
     child_session_key: str
-    envelope: "EventEnvelope"
+    envelope: EventEnvelope
 
 
 @dataclass(slots=True)
@@ -204,23 +204,23 @@ class TurnErrored:
 # Discriminated union + envelope
 # --------------------------------------------------------------------------
 
-Event = Union[
-    TurnStart,
-    BlockStart,
-    TextDelta,
-    ReasoningDelta,
-    ToolInputDelta,
-    BlockStop,
-    ToolStateRunning,
-    ToolStateHeartbeat,
-    ToolStateCompleted,
-    SubagentSpawned,
-    SubagentEvent,
-    SubagentCompleted,
-    Cancelling,
-    TurnComplete,
-    TurnErrored,
-]
+Event = (
+    TurnStart
+    | BlockStart
+    | TextDelta
+    | ReasoningDelta
+    | ToolInputDelta
+    | BlockStop
+    | ToolStateRunning
+    | ToolStateHeartbeat
+    | ToolStateCompleted
+    | SubagentSpawned
+    | SubagentEvent
+    | SubagentCompleted
+    | Cancelling
+    | TurnComplete
+    | TurnErrored
+)
 """Discriminator: ``type(event).__name__`` (e.g. ``'TextDelta'``).
 
 Used as the ``event_type`` tag in :meth:`EventEnvelope.to_json` and the

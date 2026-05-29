@@ -19,10 +19,9 @@ from corlinman_server.system.upgrader.state import (
     UpgradeStatus,
 )
 
-
 __all__ = [
-    "UpgraderProtocol",
     "UpgradeAlreadyRunning",
+    "UpgraderProtocol",
     "UpgraderUnavailable",
 ]
 

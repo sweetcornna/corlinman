@@ -29,7 +29,7 @@ import asyncio
 import json
 import os
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal
 
@@ -40,9 +40,9 @@ logger = structlog.get_logger(__name__)
 
 __all__ = [
     "UpgradeRequest",
-    "UpgradeStatus",
-    "UpgradeStateStore",
     "UpgradeState",
+    "UpgradeStateStore",
+    "UpgradeStatus",
 ]
 
 

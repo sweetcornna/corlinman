@@ -376,7 +376,6 @@ async def refresh_token(
 
 
 __all__ = [
-    "OAuthExchangeError",
     "XAI_OAUTH_CLIENT_ID",
     "XAI_OAUTH_DISCOVERY_URL",
     "XAI_OAUTH_ISSUER",
@@ -384,6 +383,7 @@ __all__ = [
     "XAI_OAUTH_REDIRECT_PATH",
     "XAI_OAUTH_REDIRECT_PORT",
     "XAI_OAUTH_SCOPE",
+    "OAuthExchangeError",
     "build_authorize_url",
     "discover_endpoints",
     "exchange_code",

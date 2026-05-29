@@ -37,7 +37,6 @@ from corlinman_mcp_server import (
     PluginOutputSuccess,
     TokenAcl,
 )
-
 from corlinman_server.gateway.mcp.server import (
     DEFAULT_MAX_FRAME_BYTES,
     McpConfig,
@@ -48,7 +47,6 @@ from corlinman_server.gateway.mcp.server import (
     build_server_config,
     token_config_to_acl,
 )
-
 
 # ---------------------------------------------------------------------
 # Minimal in-memory doubles for the bridge protocols build_dispatcher

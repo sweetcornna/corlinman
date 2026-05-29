@@ -23,11 +23,8 @@ returns **503 ``identity_disabled``**.
 
 from __future__ import annotations
 
-from datetime import timezone
+from datetime import UTC
 from typing import Annotated, Any
-
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field
 
 from corlinman_identity import (
     ChannelAlias,
@@ -36,6 +33,9 @@ from corlinman_identity import (
     UserId,
     UserNotFoundError,
 )
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel, Field
+
 from corlinman_server.gateway.routes_admin_a._auth_shim import (
     require_admin_dependency,
 )
@@ -43,7 +43,6 @@ from corlinman_server.gateway.routes_admin_a.state import (
     AdminState,
     get_admin_state,
 )
-
 
 # ---------------------------------------------------------------------------
 # Wire shapes
@@ -129,7 +128,7 @@ def _to_rfc3339_z(dt: Any) -> str:
         return dt
     try:
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
         iso = dt.isoformat()
         if iso.endswith("+00:00"):
             return iso[:-6] + "Z"

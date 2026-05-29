@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import pytest
-
 from corlinman_mcp_server import (
     INITIALIZED_NOTIFICATION,
     ClientCapabilities,

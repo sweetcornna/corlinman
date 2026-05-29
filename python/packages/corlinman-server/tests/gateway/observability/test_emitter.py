@@ -18,7 +18,6 @@ import logging
 from typing import Any
 
 import pytest
-
 from corlinman_agent.events import (
     EventEnvelope,
     ReasoningDelta,
@@ -32,7 +31,6 @@ from corlinman_server.gateway.observability import JournalBackedEmitter
 from corlinman_server.gateway.observability.emitter import (
     DEFAULT_QUEUE_MAXSIZE,
 )
-
 
 # ---------------------------------------------------------------------------
 # Test doubles
@@ -178,7 +176,7 @@ async def test_subscriber_overflow_logs_and_continues(
     emitter = JournalBackedEmitter(journal)
 
     # Open one subscriber with a 1-slot queue to make overflow easy.
-    full_q, unsub_full = await emitter.subscribe("sess-1", queue_maxsize=1)
+    _full_q, unsub_full = await emitter.subscribe("sess-1", queue_maxsize=1)
     healthy_q, unsub_healthy = await emitter.subscribe("sess-1")
     try:
         # Fill the small queue.

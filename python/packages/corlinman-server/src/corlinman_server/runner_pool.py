@@ -44,7 +44,7 @@ from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from threading import Lock
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 import structlog
 
@@ -184,7 +184,7 @@ class RunnerPool[T]:
         *,
         max_warm_per_key: int = 2,
         max_active_total: int = 8,
-        event_emitter: "EventEmitter | None" = None,
+        event_emitter: EventEmitter | None = None,
     ) -> None:
         if max_warm_per_key < 1 or max_active_total < 1:
             raise ValueError("pool caps must be positive")
@@ -210,7 +210,7 @@ class RunnerPool[T]:
         # the constructor (or the gateway-lifecycle wiring). ``None``
         # means "no observability sink wired" — every existing call
         # site keeps working unchanged.
-        self._event_emitter: "EventEmitter | None" = event_emitter
+        self._event_emitter: EventEmitter | None = event_emitter
 
     # ─── Public surface ────────────────────────────────────────────
 
@@ -361,10 +361,10 @@ class DispatchContext:
 
     turn_id: str
     session_key: str
-    emitter: "EventEmitter | None" = None
+    emitter: EventEmitter | None = None
 
 
-async def dispatch_with_observability(
+async def dispatch_with_observability[T](
     ctx: DispatchContext,
     *,
     tool_call_id: str,
@@ -556,11 +556,11 @@ async def dispatch_with_observability(
 
 
 __all__ = [
+    "TOOL_HEARTBEAT_INTERVAL_S",
     "DispatchContext",
     "PoolKey",
     "PoolStats",
     "RunnerHandle",
     "RunnerPool",
-    "TOOL_HEARTBEAT_INTERVAL_S",
     "dispatch_with_observability",
 ]

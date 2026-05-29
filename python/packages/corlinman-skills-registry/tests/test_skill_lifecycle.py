@@ -10,7 +10,7 @@ Coverage:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from corlinman_skills_registry import Skill
@@ -55,7 +55,7 @@ def test_parse_skill_reads_explicit_lifecycle_keys() -> None:
     assert skill.origin == "agent-created"
     assert skill.state == "stale"
     assert skill.pinned is True
-    assert skill.created_at == datetime(2026, 1, 15, 10, 30, tzinfo=timezone.utc)
+    assert skill.created_at == datetime(2026, 1, 15, 10, 30, tzinfo=UTC)
 
 
 def test_parse_skill_legacy_file_uses_defaults() -> None:

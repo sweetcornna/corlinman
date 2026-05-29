@@ -82,10 +82,10 @@ class SessionState:
     """
 
     __slots__ = (
-        "_phase",
-        "_client_protocol_version",
         "_client_name",
+        "_client_protocol_version",
         "_client_version",
+        "_phase",
     )
 
     def __init__(self) -> None:

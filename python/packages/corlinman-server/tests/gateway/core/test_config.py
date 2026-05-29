@@ -19,18 +19,15 @@ Covers :func:`load_from_path`, :func:`parse_config`, and
 
 from __future__ import annotations
 
-import os
 import tomllib
 from pathlib import Path
 
 import pytest
-
 from corlinman_server.gateway.core.config import (
     load_from_path,
     parse_config,
     resolve_env_refs,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

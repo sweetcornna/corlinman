@@ -29,7 +29,7 @@ import weakref
 from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Union
+from typing import TYPE_CHECKING, Any
 
 from corlinman_hooks.error import Closed, HookCancelledError, Lagged
 from corlinman_hooks.priority import CancelToken, HookPriority
@@ -48,7 +48,7 @@ _log = logging.getLogger("corlinman.hooks.bus")
 
 # Type aliases for the push-based callable-subscriber surface.
 HookPredicate = Callable[["_HookEventBase"], bool]
-HookSubscriber = Callable[["_HookEventBase"], Union[Awaitable[None], None]]
+HookSubscriber = Callable[["_HookEventBase"], Awaitable[None] | None]
 
 
 @dataclass(frozen=True)

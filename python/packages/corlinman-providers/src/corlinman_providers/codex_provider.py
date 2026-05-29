@@ -13,9 +13,9 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from functools import partial
-from typing import Any, ClassVar, Sequence
+from typing import Any, ClassVar
 
 import structlog
 

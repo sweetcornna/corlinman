@@ -17,7 +17,6 @@ import pytest
 fastapi = pytest.importorskip("fastapi")
 
 from corlinman_channels.service import (
-    TELEGRAM_HEALTH,
     TELEGRAM_RECENT_MESSAGES,
     _telegram_reset_state_for_tests,
 )

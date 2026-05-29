@@ -28,7 +28,6 @@ from corlinman_agent.events import (
     ToolStateRunning,
     TurnComplete,
 )
-
 from corlinman_channels._status import MutableSpinner
 from corlinman_channels.service import (
     _consume_observability_events,

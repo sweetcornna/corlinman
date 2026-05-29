@@ -36,8 +36,8 @@ from corlinman_wstool.types import FetchedBlob, ToolError, WsToolError
 
 __all__ = [
     "DEFAULT_MAX_BYTES",
-    "DiskFileServer",
     "FILE_FETCHER_TOOL",
+    "DiskFileServer",
     "FileFetcher",
     "FileFetcherError",
     "FileReadInfo",

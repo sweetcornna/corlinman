@@ -23,7 +23,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
-
 from corlinman_server.gateway import channels_runtime
 
 

@@ -666,7 +666,7 @@ class SqliteJournalBackend:
     so concurrent sessions read+write without serializing on the writer.
     """
 
-    __slots__ = ("_path", "_conn", "_write_lock")
+    __slots__ = ("_conn", "_path", "_write_lock")
 
     def __init__(self, path: Path) -> None:
         self._path = path
@@ -2227,17 +2227,17 @@ __all__ = [
     "ENV_BACKEND",
     "ENV_POSTGRES_DSN",
     "ENV_REDIS_URL",
+    "RESUME_MAX_AGE_MS",
+    "SESSION_SUMMARY_PREVIEW_LEN",
+    "TURN_COMPLETED",
+    "TURN_ERRORED",
+    "TURN_IN_PROGRESS",
     "InProgressTurn",
     "JournalBackend",
     "PostgresJournalBackend",
     "RedisJournalBackend",
-    "RESUME_MAX_AGE_MS",
     "ResumeData",
-    "SESSION_SUMMARY_PREVIEW_LEN",
     "SessionSummary",
     "SqliteJournalBackend",
-    "TURN_COMPLETED",
-    "TURN_ERRORED",
-    "TURN_IN_PROGRESS",
     "open_backend_from_env",
 ]

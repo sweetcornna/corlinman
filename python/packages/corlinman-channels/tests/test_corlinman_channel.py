@@ -18,12 +18,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
-
 from corlinman_channels.channel import ChannelRegistry
 from corlinman_channels.common import Attachment, AttachmentKind, UnsupportedError
 from corlinman_channels.corlinman import (
@@ -32,7 +30,6 @@ from corlinman_channels.corlinman import (
     CorlinmanOutboundFrame,
     corlinman_channel_enabled,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -54,7 +51,7 @@ async def _collect_until(
     for _ in range(max_frames):
         try:
             frame = await asyncio.wait_for(stream.__anext__(), timeout=timeout)
-        except (StopAsyncIteration, asyncio.TimeoutError):
+        except (TimeoutError, StopAsyncIteration):
             break
         out.append(frame)
     return out

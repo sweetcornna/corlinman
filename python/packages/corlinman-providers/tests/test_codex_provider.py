@@ -15,7 +15,6 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from corlinman_providers._codex_oauth import (
     CodexOAuthCredential,
     CodexOAuthRefreshError,
@@ -25,7 +24,6 @@ from corlinman_providers._codex_oauth import (
 )
 from corlinman_providers.codex_provider import CodexProvider, _messages_to_responses_input
 from corlinman_providers.specs import ProviderKind, ProviderSpec
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -941,7 +939,6 @@ async def test_chat_stream_done_usage_none_when_upstream_omits() -> None:
 
 def _fake_invalidated_401() -> Exception:
     """Build an exception that looks like a Codex token_invalidated 401."""
-    from unittest.mock import MagicMock
 
     class _AuthError(Exception):
         pass
@@ -971,7 +968,6 @@ def test_is_token_invalidated_detects_real_shape() -> None:
 
 def test_is_token_invalidated_skips_refresh_token_invalidated() -> None:
     """Refresh-token invalidation is NOT recoverable locally — must return False."""
-    from unittest.mock import MagicMock
 
     from corlinman_providers.codex_provider import _is_token_invalidated
 
@@ -1080,7 +1076,6 @@ async def test_chat_stream_gives_up_when_refresh_token_also_dead(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """If refresh also fails, the original 401 surfaces as a clean done/error."""
-    from corlinman_providers._codex_oauth import CodexOAuthRefreshError
 
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
     _write_auth_json(tmp_path, access_token="dead", refresh_token="rt-also-dead")

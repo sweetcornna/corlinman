@@ -15,7 +15,6 @@ from corlinman_server.gateway.evolution.signals.user_correction import (
     detect_correction,
 )
 
-
 # ─── Positive: one match per kind ─────────────────────────────────────
 
 

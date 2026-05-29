@@ -37,7 +37,6 @@ from importlib import metadata as _pkg_metadata
 
 from corlinman_mcp_server import (
     AdapterDispatcher,
-    DEFAULT_TENANT_ID,
     McpServer,
     McpServerConfig,
     MemoryHost,

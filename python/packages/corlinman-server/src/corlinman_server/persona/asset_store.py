@@ -50,6 +50,8 @@ logger = structlog.get_logger(__name__)
 
 __all__ = [
     "ALLOWED_MIMES",
+    "DEFAULT_MAX_BYTES_PER_ASSET",
+    "DEFAULT_MAX_BYTES_PER_PERSONA",
     "AssetKind",
     "AssetMimeRejected",
     "AssetNotFound",
@@ -57,8 +59,6 @@ __all__ = [
     "AssetRecord",
     "AssetTooLarge",
     "PersonaAssetStore",
-    "DEFAULT_MAX_BYTES_PER_ASSET",
-    "DEFAULT_MAX_BYTES_PER_PERSONA",
 ]
 
 

@@ -20,14 +20,12 @@ canonical regression net.
 from __future__ import annotations
 
 import pytest
-
 from corlinman_channels.commands import (
     COMMAND_REGISTRY,
     CommandSpec,
     apply_command_prelude,
     match_command,
 )
-
 
 # ---------------------------------------------------------------------------
 # COMMAND_REGISTRY shape

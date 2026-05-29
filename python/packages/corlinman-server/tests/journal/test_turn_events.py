@@ -24,9 +24,7 @@ from typing import Any
 
 import aiosqlite
 import pytest
-
 from corlinman_server.agent_journal import AgentJournal
-
 
 # ---------------------------------------------------------------------------
 # Fixtures + helpers

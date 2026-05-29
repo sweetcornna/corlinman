@@ -14,7 +14,6 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-
 from corlinman_channels.persona_inject import (
     compose_persona_emoji_block,
     inject_persona_if_enabled,
@@ -133,7 +132,7 @@ class TestComposePersonaEmojiBlock:
             "- angry: /abs/path/to/bbb.png",
             "- sad: /abs/path/to/ccc.png",
         ):
-            assert any(l == line for l in block.split("\n"))
+            assert any(candidate == line for candidate in block.split("\n"))
 
     @pytest.mark.asyncio
     async def test_returns_none_on_store_failure(self) -> None:

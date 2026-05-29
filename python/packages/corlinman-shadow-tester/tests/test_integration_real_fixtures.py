@@ -22,7 +22,6 @@ from corlinman_evolution_store import (
     ProposalId,
     ProposalsRepo,
 )
-
 from corlinman_shadow_tester import (
     MemoryOpSimulator,
     ShadowRunner,

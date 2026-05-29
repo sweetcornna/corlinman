@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from corlinman_mcp_server import (
     McpInvalidParamsError,
     McpMethodNotFoundError,
@@ -272,7 +271,12 @@ async def test_list_only_enumerates_own_tenant_memory():
 
 
 def test_parse_uri_recognises_three_schemes_and_rejects_others():
-    from corlinman_mcp_server.resources import _MemoryUri, _ParsedUri, _PersonaUri, _SkillUri, _parse_uri  # noqa: PLC0415
+    from corlinman_mcp_server.resources import (  # noqa: PLC0415
+        _MemoryUri,
+        _parse_uri,
+        _PersonaUri,
+        _SkillUri,
+    )
 
     parsed = _parse_uri("corlinman://memory/kb/abc")
     assert isinstance(parsed, _MemoryUri)

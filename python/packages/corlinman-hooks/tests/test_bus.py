@@ -448,7 +448,7 @@ def test_hookbus_holds_strong_refs_to_fire_and_forget_tasks() -> None:
     assert hasattr(bus, "_pending_tasks"), (
         "HookBus must hold a strong-ref set for fire-and-forget tasks"
     )
-    assert isinstance(getattr(bus, "_pending_tasks"), set)
+    assert isinstance(bus._pending_tasks, set)
 
     src = _inspect.getsource(_bus_mod.HookBus._fanout_callables_sync)
     assert "_pending_tasks.add(" in src, (

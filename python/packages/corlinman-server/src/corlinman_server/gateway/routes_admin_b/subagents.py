@@ -352,7 +352,7 @@ def router() -> APIRouter:
                 f"id: {request_id}:{seq}\n"
                 f"event: status\n"
                 f"data: {initial_payload}\n\n"
-            ).encode("utf-8")
+            ).encode()
             seq += 1
 
             if initial.is_terminal():
@@ -376,7 +376,7 @@ def router() -> APIRouter:
                                 queue.get(),
                                 timeout=_SUBAGENT_SSE_HEARTBEAT_SECONDS,
                             )
-                        except asyncio.TimeoutError:
+                        except TimeoutError:
                             # Heartbeat + terminal-state poll.
                             yield b": keepalive\n\n"
                             current = await store.get(request_id)
@@ -389,7 +389,7 @@ def router() -> APIRouter:
                                     f"id: {request_id}:{seq}\n"
                                     f"event: status\n"
                                     f"data: {payload}\n\n"
-                                ).encode("utf-8")
+                                ).encode()
                                 break
                             continue
                         # Forward the child envelope as ``event: event``.
@@ -409,7 +409,7 @@ def router() -> APIRouter:
                             f"id: {request_id}:{seq}\n"
                             f"event: event\n"
                             f"data: {payload}\n\n"
-                        ).encode("utf-8")
+                        ).encode()
                         seq += 1
                     else:
                         # Emitter / child_key not wired — fall back to
@@ -427,7 +427,7 @@ def router() -> APIRouter:
                             f"id: {request_id}:{seq}\n"
                             f"event: status\n"
                             f"data: {payload}\n\n"
-                        ).encode("utf-8")
+                        ).encode()
                         seq += 1
                         if current.is_terminal():
                             break
@@ -490,7 +490,7 @@ def router() -> APIRouter:
                         f"id: live:{seq}\n"
                         f"event: subagent\n"
                         f"data: {payload}\n\n"
-                    ).encode("utf-8")
+                    ).encode()
                     seq += 1
                     last[row.request_id] = (row.state, row.finished_at)
 
@@ -514,7 +514,7 @@ def router() -> APIRouter:
                             f"id: live:{seq}\n"
                             f"event: subagent\n"
                             f"data: {payload}\n\n"
-                        ).encode("utf-8")
+                        ).encode()
                         seq += 1
                     # Reap stale ids (test fixture deletions).
                     for stale in [k for k in last if k not in seen_ids]:

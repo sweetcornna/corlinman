@@ -159,14 +159,14 @@ class PersonaStore:
     read load pattern of this surface.
     """
 
-    __slots__ = ("_path", "_conn")
+    __slots__ = ("_conn", "_path")
 
     def __init__(self, path: Path) -> None:
         self._path = path
         self._conn: aiosqlite.Connection | None = None
 
     @classmethod
-    async def open(cls, path: Path) -> "PersonaStore":
+    async def open(cls, path: Path) -> PersonaStore:
         """Open the store at ``path``, creating the file + schema if
         necessary. Mirrors :meth:`corlinman_server.inbox.Inbox.open` so
         the call sites read identically across stores."""

@@ -8,7 +8,6 @@ exercise the same shape.
 from __future__ import annotations
 
 import pytest
-
 from corlinman_canvas import (
     AdapterError,
     ArtifactKind,

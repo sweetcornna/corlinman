@@ -47,10 +47,10 @@ __all__ = [
     "DEFAULT_TENANT_SLUG",
     "DEFAULT_TOP_K",
     "DEFAULT_TOP_N",
-    "EpisodeBrief",
-    "EpisodesResolver",
-    "MemoryResolver",
     "SUMMARY_CHAR_CAP",
     "TENANT_METADATA_KEY",
     "VALID_KINDS",
+    "EpisodeBrief",
+    "EpisodesResolver",
+    "MemoryResolver",
 ]

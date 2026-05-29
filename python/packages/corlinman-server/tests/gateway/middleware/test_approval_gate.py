@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-
 from corlinman_providers.plugins.approval import ApprovalStore
 from corlinman_server.gateway.middleware import (
     ApprovalDecision,

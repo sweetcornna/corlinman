@@ -16,14 +16,12 @@ from __future__ import annotations
 import hashlib
 
 import pytest
-
 from corlinman_server.persona import (
     AssetMimeRejected,
     AssetQuotaExceeded,
     AssetTooLarge,
     PersonaAssetStore,
 )
-
 
 # A tiny but legitimate PNG ("\x89PNG\r\n\x1a\n" + IHDR-only) so we can
 # upload "valid bytes" without hauling around a real image asset.

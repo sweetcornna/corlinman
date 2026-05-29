@@ -60,7 +60,6 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 import structlog
-
 from corlinman_agent.events import (
     Event,
     EventEmitter,
@@ -491,8 +490,8 @@ class BubbleEmitter:
 
 
 __all__ = [
-    "JournalBackedEmitter",
-    "BubbleEmitter",
-    "DEFAULT_QUEUE_MAXSIZE",
     "DEFAULT_FLUSH_THRESHOLD",
+    "DEFAULT_QUEUE_MAXSIZE",
+    "BubbleEmitter",
+    "JournalBackedEmitter",
 ]

@@ -19,19 +19,18 @@ import pytest
 
 fastapi = pytest.importorskip("fastapi")
 
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
-
 from corlinman_server.gateway.lifecycle.admin_seed import ensure_admin_credentials
+from corlinman_server.gateway.routes_admin_a._session_store import (
+    SESSION_COOKIE_NAME,
+    AdminSessionStore,
+)
 from corlinman_server.gateway.routes_admin_a.auth import router as auth_router
 from corlinman_server.gateway.routes_admin_a.state import (
     AdminState,
     set_admin_state,
 )
-from corlinman_server.gateway.routes_admin_a._session_store import (
-    SESSION_COOKIE_NAME,
-    AdminSessionStore,
-)
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 
 def _build_client(state: AdminState) -> TestClient:

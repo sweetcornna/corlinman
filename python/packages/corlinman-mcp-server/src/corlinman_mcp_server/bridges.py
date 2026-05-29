@@ -15,12 +15,12 @@ in-process.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Awaitable, Callable, Iterable, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from .types import JsonValue
-
 
 # ---------------------------------------------------------------------
 # Plugin manifest / registry / runtime

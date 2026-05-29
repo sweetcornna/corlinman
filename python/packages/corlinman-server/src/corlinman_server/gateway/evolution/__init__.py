@@ -87,13 +87,13 @@ __all__ += [
 # scoped to ``kind="user-correction"``. Kept in their own modules so
 # config can disable the routing without touching :mod:`.applier`.
 # ---------------------------------------------------------------------------
+from corlinman_server.gateway.evolution.applier_user_correction import (  # noqa: E402
+    UserCorrectionApplier,
+)
 from corlinman_server.gateway.evolution.signals.user_correction import (  # noqa: E402
     CorrectionMatch,
     detect_correction,
     register_user_correction_listener,
-)
-from corlinman_server.gateway.evolution.applier_user_correction import (  # noqa: E402
-    UserCorrectionApplier,
 )
 
 __all__ += [

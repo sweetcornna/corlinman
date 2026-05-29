@@ -34,7 +34,6 @@ from corlinman_server.gateway.lifecycle.entrypoint import (  # noqa: E402
 )
 from fastapi.testclient import TestClient  # noqa: E402
 
-
 # ---------------------------------------------------------------------------
 # Pure helpers — exercised without spinning the FastAPI app
 # ---------------------------------------------------------------------------

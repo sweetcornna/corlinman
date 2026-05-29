@@ -44,6 +44,7 @@ from corlinman_server.profiles.store import (
 
 __all__ = [
     "DEFAULT_SLUG",
+    "SLUG_REGEX",
     "Profile",
     "ProfileError",
     "ProfileExists",
@@ -51,7 +52,6 @@ __all__ = [
     "ProfileProtected",
     "ProfileSlugInvalid",
     "ProfileStore",
-    "SLUG_REGEX",
     "ensure_profile_dirs",
     "profile_memory_path",
     "profile_root",

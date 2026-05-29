@@ -45,7 +45,6 @@ from corlinman_server.system.audit import (  # noqa: E402  (after importorskip)
     SystemAuditLog,
 )
 
-
 # ---------------------------------------------------------------------------
 # Tarball builders
 # ---------------------------------------------------------------------------

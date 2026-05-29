@@ -33,7 +33,7 @@ max, collision risk is negligible.
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from corlinman_identity.error import (
     InvalidInputError,
@@ -96,7 +96,7 @@ async def _issue_phrase(
         raise InvalidInputError("channel and channel_user_id must be non-empty")
 
     phrase = _generate_phrase()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     expires_at = now + timedelta(minutes=DEFAULT_TTL_MIN)
     expires_str = _to_rfc3339(expires_at)
 
@@ -203,7 +203,7 @@ async def _redeem_phrase_locked(
         if consumed_at is not None:
             raise PhraseAlreadyConsumedError()
         expires_at = _parse_rfc3339(expires_at_str)
-        if datetime.now(timezone.utc) >= expires_at:
+        if datetime.now(UTC) >= expires_at:
             raise PhraseExpiredError()
 
         now_str = _now_utc_rfc3339()

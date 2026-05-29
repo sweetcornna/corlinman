@@ -59,11 +59,11 @@ logger = structlog.get_logger(__name__)
 
 __all__ = [
     "RegistryModelSource",
+    "_auto_inject_codex",
+    "_detect_best_codex_model",
     "bootstrap",
     "build_registry",
     "model_source_for",
-    "_detect_best_codex_model",
-    "_auto_inject_codex",
 ]
 
 
@@ -199,7 +199,7 @@ class RegistryModelSource:
     the live ``AppState``.
     """
 
-    __slots__ = ("_registry", "_config")
+    __slots__ = ("_config", "_registry")
 
     def __init__(self, registry: Any, config: Mapping[str, Any] | None) -> None:
         self._registry = registry
@@ -376,6 +376,7 @@ def _auto_inject_codex(state: Any) -> None:
     """
     try:
         from corlinman_providers._codex_oauth import load_codex_credential
+
         from corlinman_server.gateway.oauth.codex_external import read_codex_status
 
         config = getattr(state, "config", None)

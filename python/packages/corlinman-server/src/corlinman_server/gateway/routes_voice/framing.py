@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 import struct
 from dataclasses import dataclass
-from typing import Any, ClassVar, Final, Union
+from typing import Any, ClassVar, Final
 
 # ---------------------------------------------------------------------------
 # Subprotocol negotiation
@@ -123,7 +123,7 @@ class AudioFrameError(Exception):
     with a discriminating ``kind`` string plus context fields.
     """
 
-    __slots__ = ("kind", "got", "minimum", "maximum")
+    __slots__ = ("got", "kind", "maximum", "minimum")
 
     def __init__(
         self,
@@ -450,23 +450,23 @@ def encode_server_control(event: ServerControl) -> str:
 
 # Public union type alias mirroring the Rust ``ClientControl`` /
 # ``ServerControl`` enums for callers that want a typing hook.
-ControlFrame = Union[ClientControl, ServerControl]
+ControlFrame = ClientControl | ServerControl
 
 
 __all__ = [
-    "SUBPROTOCOL",
-    "SUBPROTOCOLS",
     "MAX_AUDIO_FRAME_BYTES",
     "MIN_AUDIO_FRAME_BYTES",
-    "SubprotocolDecision",
-    "accept_subprotocol",
+    "SUBPROTOCOL",
+    "SUBPROTOCOLS",
     "AudioFrame",
     "AudioFrameError",
-    "parse_audio_frame",
     "ClientControl",
     "ControlFrame",
     "ControlParseError",
     "ServerControl",
+    "SubprotocolDecision",
+    "accept_subprotocol",
     "encode_server_control",
+    "parse_audio_frame",
     "parse_client_control",
 ]

@@ -22,7 +22,6 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, Path
 
 from corlinman_server.gateway.routes_admin_b.state import (
-    AdminState,
     get_admin_state,
     require_admin,
 )

@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 from corlinman_evolution_store import EvolutionKind
-
 from corlinman_shadow_tester.eval import (
     EmptySet,
     KindMismatch,

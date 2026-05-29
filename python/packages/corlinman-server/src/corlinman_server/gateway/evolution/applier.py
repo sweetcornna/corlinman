@@ -39,8 +39,9 @@ import hashlib
 import json
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from corlinman_auto_rollback.revert import (
     Applier,
@@ -48,7 +49,6 @@ from corlinman_auto_rollback.revert import (
     InternalRevertError,
     NotAppliedRevertError,
     NotFoundRevertError,
-    RevertError,
     UnsupportedKindRevertError,
 )
 from corlinman_evolution_store import (
@@ -67,16 +67,16 @@ __all__ = [
     "ApplyError",
     "ApplyResult",
     "EvolutionApplier",
+    "HistoryMissingError",
+    "InvalidTargetError",
     "KindHandler",
+    "MalformedInverseDiffError",
     "MutationOutcome",
+    "NotAppliedError",
     "NotApprovedError",
     "NotFoundApplyError",
-    "NotAppliedError",
-    "HistoryMissingError",
     "UnsupportedKindError",
     "UnsupportedRevertKindError",
-    "InvalidTargetError",
-    "MalformedInverseDiffError",
     "now_ms",
     "sha256_hex",
 ]
@@ -260,7 +260,7 @@ class EvolutionApplier(Applier):
         history: HistoryRepo,
         *,
         handlers: KindHandlerMap | None = None,
-        clock: Callable[[], int] = None,  # type: ignore[assignment]
+        clock: Callable[[], int] | None = None,  # type: ignore[assignment]
     ) -> None:
         self._proposals = proposals
         self._history = history

@@ -38,7 +38,7 @@ _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 _OVERLOAD_STATUS = {529}
 
 
-async def with_retry(
+async def with_retry[T](
     make_attempt: Callable[[], Awaitable[T]],
     *,
     max_attempts: int = 5,

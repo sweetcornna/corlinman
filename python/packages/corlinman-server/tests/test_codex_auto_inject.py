@@ -16,9 +16,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
-import pytest
-
-from corlinman_server.gateway.providers import _auto_inject_codex, _detect_best_codex_model
+from corlinman_server.gateway.providers import _auto_inject_codex
 
 _FALLBACK = "chatgpt-4o-latest"
 

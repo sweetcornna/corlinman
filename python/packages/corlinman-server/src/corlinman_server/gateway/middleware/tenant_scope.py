@@ -79,10 +79,10 @@ class TenantScopeState:
 
     enabled: bool = False
     allowed: frozenset[TenantId] = field(default_factory=frozenset)
-    fallback: TenantId = default_tenant()
+    fallback: TenantId = field(default_factory=default_tenant)
 
     @classmethod
-    def disabled(cls) -> "TenantScopeState":
+    def disabled(cls) -> TenantScopeState:
         """Build a disabled state where every request resolves to
         :func:`~corlinman_server.tenancy.default_tenant`. Used by tests
         that want to assert handler behaviour without exercising tenant

@@ -15,12 +15,10 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
-
 from corlinman_hooks.bus import HookBus
 from corlinman_wstool import (
     ProgressSink,
     ToolAdvert,
-    ToolError,
     ToolHandler,
     WsToolConfig,
     WsToolRunner,

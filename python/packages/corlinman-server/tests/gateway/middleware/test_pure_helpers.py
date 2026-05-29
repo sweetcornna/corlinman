@@ -21,7 +21,6 @@ from corlinman_server.gateway.middleware import (
     parse_basic,
 )
 
-
 # ---------------------------------------------------------------------------
 # admin_auth.parse_basic / extract_cookie — mirror the Rust unit tests.
 # ---------------------------------------------------------------------------

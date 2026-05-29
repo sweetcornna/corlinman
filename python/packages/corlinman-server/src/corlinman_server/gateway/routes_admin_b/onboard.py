@@ -36,17 +36,16 @@ from __future__ import annotations
 import re
 from typing import Any, Literal
 
+from corlinman_providers.specs import list_supported_kinds
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from corlinman_providers.specs import list_supported_kinds
 from corlinman_server.gateway.routes_admin_b.state import (
     config_snapshot,
     get_admin_state,
     require_admin,
 )
-
 
 # ---------------------------------------------------------------------------
 # First-run wizard helpers — pull in the username/password service logic from

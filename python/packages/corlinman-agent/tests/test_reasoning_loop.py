@@ -1292,7 +1292,7 @@ def test_token_cache_incremental_on_append() -> None:
     try:
         loop = ReasoningLoop(provider=object())
         first_batch = [
-            {"role": "user", "content": "msg-{}".format(i)} for i in range(50)
+            {"role": "user", "content": f"msg-{i}"} for i in range(50)
         ]
         # Seed the cache: full walk of 50 messages.
         seeded = loop.messages_total_token_estimate(first_batch)
@@ -1301,7 +1301,7 @@ def test_token_cache_incremental_on_append() -> None:
 
         # Append 10 more — the cache MUST only walk the new tail.
         extended = first_batch + [
-            {"role": "tool", "tool_call_id": "c{}".format(i), "content": "x" * 100}
+            {"role": "tool", "tool_call_id": f"c{i}", "content": "x" * 100}
             for i in range(10)
         ]
         before_count = len(walked)

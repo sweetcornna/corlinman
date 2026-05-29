@@ -17,7 +17,6 @@ from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
-
 from corlinman_server.cli.doctor import (
     CheckReport,
     _check_provider_registry,
@@ -25,7 +24,6 @@ from corlinman_server.cli.doctor import (
     _check_runtime_wiring,
 )
 from corlinman_server.cli.main import cli
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -293,7 +291,7 @@ class TestDoctorCLIRuntime:
         # result.output may contain structlog debug lines; find the JSON array
         # by looking for the first line that starts with "[".
         lines = result.output.splitlines()
-        json_lines = "\n".join(line for line in lines if line.startswith("["))
+        "\n".join(line for line in lines if line.startswith("["))
         # The JSON block could span multiple lines - find the contiguous block.
         # More robustly: find the index of the first "\n[\n" or start-of-"[\n".
         out = result.output

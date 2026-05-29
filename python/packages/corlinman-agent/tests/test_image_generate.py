@@ -21,7 +21,6 @@ from corlinman_agent.image import (
     image_generate_tool_schema,
 )
 
-
 _GENERATED_PNG = b"\x89PNG\r\n\x1a\n" + b"PLAINIMG" * 8
 
 

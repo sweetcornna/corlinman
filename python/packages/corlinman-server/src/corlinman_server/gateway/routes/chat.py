@@ -45,6 +45,7 @@ from fastapi import APIRouter, Header, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from corlinman_server import telemetry
 from corlinman_server.gateway.services.chat_bootstrap import (
     rewrite_trailing_user_message,
 )
@@ -59,7 +60,6 @@ from corlinman_server.gateway_api import (
     ToolCallEvent,
 )
 from corlinman_server.gateway_api.types import InternalChatEvent
-from corlinman_server import telemetry
 
 __all__ = [
     "ChatMessage",

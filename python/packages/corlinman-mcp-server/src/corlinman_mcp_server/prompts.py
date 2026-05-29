@@ -15,9 +15,9 @@ Skill field                   MCP ``Prompt`` field
 
 from __future__ import annotations
 
-from typing import Iterable
+from collections.abc import Iterable
 
-from .adapters import CapabilityAdapter, SessionContext
+from .adapters import SessionContext
 from .bridges import SkillRegistry
 from .errors import (
     McpInvalidParamsError,

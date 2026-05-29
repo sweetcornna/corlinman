@@ -51,8 +51,9 @@ from __future__ import annotations
 import asyncio
 import inspect
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from corlinman_subagent.errors import (
     AcquireReject,
@@ -219,6 +220,7 @@ class Supervisor:
         "_lock",
         "_parent_session_key",
         "_parent_turn_id",
+        "_pending_tasks",
         "_per_parent",
         "_per_tenant",
         "_policy",
@@ -257,6 +259,12 @@ class Supervisor:
         self._event_emitter = event_emitter
         self._parent_turn_id = parent_turn_id
         self._parent_session_key = parent_session_key
+        # Strong references to fire-and-forget observability emits
+        # scheduled by :meth:`_safe_emit_obs`. The event loop only holds
+        # a weak reference to a bare ``create_task`` result, so without
+        # this set the task can be garbage-collected mid-flight (the
+        # R2-003 footgun). Tasks self-remove via ``add_done_callback``.
+        self._pending_tasks: set[asyncio.Task[Any]] = set()
         # Single asyncio lock guards both counter dicts. The Rust crate
         # uses per-key DashMap entries; on a single-threaded asyncio
         # event loop one global lock is simpler and just as correct
@@ -570,7 +578,7 @@ class Supervisor:
         except RuntimeError:
             return
         try:
-            loop.create_task(
+            task = loop.create_task(
                 emitter.emit_event(
                     self._parent_turn_id or "",
                     self._parent_session_key or "",
@@ -581,7 +589,10 @@ class Supervisor:
             # Loop closed / task creation refused — drop silently to
             # match the supervisor's "observability never blocks
             # spawn" contract.
-            pass
+            return
+        # Hold a strong reference so the task is not GC'd before it runs.
+        self._pending_tasks.add(task)
+        task.add_done_callback(self._pending_tasks.discard)
 
     def child_emitter(self, child_session_key: str) -> Any | None:
         """Build a :class:`BubbleEmitter` wrapping the parent's emitter
@@ -682,7 +693,7 @@ class Supervisor:
                 coro = agent(spec=task, child_ctx=child_ctx) if _is_kw_callable(agent) else agent(task, child_ctx)
                 try:
                     result = await asyncio.wait_for(coro, timeout=budget_s)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     elapsed_ms = (time.monotonic_ns() - start_ns) // 1_000_000
                     result = TaskResult(
                         output_text="",

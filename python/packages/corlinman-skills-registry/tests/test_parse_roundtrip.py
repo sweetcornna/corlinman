@@ -9,7 +9,7 @@ curator code itself.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from corlinman_skills_registry import (
@@ -25,26 +25,26 @@ def _make_skill(**overrides) -> Skill:
     """Spawn a fully-populated Skill so the round-trip exercises every field
     (no silent reliance on defaults). Overrides let individual tests tweak
     one field without rewriting the whole payload."""
-    base = dict(
-        name="alpha",
-        description="round trip target",
-        emoji="\U0001f527",
-        requires=SkillRequirements(
+    base = {
+        "name": "alpha",
+        "description": "round trip target",
+        "emoji": "\U0001f527",
+        "requires": SkillRequirements(
             bins=["jq"],
             any_bins=["curl", "wget"],
             config=["providers.brave.api_key"],
             env=["BRAVE_TOKEN"],
         ),
-        install="brew install jq",
-        allowed_tools=["web.search", "web.fetch"],
-        body_markdown="# Heading\n\nbody paragraph\n",
-        source_path=Path("/tmp/alpha.md"),
-        version="2.0.0",
-        origin="agent-created",
-        state="stale",
-        pinned=True,
-        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-    )
+        "install": "brew install jq",
+        "allowed_tools": ["web.search", "web.fetch"],
+        "body_markdown": "# Heading\n\nbody paragraph\n",
+        "source_path": Path("/tmp/alpha.md"),
+        "version": "2.0.0",
+        "origin": "agent-created",
+        "state": "stale",
+        "pinned": True,
+        "created_at": datetime(2026, 1, 1, tzinfo=UTC),
+    }
     base.update(overrides)
     return Skill(**base)
 
@@ -62,7 +62,7 @@ def test_render_emits_lifecycle_keys_at_tail() -> None:
 
     # Walk lines and find the first index where each key appears.
     lines = yaml_str.splitlines()
-    indices = {key: -1 for key in ("name", "version", "origin", "state", "pinned")}
+    indices = dict.fromkeys(("name", "version", "origin", "state", "pinned"), -1)
     for i, line in enumerate(lines):
         for key in indices:
             if line.startswith(f"{key}:") and indices[key] == -1:
@@ -79,7 +79,7 @@ def test_render_emits_lifecycle_keys_at_tail() -> None:
 def test_render_uses_iso_datetime_for_created_at() -> None:
     """PyYAML's default datetime serialiser is non-ISO; we override so
     hermes' ISO-8601 parser round-trips cleanly."""
-    skill = _make_skill(created_at=datetime(2026, 5, 17, 9, 30, tzinfo=timezone.utc))
+    skill = _make_skill(created_at=datetime(2026, 5, 17, 9, 30, tzinfo=UTC))
     yaml_str = render_skill_frontmatter(skill)
 
     assert "created_at: '2026-05-17T09:30:00+00:00'" in yaml_str

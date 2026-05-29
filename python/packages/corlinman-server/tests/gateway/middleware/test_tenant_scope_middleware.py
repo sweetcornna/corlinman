@@ -8,15 +8,14 @@ disallowed slugs surface 403.
 
 from __future__ import annotations
 
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
-
 from corlinman_server.gateway.middleware import (
     TenantScopeState,
     install_tenant_scope_middleware,
     require_tenant,
 )
 from corlinman_server.tenancy import TenantId, default_tenant
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 
 def _build_app(state: TenantScopeState | None = None) -> FastAPI:

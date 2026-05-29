@@ -16,16 +16,14 @@ in-memory inbox, run the scanner, and assert on:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 import pytest
 import structlog
-
 from corlinman_server.agent_journal import AgentJournal
 from corlinman_server.auto_resume import (
+    DEFAULT_RESUME_WINDOW_MS,
     AgentResumeService,
     BootReplayDispatcher,
-    DEFAULT_RESUME_WINDOW_MS,
     ResumeScanReport,
     run_boot_auto_resume,
 )

@@ -5,7 +5,7 @@ Ports the Rust ``verification::tests`` module.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from corlinman_identity import (
@@ -48,7 +48,7 @@ async def test_issue_phrase_persists_row_and_returns_record(
     p = await fresh_store.issue_phrase(uid, "qq", "1234")
     assert p.user_id == uid
     assert p.issued_on_channel == "qq"
-    assert p.expires_at > datetime.now(timezone.utc)
+    assert p.expires_at > datetime.now(UTC)
 
     cursor = await fresh_store.conn.execute(
         "SELECT COUNT(*) FROM verification_phrases WHERE phrase = ?",
@@ -131,7 +131,7 @@ async def test_redeem_phrase_expired_errors(
     qq_uid = await fresh_store.resolve_or_create("qq", "1234", None)
     p = await fresh_store.issue_phrase(qq_uid, "qq", "1234")
     # Forcibly age past expiry via direct SQL — short-circuits the 30-min wait.
-    past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    past = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
     past = past.replace("+00:00", "Z")
     await fresh_store.conn.execute(
         "UPDATE verification_phrases SET expires_at = ? WHERE phrase = ?",
@@ -152,7 +152,7 @@ async def test_sweep_expired_removes_only_unconsumed_past_phrases(
     expired_unconsumed = await fresh_store.issue_phrase(uid, "qq", "1234")
     expired_consumed = await fresh_store.issue_phrase(uid, "qq", "1234")
 
-    past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    past = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
     past = past.replace("+00:00", "Z")
 
     await fresh_store.conn.execute(

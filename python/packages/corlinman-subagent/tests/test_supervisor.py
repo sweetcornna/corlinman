@@ -33,7 +33,6 @@ from corlinman_subagent import (
     TaskSpec,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -65,7 +64,7 @@ async def drain_events(sub: Any, *, deadline_s: float = 0.1) -> list[Any]:
             return out
         try:
             event = await asyncio.wait_for(sub.recv(), timeout=timeout)
-        except (asyncio.TimeoutError, Exception):
+        except (TimeoutError, Exception):
             return out
         out.append(event)
 

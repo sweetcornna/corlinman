@@ -17,9 +17,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-
 from corlinman_providers._retry import default_retryable_codex, with_retry
-
 
 # ---------------------------------------------------------------------------
 # Helpers — minimal fake exception types that mimic the openai/httpx surface

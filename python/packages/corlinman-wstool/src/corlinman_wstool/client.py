@@ -19,7 +19,8 @@ import asyncio
 import contextlib
 import json
 import logging
-from typing import Awaitable, Callable, Protocol
+from collections.abc import Awaitable, Callable
+from typing import Protocol
 
 import websockets
 from websockets.client import ClientConnection
@@ -51,7 +52,7 @@ class ProgressSink:
     wire. Implementations may safely ignore the sink.
     """
 
-    __slots__ = ("_request_id", "_outbox", "_closed")
+    __slots__ = ("_closed", "_outbox", "_request_id")
 
     def __init__(self, request_id: str, outbox: asyncio.Queue[object]) -> None:
         self._request_id = request_id
@@ -397,6 +398,6 @@ class WsToolRunner:
             try:
                 await asyncio.wait_for(shutdown.wait(), timeout=delay)
                 return
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
             delay = min(delay * 2.0, 30.0)

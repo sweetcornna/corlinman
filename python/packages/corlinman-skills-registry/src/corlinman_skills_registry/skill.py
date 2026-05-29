@@ -14,7 +14,6 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-
 # Public type aliases for lifecycle vocab. Kept narrow so static checkers
 # can catch typos in callers; the hermes vocabulary is the source of truth
 # (see ``tools/skill_usage.py:52-55`` and ``tools/skill_provenance.py``).

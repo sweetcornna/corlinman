@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-
 from corlinman_mcp_server import (
     McpClient,
     McpClientMissingStdioError,
@@ -111,6 +110,6 @@ async def test_missing_stdio_returns_error():
     finally:
         try:
             await asyncio.wait_for(process.wait(), timeout=2.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             process.kill()
             await process.wait()

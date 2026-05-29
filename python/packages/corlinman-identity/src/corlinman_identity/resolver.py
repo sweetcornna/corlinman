@@ -22,7 +22,7 @@ drift between the path and the column.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
 
 import aiosqlite
@@ -40,7 +40,6 @@ from corlinman_identity.types import (
     UserSummary,
     VerificationPhrase,
 )
-
 
 # ---------------------------------------------------------------------------
 # Storage-agnostic surface
@@ -142,13 +141,13 @@ class IdentityStore(Protocol):
 
 def _now_utc_rfc3339() -> str:
     """Current UTC time in RFC-3339 with ``Z`` suffix."""
-    return _to_rfc3339(datetime.now(timezone.utc))
+    return _to_rfc3339(datetime.now(UTC))
 
 
 def _to_rfc3339(dt: datetime) -> str:
     """Format ``dt`` as RFC-3339 with a ``Z`` suffix for UTC."""
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
     iso = dt.isoformat()
     # ``isoformat`` always uses ``+00:00`` for UTC; normalise to ``Z``
     # so we exactly match the Rust serialiser.

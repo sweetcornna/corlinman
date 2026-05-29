@@ -9,7 +9,6 @@ the token class names differ from syntect's.
 from __future__ import annotations
 
 import pytest
-
 from corlinman_canvas import (
     ArtifactKind,
     CanvasPresentPayload,

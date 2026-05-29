@@ -24,6 +24,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+# Same story for the resolver methods.
+# Importing :mod:`verification` for its side effect — registers
+# ``issue_phrase`` / ``redeem_phrase`` / ``sweep_expired_phrases`` on
+# :class:`SqliteIdentityStore`. The import is load-bearing; do not
+# remove even though no symbol is consumed here.
 from corlinman_identity.channels import ChannelRegistry
 from corlinman_identity.store import SqliteIdentityStore, identity_db_path
 from corlinman_identity.tenancy import TenantIdLike
@@ -33,15 +38,6 @@ from corlinman_identity.types import (
     UserSummary,
     VerificationPhrase,
 )
-
-# Importing :mod:`verification` for its side effect — registers
-# ``issue_phrase`` / ``redeem_phrase`` / ``sweep_expired_phrases`` on
-# :class:`SqliteIdentityStore`. The import is load-bearing; do not
-# remove even though no symbol is consumed here.
-from corlinman_identity import verification as _verification
-
-# Same story for the resolver methods.
-from corlinman_identity import resolver as _resolver
 
 
 class UserIdentityResolver:

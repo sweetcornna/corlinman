@@ -40,8 +40,6 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
-from fastapi import FastAPI
-
 from corlinman_server.gateway.routes.chat import (
     ChatState,
     ModelRedirect,
@@ -52,7 +50,7 @@ from corlinman_server.gateway_api import (
     InternalChatRequest,
     TokenDeltaEvent,
 )
-
+from fastapi import FastAPI
 
 # ─── Scripted service that records the live ``cancel`` reference ──────────
 #

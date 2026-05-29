@@ -39,9 +39,10 @@ import logging
 import os
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from fastapi import APIRouter, WebSocket
 from pydantic import BaseModel, ConfigDict, Field
@@ -52,7 +53,6 @@ from corlinman_server.gateway.middleware.auth import (
     extract_bearer_token,
 )
 from corlinman_server.gateway.routes_voice.approval import (
-    APPROVAL_DENIED_TEXT,
     ApprovalDecisionKind,
     ApprovalOutcome,
     VoiceApprovalBridge,
@@ -65,10 +65,8 @@ from corlinman_server.gateway.routes_voice.budget import (
     terminate_reason_to_message,
 )
 from corlinman_server.gateway.routes_voice.cost import (
-    BudgetDecision,
-    BudgetDenyReason,
     CLOSE_CODE_BUDGET,
-    CLOSE_CODE_MAX_SESSION,
+    BudgetDenyReason,
     InMemoryVoiceSpend,
     VoiceConfig,
     VoiceSpend,
@@ -78,12 +76,11 @@ from corlinman_server.gateway.routes_voice.cost import (
     utc_day_epoch,
 )
 from corlinman_server.gateway.routes_voice.framing import (
+    SUBPROTOCOL,
     AudioFrameError,
     ClientControl,
     ControlParseError,
     ServerControl,
-    SUBPROTOCOL,
-    SubprotocolDecision,
     accept_subprotocol,
     encode_server_control,
     parse_audio_frame,
@@ -115,9 +112,9 @@ __all__ = [
     "CLOSE_CODE_VOICE_DISABLED",
     "DEFAULT_START_TIMEOUT_SECONDS",
     "DEFAULT_TICK_INTERVAL_SECONDS",
+    "WS_TOKEN_SUBPROTOCOL_PREFIX",
     "VoiceRouterConfig",
     "VoiceState",
-    "WS_TOKEN_SUBPROTOCOL_PREFIX",
     "build_voice_state_from_app",
     "resolve_voice_provider",
     "router",
@@ -1145,7 +1142,7 @@ async def _pump_ticker(
             # The wait() above returned without TimeoutError → cancel
             # was set. Loop condition handles exit.
             continue
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass
 
         action = budget.tick(time.monotonic())
@@ -1357,7 +1354,7 @@ async def _read_start_frame(
     """
     try:
         msg = await asyncio.wait_for(websocket.receive(), timeout=timeout_seconds)
-    except asyncio.TimeoutError as exc:
+    except TimeoutError as exc:
         raise _StartTimeout("no start frame within timeout") from exc
     except WebSocketDisconnect as exc:
         raise _StartDisconnect("disconnected before start") from exc

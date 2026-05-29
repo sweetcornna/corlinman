@@ -7,7 +7,6 @@ from __future__ import annotations
 import time
 
 import pytest
-
 from corlinman_server.persona import (
     DEFAULT_GRANTLEY_ID,
     Persona,

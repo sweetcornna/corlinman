@@ -11,7 +11,8 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
-from typing import Callable
+from collections.abc import Callable
+from typing import Any
 
 import httpx
 import pytest
@@ -762,7 +763,7 @@ def test_web_fetch_pins_validated_ip_against_dns_rebind(
     reach the validated public ip (pinned) — never the internal one."""
     public_ip = _PUBLIC_TEST_IP
     internal_ip = "127.0.0.1"
-    fake, state = _rebinding_getaddrinfo_factory(
+    fake, _state = _rebinding_getaddrinfo_factory(
         "rebind.test", public_ip, internal_ip
     )
 
@@ -799,7 +800,7 @@ def test_web_fetch_pins_validated_ip_on_each_redirect_hop(
     public ip."""
     public_ip = _PUBLIC_TEST_IP
     internal_ip = "169.254.169.254"
-    fake, state = _rebinding_getaddrinfo_factory(
+    fake, _state = _rebinding_getaddrinfo_factory(
         "hop2.test", public_ip, internal_ip
     )
 

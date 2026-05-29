@@ -334,15 +334,16 @@ async def _run_darwin_curate(args: argparse.Namespace):
     here so the CLI's ``run-once`` path doesn't drag the gateway-side
     types onto its stack.
     """
+    from corlinman_evolution_store.repo import SignalsRepo  # noqa: PLC0415
+    from corlinman_evolution_store.store import (  # noqa: PLC0415
+        EvolutionStore as RootStore,
+    )
+
     from corlinman_evolution_engine.darwin import (  # noqa: PLC0415
         QUALITY_THRESHOLD,
     )
     from corlinman_evolution_engine.darwin_curator import (  # noqa: PLC0415
         run_darwin_curator,
-    )
-    from corlinman_evolution_store.repo import SignalsRepo  # noqa: PLC0415
-    from corlinman_evolution_store.store import (  # noqa: PLC0415
-        EvolutionStore as RootStore,
     )
 
     threshold = args.threshold if args.threshold is not None else QUALITY_THRESHOLD

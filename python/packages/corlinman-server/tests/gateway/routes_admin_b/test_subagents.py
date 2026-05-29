@@ -34,7 +34,6 @@ from fastapi.testclient import TestClient
 
 from ._admin_auth import authenticated_test_client, configure_admin_auth
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

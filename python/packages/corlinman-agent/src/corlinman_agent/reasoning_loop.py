@@ -712,6 +712,12 @@ class ReasoningLoop:
         self._tool_results: asyncio.Queue[ToolResult] = asyncio.Queue()
         self._cancelled = asyncio.Event()
         self._cancel_reason: str = ""
+        # Strong references to fire-and-forget tasks (e.g. the best-effort
+        # ``Cancelling`` emit scheduled from :meth:`cancel`). Without this
+        # the event loop only holds a weak reference and the task can be
+        # garbage-collected mid-flight (the R2-003 footgun). Tasks
+        # self-remove via ``add_done_callback`` once complete.
+        self._pending_tasks: set[asyncio.Task[None]] = set()
         self._input_closed = asyncio.Event()
         # Mid-turn user supplements (Claude-Code-style). Drained at the
         # top of every round and appended as user messages with the
@@ -862,7 +868,7 @@ class ReasoningLoop:
             # consumer ultimately sees the signal — just not within 50ms.
             return
         try:
-            loop.create_task(
+            task = loop.create_task(
                 emitter.emit_event(
                     self._turn_id,
                     self._session_key,
@@ -873,6 +879,9 @@ class ReasoningLoop:
         except RuntimeError:
             # Loop is closed / closing — same fallback as no-loop above.
             return
+        # Hold a strong reference so the task is not GC'd before it runs.
+        self._pending_tasks.add(task)
+        task.add_done_callback(self._pending_tasks.discard)
 
     def signal_input_closed(self) -> None:
         """Signal that no more :class:`ToolResult` values will arrive.

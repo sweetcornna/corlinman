@@ -680,7 +680,7 @@ class DiscordSender:
         # ``filename`` is reflected in the message attachment metadata.
         body.extend(
             f'Content-Disposition: form-data; name="files[0]"; filename="{name}"'
-            .encode("utf-8")
+            .encode()
         )
         body.extend(crlf)
         body.extend(b"Content-Type: application/octet-stream")

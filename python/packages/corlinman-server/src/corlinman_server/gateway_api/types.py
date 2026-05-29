@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Literal, Union
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -371,10 +371,10 @@ class ErrorEvent:
 
 # Sum type alias matching the Rust ``enum InternalChatEvent``. Discriminate
 # via ``isinstance`` or the ``.kind`` literal field — both work.
-InternalChatEvent = Union[
-    TokenDeltaEvent,
-    ToolCallEvent,
-    ToolResultEvent,
-    DoneEvent,
-    ErrorEvent,
-]
+InternalChatEvent = (
+    TokenDeltaEvent
+    | ToolCallEvent
+    | ToolResultEvent
+    | DoneEvent
+    | ErrorEvent
+)

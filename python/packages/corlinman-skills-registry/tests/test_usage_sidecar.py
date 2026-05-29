@@ -11,12 +11,10 @@ Coverage:
 from __future__ import annotations
 
 import json
-import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-
 from corlinman_skills_registry.usage import (
     USAGE_FILENAME,
     SkillUsage,
@@ -27,7 +25,6 @@ from corlinman_skills_registry.usage import (
     usage_path,
     write_usage,
 )
-
 
 # ---------------------------------------------------------------------------
 # read_usage — defensive defaults
@@ -69,7 +66,7 @@ def test_read_usage_non_dict_payload_returns_empty(tmp_path: Path) -> None:
 def test_write_then_read_roundtrip(tmp_path: Path) -> None:
     """A full ``SkillUsage`` survives a serialise → file → deserialise
     cycle byte-for-byte (after parsing back into the dataclass)."""
-    now = datetime(2026, 5, 17, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 5, 17, 12, 0, tzinfo=UTC)
     written = SkillUsage(
         use_count=12,
         view_count=4,
@@ -89,7 +86,7 @@ def test_write_then_read_roundtrip(tmp_path: Path) -> None:
 def test_write_usage_emits_pretty_json_with_iso_dates(tmp_path: Path) -> None:
     """Sidecar JSON should be readable by a human: indented, sorted keys,
     ISO-8601 timestamps. Lets operators eyeball the file without tooling."""
-    now = datetime(2026, 5, 17, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 5, 17, 12, 0, tzinfo=UTC)
     write_usage(tmp_path, SkillUsage(use_count=1, last_used_at=now, created_at=now))
 
     raw = (tmp_path / USAGE_FILENAME).read_text(encoding="utf-8")
@@ -124,8 +121,8 @@ def test_write_usage_drops_none_timestamps(tmp_path: Path) -> None:
 def test_bump_use_increments_and_stamps(tmp_path: Path) -> None:
     """Two consecutive ``bump_use`` calls increment ``use_count`` by 1 each
     and update ``last_used_at`` to the injected timestamp."""
-    t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    t1 = datetime(2026, 2, 1, tzinfo=timezone.utc)
+    t0 = datetime(2026, 1, 1, tzinfo=UTC)
+    t1 = datetime(2026, 2, 1, tzinfo=UTC)
 
     after_first = bump_use(tmp_path, now=t0)
     assert after_first.use_count == 1
@@ -143,7 +140,7 @@ def test_bump_use_increments_and_stamps(tmp_path: Path) -> None:
 
 def test_bump_view_only_touches_view_counters(tmp_path: Path) -> None:
     """A view bump must not move use/patch counters or their timestamps."""
-    t = datetime(2026, 3, 14, tzinfo=timezone.utc)
+    t = datetime(2026, 3, 14, tzinfo=UTC)
     write_usage(tmp_path, SkillUsage(use_count=5, last_used_at=t, created_at=t))
 
     result = bump_view(tmp_path, now=t)
@@ -157,7 +154,7 @@ def test_bump_view_only_touches_view_counters(tmp_path: Path) -> None:
 
 def test_bump_patch_increments_patch_counter(tmp_path: Path) -> None:
     """The curator's patch flow bumps ``patch_count`` + ``last_patched_at``."""
-    t = datetime(2026, 4, 1, tzinfo=timezone.utc)
+    t = datetime(2026, 4, 1, tzinfo=UTC)
     result = bump_patch(tmp_path, now=t)
 
     assert result.patch_count == 1
@@ -169,7 +166,7 @@ def test_bump_patch_increments_patch_counter(tmp_path: Path) -> None:
 def test_bump_use_persists_to_disk(tmp_path: Path) -> None:
     """Each bump writes through to disk so a crash between two bumps never
     silently loses counter history."""
-    t = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    t = datetime(2026, 5, 1, tzinfo=UTC)
     bump_use(tmp_path, now=t)
     bump_use(tmp_path, now=t)
     bump_patch(tmp_path, now=t)

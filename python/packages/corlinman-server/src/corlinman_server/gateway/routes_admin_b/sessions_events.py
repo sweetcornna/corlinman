@@ -40,7 +40,6 @@ from corlinman_server.gateway.routes_admin_b.state import (
     require_admin,
 )
 
-
 # SSE heartbeat cadence — same 10s opencode uses for its ``/event``
 # stream. Keeps proxies / load balancers from idling the connection
 # while the agent is silent between turns.
@@ -198,7 +197,7 @@ async def _sse_stream(
                 envelope = await asyncio.wait_for(
                     queue.get(), timeout=SSE_HEARTBEAT_SECONDS
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 # SSE comment frame — standard keepalive. Comment lines
                 # are silently ignored by ``EventSource`` clients.
                 yield b": keepalive\n\n"

@@ -68,7 +68,6 @@ from corlinman_server.persona import (
     PersonaStore,
 )
 
-
 # ---------------------------------------------------------------------------
 # Wire shapes
 # ---------------------------------------------------------------------------
@@ -84,7 +83,7 @@ class PersonaOut(BaseModel):
     updated_at_ms: int
 
     @classmethod
-    def from_row(cls, p: Persona) -> "PersonaOut":
+    def from_row(cls, p: Persona) -> PersonaOut:
         return cls(
             id=p.id,
             display_name=p.display_name,
@@ -139,7 +138,7 @@ class AssetOut(BaseModel):
     url: str
 
     @classmethod
-    def from_record(cls, r: AssetRecord) -> "AssetOut":
+    def from_record(cls, r: AssetRecord) -> AssetOut:
         return cls(
             id=r.id,
             persona_id=r.persona_id,
@@ -657,4 +656,4 @@ def router() -> APIRouter:
     return r
 
 
-__all__ = ["router", "SUPPORTED_HUMANLIKE_CHANNELS"]
+__all__ = ["SUPPORTED_HUMANLIKE_CHANNELS", "router"]

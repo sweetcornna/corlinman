@@ -35,7 +35,7 @@ sibling) returns, packaged into an :class:`AdminPrincipal`.
 from __future__ import annotations
 
 import base64
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import structlog
@@ -91,7 +91,7 @@ class AdminAuthState:
 
     admin_db: AdminDb | None = None
     session_store: AdminSessionStore | None = None
-    default_tenant_id: TenantId = default_tenant()
+    default_tenant_id: TenantId = field(default_factory=default_tenant)
     protected_prefixes: tuple[str, ...] = DEFAULT_ADMIN_PREFIXES
 
 
@@ -203,7 +203,7 @@ class _AuthResult:
     with the :class:`AdminPrincipal`, or ``reason`` carries the 401
     short-circuit code."""
 
-    ok: "AdminPrincipal | None" = None
+    ok: AdminPrincipal | None = None
     reason: str | None = None
 
 

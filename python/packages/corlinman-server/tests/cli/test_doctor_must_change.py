@@ -12,10 +12,8 @@ import json
 from pathlib import Path
 
 from click.testing import CliRunner
-
 from corlinman_server.cli.doctor import _check_must_change_password
 from corlinman_server.cli.main import cli
-
 
 _DEFAULT_FLAG_TOML = """\
 [admin]

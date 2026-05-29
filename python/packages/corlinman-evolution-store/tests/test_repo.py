@@ -26,7 +26,6 @@ from corlinman_evolution_store import (
     iso_week_window,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers — mirror the Rust ``insert_pending`` / ``insert_applied`` fixtures.
 # ---------------------------------------------------------------------------

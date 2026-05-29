@@ -24,9 +24,9 @@ from __future__ import annotations
 
 import asyncio
 import getpass
-import os
 import sys
 import time
+from datetime import UTC
 from pathlib import Path
 
 import click
@@ -42,9 +42,9 @@ def _format_unix_ms(ms: int) -> str:
     """Format a unix-ms timestamp as RFC-3339. Mirrors the Rust port,
     which uses ``time::OffsetDateTime`` for the same effect."""
     try:
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        dt = datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc)
+        dt = datetime.fromtimestamp(ms / 1000.0, tz=UTC)
         # ``isoformat`` emits "+00:00" — swap to "Z" to match
         # ``well_known::Rfc3339`` output from the Rust side.
         out = dt.isoformat(timespec="seconds")

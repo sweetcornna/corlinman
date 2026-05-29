@@ -31,7 +31,7 @@ import shutil
 import tempfile
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -55,7 +55,6 @@ from corlinman_shadow_tester.simulator import (
     KindSimulator,
     SimulatorOutput,
 )
-
 
 logger = logging.getLogger(__name__)
 
@@ -400,7 +399,7 @@ async def _seed_skills(tempdir_root: Path, seed: dict[str, str]) -> None:
 def _make_eval_run_id() -> str:
     """``eval-YYYY-MM-DD-<short-uuid>`` — date for human grepping, uuid
     for uniqueness across runners on the same day."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     date = f"{now.year:04d}-{now.month:02d}-{now.day:02d}"
     short = uuid.uuid4().hex[:6]
     return f"eval-{date}-{short}"

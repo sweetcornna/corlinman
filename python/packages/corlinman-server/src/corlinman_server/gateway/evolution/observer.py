@@ -203,7 +203,7 @@ class EvolutionObserver:
                 # busy-looping. The 0.1s tick is fine — the observer
                 # is not a hot path.
                 signal = await asyncio.wait_for(self._queue.get(), timeout=0.1)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
             except asyncio.CancelledError:
                 return

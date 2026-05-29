@@ -36,7 +36,6 @@ import click
 
 from corlinman_server.cli._common import resolve_data_dir
 
-
 # ---------------------------------------------------------------------------
 # Provider catalog
 # ---------------------------------------------------------------------------
@@ -358,11 +357,11 @@ def _resolve_config_path(cli_config: Path | None, data_dir: Path | None) -> Path
 
 
 __all__ = [
-    "init",
     "_atomic_write_toml",
     "_load_existing",
     "_maybe_configure_provider",
     "_maybe_rotate_admin",
     "_resolve_config_path",
     "_supported_kinds",
+    "init",
 ]

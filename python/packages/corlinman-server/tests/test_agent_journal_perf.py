@@ -21,7 +21,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from corlinman_server.agent_journal_backend import (
     TURN_IN_PROGRESS,
     SqliteJournalBackend,

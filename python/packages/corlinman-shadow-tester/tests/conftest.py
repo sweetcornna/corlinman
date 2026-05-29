@@ -9,7 +9,6 @@ import pytest
 import pytest_asyncio
 from corlinman_evolution_store import EvolutionStore, ProposalsRepo
 
-
 FIXTURES_ROOT = Path(__file__).parent / "fixtures" / "eval"
 
 

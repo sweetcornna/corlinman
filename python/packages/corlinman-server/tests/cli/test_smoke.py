@@ -17,9 +17,7 @@ import json
 from pathlib import Path
 
 from click.testing import CliRunner
-
 from corlinman_server.cli.main import cli
-
 
 # Every subcommand the Rust binary exposes. We assert each one is in
 # the help output so a future regression on dispatch wiring is caught.

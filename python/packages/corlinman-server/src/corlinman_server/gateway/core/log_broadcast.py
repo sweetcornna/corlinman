@@ -35,11 +35,8 @@ import logging
 import threading
 import time
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
-
-import structlog
-
 
 #: Default per-subscriber queue capacity. 1024 buffered records lets a
 #: slow admin UI catch up after a short stall without dropping; beyond
@@ -77,9 +74,9 @@ class LogSubscriber:
     ``async for record in subscriber: ws.send_text(record.to_json())``.
     """
 
-    __slots__ = ("_queue", "_lagged", "_closed", "_broadcaster")
+    __slots__ = ("_broadcaster", "_closed", "_lagged", "_queue")
 
-    def __init__(self, broadcaster: "LogBroadcaster", capacity: int) -> None:
+    def __init__(self, broadcaster: LogBroadcaster, capacity: int) -> None:
         self._queue: asyncio.Queue[LogRecord] = asyncio.Queue(maxsize=capacity)
         self._lagged: int = 0
         self._closed: bool = False
@@ -129,7 +126,7 @@ class LogSubscriber:
         self._closed = True
         self._broadcaster._unsubscribe(self)
 
-    def __aiter__(self) -> "LogSubscriber":
+    def __aiter__(self) -> LogSubscriber:
         return self
 
     async def __anext__(self) -> LogRecord:
@@ -234,7 +231,7 @@ def _record_from_event(method_name: str, event_dict: dict[str, Any]) -> LogRecor
     if isinstance(ts_raw, str):
         ts = ts_raw
     else:
-        ts = datetime.fromtimestamp(time.time(), tz=timezone.utc).isoformat()
+        ts = datetime.fromtimestamp(time.time(), tz=UTC).isoformat()
 
     level = (event_dict.get("level") or method_name or "INFO").upper()
     target = str(event_dict.get("logger") or event_dict.get("target") or "gateway")
@@ -303,7 +300,7 @@ class BroadcastLoggingHandler(logging.Handler):
     handler instance is already present.
     """
 
-    def __init__(self, broadcaster: "LogBroadcaster", level: int = logging.INFO) -> None:
+    def __init__(self, broadcaster: LogBroadcaster, level: int = logging.INFO) -> None:
         super().__init__(level=level)
         self._broadcaster = broadcaster
 
@@ -317,7 +314,7 @@ class BroadcastLoggingHandler(logging.Handler):
                 msg = record.getMessage()
             except Exception:  # noqa: BLE001 — format failure shouldn't crash log path
                 msg = str(record.msg)
-            ts = datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat()
+            ts = datetime.fromtimestamp(record.created, tz=UTC).isoformat()
             fields: dict[str, Any] = {}
             # Pull any structured ``extra={…}`` keys (skip stdlib's own
             # bookkeeping attributes which would otherwise drown the
@@ -350,8 +347,8 @@ class BroadcastLoggingHandler(logging.Handler):
 
 
 __all__ = [
-    "BroadcastLoggingHandler",
     "DEFAULT_CAPACITY",
+    "BroadcastLoggingHandler",
     "LogBroadcaster",
     "LogRecord",
     "LogSubscriber",

@@ -49,7 +49,7 @@ class FakeRealtimeWebSocket:
         self.closed = True
         self._incoming.put_nowait(None)
 
-    def __aiter__(self) -> "FakeRealtimeWebSocket":
+    def __aiter__(self) -> FakeRealtimeWebSocket:
         return self
 
     async def __anext__(self) -> str:
@@ -65,14 +65,14 @@ class FakeRealtimeWebSocket:
 
 
 def install_fake_connect(
-    monkeypatch: pytest.MonkeyPatch, ws: "FakeRealtimeWebSocket"
+    monkeypatch: pytest.MonkeyPatch, ws: FakeRealtimeWebSocket
 ) -> dict[str, Any]:
     """Patch the realtime adapter's ``connect`` indirection to return
     ``ws``. Returns a dict the caller can inspect for the captured
     connect URL + headers."""
     captured: dict[str, Any] = {}
 
-    async def fake_connect(url: str, **kwargs: Any) -> "FakeRealtimeWebSocket":
+    async def fake_connect(url: str, **kwargs: Any) -> FakeRealtimeWebSocket:
         captured["url"] = url
         captured["kwargs"] = kwargs
         return ws

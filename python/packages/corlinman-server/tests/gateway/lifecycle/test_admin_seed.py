@@ -17,7 +17,6 @@ import tomllib
 from pathlib import Path
 
 import pytest
-
 from corlinman_server.gateway.lifecycle.admin_seed import (
     DEFAULT_ADMIN_PASSWORD,
     DEFAULT_ADMIN_USERNAME,
@@ -27,7 +26,6 @@ from corlinman_server.gateway.lifecycle.admin_seed import (
     resolve_admin_config_path,
 )
 from corlinman_server.gateway.routes_admin_a.auth import argon2_verify
-
 
 # ---------------------------------------------------------------------------
 # resolve_admin_config_path

@@ -17,16 +17,14 @@ import pytest
 
 fastapi = pytest.importorskip("fastapi")
 
-from fastapi import FastAPI  # noqa: E402
-from fastapi.testclient import TestClient  # noqa: E402
-
 from corlinman_server.gateway.routes import chat_approve  # noqa: E402
 from corlinman_server.gateway.routes.chat_approve import (  # noqa: E402
     ApprovalDecision,
     ChatApproveState,
     NotFoundError,
 )
-
+from fastapi import FastAPI  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
 
 # ─── Fixture helpers ─────────────────────────────────────────────────
 

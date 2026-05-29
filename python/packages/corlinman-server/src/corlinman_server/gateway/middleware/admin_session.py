@@ -31,7 +31,7 @@ import asyncio
 import threading
 import uuid
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import structlog
 
@@ -74,7 +74,7 @@ class AdminSessionStore:
         Returns the opaque token the cookie carries."""
 
         token = uuid.uuid4().hex
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         with self._lock:
             self._sessions[token] = AdminSession(
                 user=user, created_at=now, last_used=now
@@ -86,7 +86,7 @@ class AdminSessionStore:
         the token is unknown or has expired (and was evicted as a side
         effect)."""
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         with self._lock:
             entry = self._sessions.get(token)
             if entry is None:
@@ -123,7 +123,7 @@ class AdminSessionStore:
         exercise the sweep directly without waiting on the background
         task's tick."""
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         ttl = self._ttl_seconds
         with self._lock:
             victims = [
@@ -173,7 +173,7 @@ class AdminSessionStore:
             while not self._gc_stop.is_set():
                 try:
                     await asyncio.wait_for(self._gc_stop.wait(), timeout=interval)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     pass
                 if self._gc_stop.is_set():
                     return

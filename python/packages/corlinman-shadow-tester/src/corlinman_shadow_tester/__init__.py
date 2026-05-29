@@ -81,7 +81,6 @@ from corlinman_shadow_tester.simulator import (
     parse_merge_target,
 )
 
-
 __all__ = [
     "CONTENT_PREVIEW_CHARS",
     "DaemonUnavailableError",

@@ -34,7 +34,6 @@ from corlinman_server.gateway_api import (
     internal_chat_error_from_corlinman_error,
 )
 
-
 # ─── Enums ────────────────────────────────────────────────────────────
 
 

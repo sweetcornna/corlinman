@@ -16,8 +16,8 @@ from .dispatch import (
     StubMethodNotFoundHandler,
 )
 from .session import (
-    INITIALIZED_NOTIFICATION,
     INITIALIZE_METHOD,
+    INITIALIZED_NOTIFICATION,
     SessionPhase,
     SessionState,
     initialize_reply,
@@ -31,13 +31,13 @@ from .transport import (
 )
 
 __all__ = [
-    "AdapterDispatcher",
     "CLOSE_CODE_MESSAGE_TOO_BIG",
     "DEFAULT_MAX_FRAME_BYTES",
     "DEFAULT_TENANT_ID",
-    "FrameHandler",
-    "INITIALIZE_METHOD",
     "INITIALIZED_NOTIFICATION",
+    "INITIALIZE_METHOD",
+    "AdapterDispatcher",
+    "FrameHandler",
     "McpServer",
     "McpServerConfig",
     "ServerInfo",

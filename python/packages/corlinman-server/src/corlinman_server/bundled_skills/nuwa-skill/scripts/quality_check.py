@@ -10,8 +10,8 @@
     python3 quality_check.py .claude/skills/elon-musk-perspective/SKILL.md
 """
 
-import sys
 import re
+import sys
 from pathlib import Path
 
 

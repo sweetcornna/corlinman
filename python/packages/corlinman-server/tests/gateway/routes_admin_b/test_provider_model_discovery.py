@@ -13,20 +13,18 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
-
 from corlinman_server.gateway.routes_admin_b import credentials, providers
 from corlinman_server.gateway.routes_admin_b.state import (
     AdminState,
     set_admin_state,
 )
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 from ._admin_auth import (
     authenticated_test_client,
     configure_admin_auth,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -63,7 +61,7 @@ def providers_state(temp_config_path: Path) -> Iterator[tuple[AdminState, dict[s
 
 @pytest.fixture()
 def providers_client(providers_state: tuple[AdminState, dict[str, Any]]) -> TestClient:
-    state, _ = providers_state
+    _state, _ = providers_state
     app = FastAPI()
     app.include_router(providers.router())
     return authenticated_test_client(app)
@@ -71,7 +69,7 @@ def providers_client(providers_state: tuple[AdminState, dict[str, Any]]) -> Test
 
 @pytest.fixture()
 def credentials_client(providers_state: tuple[AdminState, dict[str, Any]]) -> TestClient:
-    state, _ = providers_state
+    _state, _ = providers_state
     app = FastAPI()
     app.include_router(credentials.router())
     return authenticated_test_client(app)
@@ -250,7 +248,7 @@ class TestProviderModels:
         self,
         providers_state: tuple[AdminState, dict[str, Any]],
     ) -> None:
-        _, snapshot = providers_state
+        _, _snapshot = providers_state
         cfg = {
             "providers": {
                 "myprovider": {

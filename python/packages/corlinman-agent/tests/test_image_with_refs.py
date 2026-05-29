@@ -20,13 +20,11 @@ from corlinman_agent.image import (
     dispatch_image_with_refs,
     image_with_refs_tool_schema,
 )
-
 from corlinman_server.persona import (
     Persona,
     PersonaAssetStore,
     PersonaStore,
 )
-
 
 _PNG_MAGIC = bytes.fromhex(
     "89504E470D0A1A0A0000000D49484452000000010000000108020000009077"

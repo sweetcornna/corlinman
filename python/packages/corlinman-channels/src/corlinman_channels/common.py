@@ -21,7 +21,7 @@ import hashlib
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, Generic, Protocol, TypeVar, runtime_checkable
+from typing import Any, Protocol, TypeVar, runtime_checkable
 
 # Re-export UserId so downstream consumers can write
 # ``from corlinman_channels.common import UserId`` without a separate import.
@@ -162,7 +162,7 @@ PayloadT = TypeVar("PayloadT")
 
 
 @dataclass(frozen=True, slots=True)
-class InboundEvent(Generic[PayloadT]):
+class InboundEvent[PayloadT]:
     """Normalized inbound event yielded by every channel adapter.
 
     Designed so a generic consumer can write::

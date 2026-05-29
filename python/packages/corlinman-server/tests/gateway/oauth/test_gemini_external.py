@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-
 from corlinman_server.gateway.oauth import gemini_external
 
 

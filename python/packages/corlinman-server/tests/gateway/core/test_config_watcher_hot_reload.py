@@ -18,11 +18,9 @@ directly covers the reload pipeline end to end.
 
 from __future__ import annotations
 
-import tomllib
 from pathlib import Path
 
 import pytest
-
 from corlinman_server.gateway.core.config import load_from_path
 from corlinman_server.gateway.core.config_watcher import ConfigWatcher
 

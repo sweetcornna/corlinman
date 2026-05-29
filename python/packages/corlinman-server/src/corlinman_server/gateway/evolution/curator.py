@@ -28,7 +28,7 @@ fires at most once per configured window.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import structlog
 from corlinman_evolution_store import (
@@ -39,8 +39,8 @@ from corlinman_evolution_store import (
     CuratorState,
     CuratorStateRepo,
     EvolutionSignal,
-    SignalsRepo,
     SignalSeverity,
+    SignalsRepo,
 )
 from corlinman_skills_registry import Skill, SkillRegistry, write_skill_md
 from corlinman_skills_registry.usage import SkillUsage
@@ -135,9 +135,9 @@ def _days_between(later: datetime, earlier: datetime | None) -> float:
     if earlier is None:
         return float("inf")
     if earlier.tzinfo is None:
-        earlier = earlier.replace(tzinfo=timezone.utc)
+        earlier = earlier.replace(tzinfo=UTC)
     if later.tzinfo is None:
-        later = later.replace(tzinfo=timezone.utc)
+        later = later.replace(tzinfo=UTC)
     return (later - earlier).total_seconds() / 86400.0
 
 
@@ -250,7 +250,7 @@ def apply_lifecycle_transitions(
     The pure-logic decision sits in :func:`_classify_transition` —
     this wrapper is the side-effect surface.
     """
-    when = now if now is not None else datetime.now(timezone.utc)
+    when = now if now is not None else datetime.now(UTC)
     transitions: list[CuratorTransition] = []
 
     for skill in registry:
@@ -296,7 +296,7 @@ def _now_ms(when: datetime) -> int:
     we never call :func:`datetime.now` inside the pure path.
     """
     if when.tzinfo is None:
-        when = when.replace(tzinfo=timezone.utc)
+        when = when.replace(tzinfo=UTC)
     return int(when.timestamp() * 1000)
 
 
@@ -375,7 +375,7 @@ async def maybe_run_curator(
       :meth:`CuratorStateRepo.mark_run` so the next interval window
       starts from this run.
     """
-    when = now if now is not None else datetime.now(timezone.utc)
+    when = now if now is not None else datetime.now(UTC)
     state = await curator_repo.get(profile_slug)
 
     # Paused → do nothing, not even a signal. Matches hermes

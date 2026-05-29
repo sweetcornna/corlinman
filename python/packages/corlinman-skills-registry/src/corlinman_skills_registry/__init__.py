@@ -63,6 +63,7 @@ from corlinman_skills_registry.usage import (
 )
 
 __all__ = [
+    "USAGE_FILENAME",
     "DuplicateNameError",
     "MissingFieldError",
     "Skill",
@@ -73,7 +74,6 @@ __all__ = [
     "SkillRequirements",
     "SkillState",
     "SkillUsage",
-    "USAGE_FILENAME",
     "YamlParseError",
     "bump_patch",
     "bump_use",

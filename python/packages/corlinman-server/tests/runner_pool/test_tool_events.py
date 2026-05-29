@@ -23,7 +23,6 @@ import asyncio
 from typing import Any
 
 import pytest
-
 from corlinman_agent.events import (
     EventEnvelope,
     MockEventEmitter,
@@ -35,7 +34,6 @@ from corlinman_server.runner_pool import (
     DispatchContext,
     dispatch_with_observability,
 )
-
 
 _TURN = "turn-abc-123"
 _SESSION = "tg::42"

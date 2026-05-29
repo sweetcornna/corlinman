@@ -61,7 +61,6 @@ from ._admin_auth import (  # noqa: E402
     configure_admin_auth,
 )
 
-
 HubUnavailableError = skill_hub.HubUnavailableError
 
 

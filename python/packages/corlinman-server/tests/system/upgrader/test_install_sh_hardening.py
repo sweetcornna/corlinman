@@ -251,7 +251,7 @@ def test_root_reown_happens_after_recursive_chown_in_both_paths() -> None:
 
     # Each recursive chown must be followed (before the next recursive chown
     # or EOF) by a call to the lock-down helper.
-    boundaries = recursive_idxs + [len(lines)]
+    boundaries = [*recursive_idxs, len(lines)]
     for k, ri in enumerate(recursive_idxs):
         next_recursive = boundaries[k + 1]
         following = [x for x in call_idxs if ri < x < next_recursive]

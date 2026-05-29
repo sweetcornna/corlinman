@@ -13,18 +13,19 @@ Coverage:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from corlinman_skills_registry import (
     Skill,
     SkillRegistry,
     SkillUsage,
-    bump_use as raw_bump_use,
     read_usage,
     write_usage,
 )
-
+from corlinman_skills_registry import (
+    bump_use as raw_bump_use,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -82,7 +83,7 @@ def test_usage_for_round_trips_disk_sidecar(tmp_path: Path) -> None:
     """A sidecar written to disk before registry load is visible through
     ``usage_for`` after load."""
     skill_dir = _write_skill(tmp_path, "alpha")
-    now = datetime(2026, 5, 17, 9, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 5, 17, 9, 0, tzinfo=UTC)
     write_usage(skill_dir, SkillUsage(use_count=7, last_used_at=now, created_at=now))
 
     reg = SkillRegistry.load_from_dir(tmp_path)
@@ -108,7 +109,7 @@ def test_registry_bump_use_persists(tmp_path: Path) -> None:
     _write_skill(tmp_path, "alpha")
     reg = SkillRegistry.load_from_dir(tmp_path)
 
-    t = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    t = datetime(2026, 5, 1, tzinfo=UTC)
     result = reg.bump_use("alpha", now=t)
 
     assert result is not None
@@ -123,7 +124,7 @@ def test_registry_bump_patch_persists(tmp_path: Path) -> None:
     _write_skill(tmp_path, "alpha")
     reg = SkillRegistry.load_from_dir(tmp_path)
 
-    t = datetime(2026, 5, 17, tzinfo=timezone.utc)
+    t = datetime(2026, 5, 17, tzinfo=UTC)
     reg.bump_use("alpha", now=t)
     reg.bump_patch("alpha", now=t)
 
@@ -137,7 +138,7 @@ def test_registry_bump_view_persists(tmp_path: Path) -> None:
     _write_skill(tmp_path, "alpha")
     reg = SkillRegistry.load_from_dir(tmp_path)
 
-    t = datetime(2026, 5, 17, tzinfo=timezone.utc)
+    t = datetime(2026, 5, 17, tzinfo=UTC)
     reg.bump_view("alpha", now=t)
 
     usage = reg.usage_for("alpha")
@@ -210,7 +211,7 @@ def test_created_at_backfilled_from_sidecar(tmp_path: Path) -> None:
     the registry fills it in so the model has an anchor for lifecycle
     code without needing to rewrite the file."""
     skill_dir = _write_skill(tmp_path, "alpha")
-    anchor = datetime(2025, 12, 1, tzinfo=timezone.utc)
+    anchor = datetime(2025, 12, 1, tzinfo=UTC)
     write_usage(skill_dir, SkillUsage(created_at=anchor))
 
     reg = SkillRegistry.load_from_dir(tmp_path)
@@ -231,14 +232,14 @@ def test_explicit_frontmatter_created_at_wins(tmp_path: Path) -> None:
     # Conflicting sidecar value — should be ignored for ``created_at``.
     write_usage(
         skill_dir,
-        SkillUsage(created_at=datetime(2025, 1, 1, tzinfo=timezone.utc)),
+        SkillUsage(created_at=datetime(2025, 1, 1, tzinfo=UTC)),
     )
 
     reg = SkillRegistry.load_from_dir(tmp_path)
     skill = reg.get("alpha")
 
     assert skill is not None
-    assert skill.created_at == datetime(2026, 1, 1, tzinfo=timezone.utc)
+    assert skill.created_at == datetime(2026, 1, 1, tzinfo=UTC)
 
 
 # ---------------------------------------------------------------------------
@@ -253,7 +254,7 @@ def test_raw_helpers_and_registry_share_sidecar(tmp_path: Path) -> None:
     skill_dir = _write_skill(tmp_path, "alpha")
     reg = SkillRegistry.load_from_dir(tmp_path)
 
-    t = datetime(2026, 5, 17, tzinfo=timezone.utc)
+    t = datetime(2026, 5, 17, tzinfo=UTC)
     raw_bump_use(skill_dir, now=t)
 
     # Registry sees the raw bump without a reload.

@@ -34,9 +34,8 @@ from corlinman_providers import (
     ProviderSpec,
     RateLimitError,
 )
-from corlinman_providers.failover import TimeoutError as ProviderTimeoutError
-
 from corlinman_providers.bedrock_provider import _build_anthropic_body
+from corlinman_providers.failover import TimeoutError as ProviderTimeoutError
 
 from .test_aws_eventstream import encode_message
 

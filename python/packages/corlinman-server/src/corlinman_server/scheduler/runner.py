@@ -41,9 +41,10 @@ import time
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from corlinman_hooks import HookBus, HookEvent
 
@@ -368,7 +369,7 @@ async def run_subprocess(
     timeout = max(1, int(timeout_secs))
     try:
         rc = await asyncio.wait_for(proc.wait(), timeout=timeout)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         _logger.error(
             "scheduler: subprocess timed out; sending SIGKILL",
             extra={"job": job, "run_id": run_id, "timeout_secs": timeout},
@@ -696,7 +697,7 @@ async def _sleep_until(deadline: float, cancel: asyncio.Event) -> bool:
     cancel_task = asyncio.create_task(cancel.wait(), name="scheduler-cancel-wait")
     sleep_task = asyncio.create_task(asyncio.sleep(wait), name="scheduler-sleep")
     try:
-        done, pending = await asyncio.wait(
+        done, _pending = await asyncio.wait(
             {cancel_task, sleep_task}, return_when=asyncio.FIRST_COMPLETED
         )
     finally:
@@ -728,14 +729,14 @@ async def _run_job_loop(
     a ``warning`` log — we don't want to busy-spin asking for
     :func:`next_after`.
     """
-    from datetime import datetime, timezone as _tz
+    from datetime import datetime
 
     _logger.info("scheduler: job loop started", extra={"job": spec.name})
     while True:
         if cancel.is_set():
             _logger.info("scheduler: cancelled; exiting", extra={"job": spec.name})
             return
-        now_wall = datetime.now(tz=_tz.utc)
+        now_wall = datetime.now(tz=UTC)
         nxt = next_after(spec.cron, now_wall)
         if nxt is None:
             _logger.warning(

@@ -21,7 +21,6 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 import pytest
 from corlinman_server.gateway.routes_admin_b import system as system_routes
@@ -35,7 +34,6 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from ._admin_auth import authenticated_test_client, configure_admin_auth
-
 
 # ---------------------------------------------------------------------------
 # Doubles
@@ -358,7 +356,7 @@ async def test_happy_path_records_audit_and_returns_202(
 def test_status_returns_known_request(
     client: TestClient, admin_state: AdminState
 ) -> None:
-    upgrader = _wire_default(admin_state)
+    _wire_default(admin_state)
     client.post(
         "/admin/system/upgrade",
         json={"tag": "v1.2.1", "typed_confirmation": "v1.2.1"},

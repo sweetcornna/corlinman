@@ -39,8 +39,8 @@ from corlinman_replay.replay import (
     sessions_db_path,
 )
 from corlinman_replay.session_store import (
-    CorlinmanError,
     SCHEMA_SQL,
+    CorlinmanError,
     SessionMessage,
     SessionRole,
     SessionSummary,
@@ -56,9 +56,10 @@ from corlinman_replay.tenant import (
 )
 
 __all__ = [
-    "CorlinmanError",
     "DEFAULT_TENANT_ID",
     "SCHEMA_SQL",
+    "TENANT_SLUG_REGEX_STR",
+    "CorlinmanError",
     "ReplayError",
     "ReplayMessage",
     "ReplayMode",
@@ -72,7 +73,6 @@ __all__ = [
     "SqliteSessionStore",
     "StoreLoadError",
     "StoreOpenError",
-    "TENANT_SLUG_REGEX_STR",
     "TenantId",
     "TenantIdError",
     "iter_replay_messages",

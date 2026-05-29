@@ -28,8 +28,7 @@ from __future__ import annotations
 import math
 import threading
 import time
-from abc import ABC, abstractmethod
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from typing import Final, Protocol, runtime_checkable
 
 # ---------------------------------------------------------------------------
@@ -161,7 +160,7 @@ class BudgetDenyReason:
     DAY_BUDGET_EXHAUSTED: Final[str] = "day_budget_exhausted"
     BUDGET_IS_ZERO: Final[str] = "budget_is_zero"
 
-    __slots__ = ("kind", "used_seconds", "cap_seconds")
+    __slots__ = ("cap_seconds", "kind", "used_seconds")
 
     def __init__(
         self,
@@ -283,7 +282,7 @@ class MeterTick:
     BUDGET_WARN: Final[str] = "budget_warn"
     TERMINATE: Final[str] = "terminate"
 
-    __slots__ = ("kind", "minutes_remaining", "reason", "close_code")
+    __slots__ = ("close_code", "kind", "minutes_remaining", "reason")
 
     def __init__(
         self,
@@ -452,19 +451,19 @@ def now_unix_secs() -> int:
 
 
 __all__ = [
-    "VoiceConfig",
-    "DaySpend",
-    "VoiceSpend",
-    "InMemoryVoiceSpend",
-    "BudgetDecision",
-    "BudgetDenyReason",
-    "evaluate_budget",
-    "MeterTick",
-    "TerminateReason",
-    "SessionMeter",
     "CLOSE_CODE_BUDGET",
     "CLOSE_CODE_MAX_SESSION",
-    "utc_day_epoch",
+    "BudgetDecision",
+    "BudgetDenyReason",
+    "DaySpend",
+    "InMemoryVoiceSpend",
+    "MeterTick",
+    "SessionMeter",
+    "TerminateReason",
+    "VoiceConfig",
+    "VoiceSpend",
+    "evaluate_budget",
     "next_utc_midnight",
     "now_unix_secs",
+    "utc_day_epoch",
 ]

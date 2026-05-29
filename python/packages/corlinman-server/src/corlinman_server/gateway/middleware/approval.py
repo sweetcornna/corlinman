@@ -40,18 +40,12 @@ Surface:
 
 from __future__ import annotations
 
-import asyncio
 import uuid
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
 import structlog
-from fastapi import Depends, HTTPException, Request, status
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import Response
-from starlette.types import ASGIApp
-
 from corlinman_providers.plugins.approval import (
     ApprovalDecision as ProviderApprovalDecision,
 )
@@ -60,6 +54,10 @@ from corlinman_providers.plugins.approval import (
     ApprovalRequest,
     ApprovalStore,
 )
+from fastapi import Depends, HTTPException, Request, status
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response
+from starlette.types import ASGIApp
 
 logger = structlog.get_logger(__name__)
 
@@ -350,7 +348,7 @@ class ApprovalGate:
             provider_decision = await self._queue.enqueue_and_wait(
                 request, timeout=timeout
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             # Persist the timeout outcome so the admin UI sees the row
             # close out — matches the Rust ``persist_decision`` path.
             with _swallow():
@@ -427,7 +425,7 @@ class _swallow:
     """Tiny ``contextlib.suppress(Exception)`` clone (avoids importing
     ``contextlib`` for one site)."""
 
-    def __enter__(self) -> "_swallow":
+    def __enter__(self) -> _swallow:
         return self
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:

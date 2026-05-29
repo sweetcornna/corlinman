@@ -18,7 +18,6 @@ from typing import Any
 import yaml
 from corlinman_evolution_store import EvolutionKind, EvolutionRisk
 
-
 DEFAULT_LATENCY_MS_MAX = 500
 
 

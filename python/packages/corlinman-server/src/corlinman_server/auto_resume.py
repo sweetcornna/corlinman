@@ -42,8 +42,9 @@ is moot.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any
 
 import structlog
 
@@ -217,11 +218,11 @@ class AgentResumeService:
     """
 
     __slots__ = (
-        "_journal",
-        "_inbox",
-        "_window_ms",
-        "_stale_cutoff_s",
         "_dispatcher",
+        "_inbox",
+        "_journal",
+        "_stale_cutoff_s",
+        "_window_ms",
     )
 
     def __init__(
@@ -418,10 +419,10 @@ async def open_inbox_for_boot_resume(data_dir_path: Any) -> Inbox | None:
 
 
 __all__ = [
-    "AgentResumeService",
-    "BootReplayDispatcher",
     "DEFAULT_RESUME_WINDOW_MS",
     "DEFAULT_STALE_CUTOFF_S",
+    "AgentResumeService",
+    "BootReplayDispatcher",
     "ResumeScanReport",
     "open_inbox_for_boot_resume",
     "run_boot_auto_resume",

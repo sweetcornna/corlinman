@@ -32,7 +32,6 @@ from corlinman_evolution_store import EvolutionKind
 
 from corlinman_shadow_tester.eval import EvalCase
 
-
 # Max chars copied from ``chunks.content`` into baseline/shadow metrics.
 # Keeps the per-case JSON small enough that the runner can fan-in many
 # cases into one proposal row without blowing past sqlite's TEXT

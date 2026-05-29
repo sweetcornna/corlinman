@@ -13,8 +13,8 @@
 输出: 打印markdown格式的摘要表格到stdout
 """
 
-import sys
 import re
+import sys
 from pathlib import Path
 
 AGENTS = {
@@ -57,8 +57,12 @@ def extract_key_findings(content: str, max_items: int = 3) -> list[str]:
         return bolds[:max_items]
 
     # fallback: 取前3个非空行
-    lines = [l.strip() for l in content.split('\n') if l.strip() and not l.startswith('#')]
-    return [l[:50] + '...' if len(l) > 50 else l for l in lines[:max_items]]
+    lines = [
+        line.strip()
+        for line in content.split('\n')
+        if line.strip() and not line.startswith('#')
+    ]
+    return [line[:50] + '...' if len(line) > 50 else line for line in lines[:max_items]]
 
 
 def find_contradictions(files: dict[str, str]) -> list[str]:

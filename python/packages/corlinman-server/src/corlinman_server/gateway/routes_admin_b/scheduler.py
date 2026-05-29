@@ -40,7 +40,7 @@ import json
 import re
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -223,7 +223,7 @@ def _job_metadata(state: AdminState) -> dict[str, dict[str, Any]]:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _now_ms() -> int:
@@ -744,7 +744,7 @@ async def _trigger_runtime_qzone_daily(
 def make_history_entry(job: str, status: str, source: str = "manual", message: str = "") -> HistoryEntry:
     return HistoryEntry(
         job=job,
-        at=datetime.fromtimestamp(time.time(), tz=timezone.utc).isoformat().replace("+00:00", "Z"),
+        at=datetime.fromtimestamp(time.time(), tz=UTC).isoformat().replace("+00:00", "Z"),
         source=source,
         status=status,
         message=message,

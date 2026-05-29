@@ -32,7 +32,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -122,7 +122,7 @@ class SessionMessage:
             content=content,
             tool_call_id=None,
             tool_calls=None,
-            ts=datetime.now(timezone.utc),
+            ts=datetime.now(UTC),
         )
 
     @classmethod
@@ -133,7 +133,7 @@ class SessionMessage:
             content=content,
             tool_call_id=None,
             tool_calls=tool_calls,
-            ts=datetime.now(timezone.utc),
+            ts=datetime.now(UTC),
         )
 
 
@@ -159,9 +159,9 @@ class SessionSummary:
 def _format_rfc3339(ts: datetime) -> str:
     """Format ``ts`` as RFC-3339 / ISO-8601 text, normalised to UTC."""
     if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=timezone.utc)
+        ts = ts.replace(tzinfo=UTC)
     else:
-        ts = ts.astimezone(timezone.utc)
+        ts = ts.astimezone(UTC)
     # Python's ``isoformat`` emits ``+00:00`` for UTC; canonicalise to ``Z``
     # so the wire shape matches the Rust ``Rfc3339`` formatter.
     s = ts.isoformat()
@@ -313,7 +313,7 @@ class SqliteSessionStore:
                 # Mirror the Rust ``unwrap_or_else(now_utc)`` fallback —
                 # corrupted ts falls back to ``now()`` rather than
                 # failing the whole load.
-                ts = datetime.now(timezone.utc)
+                ts = datetime.now(UTC)
             tool_calls: Any | None = None
             if tool_calls_json is not None:
                 try:
@@ -356,7 +356,7 @@ class SqliteSessionStore:
                 try:
                     ts = _parse_rfc3339(ts_raw)
                 except ValueError:
-                    ts = datetime.now(timezone.utc)
+                    ts = datetime.now(UTC)
                 tool_calls: Any | None = None
                 if tool_calls_json is not None:
                     try:
@@ -487,8 +487,8 @@ class SqliteSessionStore:
 
 
 __all__ = [
-    "CorlinmanError",
     "SCHEMA_SQL",
+    "CorlinmanError",
     "SessionMessage",
     "SessionRole",
     "SessionSummary",

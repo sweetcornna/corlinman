@@ -17,7 +17,6 @@ from corlinman_evolution_store import (
 )
 from corlinman_evolution_store.store import _column_exists
 
-
 # ---------------------------------------------------------------------------
 # Schema presence
 # ---------------------------------------------------------------------------

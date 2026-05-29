@@ -10,7 +10,6 @@ import time
 from pathlib import Path
 
 import pytest
-
 from corlinman_server.system.upgrader.state import (
     UpgradeRequest,
     UpgradeStateStore,
