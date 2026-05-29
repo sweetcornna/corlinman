@@ -162,31 +162,30 @@ class Inbox:
         await self._set_status(inbox_id, INBOX_DEAD, error=error)
 
     async def increment_retry(self, inbox_id: int, error: str | None = None) -> int:
-        """Bump retries; flip to dead if over the cap. Returns new retries."""
+        """Bump retries; flip to dead if over the cap. Returns new retries.
+
+        Atomic single-statement UPDATE...RETURNING so two concurrent
+        callers on the same row can't both read the same ``retries`` and
+        clobber each other's increment (#R2-002).
+        """
         now_ms = int(time.time() * 1000)
         try:
             cur = await self._c.execute(
-                "SELECT retries FROM inbox WHERE id = ?", (inbox_id,)
+                "UPDATE inbox SET retries = retries + 1, "
+                "status = CASE WHEN retries + 1 >= ? THEN ? ELSE ? END, "
+                "updated_at_ms = ?, error = COALESCE(?, error) "
+                "WHERE id = ? RETURNING retries",
+                (_MAX_RETRIES, INBOX_DEAD, INBOX_PENDING, now_ms, error, inbox_id),
             )
             row = await cur.fetchone()
             await cur.close()
-        except aiosqlite.Error as exc:
-            logger.warning("inbox.retry_lookup_failed", error=str(exc))
-            return -1
-        if row is None:
-            return -1
-        new_retries = int(row[0]) + 1
-        new_status = INBOX_DEAD if new_retries >= _MAX_RETRIES else INBOX_PENDING
-        try:
-            await self._c.execute(
-                "UPDATE inbox SET retries = ?, status = ?, updated_at_ms = ?, "
-                "error = COALESCE(?, error) WHERE id = ?",
-                (new_retries, new_status, now_ms, error, inbox_id),
-            )
             await self._c.commit()
         except aiosqlite.Error as exc:
             logger.warning("inbox.retry_update_failed", error=str(exc))
-        return new_retries
+            return -1
+        if row is None:
+            return -1
+        return int(row[0])
 
     async def _set_status(
         self,

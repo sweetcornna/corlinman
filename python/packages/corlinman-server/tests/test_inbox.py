@@ -112,6 +112,38 @@ async def test_increment_retry_flips_to_dead_after_max(inbox: Inbox) -> None:
     assert recent[0].retries == 3
 
 
+async def test_increment_retry_is_atomic_under_concurrency(inbox: Inbox) -> None:
+    """Two concurrent ``increment_retry`` calls on the same row must
+    both land — the original SELECT-then-UPDATE pattern lost one of the
+    two increments to a read-modify-write race (#R2-002), leaving the
+    counter stuck below ``_MAX_RETRIES`` so the row never reached
+    ``dead`` and the message kept retrying forever.
+    """
+    iid = await inbox.enqueue(channel="qq", session_key="s1", user_text="x")
+    await asyncio.gather(
+        inbox.increment_retry(iid, error="race-a"),
+        inbox.increment_retry(iid, error="race-b"),
+    )
+    recent = await inbox.list_recent(limit=1)
+    assert recent[0].retries == 2
+
+
+async def test_increment_retry_flips_to_dead_atomically(inbox: Inbox) -> None:
+    """The status flip to ``dead`` must happen in the same statement as
+    the retries bump, so a concurrent reader never observes
+    ``retries >= _MAX_RETRIES`` with status still ``pending``.
+    """
+    iid = await inbox.enqueue(channel="qq", session_key="s1", user_text="x")
+    await inbox.increment_retry(iid, error="1")
+    await inbox.increment_retry(iid, error="2")
+    # crossing the cap on this call must flip status to dead in one go.
+    r = await inbox.increment_retry(iid, error="3")
+    assert r == 3
+    recent = await inbox.list_recent(limit=1)
+    assert recent[0].retries == 3
+    assert recent[0].status == INBOX_DEAD
+
+
 async def test_stuck_dispatched_count(inbox: Inbox) -> None:
     iid = await inbox.enqueue(channel="qq", session_key="s1", user_text="x")
     await inbox.mark_dispatched(iid)
