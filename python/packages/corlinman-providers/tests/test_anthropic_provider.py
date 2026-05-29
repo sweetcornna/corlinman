@@ -383,6 +383,104 @@ def test_split_system_tool_call_malformed_arguments_falls_back_to_empty_input() 
     ]
 
 
+def test_split_system_coalesces_parallel_tool_results_into_one_user_turn() -> None:
+    """PARALLEL tool calls: an assistant turn with N>1 ``tool_use`` blocks
+    must be answered by a SINGLE following user turn whose content holds
+    ALL N ``tool_result`` blocks (Anthropic 400s otherwise).
+
+    Before the fix each ``role="tool"`` message produced its OWN
+    ``{"role":"user","content":[tool_result]}`` turn, so two consecutive
+    tool results became two consecutive user turns —
+    ``[...,"assistant","user","user"]`` — which Anthropic rejects because
+    the second tool_result has no immediately-preceding assistant turn.
+    """
+    _, chat = _split_system(
+        [
+            {"role": "user", "content": "go"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_a",
+                        "type": "function",
+                        "function": {"name": "fa", "arguments": '{"x":1}'},
+                    },
+                    {
+                        "id": "call_b",
+                        "type": "function",
+                        "function": {"name": "fb", "arguments": '{"y":2}'},
+                    },
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_a", "content": "res_a"},
+            {"role": "tool", "tool_call_id": "call_b", "content": "res_b"},
+        ]
+    )
+    # The two tool results must collapse into ONE trailing user turn.
+    assert [m["role"] for m in chat] == ["user", "assistant", "user"]
+
+    result_content = chat[2]["content"]
+    assert result_content == [
+        {"type": "tool_result", "tool_use_id": "call_a", "content": "res_a"},
+        {"type": "tool_result", "tool_use_id": "call_b", "content": "res_b"},
+    ]
+
+
+def test_split_system_parallel_tool_results_flush_before_next_message() -> None:
+    """A run of consecutive tool results is flushed as one user turn before
+    the next non-tool message (preserving ordering across rounds)."""
+    _, chat = _split_system(
+        [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_a",
+                        "type": "function",
+                        "function": {"name": "fa", "arguments": "{}"},
+                    },
+                    {
+                        "id": "call_b",
+                        "type": "function",
+                        "function": {"name": "fb", "arguments": "{}"},
+                    },
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_a", "content": "res_a"},
+            {"role": "tool", "tool_call_id": "call_b", "content": "res_b"},
+            {"role": "user", "content": "thanks"},
+        ]
+    )
+    assert [m["role"] for m in chat] == ["assistant", "user", "user"]
+    assert chat[1]["content"] == [
+        {"type": "tool_result", "tool_use_id": "call_a", "content": "res_a"},
+        {"type": "tool_result", "tool_use_id": "call_b", "content": "res_b"},
+    ]
+    assert chat[2]["content"] == "thanks"
+
+
+def test_split_system_tool_call_all_nondict_yields_fallback_text_block() -> None:
+    """Zero-block guard: an assistant turn with truthy ``tool_calls`` whose
+    entries are all non-dict (filtered out) must NOT produce an empty
+    content list — Anthropic rejects ``content: []``. A fallback text block
+    keeps the turn syntactically valid (mirrors the multipart guard)."""
+    _, chat = _split_system(
+        [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": ["not-a-dict", 42],
+            },
+        ]
+    )
+    assert chat[0]["role"] == "assistant"
+    content = chat[0]["content"]
+    assert content == [{"type": "text", "text": ""}]
+    assert content != []
+
+
 @pytest.mark.asyncio
 async def test_chat_stream_tool_round_sends_anthropic_tool_blocks(
     monkeypatch: pytest.MonkeyPatch,

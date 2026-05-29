@@ -323,6 +323,73 @@ def test_build_anthropic_body_translates_tool_round_to_vendor_blocks() -> None:
     ]
 
 
+def test_build_anthropic_body_coalesces_parallel_tool_results() -> None:
+    """PARALLEL tool calls: an assistant turn with N>1 ``tool_use`` blocks
+    must be answered by a SINGLE following user turn carrying ALL N
+    ``tool_result`` blocks (Anthropic-on-Bedrock 400s otherwise).
+
+    Before the fix each ``role="tool"`` message produced its OWN user
+    turn, so two consecutive tool results became two consecutive user
+    turns — ``[...,"assistant","user","user"]`` — which is rejected.
+    """
+    body = _build_anthropic_body(
+        messages=[
+            {"role": "user", "content": "go"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_a",
+                        "type": "function",
+                        "function": {"name": "fa", "arguments": '{"x":1}'},
+                    },
+                    {
+                        "id": "call_b",
+                        "type": "function",
+                        "function": {"name": "fb", "arguments": '{"y":2}'},
+                    },
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_a", "content": "res_a"},
+            {"role": "tool", "tool_call_id": "call_b", "content": "res_b"},
+        ],
+        tools=None,
+        temperature=None,
+        max_tokens=None,
+        extra=None,
+    )
+    chat = body["messages"]
+    assert [m["role"] for m in chat] == ["user", "assistant", "user"]
+    assert chat[2]["content"] == [
+        {"type": "tool_result", "tool_use_id": "call_a", "content": "res_a"},
+        {"type": "tool_result", "tool_use_id": "call_b", "content": "res_b"},
+    ]
+
+
+def test_build_anthropic_body_tool_call_all_nondict_yields_fallback_text() -> None:
+    """Zero-block guard: an assistant turn with truthy ``tool_calls`` whose
+    entries are all non-dict (filtered out) must NOT emit ``content: []``
+    — a fallback text block keeps the Bedrock body valid."""
+    body = _build_anthropic_body(
+        messages=[
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": ["not-a-dict", 42],
+            },
+        ],
+        tools=None,
+        temperature=None,
+        max_tokens=None,
+        extra=None,
+    )
+    chat = body["messages"]
+    assert chat[0]["role"] == "assistant"
+    assert chat[0]["content"] == [{"type": "text", "text": ""}]
+    assert chat[0]["content"] != []
+
+
 # --------------------------------------------------------------------------
 # Error paths
 # --------------------------------------------------------------------------

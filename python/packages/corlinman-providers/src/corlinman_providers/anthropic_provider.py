@@ -455,30 +455,46 @@ def _split_system(messages: Sequence[Any]) -> tuple[str | None, list[dict[str, A
     * a ``role="tool"`` message →
       ``{"role": "user", "content": [{"type": "tool_result",
       "tool_use_id": ..., "content": ...}]}``.
+
+    PARALLEL tool calls (audit G2): when an assistant turn emits N>1
+    ``tool_use`` blocks, Anthropic requires ALL N answering
+    ``tool_result`` blocks in the ONE immediately-following user turn
+    (separate user turns 400). We therefore COALESCE a run of consecutive
+    ``role="tool"`` messages into a single user turn whose content is the
+    ordered list of their ``tool_result`` blocks, flushing that run before
+    the next non-tool message.
     """
     system_parts: list[str] = []
     chat: list[dict[str, Any]] = []
+    # Accumulator for a run of consecutive tool results; flushed as one
+    # user turn before the next non-tool message (parallel-tool fix).
+    pending_tool_results: list[dict[str, Any]] = []
+
+    def _flush_tool_results() -> None:
+        if pending_tool_results:
+            chat.append({"role": "user", "content": list(pending_tool_results)})
+            pending_tool_results.clear()
+
     for m in messages:
         role = _get(m, "role")
         content = _get(m, "content")
+        if role == "tool":
+            # OpenAI tool result → Anthropic tool_result block. Accumulate
+            # so consecutive results coalesce into one user turn.
+            pending_tool_results.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": _get(m, "tool_call_id") or "",
+                    "content": content if isinstance(content, str) else (content or ""),
+                }
+            )
+            continue
+        # Any non-tool message ends a run of tool results.
+        _flush_tool_results()
         if role == "system":
             text = _content_to_text(content)
             if text:
                 system_parts.append(text)
-        elif role == "tool":
-            # OpenAI tool result → Anthropic user-turn tool_result block.
-            chat.append(
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": _get(m, "tool_call_id") or "",
-                            "content": content if isinstance(content, str) else (content or ""),
-                        }
-                    ],
-                }
-            )
         else:
             tool_calls = _get(m, "tool_calls")
             if tool_calls:
@@ -488,6 +504,12 @@ def _split_system(messages: Sequence[Any]) -> tuple[str | None, list[dict[str, A
                 if text:
                     blocks.append({"type": "text", "text": text})
                 blocks.extend(_tool_calls_to_anthropic_blocks(tool_calls))
+                if not blocks:
+                    # Zero-block guard: every tool_call was filtered (all
+                    # non-dict) and there was no text — Anthropic rejects
+                    # an empty content array, so emit a fallback text block
+                    # (mirrors _parts_to_anthropic_blocks).
+                    blocks = [{"type": "text", "text": ""}]
                 chat.append({"role": "assistant", "content": blocks})
                 continue
             # Anthropic requires role in {"user", "assistant"}.
@@ -497,6 +519,9 @@ def _split_system(messages: Sequence[Any]) -> tuple[str | None, list[dict[str, A
                 chat.append({"role": anth_role, "content": content_blocks})
             else:
                 chat.append({"role": anth_role, "content": content or ""})
+    # Flush a trailing run of tool results (the common multi-round case
+    # ends here: assistant tool_use turn followed by the tool results).
+    _flush_tool_results()
     system = "\n\n".join(system_parts) if system_parts else None
     return system, chat
 
