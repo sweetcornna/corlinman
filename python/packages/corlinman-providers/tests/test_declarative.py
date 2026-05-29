@@ -17,8 +17,10 @@ from typing import Any
 import pytest
 import structlog
 from corlinman_providers import (
+    AnthropicProvider,
     DeclarativeProvider,
     DeclarativeProviderSpec,
+    GoogleProvider,
     OpenAIProvider,
     ProviderKind,
     ProviderRegistry,
@@ -153,6 +155,252 @@ def test_query_param_auth_raises_clear_error() -> None:
         auth_config={"env_var": "QP_API_KEY", "param_name": "api_key"},
         request_format="openai_compatible",
         models={"default": ModelSpec(id="m", context_length=8192)},
+    )
+    with pytest.raises(ValueError, match="query_param auth not yet supported"):
+        DeclarativeProvider(spec, api_key="sk-secret")
+
+
+# --- anthropic_compatible / gemini_compatible custom-header auth (R7-B2) ----
+#
+# These mirror the openai_compatible header-auth tests above: a declarative
+# spec with ``auth_kind="header"`` against the anthropic/gemini wire formats
+# must send the credential in the DECLARED custom header (captured off the
+# fake vendor client) instead of silently falling back to the default vendor
+# auth (Anthropic ``x-api-key`` / Gemini ``x-goog-api-key``). ``query_param``
+# must raise the same clear "not yet supported" error.
+
+
+@pytest.fixture
+def _capture_anthropic_kwargs(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Patch ``anthropic.AsyncAnthropic`` to record its constructor kwargs.
+
+    Returns a dict that ``chat_stream`` fills with the kwargs the inner
+    :class:`AnthropicProvider` passed to the vendor SDK, so we can assert
+    the credential rode the custom header (not the default ``x-api-key``).
+    """
+    import anthropic  # type: ignore[import-not-found]
+
+    captured: dict[str, Any] = {}
+
+    class _FakeStream:
+        async def __aenter__(self) -> Any:
+            return self
+
+        async def __aexit__(self, *_: Any) -> None:
+            return None
+
+        def __aiter__(self) -> Any:
+            async def _gen() -> Any:
+                if False:  # pragma: no cover — empty event stream
+                    yield None
+
+            return _gen()
+
+        async def get_final_message(self) -> Any:
+            from types import SimpleNamespace
+
+            return SimpleNamespace(stop_reason="end_turn")
+
+    class _FakeClient:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+            from types import SimpleNamespace
+
+            self.messages = SimpleNamespace(stream=lambda **_: _FakeStream())
+
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(anthropic, "AsyncAnthropic", _FakeClient)
+    return captured
+
+
+@pytest.mark.asyncio
+async def test_declarative_anthropic_header_auth_uses_custom_header(
+    _capture_anthropic_kwargs: dict[str, Any],
+) -> None:
+    """anthropic_compatible + auth_kind="header" sends the key in the declared
+    header, NOT as the default Anthropic ``x-api-key`` credential."""
+    secret = "sk-anthropic-secret-123"
+    spec = DeclarativeProviderSpec(
+        id="anthropic-gw",
+        name="Anthropic-wire Gateway",
+        base_url="",
+        auth_kind="header",
+        auth_config={"env_var": "ANTHROPIC_GW_KEY", "header_name": "X-Custom-Auth"},
+        request_format="anthropic_compatible",
+        models={"default": ModelSpec(id="claude-x", context_length=8192)},
+    )
+    provider = DeclarativeProvider(spec, api_key=secret)
+
+    async for _ in provider.chat_stream(model="claude-x", messages=[]):
+        pass
+
+    # The vendor SDK must NOT receive the real secret as its native api_key —
+    # that would auth via the default ``x-api-key`` header (wrong gateway key).
+    assert _capture_anthropic_kwargs.get("api_key") != secret
+    # The credential must ride the declared custom header.
+    headers = _capture_anthropic_kwargs.get("default_headers") or {}
+    assert headers.get("X-Custom-Auth") == secret
+
+
+@pytest.mark.asyncio
+async def test_declarative_anthropic_header_auth_value_prefix(
+    _capture_anthropic_kwargs: dict[str, Any],
+) -> None:
+    """A declared ``value_prefix`` is prepended to the key in the header."""
+    spec = DeclarativeProviderSpec(
+        id="anthropic-prefix",
+        name="Anthropic Prefixed Gateway",
+        base_url="",
+        auth_kind="header",
+        auth_config={
+            "env_var": "ANTHROPIC_PREFIX_KEY",
+            "header_name": "X-Auth",
+            "value_prefix": "Token ",
+        },
+        request_format="anthropic_compatible",
+        models={"default": ModelSpec(id="claude-x", context_length=8192)},
+    )
+    provider = DeclarativeProvider(spec, api_key="abc")
+
+    async for _ in provider.chat_stream(model="claude-x", messages=[]):
+        pass
+
+    headers = _capture_anthropic_kwargs.get("default_headers") or {}
+    assert headers.get("X-Auth") == "Token abc"
+
+
+def test_declarative_anthropic_header_auth_no_secret_on_default_xapikey() -> None:
+    """End-to-end wire check (real anthropic SDK): with a custom header that
+    is NOT ``x-api-key``, the secret rides the custom header and the default
+    ``x-api-key`` carries only the harmless sentinel — never the secret."""
+    from anthropic import AsyncAnthropic
+    from anthropic._models import FinalRequestOptions
+    from corlinman_providers.anthropic_provider import _HEADER_AUTH_SENTINEL
+
+    secret = "sk-anthropic-secret-xyz"
+    spec = DeclarativeProviderSpec(
+        id="anthropic-wire",
+        name="Anthropic Wire",
+        base_url="",
+        auth_kind="header",
+        auth_config={"env_var": "ANTHROPIC_WIRE_KEY", "header_name": "X-Custom-Auth"},
+        request_format="anthropic_compatible",
+        models={"default": ModelSpec(id="claude-x", context_length=8192)},
+    )
+    provider = DeclarativeProvider(spec, api_key=secret)
+    inner = provider._inner
+    assert isinstance(inner, AnthropicProvider)
+
+    # Build a real Anthropic SDK client the way chat_stream would.
+    client = AsyncAnthropic(
+        api_key=_HEADER_AUTH_SENTINEL,
+        default_headers=dict(inner._default_headers or {}),
+    )
+    opts = FinalRequestOptions.construct(
+        method="post", url="/v1/messages", json_data={"model": "claude-x"}
+    )
+    headers = client._build_request(opts).headers
+
+    assert headers.get("x-custom-auth") == secret
+    # The secret must NOT leak via the default vendor auth header.
+    assert headers.get("x-api-key") != secret
+    assert secret not in (headers.get("authorization") or "")
+
+
+def test_declarative_anthropic_query_param_raises() -> None:
+    """anthropic_compatible + query_param is not yet supported → loud raise."""
+    spec = DeclarativeProviderSpec(
+        id="anthropic-qp",
+        name="Anthropic Query Param",
+        base_url="",
+        auth_kind="query_param",
+        auth_config={"env_var": "ANTHROPIC_QP_KEY", "param_name": "api_key"},
+        request_format="anthropic_compatible",
+        models={"default": ModelSpec(id="claude-x", context_length=8192)},
+    )
+    with pytest.raises(ValueError, match="query_param auth not yet supported"):
+        DeclarativeProvider(spec, api_key="sk-secret")
+
+
+@pytest.fixture
+def _capture_google_kwargs(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Patch ``google.genai.Client`` to record its constructor kwargs."""
+    import sys
+    from types import ModuleType, SimpleNamespace
+
+    from google.genai import types as real_types
+
+    captured: dict[str, Any] = {}
+
+    class _FakeAsyncIter:
+        def __aiter__(self) -> Any:
+            async def _gen() -> Any:
+                if False:  # pragma: no cover — empty chunk stream
+                    yield None
+
+            return _gen()
+
+    class _FakeModels:
+        async def generate_content_stream(self, **_: Any) -> _FakeAsyncIter:
+            return _FakeAsyncIter()
+
+    class _FakeClient:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+            self.aio = SimpleNamespace(models=_FakeModels())
+
+    google_mod = ModuleType("google")
+    genai_mod = ModuleType("google.genai")
+    genai_mod.Client = _FakeClient  # type: ignore[attr-defined]
+    genai_mod.types = real_types  # type: ignore[attr-defined]
+    google_mod.genai = genai_mod  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "google", google_mod)
+    monkeypatch.setitem(sys.modules, "google.genai", genai_mod)
+    monkeypatch.setitem(sys.modules, "google.genai.types", real_types)
+    return captured
+
+
+@pytest.mark.asyncio
+async def test_declarative_google_header_auth_uses_custom_header(
+    _capture_google_kwargs: dict[str, Any],
+) -> None:
+    """gemini_compatible + auth_kind="header" sends the key in the declared
+    header, NOT as the default Gemini ``x-goog-api-key`` credential."""
+    secret = "sk-google-secret-123"
+    spec = DeclarativeProviderSpec(
+        id="gemini-gw",
+        name="Gemini-wire Gateway",
+        base_url="",
+        auth_kind="header",
+        auth_config={"env_var": "GEMINI_GW_KEY", "header_name": "X-Custom-Auth"},
+        request_format="gemini_compatible",
+        models={"default": ModelSpec(id="gemini-x", context_length=8192)},
+    )
+    provider = DeclarativeProvider(spec, api_key=secret)
+    assert isinstance(provider._inner, GoogleProvider)
+
+    async for _ in provider.chat_stream(model="gemini-x", messages=[]):
+        pass
+
+    # The vendor SDK must NOT receive the real secret as its native api_key.
+    assert _capture_google_kwargs.get("api_key") != secret
+    http_options = _capture_google_kwargs.get("http_options")
+    headers = getattr(http_options, "headers", None) or {}
+    assert headers.get("X-Custom-Auth") == secret
+
+
+def test_declarative_google_query_param_raises() -> None:
+    """gemini_compatible + query_param is not yet supported → loud raise."""
+    spec = DeclarativeProviderSpec(
+        id="gemini-qp",
+        name="Gemini Query Param",
+        base_url="",
+        auth_kind="query_param",
+        auth_config={"env_var": "GEMINI_QP_KEY", "param_name": "key"},
+        request_format="gemini_compatible",
+        models={"default": ModelSpec(id="gemini-x", context_length=8192)},
     )
     with pytest.raises(ValueError, match="query_param auth not yet supported"):
         DeclarativeProvider(spec, api_key="sk-secret")

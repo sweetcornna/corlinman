@@ -94,12 +94,15 @@ class DeclarativeProviderSpec:
     * ``query_param``    → ``{"env_var": "...", "param_name": "api_key"}``
     * ``none``           → ``{}``
 
-    Honoured at runtime for ``request_format == "openai_compatible"``:
-    ``bearer_api_key``, ``none``, and ``header`` (the key is sent in the
-    declared ``header_name`` with an optional ``value_prefix``).
-    ``query_param`` is accepted by the loader but rejected at build time —
-    the inner OpenAI-wire client can't carry request-query auth, so it raises
-    rather than silently bearer-authing (see :meth:`DeclarativeProvider._build_inner`).
+    Honoured at runtime across all three wire formats (``openai_compatible``,
+    ``anthropic_compatible``, ``gemini_compatible``): ``bearer_api_key`` /
+    ``none`` use the vendor's native auth, and ``header`` sends the key in the
+    declared ``header_name`` with an optional ``value_prefix`` (the vendor
+    SDK's default auth header is suppressed/overridden so the secret only
+    rides the custom header). ``query_param`` is accepted by the loader but
+    rejected at build time — no vendor SDK can carry request-query auth, so it
+    raises rather than silently sending the default vendor auth (see
+    :meth:`DeclarativeProvider._build_inner`).
     """
 
     request_format: RequestFormat
@@ -222,17 +225,22 @@ class DeclarativeProvider:
     ) -> CorlinmanProvider:
         """Dispatch ``request_format`` to the matching vendor adapter.
 
-        Auth wiring (``openai_compatible`` only):
+        Auth wiring (applies to every wire format — ``openai_compatible``,
+        ``anthropic_compatible``, ``gemini_compatible``):
 
-        * ``bearer_api_key`` / ``none`` → the key is forwarded as
-          ``Authorization: Bearer`` (or omitted) via the OpenAI SDK.
+        * ``bearer_api_key`` / ``none`` → the key is forwarded via the
+          vendor's native auth (OpenAI/Anthropic bearer-or-``x-api-key``,
+          Gemini ``x-goog-api-key``) or omitted.
         * ``header`` → the key is sent in the declared custom header
           (``auth_config.header_name``, optional ``value_prefix``) instead of
-          as a bearer; the inner :class:`OpenAIProvider` is given
-          ``default_headers`` and no bearer api_key.
-        * ``query_param`` → not yet supported by the inner OpenAI-wire client;
-          we raise here rather than silently bearer-authing so the operator
-          knows their declared auth shape isn't honoured.
+          the vendor's default auth; the inner adapter is given
+          ``default_headers`` and the vendor's default auth header is
+          suppressed (OpenAI/Anthropic) or overridden (Gemini) via a
+          non-credential sentinel so the secret only rides the custom header.
+        * ``query_param`` → not yet supported by any inner vendor SDK (none
+          expose a request-query auth hook); we raise here rather than
+          silently sending the default vendor auth so the operator knows
+          their declared auth shape isn't honoured.
 
         Note: vendor adapters declare ``name`` as ``ClassVar[str]`` while
         the :class:`CorlinmanProvider` Protocol declares an instance
@@ -252,11 +260,7 @@ class DeclarativeProvider:
                     ),
                 )
             if spec.auth_kind == "query_param":
-                raise ValueError(
-                    f"{spec.id}: query_param auth not yet supported by the "
-                    "openai_compatible inner client (the OpenAI SDK has no "
-                    "request-query auth hook); use bearer_api_key or header."
-                )
+                raise ValueError(_query_param_unsupported_msg(spec))
             return cast(
                 CorlinmanProvider,
                 OpenAIProvider(api_key=api_key, base_url=spec.base_url),
@@ -269,6 +273,16 @@ class DeclarativeProvider:
                     request_format=spec.request_format,
                     base_url=spec.base_url,
                 )
+            if spec.auth_kind == "header":
+                return cast(
+                    CorlinmanProvider,
+                    AnthropicProvider(
+                        api_key=None,
+                        default_headers=_build_custom_auth_headers(spec, api_key),
+                    ),
+                )
+            if spec.auth_kind == "query_param":
+                raise ValueError(_query_param_unsupported_msg(spec))
             return cast(CorlinmanProvider, AnthropicProvider(api_key=api_key))
         if spec.request_format == "gemini_compatible":
             if spec.base_url:
@@ -278,10 +292,35 @@ class DeclarativeProvider:
                     request_format=spec.request_format,
                     base_url=spec.base_url,
                 )
+            if spec.auth_kind == "header":
+                return cast(
+                    CorlinmanProvider,
+                    GoogleProvider(
+                        api_key=None,
+                        default_headers=_build_custom_auth_headers(spec, api_key),
+                    ),
+                )
+            if spec.auth_kind == "query_param":
+                raise ValueError(_query_param_unsupported_msg(spec))
             return cast(CorlinmanProvider, GoogleProvider(api_key=api_key))
         # Literal type keeps the compiler honest; runtime check guards
         # malformed TOML that bypasses the Literal via an untyped load.
         raise ValueError(f"unknown request_format: {spec.request_format!r}")
+
+
+def _query_param_unsupported_msg(spec: DeclarativeProviderSpec) -> str:
+    """Shared "query_param not yet supported" error for every wire format.
+
+    None of the inner vendor SDKs (OpenAI / Anthropic / google-genai) expose
+    a request-query auth hook, so a declared ``auth_kind="query_param"`` can't
+    be honoured — we raise at build time rather than silently falling back to
+    the default vendor auth (which would send the WRONG credential shape).
+    """
+    return (
+        f"{spec.id}: query_param auth not yet supported by the "
+        f"{spec.request_format} inner client (the vendor SDK has no "
+        "request-query auth hook); use bearer_api_key or header."
+    )
 
 
 def _build_custom_auth_headers(

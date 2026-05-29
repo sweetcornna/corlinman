@@ -56,6 +56,17 @@ logger = structlog.get_logger(__name__)
 # the legacy ``x-api-key`` header path.
 CredentialStyle = Literal["bearer", "api_key"]
 
+# Placeholder ``api_key`` used only to satisfy the Anthropic SDK's
+# authentication-method check when the real credential travels in a custom
+# auth header (declarative ``auth_kind="header"``). It is deliberately NOT a
+# real secret: when the custom header is NOT the default ``x-api-key``, the
+# SDK still emits its default ``x-api-key`` header — carrying this sentinel,
+# never the secret — and gateways keyed on the custom header ignore it. When
+# the custom header IS ``x-api-key`` the supplied ``default_headers`` value
+# overrides the sentinel, so the real key rides ``x-api-key`` as intended.
+# Mirrors :data:`openai_provider._HEADER_AUTH_SENTINEL`.
+_HEADER_AUTH_SENTINEL = "header-auth-no-bearer"
+
 
 class AnthropicProvider:
     """Anthropic adapter.
@@ -96,9 +107,16 @@ class AnthropicProvider:
         api_key: str | None = None,
         *,
         data_dir: Path | None = None,
+        default_headers: dict[str, str] | None = None,
     ) -> None:
         self._spec_api_key = api_key
         self._data_dir = data_dir
+        # Static headers forwarded on every request. Used by declarative
+        # providers whose ``auth_kind == "header"`` carry their credential in
+        # a custom header (e.g. ``X-Api-Key``) instead of the default vendor
+        # ``x-api-key`` auth — see :func:`declarative._build_inner`. ``None``
+        # keeps the historic api_key/OAuth-only behaviour.
+        self._default_headers = default_headers
         # mtime-keyed memo of the parsed OAuth credential (audit R4-D4 /
         # PERF-003). ``_resolve_oauth_token`` runs per request on the
         # async hot path; without this cache it did a blocking
@@ -305,14 +323,31 @@ class AnthropicProvider:
         surfacing config gaps early instead of silent failure.
         """
         token, style = self._credential_resolution()
-        if not token:
+        # Custom-header auth carries the credential in ``_default_headers``
+        # rather than a resolved token, so a missing token is only an error
+        # when no header credential is configured either.
+        if not token and not self._default_headers:
             raise RuntimeError("API key missing: set ANTHROPIC_API_KEY")
 
         # Imported lazily so test environments without the SDK still import this
         # module (and so importing the module doesn't require network).
         from anthropic import AsyncAnthropic  # type: ignore[import-not-found]
 
-        if style == "bearer":
+        if self._default_headers:
+            # Custom-header auth: the real credential rides in the declared
+            # header (already baked into ``_default_headers``). The Anthropic
+            # SDK refuses to build a request unless an auth method is set OR
+            # one of ``x-api-key`` / ``Authorization`` is explicitly carried,
+            # so feed it a non-credential sentinel ``api_key`` — the default
+            # ``x-api-key`` then carries the sentinel, never the secret.
+            # Gateways keyed on the custom header ignore it. (When the custom
+            # header IS ``x-api-key`` the supplied header value overrides the
+            # sentinel, so the real key still rides ``x-api-key``.)
+            client = AsyncAnthropic(
+                api_key=_HEADER_AUTH_SENTINEL,
+                default_headers=dict(self._default_headers),
+            )
+        elif style == "bearer":
             # OAuth path: the Anthropic SDK supports ``auth_token=`` which
             # sets ``Authorization: Bearer <token>`` and suppresses the
             # default ``x-api-key`` header.

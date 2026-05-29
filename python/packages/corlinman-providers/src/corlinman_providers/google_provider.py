@@ -34,6 +34,17 @@ from corlinman_providers.specs import ProviderKind, ProviderSpec
 
 logger = structlog.get_logger(__name__)
 
+# Placeholder ``api_key`` used only to satisfy the google-genai ``Client``
+# constructor when the real credential travels in a custom auth header
+# (declarative ``auth_kind="header"``). The SDK *requires* a truthy
+# ``api_key`` to construct (raises ``ValueError`` otherwise) and stamps it
+# into the default ``x-goog-api-key`` header — so we feed this non-credential
+# sentinel rather than the real key, and the secret rides the declared custom
+# header via ``http_options.headers``. When the custom header IS
+# ``x-goog-api-key`` the supplied header value overrides the sentinel.
+# Mirrors :data:`openai_provider._HEADER_AUTH_SENTINEL`.
+_HEADER_AUTH_SENTINEL = "header-auth-no-key"
+
 
 class GoogleProvider:
     """Google Gemini adapter."""
@@ -43,8 +54,19 @@ class GoogleProvider:
 
     GOOGLE_API_KEY_ENV: ClassVar[str] = "GOOGLE_API_KEY"
 
-    def __init__(self, api_key: str | None = None) -> None:
+    def __init__(
+        self,
+        api_key: str | None = None,
+        *,
+        default_headers: dict[str, str] | None = None,
+    ) -> None:
         self._api_key = api_key or os.environ.get(self.GOOGLE_API_KEY_ENV) or None
+        # Static headers forwarded on every request. Used by declarative
+        # providers whose ``auth_kind == "header"`` carry their credential in
+        # a custom header instead of the default ``x-goog-api-key`` auth — see
+        # :func:`declarative._build_inner`. ``None`` keeps the historic
+        # api_key-only behaviour.
+        self._default_headers = default_headers
 
     async def _refresh_credential(self) -> bool:
         """Reactive 401 path: re-read ``GOOGLE_API_KEY`` and update ``_api_key``.
@@ -87,7 +109,10 @@ class GoogleProvider:
         max_tokens: int | None = None,
         extra: dict[str, Any] | None = None,
     ) -> AsyncIterator[ProviderChunk]:
-        if not self._api_key:
+        # Custom-header auth carries the credential in ``_default_headers``
+        # rather than ``_api_key``, so a missing ``_api_key`` is only an error
+        # when no header credential is configured either.
+        if not self._api_key and not self._default_headers:
             raise RuntimeError("API key missing: set GOOGLE_API_KEY")
 
         from google import genai  # type: ignore[import-not-found]
@@ -120,7 +145,21 @@ class GoogleProvider:
             (rotated outside the process between adapter construction and
             this request) is re-read and the open is retried once.
             """
-            client = genai.Client(api_key=self._api_key)
+            if self._default_headers:
+                # Custom-header auth: the real credential rides in the declared
+                # header via ``http_options.headers``. The SDK requires a
+                # truthy ``api_key``, so pass the non-credential sentinel — the
+                # default ``x-goog-api-key`` then carries the sentinel, never
+                # the secret. (When the custom header IS ``x-goog-api-key`` the
+                # supplied header value overrides the sentinel.)
+                client = genai.Client(
+                    api_key=self._api_key or _HEADER_AUTH_SENTINEL,
+                    http_options=types.HttpOptions(
+                        headers=dict(self._default_headers)
+                    ),
+                )
+            else:
+                client = genai.Client(api_key=self._api_key)
             try:
                 return await client.aio.models.generate_content_stream(
                     model=model,
