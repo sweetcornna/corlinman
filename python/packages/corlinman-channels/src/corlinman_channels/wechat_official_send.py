@@ -91,7 +91,7 @@ def split_for_send(text: str, chunk: int = MAX_TEXT_CHUNK) -> list[str]:
         # user than a blind mid-word split.
         slice_end = chunk
         window = remaining[chunk - 200 : chunk] if chunk > 200 else remaining[:chunk]
-        for marker in ("\n\n", "\n", "。", ". ", "! ", "? ", "！", "？"):  # noqa: RUF001
+        for marker in ("\n\n", "\n", "。", ". ", "! ", "? ", "！", "？"):
             idx = window.rfind(marker)
             if idx >= 0:
                 slice_end = (chunk - 200 if chunk > 200 else 0) + idx + len(marker)

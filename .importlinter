@@ -8,18 +8,21 @@
 ; Shape:
 ;   corlinman_server            (top — gRPC entrypoint)
 ;      └── corlinman_agent      (reasoning loop)
-;             └── corlinman_providers, corlinman_embedding  (peers)
+;             └── corlinman_providers  (provider adapters)
 ;                    └── corlinman_grpc  (bottom — generated stubs + client base)
 ;
-; Adjust here when adding a new Python package; every package must appear
-; in exactly one layer so the contract stays total.
+; This contract intentionally covers only the core gRPC plane (server →
+; agent → providers → grpc); the many leaf/service packages are not layered
+; here. Adjust when a package joins that core plane.
+; NOTE: corlinman_embedding was deleted in 50515f6 — removed below so
+; import-linter can resolve every root_package (it aborts the whole run if
+; any named package is missing on the path, which silently disabled the guard).
 
 [importlinter]
 root_packages =
     corlinman_grpc
     corlinman_providers
     corlinman_agent
-    corlinman_embedding
     corlinman_server
 
 [importlinter:contract:layers]
@@ -28,5 +31,13 @@ type = layers
 layers =
     corlinman_server
     corlinman_agent
-    corlinman_providers | corlinman_embedding
+    corlinman_providers
     corlinman_grpc
+; Grandfathered pre-existing upward imports (agent -> server) that the
+; phantom-package abort had been masking. The guard is re-enabled so it
+; catches any NEW violation; these three are tracked as tech-debt in
+; audit/ARCH_DEBT.md (#R5-Q1) for a proper layering fix.
+ignore_imports =
+    corlinman_agent.persona.dispatch -> corlinman_server.persona
+    corlinman_agent.subagent.tool_wrapper -> corlinman_server.system.subagent
+    corlinman_agent.subagent.tool_wrapper -> corlinman_server.gateway.observability.emitter

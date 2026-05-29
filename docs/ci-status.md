@@ -58,7 +58,33 @@ known `numkong v7.6.0` MSVC C compile failure and missing `protoc`, so adding a
 new advisory CI job now would expand signal surface before local validation is
 clean.
 
-### 2. `python` — yellow
+### 2. `python` — RED (corrected 2026-05-29, audit R5)
+
+> **Correction (R5).** The numbers below this banner (7 mypy / 17 ruff) were
+> stale and materially understated reality, and the "Scoped `uv run mypy .` to
+> `uv run mypy python/packages/`" line had **not** actually been applied to
+> `.github/workflows/ci.yml` (it still ran `uv run mypy .` until R5). Verified
+> state at HEAD on a git-clean tree:
+>
+> - `uv run ruff check .` → **1153 errors** (was 1663 before R5; R5 added a
+>   `[tool.ruff.lint] external` list so the ~510 `# noqa: BLE001`/`PLC0415`/…
+>   directives for non-selected rules stop tripping `RUF100`, and removed 11
+>   genuinely-stale noqa). Residual is genuine: I001 (202), SIM105 (115),
+>   RUF001/2/3 CJK-content false-positives (~165), F401 (95), E402 (95), UP*.
+> - `uv run mypy python/packages/` → **156 errors in 73 files** (genuine type
+>   errors; scoping does not reduce them — `mypy .` gave the same).
+> - `uv run lint-imports` → **now GREEN** (R5 removed the phantom
+>   `corlinman_embedding` root package that had been silently aborting the
+>   whole layering contract, and grandfathered 3 pre-existing agent→server
+>   upward imports). R5 also added `boundary-check` to the `gate` job's
+>   `needs` so the layering guard actually gates.
+>
+> Net: the required `gate` check is **red** because `py-ruff` and `py-mypy` are
+> red. Greening them is a dedicated mechanical-cleanup + type-correctness
+> initiative (mostly safe `ruff --fix` import churn + a CJK-unicode rule policy
+> call + 156 real mypy fixes) — tracked in `audit/ARCH_DEBT.md` (#R5-Q1).
+
+### 2 (historical). `python` — yellow
 
 Pipeline wiring: **green**. Python code: **yellow** (7 mypy + 17 ruff in
 peer packages).

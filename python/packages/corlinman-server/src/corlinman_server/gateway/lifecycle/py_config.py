@@ -173,7 +173,7 @@ def _iter_providers(cfg: Any) -> Iterable[tuple[str, Any]]:
         return list(src.items())
     # Try iterable of pairs.
     try:
-        return [(n, e) for n, e in src]  # noqa: C416 — explicit unpack
+        return [(n, e) for n, e in src]
     except TypeError:
         return []
 

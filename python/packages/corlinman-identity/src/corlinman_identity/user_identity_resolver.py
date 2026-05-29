@@ -38,10 +38,10 @@ from corlinman_identity.types import (
 # ``issue_phrase`` / ``redeem_phrase`` / ``sweep_expired_phrases`` on
 # :class:`SqliteIdentityStore`. The import is load-bearing; do not
 # remove even though no symbol is consumed here.
-from corlinman_identity import verification as _verification  # noqa: F401
+from corlinman_identity import verification as _verification
 
 # Same story for the resolver methods.
-from corlinman_identity import resolver as _resolver  # noqa: F401
+from corlinman_identity import resolver as _resolver
 
 
 class UserIdentityResolver:

@@ -178,7 +178,7 @@ class PostgresJournalBackend:
         environments that never select the Postgres backend.
         """
         try:
-            import asyncpg  # noqa: F401 — proven importable; used below.
+            import asyncpg
         except ImportError as exc:
             raise RuntimeError(
                 "postgres backend selected but asyncpg is not installed; "

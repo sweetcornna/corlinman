@@ -229,7 +229,7 @@ from corlinman_channels.wechat_official_send import (
 # subclassing.
 _ = _CommonChannelError
 
-__all__ = [  # noqa: RUF022 — grouped by subsystem for human readability.
+__all__ = [
     # Common / shared
     "Attachment",
     "AttachmentKind",

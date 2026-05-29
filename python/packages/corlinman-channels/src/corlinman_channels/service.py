@@ -1404,7 +1404,7 @@ def _to_server_attachment_shape(att: Any) -> Any:
     # isn't importable (standalone channel tests) we fall back to the
     # raw string and accept that the proto builder will hit the
     # UNSPECIFIED branch.
-    try:  # noqa: SIM105 — explicit fallback path needs the except body
+    try:
         from corlinman_server.gateway_api.types import (
             AttachmentKind as ApiKind,
         )
@@ -3898,7 +3898,7 @@ def _split_passive_and_rest(body: str) -> tuple[str, str]:
     # Look for the first sentence-ending punctuation in the first
     # ``_WECHAT_PASSIVE_CAP`` chars and break there.
     head = body[:_WECHAT_PASSIVE_CAP]
-    for marker in ("\n\n", "\n", "。", ". ", "! ", "? ", "！", "？"):  # noqa: RUF001
+    for marker in ("\n\n", "\n", "。", ". ", "! ", "? ", "！", "？"):
         idx = head.rfind(marker)
         if idx >= 100:  # not the very first chars — needs to be a real sentence
             cut = idx + len(marker)
