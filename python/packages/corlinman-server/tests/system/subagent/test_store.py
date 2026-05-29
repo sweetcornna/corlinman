@@ -207,3 +207,95 @@ async def test_summary_truncates_at_4kb(tmp_path: Path) -> None:
     status = await store.get(req.request_id)
     assert status is not None
     assert len(status.summary.encode("utf-8")) <= 4 * 1024
+
+
+@pytest.mark.asyncio
+async def test_terminal_rows_are_bounded(tmp_path: Path) -> None:
+    """Terminal rows must not accumulate without bound.
+
+    Spawning N short-lived subagents (begin → update to a terminal state)
+    must not grow ``_statuses``/``_requests`` (and the on-disk flush) to
+    O(N). A bounded recent-terminal window is retained; older terminal
+    rows are evicted.
+    """
+    persist = tmp_path / ".subagent-state.json"
+    store = SubagentTaskStore(persist)
+
+    n = 5_000
+    for i in range(n):
+        rid = f"req-{i}"
+        await store.begin(_make_req(request_id=rid))
+        await store.update(rid, state="succeeded", finished_at=_now_ms())
+
+    # The store must not retain every terminal row.
+    assert len(store._statuses) <= SubagentTaskStore._TERMINAL_RETENTION_CAP
+    assert len(store._requests) <= SubagentTaskStore._TERMINAL_RETENTION_CAP
+
+    # On-disk flush stays bounded by the cap (not by N). With N=5000 the
+    # unbounded store wrote ~3.5 MB; the bounded store stays well under
+    # that, proportional to the retention cap rather than the spawn count.
+    flush_bytes = persist.stat().st_size
+    assert flush_bytes < 600_000, flush_bytes
+
+    # The most-recent terminal rows are the ones retained.
+    recovered = await store.get(f"req-{n - 1}")
+    assert recovered is not None
+    assert recovered.state == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_in_flight_rows_never_evicted(tmp_path: Path) -> None:
+    """In-flight rows are preserved regardless of terminal churn.
+
+    Correctness of ``count_in_flight_for_tenant`` / ``get`` must survive a
+    flood of terminal rows that exceeds the retention cap.
+    """
+    store = SubagentTaskStore(tmp_path / ".subagent-state.json")
+
+    # Two long-lived in-flight rows, one per tenant.
+    live_a = SubagentRequest(
+        request_id="live-A",
+        parent_session_key="sess-A",
+        parent_agent_id="agent-parent",
+        subagent_type="researcher",
+        goal="long task",
+        description=None,
+        requested_at=_now_ms(),
+        requested_by="admin",
+        tenant_id="tenant-A",
+    )
+    live_b = SubagentRequest(
+        request_id="live-B",
+        parent_session_key="sess-B",
+        parent_agent_id="agent-parent",
+        subagent_type="researcher",
+        goal="long task",
+        description=None,
+        requested_at=_now_ms(),
+        requested_by="admin",
+        tenant_id="tenant-B",
+    )
+    await store.begin(live_a)
+    await store.begin(live_b)
+    await store.update("live-A", state="running")
+    await store.update("live-B", state="running")
+
+    # Flood the store with far more terminal rows than the cap.
+    for i in range(SubagentTaskStore._TERMINAL_RETENTION_CAP * 3):
+        rid = f"term-{i}"
+        await store.begin(_make_req(request_id=rid))
+        await store.update(rid, state="succeeded", finished_at=_now_ms())
+
+    # In-flight rows still present + counted correctly.
+    assert await store.get("live-A") is not None
+    assert await store.get("live-B") is not None
+    assert await store.count_in_flight_for_tenant("tenant-A") == 1
+    assert await store.count_in_flight_for_tenant("tenant-B") == 1
+
+    active = await store.list_active()
+    assert {r.request_id for r in active} == {"live-A", "live-B"}
+
+    # Total retained = 2 in-flight + at most the terminal cap.
+    assert (
+        len(store._statuses) <= SubagentTaskStore._TERMINAL_RETENTION_CAP + 2
+    )

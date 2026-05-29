@@ -55,6 +55,15 @@ __all__ = [
 _LOG_TAIL_MAX_BYTES: int = 4 * 1024
 _SUMMARY_MAX_BYTES: int = 4 * 1024
 
+# Bounded retention of terminal rows. In-flight rows are kept regardless
+# (they are naturally capped by the dispatcher's per-tenant quota); only
+# completed/failed/timeout/killed rows accrete, so we evict the oldest
+# (by ``finished_at``) beyond this window. This keeps ``_statuses`` /
+# ``_requests`` — and therefore the on-disk flush — bounded instead of
+# growing O(N) over the gateway's lifetime, while leaving a recent
+# history deep enough for the operator UI / notification replay.
+_TERMINAL_RETENTION_CAP: int = 512
+
 
 SubagentState = Literal[
     "queued",
@@ -165,12 +174,20 @@ class SubagentTaskStore:
     empty rather than crashing the gateway boot.
     """
 
+    #: Max number of terminal rows kept in memory + on disk. Exposed as a
+    #: class attribute so tests (and a future config knob) can reference
+    #: it without importing the module-level constant.
+    _TERMINAL_RETENTION_CAP: int = _TERMINAL_RETENTION_CAP
+
     def __init__(self, persist_path: Path) -> None:
         self._persist_path = persist_path
         self._lock = asyncio.Lock()
         self._requests: dict[str, SubagentRequest] = {}
         self._statuses: dict[str, SubagentStatus] = {}
         self._load_from_disk()
+        # A cold-started store may hydrate an unbounded backlog of terminal
+        # rows from a pre-retention on-disk file; trim it down on boot.
+        self._prune_terminal_locked()
 
     # ------------------------------------------------------------------
     # Persistence helpers
@@ -247,6 +264,37 @@ class SubagentTaskStore:
                 except (KeyError, TypeError, ValueError):
                     continue
 
+    def _prune_terminal_locked(self) -> None:
+        """Evict oldest terminal rows beyond the retention cap.
+
+        Caller MUST hold ``self._lock`` (or be in ``__init__`` before the
+        store is published). In-flight rows are never evicted — they are
+        bounded by the dispatcher's per-tenant quota and dropping one would
+        lose live state. Terminal rows are ordered by ``finished_at`` (ties
+        broken by request_id for determinism) and the newest
+        ``_TERMINAL_RETENTION_CAP`` are kept. Evicting a status also drops
+        its paired request row so the two dicts stay in lockstep.
+        """
+        terminal_ids = [
+            rid
+            for rid, status in self._statuses.items()
+            if status.is_terminal()
+        ]
+        if len(terminal_ids) <= self._TERMINAL_RETENTION_CAP:
+            return
+        # Oldest first; rows missing finished_at sort before timestamped
+        # ones (treated as oldest) so they are dropped first.
+        terminal_ids.sort(
+            key=lambda rid: (
+                self._statuses[rid].finished_at or 0,
+                rid,
+            )
+        )
+        evict_count = len(terminal_ids) - self._TERMINAL_RETENTION_CAP
+        for rid in terminal_ids[:evict_count]:
+            self._statuses.pop(rid, None)
+            self._requests.pop(rid, None)
+
     def _flush_locked(self) -> None:
         """Atomically persist current state. Caller MUST hold ``self._lock``."""
         payload = {
@@ -310,8 +358,13 @@ class SubagentTaskStore:
                         f"SubagentStatus has no field {key!r}"
                     )
                 setattr(current, key, value)
+            # Snapshot before pruning: the just-updated row has the
+            # freshest ``finished_at`` so it is never the one evicted, but
+            # we return the copy regardless of whether it stays retained.
+            snapshot = SubagentStatus(**asdict(current))
+            self._prune_terminal_locked()
             self._flush_locked()
-            return SubagentStatus(**asdict(current))
+            return snapshot
 
     async def get(self, request_id: str) -> SubagentStatus | None:
         async with self._lock:
@@ -421,8 +474,10 @@ class SubagentTaskStore:
             current.finish_reason = (
                 f"killed_by:{by}" if by else "killed"
             )
+            snapshot = SubagentStatus(**asdict(current))
+            self._prune_terminal_locked()
             self._flush_locked()
-            return SubagentStatus(**asdict(current))
+            return snapshot
 
     async def set_summary(self, request_id: str, summary: str) -> None:
         """Persist a bounded ``summary`` blob on the row.
