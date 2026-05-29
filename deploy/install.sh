@@ -125,6 +125,55 @@ warn() { printf "\033[1;33m!\033[0m %s\n" "$*" >&2; }
 die()  { printf "\033[1;31m✗\033[0m %s\n" "$*" >&2; exit 1; }
 require() { command -v "$1" >/dev/null 2>&1 || die "required tool '$1' not on PATH"; }
 
+# Dedicated unprivileged service account the gateway runs as. Mirrors the
+# Docker image (docker/Dockerfile creates a `corlinman` system user/group and
+# drops to it with `USER corlinman`). The native systemd unit MUST do the same
+# so the internet-facing gateway (BIND=0.0.0.0) never runs as root.
+SERVICE_USER="corlinman"
+
+# ----- Unprivileged service user --------------------------------------------
+# Create a system user/group `corlinman` (no home, nologin shell) for the
+# gateway to run as. Guarded by an existence check so re-runs are idempotent.
+# Linux-only (Darwin native installs have no systemd unit and run in the
+# foreground as the invoking user).
+ensure_service_user() {
+    [[ "$(uname -s)" == "Linux" ]] || return 0
+    if getent passwd "$SERVICE_USER" >/dev/null 2>&1; then
+        return 0
+    fi
+    log "creating unprivileged system user '$SERVICE_USER'"
+    # --user-group makes a matching system group; fall back to an explicit
+    # groupadd + useradd pair on toolchains where --user-group is unavailable.
+    sudo useradd --system --no-create-home --shell /usr/sbin/nologin \
+        --user-group "$SERVICE_USER" 2>/dev/null \
+        || { getent group "$SERVICE_USER" >/dev/null 2>&1 \
+                || sudo groupadd --system "$SERVICE_USER"; \
+             sudo useradd --system --no-create-home --shell /usr/sbin/nologin \
+                --gid "$SERVICE_USER" "$SERVICE_USER"; } \
+        || warn "could not create '$SERVICE_USER' user — gateway may fall back to root"
+}
+
+# ----- Lock down root-executed upgrade scripts -------------------------------
+# `sudo chown -R "$(id -u):$(id -g)" "$PREFIX"` (run by both install paths)
+# hands every file under $PREFIX — including the scripts corlinman-upgrader.
+# service later executes as User=root — to the unprivileged install user. That
+# is a local privilege-escalation: the unprivileged user could rewrite a
+# root-executed script and get root code-exec on the next one-click upgrade.
+# Re-chown the root-executed scripts back to root:root and strip group/other
+# write so only root can modify them. MUST be invoked AFTER the recursive
+# chown in each path.
+secure_root_executed_scripts() {
+    [[ "$(uname -s)" == "Linux" ]] || return 0
+    local script
+    for script in \
+        "$PREFIX/repo/deploy/corlinman-upgrader.sh" \
+        "$PREFIX/repo/deploy/install.sh"; do
+        [[ -e "$script" ]] || continue
+        sudo chown root:root "$script" || warn "could not chown $script to root"
+        sudo chmod 0755 "$script" || warn "could not chmod $script"
+    done
+}
+
 # ----- PATH augmentation -----------------------------------------------------
 # install.sh is called both interactively (where ~/.bashrc has already
 # pulled ~/.local/bin into PATH) and from `corlinman-upgrader.service`
@@ -489,6 +538,10 @@ install_docker() {
             || git clone --depth 1 --branch "$REF" "https://github.com/${REPO}.git" "$PREFIX/repo"
     fi
 
+    # Re-lock the root-executed upgrade scripts that the recursive chown above
+    # just handed to the unprivileged install user (LPE mitigation, see fn).
+    secure_root_executed_scripts
+
     # --- pull-first, build-on-miss ----------------------------------------
     # Prebuilt images get tagged at `ghcr.io/${REPO}:${REF}` by the release-image
     # workflow (see PLAN_DEPLOY_UX.md task B). Until that workflow ships, every
@@ -693,6 +746,10 @@ install_native() {
             || git clone --depth 1 --branch "$REF" "https://github.com/${REPO}.git" "$PREFIX/repo"
     fi
 
+    # Re-lock the root-executed upgrade scripts that the recursive chown above
+    # just handed to the unprivileged install user (LPE mitigation, see fn).
+    secure_root_executed_scripts
+
     log "uv sync --all-packages (this can take a few minutes on first install)"
     (cd "$PREFIX/repo" && uv sync --all-packages --frozen --no-dev)
 
@@ -704,6 +761,18 @@ install_native() {
     mkdir -p "$DATA_DIR"
 
     if [[ "$(uname -s)" == "Linux" ]]; then
+        # Create the unprivileged service account and hand it the runtime-
+        # writable paths BEFORE writing the unit that runs as it. The gateway
+        # owns its DATA_DIR (config.toml, sqlite, uploads) and reads the
+        # ui-static export, so both must be readable/writable by SERVICE_USER.
+        ensure_service_user
+        log "chowning runtime paths to $SERVICE_USER"
+        sudo chown -R "$SERVICE_USER:$SERVICE_USER" "$DATA_DIR" \
+            || warn "could not chown $DATA_DIR to $SERVICE_USER"
+        [[ -d "$PREFIX/ui-static" ]] \
+            && sudo chown -R "$SERVICE_USER:$SERVICE_USER" "$PREFIX/ui-static" \
+            || true
+
         log "writing systemd unit"
         local uv_path; uv_path="$(command -v uv)"
         sudo tee /etc/systemd/system/corlinman.service >/dev/null <<EOF
@@ -713,6 +782,8 @@ After=network.target
 
 [Service]
 Type=simple
+User=${SERVICE_USER}
+Group=${SERVICE_USER}
 WorkingDirectory=${PREFIX}/repo
 ExecStart=${uv_path} run corlinman-gateway --config ${DATA_DIR}/config.toml --port ${PORT}
 EnvironmentFile=-${PREFIX}/.env
