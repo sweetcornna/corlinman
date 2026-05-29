@@ -99,8 +99,17 @@ class SqliteIdentityStore:
         # request on its own pool connection; we hold a single shared
         # ``aiosqlite`` connection, so we have to gate the multi-stmt
         # transactional paths (``resolve_or_create``, ``redeem_phrase``,
-        # ``merge_users``) ourselves. Single-statement reads / writes
-        # bypass the lock and rely on SQLite's internal serialisation.
+        # ``merge_users``) ourselves.
+        #
+        # Single-statement *reads* may bypass the lock (they never call
+        # ``commit()``). Single-statement *writes* must NOT: ``commit()``
+        # is connection-global, so an un-gated commit from a
+        # single-statement writer (``issue_phrase``,
+        # ``sweep_expired_phrases``) would end whatever transaction
+        # another coroutine is mid-flight in, breaking its all-or-nothing
+        # atomicity (a rollback then finds no live transaction and leaves
+        # a half-written row behind). Every code path that calls
+        # ``commit()`` on the shared connection must hold this lock.
         self._tx_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------

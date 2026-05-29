@@ -100,17 +100,25 @@ async def _issue_phrase(
     expires_at = now + timedelta(minutes=DEFAULT_TTL_MIN)
     expires_str = _to_rfc3339(expires_at)
 
-    try:
-        await self.conn.execute(
-            "INSERT INTO verification_phrases "
-            "(phrase, issued_to_user_id, issued_on_channel, "
-            " issued_on_channel_user_id, expires_at) "
-            "VALUES (?1, ?2, ?3, ?4, ?5)",
-            (phrase, str(user_id), channel, channel_user_id, expires_str),
-        )
-        await self.conn.commit()
-    except Exception as exc:
-        raise StorageError(op="issue_phrase", source=exc) from exc
+    # ``commit()`` is connection-global on our single shared
+    # ``aiosqlite.Connection``. Even though this is a single-statement
+    # write, an un-gated ``commit()`` here would end whatever
+    # transaction another coroutine (``resolve_or_create`` /
+    # ``redeem_phrase`` / ``merge_users``) is mid-flight in, breaking its
+    # all-or-nothing atomicity. Hold ``tx_lock`` so our commit can never
+    # land inside someone else's ``BEGIN..COMMIT`` block.
+    async with self.tx_lock:
+        try:
+            await self.conn.execute(
+                "INSERT INTO verification_phrases "
+                "(phrase, issued_to_user_id, issued_on_channel, "
+                " issued_on_channel_user_id, expires_at) "
+                "VALUES (?1, ?2, ?3, ?4, ?5)",
+                (phrase, str(user_id), channel, channel_user_id, expires_str),
+            )
+            await self.conn.commit()
+        except Exception as exc:
+            raise StorageError(op="issue_phrase", source=exc) from exc
 
     return VerificationPhrase(
         phrase=phrase,
@@ -303,17 +311,22 @@ async def _sweep_expired_phrases(self: SqliteIdentityStore) -> int:
     package ships the helper so consumers don't need to know the schema.
     """
     now_str = _now_utc_rfc3339()
-    try:
-        cursor = await self.conn.execute(
-            "DELETE FROM verification_phrases "
-            "WHERE consumed_at IS NULL AND expires_at < ?1",
-            (now_str,),
-        )
-        deleted = int(cursor.rowcount or 0)
-        await cursor.close()
-        await self.conn.commit()
-    except Exception as exc:
-        raise StorageError(op="sweep_expired_phrases", source=exc) from exc
+    # Same connection-global ``commit()`` hazard as ``issue_phrase``:
+    # gate the bare write behind ``tx_lock`` so a sweep firing on a
+    # timer can't prematurely commit another coroutine's in-flight
+    # transaction.
+    async with self.tx_lock:
+        try:
+            cursor = await self.conn.execute(
+                "DELETE FROM verification_phrases "
+                "WHERE consumed_at IS NULL AND expires_at < ?1",
+                (now_str,),
+            )
+            deleted = int(cursor.rowcount or 0)
+            await cursor.close()
+            await self.conn.commit()
+        except Exception as exc:
+            raise StorageError(op="sweep_expired_phrases", source=exc) from exc
     return deleted
 
 
