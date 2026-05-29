@@ -177,6 +177,82 @@ async def test_stream_without_done_synthesises_terminal() -> None:
     assert [f.WhichOneof("kind") for f in frames] == ["token", "done"]
 
 
+# ─── tool-call arg assembler: correctness + O(K) accumulation ────────
+
+
+@pytest.mark.asyncio
+async def test_many_arg_deltas_assemble_byte_identical() -> None:
+    """A long stream of ``tool_call_delta`` fragments must assemble into
+    the exact byte-for-byte concatenation of every fragment.
+
+    Guards the streaming arg assembler: the buffered ``arguments_delta``
+    fragments must join in order with nothing dropped, duplicated, or
+    reordered, regardless of how the buffer is represented internally.
+    """
+    frags = [f'{{"i":{i}}}'.ljust(50) for i in range(4000)]
+    expected = "".join(frags)
+
+    chunks = [_Chunk(kind="tool_call_start", tool_call_id="c1", tool_name="big")]
+    chunks += [
+        _Chunk(kind="tool_call_delta", tool_call_id="c1", arguments_delta=f)
+        for f in frags
+    ]
+    chunks += [
+        _Chunk(kind="tool_call_end", tool_call_id="c1"),
+        _Chunk(kind="done", finish_reason="tool_calls"),
+    ]
+
+    provider = _ScriptedProvider(chunks)
+    backend = DirectProviderBackend(_StubRegistry(provider, "x"))
+    _tx, rx = await backend.start(_start("x"))
+
+    frames = [f async for f in rx]
+    tool_frames = [f for f in frames if f.WhichOneof("kind") == "tool_call"]
+    assert len(tool_frames) == 1
+    assert tool_frames[0].tool_call.args_json.decode("utf-8") == expected
+
+
+@pytest.mark.asyncio
+async def test_arg_assembler_is_linear_not_quadratic() -> None:
+    """Perf-smoke: assembling many sizeable arg fragments stays cheap.
+
+    String ``+=`` accumulation held in a container slot is O(K^2) in the
+    total argument size (each ``+=`` reallocates and recopies the whole
+    accumulated buffer). Joining buffered fragments once is O(K).
+
+    With 8000 × 2KB fragments (~16 MB of arguments) the quadratic path
+    measured ~2.1 s on the dev box while the linear ``''.join`` path
+    stays ~6 ms — a >300x gap. The 1.0 s bound sits well inside that gap
+    so it trips on the O(K^2) regression yet never on CI jitter.
+    """
+    import time
+
+    frag = "x" * 2048
+    n = 8000
+    chunks = [_Chunk(kind="tool_call_start", tool_call_id="c1", tool_name="big")]
+    chunks += [
+        _Chunk(kind="tool_call_delta", tool_call_id="c1", arguments_delta=frag)
+        for _ in range(n)
+    ]
+    chunks += [
+        _Chunk(kind="tool_call_end", tool_call_id="c1"),
+        _Chunk(kind="done", finish_reason="tool_calls"),
+    ]
+
+    provider = _ScriptedProvider(chunks)
+    backend = DirectProviderBackend(_StubRegistry(provider, "x"))
+
+    t0 = time.perf_counter()
+    _tx, rx = await backend.start(_start("x"))
+    frames = [f async for f in rx]
+    elapsed = time.perf_counter() - t0
+
+    tool_frames = [f for f in frames if f.WhichOneof("kind") == "tool_call"]
+    assert len(tool_frames) == 1
+    assert len(tool_frames[0].tool_call.args_json) == n * len(frag)
+    assert elapsed < 1.0, f"arg assembly took {elapsed * 1000:.0f}ms (expected O(K))"
+
+
 # ─── End-to-end through ChatService ──────────────────────────────────
 
 

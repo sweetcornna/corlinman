@@ -266,9 +266,12 @@ class DirectProviderBackend:
         A provider that ends without a ``done`` chunk still gets a
         synthesised ``done`` frame so the service always sees a terminal.
         """
-        # tool_call_id → [tool_name, arg_buffer]. Buffered so the emitted
-        # frame has the whole argument JSON in one shot.
-        open_calls: dict[str, list[str]] = {}
+        # tool_call_id → [tool_name, [arg_fragment, ...]]. Fragments are
+        # appended to a list and ``''.join``ed once at finalization so the
+        # emitted frame has the whole argument JSON in one shot — appending
+        # is O(1) per delta (vs. ``str +=``, which recopies the whole
+        # accumulated buffer each time → O(K^2) over K bytes / M deltas).
+        open_calls: dict[str, list[Any]] = {}
         call_order: list[str] = []
         seq = 0
         saw_done = False
@@ -291,7 +294,7 @@ class DirectProviderBackend:
                 call_id = getattr(chunk, "tool_call_id", None) or f"call_{seq}"
                 name = getattr(chunk, "tool_name", None) or ""
                 if call_id not in open_calls:
-                    open_calls[call_id] = [name, ""]
+                    open_calls[call_id] = [name, []]
                     call_order.append(call_id)
                 else:
                     # Late name on an already-open call.
@@ -299,7 +302,7 @@ class DirectProviderBackend:
                         open_calls[call_id][0] = name
                 args0 = getattr(chunk, "arguments_delta", None)
                 if args0:
-                    open_calls[call_id][1] += args0
+                    open_calls[call_id][1].append(args0)
                 continue
 
             if kind == "tool_call_delta":
@@ -308,20 +311,20 @@ class DirectProviderBackend:
                 if call_id is None:
                     continue
                 if call_id not in open_calls:
-                    open_calls[call_id] = ["", ""]
+                    open_calls[call_id] = ["", []]
                     call_order.append(call_id)
-                open_calls[call_id][1] += frag
+                open_calls[call_id][1].append(frag)
                 continue
 
             if kind == "tool_call_end":
                 call_id = getattr(chunk, "tool_call_id", None)
                 if call_id is None or call_id not in open_calls:
                     continue
-                name, args = open_calls.pop(call_id)
+                name, frags = open_calls.pop(call_id)
                 if call_id in call_order:
                     call_order.remove(call_id)
                 await rx.put(
-                    _tool_call_frame(call_id, name, args, seq),
+                    _tool_call_frame(call_id, name, "".join(frags), seq),
                 )
                 seq += 1
                 continue
@@ -330,8 +333,10 @@ class DirectProviderBackend:
                 # Flush any tool calls still open (provider ended the
                 # stream without an explicit ``tool_call_end``).
                 for call_id in call_order:
-                    name, args = open_calls[call_id]
-                    await rx.put(_tool_call_frame(call_id, name, args, seq))
+                    name, frags = open_calls[call_id]
+                    await rx.put(
+                        _tool_call_frame(call_id, name, "".join(frags), seq)
+                    )
                     seq += 1
                 open_calls.clear()
                 call_order.clear()
@@ -352,8 +357,10 @@ class DirectProviderBackend:
             # dangling tool calls and synthesise a terminal frame so the
             # ChatService never hangs waiting for one.
             for call_id in call_order:
-                name, args = open_calls[call_id]
-                await rx.put(_tool_call_frame(call_id, name, args, seq))
+                name, frags = open_calls[call_id]
+                await rx.put(
+                    _tool_call_frame(call_id, name, "".join(frags), seq)
+                )
                 seq += 1
             await rx.put(
                 agent_pb2.ServerFrame(
