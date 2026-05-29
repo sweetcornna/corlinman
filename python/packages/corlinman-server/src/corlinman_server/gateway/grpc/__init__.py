@@ -47,6 +47,7 @@ from typing import Any
 import structlog
 
 from corlinman_server.gateway.grpc.agent_server import (
+    GrpcAgentBindError,
     agent_inproc_enabled,
     resolve_agent_bind,
     serve_agent,
@@ -76,6 +77,7 @@ __all__ = [
     "DEFAULT_RUST_SOCKET",
     "DEFAULT_TOOL_TIMEOUT_MS",
     "ENV_RUST_SOCKET",
+    "GrpcAgentBindError",
     "McpToolBridge",
     "PlaceholderService",
     "ServicePluginDispatcher",

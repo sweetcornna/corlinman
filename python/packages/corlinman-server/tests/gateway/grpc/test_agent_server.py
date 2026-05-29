@@ -116,6 +116,151 @@ async def test_build_chat_service_grpc_mode(
     assert isinstance(service._backend, GrpcAgentChatBackend)
 
 
+# ─── resolve_agent_bind safety (SEC-204) ─────────────────────────────
+#
+# Defence-in-depth against an unauth-RCE footgun: ``serve_agent`` ends
+# in ``server.add_insecure_port(bind)`` with **no** TLS or auth. If an
+# operator co-hosts the agent AND points ``CORLINMAN_PY_ADDR`` (or
+# ``CORLINMAN_PY_PORT`` on a host bound to a public NIC) at a non-
+# loopback address, anyone on the network can dial the Agent gRPC and
+# issue ReasoningLoop chat turns — which auto-bind ``run_shell`` /
+# ``write_file`` / ``apply_patch`` → unauth RCE.
+#
+# Policy: ``resolve_agent_bind`` refuses any bind whose host is not in
+# ``{127.0.0.1, ::1, localhost}`` (or a ``unix://`` UDS path). The
+# operator can explicitly opt in via
+# ``CORLINMAN_GRPC_AGENT_ALLOW_PUBLIC=1`` to permit a non-loopback
+# bind — and a warning is logged when they do.
+
+
+@pytest.fixture
+def _clear_bind_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for var in (
+        "CORLINMAN_PY_SOCKET",
+        "CORLINMAN_PY_ADDR",
+        "CORLINMAN_PY_PORT",
+        "CORLINMAN_GRPC_AGENT_ALLOW_PUBLIC",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+
+def test_resolve_agent_bind_accepts_loopback_ipv4(
+    monkeypatch: pytest.MonkeyPatch, _clear_bind_env: None
+) -> None:
+    monkeypatch.setenv("CORLINMAN_PY_ADDR", "127.0.0.1:50051")
+    assert agent_server.resolve_agent_bind(None) == "127.0.0.1:50051"
+
+
+def test_resolve_agent_bind_accepts_loopback_ipv6(
+    monkeypatch: pytest.MonkeyPatch, _clear_bind_env: None
+) -> None:
+    monkeypatch.setenv("CORLINMAN_PY_ADDR", "[::1]:50051")
+    assert agent_server.resolve_agent_bind(None) == "[::1]:50051"
+
+
+def test_resolve_agent_bind_accepts_localhost(
+    monkeypatch: pytest.MonkeyPatch, _clear_bind_env: None
+) -> None:
+    monkeypatch.setenv("CORLINMAN_PY_ADDR", "localhost:50051")
+    assert agent_server.resolve_agent_bind(None) == "localhost:50051"
+
+
+def test_resolve_agent_bind_accepts_unix_socket(
+    monkeypatch: pytest.MonkeyPatch, _clear_bind_env: None
+) -> None:
+    monkeypatch.setenv("CORLINMAN_PY_SOCKET", "/tmp/agent.sock")
+    assert agent_server.resolve_agent_bind(None) == "unix:///tmp/agent.sock"
+
+
+def test_resolve_agent_bind_accepts_py_port_default_loopback(
+    monkeypatch: pytest.MonkeyPatch, _clear_bind_env: None
+) -> None:
+    """CORLINMAN_PY_PORT always renders 127.0.0.1:<port> — must stay safe."""
+    monkeypatch.setenv("CORLINMAN_PY_PORT", "55555")
+    assert agent_server.resolve_agent_bind(None) == "127.0.0.1:55555"
+
+
+def test_resolve_agent_bind_default_is_unix_socket(
+    monkeypatch: pytest.MonkeyPatch, _clear_bind_env: None
+) -> None:
+    """No env vars → default UDS path; must continue to work unchanged."""
+    bind = agent_server.resolve_agent_bind(None)
+    assert bind.startswith("unix://")
+
+
+def test_resolve_agent_bind_rejects_wildcard_v4(
+    monkeypatch: pytest.MonkeyPatch, _clear_bind_env: None
+) -> None:
+    monkeypatch.setenv("CORLINMAN_PY_ADDR", "0.0.0.0:50051")
+    with pytest.raises(agent_server.GrpcAgentBindError) as exc_info:
+        agent_server.resolve_agent_bind(None)
+    # Error must name the override env var so the operator knows what
+    # to flip if they really want a public bind.
+    assert "CORLINMAN_GRPC_AGENT_ALLOW_PUBLIC" in str(exc_info.value)
+
+
+def test_resolve_agent_bind_rejects_wildcard_v6(
+    monkeypatch: pytest.MonkeyPatch, _clear_bind_env: None
+) -> None:
+    monkeypatch.setenv("CORLINMAN_PY_ADDR", "[::]:50051")
+    with pytest.raises(agent_server.GrpcAgentBindError):
+        agent_server.resolve_agent_bind(None)
+
+
+def test_resolve_agent_bind_rejects_private_lan(
+    monkeypatch: pytest.MonkeyPatch, _clear_bind_env: None
+) -> None:
+    monkeypatch.setenv("CORLINMAN_PY_ADDR", "192.168.1.5:50051")
+    with pytest.raises(agent_server.GrpcAgentBindError):
+        agent_server.resolve_agent_bind(None)
+
+
+def test_resolve_agent_bind_rejects_public_ip(
+    monkeypatch: pytest.MonkeyPatch, _clear_bind_env: None
+) -> None:
+    monkeypatch.setenv("CORLINMAN_PY_ADDR", "8.8.8.8:50051")
+    with pytest.raises(agent_server.GrpcAgentBindError):
+        agent_server.resolve_agent_bind(None)
+
+
+def test_resolve_agent_bind_accepts_public_with_allow_flag(
+    monkeypatch: pytest.MonkeyPatch, _clear_bind_env: None
+) -> None:
+    monkeypatch.setenv("CORLINMAN_PY_ADDR", "0.0.0.0:50051")
+    monkeypatch.setenv("CORLINMAN_GRPC_AGENT_ALLOW_PUBLIC", "1")
+    assert agent_server.resolve_agent_bind(None) == "0.0.0.0:50051"
+
+
+def test_resolve_agent_bind_allow_flag_logs_warning(
+    monkeypatch: pytest.MonkeyPatch,
+    _clear_bind_env: None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The opt-in opens an unauthenticated network surface — log it.
+
+    structlog's default ConsoleRenderer writes to stdout/stderr (not the
+    stdlib ``logging`` framework), so we assert against the captured
+    stream rather than ``caplog``.
+    """
+    monkeypatch.setenv("CORLINMAN_PY_ADDR", "0.0.0.0:50051")
+    monkeypatch.setenv("CORLINMAN_GRPC_AGENT_ALLOW_PUBLIC", "1")
+    agent_server.resolve_agent_bind(None)
+    captured = capsys.readouterr()
+    rendered = captured.out + captured.err
+    assert "grpc.agent.public_bind" in rendered, rendered
+    assert "warning" in rendered.lower(), rendered
+
+
+def test_resolve_agent_bind_allow_flag_only_accepts_one(
+    monkeypatch: pytest.MonkeyPatch, _clear_bind_env: None
+) -> None:
+    """A non-``1`` value must NOT open the door — be strict, not permissive."""
+    monkeypatch.setenv("CORLINMAN_PY_ADDR", "0.0.0.0:50051")
+    monkeypatch.setenv("CORLINMAN_GRPC_AGENT_ALLOW_PUBLIC", "true")
+    with pytest.raises(agent_server.GrpcAgentBindError):
+        agent_server.resolve_agent_bind(None)
+
+
 # ─── agent_server gate ───────────────────────────────────────────────
 
 

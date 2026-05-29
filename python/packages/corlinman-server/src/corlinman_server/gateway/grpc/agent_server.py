@@ -38,6 +38,7 @@ from typing import Any
 import structlog
 
 __all__ = [
+    "GrpcAgentBindError",
     "agent_inproc_enabled",
     "resolve_agent_bind",
     "serve_agent",
@@ -51,6 +52,91 @@ log = structlog.get_logger(__name__)
 #: configured against the standard socket still finds the in-process one.
 _DEFAULT_SOCKET: str = "/tmp/corlinman-py.sock"
 _DEFAULT_TCP_ADDR: str = "127.0.0.1:50051"
+
+#: Hosts the co-hosted agent is willing to bind to without an explicit
+#: operator opt-in. The Agent gRPC has **no** TLS or auth on
+#: ``add_insecure_port`` — a non-loopback bind exposes ReasoningLoop
+#: (and its auto-bound ``run_shell`` / ``write_file`` / ``apply_patch``
+#: tools) to the network. Default-deny everything else; the operator
+#: can flip :data:`_ALLOW_PUBLIC_ENV` to opt in.
+_SAFE_HOSTS: frozenset[str] = frozenset({"127.0.0.1", "::1", "localhost"})
+
+#: Env var that lets an operator opt in to a non-loopback bind despite
+#: the missing auth layer. Strict comparison against ``"1"`` — any other
+#: value (``true``, ``yes``, empty) refuses the bind, on the
+#: defence-in-depth principle that a typo must not silently open an
+#: unauthenticated network surface.
+_ALLOW_PUBLIC_ENV: str = "CORLINMAN_GRPC_AGENT_ALLOW_PUBLIC"
+
+
+class GrpcAgentBindError(RuntimeError):
+    """Raised when :func:`resolve_agent_bind` is asked to bind the
+    co-hosted Agent gRPC to a non-loopback address without the operator
+    explicitly opting in via ``$CORLINMAN_GRPC_AGENT_ALLOW_PUBLIC=1``.
+
+    The Agent service is hosted on ``add_insecure_port`` — no TLS, no
+    auth — so a non-loopback bind exposes :class:`~corlinman_agent.\
+reasoning_loop.ReasoningLoop` (which auto-binds the shell / write-file
+    / apply-patch tools) to anyone on the network. Refusing the bind by
+    default keeps a misconfigured ``$CORLINMAN_PY_ADDR=0.0.0.0:50051``
+    from silently becoming an unauthenticated RCE.
+    """
+
+
+def _extract_host(bind: str) -> str | None:
+    """Return the host portion of a ``host:port`` (or IPv6
+    ``[host]:port``) bind. Returns ``None`` if the bind has no host —
+    e.g. a ``unix://`` UDS path, which is always loopback by nature.
+    """
+    if bind.startswith("unix://") or bind.startswith("unix:"):
+        return None
+    # IPv6 literal: ``[::1]:50051`` or ``[::]:50051``.
+    if bind.startswith("["):
+        end = bind.find("]")
+        if end == -1:
+            return bind  # malformed — let the caller flag it
+        return bind[1:end]
+    # IPv4 / hostname: ``host:port`` — take the part before the **last**
+    # colon to be robust to schemes already stripped.
+    if ":" in bind:
+        return bind.rsplit(":", 1)[0]
+    return bind
+
+
+def _assert_safe_bind(bind: str) -> None:
+    """Refuse a non-loopback bind unless the operator opted in.
+
+    A ``unix://`` UDS path is always allowed — UDS access is mediated by
+    filesystem perms, not the network. For TCP binds, the host must be
+    in :data:`_SAFE_HOSTS`, **or** the operator must set
+    ``$CORLINMAN_GRPC_AGENT_ALLOW_PUBLIC=1`` (in which case a warning is
+    logged so the choice is visible in audit logs).
+    """
+    host = _extract_host(bind)
+    if host is None or host in _SAFE_HOSTS:
+        return
+    if os.environ.get(_ALLOW_PUBLIC_ENV) == "1":
+        log.warning(
+            "grpc.agent.public_bind",
+            bind=bind,
+            host=host,
+            detail=(
+                "co-hosted Agent gRPC bound to non-loopback host with "
+                "no TLS or auth (operator opted in via "
+                f"{_ALLOW_PUBLIC_ENV}=1); ensure an upstream firewall / "
+                "mTLS proxy fronts this socket"
+            ),
+        )
+        return
+    raise GrpcAgentBindError(
+        f"refusing to bind co-hosted Agent gRPC to non-loopback host "
+        f"{host!r} (resolved bind={bind!r}) — the service uses "
+        "add_insecure_port (no TLS, no auth) and exposing it to the "
+        "network is an unauthenticated-RCE risk. Bind to 127.0.0.1, "
+        "::1, localhost, or a unix:// UDS path; or, if the deployment "
+        "fronts the socket with an mTLS / firewalled proxy, opt in "
+        f"explicitly with {_ALLOW_PUBLIC_ENV}=1."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -93,17 +179,33 @@ def resolve_agent_bind(state: Any | None = None) -> str:
     ``config["agent"]["endpoint"]`` is intentionally *not* consulted
     here — that key is the **dial** target for an external agent; the
     co-hosted server owns its own bind so the two cannot be confused.
+
+    **Safety gate (SEC-204):** the Agent gRPC is served on
+    ``add_insecure_port`` (no TLS, no auth) so binding it to a
+    non-loopback host exposes :class:`~corlinman_agent.reasoning_loop.\
+ReasoningLoop` (and its auto-bound ``run_shell`` / ``write_file`` /
+    ``apply_patch`` tools) to anyone on the network. This function
+    refuses any bind whose host is not in :data:`_SAFE_HOSTS` (or a
+    ``unix://`` UDS) and raises :class:`GrpcAgentBindError` with an
+    actionable remediation message. To opt in (e.g. when an upstream
+    mTLS proxy fronts the socket) set
+    ``$CORLINMAN_GRPC_AGENT_ALLOW_PUBLIC=1``.
     """
     sock = os.environ.get("CORLINMAN_PY_SOCKET")
     if sock:
-        return f"unix://{sock}"
-    addr = os.environ.get("CORLINMAN_PY_ADDR")
-    if addr:
-        return addr
-    port = os.environ.get("CORLINMAN_PY_PORT")
-    if port:
-        return f"127.0.0.1:{port}"
-    return f"unix://{_DEFAULT_SOCKET}"
+        bind = f"unix://{sock}"
+    else:
+        addr = os.environ.get("CORLINMAN_PY_ADDR")
+        if addr:
+            bind = addr
+        else:
+            port = os.environ.get("CORLINMAN_PY_PORT")
+            if port:
+                bind = f"127.0.0.1:{port}"
+            else:
+                bind = f"unix://{_DEFAULT_SOCKET}"
+    _assert_safe_bind(bind)
+    return bind
 
 
 # ---------------------------------------------------------------------------
