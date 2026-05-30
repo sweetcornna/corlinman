@@ -353,6 +353,89 @@ class TestBuiltinHandlers:
 
 
 # ---------------------------------------------------------------------------
+# /status shareable-link enrichment
+# ---------------------------------------------------------------------------
+
+
+class TestStatusLink:
+    """``/status`` appends the caller's signed status-card link only when
+    the feature is configured (``service.configure_status_links``).
+
+    The link helper lives in :mod:`corlinman_channels.service` and is
+    driven by module-level globals; we reset them to defaults in teardown
+    so feature state doesn't leak into sibling tests."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_status_links(self):
+        from corlinman_channels.service import configure_status_links
+
+        yield
+        # Disable the feature (defaults) so we don't leak into siblings.
+        configure_status_links()
+
+    async def test_feature_off_has_no_link(self) -> None:
+        from corlinman_channels.service import configure_status_links
+
+        configure_status_links()  # defaults: disabled
+        spec = match_command("/status")
+        assert spec is not None
+        res = await run_command_handler(spec, _ctx(spec))
+        assert res.reply is not None
+        assert "corlinman online" in res.reply
+        assert "/status/" not in res.reply
+
+    async def test_feature_on_appends_caller_link(self) -> None:
+        from corlinman_channels.service import configure_status_links
+
+        configure_status_links(
+            public_url="https://x",
+            enabled=True,
+            minter=lambda sk: "TOK",
+        )
+        spec = match_command("/status")
+        assert spec is not None
+        res = await run_command_handler(spec, _ctx(spec))
+        assert res.reply is not None
+        assert "corlinman online" in res.reply
+        assert "https://x/status/TOK" in res.reply
+
+    def _revoke_ctx(self, *, is_admin: bool) -> CommandContext:
+        spec = match_command("/status")
+        assert spec is not None
+        return CommandContext(
+            spec=spec,
+            raw_text="/status revoke",
+            args_text="revoke",
+            binding=_binding(),
+            is_admin=is_admin,
+        )
+
+    async def test_revoke_requires_admin(self) -> None:
+        spec = match_command("/status")
+        assert spec is not None
+        res = await run_command_handler(spec, self._revoke_ctx(is_admin=False))
+        assert res.reply is not None
+        assert "管理员" in res.reply
+        # A non-admin revoke must not produce a status link or pretend success.
+        assert "已吊销" not in res.reply
+
+    async def test_revoke_admin_bumps_epoch(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+        from corlinman_server.gateway.status_revocation import current_epoch
+
+        before = current_epoch(tmp_path, _binding().session_key())
+        spec = match_command("/status")
+        assert spec is not None
+        res = await run_command_handler(spec, self._revoke_ctx(is_admin=True))
+        assert res.reply is not None
+        assert "已吊销" in res.reply
+        after = current_epoch(tmp_path, _binding().session_key())
+        assert after == before + 1
+
+
+# ---------------------------------------------------------------------------
 # Admin gate via env var
 # ---------------------------------------------------------------------------
 

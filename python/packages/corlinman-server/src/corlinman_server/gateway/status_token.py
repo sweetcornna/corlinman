@@ -8,12 +8,22 @@ login**.
 
 Wire format (no DB — the token IS the capability)::
 
-    <b64url(session_key|exp_unix)>.<b64url(hmac_sha256(body, key))>
+    <b64url(session_key)>|<exp_unix>|<epoch>.<b64url(hmac_sha256(body, key))>
 
 * ``session_key`` — the conversation the token authorizes (and only that one).
 * ``exp_unix`` — hard expiry; :func:`verify_status_token` rejects stale tokens.
+* ``epoch`` — the per-session **revocation epoch** (#34) baked in at mint time.
+  A token whose epoch is behind the session's current epoch is rejected, so an
+  operator can invalidate every outstanding link for a session by bumping its
+  epoch (see :mod:`corlinman_server.gateway.status_revocation`).
 * HMAC-SHA256 over the body with a per-deployment signing key, compared in
-  constant time. Tampering with the session_key / expiry invalidates the sig.
+  constant time. Tampering with any field (session / expiry / epoch)
+  invalidates the sig.
+
+Backward compatibility: tokens minted before #34 carry only the 2-field body
+``<b64url(session_key)>|<exp_unix>`` (no epoch). :func:`verify_status_token`
+accepts both shapes — a missing epoch reads as ``0`` — so legacy links keep
+verifying until their session is explicitly revoked (current epoch >= 1).
 
 The signing key is resolved once per process via :func:`resolve_signing_key`
 (env override → a persisted ``<DATA_DIR>/status_signing.key`` generated on
@@ -77,19 +87,27 @@ def make_status_token(
     *,
     ttl_seconds: int = DEFAULT_TTL_SECONDS,
     now: int | None = None,
+    epoch: int = 0,
 ) -> str:
     """Mint a signed status token for ``session_key``.
 
     ``ttl_seconds`` <= 0 is treated as the default (never mint an
     already-expired token by accident). ``now`` is injectable for tests.
+
+    ``epoch`` is the session's current revocation epoch (#34); it is folded
+    into the signed body so a later ``revoke_session`` (which bumps the stored
+    epoch) leaves this token's epoch behind and :func:`verify_status_token`
+    rejects it. Defaults to ``0`` — the same value a legacy (pre-#34) token
+    carries — so callers that don't pass an epoch keep their old behaviour.
     """
     if not session_key:
         raise StatusTokenError("session_key must be non-empty")
     ttl = ttl_seconds if ttl_seconds > 0 else DEFAULT_TTL_SECONDS
     exp = (int(now) if now is not None else int(time.time())) + ttl
-    # ``|`` separates the two fields; session_key is b64-wrapped as a whole so
-    # a literal ``|`` inside a key can't confuse the split.
-    body = f"{_b64e(session_key.encode('utf-8'))}|{exp}"
+    epoch_val = int(epoch) if epoch and int(epoch) > 0 else 0
+    # ``|`` separates the three fields; session_key is b64-wrapped as a whole
+    # so a literal ``|`` inside a key can't confuse the split.
+    body = f"{_b64e(session_key.encode('utf-8'))}|{exp}|{epoch_val}"
     return f"{body}.{_sign(body, signing_key)}"
 
 
@@ -98,10 +116,19 @@ def verify_status_token(
     signing_key: bytes,
     *,
     now: int | None = None,
+    current_epoch: int = 0,
 ) -> str | None:
     """Return the ``session_key`` a valid, unexpired token authorizes, else
-    ``None``. Never raises — any malformed / tampered / expired token is a
-    clean ``None`` so route handlers can 403 uniformly."""
+    ``None``. Never raises — any malformed / tampered / expired / revoked
+    token is a clean ``None`` so route handlers can 403 uniformly.
+
+    ``current_epoch`` is the session's live revocation epoch (#34). A token
+    whose baked-in epoch is *behind* ``current_epoch`` is rejected — that is
+    how :func:`corlinman_server.gateway.status_revocation.revoke_session`
+    invalidates outstanding links. Both the new 3-field body
+    ``key|exp|epoch`` and the legacy 2-field body ``key|exp`` are accepted;
+    a legacy token's epoch reads as ``0``, so it is rejected only once the
+    session has been revoked (``current_epoch >= 1``)."""
     if not token or not isinstance(token, str):
         return None
     body, _, sig = token.partition(".")
@@ -111,11 +138,21 @@ def verify_status_token(
     # Constant-time compare to avoid leaking the signature byte-by-byte.
     if not hmac.compare_digest(sig, expected):
         return None
-    key_b64, _, exp_str = body.partition("|")
+    # Body is ``key|exp`` (legacy) or ``key|exp|epoch`` (#34). Split on ``|``;
+    # the session_key is b64-wrapped so it never contains a literal ``|``.
+    parts = body.split("|")
+    if len(parts) not in (2, 3):
+        return None
+    key_b64, exp_str = parts[0], parts[1]
+    epoch_str = parts[2] if len(parts) == 3 else "0"
     if not exp_str or not exp_str.isdigit():
+        return None
+    if not epoch_str or not epoch_str.isdigit():
         return None
     if int(exp_str) < (int(now) if now is not None else int(time.time())):
         return None  # expired
+    if int(epoch_str) < int(current_epoch):
+        return None  # revoked — token predates the session's current epoch
     try:
         return _b64d(key_b64).decode("utf-8")
     except (ValueError, UnicodeDecodeError):

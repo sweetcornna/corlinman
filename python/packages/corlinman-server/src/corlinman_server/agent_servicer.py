@@ -2517,6 +2517,9 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         the deployment hasn't set ``CORLINMAN_PUBLIC_URL`` (no way to build
         an absolute link) or the turn has no session to scope.
         """
+        from corlinman_server.gateway.status_revocation import (  # noqa: PLC0415
+            current_epoch,
+        )
         from corlinman_server.gateway.status_token import (  # noqa: PLC0415
             DEFAULT_TTL_SECONDS,
             make_status_token,
@@ -2583,8 +2586,16 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         except (ValueError, UnicodeDecodeError):
             pass
 
-        key = resolve_signing_key(_resolve_data_dir())
-        token = make_status_token(session_key, key, ttl_seconds=ttl)
+        data_dir = _resolve_data_dir()
+        key = resolve_signing_key(data_dir)
+        # Bake the session's live revocation epoch into the link (#34) so an
+        # operator's later ``revoke_session`` invalidates this link too.
+        token = make_status_token(
+            session_key,
+            key,
+            ttl_seconds=ttl,
+            epoch=current_epoch(data_dir, session_key),
+        )
         return json.dumps(
             {
                 "ok": True,

@@ -43,6 +43,7 @@ from fastapi import APIRouter, Query, Request
 from fastapi import Path as PathParam
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from corlinman_server.gateway.status_revocation import current_epoch
 from corlinman_server.gateway.status_token import (
     resolve_signing_key,
     verify_status_token,
@@ -208,9 +209,26 @@ def _empty_snapshot(session_key: str) -> dict[str, Any]:
 
 
 def _resolve_session(token: str) -> str | None:
-    """Verify ``token`` and return the session_key it authorizes, else None."""
-    key = resolve_signing_key(_data_dir())
-    return verify_status_token(token, key)
+    """Verify ``token`` and return the session_key it authorizes, else None.
+
+    Revocation-aware (#34): the session_key isn't known until the token is
+    verified, so we verify in two passes. The first pass (``current_epoch=0``)
+    just checks signature + expiry and tells us *which* session the token
+    claims. We then look up that session's live revocation epoch and re-verify
+    against it — so a token minted before a ``revoke_session`` (its baked-in
+    epoch now trails the stored one) fails the second pass and the route 403s.
+    """
+    data_dir = _data_dir()
+    key = resolve_signing_key(data_dir)
+    session_key = verify_status_token(token, key)
+    if session_key is None:
+        return None
+    epoch = current_epoch(data_dir, session_key)
+    if epoch <= 0:
+        # Nothing revoked for this session — the first pass already proved
+        # the token valid, so skip the redundant re-verify.
+        return session_key
+    return verify_status_token(token, key, current_epoch=epoch)
 
 
 def router() -> APIRouter:

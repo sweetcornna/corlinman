@@ -311,20 +311,102 @@ def _render_whoami(ctx: CommandContext) -> CommandResult:
     return CommandResult(reply="\n".join(lines))
 
 
-def _render_status(ctx: CommandContext) -> CommandResult:
-    """Short bot-status line — kept minimal in v1.
+def _channels_data_dir() -> str:
+    """Resolve the gateway data dir from the environment (handler-local).
 
-    Future revisions may surface persona, bound model, uptime, agent
-    busy/idle, etc. The handler stays simple today so the command can
-    ship without new infra; the channel adapter can pass extra fields
-    via ``ctx`` if needed.
+    Mirrors the env-var precedence used by
+    ``gateway.lifecycle.entrypoint`` and the persona-store handler:
+    ``$CORLINMAN_DATA_DIR`` → ``~/.corlinman`` → ``.corlinman``. Kept as
+    a tiny helper so the status-card handlers don't each re-implement it.
     """
-    return CommandResult(
-        reply=(
-            "corlinman online. Use /help to see commands. "
-            f"Channel: {ctx.binding.channel}."
+    raw = os.environ.get("CORLINMAN_DATA_DIR")
+    if raw:
+        return os.path.abspath(raw)
+    try:
+        from pathlib import Path as _Path  # noqa: PLC0415
+
+        return str(_Path.home() / ".corlinman")
+    except (RuntimeError, OSError):
+        return ".corlinman"
+
+
+def _render_status(ctx: CommandContext) -> CommandResult:
+    """Short bot-status line, plus the caller's shareable status link.
+
+    Always emits a one-line status header. When the shareable
+    agent-status-card feature is configured (see
+    :func:`corlinman_channels.service.configure_status_links`), the
+    caller's own signed link (``{public_url}/status/{token}``) is
+    appended on a fresh line so they can tap through to a live
+    trajectory view. When the feature is off the helper returns ``""``
+    and we emit just the header — never a broken/empty link.
+
+    Subcommand ``/status revoke`` (admin-only) invalidates every
+    outstanding link for the caller's session (#34): it bumps the
+    session's revocation epoch via
+    :func:`corlinman_server.gateway.status_revocation.revoke_session`,
+    so links already shared stop resolving (their baked-in epoch falls
+    behind) while a fresh ``/status`` immediately mints a working one.
+
+    The link helper lives in :mod:`corlinman_channels.service`, which
+    imports this module — so the import is lazy (inside the function)
+    to dodge the commands<->service circular import, and wrapped in
+    ``try/except`` so a missing ``corlinman_server`` or a disabled
+    feature degrades gracefully rather than crashing.
+    """
+    subcommand = ctx.args_text.strip().lower()
+
+    # /status revoke — invalidate the caller's outstanding links (admin).
+    if subcommand in ("revoke", "撤销", "吊销"):
+        if not ctx.is_admin:
+            return CommandResult(
+                reply="❌ 仅管理员可以吊销状态链接。",
+                ephemeral=True,
+            )
+        try:
+            from pathlib import Path as _Path  # noqa: PLC0415
+
+            from corlinman_server.gateway.status_revocation import (  # noqa: PLC0415
+                revoke_session,
+            )
+
+            new_epoch = revoke_session(
+                _Path(_channels_data_dir()), ctx.binding.session_key()
+            )
+        except Exception:  # noqa: BLE001 — never crash the handler
+            return CommandResult(
+                reply="❌ 吊销不可用：corlinman-server 未安装或数据目录不可写。",
+                ephemeral=True,
+            )
+        if new_epoch <= 0:
+            return CommandResult(
+                reply="❌ 吊销未生效（无法持久化撤销状态）。",
+                ephemeral=True,
+            )
+        return CommandResult(
+            reply=(
+                f"✅ 已吊销本会话此前的所有状态链接（撤销版本 #{new_epoch}）。"
+                "之前分享出去的链接将立即失效；再次发送 /status 可获取新链接。"
+            )
         )
+
+    status_line = (
+        "corlinman online. Use /help to see commands. "
+        f"Channel: {ctx.binding.channel}."
     )
+
+    link_line = ""
+    try:
+        from corlinman_channels.service import (  # noqa: PLC0415
+            _status_link_line,
+        )
+
+        link_line = _status_link_line(ctx.binding.session_key())
+    except Exception:  # noqa: BLE001 — a status link must never break the reply
+        link_line = ""
+
+    reply = f"{status_line}\n{link_line}" if link_line else status_line
+    return CommandResult(reply=reply)
 
 
 def _render_sethome(ctx: CommandContext) -> CommandResult:
@@ -520,8 +602,9 @@ COMMAND_REGISTRY: tuple[CommandSpec, ...] = (
             "/status",
             "/状态",
         ),
-        summary="显示机器人当前状态",
+        summary="显示机器人状态 + 实时状态链接（/status revoke 吊销旧链接，仅管理员）",
         category="Info",
+        args_hint="[revoke]",
         handler=_render_status,
     ),
     # First-run-wizard surface (W3 / docs/PLAN_FIRST_RUN_WIZARD.md

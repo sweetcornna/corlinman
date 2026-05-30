@@ -210,6 +210,7 @@ def _wire_status_links(cfg: Any | None, data_dir: Path) -> bool:
         from corlinman_server.gateway.origin_learn import (
             load_remembered_origin,
         )
+        from corlinman_server.gateway.status_revocation import current_epoch
         from corlinman_server.gateway.status_token import (
             make_status_token,
             resolve_signing_key,
@@ -253,7 +254,12 @@ def _wire_status_links(cfg: Any | None, data_dir: Path) -> bool:
     configure_status_links(
         public_url=public_url,
         enabled=status_enabled,
-        minter=lambda sk: make_status_token(sk, signing_key),
+        # Fold the session's live revocation epoch into each freshly-minted
+        # link (#34) so a later ``revoke_session`` bump leaves already-shared
+        # links behind while new ones keep working.
+        minter=lambda sk: make_status_token(
+            sk, signing_key, epoch=current_epoch(data_dir, sk)
+        ),
     )
 
     if status_enabled:
