@@ -158,7 +158,20 @@ def _resolve_cors_origins() -> list[str]:
     return [origin.strip() for origin in raw.split(",") if origin.strip()]
 
 
-def _wire_status_links(cfg: Any | None, data_dir: Path) -> None:
+def _status_links_explicitly_configured(cfg: Any | None) -> bool:
+    """True when an operator set ``public_url`` via config or env.
+
+    When explicit, the learned-origin auto-detection must stand down so a
+    health-check / loopback request can't shadow the operator's choice.
+    """
+    server_cfg = _extract_section(cfg, "server")
+    config_public_url = _extract_section(server_cfg, "public_url")
+    if isinstance(config_public_url, str) and config_public_url.strip():
+        return True
+    return bool(os.environ.get("CORLINMAN_PUBLIC_URL", "").strip())
+
+
+def _wire_status_links(cfg: Any | None, data_dir: Path) -> bool:
     """Wire the agent status-card channel-link feature exactly once.
 
     Each channel's reply path calls
@@ -173,20 +186,30 @@ def _wire_status_links(cfg: Any | None, data_dir: Path) -> None:
     imports ``corlinman_server`` at module top (import-linter rule).
 
     Resolution (dict-shaped config — ``load_from_path`` returns a plain
-    dict):
+    dict), first non-empty wins:
 
-    * ``public_url`` — ``[server].public_url`` in config, else the
-      ``CORLINMAN_PUBLIC_URL`` env var, else ``""``.
-    * ``status_url_in_replies`` — ``[channels].status_url_in_replies``,
-      default ``True``.
+    1. ``[server].public_url`` in config,
+    2. the ``CORLINMAN_PUBLIC_URL`` env var,
+    3. the **learned** public origin (``<data_dir>/public_origin``) written
+       by :class:`~corlinman_server.gateway.origin_learn.OriginLearningMiddleware`
+       from a real inbound request — this is the zero-config path: the
+       first browser/status-link hit through the public hostname arms the
+       feature with no operator action.
 
-    Safe no-op when ``public_url`` is empty: ``configure_status_links``
-    already guards (links stay off unless public_url + enabled + minter
-    are all truthy), and we never crash resolving config.
+    Gated by ``[channels].status_url_in_replies`` (default ``True``). Safe
+    no-op when no URL resolves: ``configure_status_links`` keeps links off
+    unless public_url + enabled + minter are all truthy.
+
+    Returns ``True`` when an explicit (config/env) URL was used — the
+    caller installs the learning middleware only when this is ``False`` (so
+    auto-detection runs only when there's nothing explicit to honour).
     """
     try:
         from corlinman_channels.service import configure_status_links
 
+        from corlinman_server.gateway.origin_learn import (
+            load_remembered_origin,
+        )
         from corlinman_server.gateway.status_token import (
             make_status_token,
             resolve_signing_key,
@@ -195,7 +218,9 @@ def _wire_status_links(cfg: Any | None, data_dir: Path) -> None:
         logger.warning(
             "gateway.channels.status_links_import_failed", error=str(exc)
         )
-        return
+        return False
+
+    explicit = _status_links_explicitly_configured(cfg)
 
     server_cfg = _extract_section(cfg, "server")
     config_public_url = _extract_section(server_cfg, "public_url")
@@ -204,18 +229,17 @@ def _wire_status_links(cfg: Any | None, data_dir: Path) -> None:
         if isinstance(config_public_url, str)
         else ""
     )
-    public_url = config_public_url or os.environ.get(
-        "CORLINMAN_PUBLIC_URL", ""
-    ).strip()
+    env_public_url = os.environ.get("CORLINMAN_PUBLIC_URL", "").strip()
+    learned_public_url = load_remembered_origin(data_dir)
+    public_url = config_public_url or env_public_url or learned_public_url
 
     # The in-process agent servicer (agent_status_card tool) holds no
     # gateway config object and resolves its public base URL from
-    # CORLINMAN_PUBLIC_URL first. When the operator set it only in
-    # ``[server].public_url`` (env unset), publish it into the process env
-    # here so the tool's dispatch builds the same absolute link the
-    # channels do — without threading a config handle through the servicer.
-    if config_public_url and not os.environ.get("CORLINMAN_PUBLIC_URL"):
-        os.environ["CORLINMAN_PUBLIC_URL"] = config_public_url
+    # CORLINMAN_PUBLIC_URL first. When the URL came from config or the
+    # learned-origin file (env unset), publish it into the process env here
+    # so the tool's dispatch builds the same absolute link the channels do.
+    if public_url and not env_public_url:
+        os.environ["CORLINMAN_PUBLIC_URL"] = public_url
 
     channels_cfg = _extract_section(cfg, "channels")
     flag = _extract_section(channels_cfg, "status_url_in_replies")
@@ -233,9 +257,19 @@ def _wire_status_links(cfg: Any | None, data_dir: Path) -> None:
     )
 
     if status_enabled:
-        logger.info(
-            "gateway.channels.status_links_enabled", public_url=public_url
+        source = (
+            "config"
+            if config_public_url
+            else "env"
+            if env_public_url
+            else "learned"
         )
+        logger.info(
+            "gateway.channels.status_links_enabled",
+            public_url=public_url,
+            source=source,
+        )
+    return explicit
 
 
 def _load_config(path: Path | None) -> Any | None:
@@ -2460,6 +2494,37 @@ def build_app(
             )
         except ImportError as exc:  # pragma: no cover
             logger.warning("gateway.cors.middleware_missing", error=str(exc))
+
+    # Zero-config public-origin learning. When no explicit public_url is
+    # set, this middleware learns the public base URL from the first real
+    # inbound request through the public hostname (honoring
+    # X-Forwarded-Proto/Host behind a reverse proxy) and persists it to
+    # ``<data_dir>/public_origin``. The ``on_learn`` callback re-arms the
+    # channel status-link feature live, so the first browser/status-link
+    # hit lights up the "🔗 实时状态" link in chat replies — no operator
+    # action, no restart. Stands down entirely when public_url is explicit.
+    try:
+        from corlinman_server.gateway.origin_learn import (
+            OriginLearningMiddleware,
+        )
+
+        def _rearm_status_links_on_learn(_origin: str) -> None:
+            try:
+                _wire_status_links(cfg, resolved_data_dir)
+            except Exception as exc:  # noqa: BLE001 - best-effort re-arm
+                logger.warning(
+                    "gateway.channels.status_links_rearm_failed",
+                    error=str(exc),
+                )
+
+        app.add_middleware(
+            OriginLearningMiddleware,
+            data_dir=resolved_data_dir,
+            explicitly_configured=_status_links_explicitly_configured(cfg),
+            on_learn=_rearm_status_links_on_learn,
+        )
+    except Exception as exc:  # noqa: BLE001 - never block boot on learning
+        logger.warning("gateway.origin_learn.install_failed", error=str(exc))
 
     # Middleware before routes — order matters for ASGI stack walks.
     #

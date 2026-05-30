@@ -2536,14 +2536,25 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             if cfg_public_url:
                 public_url = cfg_public_url.strip().rstrip("/")
         if not public_url:
+            # Zero-config fallback: the gateway learns the public origin from
+            # real inbound requests and persists it to
+            # ``<data_dir>/public_origin`` (see gateway.origin_learn). Read it
+            # so the tool produces a link with no operator configuration at
+            # all once anyone has hit the gateway through its public hostname.
+            learned = _read_learned_public_origin()
+            if learned:
+                public_url = learned.strip().rstrip("/")
+        if not public_url:
             return json.dumps(
                 {
                     "ok": False,
                     "error": "public_url_unset",
                     "message": (
-                        "shareable status links need the operator to set "
-                        "CORLINMAN_PUBLIC_URL (the gateway's public base URL) "
-                        "or [server].public_url in config.toml."
+                        "shareable status links need the gateway's public "
+                        "base URL — set CORLINMAN_PUBLIC_URL or "
+                        "[server].public_url, or simply open the admin UI / a "
+                        "status link once through the public hostname so it "
+                        "can be auto-detected."
                     ),
                 },
                 ensure_ascii=False,
@@ -2979,6 +2990,24 @@ def _read_public_url_from_py_config() -> str:
         if isinstance(server, Mapping):
             value = server.get("public_url")
     return value if isinstance(value, str) else ""
+
+
+def _read_learned_public_origin() -> str:
+    """Best-effort read of the gateway-learned public origin.
+
+    The gateway's :class:`~corlinman_server.gateway.origin_learn.OriginLearningMiddleware`
+    writes the public base URL it observed on a real inbound request to
+    ``<data_dir>/public_origin``. The status-card tool (separate process)
+    reads it as a last resort so a shareable link works with zero explicit
+    configuration. Any missing file / read error returns ``""``.
+    """
+    try:
+        from corlinman_server.gateway.origin_learn import (  # noqa: PLC0415
+            load_remembered_origin,
+        )
+    except ImportError:
+        return ""
+    return load_remembered_origin(_resolve_data_dir())
 
 
 def _resolve_data_dir() -> Path:
