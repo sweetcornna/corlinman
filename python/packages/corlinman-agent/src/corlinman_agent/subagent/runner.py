@@ -132,6 +132,7 @@ async def run_child(
     max_depth: int = DEFAULT_MAX_DEPTH,
     event_emitter: Any | None = None,
     model_override: str | None = None,
+    parent_model: str | None = None,
 ) -> TaskResult:
     """Drive one child reasoning loop and return its :class:`TaskResult`.
 
@@ -204,7 +205,18 @@ async def run_child(
         the card has no model either, ``ChatStart.model`` stays
         ``""`` (the legacy placeholder — production callers replace
         this from the parent's resolved alias at the gateway layer).
-        Precedence: ``model_override`` > ``agent_card.model`` > ``""``.
+        Precedence: ``model_override`` > ``agent_card.model`` >
+        ``parent_model`` > ``""``.
+    parent_model
+        v1.12.2 — the parent's *resolved* model alias (e.g. the value of
+        ``ChatStart.model`` the parent is running under). Used only as a
+        fallback when neither ``model_override`` nor ``agent_card.model``
+        is set: an ephemeral ``spawn_inline`` card has no model binding,
+        and unlike top-level chats the gateway does not rewrite an empty
+        child ``model``, so without this the spawn reaches the provider
+        with ``model=""`` → 400 "model is required". Inheriting the
+        parent's alias makes a model-less spawn run under the same model
+        the parent uses.
 
     Returns
     -------
@@ -284,15 +296,20 @@ async def run_child(
             )
 
     messages = _build_child_messages(agent_card, task)
-    # W1.1: resolve the child's model with the explicit precedence
-    # documented in the docstring — caller override > card binding >
-    # legacy empty placeholder. The gateway / provider router rewrites
-    # ``""`` from the parent's resolved alias as it does today, so the
-    # third branch is byte-compat with pre-W1.1 callers.
+    # W1.1 / v1.12.2: resolve the child's model with explicit precedence —
+    # caller override > card binding > inherited parent model > legacy empty
+    # placeholder. The third rung is the v1.12.2 fix: spawn_inline ephemeral
+    # cards carry no model, and the gateway no longer rewrites an empty
+    # ``model`` for *child* ChatStarts, so a bare spawn would reach the
+    # provider with ``model=""`` and 400 ("model is required"). Inheriting
+    # the parent's resolved alias makes a model-less spawn Just Work, while
+    # the empty-string final rung stays byte-compat for callers that pass
+    # neither (tests with fake providers that ignore the field).
     effective_model: str = (
         model_override
-        if model_override
-        else (agent_card.model or "")
+        or (agent_card.model or None)
+        or (parent_model or None)
+        or ""
     )
     chat_start = ChatStart(
         # ``model=""`` is a placeholder — real provider routing wires

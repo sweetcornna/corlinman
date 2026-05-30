@@ -4,6 +4,39 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.12.2] — 2026-05-30 — Hotfix: subagent model inheritance + offline default + max-10 fanout
+
+> Second prod hotfix on the subagent path. Two 400s and one capacity limit:
+> a model-less spawn reached the provider with `model=""`, a fresh VPS couldn't
+> resolve the `general-purpose` default, and the fan-out cap was stuck at 3.
+
+### Fixed
+- **`subagent_spawn_inline` → 400 `model is required`.** An ephemeral inline
+  card binds no model, and — unlike top-level chats — the gateway does not
+  rewrite an empty `model` for *child* `ChatStart`s, so a model-less spawn hit
+  the provider with `model=""`. The child now **inherits the parent's resolved
+  model** as the final fallback. New precedence in `run_child`:
+  `model_override` > `agent_card.model` > `parent_model` > `""`. The parent's
+  model is threaded from `ChatStart.model` through all three spawn dispatchers
+  (`subagent_spawn` / `_many` / `_inline`).
+- **`subagent_spawn` → `agent_not_found: 'general-purpose'` on a fresh host.**
+  The servicer's `_get_agent_registry` loaded only `<DATA_DIR>/agents` (empty on
+  a new VPS) instead of the gateway's three-tier (repo + user + project) stack,
+  so the bundled `general-purpose` card was never seen. It now reuses
+  `_build_agent_registry_stack`, **and** a new in-code `builtin_general_purpose`
+  card (via `AgentCardRegistry.get_or_builtin_default`) backstops the default
+  even when no card is on disk ("offline-first", Claude-Code parity). An
+  explicit unknown `subagent_type` still rejects with `unknown_subagent_type`
+  (typo protection preserved).
+
+### Changed
+- **Max parallel subagents raised 3 → 10** to match Claude Code's Task-tool
+  fan-out. `SUBAGENT_SPAWN_MANY_MAX_TASKS` and
+  `SupervisorPolicy.max_concurrent_per_parent` bumped in lock-step
+  (per-tenant cap stays 15, depth stays 2).
+- `subagent_spawn` / `subagent_spawn_many` now seed the child persona row
+  (`persona_store` threaded through) like the rest of the agent path.
+
 ## [1.12.1] — 2026-05-30 — Hotfix: invalid subagent tool names
 
 ### Fixed

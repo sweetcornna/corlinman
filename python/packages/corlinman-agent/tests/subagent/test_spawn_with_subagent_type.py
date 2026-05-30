@@ -21,6 +21,7 @@ from corlinman_agent.agents.card import AgentCard
 from corlinman_agent.agents.registry import (
     DEFAULT_SUBAGENT_NAME,
     AgentCardRegistry,
+    builtin_general_purpose,
 )
 from corlinman_agent.subagent import (
     AGENT_NOT_FOUND_ERROR,
@@ -200,11 +201,14 @@ async def test_unknown_legacy_agent_field_keeps_agent_not_found() -> None:
     assert provider.calls == 0
 
 
-async def test_default_falls_through_when_general_purpose_unregistered() -> None:
-    """When the caller omits ``subagent_type`` *and* the registry has
-    no ``general-purpose`` card (e.g. a deployment that stripped the
-    bundled YAML), the dispatcher must still emit a clear rejection
-    rather than crashing."""
+async def test_default_runs_incode_fallback_when_general_purpose_unregistered() -> None:
+    """v1.12.2: when the caller omits ``subagent_type`` *and* the registry
+    has no ``general-purpose`` card (e.g. a fresh VPS whose ``agents/`` dir
+    is empty), the dispatcher now runs the IN-CODE ``builtin_general_purpose``
+    fallback instead of rejecting with ``agent_not_found``.
+
+    This is the fix for the prod ``agent_not_found: 'general-purpose'``
+    incident — a model-less default spawn must Just Work offline."""
     args = json.dumps({"goal": "x"})
     provider = _FakeProvider()
     content = await dispatch_subagent_spawn(
@@ -212,13 +216,16 @@ async def test_default_falls_through_when_general_purpose_unregistered() -> None
         parent_ctx=_parent_ctx(),
         agent_registry=_registry(_card("researcher")),  # no general-purpose
         provider=provider,
+        parent_model="claude-opus-4-8",
     )
     payload = json.loads(content)
-    assert payload["finish_reason"] == "rejected"
-    # Falls back to the legacy agent_not_found sentinel — operators see
-    # one bucket for "missing card" regardless of root cause.
-    assert payload["error"].startswith(AGENT_NOT_FOUND_ERROR)
-    assert provider.calls == 0
+    # The child actually ran on the in-code fallback card.
+    assert payload["finish_reason"] == "stop"
+    assert provider.calls == 1
+    # And it inherited the parent's model (the fallback card binds none).
+    assert provider.model_seen == ["claude-opus-4-8"]
+    # The resolved card name threads into the child's agent id.
+    assert DEFAULT_SUBAGENT_NAME in payload["child_agent_id"]
 
 
 # ---------------------------------------------------------------------------
@@ -499,3 +506,170 @@ def test_get_or_default_returns_none_when_default_absent() -> None:
     reg = _registry(_card("researcher"))
     assert reg.get_or_default(None) is None
     assert reg.get_or_default("") is None
+
+
+# ---------------------------------------------------------------------------
+# v1.12.2 — parent-model inheritance + in-code general-purpose fallback.
+# ---------------------------------------------------------------------------
+
+
+async def test_parent_model_inherited_when_card_and_override_absent() -> None:
+    """v1.12.2: when neither ``model_override`` nor ``agent_card.model``
+    is set, the runner inherits ``parent_model`` — the fix for the
+    ``model is required`` 400 on model-less (esp. inline) spawns."""
+    card = _card("researcher")  # no model binding
+    provider = _FakeProvider()
+
+    await run_child(
+        _parent_ctx(),
+        card,
+        TaskSpec(goal="x"),
+        provider=provider,
+        parent_tools=[],
+        parent_model="claude-opus-4-8",
+    )
+
+    assert provider.model_seen == ["claude-opus-4-8"]
+
+
+async def test_card_model_wins_over_parent_model() -> None:
+    """The card's own binding takes precedence over the inherited
+    parent model (the card author chose that model deliberately)."""
+    card = _card("researcher", model="claude-sonnet-4-7")
+    provider = _FakeProvider()
+
+    await run_child(
+        _parent_ctx(),
+        card,
+        TaskSpec(goal="x"),
+        provider=provider,
+        parent_tools=[],
+        parent_model="claude-opus-4-8",
+    )
+
+    assert provider.model_seen == ["claude-sonnet-4-7"]
+
+
+async def test_override_wins_over_parent_model() -> None:
+    """An explicit ``model_override`` beats both the card binding and
+    the inherited parent model — top of the precedence ladder."""
+    card = _card("researcher", model="claude-sonnet-4-7")
+    provider = _FakeProvider()
+
+    await run_child(
+        _parent_ctx(),
+        card,
+        TaskSpec(goal="x"),
+        provider=provider,
+        parent_tools=[],
+        model_override="gpt-4o",
+        parent_model="claude-opus-4-8",
+    )
+
+    assert provider.model_seen == ["gpt-4o"]
+
+
+async def test_no_model_anywhere_keeps_empty_placeholder() -> None:
+    """With no override, no card binding, AND no parent_model, the
+    child's ChatStart.model stays ``""`` — byte-compat with callers
+    (tests / pre-v1.12.2 paths) that thread none of the three."""
+    card = _card("researcher")
+    provider = _FakeProvider()
+
+    await run_child(
+        _parent_ctx(),
+        card,
+        TaskSpec(goal="x"),
+        provider=provider,
+        parent_tools=[],
+    )
+
+    assert provider.model_seen == [""]
+
+
+async def test_dispatcher_threads_parent_model_to_runner() -> None:
+    """End-to-end: ``dispatch_subagent_spawn(parent_model=...)`` with no
+    ``model`` in the args_json and a card with no binding reaches the
+    provider as the parent's model. Locks the servicer→dispatcher→runner
+    wiring that fixes the prod ``model is required`` incident."""
+    gp_card = _card(DEFAULT_SUBAGENT_NAME, tools_allowed=["*"])  # no model
+    args = json.dumps({"goal": "x"})  # no model field
+
+    provider = _FakeProvider()
+    await dispatch_subagent_spawn(
+        args_json=args,
+        parent_ctx=_parent_ctx(),
+        agent_registry=_registry(gp_card),
+        provider=provider,
+        parent_model="claude-opus-4-8",
+    )
+
+    assert provider.model_seen == ["claude-opus-4-8"]
+
+
+async def test_dispatcher_arg_model_wins_over_parent_model() -> None:
+    """A ``model`` in the args_json still beats the inherited
+    parent_model — the per-spawn knob keeps its precedence."""
+    gp_card = _card(DEFAULT_SUBAGENT_NAME, tools_allowed=["*"])
+    args = json.dumps({"goal": "x", "model": "gpt-4o-mini"})
+
+    provider = _FakeProvider()
+    await dispatch_subagent_spawn(
+        args_json=args,
+        parent_ctx=_parent_ctx(),
+        agent_registry=_registry(gp_card),
+        provider=provider,
+        parent_model="claude-opus-4-8",
+    )
+
+    assert provider.model_seen == ["gpt-4o-mini"]
+
+
+def test_get_or_builtin_default_falls_back_without_file() -> None:
+    """v1.12.2: an EMPTY registry (fresh VPS, no bundled cards loaded)
+    still resolves the default via the in-code ``builtin_general_purpose``
+    card — this is the fix for ``agent_not_found: 'general-purpose'``."""
+    reg = _registry()  # no cards at all
+    card = reg.get_or_builtin_default(None)
+    assert card is not None
+    assert card.name == DEFAULT_SUBAGENT_NAME
+    assert card.source_path is None  # in-code, never on disk
+    assert "*" in card.tools_allowed  # inherits the parent's tools
+
+
+def test_get_or_builtin_default_explicit_general_purpose() -> None:
+    """Explicitly naming ``general-purpose`` on an empty registry also
+    resolves the in-code fallback (not just the omitted-name path)."""
+    reg = _registry()
+    card = reg.get_or_builtin_default(DEFAULT_SUBAGENT_NAME)
+    assert card is not None
+    assert card.name == DEFAULT_SUBAGENT_NAME
+
+
+def test_get_or_builtin_default_prefers_loaded_card() -> None:
+    """When a bundled ``general-purpose`` IS loaded, that card wins over
+    the in-code fallback (deployment can customise the default)."""
+    loaded = _card(DEFAULT_SUBAGENT_NAME, system_prompt="CUSTOM default")
+    reg = _registry(loaded)
+    card = reg.get_or_builtin_default(None)
+    assert card is not None
+    assert card.system_prompt == "CUSTOM default"
+
+
+def test_get_or_builtin_default_unknown_named_still_none() -> None:
+    """An explicit OTHER unknown name still returns ``None`` so the
+    dispatcher surfaces ``unknown_subagent_type`` (typo protection is
+    preserved — only the *default* gets the offline fallback)."""
+    reg = _registry()
+    assert reg.get_or_builtin_default("nope") is None
+
+
+def test_builtin_general_purpose_card_shape() -> None:
+    """The in-code card is self-consistent: ephemeral (no source_path),
+    model-less (inherits parent), wildcard tools, non-empty prompt."""
+    card = builtin_general_purpose()
+    assert card.name == DEFAULT_SUBAGENT_NAME
+    assert card.source_path is None
+    assert card.model is None
+    assert card.tools_allowed == ["*"]
+    assert card.system_prompt.strip()

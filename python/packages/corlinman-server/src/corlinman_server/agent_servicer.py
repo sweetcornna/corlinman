@@ -1994,9 +1994,14 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     agent_registry=registry,
                     provider=provider,
                     parent_tools=list(start.tools or []),
+                    persona_store=await self._get_persona_store(),
                     supervisor_acquire=_acquire,
                     max_depth=_sup.policy.max_depth,
                     max_wall_seconds_ceiling=_sup.policy.max_wall_seconds_ceiling,
+                    # v1.12.2: the child inherits the parent's resolved
+                    # model when neither the spawn arg nor the card binds
+                    # one — otherwise ChatStart.model="" 400s upstream.
+                    parent_model=start.model or None,
                     event_emitter=self._event_emitter,
                     parent_turn_id=_parent_turn_id,
                     parent_session_key=start.session_key or None,
@@ -2018,9 +2023,11 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     agent_registry=registry,
                     provider=provider,
                     parent_tools=list(start.tools or []),
+                    persona_store=await self._get_persona_store(),
                     supervisor_acquire=_acquire,
                     max_depth=_sup.policy.max_depth,
                     max_wall_seconds_ceiling=_sup.policy.max_wall_seconds_ceiling,
+                    parent_model=start.model or None,
                     event_emitter=self._event_emitter,
                     parent_turn_id=_parent_turn_id,
                     parent_session_key=start.session_key or None,
@@ -2043,6 +2050,10 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     supervisor_acquire=_acquire,
                     max_depth=_sup.policy.max_depth,
                     max_wall_seconds_ceiling=_sup.policy.max_wall_seconds_ceiling,
+                    # v1.12.2: the ephemeral inline card never binds a
+                    # model, so without this the child 400s "model is
+                    # required" — inherit the parent's resolved alias.
+                    parent_model=start.model or None,
                     event_emitter=self._event_emitter,
                     parent_turn_id=_parent_turn_id,
                     parent_session_key=start.session_key or None,
@@ -2347,8 +2358,21 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
 
     def _get_agent_registry(self) -> AgentCardRegistry | None:
         """Resolve the agent registry from the context assembler or
-        lazy-load from the data dir. Returns ``None`` if no agents/ dir
-        is configured; callers fall back to an error envelope."""
+        lazy-load the full three-tier stack. Returns ``None`` if the
+        agent package is unavailable; callers fall back to an error
+        envelope.
+
+        v1.12.2 — previously this fell back to
+        ``AgentCardRegistry.load_from_dir(data_dir / "agents")``, which
+        scans ONLY the (usually empty) user overlay. On a fresh VPS
+        ``<DATA_DIR>/agents`` has no cards, so ``subagent_spawn`` with
+        the default ``general-purpose`` resolved to
+        ``agent_not_found``. We now reuse the gateway's
+        ``_build_agent_registry_stack`` so the dispatcher sees the same
+        built-in (repo) + user + project tiers the rest of the server
+        does — and the in-code ``builtin_general_purpose`` fallback in
+        ``get_or_builtin_default`` backstops even an empty stack.
+        """
         if self._builtin_agents is not None:
             return self._builtin_agents
         assembler = self._get_context_assembler()
@@ -2356,10 +2380,12 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             self._builtin_agents = assembler.agents
             return self._builtin_agents
         try:
-            data_dir = _resolve_data_dir()
-            self._builtin_agents = AgentCardRegistry.load_from_dir(
-                data_dir / "agents"
+            from corlinman_server.gateway.lifecycle.entrypoint import (  # noqa: PLC0415
+                _build_agent_registry_stack,
             )
+
+            registry, _reload = _build_agent_registry_stack(_resolve_data_dir())
+            self._builtin_agents = registry
             return self._builtin_agents
         except Exception as exc:
             logger.warning("agent.chat.agent_registry_load_failed", error=str(exc))

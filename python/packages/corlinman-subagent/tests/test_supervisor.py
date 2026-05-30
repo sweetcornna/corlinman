@@ -75,9 +75,13 @@ async def drain_events(sub: Any, *, deadline_s: float = 0.1) -> list[Any]:
 
 
 def test_policy_defaults_match_design() -> None:
-    """Maps to ``policy_defaults_match_design`` in Rust."""
+    """Maps to ``policy_defaults_match_design`` in Rust.
+
+    v1.12.2 — ``max_concurrent_per_parent`` raised 3 → 10 to match
+    Claude Code's Task-tool max-fanout and ``SUBAGENT_SPAWN_MANY_MAX_TASKS``.
+    """
     p = SupervisorPolicy()
-    assert p.max_concurrent_per_parent == 3
+    assert p.max_concurrent_per_parent == 10
     assert p.max_concurrent_per_tenant == 15
     assert p.max_depth == 2
     # Python-side addition: the wall-clock ceiling lives on the policy
@@ -86,8 +90,13 @@ def test_policy_defaults_match_design() -> None:
 
 
 def test_concurrency_cap_rejects_fourth_when_three_in_flight() -> None:
-    """Maps to ``concurrency_cap_rejects_fourth_when_three_in_flight``."""
-    sup = Supervisor(SupervisorPolicy())  # 3 per parent
+    """Maps to ``concurrency_cap_rejects_fourth_when_three_in_flight``.
+
+    Pins the cap to 3 explicitly so the boundary test is independent of
+    the default (raised to 10 in v1.12.2) — it exercises the cap
+    *mechanism*, not the default value (covered by
+    ``test_policy_defaults_match_design``)."""
+    sup = Supervisor(SupervisorPolicy(max_concurrent_per_parent=3))
     ctx = make_parent("t1", "session-A")
 
     s1 = sup.try_acquire(ctx)
@@ -351,7 +360,8 @@ async def test_try_acquire_emits_depth_capped_on_concurrency_cap() -> None:
     """Maps to ``try_acquire_emits_depth_capped_on_concurrency_cap``."""
     bus = HookBus(64)
     sub = bus.subscribe(HookPriority.NORMAL)
-    sup = Supervisor(SupervisorPolicy(), hook_bus=bus)
+    # Pin the cap to 3 — boundary test, independent of the v1.12.2 default.
+    sup = Supervisor(SupervisorPolicy(max_concurrent_per_parent=3), hook_bus=bus)
 
     ctx = make_parent("t", "s")
     _s1 = sup.try_acquire(ctx)
@@ -565,7 +575,8 @@ async def test_spawn_child_to_result_maps_concurrency_cap_to_rejected() -> None:
     envelope (mirrors Rust's mapping of non-depth caps to
     ``FinishReason::Rejected``).
     """
-    sup = Supervisor(SupervisorPolicy())
+    # Pin the cap to 3 — boundary test, independent of the v1.12.2 default.
+    sup = Supervisor(SupervisorPolicy(max_concurrent_per_parent=3))
     parent = make_parent("t", "sess")
 
     # Saturate the per-parent counter.

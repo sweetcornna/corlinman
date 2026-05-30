@@ -17,7 +17,11 @@ from corlinman_agent.agents.expander import (
     ExpansionResult,
 )
 from corlinman_agent.agents.markdown import parse_markdown_card
-from corlinman_agent.agents.registry import AgentCardLoadError, AgentCardRegistry
+from corlinman_agent.agents.registry import (
+    AgentCardLoadError,
+    AgentCardRegistry,
+    builtin_general_purpose,
+)
 
 __all__ = [
     "AgentCard",
@@ -27,5 +31,6 @@ __all__ = [
     "AgentExpander",
     "AgentSource",
     "ExpansionResult",
+    "builtin_general_purpose",
     "parse_markdown_card",
 ]

@@ -351,6 +351,19 @@ class AgentCardRegistry:
         """Return the card for ``name`` or ``None`` if not registered."""
         return self._cards.get(name)
 
+    def get_or_builtin_default(self, name: str | None) -> AgentCard | None:
+        """Like :meth:`get_or_default`, but the *default* (omitted name) and
+        an explicit ``general-purpose`` always resolve — falling back to the
+        in-code :func:`builtin_general_purpose` card when no bundled
+        ``general-purpose`` was loaded (Claude-Code "offline-first").
+
+        An explicit OTHER unknown name still returns ``None`` so the
+        dispatcher can surface ``unknown_subagent_type`` (typo protection).
+        """
+        if name and name != DEFAULT_SUBAGENT_NAME:
+            return self._cards.get(name)
+        return self._cards.get(DEFAULT_SUBAGENT_NAME) or builtin_general_purpose()
+
     def get_or_default(self, name: str | None) -> AgentCard | None:
         """Resolve ``name`` to a card, falling back to ``general-purpose``.
 
@@ -392,8 +405,42 @@ class AgentCardRegistry:
         return len(self._cards)
 
 
+def builtin_general_purpose() -> AgentCard:
+    """The in-code ``general-purpose`` subagent card.
+
+    Claude-Code-style "offline-first" fallback: spawns resolve to this when
+    the bundled ``agents/general-purpose.yaml`` wasn't loaded (e.g. a
+    deployment whose registry only scans ``<DATA_DIR>/agents``). Mirrors the
+    on-disk card: ``tools_allowed=["*"]`` (inherit the parent's full set,
+    bounded downstream), ``model=None`` (inherit the parent's resolved
+    model). Never registered — ``source_path=None``.
+    """
+    return AgentCard(
+        name=DEFAULT_SUBAGENT_NAME,
+        description="General-purpose subagent (built-in fallback).",
+        system_prompt=(
+            "You are a general-purpose subagent dispatched by a parent agent "
+            "to handle one focused task. You have the parent's tool set "
+            "(subject to its whitelist). Stay strictly within the goal — do "
+            "not branch into new topics and do not recursively spawn your own "
+            "subagents. When done, return a concise structured summary: what "
+            "you did, what succeeded/failed (with paths/URLs), any caveats, "
+            "and a one-line verdict."
+        ),
+        variables={},
+        tools_allowed=["*"],
+        skill_refs=[],
+        source_path=None,
+        model=None,
+        provider=None,
+        show_action_trace=True,
+        source="built-in",
+    )
+
+
 __all__ = [
     "DEFAULT_SUBAGENT_NAME",
     "AgentCardLoadError",
     "AgentCardRegistry",
+    "builtin_general_purpose",
 ]

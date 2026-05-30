@@ -88,7 +88,10 @@ class SupervisorPolicy:
     Mirrors the Rust ``SupervisorPolicy``. Defaults match the design's
     ``[subagent]`` block:
 
-    - ``max_concurrent_per_parent=3``
+    - ``max_concurrent_per_parent=10`` (v1.12.2 — raised 3 → 10 to match
+      Claude Code's Task-tool max-fanout and
+      ``SUBAGENT_SPAWN_MANY_MAX_TASKS``; the per-tenant cap is the wider
+      backstop)
     - ``max_concurrent_per_tenant=15``
     - ``max_depth=2``
     - ``max_wall_seconds_ceiling=60`` (used by
@@ -96,7 +99,7 @@ class SupervisorPolicy:
       mirrors ``types::defaults::DEFAULT_MAX_WALL_SECONDS``)
     """
 
-    max_concurrent_per_parent: int = 3
+    max_concurrent_per_parent: int = 10
     max_concurrent_per_tenant: int = 15
     max_depth: int = 2
     #: Hard ceiling on a child's wall-clock budget. ``TaskSpec.max_wall_seconds``

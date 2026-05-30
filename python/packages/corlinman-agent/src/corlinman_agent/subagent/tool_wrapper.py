@@ -291,6 +291,7 @@ async def dispatch_subagent_spawn(
     child_seq: int = 0,
     max_depth: int = DEFAULT_MAX_DEPTH,
     max_wall_seconds_ceiling: int | None = None,
+    parent_model: str | None = None,
     event_emitter: Any | None = None,
     parent_turn_id: str | None = None,
     parent_session_key: str | None = None,
@@ -343,6 +344,12 @@ async def dispatch_subagent_spawn(
         Optional ceiling on the request's ``max_wall_seconds``. The
         design's ``[subagent].max_wall_seconds_ceiling`` (default 300)
         is enforced from above — if the LLM asks for more, we clamp.
+    parent_model
+        v1.12.2 — the parent's resolved model alias. Threaded into
+        :func:`run_child` as the *fallback* model: when the LLM omits
+        ``model`` and the resolved card has no ``model`` binding, the
+        child inherits the parent's model instead of reaching the
+        provider with ``model=""`` (which 400s "model is required").
 
     Returns
     -------
@@ -402,14 +409,16 @@ async def dispatch_subagent_spawn(
             child_seq=child_seq,
         )
 
-    # ── 2. Resolve the agent card. W1.1 ──────────────────────────────
-    # ``get_or_default`` returns the explicit card when the LLM passed
-    # a known ``subagent_type`` / ``agent`` value, the registry's
-    # ``general-purpose`` fallback when the field is empty/absent, or
-    # ``None`` when an *explicit* value didn't resolve (the dispatcher
-    # then emits ``unknown_subagent_type`` so the LLM can correct the
-    # typo rather than silently getting the default card).
-    card = agent_registry.get_or_default(parsed.subagent_type)
+    # ── 2. Resolve the agent card. W1.1 / v1.12.2 ────────────────────
+    # ``get_or_builtin_default`` returns the explicit card when the LLM
+    # passed a known ``subagent_type`` / ``agent`` value, an IN-CODE
+    # ``general-purpose`` fallback when the field is empty/absent (the
+    # v1.12.2 fix: this no longer requires a ``general-purpose.md`` on
+    # disk, so a fresh VPS with an empty ``agents/`` dir still resolves
+    # the default), or ``None`` when an *explicit* value didn't resolve
+    # (the dispatcher then emits ``unknown_subagent_type`` so the LLM can
+    # correct the typo rather than silently getting the default card).
+    card = agent_registry.get_or_builtin_default(parsed.subagent_type)
     if card is None:
         if parsed.subagent_type:
             # Explicit but unknown. Sentinel choice tracks which field
@@ -458,8 +467,9 @@ async def dispatch_subagent_spawn(
         max_wall_seconds_ceiling=max_wall_seconds_ceiling,
         # W1.1: caller's ``model`` arg (when present) wins over the
         # card's binding; ``None`` lets the runner fall back to
-        # ``agent_card.model``.
+        # ``agent_card.model`` and then ``parent_model``.
         model_override=parsed.model,
+        parent_model=parent_model,
         event_emitter=event_emitter,
         parent_turn_id=parent_turn_id,
         parent_session_key=parent_session_key,
@@ -482,6 +492,7 @@ async def _run_child_under_slot(
     event_emitter: Any | None,
     parent_turn_id: str | None,
     parent_session_key: str | None,
+    parent_model: str | None = None,
 ) -> str:
     """Shared post-resolution driver for ``subagent_spawn`` /
     ``subagent_spawn_inline``.
@@ -565,6 +576,7 @@ async def _run_child_under_slot(
                 max_depth=max_depth,
                 event_emitter=_child_emitter,
                 model_override=model_override,
+                parent_model=parent_model,
             )
     except Exception as exc:
         logger.exception(
@@ -963,7 +975,7 @@ async def _dispatch_via_background(
     # second lookup at execution time); we only need to know whether the
     # name is valid so the rejection envelope can carry the right
     # sentinel.
-    card = agent_registry.get_or_default(parsed.subagent_type)
+    card = agent_registry.get_or_builtin_default(parsed.subagent_type)
     if card is None:
         sentinel = (
             AGENT_NOT_FOUND_ERROR
@@ -1078,10 +1090,13 @@ def _result_json(result: TaskResult) -> str:
 #: Hard cap on the number of siblings one ``subagent_spawn_many`` call
 #: can dispatch. Matches the supervisor's per-parent concurrency ceiling
 #: so the cap surfaces as an args-invalid rejection (a clear, actionable
-#: signal to the LLM) instead of N-3 silent ``parent_concurrency_exceeded``
+#: signal to the LLM) instead of N-10 silent ``parent_concurrency_exceeded``
 #: rejections inside the gather. Raise this only if the supervisor's
 #: ``SupervisorPolicy::max_concurrent_per_parent`` is raised in lock-step.
-SUBAGENT_SPAWN_MANY_MAX_TASKS: int = 3
+#: v1.12.2 — raised 3 → 10 to match Claude Code's max-fanout (the Task
+#: tool lets the orchestrator dispatch up to 10 parallel subagents) and
+#: ``SupervisorPolicy.max_concurrent_per_parent`` was bumped in lock-step.
+SUBAGENT_SPAWN_MANY_MAX_TASKS: int = 10
 
 
 def subagent_spawn_many_tool_schema(
@@ -1207,6 +1222,7 @@ async def dispatch_subagent_spawn_many(
     max_depth: int = DEFAULT_MAX_DEPTH,
     max_wall_seconds_ceiling: int | None = None,
     max_tasks: int = SUBAGENT_SPAWN_MANY_MAX_TASKS,
+    parent_model: str | None = None,
     event_emitter: Any | None = None,
     parent_turn_id: str | None = None,
     parent_session_key: str | None = None,
@@ -1268,6 +1284,7 @@ async def dispatch_subagent_spawn_many(
             child_seq=base_child_seq + i,
             max_depth=max_depth,
             max_wall_seconds_ceiling=max_wall_seconds_ceiling,
+            parent_model=parent_model,
             event_emitter=event_emitter,
             parent_turn_id=parent_turn_id,
             parent_session_key=parent_session_key,
@@ -1520,6 +1537,7 @@ async def dispatch_subagent_spawn_inline(
     child_seq: int = 0,
     max_depth: int = DEFAULT_MAX_DEPTH,
     max_wall_seconds_ceiling: int | None = None,
+    parent_model: str | None = None,
     event_emitter: Any | None = None,
     parent_turn_id: str | None = None,
     parent_session_key: str | None = None,
@@ -1583,6 +1601,7 @@ async def dispatch_subagent_spawn_inline(
         max_depth=max_depth,
         max_wall_seconds_ceiling=max_wall_seconds_ceiling,
         model_override=None,  # card.model already carries parsed.model
+        parent_model=parent_model,  # v1.12.2: inline card has no model → inherit parent's
         event_emitter=event_emitter,
         parent_turn_id=parent_turn_id,
         parent_session_key=parent_session_key,

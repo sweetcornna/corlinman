@@ -83,10 +83,10 @@ from corlinman_providers.base import ProviderChunk
 _CHILD_SLEEP_SECONDS: float = 0.15
 
 #: Number of children spawned in parallel. Three matches the canonical
-#: research-fan-out scenario in the design doc and the per-parent
-#: concurrency cap default (``[subagent].max_concurrent_per_parent =
-#: 3``). The supervisor would reject a fourth concurrent spawn; we test
-#: at the cap, not above it.
+#: research-fan-out scenario in the design doc. It sits comfortably under
+#: the per-parent concurrency cap (``[subagent].max_concurrent_per_parent``,
+#: raised 3 → 10 in v1.12.2) so the supervisor admits all three; the
+#: benchmark measures parallelism, not the cap boundary.
 _FANOUT_DEGREE: int = 3
 
 #: Acceptance ratio from ``phase4-roadmap.md:309,429``. Parallel
