@@ -1,0 +1,107 @@
+# Event-seed pack for the built-in `grantley` persona.
+# Ported verbatim from hermes-agent/tools/grantly_life_tool.py (_DEFAULT_SEEDS).
+# Grantley (格兰特利·贝尔) lives at the Knights College (骑士学院); these cues
+# feed `persona_life_event_seed` so missions / travels / academy scenes stay
+# fresh. Operators can override per persona via
+# <DATA_DIR>/persona_life/grantley.events.yaml.
+
+mission_scenario:
+  - 护送商队穿越北境森林
+  - 调查山村的孩子失踪案
+  - 陪学院教授去古战场取样
+  - 替骑士团捎信去港口
+  - 协助镇压走私团伙
+  - 替商会找回被劫的家传剑
+  - 驱除山道上的野兽
+  - 守夜监视一处可疑古迹
+  - 替村子里的老人寻找走失的猎犬
+  - 押送一名嫌犯回首都
+
+travel_destination:
+  - 海港小镇
+  - 北境森林边缘的猎人村
+  - 首都市集
+  - 古战场废墟
+  - 深山温泉
+  - 雪原边境哨所
+  - 湖心岛上的灯塔
+  - 南方葡萄园
+  - 断崖修道院
+  - 废弃矿洞口的小集市
+
+academy_scene:
+  - 剑术场训练
+  - 食堂蹭夜宵
+  - 图书馆混过自习
+  - 宿舍走廊跟人吵架
+  - 马厩刷马
+  - 操场跑圈
+  - 屋顶上吹风
+  - 教务处门口被点名
+  - 澡堂排队
+  - 练习场旁边偷懒
+
+companion:
+  - 艾尔戈
+  - 奥斯卡
+  - 西奥
+  - 朱利乌斯
+  - 赫尔曼
+  - 保罗
+  - 迪德里希
+  - 海里奥
+  - 独自一人
+  - 一只跟着的流浪狗
+
+tension:
+  - 传闻有野兽出没
+  - 天气说变就变
+  - 队伍里有人情绪不对
+  - 目标比想象的难找
+  - 时间比预想的紧
+  - 突然下大雾
+  - 一切顺利得反常
+  - 中途收到学院的紧急信
+  - 路上遇到熟人
+  - 钱包丢了
+
+weather:
+  - 晴
+  - 阴
+  - 小雨
+  - 暴雨
+  - 大雾
+  - 雪
+  - 闷热
+  - 凉风
+  - 夜风
+  - 正午烈日
+
+mood:
+  - 兴奋
+  - 犯困
+  - 心情复杂
+  - 痞痞的
+  - 嘴硬
+  - 想家
+  - 无聊
+  - 警觉
+  - 懒洋洋
+  - 认真
+
+duration_hint:
+  - 半天
+  - 一整天
+  - 两三天
+  - 三天到一周
+  - 一周左右
+  - 可能要十天
+  - 看情况
+
+season_hint:
+  - 初春
+  - 盛夏
+  - 初秋
+  - 深秋
+  - 初冬
+  - 雪季

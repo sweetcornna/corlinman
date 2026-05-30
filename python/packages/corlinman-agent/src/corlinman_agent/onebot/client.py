@@ -364,3 +364,26 @@ class OneBotClient:
             f"OneBot get_csrf_token returned unexpected token shape: "
             f"{token!r}"
         )
+
+    async def fetch_friend_list(self) -> list[dict[str, Any]]:
+        """Return the QQ friend list as a list of raw friend dicts.
+
+        Maps to the OneBot v11 ``get_friend_list`` action. NapCat /
+        Lagrange return a JSON array of ``{user_id, nickname, remark, …}``
+        objects directly under ``data``; some forks wrap it one level
+        deeper under ``data.friends``. Both shapes are unwrapped here so
+        the QZone comment tool gets a plain list. Raises
+        :class:`OneBotError` (via :meth:`_call`) on transport / envelope
+        failures; a logged-in account with zero friends returns ``[]``.
+        """
+        data = await self._call("get_friend_list")
+        if isinstance(data, dict):
+            friends = data.get("friends") or data.get("data") or []
+        else:
+            friends = data
+        if not isinstance(friends, list):
+            raise OneBotError(
+                "OneBot get_friend_list returned an unexpected shape: "
+                f"{type(friends).__name__}"
+            )
+        return [f for f in friends if isinstance(f, dict)]

@@ -90,6 +90,13 @@ from corlinman_agent.persona import (
     PERSONA_CREATE_TOOL,
     PERSONA_DELETE_TOOL,
     PERSONA_GET_TOOL,
+    PERSONA_LIFE_DIARY_ADD_TOOL,
+    PERSONA_LIFE_EVENT_SEED_TOOL,
+    PERSONA_LIFE_GET_SEEDS_TOOL,
+    PERSONA_LIFE_GET_TOOL,
+    PERSONA_LIFE_SET_SEEDS_TOOL,
+    PERSONA_LIFE_SET_STATE_TOOL,
+    PERSONA_LIFE_TOOLS,
     PERSONA_LIST_ASSETS_TOOL,
     PERSONA_LIST_TOOL,
     PERSONA_TOOLS,
@@ -98,15 +105,32 @@ from corlinman_agent.persona import (
     dispatch_persona_create,
     dispatch_persona_delete,
     dispatch_persona_get,
+    dispatch_persona_life_diary_add,
+    dispatch_persona_life_event_seed,
+    dispatch_persona_life_get,
+    dispatch_persona_life_get_seeds,
+    dispatch_persona_life_set_seeds,
+    dispatch_persona_life_set_state,
     dispatch_persona_list,
     dispatch_persona_list_assets,
     dispatch_persona_update,
+    persona_life_tool_schemas,
     persona_tool_schemas,
 )
 from corlinman_agent.placeholder_client import PlaceholderClient
 from corlinman_agent.qzone import (
+    QZONE_COMMENT_TOOLS,
+    QZONE_GET_POST_TOOL,
+    QZONE_LIST_FEED_TOOL,
+    QZONE_LIST_FRIENDS_TOOL,
+    QZONE_POST_COMMENT_TOOL,
     QZONE_PUBLISH_TOOL,
+    dispatch_qzone_get_post,
+    dispatch_qzone_list_feed,
+    dispatch_qzone_list_friends,
+    dispatch_qzone_post_comment,
     dispatch_qzone_publish,
+    qzone_comment_tool_schemas,
     qzone_publish_tool_schema,
 )
 from corlinman_agent.reasoning_loop import (
@@ -204,7 +228,7 @@ BUILTIN_TOOLS: frozenset[str] = frozenset(
         IMAGE_GENERATE_TOOL,
         QZONE_PUBLISH_TOOL,
     }
-) | CODING_TOOLS | PERSONA_TOOLS
+) | CODING_TOOLS | PERSONA_TOOLS | PERSONA_LIFE_TOOLS | QZONE_COMMENT_TOOLS
 
 
 def _send_attachment_tool_schema() -> dict[str, Any]:
@@ -282,7 +306,9 @@ def _builtin_tool_schemas() -> list[dict[str, Any]]:
         image_with_refs_tool_schema(),
         image_generate_tool_schema(),
         qzone_publish_tool_schema(),
+        *qzone_comment_tool_schemas(),
         *persona_tool_schemas(),
+        *persona_life_tool_schemas(),
         *coding_tool_schemas(),
     ]
 
@@ -743,6 +769,14 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         self._persona_asset_store: Any | None = None
         self._persona_store_init_done: bool = False
         self._persona_asset_store_init_done: bool = False
+        # persona_life.* runtime-state handle. The life tools persist into
+        # the SAME ``agent_state.sqlite`` the persona runtime-state system
+        # (corlinman-persona) owns, keyed by the bound persona_id. Lazy-
+        # opened on first ``persona_life_*`` dispatch; ``Any`` typing keeps
+        # the type a corlinman_persona.store.PersonaStore without widening
+        # the servicer's import surface.
+        self._persona_state_store: Any | None = None
+        self._persona_state_store_init_done: bool = False
         # v0.7.1 warm pool. Operators can call ``prewarm_providers`` at
         # boot to resolve known aliases before the first user request;
         # the SDK auth handshake then happens off the hot path. The
@@ -1686,6 +1720,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             ("journal", self._journal),
             ("memory_host", self._memory_host),
             ("blackboard_store", self._blackboard_store),
+            ("persona_state_store", self._persona_state_store),
             ("inbox", getattr(self, "_inbox", None)),
             ("hook_bus", self._hook_bus),
         ]
@@ -1712,6 +1747,8 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         self._memory_host = None
         self._memory_init_done = True
         self._blackboard_store = None
+        self._persona_state_store = None
+        self._persona_state_store_init_done = True
 
     # ------------------------------------------------------------------
     # T3.2 — hook bus emitters (no-op when no bus is configured)
@@ -2014,6 +2051,74 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                         persona_store=persona_store,
                         asset_store=persona_asset_store,
                     )
+            if event.tool in PERSONA_LIFE_TOOLS:
+                # persona_life.* — a bound persona's stateful life + private
+                # diary. State persists into the runtime persona-state store
+                # (corlinman-persona), keyed by the persona bound on the
+                # channel (start.extra["persona_id"]) so each persona owns
+                # its own ongoing life; ``mood`` mirrors onto the native
+                # column. Same persona-resolution contract as the image /
+                # qzone_publish branches.
+                pl_extra = getattr(start, "extra", None) or {}
+                pl_persona_id: str | None = None
+                if isinstance(pl_extra, dict):
+                    val = pl_extra.get("persona_id")
+                    if isinstance(val, str) and val.strip():
+                        pl_persona_id = val.strip()
+                if event.tool == PERSONA_LIFE_EVENT_SEED_TOOL:
+                    # Pure inspiration draw — no state IO; just the per-
+                    # persona seed library (+ optional operator override
+                    # under <DATA_DIR>/persona_life/).
+                    return await dispatch_persona_life_event_seed(
+                        args_json=event.args_json,
+                        persona_id=pl_persona_id,
+                        data_dir=_resolve_data_dir(),
+                    )
+                if event.tool == PERSONA_LIFE_SET_SEEDS_TOOL:
+                    # Authoring tool — reads an EXPLICIT persona_id from its
+                    # args (the /persona wizard populates a freshly-created
+                    # persona's lore, which may differ from the channel's
+                    # bound persona). No state store needed.
+                    return await dispatch_persona_life_set_seeds(
+                        args_json=event.args_json,
+                        data_dir=_resolve_data_dir(),
+                    )
+                if event.tool == PERSONA_LIFE_GET_SEEDS_TOOL:
+                    return await dispatch_persona_life_get_seeds(
+                        args_json=event.args_json,
+                        data_dir=_resolve_data_dir(),
+                    )
+                state_store = await self._get_persona_state_store()
+                if state_store is None:
+                    return json.dumps(
+                        {
+                            "ok": False,
+                            "error": "persona_state_store_unavailable",
+                            "message": (
+                                "persona-state store is not available in "
+                                "this deployment"
+                            ),
+                        },
+                        ensure_ascii=False,
+                    )
+                if event.tool == PERSONA_LIFE_GET_TOOL:
+                    return await dispatch_persona_life_get(
+                        args_json=event.args_json,
+                        persona_id=pl_persona_id,
+                        state_store=state_store,
+                    )
+                if event.tool == PERSONA_LIFE_SET_STATE_TOOL:
+                    return await dispatch_persona_life_set_state(
+                        args_json=event.args_json,
+                        persona_id=pl_persona_id,
+                        state_store=state_store,
+                    )
+                if event.tool == PERSONA_LIFE_DIARY_ADD_TOOL:
+                    return await dispatch_persona_life_diary_add(
+                        args_json=event.args_json,
+                        persona_id=pl_persona_id,
+                        state_store=state_store,
+                    )
             if event.tool == IMAGE_WITH_REFS_TOOL:
                 # Resolve the bound persona from start.extra when the
                 # channel injected it (W4 channel-side wiring lands
@@ -2065,6 +2170,20 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                         "bound_persona_id": qz_bound_persona_id,
                     },
                 )
+            if event.tool in QZONE_COMMENT_TOOLS:
+                # qzone_* read + comment. Each dispatcher borrows the QQ
+                # login state the same way qzone_publish does (an env-
+                # configured OneBot HTTP client constructed inside the
+                # dispatcher) — no persona binding needed, these operate on
+                # the bound QQ account itself, not a persona.
+                if event.tool == QZONE_LIST_FEED_TOOL:
+                    return await dispatch_qzone_list_feed(args_json=event.args_json)
+                if event.tool == QZONE_GET_POST_TOOL:
+                    return await dispatch_qzone_get_post(args_json=event.args_json)
+                if event.tool == QZONE_POST_COMMENT_TOOL:
+                    return await dispatch_qzone_post_comment(args_json=event.args_json)
+                if event.tool == QZONE_LIST_FRIENDS_TOOL:
+                    return await dispatch_qzone_list_friends(args_json=event.args_json)
             if event.tool == SEND_ATTACHMENT_TOOL:
                 # No-op stub on the agent side. The real upload happens
                 # in the channel handler (handle_one_telegram /
@@ -2196,6 +2315,40 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             )
             self._persona_store = None
         return self._persona_store
+
+    async def _get_persona_state_store(self) -> Any | None:
+        """Lazy-open the runtime persona-STATE store (corlinman-persona)
+        against ``<data_dir>/agent_state.sqlite`` — the same DB the
+        ``mood`` / ``fatigue`` / ``recent_topics`` machinery owns. Backs
+        the ``persona_life_*`` tools, which persist a persona's life-state
+        + diary into that row's ``state_json``.
+
+        Returns the cached handle on subsequent calls; ``None`` on any
+        open failure (so the life dispatcher surfaces a typed
+        ``persona_state_store_unavailable`` error rather than crashing the
+        turn). Distinct from :meth:`_get_persona_store` — that one is the
+        system_prompt *registry*, this one is the mutable runtime state.
+        """
+        if self._persona_state_store is not None:
+            return self._persona_state_store
+        if self._persona_state_store_init_done:
+            return None
+        self._persona_state_store_init_done = True
+        try:
+            from corlinman_persona.store import PersonaStore as _StateStore  # noqa: PLC0415
+
+            data_dir = _resolve_data_dir()
+            data_dir.mkdir(parents=True, exist_ok=True)
+            self._persona_state_store = await _StateStore.open_or_create(
+                data_dir / "agent_state.sqlite"
+            )
+            logger.info("agent.persona_state_store.opened_lazy")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "agent.persona_state_store.init_failed", error=str(exc)
+            )
+            self._persona_state_store = None
+        return self._persona_state_store
 
     async def _get_persona_asset_store(self) -> Any | None:
         """Lazy-open the PersonaAssetStore against

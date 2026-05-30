@@ -4,6 +4,43 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.11.0] — 2026-05-30 — Persona life system + QZone comments
+
+> Ports the "Grantley (格兰)" tooling from hermes-agent into corlinman and wires
+> it into the **current persona system**: a persona now lives an ongoing life
+> (missions, travels, a private diary) backed by the native runtime
+> persona-state store and surfaced through the `{{persona.*}}` placeholder
+> layer; the bot can read + comment on the QQ空间 timeline; and the `/persona`
+> creation wizard can author a persona's life lore via online research or
+> user-provided materials.
+
+### Added
+- **`persona_life_*` tools** — `persona_life_get` / `persona_life_set_state` /
+  `persona_life_diary_add` / `persona_life_event_seed`. Persona-agnostic
+  (keyed by the bound persona), persisted in the native `corlinman-persona`
+  runtime-state store (`agent_state.sqlite`, `state_json`). `set_state` mirrors
+  `mood`→native column, `activity`→`recent_topics`, and the salient fields→flat
+  `state_json["life_*"]` keys so a system_prompt can interpolate
+  `{{persona.life_location}}` / `{{persona.life_state}}` / … via
+  `PersonaResolver`. The built-in `grantley` persona ships a bundled
+  Knights-College event-seed pack.
+- **`qzone_*` read + comment tools** — `qzone_list_feed` / `qzone_get_post` /
+  `qzone_post_comment` / `qzone_list_friends`: read the 好友动态 timeline and
+  comment on (or reply under) 说说. Async-httpx port reusing the
+  `qzone_publish` auth path; added `OneBotClient.fetch_friend_list()`.
+- **Persona-creation lore authoring** — new `persona_life_set_seeds` /
+  `persona_life_get_seeds` tools, plus a new **"Stage 4b — 人生设定/事件种子"** in
+  the `configure-persona` wizard offering an explicit choice between
+  **agent auto-research online** and **filling from user-provided materials**
+  (skippable). Stage 6 writes the authored seed library after `persona_create`.
+
+### Fixed
+- **`corlinman-persona` store missing WAL/busy_timeout.** `PersonaStore._open`
+  now enables `journal_mode=WAL` + `synchronous=NORMAL` + `busy_timeout=5000`
+  (matching every other corlinman sqlite store) so the EvolutionLoop / decay
+  job / placeholder resolver / `persona_life_*` tools — each holding a separate
+  handle to `agent_state.sqlite` — no longer race to "database is locked".
+
 ## [1.10.1] — 2026-05-29 — Channel subsystem completion
 
 > Fixes the "Telegram/QQ channel pages cannot be accessed" report, completes

@@ -9,9 +9,10 @@ client trivially testable via :class:`httpx.MockTransport`.
 
 Public surface
 --------------
-* :class:`OneBotClient` — async httpx client with the three actions
-  ``qzone_publish`` needs: ``fetch_login_info`` / ``fetch_cookies`` /
-  ``fetch_csrf_token``.
+* :class:`OneBotClient` — async httpx client with the actions the QZone
+  tools need: ``fetch_login_info`` / ``fetch_cookies`` /
+  ``fetch_csrf_token`` (publish) and ``fetch_friend_list``
+  (the ``qzone_list_friends`` comment tool).
 * :class:`OneBotError` — :class:`RuntimeError` subclass raised on
   non-``status:"ok"`` responses or transport failures.
 """
