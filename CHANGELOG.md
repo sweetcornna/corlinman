@@ -4,6 +4,23 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.13.2] — 2026-05-30 — Subagent persona-state seeding fix
+
+### Fixed
+- **Subagent spawns now seed the child's persona-state row.** All three spawn
+  dispatch paths in the agent servicer (`subagent_spawn` / `_many` / `_inline`)
+  threaded the system-prompt **registry** store
+  (`corlinman_server.persona.PersonaStore`, `personas.sqlite`) into the child
+  runner's `_seed_child_persona`, which needs the tenant-aware **state** store
+  (`corlinman_persona.store.PersonaStore`, `agent_state.sqlite`). The registry's
+  `get()` rejects `tenant_id=`, so every child spawn logged
+  `subagent.runner.persona_seed_failed: unexpected keyword argument 'tenant_id'`
+  and the child's mood/fatigue state row was silently never written (seeding is
+  best-effort, so spawns still succeeded — which masked the bug). Now passes
+  `_get_persona_state_store()`. Surfaced by a live prod fan-out smoke test of
+  the v1.13.1 deploy; covered by a new `test_servicer_spawn_seeds_child_persona_state`
+  regression that asserts the row is actually present.
+
 ## [1.13.1] — 2026-05-30 — Multi-agent subsystem hardening
 
 > Fixes a packaging defect that crashed every subagent fan-out with

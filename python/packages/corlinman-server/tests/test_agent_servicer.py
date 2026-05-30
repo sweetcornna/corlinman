@@ -564,6 +564,60 @@ async def test_servicer_dispatches_spawn_many_round_trip(
 
 
 @pytest.mark.asyncio
+async def test_servicer_spawn_seeds_child_persona_state(
+    tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: a subagent spawn must seed the child's persona-STATE row.
+
+    The dispatch threads ``_get_persona_state_store()`` (the tenant-aware
+    corlinman-persona STATE store, ``agent_state.sqlite``) into the runner's
+    ``_seed_child_persona`` — NOT the system-prompt registry
+    (``personas.sqlite``). A prior wiring bug passed the registry, whose
+    ``get()`` rejects ``tenant_id=``, so every child spawn logged
+    ``subagent.runner.persona_seed_failed`` and the STATE row was never
+    written. Because seeding is best-effort the spawn still succeeded, which
+    masked the bug — so we assert the row is *actually* present, not just that
+    the spawn returned. Surfaced by a live prod fan-out test.
+    """
+    from corlinman_agent.agents.card import AgentCard
+    from corlinman_agent.agents.registry import AgentCardRegistry
+    from corlinman_agent.reasoning_loop import ChatStart, ToolCallEvent
+    from corlinman_server.agent_servicer import CorlinmanAgentServicer
+
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+    servicer = CorlinmanAgentServicer(provider_resolver=lambda _m: _FakeProvider([]))
+    servicer._builtin_agents = AgentCardRegistry(
+        {
+            "researcher": AgentCard(
+                name="researcher", description="", system_prompt="you research"
+            )
+        }
+    )
+    provider = _FakeProvider(_token_stream(["did the work"]))
+    start = ChatStart(
+        model="orchestrator", messages=[], tools=[], session_key="tenant-a::sess-1"
+    )
+    args = json.dumps({"tasks": [{"agent": "researcher", "goal": "find papers"}]})
+    event = ToolCallEvent(
+        call_id="spawn-1",
+        plugin="subagent",
+        tool="subagent_spawn_many",
+        args_json=args.encode(),
+    )
+    payload = json.loads(await servicer._dispatch_builtin(event, start, provider))
+    assert payload["tasks"][0]["finish_reason"] == "stop"
+
+    # The child's persona-STATE row must exist in the STATE store — only true
+    # if the seeder received a tenant-aware store (the bug passed the registry,
+    # so this row was never written).
+    state_store = await servicer._get_persona_state_store()
+    assert state_store is not None, "state store should open under CORLINMAN_DATA_DIR"
+    child_agent_id = payload["tasks"][0]["child_agent_id"]
+    row = await state_store.get(child_agent_id, tenant_id="tenant-a")
+    assert row is not None, "subagent spawn must seed the child persona-state row"
+
+
+@pytest.mark.asyncio
 async def test_servicer_threads_parent_tools_into_spawn(
     tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
