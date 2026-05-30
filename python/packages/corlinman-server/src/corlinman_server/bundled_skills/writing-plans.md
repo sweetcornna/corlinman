@@ -28,7 +28,7 @@ Write a plan that the next implementer can execute without guessing. Assume they
 ## When to use
 
 - Before implementing any multi-step feature.
-- Before delegating to `subagent.spawn_many` via the `subagent-driven-development` skill.
+- Before delegating to `subagent_spawn_many` via the `subagent-driven-development` skill.
 - Whenever a "small" change is touching more than 2 files.
 
 ## Bite-sized task granularity

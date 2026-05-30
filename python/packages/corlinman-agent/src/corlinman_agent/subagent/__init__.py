@@ -1,6 +1,6 @@
 """Subagent delegation runtime — Python half.
 
-The parent reasoning loop's ``subagent.spawn`` tool is dispatched to the
+The parent reasoning loop's ``subagent_spawn`` tool is dispatched to the
 Rust supervisor (``corlinman-subagent`` crate, owns the depth /
 concurrency / time-budget caps) which then re-enters this module via
 PyO3 (lands in iter 5) to actually drive a child :class:`ReasoningLoop`.
@@ -27,7 +27,7 @@ escalation-reject envelope. Iter 8 (this revision) ships
 
 * :func:`subagent_spawn_tool_schema` — the OpenAI descriptor parents
   drop into ``ChatStart.tools`` so the LLM can emit
-  ``ToolCallEvent("subagent.spawn", {...})``;
+  ``ToolCallEvent("subagent_spawn", {...})``;
 * :func:`dispatch_subagent_spawn` — async shim that takes one tool
   call's ``args_json``, drives :func:`run_child` (subject to the Rust
   supervisor's slot acquire), and returns the JSON-encoded

@@ -18,7 +18,7 @@ from corlinman_agent.agents.card import AgentCard, AgentSource
 logger = logging.getLogger(__name__)
 
 #: Name of the built-in fallback subagent card. W1.1: when an LLM emits a
-#: ``subagent.spawn`` call without specifying ``subagent_type`` (or with an
+#: ``subagent_spawn`` call without specifying ``subagent_type`` (or with an
 #: unknown value), the dispatcher resolves to this card via
 #: :meth:`AgentCardRegistry.get_or_default`. The card is shipped at the
 #: repo's ``agents/general-purpose.yaml`` and uses ``tools_allowed: ["*"]``
@@ -355,7 +355,7 @@ class AgentCardRegistry:
         """Resolve ``name`` to a card, falling back to ``general-purpose``.
 
         W1.1 — backstops the new ``subagent_type`` arg on the
-        ``subagent.spawn`` tool. When the LLM omits ``subagent_type``
+        ``subagent_spawn`` tool. When the LLM omits ``subagent_type``
         (or passes ``None``/empty), the registry returns the built-in
         ``general-purpose`` card. When the LLM passes a non-empty name
         the registry returns that card if registered, otherwise ``None``

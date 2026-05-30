@@ -2,7 +2,7 @@
 
 W1.3 of ``docs/PLAN_MULTI_AGENT.md``. Owns the persistent
 :class:`SubagentTaskStore` and the :class:`AsyncSubagentDispatcher` that
-schedules ``subagent.spawn`` calls with ``run_in_background=true`` as
+schedules ``subagent_spawn`` calls with ``run_in_background=true`` as
 asyncio tasks (so the parent's tool dispatch returns immediately).
 
 Wiring contract

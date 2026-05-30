@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Literal
 
 #: ``"inline"`` is the tier for ad-hoc / temporary cards built in memory by
-#: ``subagent.spawn_inline`` — they are never loaded from disk and never
+#: ``subagent_spawn_inline`` — they are never loaded from disk and never
 #: enter the registry, so the admin CRUD surface (which keys delete/mutate
 #: refusals on ``"built-in"``) never sees them.
 AgentSource = Literal["built-in", "user", "project", "inline"]
@@ -123,7 +123,7 @@ def build_ephemeral_card(
 ) -> AgentCard:
     """Build a one-off, in-memory :class:`AgentCard` for an ad-hoc child.
 
-    Backs ``subagent.spawn_inline`` — the temporary/purpose-built agent the
+    Backs ``subagent_spawn_inline`` — the temporary/purpose-built agent the
     main agent creates on the fly (Claude-Code's ad-hoc general-purpose
     pattern). The card is **never registered**: ``source_path=None`` and
     ``source="inline"``.

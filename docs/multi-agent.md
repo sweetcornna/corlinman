@@ -3,7 +3,7 @@
 corlinman ships a small set of topic-specific sub-agents (researcher,
 editor, mentor, orchestrator, general-purpose) plus everything an
 operator needs to author their own. The main model can pick one on the
-fly through the `subagent.spawn` tool; an operator can pin a playground
+fly through the `subagent_spawn` tool; an operator can pin a playground
 session to a specific persona; long-running children can run detached
 and notify the parent on completion.
 
@@ -18,7 +18,7 @@ event-stream contract that backs the live activity panel, see
 
 Two surfaces, both backed by the same registry + supervisor:
 
-- **Auto-dispatch** — the main model calls `subagent.spawn` with a
+- **Auto-dispatch** — the main model calls `subagent_spawn` with a
   `subagent_type` argument (`"researcher"`, `"editor"`, …). The
   registry resolves the name to an AgentCard, the supervisor enforces
   caps + tool whitelists, and a child reasoning loop runs against the
@@ -130,14 +130,14 @@ upstream tools (Claude Code, opencode) load without edits.
 
 ---
 
-## `subagent.spawn` tool
+## `subagent_spawn` tool
 
 The tool is registered as a builtin and is the only way the main model
 spawns children. Schema:
 
 ```python
 {
-  "name": "subagent.spawn",
+  "name": "subagent_spawn",
   "parameters": {
     "goal": str,                  # required — what the child should do
     "subagent_type": str?,        # registry key; fallback "general-purpose"
@@ -166,9 +166,9 @@ Semantics:
 
 ---
 
-## `subagent.spawn_inline` tool — temporary / ad-hoc agents
+## `subagent_spawn_inline` tool — temporary / ad-hoc agents
 
-Where `subagent.spawn` runs a **pre-registered** card by name, `subagent.spawn_inline`
+Where `subagent_spawn` runs a **pre-registered** card by name, `subagent_spawn_inline`
 lets the main agent **create a one-off, purpose-built agent on the fly** when no
 registered agent fits — Claude Code's "general-purpose with overrides" pattern. The
 agent is built from an inline `system_prompt`, run once, and **never written to the
@@ -176,7 +176,7 @@ registry** (it's an ephemeral `AgentCard` with `source="inline"`, `source_path=N
 
 ```python
 {
-  "name": "subagent.spawn_inline",
+  "name": "subagent_spawn_inline",
   "parameters": {
     "goal": str,                  # required — the child's only user-turn
     "system_prompt": str,         # required — the temporary agent's instructions/persona
@@ -191,7 +191,7 @@ registry** (it's an ephemeral `AgentCard` with `source="inline"`, `source_path=N
 }
 ```
 
-Semantics — **identical** to `subagent.spawn` downstream of card construction (same
+Semantics — **identical** to `subagent_spawn` downstream of card construction (same
 runner, same supervisor caps, same isolated fresh context, same `{tasks…}` / TaskResult
 envelope). The only differences:
 
@@ -203,7 +203,7 @@ envelope). The only differences:
 - **Background not yet supported** — `run_in_background` rejects with
   `run_in_background_not_implemented` (deferred to a later wave).
 
-Together, `subagent.spawn` (call an existing agent) + `subagent.spawn_inline` (create a
+Together, `subagent_spawn` (call an existing agent) + `subagent_spawn_inline` (create a
 temporary one) give the main agent both dispatch modes. All spawn tools are now
 advertised to the model and share one supervisor (depth/concurrency/tenant caps enforced
 at the servicer entry point).
@@ -236,7 +236,7 @@ child runs detached and the parent can resume its turn:
 ```
 main model                gateway                 child loop
     │                        │                        │
-    ├─ subagent.spawn ──────►│                        │
+    ├─ subagent_spawn ──────►│                        │
     │  run_in_background     ├─ admit (cap check)     │
     │                        ├─ persist task ─┐       │
     │                        │                │       │
@@ -433,7 +433,7 @@ file layout, then through the UI.
    documentation-cleaner agent to audit docs/quickstart.md", or pin
    the playground picker to `documentation-cleaner` and send the same
    prompt. The tool call goes out as
-   `subagent.spawn(subagent_type="documentation-cleaner", goal=…)`,
+   `subagent_spawn(subagent_type="documentation-cleaner", goal=…)`,
    the supervisor admits it, and you can watch the run in
    `/admin/subagents`.
 

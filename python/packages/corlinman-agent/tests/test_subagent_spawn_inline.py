@@ -1,4 +1,4 @@
-"""Tests for ``subagent.spawn_inline`` — the ad-hoc / temporary agent tool.
+"""Tests for ``subagent_spawn_inline`` — the ad-hoc / temporary agent tool.
 
 Mirrors the named-spawn tests but for the inline path: an ephemeral
 :class:`AgentCard` built from a freeform ``system_prompt``, never written
@@ -80,7 +80,7 @@ def test_inline_schema_shape() -> None:
     schema = subagent_spawn_inline_tool_schema()
     assert schema["type"] == "function"
     fn = schema["function"]
-    assert fn["name"] == SUBAGENT_SPAWN_INLINE_TOOL == "subagent.spawn_inline"
+    assert fn["name"] == SUBAGENT_SPAWN_INLINE_TOOL == "subagent_spawn_inline"
     assert set(fn["parameters"]["required"]) == {"goal", "system_prompt"}
 
 
@@ -206,7 +206,7 @@ async def test_inline_run_in_background_rejected() -> None:
 
 
 def test_inline_tool_pruned_at_max_depth() -> None:
-    # A child at depth == max_depth-1 must NOT keep subagent.spawn_inline
+    # A child at depth == max_depth-1 must NOT keep subagent_spawn_inline
     # (it can't legally spawn a grandchild).
     effective = _filter_tools_for_child(
         parent_tool_names=frozenset({_INLINE_NAME, "calculator"}),

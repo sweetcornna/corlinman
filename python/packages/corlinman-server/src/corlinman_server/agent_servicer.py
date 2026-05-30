@@ -359,8 +359,8 @@ def _builtin_tool_schemas() -> list[dict[str, Any]]:
         *persona_tool_schemas(),
         *persona_life_tool_schemas(),
         # Multi-agent surface: the main agent can call an existing
-        # registered agent (subagent.spawn / spawn_many) OR spin up a
-        # temporary purpose-built one (subagent.spawn_inline). Advertised
+        # registered agent (subagent_spawn / spawn_many) OR spin up a
+        # temporary purpose-built one (subagent_spawn_inline). Advertised
         # so the model actually sees them; the supervisor caps every spawn.
         subagent_spawn_tool_schema(),
         subagent_spawn_many_tool_schema(),
@@ -834,7 +834,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         self._persona_state_store: Any | None = None
         self._persona_state_store_init_done: bool = False
         # Shared in-process subagent supervisor (cap accountant for
-        # subagent.spawn / spawn_many / spawn_inline). Lazy-constructed on
+        # subagent_spawn / spawn_many / spawn_inline). Lazy-constructed on
         # first spawn so deployments that never fan out don't pay for it;
         # one instance across the servicer keeps per-parent / per-tenant
         # concurrency counts consistent. ``Any`` typing keeps the
@@ -1282,7 +1282,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     seq += 1
                 elif isinstance(event, ToolCallEvent):
                     if event.tool in BUILTIN_TOOLS:
-                        # Builtin tools (subagent.spawn{,_many}, blackboard.*,
+                        # Builtin tools (subagent_spawn{,_many}, blackboard.*,
                         # web/calc/coding) are dispatched in-process — the
                         # plugin runtime doesn't need to round-trip a result.
                         # We still emit an *observation-only* ToolCall frame

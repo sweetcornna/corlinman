@@ -1,7 +1,7 @@
 """Shared blackboard for sibling subagents (v0.7 multi-agent release).
 
 The orchestrator persona dispatches multiple sibling children via
-``subagent.spawn_many``; those siblings often need to coordinate by
+``subagent_spawn_many``; those siblings often need to coordinate by
 reading and writing a shared scratchpad rather than passing JSON back
 through the parent. The blackboard is that scratchpad: a small, typed,
 trace-scoped key-value store backed by SQLite.
@@ -27,7 +27,7 @@ Design constraints baked in here:
 4. **Wire shape mirrors subagent tool wrappers.** Both ``blackboard.read``
    and ``blackboard.write`` follow the same
    ``dispatch_<tool>(args_json=..., ...) -> str`` pattern the
-   ``subagent.spawn`` family uses, so the gateway tool dispatcher
+   ``subagent_spawn`` family uses, so the gateway tool dispatcher
    routes them identically.
 
 What this module deliberately does NOT do:
@@ -194,7 +194,7 @@ def blackboard_read_tool_schema() -> dict[str, Any]:
                 "trace-scoped blackboard. Returns "
                 "{\"key\": str, \"value\": str | null, \"present\": bool}. "
                 "Use to coordinate with sibling agents dispatched via "
-                "subagent.spawn_many."
+                "subagent_spawn_many."
             ),
             "parameters": {
                 "type": "object",

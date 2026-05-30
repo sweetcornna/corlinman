@@ -1,4 +1,4 @@
-"""Tests for ``subagent.spawn_many`` — the v0.7 parallel sibling fan-out.
+"""Tests for ``subagent_spawn_many`` — the v0.7 parallel sibling fan-out.
 
 The fan-out wrapper is a thin orchestration layer over the existing
 ``dispatch_subagent_spawn``: same per-child validation, same supervisor
@@ -83,7 +83,7 @@ def test_spawn_many_schema_shape_is_openai_compatible() -> None:
     assert schema["type"] == "function"
     fn = schema["function"]
     assert fn["name"] == SUBAGENT_SPAWN_MANY_TOOL
-    assert fn["name"] == "subagent.spawn_many"
+    assert fn["name"] == "subagent_spawn_many"
     params = fn["parameters"]
     assert params["required"] == ["tasks"]
     tasks = params["properties"]["tasks"]
@@ -91,7 +91,7 @@ def test_spawn_many_schema_shape_is_openai_compatible() -> None:
     assert tasks["minItems"] == 1
     assert tasks["maxItems"] == SUBAGENT_SPAWN_MANY_MAX_TASKS
     # The per-task object shape must accept the same fields as
-    # subagent.spawn so the LLM doesn't have to learn two schemas.
+    # subagent_spawn so the LLM doesn't have to learn two schemas.
     per_task = tasks["items"]
     assert set(per_task["required"]) == {"agent", "goal"}
     for key in ("agent", "goal", "tool_allowlist", "max_wall_seconds",

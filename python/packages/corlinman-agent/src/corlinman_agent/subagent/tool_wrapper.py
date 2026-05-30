@@ -1,12 +1,12 @@
-"""Parent-loop integration for the ``subagent.spawn`` tool.
+"""Parent-loop integration for the ``subagent_spawn`` tool.
 
 Iter 8 of the D3 plan in ``docs/design/phase4-w4-d3-design.md``. Iter 7
 landed the runner-side filtering; this module provides the bits needed
-to actually expose ``subagent.spawn`` to the parent's LLM:
+to actually expose ``subagent_spawn`` to the parent's LLM:
 
 1. :func:`subagent_spawn_tool_schema` — OpenAI-shaped tool descriptor.
    Drop this into the parent's ``ChatStart.tools`` list and the model
-   will emit ``ToolCallEvent("subagent.spawn", {"agent": "...",
+   will emit ``ToolCallEvent("subagent_spawn", {"agent": "...",
    "goal": "..."})`` calls.
 2. :func:`dispatch_subagent_spawn` — async helper that consumes a tool
    call's ``args_json``, resolves the requested agent card, drives
@@ -119,11 +119,11 @@ def subagent_spawn_tool_schema(
     default_max_wall_seconds: int = DEFAULT_MAX_WALL_SECONDS,
     default_max_tool_calls: int = DEFAULT_MAX_TOOL_CALLS,
 ) -> dict[str, Any]:
-    """Return the OpenAI-shaped tool descriptor for ``subagent.spawn``.
+    """Return the OpenAI-shaped tool descriptor for ``subagent_spawn``.
 
     The descriptor is what the parent's reasoning loop hands the
     provider so the LLM can emit a ``ToolCallEvent`` for
-    ``subagent.spawn``. Field naming matches the design's
+    ``subagent_spawn``. Field naming matches the design's
     :class:`TaskSpec` exactly so a one-to-one
     ``json.loads(args_json) → TaskSpec(**...)`` works in
     :func:`dispatch_subagent_spawn`.
@@ -296,7 +296,7 @@ async def dispatch_subagent_spawn(
     parent_session_key: str | None = None,
     subagent_dispatcher: Any | None = None,
 ) -> str:
-    """Translate one ``subagent.spawn`` tool call into a JSON
+    """Translate one ``subagent_spawn`` tool call into a JSON
     :class:`TaskResult` envelope.
 
     Parameters
@@ -442,7 +442,7 @@ async def dispatch_subagent_spawn(
             )
         )
     # Hand off to the shared post-resolution driver (clamp → acquire slot
-    # → emit → run_child → emit → envelope). ``subagent.spawn_inline``
+    # → emit → run_child → emit → envelope). ``subagent_spawn_inline``
     # reuses the SAME driver — its only divergence from this path is that
     # ``card`` is an ephemeral in-memory card instead of a registry lookup.
     return await _run_child_under_slot(
@@ -483,8 +483,8 @@ async def _run_child_under_slot(
     parent_turn_id: str | None,
     parent_session_key: str | None,
 ) -> str:
-    """Shared post-resolution driver for ``subagent.spawn`` /
-    ``subagent.spawn_inline``.
+    """Shared post-resolution driver for ``subagent_spawn`` /
+    ``subagent_spawn_inline``.
 
     Both the named-card path and the inline-card path resolve an
     :class:`AgentCard` (registry lookup vs ephemeral construction) and
@@ -721,7 +721,7 @@ class _ArgsInvalidError(Exception):
 
 @dataclass(slots=True, frozen=True)
 class _ParsedSpawnArgs:
-    """Internal record for the parsed ``subagent.spawn`` tool-call args.
+    """Internal record for the parsed ``subagent_spawn`` tool-call args.
 
     W1.1 — extending the original ``(spec, agent_name)`` tuple to carry
     the four Claude-Code-style fields without churning every call site.
@@ -1075,7 +1075,7 @@ def _result_json(result: TaskResult) -> str:
     return json.dumps(payload)
 
 
-#: Hard cap on the number of siblings one ``subagent.spawn_many`` call
+#: Hard cap on the number of siblings one ``subagent_spawn_many`` call
 #: can dispatch. Matches the supervisor's per-parent concurrency ceiling
 #: so the cap surfaces as an args-invalid rejection (a clear, actionable
 #: signal to the LLM) instead of N-3 silent ``parent_concurrency_exceeded``
@@ -1090,7 +1090,7 @@ def subagent_spawn_many_tool_schema(
     default_max_tool_calls: int = DEFAULT_MAX_TOOL_CALLS,
     max_tasks: int = SUBAGENT_SPAWN_MANY_MAX_TASKS,
 ) -> dict[str, Any]:
-    """Return the OpenAI-shaped tool descriptor for ``subagent.spawn_many``.
+    """Return the OpenAI-shaped tool descriptor for ``subagent_spawn_many``.
 
     The orchestrator persona is the primary consumer. The descriptor
     accepts a list of per-child specs (each shaped like a
@@ -1211,7 +1211,7 @@ async def dispatch_subagent_spawn_many(
     parent_turn_id: str | None = None,
     parent_session_key: str | None = None,
 ) -> str:
-    """Translate one ``subagent.spawn_many`` tool call into a JSON
+    """Translate one ``subagent_spawn_many`` tool call into a JSON
     envelope of :class:`TaskResult` siblings, run concurrently.
 
     The dispatcher splits the LLM's ``tasks`` list, builds an isolated
@@ -1359,7 +1359,7 @@ def _parse_spawn_many_args(
 
 
 # ---------------------------------------------------------------------------
-# subagent.spawn_inline — ad-hoc / temporary purpose-built agent
+# subagent_spawn_inline — ad-hoc / temporary purpose-built agent
 # ---------------------------------------------------------------------------
 
 
@@ -1368,7 +1368,7 @@ def subagent_spawn_inline_tool_schema(
     default_max_wall_seconds: int = DEFAULT_MAX_WALL_SECONDS,
     default_max_tool_calls: int = DEFAULT_MAX_TOOL_CALLS,
 ) -> dict[str, Any]:
-    """OpenAI-shaped descriptor for ``subagent.spawn_inline``.
+    """OpenAI-shaped descriptor for ``subagent_spawn_inline``.
 
     The ad-hoc counterpart to :func:`subagent_spawn_tool_schema`: instead of
     naming a pre-registered card, the parent supplies an inline
@@ -1382,7 +1382,7 @@ def subagent_spawn_inline_tool_schema(
             "name": SUBAGENT_SPAWN_INLINE_TOOL,
             "description": (
                 "Create a TEMPORARY, purpose-built child agent on the fly "
-                "and block until it returns. Unlike subagent.spawn (which "
+                "and block until it returns. Unlike subagent_spawn (which "
                 "runs a pre-registered agent card by name), this builds a "
                 "one-off agent from the system_prompt you write here — use "
                 "it when no existing agent fits the subtask. The child runs "
@@ -1470,7 +1470,7 @@ def subagent_spawn_inline_tool_schema(
 
 @dataclass(slots=True, frozen=True)
 class _ParsedInlineSpawnArgs:
-    """Parsed args for ``subagent.spawn_inline`` — the shared spawn fields
+    """Parsed args for ``subagent_spawn_inline`` — the shared spawn fields
     (via :func:`_parse_args`) plus the inline-only ``system_prompt`` +
     ``name``."""
 
@@ -1483,7 +1483,7 @@ class _ParsedInlineSpawnArgs:
 
 
 def _parse_inline_args(args_json: bytes | str) -> _ParsedInlineSpawnArgs:
-    """Validate the raw args for ``subagent.spawn_inline``.
+    """Validate the raw args for ``subagent_spawn_inline``.
 
     Reuses :func:`_parse_args` for every shared field (``goal``,
     ``tool_allowlist``, budgets, ``extra_context``, ``model``,
@@ -1524,7 +1524,7 @@ async def dispatch_subagent_spawn_inline(
     parent_turn_id: str | None = None,
     parent_session_key: str | None = None,
 ) -> str:
-    """Translate one ``subagent.spawn_inline`` tool call into a JSON
+    """Translate one ``subagent_spawn_inline`` tool call into a JSON
     :class:`TaskResult` envelope.
 
     Mirrors :func:`dispatch_subagent_spawn` but builds an EPHEMERAL

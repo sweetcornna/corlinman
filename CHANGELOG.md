@@ -4,6 +4,18 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.12.1] — 2026-05-30 — Hotfix: invalid subagent tool names
+
+### Fixed
+- **Chat 400 `Invalid 'tools[N].name'` on every request.** v1.12.0 advertised
+  the subagent tools to the model, but they were named with dots
+  (`subagent.spawn` / `subagent.spawn_many` / `subagent.spawn_inline`), which
+  OpenAI-style providers reject (tool names must match `^[a-zA-Z0-9_-]+$`).
+  Renamed to underscores (`subagent_spawn` / `subagent_spawn_many` /
+  `subagent_spawn_inline`) across the constants, schemas, skills, and tests.
+  Pre-v1.12.0 these tools were dispatch-only (never sent to the model), which
+  is why the latent invalid name only surfaced once they were advertised.
+
 ## [1.12.0] — 2026-05-30 — Dynamic subagents + status-card foundation
 
 > Brings Claude Code's dual-mode subagent dispatch to corlinman — the main

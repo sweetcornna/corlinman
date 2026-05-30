@@ -14,7 +14,7 @@ What :func:`run_child` now does end-to-end:
    already hold returns a synthetic
    :class:`TaskResult` with ``finish_reason=REJECTED`` and
    ``error="tool_allowlist_escalation"`` *before* the loop is driven.
-3. Prune ``subagent.spawn`` from the child's allowlist when the *child's*
+3. Prune ``subagent_spawn`` from the child's allowlist when the *child's*
    depth would equal ``max_depth - 1`` — at that depth a grandchild
    spawn is the next thing the supervisor would refuse with
    ``DepthCapped`` anyway, so we save the LLM the round-trip.
@@ -72,24 +72,28 @@ from corlinman_agent.subagent.api import (
 #: :attr:`FinishReason.DEPTH_CAPPED` anyway. Lifting the literal into a
 #: module constant keeps the iter-8 tool-wrapper registration in one
 #: place — registry code imports the same name.
-SUBAGENT_SPAWN_TOOL: str = "subagent.spawn"
+#: NOTE: underscore, not dot. OpenAI-style providers require tool names to
+#: match ``^[a-zA-Z0-9_-]+$`` — a ``.`` is rejected with a 400 once the tool
+#: is advertised. Kept as a constant so the dispatch switch + schema + prune
+#: all agree.
+SUBAGENT_SPAWN_TOOL: str = "subagent_spawn"
 
-#: Fan-out sibling of ``subagent.spawn`` — the orchestrator agent (v0.7)
+#: Fan-out sibling of ``subagent_spawn`` — the orchestrator agent (v0.7)
 #: emits this to dispatch N children concurrently under one parent. The
 #: supervisor's per-parent concurrency cap (default 3) still bounds the
 #: live siblings; the dispatcher splits the task list and awaits all via
 #: ``asyncio.gather``. Pruned from the child's allowlist by the same
-#: depth-1 rule that prunes ``subagent.spawn``.
-SUBAGENT_SPAWN_MANY_TOOL: str = "subagent.spawn_many"
+#: depth-1 rule that prunes ``subagent_spawn``.
+SUBAGENT_SPAWN_MANY_TOOL: str = "subagent_spawn_many"
 
-#: Ad-hoc / temporary sibling of ``subagent.spawn`` (Claude-Code's
-#: "general-purpose with overrides" pattern). Where ``subagent.spawn``
+#: Ad-hoc / temporary sibling of ``subagent_spawn`` (Claude-Code's
+#: "general-purpose with overrides" pattern). Where ``subagent_spawn``
 #: resolves a *registered* card by name, this spawns a one-off child from
 #: an INLINE ``system_prompt`` — an ephemeral :class:`AgentCard` built in
 #: memory and never written to the registry. Pruned from the child's
 #: allowlist by the same depth-1 rule so a deep child can't inline-spawn a
 #: grandchild the supervisor would reject anyway.
-SUBAGENT_SPAWN_INLINE_TOOL: str = "subagent.spawn_inline"
+SUBAGENT_SPAWN_INLINE_TOOL: str = "subagent_spawn_inline"
 
 #: Sentinel error string surfaced on a privilege-escalation rejection.
 #: Pinned in :attr:`TaskResult.error` so the LLM (and forensic queries)
@@ -185,7 +189,7 @@ async def run_child(
         parent never had is itself escalation).
     max_depth
         The supervisor's ``[subagent].max_depth`` policy value. The
-        runner reads it only for the ``subagent.spawn`` self-prune at
+        runner reads it only for the ``subagent_spawn`` self-prune at
         ``child_ctx.depth == max_depth - 1`` — *not* for the depth-cap
         check itself, which still belongs to the supervisor (the runner
         is called by the supervisor *after* the cap admits the spawn).
@@ -299,7 +303,7 @@ async def run_child(
         # Iter 7: filtered+pruned schema list. Empty when the parent
         # had no tools, when ``task.tool_allowlist == []`` (the explicit
         # "pure LLM" mode), or when every parent tool was excluded by
-        # the depth-prune (only ``subagent.spawn`` at the deepest legal
+        # the depth-prune (only ``subagent_spawn`` at the deepest legal
         # depth, in practice).
         tools=child_tools,
         session_key=child_ctx.parent_session_key,
@@ -524,7 +528,7 @@ def _filter_tools_for_child(
       treated as an unknown tool name and rejected via the standard
       escalation path.
 
-    After resolution, prune ``subagent.spawn`` when the child is at the
+    After resolution, prune ``subagent_spawn`` when the child is at the
     deepest depth that could still spawn a grandchild
     (``child_depth >= max_depth - 1``). The supervisor would refuse the
     grandchild's spawn anyway with :attr:`FinishReason.DEPTH_CAPPED`;

@@ -548,7 +548,7 @@ async def test_servicer_dispatches_spawn_many_round_trip(
     event = ToolCallEvent(
         call_id="spawn-1",
         plugin="subagent",
-        tool="subagent.spawn_many",
+        tool="subagent_spawn_many",
         args_json=args.encode(),
     )
     result_json = await servicer._dispatch_builtin(event, start, provider)
@@ -612,7 +612,7 @@ async def test_servicer_threads_parent_tools_into_spawn(
     event = ToolCallEvent(
         call_id="c",
         plugin="subagent",
-        tool="subagent.spawn",
+        tool="subagent_spawn",
         args_json=args.encode(),
     )
     result_json = await servicer._dispatch_builtin(

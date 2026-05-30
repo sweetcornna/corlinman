@@ -24,7 +24,7 @@ allowed-tools:
 
 Load a plan, review it critically, then execute every task. Report back when complete.
 
-**Note:** If `subagent.spawn` is available in the active agent's tool whitelist, prefer the `subagent-driven-development` skill — fresh subagents per task produce higher quality. Use this skill when no subagents are available, or when the plan is short and a single pass is enough.
+**Note:** If `subagent_spawn` is available in the active agent's tool whitelist, prefer the `subagent-driven-development` skill — fresh subagents per task produce higher quality. Use this skill when no subagents are available, or when the plan is short and a single pass is enough.
 
 ## The process
 

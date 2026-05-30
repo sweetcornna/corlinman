@@ -1,4 +1,4 @@
-"""Concurrency / depth / timeout caps for ``subagent.spawn``.
+"""Concurrency / depth / timeout caps for ``subagent_spawn``.
 
 Python port of ``rust/crates/corlinman-subagent/src/supervisor.rs``. The
 Rust crate split the supervisor (caps + lifecycle) from the Python

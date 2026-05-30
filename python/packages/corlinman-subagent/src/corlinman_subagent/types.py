@@ -2,7 +2,7 @@
 
 Mirrors ``rust/crates/corlinman-subagent/src/types.rs``. These types
 form the envelope that crosses the boundary between the parent's
-``subagent.spawn`` tool call and the child's reasoning loop.
+``subagent_spawn`` tool call and the child's reasoning loop.
 
 The Rust crate marked these ``#[derive(Serialize, Deserialize)]`` so
 the PyO3 bridge could ferry JSON across the FFI seam. On the Python

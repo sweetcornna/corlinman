@@ -18,7 +18,7 @@ metadata:
 allowed-tools:
   - file.read
   - shell.run
-  - subagent.spawn
+  - subagent_spawn
 ---
 # Pre-Commit Code Review
 
@@ -93,10 +93,10 @@ If baseline was clean and your changes introduce failures, that's a regression a
 
 ## Step 5 — independent reviewer subagent
 
-Spawn a reviewer via `subagent.spawn` with ONLY the diff + static-scan findings — no shared context with the implementer. Fail-closed: unparseable response = fail.
+Spawn a reviewer via `subagent_spawn` with ONLY the diff + static-scan findings — no shared context with the implementer. Fail-closed: unparseable response = fail.
 
 ```
-subagent.spawn(
+subagent_spawn(
   agent="researcher",
   goal="""You are an independent code reviewer. Return ONLY valid JSON.
 
@@ -138,7 +138,7 @@ Combine results from Steps 2, 3, 5.
 Spawn a THIRD subagent (not the implementer, not the reviewer) to fix ONLY the reported issues:
 
 ```
-subagent.spawn(
+subagent_spawn(
   agent="editor",
   goal="Fix ONLY the issues listed below. Do not refactor, rename, or change anything else.
 

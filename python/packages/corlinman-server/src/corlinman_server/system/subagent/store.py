@@ -1,4 +1,4 @@
-"""Persistent + in-memory tracker for background ``subagent.spawn`` requests.
+"""Persistent + in-memory tracker for background ``subagent_spawn`` requests.
 
 W1.3 of ``docs/PLAN_MULTI_AGENT.md`` §2 Wave 1/W1.3.
 
@@ -94,7 +94,7 @@ def _now_ms() -> int:
 
 @dataclass(slots=True, frozen=True)
 class SubagentRequest:
-    """Immutable record of a background ``subagent.spawn`` request.
+    """Immutable record of a background ``subagent_spawn`` request.
 
     Mirrors :class:`corlinman_server.system.upgrader.state.UpgradeRequest`
     in role: written once at :meth:`SubagentTaskStore.begin`, never

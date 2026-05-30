@@ -1,5 +1,5 @@
 """`corlinman-subagent` — Python supervisor for the parent reasoning loop's
-``subagent.spawn`` tool.
+``subagent_spawn`` tool.
 
 Python port of ``rust/crates/corlinman-subagent``. The Rust crate split the
 supervisor (depth/concurrency/timeout caps + lifecycle) from the Python

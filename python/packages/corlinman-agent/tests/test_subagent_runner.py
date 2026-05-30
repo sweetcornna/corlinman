@@ -434,7 +434,7 @@ async def test_child_timeout_decrements_concurrency_via_supervisor() -> None:
 # * ``tool_allowlist_escalation_rejected`` — child asks for a tool the
 #   parent does not hold → ``error="tool_allowlist_escalation"``.
 # * ``subagent_spawn_pruned_at_depth_n_minus_1`` — child at the deepest
-#   legal depth must NOT see ``subagent.spawn`` in its tools.
+#   legal depth must NOT see ``subagent_spawn`` in its tools.
 #
 # Plus three light-weight assertions that lock the inheritance default
 # and the explicit "empty list = no tools" mode (these branches cover
@@ -517,11 +517,11 @@ async def test_tool_allowlist_escalation_rejected() -> None:
 
 async def test_subagent_spawn_pruned_at_depth_n_minus_1() -> None:
     """At ``child_ctx.depth == max_depth - 1`` the runner strips
-    ``subagent.spawn`` from the child's tool list — a grandchild spawn
+    ``subagent_spawn`` from the child's tool list — a grandchild spawn
     would be refused by the supervisor anyway, so the child must not
     even see the option.
 
-    The parent (depth 0) holds ``subagent.spawn`` + ``web_search``.
+    The parent (depth 0) holds ``subagent_spawn`` + ``web_search``.
     The child runs at depth 1 (``parent_ctx.depth=0`` → child_ctx
     depth becomes 1 after :meth:`ParentContext.child_context`). With
     ``max_depth=2`` (default), depth 1 == max_depth - 1, so the spawn
@@ -546,10 +546,10 @@ async def test_subagent_spawn_pruned_at_depth_n_minus_1() -> None:
         (t.get("function") or {}).get("name") if isinstance(t, dict) else None
         for t in seen
     }
-    # ``web_search`` survives, ``subagent.spawn`` is pruned.
+    # ``web_search`` survives, ``subagent_spawn`` is pruned.
     assert "web_search" in seen_names
     assert SUBAGENT_SPAWN_TOOL not in seen_names, (
-        "subagent.spawn must be pruned at the deepest legal child depth"
+        "subagent_spawn must be pruned at the deepest legal child depth"
     )
 
 
@@ -559,7 +559,7 @@ async def test_subagent_spawn_kept_below_depth_cap_minus_one() -> None:
 
     Bumps ``max_depth=4`` so the default-depth-1 child has plenty of
     room. Locks the design § "tool exposure" branch where
-    ``depth < max_depth - 1`` keeps ``subagent.spawn`` available.
+    ``depth < max_depth - 1`` keeps ``subagent_spawn`` available.
     """
     provider = _ToolListCapturingProvider()
     parent_tools = [_tool(SUBAGENT_SPAWN_TOOL), _tool("web_search")]
@@ -586,7 +586,7 @@ async def test_inherit_when_allowlist_is_none() -> None:
     """``tool_allowlist=None`` (the default) means "inherit the parent's
     tool set verbatim". Locks the design § "Tool exposure" first
     policy: the child sees every tool the parent holds, modulo the
-    iter-7 self-prune (which doesn't fire here because ``subagent.spawn``
+    iter-7 self-prune (which doesn't fire here because ``subagent_spawn``
     isn't in the parent set)."""
     provider = _ToolListCapturingProvider()
     parent_tools = [_tool("web_search"), _tool("python_eval")]

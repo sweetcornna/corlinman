@@ -40,7 +40,7 @@ DEFAULT_MAX_TOOL_CALLS: int = 12
 
 #: Maximum nesting depth (parent → child → grandchild). Used by the
 #: supervisor's ``depth_capped`` short-circuit; runner only reads it for
-#: the ``subagent.spawn`` self-prune at ``depth == max_depth - 1`` (iter 7).
+#: the ``subagent_spawn`` self-prune at ``depth == max_depth - 1`` (iter 7).
 DEFAULT_MAX_DEPTH: int = 2
 
 

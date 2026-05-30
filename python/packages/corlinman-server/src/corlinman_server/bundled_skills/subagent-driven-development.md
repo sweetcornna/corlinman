@@ -10,12 +10,12 @@ metadata:
       config: []
       env: []
     install: |
-      No installation needed. The skill relies on the `subagent.spawn`
+      No installation needed. The skill relies on the `subagent_spawn`
       tool, which is part of the corlinman runtime.
 allowed-tools:
   - file.read
-  - subagent.spawn
-  - subagent.spawn_many
+  - subagent_spawn
+  - subagent_spawn_many
   - blackboard.read
   - blackboard.write
 ---
@@ -47,7 +47,7 @@ For each task:
 #### Step 1 — dispatch implementer subagent
 
 ```
-subagent.spawn(
+subagent_spawn(
   agent="editor",
   goal="Implement Task N: <descriptive name>",
   extra_context={
@@ -63,7 +63,7 @@ subagent.spawn(
 After the implementer returns, verify against the original spec:
 
 ```
-subagent.spawn(
+subagent_spawn(
   agent="researcher",
   goal="Verify the implementation matches the spec exactly.",
   extra_context={
@@ -86,7 +86,7 @@ subagent.spawn(
 After spec compliance passes:
 
 ```
-subagent.spawn(
+subagent_spawn(
   agent="researcher",
   goal="Review code quality for Task N.",
   extra_context={

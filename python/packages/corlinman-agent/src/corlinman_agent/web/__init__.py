@@ -1,7 +1,7 @@
 """Builtin web tools — the network half of the agent's tool surface.
 
 corlinman's builtin tool set started life as pure orchestration
-(``subagent.spawn{,_many}`` + ``blackboard.{read,write}``). Real agents
+(``subagent_spawn{,_many}`` + ``blackboard.{read,write}``). Real agents
 also need to *look things up*: fetch a page, run a search. This package
 ships those two tools (plus a cheap, self-contained ``calculator``)
 following the exact same wire contract the subagent / blackboard tools

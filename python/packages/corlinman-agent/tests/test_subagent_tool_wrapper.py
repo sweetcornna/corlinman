@@ -2,7 +2,7 @@
 
 Covers the design § "Implementation order" iter-8 acceptance:
 
-* ``subagent.spawn`` tool descriptor is OpenAI-shaped and the LLM can
+* ``subagent_spawn`` tool descriptor is OpenAI-shaped and the LLM can
   emit a ``ToolCallEvent`` for it.
 * Gateway dispatcher routes the call into the runner; the JSON
   ``TaskResult`` envelope is the ``ToolResult.content`` value the
@@ -92,7 +92,7 @@ def test_tool_schema_shape_is_openai_compatible() -> None:
     assert schema["type"] == "function"
     fn = schema["function"]
     assert fn["name"] == SUBAGENT_SPAWN_TOOL
-    assert fn["name"] == "subagent.spawn", "wire-stable identifier"
+    assert fn["name"] == "subagent_spawn", "wire-stable identifier"
     params = fn["parameters"]
     assert params["type"] == "object"
     # W1.1: only ``goal`` is strictly required — ``subagent_type`` /
@@ -141,7 +141,7 @@ def test_tool_schema_documents_default_budgets() -> None:
 
 
 async def test_dispatch_returns_json_envelope_on_happy_path() -> None:
-    """The LLM emits a ``ToolCallEvent("subagent.spawn", args_json)``;
+    """The LLM emits a ``ToolCallEvent("subagent_spawn", args_json)``;
     the gateway dispatcher calls :func:`dispatch_subagent_spawn`; the
     return string is what becomes ``ToolResult.content`` and gets
     appended to the parent's chat as a ``role="tool"`` message.

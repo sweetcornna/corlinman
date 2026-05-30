@@ -16,7 +16,7 @@ The shape locked in by the design (§ "Why this exists"):
   ``max(child_durations) + overhead`` (parallel via subagents).
 
 * The benchmark proves the contract end-to-end: an LLM-shaped tool
-  call (``ToolCallEvent("subagent.spawn", args_json)``) goes through
+  call (``ToolCallEvent("subagent_spawn", args_json)``) goes through
   :func:`dispatch_subagent_spawn`, the dispatcher acquires a
   supervisor slot, the runner drives a fresh
   :class:`ReasoningLoop` for each child, and every child returns
@@ -178,7 +178,7 @@ def _parent_ctx() -> ParentContext:
 
 def _spawn_args(agent_name: str, goal: str) -> bytes:
     """Build the JSON args payload the LLM would emit for one
-    ``subagent.spawn`` tool call. Matches the design's wire envelope:
+    ``subagent_spawn`` tool call. Matches the design's wire envelope:
     ``{"agent": "<card name>", "goal": "<sub-task prompt>"}``."""
     return json.dumps({"agent": agent_name, "goal": goal}).encode("utf-8")
 
@@ -192,7 +192,7 @@ async def _dispatch_one(
     goal: str,
     child_seq: int,
 ) -> dict[str, Any]:
-    """Drive one ``subagent.spawn`` round and decode its result envelope.
+    """Drive one ``subagent_spawn`` round and decode its result envelope.
 
     Returns the parsed :class:`TaskResult`-shaped dict so callers can
     assert on the wire shape. The dispatcher returns a JSON string
@@ -221,7 +221,7 @@ async def _dispatch_one(
 
 
 async def test_e2e_research_fanout_beats_serial_walltime() -> None:
-    """Wave-4 acceptance: 3-way fan-out via ``subagent.spawn`` must
+    """Wave-4 acceptance: 3-way fan-out via ``subagent_spawn`` must
     beat the serial baseline by at least ``1 - 0.7 = 30%``.
 
     Design row: ``e2e_research_fanout_beats_serial_walltime`` in the

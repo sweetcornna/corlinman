@@ -1,4 +1,4 @@
-"""Background dispatch for ``subagent.spawn`` with ``run_in_background=true``.
+"""Background dispatch for ``subagent_spawn`` with ``run_in_background=true``.
 
 W1.3 of ``docs/PLAN_MULTI_AGENT.md`` §2 Wave 1/W1.3.
 
@@ -147,7 +147,7 @@ def _truncate(text: str, limit: int) -> str:
 
 
 class AsyncSubagentDispatcher:
-    """Schedule + track background ``subagent.spawn`` requests.
+    """Schedule + track background ``subagent_spawn`` requests.
 
     Construct one per gateway process; share by reference via
     ``AdminState.subagent_dispatcher``. The dispatcher owns the

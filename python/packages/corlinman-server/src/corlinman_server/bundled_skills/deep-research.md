@@ -15,15 +15,15 @@ metadata:
          install steps for the Brave API key setup.
       2. The skill works without `subagent.*` access (single-threaded
          fallback), but quality is dramatically higher when the agent
-         can fan out via `subagent.spawn_many`.
+         can fan out via `subagent_spawn_many`.
 allowed-tools:
   - web.search
   - web.fetch
   - kb.search
   - memory.search
   - memory.write
-  - subagent.spawn
-  - subagent.spawn_many
+  - subagent_spawn
+  - subagent_spawn_many
   - blackboard.read
   - blackboard.write
 ---
@@ -70,10 +70,10 @@ Anything found here saves a web round-trip *and* surfaces prior decisions that a
 
 ### 3. Fan out web searches (one per sub-question)
 
-If `subagent.spawn_many` is available, dispatch one researcher sibling per sub-question — siblings are isolated, which prevents one early "official-looking" source from anchoring the others:
+If `subagent_spawn_many` is available, dispatch one researcher sibling per sub-question — siblings are isolated, which prevents one early "official-looking" source from anchoring the others:
 
 ```
-subagent.spawn_many(
+subagent_spawn_many(
   agent="researcher",
   goals=[
     "Sub-question 1: ...",
