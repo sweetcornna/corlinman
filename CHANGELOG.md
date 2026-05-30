@@ -4,6 +4,43 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.13.0] — 2026-05-30 — Shareable agent status card across every channel
+
+> Chat replies on every channel can now carry a tap-through link to a public,
+> read-only "what is the agent doing right now" page — a live trajectory view
+> backed by a signed, self-expiring capability token. Off by default; lights
+> up only when the operator sets `[server].public_url`.
+
+### Added
+- **Public agent status card.** New unauthenticated route
+  `GET /status/{token}/data` (JSON snapshot: `session_key`, `status`, `turns`,
+  `events`, `started_at_ms`, `updated_at_ms`) plus `GET /status/{token}/events/live`
+  (SSE live feed, 10s heartbeat, `Last-Event-ID` resume). Mounted at root in
+  `gateway/routes/register.py`; the signed token in the path **is** the
+  capability (a tampered/expired token → `403`). The journal is read lazily
+  from `app.state.corlinman_journal`. (#28, #31)
+- **Status link in every channel reply.** All seven chat channels
+  (Telegram, Discord, Slack, Feishu, QQ/OneBot, QQ Official, WeChat Official)
+  append a `🔗 实时状态: {public_url}/status/{token}` line to the final reply
+  when the feature is configured. The four spinner channels route through the
+  shared `_build_footer_for_outcome`; QQ / QQ-Official / WeChat inject on their
+  own reply paths. Dropped gracefully when it would overflow a channel's length
+  cap.
+- **Public status UI.** `ui/app/status/[token]/` — a static-export shell that
+  reads the token from the URL at runtime, fetches the snapshot, subscribes to
+  the SSE feed, and renders the same read-only `EventTimelineBody` the admin
+  surface uses. (#29)
+- **Trajectory redaction (privacy).** The public snapshot redacts tool-call
+  args/results by default (tool *names* + status survive, payload bodies are
+  stripped) so a shared link can't leak prompts / keys / file contents. Toggle
+  via `CORLINMAN_STATUS_REDACT`. (#30)
+- **Config.** `[server].public_url` and `[channels].status_url_in_replies`
+  (default `true`) in `docs/config.example.toml`; the entrypoint arms the
+  feature once at boot (`_wire_status_links`) before channels start, injecting a
+  token-minting closure so `corlinman-channels` never imports `corlinman-server`
+  (import-linter layering preserved). The `agent_status_card` tool falls back to
+  the config `public_url` when `CORLINMAN_PUBLIC_URL` is unset. (#33)
+
 ## [1.12.3] — 2026-05-30 — Subagents run their tools; reliable PDF/document generation
 
 > Two live-usage fixes found from a real multi-agent run: research subagents

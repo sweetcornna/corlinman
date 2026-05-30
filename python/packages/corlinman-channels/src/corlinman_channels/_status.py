@@ -55,6 +55,7 @@ __all__ = [
     "chunk_reply",
     "format_ask_user",
     "format_elapsed_ms",
+    "format_status_footer_line",
     "format_todo_list",
     "format_tool_heartbeat",
     "format_tool_result",
@@ -510,6 +511,33 @@ def format_turn_footer(
         prefix = "~" if cost_status in ("estimated", "unknown", None) else ""
         parts.append(f"{prefix}${estimated_cost_usd:.4f}")
     return f"({' · '.join(parts)})"
+
+
+def format_status_footer_line(
+    public_url: str,
+    token: str,
+    *,
+    label: str = "🔗 实时状态",
+) -> str:
+    """Render the shareable **agent status card** link line for a reply.
+
+    Shape (one line, appended after the model's prose so a chat user can
+    tap through to a live read-only view of the agent's current step +
+    work trajectory)::
+
+        🔗 实时状态: https://bot.example.com/status/<signed-token>
+
+    Pure formatter — takes an already-minted, already-signed ``token`` and
+    the configured ``public_url`` and joins them. Returns ``""`` when
+    either is empty so callers can unconditionally pipe the result through
+    :func:`try_append_footer` (which is itself empty-safe). Keeping the
+    token-minting out of this package avoids a ``corlinman_channels`` →
+    ``corlinman_server`` import (the gateway injects a minting closure at
+    channel-runtime bootstrap); see ``service.configure_status_links``.
+    """
+    if not public_url or not token:
+        return ""
+    return f"{label}: {public_url.rstrip('/')}/status/{token}"
 
 
 def try_append_footer(message: str, footer: str, limit: int = TEXT_LIMIT) -> str:

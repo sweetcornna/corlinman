@@ -158,6 +158,86 @@ def _resolve_cors_origins() -> list[str]:
     return [origin.strip() for origin in raw.split(",") if origin.strip()]
 
 
+def _wire_status_links(cfg: Any | None, data_dir: Path) -> None:
+    """Wire the agent status-card channel-link feature exactly once.
+
+    Each channel's reply path calls
+    ``corlinman_channels.service._status_link_line(session_key)`` which
+    appends a ``{public_url}/status/{token}`` line when this feature is
+    armed. We arm it here — before the channels start in the
+    sibling-bootstrap loop — by handing
+    :func:`corlinman_channels.service.configure_status_links` the public
+    base URL + a ``minter`` closure that signs a token for a session key.
+
+    Layering: the ``minter`` is a closure so ``corlinman_channels`` never
+    imports ``corlinman_server`` at module top (import-linter rule).
+
+    Resolution (dict-shaped config — ``load_from_path`` returns a plain
+    dict):
+
+    * ``public_url`` — ``[server].public_url`` in config, else the
+      ``CORLINMAN_PUBLIC_URL`` env var, else ``""``.
+    * ``status_url_in_replies`` — ``[channels].status_url_in_replies``,
+      default ``True``.
+
+    Safe no-op when ``public_url`` is empty: ``configure_status_links``
+    already guards (links stay off unless public_url + enabled + minter
+    are all truthy), and we never crash resolving config.
+    """
+    try:
+        from corlinman_channels.service import configure_status_links
+
+        from corlinman_server.gateway.status_token import (
+            make_status_token,
+            resolve_signing_key,
+        )
+    except ImportError as exc:
+        logger.warning(
+            "gateway.channels.status_links_import_failed", error=str(exc)
+        )
+        return
+
+    server_cfg = _extract_section(cfg, "server")
+    config_public_url = _extract_section(server_cfg, "public_url")
+    config_public_url = (
+        config_public_url.strip()
+        if isinstance(config_public_url, str)
+        else ""
+    )
+    public_url = config_public_url or os.environ.get(
+        "CORLINMAN_PUBLIC_URL", ""
+    ).strip()
+
+    # The in-process agent servicer (agent_status_card tool) holds no
+    # gateway config object and resolves its public base URL from
+    # CORLINMAN_PUBLIC_URL first. When the operator set it only in
+    # ``[server].public_url`` (env unset), publish it into the process env
+    # here so the tool's dispatch builds the same absolute link the
+    # channels do — without threading a config handle through the servicer.
+    if config_public_url and not os.environ.get("CORLINMAN_PUBLIC_URL"):
+        os.environ["CORLINMAN_PUBLIC_URL"] = config_public_url
+
+    channels_cfg = _extract_section(cfg, "channels")
+    flag = _extract_section(channels_cfg, "status_url_in_replies")
+    # Default-on: the feature only surfaces when public_url is also set,
+    # so a default of True is safe — an operator who never sets a public
+    # URL never sees a link.
+    status_enabled = bool(public_url) and (flag is None or bool(flag))
+
+    signing_key = resolve_signing_key(data_dir)
+
+    configure_status_links(
+        public_url=public_url,
+        enabled=status_enabled,
+        minter=lambda sk: make_status_token(sk, signing_key),
+    )
+
+    if status_enabled:
+        logger.info(
+            "gateway.channels.status_links_enabled", public_url=public_url
+        )
+
+
 def _load_config(path: Path | None) -> Any | None:
     """Best-effort config load.
 
@@ -1949,6 +2029,22 @@ def build_app(
             logger.info("gateway.mcp.manager_connected")
         except Exception as exc:
             logger.warning("gateway.mcp.manager_failed", error=str(exc))
+
+        # Agent status-card channel links. Wire the corlinman-channels
+        # feature ONCE here, *before* the sibling-bootstrap loop starts
+        # the channels: each channel's reply path then appends a
+        # "{public_url}/status/{token}" line so a chat user can tap
+        # through to a read-only live status page. The minter is injected
+        # as a closure (session_key -> signed token) so corlinman_channels
+        # never has to import corlinman_server (import-linter layering).
+        # No-op / links-off unless public_url is set AND the channels
+        # feature flag is on — ``configure_status_links`` already guards.
+        try:
+            _wire_status_links(cfg, resolved_data_dir)
+        except Exception as exc:  # pragma: no cover — best-effort
+            logger.warning(
+                "gateway.channels.status_links_wire_failed", error=str(exc)
+            )
 
         # Generic sibling-bootstrap seam (see docs/contracts/runtime-
         # wiring.md §2). Each sibling module *may* export

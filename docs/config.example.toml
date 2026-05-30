@@ -13,6 +13,13 @@ port = 6005
 bind = "0.0.0.0"
 # Files (agents/, plugins/, knowledge/, vector/, logs/) all live under here.
 data_dir = "~/.corlinman"
+# Public base URL of this gateway as reached from the outside world
+# (scheme + host, no trailing slash), e.g. "https://bot.example.com".
+# Used to build absolute, shareable agent status-card links
+# ("{public_url}/status/{token}") that channels can append to replies and
+# that the `agent_status_card` tool mints. Empty ("") disables those
+# links. The CORLINMAN_PUBLIC_URL env var overrides this when set.
+public_url = ""
 
 # ---------------------------------------------------------------------------
 # [admin] — credentials for /admin/* routes (basic auth, argon2id hash).
@@ -147,6 +154,17 @@ cheap = "claude-haiku-4-5-20251001"
 # [models.aliases.local]
 # model = "llama3.2:3b"
 # provider = "ollama"
+
+# ---------------------------------------------------------------------------
+# [channels] — cross-channel reply behaviour (applies to every adapter).
+# ---------------------------------------------------------------------------
+[channels]
+# Append a shareable, read-only "live status" link
+# ("{server.public_url}/status/{token}") to every channel reply so a chat
+# user can tap through to watch the agent work. Only takes effect when
+# [server].public_url (or CORLINMAN_PUBLIC_URL) is also set; with no public
+# URL this flag is a no-op. Default true.
+status_url_in_replies = true
 
 # ---------------------------------------------------------------------------
 # [channels.qq] — OneBot v11 forward-WS bridge. Disabled by default.

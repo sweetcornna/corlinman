@@ -33,6 +33,7 @@ that has access to an identity store can populate
 opaque handle.
 """
 
+from corlinman_channels._status import format_status_footer_line
 from corlinman_channels.channel import (
     ApnsChannel,
     Channel,
@@ -150,6 +151,7 @@ from corlinman_channels.service import (
     SlackChannelParams,
     TelegramChannelParams,
     WeChatOfficialChannelParams,
+    configure_status_links,
     handle_one_discord,
     handle_one_feishu,
     handle_one_qq,
@@ -360,9 +362,11 @@ __all__ = [
     "classify",
     # Persona injection (W7 Persona Studio)
     "compose_persona_emoji_block",
+    "configure_status_links",
     "corlinman_channel_enabled",
     "default_media_dir",
     "download_to_media_dir",
+    "format_status_footer_line",
     "handle_one_discord",
     "handle_one_feishu",
     "handle_one_qq",

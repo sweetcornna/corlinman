@@ -2525,13 +2525,25 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
 
         public_url = os.environ.get("CORLINMAN_PUBLIC_URL", "").strip().rstrip("/")
         if not public_url:
+            # Fall back to the gateway config's ``[server].public_url`` when
+            # the env var is unset. The servicer has no config object in
+            # scope, so read it from the Rust→Python config-handshake JSON
+            # drop the gateway writes at boot (``$CORLINMAN_PY_CONFIG`` /
+            # ``~/.corlinman/py_config.json``). Best-effort: any read/parse
+            # failure leaves ``public_url`` empty and the typed error below
+            # fires, exactly as before.
+            cfg_public_url = _read_public_url_from_py_config()
+            if cfg_public_url:
+                public_url = cfg_public_url.strip().rstrip("/")
+        if not public_url:
             return json.dumps(
                 {
                     "ok": False,
                     "error": "public_url_unset",
                     "message": (
                         "shareable status links need the operator to set "
-                        "CORLINMAN_PUBLIC_URL (the gateway's public base URL)."
+                        "CORLINMAN_PUBLIC_URL (the gateway's public base URL) "
+                        "or [server].public_url in config.toml."
                     ),
                 },
                 ensure_ascii=False,
@@ -2928,6 +2940,45 @@ def _build_default_context_assembler() -> ContextAssembler | None:
     except Exception as exc:
         logger.warning("agent.chat.context_assembler_init_failed", error=str(exc))
         return None
+
+
+def _read_public_url_from_py_config() -> str:
+    """Best-effort read of ``[server].public_url`` for the status-card tool.
+
+    The servicer holds no gateway config object, so when
+    ``CORLINMAN_PUBLIC_URL`` is unset (the status-card tool's primary
+    source) we fall back to the Rust→Python config-handshake JSON drop the
+    gateway writes at boot (``$CORLINMAN_PY_CONFIG`` /
+    ``$CORLINMAN_DATA_DIR/py-config.json``). The drop is read tolerantly —
+    accepting either a top-level ``public_url`` or a nested
+    ``server.public_url`` — so it keeps working whatever shape the
+    renderer settles on. Any missing file / parse error / wrong type
+    returns ``""`` and the caller surfaces its typed ``public_url_unset``
+    envelope, exactly as before this fallback existed.
+
+    Note: the gateway also exports a config-only ``[server].public_url``
+    into ``CORLINMAN_PUBLIC_URL`` at boot (see
+    ``entrypoint._wire_status_links``), so in the normal in-process
+    deployment the env lookup already wins; this drop read is the
+    belt-and-braces path for out-of-process / sidecar consumers.
+    """
+    raw = os.environ.get("CORLINMAN_PY_CONFIG")
+    if raw:
+        path = Path(raw)
+    else:
+        path = _resolve_data_dir() / "py-config.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(data, Mapping):
+        return ""
+    value = data.get("public_url")
+    if value is None:
+        server = data.get("server")
+        if isinstance(server, Mapping):
+            value = server.get("public_url")
+    return value if isinstance(value, str) else ""
 
 
 def _resolve_data_dir() -> Path:

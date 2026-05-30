@@ -105,6 +105,7 @@ from corlinman_channels._status import (
 from corlinman_channels._status import (
     MutableSpinner,
     chunk_reply,
+    format_status_footer_line,
     format_turn_footer,
     truncate_reply,
     try_append_footer,
@@ -1321,6 +1322,14 @@ async def handle_one_qq(
     # Discord / Slack / Feishu — instead of letting NapCat silently
     # cut off the reply.
     chunks = chunk_reply(body, _QQ_TEXT_LIMIT)
+    # Surface the shareable agent-status link on the LAST chunk (one per
+    # turn), when the feature is configured. Dropped gracefully by
+    # ``try_append_footer`` if attaching would overflow the QQ cap.
+    _qq_status_line = _status_link_line(req.binding.session_key())
+    if _qq_status_line and chunks:
+        chunks[-1] = try_append_footer(
+            chunks[-1], _qq_status_line, _QQ_TEXT_LIMIT
+        )
     if len(chunks) > 1:
         _log.info(
             "qq reply split user=%s len=%d chunks=%d",
@@ -2478,7 +2487,9 @@ async def handle_one_telegram(
     # W4.1 — append the post-turn observability footer to the LAST chunk
     # only (one footer per turn). ``try_append_footer`` drops it
     # gracefully if attaching would push the chunk past the cap.
-    footer = _build_footer_for_outcome(outcome, footer_state)
+    footer = _build_footer_for_outcome(
+        outcome, footer_state, session_key=inbound.binding.session_key()
+    )
     if footer:
         chunks[-1] = try_append_footer(chunks[-1], footer, _TELEGRAM_TEXT_LIMIT)
 
@@ -2731,15 +2742,74 @@ async def _drive_spinner(
     return outcome
 
 
+# ---------------------------------------------------------------------------
+# Agent status-card links (shareable read-only "what is the agent doing now")
+# ---------------------------------------------------------------------------
+# The gateway can surface a per-turn link ({public_url}/status/{token}) in every
+# channel reply so a chat user can tap through to a live trajectory view. The
+# token is a signed capability minted by corlinman_server.gateway.status_token;
+# to keep this package from importing corlinman_server (import-linter layering),
+# the channels-runtime bootstrap injects a minting CLOSURE here instead.
+_STATUS_LINK_PUBLIC_URL: str = ""
+_STATUS_LINK_ENABLED: bool = False
+_STATUS_LINK_MINTER: Callable[[str], str] | None = None
+
+
+def configure_status_links(
+    *,
+    public_url: str = "",
+    enabled: bool = False,
+    minter: Callable[[str], str] | None = None,
+) -> None:
+    """Wire (or disable) the shareable agent-status link feature.
+
+    Called once by the gateway's channels-runtime bootstrap. ``minter`` is a
+    ``session_key -> signed-token`` closure (captures the signing key + TTL on
+    the server side) so this package never imports ``corlinman_server``. All
+    three of ``public_url``, ``enabled``, and ``minter`` must be truthy for a
+    link to appear; otherwise :func:`_status_link_line` returns ``""`` and
+    every channel reply is unchanged. Idempotent — safe to call on reload.
+    """
+    global _STATUS_LINK_PUBLIC_URL, _STATUS_LINK_ENABLED, _STATUS_LINK_MINTER
+    _STATUS_LINK_PUBLIC_URL = public_url or ""
+    _STATUS_LINK_ENABLED = bool(enabled)
+    _STATUS_LINK_MINTER = minter
+
+
+def _status_link_line(session_key: str) -> str:
+    """Mint + format the status-card link line for ``session_key``.
+
+    Returns ``""`` when the feature is off, unconfigured, or minting fails —
+    a status link must NEVER break or delay a user-facing reply. Callers pipe
+    the result through :func:`try_append_footer` (empty-safe).
+    """
+    if (
+        not _STATUS_LINK_ENABLED
+        or not _STATUS_LINK_PUBLIC_URL
+        or not session_key
+        or _STATUS_LINK_MINTER is None
+    ):
+        return ""
+    try:
+        token = _STATUS_LINK_MINTER(session_key)
+    except Exception:  # noqa: BLE001 — never fail a reply over a status link
+        return ""
+    if not token:
+        return ""
+    return format_status_footer_line(_STATUS_LINK_PUBLIC_URL, token)
+
+
 def _build_footer_for_outcome(
     outcome: _DriveSpinnerOutcome,
     footer_state: _FooterState,
+    *,
+    session_key: str = "",
 ) -> str:
-    """Compose the W4.1 post-turn footer from outcome + emitter state.
+    """Compose the per-turn reply footer: W4.1 observability + status link.
 
-    Only renders a footer when the new emitter wired the per-turn flow
-    (``footer_state.populated`` is True). This gates the cost+elapsed
-    line behind the observability emitter so:
+    The W4.1 cost/elapsed line only renders when the new emitter wired the
+    per-turn flow (``footer_state.populated`` is True). This gates the
+    cost+elapsed line behind the observability emitter so:
 
     * Deployments without the emitter (older builds, unit-test harnesses
       that mock the chat service directly) keep their pre-W4.1 reply
@@ -2751,25 +2821,33 @@ def _build_footer_for_outcome(
       authoritative — :class:`_DriveSpinnerOutcome` only provides the
       legacy ``tool_call_count`` fallback for the same turn.
 
-    Returns the empty string when ``footer_state`` was never populated;
-    callers (every spinner channel) pass the return through
-    :func:`try_append_footer` which is itself empty-footer-safe.
+    The shareable status-card link (when ``session_key`` is supplied and the
+    feature is configured via :func:`configure_status_links`) is appended on
+    its own line and is INDEPENDENT of ``populated`` — a user always gets the
+    "watch me work" link even on an emitter-less deployment.
+
+    Returns the empty string when nothing applies; callers (every channel)
+    pass the return through :func:`try_append_footer` which is empty-safe.
     """
-    if not footer_state.populated:
-        return ""
-    elapsed_ms = footer_state.elapsed_ms
-    cost = footer_state.estimated_cost_usd
-    cost_status = footer_state.cost_status
-    # Prefer the emitter-side count when populated; the legacy stream's
-    # tool_call count covers the case where ToolStateCompleted hasn't
-    # fired yet (e.g. the agent finished too fast for the heartbeat
-    # task to spin up — counted by the consumer regardless).
-    tool_calls = (
-        footer_state.tool_call_count
-        if footer_state.tool_call_count > 0
-        else outcome.tool_call_count
-    )
-    return format_turn_footer(elapsed_ms, tool_calls, cost, cost_status)
+    w41 = ""
+    if footer_state.populated:
+        elapsed_ms = footer_state.elapsed_ms
+        cost = footer_state.estimated_cost_usd
+        cost_status = footer_state.cost_status
+        # Prefer the emitter-side count when populated; the legacy stream's
+        # tool_call count covers the case where ToolStateCompleted hasn't
+        # fired yet (e.g. the agent finished too fast for the heartbeat
+        # task to spin up — counted by the consumer regardless).
+        tool_calls = (
+            footer_state.tool_call_count
+            if footer_state.tool_call_count > 0
+            else outcome.tool_call_count
+        )
+        w41 = format_turn_footer(elapsed_ms, tool_calls, cost, cost_status)
+    status_line = _status_link_line(session_key)
+    if w41 and status_line:
+        return f"{w41}\n{status_line}"
+    return w41 or status_line
 
 
 # ---------------------------------------------------------------------------
@@ -3042,7 +3120,9 @@ async def handle_one_discord(
         _log.info(
             "discord reply split len=%d chunks=%d", len(body), len(chunks)
         )
-    footer = _build_footer_for_outcome(outcome, footer_state)
+    footer = _build_footer_for_outcome(
+        outcome, footer_state, session_key=inbound.binding.session_key()
+    )
     if footer:
         chunks[-1] = try_append_footer(chunks[-1], footer, _DISCORD_TEXT_LIMIT)
     try:
@@ -3311,7 +3391,9 @@ async def handle_one_slack(
         _log.info(
             "slack reply split len=%d chunks=%d", len(body), len(chunks)
         )
-    footer = _build_footer_for_outcome(outcome, footer_state)
+    footer = _build_footer_for_outcome(
+        outcome, footer_state, session_key=inbound.binding.session_key()
+    )
     if footer:
         chunks[-1] = try_append_footer(chunks[-1], footer, _SLACK_TEXT_LIMIT)
     try:
@@ -3578,7 +3660,9 @@ async def handle_one_feishu(
         _log.info(
             "feishu reply split len=%d chunks=%d", len(body), len(chunks)
         )
-    footer = _build_footer_for_outcome(outcome, footer_state)
+    footer = _build_footer_for_outcome(
+        outcome, footer_state, session_key=inbound.binding.session_key()
+    )
     if footer:
         chunks[-1] = try_append_footer(chunks[-1], footer, _FEISHU_TEXT_LIMIT)
     try:
@@ -3996,6 +4080,10 @@ async def handle_one_qq_official(
     final = (summary + body) if summary else body
     if not final.strip():
         return
+    # Append the shareable agent-status link when configured (empty-safe).
+    _qqo_status_line = _status_link_line(inbound.binding.session_key())
+    if _qqo_status_line:
+        final = try_append_footer(final, _qqo_status_line)
 
     try:
         await _qq_official_send_text(sender, inbound, final)
@@ -4279,6 +4367,11 @@ async def handle_one_wechat_official(
     # so the user still gets the answer.
     openid = inbound.binding.sender
     push_body = remainder if passive_delivered else body
+    # Append the shareable status link to the customer-service push (NOT the
+    # length-capped passive XML), so the user gets a live trajectory link.
+    _wx_status_line = _status_link_line(inbound.binding.session_key())
+    if _wx_status_line and push_body:
+        push_body = try_append_footer(push_body, _wx_status_line)
     if push_body and push_body.strip():
         try:
             await sender.send_text_customer(openid, push_body)

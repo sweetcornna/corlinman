@@ -49,6 +49,7 @@ from corlinman_server.gateway.routes import (
     metrics,
     models,
     plugin_callback,
+    status,
     wechat_webhook,
 )
 
@@ -118,6 +119,20 @@ def build_app_router(state: GatewayState) -> APIRouter:
     # populated by the channel runtime after gateway boot. An unregistered
     # bot name surfaces as 404 from the route itself.
     parent.include_router(wechat_webhook.build_wechat_router())
+
+    # Public agent status card — GET /status/{token}/data + /events/live.
+    # Mounted at ROOT with NO auth: the signed token in the path IS the
+    # capability (verify_status_token -> 403 on bad/expired). The handler
+    # reads the journal lazily from app.state, so it needs no GatewayState
+    # field here and is always safe to mount.
+    parent.include_router(status.router())
+
+    # Public agent status card — GET /status/{token}/data + /events/live.
+    # Mounted at ROOT with NO auth: the signed token in the path IS the
+    # capability (verify_status_token -> 403 on bad/expired). The handler
+    # reads the journal lazily from app.state, so it needs no GatewayState
+    # field here and is always safe to mount.
+    parent.include_router(status.router())
 
     # Plugin callback — type-narrow the registry slot for lazy import safety.
     if state.plugin_async_tasks is not None:
