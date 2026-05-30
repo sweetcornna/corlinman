@@ -785,6 +785,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         hook_bus: Any | None = None,
         permission_gate: PermissionGate | None = None,
         event_emitter: Any | None = None,
+        data_dir: Path | str | None = None,
     ) -> None:
         """Construct the servicer.
 
@@ -807,6 +808,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             self._resolve = provider_registry.resolve
         self._aliases: dict[str, AliasEntry] = dict(aliases or {})
         self._context_assembler = context_assembler
+        self._data_dir = Path(data_dir) if data_dir is not None else None
         # Builtin-tool runtime state. The agent registry is reused from
         # the context assembler when one is configured; the blackboard
         # store is created lazily on the first builtin dispatch so an
@@ -1696,7 +1698,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             return self._journal
         self._journal_init_done = True
         try:
-            path = _resolve_data_dir() / "agent_journal.sqlite"
+            path = _resolve_data_dir(self._data_dir) / "agent_journal.sqlite"
             # ``open_from_env`` honours ``CORLINMAN_JOURNAL_BACKEND``;
             # unset / "sqlite" preserves the existing on-disk behavior
             # at ``path``. Future HA deployments can swap the backend
@@ -2183,7 +2185,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     return await dispatch_persona_life_event_seed(
                         args_json=event.args_json,
                         persona_id=pl_persona_id,
-                        data_dir=_resolve_data_dir(),
+                        data_dir=_resolve_data_dir(self._data_dir),
                     )
                 if event.tool == PERSONA_LIFE_SET_SEEDS_TOOL:
                     # Authoring tool — reads an EXPLICIT persona_id from its
@@ -2192,12 +2194,12 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     # bound persona). No state store needed.
                     return await dispatch_persona_life_set_seeds(
                         args_json=event.args_json,
-                        data_dir=_resolve_data_dir(),
+                        data_dir=_resolve_data_dir(self._data_dir),
                     )
                 if event.tool == PERSONA_LIFE_GET_SEEDS_TOOL:
                     return await dispatch_persona_life_get_seeds(
                         args_json=event.args_json,
-                        data_dir=_resolve_data_dir(),
+                        data_dir=_resolve_data_dir(self._data_dir),
                     )
                 state_store = await self._get_persona_state_store()
                 if state_store is None:
@@ -2384,7 +2386,9 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 _build_agent_registry_stack,
             )
 
-            registry, _reload = _build_agent_registry_stack(_resolve_data_dir())
+            registry, _reload = _build_agent_registry_stack(
+                _resolve_data_dir(self._data_dir)
+            )
             self._builtin_agents = registry
             return self._builtin_agents
         except Exception as exc:
@@ -2396,7 +2400,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         data dir; created on first use."""
         if self._blackboard_store is not None:
             return self._blackboard_store
-        data_dir = _resolve_data_dir()
+        data_dir = _resolve_data_dir(self._data_dir)
         data_dir.mkdir(parents=True, exist_ok=True)
         self._blackboard_store = BlackboardStore(data_dir / "blackboard.sqlite")
         return self._blackboard_store
@@ -2429,7 +2433,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         try:
             from corlinman_server.persona import PersonaStore  # noqa: PLC0415
 
-            data_dir = _resolve_data_dir()
+            data_dir = _resolve_data_dir(self._data_dir)
             data_dir.mkdir(parents=True, exist_ok=True)
             self._persona_store = await PersonaStore.open(
                 data_dir / "personas.sqlite"
@@ -2494,7 +2498,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         except (ValueError, UnicodeDecodeError):
             pass
 
-        key = resolve_signing_key(_resolve_data_dir())
+        key = resolve_signing_key(_resolve_data_dir(self._data_dir))
         token = make_status_token(session_key, key, ttl_seconds=ttl)
         return json.dumps(
             {
@@ -2562,7 +2566,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         try:
             from corlinman_persona.store import PersonaStore as _StateStore  # noqa: PLC0415
 
-            data_dir = _resolve_data_dir()
+            data_dir = _resolve_data_dir(self._data_dir)
             data_dir.mkdir(parents=True, exist_ok=True)
             self._persona_state_store = await _StateStore.open_or_create(
                 data_dir / "agent_state.sqlite"
@@ -2591,7 +2595,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 PersonaAssetStore,
             )
 
-            data_dir = _resolve_data_dir()
+            data_dir = _resolve_data_dir(self._data_dir)
             data_dir.mkdir(parents=True, exist_ok=True)
             self._persona_asset_store = await PersonaAssetStore.open(
                 data_dir / "persona_assets.sqlite",
@@ -2769,7 +2773,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         try:
             from corlinman_memory_host import LocalSqliteHost
 
-            path = _resolve_data_dir() / "memory.sqlite"
+            path = _resolve_data_dir(self._data_dir) / "memory.sqlite"
             self._memory_host = await LocalSqliteHost.open("local", str(path))
             logger.info("agent.memory.opened", path=str(path))
         except Exception as exc:  # noqa: BLE001 — degrade, never crash chat
@@ -2863,7 +2867,9 @@ def _build_default_context_assembler() -> ContextAssembler | None:
         return None
 
 
-def _resolve_data_dir() -> Path:
+def _resolve_data_dir(override: Path | str | None = None) -> Path:
+    if override is not None:
+        return Path(override)
     raw = os.environ.get("CORLINMAN_DATA_DIR")
     if raw:
         return Path(raw)

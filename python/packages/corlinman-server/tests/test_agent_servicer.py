@@ -7,6 +7,7 @@ import json
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import Any, ClassVar
+from urllib.parse import urlparse
 
 import grpc
 import grpc.aio
@@ -15,6 +16,10 @@ from corlinman_grpc import agent_pb2, agent_pb2_grpc, common_pb2
 from corlinman_providers import AliasEntry, ProviderRegistry
 from corlinman_providers.base import ProviderChunk
 from corlinman_server.agent_servicer import CorlinmanAgentServicer
+from corlinman_server.gateway.status_token import (
+    resolve_signing_key,
+    verify_status_token,
+)
 
 
 class _FakeProvider:
@@ -61,6 +66,26 @@ class _FakeContextAssembler:
                     "{{memory.backend}}", "memory hit from assembler"
                 )
         return SimpleNamespace(messages=rendered)
+
+
+def test_agent_status_card_uses_servicer_data_dir_for_signing_key(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("CORLINMAN_STATUS_SIGNING_KEY", raising=False)
+    monkeypatch.setenv("CORLINMAN_PUBLIC_URL", "https://status.example.test")
+    other_data_dir = tmp_path / "env-data"
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(other_data_dir))
+    data_dir = tmp_path / "gateway-data"
+
+    servicer = CorlinmanAgentServicer(data_dir=data_dir)
+    raw = servicer._dispatch_agent_status_card(b"{}", "sess-tool")
+
+    body = json.loads(raw)
+    assert body["ok"] is True
+    token = urlparse(body["url"]).path.rsplit("/", 1)[-1]
+    assert verify_status_token(token, resolve_signing_key(data_dir)) == "sess-tool"
+    assert verify_status_token(token, resolve_signing_key(other_data_dir)) is None
 
 
 def _token_stream(deltas: list[str]) -> list[ProviderChunk]:

@@ -41,6 +41,7 @@ from corlinman_server.gateway.routes import (
     models,
     plugin_callback,
     register,
+    status,
 )
 
 __all__ = [
@@ -54,4 +55,5 @@ __all__ = [
     "models",
     "plugin_callback",
     "register",
+    "status",
 ]

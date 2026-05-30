@@ -218,6 +218,7 @@ async def serve_agent(
     shutdown: asyncio.Event,
     *,
     event_emitter: Any | None = None,
+    data_dir: Path | str | None = None,
 ) -> None:
     """Bind a ``grpc.aio`` server hosting the ``Agent`` service and serve
     until ``shutdown`` fires.
@@ -272,7 +273,8 @@ async def serve_agent(
     # into the journal + live SSE subscribers. ``None`` keeps the
     # legacy yield-only path active for the test smoke / degraded boot.
     agent_pb2_grpc.add_AgentServicer_to_server(
-        CorlinmanAgentServicer(event_emitter=event_emitter), server
+        CorlinmanAgentServicer(event_emitter=event_emitter, data_dir=data_dir),
+        server,
     )
     try:
         server.add_insecure_port(bind)
@@ -343,8 +345,9 @@ def serve_agent_in_background(
         extras = getattr(state, "extras", None)
         if isinstance(extras, dict):
             event_emitter = extras.get("event_emitter")
+    data_dir = getattr(state, "data_dir", None)
     task = asyncio.create_task(
-        serve_agent(bind, cancel, event_emitter=event_emitter),
+        serve_agent(bind, cancel, event_emitter=event_emitter, data_dir=data_dir),
         name="gateway.grpc.agent_server",
     )
     log.info(

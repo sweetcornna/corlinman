@@ -8,7 +8,7 @@ item below maps 1:1 to a GitHub issue filed via `scripts/gh_followup_issues.sh`.
 The `agent_status_card` tool + signed token shipped in v1.12.0; the link is not
 yet usable end-to-end.
 
-- [ ] **HIGH — public `GET /status/{token}` route.** Verify the token →
+- [x] **HIGH — public `GET /status/{token}` route.** Verify the token →
   read the per-turn journal (`list_session_turns` / `get_session_turn_ids`) →
   return `{session_key, status, turns[…], current_step}` JSON. Mounts at root
   via `routes/register.build_app_router` (auth only gates `/v1/` + `/admin/*`,

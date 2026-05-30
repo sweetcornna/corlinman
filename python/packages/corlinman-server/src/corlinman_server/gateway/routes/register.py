@@ -49,6 +49,7 @@ from corlinman_server.gateway.routes import (
     metrics,
     models,
     plugin_callback,
+    status,
     wechat_webhook,
 )
 
@@ -78,6 +79,7 @@ class GatewayState:
     plugin_async_tasks: object | None = None  # AsyncTaskRegistry (lazy import)
     models_source: models.ModelSource | None = None
     metrics_registry: object | None = None  # prometheus CollectorRegistry
+    app_state: object | None = None
 
 
 def build_app_router(state: GatewayState) -> APIRouter:
@@ -94,6 +96,13 @@ def build_app_router(state: GatewayState) -> APIRouter:
     # an early 404 on /v1/chat doesn't shadow the readiness signal.
     parent.include_router(health.router(state.health))
     parent.include_router(metrics.router(state.metrics_registry))
+    parent.include_router(
+        status.router(
+            status.StatusState(
+                app_state=state.app_state,
+            )
+        )
+    )
 
     # /v1 chat surface
     parent.include_router(chat.router(state.chat))
