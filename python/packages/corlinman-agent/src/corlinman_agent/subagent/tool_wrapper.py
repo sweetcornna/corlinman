@@ -72,6 +72,7 @@ from corlinman_agent.subagent.runner import (
     SUBAGENT_SPAWN_INLINE_TOOL,
     SUBAGENT_SPAWN_MANY_TOOL,
     SUBAGENT_SPAWN_TOOL,
+    ChildToolExecutor,
     run_child,
 )
 
@@ -292,6 +293,7 @@ async def dispatch_subagent_spawn(
     max_depth: int = DEFAULT_MAX_DEPTH,
     max_wall_seconds_ceiling: int | None = None,
     parent_model: str | None = None,
+    tool_executor: ChildToolExecutor | None = None,
     event_emitter: Any | None = None,
     parent_turn_id: str | None = None,
     parent_session_key: str | None = None,
@@ -470,6 +472,7 @@ async def dispatch_subagent_spawn(
         # ``agent_card.model`` and then ``parent_model``.
         model_override=parsed.model,
         parent_model=parent_model,
+        tool_executor=tool_executor,
         event_emitter=event_emitter,
         parent_turn_id=parent_turn_id,
         parent_session_key=parent_session_key,
@@ -493,6 +496,7 @@ async def _run_child_under_slot(
     parent_turn_id: str | None,
     parent_session_key: str | None,
     parent_model: str | None = None,
+    tool_executor: ChildToolExecutor | None = None,
 ) -> str:
     """Shared post-resolution driver for ``subagent_spawn`` /
     ``subagent_spawn_inline``.
@@ -577,6 +581,7 @@ async def _run_child_under_slot(
                 event_emitter=_child_emitter,
                 model_override=model_override,
                 parent_model=parent_model,
+                tool_executor=tool_executor,
             )
     except Exception as exc:
         logger.exception(
@@ -1223,6 +1228,7 @@ async def dispatch_subagent_spawn_many(
     max_wall_seconds_ceiling: int | None = None,
     max_tasks: int = SUBAGENT_SPAWN_MANY_MAX_TASKS,
     parent_model: str | None = None,
+    tool_executor: ChildToolExecutor | None = None,
     event_emitter: Any | None = None,
     parent_turn_id: str | None = None,
     parent_session_key: str | None = None,
@@ -1285,6 +1291,7 @@ async def dispatch_subagent_spawn_many(
             max_depth=max_depth,
             max_wall_seconds_ceiling=max_wall_seconds_ceiling,
             parent_model=parent_model,
+            tool_executor=tool_executor,
             event_emitter=event_emitter,
             parent_turn_id=parent_turn_id,
             parent_session_key=parent_session_key,
@@ -1538,6 +1545,7 @@ async def dispatch_subagent_spawn_inline(
     max_depth: int = DEFAULT_MAX_DEPTH,
     max_wall_seconds_ceiling: int | None = None,
     parent_model: str | None = None,
+    tool_executor: ChildToolExecutor | None = None,
     event_emitter: Any | None = None,
     parent_turn_id: str | None = None,
     parent_session_key: str | None = None,
@@ -1602,6 +1610,7 @@ async def dispatch_subagent_spawn_inline(
         max_wall_seconds_ceiling=max_wall_seconds_ceiling,
         model_override=None,  # card.model already carries parsed.model
         parent_model=parent_model,  # v1.12.2: inline card has no model → inherit parent's
+        tool_executor=tool_executor,  # v1.12.3: child can actually run tools
         event_emitter=event_emitter,
         parent_turn_id=parent_turn_id,
         parent_session_key=parent_session_key,
