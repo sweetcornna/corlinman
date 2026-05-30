@@ -2612,7 +2612,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         """Return ``(supervisor, acquire)`` for the subagent spawn tools.
 
         Lazy-constructs the shared in-process :class:`Supervisor` (default
-        policy: 3 per-parent, 15 per-tenant, depth 2) and an ``acquire``
+        policy: 10 per-parent, 15 per-tenant, depth 1) and an ``acquire``
         adapter that turns the supervisor's raise-on-reject ``try_acquire``
         into the dispatcher's "return a Slot context-manager, or a reject-
         reason string" contract. Threaded into every spawn / spawn_many /

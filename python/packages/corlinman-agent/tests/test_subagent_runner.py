@@ -553,13 +553,17 @@ async def test_subagent_spawn_pruned_at_depth_n_minus_1() -> None:
     )
 
 
-async def test_subagent_spawn_kept_below_depth_cap_minus_one() -> None:
-    """Symmetric: at ``child_depth < max_depth - 1`` the spawn tool
-    survives — the child *can* legally delegate one more level.
+async def test_subagent_spawn_pruned_for_every_child_regardless_of_max_depth() -> None:
+    """D7 — EVERY spawned child (``child_depth >= 1``) loses the spawn tools,
+    independent of the configured ``max_depth``.
 
-    Bumps ``max_depth=4`` so the default-depth-1 child has plenty of
-    room. Locks the design § "tool exposure" branch where
-    ``depth < max_depth - 1`` keeps ``subagent_spawn`` available.
+    Was ``test_subagent_spawn_kept_below_depth_cap_minus_one``, which asserted
+    a depth-1 child under ``max_depth=4`` KEPT ``subagent_spawn``. That was the
+    "advertise != usable" drift the audit flagged: the gateway child executor
+    blanket-refuses every recursive spawn with ``subagent_no_recursive_spawn``
+    regardless of depth, so advertising the tool to the child only wasted an
+    LLM round on a call that is always rejected. The runner now prunes it for
+    every child. ``web_search`` (a normal tool) still passes through.
     """
     provider = _ToolListCapturingProvider()
     parent_tools = [_tool(SUBAGENT_SPAWN_TOOL), _tool("web_search")]
@@ -570,7 +574,7 @@ async def test_subagent_spawn_kept_below_depth_cap_minus_one() -> None:
         TaskSpec(goal="anything"),
         provider=provider,
         parent_tools=parent_tools,
-        max_depth=4,  # child at depth 1 < 4-1 → spawn tool stays
+        max_depth=4,  # even with generous depth, a child still cannot re-spawn
     )
 
     seen = provider.tools_seen[0] or []
@@ -578,7 +582,7 @@ async def test_subagent_spawn_kept_below_depth_cap_minus_one() -> None:
         (t.get("function") or {}).get("name") if isinstance(t, dict) else None
         for t in seen
     }
-    assert SUBAGENT_SPAWN_TOOL in seen_names
+    assert SUBAGENT_SPAWN_TOOL not in seen_names
     assert "web_search" in seen_names
 
 

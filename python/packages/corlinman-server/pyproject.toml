@@ -1,6 +1,6 @@
 [project]
 name = "corlinman-server"
-version = "1.13.0"
+version = "1.13.1"
 description = "grpc.aio server entrypoint for the corlinman Python AI plane."
 requires-python = ">=3.12"
 readme = "README.md"
@@ -70,6 +70,16 @@ dependencies = [
     "corlinman-canvas",
     "corlinman-mcp-server",
     "corlinman-skills-registry",
+    # The agent servicer lazily imports ``corlinman_subagent.supervisor``
+    # (Supervisor + SupervisorPolicy) and ``corlinman_subagent.errors`` to
+    # enforce the depth / per-parent / per-tenant caps threaded into every
+    # subagent_spawn / spawn_many / spawn_inline dispatch (see
+    # agent_servicer._get_subagent_caps). Previously this package was only
+    # present because ``uv sync --all-packages`` installs every workspace
+    # member; a selective install (published wheel, or a stale prod venv
+    # refreshed without re-sync) dropped it, crashing every fan-out with
+    # ``No module named 'corlinman_subagent'``. Declare the contract.
+    "corlinman-subagent",
     "tomli-w>=1.2.0",
 ]
 
@@ -102,6 +112,7 @@ corlinman-evolution-store = { workspace = true }
 corlinman-canvas = { workspace = true }
 corlinman-mcp-server = { workspace = true }
 corlinman-skills-registry = { workspace = true }
+corlinman-subagent = { workspace = true }
 
 [project.scripts]
 corlinman-python-server = "corlinman_server.main:main"

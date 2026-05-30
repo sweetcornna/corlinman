@@ -14,10 +14,11 @@ What :func:`run_child` now does end-to-end:
    already hold returns a synthetic
    :class:`TaskResult` with ``finish_reason=REJECTED`` and
    ``error="tool_allowlist_escalation"`` *before* the loop is driven.
-3. Prune ``subagent_spawn`` from the child's allowlist when the *child's*
-   depth would equal ``max_depth - 1`` — at that depth a grandchild
-   spawn is the next thing the supervisor would refuse with
-   ``DepthCapped`` anyway, so we save the LLM the round-trip.
+3. Prune the spawn tools (``subagent_spawn`` / ``_many`` / ``_inline``)
+   from EVERY spawned child's allowlist (``child_depth >= 1``) — single-
+   level nesting (parent → child). The gateway's child executor refuses
+   any recursive spawn anyway, so advertising it would only waste an LLM
+   round-trip on a tool that is always rejected.
 4. Project the resulting *names* back onto the parent's *tool schemas*
    (the OpenAI `tools=` array) so the child's :class:`ChatStart`
    carries usable tool definitions, not just names.
@@ -92,10 +93,11 @@ SUBAGENT_SPAWN_TOOL: str = "subagent_spawn"
 
 #: Fan-out sibling of ``subagent_spawn`` — the orchestrator agent (v0.7)
 #: emits this to dispatch N children concurrently under one parent. The
-#: supervisor's per-parent concurrency cap (default 3) still bounds the
-#: live siblings; the dispatcher splits the task list and awaits all via
+#: supervisor's per-parent concurrency cap
+#: (``SupervisorPolicy.max_concurrent_per_parent``, default 10) still bounds
+#: the live siblings; the dispatcher splits the task list and awaits all via
 #: ``asyncio.gather``. Pruned from the child's allowlist by the same
-#: depth-1 rule that prunes ``subagent_spawn``.
+#: depth rule that prunes ``subagent_spawn``.
 SUBAGENT_SPAWN_MANY_TOOL: str = "subagent_spawn_many"
 
 #: Ad-hoc / temporary sibling of ``subagent_spawn`` (Claude-Code's
@@ -358,6 +360,13 @@ async def run_child(
         tool_executor=tool_executor,
         tool_result_timeout=tool_result_timeout,
         event_emitter=event_emitter,
+        # D1: the child's *enforced* tool subset. Threaded down to the drain
+        # so the execution boundary refuses any tool the model emits that is
+        # not in this set — the advertised schema (built from the same names)
+        # only HIDES out-of-allowlist tools; a model can still emit a hidden
+        # name, and without this gate the gateway executor would run it with
+        # the parent's authority. advertised-toolset == usable-toolset.
+        allowed_tools=child_tool_names,
     )
 
 
@@ -380,6 +389,7 @@ async def _drive_and_collect(
     tool_executor: ChildToolExecutor | None = None,
     tool_result_timeout: float = 0.05,
     event_emitter: Any | None = None,
+    allowed_tools: frozenset[str] | None = None,
 ) -> TaskResult:
     """Drain :meth:`ReasoningLoop.run` into a :class:`TaskResult`,
     enforcing :attr:`TaskSpec.max_wall_seconds` cooperatively.
@@ -419,6 +429,7 @@ async def _drive_and_collect(
             tool_executor=tool_executor,
             max_tool_calls=task.max_tool_calls,
             executed_results=executed_results,
+            allowed_tools=allowed_tools,
         )
     )
     try:
@@ -460,6 +471,21 @@ async def _drive_and_collect(
         )
         state["error_msg"] = str(exc)
         state["finish_reason"] = FinishReason.ERROR
+    finally:
+        # D2 — never orphan the drain. ``asyncio.shield`` keeps ``drain_task``
+        # alive when THIS coroutine is cancelled from the outside (e.g. a
+        # ``spawn_many`` gather cancelling its siblings, or the parent turn
+        # aborting): ``CancelledError`` is a ``BaseException``, so the
+        # ``except Exception`` above does not catch it and ``wait_for`` leaves
+        # the shielded task running detached — holding the live ReasoningLoop,
+        # provider stream and tool_executor until GC. Cancel + drain it on
+        # every exit path. The timeout branch already cancelled on grace-
+        # exhaustion, so ``done()`` short-circuits there; the happy path has
+        # ``done()`` True too, making this a no-op except under cancellation.
+        if not drain_task.done():
+            drain_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await drain_task
 
     output_text = "".join(output_chunks)
 
@@ -477,20 +503,33 @@ async def _drive_and_collect(
         and tool_executor is not None
         and state["finish_reason"] not in (FinishReason.TIMEOUT, FinishReason.ERROR)
     ):
-        synth = await _synthesize_from_tool_results(
-            provider=provider,
-            base_messages=chat_start.messages,
-            executed_results=executed_results,
-            model=chat_start.model,
-            session_key=chat_start.session_key,
-            tool_result_timeout=tool_result_timeout,
-            child_session_key=child_ctx.parent_session_key,
+        # D10 — the forced-synthesis round must fit inside the child's
+        # REMAINING wall-clock budget so ``max_wall_seconds`` stays a true
+        # ceiling. The drain above already consumed part of the budget;
+        # giving synthesis a fresh 30s on top let a "success-but-empty" child
+        # overrun the advertised hard cap by up to 30s. Cap at the 30s
+        # fallback ceiling AND at whatever budget is left; skip entirely when
+        # the budget is already spent.
+        synth_budget = min(
+            _SYNTH_FALLBACK_TIMEOUT_SECONDS,
+            float(task.max_wall_seconds) - (_now_ms() - started_ms) / 1000.0,
         )
-        if synth.strip():
-            output_text = synth
-            # The model did finish — just on a second, forced turn. STOP is
-            # the truthful terminal state for the parent's prompt.
-            state["finish_reason"] = FinishReason.STOP
+        if synth_budget > 0:
+            synth = await _synthesize_from_tool_results(
+                provider=provider,
+                base_messages=chat_start.messages,
+                executed_results=executed_results,
+                model=chat_start.model,
+                session_key=chat_start.session_key,
+                tool_result_timeout=tool_result_timeout,
+                child_session_key=child_ctx.parent_session_key,
+                timeout_seconds=synth_budget,
+            )
+            if synth.strip():
+                output_text = synth
+                # The model did finish — just on a second, forced turn. STOP
+                # is the truthful terminal state for the parent's prompt.
+                state["finish_reason"] = FinishReason.STOP
 
     elapsed_ms = max(0, _now_ms() - started_ms)
     return TaskResult(
@@ -523,6 +562,7 @@ async def _synthesize_from_tool_results(
     session_key: str,
     tool_result_timeout: float,
     child_session_key: str,
+    timeout_seconds: float = _SYNTH_FALLBACK_TIMEOUT_SECONDS,
 ) -> str:
     """Run ONE tools-disabled generation that turns the child's tool results
     into a final answer. The belt-and-braces half of the v1.12.3 fix.
@@ -532,7 +572,10 @@ async def _synthesize_from_tool_results(
     :class:`ReasoningLoop` with ``tools=[]`` so the model physically cannot
     loop back into another tool round. Never raises — any failure logs and
     returns ``""`` (the caller keeps the empty output rather than crashing
-    the spawn). Bounded by :data:`_SYNTH_FALLBACK_TIMEOUT_SECONDS`.
+    the spawn). Bounded by ``timeout_seconds`` — defaults to
+    :data:`_SYNTH_FALLBACK_TIMEOUT_SECONDS`, but the caller passes the child's
+    *remaining* wall-clock budget (D10) so this fallback can't push the spawn
+    past its advertised ``max_wall_seconds`` ceiling.
     """
     if not executed_results:
         return ""
@@ -566,7 +609,7 @@ async def _synthesize_from_tool_results(
                 chunks.append(ev.text)
 
     try:
-        await asyncio.wait_for(_pump(), timeout=_SYNTH_FALLBACK_TIMEOUT_SECONDS)
+        await asyncio.wait_for(_pump(), timeout=timeout_seconds)
     except (TimeoutError, Exception) as exc:  # noqa: BLE001 — never crash the spawn
         logger.warning(
             "subagent.runner.synth_fallback_failed",
@@ -593,6 +636,7 @@ async def _drain_events(
     tool_executor: ChildToolExecutor | None = None,
     max_tool_calls: int = 0,
     executed_results: list[str] | None = None,
+    allowed_tools: frozenset[str] | None = None,
 ) -> None:
     """Pump the reasoning loop's event stream into shared collectors.
 
@@ -628,6 +672,28 @@ async def _drain_events(
                     # call only (pre-v1.12.3 behaviour) — the loop will time
                     # out its result wait and end. Kept so no-tool children
                     # and unit tests that don't supply an executor still pass.
+                    continue
+                if allowed_tools is not None and event.tool not in allowed_tools:
+                    # D1 — execution-boundary enforcement of the child's tool
+                    # subset. ``_filter_tools_for_child`` only narrows the
+                    # ADVERTISED schema; a model can still emit a tool name
+                    # outside its allowlist, and the gateway executor would run
+                    # it with the parent's full authority (privilege
+                    # non-containment). Refuse here so advertised == usable.
+                    # ``None`` keeps the legacy "no gate" path for callers /
+                    # tests that drive the drain directly without an allowlist.
+                    loop.feed_tool_result(
+                        ToolResult(
+                            call_id=event.call_id,
+                            content=json.dumps(
+                                {
+                                    "error": "tool_not_in_allowlist",
+                                    "tool": event.tool,
+                                }
+                            ),
+                            is_error=True,
+                        )
+                    )
                     continue
                 if max_tool_calls and executed >= max_tool_calls:
                     # Budget spent — stop running real tools but keep the
@@ -814,12 +880,17 @@ def _filter_tools_for_child(
             raise _ToolAllowlistEscalationError(offending)
         effective = requested
 
-    # Self-prune at the deepest legal depth. ``max_depth - 1`` is the
-    # last depth at which a child *could* spawn a grandchild; pruning
-    # the spawn tool here means the LLM isn't tempted to call it. Below
-    # that depth the spawn tool is left in place so the child can
-    # delegate one more level.
-    if child_depth >= max_depth - 1:
+    # D7 — single-level nesting (parent → child). EVERY spawned child
+    # (``child_depth >= 1``) loses the spawn tools, regardless of the
+    # configured ``max_depth``. This matches reality on two fronts: the
+    # default policy is ``max_depth=1`` (a child may not spawn a grandchild),
+    # AND the gateway's child tool-executor blanket-refuses every spawn tool
+    # with ``subagent_no_recursive_spawn``. Advertising a spawn tool the
+    # executor will always reject is the "advertise != usable" drift the audit
+    # flagged — so we never advertise it to a child. (``max_depth`` is kept on
+    # the signature for the supervisor cap contract / future deeper nesting;
+    # the prune itself no longer keys off it.)
+    if child_depth >= 1:
         effective.discard(SUBAGENT_SPAWN_TOOL)
         effective.discard(SUBAGENT_SPAWN_MANY_TOOL)
         effective.discard(SUBAGENT_SPAWN_INLINE_TOOL)

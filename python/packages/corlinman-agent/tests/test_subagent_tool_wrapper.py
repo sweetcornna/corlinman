@@ -104,7 +104,6 @@ def test_tool_schema_shape_is_openai_compatible() -> None:
         "agent",  # legacy alias retained for backwards compatibility
         "subagent_type",
         "description",
-        "run_in_background",
         "model",
         "goal",
         "tool_allowlist",
@@ -113,6 +112,11 @@ def test_tool_schema_shape_is_openai_compatible() -> None:
         "extra_context",
     ):
         assert key in params["properties"], f"missing {key} in schema"
+    # D4 — ``run_in_background`` is intentionally NOT advertised: the
+    # end-to-end background path is not wired, so advertising it only invited
+    # the model to request a mode that always rejects. Don't advertise what
+    # the wiring can't deliver.
+    assert "run_in_background" not in params["properties"]
 
 
 def test_tool_schema_documents_default_budgets() -> None:

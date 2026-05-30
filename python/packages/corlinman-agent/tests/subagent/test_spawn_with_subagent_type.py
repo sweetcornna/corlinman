@@ -464,11 +464,18 @@ def test_schema_carries_new_w1_1_properties() -> None:
     schema = subagent_spawn_tool_schema()
     props = schema["function"]["parameters"]["properties"]
 
-    for key in ("subagent_type", "description", "run_in_background", "model"):
+    for key in ("subagent_type", "description", "model"):
         assert key in props, f"W1.1 field {key!r} missing from schema"
 
-    # ``goal`` is the only required field now — the four new fields and
-    # the legacy ``agent`` are all optional.
+    # D4 — ``run_in_background`` is no longer advertised: the end-to-end
+    # background path is not wired, so advertising it only invited the model
+    # to request a mode that always rejects. (A hand-crafted
+    # ``run_in_background=true`` arg is still defensively rejected — see
+    # ``test_run_in_background_rejected_as_not_implemented``.)
+    assert "run_in_background" not in props
+
+    # ``goal`` is the only required field now — the new fields and the legacy
+    # ``agent`` are all optional.
     assert schema["function"]["parameters"]["required"] == ["goal"]
 
 

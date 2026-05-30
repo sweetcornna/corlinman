@@ -185,19 +185,15 @@ def subagent_spawn_tool_schema(
                             "event."
                         ),
                     },
-                    "run_in_background": {
-                        "type": "boolean",
-                        "default": False,
-                        "description": (
-                            "When true, dispatch asynchronously and "
-                            "return a request_id immediately so the "
-                            "parent can keep reasoning while the "
-                            "child runs. NOT YET IMPLEMENTED — "
-                            "currently rejects with "
-                            "error=run_in_background_not_implemented; "
-                            "background dispatch lands in W1.3."
-                        ),
-                    },
+                    # D4 — ``run_in_background`` is intentionally NOT advertised.
+                    # The end-to-end background path is not wired (the gateway
+                    # never threads a dispatcher into the spawn call and the
+                    # published factory raises), so advertising the field only
+                    # invited the model to request a mode that always rejects.
+                    # Don't advertise what the wiring can't deliver. The
+                    # defensive reject branch below still handles a hand-crafted
+                    # ``run_in_background=true`` arg, so older callers fail
+                    # cleanly rather than silently running in the foreground.
                     "model": {
                         "type": "string",
                         "description": (
@@ -550,25 +546,35 @@ async def _run_child_under_slot(
         slot_cm = outcome  # context-manager-shaped slot drop-guard
 
     # ── Drive the child runner under the slot. ───────────────────────
+    # D5 — enter the slot guard BEFORE the first post-acquire await. The
+    # supervisor incremented the per-parent + per-tenant counters
+    # synchronously inside ``supervisor_acquire`` above. If this coroutine is
+    # cancelled at the ``_emit_subagent_spawned`` await below (CancelledError
+    # is a BaseException, so the emitter's own ``except Exception`` does not
+    # swallow it), the slot's ``release()`` would never run and the counters
+    # would leak until a non-deterministic ``Slot.__del__``. Wrapping every
+    # post-acquire await in the ``with`` releases the slot on cancellation
+    # too. ``nullcontext`` (the supervisor-less test path) is re-entrant so
+    # this is safe.
     child_ctx_preview = parent_ctx.child_context(agent_name, child_seq)
-    await _emit_subagent_spawned(
-        emitter=event_emitter,
-        parent_turn_id=parent_turn_id,
-        parent_session_key=parent_session_key,
-        parent_ctx=parent_ctx,
-        child_ctx=child_ctx_preview,
-        prompt_preview=spec.goal,
-    )
-
-    _child_emitter = _make_bubble_emitter(
-        parent=event_emitter,
-        parent_turn_id=parent_turn_id,
-        parent_session_key=parent_session_key,
-        child_session_key=child_ctx_preview.parent_session_key,
-    )
-
     try:
         with slot_cm:
+            await _emit_subagent_spawned(
+                emitter=event_emitter,
+                parent_turn_id=parent_turn_id,
+                parent_session_key=parent_session_key,
+                parent_ctx=parent_ctx,
+                child_ctx=child_ctx_preview,
+                prompt_preview=spec.goal,
+            )
+
+            _child_emitter = _make_bubble_emitter(
+                parent=event_emitter,
+                parent_turn_id=parent_turn_id,
+                parent_session_key=parent_session_key,
+                child_session_key=child_ctx_preview.parent_session_key,
+            )
+
             result = await run_child(
                 parent_ctx,
                 card,
@@ -1131,8 +1137,10 @@ def subagent_spawn_many_tool_schema(
             "agent": {
                 "type": "string",
                 "description": (
-                    "Name of the registered agent card to spawn for "
-                    "this sibling."
+                    "Optional. Registry key of the agent card to spawn "
+                    "for this sibling. Omit (or pass empty) for the "
+                    "built-in ``general-purpose`` fallback — same default "
+                    "as single ``subagent_spawn``."
                 ),
             },
             "goal": {
@@ -1176,7 +1184,12 @@ def subagent_spawn_many_tool_schema(
                 ),
             },
         },
-        "required": ["agent", "goal"],
+        # D11 — only ``goal`` is required, matching the dispatcher (which
+        # defaults a missing ``agent`` to ``general-purpose``) and single
+        # ``subagent_spawn`` (``required: ["goal"]``). Previously the schema
+        # required ``agent`` too, so strict providers 400'd an agent-less
+        # task that the dispatcher would have happily run as general-purpose.
+        "required": ["goal"],
         "additionalProperties": False,
     }
     return {
@@ -1239,10 +1252,10 @@ async def dispatch_subagent_spawn_many(
     The dispatcher splits the LLM's ``tasks`` list, builds an isolated
     ``args_json`` for each, and awaits :func:`dispatch_subagent_spawn`
     on all of them in parallel via ``asyncio.gather``. The supervisor's
-    per-parent concurrency cap (default 3) is the hard limit on live
-    siblings; this dispatcher also rejects ``len(tasks) > max_tasks``
-    up-front so the LLM sees a clean args-invalid envelope instead of
-    N-3 silent slot rejections.
+    per-parent concurrency cap (``SupervisorPolicy.max_concurrent_per_parent``,
+    default 10) is the hard limit on live siblings; this dispatcher also
+    rejects ``len(tasks) > max_tasks`` up-front so the LLM sees a clean
+    args-invalid envelope instead of N-10 silent slot rejections.
 
     Children are disambiguated by ``child_seq = base_child_seq + i`` so
     their ``ParentContext.child_context`` derivations don't collide.

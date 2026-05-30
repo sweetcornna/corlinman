@@ -4,6 +4,74 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.13.1] — 2026-05-30 — Multi-agent subsystem hardening
+
+> Fixes a packaging defect that crashed every subagent fan-out with
+> `No module named 'corlinman_subagent'` in any non-`--all-packages` install,
+> then closes 13 adversarially-confirmed defects across the subagent spawn /
+> supervisor / dispatcher stack — surfaced by a multi-agent audit and graded
+> against Claude Code's subagent semantics. The two highest-impact fixes:
+> child tool-allowlists are now enforced at the **execution** boundary (not
+> just hidden from the schema), and orphaned background rows no longer wedge a
+> tenant's quota across a restart.
+
+### Fixed
+- **`corlinman-server` now declares its `corlinman-subagent` dependency.** The
+  agent servicer lazily imports `corlinman_subagent.supervisor` to enforce the
+  subagent caps but never declared the package — it free-rode on
+  `uv sync --all-packages`. A published-wheel or stale-venv install dropped it,
+  crashing every `subagent_spawn` / `_many` / `_inline` fan-out with
+  `No module named 'corlinman_subagent'`. The dependency edge is now explicit
+  in the lockfile.
+- **Child tool-allowlist enforced at execution (D1).** `run_child` filtered the
+  child's *advertised* tool schema but never checked tool names at execution,
+  so a model that emitted a hidden tool ran it with the parent's authority. The
+  drain now refuses any tool outside the child's allowlist with a
+  `tool_not_in_allowlist` envelope — advertised toolset == usable toolset.
+- **Orphaned background subagent rows no longer wedge tenant quota (D3).** A row
+  persisted as `queued`/`running` whose driving task died on restart stayed
+  "in-flight" forever and counted against the 15-slot per-tenant quota until
+  every future background spawn rejected. `stalled` is now terminal and the
+  store reconciles orphans to it on boot (freeing the quota).
+- **Cancelled delegations release their resources (D2, D5).** A cancelled
+  `run_child` no longer orphans its shielded drain task (live ReasoningLoop +
+  provider stream), and the supervisor slot guard is entered *before* the first
+  post-acquire `await` so a cancel can't leak the per-parent / per-tenant
+  counters.
+- **`run_in_background` is no longer advertised (D4).** The end-to-end
+  background path was never wired (the servicer never threads a dispatcher into
+  the spawn path; the published factory raises), so the schema field only
+  invited a mode that always rejects. Removed from the `subagent_spawn` schema;
+  the defensive reject branch is retained for hand-crafted args.
+- **`subagent_spawn_many` per-task schema relaxed (D11).** Only `goal` is
+  required now (was `agent` + `goal`); a missing `agent` defaults to
+  `general-purpose`, matching the dispatcher and single `subagent_spawn`.
+  Strict providers no longer 400 an agent-less fan-out task.
+- **Synthesis fallback honors the wall-clock budget (D10).** The forced
+  final-answer round is now bounded by the child's *remaining* budget (capped at
+  30s) instead of a fresh 30s on top of `max_wall_seconds`.
+
+### Changed
+- **Single-level subagent nesting is now the contract (D7).** `max_depth`
+  defaults to `1` (was `2` but unreachable). A subagent cannot spawn a
+  sub-subagent — matching Claude Code's Task tool and the executor's existing
+  blanket recursive-spawn refusal. The runner prunes spawn tools from every
+  child regardless of `max_depth`, so the advertised toolset matches the
+  enforced one.
+- **Wall-clock ceiling decoupled from the default budget (D9).** New
+  `DEFAULT_MAX_WALL_SECONDS_CEILING = 300`; the 60s default and the 300s
+  request ceiling are now distinct, so a child may legitimately request up to
+  300s and the clamp actually engages.
+- **Background dispatcher lifecycle + layering cleanups (D6, D8, D12).** Removed
+  the dead `Supervisor._lock` (the cap read-modify-write is await-free, so no
+  lock is needed) and the dead `child_emitter` (which imported the server
+  package, creating a server→subagent→server cycle); guarded the supervisor's
+  `corlinman_agent.events` imports so the low-level package degrades cleanly.
+  Added `AsyncSubagentDispatcher.shutdown()` (cancel + await in-flight tasks,
+  called from lifespan teardown) and dropped its dead `_snapshot` / `_asdict`
+  helpers. Refreshed stale cap/ceiling docstrings (per-parent 3→10, ceiling
+  300, depth) across the stack.
+
 ## [1.13.0] — 2026-05-30 — Shareable agent status card across every channel
 
 > Chat replies on every channel can now carry a tap-through link to a public,

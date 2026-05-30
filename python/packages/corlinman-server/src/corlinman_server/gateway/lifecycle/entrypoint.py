@@ -1851,13 +1851,17 @@ def build_app(
         # ``$DATA_DIR/.subagent-state.json``) and an
         # :class:`AsyncSubagentDispatcher` published onto AdminState so
         # the ``/admin/subagents*`` routes resolve it via
-        # ``get_admin_state()``. The dispatcher is constructed with a
-        # ``run_child_factory`` placeholder that the W1.1 tool-wrapper
-        # integration replaces with a real supervisor-bound factory at
-        # the call site (until then ``run_in_background=true`` calls
-        # surface the placeholder's NotImplementedError-shaped envelope).
-        # Both pieces are best-effort: a failure leaves the routes
-        # serving a typed 503 ``subagent_dispatcher_unavailable``.
+        # ``get_admin_state()``, and so the persistent store boots (its
+        # D3 orphan-reconcile runs here on every restart). The dispatcher
+        # is constructed with a ``run_child_factory`` that intentionally
+        # raises: end-to-end BACKGROUND dispatch is NOT wired (the servicer
+        # never threads this dispatcher into the spawn tool path), so the
+        # model-facing ``subagent_spawn`` schema deliberately no longer
+        # advertises ``run_in_background`` (D4). The factory's raise is the
+        # belt-and-braces backstop for any hand-crafted background request
+        # that slips through: ``_run`` folds it into a clean ``failed`` row.
+        # Both pieces are best-effort: a failure leaves the routes serving
+        # a typed 503 ``subagent_dispatcher_unavailable``.
         if resolved_data_dir is not None:
             try:
                 from corlinman_server.system.subagent import (
@@ -1874,14 +1878,18 @@ def build_app(
                 async def _unwired_run_child_factory(
                     req: SubagentRequest,
                 ) -> Any:
-                    # Placeholder until W1.1 wires the real factory
-                    # (which closes over the supervisor + agent registry
-                    # + provider). The dispatcher's :meth:`_run` catches
-                    # this exception and flips the row to ``failed``.
+                    # Background dispatch is intentionally not wired (D4): a
+                    # real factory would close over the supervisor + agent
+                    # registry + provider and be threaded into the servicer's
+                    # spawn path, which it is not. Until that lands, this
+                    # raises; the dispatcher's :meth:`_run` catches it and
+                    # flips the row to ``failed``. The model-facing schema
+                    # does not advertise ``run_in_background``, so this path
+                    # is only reachable by a hand-crafted background request.
                     raise RuntimeError(
-                        "subagent run_child factory not wired; "
-                        "W1.1 must install one via "
-                        "AdminState.subagent_dispatcher.replace_factory()"
+                        "subagent background dispatch is not wired; "
+                        "run_in_background is not advertised on the "
+                        "subagent_spawn schema (see tool_wrapper D4)"
                     )
 
                 # W3.1: thread the existing one-click-upgrade audit log
@@ -2392,6 +2400,23 @@ def build_app(
                         error=str(exc),
                     )
                 app.state._evolution_store = None
+            # D12 teardown: cancel + await any in-flight background subagent
+            # dispatch tasks BEFORE closing the journal they emit into, so a
+            # shutdown doesn't orphan child-driving tasks against a
+            # tearing-down provider / journal. Idempotent + safe when the
+            # dispatcher was never wired.
+            subagent_dispatcher = getattr(
+                app.state, "corlinman_subagent_dispatcher", None
+            )
+            if subagent_dispatcher is not None:
+                try:
+                    await subagent_dispatcher.shutdown()
+                except Exception as exc:  # pragma: no cover — defensive
+                    logger.warning(
+                        "gateway.subagent.dispatcher_shutdown_failed",
+                        error=str(exc),
+                    )
+
             # W1.3 teardown: close the observability journal so its WAL
             # file is checkpointed before the process exits.
             obs_journal = getattr(app.state, "corlinman_journal", None)

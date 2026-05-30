@@ -23,6 +23,7 @@ __all__ = [
     "DEFAULT_MAX_DEPTH",
     "DEFAULT_MAX_TOOL_CALLS",
     "DEFAULT_MAX_WALL_SECONDS",
+    "DEFAULT_MAX_WALL_SECONDS_CEILING",
     "FinishReason",
     "ParentContext",
     "TaskResult",
@@ -35,19 +36,28 @@ __all__ = [
 # Defaults — mirror ``types::defaults`` in the Rust crate verbatim.
 # ---------------------------------------------------------------------------
 
-#: Hard ceiling on a child's wall-clock budget. ``task.max_wall_seconds``
-#: may *lower* this but never raise it; the supervisor enforces the upper
-#: bound.
+#: Default per-child wall-clock budget when a ``TaskSpec`` does not set its
+#: own ``max_wall_seconds``. A child may request *less* than this; it may
+#: request more only up to :data:`DEFAULT_MAX_WALL_SECONDS_CEILING`.
 DEFAULT_MAX_WALL_SECONDS: int = 60
+
+#: Hard upper bound the supervisor clamps ``task.max_wall_seconds`` to (D9).
+#: Decoupled from :data:`DEFAULT_MAX_WALL_SECONDS` so the *default* budget
+#: (60s) and the *ceiling* a child may request up to (300s) are distinct —
+#: previously both were 60, so the clamp never engaged and the documented
+#: "child may request up to the ceiling" headroom did not exist.
+DEFAULT_MAX_WALL_SECONDS_CEILING: int = 300
 
 #: Cap on the child's ``_MAX_ROUNDS`` (parent loop's own ceiling is 8;
 #: children get a slightly higher allowance because they often chain
 #: search → fetch → summarise).
 DEFAULT_MAX_TOOL_CALLS: int = 12
 
-#: Maximum nesting depth (parent → child → grandchild). ``>=`` this
-#: triggers the supervisor's ``depth_capped`` short-circuit.
-DEFAULT_MAX_DEPTH: int = 2
+#: Maximum nesting depth (parent → child). ``>=`` this triggers the
+#: supervisor's ``depth_capped`` short-circuit. Single-level nesting (1): a
+#: subagent cannot spawn a sub-subagent — matching Claude Code's Task tool
+#: and the gateway executor's blanket ``subagent_no_recursive_spawn`` refusal.
+DEFAULT_MAX_DEPTH: int = 1
 
 
 # ---------------------------------------------------------------------------

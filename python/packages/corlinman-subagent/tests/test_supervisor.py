@@ -1,9 +1,10 @@
 """Port of the Rust ``supervisor::tests`` module — cap accountant
 behaviour, slot drop-guard, and hook-bus emit shape.
 
-Where the Rust crate uses ``DashMap`` per-key entries we hold a single
-:class:`asyncio.Lock`-guarded dict, but the public contract is
-identical: depth → per-parent → per-tenant, counter rollback on
+Where the Rust crate uses ``DashMap`` per-key entries we hold plain dicts
+mutated by a synchronous, await-free :meth:`try_acquire` (D8 — no lock; the
+read-modify-write is atomic on a single-threaded loop), but the public
+contract is identical: depth → per-parent → per-tenant, counter rollback on
 later-stage rejection, idempotent release, and best-effort hook emits.
 
 Async tests live alongside the sync ones because :meth:`Supervisor.
@@ -15,6 +16,7 @@ and the hook emits are non-blocking.
 from __future__ import annotations
 
 import asyncio
+import inspect
 from typing import Any
 
 import pytest
@@ -83,10 +85,38 @@ def test_policy_defaults_match_design() -> None:
     p = SupervisorPolicy()
     assert p.max_concurrent_per_parent == 10
     assert p.max_concurrent_per_tenant == 15
-    assert p.max_depth == 2
+    # D7 — single-level nesting: a subagent cannot spawn a sub-subagent.
+    assert p.max_depth == 1
     # Python-side addition: the wall-clock ceiling lives on the policy
-    # struct (Rust enforced this in a separate config layer).
-    assert p.max_wall_seconds_ceiling == 60
+    # struct (Rust enforced this in a separate config layer). D9 — decoupled
+    # from the 60s default so a child may request up to 300s.
+    assert p.max_wall_seconds_ceiling == 300
+
+
+def test_supervisor_has_no_dead_lock_and_no_server_coupling() -> None:
+    """D8 + D6 — guard two cleanups against regression.
+
+    D8: the supervisor carries NO ``_lock`` (the read-modify-write in
+    ``try_acquire`` is synchronous + await-free, so it is atomic on a single-
+    threaded loop without one). The old unused ``asyncio.Lock`` falsely
+    implied the acquire path could yield mid-RMW.
+
+    D6: the LOW-level supervisor must not reach UP into corlinman_server (the
+    deleted ``child_emitter`` imported the server's ``BubbleEmitter`` and
+    created a server → subagent → server import cycle).
+    """
+    sup = Supervisor(SupervisorPolicy())
+    assert not hasattr(sup, "_lock"), "dead _lock must not be re-introduced"
+    assert not hasattr(sup, "child_emitter"), "server-coupled helper must stay gone"
+
+    import corlinman_subagent.supervisor as sup_mod
+
+    src = inspect.getsource(sup_mod)
+    assert "import corlinman_server" not in src
+    assert "from corlinman_server" not in src
+    # try_acquire must stay synchronous (no ``await`` in the acquire path) or
+    # the lock-free RMW atomicity argument breaks.
+    assert not inspect.iscoroutinefunction(Supervisor.try_acquire)
 
 
 def test_concurrency_cap_rejects_fourth_when_three_in_flight() -> None:
@@ -160,30 +190,32 @@ def test_tenant_quota_caps_across_parents() -> None:
     assert other_slot.released is False
 
 
-def test_depth_cap_blocks_grandchild_at_depth_2() -> None:
-    """Maps to ``depth_cap_blocks_grandchild_at_depth_2`` in Rust."""
-    sup = Supervisor(SupervisorPolicy())  # max_depth=2
+def test_depth_cap_blocks_child_spawn_at_depth_1() -> None:
+    """D7 — single-level nesting (``max_depth=1``): a top-level turn may spawn
+    a child, but that child (depth 1) may NOT spawn a grandchild.
 
-    # depth 0 (top-level user turn): allowed.
+    (Was ``test_depth_cap_blocks_grandchild_at_depth_2`` under the old
+    ``max_depth=2`` contract; the live ceiling is now depth 1, matching Claude
+    Code's Task tool and the gateway executor's blanket recursive-spawn
+    refusal.)
+    """
+    sup = Supervisor(SupervisorPolicy())  # max_depth=1
+
+    # depth 0 (top-level user turn spawning a child): allowed.
     ctx0 = make_parent("t", "s", 0)
     _s0 = sup.try_acquire(ctx0)
 
-    # depth 1 (child wants to spawn grandchild): allowed.
+    # depth 1 (child wants to spawn a grandchild): refused — single-level
+    # nesting means a subagent cannot spawn a sub-subagent.
     ctx1 = make_parent("t", "s::child::0", 1)
-    _s1 = sup.try_acquire(ctx1)
-
-    # depth 2 (grandchild wants to spawn): refused — that would be a
-    # great-grandchild beyond the cap.
-    ctx2 = make_parent("t", "s::child::0::child::0", 2)
     with pytest.raises(AcquireRejectError) as ei:
-        sup.try_acquire(ctx2)
+        sup.try_acquire(ctx1)
     assert ei.value.reason is AcquireReject.DEPTH_CAPPED
 
     # No counters should have been incremented for the rejected spawn.
-    assert sup.parent_count("s::child::0::child::0") == 0
-    # Pin held slots so they're not gc'd before the assertion.
+    assert sup.parent_count("s::child::0") == 0
+    # Pin held slot so it's not gc'd before the assertion.
     assert _s0.released is False
-    assert _s1.released is False
 
 
 def test_explicit_release_is_idempotent_and_decrements_once() -> None:

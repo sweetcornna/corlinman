@@ -140,15 +140,24 @@ async def test_persistence_round_trip_across_instances(tmp_path: Path) -> None:
     )
     await store1.append_log("req-PERSIST", "child output line\n")
 
-    # Brand-new store reading the same file.
+    # Brand-new store reading the same file. D3 — a fresh instance has an
+    # empty in-process task map, so the persisted ``running`` row is an
+    # orphan (nothing is driving it). Boot reconciliation resolves it to the
+    # terminal ``stalled`` state rather than leaving it ``running`` forever.
+    # All the row's other data still round-trips intact.
     store2 = SubagentTaskStore(persist)
     recovered = await store2.get("req-PERSIST")
     assert recovered is not None
-    assert recovered.state == "running"
+    assert recovered.state == "stalled"
+    assert recovered.finish_reason == "stalled_on_restart"
+    assert recovered.finished_at is not None
     assert recovered.subagent_type == "editor"
     assert recovered.started_at == 4242
     assert recovered.child_session_key == "sess-A::child::0"
     assert recovered.log_tail == "child output line\n"
+
+    # ``stalled`` is terminal, so the orphan no longer consumes tenant quota.
+    assert await store2.count_in_flight_for_tenant(req.tenant_id) == 0
 
     # ``get_request`` also round-trips
     fetched_req = await store2.get_request("req-PERSIST")

@@ -36,7 +36,6 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -368,6 +367,31 @@ class AsyncSubagentDispatcher:
             )
         return killed
 
+    async def shutdown(self) -> None:
+        """Cancel every in-flight background dispatch task and await them.
+
+        D12 — called from the gateway lifespan teardown so a shutdown does
+        not leave detached child-driving tasks running against a
+        tearing-down provider / journal. The task list is snapshotted under
+        the lock, but the cancel + gather run OUTSIDE the lock: each
+        cancelled :meth:`_run` calls :meth:`_cleanup_registry`, which itself
+        acquires the lock — holding it here would deadlock. ``_run`` folds
+        ``CancelledError`` into a clean registry cleanup, and
+        ``return_exceptions=True`` collects the cancellations without
+        surfacing ``Task exception was never retrieved`` noise. Idempotent —
+        a second call finds an empty task map.
+        """
+        async with self._lock:
+            tasks = [
+                outcome.task
+                for outcome in self._tasks.values()
+                if not outcome.task.done()
+            ]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
     # ------------------------------------------------------------------
     # Internal — the asyncio task body
     # ------------------------------------------------------------------
@@ -592,17 +616,6 @@ class AsyncSubagentDispatcher:
 # ---------------------------------------------------------------------------
 
 
-async def _snapshot(store: SubagentTaskStore) -> list[SubagentStatus]:
-    """Read every status row without re-entering the store's lock.
-
-    The dispatcher's outer lock guards ``begin`` / kill / cleanup at the
-    dispatcher layer; the store has its own lock for serialised
-    persistence. We snapshot once per dispatch decision so the
-    quota check sees a coherent count.
-    """
-    return await store.list_all()
-
-
 def _read_finish_reason(result: Any) -> str:
     """Extract the finish_reason value as a string, defensively.
 
@@ -638,7 +651,3 @@ def _safe_str(value: Any) -> str:
     if isinstance(value, str):
         return value
     return str(value) if value is not None else ""
-
-
-# Re-export asdict for tests that round-trip statuses through JSON.
-_asdict = asdict

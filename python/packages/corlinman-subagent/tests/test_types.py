@@ -22,6 +22,7 @@ from corlinman_subagent import (
     DEFAULT_MAX_DEPTH,
     DEFAULT_MAX_TOOL_CALLS,
     DEFAULT_MAX_WALL_SECONDS,
+    DEFAULT_MAX_WALL_SECONDS_CEILING,
     FinishReason,
     ParentContext,
     TaskResult,
@@ -195,4 +196,9 @@ def test_module_defaults_match_design() -> None:
     own configs."""
     assert DEFAULT_MAX_WALL_SECONDS == 60
     assert DEFAULT_MAX_TOOL_CALLS == 12
-    assert DEFAULT_MAX_DEPTH == 2
+    # D7 — single-level nesting (parent → child). A subagent cannot spawn a
+    # sub-subagent; matches Claude Code's Task tool.
+    assert DEFAULT_MAX_DEPTH == 1
+    # D9 — the request ceiling is decoupled from the 60s default budget so a
+    # child may legitimately request up to 300s.
+    assert DEFAULT_MAX_WALL_SECONDS_CEILING == 300

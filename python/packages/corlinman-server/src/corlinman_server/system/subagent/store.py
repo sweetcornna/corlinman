@@ -77,10 +77,17 @@ SubagentState = Literal[
 """Terminal vs in-flight discriminator for :class:`SubagentStatus`."""
 
 
+# D3 — ``stalled`` is TERMINAL. An orphaned background row (one persisted as
+# queued/running whose driving task died with the process) is resolved to
+# ``stalled`` on the next boot; it must then be prune-eligible and must NOT
+# count toward the per-tenant in-flight quota — otherwise orphans accrete
+# until the 15-slot cap rejects every future background spawn from that
+# tenant. Previously ``stalled`` lived in ``_IN_FLIGHT_STATES`` and nothing
+# ever set it, so the recovery path was inert and the wedge was permanent.
 _TERMINAL_STATES: frozenset[str] = frozenset(
-    {"succeeded", "failed", "timeout", "killed"}
+    {"succeeded", "failed", "timeout", "killed", "stalled"}
 )
-_IN_FLIGHT_STATES: frozenset[str] = frozenset({"queued", "running", "stalled"})
+_IN_FLIGHT_STATES: frozenset[str] = frozenset({"queued", "running"})
 
 
 def _now_ms() -> int:
@@ -185,9 +192,21 @@ class SubagentTaskStore:
         self._requests: dict[str, SubagentRequest] = {}
         self._statuses: dict[str, SubagentStatus] = {}
         self._load_from_disk()
+        # D3 — a cold-started dispatcher has an EMPTY in-process task map, so
+        # any row hydrated as queued/running is orphaned (no live task is
+        # driving it). Resolve those to a terminal ``stalled`` state up front
+        # so they become prune-eligible and stop consuming per-tenant quota
+        # forever. Runs before the prune so freshly-stalled rows are included
+        # in the retention bound.
+        reconciled = self._reconcile_orphaned_in_flight_locked()
         # A cold-started store may hydrate an unbounded backlog of terminal
         # rows from a pre-retention on-disk file; trim it down on boot.
         self._prune_terminal_locked()
+        # Persist the cleaned state so the resolution is durable and the disk
+        # file stops re-hydrating orphans / pruned rows on every restart.
+        if reconciled:
+            logger.info("subagent_state.reconciled_orphans", count=reconciled)
+            self._flush_locked()
 
     # ------------------------------------------------------------------
     # Persistence helpers
@@ -263,6 +282,33 @@ class SubagentTaskStore:
                     )
                 except (KeyError, TypeError, ValueError):
                     continue
+
+    def _reconcile_orphaned_in_flight_locked(self) -> int:
+        """D3 — resolve rows hydrated as queued/running on a cold start.
+
+        A background subagent task lives only in the dispatcher's in-process
+        ``_tasks`` map; on a gateway restart that map starts empty, so any row
+        persisted as ``queued`` / ``running`` has no live task driving it — it
+        is orphaned. Left alone it stays in-flight forever and is counted by
+        :meth:`count_in_flight_for_tenant`, permanently consuming the tenant's
+        quota until the per-tenant cap rejects every future background spawn.
+        Mark each orphan terminal (``stalled``) so it is prune-eligible and
+        stops counting.
+
+        Caller MUST hold ``self._lock`` (or be in ``__init__`` before the
+        store is published). Returns the number of rows reconciled.
+        """
+        now = _now_ms()
+        reconciled = 0
+        for status in self._statuses.values():
+            if status.state in ("queued", "running"):
+                status.state = "stalled"
+                if status.finished_at is None:
+                    status.finished_at = now
+                if status.finish_reason is None:
+                    status.finish_reason = "stalled_on_restart"
+                reconciled += 1
+        return reconciled
 
     def _prune_terminal_locked(self) -> None:
         """Evict oldest terminal rows beyond the retention cap.

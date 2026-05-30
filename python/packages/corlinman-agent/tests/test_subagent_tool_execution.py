@@ -176,6 +176,40 @@ async def test_finish_reason_tool_calls_maps_to_length() -> None:
     assert _map_finish_reason("stop") is FinishReason.STOP
 
 
+async def test_tool_outside_allowlist_refused_at_execution_boundary() -> None:
+    """D1 — the child's tool allowlist is enforced at the EXECUTION boundary,
+    not merely by hiding the tool from the advertised schema. A model that
+    emits a tool name outside its allowlist gets a ``tool_not_in_allowlist``
+    error fed back and the executor is NEVER invoked for it — advertised
+    toolset == usable toolset, no privilege escalation past the parent's grant.
+    """
+    executed: list[str] = []
+
+    async def executor(ev: ToolCallEvent) -> str:  # records every real run
+        executed.append(ev.tool)
+        return json.dumps({"results": ["should-not-run"]})
+
+    # Parent holds BOTH tools; the child is restricted to ``run_shell`` only
+    # (a legal subset — no escalation). The scripted model nonetheless emits
+    # ``web_search`` (outside the child's allowlist) on the first round.
+    provider = _ScriptedProvider([_TOOL_ROUND, _FINAL_ROUND])
+    result = await run_child(
+        _parent_ctx(),
+        _card(),
+        TaskSpec(goal="x", tool_allowlist=["run_shell"]),
+        provider=provider,
+        parent_tools=[_tool_schema("web_search"), _tool_schema("run_shell")],
+        tool_executor=executor,
+    )
+
+    # The disallowed tool was refused at the gate — the executor never ran it.
+    assert executed == [], "out-of-allowlist tool must never reach the executor"
+    # The run still completes cleanly with the model's final answer (the
+    # refusal envelope is fed back, the model writes its answer next round).
+    assert result.output_text.strip()
+    assert result.finish_reason is FinishReason.STOP
+
+
 async def test_no_executor_keeps_legacy_behaviour() -> None:
     """Without a wired executor (pure-LLM child / legacy callers), a tool call
     is recorded but not run — the pre-v1.12.3 contract, so existing no-tool

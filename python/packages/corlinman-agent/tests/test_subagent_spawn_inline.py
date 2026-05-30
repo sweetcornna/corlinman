@@ -7,11 +7,13 @@ to the registry, run through the SAME runner/supervisor as named spawns.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from contextlib import nullcontext
 from typing import Any
 
+import pytest
 from corlinman_agent.agents.card import _safe_slug, build_ephemeral_card
 from corlinman_agent.subagent import (
     ARGS_INVALID_ERROR,
@@ -227,3 +229,62 @@ def test_inline_tool_pruned_at_max_depth() -> None:
         max_depth=3,
     )
     assert _INLINE_NAME in shallow
+
+
+async def test_slot_released_on_cancellation_at_spawn_emit() -> None:
+    """D5 — a cancellation in the post-acquire window (here parked at the
+    ``SubagentSpawned`` emit await) must still release the supervisor slot.
+
+    The guard is now entered BEFORE the first post-acquire await, so the
+    per-parent + per-tenant counters return to zero on cancel instead of
+    leaking until a non-deterministic ``Slot.__del__``.
+    """
+    from corlinman_subagent import (
+        AcquireRejectError,
+        Supervisor,
+        SupervisorPolicy,
+    )
+
+    sup = Supervisor(SupervisorPolicy())
+
+    def _acquire(ctx: Any) -> Any:
+        # Same adapter the gateway servicer uses: return the Slot on success,
+        # the reject reason string on a cap hit.
+        try:
+            return sup.try_acquire(ctx)
+        except AcquireRejectError as exc:
+            return exc.reason.value
+
+    entered = asyncio.Event()
+    never = asyncio.Event()  # never set → the emit await parks here
+
+    class _BlockingEmitter:
+        async def emit_event(self, *_a: Any, **_k: Any) -> None:
+            entered.set()
+            await never.wait()
+
+    ctx = _parent_ctx()
+    task = asyncio.ensure_future(
+        dispatch_subagent_spawn_inline(
+            args_json=_args(system_prompt="you are a helper", goal="hi"),
+            parent_ctx=ctx,
+            provider=_FakeProvider(),
+            supervisor_acquire=_acquire,
+            event_emitter=_BlockingEmitter(),
+            parent_turn_id="turn-1",
+            parent_session_key="root",
+        )
+    )
+
+    # Park at the emit await — the slot is held right now.
+    await asyncio.wait_for(entered.wait(), timeout=2.0)
+    assert sup.parent_count(ctx.parent_session_key) == 1
+    assert sup.tenant_count(ctx.tenant_id) == 1
+
+    # Cancel at the emit await; the D5 guard must release the slot.
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert sup.parent_count(ctx.parent_session_key) == 0, "per-parent slot leaked"
+    assert sup.tenant_count(ctx.tenant_id) == 0, "per-tenant slot leaked"

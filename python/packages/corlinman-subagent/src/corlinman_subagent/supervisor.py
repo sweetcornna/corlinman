@@ -9,13 +9,14 @@ both halves live in-process, so this module fuses the cap accountant
 
 Three caps, all enforced at :meth:`Supervisor.try_acquire` time:
 
-* **Per-parent concurrency** (default 3) — keyed by
+* **Per-parent concurrency** (default 10) — keyed by
   ``parent_session_key``. One operator session can fan out at most N
   children at any instant; siblings must finish before the (N+1)th.
 * **Per-tenant quota** (default 15) — keyed by ``tenant_id``. Stops one
   noisy tenant from starving siblings under shared deployment.
-* **Depth cap** (default 2) — ``parent_ctx.depth >= max_depth`` refuses
-  the spawn outright. Prevents fork-bomb chains.
+* **Depth cap** (default 1) — ``parent_ctx.depth >= max_depth`` refuses
+  the spawn outright. Single-level nesting: a subagent cannot spawn a
+  sub-subagent. Prevents fork-bomb chains.
 
 A fourth cap, **wall-clock timeout** (``task.max_wall_seconds`` capped
 by ``policy.max_wall_seconds_ceiling``), is enforced inside
@@ -31,11 +32,16 @@ that don't use the ``with`` form get the same behaviour from
 finaliser (mirrors the Rust ``Drop`` guarantee — neither path
 double-decrements).
 
-The supervisor uses :class:`asyncio.Lock` around the counter
-read-modify-write so two concurrent ``try_acquire`` calls on the same
-parent see consistent counts. This is the Python analogue of the Rust
-``DashMap`` per-key entry guard; on a single-threaded asyncio runtime
-the lock is only contended across ``await`` boundaries.
+The counter read-modify-write in :meth:`Supervisor.try_acquire` needs no
+lock: ``try_acquire`` is **synchronous and await-free**, so on a single-
+threaded asyncio runtime the whole check-and-increment runs atomically
+between yield points — no other coroutine can interleave. (An earlier
+revision carried an unused :class:`asyncio.Lock`; it was removed because it
+was never acquired and falsely implied the path could yield mid-RMW. The
+invariant is load-bearing: **do not introduce an ``await`` into the
+acquire path** — doing so would reopen the interleaving window the lock
+pretended to guard.) This mirrors the Rust ``DashMap`` per-key entry
+guard, which is likewise non-blocking.
 
 Hook bus integration mirrors the Rust crate's iter-9 wiring: an
 optional :class:`~corlinman_hooks.HookBus` lets the supervisor emit
@@ -61,7 +67,7 @@ from corlinman_subagent.errors import (
     SubagentError,
 )
 from corlinman_subagent.types import (
-    DEFAULT_MAX_WALL_SECONDS,
+    DEFAULT_MAX_WALL_SECONDS_CEILING,
     FinishReason,
     ParentContext,
     TaskResult,
@@ -93,20 +99,23 @@ class SupervisorPolicy:
       ``SUBAGENT_SPAWN_MANY_MAX_TASKS``; the per-tenant cap is the wider
       backstop)
     - ``max_concurrent_per_tenant=15``
-    - ``max_depth=2``
-    - ``max_wall_seconds_ceiling=60`` (used by
+    - ``max_depth=1`` (D7 — single-level nesting: a subagent cannot spawn a
+      sub-subagent; matches Claude Code's Task tool)
+    - ``max_wall_seconds_ceiling=300`` (D9 — used by
       :meth:`Supervisor.spawn_child` to clamp ``task.max_wall_seconds``;
-      mirrors ``types::defaults::DEFAULT_MAX_WALL_SECONDS``)
+      decoupled from the 60s *default* so a child may request up to 300s)
     """
 
     max_concurrent_per_parent: int = 10
     max_concurrent_per_tenant: int = 15
-    max_depth: int = 2
+    max_depth: int = 1
     #: Hard ceiling on a child's wall-clock budget. ``TaskSpec.max_wall_seconds``
     #: may *lower* this but never raise it. Not in the Rust ``SupervisorPolicy``
     #: struct (Rust enforced ceiling externally); we keep it here so the
-    #: timeout layer has one struct to consult.
-    max_wall_seconds_ceiling: int = DEFAULT_MAX_WALL_SECONDS
+    #: timeout layer has one struct to consult. D9 — points at the dedicated
+    #: 300s ceiling constant, NOT the 60s default, so the clamp has real
+    #: headroom above the default budget.
+    max_wall_seconds_ceiling: int = DEFAULT_MAX_WALL_SECONDS_CEILING
 
 
 # ---------------------------------------------------------------------------
@@ -220,7 +229,6 @@ class Supervisor:
     __slots__ = (
         "_event_emitter",
         "_hook_bus",
-        "_lock",
         "_parent_session_key",
         "_parent_turn_id",
         "_pending_tasks",
@@ -268,11 +276,9 @@ class Supervisor:
         # this set the task can be garbage-collected mid-flight (the
         # R2-003 footgun). Tasks self-remove via ``add_done_callback``.
         self._pending_tasks: set[asyncio.Task[Any]] = set()
-        # Single asyncio lock guards both counter dicts. The Rust crate
-        # uses per-key DashMap entries; on a single-threaded asyncio
-        # event loop one global lock is simpler and just as correct
-        # (the read-modify-write window doesn't span any ``await``).
-        self._lock = asyncio.Lock()
+        # NOTE: no counter lock — :meth:`try_acquire` is synchronous and
+        # await-free, so its read-modify-write is atomic on a single-threaded
+        # loop (see module docstring). Keep it that way.
 
     @property
     def policy(self) -> SupervisorPolicy:
@@ -528,11 +534,15 @@ class Supervisor:
             or self._parent_session_key is None
         ):
             return
-        # Lazy import keeps corlinman-subagent from pulling
-        # corlinman-agent at import time. Both packages already share a
-        # ParentContext dataclass so this is the only direction we need
-        # to break.
-        from corlinman_agent.events import SubagentSpawned  # noqa: PLC0415
+        # Lazy + guarded import. corlinman-subagent is the LOW-level cap
+        # accountant and deliberately does NOT declare corlinman-agent as a
+        # dependency, so the envelope type may be absent (standalone install /
+        # the package's own test env). Observability is best-effort — a
+        # missing emitter type just skips the emit, never breaks the spawn.
+        try:
+            from corlinman_agent.events import SubagentSpawned  # noqa: PLC0415
+        except ImportError:
+            return
 
         event = SubagentSpawned(
             parent_session_key=parent_ctx.parent_session_key,
@@ -557,7 +567,10 @@ class Supervisor:
             or self._parent_session_key is None
         ):
             return
-        from corlinman_agent.events import SubagentCompleted  # noqa: PLC0415
+        try:
+            from corlinman_agent.events import SubagentCompleted  # noqa: PLC0415
+        except ImportError:
+            return
 
         event = SubagentCompleted(
             child_session_key=result.child_session_key,
@@ -602,38 +615,13 @@ class Supervisor:
         self._pending_tasks.add(task)
         task.add_done_callback(self._pending_tasks.discard)
 
-    def child_emitter(self, child_session_key: str) -> Any | None:
-        """Build a :class:`BubbleEmitter` wrapping the parent's emitter
-        for ``child_session_key``.
-
-        Returned object conforms to
-        :class:`corlinman_agent.events.EventEmitter` so the caller can
-        hand it to the child agent's reasoning loop / runner pool as
-        the ``event_emitter`` arg. Returns ``None`` when no parent
-        emitter is wired — callers should treat that as "fall back to
-        the legacy no-observability path".
-        """
-        emitter = self._event_emitter
-        if (
-            emitter is None
-            or self._parent_turn_id is None
-            or self._parent_session_key is None
-        ):
-            return None
-        # Local import to keep corlinman-subagent free of a
-        # corlinman-server dependency at import time. The BubbleEmitter
-        # lives on the server side (next to JournalBackedEmitter)
-        # because that's where the gateway-wide emitter pipeline lives.
-        from corlinman_server.gateway.observability.emitter import (  # noqa: PLC0415
-            BubbleEmitter,
-        )
-
-        return BubbleEmitter(
-            parent=emitter,
-            parent_turn_id=self._parent_turn_id,
-            parent_session_key=self._parent_session_key,
-            child_session_key=child_session_key,
-        )
+    # NOTE: the former ``child_emitter`` helper (which imported
+    # ``corlinman_server.gateway.observability.emitter.BubbleEmitter``) was
+    # deleted (D6). It had zero call sites — production builds the child's
+    # bubble emitter in ``corlinman_agent.subagent.tool_wrapper`` via
+    # ``_make_bubble_emitter`` — and its import created a
+    # corlinman-server → corlinman-subagent → corlinman-server cycle. The
+    # low-level supervisor must not reach up into the server package.
 
     # ----------------------------------------------------------------- spawn
 

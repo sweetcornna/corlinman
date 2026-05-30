@@ -93,7 +93,9 @@ def test_spawn_many_schema_shape_is_openai_compatible() -> None:
     # The per-task object shape must accept the same fields as
     # subagent_spawn so the LLM doesn't have to learn two schemas.
     per_task = tasks["items"]
-    assert set(per_task["required"]) == {"agent", "goal"}
+    # D11 — only ``goal`` is required; ``agent`` is optional and defaults to
+    # ``general-purpose`` in the dispatcher, matching single ``subagent_spawn``.
+    assert set(per_task["required"]) == {"goal"}
     for key in ("agent", "goal", "tool_allowlist", "max_wall_seconds",
                 "max_tool_calls", "extra_context"):
         assert key in per_task["properties"], f"missing {key}"

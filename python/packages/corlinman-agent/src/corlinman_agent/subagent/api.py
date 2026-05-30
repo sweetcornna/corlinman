@@ -38,10 +38,14 @@ DEFAULT_MAX_WALL_SECONDS: int = 60
 #: because they often need to chain ``search → fetch → summarise``.
 DEFAULT_MAX_TOOL_CALLS: int = 12
 
-#: Maximum nesting depth (parent → child → grandchild). Used by the
-#: supervisor's ``depth_capped`` short-circuit; runner only reads it for
-#: the ``subagent_spawn`` self-prune at ``depth == max_depth - 1`` (iter 7).
-DEFAULT_MAX_DEPTH: int = 2
+#: Maximum nesting depth (parent → child). Used by the supervisor's
+#: ``depth_capped`` short-circuit. Single-level nesting (D7): a subagent
+#: cannot spawn a sub-subagent — matching Claude Code's Task tool and the
+#: gateway executor's blanket ``subagent_no_recursive_spawn`` refusal. The
+#: runner now prunes the spawn tools from EVERY child (``child_depth >= 1``)
+#: rather than keying off ``max_depth - 1``. Kept in sync with
+#: :data:`corlinman_subagent.types.DEFAULT_MAX_DEPTH`.
+DEFAULT_MAX_DEPTH: int = 1
 
 
 class FinishReason(StrEnum):
