@@ -25,7 +25,7 @@ import os
 import sys
 import time
 from collections import OrderedDict
-from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -244,6 +244,25 @@ BUILTIN_TOOLS: frozenset[str] = frozenset(
         AGENT_STATUS_CARD_TOOL,
     }
 ) | CODING_TOOLS | PERSONA_TOOLS | PERSONA_LIFE_TOOLS | QZONE_COMMENT_TOOLS
+
+#: The three subagent-spawn tools. A spawned child is refused these by
+#: :meth:`AgentServicer._make_child_tool_executor` (v1.12.3) — recursive
+#: spawning from inside a child would create grandchildren under the
+#: parent's depth-0 context with the wrong caps. The runner's depth-prune
+#: already strips them from the deepest child's schema; this is the
+#: belt-and-braces execution-time guard for shallower children.
+_SUBAGENT_SPAWN_TOOLS: frozenset[str] = frozenset(
+    {SUBAGENT_SPAWN_TOOL, SUBAGENT_SPAWN_MANY_TOOL, SUBAGENT_SPAWN_INLINE_TOOL}
+)
+
+#: Skills injected into EVERY chat turn regardless of whether the message
+#: invokes an agent card (v1.12.3). Stage-3 skill injection is otherwise
+#: gated on a ``{{角色}}`` token, so the main chat agent never saw any skill
+#: and improvised — e.g. hand-rolling a broken PDF. ``document-generator``
+#: gives it the known-good document/PDF recipe on every turn. Missing-skill
+#: refs are non-fatal (logged into ``skill_errors``), so this degrades
+#: cleanly on deploys that haven't seeded the skill yet.
+_DEFAULT_ALWAYS_SKILLS: tuple[str, ...] = ("document-generator",)
 
 
 def _send_attachment_tool_schema() -> dict[str, Any]:
@@ -1889,6 +1908,41 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 error=str(exc),
             )
 
+    def _make_child_tool_executor(
+        self,
+        start: AgentChatStart,
+        provider: CorlinmanProvider,
+        file_state: FileState | None,
+    ) -> Callable[[ToolCallEvent], Awaitable[str]]:
+        """Build the tool-execution callback a spawned child uses (v1.12.3).
+
+        The child's :class:`ReasoningLoop` emits ``ToolCallEvent``s but can't
+        run them itself; the runner calls this back to execute each one and
+        feed the result so the child can synthesize a real answer (the fix
+        for the empty-``output_text`` prod incident). The closure reuses the
+        parent's own :meth:`_dispatch_builtin` bound to the parent's
+        ``start`` / ``provider`` / ``file_state`` so the child inherits the
+        same permission gate, workspace, and observability — it can never
+        exceed the parent (the child's tool *schemas* are already filtered to
+        a subset of the parent's by the runner).
+
+        Recursive spawning is refused: a child running its own ``_dispatch``
+        of ``subagent_spawn*`` would spawn grandchildren under the *parent's*
+        depth-0 context (wrong caps), so those tools are rejected with a
+        clean envelope the model can read and adapt to. (The runner's
+        depth-prune already strips spawn tools from the deepest child's
+        schema; this is defense in depth for shallower children.)
+        """
+
+        async def _execute(child_event: ToolCallEvent) -> str:
+            if child_event.tool in _SUBAGENT_SPAWN_TOOLS:
+                return json.dumps({"error": "subagent_no_recursive_spawn"})
+            return await self._dispatch_builtin(
+                child_event, start, provider, file_state
+            )
+
+        return _execute
+
     async def _dispatch_builtin(
         self,
         event: ToolCallEvent,
@@ -2002,6 +2056,12 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     # model when neither the spawn arg nor the card binds
                     # one — otherwise ChatStart.model="" 400s upstream.
                     parent_model=start.model or None,
+                    # v1.12.3: the child can now actually EXECUTE its tools
+                    # (web_search, etc.) and synthesize a real answer instead
+                    # of returning a bare tool-call trajectory.
+                    tool_executor=self._make_child_tool_executor(
+                        start, provider, file_state
+                    ),
                     event_emitter=self._event_emitter,
                     parent_turn_id=_parent_turn_id,
                     parent_session_key=start.session_key or None,
@@ -2028,6 +2088,9 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     max_depth=_sup.policy.max_depth,
                     max_wall_seconds_ceiling=_sup.policy.max_wall_seconds_ceiling,
                     parent_model=start.model or None,
+                    tool_executor=self._make_child_tool_executor(
+                        start, provider, file_state
+                    ),
                     event_emitter=self._event_emitter,
                     parent_turn_id=_parent_turn_id,
                     parent_session_key=start.session_key or None,
@@ -2054,6 +2117,9 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     # model, so without this the child 400s "model is
                     # required" — inherit the parent's resolved alias.
                     parent_model=start.model or None,
+                    tool_executor=self._make_child_tool_executor(
+                        start, provider, file_state
+                    ),
                     event_emitter=self._event_emitter,
                     parent_turn_id=_parent_turn_id,
                     parent_session_key=start.session_key or None,
@@ -2857,6 +2923,7 @@ def _build_default_context_assembler() -> ContextAssembler | None:
             placeholder_client=PlaceholderClient(),
             hook_emitter=LoggingHookEmitter(),
             config_lookup=lambda key: os.environ.get(key),
+            default_skill_refs=_DEFAULT_ALWAYS_SKILLS,
         )
     except Exception as exc:
         logger.warning("agent.chat.context_assembler_init_failed", error=str(exc))

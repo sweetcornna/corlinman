@@ -4,6 +4,51 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.12.3] — 2026-05-30 — Subagents run their tools; reliable PDF/document generation
+
+> Two live-usage fixes found from a real multi-agent run: research subagents
+> returned only their search *trajectory* (no synthesized answer), and a
+> "summarize to PDF" task produced a letter-spaced garbage file.
+
+### Fixed
+- **Subagents now actually EXECUTE their tools and synthesize an answer.** A
+  spawned child's `ReasoningLoop` emitted `web_search` (etc.) calls, but the
+  runner only *recorded* them — it never ran the tool or fed the result back,
+  so `_collect_results` timed out, the loop ended on the tool round, and the
+  child returned `output_text=""` (only `tool_calls_made` was populated). The
+  parent had to redo all the work. The child runner now takes a
+  `tool_executor` (the gateway binds it to the parent's own builtin dispatcher
+  under the parent's permission gate + workspace) and calls
+  `loop.feed_tool_result(...)` exactly as the parent does, so the model
+  receives results and writes a real final answer. Children may not recursively
+  spawn (refused with a clean envelope). Added:
+  - a **guaranteed-synthesis fallback** — if tools ran but no answer text was
+    produced, one tools-disabled round turns the tool results into a final
+    answer, so a delegation never comes back empty;
+  - **`max_tool_calls` enforcement** (was documented but never applied) capping
+    real tool execution as a cost guard;
+  - a truthful **finish-reason mapping**: a child that ends on a tool-call
+    round now maps to `LENGTH` (truncated), not a silent `STOP`.
+- **Reliable PDF / document generation.** When asked to "总结成 PDF" the agent
+  had no prescribed pipeline (no document skill existed) and improvised —
+  headless-chrome with the wrong flags, then `reportlab` it couldn't install,
+  then a hand-rolled raw-PDF script whose glyph advances were wrong (every
+  character space-padded). Now ships:
+  - a **`corlinman-md2pdf`** console script (Markdown → clean, CJK-correct PDF
+    via headless Chrome with a proper font stack; self-contained Markdown
+    converter, no fragile deps);
+  - a **`document-generator` bundled skill** documenting the exact pipeline and
+    the anti-patterns (never hand-roll PDF bytes, never `reportlab`, never bare
+    `--headless`).
+
+### Changed
+- **Always-on skills reach the main agent.** Stage-3 skill injection only fired
+  when a message invoked an agent card (`{{角色}}` token), so the *main* chat
+  agent received no skills at all. `ContextAssembler` now also injects a
+  configurable `default_skill_refs` on every turn (default:
+  `document-generator`), merged/deduped with any invoked card's `skill_refs`.
+  Missing-skill refs stay non-fatal.
+
 ## [1.12.2] — 2026-05-30 — Hotfix: subagent model inheritance + offline default + max-10 fanout
 
 > Second prod hotfix on the subagent path. Two 400s and one capacity limit:

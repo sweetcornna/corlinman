@@ -40,8 +40,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import time
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
@@ -55,7 +56,18 @@ from corlinman_agent.reasoning_loop import (
     ReasoningLoop,
     TokenEvent,
     ToolCallEvent,
+    ToolResult,
 )
+
+#: Async callback the child loop uses to actually EXECUTE a tool call and
+#: return its JSON result envelope (the same string the parent feeds back as
+#: :attr:`ToolResult.content`). Supplied by the gateway (which binds it to the
+#: parent's builtin dispatcher) and threaded down through
+#: :func:`run_child`. ``None`` keeps the legacy "no tool execution" behaviour
+#: for pure-LLM children / unit tests that don't wire one. v1.12.3 — without
+#: this the child emitted tool calls that were never executed, so the model
+#: never received results and returned an empty ``output_text``.
+ChildToolExecutor = Callable[[ToolCallEvent], Awaitable[str]]
 from corlinman_agent.subagent.api import (
     DEFAULT_MAX_DEPTH,
     FinishReason,
@@ -133,6 +145,7 @@ async def run_child(
     event_emitter: Any | None = None,
     model_override: str | None = None,
     parent_model: str | None = None,
+    tool_executor: ChildToolExecutor | None = None,
 ) -> TaskResult:
     """Drive one child reasoning loop and return its :class:`TaskResult`.
 
@@ -336,7 +349,15 @@ async def run_child(
         event_emitter=event_emitter,
     )
     return await _drive_and_collect(
-        loop, chat_start, child_ctx, started_ms, task
+        loop,
+        chat_start,
+        child_ctx,
+        started_ms,
+        task,
+        provider=provider,
+        tool_executor=tool_executor,
+        tool_result_timeout=tool_result_timeout,
+        event_emitter=event_emitter,
     )
 
 
@@ -354,6 +375,11 @@ async def _drive_and_collect(
     child_ctx: ParentContext,
     started_ms: int,
     task: TaskSpec,
+    *,
+    provider: Any,
+    tool_executor: ChildToolExecutor | None = None,
+    tool_result_timeout: float = 0.05,
+    event_emitter: Any | None = None,
 ) -> TaskResult:
     """Drain :meth:`ReasoningLoop.run` into a :class:`TaskResult`,
     enforcing :attr:`TaskSpec.max_wall_seconds` cooperatively.
@@ -377,13 +403,23 @@ async def _drive_and_collect(
     """
     output_chunks: list[str] = []
     tool_calls: list[ToolCallSummary] = []
+    executed_results: list[str] = []
     state: _DrainState = {
         "finish_reason": FinishReason.STOP,
         "error_msg": None,
     }
 
     drain_task: asyncio.Task[None] = asyncio.ensure_future(
-        _drain_events(loop, chat_start, output_chunks, tool_calls, state)
+        _drain_events(
+            loop,
+            chat_start,
+            output_chunks,
+            tool_calls,
+            state,
+            tool_executor=tool_executor,
+            max_tool_calls=task.max_tool_calls,
+            executed_results=executed_results,
+        )
     )
     try:
         # ``asyncio.wait_for`` is the cooperative analogue the design
@@ -425,9 +461,40 @@ async def _drive_and_collect(
         state["error_msg"] = str(exc)
         state["finish_reason"] = FinishReason.ERROR
 
+    output_text = "".join(output_chunks)
+
+    # v1.12.3 — guaranteed-synthesis net. A child that executed tools but
+    # whose model emitted no final answer text (a bare tool-call round) would
+    # otherwise return ``output_text=""`` — the exact prod failure where
+    # research subagents handed back only their search trajectory. When tools
+    # ran and produced results but no answer surfaced, do ONE tools-disabled
+    # round so the delegation always returns something usable. Skipped on
+    # timeout/error (the loop already failed) and when no tools ran (a pure-LLM
+    # child legitimately producing empty text is not this bug).
+    if (
+        not output_text.strip()
+        and executed_results
+        and tool_executor is not None
+        and state["finish_reason"] not in (FinishReason.TIMEOUT, FinishReason.ERROR)
+    ):
+        synth = await _synthesize_from_tool_results(
+            provider=provider,
+            base_messages=chat_start.messages,
+            executed_results=executed_results,
+            model=chat_start.model,
+            session_key=chat_start.session_key,
+            tool_result_timeout=tool_result_timeout,
+            child_session_key=child_ctx.parent_session_key,
+        )
+        if synth.strip():
+            output_text = synth
+            # The model did finish — just on a second, forced turn. STOP is
+            # the truthful terminal state for the parent's prompt.
+            state["finish_reason"] = FinishReason.STOP
+
     elapsed_ms = max(0, _now_ms() - started_ms)
     return TaskResult(
-        output_text="".join(output_chunks),
+        output_text=output_text,
         tool_calls_made=tool_calls,
         child_session_key=child_ctx.parent_session_key,
         child_agent_id=child_ctx.parent_agent_id,
@@ -435,6 +502,78 @@ async def _drive_and_collect(
         finish_reason=state["finish_reason"],
         error=state["error_msg"],
     )
+
+
+#: Hard cap on the wall-clock for the forced final-synthesis round so the
+#: belt-and-braces fallback can't itself hang the spawn. 30s is generous for
+#: a single tools-disabled generation.
+_SYNTH_FALLBACK_TIMEOUT_SECONDS: float = 30.0
+
+#: Cap on how much tool-result text is fed into the synthesis fallback so a
+#: handful of verbose ``web_search`` payloads don't blow the child's context.
+_SYNTH_RESULT_DIGEST_CHARS: int = 12000
+
+
+async def _synthesize_from_tool_results(
+    *,
+    provider: Any,
+    base_messages: Sequence[dict[str, Any]],
+    executed_results: list[str],
+    model: str,
+    session_key: str,
+    tool_result_timeout: float,
+    child_session_key: str,
+) -> str:
+    """Run ONE tools-disabled generation that turns the child's tool results
+    into a final answer. The belt-and-braces half of the v1.12.3 fix.
+
+    Builds ``base_messages + [user: "here are your tool results, write the
+    final answer now, no more tools"]`` and drives a fresh
+    :class:`ReasoningLoop` with ``tools=[]`` so the model physically cannot
+    loop back into another tool round. Never raises — any failure logs and
+    returns ``""`` (the caller keeps the empty output rather than crashing
+    the spawn). Bounded by :data:`_SYNTH_FALLBACK_TIMEOUT_SECONDS`.
+    """
+    if not executed_results:
+        return ""
+    digest = "\n\n".join(executed_results)
+    if len(digest) > _SYNTH_RESULT_DIGEST_CHARS:
+        digest = digest[:_SYNTH_RESULT_DIGEST_CHARS] + "\n…(truncated)"
+    synth_messages: list[dict[str, Any]] = [
+        *base_messages,
+        {
+            "role": "user",
+            "content": (
+                "你已经调用工具并获得以下结果：\n\n"
+                + digest
+                + "\n\n请基于以上结果，现在直接写出完整的最终答案，"
+                "不要再调用任何工具。"
+            ),
+        },
+    ]
+    synth_start = ChatStart(
+        model=model,
+        messages=synth_messages,
+        tools=[],
+        session_key=session_key,
+    )
+    synth_loop = ReasoningLoop(provider, tool_result_timeout=tool_result_timeout)
+    chunks: list[str] = []
+
+    async def _pump() -> None:
+        async for ev in synth_loop.run(synth_start):
+            if isinstance(ev, TokenEvent):
+                chunks.append(ev.text)
+
+    try:
+        await asyncio.wait_for(_pump(), timeout=_SYNTH_FALLBACK_TIMEOUT_SECONDS)
+    except (TimeoutError, Exception) as exc:  # noqa: BLE001 — never crash the spawn
+        logger.warning(
+            "subagent.runner.synth_fallback_failed",
+            child_session_key=child_session_key,
+            error=str(exc),
+        )
+    return "".join(chunks)
 
 
 # Drain-state contract: a tiny TypedDict-shaped dict the drain coroutine
@@ -450,6 +589,10 @@ async def _drain_events(
     output_chunks: list[str],
     tool_calls: list[ToolCallSummary],
     state: _DrainState,
+    *,
+    tool_executor: ChildToolExecutor | None = None,
+    max_tool_calls: int = 0,
+    executed_results: list[str] | None = None,
 ) -> None:
     """Pump the reasoning loop's event stream into shared collectors.
 
@@ -459,7 +602,17 @@ async def _drain_events(
     the partial-output guarantee documented in design § "Timeout
     handling" wouldn't hold — a TaskCancelled would erase the
     intermediate state along with the task's local frame.
+
+    v1.12.3 — when ``tool_executor`` is wired, the drain doesn't just
+    *record* tool calls: it EXECUTES each one and feeds the result back via
+    :meth:`ReasoningLoop.feed_tool_result`, exactly as the gateway's parent
+    loop does. Without this the child's ``_collect_results`` timed out on a
+    queue nothing fed, the loop exited after the tool round, and the model
+    never produced a final answer (``output_text==""``). ``max_tool_calls``
+    caps real tool execution (cost guard); past the cap we feed a
+    "budget exhausted, wrap up" envelope instead of running the tool.
     """
+    executed = 0
     try:
         async for event in loop.run(chat_start):
             if isinstance(event, TokenEvent):
@@ -470,6 +623,42 @@ async def _drain_events(
                 output_chunks.append(event.text)
             elif isinstance(event, ToolCallEvent):
                 tool_calls.append(_summarise_tool_call(event))
+                if tool_executor is None:
+                    # Legacy / pure-LLM child: no executor wired. Record the
+                    # call only (pre-v1.12.3 behaviour) — the loop will time
+                    # out its result wait and end. Kept so no-tool children
+                    # and unit tests that don't supply an executor still pass.
+                    continue
+                if max_tool_calls and executed >= max_tool_calls:
+                    # Budget spent — stop running real tools but keep the
+                    # conversation alive so the model writes its final answer.
+                    loop.feed_tool_result(
+                        ToolResult(
+                            call_id=event.call_id,
+                            content=json.dumps(
+                                {
+                                    "error": "tool_budget_exhausted",
+                                    "note": (
+                                        "工具调用次数已达上限，请基于已有结果"
+                                        "直接给出最终答案，不要再调用工具。"
+                                    ),
+                                }
+                            ),
+                            is_error=True,
+                        )
+                    )
+                    continue
+                executed += 1
+                result_json = await _execute_child_tool(tool_executor, event)
+                if executed_results is not None:
+                    executed_results.append(result_json)
+                loop.feed_tool_result(
+                    ToolResult(
+                        call_id=event.call_id,
+                        content=result_json,
+                        is_error=_result_is_error(result_json),
+                    )
+                )
             elif isinstance(event, DoneEvent):
                 state["finish_reason"] = _map_finish_reason(event.finish_reason)
             elif isinstance(event, ErrorEvent):
@@ -479,6 +668,43 @@ async def _drain_events(
         # Re-raise so the wait_for sees cancellation. The shared lists
         # already carry whatever was drained before the cancel fired.
         raise
+
+
+async def _execute_child_tool(
+    executor: ChildToolExecutor,
+    event: ToolCallEvent,
+) -> str:
+    """Run one child tool call through the executor, never raising.
+
+    The executor (gateway-supplied) already folds its own failures into an
+    ``{"error": ...}`` envelope, but we belt-and-brace here so a programmer
+    error in the dispatch layer becomes a readable tool result the model can
+    react to rather than tearing down the child's drain loop.
+    """
+    try:
+        return await executor(event)
+    except Exception as exc:  # noqa: BLE001 — tool exec must never crash the drain
+        logger.warning(
+            "subagent.runner.tool_exec_failed",
+            tool=event.tool,
+            call_id=event.call_id,
+            error=str(exc),
+        )
+        return json.dumps({"error": f"tool_execution_failed: {exc}"})
+
+
+def _result_is_error(result_json: str) -> bool:
+    """Parse a tool-result envelope and report whether it signals an error.
+
+    Mirrors the gateway's own check (agent_servicer ``_summarise``): an
+    object carrying a truthy ``error`` or ``is_error`` key is an error.
+    Malformed JSON counts as success (the model still reads the raw text).
+    """
+    try:
+        parsed = json.loads(result_json or "{}")
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return False
+    return isinstance(parsed, dict) and bool(parsed.get("error") or parsed.get("is_error"))
 
 
 class _ToolAllowlistEscalationError(Exception):
@@ -711,20 +937,23 @@ def _map_finish_reason(provider_reason: str) -> FinishReason:
 
     The reasoning loop emits the OpenAI-standard vocabulary
     (``"stop"`` / ``"length"`` / ``"tool_calls"`` / ``"content_filter"``).
-    We promote ``"stop"`` and ``"length"`` to their direct counterparts;
-    everything else maps to ``STOP`` for iter 4 (the parent's prompt
-    only branches on ``stop`` vs the rejection reasons for now).
+    We promote ``"stop"`` and ``"length"`` to their direct counterparts.
+
+    v1.12.3 — ``"tool_calls"`` now maps to :attr:`FinishReason.LENGTH`,
+    not ``STOP``. The loop reports ``"tool_calls"`` when it ends ON a
+    tool-call round without a following synthesis turn — i.e. the child
+    was *truncated* mid-task, not cleanly done. Mapping it to ``STOP``
+    made that failure silent (the parent saw a clean stop with empty
+    text). ``LENGTH`` is the truthful "did not produce a final answer"
+    signal. When tool execution + the synthesis fallback succeed, the
+    terminal event is a genuine ``"stop"`` and this branch isn't hit.
     """
     match provider_reason:
         case "stop":
             return FinishReason.STOP
-        case "length":
+        case "length" | "tool_calls":
             return FinishReason.LENGTH
         case _:
-            # ``tool_calls`` is the second-most common finish reason
-            # but at iter 4 we have no tools wired so the loop won't
-            # actually emit it on the happy path. iter 7 may need to
-            # re-classify for the parent's prompt.
             return FinishReason.STOP
 
 

@@ -138,6 +138,7 @@ def _make_assembler(
     hook: RecordingHookEmitter | None = None,
     config_lookup=None,
     single_agent_gate: bool = True,
+    default_skill_refs: tuple[str, ...] = (),
 ) -> tuple[ContextAssembler, RecordingHookEmitter, _StubPlaceholderClient]:
     """One-liner assembler constructor used across the tests."""
     agents_dir = tmp_path / "agents"
@@ -165,6 +166,7 @@ def _make_assembler(
         hook_emitter=hk,
         config_lookup=cfg,
         single_agent_gate=single_agent_gate,
+        default_skill_refs=default_skill_refs,
     )
     return assembler, hk, ph
 
@@ -624,3 +626,86 @@ async def test_golden_snapshot(
     # between tests so cross-contamination stays impossible.
     assert GOLDEN_DIR.exists(), f"missing golden dir {GOLDEN_DIR}"
     await _run_golden(tmp_path, name, monkeypatch)
+
+
+# --------------------------------------------------------------------------- #
+# default_skill_refs — always-on skills reach the MAIN agent (v1.12.3)         #
+# --------------------------------------------------------------------------- #
+
+_DOCGEN_SKILL = (
+    "document-generator.md",
+    "---\nname: document-generator\ndescription: make clean PDFs\n---\n"
+    "Use corlinman-md2pdf; never hand-roll a PDF.\n",
+)
+
+
+@pytest.mark.asyncio
+async def test_default_skill_injected_without_agent_card(tmp_path: Path) -> None:
+    """v1.12.3 — a plain user turn that invokes NO agent card still gets the
+    default skill injected. This is the fix: the main bot agent never matched
+    the ``expanded_agent`` gate, so it previously received zero skills."""
+    assembler, _, _ = _make_assembler(
+        tmp_path,
+        skills=[_DOCGEN_SKILL],
+        default_skill_refs=("document-generator",),
+    )
+    result = await assembler.assemble(
+        [{"role": "user", "content": "把这个总结成 pdf"}],
+        session_key="s",
+        model_name="gpt-4",
+    )
+    sys_content = result.messages[0]["content"]
+    assert "## Skill: document-generator" in sys_content
+    assert "never hand-roll a PDF" in sys_content
+    assert result.skill_errors == []
+    assert result.expanded_agent is None  # no card was invoked
+
+
+@pytest.mark.asyncio
+async def test_no_default_skill_means_no_injection(tmp_path: Path) -> None:
+    """Without default_skill_refs, a card-less turn gets no skill (the old
+    behaviour stays intact for callers that don't opt in)."""
+    assembler, _, _ = _make_assembler(tmp_path, skills=[_DOCGEN_SKILL])
+    result = await assembler.assemble(
+        [{"role": "user", "content": "hi"}], session_key="s", model_name="gpt-4"
+    )
+    joined = " ".join(
+        m.get("content", "") for m in result.messages if isinstance(m.get("content"), str)
+    )
+    assert "## Skill:" not in joined
+
+
+@pytest.mark.asyncio
+async def test_default_and_card_skills_merge_deduped(tmp_path: Path) -> None:
+    """When a card IS invoked, its skill_refs merge with the defaults without
+    duplicating a shared name."""
+    assembler, _, _ = _make_assembler(
+        tmp_path,
+        agents_body={
+            "mentor": (
+                "name: mentor\n"
+                "description: d\n"
+                "system_prompt: You are a mentor.\n"
+                "skill_refs:\n"
+                "  - codereview\n"
+                "  - document-generator\n"
+            ),
+        },
+        skills=[
+            _DOCGEN_SKILL,
+            (
+                "codereview.md",
+                "---\nname: codereview\ndescription: review\n---\nCheck tests.\n",
+            ),
+        ],
+        default_skill_refs=("document-generator",),
+    )
+    result = await assembler.assemble(
+        [{"role": "system", "content": "{{agent.mentor}}"}, {"role": "user", "content": "hi"}],
+        session_key="s",
+        model_name="gpt-4",
+    )
+    sys_content = result.messages[0]["content"]
+    # both skills present, document-generator only once despite being in both
+    assert "## Skill: codereview" in sys_content
+    assert sys_content.count("## Skill: document-generator") == 1

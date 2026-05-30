@@ -177,6 +177,7 @@ class ContextAssembler:
         hook_emitter: HookEmitter,
         config_lookup: Callable[[str], str | None],
         single_agent_gate: bool = True,
+        default_skill_refs: Sequence[str] = (),
     ) -> None:
         self._agent_expander = AgentExpander(agents, single_agent_gate=single_agent_gate)
         self._variables = variables
@@ -184,6 +185,14 @@ class ContextAssembler:
         self._placeholder = placeholder_client
         self._hook = hook_emitter
         self._config_lookup = config_lookup
+        # v1.12.3 — skills injected on EVERY turn, even when the message
+        # invokes no agent card. Stage-3 skill injection is otherwise gated on
+        # ``expansion.expanded_agent`` (a ``{{角色}}`` token), so the MAIN chat
+        # agent never received any skill — it improvised, e.g. hand-rolling a
+        # broken PDF instead of following the ``document-generator`` recipe.
+        # These names are injected for the main agent and merged with (deduped
+        # against) an invoked card's own ``skill_refs``.
+        self._default_skill_refs: list[str] = list(default_skill_refs)
 
     # ------------------------------------------------------------------ API
 
@@ -227,11 +236,18 @@ class ContextAssembler:
                     unresolved.append(key)
 
         # --- Stage 3: skill injection -----------------------------------
+        # Always-on defaults first (reach the main chat agent, which invokes
+        # no card), then any invoked card's own refs — deduped, order-stable.
         skill_errors: list[str] = []
+        refs: list[str] = list(self._default_skill_refs)
         if expansion.expanded_agent is not None:
             card = self._agent_expander._registry.get(expansion.expanded_agent)
             if card is not None and card.skill_refs:
-                self._inject_skills(msgs, card.skill_refs, skill_errors)
+                for ref in card.skill_refs:
+                    if ref not in refs:
+                        refs.append(ref)
+        if refs:
+            self._inject_skills(msgs, refs, skill_errors)
 
         # --- Stage 3.5: toolbox dedup + privilege gate ------------------
         # Mirrors the ``single_agent_gate`` pattern (and the openclaw
