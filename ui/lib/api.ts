@@ -2210,6 +2210,77 @@ export { openLiveEventStream as streamSessionEvents } from "@/lib/sessions/event
 export type { LiveEvent } from "@/lib/sessions/event-stream";
 // === end W2.1 ===
 
+// === Public status card =====================================================
+
+export interface PublicStatusTurn {
+  turn_id: string;
+  started_at_ms?: number | null;
+  ended_at_ms?: number | null;
+  status: string;
+  finish_reason?: string | null;
+  elapsed_ms?: number | null;
+  estimated_cost_usd?: number | null;
+  cost_status?: string | null;
+  tool_call_count?: number | null;
+  reasoning_token_count?: number | null;
+  user_text_preview?: string | null;
+}
+
+export interface PublicStatusCurrentStep {
+  kind: "tool" | "subagent";
+  turn_id: string;
+  event_type: string;
+  call_id?: string | null;
+  name?: string | null;
+  child_session_key?: string | null;
+  child_agent_id?: string | null;
+}
+
+export interface PublicStatusResponse {
+  session_key: string;
+  status: string;
+  started_at_ms: number | null;
+  last_activity_at_ms: number | null;
+  turns: PublicStatusTurn[];
+  current_step: PublicStatusCurrentStep | null;
+}
+
+export interface PublicStatusEventsResponse {
+  session_key: string;
+  events: _W21LiveEvent[];
+  next_cursor: number | null;
+}
+
+export function loadPublicStatus(
+  token: string,
+  opts: { signal?: AbortSignal } = {},
+): Promise<PublicStatusResponse> {
+  return apiFetch<PublicStatusResponse>(
+    `/status/${encodeURIComponent(token)}?format=json`,
+    {
+      signal: opts.signal,
+      headers: { accept: "application/json" },
+      credentials: "omit",
+    },
+  );
+}
+
+export function loadPublicStatusEvents(
+  token: string,
+  opts: { signal?: AbortSignal } = {},
+): Promise<PublicStatusEventsResponse> {
+  return apiFetch<PublicStatusEventsResponse>(
+    `/status/${encodeURIComponent(token)}/events`,
+    {
+      signal: opts.signal,
+      headers: { accept: "application/json" },
+      credentials: "omit",
+    },
+  );
+}
+
+// === end public status card ================================================
+
 // === W2.3 — past-turns listing + provider test/models + credential reveal ===
 //
 // Four small helpers wired to backend endpoints that the W1.x backports

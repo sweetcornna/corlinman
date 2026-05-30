@@ -13,7 +13,7 @@ yet usable end-to-end.
   return `{session_key, status, turns[…], current_step}` JSON. Mounts at root
   via `routes/register.build_app_router` (auth only gates `/v1/` + `/admin/*`,
   so `/status` is public). Without it the tool's link 404s.
-- [ ] **HIGH — public status-card UI page** `ui/app/status/[token]/page.tsx`
+- [x] **HIGH — public status-card UI page** `ui/app/status/[token]/page.tsx`
   (outside `(admin)`). Reuse `EventTimeline` / `ToolCallCard` / `SubagentCard`
   read-only (strip kill buttons). Needs a live app run to verify.
 - [ ] **MED — trajectory privacy/redaction.** Tool-call args/results in the

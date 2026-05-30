@@ -8,12 +8,16 @@ public status page. It deliberately lives outside the admin route tree.
 
 from __future__ import annotations
 
+import mimetypes
+import os
 from collections.abc import Iterable
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path as FsPath
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Path, Query
+from fastapi import APIRouter, HTTPException, Path, Query, Request
+from fastapi.responses import FileResponse
 
 from corlinman_server.gateway.status_token import (
     resolve_signing_key,
@@ -22,6 +26,8 @@ from corlinman_server.gateway.status_token import (
 
 STATUS_TURNS_DEFAULT_LIMIT = 25
 STATUS_TURNS_MAX_LIMIT = 100
+STATUS_EVENTS_DEFAULT_LIMIT = 5000
+STATUS_EVENTS_MAX_LIMIT = 20000
 
 _RUNNING_EVENT_TYPES = {
     "ToolStateRunning",
@@ -73,6 +79,43 @@ def _invalid_token_403() -> HTTPException:
             "message": "status token is invalid or expired",
         },
     )
+
+
+def _is_browser_html_request(request: Request, response_format: str | None) -> bool:
+    if response_format == "json":
+        return False
+    accept = request.headers.get("accept", "")
+    if "text/html" not in accept:
+        return False
+    # Fetch/XHR clients can still ask for HTML in tests or browser code.
+    # Treat navigation/document-style requests as the public page shell.
+    mode = request.headers.get("sec-fetch-mode", "")
+    dest = request.headers.get("sec-fetch-dest", "")
+    return mode in {"", "navigate"} and dest in {"", "document"}
+
+
+@lru_cache(maxsize=1)
+def _status_shell_path(ui_dir_env: str | None) -> FsPath | None:
+    if not ui_dir_env:
+        return None
+    ui_dir = FsPath(ui_dir_env)
+    candidates = [
+        ui_dir / "status" / "__token__.html",
+        ui_dir / "status" / "[token].html",
+        ui_dir / "status.html",
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _status_shell_response() -> FileResponse | None:
+    shell_path = _status_shell_path(os.environ.get("CORLINMAN_UI_DIR"))
+    if shell_path is None:
+        return None
+    media_type = mimetypes.guess_type(str(shell_path))[0] or "text/html"
+    return FileResponse(shell_path, media_type=media_type)
 
 
 def _resolve_session_key(token: str, state: StatusState) -> str:
@@ -202,18 +245,117 @@ async def _current_step(journal: Any, turns: Iterable[dict[str, Any]]) -> dict[s
     return None
 
 
+async def _status_payload(
+    *,
+    token: str,
+    status_state: StatusState,
+    limit: int,
+) -> dict[str, Any]:
+    session_key = _resolve_session_key(token, status_state)
+    journal = status_state.resolve_journal()
+    if journal is None:
+        raise _disabled_503()
+
+    turns = await journal.list_session_turns(session_key, limit=limit)
+    return {
+        "session_key": session_key,
+        "status": _overall_status(turns),
+        "started_at_ms": (
+            min(
+                t["started_at_ms"]
+                for t in turns
+                if isinstance(t.get("started_at_ms"), int)
+            )
+            if any(isinstance(t.get("started_at_ms"), int) for t in turns)
+            else None
+        ),
+        "last_activity_at_ms": _latest_activity(turns),
+        "turns": turns,
+        "current_step": await _current_step(journal, turns),
+    }
+
+
+async def _session_events(
+    *,
+    journal: Any,
+    session_key: str,
+    turn_limit: int,
+    event_limit: int,
+    after_sequence: int,
+) -> list[dict[str, Any]]:
+    turn_ids = await journal.get_session_turn_ids(session_key, limit=turn_limit)
+    events: list[dict[str, Any]] = []
+    for turn_id in reversed(turn_ids):
+        async for event in journal.iter_events(
+            str(turn_id), start_sequence=after_sequence
+        ):
+            event_session_key = event.get("session_key")
+            if event_session_key is not None and event_session_key != session_key:
+                continue
+            out = {**event, "session_key": session_key}
+            events.append(out)
+            if len(events) >= event_limit:
+                return events
+    events.sort(
+        key=lambda ev: (
+            int(ev.get("timestamp_ms") or 0),
+            str(ev.get("turn_id") or ""),
+            int(ev.get("sequence") or 0),
+        )
+    )
+    return events
+
+
 def router(state: StatusState | None = None) -> APIRouter:
     r = APIRouter(tags=["status"])
     status_state = state or StatusState()
 
-    @r.get("/status/{token}")
+    @r.get("/status/{token}", response_model=None)
     async def get_status_card(
+        request: Request,
         token: str = Path(..., description="Signed status-card token."),
+        response_format: str | None = Query(
+            None,
+            alias="format",
+            description="Use 'json' to force the status API response.",
+        ),
         limit: int = Query(
             STATUS_TURNS_DEFAULT_LIMIT,
             ge=1,
             le=STATUS_TURNS_MAX_LIMIT,
             description="Max recent turns to include.",
+        ),
+    ) -> Any:
+        if _is_browser_html_request(request, response_format):
+            shell = _status_shell_response()
+            if shell is not None:
+                return shell
+
+        return await _status_payload(
+            token=token,
+            status_state=status_state,
+            limit=limit,
+        )
+
+    @r.get("/status/{token}/events")
+    async def get_status_events(
+        token: str = Path(..., description="Signed status-card token."),
+        turn_limit: int = Query(
+            STATUS_TURNS_MAX_LIMIT,
+            ge=1,
+            le=STATUS_TURNS_MAX_LIMIT,
+            description="Max recent turns to replay.",
+        ),
+        limit: int = Query(
+            STATUS_EVENTS_DEFAULT_LIMIT,
+            ge=1,
+            le=STATUS_EVENTS_MAX_LIMIT,
+            description="Max events to return.",
+        ),
+        after_sequence: int = Query(
+            -1,
+            ge=-1,
+            description="Return events with sequence > after_sequence.",
         ),
     ) -> dict[str, Any]:
         session_key = _resolve_session_key(token, status_state)
@@ -221,22 +363,16 @@ def router(state: StatusState | None = None) -> APIRouter:
         if journal is None:
             raise _disabled_503()
 
-        turns = await journal.list_session_turns(session_key, limit=limit)
         return {
             "session_key": session_key,
-            "status": _overall_status(turns),
-            "started_at_ms": (
-                min(
-                    t["started_at_ms"]
-                    for t in turns
-                    if isinstance(t.get("started_at_ms"), int)
-                )
-                if any(isinstance(t.get("started_at_ms"), int) for t in turns)
-                else None
+            "events": await _session_events(
+                journal=journal,
+                session_key=session_key,
+                turn_limit=turn_limit,
+                event_limit=limit,
+                after_sequence=after_sequence,
             ),
-            "last_activity_at_ms": _latest_activity(turns),
-            "turns": turns,
-            "current_step": await _current_step(journal, turns),
+            "next_cursor": None,
         }
 
     return r

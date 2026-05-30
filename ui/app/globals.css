@@ -5,6 +5,8 @@
 /* Linear-style redesign. Neutral base + indigo accent. Dark-first. */
 @layer base {
   :root {
+    --font-instrument-serif: Georgia, "Times New Roman", serif;
+
     /* ──────────────────────────────────────────────────────────────
      * Bas-relief Ivory — light/"day" mode (Wise-style).
      * Surface: warm cream relief (see /bg/relief-ivory.jpg). Type +

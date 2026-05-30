@@ -38,6 +38,7 @@ import { fileURLToPath } from 'node:url';
 const REQUIRED_ROUTES = [
   'index.html',
   'login.html',
+  'status/__token__.html',
   'chat.html',
   'channels/qq.html',
   'channels/telegram.html',
