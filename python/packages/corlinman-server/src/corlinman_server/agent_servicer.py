@@ -149,11 +149,16 @@ from corlinman_agent.reasoning_loop import (
 )
 from corlinman_agent.skills import SkillRegistry
 from corlinman_agent.subagent import (
+    SUBAGENT_SPAWN_INLINE_TOOL,
     SUBAGENT_SPAWN_MANY_TOOL,
     SUBAGENT_SPAWN_TOOL,
     ParentContext,
     dispatch_subagent_spawn,
+    dispatch_subagent_spawn_inline,
     dispatch_subagent_spawn_many,
+    subagent_spawn_inline_tool_schema,
+    subagent_spawn_many_tool_schema,
+    subagent_spawn_tool_schema,
 )
 from corlinman_agent.subagent.blackboard import (
     BLACKBOARD_READ_TOOL,
@@ -207,6 +212,14 @@ logger = structlog.get_logger(__name__)
 SEND_ATTACHMENT_TOOL = "send_attachment"
 
 
+#: Mints a shareable, token-gated link to THIS conversation's live status +
+#: work-trajectory page. The agent calls it then includes the returned URL in
+#: its reply (channels ship URLs verbatim) so the user can click through to a
+#: read-only status card. Server-side dispatch (needs the public base URL +
+#: signing key + the turn's session_key).
+AGENT_STATUS_CARD_TOOL = "agent_status_card"
+
+
 #: Tool names dispatched in-process by the servicer rather than routed
 #: through the Rust plugin registry. These cover the v0.7 multi-agent
 #: surface (subagent fan-out + shared blackboard) plus the v0.8 web
@@ -217,6 +230,7 @@ BUILTIN_TOOLS: frozenset[str] = frozenset(
     {
         SUBAGENT_SPAWN_TOOL,
         SUBAGENT_SPAWN_MANY_TOOL,
+        SUBAGENT_SPAWN_INLINE_TOOL,
         BLACKBOARD_READ_TOOL,
         BLACKBOARD_WRITE_TOOL,
         WEB_FETCH_TOOL,
@@ -227,6 +241,7 @@ BUILTIN_TOOLS: frozenset[str] = frozenset(
         IMAGE_WITH_REFS_TOOL,
         IMAGE_GENERATE_TOOL,
         QZONE_PUBLISH_TOOL,
+        AGENT_STATUS_CARD_TOOL,
     }
 ) | CODING_TOOLS | PERSONA_TOOLS | PERSONA_LIFE_TOOLS | QZONE_COMMENT_TOOLS
 
@@ -282,6 +297,39 @@ def _send_attachment_tool_schema() -> dict[str, Any]:
         },
     }
 
+def _agent_status_card_tool_schema() -> dict[str, Any]:
+    """OpenAI descriptor for the ``agent_status_card`` builtin."""
+    return {
+        "type": "function",
+        "function": {
+            "name": AGENT_STATUS_CARD_TOOL,
+            "description": (
+                "Mint a shareable link to a live status page for THIS "
+                "conversation — it shows your current status and work "
+                "trajectory (reasoning, tool calls, sub-agents). Call this "
+                "when the user asks to see what you're doing / your status / "
+                "progress, then include the returned `url` in your reply so "
+                "they can click it. The link is read-only and expires."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ttl_seconds": {
+                        "type": "integer",
+                        "description": (
+                            "Optional link lifetime in seconds (default 24h). "
+                            "Clamped to a sane range."
+                        ),
+                        "minimum": 60,
+                    },
+                },
+                "required": [],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
 #: Builtin tools advertised to the model on every chat turn so it can
 #: actually *call* them. ``BUILTIN_TOOLS`` (above) is the dispatch gate;
 #: this is the *discovery* surface. Kept to the keyless, low-risk tools
@@ -306,9 +354,17 @@ def _builtin_tool_schemas() -> list[dict[str, Any]]:
         image_with_refs_tool_schema(),
         image_generate_tool_schema(),
         qzone_publish_tool_schema(),
+        _agent_status_card_tool_schema(),
         *qzone_comment_tool_schemas(),
         *persona_tool_schemas(),
         *persona_life_tool_schemas(),
+        # Multi-agent surface: the main agent can call an existing
+        # registered agent (subagent.spawn / spawn_many) OR spin up a
+        # temporary purpose-built one (subagent.spawn_inline). Advertised
+        # so the model actually sees them; the supervisor caps every spawn.
+        subagent_spawn_tool_schema(),
+        subagent_spawn_many_tool_schema(),
+        subagent_spawn_inline_tool_schema(),
         *coding_tool_schemas(),
     ]
 
@@ -777,6 +833,13 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # the servicer's import surface.
         self._persona_state_store: Any | None = None
         self._persona_state_store_init_done: bool = False
+        # Shared in-process subagent supervisor (cap accountant for
+        # subagent.spawn / spawn_many / spawn_inline). Lazy-constructed on
+        # first spawn so deployments that never fan out don't pay for it;
+        # one instance across the servicer keeps per-parent / per-tenant
+        # concurrency counts consistent. ``Any`` typing keeps the
+        # corlinman_subagent import lazy.
+        self._subagent_supervisor: Any | None = None
         # v0.7.1 warm pool. Operators can call ``prewarm_providers`` at
         # boot to resolve known aliases before the first user request;
         # the SDK auth handshake then happens off the hot path. The
@@ -1924,12 +1987,16 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 _parent_turn_id = (
                     _parent_loop.turn_id if _parent_loop is not None else None
                 )
+                _sup, _acquire = self._get_subagent_caps()
                 return await dispatch_subagent_spawn(
                     args_json=event.args_json,
                     parent_ctx=parent_ctx,
                     agent_registry=registry,
                     provider=provider,
                     parent_tools=list(start.tools or []),
+                    supervisor_acquire=_acquire,
+                    max_depth=_sup.policy.max_depth,
+                    max_wall_seconds_ceiling=_sup.policy.max_wall_seconds_ceiling,
                     event_emitter=self._event_emitter,
                     parent_turn_id=_parent_turn_id,
                     parent_session_key=start.session_key or None,
@@ -1944,12 +2011,38 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 _parent_turn_id = (
                     _parent_loop.turn_id if _parent_loop is not None else None
                 )
+                _sup, _acquire = self._get_subagent_caps()
                 return await dispatch_subagent_spawn_many(
                     args_json=event.args_json,
                     parent_ctx=parent_ctx,
                     agent_registry=registry,
                     provider=provider,
                     parent_tools=list(start.tools or []),
+                    supervisor_acquire=_acquire,
+                    max_depth=_sup.policy.max_depth,
+                    max_wall_seconds_ceiling=_sup.policy.max_wall_seconds_ceiling,
+                    event_emitter=self._event_emitter,
+                    parent_turn_id=_parent_turn_id,
+                    parent_session_key=start.session_key or None,
+                )
+            if event.tool == SUBAGENT_SPAWN_INLINE_TOOL:
+                # Ad-hoc / temporary purpose-built child (Claude-Code's
+                # general-purpose-with-overrides). No registry needed — the
+                # dispatcher builds an ephemeral card from the inline
+                # system_prompt. Same supervisor caps as the named path.
+                _parent_loop = self._active_loops.get(start.session_key or "")
+                _parent_turn_id = (
+                    _parent_loop.turn_id if _parent_loop is not None else None
+                )
+                _sup, _acquire = self._get_subagent_caps()
+                return await dispatch_subagent_spawn_inline(
+                    args_json=event.args_json,
+                    parent_ctx=parent_ctx,
+                    provider=provider,
+                    parent_tools=list(start.tools or []),
+                    supervisor_acquire=_acquire,
+                    max_depth=_sup.policy.max_depth,
+                    max_wall_seconds_ceiling=_sup.policy.max_wall_seconds_ceiling,
                     event_emitter=self._event_emitter,
                     parent_turn_id=_parent_turn_id,
                     parent_session_key=start.session_key or None,
@@ -2006,6 +2099,13 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 # finalise the reply with the question text and not
                 # call any more tools this turn.
                 return dispatch_ask_user(args_json=event.args_json)
+            if event.tool == AGENT_STATUS_CARD_TOOL:
+                # Mint a token-gated link to this conversation's live status
+                # page. Pure (sign a token from the turn's session_key + the
+                # public base URL) — no I/O, so no await.
+                return self._dispatch_agent_status_card(
+                    event.args_json, start.session_key or ""
+                )
             if event.tool in PERSONA_TOOLS:
                 persona_store = await self._get_persona_store()
                 persona_asset_store = await self._get_persona_asset_store()
@@ -2315,6 +2415,105 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             )
             self._persona_store = None
         return self._persona_store
+
+    def _dispatch_agent_status_card(
+        self, args_json: bytes | str, session_key: str
+    ) -> str:
+        """Mint a shareable status-card URL for ``session_key``.
+
+        Returns ``{"ok": true, "url": ...}`` or a typed error envelope when
+        the deployment hasn't set ``CORLINMAN_PUBLIC_URL`` (no way to build
+        an absolute link) or the turn has no session to scope.
+        """
+        from corlinman_server.gateway.status_token import (  # noqa: PLC0415
+            DEFAULT_TTL_SECONDS,
+            make_status_token,
+            resolve_signing_key,
+        )
+
+        public_url = os.environ.get("CORLINMAN_PUBLIC_URL", "").strip().rstrip("/")
+        if not public_url:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": "public_url_unset",
+                    "message": (
+                        "shareable status links need the operator to set "
+                        "CORLINMAN_PUBLIC_URL (the gateway's public base URL)."
+                    ),
+                },
+                ensure_ascii=False,
+            )
+        if not session_key:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": "no_session",
+                    "message": "this turn has no session_key to scope a status link.",
+                },
+                ensure_ascii=False,
+            )
+
+        ttl = DEFAULT_TTL_SECONDS
+        try:
+            decoded = (
+                args_json.decode("utf-8")
+                if isinstance(args_json, (bytes, bytearray))
+                else (args_json or "")
+            )
+            obj = json.loads(decoded or "{}")
+            if isinstance(obj, dict) and isinstance(obj.get("ttl_seconds"), int):
+                # Clamp to [60s, 7d].
+                ttl = max(60, min(int(obj["ttl_seconds"]), 7 * 24 * 60 * 60))
+        except (ValueError, UnicodeDecodeError):
+            pass
+
+        key = resolve_signing_key(_resolve_data_dir())
+        token = make_status_token(session_key, key, ttl_seconds=ttl)
+        return json.dumps(
+            {
+                "ok": True,
+                "url": f"{public_url}/status/{token}",
+                "expires_in_seconds": ttl,
+                "note": (
+                    "把这个链接发给用户; 点开就能看到你的实时状态和工作轨迹 (只读, 会过期)."
+                ),
+            },
+            ensure_ascii=False,
+        )
+
+    def _get_subagent_caps(self) -> tuple[Any, Callable[[Any], Any]]:
+        """Return ``(supervisor, acquire)`` for the subagent spawn tools.
+
+        Lazy-constructs the shared in-process :class:`Supervisor` (default
+        policy: 3 per-parent, 15 per-tenant, depth 2) and an ``acquire``
+        adapter that turns the supervisor's raise-on-reject ``try_acquire``
+        into the dispatcher's "return a Slot context-manager, or a reject-
+        reason string" contract. Threaded into every spawn / spawn_many /
+        spawn_inline dispatch so depth + concurrency + tenant caps are
+        actually enforced at this entry point (previously omitted).
+        """
+        sup = self._subagent_supervisor
+        if sup is None:
+            from corlinman_subagent.supervisor import (  # noqa: PLC0415
+                Supervisor,
+                SupervisorPolicy,
+            )
+
+            sup = Supervisor(SupervisorPolicy())
+            self._subagent_supervisor = sup
+
+        from corlinman_subagent.errors import AcquireRejectError  # noqa: PLC0415
+
+        def _acquire(parent_ctx: Any) -> Any:
+            try:
+                return sup.try_acquire(parent_ctx)
+            except AcquireRejectError as exc:
+                # ``"depth_capped"`` → DEPTH_CAPPED; the per-parent /
+                # per-tenant rejections map to REJECTED in the dispatcher.
+                return exc.reason.value
+
+        return sup, _acquire
 
     async def _get_persona_state_store(self) -> Any | None:
         """Lazy-open the runtime persona-STATE store (corlinman-persona)

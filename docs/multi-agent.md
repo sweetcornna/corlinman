@@ -166,6 +166,50 @@ Semantics:
 
 ---
 
+## `subagent.spawn_inline` tool — temporary / ad-hoc agents
+
+Where `subagent.spawn` runs a **pre-registered** card by name, `subagent.spawn_inline`
+lets the main agent **create a one-off, purpose-built agent on the fly** when no
+registered agent fits — Claude Code's "general-purpose with overrides" pattern. The
+agent is built from an inline `system_prompt`, run once, and **never written to the
+registry** (it's an ephemeral `AgentCard` with `source="inline"`, `source_path=None`).
+
+```python
+{
+  "name": "subagent.spawn_inline",
+  "parameters": {
+    "goal": str,                  # required — the child's only user-turn
+    "system_prompt": str,         # required — the temporary agent's instructions/persona
+    "name": str?,                 # optional slug (a-z0-9-) for the activity panel; default "inline"
+    "description": str?,          # 3-5 word task label for UI
+    "tool_allowlist": list[str]?, # subset of the PARENT's tools (omit = inherit all, [] = pure LLM)
+    "model": str?,                # optional model override
+    "max_wall_seconds": int?,     # capped by the supervisor ceiling
+    "max_tool_calls": int?,
+    "extra_context": str?,
+  }
+}
+```
+
+Semantics — **identical** to `subagent.spawn` downstream of card construction (same
+runner, same supervisor caps, same isolated fresh context, same `{tasks…}` / TaskResult
+envelope). The only differences:
+
+- **No registry lookup** — the card is built in memory from `system_prompt`.
+- **Containment** — the ephemeral card carries `tools_allowed: ["*"]`, so the child
+  inherits the parent's tool set, still bounded by `tool_allowlist` ∩ parent's tools
+  (escalation rejected). An inline agent can never exceed the parent's authority.
+- **Ephemeral** — not persisted; it exists only for that one call.
+- **Background not yet supported** — `run_in_background` rejects with
+  `run_in_background_not_implemented` (deferred to a later wave).
+
+Together, `subagent.spawn` (call an existing agent) + `subagent.spawn_inline` (create a
+temporary one) give the main agent both dispatch modes. All spawn tools are now
+advertised to the model and share one supervisor (depth/concurrency/tenant caps enforced
+at the servicer entry point).
+
+---
+
 ## Background dispatch
 
 > **Status (as of v1.9.x): NOT YET IMPLEMENTED.** Setting

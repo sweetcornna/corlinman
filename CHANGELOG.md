@@ -4,6 +4,38 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.12.0] — 2026-05-30 — Dynamic subagents + status-card foundation
+
+> Brings Claude Code's dual-mode subagent dispatch to corlinman — the main
+> agent can now call an existing registered agent **and** spin up a temporary,
+> purpose-built one on the fly — and lays the (signed-token) foundation for a
+> shareable "agent status card" link. Researched from Claude Code's own source.
+
+### Added
+- **`subagent.spawn_inline`** — a temporary / ad-hoc child agent built from an
+  inline `system_prompt`, run once, **never registered** (ephemeral `AgentCard`,
+  `source="inline"`). Reuses the existing runner / supervisor / blackboard via a
+  shared `_run_child_under_slot` helper. `tools_allowed=["*"]` inherits the
+  parent's tools, bounded by `tool_allowlist` ∩ parent (escalation rejected).
+  See `docs/PLAN_DYNAMIC_SUBAGENTS.md`.
+- **Existing-agent call surfaced** — `subagent.spawn` / `subagent.spawn_many`
+  are now **advertised** to the main agent (they were dispatch-only, so the
+  model never saw them). No logic change.
+- **Agent status-card foundation** — a stateless, signed, expiring share token
+  (`gateway/status_token.py`) scoping read-only access to one conversation, plus
+  the `agent_status_card` builtin tool that mints a
+  `<CORLINMAN_PUBLIC_URL>/status/<token>` link for the current session. The
+  public route + UI page are tracked follow-ups (see
+  `docs/PLAN_AGENT_STATUS_CARD.md`); the tool returns a clear `public_url_unset`
+  envelope until an operator opts in.
+
+### Fixed
+- **Subagent supervisor caps were not enforced at the servicer.** The spawn
+  dispatch calls omitted `supervisor_acquire` / `max_depth` /
+  `max_wall_seconds_ceiling`, so depth + per-parent + per-tenant concurrency
+  caps were effectively off at that entry point. All three spawn tools now share
+  one in-process `Supervisor` (default depth 2, 3-per-parent, 15-per-tenant).
+
 ## [1.11.0] — 2026-05-30 — Persona life system + QZone comments
 
 > Ports the "Grantley (格兰)" tooling from hermes-agent into corlinman and wires

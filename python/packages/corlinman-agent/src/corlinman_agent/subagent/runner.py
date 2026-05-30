@@ -82,6 +82,15 @@ SUBAGENT_SPAWN_TOOL: str = "subagent.spawn"
 #: depth-1 rule that prunes ``subagent.spawn``.
 SUBAGENT_SPAWN_MANY_TOOL: str = "subagent.spawn_many"
 
+#: Ad-hoc / temporary sibling of ``subagent.spawn`` (Claude-Code's
+#: "general-purpose with overrides" pattern). Where ``subagent.spawn``
+#: resolves a *registered* card by name, this spawns a one-off child from
+#: an INLINE ``system_prompt`` — an ephemeral :class:`AgentCard` built in
+#: memory and never written to the registry. Pruned from the child's
+#: allowlist by the same depth-1 rule so a deep child can't inline-spawn a
+#: grandchild the supervisor would reject anyway.
+SUBAGENT_SPAWN_INLINE_TOOL: str = "subagent.spawn_inline"
+
 #: Sentinel error string surfaced on a privilege-escalation rejection.
 #: Pinned in :attr:`TaskResult.error` so the LLM (and forensic queries)
 #: can branch on the exact reason the child was refused.
@@ -566,6 +575,7 @@ def _filter_tools_for_child(
     if child_depth >= max_depth - 1:
         effective.discard(SUBAGENT_SPAWN_TOOL)
         effective.discard(SUBAGENT_SPAWN_MANY_TOOL)
+        effective.discard(SUBAGENT_SPAWN_INLINE_TOOL)
 
     return frozenset(effective)
 
@@ -751,6 +761,7 @@ def _now_ms() -> int:
 # iter 4. iter 6 will reach for it when overlaying timeout outcomes
 # onto a partial TaskResult.
 __all__ = [
+    "SUBAGENT_SPAWN_INLINE_TOOL",
     "SUBAGENT_SPAWN_MANY_TOOL",
     "SUBAGENT_SPAWN_TOOL",
     "TOOL_ALLOWLIST_ESCALATION_ERROR",

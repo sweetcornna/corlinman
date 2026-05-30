@@ -48,6 +48,7 @@ from corlinman_agent.subagent.api import (
     ToolCallSummary,
 )
 from corlinman_agent.subagent.runner import (
+    SUBAGENT_SPAWN_INLINE_TOOL,
     SUBAGENT_SPAWN_MANY_TOOL,
     SUBAGENT_SPAWN_TOOL,
     TOOL_ALLOWLIST_ESCALATION_ERROR,
@@ -60,7 +61,9 @@ from corlinman_agent.subagent.tool_wrapper import (
     SUBAGENT_SPAWN_MANY_MAX_TASKS,
     UNKNOWN_SUBAGENT_TYPE_ERROR,
     dispatch_subagent_spawn,
+    dispatch_subagent_spawn_inline,
     dispatch_subagent_spawn_many,
+    subagent_spawn_inline_tool_schema,
     subagent_spawn_many_tool_schema,
     subagent_spawn_tool_schema,
 )
@@ -72,6 +75,7 @@ __all__ = [
     "DEFAULT_MAX_DEPTH",
     "DEFAULT_MAX_TOOL_CALLS",
     "DEFAULT_MAX_WALL_SECONDS",
+    "SUBAGENT_SPAWN_INLINE_TOOL",
     "SUBAGENT_SPAWN_MANY_MAX_TASKS",
     "SUBAGENT_SPAWN_MANY_TOOL",
     "SUBAGENT_SPAWN_TOOL",
@@ -83,8 +87,10 @@ __all__ = [
     "TaskSpec",
     "ToolCallSummary",
     "dispatch_subagent_spawn",
+    "dispatch_subagent_spawn_inline",
     "dispatch_subagent_spawn_many",
     "run_child",
+    "subagent_spawn_inline_tool_schema",
     "subagent_spawn_many_tool_schema",
     "subagent_spawn_tool_schema",
 ]

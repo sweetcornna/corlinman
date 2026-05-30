@@ -16,11 +16,16 @@ local-variable substitution we do perform during expansion.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-AgentSource = Literal["built-in", "user", "project"]
+#: ``"inline"`` is the tier for ad-hoc / temporary cards built in memory by
+#: ``subagent.spawn_inline`` — they are never loaded from disk and never
+#: enter the registry, so the admin CRUD surface (which keys delete/mutate
+#: refusals on ``"built-in"``) never sees them.
+AgentSource = Literal["built-in", "user", "project", "inline"]
 
 
 @dataclass(frozen=True)
@@ -91,4 +96,56 @@ class AgentCard:
     source: AgentSource = "built-in"
 
 
-__all__ = ["AgentCard", "AgentSource"]
+_SLUG_STRIP_RE = re.compile(r"[^a-z0-9-]+")
+
+
+def _safe_slug(name: str | None, *, fallback: str = "inline") -> str:
+    """Reduce a freeform ``name`` to a safe agent slug.
+
+    Claude-Code-style: lowercase, keep only ``[a-z0-9-]``, collapse runs of
+    separators to a single ``-``, trim leading/trailing ``-``, cap at 50
+    chars. Falls back to ``fallback`` when the cleaned result is shorter
+    than 3 chars (so an ephemeral agent always has a stable, file-safe
+    label even if the model passes junk or omits ``name``).
+    """
+    raw = (name or "").strip().lower()
+    cleaned = _SLUG_STRIP_RE.sub("-", raw).strip("-")
+    cleaned = re.sub(r"-{2,}", "-", cleaned)[:50].rstrip("-")
+    return cleaned if len(cleaned) >= 3 else fallback
+
+
+def build_ephemeral_card(
+    *,
+    name: str | None,
+    system_prompt: str,
+    description: str | None = None,
+    model: str | None = None,
+) -> AgentCard:
+    """Build a one-off, in-memory :class:`AgentCard` for an ad-hoc child.
+
+    Backs ``subagent.spawn_inline`` — the temporary/purpose-built agent the
+    main agent creates on the fly (Claude-Code's ad-hoc general-purpose
+    pattern). The card is **never registered**: ``source_path=None`` and
+    ``source="inline"``.
+
+    ``tools_allowed=["*"]`` triggers the runner's wildcard rule ("inherit
+    the parent's full tool set"); the child is still bounded by the
+    parent's tools and the caller's ``tool_allowlist`` (escalation is
+    rejected), so an inline agent can never exceed the parent's authority.
+    """
+    return AgentCard(
+        name=_safe_slug(name),
+        description=(description or "").strip() or "ad-hoc inline agent",
+        system_prompt=system_prompt,
+        variables={},
+        tools_allowed=["*"],
+        skill_refs=[],
+        source_path=None,
+        model=model or None,
+        provider=None,
+        show_action_trace=True,
+        source="inline",
+    )
+
+
+__all__ = ["AgentCard", "AgentSource", "build_ephemeral_card"]

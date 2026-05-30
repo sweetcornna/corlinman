@@ -58,6 +58,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from corlinman_agent.agents.card import AgentCard, build_ephemeral_card
 from corlinman_agent.subagent.api import (
     DEFAULT_MAX_DEPTH,
     DEFAULT_MAX_TOOL_CALLS,
@@ -68,6 +69,7 @@ from corlinman_agent.subagent.api import (
     TaskSpec,
 )
 from corlinman_agent.subagent.runner import (
+    SUBAGENT_SPAWN_INLINE_TOOL,
     SUBAGENT_SPAWN_MANY_TOOL,
     SUBAGENT_SPAWN_TOOL,
     run_child,
@@ -439,13 +441,65 @@ async def dispatch_subagent_spawn(
                 error=error,
             )
         )
-    # The resolved card's name is what threads into the child's
-    # ``parent_agent_id`` mangling (``::<card>::<seq>``) so a fallback
-    # to ``general-purpose`` is observable in the child's id rather
-    # than masked behind whatever the LLM typed.
+    # Hand off to the shared post-resolution driver (clamp → acquire slot
+    # → emit → run_child → emit → envelope). ``subagent.spawn_inline``
+    # reuses the SAME driver — its only divergence from this path is that
+    # ``card`` is an ephemeral in-memory card instead of a registry lookup.
+    return await _run_child_under_slot(
+        card=card,
+        spec=spec,
+        parent_ctx=parent_ctx,
+        provider=provider,
+        parent_tools=parent_tools,
+        persona_store=persona_store,
+        supervisor_acquire=supervisor_acquire,
+        child_seq=child_seq,
+        max_depth=max_depth,
+        max_wall_seconds_ceiling=max_wall_seconds_ceiling,
+        # W1.1: caller's ``model`` arg (when present) wins over the
+        # card's binding; ``None`` lets the runner fall back to
+        # ``agent_card.model``.
+        model_override=parsed.model,
+        event_emitter=event_emitter,
+        parent_turn_id=parent_turn_id,
+        parent_session_key=parent_session_key,
+    )
+
+
+async def _run_child_under_slot(
+    *,
+    card: AgentCard,
+    spec: TaskSpec,
+    parent_ctx: ParentContext,
+    provider: Any,
+    parent_tools: Sequence[dict[str, Any]] | None,
+    persona_store: PersonaStore | None,
+    supervisor_acquire: SupervisorAcquire | None,
+    child_seq: int,
+    max_depth: int,
+    max_wall_seconds_ceiling: int | None,
+    model_override: str | None,
+    event_emitter: Any | None,
+    parent_turn_id: str | None,
+    parent_session_key: str | None,
+) -> str:
+    """Shared post-resolution driver for ``subagent.spawn`` /
+    ``subagent.spawn_inline``.
+
+    Both the named-card path and the inline-card path resolve an
+    :class:`AgentCard` (registry lookup vs ephemeral construction) and
+    then funnel through here: clamp budgets to the policy ceiling, acquire
+    a supervisor slot (or run unguarded in test mode), emit the
+    ``SubagentSpawned`` / ``SubagentCompleted`` envelopes, drive
+    :func:`run_child` under the slot, and fold every outcome into the JSON
+    :class:`TaskResult` envelope. Never raises.
+    """
+    # The card's name threads into the child's ``parent_agent_id``
+    # mangling (``::<card>::<seq>``) so a fallback / ephemeral label is
+    # observable in the child's id.
     agent_name = card.name
 
-    # ── 3. Clamp request-side budgets to policy ceiling. ─────────────
+    # ── Clamp request-side budgets to the policy ceiling. ────────────
     if (
         max_wall_seconds_ceiling is not None
         and spec.max_wall_seconds > max_wall_seconds_ceiling
@@ -455,15 +509,15 @@ async def dispatch_subagent_spawn(
 
         spec = _dc_replace(spec, max_wall_seconds=max_wall_seconds_ceiling)
 
-    # ── 4. Acquire a supervisor slot (real or stubbed). ──────────────
+    # ── Acquire a supervisor slot (real or stubbed). ─────────────────
     slot_cm: Any
     if supervisor_acquire is None:
         slot_cm = nullcontext()
     else:
         outcome = supervisor_acquire(parent_ctx)
         if isinstance(outcome, str):
-            # Rejection — map the string to a finish reason. The Rust
-            # bridge serialises ``AcquireReject::DepthCapped`` as
+            # Rejection — map the string to a finish reason. The
+            # supervisor serialises ``AcquireReject::DepthCapped`` as
             # ``"depth_capped"``; anything else is a per-parent /
             # tenant cap rejection.
             reason = (
@@ -480,14 +534,7 @@ async def dispatch_subagent_spawn(
             )
         slot_cm = outcome  # context-manager-shaped slot drop-guard
 
-    # ── 5. Drive the child runner under the slot. ────────────────────
-    #
-    # W3.2 — when the caller wired an ``event_emitter`` + the parent's
-    # ``turn_id`` / ``session_key`` correlation pair, emit a
-    # ``SubagentSpawned`` envelope on the parent's stream the moment
-    # the slot was acquired (just above) and a matching
-    # ``SubagentCompleted`` once the child returns. The frontend reads
-    # both to nest the child's timeline under the spawning tool call.
+    # ── Drive the child runner under the slot. ───────────────────────
     child_ctx_preview = parent_ctx.child_context(agent_name, child_seq)
     await _emit_subagent_spawned(
         emitter=event_emitter,
@@ -498,10 +545,6 @@ async def dispatch_subagent_spawn(
         prompt_preview=spec.goal,
     )
 
-    # Wrap the parent's emitter so the child's reasoning loop bubbles
-    # every envelope up under the parent's turn_id / session_key as
-    # ``SubagentEvent``. ``None`` when no observability is wired —
-    # ``run_child`` falls back to the legacy no-emitter path.
     _child_emitter = _make_bubble_emitter(
         parent=event_emitter,
         parent_turn_id=parent_turn_id,
@@ -521,11 +564,7 @@ async def dispatch_subagent_spawn(
                 parent_tools=parent_tools,
                 max_depth=max_depth,
                 event_emitter=_child_emitter,
-                # W1.1: caller's ``model`` arg (when present) wins over
-                # the card's binding; ``None`` lets the runner fall
-                # back to ``agent_card.model`` and then to the legacy
-                # gateway-substituted empty placeholder.
-                model_override=parsed.model,
+                model_override=model_override,
             )
     except Exception as exc:
         logger.exception(
@@ -704,6 +743,32 @@ class _ParsedSpawnArgs:
     #: the W1.1 ``unknown_subagent_type`` error so callers built
     #: against either schema get the error sentinel they branch on.
     used_legacy_agent_field: bool
+
+
+def _decode_args_dict(args_json: bytes | str) -> dict[str, Any]:
+    """Decode ``args_json`` to a JSON object dict.
+
+    Raises :class:`_ArgsInvalidError` on non-utf8 / non-JSON / non-object
+    payloads. Shared by :func:`_parse_inline_args` so it can read fields
+    (``system_prompt`` / ``name``) that :func:`_parse_args` doesn't surface
+    without duplicating the decode-and-validate ladder.
+    """
+    if isinstance(args_json, (bytes, bytearray)):
+        try:
+            decoded = args_json.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise _ArgsInvalidError(f"args_json not utf-8: {exc}") from exc
+    else:
+        decoded = args_json
+    try:
+        raw = json.loads(decoded) if decoded else {}
+    except json.JSONDecodeError as exc:
+        raise _ArgsInvalidError(f"args_json not JSON: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise _ArgsInvalidError(
+            f"args_json must be a JSON object, got {type(raw).__name__}"
+        )
+    return raw
 
 
 def _parse_args(args_json: bytes | str) -> _ParsedSpawnArgs:
@@ -1293,6 +1358,237 @@ def _parse_spawn_many_args(
     return out
 
 
+# ---------------------------------------------------------------------------
+# subagent.spawn_inline — ad-hoc / temporary purpose-built agent
+# ---------------------------------------------------------------------------
+
+
+def subagent_spawn_inline_tool_schema(
+    *,
+    default_max_wall_seconds: int = DEFAULT_MAX_WALL_SECONDS,
+    default_max_tool_calls: int = DEFAULT_MAX_TOOL_CALLS,
+) -> dict[str, Any]:
+    """OpenAI-shaped descriptor for ``subagent.spawn_inline``.
+
+    The ad-hoc counterpart to :func:`subagent_spawn_tool_schema`: instead of
+    naming a pre-registered card, the parent supplies an inline
+    ``system_prompt`` and the dispatcher spins up a one-off, ephemeral
+    child (never written to the registry). Mirrors Claude Code's
+    general-purpose-with-overrides agent.
+    """
+    return {
+        "type": "function",
+        "function": {
+            "name": SUBAGENT_SPAWN_INLINE_TOOL,
+            "description": (
+                "Create a TEMPORARY, purpose-built child agent on the fly "
+                "and block until it returns. Unlike subagent.spawn (which "
+                "runs a pre-registered agent card by name), this builds a "
+                "one-off agent from the system_prompt you write here — use "
+                "it when no existing agent fits the subtask. The child runs "
+                "in a fresh, isolated context (it cannot see this chat) and "
+                "is bounded by your tools — pass a narrow tool_allowlist to "
+                "constrain it. The agent is ephemeral: it is NOT saved to "
+                "the registry."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "goal": {
+                        "type": "string",
+                        "description": (
+                            "The task / user-turn the temporary agent "
+                            "receives as its only message. Self-contained "
+                            "— the child cannot see this conversation."
+                        ),
+                    },
+                    "system_prompt": {
+                        "type": "string",
+                        "description": (
+                            "The temporary agent's instructions / persona "
+                            "— who it is and how to do the job. This is "
+                            "what makes it purpose-built."
+                        ),
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": (
+                            "Optional short label (a-z0-9-), shown in the "
+                            "activity panel. Default 'inline'."
+                        ),
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Optional 3-5 word task label for the UI.",
+                    },
+                    "tool_allowlist": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Optional subset of YOUR tools the child may "
+                            "call. Omit to inherit your full set; pass [] "
+                            "for a pure-LLM child. Asking for a tool you "
+                            "don't hold rejects the spawn."
+                        ),
+                    },
+                    "model": {
+                        "type": "string",
+                        "description": "Optional model alias override for the child.",
+                    },
+                    "max_wall_seconds": {
+                        "type": "integer",
+                        "description": (
+                            f"Hard wall-clock budget. Default "
+                            f"{default_max_wall_seconds}s; capped by the "
+                            f"supervisor ceiling."
+                        ),
+                        "minimum": 1,
+                    },
+                    "max_tool_calls": {
+                        "type": "integer",
+                        "description": (
+                            f"Cap on the child's reasoning rounds. Default "
+                            f"{default_max_tool_calls}."
+                        ),
+                        "minimum": 1,
+                    },
+                    "extra_context": {
+                        "type": "object",
+                        "additionalProperties": {"type": "string"},
+                        "description": (
+                            "Optional {ctx.<key>: <text>} blobs spliced "
+                            "into the child's system prompt."
+                        ),
+                    },
+                },
+                "required": ["goal", "system_prompt"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+@dataclass(slots=True, frozen=True)
+class _ParsedInlineSpawnArgs:
+    """Parsed args for ``subagent.spawn_inline`` — the shared spawn fields
+    (via :func:`_parse_args`) plus the inline-only ``system_prompt`` +
+    ``name``."""
+
+    spec: TaskSpec
+    system_prompt: str
+    name: str | None
+    description: str | None
+    run_in_background: bool
+    model: str | None
+
+
+def _parse_inline_args(args_json: bytes | str) -> _ParsedInlineSpawnArgs:
+    """Validate the raw args for ``subagent.spawn_inline``.
+
+    Reuses :func:`_parse_args` for every shared field (``goal``,
+    ``tool_allowlist``, budgets, ``extra_context``, ``model``,
+    ``description``, ``run_in_background``) so validation stays in one
+    place, then layers on the inline-only ``system_prompt`` (required) and
+    ``name`` (optional). Any ``subagent_type`` / ``agent`` field is
+    ignored — an inline spawn never resolves a registry card.
+    """
+    base = _parse_args(args_json)
+    raw = _decode_args_dict(args_json)
+    system_prompt = raw.get("system_prompt")
+    if not isinstance(system_prompt, str) or not system_prompt.strip():
+        raise _ArgsInvalidError("missing or empty 'system_prompt' field")
+    name_raw = raw.get("name")
+    if name_raw is not None and not isinstance(name_raw, str):
+        raise _ArgsInvalidError("'name' must be a string when provided")
+    return _ParsedInlineSpawnArgs(
+        spec=base.spec,
+        system_prompt=system_prompt,
+        name=name_raw or None if isinstance(name_raw, str) else None,
+        description=base.description,
+        run_in_background=base.run_in_background,
+        model=base.model,
+    )
+
+
+async def dispatch_subagent_spawn_inline(
+    *,
+    args_json: bytes | str,
+    parent_ctx: ParentContext,
+    provider: Any,
+    parent_tools: Sequence[dict[str, Any]] | None = None,
+    supervisor_acquire: SupervisorAcquire | None = None,
+    child_seq: int = 0,
+    max_depth: int = DEFAULT_MAX_DEPTH,
+    max_wall_seconds_ceiling: int | None = None,
+    event_emitter: Any | None = None,
+    parent_turn_id: str | None = None,
+    parent_session_key: str | None = None,
+) -> str:
+    """Translate one ``subagent.spawn_inline`` tool call into a JSON
+    :class:`TaskResult` envelope.
+
+    Mirrors :func:`dispatch_subagent_spawn` but builds an EPHEMERAL
+    :class:`AgentCard` from the inline ``system_prompt`` instead of
+    resolving a registry card — no ``agent_registry`` is needed and the
+    card is never persisted. The card carries ``tools_allowed=["*"]`` so
+    the child inherits the parent's tools (bounded by ``parent_tools`` +
+    the caller's ``tool_allowlist``; escalation is rejected by the runner).
+    Never raises.
+    """
+    try:
+        parsed = _parse_inline_args(args_json)
+    except _ArgsInvalidError as exc:
+        logger.warning(
+            "subagent.dispatch_inline.args_invalid",
+            session=parent_ctx.parent_session_key,
+            error=exc.message,
+        )
+        return _result_json(
+            _rejected_result(
+                parent_ctx=parent_ctx,
+                reason=FinishReason.REJECTED,
+                error=f"{ARGS_INVALID_ERROR}: {exc.message}",
+            )
+        )
+
+    # Inline + background isn't wired yet (the ephemeral child would need
+    # the same async store path as a named background spawn). Reject
+    # cleanly so the model retries foreground.
+    if parsed.run_in_background:
+        return _result_json(
+            _rejected_result(
+                parent_ctx=parent_ctx,
+                reason=FinishReason.REJECTED,
+                error=BACKGROUND_NOT_IMPLEMENTED_ERROR,
+            )
+        )
+
+    # Build the ephemeral card in memory — never touches the registry.
+    card = build_ephemeral_card(
+        name=parsed.name,
+        system_prompt=parsed.system_prompt,
+        description=parsed.description,
+        model=parsed.model,
+    )
+
+    return await _run_child_under_slot(
+        card=card,
+        spec=parsed.spec,
+        parent_ctx=parent_ctx,
+        provider=provider,
+        parent_tools=parent_tools,
+        persona_store=None,  # ephemeral child seeds no persona row
+        supervisor_acquire=supervisor_acquire,
+        child_seq=child_seq,
+        max_depth=max_depth,
+        max_wall_seconds_ceiling=max_wall_seconds_ceiling,
+        model_override=None,  # card.model already carries parsed.model
+        event_emitter=event_emitter,
+        parent_turn_id=parent_turn_id,
+        parent_session_key=parent_session_key,
+    )
+
+
 __all__ = [
     "AGENT_NOT_FOUND_ERROR",
     "ARGS_INVALID_ERROR",
@@ -1301,7 +1597,9 @@ __all__ = [
     "UNKNOWN_SUBAGENT_TYPE_ERROR",
     "SupervisorAcquire",
     "dispatch_subagent_spawn",
+    "dispatch_subagent_spawn_inline",
     "dispatch_subagent_spawn_many",
+    "subagent_spawn_inline_tool_schema",
     "subagent_spawn_many_tool_schema",
     "subagent_spawn_tool_schema",
 ]
