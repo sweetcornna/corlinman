@@ -47,6 +47,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 _NESTED_SENTINEL = "<main data-test='nested-shell'>nested channel-style page</main>"
 _NOT_FOUND_SENTINEL = "<main data-test='not-found-shell'>not found page</main>"
+_STATUS_SHELL_SENTINEL = "<main data-test='status-shell'>agent status card shell</main>"
 
 
 def _make_export(root: Path) -> Path:
@@ -67,7 +68,59 @@ def _make_export(root: Path) -> Path:
     (ui_dir / "media" / "page.html").write_text(_NESTED_SENTINEL, encoding="utf-8")
     (ui_dir / "channels" / "qq.html").write_text(_NESTED_SENTINEL, encoding="utf-8")
     (ui_dir / "404.html").write_text(_NOT_FOUND_SENTINEL, encoding="utf-8")
+    # Dynamic-route shell: Next exports /status/[token] (with
+    # generateStaticParams -> [{token:"__shell__"}], dynamicParams=false)
+    # as a single ``status/__shell__.html`` placeholder. A real
+    # /status/<signed-token> request has no file of its own and must fall
+    # back to this shell (the agent status-card page).
+    (ui_dir / "status").mkdir(parents=True)
+    (ui_dir / "status" / "__shell__.html").write_text(
+        _STATUS_SHELL_SENTINEL, encoding="utf-8"
+    )
     return ui_dir
+
+
+def test_status_token_path_serves_dynamic_shell(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real ``/status/<token>`` URL — which has no exported file of its
+    own — resolves to the single ``status/__shell__.html`` placeholder, NOT
+    the 404 shell.
+
+    This is the public agent status-card link a chat user taps
+    (``{public_url}/status/{token}``). The client then reads the token from
+    ``window.location`` and fetches ``/status/{token}/data``. Without the
+    dynamic-segment fallback in ``_NextStaticFiles`` the link would 404.
+    """
+    ui_dir = _make_export(tmp_path)
+    monkeypatch.setenv("CORLINMAN_UI_DIR", str(ui_dir))
+
+    app = build_app(config_path=None, data_dir=tmp_path / "data")
+
+    with TestClient(app) as client:
+        resp = client.get("/status/eyJz2Vzc2lvbiI6ImFiYyJ9.signature-blob")
+
+    assert resp.status_code == 200, resp.text
+    assert _STATUS_SHELL_SENTINEL in resp.text
+    assert _NOT_FOUND_SENTINEL not in resp.text
+
+
+def test_status_shell_file_itself_still_resolves(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The shell's own extensionless route (``/status/__shell__``) resolves
+    directly via the ``.html`` rule — the dynamic fallback's ``path != shell``
+    guard must not interfere with serving the shell by its real name."""
+    ui_dir = _make_export(tmp_path)
+    monkeypatch.setenv("CORLINMAN_UI_DIR", str(ui_dir))
+
+    app = build_app(config_path=None, data_dir=tmp_path / "data")
+
+    with TestClient(app) as client:
+        resp = client.get("/status/__shell__")
+
+    assert resp.status_code == 200, resp.text
+    assert _STATUS_SHELL_SENTINEL in resp.text
 
 
 def test_nested_route_resolves_to_html(

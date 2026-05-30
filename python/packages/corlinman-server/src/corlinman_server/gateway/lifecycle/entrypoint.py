@@ -2576,7 +2576,39 @@ def build_app(
                 )
                 from starlette.types import Scope
 
+                # Next static-export dynamic routes (e.g. /status/[token])
+                # are exported as a SINGLE placeholder shell — for
+                # /status/[token] with generateStaticParams()->[{token:
+                # "__shell__"}] + dynamicParams=false, that's
+                # ``status/__shell__.html``. A real request like
+                # /status/<signed-token> has no file of its own, so we map
+                # any unmatched path under such a prefix onto its shell;
+                # the client then reads the token from window.location.
+                # (key = URL prefix, value = exported shell file.)
+                _DYNAMIC_SHELLS: dict[str, str] = {
+                    "status/": "status/__shell__.html",
+                }
+
                 class _NextStaticFiles(StaticFiles):
+                    async def _dynamic_shell(self, path: str, scope: Scope):
+                        """Serve the exported shell for a path under a known
+                        dynamic-route prefix (e.g. /status/<token> ->
+                        status/__shell__.html), else ``None``.
+
+                        ``path != shell`` keeps the shell file's own route
+                        (/status/__shell__) resolving normally.
+                        """
+                        for prefix, shell in _DYNAMIC_SHELLS.items():
+                            if path.startswith(prefix) and path != shell:
+                                try:
+                                    resp = await super().get_response(shell, scope)
+                                except StarletteHTTPException:
+                                    return None
+                                if resp.status_code != 404:
+                                    return resp
+                                return None
+                        return None
+
                     async def get_response(self, path: str, scope: Scope):
                         leaf = path.rsplit("/", 1)[-1]
                         if path and not path.endswith("/") and "." not in leaf:
@@ -2592,17 +2624,31 @@ def build_app(
                                 if response.status_code != 404:
                                     return response
 
+                        # With ``html=True`` StaticFiles RETURNS a 404.html
+                        # response (status 404) for a missing file rather than
+                        # raising — so we must inspect the status, not just
+                        # catch. Either way, before serving that 404 we try
+                        # the dynamic-segment shell (covers tokens with dots
+                        # in the path, which skip the .html branch above).
                         try:
-                            return await super().get_response(path, scope)
+                            response = await super().get_response(path, scope)
                         except StarletteHTTPException as exc:
                             if exc.status_code != 404:
                                 raise
+                            shell = await self._dynamic_shell(path, scope)
+                            if shell is not None:
+                                return shell
                             try:
                                 return await super().get_response("404.html", scope)
                             except StarletteHTTPException as fallback_exc:
                                 if fallback_exc.status_code == 404:
                                     raise exc from fallback_exc
                                 raise
+                        if response.status_code == 404:
+                            shell = await self._dynamic_shell(path, scope)
+                            if shell is not None:
+                                return shell
+                        return response
 
                 # Mount last so all explicit API routes (incl. /health,
                 # /admin/*, /v1/*, /onboard) win in route resolution.
