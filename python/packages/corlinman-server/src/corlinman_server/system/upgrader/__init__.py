@@ -64,6 +64,10 @@ def resolve_upgrader(
       copy-paste fallback.
     """
     if mode == "docker":
+        # DockerUpgrader derives all paths from the container; it does not
+        # accept ``data_dir`` (a native-only kwarg). Drop it so a caller can
+        # uniformly pass data_dir without breaking the docker path.
+        kwargs.pop("data_dir", None)
         return DockerUpgrader(store=store, **kwargs)
     if mode == "native":
         return NativeUpgrader(store=store, **kwargs)

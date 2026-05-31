@@ -2173,10 +2173,15 @@ def build_app(
                 upgrade_state_store = UpgradeStateStore(
                     resolved_data_dir / ".upgrade-state.json"
                 )
+                # NOTE: no upgrader __init__ accepts ``audit_log`` (the audit
+                # log is installed separately on app.state / admin_b_state
+                # above); passing it here raised a TypeError that silently
+                # disabled the native upgrader in prod. ``data_dir`` is routed
+                # to the native upgrader only (DockerUpgrader derives its paths
+                # from the container) inside resolve_upgrader.
                 upgrader = resolve_upgrader(
                     mode,
                     store=upgrade_state_store,
-                    audit_log=audit_log,
                     data_dir=resolved_data_dir,
                 )
                 if upgrader is not None:
