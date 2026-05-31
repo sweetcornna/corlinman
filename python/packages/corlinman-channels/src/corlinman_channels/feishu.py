@@ -57,6 +57,8 @@ import websockets
 from websockets.asyncio.client import ClientConnection
 
 from corlinman_channels.common import (
+    Attachment,
+    AttachmentKind,
     ChannelBinding,
     ConfigError,
     InboundEvent,
@@ -149,6 +151,70 @@ def extract_text(message: dict[str, Any]) -> str:
                         parts.append(str(run.get("text", "")))
         return " ".join(parts).strip()
     return ""
+
+
+def extract_attachments(message: dict[str, Any]) -> list[Attachment]:
+    """Extract :class:`Attachment` descriptors from a Feishu message.
+
+    Feishu references media by key inside the JSON-encoded ``content``:
+    ``image`` → ``image_key``; ``file`` / ``audio`` / ``media`` →
+    ``file_key``. The bytes are fetched with a follow-up
+    ``im/v1/messages/{message_id}/resources/{key}`` call (auth + the
+    message id), so at parse time we carry an opaque resolver token in
+    :attr:`Attachment.url` of the form
+    ``feishu-resource:<message_id>:<key>`` plus the source ``mime``-glob.
+    """
+    raw = message.get("content")
+    if not raw:
+        return []
+    try:
+        body = json.loads(raw) if isinstance(raw, str) else raw
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(body, dict):
+        return []
+    msg_type = message.get("message_type") or message.get("msg_type")
+    message_id = str(message.get("message_id", ""))
+
+    def _token(key: str) -> str:
+        return f"feishu-resource:{message_id}:{key}"
+
+    if msg_type == "image":
+        key = str(body.get("image_key", ""))
+        if key:
+            return [
+                Attachment(kind=AttachmentKind.IMAGE, url=_token(key), mime="image/*")
+            ]
+        return []
+    if msg_type in ("file", "audio", "media"):
+        key = str(body.get("file_key", ""))
+        if not key:
+            return []
+        kind = {
+            "audio": AttachmentKind.AUDIO,
+            "media": AttachmentKind.VIDEO,
+        }.get(msg_type, AttachmentKind.DOCUMENT)
+        return [
+            Attachment(
+                kind=kind,
+                url=_token(key),
+                file_name=body.get("file_name") or None,
+            )
+        ]
+    return []
+
+
+def sender_display_name(event_message: dict[str, Any], sender: dict[str, Any]) -> str | None:
+    """Best-effort author display name for group attribution.
+
+    Feishu's message event ``sender`` block rarely inlines a name; when a
+    ``sender_id`` or enriched ``name`` is present we surface it. Returns
+    ``None`` when only opaque open ids are available (the agent can still
+    resolve via the binding)."""
+    name = sender.get("name") or sender.get("sender_name")
+    if name:
+        return str(name)
+    return None
 
 
 def is_mentioning_bot(message: dict[str, Any], bot_open_id: str) -> bool:
@@ -332,7 +398,8 @@ class FeishuAdapter:
                     continue
 
             text = _strip_mention_keys(extract_text(message))
-            if not text.strip():
+            attachments = extract_attachments(message)
+            if not text.strip() and not attachments:
                 continue
 
             # Stash the sender open id so ``binding_from_event`` can read it.
@@ -345,8 +412,9 @@ class FeishuAdapter:
                 message_id=str(message.get("message_id", "")) or None,
                 timestamp=_parse_create_time(message.get("create_time")),
                 mentioned=mentioned or is_p2p,
-                attachments=[],  # multimodal download is out of scope here
+                attachments=attachments,
                 payload=event,
+                sender_name=sender_display_name(message, sender),
             )
 
     # ------------------------------------------------------------------

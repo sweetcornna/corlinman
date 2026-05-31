@@ -16,6 +16,7 @@ import json
 import os
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -41,6 +42,7 @@ from .errors import (
 )
 from .types import (
     JsonValue,
+    ToolAnnotations,
     ToolDescriptor,
     ToolsCallParams,
     ToolsCallResult,
@@ -162,6 +164,67 @@ def decode_tool_name(qualified: str) -> tuple[str, str] | None:
 
 
 # ---------------------------------------------------------------------
+# Annotation extraction
+# ---------------------------------------------------------------------
+
+
+def _optional_str(value: object) -> str | None:
+    """Coerce to a non-empty ``str`` or ``None``."""
+    if isinstance(value, str) and value:
+        return value
+    return None
+
+
+def _tool_output_schema(tool: object) -> JsonValue | None:
+    """Read an optional structured-output JSON Schema off a plugin tool.
+
+    Defensive: the bridge :class:`~corlinman_mcp_server.bridges.PluginTool`
+    may not (yet) carry ``output_schema``; we read it via ``getattr`` so the
+    adapter degrades gracefully on older bridge shapes."""
+    schema = getattr(tool, "output_schema", None)
+    if isinstance(schema, dict) and schema:
+        return schema
+    return None
+
+
+def _tool_annotations(tool: object) -> ToolAnnotations | None:
+    """Lift a plugin tool's behavioural hints onto :class:`ToolAnnotations`.
+
+    The plugin tool may expose an ``annotations`` object (with snake_case
+    or camelCase attrs) or a plain mapping. Returns ``None`` when no hint
+    is present so the descriptor elides the key entirely."""
+    ann = getattr(tool, "annotations", None)
+    if ann is None:
+        return None
+    if isinstance(ann, ToolAnnotations):
+        return ann if not ann.is_empty() else None
+
+    def _pick(*names: str) -> object:
+        if isinstance(ann, Mapping):
+            for n in names:
+                if n in ann:
+                    return ann[n]
+            return None
+        for n in names:
+            v = getattr(ann, n, None)
+            if v is not None:
+                return v
+        return None
+
+    def _bool_or_none(v: object) -> bool | None:
+        return v if isinstance(v, bool) else None
+
+    built = ToolAnnotations(
+        title=_optional_str(_pick("title")),
+        readOnlyHint=_bool_or_none(_pick("read_only_hint", "readOnlyHint")),
+        destructiveHint=_bool_or_none(_pick("destructive_hint", "destructiveHint")),
+        idempotentHint=_bool_or_none(_pick("idempotent_hint", "idempotentHint")),
+        openWorldHint=_bool_or_none(_pick("open_world_hint", "openWorldHint")),
+    )
+    return built if not built.is_empty() else None
+
+
+# ---------------------------------------------------------------------
 # Adapter
 # ---------------------------------------------------------------------
 
@@ -253,6 +316,9 @@ class ToolsAdapter:
                         name=name,
                         description=description,
                         inputSchema=input_schema,
+                        outputSchema=_tool_output_schema(tool),
+                        annotations=_tool_annotations(tool),
+                        title=_optional_str(getattr(tool, "title", None)),
                     )
                 )
         # Stable ordering for snapshot tests.

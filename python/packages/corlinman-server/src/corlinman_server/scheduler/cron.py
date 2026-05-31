@@ -37,6 +37,7 @@ returns a ``Result``; the Python equivalent raises (per the project's
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -46,8 +47,19 @@ __all__ = [
     "CronParseError",
     "Schedule",
     "next_after",
+    "normalise_interval_expr",
     "parse",
 ]
+
+
+#: Ergonomic interval grammar: ``every <N><unit>`` (e.g. ``every 30m``,
+#: ``every 2h``, ``every 45s``, ``every 1d``). Case-insensitive; optional
+#: whitespace between number and unit. The ``every`` keyword may be
+#: omitted (``30m`` works too). Units: ``s`` second, ``m`` minute,
+#: ``h`` hour, ``d`` day.
+_INTERVAL_RE = re.compile(
+    r"^\s*(?:every\s+)?(\d+)\s*([smhd])\s*$", re.IGNORECASE
+)
 
 
 class CronParseError(ValueError):
@@ -117,17 +129,57 @@ def _normalise_seven_field(expr: str) -> tuple[str, bool]:
     return expr, False
 
 
+def normalise_interval_expr(expr: str) -> str | None:
+    """Translate the ergonomic ``every <N><unit>`` form into a cron string.
+
+    Returns the equivalent cron expression, or ``None`` when ``expr`` is
+    not an interval form (the caller then treats it as a literal cron).
+
+    Mappings (croniter-native field forms — see :func:`_normalise_seven_field`):
+
+    * ``every 30s`` → ``"*/30 * * * * *"`` (6-field, seconds slot).
+    * ``every 30m`` → ``"*/30 * * * *"`` (5-field).
+    * ``every 2h``  → ``"0 */2 * * *"`` (top of every 2nd hour).
+    * ``every 1d``  → ``"0 0 */1 * *"`` (midnight every Nth day-of-month).
+
+    ``N`` must be ``>= 1``; ``every 0m`` returns ``None`` (falls through to
+    the literal-parse path which then raises a clean ``CronParseError``).
+    """
+    m = _INTERVAL_RE.match(expr)
+    if m is None:
+        return None
+    n = int(m.group(1))
+    unit = m.group(2).lower()
+    if n < 1:
+        return None
+    if unit == "s":
+        return f"*/{n} * * * * *"
+    if unit == "m":
+        return f"*/{n} * * * *"
+    if unit == "h":
+        return f"0 */{n} * * *"
+    if unit == "d":
+        return f"0 0 */{n} * *"
+    return None  # pragma: no cover — regex restricts the unit set
+
+
 def parse(expr: str) -> Schedule:
     """Parse ``expr`` into a :class:`Schedule`.
 
-    Accepts the Rust crate's 7-field grammar (``sec min hour dom mon
-    dow year``) for back-compat with the existing TOML corpus, plus
-    the 5- and 6-field :mod:`croniter`-native forms.
+    Accepts:
+
+    * the Rust crate's 7-field grammar (``sec min hour dom mon dow
+      year``) for back-compat with the existing TOML corpus;
+    * the 5- and 6-field :mod:`croniter`-native forms;
+    * the ergonomic ``every <N><unit>`` interval form (``every 30m``,
+      ``every 2h``, ``30s`` …) — see :func:`normalise_interval_expr`.
 
     Raises:
         CronParseError: if the expression doesn't compile.
     """
-    normalised, has_seconds = _normalise_seven_field(expr)
+    interval = normalise_interval_expr(expr)
+    base_expr = interval if interval is not None else expr
+    normalised, has_seconds = _normalise_seven_field(base_expr)
     try:
         # Validate by constructing one iterator at parse time. We don't
         # keep it — `next_after` makes its own with the caller's "now".

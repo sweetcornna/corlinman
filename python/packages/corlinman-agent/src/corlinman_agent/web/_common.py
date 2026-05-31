@@ -15,6 +15,7 @@ import ipaddress
 import os
 import re
 import socket
+from html.parser import HTMLParser
 from typing import Any
 
 import httpx
@@ -147,6 +148,148 @@ def html_to_text(markup: str) -> str:
     # Trim trailing spaces left on each line.
     text = "\n".join(line.strip() for line in text.splitlines())
     return text.strip()
+
+
+def html_to_markdown(markup: str) -> str:
+    """Convert an HTML document to Markdown.
+
+    Prefers an OPTIONAL third-party converter (``markdownify`` then
+    ``html2text``) when one is installed, since they preserve headings /
+    links / lists far better than a regex. Both are *soft* dependencies
+    — the prod VPS does not ship them — so when neither imports we fall
+    back to a dependency-free stdlib :class:`html.parser.HTMLParser`
+    pass that emits a reasonable Markdown approximation (``#`` headings,
+    ``-`` list items, ``[text](href)`` links, fenced ``code``).
+
+    Never raises: any converter failure degrades to the stdlib fallback,
+    and the fallback itself degrades to :func:`html_to_text` if even the
+    parser chokes on malformed markup.
+    """
+    # 1) markdownify (preferred — closest to a faithful conversion).
+    try:
+        import markdownify  # type: ignore[import-not-found]
+
+        return str(markdownify.markdownify(markup, heading_style="ATX")).strip()
+    except ImportError:
+        pass
+    except Exception as exc:  # noqa: BLE001 - converter must never break fetch
+        logger.info("html_to_markdown.markdownify_failed", error=str(exc))
+
+    # 2) html2text (also optional).
+    try:
+        import html2text  # type: ignore[import-not-found]
+
+        converter = html2text.HTML2Text()
+        converter.body_width = 0  # don't hard-wrap; keep paragraphs intact
+        converter.ignore_images = True
+        return str(converter.handle(markup)).strip()
+    except ImportError:
+        pass
+    except Exception as exc:  # noqa: BLE001 - converter must never break fetch
+        logger.info("html_to_markdown.html2text_failed", error=str(exc))
+
+    # 3) stdlib fallback — dependency-free Markdown approximation.
+    try:
+        return _StdlibMarkdownParser.convert(markup)
+    except Exception as exc:  # noqa: BLE001 - last resort: plain text
+        logger.info("html_to_markdown.stdlib_failed", error=str(exc))
+        return html_to_text(markup)
+
+
+class _StdlibMarkdownParser(HTMLParser):
+    """Dependency-free HTML→Markdown approximation.
+
+    Not layout-faithful — it captures the structure an LLM cares about:
+    headings, paragraphs, list items, links and inline code. Scripts /
+    styles / heads are skipped wholesale. This is the fallback when no
+    optional converter is installed.
+    """
+
+    _SKIP = {"script", "style", "noscript", "template", "svg", "head"}
+    _HEADINGS = {"h1": "# ", "h2": "## ", "h3": "### ", "h4": "#### ", "h5": "##### ", "h6": "###### "}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._out: list[str] = []
+        self._skip_depth = 0
+        self._href: str | None = None
+        self._link_text: list[str] = []
+
+    @classmethod
+    def convert(cls, markup: str) -> str:
+        parser = cls()
+        parser.feed(markup)
+        parser.close()
+        text = "".join(parser._out)
+        # Collapse runs of >2 newlines and trim trailing spaces per line.
+        text = _BLANKLINE_RUN_RE.sub("\n\n", text)
+        text = "\n".join(line.rstrip() for line in text.splitlines())
+        return text.strip()
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in self._SKIP:
+            self._skip_depth += 1
+            return
+        if self._skip_depth:
+            return
+        if tag in self._HEADINGS:
+            self._out.append("\n\n" + self._HEADINGS[tag])
+        elif tag in ("p", "div", "section", "article", "blockquote", "tr"):
+            self._out.append("\n\n")
+        elif tag == "br":
+            self._out.append("\n")
+        elif tag == "li":
+            self._out.append("\n- ")
+        elif tag in ("code", "tt"):
+            self._out.append("`")
+        elif tag in ("strong", "b"):
+            self._out.append("**")
+        elif tag in ("em", "i"):
+            self._out.append("*")
+        elif tag == "a":
+            href = dict(attrs).get("href")
+            self._href = href if href else None
+            self._link_text = []
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self._SKIP:
+            if self._skip_depth:
+                self._skip_depth -= 1
+            return
+        if self._skip_depth:
+            return
+        if tag in ("code", "tt"):
+            self._out.append("`")
+        elif tag in ("strong", "b"):
+            self._out.append("**")
+        elif tag in ("em", "i"):
+            self._out.append("*")
+        elif tag in self._HEADINGS or tag in (
+            "p",
+            "div",
+            "section",
+            "article",
+            "blockquote",
+        ):
+            self._out.append("\n")
+        elif tag == "a":
+            text = "".join(self._link_text).strip()
+            if self._href and text:
+                self._out.append(f"[{text}]({self._href})")
+            else:
+                self._out.append(text)
+            self._href = None
+            self._link_text = []
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth:
+            return
+        # Collapse intra-text whitespace runs but keep single spaces.
+        chunk = _WS_RUN_RE.sub(" ", data.replace("\n", " "))
+        if self._href is not None:
+            self._link_text.append(chunk)
+        else:
+            self._out.append(chunk)
 
 
 def looks_like_html(content_type: str | None, body: str) -> bool:

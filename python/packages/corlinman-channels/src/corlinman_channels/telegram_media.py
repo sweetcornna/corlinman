@@ -24,19 +24,43 @@ from typing import Any, Protocol, runtime_checkable
 
 import httpx
 
+from corlinman_channels.common import Attachment
 from corlinman_channels.telegram import (
     MAX_DOWNLOAD_BYTES,
     File,
 )
 
+#: Prefix the Telegram adapter stamps onto :attr:`Attachment.url` for an
+#: attachment whose bytes still need a ``getFile`` + download (Telegram
+#: references attachments by ``file_id``, not a fetchable HTTP URL).
+TG_FILE_ID_PREFIX: str = "tg-file-id:"
+
 __all__ = [
     "MAX_DOWNLOAD_BYTES",
+    "TG_FILE_ID_PREFIX",
     "DownloadedMedia",
     "HttpxTelegramHttp",
     "MediaError",
     "TelegramHttp",
+    "attachment_file_id",
+    "download_attachment",
     "download_to_media_dir",
 ]
+
+
+def attachment_file_id(att: Attachment) -> str | None:
+    """Return the Telegram ``file_id`` an :class:`Attachment` references.
+
+    The Telegram adapter encodes the pending download as
+    ``url="tg-file-id:<file_id>"`` (see :meth:`Message.to_attachments`).
+    Returns the bare ``file_id`` for such attachments, or ``None`` for an
+    attachment that already carries a real HTTP url / inline bytes (so the
+    caller can skip the ``getFile`` dance).
+    """
+    url = att.url or ""
+    if url.startswith(TG_FILE_ID_PREFIX):
+        return url[len(TG_FILE_ID_PREFIX) :] or None
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -301,3 +325,28 @@ async def download_to_media_dir(
         bytes_written=written,
         file_id=file_id,
     )
+
+
+async def download_attachment(
+    http: TelegramHttp,
+    attachment: Attachment,
+    data_dir: Path,
+) -> DownloadedMedia | None:
+    """Resolve + download an inbound :class:`Attachment`.
+
+    Returns ``None`` when the attachment doesn't carry a Telegram
+    ``file_id`` (already a fetchable URL or inline bytes), so the caller
+    can branch without re-parsing the url. The fallback extension is
+    chosen from the attachment kind so a voice note lands as ``.ogg`` and
+    a document as ``.bin`` when ``getFile`` returns no path suffix.
+    """
+    file_id = attachment_file_id(attachment)
+    if file_id is None:
+        return None
+    fallback_ext = {
+        "audio": "ogg",
+        "video": "mp4",
+        "image": "jpg",
+        "document": "bin",
+    }.get(str(getattr(attachment.kind, "value", attachment.kind)), "bin")
+    return await download_to_media_dir(http, file_id, data_dir, fallback_ext)

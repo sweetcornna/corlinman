@@ -66,6 +66,8 @@ import websockets
 from websockets.asyncio.client import ClientConnection
 
 from corlinman_channels.common import (
+    Attachment,
+    AttachmentKind,
     ChannelBinding,
     ConfigError,
     InboundEvent,
@@ -165,6 +167,67 @@ def _strip_mention(text: str, bot_user_id: str) -> str:
     if not bot_user_id:
         return text.strip()
     return text.replace(f"<@{bot_user_id}>", " ").strip()
+
+
+def _classify_slack_file(f: dict[str, Any]) -> AttachmentKind:
+    """Classify a Slack ``file`` object by mimetype / mode."""
+    mime = str(f.get("mimetype") or "").lower()
+    if mime.startswith("image/"):
+        return AttachmentKind.IMAGE
+    if mime.startswith("audio/"):
+        return AttachmentKind.AUDIO
+    if mime.startswith("video/"):
+        return AttachmentKind.VIDEO
+    return AttachmentKind.DOCUMENT
+
+
+def extract_attachments(event: dict[str, Any]) -> list[Attachment]:
+    """Extract :class:`Attachment` descriptors from a Slack message event.
+
+    Slack ships uploaded files under ``files`` — each carries a
+    ``url_private`` that requires the bot token as a Bearer header to
+    fetch (the downstream download step supplies it). We carry that url
+    plus the mimetype + name so the agent's multimodal handler can
+    resolve the bytes.
+    """
+    out: list[Attachment] = []
+    for f in event.get("files") or []:
+        if not isinstance(f, dict):
+            continue
+        url = str(
+            f.get("url_private_download")
+            or f.get("url_private")
+            or f.get("permalink")
+            or ""
+        )
+        if not url:
+            continue
+        out.append(
+            Attachment(
+                kind=_classify_slack_file(f),
+                url=url,
+                mime=f.get("mimetype") or None,
+                file_name=f.get("name") or None,
+            )
+        )
+    return out
+
+
+def sender_display_name(event: dict[str, Any]) -> str | None:
+    """Best-effort author display name for group attribution.
+
+    Slack message events don't always inline the profile; when the
+    ``user_profile`` block is present (enriched events) prefer
+    ``display_name`` then ``real_name``. Falls back to ``username``.
+    """
+    profile = event.get("user_profile")
+    if isinstance(profile, dict):
+        for key in ("display_name", "real_name"):
+            val = profile.get(key)
+            if val:
+                return str(val)
+    username = event.get("username")
+    return str(username) if username else None
 
 
 # ===========================================================================
@@ -294,7 +357,8 @@ class SlackAdapter:
                     continue
 
             text = _strip_mention(event.get("text") or "", bot_user_id)
-            if not text.strip():
+            attachments = extract_attachments(event)
+            if not text.strip() and not attachments:
                 continue
 
             binding = binding_from_event(event, bot_user_id)
@@ -305,8 +369,9 @@ class SlackAdapter:
                 message_id=str(event.get("ts", "")) or None,
                 timestamp=_parse_ts(event.get("ts")),
                 mentioned=mentioned or is_dm,
-                attachments=[],  # multimodal download is out of scope here
+                attachments=attachments,
                 payload=event,
+                sender_name=sender_display_name(event),
             )
 
     # ------------------------------------------------------------------

@@ -12,6 +12,7 @@ Each ``dispatch_*`` returns a JSON envelope string for
 from __future__ import annotations
 
 import base64
+import difflib
 import json
 import mimetypes
 import os
@@ -83,6 +84,31 @@ _IMAGE_MIME: dict[str, str] = {
     ".webp": "image/webp",
 }
 
+#: Max PDF pages we extract text for in a single read (DoS guard — a
+#: 10k-page PDF should not blow the read budget). Page selection via the
+#: ``pages`` param can still target later pages within this window.
+_PDF_MAX_PAGES: int = 200
+
+#: Per-cell output cap (chars) when rendering a Jupyter notebook so a
+#: single noisy cell (e.g. a dumped DataFrame) does not swamp the read.
+_NOTEBOOK_OUTPUT_CHARS: int = 2_000
+
+#: Curly/typographic quote -> ASCII straight quote map applied symmetrically
+#: to the file text and ``old_string`` at edit match time. Models routinely
+#: emit smart quotes that never appear in the on-disk source.
+_QUOTE_NORMALIZE: dict[int, str] = {
+    0x2018: "'",  # left single quotation mark
+    0x2019: "'",  # right single quotation mark
+    0x201A: "'",  # single low-9 quotation mark
+    0x201B: "'",  # single high-reversed-9 quotation mark
+    0x2032: "'",  # prime
+    0x201C: '"',  # left double quotation mark
+    0x201D: '"',  # right double quotation mark
+    0x201E: '"',  # double low-9 quotation mark
+    0x201F: '"',  # double high-reversed-9 quotation mark
+    0x2033: '"',  # double prime
+}
+
 
 # ---------------------------------------------------------------------------
 # Schemas
@@ -99,7 +125,10 @@ def read_file_tool_schema() -> dict[str, Any]:
                 "content with 1-based line numbers; use offset/limit to page "
                 "through large files. Image files (.png, .jpg, .jpeg, .gif, "
                 ".webp) are returned as a base64-encoded image content block "
-                "so vision models can inspect them directly."
+                "so vision models can inspect them directly. PDF files return "
+                "per-page extracted text (use 'pages' like '1-5' to select a "
+                "range); .ipynb notebooks return numbered cells with sources "
+                "and truncated outputs."
             ),
             "parameters": {
                 "type": "object",
@@ -115,6 +144,13 @@ def read_file_tool_schema() -> dict[str, Any]:
                     "limit": {
                         "type": "integer",
                         "description": "Max lines to read (default 500).",
+                    },
+                    "pages": {
+                        "type": "string",
+                        "description": (
+                            "PDF only: 1-based page range like '1-5' or a "
+                            "single page '3' (default: all, capped)."
+                        ),
                     },
                 },
                 "required": ["path"],
@@ -160,7 +196,10 @@ def edit_file_tool_schema() -> dict[str, Any]:
             "description": (
                 "Edit a file by replacing an exact string. 'old_string' must "
                 "match exactly once (include enough surrounding context to be "
-                "unique). Use replace_all to replace every occurrence."
+                "unique). Use replace_all to replace every occurrence. "
+                "Matching tolerates curly-vs-straight quotes, CRLF-vs-LF, and "
+                "leading BOM; the file's original line endings and encoding are "
+                "preserved on write-back."
             ),
             "parameters": {
                 "type": "object",
@@ -224,6 +263,224 @@ def _err(payload: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
+def _parse_pages(spec: Any, total: int) -> list[int]:
+    """Resolve a ``pages`` spec to 0-based page indices within ``total``.
+
+    Accepts ``"1-5"`` (inclusive range), a single page ``"3"``, or
+    ``None``/empty (all pages). Out-of-range bounds are clamped; an
+    unparsable spec returns all pages so a malformed hint never hard-fails
+    the read. 1-based on the wire, 0-based in the returned list.
+    """
+    if spec is None or (isinstance(spec, str) and not spec.strip()):
+        return list(range(total))
+    text = str(spec).strip()
+    try:
+        if "-" in text:
+            lo_s, hi_s = text.split("-", 1)
+            lo = int(lo_s) if lo_s.strip() else 1
+            hi = int(hi_s) if hi_s.strip() else total
+        else:
+            lo = hi = int(text)
+    except ValueError:
+        return list(range(total))
+    lo = max(1, lo)
+    hi = min(total, hi)
+    if hi < lo:
+        return []
+    return list(range(lo - 1, hi))
+
+
+def _read_pdf(
+    path: Path, rel: str, pages_spec: Any
+) -> str | list[dict[str, Any]]:
+    """Extract per-page text from a PDF via an OPTIONAL parser.
+
+    Tries ``pypdf`` then ``pdfminer.six``; honours a ``pages`` selection
+    like ``"1-5"``. When neither library is installed the PDF bytes are
+    returned as a base64 ``file`` content block (the same union the image
+    branch uses) so a capable provider can still ingest the document,
+    plus a note explaining the fallback.
+    """
+    try:
+        raw_bytes = path.read_bytes()
+    except OSError as exc:
+        return _err({"path": rel, "error": f"read_failed: {exc}"})
+
+    # --- Tier 1: pypdf -------------------------------------------------
+    try:
+        import pypdf  # type: ignore
+
+        try:
+            reader = pypdf.PdfReader(str(path))
+            total = len(reader.pages)
+            indices = _parse_pages(pages_spec, total)
+            capped = indices[:_PDF_MAX_PAGES]
+            sections: list[str] = []
+            for idx in capped:
+                try:
+                    txt = reader.pages[idx].extract_text() or ""
+                except Exception:  # noqa: BLE001 — page extraction is best-effort
+                    txt = ""
+                sections.append(f"--- page {idx + 1} ---\n{txt.strip()}")
+            content = "\n\n".join(sections)
+            truncated = len(content) > MAX_READ_CHARS
+            return json.dumps(
+                {
+                    "path": rel,
+                    "kind": "pdf",
+                    "engine": "pypdf",
+                    "pages_total": total,
+                    "pages_shown": [i + 1 for i in capped],
+                    "content": content[:MAX_READ_CHARS],
+                    "truncated": truncated or len(indices) > len(capped),
+                },
+                ensure_ascii=False,
+            )
+        except Exception as exc:  # noqa: BLE001 — fall through to next engine
+            logger.debug("pdf_pypdf_failed", error=str(exc))
+    except ImportError:
+        pass
+
+    # --- Tier 2: pdfminer.six -----------------------------------------
+    try:
+        from pdfminer.high_level import extract_text  # type: ignore
+
+        try:
+            indices_all: list[int] | None = None
+            if pages_spec is not None and str(pages_spec).strip():
+                # pdfminer page_numbers is 0-based; we cannot cheaply know
+                # the total first, so pass the parsed selection and let it
+                # clamp. A spec referencing only later pages still works.
+                try:
+                    # Probe total via a bounded parse is costly; instead
+                    # accept whatever indices the spec yields up to the cap.
+                    spec_indices = _parse_pages(pages_spec, _PDF_MAX_PAGES)
+                except ValueError:
+                    spec_indices = None
+                indices_all = spec_indices
+            txt = extract_text(
+                str(path),
+                page_numbers=indices_all if indices_all else None,
+                maxpages=_PDF_MAX_PAGES,
+            )
+            content = (txt or "").strip()
+            truncated = len(content) > MAX_READ_CHARS
+            return json.dumps(
+                {
+                    "path": rel,
+                    "kind": "pdf",
+                    "engine": "pdfminer",
+                    "content": content[:MAX_READ_CHARS],
+                    "truncated": truncated,
+                },
+                ensure_ascii=False,
+            )
+        except Exception as exc:  # noqa: BLE001 — fall through to base64
+            logger.debug("pdf_pdfminer_failed", error=str(exc))
+    except ImportError:
+        pass
+
+    # --- Fallback: no parser — return base64 file content block --------
+    b64 = base64.b64encode(raw_bytes).decode("ascii")
+    data_url = f"data:application/pdf;base64,{b64}"
+    return [
+        {
+            "type": "file",
+            "file": {"filename": path.name, "file_data": data_url},
+        },
+        {
+            "type": "text",
+            "text": (
+                "[note] No PDF text-extraction library (pypdf / pdfminer.six) "
+                "is installed; returned the raw PDF as a base64 file block for "
+                "providers that accept documents. Install pypdf for per-page "
+                "text extraction."
+            ),
+        },
+    ]
+
+
+def _read_notebook(path: Path, rel: str) -> str:
+    """Render a Jupyter ``.ipynb`` as numbered, readable cells.
+
+    Each cell becomes ``[cell N] <type>`` followed by its source and, for
+    code cells, truncated text representations of any stdout/result/error
+    outputs. Returns the standard JSON read envelope (str). Falls back to
+    a plain text read if the file is not valid notebook JSON.
+    """
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return _err({"path": rel, "error": f"read_failed: {exc}"})
+    try:
+        nb = json.loads(text)
+    except json.JSONDecodeError:
+        return _err({"path": rel, "error": "ipynb_invalid_json"})
+    if not isinstance(nb, dict):
+        return _err({"path": rel, "error": "ipynb_invalid_json"})
+
+    cells = nb.get("cells")
+    if not isinstance(cells, list):
+        return _err({"path": rel, "error": "ipynb_no_cells"})
+
+    def _join(src: Any) -> str:
+        if isinstance(src, list):
+            return "".join(str(s) for s in src)
+        return str(src) if src is not None else ""
+
+    blocks: list[str] = []
+    for n, cell in enumerate(cells, start=1):
+        if not isinstance(cell, dict):
+            continue
+        ctype = str(cell.get("cell_type", "unknown"))
+        source = _join(cell.get("source", "")).rstrip("\n")
+        header = f"[cell {n}] {ctype}"
+        parts = [header, source] if source else [header]
+        outputs = cell.get("outputs")
+        if ctype == "code" and isinstance(outputs, list):
+            for out in outputs:
+                if not isinstance(out, dict):
+                    continue
+                otype = out.get("output_type")
+                rendered = ""
+                if otype == "stream":
+                    rendered = _join(out.get("text", ""))
+                elif otype in {"execute_result", "display_data"}:
+                    data = out.get("data", {})
+                    if isinstance(data, dict):
+                        rendered = _join(data.get("text/plain", ""))
+                elif otype == "error":
+                    tb = out.get("traceback", [])
+                    if isinstance(tb, list):
+                        rendered = "\n".join(str(t) for t in tb)
+                    rendered = (
+                        f"{out.get('ename', 'Error')}: "
+                        f"{out.get('evalue', '')}\n{rendered}"
+                    )
+                rendered = rendered.strip()
+                if rendered:
+                    if len(rendered) > _NOTEBOOK_OUTPUT_CHARS:
+                        rendered = (
+                            rendered[:_NOTEBOOK_OUTPUT_CHARS]
+                            + "\n... [output truncated]"
+                        )
+                    parts.append(f"  [out] {rendered}")
+        blocks.append("\n".join(parts))
+
+    content = "\n\n".join(blocks)
+    truncated = len(content) > MAX_READ_CHARS
+    return json.dumps(
+        {
+            "path": rel,
+            "kind": "notebook",
+            "cells": len(blocks),
+            "content": content[:MAX_READ_CHARS],
+            "truncated": truncated,
+        },
+        ensure_ascii=False,
+    )
+
+
 def dispatch_read_file(
     *,
     args_json: bytes | str,
@@ -284,6 +541,16 @@ def dispatch_read_file(
                 "image_url": {"url": data_url},
             }
         ]
+
+    suffix = path.suffix.lower()
+
+    # --- PDF files: per-page text extraction (optional libs) ------------
+    if suffix == ".pdf":
+        return _read_pdf(path, workspace_rel(ws, path), raw.get("pages"))
+
+    # --- Jupyter notebooks: numbered cells with truncated outputs -------
+    if suffix == ".ipynb":
+        return _read_notebook(path, workspace_rel(ws, path))
 
     offset = raw.get("offset", 1)
     limit = raw.get("limit", 500)
@@ -376,6 +643,15 @@ def dispatch_write_file(
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         existed = path.exists()
+        # Capture prior content (best-effort) so the result can carry a
+        # diff of what the overwrite changed. A read failure here is
+        # non-fatal — we just skip the snippet.
+        prior = ""
+        if existed:
+            try:
+                prior = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                prior = ""
         # S3: open with ``O_NOFOLLOW`` so a leaf symlink that appeared
         # between :func:`resolve_in_workspace` and the open (TOCTOU)
         # is also refused at the syscall layer. The pre-check catches
@@ -409,14 +685,21 @@ def dispatch_write_file(
         # without a redundant read first.
         state.forget(path)
         state.mark_seen(path)
-    return json.dumps(
-        {
-            "path": workspace_rel(ws, path),
-            "bytes": len(content.encode("utf-8")),
-            "action": "overwritten" if existed else "created",
-        },
-        ensure_ascii=False,
+    payload: dict[str, Any] = {
+        "path": workspace_rel(ws, path),
+        "bytes": len(content.encode("utf-8")),
+        "action": "overwritten" if existed else "created",
+    }
+    # Changed-region diff so the caller sees what the write did. For a
+    # new file the diff is the full content as additions.
+    snippet = _diff_snippet(
+        prior.replace("\r\n", "\n").replace("\r", "\n"),
+        content.replace("\r\n", "\n").replace("\r", "\n"),
+        workspace_rel(ws, path),
     )
+    if snippet:
+        payload["diff"] = snippet
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def _line_span_offsets(text: str) -> list[tuple[int, int]]:
@@ -476,6 +759,93 @@ def _fuzzy_line_matches(
     return out
 
 
+#: Max chars of unified-diff / changed-region snippet attached to an
+#: edit/write result so the caller sees what changed without re-reading.
+_DIFF_SNIPPET_CHARS: int = 4_000
+
+
+def _normalize_for_match(s: str) -> str:
+    """Canonicalize text for tolerant edit matching.
+
+    Strips a leading BOM, folds CRLF/CR -> LF, and maps curly/typographic
+    quotes to their ASCII equivalents. Applied SYMMETRICALLY to the file
+    text and ``old_string`` so a smart-quote or CRLF mismatch in the
+    model's argument still matches the on-disk source. Offsets in the
+    normalized string are NOT 1:1 with the original (BOM/CRLF differ), so
+    matching here is line-aligned via :func:`_fuzzy_line_matches` rather
+    than substring char offsets.
+    """
+    if s.startswith("﻿"):
+        s = s[1:]
+    s = s.replace("\r\n", "\n").replace("\r", "\n")
+    return s.translate(_QUOTE_NORMALIZE)
+
+
+def _detect_eol(text: str) -> str:
+    """Return the dominant line ending in ``text`` (``\\r\\n`` or ``\\n``)."""
+    crlf = text.count("\r\n")
+    # bare LF = total LF minus those that are part of a CRLF pair
+    lf = text.count("\n") - crlf
+    return "\r\n" if crlf > lf else "\n"
+
+
+def _apply_eol_bom(text_lf: str, eol: str, bom: str) -> str:
+    """Round-trip ``text_lf`` (LF-normalized) back to ``eol`` + leading ``bom``."""
+    out = text_lf.replace("\n", eol) if eol != "\n" else text_lf
+    return bom + out
+
+
+def _diff_snippet(before: str, after: str, rel: str) -> str:
+    """Compact unified diff of ``before`` -> ``after``, truncated for the result.
+
+    Operates on LF-normalized text so a CRLF file does not produce a diff
+    where every line looks changed. Returns ``""`` when nothing differs.
+    """
+    b_lines = before.split("\n")
+    a_lines = after.split("\n")
+    diff = difflib.unified_diff(
+        b_lines, a_lines, fromfile=f"a/{rel}", tofile=f"b/{rel}", lineterm="", n=2
+    )
+    text = "\n".join(diff)
+    if len(text) > _DIFF_SNIPPET_CHARS:
+        text = text[:_DIFF_SNIPPET_CHARS] + "\n... [diff truncated]"
+    return text
+
+
+def _block_anchor_matches(text: str, old: str) -> list[tuple[int, int]]:
+    """Tier-4: match a multi-line block by its first+last line only.
+
+    Anchors on the (stripped) first and last lines of ``old`` and matches
+    any line-aligned span in ``text`` that begins/ends with those anchors,
+    tolerating interior drift. Returns char-offset spans in ``text``.
+    Single-line ``old`` is rejected (no interior to drift). The caller
+    only accepts the result when exactly one span is found — a non-unique
+    anchored span is too risky to auto-apply.
+    """
+    old_lines = old.split("\n")
+    if len(old_lines) < 2:
+        return []
+    first = old_lines[0].strip()
+    last = old_lines[-1].strip()
+    if not first or not last:
+        return []
+    text_lines = text.split("\n")
+    stripped = [ln.strip() for ln in text_lines]
+    line_spans = _line_span_offsets(text)
+    out: list[tuple[int, int]] = []
+    n = len(text_lines)
+    for i in range(n):
+        if stripped[i] != first:
+            continue
+        # Find the nearest later line equal to the last anchor; the block
+        # must be at least as long as old (>= 2 lines) so j > i.
+        for j in range(i + 1, n):
+            if stripped[j] == last:
+                out.append((line_spans[i][0], line_spans[j][1]))
+                break
+    return out
+
+
 def dispatch_edit_file(
     *,
     args_json: bytes | str,
@@ -484,16 +854,27 @@ def dispatch_edit_file(
 ) -> str:
     """Replace an exact string in a workspace file. JSON envelope.
 
-    Match cascade (T2.2):
+    Match cascade:
     1. exact substring match (today's behaviour);
     2. line-aligned ``rstrip`` match — recovers from trailing-whitespace
        drift in the model's ``old_string``;
-    3. line-aligned ``strip`` match — recovers from indentation drift.
+    3. line-aligned ``strip`` match — recovers from indentation drift;
+    4. block-anchor match — anchors the first+last line and tolerates
+       interior drift, but only when the anchored span is UNIQUE.
+
+    Before matching, the file text and ``old_string`` are normalized
+    symmetrically: a leading BOM is stripped, CRLF/CR are folded to LF,
+    and curly quotes are mapped to ASCII. The file's ORIGINAL encoding,
+    line ending, and BOM are remembered and round-tripped on write-back,
+    so a CRLF file stays CRLF.
 
     Each tier is consulted in order; the first tier with **any** matches
     wins. The uniqueness rule still applies: >1 match without
     ``replace_all`` is rejected. Fuzzy tiers only run for multi-line
     ``old_string`` — single-line edits stay on the exact path.
+
+    The result envelope carries a compact unified-diff ``snippet`` of the
+    changed region so the caller sees what changed without re-reading.
 
     When ``state`` is supplied and the file changed under the agent
     since its last recorded read, the edit is refused with
@@ -546,14 +927,47 @@ def dispatch_edit_file(
         )
 
     try:
-        text = path.read_text(encoding="utf-8")
+        raw_bytes = path.read_bytes()
     except OSError as exc:
         return _err({"path": raw.get("path"), "error": f"read_failed: {exc}"})
 
+    # Detect encoding + BOM. UTF-16 files carry a 2-byte BOM; UTF-8 may
+    # carry a 3-byte BOM. We decode losslessly, remember what we stripped,
+    # and re-apply it on write so the file's on-disk shape is preserved.
+    encoding = "utf-8"
+    bom = ""
+    if raw_bytes.startswith(b"\xff\xfe") or raw_bytes.startswith(b"\xfe\xff"):
+        encoding = "utf-16"  # codec consumes the BOM and infers endianness
+    try:
+        decoded = raw_bytes.decode(encoding)
+    except UnicodeDecodeError as exc:
+        return _err({"path": raw.get("path"), "error": f"read_failed: {exc}"})
+    if encoding == "utf-8" and decoded.startswith("﻿"):
+        bom = "﻿"
+        decoded = decoded[1:]
+
+    # Original line ending, decided before we fold to LF.
+    eol = _detect_eol(decoded)
+    # ``text`` is the LF-normalized working copy we mutate; EOL/BOM are
+    # re-applied at write time. We keep ``old``/``new`` LF-normalized too
+    # so an exact match still behaves byte-identically on LF files.
+    text = decoded.replace("\r\n", "\n").replace("\r", "\n")
+    before_text = text
+    old_lf = old.replace("\r\n", "\n").replace("\r", "\n")
+    new_lf = new.replace("\r\n", "\n").replace("\r", "\n")
+
     replace_all = bool(raw.get("replace_all", False))
 
-    # --- Tier 1: exact substring -----------------------------------------
-    exact_count = text.count(old)
+    # Normalized views for tolerant matching (quotes folded, BOM gone).
+    match_text = _normalize_for_match(text)
+    old_norm = _normalize_for_match(old_lf)
+
+    updated: str | None = None
+    tier: str | None = None
+    replacements = 0
+
+    # --- Tier 1: exact substring (on LF text) ----------------------------
+    exact_count = text.count(old_lf)
     if exact_count > 0:
         if exact_count > 1 and not replace_all:
             return _err(
@@ -565,19 +979,61 @@ def dispatch_edit_file(
                     ),
                 }
             )
-        updated = text.replace(old, new) if replace_all else text.replace(old, new, 1)
+        updated = (
+            text.replace(old_lf, new_lf)
+            if replace_all
+            else text.replace(old_lf, new_lf, 1)
+        )
         replacements = exact_count if replace_all else 1
         tier = "exact"
-    else:
-        # --- Tier 2/3: line-aligned fuzzy for multi-line old_string -----
-        updated = None
-        tier = None
-        replacements = 0
+
+    # --- Tier 1b: normalized substring (quotes/BOM folded) ---------------
+    # Only when the raw exact match failed but the normalized forms match —
+    # recovers from curly-quote / BOM drift in the model's old_string while
+    # still letting us splice into the ORIGINAL ``text`` via the normalized
+    # offset (BOM already stripped from both, so offsets align 1:1 here).
+    if updated is None and old_norm:
+        norm_count = match_text.count(old_norm)
+        if norm_count > 0:
+            if norm_count > 1 and not replace_all:
+                return _err(
+                    {
+                        "path": raw.get("path"),
+                        "error": (
+                            f"old_string_not_unique: {norm_count} matches "
+                            "(after quote/BOM normalization) — add context or "
+                            "set replace_all=true"
+                        ),
+                    }
+                )
+            # match_text and text are the same length (only char-for-char
+            # quote substitutions + identical BOM-stripping), so offsets in
+            # match_text map directly onto text.
+            spans: list[tuple[int, int]] = []
+            start = 0
+            while True:
+                idx = match_text.find(old_norm, start)
+                if idx == -1:
+                    break
+                spans.append((idx, idx + len(old_norm)))
+                start = idx + len(old_norm)
+                if not replace_all:
+                    break
+            updated = text
+            for s, e in sorted(spans, reverse=True):
+                updated = updated[:s] + new_lf + updated[e:]
+            replacements = len(spans)
+            tier = "normalized"
+
+    # --- Tier 2/3: line-aligned fuzzy for multi-line old_string ----------
+    if updated is None:
         for tier_name, transform in (
             ("rstrip", str.rstrip),
             ("strip", str.strip),
         ):
-            spans = _fuzzy_line_matches(text, old, transform)
+            # Match against the normalized text so quote/BOM drift is also
+            # tolerated here; offsets map 1:1 back onto ``text``.
+            spans = _fuzzy_line_matches(match_text, old_norm, transform)
             if not spans:
                 continue
             if len(spans) > 1 and not replace_all:
@@ -591,20 +1047,44 @@ def dispatch_edit_file(
                         ),
                     }
                 )
-            # Apply right-to-left so earlier spans' offsets stay valid.
-            updated = text
-            for start, end in sorted(spans, reverse=True):
-                updated = updated[:start] + new + updated[end:]
-            replacements = len(spans) if replace_all else 1
-            if not replace_all:
-                # We only consumed the first span — recompute as a
-                # single-shot replace using the first matched range.
+            if replace_all:
+                updated = text
+                for start, end in sorted(spans, reverse=True):
+                    updated = updated[:start] + new_lf + updated[end:]
+                replacements = len(spans)
+            else:
                 start, end = spans[0]
-                updated = text[:start] + new + text[end:]
+                updated = text[:start] + new_lf + text[end:]
+                replacements = 1
             tier = tier_name
             break
+
+    # --- Tier 4: block-anchor (first+last line, UNIQUE only) -------------
+    if updated is None:
+        anchored = _block_anchor_matches(match_text, old_norm)
+        if len(anchored) == 1:
+            start, end = anchored[0]
+            updated = text[:start] + new_lf + text[end:]
+            replacements = 1
+            tier = "block-anchor"
+        elif len(anchored) > 1:
+            return _err(
+                {
+                    "path": raw.get("path"),
+                    "error": (
+                        f"old_string_not_unique: {len(anchored)} block-anchor "
+                        "matches — the first/last line anchor is ambiguous, "
+                        "add more distinctive context"
+                    ),
+                }
+            )
+
     if updated is None:
         return _err({"path": raw.get("path"), "error": "old_string_not_found"})
+
+    # Round-trip the original encoding, BOM, and line ending.
+    out_text = _apply_eol_bom(updated, eol, bom)
+    snippet = _diff_snippet(before_text, updated, workspace_rel(ws, path))
 
     try:
         # S3: open with O_NOFOLLOW. The earlier resolve_in_workspace
@@ -624,8 +1104,12 @@ def dispatch_edit_file(
                 )
             return _err({"path": raw.get("path"), "error": f"write_failed: {exc}"})
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(updated)
+            # ``newline=""`` so Python does NOT translate our explicit EOL —
+            # ``out_text`` already carries the file's original line endings.
+            with os.fdopen(
+                fd, "w", encoding=encoding, newline=""
+            ) as fh:
+                fh.write(out_text)
         except OSError as exc:
             return _err({"path": raw.get("path"), "error": f"write_failed: {exc}"})
     except OSError as exc:
@@ -641,6 +1125,8 @@ def dispatch_edit_file(
     }
     if tier and tier != "exact":
         payload["match_tier"] = tier  # surface fuzzy matches for transparency
+    if snippet:
+        payload["diff"] = snippet  # changed-region unified diff for the caller
     return json.dumps(payload, ensure_ascii=False)
 
 

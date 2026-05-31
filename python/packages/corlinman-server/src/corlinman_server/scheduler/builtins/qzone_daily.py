@@ -170,7 +170,14 @@ async def _qzone_daily_publish_action(context: BuiltinContext) -> dict[str, Any]
         if persona is None:
             return {**base, "ok": False, "error": "persona_not_found"}
 
-        system_prompt = _compose_system_prompt(persona.system_prompt)
+        # gap-fill v1.15: bind the persona's *runtime* life-state + recent
+        # diary into the system prompt so the daily 说说 reflects what the
+        # persona has actually been "living". Read-only + best-effort — a
+        # missing life block just composes the bare persona prompt.
+        life_block = await _resolve_life_block(context, persona_id)
+        system_prompt = _compose_system_prompt(
+            persona.system_prompt, life_block=life_block
+        )
         model = _resolve_default_model(context)
         session_key = _build_session_key(persona_id)
 
@@ -558,10 +565,136 @@ def _resolve_data_dir(app_state: Any | None) -> Path | None:
     return None
 
 
-def _compose_system_prompt(persona_prompt: str) -> str:
-    """Glue the persona body + the scheduler tail together."""
+def _compose_system_prompt(
+    persona_prompt: str, *, life_block: str | None = None
+) -> str:
+    """Glue the persona body + (optional) runtime life block + the
+    scheduler tail together.
+
+    The life block is inserted *between* the persona body and the
+    scheduler instruction tail so the agent sees "who I am" → "what I've
+    been living" → "what to do this turn" in reading order.
+    """
     base = (persona_prompt or "").rstrip()
-    return f"{base}{QZONE_DAILY_SYSTEM_TAIL}"
+    parts = [base]
+    if life_block:
+        parts.append(life_block.rstrip())
+    parts.append(QZONE_DAILY_SYSTEM_TAIL)
+    return "".join(
+        # Two blank lines between major blocks; the tail already starts
+        # with its own ``\n\n---`` so no extra separator is needed there.
+        (f"\n\n{p}" if i and not p.startswith("\n") else p)
+        for i, p in enumerate(parts)
+    )
+
+
+async def _resolve_life_block(
+    context: BuiltinContext, persona_id: str
+) -> str | None:
+    """Build a short ``## 我最近的生活`` block from the persona's runtime
+    life-state + recent diary tail.
+
+    Resolution order (all best-effort, ``None`` on any miss):
+
+    1. ``app_state.persona_resolver`` — the C2-wired read-only resolver
+       over ``agent_state.sqlite``; we read the flat ``life_*`` /
+       ``mood`` placeholder keys it exposes.
+    2. ``app_state.extras["persona_state_store"]`` /
+       ``app_state.corlinman_persona_state_store`` — the open
+       :class:`corlinman_persona.store.PersonaStore`; we read the row's
+       ``state_json`` (``life.current`` + ``diary`` tail) directly.
+
+    Returns a Chinese system-prompt fragment, or ``None`` when nothing is
+    available (the daily post then composes from the bare persona body).
+    """
+    app_state = context.app_state
+    if app_state is None or not persona_id:
+        return None
+
+    # Strategy 1: the C2 persona_resolver (flat placeholder keys).
+    resolver = getattr(app_state, "persona_resolver", None)
+    if resolver is not None and hasattr(resolver, "resolve"):
+        try:
+            mood = await resolver.resolve("mood", persona_id)
+            location = await resolver.resolve("life_location", persona_id)
+            activity = await resolver.resolve("life_activity", persona_id)
+            state = await resolver.resolve("life_state", persona_id)
+            companions = await resolver.resolve("life_companions", persona_id)
+            arc = await resolver.resolve("life_story_arc", persona_id)
+        except Exception as exc:  # noqa: BLE001 — never break the firing
+            _logger.warning(
+                "scheduler.builtin.qzone_daily.resolver_failed",
+                extra={"persona_id": persona_id, "error": repr(exc)},
+            )
+        else:
+            rows = [
+                ("此刻心情", mood),
+                ("现在在做", activity),
+                ("人在哪", location),
+                ("身边有谁", companions),
+                ("状态", state),
+                ("当前剧情线", arc),
+            ]
+            lines = [f"- {label}：{val}" for label, val in rows if val]
+            if lines:
+                return "## 我最近的生活（写说说时自然带上，别逐条念）\n" + "\n".join(
+                    lines
+                )
+
+    # Strategy 2: read the open runtime persona-state store directly so we
+    # can also surface a recent diary tail (the resolver doesn't expose it).
+    store = None
+    extras = getattr(app_state, "extras", None)
+    if isinstance(extras, dict):
+        store = extras.get("persona_state_store")
+    if store is None:
+        store = getattr(app_state, "corlinman_persona_state_store", None)
+    if store is not None and hasattr(store, "get"):
+        try:
+            row = await store.get(persona_id)
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning(
+                "scheduler.builtin.qzone_daily.state_store_failed",
+                extra={"persona_id": persona_id, "error": repr(exc)},
+            )
+            return None
+        if row is None:
+            return None
+        sj = getattr(row, "state_json", None)
+        if not isinstance(sj, dict):
+            return None
+        life = sj.get("life") if isinstance(sj.get("life"), dict) else {}
+        current = life.get("current") if isinstance(life.get("current"), dict) else {}
+        diary = sj.get("diary") if isinstance(sj.get("diary"), list) else []
+        lines: list[str] = []
+        for label, key in (
+            ("此刻心情", "mood"),
+            ("现在在做", "activity"),
+            ("人在哪", "location"),
+            ("状态", "state"),
+        ):
+            val = current.get(key)
+            if isinstance(val, str) and val.strip():
+                lines.append(f"- {label}：{val.strip()}")
+        diary_tail = [d for d in diary[-3:] if d]
+        if diary_tail:
+            entries = []
+            for d in diary_tail:
+                if isinstance(d, dict):
+                    text = d.get("text") or d.get("entry") or ""
+                elif isinstance(d, str):
+                    text = d
+                else:
+                    text = str(d)
+                if text:
+                    entries.append(f"  · {str(text)[:120]}")
+            if entries:
+                lines.append("- 最近日记：\n" + "\n".join(entries))
+        if lines:
+            return "## 我最近的生活（写说说时自然带上，别逐条念）\n" + "\n".join(
+                lines
+            )
+    return None
 
 
 def _build_session_key(persona_id: str) -> str:

@@ -50,8 +50,11 @@ from __future__ import annotations
 import asyncio
 import inspect
 import os
+import re
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from enum import StrEnum
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -63,15 +66,22 @@ __all__ = [
     "CommandHandler",
     "CommandResult",
     "CommandSpec",
+    "SlashAccessPolicy",
+    "SlashAccessTier",
     "all_specs",
     "apply_command_prelude",
     "is_command_admin",
+    "load_commands_dir",
     "match_command",
     "match_command_with_args",
     "register_command",
+    "register_commands_from_dir",
+    "register_skill_command",
     "run_command_handler",
     "runtime_registry",
+    "substitute_arguments",
     "telegram_bot_commands",
+    "unknown_command_notice",
     "validate_registry",
 ]
 
@@ -963,3 +973,412 @@ def is_command_admin(binding: ChannelBinding) -> bool:
     needle = f"{binding.channel}:{binding.sender}"
     entries = {item.strip() for item in raw.split(",") if item.strip()}
     return needle in entries
+
+
+# ---------------------------------------------------------------------------
+# $ARGUMENTS / $1.. substitution
+# ---------------------------------------------------------------------------
+
+
+#: Matches ``$ARGUMENTS``, ``$1`` … ``$9`` (and ``${1}`` brace form). The
+#: brace form lets a template write ``${1}files`` without the digit
+#: greedily swallowing the trailing word.
+_ARG_TOKEN_RE = re.compile(r"\$(?:\{(\d+|ARGUMENTS)\}|(ARGUMENTS|\d+))")
+
+
+def substitute_arguments(template: str, args_text: str) -> str:
+    """Substitute ``$ARGUMENTS`` / ``$1``..``$N`` in ``template``.
+
+    Mirrors the Claude-Code / hermes commands-dir convention used by
+    ``*.md`` command bodies:
+
+    * ``$ARGUMENTS`` → the full args string (everything the user typed
+      after the command alias), verbatim.
+    * ``$1`` … ``$N`` → the N-th whitespace-delimited positional token.
+      Out-of-range positions substitute to ``""``.
+    * ``${1}`` / ``${ARGUMENTS}`` brace forms are equivalent and useful
+      when a digit would otherwise run into a following word.
+
+    Unmatched ``$`` sequences (``$foo``, a bare ``$``) are left intact —
+    only the recognised tokens are rewritten — so a template containing
+    shell snippets or prices isn't mangled.
+    """
+    positional = args_text.split()
+
+    def _repl(m: re.Match[str]) -> str:
+        token = m.group(1) or m.group(2)
+        if token == "ARGUMENTS":
+            return args_text
+        idx = int(token)
+        if idx <= 0:
+            return ""
+        return positional[idx - 1] if idx <= len(positional) else ""
+
+    return _ARG_TOKEN_RE.sub(_repl, template)
+
+
+# ---------------------------------------------------------------------------
+# Commands-dir (*.md) loader
+# ---------------------------------------------------------------------------
+
+
+def _parse_frontmatter(raw: str) -> tuple[dict[str, str], str]:
+    """Split a ``---``-delimited YAML-ish frontmatter block off ``raw``.
+
+    Returns ``(meta, body)``. We deliberately do NOT depend on PyYAML
+    (it is not a guaranteed dep and the prod VPS is memory-constrained);
+    the frontmatter we care about is flat ``key: value`` scalars, which a
+    line parser handles. Quotes around the value are stripped. A document
+    without an opening ``---`` returns ``({}, raw)``.
+
+    Values may be wrapped in matching single/double quotes; comma lists
+    (e.g. ``aliases: /foo, /bar``) are left as the raw string for the
+    caller to split — keeping this parser dependency-free and total.
+    """
+    if not raw.startswith("---"):
+        return {}, raw
+    # Find the closing fence. The first line is the opening ``---``.
+    lines = raw.splitlines()
+    end = None
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            end = i
+            break
+    if end is None:
+        return {}, raw
+    meta: dict[str, str] = {}
+    for line in lines[1:end]:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if ":" not in stripped:
+            continue
+        key, _, value = stripped.partition(":")
+        key = key.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        if key:
+            meta[key] = value
+    body = "\n".join(lines[end + 1 :]).lstrip("\n")
+    return meta, body
+
+
+def _aliases_for(name: str, meta: dict[str, str]) -> tuple[str, ...]:
+    """Compute the alias tuple for a loaded command.
+
+    The canonical alias is always ``/<name>``. Additional aliases come
+    from a comma-separated ``aliases:`` frontmatter key. Aliases that
+    don't already carry a leading ``/`` (and aren't a bare-word ergonomic
+    form) are normalised to ``/<alias>`` so authors can write
+    ``aliases: foo, bar`` ergonomically.
+    """
+    aliases: list[str] = [f"/{name}"]
+    raw = meta.get("aliases", "")
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        # Bare CJK / ergonomic forms (no ASCII slug) pass through verbatim;
+        # ASCII slugs without a slash get one prepended.
+        if not item.startswith("/") and re.fullmatch(r"[A-Za-z0-9_-]+", item):
+            item = f"/{item}"
+        if item not in aliases:
+            aliases.append(item)
+    return tuple(aliases)
+
+
+def _spec_from_md(name: str, raw: str) -> CommandSpec:
+    """Build a :class:`CommandSpec` from one ``*.md`` command document.
+
+    The markdown body becomes the ``wizard_prelude`` (with ``$ARGUMENTS``
+    left intact — :func:`run_command_handler` / the router perform the
+    per-invocation substitution). Frontmatter keys:
+
+    * ``description`` / ``summary`` → :attr:`CommandSpec.summary`
+    * ``aliases`` → extra aliases (comma list)
+    * ``category`` → :attr:`CommandSpec.category`
+    * ``args_hint`` / ``argument-hint`` → :attr:`CommandSpec.args_hint`
+    * ``admin_only`` (``true``/``1``/``yes``) → :attr:`CommandSpec.admin_only`
+    """
+    meta, body = _parse_frontmatter(raw)
+    summary = meta.get("description") or meta.get("summary") or name
+    args_hint = meta.get("args_hint") or meta.get("argument-hint") or ""
+    admin_only = meta.get("admin_only", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    return CommandSpec(
+        name=name,
+        aliases=_aliases_for(name, meta),
+        summary=summary,
+        category=meta.get("category", "Custom"),
+        args_hint=args_hint,
+        admin_only=admin_only,
+        wizard_prelude=body or summary,
+    )
+
+
+def load_commands_dir(directory: str | Path) -> list[CommandSpec]:
+    """Load every ``*.md`` command document under ``directory``.
+
+    Returns a list of (un-registered) :class:`CommandSpec`. The command
+    name is the file stem; the markdown body becomes the agent-injected
+    prelude. A missing directory returns ``[]`` (callers can point this at
+    an optional ``commands/`` folder that may not exist). Files are loaded
+    in sorted order so two specs that collide surface deterministically.
+    """
+    path = Path(directory)
+    if not path.is_dir():
+        return []
+    out: list[CommandSpec] = []
+    for md in sorted(path.glob("*.md")):
+        try:
+            raw = md.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        out.append(_spec_from_md(md.stem, raw))
+    return out
+
+
+def register_commands_from_dir(directory: str | Path) -> list[CommandSpec]:
+    """Load + :func:`register_command` every ``*.md`` under ``directory``.
+
+    Returns the specs that were successfully registered. Specs whose name
+    or aliases collide with an already-registered command are skipped (a
+    bundled command already owns that surface) rather than raising — the
+    directory is an additive extension point, not a source of truth.
+    """
+    registered: list[CommandSpec] = []
+    for spec in load_commands_dir(directory):
+        try:
+            register_command(spec)
+        except ValueError:
+            continue
+        registered.append(spec)
+    return registered
+
+
+# ---------------------------------------------------------------------------
+# Skill → command bridge
+# ---------------------------------------------------------------------------
+
+
+def register_skill_command(
+    *,
+    name: str,
+    summary: str,
+    prelude: str | None = None,
+    handler: CommandHandler | None = None,
+    aliases: tuple[str, ...] = (),
+    category: str = "Skills",
+    args_hint: str = "",
+    admin_only: bool = False,
+) -> CommandSpec | None:
+    """Register a slash command sourced from a skill's frontmatter.
+
+    Skills may declare a ``command`` invocation surface in their
+    ``SKILL.md`` frontmatter; this bridges that declaration into the
+    channel command registry so ``/<name>`` triggers the skill on every
+    channel + the web playground. The default delivery is a prelude that
+    points the agent at the named skill.
+
+    Returns the registered :class:`CommandSpec`, or ``None`` when the
+    name/alias already exists (idempotent re-seed on reload).
+    """
+    alias_tuple: tuple[str, ...] = (f"/{name}", *aliases)
+    if prelude is None and handler is None:
+        prelude = (
+            f"[SYSTEM-INSERTED] The user invoked /{name}. Use the "
+            f"`{name}` skill to handle this request. User arguments: "
+            "$ARGUMENTS"
+        )
+    spec = CommandSpec(
+        name=name,
+        aliases=alias_tuple,
+        summary=summary,
+        category=category,
+        args_hint=args_hint,
+        admin_only=admin_only,
+        wizard_prelude=prelude,
+        handler=handler,
+    )
+    try:
+        register_command(spec)
+    except ValueError:
+        return None
+    return spec
+
+
+# ---------------------------------------------------------------------------
+# Slash access policy (admin / DM / allowlist tiers)
+# ---------------------------------------------------------------------------
+
+
+class SlashAccessTier(StrEnum):
+    """Coarse authorization tier required to invoke a command surface.
+
+    Preserves corlinman's allow-by-default polarity: ``PUBLIC`` is the
+    default and lets anyone run the command (matching the pre-policy
+    behaviour). The stricter tiers are opt-in per command / per policy.
+    """
+
+    PUBLIC = "public"
+    """Anyone on an enabled channel may invoke (default — allow-by-default)."""
+
+    DM_ONLY = "dm_only"
+    """Only direct messages (private chats), regardless of admin status.
+    Used for commands that leak per-user state into a group otherwise."""
+
+    ALLOWLIST = "allowlist"
+    """Only senders on the configured admin/allowlist
+    (:func:`is_command_admin`)."""
+
+    ADMIN = "admin"
+    """Synonym for ALLOWLIST kept for call-site readability."""
+
+
+@dataclass(slots=True)
+class SlashAccessPolicy:
+    """Decide whether a caller may invoke a given command.
+
+    Allow-by-default: a command with no explicit tier resolves to
+    ``PUBLIC`` and is always permitted. The policy maps command *names*
+    to a :class:`SlashAccessTier`; a spec's own ``admin_only`` flag is
+    honoured as an implicit ``ALLOWLIST`` tier so the two mechanisms
+    compose without surprising precedence.
+
+    ``default_tier`` lets a deployment flip the global polarity (e.g.
+    lock every command to ``ALLOWLIST`` for a private bot) while still
+    allow-by-default for any deployment that doesn't configure it.
+    """
+
+    tiers: dict[str, SlashAccessTier] = field(default_factory=dict)
+    default_tier: SlashAccessTier = SlashAccessTier.PUBLIC
+
+    def tier_for(self, spec: CommandSpec) -> SlashAccessTier:
+        """Resolve the effective tier for ``spec``.
+
+        Precedence: an explicit per-name entry wins; otherwise the spec's
+        ``admin_only`` flag implies ``ALLOWLIST``; otherwise the policy's
+        ``default_tier``.
+        """
+        explicit = self.tiers.get(spec.name)
+        if explicit is not None:
+            return explicit
+        if spec.admin_only:
+            return SlashAccessTier.ALLOWLIST
+        return self.default_tier
+
+    def allows(
+        self,
+        spec: CommandSpec,
+        binding: ChannelBinding,
+        *,
+        is_dm: bool,
+        is_admin: bool | None = None,
+    ) -> bool:
+        """Return ``True`` when ``binding`` may invoke ``spec``.
+
+        ``is_dm`` flags whether the inbound came from a private chat.
+        ``is_admin`` is resolved via :func:`is_command_admin` when not
+        supplied so callers can stay terse.
+        """
+        tier = self.tier_for(spec)
+        if tier == SlashAccessTier.PUBLIC:
+            return True
+        if tier == SlashAccessTier.DM_ONLY:
+            return is_dm
+        # ALLOWLIST / ADMIN.
+        if is_admin is None:
+            is_admin = is_command_admin(binding)
+        return bool(is_admin)
+
+
+# ---------------------------------------------------------------------------
+# Unknown-command notice
+# ---------------------------------------------------------------------------
+
+
+def _looks_like_command(text: str) -> bool:
+    """True when ``text`` *looks* like a slash command invocation.
+
+    A leading-slash token of ASCII / CJK word characters. Used to decide
+    whether an unmatched message warrants an "unknown command" hint vs.
+    being plain prose that happens to start with a slash (a URL path, a
+    fraction, ...). We require the first token to be reasonably command-
+    shaped: ``/`` followed by 1+ word chars and no whitespace inside the
+    token itself.
+    """
+    stripped = text.strip()
+    if not stripped.startswith("/"):
+        return False
+    first = stripped.split(maxsplit=1)[0]
+    # ``/`` alone, ``//x`` (comment-ish), or a path with another slash is
+    # not a command shape.
+    body = first[1:]
+    if not body or "/" in body:
+        return False
+    return bool(re.fullmatch(r"[\w\-]+", body, flags=re.UNICODE))
+
+
+def unknown_command_notice(text: str, *, max_suggestions: int = 3) -> str | None:
+    """Return a hint string when ``text`` is an unknown slash command.
+
+    Contract:
+
+    * Returns ``None`` when ``text`` matches a registered command
+      (:func:`match_command`) — the caller dispatches normally.
+    * Returns ``None`` when ``text`` doesn't look like a command at all
+      (no leading slash / not command-shaped) — plain prose is forwarded
+      to the agent untouched, preserving allow-by-default.
+    * Otherwise returns a short notice listing the closest registered
+      aliases so the user can self-correct.
+
+    The suggestion set is the registered ``/``-prefixed aliases sharing
+    the longest common prefix with the typed token, capped at
+    ``max_suggestions``; falls back to ``/help``.
+    """
+    stripped = text.strip()
+    if not _looks_like_command(stripped):
+        return None
+    if match_command(stripped) is not None:
+        return None
+
+    typed = stripped.split(maxsplit=1)[0]
+    typed_lower = typed.lower()
+
+    slash_aliases: list[str] = []
+    for spec in all_specs():
+        for alias in spec.aliases:
+            if alias.startswith("/"):
+                slash_aliases.append(alias)
+
+    def _shared_prefix_len(a: str, b: str) -> int:
+        n = 0
+        for ca, cb in zip(a, b):
+            if ca == cb:
+                n += 1
+            else:
+                break
+        return n
+
+    scored = sorted(
+        slash_aliases,
+        key=lambda a: (-_shared_prefix_len(a.lower(), typed_lower), a),
+    )
+    # Keep only candidates that share at least the leading slash + 1 char
+    # so we don't suggest wholly unrelated commands.
+    suggestions = [
+        a for a in scored if _shared_prefix_len(a.lower(), typed_lower) >= 2
+    ][:max_suggestions]
+
+    if suggestions:
+        hint = "，".join(suggestions)
+        return (
+            f"未知命令 {typed}。你是不是想输入：{hint}？"
+            "发送 /help 查看全部命令。"
+        )
+    return f"未知命令 {typed}。发送 /help 查看全部可用命令。"

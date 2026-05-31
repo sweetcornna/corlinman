@@ -63,11 +63,14 @@ import websockets
 from websockets.asyncio.client import ClientConnection
 
 from corlinman_channels.common import (
+    Attachment,
+    AttachmentKind,
     ChannelBinding,
     ConfigError,
     InboundEvent,
     TransportError,
     split_on_msg_break,
+    sticker_placeholder,
 )
 
 __all__ = [
@@ -199,6 +202,103 @@ def _strip_mention(content: str, bot_id: str) -> str:
     return content.strip()
 
 
+def _classify_attachment(att: dict[str, Any]) -> AttachmentKind:
+    """Classify a Discord attachment dict by its ``content_type`` / name.
+
+    Discord ships ``content_type`` (a MIME string) on most attachments;
+    we fall back to the filename extension when it's absent.
+    """
+    ctype = str(att.get("content_type") or "").lower()
+    name = str(att.get("filename") or "").lower()
+    if ctype.startswith("image/") or name.endswith(
+        (".png", ".jpg", ".jpeg", ".gif", ".webp")
+    ):
+        return AttachmentKind.IMAGE
+    if ctype.startswith("audio/") or name.endswith((".ogg", ".mp3", ".wav", ".m4a")):
+        return AttachmentKind.AUDIO
+    if ctype.startswith("video/") or name.endswith((".mp4", ".mov", ".webm")):
+        return AttachmentKind.VIDEO
+    return AttachmentKind.DOCUMENT
+
+
+def extract_attachments(message: dict[str, Any]) -> list[Attachment]:
+    """Extract :class:`Attachment` descriptors from a Discord message.
+
+    Discord pre-uploads every attachment to its CDN, so each carries a
+    fetchable ``url`` — no follow-up download token needed (unlike
+    Telegram). Stickers are surfaced as IMAGE attachments via the sticker
+    CDN; their textual hint is added by the adapter.
+    """
+    out: list[Attachment] = []
+    for att in message.get("attachments") or []:
+        if not isinstance(att, dict):
+            continue
+        url = str(att.get("url") or att.get("proxy_url") or "")
+        if not url:
+            continue
+        out.append(
+            Attachment(
+                kind=_classify_attachment(att),
+                url=url,
+                mime=att.get("content_type") or None,
+                file_name=att.get("filename") or None,
+            )
+        )
+    for st in message.get("sticker_items") or message.get("stickers") or []:
+        if not isinstance(st, dict):
+            continue
+        sticker_id = str(st.get("id") or "")
+        if not sticker_id:
+            continue
+        out.append(
+            Attachment(
+                kind=AttachmentKind.IMAGE,
+                url=f"https://media.discordapp.net/stickers/{sticker_id}.png",
+                mime="image/png",
+                file_name=f"{st.get('name') or 'sticker'}.png",
+            )
+        )
+    return out
+
+
+def sender_display_name(message: dict[str, Any]) -> str | None:
+    """Best-effort author display name for group attribution.
+
+    Prefers the per-guild ``member.nick``, then the account-level
+    ``global_name``, then ``username``.
+    """
+    member = message.get("member")
+    if isinstance(member, dict) and member.get("nick"):
+        return str(member["nick"])
+    author = message.get("author")
+    if isinstance(author, dict):
+        for key in ("global_name", "username"):
+            val = author.get(key)
+            if val:
+                return str(val)
+    return None
+
+
+def reply_to_text(message: dict[str, Any], bot_id: str) -> str | None:
+    """Text of the message this one replies to (``referenced_message``)."""
+    ref = message.get("referenced_message")
+    if not isinstance(ref, dict):
+        return None
+    content = _strip_mention(str(ref.get("content") or ""), bot_id)
+    return content or None
+
+
+def sticker_hint(message: dict[str, Any]) -> str | None:
+    """Synthesised text hint for a sticker-only Discord message."""
+    items = message.get("sticker_items") or message.get("stickers") or []
+    for st in items:
+        if isinstance(st, dict) and st.get("name"):
+            return sticker_placeholder(set_name=str(st["name"]))
+    if items:
+        return sticker_placeholder()
+    return None
+
+
 # ===========================================================================
 # Adapter
 # ===========================================================================
@@ -321,7 +421,15 @@ class DiscordAdapter:
                     continue
 
             content = _strip_mention(msg.get("content") or "", bot_id)
+            attachments = extract_attachments(msg)
             if not content.strip():
+                # No text — try a sticker hint so a sticker-only message
+                # still routes; otherwise fall through to the
+                # attachment-only guard below.
+                hint = sticker_hint(msg)
+                if hint is not None:
+                    content = hint
+            if not content.strip() and not attachments:
                 continue
 
             binding = binding_from_message(msg, bot_id)
@@ -332,8 +440,10 @@ class DiscordAdapter:
                 message_id=str(msg.get("id", "")) or None,
                 timestamp=_parse_timestamp(msg.get("timestamp")),
                 mentioned=mentioned or is_dm,
-                attachments=[],  # multimodal download is out of scope here
+                attachments=attachments,
                 payload=msg,
+                sender_name=sender_display_name(msg),
+                reply_to_text=reply_to_text(msg, bot_id),
             )
 
     # ------------------------------------------------------------------

@@ -39,10 +39,13 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 from corlinman_channels.common import (
+    Attachment,
+    AttachmentKind,
     ChannelBinding,
     ConfigError,
     InboundEvent,
     TransportError,
+    sticker_placeholder,
 )
 
 # ---------------------------------------------------------------------------
@@ -132,6 +135,61 @@ class Document(BaseModel):
     file_size: int | None = None
 
 
+class Video(BaseModel):
+    """Telegram video attachment."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    file_id: str
+    file_unique_id: str | None = None
+    duration: int = 0
+    mime_type: str | None = None
+    file_name: str | None = None
+    file_size: int | None = None
+
+
+class Audio(BaseModel):
+    """Telegram audio attachment (music files, not voice notes)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    file_id: str
+    file_unique_id: str | None = None
+    duration: int = 0
+    mime_type: str | None = None
+    file_name: str | None = None
+    file_size: int | None = None
+
+
+class Animation(BaseModel):
+    """Telegram animation (GIF / silent MP4)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    file_id: str
+    file_unique_id: str | None = None
+    duration: int = 0
+    mime_type: str | None = None
+    file_name: str | None = None
+    file_size: int | None = None
+
+
+class Sticker(BaseModel):
+    """Telegram sticker. Carries no text body — the adapter synthesises a
+    placeholder description from ``emoji`` + ``set_name`` so a
+    sticker-only message still routes (see :func:`sticker_placeholder`)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    file_id: str
+    file_unique_id: str | None = None
+    emoji: str | None = None
+    set_name: str | None = None
+    is_animated: bool = False
+    is_video: bool = False
+    file_size: int | None = None
+
+
 class MessageEntity(BaseModel):
     """One ``MessageEntity`` — only mention-related types are interpreted."""
 
@@ -162,11 +220,17 @@ class Message(BaseModel):
     chat: Chat
     date: int
     text: str | None = None
+    caption: str | None = None
     entities: list[MessageEntity] = Field(default_factory=list)
     reply_to_message: Message | None = None
     photo: list[PhotoSize] = Field(default_factory=list)
     voice: Voice | None = None
     document: Document | None = None
+    video: Video | None = None
+    audio: Audio | None = None
+    animation: Animation | None = None
+    sticker: Sticker | None = None
+    media_group_id: str | None = None
 
     def largest_photo(self) -> PhotoSize | None:
         """Pick the largest :class:`PhotoSize` (max by ``file_size``)."""
@@ -176,6 +240,103 @@ class Message(BaseModel):
         if with_size:
             return max(with_size, key=lambda p: p.file_size or 0)
         return self.photo[-1]
+
+    def body_text(self) -> str:
+        """Human-readable text — ``text`` for plain messages, else the
+        media ``caption`` (photo/video/document captions live here, not
+        in ``text``)."""
+        return self.text or self.caption or ""
+
+    def to_attachments(self) -> list[Attachment]:
+        """Extract normalized :class:`Attachment` descriptors.
+
+        Telegram attachments are referenced by ``file_id`` and require a
+        follow-up ``getFile`` + download (see
+        :func:`corlinman_channels.telegram_media.download_to_media_dir`)
+        to materialise the bytes. At parse time we carry the ``file_id``
+        in the :attr:`Attachment.url` slot prefixed with ``tg-file-id:``
+        so the download step downstream knows to resolve it rather than
+        fetch an HTTP URL — keeping the inbound parse network-free.
+
+        Covers photo (largest variant), voice, audio, video, animation,
+        document, and sticker. A sticker yields an attachment AND its
+        emoji surfaces as the message text via :func:`sticker_placeholder`
+        (handled by the adapter).
+        """
+        out: list[Attachment] = []
+        photo = self.largest_photo()
+        if photo is not None:
+            out.append(
+                Attachment(
+                    kind=AttachmentKind.IMAGE,
+                    url=f"tg-file-id:{photo.file_id}",
+                    mime="image/jpeg",
+                )
+            )
+        if self.sticker is not None:
+            out.append(
+                Attachment(
+                    kind=AttachmentKind.IMAGE,
+                    url=f"tg-file-id:{self.sticker.file_id}",
+                    mime="image/webp",
+                    file_name="sticker.webp",
+                )
+            )
+        if self.voice is not None:
+            out.append(
+                Attachment(
+                    kind=AttachmentKind.AUDIO,
+                    url=f"tg-file-id:{self.voice.file_id}",
+                    mime=self.voice.mime_type or "audio/ogg",
+                )
+            )
+        if self.audio is not None:
+            out.append(
+                Attachment(
+                    kind=AttachmentKind.AUDIO,
+                    url=f"tg-file-id:{self.audio.file_id}",
+                    mime=self.audio.mime_type or "audio/*",
+                    file_name=self.audio.file_name,
+                )
+            )
+        if self.video is not None:
+            out.append(
+                Attachment(
+                    kind=AttachmentKind.VIDEO,
+                    url=f"tg-file-id:{self.video.file_id}",
+                    mime=self.video.mime_type or "video/mp4",
+                    file_name=self.video.file_name,
+                )
+            )
+        if self.animation is not None:
+            out.append(
+                Attachment(
+                    kind=AttachmentKind.VIDEO,
+                    url=f"tg-file-id:{self.animation.file_id}",
+                    mime=self.animation.mime_type or "video/mp4",
+                    file_name=self.animation.file_name or "animation.mp4",
+                )
+            )
+        if self.document is not None:
+            out.append(
+                Attachment(
+                    kind=AttachmentKind.DOCUMENT,
+                    url=f"tg-file-id:{self.document.file_id}",
+                    mime=self.document.mime_type or "application/octet-stream",
+                    file_name=self.document.file_name,
+                )
+            )
+        return out
+
+    def sender_display_name(self) -> str | None:
+        """Best-effort display name of the author for group attribution."""
+        if self.from_ is None:
+            return None
+        if self.from_.first_name:
+            return self.from_.first_name
+        if self.from_.username:
+            return f"@{self.from_.username}"
+        return None
 
 
 # pydantic forward-ref resolution for the self-referential reply_to_message.
@@ -548,9 +709,24 @@ class TelegramAdapter:
                 if not mentioned and not self._keyword_match(msg):
                     continue
 
-            text = msg.text
-            if text is None or not text.strip():
+            # Multimodal: build the attachment descriptors first so an
+            # image-/voice-/document-only message (which has no ``text``)
+            # is no longer dropped — only messages with NEITHER text NOR
+            # any attachment are skipped.
+            attachments = msg.to_attachments()
+            text = msg.body_text()
+            if msg.sticker is not None and not text.strip():
+                # Sticker-only message — synthesise a readable placeholder
+                # from the sticker's emoji + set so the agent has content.
+                text = sticker_placeholder(
+                    msg.sticker.emoji, msg.sticker.set_name
+                )
+            if not text.strip() and not attachments:
                 continue
+
+            reply_to_text: str | None = None
+            if msg.reply_to_message is not None:
+                reply_to_text = msg.reply_to_message.body_text() or None
 
             binding = binding_from_message(msg, bot_id)
             yield InboundEvent(
@@ -560,8 +736,11 @@ class TelegramAdapter:
                 message_id=str(msg.message_id),
                 timestamp=msg.date,
                 mentioned=mentioned or msg.chat.is_private(),
-                attachments=[],  # download is a follow-up step — out of scope here
+                attachments=attachments,
                 payload=msg,
+                sender_name=msg.sender_display_name(),
+                reply_to_text=reply_to_text,
+                media_group_id=msg.media_group_id,
             )
             # Note `bot_username` is unused inside the loop body but kept in
             # scope so future refactors that need it don't re-read it from
@@ -808,6 +987,8 @@ __all__ = [
     "ERROR_BACKOFF_SECS",
     "LONG_POLL_TIMEOUT",
     "MAX_DOWNLOAD_BYTES",
+    "Animation",
+    "Audio",
     "CallbackQuery",
     "Chat",
     "Document",
@@ -816,10 +997,12 @@ __all__ = [
     "MessageEntity",
     "MessageRoute",
     "PhotoSize",
+    "Sticker",
     "TelegramAdapter",
     "TelegramConfig",
     "Update",
     "User",
+    "Video",
     "Voice",
     "binding_from_message",
     "classify",

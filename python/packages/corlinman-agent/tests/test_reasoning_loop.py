@@ -530,8 +530,16 @@ async def test_done_event_usage_reflects_last_round_in_multi_round_loop() -> Non
 
 
 def test_estimate_tokens_sums_string_and_multimodal_content() -> None:
-    """Estimator sums string content + multimodal text parts, ignores images."""
-    from corlinman_agent.reasoning_loop import _estimate_tokens
+    """Estimator sums string + multimodal text AND charges image blocks.
+
+    Gap ``chars-div-4-token-estimate``: image / file content blocks are no
+    longer treated as free — each is charged a flat ~1.5k-token weight so
+    the context budget reflects multimodal payloads.
+    """
+    from corlinman_agent.reasoning_loop import (
+        _IMAGE_BLOCK_TOKEN_CHARGE,
+        _estimate_tokens,
+    )
 
     messages = [
         {"role": "user", "content": "hello"},
@@ -543,8 +551,9 @@ def test_estimate_tokens_sums_string_and_multimodal_content() -> None:
             ],
         },
     ]
-    # 5 chars + 5 chars = 10 → 10 // 4 = 2.
-    assert _estimate_tokens(messages) == 10 // 4
+    # 5 chars + 5 chars = 10 text chars → 2 text tokens, plus the image
+    # block's fixed per-block charge.
+    assert _estimate_tokens(messages) == 10 // 4 + _IMAGE_BLOCK_TOKEN_CHARGE
 
 
 @pytest.mark.asyncio

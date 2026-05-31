@@ -449,6 +449,21 @@ async def dispatch(spec: JobSpec, bus: HookBus, app_state: object | None = None)
             spec.action.env,
         )
         await _emit_outcome(bus, spec.name, run_id, outcome)
+        _err_kind = (
+            None
+            if outcome.kind is SubprocessOutcomeKind.SUCCESS
+            else outcome.kind.value
+        )
+        await _maybe_record(
+            app_state,
+            job_name=spec.name,
+            run_id=run_id,
+            action_kind="subprocess",
+            outcome_kind=outcome.kind.value,
+            error_kind=_err_kind,
+            exit_code=outcome.exit_code,
+            duration_ms=int(outcome.duration_secs * 1000),
+        )
         return
 
     if spec.action.kind == "run_tool":
@@ -493,7 +508,8 @@ async def dispatch(spec: JobSpec, bus: HookBus, app_state: object | None = None)
         # stays in one place.
         result = await run_builtin(builtin_name, ctx)
         duration_ms = int((time.monotonic() - started) * 1000)
-        if isinstance(result, dict) and bool(result.get("ok")):
+        _ok = isinstance(result, dict) and bool(result.get("ok"))
+        if _ok:
             event: _HookEventBase = HookEvent.EngineRunCompleted(
                 run_id=run_id, proposals_generated=0, duration_ms=duration_ms
             )
@@ -518,6 +534,16 @@ async def dispatch(spec: JobSpec, bus: HookBus, app_state: object | None = None)
                 "scheduler: hook emit failed",
                 extra={"job": spec.name, "run_id": run_id, "error": str(exc)},
             )
+        await _maybe_record(
+            app_state,
+            job_name=spec.name,
+            run_id=run_id,
+            action_kind="run_tool",
+            outcome_kind="success" if _ok else "non_zero_exit",
+            error_kind=None if _ok else "builtin_not_ok",
+            exit_code=None,
+            duration_ms=duration_ms,
+        )
         return
 
     if spec.action.kind == "run_agent":
@@ -563,23 +589,65 @@ async def dispatch(spec: JobSpec, bus: HookBus, app_state: object | None = None)
             extra={"job": spec.name, "run_id": run_id, "prompt_preview": prompt[:200]},
         )
         started = time.monotonic()
+        _agent_err: str | None = None
         try:
             result = await runner_fn(prompt)
             duration_ms = int((time.monotonic() - started) * 1000)
-            _logger.info(
-                "scheduler: run_agent job completed",
-                extra={
-                    "job": spec.name,
-                    "run_id": run_id,
-                    "duration_ms": duration_ms,
-                    "result_type": type(result).__name__,
-                },
-            )
-            event: _HookEventBase = HookEvent.EngineRunCompleted(
-                run_id=run_id, proposals_generated=0, duration_ms=duration_ms
-            )
+            # The wired ``agent_runner_fn`` returns a result dict carrying
+            # an ``ok`` flag (chat_service_unavailable / chat_error fold
+            # into ``ok: False``). Honour it so a soft failure surfaces as
+            # EngineRunFailed rather than masquerading as a completed run.
+            _ok = True
+            if isinstance(result, dict) and result.get("ok") is False:
+                _ok = False
+                _agent_err = str(result.get("error") or "run_agent_failed")
+            if _ok:
+                _logger.info(
+                    "scheduler: run_agent job completed",
+                    extra={
+                        "job": spec.name,
+                        "run_id": run_id,
+                        "duration_ms": duration_ms,
+                        "result_type": type(result).__name__,
+                    },
+                )
+                event: _HookEventBase = HookEvent.EngineRunCompleted(
+                    run_id=run_id, proposals_generated=0, duration_ms=duration_ms
+                )
+                # Channel delivery seam: surface the reply on the structlog
+                # feed (the same best-effort delivery seam the gateway's
+                # restart-broadcast uses) so an operator sees scheduled-run
+                # output. A future outbound-handle wave routes through here.
+                _reply = (
+                    result.get("reply") if isinstance(result, dict) else None
+                )
+                if isinstance(_reply, str) and _reply.strip():
+                    _logger.info(
+                        "scheduler: run_agent reply",
+                        extra={
+                            "job": spec.name,
+                            "run_id": run_id,
+                            "reply_preview": _reply[:500],
+                        },
+                    )
+            else:
+                _logger.error(
+                    "scheduler: run_agent runner reported failure",
+                    extra={
+                        "job": spec.name,
+                        "run_id": run_id,
+                        "duration_ms": duration_ms,
+                        "error": _agent_err,
+                    },
+                )
+                event = HookEvent.EngineRunFailed(
+                    run_id=run_id,
+                    error_kind=_agent_err or "run_agent_failed",
+                    exit_code=None,
+                )
         except Exception as exc:  # noqa: BLE001 — surface on bus, never crash scheduler
             duration_ms = int((time.monotonic() - started) * 1000)
+            _agent_err = "run_agent_exception"
             _logger.error(
                 "scheduler: run_agent job raised",
                 extra={
@@ -592,6 +660,16 @@ async def dispatch(spec: JobSpec, bus: HookBus, app_state: object | None = None)
             event = HookEvent.EngineRunFailed(
                 run_id=run_id, error_kind="run_agent_exception", exit_code=None
             )
+        await _maybe_record(
+            app_state,
+            job_name=spec.name,
+            run_id=run_id,
+            action_kind="run_agent",
+            outcome_kind="success" if _agent_err is None else "non_zero_exit",
+            error_kind=_agent_err,
+            exit_code=None,
+            duration_ms=duration_ms,
+        )
         try:
             await bus.emit(event)
         except Exception as exc:  # noqa: BLE001 — emit failures are non-fatal
@@ -676,6 +754,48 @@ async def _emit_failed(bus: HookBus, run_id: str, error_kind: str, exit_code: in
     except Exception as exc:  # noqa: BLE001
         _logger.warning(
             "scheduler: hook emit failed", extra={"run_id": run_id, "error": str(exc)}
+        )
+
+
+async def _maybe_record(
+    app_state: object | None,
+    *,
+    job_name: str,
+    run_id: str,
+    action_kind: str,
+    outcome_kind: str,
+    error_kind: str | None,
+    exit_code: int | None,
+    duration_ms: int,
+) -> None:
+    """Persist a firing to the SchedulerStore parked on ``app_state``.
+
+    Best-effort: no store reachable, or a write error, both skip silently
+    — persistence is for history + missed-run catch-up across restarts,
+    never load-bearing for the firing itself. This is the production
+    caller that fills ``scheduler_runs`` so :func:`_maybe_catch_up` has a
+    last-fire timestamp to read on the next boot.
+    """
+    store = _resolve_scheduler_store(app_state)
+    if store is None:
+        return
+    record_raw = getattr(store, "record_raw", None)
+    if record_raw is None:
+        return
+    try:
+        await record_raw(
+            job_name=job_name,
+            run_id=run_id,
+            action_kind=action_kind,
+            outcome_kind=outcome_kind,
+            error_kind=error_kind,
+            exit_code=exit_code,
+            duration_ms=duration_ms,
+        )
+    except Exception as exc:  # noqa: BLE001 — history is never load-bearing
+        _logger.warning(
+            "scheduler: run-history record failed",
+            extra={"job": job_name, "run_id": run_id, "error": str(exc)},
         )
 
 
@@ -788,16 +908,127 @@ async def _sleep_until(deadline: float, cancel: asyncio.Event) -> bool:
     return cancel_task in done
 
 
+#: Default missed-run catch-up grace window (seconds). When the gateway
+#: restarts and a job's scheduled firing was missed during the downtime,
+#: the job fires once immediately *iff* the missed firing is within this
+#: window. Older misses are skipped (we don't replay a backlog). Operators
+#: override via ``CORLINMAN_SCHEDULER_CATCHUP_GRACE_SECS``.
+_CATCHUP_GRACE_SECS_DEFAULT: int = 3600
+
+
+def _resolve_catchup_grace_secs() -> int:
+    raw = os.environ.get("CORLINMAN_SCHEDULER_CATCHUP_GRACE_SECS", "")
+    if not raw:
+        return _CATCHUP_GRACE_SECS_DEFAULT
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return _CATCHUP_GRACE_SECS_DEFAULT
+
+
+def _resolve_scheduler_store(app_state: object | None) -> object | None:
+    """Best-effort resolve a :class:`SchedulerStore`-shaped handle off
+    ``app_state`` for last-fire lookups. Returns ``None`` (no catch-up)
+    when nothing usable is parked — keeps unit tests + degraded boots
+    catch-up-free without any wiring."""
+    if app_state is None:
+        return None
+    store = getattr(app_state, "scheduler_store", None)
+    if store is not None:
+        return store
+    handle = getattr(app_state, "corlinman_scheduler_handle", None)
+    if handle is not None:
+        return getattr(handle, "store", None)
+    return None
+
+
+async def _maybe_catch_up(
+    spec: JobSpec,
+    bus: HookBus,
+    app_state: object | None,
+) -> None:
+    """Fire ``spec`` once on startup if its previous scheduled firing was
+    missed during downtime and falls within the catch-up grace window.
+
+    Reads the last recorded firing for ``spec.name`` from a
+    SchedulerStore parked on ``app_state`` (when available). Computes the
+    most-recent scheduled firing that is at-or-before ``now``; if that
+    firing happened *after* the last recorded run and is within the grace
+    window, dispatch once. Best-effort + fully defensive: no store, no
+    history, parse trouble, or an out-of-grace miss all skip silently.
+    """
+    from datetime import datetime, timedelta
+
+    store = _resolve_scheduler_store(app_state)
+    if store is None:
+        return
+    list_for_job = getattr(store, "list_for_job", None)
+    if list_for_job is None:
+        return
+    try:
+        recent = await list_for_job(spec.name, 1)
+    except Exception as exc:  # noqa: BLE001 — catch-up is never load-bearing
+        _logger.warning(
+            "scheduler: catch-up last-fire lookup failed",
+            extra={"job": spec.name, "error": str(exc)},
+        )
+        return
+    last_fired_ms: int | None = None
+    if recent:
+        last_fired_ms = getattr(recent[0], "fired_at_ms", None)
+
+    now_wall = datetime.now(tz=UTC)
+    grace = _resolve_catchup_grace_secs()
+    # Walk back from now to find the most-recent scheduled firing at-or-
+    # before now. ``next_after`` only yields strictly-future firings, so
+    # we step back a window and take the latest firing that is <= now.
+    lookback = now_wall - timedelta(seconds=max(grace, 60) + 86400)
+    cursor = lookback
+    last_due: datetime | None = None
+    # Bounded walk: at most ~1500 steps even for a per-minute cron over a
+    # 24h+grace lookback — cheap and can't spin (next_after is strictly
+    # increasing, and we break once we pass ``now``).
+    for _ in range(2000):
+        nxt = next_after(spec.cron, cursor)
+        if nxt is None or nxt > now_wall:
+            break
+        last_due = nxt
+        cursor = nxt
+    if last_due is None:
+        return
+    missed_age = (now_wall - last_due).total_seconds()
+    if missed_age > grace:
+        return  # too old — don't replay stale backlog
+    if last_fired_ms is not None:
+        last_due_ms = int(last_due.timestamp() * 1000)
+        if last_fired_ms >= last_due_ms:
+            return  # already ran this firing — not actually missed
+    _logger.info(
+        "scheduler: catching up missed firing",
+        extra={
+            "job": spec.name,
+            "missed_due_at": last_due.isoformat(),
+            "missed_age_secs": int(missed_age),
+        },
+    )
+    await dispatch(spec, bus, app_state)
+
+
 async def _run_job_loop(
     spec: JobSpec,
     bus: HookBus,
     cancel: asyncio.Event,
     app_state: object | None = None,
+    *,
+    catch_up: bool = True,
 ) -> None:
     """Per-job tick loop. Mirrors Rust ``runtime::run_job_loop``.
 
     Responsibilities:
 
+    * (R4 gap goals-cron) catch up a single missed firing on startup when
+      ``catch_up`` is set and a SchedulerStore is reachable off
+      ``app_state`` — see :func:`_maybe_catch_up`;
     * compute the next firing relative to *wall clock* ``utcnow``;
     * sleep until then (or until cancel fires);
     * dispatch on the action;
@@ -811,6 +1042,14 @@ async def _run_job_loop(
     from datetime import datetime
 
     _logger.info("scheduler: job loop started", extra={"job": spec.name})
+    if catch_up and not cancel.is_set():
+        try:
+            await _maybe_catch_up(spec, bus, app_state)
+        except Exception as exc:  # noqa: BLE001 — never crash the loop
+            _logger.warning(
+                "scheduler: catch-up failed",
+                extra={"job": spec.name, "error": str(exc)},
+            )
     while True:
         if cancel.is_set():
             _logger.info("scheduler: cancelled; exiting", extra={"job": spec.name})
@@ -855,6 +1094,8 @@ def spawn(
     bus: HookBus,
     cancel: asyncio.Event | None = None,
     app_state: object | None = None,
+    *,
+    catch_up: bool = True,
 ) -> SchedulerHandle:
     """Spawn one tick task per ``cfg.jobs`` entry.
 
@@ -886,7 +1127,7 @@ def spawn(
         specs[job.name] = spec
         tasks.append(
             asyncio.create_task(
-                _run_job_loop(spec, bus, cancel, app_state),
+                _run_job_loop(spec, bus, cancel, app_state, catch_up=catch_up),
                 name=f"scheduler-{job.name}",
             )
         )

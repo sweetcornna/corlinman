@@ -18,6 +18,7 @@ object regardless of transport.
 from __future__ import annotations
 
 import hashlib
+import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -211,6 +212,26 @@ class InboundEvent[PayloadT]:
     identity resolver. Adapters that don't perform resolution leave this
     ``None``; the caller can do it lazily via the binding."""
 
+    sender_name: str | None = None
+    """Best-effort human-readable display name of the message author
+    (``"Alice"``, ``"@bob"``, a Telegram first_name, a Feishu nickname...).
+    Mirrors openclaw/hermes inbound attribution: the gateway prefixes the
+    agent-facing content with this so multi-party group chats stay
+    attributable. ``None`` when the transport didn't expose one."""
+
+    reply_to_text: str | None = None
+    """Best-effort plain text of the message this one is replying to
+    (Telegram ``reply_to_message.text``, Discord ``referenced_message``,
+    Slack thread-parent, ...). Carries quote context to the agent so a
+    bare ``"+1"`` reply isn't ambiguous. ``None`` when there's no reply
+    parent or the transport didn't ship its text."""
+
+    media_group_id: str | None = None
+    """Transport media-group / album id (Telegram ``media_group_id``).
+    Two inbound events that share this id were sent together as one album;
+    :class:`AlbumDebouncer` buffers them and merges their attachments +
+    captions before dispatch. ``None`` for standalone messages."""
+
 
 # ---------------------------------------------------------------------------
 # Errors
@@ -265,7 +286,213 @@ def split_on_msg_break(text: str) -> list[str]:
     return parts if parts else [text]
 
 
+# ---------------------------------------------------------------------------
+# Sticker → vision-description placeholder
+# ---------------------------------------------------------------------------
+
+
+def sticker_placeholder(emoji: str | None = None, set_name: str | None = None) -> str:
+    """Build a short text description for a sticker the agent can read.
+
+    Stickers carry no body text, so without a placeholder a sticker-only
+    message looks empty and is dropped. openclaw/hermes both surface the
+    sticker's associated emoji (and set name when present) as a textual
+    hint so the agent has *something* to react to. The returned string is
+    written into :attr:`InboundEvent.text` for sticker-only messages.
+
+    Examples::
+
+        sticker_placeholder("😂")            -> "[sticker 😂]"
+        sticker_placeholder("😂", "Cats")    -> "[sticker 😂 from \\"Cats\\"]"
+        sticker_placeholder()                -> "[sticker]"
+    """
+    emoji_part = f" {emoji}" if emoji else ""
+    set_part = f' from "{set_name}"' if set_name else ""
+    return f"[sticker{emoji_part}{set_part}]"
+
+
+# ---------------------------------------------------------------------------
+# Inbound attribution prefix
+# ---------------------------------------------------------------------------
+
+
+def format_attribution_prefix(
+    *,
+    sender_name: str | None,
+    reply_to_text: str | None,
+    max_quote_chars: int = 280,
+) -> str:
+    """Render the sender / reply-to attribution block prepended to the
+    agent-facing content.
+
+    Mirrors openclaw's group-chat attribution: the agent sees who said a
+    message and (when it's a reply) a truncated quote of the parent so a
+    bare ``"+1"`` keeps its referent. Returns ``""`` when there's nothing
+    to attribute, so callers can unconditionally prepend it.
+
+    Format::
+
+        [sender_name 回复 "<quoted parent ...>"]\\n<content>
+
+    The reply quote is single-line-collapsed and truncated to
+    ``max_quote_chars`` with an ellipsis so a long parent message can't
+    blow the prompt budget.
+    """
+    parts: list[str] = []
+    name = (sender_name or "").strip()
+    if name:
+        parts.append(name)
+    quote = (reply_to_text or "").strip()
+    if quote:
+        # Collapse to a single line so the bracketed prefix stays compact.
+        quote = " ".join(quote.split())
+        if len(quote) > max_quote_chars:
+            quote = quote[: max_quote_chars - 1].rstrip() + "…"
+        parts.append(f'回复 "{quote}"')
+    if not parts:
+        return ""
+    return f"[{' '.join(parts)}]"
+
+
+# ---------------------------------------------------------------------------
+# Album / media-group debounce
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class _AlbumBuffer:
+    """Mutable accumulator for one in-flight album (private to
+    :class:`AlbumDebouncer`)."""
+
+    first: InboundEvent[Any]
+    attachments: list[Attachment]
+    texts: list[str]
+    last_seen: float
+
+
+class AlbumDebouncer:
+    """Buffer + merge media-group (album) items before dispatch.
+
+    Telegram delivers an album as N separate ``Message`` updates that
+    share a ``media_group_id`` — each carries one photo and at most one
+    caption (usually only the first). Dispatching each as its own turn
+    produces N duplicate agent turns and loses the "these belong
+    together" relationship. openclaw debounces them: items are buffered
+    keyed by ``media_group_id`` and flushed once no new item has arrived
+    for ``window_secs``, merged into a single :class:`InboundEvent`
+    carrying every attachment and the concatenated captions.
+
+    The debouncer is transport-agnostic and side-effect-free: it does no
+    timers of its own. The caller drives it from its inbound loop::
+
+        async for ev in adapter.inbound():
+            for merged in debouncer.feed(ev):
+                await handle(merged)        # ready (non-album or window lapsed)
+        for merged in debouncer.flush_all():  # drain on shutdown
+            await handle(merged)
+
+    A standalone (non-album) event passes straight through ``feed`` as a
+    single-element list. Album members accumulate silently; ``feed``
+    emits a previously-buffered album only once a *different* group's
+    item arrives after the window, or the caller calls
+    :meth:`flush_ready` / :meth:`flush_all`.
+    """
+
+    __slots__ = ("_buffers", "_window_secs", "_clock")
+
+    def __init__(
+        self,
+        window_secs: float = 1.5,
+        *,
+        clock: Any = None,
+    ) -> None:
+        self._buffers: dict[str, _AlbumBuffer] = {}
+        self._window_secs = window_secs
+        # Injectable clock for deterministic tests (defaults to monotonic).
+        self._clock = clock or time.monotonic
+
+    def feed(self, event: InboundEvent[Any]) -> list[InboundEvent[Any]]:
+        """Ingest one inbound event; return the events ready to dispatch.
+
+        Non-album events return ``[event]`` immediately (plus any albums
+        whose window has lapsed). Album members are buffered; the list
+        returned contains only albums whose debounce window already
+        expired by the time this newer item arrived.
+        """
+        now = self._clock()
+        ready = self._flush_expired(now)
+        group = event.media_group_id
+        if not group:
+            ready.append(event)
+            return ready
+        buf = self._buffers.get(group)
+        if buf is None:
+            self._buffers[group] = _AlbumBuffer(
+                first=event,
+                attachments=list(event.attachments),
+                texts=[event.text] if event.text.strip() else [],
+                last_seen=now,
+            )
+        else:
+            buf.attachments.extend(event.attachments)
+            if event.text.strip():
+                buf.texts.append(event.text)
+            buf.last_seen = now
+        return ready
+
+    def flush_ready(self) -> list[InboundEvent[Any]]:
+        """Flush every album whose debounce window has lapsed *now*.
+
+        The caller polls this (e.g. on a short timer) so an album that is
+        never followed by another inbound item still gets dispatched.
+        """
+        return self._flush_expired(self._clock())
+
+    def flush_all(self) -> list[InboundEvent[Any]]:
+        """Drain every buffered album regardless of timing (shutdown)."""
+        out = [self._merge(buf) for buf in self._buffers.values()]
+        self._buffers.clear()
+        return out
+
+    def _flush_expired(self, now: float) -> list[InboundEvent[Any]]:
+        expired = [
+            group
+            for group, buf in self._buffers.items()
+            if now - buf.last_seen >= self._window_secs
+        ]
+        out: list[InboundEvent[Any]] = []
+        for group in expired:
+            out.append(self._merge(self._buffers.pop(group)))
+        return out
+
+    @staticmethod
+    def _merge(buf: _AlbumBuffer) -> InboundEvent[Any]:
+        """Collapse a buffered album into one :class:`InboundEvent`.
+
+        The merged event keeps the first item's binding / message_id /
+        timestamp / sender attribution, concatenates the captions, and
+        carries every attachment from every member.
+        """
+        merged_text = "\n".join(buf.texts)
+        first = buf.first
+        return InboundEvent(
+            channel=first.channel,
+            binding=first.binding,
+            text=merged_text,
+            message_id=first.message_id,
+            timestamp=first.timestamp,
+            mentioned=first.mentioned,
+            attachments=buf.attachments,
+            payload=first.payload,
+            user_id=first.user_id,
+            sender_name=first.sender_name,
+            reply_to_text=first.reply_to_text,
+            media_group_id=first.media_group_id,
+        )
+
+
 __all__ = [
+    "AlbumDebouncer",
     "Attachment",
     "AttachmentKind",
     "ChannelBinding",
@@ -276,5 +503,7 @@ __all__ = [
     "TransportError",
     "UnsupportedError",
     "UserId",
+    "format_attribution_prefix",
     "split_on_msg_break",
+    "sticker_placeholder",
 ]

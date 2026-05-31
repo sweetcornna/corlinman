@@ -32,6 +32,7 @@ from corlinman_channels.commands import (
     CommandSpec,
     apply_command_prelude,
     match_command_with_args,
+    unknown_command_notice,
 )
 from corlinman_channels.common import ChannelBinding
 from corlinman_channels.onebot import (
@@ -152,6 +153,19 @@ class RoutedRequest:
     mentioned: bool = False
     command_spec: CommandSpec | None = None
     command_args: str = ""
+    sender_name: str | None = None
+    """Best-effort display name of the message author (group attribution).
+    Carried through so the servicer can prefix the agent-facing content
+    with ``[sender_name] ...`` — see the wire contract returned by
+    lane-channels. ``None`` when the transport didn't expose one."""
+    reply_to_text: str | None = None
+    """Plain text of the message this one replied to (quote context).
+    ``None`` when there's no reply parent."""
+    unknown_command_notice: str | None = None
+    """Populated when the routed text looked like a slash command but no
+    registered command matched. The caller should send this hint back to
+    the user and skip the agent turn. ``None`` for every normal message
+    (including matched commands and plain prose)."""
 
     @property
     def session_key(self) -> str:
@@ -326,6 +340,7 @@ class ChannelRouter:
         content = text
         command_spec: CommandSpec | None = None
         command_args = ""
+        unknown_notice: str | None = None
         if enable_commands:
             match = match_command_with_args(text)
             if match is not None:
@@ -338,6 +353,13 @@ class ChannelRouter:
                 # Handler-bearing specs leave ``content`` as the literal
                 # text; the caller invokes the handler and posts its
                 # reply via the adapter.
+            else:
+                # No command matched. When the text *looks* like a slash
+                # command (leading-slash, command-shaped first token) but
+                # isn't registered, surface a hint instead of forwarding
+                # the bare ``/foo`` to the agent. Plain prose returns
+                # ``None`` here so allow-by-default is preserved.
+                unknown_notice = unknown_command_notice(text)
 
         return RoutedRequest(
             binding=binding,
@@ -347,6 +369,7 @@ class ChannelRouter:
             mentioned=mentioned,
             command_spec=command_spec,
             command_args=command_args,
+            unknown_command_notice=unknown_notice,
         )
 
     # ------------------------------------------------------------------

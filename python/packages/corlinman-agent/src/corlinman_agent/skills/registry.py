@@ -131,6 +131,45 @@ def _as_str_list(value: Any, field_name: str, path: Path) -> list[str]:
     return out
 
 
+def _opt_str_field(value: Any, field_name: str, path: Path) -> str | None:
+    """Coerce an optional string frontmatter field. ``None`` / missing →
+    ``None``; a non-string value is type drift and rejected (consistent
+    with :func:`_as_str_list`'s strictness)."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise SkillLoadError(path, f"{field_name} must be a string")
+    stripped = value.strip()
+    return stripped or None
+
+
+def _as_bool(value: Any, field_name: str, path: Path) -> bool:
+    """Coerce an optional boolean frontmatter field. Accepts real bools and
+    the common YAML string spellings; rejects other shapes as type drift."""
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        token = value.strip().lower()
+        if token in {"true", "yes", "1", "on"}:
+            return True
+        if token in {"false", "no", "0", "off", ""}:
+            return False
+    raise SkillLoadError(path, f"{field_name} must be a boolean")
+
+
+def _parse_hooks(raw: Any, path: Path) -> dict[str, Any]:
+    """Carry the ``hooks`` mapping verbatim. ``None`` / missing → empty
+    mapping; a non-mapping value is rejected (the hook runner expects a
+    mapping it can register from)."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise SkillLoadError(path, "hooks must be a mapping")
+    return {str(k): v for k, v in raw.items()}
+
+
 def _parse_requires(raw: Any, path: Path) -> SkillRequirements:
     """Parse the ``metadata.openclaw.requires`` block. Missing or
     ``None`` means an empty requirements set."""
@@ -197,6 +236,28 @@ def _parse_skill(path: Path, text: str) -> Skill:
     # Rust uses the rename ``allowed-tools``; keep that on the wire.
     allowed_tools = _as_str_list(raw.get("allowed-tools"), "allowed-tools", path)
 
+    # --- Progressive-disclosure / model-selection metadata ----------
+    # These ride in the top-level frontmatter (openclaw / claude-code
+    # SKILL.md style). Carried through so the context assembler can build
+    # a narrowed catalog and honour ``disable-model-invocation``. We accept
+    # the camelCase / kebab-case spellings seen in the wild.
+    when_to_use = _opt_str_field(
+        raw.get("whenToUse") if raw.get("whenToUse") is not None else raw.get("when_to_use"),
+        "whenToUse",
+        path,
+    )
+    paths = _as_str_list(raw.get("paths"), "paths", path)
+    platforms = _as_str_list(raw.get("platforms"), "platforms", path)
+    model = _opt_str_field(raw.get("model"), "model", path)
+    effort = _opt_str_field(raw.get("effort"), "effort", path)
+    hooks = _parse_hooks(raw.get("hooks"), path)
+    dmi_raw = raw.get("disable-model-invocation")
+    if dmi_raw is None:
+        dmi_raw = raw.get("disableModelInvocation")
+    if dmi_raw is None:
+        dmi_raw = raw.get("disable_model_invocation")
+    disable_model_invocation = _as_bool(dmi_raw, "disable-model-invocation", path)
+
     return Skill(
         name=name,
         description=description,
@@ -204,6 +265,13 @@ def _parse_skill(path: Path, text: str) -> Skill:
         requires=requires,
         install=install,
         allowed_tools=allowed_tools,
+        when_to_use=when_to_use,
+        paths=paths,
+        platforms=platforms,
+        model=model,
+        effort=effort,
+        hooks=hooks,
+        disable_model_invocation=disable_model_invocation,
         body_markdown=body,
         source_path=path,
     )
@@ -318,6 +386,34 @@ class SkillRegistry:
     def names(self) -> list[str]:
         """Sorted list of all registered skill names."""
         return sorted(self._skills.keys())
+
+    def model_invokable_names(self) -> list[str]:
+        """Sorted names of skills the model is allowed to auto-select.
+
+        Skills with ``disable_model_invocation=True`` are excluded — they
+        remain available when a card explicitly references them, but the
+        progressive-disclosure catalog the wiring lane builds for the model
+        should not advertise them. The full set is still reachable via
+        :meth:`names` / :meth:`get`.
+        """
+        return sorted(
+            name
+            for name, skill in self._skills.items()
+            if not skill.disable_model_invocation
+        )
+
+    def catalog(self) -> list[dict[str, Any]]:
+        """Compact, model-facing catalog rows for progressive disclosure.
+
+        One :meth:`Skill.catalog_entry` per model-invokable skill, sorted by
+        name. The wiring lane (context assembler / servicer) renders this as
+        the narrowed list of skills the model can pull a body for on demand,
+        instead of injecting every full body every turn.
+        """
+        return [
+            self._skills[name].catalog_entry()
+            for name in self.model_invokable_names()
+        ]
 
     @property
     def last_refreshed_at_ms(self) -> int | None:

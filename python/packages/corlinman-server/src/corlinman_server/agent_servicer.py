@@ -37,6 +37,7 @@ from corlinman_agent.coding import (
     APPLY_PATCH_TOOL,
     CODING_TOOLS,
     EDIT_FILE_TOOL,
+    EXECUTE_CODE_TOOL,
     LIST_FILES_TOOL,
     READ_FILE_TOOL,
     REVERT_CHANGES_TOOL,
@@ -49,6 +50,7 @@ from corlinman_agent.coding import (
     coding_tool_schemas,
     dispatch_apply_patch,
     dispatch_edit_file,
+    dispatch_execute_code,
     dispatch_list_files,
     dispatch_read_file,
     dispatch_revert_changes,
@@ -73,6 +75,24 @@ from corlinman_agent.image import (
     image_with_refs_tool_schema,
     vision_analyze_tool_schema,
 )
+
+# ``image/__init__.py`` does NOT re-export the TTS surface, so we import
+# the submodule directly (lane-new-tools wire-contract). Guarded with a
+# try/except so a packaging skew (older corlinman-agent without the tts
+# module) degrades gracefully — the tool is simply not registered.
+try:
+    from corlinman_agent.image.tts import (
+        TEXT_TO_SPEECH_TOOL,
+        dispatch_text_to_speech,
+        text_to_speech_tool_schema,
+    )
+
+    _TTS_AVAILABLE = True
+except Exception:  # noqa: BLE001 — degrade if the submodule is absent
+    TEXT_TO_SPEECH_TOOL = "text_to_speech"
+    dispatch_text_to_speech = None  # type: ignore[assignment]
+    text_to_speech_tool_schema = None  # type: ignore[assignment]
+    _TTS_AVAILABLE = False
 from corlinman_agent.interactive import (
     ASK_USER_TOOL,
     ask_user_tool_schema,
@@ -85,6 +105,33 @@ from corlinman_agent.memory import (
     dispatch_memory_search,
     dispatch_session_search,
     memory_tool_schemas,
+)
+
+# The two durable-note tools (memory_write / memory_read) are imported
+# from the ``tools`` submodule directly so this lane (wire-A) does not
+# depend on the package ``__init__.py`` re-export landing first. Guarded
+# so a packaging skew degrades to "not registered" rather than ImportError.
+try:
+    from corlinman_agent.memory.tools import (
+        MEMORY_READ_TOOL,
+        MEMORY_WRITE_TOOL,
+        dispatch_memory_read,
+        dispatch_memory_write,
+    )
+
+    _MEMORY_RW_AVAILABLE = True
+except Exception:  # noqa: BLE001 — degrade if the submodule lacks the symbols
+    MEMORY_READ_TOOL = "memory_read"
+    MEMORY_WRITE_TOOL = "memory_write"
+    dispatch_memory_read = None  # type: ignore[assignment]
+    dispatch_memory_write = None  # type: ignore[assignment]
+    _MEMORY_RW_AVAILABLE = False
+from corlinman_agent.approval_gate import ApprovalGate, ApprovalOutcome
+from corlinman_agent.permission import (
+    ALLOW as _PERM_ALLOW,
+)
+from corlinman_agent.permission import (
+    ASK as _PERM_ASK,
 )
 from corlinman_agent.permission import (
     DENY as _PERM_DENY,
@@ -213,6 +260,17 @@ from corlinman_server.runner_pool import (
     dispatch_with_observability as _dispatch_with_obs,
 )
 
+# gap observability-metrics-unwired: the approval-decision Prometheus
+# family was declared but never incremented. Imported defensively so a
+# build without the prometheus_client backing (or a registry skew) never
+# crashes agent boot — the call sites guard ``_APPROVALS_TOTAL is None``.
+try:
+    from corlinman_server.gateway.core.metrics import (
+        APPROVALS_TOTAL as _APPROVALS_TOTAL,
+    )
+except Exception:  # noqa: BLE001 — degrade to a no-op metric handle
+    _APPROVALS_TOTAL = None  # type: ignore[assignment]
+
 logger = structlog.get_logger(__name__)
 
 #: The "send file via current channel" tool — surfaced as a builtin so
@@ -231,6 +289,23 @@ SEND_ATTACHMENT_TOOL = "send_attachment"
 AGENT_STATUS_CARD_TOOL = "agent_status_card"
 
 
+#: gap ``subagents-no-stop-tool`` — a model-callable tool that asks the
+#: orchestrator to abort the currently-running turn for a session. Routed
+#: to the existing operator stop mechanism (:func:`cancel_session`) so a
+#: misbehaving / runaway agent can halt itself (or a spawned child loop it
+#: holds the session_key for). Pure: signals the loop registry, no I/O.
+SUBAGENT_STOP_TOOL = "subagent_stop"
+
+
+#: gap ``skills-no-progressive-disclosure`` — an on-demand tool that pulls
+#: the full body of a skill the model selected from the narrowed catalog
+#: the context assembler injected. Looks the skill up in the in-agent
+#: :class:`SkillRegistry`, runs ``check_requirements``, and returns the
+#: skill's ``body_markdown`` so the model reads it lazily instead of every
+#: skill body being dumped into the system prompt every turn.
+SKILL_TOOL = "Skill"
+
+
 #: Tool names dispatched in-process by the servicer rather than routed
 #: through the Rust plugin registry. These cover the v0.7 multi-agent
 #: surface (subagent fan-out + shared blackboard) plus the v0.8 web
@@ -242,6 +317,7 @@ BUILTIN_TOOLS: frozenset[str] = frozenset(
         SUBAGENT_SPAWN_TOOL,
         SUBAGENT_SPAWN_MANY_TOOL,
         SUBAGENT_SPAWN_INLINE_TOOL,
+        SUBAGENT_STOP_TOOL,
         BLACKBOARD_READ_TOOL,
         BLACKBOARD_WRITE_TOOL,
         WEB_FETCH_TOOL,
@@ -252,8 +328,15 @@ BUILTIN_TOOLS: frozenset[str] = frozenset(
         IMAGE_WITH_REFS_TOOL,
         IMAGE_GENERATE_TOOL,
         VISION_ANALYZE_TOOL,
+        TEXT_TO_SPEECH_TOOL,
         QZONE_PUBLISH_TOOL,
         AGENT_STATUS_CARD_TOOL,
+        SKILL_TOOL,
+        # ``memory_write`` / ``memory_read`` also arrive via ``MEMORY_TOOLS``
+        # once wire-B widens that frozenset; naming them here keeps the
+        # dispatch gate correct independently of that re-export landing.
+        MEMORY_WRITE_TOOL,
+        MEMORY_READ_TOOL,
     }
 ) | CODING_TOOLS | PERSONA_TOOLS | PERSONA_LIFE_TOOLS | QZONE_COMMENT_TOOLS | MEMORY_TOOLS
 
@@ -361,6 +444,81 @@ def _agent_status_card_tool_schema() -> dict[str, Any]:
     }
 
 
+def _subagent_stop_tool_schema() -> dict[str, Any]:
+    """OpenAI descriptor for the ``subagent_stop`` builtin.
+
+    gap ``subagents-no-stop-tool``. Model-callable; routed to the operator
+    stop mechanism (:func:`cancel_session`) for the turn's own session_key
+    or an explicitly-supplied one (e.g. a spawned child's session_key the
+    parent holds).
+    """
+    return {
+        "type": "function",
+        "function": {
+            "name": SUBAGENT_STOP_TOOL,
+            "description": (
+                "Abort the currently-running agent turn for a session. Use "
+                "this to halt a runaway loop, a stuck sub-task, or when the "
+                "user explicitly asks you to stop. By default it stops the "
+                "current conversation; pass a `session_key` to stop a "
+                "specific spawned sub-agent you started."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session_key": {
+                        "type": "string",
+                        "description": (
+                            "Optional. The session to stop. Defaults to the "
+                            "current conversation when omitted."
+                        ),
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Optional short reason for the stop.",
+                    },
+                },
+                "required": [],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def _skill_tool_schema() -> dict[str, Any]:
+    """OpenAI descriptor for the on-demand ``Skill`` builtin.
+
+    gap ``skills-no-progressive-disclosure``. The context assembler injects
+    a narrowed catalog (name + when_to_use); this tool pulls a chosen
+    skill's full body on demand so the model only loads what it needs.
+    """
+    return {
+        "type": "function",
+        "function": {
+            "name": SKILL_TOOL,
+            "description": (
+                "Load the full instructions for a skill by name. The system "
+                "prompt lists available skills with a short summary; call "
+                "this with the skill's `name` to read its complete body "
+                "before performing the task it describes. Returns the skill "
+                "markdown (or an error if the skill is unavailable / its "
+                "requirements are unmet)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "The skill name to load (from the catalog).",
+                    },
+                },
+                "required": ["name"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
 #: Builtin tools advertised to the model on every chat turn so it can
 #: actually *call* them. ``BUILTIN_TOOLS`` (above) is the dispatch gate;
 #: this is the *discovery* surface. Kept to the keyless, low-risk tools
@@ -376,7 +534,7 @@ def _builtin_tool_schemas() -> list[dict[str, Any]]:
     Kept callable so tests can re-derive the list at runtime; the chat
     hot path reads :data:`_CACHED_BUILTIN_TOOL_SCHEMAS` instead.
     """
-    return [
+    schemas: list[dict[str, Any]] = [
         calculator_tool_schema(),
         web_search_tool_schema(),
         web_fetch_tool_schema(),
@@ -387,9 +545,13 @@ def _builtin_tool_schemas() -> list[dict[str, Any]]:
         vision_analyze_tool_schema(),
         qzone_publish_tool_schema(),
         _agent_status_card_tool_schema(),
+        _subagent_stop_tool_schema(),
         *qzone_comment_tool_schemas(),
         *persona_tool_schemas(),
         *persona_life_tool_schemas(),
+        # ``memory_tool_schemas()`` returns all four memory tools (search,
+        # session_search, write, read) once lane-new-tools landed; the
+        # wiring lane advertises them verbatim here.
         *memory_tool_schemas(),
         # Multi-agent surface: the main agent can call an existing
         # registered agent (subagent_spawn / spawn_many) OR spin up a
@@ -398,8 +560,18 @@ def _builtin_tool_schemas() -> list[dict[str, Any]]:
         subagent_spawn_tool_schema(),
         subagent_spawn_many_tool_schema(),
         subagent_spawn_inline_tool_schema(),
+        # Progressive-disclosure on-demand body pull (gap
+        # skills-no-progressive-disclosure). Advertised so the model can
+        # fetch a skill body after seeing the narrowed catalog.
+        _skill_tool_schema(),
         *coding_tool_schemas(),
     ]
+    # text_to_speech is advertised next to the image tools when the
+    # submodule is present (lane-new-tools). Guarded so a packaging skew
+    # never injects a None.
+    if _TTS_AVAILABLE and text_to_speech_tool_schema is not None:
+        schemas.append(text_to_speech_tool_schema())
+    return schemas
 
 
 #: Module-load snapshot of the advertised builtin tool descriptors.
@@ -923,6 +1095,12 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             if permission_gate is not None
             else PermissionGate.from_env()
         )
+        # gap permissions-no-ask-action: the unified approval gate wraps the
+        # permission gate + an optional prompt-and-wait resolver. Lazily
+        # built on the first ``ask`` verdict so deployments that never use
+        # the ``ask`` action don't pay for it. The resolver (if any) is
+        # resolved from ``app_state.approval_resolver`` at build time.
+        self._approval_gate: ApprovalGate | None = None
         # T4.1 per-turn journal — opens lazily on first chat turn so a
         # smoke-test agent boot is unaffected. ``False`` once an init
         # failure has been logged so we don't retry every request.
@@ -946,6 +1124,13 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # populated under the session lock right before ``loop.run()``
         # starts, cleared in the same handler's ``finally``.
         self._active_loops: dict[str, ReasoningLoop] = {}
+        # gap skills-no-progressive-disclosure: skills the model has pulled
+        # the body of (via the on-demand ``Skill`` tool) this process,
+        # mapped to their ``allowed_tools`` list. Used to narrow what tools
+        # a skill may invoke once active (empty list == no restriction,
+        # matching today's carry-only semantics). Process-scoped + bounded
+        # by natural skill count; cleared on no key when not active.
+        self._active_skills: dict[str, list[str]] = {}
 
     async def Chat(  # noqa: N802 — gRPC method name
         self,
@@ -1568,6 +1753,29 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                             logger.warning(
                                 "agent.journal.complete_failed", error=str(exc)
                             )
+                    # gap cost-no-usd-math: persist the loop's per-turn USD
+                    # cost. ``DoneEvent.usd_cost`` is computed from the
+                    # reasoning loop's 4-class MODEL_COSTS map (incl.
+                    # cache_creation); ``None`` for unpriced models. Use the
+                    # captured ``local_turn_id`` because ``journal_turn_id``
+                    # was cleared inside the try above on success.
+                    _usd_cost = getattr(event, "usd_cost", None)
+                    if (
+                        journal is not None
+                        and local_turn_id is not None
+                        and _usd_cost is not None
+                    ):
+                        try:
+                            await journal.update_turn_cost(
+                                local_turn_id,
+                                estimated_cost_usd=_usd_cost,
+                                cost_status="estimated",
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning(
+                                "agent.journal.update_turn_cost_failed",
+                                error=str(exc),
+                            )
                     # T1.4: fold the turn's reported token usage into the
                     # per-session meter and log a structured per-turn
                     # record. ``usage`` is ``None`` when the provider did
@@ -2002,16 +2210,57 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
 
         # T3.1: permission gate. ``deny`` short-circuits with a clean
         # ``permission_denied`` envelope; ``log`` is observer-only and
-        # passes through; ``allow`` is the default. The decision is
-        # made against the full caller context (tool + model + session
-        # + user_id) so per-channel / per-user / per-model rules can
-        # selectively narrow what the model is allowed to invoke.
+        # passes through; ``ask`` escalates to the approval gate's
+        # prompt-and-wait (fail-closed to deny when no resolver is wired);
+        # ``allow`` is the default. The decision is made against the full
+        # caller context (tool + model + session + user_id) AND the parsed
+        # arguments so per-channel / per-user / per-model / per-argument
+        # rules (e.g. ``run_shell(rm:*)``) can selectively narrow what the
+        # model is allowed to invoke.
         perm_ctx = PermissionContext(
             model=getattr(start, "model", None) or None,
             session_key=getattr(start, "session_key", None) or None,
             user_id=_extract_user_id(start),
         )
-        decision, rule_idx = self._permission_gate.resolve(event.tool, perm_ctx)
+        _perm_args = self._parse_args_dict(event.args_json)
+        decision, rule_idx = self._permission_gate.resolve_with_args(
+            event.tool, perm_ctx, _perm_args
+        )
+        if decision == _PERM_ASK:
+            # Escalate to the approval gate (prompt-and-wait). When no
+            # resolver is wired the gate fail-closes to deny, surfaced
+            # below as a permission_denied envelope.
+            _outcome = await self._approval_decide(
+                event.tool, _perm_args, perm_ctx
+            )
+            if _APPROVALS_TOTAL is not None:
+                try:
+                    _APPROVALS_TOTAL.labels(
+                        decision="approved" if _outcome.allowed else "denied"
+                    ).inc()
+                except Exception:  # noqa: BLE001 — metric is best-effort
+                    pass
+            if not _outcome.allowed:
+                logger.info(
+                    "agent.permission.ask_denied",
+                    tool=event.tool,
+                    call_id=event.call_id,
+                    reason=_outcome.reason,
+                )
+                self._emit_tool_called(
+                    event, start, ok=False, duration_ms=0,
+                    error_code="approval_denied",
+                )
+                return json.dumps(
+                    {
+                        "error": (
+                            f"approval_denied: {_outcome.reason or 'tool requires approval'}"
+                        ),
+                        "tool": event.tool,
+                    }
+                )
+            # Approved — fall through as if the rule had said allow.
+            decision = _PERM_ALLOW
         if decision == _PERM_DENY:
             audit = self._permission_gate.audit_log_entry(
                 event.tool, perm_ctx, decision, rule_index=rule_idx
@@ -2040,11 +2289,44 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 call_id=event.call_id,
             )
 
-        # Shell-command hook gate: run ``pre_{tool}`` / ``pre_tool`` hook.
-        # Non-zero exit → block the call and return an error envelope to the
-        # model. The async variant is used here so the event loop is not
-        # blocked by subprocess I/O.
-        if self._hook_runner is not None:
+        # gap skills-no-progressive-disclosure (enforcement half): when a
+        # skill has been pulled/activated this process and carries a
+        # non-empty ``allowed_tools`` list, deny tool calls whose name is
+        # outside the union of all active skills' allowed tools. The Skill
+        # tool itself + the stop tool are always permitted so the model can
+        # never trap itself. An empty list == no restriction (carry-only
+        # semantics) so an active skill that declares no allowed-tools does
+        # not narrow anything.
+        _denied_by_skill = self._skill_allowed_tools_block(event.tool)
+        if _denied_by_skill is not None:
+            logger.info(
+                "agent.tool.skill_allowed_tools_block",
+                tool=event.tool,
+                call_id=event.call_id,
+            )
+            self._emit_tool_called(
+                event, start, ok=False, duration_ms=0,
+                error_code="skill_tool_not_allowed",
+            )
+            return json.dumps(
+                {
+                    "error": (
+                        f"tool_not_allowed: {event.tool!r} is not in the active "
+                        "skill's allowed-tools list"
+                    ),
+                    "tool": event.tool,
+                    "allowed_tools": _denied_by_skill,
+                }
+            )
+
+        # C3 PreToolDispatch hook gate: run ``pre_{tool}`` / ``pre_tool``.
+        # The runner is resolved C2-first (``app_state.hook_runner`` set by
+        # wire-B in the lifespan) and falls back to the constructor-injected
+        # one. A blocking decision (``allow=False``) short-circuits with a
+        # ``tool_not_allowed`` envelope; ``mutated_args`` rewrites the call.
+        # The async variant keeps the event loop unblocked on subprocess I/O.
+        _hook_runner = self._resolve_hook_runner()
+        if _hook_runner is not None:
             try:
                 _args_dict: dict[str, Any] = {}
                 try:
@@ -2054,11 +2336,37 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                         _args_dict = {}
                 except (json.JSONDecodeError, ValueError):
                     pass
-                _should_proceed, _block_msg = await self._hook_runner.run_pre_tool_async(
-                    event.tool, _args_dict
+                _hook_ctx = {
+                    "session_key": getattr(start, "session_key", None),
+                    "tenant_id": getattr(start, "tenant_id", None),
+                    "user_id": _extract_user_id(start),
+                }
+                _decision = await _hook_runner.run_pre_tool_async(
+                    event.tool, _args_dict, _hook_ctx
                 )
-                if not _should_proceed:
-                    _reason = _block_msg or "hook blocked"
+                # ``run_pre_tool_async`` returns a HookDecision; it is also
+                # tuple-unpackable as (allow, reason) for back-compat. Read
+                # the rich fields defensively so a runner that still returns
+                # a bare tuple / bool degrades cleanly.
+                _reason_legacy: str = ""
+                if hasattr(_decision, "allow"):
+                    _allow = bool(_decision.allow)
+                elif isinstance(_decision, (tuple, list)) and _decision:
+                    # Legacy ``(allow, reason)`` tuple shape.
+                    _allow = bool(_decision[0])
+                    if len(_decision) > 1 and isinstance(_decision[1], str):
+                        _reason_legacy = _decision[1]
+                    _decision = None
+                else:
+                    # Bare bool / unexpected shape — treat truthy as allow.
+                    _allow = bool(_decision)
+                    _decision = None
+                if not _allow:
+                    _reason = (
+                        getattr(_decision, "reason", None)
+                        if _decision is not None
+                        else _reason_legacy
+                    ) or "hook blocked"
                     logger.info(
                         "agent.tool.hook_blocked",
                         tool=event.tool,
@@ -2072,6 +2380,22 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     return json.dumps(
                         {"error": f"blocked by hook: {_reason}", "tool": event.tool}
                     )
+                # Honour an arg rewrite — re-encode the mutated args back
+                # onto the event so the downstream dispatch reads them.
+                _mutated = (
+                    getattr(_decision, "mutated_args", None)
+                    if _decision is not None
+                    else None
+                )
+                if isinstance(_mutated, dict):
+                    try:
+                        event.args_json = json.dumps(_mutated).encode("utf-8")
+                    except (TypeError, ValueError) as exc:
+                        logger.warning(
+                            "agent.tool.hook_mutated_args_invalid",
+                            tool=event.tool,
+                            error=str(exc),
+                        )
             except Exception as exc:  # noqa: BLE001 — hook failure must not break dispatch
                 logger.warning(
                     "agent.tool.hook_runner_error",
@@ -2204,6 +2528,18 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     parent_turn_id=_parent_turn_id,
                     parent_session_key=start.session_key or None,
                 )
+            if event.tool == SUBAGENT_STOP_TOOL:
+                # gap subagents-no-stop-tool: route to the operator stop
+                # mechanism. Defaults to the current session; an explicit
+                # session_key lets a parent stop a child loop it started.
+                return self._dispatch_subagent_stop(
+                    event.args_json, start.session_key or ""
+                )
+            if event.tool == SKILL_TOOL:
+                # gap skills-no-progressive-disclosure: pull a skill body
+                # on demand after the model selects it from the narrowed
+                # catalog the context assembler injected.
+                return self._dispatch_skill_tool(event.args_json)
             if event.tool == BLACKBOARD_READ_TOOL:
                 return dispatch_blackboard_read(
                     args_json=event.args_json,
@@ -2236,6 +2572,14 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 return dispatch_search_files(args_json=event.args_json)
             if event.tool == RUN_SHELL_TOOL:
                 return await dispatch_run_shell(args_json=event.args_json)
+            if event.tool == EXECUTE_CODE_TOOL:
+                # Disabled by default — dispatch_execute_code returns an
+                # ``execute_code_disabled`` envelope unless
+                # CORLINMAN_ENABLE_EXECUTE_CODE is truthy (operator opt-in).
+                return await dispatch_execute_code(
+                    args_json=event.args_json,
+                    session_key=start.session_key,
+                )
             if event.tool == APPLY_PATCH_TOOL:
                 return dispatch_apply_patch(args_json=event.args_json)
             if event.tool == TODO_WRITE_TOOL:
@@ -2423,6 +2767,19 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 return dispatch_vision_analyze(
                     args_json=event.args_json,
                 )
+            if event.tool == TEXT_TO_SPEECH_TOOL:
+                # lane-new-tools: synthesise audio into the workspace; the
+                # model pairs the returned path with send_attachment. Guard
+                # for the packaging-skew case where the submodule was absent
+                # at import time (then dispatch_text_to_speech is None).
+                if not _TTS_AVAILABLE or dispatch_text_to_speech is None:
+                    return json.dumps(
+                        {"ok": False, "error": "text_to_speech_unavailable"}
+                    )
+                return await dispatch_text_to_speech(
+                    args_json=event.args_json,
+                    provider=provider,
+                )
             if event.tool == QZONE_PUBLISH_TOOL:
                 # W5 — qzone_publish. The dispatcher does its own
                 # OneBot credential fetch (via CORLINMAN_NAPCAT_HTTP_URL
@@ -2462,14 +2819,23 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     return await dispatch_qzone_post_comment(args_json=event.args_json)
                 if event.tool == QZONE_LIST_FRIENDS_TOOL:
                     return await dispatch_qzone_list_friends(args_json=event.args_json)
-            if event.tool in MEMORY_TOOLS:
-                # WP17: agent-callable memory search. ``memory_host`` is
-                # resolved from ``app_state`` (set during gateway lifespan).
-                # When not wired, dispatchers return empty results rather
-                # than raising, so the model can handle unavailability.
+            if (
+                event.tool in MEMORY_TOOLS
+                or event.tool == MEMORY_WRITE_TOOL
+                or event.tool == MEMORY_READ_TOOL
+            ):
+                # WP17: agent-callable memory. ``memory_host`` is resolved
+                # from ``app_state`` (CONTRACT C2 — set during gateway
+                # lifespan by wire-B). When not wired, dispatchers return
+                # empty / not_configured envelopes rather than raising, so
+                # the model can handle unavailability.
                 _memory_host = None
                 if hasattr(self, "_app_state") and self._app_state is not None:
                     _memory_host = getattr(self._app_state, "memory_host", None)
+                if _memory_host is None:
+                    # Fall back to the servicer's own lazily-opened host so
+                    # durable notes work even before app_state is attached.
+                    _memory_host = await self._get_memory_host()
                 _ms_session_key = start.session_key or None
                 if event.tool == MEMORY_SEARCH_TOOL:
                     return await dispatch_memory_search(
@@ -2479,6 +2845,18 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     )
                 if event.tool == SESSION_SEARCH_TOOL:
                     return await dispatch_session_search(
+                        args_json=event.args_json,
+                        memory_host=_memory_host,
+                        session_key=_ms_session_key,
+                    )
+                if event.tool == MEMORY_WRITE_TOOL and dispatch_memory_write is not None:
+                    return await dispatch_memory_write(
+                        args_json=event.args_json,
+                        memory_host=_memory_host,
+                        session_key=_ms_session_key,
+                    )
+                if event.tool == MEMORY_READ_TOOL and dispatch_memory_read is not None:
+                    return await dispatch_memory_read(
                         args_json=event.args_json,
                         memory_host=_memory_host,
                         session_key=_ms_session_key,
@@ -2729,6 +3107,248 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             },
             ensure_ascii=False,
         )
+
+    def _dispatch_subagent_stop(
+        self, args_json: bytes | str, current_session_key: str
+    ) -> str:
+        """Dispatch ``subagent_stop`` — route to :func:`cancel_session`.
+
+        gap ``subagents-no-stop-tool``. Defaults to the current turn's
+        session; an explicit ``session_key`` arg lets a parent stop a child
+        loop it spawned. Never raises — folds every failure into an
+        envelope the model can read.
+        """
+        try:
+            decoded = (
+                args_json.decode("utf-8")
+                if isinstance(args_json, (bytes, bytearray))
+                else (args_json or "")
+            )
+            obj = json.loads(decoded or "{}")
+        except (ValueError, UnicodeDecodeError):
+            obj = {}
+        if not isinstance(obj, dict):
+            obj = {}
+        target = obj.get("session_key")
+        target_session = (
+            target.strip()
+            if isinstance(target, str) and target.strip()
+            else current_session_key
+        )
+        reason = obj.get("reason")
+        reason_str = (
+            reason.strip()
+            if isinstance(reason, str) and reason.strip()
+            else "agent_self_stop"
+        )
+        if not target_session:
+            return json.dumps(
+                {"ok": False, "error": "no_session", "message": "no session to stop"}
+            )
+        try:
+            status, turn_id = cancel_session(target_session, reason=reason_str)
+        except Exception as exc:  # noqa: BLE001 — never raise from dispatch
+            logger.warning("agent.subagent_stop.failed", error=str(exc))
+            return json.dumps({"ok": False, "error": f"stop_failed: {exc}"})
+        return json.dumps(
+            {
+                "ok": status == "cancelled",
+                "status": status,
+                "session_key": target_session,
+                "turn_id": turn_id,
+            }
+        )
+
+    def _dispatch_skill_tool(self, args_json: bytes | str) -> str:
+        """Dispatch the on-demand ``Skill`` tool — return a skill body.
+
+        gap ``skills-no-progressive-disclosure``. Looks the skill up in the
+        in-agent :class:`SkillRegistry` (reached via the context
+        assembler), runs ``check_requirements``, and returns its
+        ``body_markdown``. Records the skill as active for the session so
+        allowed-tools enforcement (when a skill carries one) can gate
+        subsequent calls. Never raises.
+        """
+        try:
+            decoded = (
+                args_json.decode("utf-8")
+                if isinstance(args_json, (bytes, bytearray))
+                else (args_json or "")
+            )
+            obj = json.loads(decoded or "{}")
+        except (ValueError, UnicodeDecodeError):
+            obj = {}
+        if not isinstance(obj, dict):
+            obj = {}
+        name = obj.get("name")
+        if not isinstance(name, str) or not name.strip():
+            return json.dumps({"ok": False, "error": "name_required"})
+        name = name.strip()
+
+        registry = self._get_skill_registry()
+        if registry is None:
+            return json.dumps(
+                {"ok": False, "error": "skills_unavailable", "name": name}
+            )
+        skill = registry.get(name)
+        if skill is None:
+            return json.dumps(
+                {"ok": False, "error": "skill_not_registered", "name": name}
+            )
+        try:
+            problems = registry.check_requirements(name, self._skill_config_lookup)
+        except Exception as exc:  # noqa: BLE001 — degrade to "no problems"
+            logger.warning("agent.skill_tool.requirements_failed", error=str(exc))
+            problems = []
+        if problems:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": "requirements_unmet",
+                    "name": name,
+                    "problems": list(problems),
+                },
+                ensure_ascii=False,
+            )
+        # Mark active so allowed-tools enforcement can narrow the catalog.
+        allowed = list(getattr(skill, "allowed_tools", None) or [])
+        self._active_skills[name] = allowed
+        return json.dumps(
+            {
+                "ok": True,
+                "name": skill.name,
+                "body": skill.body_markdown,
+                "allowed_tools": allowed,
+            },
+            ensure_ascii=False,
+        )
+
+    def _get_skill_registry(self) -> SkillRegistry | None:
+        """Resolve the in-agent :class:`SkillRegistry`, or ``None``.
+
+        Reuses the context assembler's registry (the same one stage-3
+        skill injection reads). Defensive: degrades to ``None`` if no
+        assembler / no ``_skills`` attribute is wired so the Skill tool
+        returns a clean envelope rather than crashing dispatch.
+        """
+        assembler = getattr(self, "_context_assembler", None)
+        if assembler is None:
+            return None
+        registry = getattr(assembler, "_skills", None)
+        if isinstance(registry, SkillRegistry):
+            return registry
+        return None
+
+    @staticmethod
+    def _skill_config_lookup(_key: str) -> str | None:
+        """Config lookup for skill ``check_requirements``.
+
+        The servicer holds no config object in scope, so requirements that
+        depend on a config key resolve from the environment as a best
+        effort. Unknown keys return ``None`` (treated as "unset").
+        """
+        return os.environ.get(_key)
+
+    @staticmethod
+    def _parse_args_dict(args_json: bytes | str) -> dict[str, Any]:
+        """Best-effort decode of a tool-call's argument JSON into a dict.
+
+        Returns ``{}`` on any decode failure / non-object payload so the
+        permission gate's per-arg matching degrades to "no primary arg"
+        (matches a catch-all rule, never a narrowed one).
+        """
+        try:
+            raw = (
+                args_json.decode("utf-8", "replace")
+                if isinstance(args_json, (bytes, bytearray))
+                else (args_json or "")
+            )
+            obj = json.loads(raw) if raw.strip() else {}
+        except (json.JSONDecodeError, ValueError):
+            return {}
+        return obj if isinstance(obj, dict) else {}
+
+    def _get_approval_gate(self) -> ApprovalGate:
+        """Lazily build the unified approval gate around the permission gate.
+
+        The optional prompt-and-wait resolver is read from
+        ``app_state.approval_resolver`` (an async callable) when present, so
+        a deployment that wires a channel-side approval surface gets
+        interactive ``ask`` verdicts; otherwise the gate fail-closes
+        ``ask`` to deny. Built once and reused.
+        """
+        if self._approval_gate is None:
+            resolver = None
+            app_state = getattr(self, "_app_state", None)
+            if app_state is not None:
+                resolver = getattr(app_state, "approval_resolver", None)
+            self._approval_gate = ApprovalGate(
+                self._permission_gate, resolver=resolver
+            )
+        return self._approval_gate
+
+    async def _approval_decide(
+        self,
+        tool: str,
+        args: dict[str, Any],
+        ctx: PermissionContext,
+    ) -> ApprovalOutcome:
+        """Run the unified approval gate for an ``ask`` verdict."""
+        gate = self._get_approval_gate()
+        return await gate.decide(
+            tool,
+            args=args,
+            model=ctx.model,
+            session_key=ctx.session_key,
+            user_id=ctx.user_id,
+        )
+
+    def _resolve_hook_runner(self) -> Any | None:
+        """Resolve the pre-tool hook runner (CONTRACT C2-first).
+
+        Prefers ``app_state.hook_runner`` (set by wire-B in the gateway
+        lifespan) so a runtime-configured runner wins, falling back to the
+        constructor-injected ``self._hook_runner``. Every access is
+        ``hasattr`` / ``getattr`` guarded so a missing app_state, a missing
+        attribute, or a ``None`` value all degrade to "no hook runner".
+        """
+        app_state = getattr(self, "_app_state", None)
+        if app_state is not None:
+            runner = getattr(app_state, "hook_runner", None)
+            if runner is not None:
+                return runner
+        return getattr(self, "_hook_runner", None)
+
+    def _skill_allowed_tools_block(self, tool: str) -> list[str] | None:
+        """Return the allowed-tools list when ``tool`` is blocked, else ``None``.
+
+        gap skills-no-progressive-disclosure (enforcement half). When one or
+        more skills are active (their bodies pulled via the ``Skill`` tool)
+        AND at least one carries a non-empty ``allowed_tools`` list, the
+        union of those lists narrows what the model may call. A tool outside
+        the union is blocked. Skills with an empty allowed-tools list impose
+        no restriction. The control tools (``Skill`` / ``subagent_stop``)
+        are always permitted so the model can never trap itself. Returns the
+        (sorted) allowed union when blocking, or ``None`` when permitted.
+        """
+        active = getattr(self, "_active_skills", None)
+        if not active:
+            return None
+        union: set[str] = set()
+        any_restriction = False
+        for allowed in active.values():
+            if allowed:
+                any_restriction = True
+                union.update(allowed)
+        if not any_restriction:
+            return None
+        # Control tools always pass — never let an active skill strand the
+        # model with no way to load another skill or stop the turn.
+        if tool in (SKILL_TOOL, SUBAGENT_STOP_TOOL):
+            return None
+        if tool in union:
+            return None
+        return sorted(union)
 
     def _get_subagent_caps(self) -> tuple[Any, Callable[[Any], Any]]:
         """Return ``(supervisor, acquire)`` for the subagent spawn tools.
@@ -3036,6 +3656,65 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         start.messages = _inject_memory_note(list(start.messages), note)
         logger.info(
             "agent.memory.recalled", session=start.session_key, hits=len(hits)
+        )
+        # gap memory-and-session-search (server half): in addition to the
+        # recency recall above, run a RELEVANCE query against the shared
+        # durable-notes host (CONTRACT C2 — ``app_state.memory_host``, set
+        # by wire-B in the lifespan) keyed on the user's current text, and
+        # inject the matching notes. Best-effort + fully guarded so a
+        # missing app_state / host / query method degrades to a no-op.
+        await self._recall_relevant_notes(start)
+
+    async def _recall_relevant_notes(self, start: AgentChatStart) -> None:
+        """Inject durable notes relevant to the current user text (C2 host).
+
+        Reads ``app_state.memory_host`` (falling back to the servicer's own
+        lazily-opened host) and runs a BM25 ``MemoryQuery`` against the
+        notes namespace. Silent no-op on any missing piece — never raises.
+        """
+        try:
+            host = None
+            app_state = getattr(self, "_app_state", None)
+            if app_state is not None:
+                host = getattr(app_state, "memory_host", None)
+            if host is None:
+                host = await self._get_memory_host()
+            if host is None:
+                return
+            query_fn = getattr(host, "query", None)
+            if query_fn is None:
+                return
+            user_text = _last_user_text(start.messages)
+            if not user_text or not user_text.strip():
+                return
+            from corlinman_memory_host.types import MemoryQuery  # noqa: PLC0415
+
+            req = MemoryQuery(
+                text=user_text.strip()[:500],
+                top_k=4,
+                namespace="agent_notes",
+            )
+            hits = await query_fn(req)
+        except Exception as exc:  # noqa: BLE001 — recall is best-effort
+            logger.warning("agent.memory.relevance_recall_failed", error=str(exc))
+            return
+        if not hits:
+            return
+        recalled = "\n".join(
+            f"- {getattr(h, 'content', '')}" for h in hits if getattr(h, "content", "")
+        )
+        if not recalled.strip():
+            return
+        note = (
+            "## Relevant notes (recalled for this message)\n"
+            f"{recalled}\n"
+            "Use these if relevant; do not mention that you recalled them."
+        )
+        start.messages = _inject_memory_note(list(start.messages), note)
+        logger.info(
+            "agent.memory.relevant_recalled",
+            session=start.session_key,
+            hits=len(hits),
         )
 
     async def _store_memory(

@@ -145,14 +145,41 @@ class Communication(BaseModel):
     timeout_ms: int | None = None
 
 
+class ToolAnnotations(BaseModel):
+    """Optional behavioural hints carried on a manifest :class:`Tool`.
+
+    These mirror MCP's ``ToolAnnotations`` (``readOnlyHint`` /
+    ``destructiveHint`` / ``idempotentHint`` / ``openWorldHint`` /
+    ``title``). They are advisory and parsed-and-kept so the MCP server
+    can surface them in ``tools/list`` rather than dropping them. Authors
+    may write either snake_case or the canonical camelCase keys.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    title: str | None = None
+    read_only_hint: bool | None = Field(default=None, alias="readOnlyHint")
+    destructive_hint: bool | None = Field(default=None, alias="destructiveHint")
+    idempotent_hint: bool | None = Field(default=None, alias="idempotentHint")
+    open_world_hint: bool | None = Field(default=None, alias="openWorldHint")
+
+
 class Tool(BaseModel):
     """A single tool exposed by the plugin."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     name: str = Field(min_length=1, max_length=128)
     description: str = ""
     parameters: dict[str, Any] = Field(default_factory=lambda: {"type": "object"})
+    #: Optional MCP ``ToolAnnotations`` (parse-and-keep, not dropped).
+    annotations: ToolAnnotations | None = None
+    #: Optional JSON Schema describing structured tool output
+    #: (MCP ``outputSchema``). Kept loose so plugin-supplied schemas
+    #: round-trip verbatim.
+    output_schema: dict[str, Any] | None = Field(default=None, alias="outputSchema")
+    #: Optional human-readable display title (MCP tool ``title``).
+    title: str | None = None
 
 
 class Capabilities(BaseModel):
@@ -410,6 +437,7 @@ __all__ = [
     "RestartPolicy",
     "SandboxConfig",
     "Tool",
+    "ToolAnnotations",
     "ToolsAllowlist",
     "parse_manifest_file",
 ]

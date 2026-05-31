@@ -407,6 +407,69 @@ class HookBus:
         self._fanout_callables_sync(event)
 
     # ------------------------------------------------------------------
+    # Decision / collecting fan-out (loop-blocking-lifecycle-hooks).
+    # ------------------------------------------------------------------
+
+    async def emit_collect(self, event: _HookEventBase) -> list[Any]:
+        """Emit ``event`` and *gather* every callable subscriber's return.
+
+        The plain :meth:`emit` is observe-only: subscriber return values
+        are discarded and the producer never learns what a listener
+        decided. :meth:`emit_collect` is the decision path — it fans the
+        event out to every matching :meth:`subscribe` callable (and the
+        per-tier pull queues, for parity with :meth:`emit`) and returns a
+        list of the non-``None`` values the callables produced, in
+        subscriber-registration order.
+
+        This lets a caller (the dispatcher's PreToolDispatch gate, the
+        loop's turn-end Stop check, the compactor's PreCompact veto)
+        treat hooks as *blocking* — e.g. deny a tool call or inject a
+        continuation message — without changing the fire-and-forget
+        :meth:`emit` semantics that the rest of the bus relies on.
+
+        A subscriber that returns an awaitable is awaited; its resolved
+        value is collected. A subscriber that raises is isolated (logged)
+        and contributes nothing. The cancel token is honored: if it is
+        flipped, :class:`HookCancelledError` is raised before any fan-out
+        (same precondition as :meth:`emit`).
+
+        ``None`` returns are skipped so an abstaining subscriber doesn't
+        pollute the result list; callers that need to know about every
+        subscriber should return an explicit sentinel instead of ``None``.
+        """
+        if self._cancel.is_cancelled():
+            raise HookCancelledError()
+        # Mirror emit's tiered pull-fanout so pull subscribers still see
+        # the event (they can't return a value — only callables can).
+        for tier in HookPriority.ordered():
+            if self._cancel.is_cancelled():
+                raise HookCancelledError()
+            self._fanout_tier(tier, event)
+            await asyncio.sleep(0)
+        collected: list[Any] = []
+        for predicate, subscriber in list(self._callable_subs.values()):
+            try:
+                if not predicate(event):
+                    continue
+            except Exception:  # noqa: BLE001 — never let a predicate kill emit
+                _log.exception("hook subscriber predicate raised; dropping event for this sub")
+                continue
+            try:
+                result = subscriber(event)
+            except Exception:  # noqa: BLE001 — isolate sync subscriber failure
+                _log.exception("hook subscriber raised; isolated")
+                continue
+            if inspect.isawaitable(result):
+                try:
+                    result = await result
+                except Exception:  # noqa: BLE001 — isolate async subscriber failure
+                    _log.exception("hook subscriber coroutine raised; isolated")
+                    continue
+            if result is not None:
+                collected.append(result)
+        return collected
+
+    # ------------------------------------------------------------------
     # Push-based callable-subscriber fan-out.
     # ------------------------------------------------------------------
 

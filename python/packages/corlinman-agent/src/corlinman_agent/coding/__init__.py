@@ -42,6 +42,11 @@ from corlinman_agent.coding.patch import (
     apply_patch_tool_schema,
     dispatch_apply_patch,
 )
+from corlinman_agent.coding.repl import (
+    EXECUTE_CODE_TOOL,
+    dispatch_execute_code,
+    execute_code_tool_schema,
+)
 from corlinman_agent.coding.revert import (
     REVERT_CHANGES_TOOL,
     dispatch_revert_changes,
@@ -82,10 +87,21 @@ CODING_TOOLS: frozenset[str] = frozenset(
     }
 )
 
+#: ``execute_code`` is opt-in (disabled by default — see
+#: :func:`dispatch_execute_code`). It is intentionally excluded from the
+#: always-advertised :data:`CODING_TOOLS` so the model is never offered a
+#: tool that would just return a ``execute_code_disabled`` envelope; the
+#: servicer advertises + dispatches it only when explicitly enabled.
+OPTIONAL_CODING_TOOLS: frozenset[str] = frozenset({EXECUTE_CODE_TOOL})
 
-def coding_tool_schemas() -> list[dict]:
-    """OpenAI tool descriptors for every coding tool."""
-    return [
+
+def coding_tool_schemas(*, include_optional: bool = False) -> list[dict]:
+    """OpenAI tool descriptors for every coding tool.
+
+    ``include_optional`` adds the opt-in tools (currently ``execute_code``);
+    callers that have enabled them pass ``True``.
+    """
+    schemas = [
         read_file_tool_schema(),
         write_file_tool_schema(),
         edit_file_tool_schema(),
@@ -96,12 +112,17 @@ def coding_tool_schemas() -> list[dict]:
         todo_write_tool_schema(),
         revert_changes_tool_schema(),
     ]
+    if include_optional:
+        schemas.append(execute_code_tool_schema())
+    return schemas
 
 
 __all__ = [
     "APPLY_PATCH_TOOL",
     "CODING_TOOLS",
+    "OPTIONAL_CODING_TOOLS",
     "EDIT_FILE_TOOL",
+    "EXECUTE_CODE_TOOL",
     "LIST_FILES_TOOL",
     "READ_FILE_TOOL",
     "REVERT_CHANGES_TOOL",
@@ -116,6 +137,7 @@ __all__ = [
     "coding_tool_schemas",
     "dispatch_apply_patch",
     "dispatch_edit_file",
+    "dispatch_execute_code",
     "dispatch_list_files",
     "dispatch_read_file",
     "dispatch_revert_changes",
@@ -124,6 +146,7 @@ __all__ = [
     "dispatch_todo_write",
     "dispatch_write_file",
     "edit_file_tool_schema",
+    "execute_code_tool_schema",
     "ensure_repo",
     "list_files_tool_schema",
     "list_snapshots",

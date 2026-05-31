@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import time
 from pathlib import Path
 from typing import Any
@@ -289,6 +290,35 @@ class _SqliteStore:
         async with self._conn.execute(sql, (namespace, limit)) as cur:
             rows = await cur.fetchall()
         return [int(r["id"]) for r in rows]
+
+    async def chunk_mtimes_by_ids(self, ids: list[int]) -> dict[int, int]:
+        """Return ``{chunk_id: creation_unix_seconds}`` for the given ids.
+
+        Creation time is read from the synthetic ``files.mtime`` column the
+        host stamps on upsert (see :meth:`LocalSqliteHost.upsert`). Chunks
+        whose owning file row predates this behaviour carry ``mtime = 0``
+        and are simply absent from the returned mapping so callers can fall
+        back to the un-decayed score. Only used by the opt-in time-decay
+        re-rank, so it stays off the legacy hot path entirely.
+        """
+        if not ids:
+            return {}
+        placeholders = ",".join("?" * len(ids))
+        sql = (
+            "SELECT c.id AS id, f.mtime AS mtime "
+            "FROM chunks c JOIN files f ON c.file_id = f.id "
+            f"WHERE c.id IN ({placeholders})"
+        )
+        async with self._conn.execute(sql, ids) as cur:
+            rows = await cur.fetchall()
+        out: dict[int, int] = {}
+        for r in rows:
+            mtime = int(r["mtime"])
+            # mtime 0 = "unknown / pre-decay row"; skip so it doesn't get
+            # treated as the epoch (which would crush its decayed score).
+            if mtime > 0:
+                out[int(r["id"])] = mtime
+        return out
 
     async def search_bm25_with_filter(
         self,
@@ -551,6 +581,13 @@ class LocalSqliteHost(MemoryHost):
         if not hits:
             return []
 
+        # Opt-in exponential time-decay re-rank: multiply each seed's BM25
+        # score by a recency weight so recent chunks float up. Default off
+        # (``time_decay_half_life_s is None``) → identical legacy ordering.
+        # Applied to seeds BEFORE the graph-expansion floor is derived so
+        # the floor tracks the decayed seed scores.
+        hits = await self._apply_time_decay(hits, req)
+
         # ``scored`` carries (chunk_id, score, graph_expanded). Seed
         # hits keep their BM25 score; graph-expanded hits get
         # ``seed_floor = max(seed) * 0.85`` so they rank below all seeds.
@@ -672,10 +709,16 @@ class LocalSqliteHost(MemoryHost):
         self._upsert_counter += 1
         nanos = time.time_ns()
         synthetic_path = f"memory-host://{nanos}-{counter}"
+        # Stamp the creation instant (unix seconds) into ``files.mtime`` —
+        # previously hard-coded to 0. This is the recency signal the opt-in
+        # query-time time-decay re-rank reads back via
+        # ``chunk_mtimes_by_ids``. Legacy callers that never enable decay
+        # are unaffected; the column already existed in the schema.
+        created_unix = nanos // 1_000_000_000
 
         try:
             file_id = await self._store.insert_file(
-                synthetic_path, _DEFAULT_DIARY_NAME, "", 0, 0
+                synthetic_path, _DEFAULT_DIARY_NAME, "", created_unix, 0
             )
         except aiosqlite.Error as exc:
             raise MemoryHostError(
@@ -746,6 +789,58 @@ class LocalSqliteHost(MemoryHost):
         )
 
     # ---- internal helpers -------------------------------------------------
+
+    async def _apply_time_decay(
+        self, hits: list[tuple[int, float]], req: MemoryQuery
+    ) -> list[tuple[int, float]]:
+        """Re-rank ``hits`` by exponential recency weight when opted in.
+
+        No-op (returns ``hits`` unchanged, preserving order) unless
+        ``req.time_decay_half_life_s`` is a positive finite number. Each
+        score is multiplied by ``exp(-ln(2) * age_s / half_life_s)`` where
+        ``age_s`` is the chunk's age relative to ``req.time_decay_now_s``
+        (or wall-clock now). Chunks with no recorded creation time keep
+        their raw score (weight 1.0), and the result is re-sorted so the
+        downstream graph-floor / budgeting logic sees a monotonic list.
+        """
+        half_life = req.time_decay_half_life_s
+        if half_life is None or not math.isfinite(half_life) or half_life <= 0.0:
+            return hits
+
+        ids = [cid for (cid, _) in hits]
+        try:
+            mtimes = await self._store.chunk_mtimes_by_ids(ids)
+        except aiosqlite.Error as exc:
+            raise MemoryHostError(
+                f"LocalSqliteHost: time-decay mtime lookup: {exc}"
+            ) from exc
+
+        now_s = (
+            req.time_decay_now_s
+            if req.time_decay_now_s is not None
+            else time.time()
+        )
+        decay_k = math.log(2.0) / half_life
+
+        reweighted: list[tuple[int, float]] = []
+        for cid, score in hits:
+            mtime = mtimes.get(cid)
+            if mtime is None:
+                # Unknown age → no recency adjustment.
+                reweighted.append((cid, score))
+                continue
+            age_s = now_s - float(mtime)
+            if age_s <= 0.0:
+                weight = 1.0
+            else:
+                weight = math.exp(-decay_k * age_s)
+            reweighted.append((cid, score * weight))
+
+        # Stable descending sort keeps deterministic ties (equal weights
+        # preserve the original BM25 relevance order via the negated key
+        # being equal — Python's sort is stable).
+        reweighted.sort(key=lambda pair: pair[1], reverse=True)
+        return reweighted
 
     async def _ensure_metadata_schema(self) -> None:
         try:

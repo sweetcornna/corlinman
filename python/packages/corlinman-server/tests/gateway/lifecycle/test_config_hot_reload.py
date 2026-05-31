@@ -60,6 +60,16 @@ api_key = "sk-original"
 _MALFORMED = "[providers.openai\nkind = broken"
 
 
+@pytest.fixture(autouse=True)
+def _enable_hot_reload(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Live fs-watch hot-reload is opt-in (default OFF) since gap-fill v1.15
+    — a real fs observer per boot accumulates OS watch handles across the
+    suite. These integration tests explicitly opt in so the ConfigWatcher
+    arms in the lifespan; the env var is reverted automatically after each
+    test, so no other test boots a watcher."""
+    monkeypatch.setenv("CORLINMAN_CONFIG_HOT_RELOAD", "1")
+
+
 def _provider_names(state) -> set[str]:
     registry = state.provider_registry
     assert registry is not None

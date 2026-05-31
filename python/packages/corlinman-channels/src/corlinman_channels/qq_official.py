@@ -62,6 +62,8 @@ import websockets
 from websockets.asyncio.client import ClientConnection
 
 from corlinman_channels.common import (
+    Attachment,
+    AttachmentKind,
     ChannelBinding,
     ConfigError,
     InboundEvent,
@@ -203,6 +205,68 @@ def extract_message_text(payload: dict[str, Any]) -> str:
     if isinstance(content, str):
         return content
     return ""
+
+
+def _classify_qq_attachment(att: dict[str, Any]) -> AttachmentKind:
+    """Classify a QQ Official ``attachments`` entry.
+
+    QQ ships ``content_type`` (``"image/jpeg"``, ``"voice"``, ...) on
+    most; we map the coarse leading token, falling back to DOCUMENT.
+    """
+    ctype = str(att.get("content_type") or "").lower()
+    if ctype.startswith("image") or att.get("width") or att.get("height"):
+        return AttachmentKind.IMAGE
+    if ctype.startswith(("audio", "voice")):
+        return AttachmentKind.AUDIO
+    if ctype.startswith("video"):
+        return AttachmentKind.VIDEO
+    return AttachmentKind.DOCUMENT
+
+
+def extract_attachments(payload: dict[str, Any]) -> list[Attachment]:
+    """Extract :class:`Attachment` descriptors from a QQ Official message.
+
+    The 官方 platform pre-uploads media and ships an ``attachments`` array
+    where each entry carries a fetchable ``url`` (sometimes scheme-less,
+    so we normalise to ``https://``), a ``content_type`` and a
+    ``filename``. Guild-message rich media also appears here.
+    """
+    out: list[Attachment] = []
+    for att in payload.get("attachments") or []:
+        if not isinstance(att, dict):
+            continue
+        url = str(att.get("url") or "")
+        if not url:
+            continue
+        if url.startswith("//"):
+            url = f"https:{url}"
+        elif not url.startswith(("http://", "https://")):
+            url = f"https://{url}"
+        out.append(
+            Attachment(
+                kind=_classify_qq_attachment(att),
+                url=url,
+                mime=att.get("content_type") or None,
+                file_name=att.get("filename") or None,
+            )
+        )
+    return out
+
+
+def sender_display_name(payload: dict[str, Any]) -> str | None:
+    """Best-effort author display name for group attribution.
+
+    Guild messages carry a rich ``author`` (``username``) and a
+    ``member.nick``; C2C / group@bot messages only expose openids, so
+    this returns ``None`` for those (the agent resolves via the binding).
+    """
+    member = payload.get("member")
+    if isinstance(member, dict) and member.get("nick"):
+        return str(member["nick"])
+    author = payload.get("author")
+    if isinstance(author, dict) and author.get("username"):
+        return str(author["username"])
+    return None
 
 
 def extract_msg_id(payload: dict[str, Any]) -> str | None:
@@ -516,7 +580,8 @@ class QqOfficialAdapter:
             text = extract_message_text(payload)
             if event_type in (_EVENT_GUILD_AT_MESSAGE, _EVENT_GUILD_MESSAGE):
                 text = _strip_mention(text)
-            if not text.strip():
+            attachments = extract_attachments(payload)
+            if not text.strip() and not attachments:
                 continue
             binding = binding_from_payload(
                 event_type=event_type,
@@ -541,8 +606,9 @@ class QqOfficialAdapter:
                 # only when the bot owns the channel (rare); we mark it
                 # as un-mentioned so the router can drop it if desired.
                 mentioned=event_type != _EVENT_GUILD_MESSAGE,
-                attachments=[],  # multimodal download is out of scope here
+                attachments=attachments,
                 payload=payload_with_type,
+                sender_name=sender_display_name(payload),
             )
 
     # ------------------------------------------------------------------

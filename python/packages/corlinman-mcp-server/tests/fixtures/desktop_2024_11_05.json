@@ -36,9 +36,9 @@
         "result": {
           "protocolVersion": "2024-11-05",
           "capabilities": {
-            "tools": {},
-            "resources": { "subscribe": false },
-            "prompts": {}
+            "tools": { "listChanged": true },
+            "resources": { "subscribe": false, "listChanged": true },
+            "prompts": { "listChanged": true }
           },
           "serverInfo": { "name": "corlinman", "version": "*" }
         }

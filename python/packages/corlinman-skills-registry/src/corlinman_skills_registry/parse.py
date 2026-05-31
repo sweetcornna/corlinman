@@ -8,7 +8,10 @@ behaviour byte-for-byte so the test suites can share fixtures.
 
 from __future__ import annotations
 
+import hashlib
 import os
+import re
+import tarfile
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -16,7 +19,7 @@ from typing import Any, cast, get_args
 
 import yaml
 
-from .errors import MissingFieldError, YamlParseError
+from .errors import MissingFieldError, SkillLoadError, YamlParseError
 from .skill import Skill, SkillOrigin, SkillRequirements, SkillState
 
 
@@ -74,6 +77,34 @@ def _coerce_str_list(value: Any) -> list[str]:
     if isinstance(value, list):
         return [str(item) for item in value]
     return []
+
+
+def _coerce_opt_str(value: Any) -> str | None:
+    """Return a non-empty trimmed string, else ``None`` (missing/blank)."""
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _coerce_mapping(value: Any) -> dict[str, Any]:
+    """Carry an arbitrary YAML mapping verbatim; fail-soft to ``{}`` for
+    missing / non-mapping shapes so a malformed ``hooks`` block never blocks
+    skill loading (interpretation happens in the hook runner downstream)."""
+    if isinstance(value, dict):
+        # Normalise keys to str so the model's ``dict[str, Any]`` is honest;
+        # values stay verbatim.
+        return {str(k): v for k, v in value.items()}
+    return {}
+
+
+def _coerce_bool(value: Any) -> bool:
+    """Strict-ish bool coercion. Accepts real bools plus the common YAML
+    string spellings so ``disable-model-invocation: "true"`` still works."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "yes", "1", "on"}
+    return False
 
 
 _VALID_ORIGINS = set(get_args(SkillOrigin))
@@ -193,6 +224,29 @@ def parse_skill(source_path: Path, text: str) -> Skill:
 
     created_at = _coerce_datetime(raw.get("created_at"))
 
+    # --- Progressive-disclosure / model-selection metadata -----------
+    # Read from top-level frontmatter (openclaw / claude-code SKILL.md
+    # style). Accept both camelCase (``whenToUse``) and snake/kebab
+    # spellings so hand-authored and hub-published files both load. These
+    # were previously parsed-and-dropped; carry them through now.
+    when_to_use = _coerce_opt_str(
+        raw.get("whenToUse")
+        if raw.get("whenToUse") is not None
+        else raw.get("when_to_use")
+    )
+    paths = _coerce_str_list(raw.get("paths"))
+    platforms = _coerce_str_list(raw.get("platforms"))
+    model = _coerce_opt_str(raw.get("model"))
+    effort = _coerce_opt_str(raw.get("effort"))
+    hooks = _coerce_mapping(raw.get("hooks"))
+    # Frontmatter has been seen with kebab-case and camelCase spellings.
+    dmi_raw = raw.get("disable-model-invocation")
+    if dmi_raw is None:
+        dmi_raw = raw.get("disableModelInvocation")
+    if dmi_raw is None:
+        dmi_raw = raw.get("disable_model_invocation")
+    disable_model_invocation = _coerce_bool(dmi_raw)
+
     return Skill(
         name=name,
         description=description,
@@ -200,6 +254,13 @@ def parse_skill(source_path: Path, text: str) -> Skill:
         requires=requires,
         install=install,
         allowed_tools=allowed_tools,
+        when_to_use=when_to_use,
+        paths=paths,
+        platforms=platforms,
+        model=model,
+        effort=effort,
+        hooks=hooks,
+        disable_model_invocation=disable_model_invocation,
         body_markdown=body,
         source_path=source_path,
         version=version,
@@ -241,6 +302,25 @@ def render_skill_frontmatter(skill: Skill) -> str:
 
     if skill.allowed_tools:
         doc["allowed-tools"] = list(skill.allowed_tools)
+
+    # Progressive-disclosure / model-selection metadata — only emit
+    # non-default keys so legacy hand-written files keep their shape. We
+    # use the camelCase ``whenToUse`` spelling on write (matches the
+    # openclaw / claude-code convention) and kebab-case for the boolean.
+    if skill.when_to_use is not None:
+        doc["whenToUse"] = skill.when_to_use
+    if skill.paths:
+        doc["paths"] = list(skill.paths)
+    if skill.platforms:
+        doc["platforms"] = list(skill.platforms)
+    if skill.model is not None:
+        doc["model"] = skill.model
+    if skill.effort is not None:
+        doc["effort"] = skill.effort
+    if skill.hooks:
+        doc["hooks"] = dict(skill.hooks)
+    if skill.disable_model_invocation:
+        doc["disable-model-invocation"] = True
 
     # ``metadata.openclaw`` sub-block — only emit keys that are non-default
     # so we don't bloat hand-written files.
@@ -329,9 +409,135 @@ def write_skill_md(path: Path, skill: Skill, body: str | None = None) -> None:
         raise
 
 
+# ---------------------------------------------------------------------------
+# Trust scan — verify a downloaded skill tarball before it is materialised.
+# ---------------------------------------------------------------------------
+#
+# The hub installer (``corlinman_server.system.skill_hub.installer``) does not
+# own this package, so the verify + static-scan logic lives here where the
+# skill data-model also lives. The installer is expected to call
+# :func:`verify_and_scan_tarball` BEFORE extracting an untrusted tarball — see
+# the wire_contract returned by lane-skills-meta.
+
+
+class SkillHashMismatchError(SkillLoadError):
+    """The downloaded tarball's sha256 did not match the declared
+    ``content_hash``. A mismatch means the bytes were tampered with (or the
+    CDN edge served a stale/corrupt blob); we refuse to install rather than
+    materialise unverified content."""
+
+    def __init__(self, *, expected: str, actual: str) -> None:
+        super().__init__(
+            f"skill tarball hash mismatch: declared content_hash "
+            f"{expected!r} but downloaded bytes hash to {actual!r}"
+        )
+        self.expected = expected
+        self.actual = actual
+
+
+# Lightweight static-scan signatures. This is intentionally a cheap,
+# heuristic line-scan — NOT a sandbox. It exists to flag the *obviously*
+# dangerous patterns a malicious SKILL.md / helper script might smuggle in,
+# so an operator gets a warning chip before the skill is trusted. False
+# positives are acceptable (they surface as advisory flags, not hard
+# failures); the goal is "loud enough to notice", not airtight.
+_DANGEROUS_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("eval-exec", re.compile(r"\b(?:eval|exec)\s*\(")),
+    ("os-system", re.compile(r"\bos\.system\s*\(")),
+    ("subprocess-shell", re.compile(r"subprocess\.(?:Popen|call|run|check_output)\b.*shell\s*=\s*True")),
+    ("pickle-loads", re.compile(r"\bpickle\.loads?\s*\(")),
+    ("rm-rf", re.compile(r"\brm\s+-rf\b")),
+    ("curl-pipe-shell", re.compile(r"\bcurl\b[^\n|]*\|\s*(?:ba)?sh\b")),
+    ("wget-pipe-shell", re.compile(r"\bwget\b[^\n|]*\|\s*(?:ba)?sh\b")),
+    ("base64-decode-exec", re.compile(r"base64\.b64decode\s*\([^\n]*\)[^\n]*(?:exec|eval)")),
+    ("dunder-import", re.compile(r"__import__\s*\(")),
+    ("sensitive-path", re.compile(r"(?:/etc/(?:passwd|shadow)|~/\.ssh/|\.aws/credentials)")),
+)
+
+
+def scan_text_for_dangerous_patterns(text: str) -> list[str]:
+    """Return a sorted list of flag tags for any dangerous patterns found in
+    ``text``. Empty list means the scan found nothing notable.
+
+    Cheap and dependency-free — a regex line-scan, not real static analysis.
+    Callers surface the tags as advisory warnings; they do not block install
+    on their own (a hash mismatch does).
+    """
+    flags: set[str] = set()
+    for tag, pattern in _DANGEROUS_PATTERNS:
+        if pattern.search(text):
+            flags.add(tag)
+    return sorted(flags)
+
+
+def scan_tarball_members(tarball: bytes) -> list[str]:
+    """Static-scan the text members of a (gzip/plain) tar ``tarball``.
+
+    Reads each regular member up to a small per-file cap, decodes as UTF-8
+    (errors ignored — we only care about ASCII-ish payload patterns), and
+    runs :func:`scan_text_for_dangerous_patterns`. Returns the de-duplicated,
+    sorted union of flags across all members.
+
+    Fail-soft: an unreadable / non-tar blob yields ``[]`` — the hash verify
+    is the hard gate; the scan is advisory and must never crash the install.
+    """
+    import io
+
+    _PER_MEMBER_SCAN_CAP = 1 * 1024 * 1024  # 1 MiB is plenty for source text
+    flags: set[str] = set()
+    try:
+        with tarfile.open(fileobj=io.BytesIO(tarball), mode="r:*") as tar:
+            for member in tar.getmembers():
+                if not member.isfile():
+                    continue
+                src = tar.extractfile(member)
+                if src is None:
+                    continue
+                with src:
+                    data = src.read(_PER_MEMBER_SCAN_CAP)
+                text = data.decode("utf-8", errors="ignore")
+                flags.update(scan_text_for_dangerous_patterns(text))
+    except (tarfile.TarError, OSError):
+        # Not a readable tar (or read error) — leave the hard gate to the
+        # hash verify + the installer's own safe-extract path.
+        return []
+    return sorted(flags)
+
+
+def verify_and_scan_tarball(
+    tarball: bytes,
+    declared_hash: str | None,
+) -> list[str]:
+    """Verify ``tarball``'s sha256 against ``declared_hash`` and static-scan
+    its members.
+
+    * If ``declared_hash`` is provided, the sha256 of ``tarball`` MUST match
+      (case-insensitive; an optional ``sha256:`` prefix is tolerated). A
+      mismatch raises :class:`SkillHashMismatchError`. When ``declared_hash``
+      is ``None`` (ClawHub's ``X-Content-Hash`` header is best-effort and
+      absent on some edges) the verify step is skipped — we can't check what
+      upstream never declared.
+    * Always returns the advisory static-scan flags (possibly empty). The
+      installer should record these on the skill's sidecar / audit log so an
+      operator can review what tripped the scanner.
+    """
+    actual = hashlib.sha256(tarball).hexdigest()
+    if declared_hash:
+        expected = declared_hash.strip().lower()
+        if expected.startswith("sha256:"):
+            expected = expected[len("sha256:") :]
+        if expected and expected != actual:
+            raise SkillHashMismatchError(expected=expected, actual=actual)
+    return scan_tarball_members(tarball)
+
+
 __all__ = [
+    "SkillHashMismatchError",
     "parse_skill",
     "render_skill_frontmatter",
+    "scan_tarball_members",
+    "scan_text_for_dangerous_patterns",
     "split_frontmatter",
+    "verify_and_scan_tarball",
     "write_skill_md",
 ]

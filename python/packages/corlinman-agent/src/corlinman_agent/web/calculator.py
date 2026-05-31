@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import ast
 import json
+import math
 import operator
+import statistics
 from collections.abc import Callable
 from typing import Any
 
@@ -32,6 +34,57 @@ logger = structlog.get_logger(__name__)
 
 #: Wire-stable tool name.
 CALCULATOR_TOOL: str = "calculator"
+
+#: Scientific function allowlist: the ONLY names ``ast.Call`` may target.
+#: Every entry maps to a stdlib :mod:`math` / :mod:`statistics` callable
+#: — there is no path to an arbitrary attribute or builtin. Variadic
+#: stats functions (mean/median/stdev) accept either a single iterable
+#: argument (``mean([1,2,3])``) or positional numbers (``mean(1,2,3)``)
+#: via :func:`_stats_adapter`.
+def _stats_adapter(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Let a ``statistics`` reducer accept either an iterable or *args."""
+
+    def _call(*args: Any) -> Any:
+        if len(args) == 1 and isinstance(args[0], (list, tuple)):
+            return fn(args[0])
+        return fn(args)
+
+    return _call
+
+
+_SCI_FUNCS: dict[str, Callable[..., Any]] = {
+    "sqrt": math.sqrt,
+    "sin": math.sin,
+    "cos": math.cos,
+    "tan": math.tan,
+    "asin": math.asin,
+    "acos": math.acos,
+    "atan": math.atan,
+    "log": math.log,  # log(x) or log(x, base)
+    "log10": math.log10,
+    "exp": math.exp,
+    "pow": math.pow,
+    "factorial": math.factorial,
+    "hypot": math.hypot,
+    "degrees": math.degrees,
+    "radians": math.radians,
+    "mean": _stats_adapter(statistics.mean),
+    "median": _stats_adapter(statistics.median),
+    "stdev": _stats_adapter(statistics.stdev),
+}
+
+#: Named numeric constants ``ast.Name`` may resolve to. NOTHING else — a
+#: bare ``ast.Name`` outside this set is rejected, preserving the
+#: no-arbitrary-eval guarantee (no variable / builtin / module lookup).
+_SCI_CONSTS: dict[str, float] = {
+    "pi": math.pi,
+    "e": math.e,
+    "tau": math.tau,
+}
+
+#: Cap on the integer passed to ``factorial`` so a single call cannot
+#: pin the CPU / exhaust memory (``factorial(10**9)``).
+_MAX_FACTORIAL = 10_000
 
 #: Allowed binary operators → their implementation.
 _BIN_OPS: dict[type[ast.operator], Callable[..., Any]] = {
@@ -61,10 +114,16 @@ def calculator_tool_schema() -> dict[str, Any]:
         "function": {
             "name": CALCULATOR_TOOL,
             "description": (
-                "Evaluate an arithmetic expression precisely. Supports "
-                "+, -, *, /, // (floor div), % (modulo), ** (power) and "
-                "parentheses. Use this instead of doing multi-digit "
-                "arithmetic yourself."
+                "Evaluate a math expression precisely. Supports arithmetic "
+                "(+, -, *, /, // floor-div, % modulo, ** power, parentheses) "
+                "AND a scientific function allowlist: sqrt, sin, cos, tan, "
+                "asin, acos, atan, log (log(x) or log(x, base)), log10, exp, "
+                "pow, factorial, hypot, degrees, radians, and the stats "
+                "reducers mean/median/stdev (each takes either a bracketed "
+                "list like mean([1,2,3]) or positional numbers). The "
+                "constants pi, e, and tau are available. Use this instead of "
+                "doing multi-digit or trig/log arithmetic yourself. No "
+                "variables, no arbitrary functions."
             ),
             "parameters": {
                 "type": "object",
@@ -72,8 +131,9 @@ def calculator_tool_schema() -> dict[str, Any]:
                     "expression": {
                         "type": "string",
                         "description": (
-                            "The arithmetic expression, e.g. "
-                            "'(1234 * 5678) / 90'."
+                            "The math expression, e.g. '(1234 * 5678) / 90', "
+                            "'sqrt(2) * pi', 'log(1000, 10)', or "
+                            "'mean([3, 5, 7])'."
                         ),
                     }
                 },
@@ -120,6 +180,58 @@ def _eval_node(node: ast.AST) -> Any:
                 f"unary operator {type(node.op).__name__} is not allowed"
             )
         return impl(_eval_node(node.operand))
+    if isinstance(node, ast.Name):
+        # Only the whitelisted numeric constants resolve. Any other bare
+        # name (a variable, a builtin like ``__import__``, a module) is
+        # rejected — there is no general name lookup.
+        const = _SCI_CONSTS.get(node.id)
+        if const is None:
+            raise _UnsafeExpressionError(
+                f"unknown name {node.id!r} (only pi, e, tau allowed)"
+            )
+        return const
+    if isinstance(node, (ast.List, ast.Tuple)):
+        # Numeric sequence literals — used as the argument to the stats
+        # reducers (``mean([1,2,3])``). Elements are evaluated through the
+        # same allowlist, so a list cannot smuggle anything unsafe. We
+        # forbid starred elements (``[*x]``).
+        elts: list[Any] = []
+        for elt in node.elts:
+            if isinstance(elt, ast.Starred):
+                raise _UnsafeExpressionError("starred elements not allowed")
+            elts.append(_eval_node(elt))
+        return elts
+    if isinstance(node, ast.Call):
+        # Calls are permitted ONLY against the scientific allowlist, named
+        # directly (``sqrt(2)``). Attribute calls (``math.sqrt``), keyword
+        # args, *args/**kwargs unpacking, and any non-Name callee are all
+        # rejected so no arbitrary callable can be reached.
+        if not isinstance(node.func, ast.Name):
+            raise _UnsafeExpressionError(
+                "only direct calls to allowed functions are permitted"
+            )
+        fn = _SCI_FUNCS.get(node.func.id)
+        if fn is None:
+            raise _UnsafeExpressionError(
+                f"function {node.func.id!r} is not allowed"
+            )
+        if node.keywords:
+            raise _UnsafeExpressionError("keyword arguments are not allowed")
+        args = [_eval_node(arg) for arg in node.args]
+        if node.func.id == "factorial":
+            if (
+                len(args) != 1
+                or not isinstance(args[0], int)
+                or isinstance(args[0], bool)
+            ):
+                raise _UnsafeExpressionError(
+                    "factorial requires a single integer argument"
+                )
+            if args[0] < 0 or args[0] > _MAX_FACTORIAL:
+                raise _UnsafeExpressionError(
+                    f"factorial argument out of range (0..{_MAX_FACTORIAL})"
+                )
+        return fn(*args)
     raise _UnsafeExpressionError(
         f"expression node {type(node).__name__} is not allowed"
     )

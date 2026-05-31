@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -43,18 +44,37 @@ from .session import (
     initialize_reply,
 )
 from .types import (
+    PROMPTS_LIST_CHANGED_NOTIFICATION,
+    RESOURCES_LIST_CHANGED_NOTIFICATION,
+    TOOLS_LIST_CHANGED_NOTIFICATION,
     InitializeParams,
     JsonRpcErrorResponse,
     JsonRpcRequest,
     JsonRpcResponse,
     JsonRpcResultResponse,
+    JsonValue,
     PromptsCapability,
     ResourcesCapability,
     ServerCapabilities,
     ToolsCapability,
+    list_changed_notification,
 )
 
 log = structlog.get_logger(__name__)
+
+#: Server -> client send sink. The transport hands the dispatcher one of
+#: these per connection so the dispatcher can push id-less notifications
+#: (e.g. ``*/list_changed``) without a preceding client request. Returns
+#: an awaitable; failures should be swallowed by the caller so one dead
+#: connection can't break a fan-out.
+NotificationSink = Callable[[dict[str, JsonValue]], Awaitable[None]]
+
+#: Map a capability family onto its ``*/list_changed`` method name.
+_LIST_CHANGED_METHOD: dict[str, str] = {
+    "tools": TOOLS_LIST_CHANGED_NOTIFICATION,
+    "resources": RESOURCES_LIST_CHANGED_NOTIFICATION,
+    "prompts": PROMPTS_LIST_CHANGED_NOTIFICATION,
+}
 
 
 @dataclass
@@ -113,6 +133,12 @@ class AdapterDispatcher:
         self._server_info: ServerInfo = server_info or ServerInfo.default()
         self._adapters: dict[str, CapabilityAdapter] = {}
         self._capabilities: ServerCapabilities = ServerCapabilities()
+        # Per-connection server -> client send channels. The transport
+        # registers one on connect and removes it on teardown so a
+        # capability change can be pushed to every live session.
+        self._sinks: dict[int, NotificationSink] = {}
+        self._sinks_lock: asyncio.Lock = asyncio.Lock()
+        self._next_sink_id: int = 0
 
     @classmethod
     def from_adapters(
@@ -145,18 +171,76 @@ class AdapterDispatcher:
             )
         self._adapters[cap] = adapter
         # Refresh advertised capabilities. We use the spec's
-        # "object, even if empty" shape — present means supported.
+        # "object, even if empty" shape — present means supported. We now
+        # support pushing ``*/list_changed`` notifications, so advertise
+        # ``listChanged: true`` per capability so a client knows to listen.
         if cap == "tools":
-            self._capabilities.tools = ToolsCapability()
+            self._capabilities.tools = ToolsCapability(listChanged=True)
         elif cap == "resources":
-            self._capabilities.resources = ResourcesCapability(subscribe=False)
+            self._capabilities.resources = ResourcesCapability(
+                subscribe=False, listChanged=True
+            )
         elif cap == "prompts":
-            self._capabilities.prompts = PromptsCapability()
+            self._capabilities.prompts = PromptsCapability(listChanged=True)
         else:
             log.warning(
                 "mcp dispatcher: unknown adapter capability",
                 capability=cap,
             )
+
+    # ------------------------------------------------------------------
+    # Server -> client notification channel
+    # ------------------------------------------------------------------
+
+    async def register_sink(self, sink: NotificationSink) -> int:
+        """Register a per-connection server->client send channel.
+
+        Returns an opaque handle the transport passes back to
+        :meth:`unregister_sink` on teardown. Thread/​task-safe under the
+        internal lock."""
+        async with self._sinks_lock:
+            handle = self._next_sink_id
+            self._next_sink_id += 1
+            self._sinks[handle] = sink
+            return handle
+
+    async def unregister_sink(self, handle: int) -> None:
+        """Drop a previously-registered send channel. Idempotent."""
+        async with self._sinks_lock:
+            self._sinks.pop(handle, None)
+
+    async def notify_list_changed(self, capability: str) -> int:
+        """Fan a ``notifications/<capability>/list_changed`` frame out to
+        every connected session.
+
+        Call this after the underlying tool / resource / prompt set
+        changes (e.g. a plugin (un)loaded). No-ops (returns 0) when the
+        capability is unknown or no sessions are connected. A single dead
+        connection never aborts the fan-out — its sink error is logged and
+        the channel left in place for the transport to reap on teardown.
+        Returns the number of sinks the frame was delivered to."""
+        method = _LIST_CHANGED_METHOD.get(capability)
+        if method is None:
+            log.warning(
+                "mcp dispatcher: list_changed for unknown capability",
+                capability=capability,
+            )
+            return 0
+        frame = list_changed_notification(method)
+        async with self._sinks_lock:
+            sinks = list(self._sinks.values())
+        delivered = 0
+        for sink in sinks:
+            try:
+                await sink(frame)
+                delivered += 1
+            except Exception as err:  # noqa: BLE001 — one dead conn must not abort fan-out
+                log.debug(
+                    "mcp dispatcher: list_changed delivery failed",
+                    capability=capability,
+                    err=str(err),
+                )
+        return delivered
 
     @staticmethod
     def capability_for(method: str) -> str | None:
@@ -232,6 +316,7 @@ class AdapterDispatcher:
 __all__ = [
     "AdapterDispatcher",
     "FrameHandler",
+    "NotificationSink",
     "ServerInfo",
     "StubMethodNotFoundHandler",
 ]

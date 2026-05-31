@@ -248,6 +248,40 @@ class _PreToolDispatch(_HookEventBase):
 
 
 @dataclass(frozen=True)
+class _PreToolDecision(_HookEventBase):
+    """Decision-returning variant of :class:`_PreToolDispatch`.
+
+    Unlike the fire-and-forget :class:`_PreToolDispatch`, this variant is
+    emitted via :func:`corlinman_hooks.bus.emit_collect` (or
+    :meth:`HookBus.emit_collect`) so subscribers can *return* a verdict
+    that the dispatcher honors (allow / deny / mutate). Subscribers that
+    return ``None`` abstain; the first explicit deny wins.
+
+    ``args`` carries the full (already-parsed) tool arguments so a
+    subscriber can inspect them — the observe-only :class:`_PreToolDispatch`
+    only carries an ``args_preview`` string for the telemetry feed.
+    """
+
+    tool: str
+    call_id: str
+    args: Any
+    session_key_: str = ""
+    tenant_id: str | None = None
+    user_id: str | None = None
+
+    KIND: ClassVar[str] = "pre_tool_decision"
+    OPTIONAL_FIELDS: ClassVar[tuple[str, ...]] = ("tenant_id", "user_id")
+
+    def session_key(self) -> str | None:
+        return self.session_key_ or None
+
+    def to_dict(self) -> dict[str, Any]:
+        d = super().to_dict()
+        d["session_key"] = d.pop("session_key_")
+        return d
+
+
+@dataclass(frozen=True)
 class _ToolCalled(_HookEventBase):
     tool: str
     runner_id: str
@@ -520,6 +554,142 @@ class _UserSupplemented(_HookEventBase):
         return d
 
 
+@dataclass(frozen=True)
+class _SessionStart(_HookEventBase):
+    """Fired when a chat session is first observed (first turn / resume).
+
+    ``source`` distinguishes a brand-new session (``"startup"``) from a
+    resumed one (``"resume"``) so subscribers (audit, greeting injectors)
+    can react differently.
+    """
+
+    session_key_: str
+    source: str = "startup"
+
+    KIND: ClassVar[str] = "session_start"
+
+    def session_key(self) -> str | None:
+        return self.session_key_ or None
+
+    def to_dict(self) -> dict[str, Any]:
+        d = super().to_dict()
+        d["session_key"] = d.pop("session_key_")
+        return d
+
+
+@dataclass(frozen=True)
+class _SessionEnd(_HookEventBase):
+    """Fired when a session is torn down / evicted.
+
+    ``reason`` is a short code (``"clear"``, ``"timeout"``, ``"shutdown"``).
+    """
+
+    session_key_: str
+    reason: str = "shutdown"
+
+    KIND: ClassVar[str] = "session_end"
+
+    def session_key(self) -> str | None:
+        return self.session_key_ or None
+
+    def to_dict(self) -> dict[str, Any]:
+        d = super().to_dict()
+        d["session_key"] = d.pop("session_key_")
+        return d
+
+
+@dataclass(frozen=True)
+class _SessionReset(_HookEventBase):
+    """Fired when a session's conversation history is cleared in place
+    (``/clear`` / ``/reset``) but the session key is retained."""
+
+    session_key_: str
+
+    KIND: ClassVar[str] = "session_reset"
+
+    def session_key(self) -> str | None:
+        return self.session_key_ or None
+
+    def to_dict(self) -> dict[str, Any]:
+        d = super().to_dict()
+        d["session_key"] = d.pop("session_key_")
+        return d
+
+
+@dataclass(frozen=True)
+class _PreCompact(_HookEventBase):
+    """Fired *before* the reasoning loop compacts conversation history.
+
+    Carries the pre-compaction message count + estimated token total so a
+    subscriber (or a blocking hook via :func:`emit_collect`) can veto or
+    adjust the compaction. ``trigger`` is ``"auto"`` (budget-driven) or
+    ``"manual"`` (explicit ``/compact``).
+    """
+
+    session_key_: str
+    message_count: int
+    token_estimate: int
+    trigger: str = "auto"
+
+    KIND: ClassVar[str] = "pre_compact"
+
+    def session_key(self) -> str | None:
+        return self.session_key_ or None
+
+    def to_dict(self) -> dict[str, Any]:
+        d = super().to_dict()
+        d["session_key"] = d.pop("session_key_")
+        return d
+
+
+@dataclass(frozen=True)
+class _PostCompact(_HookEventBase):
+    """Fired *after* compaction completes, with the before/after message
+    counts so observers can record how much was dropped."""
+
+    session_key_: str
+    messages_before: int
+    messages_after: int
+    summary_preview: str = ""
+
+    KIND: ClassVar[str] = "post_compact"
+
+    def session_key(self) -> str | None:
+        return self.session_key_ or None
+
+    def to_dict(self) -> dict[str, Any]:
+        d = super().to_dict()
+        d["session_key"] = d.pop("session_key_")
+        return d
+
+
+@dataclass(frozen=True)
+class _Stop(_HookEventBase):
+    """Fired at turn-end, *before* the loop exits because the model
+    produced no further tool calls.
+
+    Emitted via :func:`emit_collect` so a blocking hook can veto the
+    stop and inject a continuation message (claude-code "Stop" hook
+    parity). ``turn_id`` is the loop's current turn; ``rounds`` is how
+    many tool rounds ran this turn.
+    """
+
+    session_key_: str
+    turn_id: int | None
+    rounds: int
+
+    KIND: ClassVar[str] = "stop"
+    OPTIONAL_FIELDS: ClassVar[tuple[str, ...]] = ("turn_id",)
+
+    def session_key(self) -> str | None:
+        return self.session_key_ or None
+
+    def to_dict(self) -> dict[str, Any]:
+        d = super().to_dict()
+        d["session_key"] = d.pop("session_key_")
+        return d
+
+
 # ---------------------------------------------------------------------------
 # Public umbrella class: exposes variants as attributes mirroring Rust's
 # ``HookEvent::Variant`` syntax in the source crate.
@@ -546,6 +716,7 @@ class HookEvent(_HookEventBase):
     GatewayStartup = _GatewayStartup
     ConfigChanged = _ConfigChanged
     PreToolDispatch = _PreToolDispatch
+    PreToolDecision = _PreToolDecision
     ToolCalled = _ToolCalled
     ApprovalRequested = _ApprovalRequested
     ApprovalDecided = _ApprovalDecided
@@ -561,6 +732,12 @@ class HookEvent(_HookEventBase):
     TurnComplete = _TurnComplete
     TurnErrored = _TurnErrored
     UserSupplemented = _UserSupplemented
+    SessionStart = _SessionStart
+    SessionEnd = _SessionEnd
+    SessionReset = _SessionReset
+    PreCompact = _PreCompact
+    PostCompact = _PostCompact
+    Stop = _Stop
 
     # Registry of PascalCase variant name -> concrete dataclass. Keys
     # mirror the Rust ``#[serde(tag = "kind")]`` discriminant values
@@ -576,6 +753,7 @@ class HookEvent(_HookEventBase):
         "GatewayStartup": _GatewayStartup,
         "ConfigChanged": _ConfigChanged,
         "PreToolDispatch": _PreToolDispatch,
+        "PreToolDecision": _PreToolDecision,
         "ToolCalled": _ToolCalled,
         "ApprovalRequested": _ApprovalRequested,
         "ApprovalDecided": _ApprovalDecided,
@@ -591,6 +769,12 @@ class HookEvent(_HookEventBase):
         "TurnComplete": _TurnComplete,
         "TurnErrored": _TurnErrored,
         "UserSupplemented": _UserSupplemented,
+        "SessionStart": _SessionStart,
+        "SessionEnd": _SessionEnd,
+        "SessionReset": _SessionReset,
+        "PreCompact": _PreCompact,
+        "PostCompact": _PostCompact,
+        "Stop": _Stop,
     }
 
     # Set of variants that store the JSON ``session_key`` field under
@@ -607,11 +791,18 @@ class HookEvent(_HookEventBase):
             "AgentBootstrap",
             "ApprovalRequested",
             "PreToolDispatch",
+            "PreToolDecision",
             "RateLimitTriggered",
             "UserPromptSubmit",
             "TurnComplete",
             "TurnErrored",
             "UserSupplemented",
+            "SessionStart",
+            "SessionEnd",
+            "SessionReset",
+            "PreCompact",
+            "PostCompact",
+            "Stop",
         }
     )
 

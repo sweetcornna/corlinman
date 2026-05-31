@@ -61,6 +61,40 @@ class AppState:
     config_path: Path | None = None
     config_watcher: ConfigWatcher | None = None
 
+    # ---- gap-fill v1.15 wiring spine (CONTRACT C2) ------------------------
+    #
+    # wire-B (the boot lifespan) SETS these on the AppState; wire-A (the
+    # agent servicer + scheduler) READS them. The names are load-bearing —
+    # see the C2 contract — so the servicer's ``getattr(app_state, "...")``
+    # calls resolve to a live handle once the lifespan has populated them.
+    # Each defaults to ``None`` so a degraded boot / partial port still
+    # constructs cleanly and the consumer degrades gracefully.
+
+    # corlinman_memory_host.LocalSqliteHost — the conversational + agent-
+    # callable memory backend. The agent servicer reads this for the
+    # ``memory_search`` / ``session_search`` / ``memory_write`` /
+    # ``memory_read`` tool family (WP17 + new-tools lane).
+    memory_host: Any = None
+
+    # corlinman_persona.PersonaResolver — read-only ``{{persona.*}}`` /
+    # ``{{persona.life_*}}`` placeholder lookup keyed by ``agent_id``.
+    persona_resolver: Any = None
+
+    # corlinman_identity.IdentityStore (SqliteIdentityStore) — cross-channel
+    # identity graph + verification-phrase redeem path. The admin
+    # ``/admin/identity*`` routes resolve it off the AdminState; inbound
+    # routing calls ``resolve_or_create`` on it.
+    identity_store: Any = None
+
+    # Async callable ``(prompt: str) -> Any`` the scheduler's ``run_agent``
+    # action invokes for a real one-turn agent run on a cron schedule.
+    agent_runner_fn: Any = None
+
+    # corlinman_hooks.runner.HookRunner — in-process pre/post-tool + Stop
+    # lifecycle hooks (C3). The agent servicer's PreToolDispatch + the
+    # reasoning loop's turn-end Stop veto read this; ``None`` = no hooks.
+    hook_runner: Any = None
+
     # Tenancy stack — boot wires these from corlinman_server.tenancy.
     admin_db: Any = None
     tenant_pool: Any = None

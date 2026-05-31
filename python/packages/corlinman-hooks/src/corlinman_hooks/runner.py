@@ -1,11 +1,21 @@
-"""Shell-command hook runner — blocking/discoverable hooks for corlinman-agent.
+"""Hook runner — blocking, decision-returning, discoverable hooks.
 
-Mirrors the claude-code hooks feature: operators register shell commands for
-specific events (``pre_tool``, ``post_tool``, ``notification``). When the
-event fires, the command is executed with the event payload on stdin as JSON.
-For blocking events (``pre_tool``), a non-zero exit code stops the tool call.
+Mirrors the claude-code / hermes hooks feature on two levels:
 
-Configuration shape (from the agent config dict)::
+1. **Shell-command hooks** (the original surface). Operators register
+   shell commands for specific events (``pre_tool``, ``post_tool``,
+   ``notification``) in the agent config dict. When the event fires the
+   command runs with the event payload on stdin as JSON. For blocking
+   events (``pre_tool``), a non-zero exit code stops the tool call.
+
+2. **File-discovered hooks** (``HOOK.yaml`` + ``handler.py``). A hooks
+   directory (``~/.corlinman/hooks/<name>/`` style) can hold one folder
+   per hook, each with a ``HOOK.yaml`` manifest naming the events it
+   subscribes to and a ``handler.py`` exposing a callable. Discovered
+   handlers run in-process and return a :class:`HookDecision` so they can
+   allow / deny / mutate a tool call or veto a turn-end ``Stop``.
+
+Configuration shape (shell hooks, from the agent config dict)::
 
     {
         "hooks": {
@@ -21,30 +31,33 @@ Lookup order for ``pre_tool`` events:
 1. Tool-specific key: ``pre_{tool_name}`` (e.g. ``pre_run_shell``).
 2. Wildcard key: ``pre_tool``.
 
-The first matching key wins. Missing keys are a silent no-op (allow-all is
-the safe default).
+The first matching key wins. Missing keys are a silent no-op (allow-all
+is the safe default).
 
-Post-tool hooks (``post_{tool_name}`` / ``post_tool``) and notification hooks
-(``notification``) are fire-and-forget — they run but their exit code does not
-affect the agent.
+Return-value contract (C3): the decision methods return a
+:class:`HookDecision`. For backwards compatibility the decision unpacks
+as a ``(allow, reason)`` 2-tuple so the existing call sites and tests
+that wrote ``ok, msg = runner.run_pre_tool(...)`` keep working unchanged.
 
 Thread-safety: ``HookRunner`` is designed for use from a single asyncio
-event loop. The subprocess is run with
-:func:`asyncio.create_subprocess_shell` when called from an async context
-(see :meth:`run_pre_tool_async`), or with :mod:`subprocess` in the sync
-fallback used by tests and the agent_servicer's ``_emit_pre_tool_dispatch``
-path.
+event loop. Shell hooks run via :func:`asyncio.create_subprocess_shell`
+when called from an async context (see :meth:`run_pre_tool_async`), or
+with :mod:`subprocess` in the sync fallback used by tests and the
+agent_servicer's ``_emit_pre_tool_dispatch`` path.
 """
 
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
 import logging
 import subprocess
-from typing import Any
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Callable
 
-__all__ = ["HookRunner"]
+__all__ = ["HookDecision", "HookRunner", "emit_collect"]
 
 _log = logging.getLogger("corlinman.hooks.runner")
 
@@ -54,20 +67,123 @@ _log = logging.getLogger("corlinman.hooks.runner")
 _HOOK_TIMEOUT: float = 5.0
 
 
+@dataclass
+class HookDecision:
+    """Verdict returned by a decision-returning hook (C3 contract).
+
+    Fields:
+
+    * ``allow`` — ``True`` lets the action proceed, ``False`` blocks it.
+    * ``reason`` — human-readable explanation (surfaced to the model /
+      logged) when the hook blocks or wants to annotate an allow.
+    * ``mutated_args`` — when not ``None``, replaces the tool's argument
+      dict before dispatch (lets a hook rewrite a call rather than only
+      veto it).
+    * ``inject_message`` — when not ``None``, a message the loop should
+      inject (e.g. a continuation prompt on a vetoed ``Stop``).
+    * ``stop`` — request the loop to halt (turn-end hook semantics).
+
+    The decision is **tuple-compatible**: ``allow, reason = decision``
+    unpacks the first two fields, so legacy call sites that expected the
+    old ``tuple[bool, str]`` return keep working. The ``reason`` slot in
+    that unpacking is coerced to ``""`` when ``None`` for parity with the
+    historical contract.
+    """
+
+    allow: bool = True
+    reason: str | None = None
+    mutated_args: dict[str, Any] | None = None
+    inject_message: str | None = None
+    stop: bool = False
+
+    # -- tuple compatibility -------------------------------------------
+    def __iter__(self):  # type: ignore[no-untyped-def]
+        # Yields (allow, reason-as-str) so ``ok, msg = decision`` matches
+        # the historical ``tuple[bool, str]`` return shape exactly.
+        yield self.allow
+        yield self.reason or ""
+
+    def __getitem__(self, index: int) -> Any:
+        return (self.allow, self.reason or "")[index]
+
+    def __len__(self) -> int:
+        return 2
+
+    @classmethod
+    def deny(cls, reason: str, *, stop: bool = False) -> HookDecision:
+        return cls(allow=False, reason=reason, stop=stop)
+
+    @classmethod
+    def allow_all(cls) -> HookDecision:
+        return cls(allow=True)
+
+
+# A discovered in-process handler. It receives ``(event, payload)`` and
+# returns either a :class:`HookDecision`, a plain ``bool`` (True=allow),
+# ``None`` (abstain), or a dict the runner coerces into a decision.
+_Handler = Callable[[str, "dict[str, Any]"], Any]
+
+
+def _coerce_decision(value: Any) -> HookDecision | None:
+    """Normalize a handler return into a :class:`HookDecision` or ``None``.
+
+    ``None`` → abstain (``None``). ``bool`` → allow/deny. ``HookDecision``
+    passes through. A dict is treated as ``HookDecision(**dict)`` for the
+    recognized keys (unknown keys ignored).
+    """
+    if value is None:
+        return None
+    if isinstance(value, HookDecision):
+        return value
+    if isinstance(value, bool):
+        return HookDecision(allow=value, reason=None if value else "denied by hook")
+    if isinstance(value, dict):
+        allow = bool(value.get("allow", True))
+        return HookDecision(
+            allow=allow,
+            reason=value.get("reason"),
+            mutated_args=value.get("mutated_args"),
+            inject_message=value.get("inject_message"),
+            stop=bool(value.get("stop", False)),
+        )
+    # Unknown shape → conservatively treat as abstain so a misbehaving
+    # handler never silently blocks the agent.
+    _log.warning("hook handler returned unrecognized value type: %r", type(value))
+    return None
+
+
 class HookRunner:
-    """Runs shell-command hooks keyed by event name.
+    """Runs shell-command + file-discovered hooks keyed by event name.
 
     Parameters
     ----------
     config:
         The agent-level config dict (or any sub-dict). ``hooks`` is
-        extracted from ``config.get("hooks", {})``.  An empty or
-        missing mapping means all events pass through.
+        extracted from ``config.get("hooks", {})``. An empty or missing
+        mapping means all shell-hook events pass through.
+    hooks_dir:
+        Optional directory to discover ``HOOK.yaml`` + ``handler.py``
+        hooks from. When provided (or set later via :meth:`discover`),
+        each subfolder's manifest registers its handler against the
+        events it names. Discovery failures are logged and skipped so a
+        broken hook folder never bricks the runner.
     """
 
-    def __init__(self, config: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        config: dict[str, Any] | None = None,
+        *,
+        hooks_dir: str | Path | None = None,
+    ) -> None:
+        config = config or {}
         raw = config.get("hooks", {})
-        self._hooks: dict[str, str] = {k: str(v) for k, v in raw.items() if v} if isinstance(raw, dict) else {}
+        self._hooks: dict[str, str] = (
+            {k: str(v) for k, v in raw.items() if v} if isinstance(raw, dict) else {}
+        )
+        # event name -> list of in-process handlers discovered from disk.
+        self._handlers: dict[str, list[_Handler]] = {}
+        if hooks_dir is not None:
+            self.discover(hooks_dir)
 
     # ------------------------------------------------------------------
     # Discovery
@@ -75,70 +191,338 @@ class HookRunner:
 
     @property
     def registered(self) -> dict[str, str]:
-        """Return a copy of the registered hook commands keyed by event name.
+        """Return a copy of the registered shell-hook commands keyed by event.
 
         Useful for the ``GET /admin/hooks`` discovery endpoint.
         """
         return dict(self._hooks)
 
+    @property
+    def discovered_events(self) -> dict[str, int]:
+        """Map of event name -> count of discovered in-process handlers."""
+        return {ev: len(hs) for ev, hs in self._handlers.items()}
+
     def supported_events(self) -> list[str]:
         """Return the canonical event names this runner understands.
 
-        The list is fixed and documents the hook protocol; registered
-        commands are a subset.
+        The list documents the hook protocol; registered commands are a
+        subset. Lifecycle events are included so the discovery endpoint
+        and ``HOOK.yaml`` validation can advertise them.
         """
-        return ["pre_tool", "post_tool", "notification"]
+        return [
+            "pre_tool",
+            "post_tool",
+            "notification",
+            "session_start",
+            "session_end",
+            "session_reset",
+            "pre_compact",
+            "post_compact",
+            "stop",
+        ]
+
+    def register_handler(self, event: str, handler: _Handler) -> None:
+        """Register an in-process ``handler`` against ``event``.
+
+        Used by :meth:`discover` and available for programmatic
+        registration (tests, plugin-contributed hooks).
+        """
+        self._handlers.setdefault(event, []).append(handler)
+
+    def discover(self, hooks_dir: str | Path) -> int:
+        """Discover ``HOOK.yaml`` + ``handler.py`` hooks under ``hooks_dir``.
+
+        Layout (per claude-code / hermes convention)::
+
+            <hooks_dir>/
+                my-hook/
+                    HOOK.yaml      # {events: [pre_tool, stop], handler: handler.py:run}
+                    handler.py     # def run(event, payload) -> HookDecision | bool | None
+
+        The manifest's ``events`` (list or comma string) names the events
+        the handler subscribes to. ``handler`` is ``"<file>:<callable>"``
+        (defaults to ``handler.py:run`` / ``handler.py:handle`` when
+        omitted). Returns the number of (event, handler) pairs registered.
+
+        Robust by design: a missing dir, an unparseable manifest, or an
+        import error for one folder is logged and skipped — the rest of
+        discovery proceeds. No third-party YAML dependency is required;
+        :mod:`yaml` is used when importable, else a minimal built-in
+        fallback parses the flat ``key: value`` manifest shape.
+        """
+        root = Path(hooks_dir)
+        if not root.is_dir():
+            return 0
+        registered = 0
+        for entry in sorted(root.iterdir()):
+            if not entry.is_dir():
+                continue
+            manifest_path = entry / "HOOK.yaml"
+            if not manifest_path.is_file():
+                manifest_path = entry / "HOOK.yml"
+                if not manifest_path.is_file():
+                    continue
+            try:
+                manifest = self._load_manifest(manifest_path)
+            except Exception as exc:  # noqa: BLE001 — one bad hook must not break the rest
+                _log.warning("hook.discover.manifest_error", extra={"dir": str(entry), "error": str(exc)})
+                continue
+            events = self._manifest_events(manifest)
+            if not events:
+                _log.info("hook.discover.no_events", extra={"dir": str(entry)})
+                continue
+            handler_ref = str(manifest.get("handler") or "handler.py:run")
+            try:
+                handler = self._load_handler(entry, handler_ref)
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("hook.discover.handler_error", extra={"dir": str(entry), "error": str(exc)})
+                continue
+            if handler is None:
+                continue
+            for ev in events:
+                self.register_handler(ev, handler)
+                registered += 1
+        if registered:
+            _log.info("hook.discover.registered", extra={"dir": str(root), "count": registered})
+        return registered
+
+    @staticmethod
+    def _load_manifest(path: Path) -> dict[str, Any]:
+        """Parse a ``HOOK.yaml`` manifest into a dict.
+
+        Uses :mod:`yaml` when available (optional dependency — guarded),
+        falling back to a tiny flat ``key: value`` / ``key: [a, b]``
+        parser otherwise so discovery works on a 1.9GB box that never
+        installed PyYAML.
+        """
+        text = path.read_text(encoding="utf-8")
+        try:
+            import yaml  # type: ignore[import-untyped]
+        except ImportError:
+            return HookRunner._parse_flat_yaml(text)
+        data = yaml.safe_load(text)
+        if not isinstance(data, dict):
+            raise ValueError("HOOK.yaml top level must be a mapping")
+        return data
+
+    @staticmethod
+    def _parse_flat_yaml(text: str) -> dict[str, Any]:
+        """Minimal fallback parser for a flat ``HOOK.yaml`` (no PyYAML).
+
+        Handles ``key: value`` and ``key: [a, b, c]`` (inline list). Lines
+        starting with ``#`` and blank lines are ignored. Quotes around
+        scalars are stripped. This is intentionally tiny — discovered
+        manifests are expected to be simple flat maps.
+        """
+        out: dict[str, Any] = {}
+        for raw_line in text.splitlines():
+            line = raw_line.split("#", 1)[0].strip()
+            if not line or ":" not in line:
+                continue
+            key, _, value = line.partition(":")
+            key = key.strip()
+            value = value.strip()
+            if value.startswith("[") and value.endswith("]"):
+                inner = value[1:-1].strip()
+                items = [v.strip().strip("'\"") for v in inner.split(",") if v.strip()]
+                out[key] = items
+            else:
+                out[key] = value.strip("'\"")
+        return out
+
+    @staticmethod
+    def _manifest_events(manifest: dict[str, Any]) -> list[str]:
+        """Normalize the manifest's ``events`` (or ``event``) into a list."""
+        raw = manifest.get("events")
+        if raw is None:
+            raw = manifest.get("event")
+        if raw is None:
+            return []
+        if isinstance(raw, str):
+            return [e.strip() for e in raw.split(",") if e.strip()]
+        if isinstance(raw, (list, tuple)):
+            return [str(e).strip() for e in raw if str(e).strip()]
+        return []
+
+    @staticmethod
+    def _load_handler(hook_dir: Path, handler_ref: str) -> _Handler | None:
+        """Import ``handler_ref`` (``file.py:callable``) from ``hook_dir``.
+
+        Loads the module by file path (so it doesn't need to be on
+        ``sys.path``) under a unique synthetic module name keyed by the
+        hook folder. Returns the named callable, or the first of
+        ``run`` / ``handle`` / ``main`` when no name is given.
+        """
+        file_part, _, attr = handler_ref.partition(":")
+        file_part = file_part.strip() or "handler.py"
+        handler_file = hook_dir / file_part
+        if not handler_file.is_file():
+            _log.warning("hook.discover.missing_handler_file", extra={"file": str(handler_file)})
+            return None
+        mod_name = f"_corlinman_hook_{hook_dir.name}_{handler_file.stem}"
+        spec = importlib.util.spec_from_file_location(mod_name, handler_file)
+        if spec is None or spec.loader is None:
+            return None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        if attr:
+            fn = getattr(module, attr.strip(), None)
+        else:
+            fn = (
+                getattr(module, "run", None)
+                or getattr(module, "handle", None)
+                or getattr(module, "main", None)
+            )
+        if fn is None or not callable(fn):
+            _log.warning("hook.discover.handler_not_callable", extra={"ref": handler_ref})
+            return None
+        return fn
+
+    def _run_handlers(self, event: str, payload: dict[str, Any]) -> HookDecision:
+        """Run every discovered in-process handler for ``event`` and fold
+        their verdicts into a single :class:`HookDecision`.
+
+        Semantics: the first explicit deny wins (and short-circuits). An
+        allow with ``mutated_args`` / ``inject_message`` / ``stop`` is
+        carried forward and merged. A handler that raises is isolated.
+        Returns an allow-all decision when no handler objects.
+        """
+        handlers = self._handlers.get(event)
+        if not handlers:
+            return HookDecision.allow_all()
+        result = HookDecision.allow_all()
+        for handler in handlers:
+            try:
+                raw = handler(event, payload)
+            except Exception as exc:  # noqa: BLE001 — isolate a broken handler
+                _log.warning("hook.handler.error", extra={"event": event, "error": str(exc)})
+                continue
+            decision = _coerce_decision(raw)
+            if decision is None:
+                continue
+            if not decision.allow:
+                return decision  # first deny wins
+            if decision.mutated_args is not None:
+                result.mutated_args = decision.mutated_args
+                if decision.mutated_args is not None:
+                    payload = {**payload, "args": decision.mutated_args}
+            if decision.inject_message is not None:
+                result.inject_message = decision.inject_message
+            if decision.stop:
+                result.stop = True
+            if decision.reason and not result.reason:
+                result.reason = decision.reason
+        return result
 
     # ------------------------------------------------------------------
-    # Synchronous API (used inside ``_emit_pre_tool_dispatch`` + tests)
+    # Synchronous decision API (C3): used inside ``_emit_pre_tool_dispatch``
+    # + tests. Returns a HookDecision (tuple-compatible for back-compat).
     # ------------------------------------------------------------------
 
-    def run_pre_tool(self, tool_name: str, args: dict[str, Any]) -> tuple[bool, str]:
-        """Run the ``pre_{tool_name}`` or ``pre_tool`` hook synchronously.
+    def run_pre_tool(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+        ctx: dict[str, Any] | None = None,
+    ) -> HookDecision:
+        """Run the pre-tool gate (shell hook + discovered handlers).
 
-        Returns ``(should_proceed, message)`` where:
+        Returns a :class:`HookDecision`. ``allow=False`` blocks the call;
+        ``reason`` carries the hook's message. No matching hook → allow.
+        Because :class:`HookDecision` unpacks as ``(allow, reason)``, the
+        legacy ``ok, msg = runner.run_pre_tool(...)`` form still works.
 
-        * ``should_proceed=True`` means the tool call is allowed.
-        * ``should_proceed=False`` means it should be blocked; ``message``
-          carries the hook's stdout (first 500 chars) as a reason string.
-
-        No matching hook → ``(True, "")`` (allow-all default).
-
-        The hook process receives a JSON payload on stdin::
+        The shell hook receives a JSON payload on stdin::
 
             {"tool": "<name>", "args": {...}}
 
-        A zero exit code = allow. Non-zero = block.
-        Timeout (>5 s) is treated as allow so a stuck hook never bricks
-        tool dispatch.
+        A zero exit code = allow. Non-zero = block. Timeout (>5 s) is
+        treated as allow so a stuck hook never bricks tool dispatch.
+
+        In-process discovered ``pre_tool`` handlers run *after* the shell
+        hook (only if it allowed) and can deny, mutate args, or annotate.
         """
         cmd = self._hooks.get(f"pre_{tool_name}") or self._hooks.get("pre_tool")
-        if not cmd:
-            return True, ""
-        payload = json.dumps({"tool": tool_name, "args": args}, ensure_ascii=False)
-        try:
-            result = subprocess.run(
-                cmd,
-                shell=True,
-                input=payload,
-                capture_output=True,
-                text=True,
-                timeout=_HOOK_TIMEOUT,
-            )
-        except subprocess.TimeoutExpired:
-            _log.warning("hook.pre_tool.timeout", extra={"tool": tool_name, "cmd": cmd})
-            return True, ""  # timeout → allow
-        except Exception as exc:  # noqa: BLE001
-            _log.warning("hook.pre_tool.error", extra={"tool": tool_name, "error": str(exc)})
-            return True, ""  # error → allow
-        if result.returncode != 0:
-            msg = (result.stdout or result.stderr or "").strip()[:500]
-            _log.info(
-                "hook.pre_tool.blocked",
-                extra={"tool": tool_name, "returncode": result.returncode, "message": msg},
-            )
-            return False, msg
-        return True, ""
+        if cmd:
+            payload = json.dumps({"tool": tool_name, "args": args}, ensure_ascii=False)
+            try:
+                result = subprocess.run(
+                    cmd,
+                    shell=True,
+                    input=payload,
+                    capture_output=True,
+                    text=True,
+                    timeout=_HOOK_TIMEOUT,
+                )
+            except subprocess.TimeoutExpired:
+                _log.warning("hook.pre_tool.timeout", extra={"tool": tool_name, "cmd": cmd})
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("hook.pre_tool.error", extra={"tool": tool_name, "error": str(exc)})
+            else:
+                if result.returncode != 0:
+                    msg = (result.stdout or result.stderr or "").strip()[:500]
+                    _log.info(
+                        "hook.pre_tool.blocked",
+                        extra={"tool": tool_name, "returncode": result.returncode, "message": msg},
+                    )
+                    return HookDecision.deny(msg or "blocked by hook")
+        # Discovered in-process handlers (event == "pre_tool").
+        if self._handlers.get("pre_tool") or self._handlers.get(f"pre_{tool_name}"):
+            handler_payload = {"tool": tool_name, "args": args, "ctx": ctx or {}}
+            specific = self._run_handlers(f"pre_{tool_name}", handler_payload)
+            if not specific.allow:
+                return specific
+            generic = self._run_handlers("pre_tool", handler_payload)
+            if not generic.allow:
+                return generic
+            # Merge mutate/inject from both tiers (specific then generic).
+            merged = HookDecision.allow_all()
+            for d in (specific, generic):
+                if d.mutated_args is not None:
+                    merged.mutated_args = d.mutated_args
+                if d.inject_message is not None:
+                    merged.inject_message = d.inject_message
+                if d.stop:
+                    merged.stop = True
+                if d.reason and not merged.reason:
+                    merged.reason = d.reason
+            return merged
+        return HookDecision.allow_all()
+
+    def run_stop(self, ctx: dict[str, Any] | None = None) -> HookDecision:
+        """Run the turn-end ``Stop`` gate.
+
+        Discovered ``stop`` handlers may veto the loop's exit (``allow=
+        False``) and/or supply an ``inject_message`` continuation prompt
+        (claude-code Stop-hook parity). A shell-command ``stop`` hook is
+        also honored when configured: non-zero exit vetoes the stop and
+        the hook's stdout becomes the ``inject_message``.
+
+        Default (no hook) → allow (the loop stops normally).
+        """
+        ctx = ctx or {}
+        cmd = self._hooks.get("stop")
+        if cmd:
+            payload = json.dumps(ctx, ensure_ascii=False)
+            try:
+                result = subprocess.run(
+                    cmd,
+                    shell=True,
+                    input=payload,
+                    capture_output=True,
+                    text=True,
+                    timeout=_HOOK_TIMEOUT,
+                )
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("hook.stop.error", extra={"error": str(exc)})
+            else:
+                if result.returncode != 0:
+                    msg = (result.stdout or result.stderr or "").strip()[:1000]
+                    _log.info("hook.stop.veto", extra={"returncode": result.returncode})
+                    return HookDecision(allow=False, reason="stop vetoed by hook", inject_message=msg or None)
+        if self._handlers.get("stop"):
+            return self._run_handlers("stop", ctx)
+        return HookDecision.allow_all()
 
     def run_post_tool(self, tool_name: str, args: dict[str, Any], result_json: str) -> None:
         """Run the ``post_{tool_name}`` or ``post_tool`` hook (fire-and-forget).
@@ -169,12 +553,28 @@ class HookRunner:
         except Exception as exc:  # noqa: BLE001
             _log.warning("hook.post_tool.error", extra={"tool": tool_name, "error": str(exc)})
 
-    def run_notification(self, payload: dict[str, Any]) -> None:
+    def run_notification(
+        self,
+        event_or_payload: str | dict[str, Any],
+        payload: dict[str, Any] | None = None,
+    ) -> None:
         """Run the ``notification`` hook (fire-and-forget).
 
-        The hook receives the ``payload`` dict as JSON on stdin. Exit code
-        and output are ignored.
+        Two call shapes are accepted:
+
+        * ``run_notification(event, payload)`` — C3 contract form: the
+          ``event`` string is folded into the payload under ``"event"``.
+        * ``run_notification(payload)`` — legacy form: the single dict is
+          sent verbatim.
+
+        The hook receives the resolved payload dict as JSON on stdin.
+        Exit code and output are ignored.
         """
+        if isinstance(event_or_payload, str):
+            data: dict[str, Any] = dict(payload or {})
+            data.setdefault("event", event_or_payload)
+        else:
+            data = event_or_payload or {}
         cmd = self._hooks.get("notification")
         if not cmd:
             return
@@ -182,7 +582,7 @@ class HookRunner:
             subprocess.run(
                 cmd,
                 shell=True,
-                input=json.dumps(payload, ensure_ascii=False),
+                input=json.dumps(data, ensure_ascii=False),
                 capture_output=True,
                 text=True,
                 timeout=_HOOK_TIMEOUT,
@@ -191,48 +591,104 @@ class HookRunner:
             _log.warning("hook.notification.error", extra={"error": str(exc)})
 
     # ------------------------------------------------------------------
-    # Async API (preferred inside async tool dispatch)
+    # Async API (preferred inside async tool dispatch).
     # ------------------------------------------------------------------
 
     async def run_pre_tool_async(
-        self, tool_name: str, args: dict[str, Any]
-    ) -> tuple[bool, str]:
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+        ctx: dict[str, Any] | None = None,
+    ) -> HookDecision:
         """Async variant of :meth:`run_pre_tool`.
 
-        Runs the hook subprocess via :func:`asyncio.create_subprocess_shell`
-        so the event loop is not blocked. Falls back to the synchronous
-        implementation when no running loop is available (shouldn't happen
-        in production but keeps tests simple).
+        Runs the shell hook subprocess via
+        :func:`asyncio.create_subprocess_shell` so the event loop is not
+        blocked. Discovered in-process handlers are then run (they are
+        synchronous callables). Returns a tuple-compatible
+        :class:`HookDecision`.
         """
         cmd = self._hooks.get(f"pre_{tool_name}") or self._hooks.get("pre_tool")
-        if not cmd:
-            return True, ""
-        payload = json.dumps({"tool": tool_name, "args": args}, ensure_ascii=False)
-        try:
-            proc = await asyncio.create_subprocess_shell(
-                cmd,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
+        if cmd:
+            payload = json.dumps({"tool": tool_name, "args": args}, ensure_ascii=False)
             try:
-                stdout_b, stderr_b = await asyncio.wait_for(
-                    proc.communicate(payload.encode()),
-                    timeout=_HOOK_TIMEOUT,
+                proc = await asyncio.create_subprocess_shell(
+                    cmd,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
                 )
-            except TimeoutError:
-                proc.kill()
-                await proc.wait()
-                _log.warning("hook.pre_tool.timeout", extra={"tool": tool_name, "cmd": cmd})
-                return True, ""
-        except Exception as exc:  # noqa: BLE001
-            _log.warning("hook.pre_tool.error", extra={"tool": tool_name, "error": str(exc)})
-            return True, ""
-        if proc.returncode != 0:
-            msg = (stdout_b or stderr_b or b"").decode("utf-8", "replace").strip()[:500]
-            _log.info(
-                "hook.pre_tool.blocked",
-                extra={"tool": tool_name, "returncode": proc.returncode, "message": msg},
-            )
-            return False, msg
-        return True, ""
+                try:
+                    stdout_b, stderr_b = await asyncio.wait_for(
+                        proc.communicate(payload.encode()),
+                        timeout=_HOOK_TIMEOUT,
+                    )
+                except (TimeoutError, asyncio.TimeoutError):
+                    proc.kill()
+                    await proc.wait()
+                    _log.warning("hook.pre_tool.timeout", extra={"tool": tool_name, "cmd": cmd})
+                    stdout_b = stderr_b = b""
+                    proc_rc = 0
+                else:
+                    proc_rc = proc.returncode or 0
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("hook.pre_tool.error", extra={"tool": tool_name, "error": str(exc)})
+            else:
+                if proc_rc != 0:
+                    msg = (stdout_b or stderr_b or b"").decode("utf-8", "replace").strip()[:500]
+                    _log.info(
+                        "hook.pre_tool.blocked",
+                        extra={"tool": tool_name, "returncode": proc_rc, "message": msg},
+                    )
+                    return HookDecision.deny(msg or "blocked by hook")
+        # In-process handlers are synchronous — reuse the sync fold.
+        if self._handlers.get("pre_tool") or self._handlers.get(f"pre_{tool_name}"):
+            handler_payload = {"tool": tool_name, "args": args, "ctx": ctx or {}}
+            specific = self._run_handlers(f"pre_{tool_name}", handler_payload)
+            if not specific.allow:
+                return specific
+            return self._run_handlers("pre_tool", handler_payload)
+        return HookDecision.allow_all()
+
+
+def emit_collect(event: str, payload: dict[str, Any]) -> list[Any]:
+    """Module-level collecting emit (C3 contract).
+
+    Runs every registered process-global handler for ``event`` and
+    returns the list of non-``None`` verdicts they produced. This is the
+    decision counterpart to the fire-and-forget bus ``emit`` — call sites
+    that don't hold a :class:`~corlinman_hooks.bus.HookBus` reference but
+    still need a collecting fan-out (e.g. a lifecycle veto point) use this.
+
+    Handlers are registered via :func:`register_global_handler`. When no
+    handler objects, an empty list is returned (the safe abstain default,
+    so every call site no-ops cleanly when nothing is wired).
+    """
+    handlers = _GLOBAL_HANDLERS.get(event, [])
+    collected: list[Any] = []
+    for handler in list(handlers):
+        try:
+            result = handler(event, payload)
+        except Exception as exc:  # noqa: BLE001 — isolate a broken handler
+            _log.warning("hook.emit_collect.error", extra={"event": event, "error": str(exc)})
+            continue
+        if result is not None:
+            collected.append(result)
+    return collected
+
+
+# Process-global handler registry backing :func:`emit_collect`. Kept
+# separate from a per-runner ``HookRunner._handlers`` so a call site that
+# only has the module function (no runner instance in scope) can still
+# participate in the decision path.
+_GLOBAL_HANDLERS: dict[str, list[_Handler]] = {}
+
+
+def register_global_handler(event: str, handler: _Handler) -> None:
+    """Register a process-global handler for :func:`emit_collect`."""
+    _GLOBAL_HANDLERS.setdefault(event, []).append(handler)
+
+
+def clear_global_handlers() -> None:
+    """Drop all process-global handlers (test isolation helper)."""
+    _GLOBAL_HANDLERS.clear()

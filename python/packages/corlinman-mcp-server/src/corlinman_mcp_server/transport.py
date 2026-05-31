@@ -204,6 +204,33 @@ async def connection_loop(
     ctx = acl.to_session_context()
     log.info("mcp: connection opened", label=acl.label)
 
+    # Server -> client channel. If the handler can fan out notifications
+    # (e.g. ``*/list_changed``), register a sink that writes onto this
+    # socket so capability changes propagate to the connected client.
+    # Writes serialise behind a per-connection lock so a pushed
+    # notification can't interleave bytes with a request reply.
+    send_lock = asyncio.Lock()
+    sink_handle: int | None = None
+
+    async def _push(frame: dict) -> None:
+        async with send_lock:
+            await _send_json(ws, frame)
+
+    register_sink = getattr(handler, "register_sink", None)
+    unregister_sink = getattr(handler, "unregister_sink", None)
+    if callable(register_sink) and callable(unregister_sink):
+        try:
+            sink_handle = await register_sink(_push)
+        except Exception as err:  # noqa: BLE001 — registration is best-effort
+            log.debug("mcp: sink registration failed", err=str(err))
+            sink_handle = None
+
+    async def _reply_send(resp) -> None:
+        """Serialise reply writes behind the same lock as pushed
+        notifications so the two channels never interleave on the wire."""
+        async with send_lock:
+            await _send_json(ws, resp)
+
     try:
         async for message in ws:
             # Binary frames are rejected; MCP is text-only.
@@ -235,7 +262,7 @@ async def connection_loop(
                     McpParseError(str(err)).to_jsonrpc_error(),
                 )
                 try:
-                    await _send_json(ws, resp)
+                    await _reply_send(resp)
                 except McpTransportError:
                     return
                 continue
@@ -246,7 +273,7 @@ async def connection_loop(
                     McpParseError(str(err)).to_jsonrpc_error(),
                 )
                 try:
-                    await _send_json(ws, resp)
+                    await _reply_send(resp)
                 except McpTransportError:
                     return
                 continue
@@ -264,7 +291,7 @@ async def connection_loop(
                     continue
                 resp = JsonRpcResponse.err(request_id, err.to_jsonrpc_error())
                 try:
-                    await _send_json(ws, resp)
+                    await _reply_send(resp)
                 except McpTransportError as werr:
                     log.warning("mcp: write failed; tearing down", err=str(werr))
                     return
@@ -284,7 +311,7 @@ async def connection_loop(
                     McpInternalError(str(err)).to_jsonrpc_error(),
                 )
                 try:
-                    await _send_json(ws, resp)
+                    await _reply_send(resp)
                 except McpTransportError as werr:
                     log.warning("mcp: write failed; tearing down", err=str(werr))
                     return
@@ -294,13 +321,20 @@ async def connection_loop(
                 # Handler chose not to reply (notifications).
                 continue
             try:
-                await _send_json(ws, reply)
+                await _reply_send(reply)
             except McpTransportError as err:
                 log.warning("mcp: write failed; tearing down", err=str(err))
                 return
     except ConnectionClosed:
         pass
     finally:
+        # Drop the server -> client channel so a closed socket can't be
+        # written to by a later capability fan-out.
+        if sink_handle is not None and callable(unregister_sink):
+            try:
+                await unregister_sink(sink_handle)
+            except Exception as err:  # noqa: BLE001 — teardown is best-effort
+                log.debug("mcp: sink unregister failed", err=str(err))
         log.info("mcp: connection closed")
 
 

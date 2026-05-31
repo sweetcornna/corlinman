@@ -22,6 +22,7 @@ Tested against ``openai==2.32``.
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
@@ -476,6 +477,71 @@ def _retry_after_ms_from_exc(exc: Exception) -> int | None:
     return int(seconds * 1000)
 
 
+# OpenAI phrases a context overflow as e.g. ``This model's maximum context
+# length is 128000 tokens. However, your messages resulted in 130000 tokens``
+# or the ``A + B > C`` arithmetic form some compatible servers emit. We pull a
+# best-effort ``(input_tokens, limit)`` so the reasoning loop can shrink-retry.
+_OPENAI_CONTEXT_LIMIT_RE = re.compile(
+    r"maximum context length is\s+(\d[\d,]*)\s+tokens", re.IGNORECASE
+)
+_OPENAI_CONTEXT_RESULTED_RE = re.compile(
+    r"resulted in\s+(\d[\d,]*)\s+tokens", re.IGNORECASE
+)
+_OPENAI_CONTEXT_TRIPLE_RE = re.compile(
+    r"(\d[\d,]*)\s*\+\s*(\d[\d,]*)\s*>\s*(\d[\d,]*)"
+)
+
+
+def _parse_openai_context_overflow(message: str) -> tuple[int | None, int | None, int | None]:
+    """Best-effort ``(input_tokens, max_tokens, limit)`` from an overflow body.
+
+    Returns a triple with ``None`` for any field that couldn't be parsed.
+    Two body shapes are recognised: the OpenAI prose form (``maximum context
+    length is C ... resulted in A tokens``) and the ``A + B > C`` arithmetic
+    form some OpenAI-compatible servers emit.
+    """
+    text = message or ""
+
+    def _to_int(s: str | None) -> int | None:
+        if s is None:
+            return None
+        try:
+            return int(s.replace(",", ""))
+        except (TypeError, ValueError):
+            return None
+
+    triple = _OPENAI_CONTEXT_TRIPLE_RE.search(text)
+    if triple is not None:
+        return _to_int(triple.group(1)), _to_int(triple.group(2)), _to_int(triple.group(3))
+    limit_m = _OPENAI_CONTEXT_LIMIT_RE.search(text)
+    used_m = _OPENAI_CONTEXT_RESULTED_RE.search(text)
+    limit = _to_int(limit_m.group(1)) if limit_m else None
+    used = _to_int(used_m.group(1)) if used_m else None
+    return used, None, limit
+
+
+def _build_openai_context_overflow_error(
+    exc: Exception, *, ctx: dict[str, Any]
+) -> ContextOverflowError:
+    """Build a :class:`ContextOverflowError` carrying the parsed numeric limit.
+
+    Attaches ``input_tokens`` / ``max_tokens`` / ``limit`` onto the instance
+    (when parseable) so the reasoning loop can compute an available-context
+    budget and shrink-retry. ``failover.ContextOverflowError`` does not declare
+    these as constructor kwargs (see wire_contract); readers use
+    ``getattr(err, "limit", None)`` etc.
+    """
+    err = ContextOverflowError(str(exc), status_code=400, **ctx)
+    input_tokens, max_tokens, limit = _parse_openai_context_overflow(str(exc))
+    if input_tokens is not None:
+        err.input_tokens = input_tokens  # type: ignore[attr-defined]
+    if max_tokens is not None:
+        err.max_tokens = max_tokens  # type: ignore[attr-defined]
+    if limit is not None:
+        err.limit = limit  # type: ignore[attr-defined]
+    return err
+
+
 def _map_openai_error(exc: Exception, *, model: str, provider: str) -> CorlinmanError:
     """Coerce any OpenAI SDK exception into a :class:`CorlinmanError` subtype."""
     try:
@@ -514,7 +580,7 @@ def _map_openai_error(exc: Exception, *, model: str, provider: str) -> Corlinman
         if "quota" in msg or "billing" in msg or "credit" in msg:
             return BillingError(str(exc), status_code=402, **ctx)
         if "context" in msg or "too long" in msg or "maximum context" in msg:
-            return ContextOverflowError(str(exc), status_code=400, **ctx)
+            return _build_openai_context_overflow_error(exc, ctx=ctx)
         return FormatError(str(exc), status_code=400, **ctx)
     if isinstance(exc, APIStatusError):
         status = getattr(exc, "status_code", 0) or 0

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 from typing import Any, ClassVar, Literal
@@ -130,6 +131,14 @@ class AnthropicProvider:
         # be ``None`` (a malformed/absent file that parsed to nothing).
         self._cred_cache_key: tuple[int, int] | None = None
         self._cred_cache_value: AnthropicOAuthCredential | None = None
+        # Single-flight gate for the async on-use OAuth refresh
+        # (:meth:`_ensure_fresh`). Mirrors the Codex provider: two concurrent
+        # chat streams sharing the same expiring credential must not both POST
+        # to the token endpoint (the server rotates ``refresh_token`` on each,
+        # leaving the loser with a dead token). The lock is created lazily on
+        # first use so the provider stays importable / constructible outside an
+        # event loop (the synchronous resolution path never touches it).
+        self._refresh_lock: Any | None = None
 
     @classmethod
     def build(
@@ -294,6 +303,114 @@ class AnthropicProvider:
             return asyncio.run(refresh_anthropic_token(refresh_token=refresh_token))
         return None
 
+    async def _ensure_fresh(self) -> None:
+        """Proactively refresh an expiring OAuth bearer before ``chat_stream``.
+
+        Unlike the synchronous :meth:`_resolve_oauth_token` path (which is a
+        no-op when called inside a running loop — see
+        ``provider-auth-anthropic-refresh-noop``), this runs on the async hot
+        path and actually performs the network refresh. Single-flight via
+        :attr:`_refresh_lock`: two concurrent streams that both observe an
+        expiring credential serialise so only one POST hits the token
+        endpoint; the second arrival re-checks expiry under the lock and
+        no-ops when the first already rotated the token.
+
+        Best-effort: a missing data_dir / credential file, a credential
+        without a refresh token, or a refresh failure all leave the existing
+        (possibly stale) access token in place — the upstream returns a 401
+        if it is truly dead and the reactive 401 path (below) recovers.
+        """
+        if self._data_dir is None:
+            return
+        cred = self._load_credential_cached()
+        if cred is None:
+            return
+        # Fast-path: a credential comfortably within its window needs no
+        # refresh and no lock.
+        if not (cred.is_expired(skew_seconds=120) and cred.refresh_token):
+            return
+        lock = self._get_refresh_lock()
+        async with lock:
+            # Re-read under the lock: a racing task may have rotated the file.
+            cred = self._load_credential_cached() or cred
+            if not (cred.is_expired(skew_seconds=120) and cred.refresh_token):
+                return
+            await self._do_refresh(cred)
+
+    async def _async_refresh_credential(self) -> bool:
+        """Reactive 401 recovery: force a single OAuth refresh + retry signal.
+
+        Returns ``True`` when the in-process credential was rotated (so the
+        caller should retry the open phase), ``False`` otherwise. Serialised
+        through the same :attr:`_refresh_lock` as :meth:`_ensure_fresh` so a
+        proactive refresh racing a 401 recovery cannot double-POST.
+        """
+        if self._data_dir is None:
+            return False
+        cred = self._load_credential_cached()
+        if cred is None or not cred.refresh_token:
+            return False
+        pre_token = cred.access_token
+        lock = self._get_refresh_lock()
+        async with lock:
+            cred = self._load_credential_cached() or cred
+            if cred.access_token != pre_token:
+                # Another task already rotated the token while we waited —
+                # retry with the fresh one without issuing our own POST.
+                return True
+            if not cred.refresh_token:
+                return False
+            return await self._do_refresh(cred)
+
+    async def _do_refresh(self, cred: AnthropicOAuthCredential) -> bool:
+        """Run the async token refresh + persist. Returns True on success.
+
+        Caller MUST hold :attr:`_refresh_lock`. Updates the credential memo
+        with the freshly-written value so the next request reuses it without
+        re-reading the file.
+        """
+        assert cred.refresh_token is not None
+        try:
+            refreshed = await refresh_anthropic_token(refresh_token=cred.refresh_token)
+        except Exception as exc:  # noqa: BLE001 — refresh failure must not kill the turn
+            logger.warning("anthropic.oauth_refresh_failed", error=str(exc))
+            return False
+        new_cred = cred.with_refreshed(
+            access_token=refreshed["access_token"],
+            refresh_token=refreshed.get("refresh_token"),
+            expires_at_ms=refreshed.get("expires_at_ms"),
+        )
+        if self._data_dir is not None:
+            try:
+                save_anthropic_credential(self._data_dir, new_cred)
+            except OSError as exc:
+                logger.warning("anthropic.oauth_save_failed", error=str(exc))
+        # Prime the memo with the freshly-written credential keyed on the
+        # post-write stat; drop the key on stat failure so the next call
+        # re-reads from disk.
+        try:
+            st = self._credential_file_path().stat()
+            self._cred_cache_key = (st.st_mtime_ns, st.st_size)
+            self._cred_cache_value = new_cred
+        except OSError:
+            self._cred_cache_key = None
+            self._cred_cache_value = None
+        return True
+
+    def _get_refresh_lock(self) -> Any:
+        """Return the single-flight lock, creating it lazily on first use.
+
+        Created lazily so the provider stays constructible outside an event
+        loop. ``asyncio.Lock()`` binds to the running loop on first await; all
+        refresh calls happen on the same chat-stream loop so a single lazily
+        created lock is correct.
+        """
+        if self._refresh_lock is None:
+            import asyncio
+
+            self._refresh_lock = asyncio.Lock()
+        return self._refresh_lock
+
     # Compatibility shim: existing tests/call-sites read ``_api_key`` to
     # gate the "is anything configured?" check. We compute it on the fly
     # from the resolution chain so the property reflects the live state.
@@ -322,6 +439,14 @@ class AnthropicProvider:
         Raises :class:`RuntimeError` when no API key is configured —
         surfacing config gaps early instead of silent failure.
         """
+        # OAuth proactive refresh: when the active credential is a soon-to-
+        # expire OAuth bearer, refresh it (single-flight) BEFORE resolving the
+        # token we'll bind to the client. Runs on the async hot path — the
+        # synchronous resolution path's refresh is a no-op inside a loop
+        # (provider-auth-anthropic-refresh-noop), so this is where the
+        # proactive refresh actually fires.
+        await self._ensure_fresh()
+
         token, style = self._credential_resolution()
         # Custom-header auth carries the credential in ``_default_headers``
         # rather than a resolved token, so a missing token is only an error
@@ -333,48 +458,89 @@ class AnthropicProvider:
         # module (and so importing the module doesn't require network).
         from anthropic import AsyncAnthropic  # type: ignore[import-not-found]
 
-        if self._default_headers:
-            # Custom-header auth: the real credential rides in the declared
-            # header (already baked into ``_default_headers``). The Anthropic
-            # SDK refuses to build a request unless an auth method is set OR
-            # one of ``x-api-key`` / ``Authorization`` is explicitly carried,
-            # so feed it a non-credential sentinel ``api_key`` — the default
-            # ``x-api-key`` then carries the sentinel, never the secret.
-            # Gateways keyed on the custom header ignore it. (When the custom
-            # header IS ``x-api-key`` the supplied header value overrides the
-            # sentinel, so the real key still rides ``x-api-key``.)
-            client = AsyncAnthropic(
-                api_key=_HEADER_AUTH_SENTINEL,
-                default_headers=dict(self._default_headers),
-            )
-        elif style == "bearer":
-            # OAuth path: the Anthropic SDK supports ``auth_token=`` which
-            # sets ``Authorization: Bearer <token>`` and suppresses the
-            # default ``x-api-key`` header. Identity headers are required
-            # so the Anthropic API recognises the OAuth subscription token.
-            _OAUTH_EXTRA_HEADERS = {
-                "anthropic-beta": "oauth-2025-04-20",
-                "x-app": "cli",
-                "user-agent": "claude-cli/2.1.88 (claude-code)",
-            }
-            client = AsyncAnthropic(auth_token=token, default_headers=_OAUTH_EXTRA_HEADERS)
-        else:
-            client = AsyncAnthropic(api_key=token)
+        def _build_client(bearer_token: str | None) -> Any:
+            """Construct the AsyncAnthropic client for the resolved auth path.
+
+            Factored into a closure so the reactive 401 path can rebuild it
+            with a freshly-refreshed bearer token after recovery.
+            """
+            if self._default_headers:
+                # Custom-header auth: the real credential rides in the declared
+                # header (already baked into ``_default_headers``). The
+                # Anthropic SDK refuses to build a request unless an auth method
+                # is set OR one of ``x-api-key`` / ``Authorization`` is
+                # explicitly carried, so feed it a non-credential sentinel
+                # ``api_key`` — the default ``x-api-key`` then carries the
+                # sentinel, never the secret. Gateways keyed on the custom
+                # header ignore it. (When the custom header IS ``x-api-key`` the
+                # supplied header value overrides the sentinel, so the real key
+                # still rides ``x-api-key``.)
+                return AsyncAnthropic(
+                    api_key=_HEADER_AUTH_SENTINEL,
+                    default_headers=dict(self._default_headers),
+                )
+            if style == "bearer":
+                # OAuth path: the Anthropic SDK supports ``auth_token=`` which
+                # sets ``Authorization: Bearer <token>`` and suppresses the
+                # default ``x-api-key`` header. Identity headers are required
+                # so the Anthropic API recognises the OAuth subscription token.
+                _OAUTH_EXTRA_HEADERS = {
+                    "anthropic-beta": "oauth-2025-04-20",
+                    "x-app": "cli",
+                    "user-agent": "claude-cli/2.1.88 (claude-code)",
+                }
+                return AsyncAnthropic(
+                    auth_token=bearer_token, default_headers=_OAUTH_EXTRA_HEADERS
+                )
+            return AsyncAnthropic(api_key=bearer_token)
+
+        client = _build_client(token)
         system, anthropic_messages = _split_system(messages)
         if style == "bearer":
             _cc_prefix = "You are Claude Code, Anthropic's official CLI for Claude.\n\n"
             system = (_cc_prefix + system) if system else _cc_prefix
+        _caching = _supports_prompt_caching(model)
+        # Anthropic caps the number of ``cache_control`` markers per request at
+        # 4. We spend that budget across (in priority order): the trailing
+        # tools entry (large, stable tool schemas), the last stable system
+        # block, then up to 2 trailing user turns. ``_cache_budget`` tracks
+        # the remaining markers so we never emit a 5th and 400 the request.
+        _cache_budget = 4 if _caching else 0
         if system:
-            _system_param = [
-                {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
-            ]
+            # The system block carries a cache_control marker only when the
+            # model supports caching and we still have budget. The prefix is
+            # always present on the bearer path; the marker is the cache hook.
+            if _caching and _cache_budget > 0:
+                _system_param: list[dict[str, Any]] | None = [
+                    {
+                        "type": "text",
+                        "text": system,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ]
+                _cache_budget -= 1
+            else:
+                _system_param = [{"type": "text", "text": system}]
         else:
             _system_param = None
-        # WP8: inject cache_control on the last 2 user-turn messages when the
+        _tools_list: list[dict[str, Any]] | None = None
+        if tools:
+            _tools_list = list(tools)
+            # Attach cache_control to the trailing tools entry so the whole
+            # (stable) tool array becomes a cached prefix segment. Spends one
+            # marker from the budget; skipped when the budget is exhausted.
+            if _caching and _cache_budget > 0:
+                _tools_list = _inject_tools_cache_control(_tools_list)
+                _cache_budget -= 1
+        # WP8: inject cache_control on the last user-turn messages when the
         # model supports prompt caching and the system prompt is >= 1024 chars
-        # (approximately 256 tokens — enough to make caching worthwhile).
-        if _supports_prompt_caching(model) and len(system or "") >= 1024:
-            anthropic_messages = _inject_user_cache_control(anthropic_messages, n_turns=2)
+        # (approximately 256 tokens — enough to make caching worthwhile). Bound
+        # the number of marked turns by the remaining marker budget so the
+        # total stays <= 4.
+        if _caching and len(system or "") >= 1024 and _cache_budget > 0:
+            anthropic_messages = _inject_user_cache_control(
+                anthropic_messages, n_turns=min(2, _cache_budget)
+            )
         kwargs: dict[str, Any] = {
             "model": model,
             "messages": anthropic_messages,
@@ -384,8 +550,8 @@ class AnthropicProvider:
             kwargs["system"] = _system_param
         if temperature is not None:
             kwargs["temperature"] = temperature
-        if tools:
-            kwargs["tools"] = list(tools)
+        if _tools_list:
+            kwargs["tools"] = _tools_list
         if extra:
             kwargs.update(extra)
 
@@ -393,6 +559,11 @@ class AnthropicProvider:
 
         _max_retries = 3
         _attempt = 0
+        # One-shot reactive 401 recovery (provider-auth-anthropic-refresh-noop):
+        # if the upstream rejects the bearer with a 401 we refresh the OAuth
+        # token once, rebuild the client, and retry. Only the OAuth (``bearer``)
+        # path is eligible — an api_key 401 is not self-healable here.
+        _did_401_refresh = False
         try:
             while True:
                 try:
@@ -460,13 +631,39 @@ class AnthropicProvider:
                                 _usage_dict = None
                         yield ProviderChunk(kind="done", finish_reason=finish, usage=_usage_dict)
                     break  # success — exit retry loop
-                except (RateLimitError, OverloadedError) as _retry_exc:
-                    if _attempt >= _max_retries:
-                        raise
-                    _retry_ms = getattr(_retry_exc, "retry_after_ms", None)
-                    _delay = (_retry_ms / 1000.0) if isinstance(_retry_ms, int) else (2.0 ** _attempt)
-                    await asyncio.sleep(min(_delay, 60.0))
-                    _attempt += 1
+                except CorlinmanError as _cl_exc:
+                    _mapped: CorlinmanError = _cl_exc
+                except Exception as _raw_exc:
+                    # Map the vendor SDK exception to our typed hierarchy so the
+                    # retry / 401-recovery arms below can discriminate on type.
+                    _mapped = _map_anthropic_error(_raw_exc, model=model)
+                    _mapped.__cause__ = _raw_exc
+                # --- error dispatch (shared by mapped + raw paths) ----------
+                # Reached only when one of the two ``except`` arms above fired
+                # (the success path ``break``s out of the loop before here).
+                # Rate-limit / overload are NOT retried at the adapter layer.
+                # The Anthropic SDK already retries transient 429/503/529, and
+                # cross-call backoff + model fallback are owned by the reasoning
+                # loop. We raise the typed error (carrying retry_after_ms /
+                # reset_at_ms) so the loop can act on it. (A previous adapter-
+                # level sleep-retry here double-retried and made the error-
+                # mapping tests block for minutes — removed.)
+                if (
+                    isinstance(_mapped, AuthError)
+                    and style == "bearer"
+                    and not _did_401_refresh
+                ):
+                    _did_401_refresh = True
+                    recovered = await self._async_refresh_credential()
+                    if recovered:
+                        # Rebuild the client with the freshly-refreshed bearer
+                        # token, closing the stale one first to avoid leaking
+                        # its httpx pool (audit R1-003 lineage).
+                        await _safe_close(client)
+                        _new_token, _ = self._credential_resolution()
+                        client = _build_client(_new_token)
+                        continue
+                raise _mapped
         except CorlinmanError:
             raise
         except Exception as exc:
@@ -534,6 +731,28 @@ _CACHING_MODEL_PREFIXES: tuple[str, ...] = (
 def _supports_prompt_caching(model: str) -> bool:
     """Return True when ``model`` supports the ``cache_control`` extension."""
     return any(model.startswith(p) for p in _CACHING_MODEL_PREFIXES)
+
+
+def _inject_tools_cache_control(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return a copy of ``tools`` with cache_control on the trailing entry.
+
+    Anthropic caches a tool array prefix when the LAST tool definition
+    carries ``{"cache_control": {"type": "ephemeral"}}`` — the marker on the
+    final entry caches every tool definition up to and including it. We copy
+    only the trailing entry (shallow-copy the list, deep-copy the one dict we
+    touch) so the caller's list is never mutated. A non-dict trailing entry or
+    an empty list is returned unchanged (idempotent passthrough).
+    """
+    if not tools:
+        return tools
+    last = tools[-1]
+    if not isinstance(last, dict):
+        return tools
+    result = list(tools)
+    new_last = dict(last)
+    new_last["cache_control"] = {"type": "ephemeral"}
+    result[-1] = new_last
+    return result
 
 
 def _inject_user_cache_control(
@@ -647,13 +866,18 @@ def _split_system(messages: Sequence[Any]) -> tuple[str | None, list[dict[str, A
         if role == "tool":
             # OpenAI tool result → Anthropic tool_result block. Accumulate
             # so consecutive results coalesce into one user turn.
-            pending_tool_results.append(
-                {
-                    "type": "tool_result",
-                    "tool_use_id": _get(m, "tool_call_id") or "",
-                    "content": content if isinstance(content, str) else (content or ""),
-                }
-            )
+            block: dict[str, Any] = {
+                "type": "tool_result",
+                "tool_use_id": _get(m, "tool_call_id") or "",
+                "content": content if isinstance(content, str) else (content or ""),
+            }
+            # C4: the reasoning loop marks an errored tool result with a
+            # truthy ``_is_error`` key on the ``role="tool"`` message; surface
+            # it as Anthropic's ``is_error`` on the tool_result block so the
+            # model can distinguish a failed call from a successful one.
+            if _get(m, "_is_error"):
+                block["is_error"] = True
+            pending_tool_results.append(block)
             continue
         # Any non-tool message ends a run of tool results.
         _flush_tool_results()
@@ -828,6 +1052,23 @@ def _map_stop_reason(reason: str | None) -> str:
     return mapping.get(reason or "", "stop")
 
 
+def _headers_from_exc(exc: Exception) -> Any:
+    """Return a header mapping off a vendor SDK exception, or ``None``.
+
+    The Anthropic SDK preserves the upstream headers on
+    ``exc.response.headers``; some error shapes attach them directly on
+    the exception instead. Returns the first mapping-like object found.
+    """
+    response = getattr(exc, "response", None)
+    headers: Any = getattr(response, "headers", None) if response is not None else None
+    if headers is None:
+        # The SDK sometimes attaches headers directly on the exception.
+        headers = getattr(exc, "headers", None)
+    if headers is None or not hasattr(headers, "get"):
+        return None
+    return headers
+
+
 def _retry_after_ms_from_exc(exc: Exception) -> int | None:
     """Extract the ``Retry-After`` header off a vendor 429 as milliseconds.
 
@@ -841,12 +1082,8 @@ def _retry_after_ms_from_exc(exc: Exception) -> int | None:
     Mirrors ``_retry._retry_after_or_backoff`` but returns ms for
     :attr:`failover.RateLimitError.retry_after_ms`.
     """
-    response = getattr(exc, "response", None)
-    headers: Any = getattr(response, "headers", None) if response is not None else None
+    headers = _headers_from_exc(exc)
     if headers is None:
-        # The SDK sometimes attaches headers directly on the exception.
-        headers = getattr(exc, "headers", None)
-    if headers is None or not hasattr(headers, "get"):
         return None
 
     try:
@@ -864,6 +1101,120 @@ def _retry_after_ms_from_exc(exc: Exception) -> int | None:
     if seconds < 0:
         return None
     return int(seconds * 1000)
+
+
+def _unified_reset_ms_from_exc(exc: Exception) -> int | None:
+    """Parse the ``anthropic-ratelimit-unified-reset`` header to an epoch-ms.
+
+    Anthropic's unified rate-limit window publishes its reset point via the
+    ``anthropic-ratelimit-unified-reset`` response header. Two encodings are
+    seen in the wild: an absolute Unix timestamp (seconds since epoch — the
+    documented form) or a small delta-seconds value (a relative reset). We
+    disambiguate by magnitude: values below a ~10-year span (``< 10**9``) are
+    treated as a delta from now, larger values as an absolute epoch. Returns
+    the reset point as epoch milliseconds, or ``None`` when the header is
+    absent / unparseable — callers then fall back to ``retry_after_ms`` or
+    the default backoff schedule.
+    """
+    headers = _headers_from_exc(exc)
+    if headers is None:
+        return None
+    try:
+        raw = headers.get("anthropic-ratelimit-unified-reset") or headers.get(
+            "Anthropic-Ratelimit-Unified-Reset"
+        )
+    except Exception:  # defensive: tolerate odd header mappings
+        return None
+    if raw is None:
+        return None
+    try:
+        value = float(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    if value < 0:
+        return None
+    import time as _time
+
+    # Heuristic split: a bare delta-seconds window (server resets in N s)
+    # vs an absolute Unix-epoch-seconds reset point.
+    if value < 1_000_000_000:
+        return int((_time.time() + value) * 1000)
+    return int(value * 1000)
+
+
+# Pattern matching Anthropic's context-overflow body. The vendor phrases it
+# as e.g. ``input length and ``max_tokens`` exceed context limit: 200000 +
+# 8192 > 200000`` — three integers ``A + B > C`` where C is the model's
+# context window. We pull all three so the reasoning loop can compute an
+# available-context budget and shrink-retry.
+_CONTEXT_OVERFLOW_RE = re.compile(
+    r"(\d[\d,]*)\s*\+\s*(\d[\d,]*)\s*>\s*(\d[\d,]*)"
+)
+
+
+def _parse_context_overflow_limits(message: str) -> tuple[int, int, int] | None:
+    """Extract ``(input_tokens, max_tokens, limit)`` from an overflow body.
+
+    Returns ``None`` when the ``A + B > C`` shape is absent so the caller
+    raises a plain :class:`ContextOverflowError` without numeric hints.
+    """
+    m = _CONTEXT_OVERFLOW_RE.search(message or "")
+    if m is None:
+        return None
+    try:
+        a = int(m.group(1).replace(",", ""))
+        b = int(m.group(2).replace(",", ""))
+        c = int(m.group(3).replace(",", ""))
+    except (TypeError, ValueError):
+        return None
+    return a, b, c
+
+
+def _build_rate_limit_error(
+    exc: Exception, *, status_code: int, ctx: dict[str, Any]
+) -> RateLimitError:
+    """Build a :class:`RateLimitError`, attaching window-based reset_at_ms.
+
+    In addition to the standard ``retry-after`` delta-seconds parse we read
+    Anthropic's ``anthropic-ratelimit-unified-reset`` header (window-based
+    reset point) and attach it as ``reset_at_ms`` so the failover/retry
+    layer can wait until the unified window actually reopens rather than
+    relying solely on a relative delay. ``failover.RateLimitError`` does not
+    declare the field as a constructor kwarg yet (see wire_contract), so we
+    set it on the instance after construction — a no-op-safe extra attribute
+    that readers access via ``getattr(err, "reset_at_ms", None)``.
+    """
+    err = RateLimitError(
+        str(exc),
+        status_code=status_code,
+        retry_after_ms=_retry_after_ms_from_exc(exc),
+        **ctx,
+    )
+    err.reset_at_ms = _unified_reset_ms_from_exc(exc)  # type: ignore[attr-defined]
+    return err
+
+
+def _build_context_overflow_error(
+    exc: Exception, *, ctx: dict[str, Any]
+) -> ContextOverflowError:
+    """Build a :class:`ContextOverflowError` carrying the parsed numeric limit.
+
+    Parses the ``A + B > C`` triple out of the vendor body and attaches
+    ``input_tokens`` (A), ``max_tokens`` (B), and ``limit`` (C) onto the
+    instance so the reasoning loop can compute an available-context budget
+    (``limit - input_tokens - buffer``) and shrink-retry with a smaller
+    ``max_tokens``. ``failover.ContextOverflowError`` does not declare these
+    as constructor kwargs (see wire_contract); readers use ``getattr(err,
+    "limit", None)`` etc.
+    """
+    err = ContextOverflowError(str(exc), status_code=400, **ctx)
+    parsed = _parse_context_overflow_limits(str(exc))
+    if parsed is not None:
+        input_tokens, max_tokens, limit = parsed
+        err.input_tokens = input_tokens  # type: ignore[attr-defined]
+        err.max_tokens = max_tokens  # type: ignore[attr-defined]
+        err.limit = limit  # type: ignore[attr-defined]
+    return err
 
 
 def _map_anthropic_error(exc: Exception, *, model: str) -> CorlinmanError:
@@ -886,12 +1237,7 @@ def _map_anthropic_error(exc: Exception, *, model: str) -> CorlinmanError:
 
     ctx: dict[str, Any] = {"provider": "anthropic", "model": model}
     if isinstance(exc, AnthRateLimit):
-        return RateLimitError(
-            str(exc),
-            status_code=429,
-            retry_after_ms=_retry_after_ms_from_exc(exc),
-            **ctx,
-        )
+        return _build_rate_limit_error(exc, status_code=429, ctx=ctx)
     if isinstance(exc, APITimeoutError):
         return TimeoutError(str(exc), **ctx)
     if isinstance(exc, AuthenticationError):
@@ -905,19 +1251,14 @@ def _map_anthropic_error(exc: Exception, *, model: str) -> CorlinmanError:
         if "credit" in msg or "billing" in msg or "quota" in msg:
             return BillingError(str(exc), status_code=402, **ctx)
         if "context" in msg or "too long" in msg or "tokens" in msg:
-            return ContextOverflowError(str(exc), status_code=400, **ctx)
+            return _build_context_overflow_error(exc, ctx=ctx)
         return FormatError(str(exc), status_code=400, **ctx)
     if isinstance(exc, APIStatusError):
         status = getattr(exc, "status_code", 0) or 0
         if status == 503 or status == 529:
             return OverloadedError(str(exc), status_code=status, **ctx)
         if status == 429:
-            return RateLimitError(
-                str(exc),
-                status_code=status,
-                retry_after_ms=_retry_after_ms_from_exc(exc),
-                **ctx,
-            )
+            return _build_rate_limit_error(exc, status_code=status, ctx=ctx)
         if status in (401, 403):
             return AuthError(str(exc), status_code=status, **ctx)
         if status == 404:

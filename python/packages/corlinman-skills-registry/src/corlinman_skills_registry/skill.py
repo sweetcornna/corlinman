@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -75,6 +75,47 @@ class Skill(BaseModel):
     allowed_tools: list[str] = Field(default_factory=list)
     """Tools this skill is allowed to invoke at runtime. Enforcement happens
     elsewhere; we just carry the list."""
+
+    # ------------------------------------------------------------------
+    # Progressive-disclosure / model-driven selection metadata
+    # ------------------------------------------------------------------
+    # Mirrors the openclaw / claude-code SKILL.md frontmatter shape. These
+    # rode in the frontmatter before but were silently dropped on parse;
+    # carrying them lets the catalog narrow on ``when_to_use`` / ``platforms``
+    # and the wiring lane gate body-injection on ``disable_model_invocation``.
+    # Every default is benign so legacy files load unchanged.
+
+    when_to_use: str | None = None
+    """Free-text hint (frontmatter ``whenToUse``) the model reads to decide
+    whether to pull a skill's body on demand. Surfaced in the catalog so the
+    progressive-disclosure narrowing can match against it."""
+
+    paths: list[str] = Field(default_factory=list)
+    """Glob/path hints (frontmatter ``paths``) describing where this skill is
+    relevant. Carried verbatim; matching is the wiring lane's job."""
+
+    platforms: list[str] = Field(default_factory=list)
+    """Platforms this skill targets (e.g. ``darwin``/``linux``). Carried so the
+    catalog can hide skills that don't apply to the running host."""
+
+    model: str | None = None
+    """Preferred model id (frontmatter ``model``) for the skill's task. Pure
+    metadata here; per-skill model binding is enforced downstream."""
+
+    effort: str | None = None
+    """Reasoning-effort hint (frontmatter ``effort``: ``low``/``medium``/
+    ``high``). Carried for the dispatcher to consume; not validated here."""
+
+    hooks: dict[str, Any] = Field(default_factory=dict)
+    """Skill-scoped hook declarations (frontmatter ``hooks``) — preserved
+    verbatim as a mapping so the hook runner can register them. Parsed but
+    not interpreted by this package."""
+
+    disable_model_invocation: bool = False
+    """When ``True`` the model must NOT auto-select / auto-inject this skill;
+    it is only available when explicitly referenced. The card / context
+    assembler honours this to keep noisy skills out of the model's catalog
+    (frontmatter ``disable-model-invocation`` / ``disableModelInvocation``)."""
 
     body_markdown: str = ""
     """The Markdown body (everything after the closing ``---`` of the

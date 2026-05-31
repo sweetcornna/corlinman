@@ -120,12 +120,27 @@ class MemoryQuery:
     """Query into a memory host.
 
     Wire shape mirrors the Rust ``MemoryQuery`` (``#[serde(default)]``
-    on ``filters`` and ``namespace``)."""
+    on ``filters`` and ``namespace``).
+
+    ``time_decay_half_life_s`` is an **opt-in** BM25-recall refinement:
+    when set to a positive value, :class:`~corlinman_memory_host.local_sqlite.LocalSqliteHost`
+    multiplies each seed hit's score by an exponential recency weight
+    ``exp(-ln(2) * age_s / half_life_s)`` so recent chunks rank higher.
+    The half-life is the age (in seconds) at which a chunk's weight
+    halves. Left ``None`` (the default), ranking is byte-for-byte the
+    legacy BM25 order — the field is purely additive and Rust-side
+    ``serde`` ignores the unknown key, so wire compatibility is
+    preserved. ``time_decay_now_s`` is an optional "current time"
+    override (seconds since the epoch) so callers/tests can pin the
+    decay reference instant; ``None`` means "use wall-clock now".
+    """
 
     text: str
     top_k: int
     filters: list[MemoryFilter] = field(default_factory=list)
     namespace: str | None = None
+    time_decay_half_life_s: float | None = None
+    time_decay_now_s: float | None = None
 
     def to_json(self) -> dict[str, Any]:
         out: dict[str, Any] = {"text": self.text, "top_k": self.top_k}
@@ -133,6 +148,13 @@ class MemoryQuery:
             out["filters"] = [f.to_json() for f in self.filters]
         if self.namespace is not None:
             out["namespace"] = self.namespace
+        # Only emit the decay knobs when set — keeps the wire shape
+        # identical to the legacy/Rust query for the common path so an
+        # existing decoder never sees an unexpected key.
+        if self.time_decay_half_life_s is not None:
+            out["time_decay_half_life_s"] = self.time_decay_half_life_s
+        if self.time_decay_now_s is not None:
+            out["time_decay_now_s"] = self.time_decay_now_s
         return out
 
     @classmethod
@@ -141,11 +163,17 @@ class MemoryQuery:
             raise MemoryHostError("MemoryQuery.from_json: expected object")
         filters_raw = raw.get("filters") or []
         filters = [MemoryFilter.from_json(f) for f in filters_raw]
+        half_life = raw.get("time_decay_half_life_s")
+        now_s = raw.get("time_decay_now_s")
         return cls(
             text=str(raw.get("text", "")),
             top_k=int(raw.get("top_k", 0)),
             filters=filters,
             namespace=raw.get("namespace"),
+            time_decay_half_life_s=(
+                float(half_life) if half_life is not None else None
+            ),
+            time_decay_now_s=(float(now_s) if now_s is not None else None),
         )
 
 

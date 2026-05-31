@@ -184,6 +184,19 @@ class AliasEntry(BaseModel):
     model: str
     params: dict[str, Any] = Field(default_factory=dict)
 
+    fallback_models: list[str] = Field(default_factory=list)
+    """Ordered fallback chain tried on sustained overload / model failure.
+
+    Gap-fill (E4 / ``no-model-fallback-chain``): when the primary
+    ``model`` returns a sustained ``OverloadedError`` (retries exhausted)
+    or a ``ModelNotFoundError`` / quota failure, the reasoning loop
+    switches to the next id in this list and replays the turn (bounded by
+    the list length). Each entry is an *upstream model id* in the same
+    vendor wire shape as ``model`` — the loop does not re-resolve aliases.
+    Empty (the default) preserves the historical behaviour: no fallback,
+    surface the error.
+    """
+
 
 class EmbeddingSpec(BaseModel):
     """``[embedding]`` — selects provider + model + dimension for embeddings.

@@ -129,7 +129,8 @@ from corlinman_channels.commands import (
     match_command_with_args,
     run_command_handler,
 )
-from corlinman_channels.common import InboundEvent, TransportError
+from corlinman_channels.common import AlbumDebouncer, InboundEvent, TransportError
+from corlinman_channels.common import format_attribution_prefix as _attribution
 from corlinman_channels.common import split_on_msg_break as _split_on_msg_break
 from corlinman_channels.discord import (
     DEFAULT_GATEWAY_URL,
@@ -766,6 +767,18 @@ async def _qq_dispatch_loop(
                         await inbox.mark_done(cmd_inbox_id)
                     except Exception:  # noqa: BLE001
                         pass
+                continue
+            # Unknown-command notice: the text looked like a slash command
+            # (leading slash, command-shaped) but matched nothing. Reply
+            # with the hint the router computed and skip the agent turn —
+            # don't forward a bare ``/foo`` to the LLM.
+            if req.unknown_command_notice is not None:
+                try:
+                    await adapter.send_action(
+                        _build_reply_action(payload, req.unknown_command_notice)
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    _log.warning("qq unknown-command notice send failed: %s", exc)
                 continue
             if params.chat_service is None:
                 # No backend wired — drop silently (matches Rust when
@@ -1408,7 +1421,17 @@ def _build_internal_request(
         _to_server_attachment_shape(a)
         for a in segments_to_attachments(event.message)
     ]
-    message = SimpleNamespace(role="user", content=req.content)
+    # Inbound attribution: prefix with sender / reply-to context when the
+    # router carried it (group attribution). A no-op for the OneBot path
+    # today since the QQ ``MessageEvent`` port doesn't expose a display
+    # name yet — the field exists so a future onebot-parse lane lights it
+    # up with zero servicer change.
+    prefix = _attribution(
+        sender_name=getattr(req, "sender_name", None),
+        reply_to_text=getattr(req, "reply_to_text", None),
+    )
+    content = f"{prefix}\n{req.content}" if prefix else req.content
+    message = SimpleNamespace(role="user", content=content)
     return SimpleNamespace(
         model=model,
         messages=[message],
@@ -2146,10 +2169,16 @@ async def run_telegram_channel(
     pending: set[asyncio.Task[None]] = set()
     try:
         async with adapter:
-            iterator = adapter.inbound()
-            while not cancel.is_set():
-                ev = await _race_iter_or_cancel(iterator, cancel)
-                if ev is None:
+            # Album/media-group merge-debounce: a Telegram album fans out
+            # as N rapid single-photo updates sharing a media_group_id;
+            # ``_debounce_albums`` buffers + merges them into one event so
+            # the agent gets a single turn carrying every attachment.
+            # Standalone messages pass straight through with no added
+            # latency. The wrapper owns the cancel/timeout race, so the
+            # loop is a plain ``async for``.
+            iterator = _debounce_albums(adapter.inbound(), cancel)
+            async for ev in iterator:
+                if cancel.is_set():
                     break
                 # Command-handler short-circuit. When the inbound text
                 # matches a registered slash command whose spec carries
@@ -4492,6 +4521,106 @@ async def handle_one_wechat_official(
 # ---------------------------------------------------------------------------
 
 
+def _attribution_prefix(inbound: InboundEvent[Any]) -> str:
+    """Render the sender / reply-to attribution prefix for an inbound.
+
+    Thin wrapper over
+    :func:`corlinman_channels.common.format_attribution_prefix` reading
+    the :class:`InboundEvent` fields. Returns ``""`` when there's nothing
+    to attribute so callers can prepend unconditionally.
+    """
+    return _attribution(
+        sender_name=getattr(inbound, "sender_name", None),
+        reply_to_text=getattr(inbound, "reply_to_text", None),
+    )
+
+
+#: Default album-debounce window. Telegram fans an album out as N rapid
+#: updates; 1.5s comfortably covers the inter-item gap without adding
+#: perceptible latency to a standalone message (which never buffers).
+_ALBUM_DEBOUNCE_SECS: float = 1.5
+
+
+async def _debounce_albums(
+    iterator: AsyncIterator[InboundEvent[Any]],
+    cancel: asyncio.Event,
+    *,
+    window_secs: float = _ALBUM_DEBOUNCE_SECS,
+) -> AsyncIterator[InboundEvent[Any]]:
+    """Wrap an adapter ``inbound()`` iterator with album merge-debounce.
+
+    Standalone (non-album) events pass straight through. Album members
+    (sharing a ``media_group_id``) are buffered by
+    :class:`AlbumDebouncer` and emitted as a single merged event once no
+    new item arrives within ``window_secs``. On cancel / stream end the
+    buffered albums are flushed so nothing is lost.
+
+    Implemented as a race between the next inbound item and a short
+    timeout so a trailing album (never followed by another item) still
+    flushes promptly instead of stalling until the next unrelated
+    message arrives.
+    """
+    debouncer = AlbumDebouncer(window_secs)
+    while not cancel.is_set():
+        ev = await _race_iter_or_cancel_timeout(iterator, cancel, window_secs)
+        if ev is _CANCELLED:
+            break
+        if ev is _TIMEOUT:
+            for ready in debouncer.flush_ready():
+                yield ready
+            continue
+        assert isinstance(ev, InboundEvent)
+        for ready in debouncer.feed(ev):
+            yield ready
+    # Drain whatever remains so a trailing album isn't dropped on shutdown.
+    for ready in debouncer.flush_all():
+        yield ready
+
+
+#: Sentinels distinguishing the three outcomes of
+#: :func:`_race_iter_or_cancel_timeout` (an inbound event, a window
+#: timeout, or cancellation/stream-end) without overloading ``None``
+#: (a legitimate iterator could in principle yield ``None``).
+_TIMEOUT: Any = object()
+_CANCELLED: Any = object()
+
+
+async def _race_iter_or_cancel_timeout(
+    iterator: AsyncIterator[Any],
+    cancel: asyncio.Event,
+    timeout: float,
+) -> Any:
+    """Next item from ``iterator``, or ``_TIMEOUT`` after ``timeout`` s,
+    or ``_CANCELLED`` if ``cancel`` fires / the stream ends.
+
+    Sibling of :func:`_race_iter_or_cancel` with an added timeout arm so
+    the album debouncer can flush a trailing album.
+    """
+    async def _anext() -> Any:
+        return await iterator.__anext__()
+
+    next_task = asyncio.create_task(_anext())
+    cancel_task = asyncio.create_task(cancel.wait())
+    timeout_task = asyncio.create_task(asyncio.sleep(timeout))
+    try:
+        done, _pending = await asyncio.wait(
+            {next_task, cancel_task, timeout_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+    finally:
+        for t in (next_task, cancel_task, timeout_task):
+            if not t.done():
+                t.cancel()
+    if cancel_task in done:
+        return _CANCELLED
+    if next_task in done:
+        try:
+            return next_task.result()
+        except (StopAsyncIteration, asyncio.CancelledError):
+            return _CANCELLED
+    return _TIMEOUT
+
+
 def _build_text_channel_request(
     inbound: InboundEvent[Any], model: str
 ) -> Any:
@@ -4510,7 +4639,17 @@ def _build_text_channel_request(
     """
     from types import SimpleNamespace
 
-    message = SimpleNamespace(role="user", content=inbound.text)
+    # Inbound attribution: prefix the agent-facing content with the
+    # sender display-name + (when this is a reply) a truncated quote of
+    # the parent message. Mirrors openclaw's group-chat attribution so a
+    # multi-party thread stays attributable and a bare reply keeps its
+    # referent. The prefix is empty (no-op) when neither field is set, so
+    # private 1:1 chats with no reply context are byte-identical to the
+    # pre-attribution behaviour.
+    prefix = _attribution_prefix(inbound)
+    content = f"{prefix}\n{inbound.text}" if prefix else inbound.text
+
+    message = SimpleNamespace(role="user", content=content)
     return SimpleNamespace(
         model=model,
         messages=[message],

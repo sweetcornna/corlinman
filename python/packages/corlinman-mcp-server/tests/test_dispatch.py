@@ -51,7 +51,9 @@ async def test_initialize_advertises_registered_capabilities_only():
     reply = await d.handle(req, session, lock, ctx)
     assert isinstance(reply, JsonRpcResultResponse)
     result = reply.result
-    assert result["capabilities"]["tools"] == {}
+    # gap-fill v1.15: the server now emits tools/list_changed notifications,
+    # so it advertises listChanged:true on the tools capability (MCP spec).
+    assert result["capabilities"]["tools"] == {"listChanged": True}
     assert "resources" not in result["capabilities"]
     assert "prompts" not in result["capabilities"]
     assert result["protocolVersion"] == "2024-11-05"

@@ -28,6 +28,26 @@ JSONRPC_VERSION: Literal["2.0"] = "2.0"
 MCP_PROTOCOL_VERSION: Literal["2024-11-05"] = "2024-11-05"
 """MCP protocol version we implement."""
 
+# Server -> client ``*/list_changed`` notification method names. The
+# server emits these (id-less JSON-RPC notifications) when a capability's
+# listing changes so a connected client can re-fetch ``*/list``.
+TOOLS_LIST_CHANGED_NOTIFICATION: Literal["notifications/tools/list_changed"] = (
+    "notifications/tools/list_changed"
+)
+RESOURCES_LIST_CHANGED_NOTIFICATION: Literal[
+    "notifications/resources/list_changed"
+] = "notifications/resources/list_changed"
+PROMPTS_LIST_CHANGED_NOTIFICATION: Literal[
+    "notifications/prompts/list_changed"
+] = "notifications/prompts/list_changed"
+
+
+def list_changed_notification(method: str) -> dict[str, Any]:
+    """Build an id-less JSON-RPC 2.0 notification frame for a
+    ``*/list_changed`` method. Notifications carry no ``id`` and expect
+    no reply (JSON-RPC 2.0 §4.1)."""
+    return {"jsonrpc": JSONRPC_VERSION, "method": method}
+
 JsonValue = Any
 """Loose alias for any JSON value. Kept ``Any`` so payloads can carry
 arbitrary plugin-supplied schemas without forcing a discriminated union."""
@@ -328,19 +348,76 @@ class InitializeResult(BaseModel):
 # ---------------------------------------------------------------------
 
 
+class ToolAnnotations(BaseModel):
+    """Optional behavioural hints on a tool (MCP ``ToolAnnotations``).
+
+    All fields are advisory only — the spec is explicit that a client
+    MUST NOT rely on them for security decisions. We carry them
+    verbatim so a model-facing client can surface read-only / destructive
+    affordances. Every field is optional and elided from the wire when
+    unset so a tool with no annotations serialises to ``{}`` (and the
+    parent :class:`ToolDescriptor` drops the key entirely).
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    title: str | None = None
+    read_only_hint: bool | None = Field(default=None, alias="readOnlyHint")
+    destructive_hint: bool | None = Field(default=None, alias="destructiveHint")
+    idempotent_hint: bool | None = Field(default=None, alias="idempotentHint")
+    open_world_hint: bool | None = Field(default=None, alias="openWorldHint")
+
+    @model_serializer(mode="wrap")
+    def _serialize(self, handler) -> dict[str, Any]:  # noqa: ARG002
+        out: dict[str, Any] = {}
+        if self.title is not None:
+            out["title"] = self.title
+        if self.read_only_hint is not None:
+            out["readOnlyHint"] = self.read_only_hint
+        if self.destructive_hint is not None:
+            out["destructiveHint"] = self.destructive_hint
+        if self.idempotent_hint is not None:
+            out["idempotentHint"] = self.idempotent_hint
+        if self.open_world_hint is not None:
+            out["openWorldHint"] = self.open_world_hint
+        return out
+
+    def is_empty(self) -> bool:
+        """True when no hint is set — the descriptor elides the key."""
+        return (
+            self.title is None
+            and self.read_only_hint is None
+            and self.destructive_hint is None
+            and self.idempotent_hint is None
+            and self.open_world_hint is None
+        )
+
+
 class ToolDescriptor(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
     name: str
     description: str | None = None
     input_schema: JsonValue = Field(alias="inputSchema")
+    # MCP ``outputSchema`` (2025-03 draft) — a JSON Schema for the
+    # structured ``structuredContent`` of a tool result. Optional; kept
+    # loose (``JsonValue``) so plugin-supplied schemas pass through verbatim.
+    output_schema: JsonValue | None = Field(default=None, alias="outputSchema")
+    annotations: ToolAnnotations | None = None
+    title: str | None = None
 
     @model_serializer(mode="wrap")
-    def _serialize(self, handler) -> dict[str, Any]:
+    def _serialize(self, handler) -> dict[str, Any]:  # noqa: ARG002
         out: dict[str, Any] = {"name": self.name}
+        if self.title is not None:
+            out["title"] = self.title
         if self.description is not None:
             out["description"] = self.description
         out["inputSchema"] = self.input_schema
+        if self.output_schema is not None:
+            out["outputSchema"] = self.output_schema
+        if self.annotations is not None and not self.annotations.is_empty():
+            out["annotations"] = self.annotations.model_dump()
         return out
 
 
@@ -625,6 +702,9 @@ class PromptsGetResult(BaseModel):
 __all__ = [
     "JSONRPC_VERSION",
     "MCP_PROTOCOL_VERSION",
+    "PROMPTS_LIST_CHANGED_NOTIFICATION",
+    "RESOURCES_LIST_CHANGED_NOTIFICATION",
+    "TOOLS_LIST_CHANGED_NOTIFICATION",
     "BlobResourceContent",
     "ClientCapabilities",
     "Content",
@@ -658,12 +738,14 @@ __all__ = [
     "ServerCapabilities",
     "TextContent",
     "TextResourceContent",
+    "ToolAnnotations",
     "ToolDescriptor",
     "ToolsCallParams",
     "ToolsCallResult",
     "ToolsCapability",
     "ToolsListResult",
     "error_codes",
+    "list_changed_notification",
     "prompt_text_content",
     "response_id",
     "text_content",

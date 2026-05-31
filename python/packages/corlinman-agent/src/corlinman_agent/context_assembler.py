@@ -178,6 +178,7 @@ class ContextAssembler:
         config_lookup: Callable[[str], str | None],
         single_agent_gate: bool = True,
         default_skill_refs: Sequence[str] = (),
+        progressive_skill_disclosure: bool = True,
     ) -> None:
         self._agent_expander = AgentExpander(agents, single_agent_gate=single_agent_gate)
         self._variables = variables
@@ -185,6 +186,13 @@ class ContextAssembler:
         self._placeholder = placeholder_client
         self._hook = hook_emitter
         self._config_lookup = config_lookup
+        # gap skills-no-progressive-disclosure: when enabled, only EXPLICIT
+        # skill_refs get their full body injected; all other model-invokable
+        # skills are advertised as a compact catalog (name + when_to_use)
+        # the model reads to decide which body to pull on demand (via the
+        # servicer's ``Skill`` tool). Disabling it restores the legacy
+        # all-bodies-every-turn behaviour.
+        self._progressive_skill_disclosure = progressive_skill_disclosure
         # v1.12.3 — skills injected on EVERY turn, even when the message
         # invokes no agent card. Stage-3 skill injection is otherwise gated on
         # ``expansion.expanded_agent`` (a ``{{角色}}`` token), so the MAIN chat
@@ -248,6 +256,13 @@ class ContextAssembler:
                         refs.append(ref)
         if refs:
             self._inject_skills(msgs, refs, skill_errors)
+        # gap skills-no-progressive-disclosure: advertise the remaining
+        # model-invokable skills as a compact catalog the model can pull a
+        # body for on demand (via the servicer's ``Skill`` tool), instead of
+        # dumping every body every turn. Skills already injected above
+        # (explicit refs) are excluded so they aren't listed twice.
+        if self._progressive_skill_disclosure:
+            self._inject_skill_catalog(msgs, exclude=set(refs))
 
         # --- Stage 3.5: toolbox dedup + privilege gate ------------------
         # Mirrors the ``single_agent_gate`` pattern (and the openclaw
@@ -455,6 +470,62 @@ class ContextAssembler:
             # Insert a dedicated system turn right before so the skill
             # body still reaches the provider in the right position.
             messages.insert(sys_idx, {"role": "system", "content": section})
+
+    def _inject_skill_catalog(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        exclude: set[str],
+    ) -> None:
+        """Inject a compact, model-facing skill catalog for progressive disclosure.
+
+        Renders one short row per model-invokable skill (name + when_to_use /
+        description) so the model can SELECT which skill body to pull on
+        demand via the ``Skill`` tool, instead of every body being dumped
+        into the prompt. Skills in ``exclude`` (explicit refs already
+        injected with their full body) and ``disable_model_invocation``
+        skills (already filtered out of ``catalog()``) are omitted. No-op
+        when there is nothing to advertise.
+        """
+        try:
+            rows = self._skills.catalog()
+        except Exception as exc:  # noqa: BLE001 — never break assembly on a bad catalog
+            logger.warning("context_assembler.skill_catalog_failed", error=str(exc))
+            return
+        lines: list[str] = []
+        for row in rows:
+            name = row.get("name")
+            if not isinstance(name, str) or not name or name in exclude:
+                continue
+            hint = row.get("when_to_use") or row.get("description") or ""
+            hint = " ".join(str(hint).split())
+            if len(hint) > 200:
+                hint = hint[:199].rstrip() + "…"
+            lines.append(f"- {name}: {hint}" if hint else f"- {name}")
+        if not lines:
+            return
+
+        catalog_block = (
+            "## Available skills\n\n"
+            "The following skills are available. Each lists when to use it. "
+            "Call the `Skill` tool with a skill's `name` to load its full "
+            "instructions before performing its task — do NOT guess the "
+            "contents.\n\n" + "\n".join(lines)
+        )
+
+        sys_idx: int | None = None
+        for i, msg in enumerate(messages):
+            if msg.get("role") == "system":
+                sys_idx = i
+                break
+        if sys_idx is None:
+            messages.insert(0, {"role": "system", "content": catalog_block})
+            return
+        existing = messages[sys_idx].get("content")
+        if isinstance(existing, str) and existing:
+            messages[sys_idx]["content"] = f"{existing}\n\n{catalog_block}"
+        else:
+            messages.insert(sys_idx, {"role": "system", "content": catalog_block})
 
     def _emit_preprocessed(
         self,

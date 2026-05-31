@@ -117,13 +117,29 @@ class EpaBackfiller:
         rows = self._load_chunks()
         if not rows:
             stats.wall_clock_s = time.perf_counter() - start
+            # No chunk carries a dense vector. This is the *expected* state
+            # on a memory-host-populated DB today: ``LocalSqliteHost.upsert``
+            # writes ``vector = NULL`` (dense recall is deferred), so the
+            # backfill has nothing to project. Distinguish "no vectors but
+            # chunks exist" (the live case — actionable: embeddings not yet
+            # populated) from "genuinely empty DB" so an operator running
+            # this offline job isn't left guessing. Never the BM25 hot path.
+            stats.chunks_skipped = self._count_skipped()
+            total_chunks = self._count_total_chunks()
+            status = (
+                "no_vectors"
+                if total_chunks > 0
+                else "empty_corpus"
+            )
             _log.info(
                 "epa_backfill",
                 chunks_processed=0,
+                chunks_skipped=stats.chunks_skipped,
+                total_chunks=total_chunks,
                 basis_axes=0,
                 wall_clock_s=stats.wall_clock_s,
                 namespace=self.config.target_namespace,
-                status="empty_corpus",
+                status=status,
             )
             return stats
 
@@ -200,6 +216,32 @@ class EpaBackfiller:
                 )
             row = cur.fetchone()
             return int(row[0]) if row else 0
+        finally:
+            conn.close()
+
+    def _count_total_chunks(self) -> int:
+        """Count every chunk in scope, regardless of vector state.
+
+        Used only to classify the empty-result case: ``> 0`` here while
+        ``_load_chunks()`` returned nothing means "chunks exist but none
+        carry a dense vector yet" (status ``no_vectors``), as opposed to a
+        genuinely empty DB (``empty_corpus``). Never raises — returns 0 on
+        a missing table or any operational error so the diagnostic can't
+        itself fail the offline job."""
+        conn = self._connect()
+        try:
+            cur = conn.cursor()
+            if self.config.target_namespace is None:
+                cur.execute("SELECT COUNT(*) FROM chunks")
+            else:
+                cur.execute(
+                    "SELECT COUNT(*) FROM chunks WHERE namespace = ?",
+                    (self.config.target_namespace,),
+                )
+            row = cur.fetchone()
+            return int(row[0]) if row else 0
+        except sqlite3.Error:
+            return 0
         finally:
             conn.close()
 

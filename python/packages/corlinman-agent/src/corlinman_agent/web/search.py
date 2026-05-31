@@ -51,6 +51,10 @@ from corlinman_agent.web._common import (
     make_client,
     pin_transport,
 )
+from corlinman_agent.web.external_content import (
+    detect_suspicious_patterns,
+    wrap_external_content,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -249,6 +253,34 @@ async def _search_serpapi(
     return results
 
 
+def _wrap_results(
+    results: list[dict[str, str]], source: str
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Fence each result's untrusted ``snippet`` and collect injection flags.
+
+    Search snippets are untrusted web text exactly like a fetched body —
+    a poisoned result can carry prompt-injection prose. We wrap the
+    snippet in randomized markers (via :func:`wrap_external_content`) and
+    surface any suspicious-pattern hits as advisory metadata. The
+    ``title`` / ``url`` are left as-is (the URL is already SSRF-filtered
+    upstream and the title is short ranking text), but suspicious-pattern
+    detection still scans the raw snippet.
+    """
+    wrapped: list[dict[str, Any]] = []
+    flags: list[str] = []
+    for hit in results:
+        snippet = hit.get("snippet", "")
+        flags.extend(detect_suspicious_patterns(snippet))
+        new_hit: dict[str, Any] = dict(hit)
+        if snippet:
+            new_hit["snippet"] = wrap_external_content(snippet, source=source)
+        wrapped.append(new_hit)
+    # De-dup flags while preserving order.
+    seen: set[str] = set()
+    unique_flags = [f for f in flags if not (f in seen or seen.add(f))]
+    return wrapped, unique_flags
+
+
 async def dispatch_web_search(
     *,
     args_json: bytes | str,
@@ -330,9 +362,15 @@ async def dispatch_web_search(
                         "error": f"unknown_backend: {backend}",
                     }
                 )
-        return json.dumps(
-            {"query": query, "backend": backend, "results": results}
-        )
+        wrapped_results, suspicious = _wrap_results(results, source=backend)
+        envelope: dict[str, Any] = {
+            "query": query,
+            "backend": backend,
+            "results": wrapped_results,
+        }
+        if suspicious:
+            envelope["suspicious_patterns"] = suspicious
+        return json.dumps(envelope)
     except WebArgsInvalidError as exc:
         return json.dumps(
             {

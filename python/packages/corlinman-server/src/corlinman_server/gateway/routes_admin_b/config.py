@@ -308,15 +308,59 @@ def router() -> APIRouter:
 
     @r.get("/admin/config/schema")
     async def get_schema():
-        # No central Pydantic Config model in Python today; emit a
-        # placeholder schema. The Rust side serialises a schemars-derived
-        # document; an equivalent Python model will land alongside the
-        # rest of the gateway core.
+        # gap-fill v1.15 (config-admin-reload-dead): emit a JSON-Schema
+        # document for the config. There is still no central Pydantic
+        # Config model in Python, so we derive a best-effort object schema
+        # from the live snapshot's top-level sections plus the well-known
+        # corlinman sections. The schema advertises each section as an
+        # ``object`` with ``additionalProperties: true`` (the inner shapes
+        # are still loosely-typed) so the admin UI's form generator can at
+        # least surface the section list + restart-required hints. The
+        # Rust side serialises a schemars-derived document; this is the
+        # Python parity surface until a typed model lands.
+        try:
+            from corlinman_server.gateway.core.config_watcher import (
+                RESTART_REQUIRED_SECTIONS,
+            )
+
+            restart_sections = sorted(RESTART_REQUIRED_SECTIONS)
+        except Exception:  # noqa: BLE001 — schema must never 500
+            restart_sections = []
+
+        # Union of live-snapshot keys + the canonical corlinman sections so
+        # the schema is stable even on a degraded (empty-snapshot) boot.
+        known_sections = (
+            "server",
+            "admin",
+            "providers",
+            "models",
+            "channels",
+            "scheduler",
+            "logging",
+            "tenants",
+            "hooks",
+            "memory",
+            "system",
+            "identity",
+            "persona",
+        )
+        snap = dict(config_snapshot())
+        sections = sorted(set(known_sections) | set(snap.keys()))
+        properties = {
+            name: {"type": "object", "additionalProperties": True}
+            for name in sections
+        }
         return {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
             "title": "CorlinmanConfig",
             "type": "object",
             "additionalProperties": True,
-            "$comment": "stub — replace once a typed Config model lands in Python",
+            "properties": properties,
+            "x-restart-required-sections": restart_sections,
+            "$comment": (
+                "best-effort section schema; inner shapes are loosely "
+                "typed until a central Pydantic Config model lands"
+            ),
         }
 
     @r.post("/admin/config/reload")

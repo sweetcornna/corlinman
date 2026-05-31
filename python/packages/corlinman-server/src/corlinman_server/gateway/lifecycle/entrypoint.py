@@ -65,6 +65,7 @@ import importlib
 import os
 import signal
 import sys
+import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
@@ -429,6 +430,26 @@ def _reapply_hot_reloadable(state: Any, changed: list[str]) -> list[str]:
     return reapplied
 
 
+def _config_hot_reload_enabled(state: Any) -> bool:
+    """Whether live config fs-watch hot-reload is enabled (default OFF).
+
+    Honours ``CORLINMAN_CONFIG_HOT_RELOAD`` (env, wins) then
+    ``[server].config_hot_reload`` in the loaded config. Off by default —
+    see :func:`_start_config_watcher` for why.
+    """
+    import os
+
+    raw = os.environ.get("CORLINMAN_CONFIG_HOT_RELOAD")
+    if raw is not None:
+        return raw.strip().lower() in ("1", "true", "yes", "on")
+    cfg = getattr(state, "config", None)
+    if isinstance(cfg, dict):
+        server = cfg.get("server")
+        if isinstance(server, dict):
+            return bool(server.get("config_hot_reload", False))
+    return False
+
+
 def _start_config_watcher(app: Any, state: Any, config_path: Path | None) -> Any:
     """Build + start a :class:`ConfigWatcher` for the gateway config TOML.
 
@@ -443,6 +464,16 @@ def _start_config_watcher(app: Any, state: Any, config_path: Path | None) -> Any
     rebuild). A malformed reload keeps the previous good snapshot.
     """
     if config_path is None or not config_path.exists():
+        return None
+    # gap-fill v1.15: live fs-watch hot-reload is OPT-IN (default OFF). A real
+    # filesystem observer per boot accumulates OS watch handles and can race
+    # the config-write path (it destabilises multi-boot test suites and adds
+    # little value to most deployments, which restart to apply config). The
+    # machinery stays fully wired; enable it with CORLINMAN_CONFIG_HOT_RELOAD=1
+    # or ``[server].config_hot_reload = true``. When disabled we behave exactly
+    # as before this gap-fill: no watcher, and POST /admin/config/reload stays
+    # 503 (manual reload not armed).
+    if not _config_hot_reload_enabled(state):
         return None
     watcher_mod = _lazy_import("corlinman_server.gateway.core.config_watcher")
     config_mod = _lazy_import("corlinman_server.gateway.core.config")
@@ -487,10 +518,66 @@ def _start_config_watcher(app: Any, state: Any, config_path: Path | None) -> Any
                 ),
             )
 
+    def _validator(new_cfg: dict[str, Any]) -> list[str]:
+        """Validate a reloaded config before it goes live.
+
+        Returns a list of human-readable error strings — non-empty means
+        the reload is rejected and the previous good snapshot is kept (the
+        ConfigWatcher gates on this). Best-effort + defensive: any
+        validator crash returns ``[]`` (accept) rather than wedging the
+        watcher. Defers to the gateway core ``validate_config`` helper when
+        present so the prod cascade's typed validation is honoured.
+        """
+        validate = getattr(config_mod, "validate_config", None)
+        if validate is None:
+            return []
+        try:
+            issues = validate(new_cfg)
+        except Exception as exc:  # noqa: BLE001 — never wedge the watcher
+            logger.warning("gateway.config_reload.validator_crashed", error=str(exc))
+            return []
+        if not issues:
+            return []
+        return [str(i) for i in issues]
+
+    async def _hook_emitter(
+        event: str, section: str, old: Any, new: Any
+    ) -> None:
+        """Fire a ``ConfigChanged`` notice onto the shared HookBus per
+        changed section so in-process subscribers (evolution observer,
+        future config-reactive components) react to a live edit. The
+        watcher already swapped the snapshot before calling us; we only
+        notify. Best-effort: a missing bus / emit failure is swallowed so
+        the reload itself never fails on the notification side."""
+        bus = getattr(app.state, "hook_bus", None)
+        if bus is None:
+            return
+        emit = getattr(bus, "emit", None)
+        if emit is None:
+            return
+        try:
+            res = emit(
+                {
+                    "kind": "ConfigChanged",
+                    "event": event,
+                    "section": section,
+                }
+            )
+            if hasattr(res, "__await__"):
+                await res
+        except Exception as exc:  # noqa: BLE001 — notification is best-effort
+            logger.debug(
+                "gateway.config_reload.hook_emit_failed",
+                section=section,
+                error=str(exc),
+            )
+
     watcher = ConfigWatcher(
         config_path,
         initial,
         parser=load_from_path,
+        validator=_validator,
+        hook_emitter=_hook_emitter,
         on_reload=_on_reload,
     )
     # Expose the watcher on AppState so the admin /admin/config/reload
@@ -852,6 +939,262 @@ def _effective_scheduler_config(app: Any, cfg: Any | None) -> Any:
             seen.add(jname)
 
     return SchedulerConfig(jobs=tuple(jobs))
+
+
+# ---------------------------------------------------------------------------
+# gap-fill v1.15 — CONTRACT C2 wiring spine + identity sweep
+# ---------------------------------------------------------------------------
+
+
+#: Identity verification-phrase sweep cadence (seconds). Phrases TTL out
+#: after ``corlinman_identity.DEFAULT_TTL_MIN``; a sweep every 10 min keeps
+#: the expired-phrase table small without hammering sqlite.
+_IDENTITY_SWEEP_INTERVAL_SECS: int = 600
+
+
+async def _identity_sweep_loop(store: Any) -> None:
+    """Periodically purge expired verification phrases.
+
+    Calls ``store.sweep_expired_phrases()`` every
+    :data:`_IDENTITY_SWEEP_INTERVAL_SECS` seconds until cancelled. Each
+    sweep is best-effort: a sqlite hiccup logs a warning and the loop
+    keeps going so a transient error doesn't kill the periodic cleanup.
+    Exits cleanly on :class:`asyncio.CancelledError` (lifespan shutdown).
+    """
+    sweep = getattr(store, "sweep_expired_phrases", None)
+    if sweep is None:
+        return
+    while True:
+        try:
+            await asyncio.sleep(_IDENTITY_SWEEP_INTERVAL_SECS)
+        except asyncio.CancelledError:
+            return
+        try:
+            purged = await sweep()
+            if purged:
+                logger.info("gateway.identity.sweep_purged", count=int(purged))
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:  # noqa: BLE001 — never kill the loop
+            logger.warning("gateway.identity.sweep_failed", error=str(exc))
+
+
+def _build_agent_runner_fn(state: Any) -> Any:
+    """Build the ``agent_runner_fn`` the scheduler's ``run_agent`` action
+    invokes for a real one-turn agent run on a cron schedule.
+
+    The returned coroutine accepts a ``prompt`` string, drives one turn
+    through the live :class:`ChatService` parked on ``state.chat``, and
+    returns a small result dict (``{"ok": ..., "reply"/"error": ...}``).
+    It resolves the chat service lazily *per firing* so a scheduler job
+    that fires before the chat bootstrap completed (or after a hot-reload
+    swapped the service) always sees the current handle. When no chat
+    service is wired the runner returns ``{"ok": False,
+    "error": "chat_service_unavailable"}`` and the scheduler surfaces the
+    firing as a failure on the hook bus rather than crashing.
+
+    Channel delivery: when the job metadata carries a home-channel hint
+    the result is logged on the structlog feed (the same best-effort
+    delivery seam the restart-broadcast uses); a future outbound-handle
+    wave can route through it without re-touching this closure.
+    """
+
+    async def _runner(prompt: str) -> dict[str, Any]:
+        chat_service = getattr(state, "chat", None)
+        if chat_service is None:
+            extras = getattr(state, "extras", None)
+            if isinstance(extras, dict):
+                chat_service = extras.get("chat")
+        if chat_service is None:
+            return {"ok": False, "error": "chat_service_unavailable"}
+        try:
+            from corlinman_server.gateway_api.types import (
+                InternalChatRequest,
+                Message,
+                Role,
+            )
+        except Exception as exc:  # noqa: BLE001 — degrade cleanly
+            return {"ok": False, "error": "gateway_api_unavailable",
+                    "message": str(exc)}
+
+        model = ""
+        cfg = getattr(state, "config", None)
+        if isinstance(cfg, dict):
+            models_cfg = cfg.get("models")
+            if isinstance(models_cfg, dict):
+                m = models_cfg.get("default")
+                if isinstance(m, str) and m:
+                    model = m
+
+        request = InternalChatRequest(
+            model=model,
+            messages=[Message(role=Role.USER, content=prompt)],
+            session_key=f"scheduler:run_agent:{uuid.uuid4().hex[:8]}",
+            stream=False,
+            max_tokens=None,
+            temperature=None,
+            attachments=[],
+            binding=None,
+        )
+        cancel = asyncio.Event()
+        reply_parts: list[str] = []
+        try:
+            stream = chat_service.run(request, cancel)
+            async for event in stream:
+                kind = getattr(event, "kind", None)
+                if kind == "token_delta":
+                    delta = getattr(event, "delta", None)
+                    if isinstance(delta, str):
+                        reply_parts.append(delta)
+                elif kind == "error":
+                    inner = getattr(event, "error", None)
+                    return {
+                        "ok": False,
+                        "error": "chat_error",
+                        "reason": str(getattr(inner, "reason", "unknown")),
+                    }
+                elif kind == "done":
+                    break
+        except Exception as exc:  # noqa: BLE001 — surface, never raise
+            return {"ok": False, "error": "chat_service_failed",
+                    "message": str(exc)}
+        return {"ok": True, "reply": "".join(reply_parts)}
+
+    return _runner
+
+
+async def _wire_c2_handles(
+    app: Any, state: Any, admin_a_state: Any, data_dir: Path, cfg: Any | None
+) -> None:
+    """Construct + publish the CONTRACT C2 handles onto ``state``.
+
+    Sets (each best-effort, ``None`` on failure so the consumer degrades):
+
+    * ``state.memory_host``     — corlinman_memory_host.LocalSqliteHost.
+    * ``state.persona_resolver``— corlinman_persona.PersonaResolver over
+      the runtime persona-STATE store (``agent_state.sqlite``); also stashed
+      on ``extras`` + admin_a for the qzone builtin / future producers.
+    * ``state.identity_store``  — corlinman_identity.SqliteIdentityStore;
+      also stamped onto ``admin_a_state`` so the ``/admin/identity*`` routes
+      un-503.
+    * ``state.agent_runner_fn`` — async ``(prompt) -> dict`` for the
+      scheduler ``run_agent`` action.
+    * ``state.hook_runner``     — corlinman_hooks.runner.HookRunner with
+      file-discovery (``CORLINMAN_HOOKS_DIR``).
+    """
+    # --- memory_host -----------------------------------------------------
+    try:
+        from corlinman_memory_host import LocalSqliteHost
+
+        if getattr(state, "memory_host", None) is None:
+            mem_path = data_dir / "memory.sqlite"
+            state.memory_host = await LocalSqliteHost.open(
+                "local", str(mem_path)
+            )
+            logger.info("gateway.c2.memory_host_wired", path=str(mem_path))
+    except Exception as exc:  # noqa: BLE001 — memory-free chat degrades fine
+        logger.warning("gateway.c2.memory_host_failed", error=str(exc))
+        with suppress(AttributeError, TypeError):
+            state.memory_host = None
+
+    # --- persona_resolver (gap persona-life-resolver-dead) ---------------
+    # The resolver reads ``{{persona.mood}}`` / ``{{persona.life_*}}`` off
+    # the SAME runtime persona-STATE DB (``agent_state.sqlite``) the agent
+    # ``persona_life_*`` tools write to, keyed by ``agent_id``. Publishing
+    # it on AppState gives the prompt-render path a live read surface.
+    try:
+        from corlinman_persona import PersonaResolver
+        from corlinman_persona.store import PersonaStore as _StateStore
+
+        state_store = await _StateStore.open_or_create(
+            data_dir / "agent_state.sqlite"
+        )
+        resolver = PersonaResolver(state_store)
+        state.persona_resolver = resolver
+        # Stash the open store handle so the lifespan-exit can close it and
+        # the qzone builtin can reach the same DB without re-opening.
+        app.state.corlinman_persona_state_store = state_store
+        extras = getattr(state, "extras", None)
+        if isinstance(extras, dict):
+            extras["persona_resolver"] = resolver
+            extras["persona_state_store"] = state_store
+        if admin_a_state is not None:
+            with suppress(AttributeError, TypeError):
+                admin_a_state.persona_resolver = resolver
+        logger.info("gateway.c2.persona_resolver_wired")
+    except Exception as exc:  # noqa: BLE001 — placeholders fall back to ""
+        logger.warning("gateway.c2.persona_resolver_failed", error=str(exc))
+        with suppress(AttributeError, TypeError):
+            state.persona_resolver = None
+
+    # --- identity_store (gap identity-unwired-and-no-auth-gate) ----------
+    try:
+        from corlinman_identity import (
+            SqliteIdentityStore,
+            identity_db_path,
+            legacy_default,
+        )
+
+        id_path = identity_db_path(data_dir, legacy_default())
+        id_store = await SqliteIdentityStore.open(id_path)
+        state.identity_store = id_store
+        app.state.corlinman_identity_store = id_store
+        # Un-503 the /admin/identity* routes by stamping the store onto the
+        # AdminState the routes resolve via get_admin_state().
+        if admin_a_state is not None:
+            with suppress(AttributeError, TypeError):
+                admin_a_state.identity_store = id_store
+        extras = getattr(state, "extras", None)
+        if isinstance(extras, dict):
+            extras["identity_store"] = id_store
+        logger.info("gateway.c2.identity_store_wired", path=str(id_path))
+    except Exception as exc:  # noqa: BLE001 — routes 503 cleanly
+        logger.warning("gateway.c2.identity_store_failed", error=str(exc))
+        with suppress(AttributeError, TypeError):
+            state.identity_store = None
+
+    # --- agent_runner_fn (gap goals-cron-run-agent-dead) -----------------
+    try:
+        state.agent_runner_fn = _build_agent_runner_fn(state)
+        logger.info("gateway.c2.agent_runner_fn_wired")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("gateway.c2.agent_runner_fn_failed", error=str(exc))
+        with suppress(AttributeError, TypeError):
+            state.agent_runner_fn = None
+
+    # --- hook_runner (C3) ------------------------------------------------
+    try:
+        from corlinman_hooks.runner import HookRunner
+
+        # The agent-level hooks config lives under ``[hooks]`` in the
+        # loaded config; file-discovered HOOK.yaml/handler.py hooks load
+        # from CORLINMAN_HOOKS_DIR (falls back to <data_dir>/hooks).
+        hooks_cfg: dict[str, Any] = {}
+        section = _extract_section(cfg, "hooks")
+        if isinstance(section, dict):
+            hooks_cfg = {"hooks": section}
+        hooks_dir_env = os.environ.get("CORLINMAN_HOOKS_DIR")
+        hooks_dir: Path | None
+        if hooks_dir_env:
+            hooks_dir = Path(hooks_dir_env)
+        else:
+            default_hooks_dir = data_dir / "hooks"
+            hooks_dir = default_hooks_dir if default_hooks_dir.is_dir() else None
+        runner = HookRunner(hooks_cfg, hooks_dir=hooks_dir)
+        state.hook_runner = runner
+        app.state.corlinman_hook_runner = runner
+        extras = getattr(state, "extras", None)
+        if isinstance(extras, dict):
+            extras["hook_runner"] = runner
+        logger.info(
+            "gateway.c2.hook_runner_wired",
+            hooks_dir=str(hooks_dir) if hooks_dir else None,
+            discovered=getattr(runner, "discovered_events", {}),
+        )
+    except Exception as exc:  # noqa: BLE001 — no hooks degrades fine
+        logger.warning("gateway.c2.hook_runner_failed", error=str(exc))
+        with suppress(AttributeError, TypeError):
+            state.hook_runner = None
 
 
 # ---------------------------------------------------------------------------
@@ -1605,6 +1948,21 @@ def build_app(
                     error=str(exc),
                 )
 
+        # gap-fill v1.15 — CONTRACT C2 wiring spine.
+        #
+        # Construct + publish the six C2 handles onto the AppState so the
+        # agent servicer (wire-A) + scheduler resolve them via getattr.
+        # Every branch is independently best-effort: a failure leaves the
+        # slot ``None`` and the consumer degrades (memory-free chat, no
+        # persona placeholders, identity routes 503, scheduler run_agent
+        # ``runner_not_registered``, no hooks). Boot never crashes here.
+        # The identity sweep task is scheduled later (once ``background``
+        # exists) so the lifespan-exit ``finally`` cancels + awaits it.
+        if resolved_data_dir is not None:
+            await _wire_c2_handles(
+                app, state, admin_a_state, resolved_data_dir, cfg
+            )
+
         # W1.3 — task-observability surface. Open the per-turn journal
         # the agent servicer also opens lazily on first chat, and
         # construct one :class:`JournalBackedEmitter` for the whole
@@ -2061,6 +2419,20 @@ def build_app(
         cancel = asyncio.Event()
         background: list[asyncio.Task[Any]] = []
 
+        # gap-fill v1.15 — schedule the identity verification-phrase sweep
+        # (CONTRACT C2). The store was wired by ``_wire_c2_handles`` above;
+        # register the periodic ``sweep_expired_phrases`` loop here, now
+        # that ``background`` exists, so the lifespan-exit ``finally``
+        # cancels + awaits it on shutdown. No-op when no store was wired.
+        _identity_store = getattr(state, "identity_store", None)
+        if _identity_store is not None:
+            sweep_task = asyncio.create_task(
+                _identity_sweep_loop(_identity_store),
+                name="gateway.identity.sweep_expired_phrases",
+            )
+            background.append(sweep_task)
+            logger.info("gateway.identity.sweep_scheduled")
+
         # Parcel P14: build + connect the external MCP client manager
         # *before* the sibling-bootstrap loop, so ``services.bootstrap``
         # → ``build_tool_executor`` can bind ``mcp``-kind plugin dispatch
@@ -2385,6 +2757,34 @@ def build_app(
 
                 from corlinman_server.scheduler import spawn as _spawn_scheduler
 
+                # gap-fill v1.15 (goals-cron): open the run-history store +
+                # park it on app.state BEFORE spawn so each firing persists
+                # an outcome row (``dispatch`` reads ``app_state.scheduler_
+                # store``) and the per-job loop's missed-run catch-up can
+                # read the last firing across restarts. Best-effort — a
+                # store-open failure leaves catch-up + history off but the
+                # scheduler still fires on schedule.
+                if (
+                    resolved_data_dir is not None
+                    and getattr(app.state, "scheduler_store", None) is None
+                ):
+                    try:
+                        from corlinman_server.scheduler import SchedulerStore
+
+                        _sched_store = await SchedulerStore.open(
+                            resolved_data_dir / "scheduler.sqlite"
+                        )
+                        app.state.scheduler_store = _sched_store
+                        logger.info(
+                            "gateway.scheduler.store_opened",
+                            path=str(resolved_data_dir / "scheduler.sqlite"),
+                        )
+                    except Exception as exc:  # noqa: BLE001 — history optional
+                        logger.warning(
+                            "gateway.scheduler.store_open_failed",
+                            error=str(exc),
+                        )
+
                 sched_bus = getattr(app.state, "hook_bus", None)
                 if sched_bus is None:
                     sched_bus = HookBus(capacity=256)
@@ -2450,6 +2850,49 @@ def build_app(
                         "gateway.subagent.dispatcher_shutdown_failed",
                         error=str(exc),
                     )
+
+            # gap-fill v1.15 (C2) teardown: close the identity store +
+            # runtime persona-state store + memory host opened by
+            # ``_wire_c2_handles`` so their WAL files are checkpointed and
+            # tests don't leak file descriptors. Each is best-effort +
+            # idempotent (close suppresses its own errors / re-entry).
+            for _attr, _label in (
+                ("corlinman_identity_store", "identity.store"),
+                ("corlinman_persona_state_store", "persona.state_store"),
+                ("scheduler_store", "scheduler.store"),
+            ):
+                _handle = getattr(app.state, _attr, None)
+                if _handle is not None:
+                    closer = getattr(_handle, "close", None)
+                    if closer is not None:
+                        try:
+                            res = closer()
+                            if hasattr(res, "__await__"):
+                                await res
+                        except Exception as exc:  # pragma: no cover
+                            logger.warning(
+                                f"gateway.c2.{_label}.close_failed",
+                                error=str(exc),
+                            )
+                    with suppress(AttributeError, TypeError):
+                        setattr(app.state, _attr, None)
+            _mem_host = getattr(state, "memory_host", None)
+            if _mem_host is not None:
+                _mem_close = getattr(_mem_host, "close", None) or getattr(
+                    _mem_host, "aclose", None
+                )
+                if _mem_close is not None:
+                    try:
+                        res = _mem_close()
+                        if hasattr(res, "__await__"):
+                            await res
+                    except Exception as exc:  # pragma: no cover
+                        logger.warning(
+                            "gateway.c2.memory_host.close_failed",
+                            error=str(exc),
+                        )
+                with suppress(AttributeError, TypeError):
+                    state.memory_host = None
 
             # W1.3 teardown: close the observability journal so its WAL
             # file is checkpointed before the process exits.

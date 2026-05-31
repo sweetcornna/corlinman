@@ -65,15 +65,21 @@ logger = structlog.get_logger(__name__)
 # Covers the Claude family; unknown models fall through to zero cost.
 # ---------------------------------------------------------------------------
 
-_MODEL_COSTS: dict[str, tuple[float, float, float]] = {
-    # (input_usd_per_1m, output_usd_per_1m, cache_read_usd_per_1m)
-    "claude-opus-4": (15.0, 75.0, 1.5),
-    "claude-sonnet-4-6": (3.0, 15.0, 0.30),
-    "claude-3-7-sonnet": (3.0, 15.0, 0.30),
-    "claude-3-5-sonnet": (3.0, 15.0, 0.30),
-    "claude-3-5-haiku": (0.8, 4.0, 0.08),
-    "claude-3-haiku": (0.25, 1.25, 0.03),
-    "claude-haiku-4-5": (0.8, 4.0, 0.08),
+# Each entry is a 4-tuple of $/1M-token rates:
+#   (input, output, cache_read, cache_creation)
+# Anthropic prices cache writes (cache_creation) at ~1.25x base input;
+# cache reads at ~0.1x. Both are charged here so the per-turn USD math
+# matches the vendor invoice (gap ``cost-no-usd-math`` + the new-gap
+# "USD cost ignores cache_creation").
+_MODEL_COSTS: dict[str, tuple[float, float, float, float]] = {
+    # (input, output, cache_read, cache_creation) $/1M tokens
+    "claude-opus-4": (15.0, 75.0, 1.5, 18.75),
+    "claude-sonnet-4-6": (3.0, 15.0, 0.30, 3.75),
+    "claude-3-7-sonnet": (3.0, 15.0, 0.30, 3.75),
+    "claude-3-5-sonnet": (3.0, 15.0, 0.30, 3.75),
+    "claude-3-5-haiku": (0.8, 4.0, 0.08, 1.0),
+    "claude-3-haiku": (0.25, 1.25, 0.03, 0.30),
+    "claude-haiku-4-5": (0.8, 4.0, 0.08, 1.0),
 }
 
 
@@ -81,24 +87,33 @@ def _estimate_turn_cost_usd(model: str, usage: dict[str, int]) -> float:
     """Return estimated USD cost for one provider call.
 
     Looks up the model prefix in ``_MODEL_COSTS``; falls back to zero for
-    unknown models. Pure / no-I/O.
+    unknown models. Charges four token classes — input, output,
+    cache-read, and cache-creation (the write that populates a prompt
+    cache, priced higher than a plain read). Pure / no-I/O.
     """
     # Match by prefix so minor version suffixes don't break lookups.
-    rates: tuple[float, float, float] | None = None
+    rates: tuple[float, float, float, float] | None = None
     for key, vals in _MODEL_COSTS.items():
         if model.startswith(key) or key in model:
             rates = vals
             break
     if rates is None:
         return 0.0
-    in_rate, out_rate, cache_rate = rates
+    in_rate, out_rate, cache_read_rate, cache_create_rate = rates
     input_tok = usage.get("input_tokens", 0)
     output_tok = usage.get("output_tokens", 0)
-    cache_tok = usage.get("cache_read_input_tokens", 0)
+    cache_read_tok = usage.get("cache_read_input_tokens", 0)
+    # Anthropic reports the cache-write count under
+    # ``cache_creation_input_tokens``; some shims fold it into a
+    # ``cache_creation`` key — honour both.
+    cache_create_tok = usage.get(
+        "cache_creation_input_tokens", usage.get("cache_creation", 0)
+    )
     return (
         input_tok * in_rate / 1_000_000
         + output_tok * out_rate / 1_000_000
-        + cache_tok * cache_rate / 1_000_000
+        + cache_read_tok * cache_read_rate / 1_000_000
+        + cache_create_tok * cache_create_rate / 1_000_000
     )
 
 
@@ -132,7 +147,17 @@ def _loop_retryable(exc: BaseException) -> float | None:
         return None
     if isinstance(exc, RateLimitError):
         ms = getattr(exc, "retry_after_ms", None)
-        return (ms / 1000.0) if isinstance(ms, int) and ms > 0 else 0.0
+        if isinstance(ms, int) and ms > 0:
+            return ms / 1000.0
+        # The anthropic adapter parses ``anthropic-ratelimit-unified-reset``
+        # into ``reset_at_ms`` (an epoch-ms wall-clock instant). Honour it
+        # when present — sleep until the reset, clamped to a sane ceiling.
+        reset_at_ms = getattr(exc, "reset_at_ms", None)
+        if isinstance(reset_at_ms, int) and reset_at_ms > 0:
+            delay = (reset_at_ms - time.time_ns() // 1_000_000) / 1000.0
+            if delay > 0:
+                return min(delay, 60.0)
+        return 0.0
     if isinstance(exc, OverloadedError):
         return 0.0
     # Generic HTTP 429/500/502/503/504 in the exception string (openai SDK etc.)
@@ -233,6 +258,12 @@ class DoneEvent:
 
     finish_reason: str = "stop"
     usage: dict[str, int] | None = None
+    # gap cost-no-usd-math: accumulated per-turn USD cost (input + output
+    # + cache_read + cache_creation across every round of THIS turn).
+    # ``None`` when the model is unpriced or no usage was reported. The
+    # servicer persists this via ``journal.update_turn_cost`` — see the
+    # lane-reasoning-loop wire_contract.
+    usd_cost: float | None = None
 
 
 @dataclass(slots=True)
@@ -432,6 +463,19 @@ _SUMMARY_PROMPT = (
 )
 
 
+# Per-non-text-block token charge for the heuristic estimator. An image
+# tile costs vendors ~1-1.6k tokens depending on resolution; a forwarded
+# file part (PDF / audio handle) is similar order-of-magnitude. The
+# estimator charges a flat ~1.5k tokens per image / file block so the
+# context budget reflects multimodal payloads instead of treating them
+# as free (gap ``chars-div-4-token-estimate``). Expressed in *chars*
+# because ``_estimate_chars`` returns chars and the //4 happens once at
+# the top of ``_estimate_tokens`` — 1500 tokens ≈ 6000 chars.
+_IMAGE_BLOCK_TOKEN_CHARGE = 1_500
+_FILE_BLOCK_TOKEN_CHARGE = 1_500
+_NONTEXT_BLOCK_CHAR_CHARGE = _IMAGE_BLOCK_TOKEN_CHARGE * 4
+
+
 def _has_cjk(text: str) -> bool:
     """Return True if ``text`` contains any CJK Unified Ideograph.
 
@@ -502,6 +546,22 @@ def _estimate_chars(messages: Sequence[dict[str, Any]]) -> int:
                     text = part.get("text")
                     if isinstance(text, str):
                         total_chars += _cjk_adjusted_chars(text)
+                        continue
+                    # Non-text multimodal block (image_url / image / file /
+                    # input_image / input_audio). The flat ``chars // 4``
+                    # heuristic treats these as free; charge a fixed
+                    # per-block weight instead so the context budget
+                    # reflects image/file payloads (gap
+                    # ``chars-div-4-token-estimate``).
+                    ptype = part.get("type")
+                    if ptype in (
+                        "image_url",
+                        "image",
+                        "input_image",
+                    ):
+                        total_chars += _NONTEXT_BLOCK_CHAR_CHARGE
+                    elif ptype in ("file", "input_file", "input_audio", "audio"):
+                        total_chars += _NONTEXT_BLOCK_CHAR_CHARGE
         tool_calls = msg.get("tool_calls")
         if isinstance(tool_calls, list):
             for tc in tool_calls:
@@ -520,6 +580,12 @@ def _estimate_tokens(messages: Sequence[dict[str, Any]]) -> int:
 
     Returns ``_estimate_chars(messages) // 4``. Pure / no-I/O — the
     :func:`_compact_history` budget check calls this every round.
+
+    Multimodal-aware: image / file content blocks are charged a flat
+    per-block weight (~1.5k tokens each) by :func:`_estimate_chars`, and
+    CJK text is up-weighted ~1.5x — so an image-heavy or Chinese-heavy
+    turn no longer reads as near-zero tokens (gap
+    ``chars-div-4-token-estimate``).
     """
     return _estimate_chars(messages) // 4
 
@@ -827,6 +893,75 @@ async def _summarize_old_messages(
     return [*leading_system, synthetic, *recent_slice]
 
 
+# Tool-result spill threshold. A single result larger than this gets
+# written to a temp file and replaced in-history with a short handle +
+# head/tail preview, so a runaway ``read_file`` / ``run_shell`` blob
+# never sits verbatim in the context window across every subsequent
+# round. Distinct from ``_TOOL_RESULT_CAP``: the cap head/tail-truncates
+# in-place; the spill offloads the FULL payload to disk and leaves a
+# pointer. Override with ``$CORLINMAN_TOOL_RESULT_SPILL``.
+try:
+    _TOOL_RESULT_SPILL_CAP = max(
+        16_000, int(os.environ.get("CORLINMAN_TOOL_RESULT_SPILL", "65536"))
+    )
+except ValueError:
+    _TOOL_RESULT_SPILL_CAP = 65_536
+
+# Per-turn cumulative tool-output budget (chars). Once a single turn's
+# tool results cross this, every subsequent oversized result spills
+# regardless of its individual size, protecting against many medium
+# results that each clear the per-result truncate cap but sum to a
+# context blowout. Override with ``$CORLINMAN_TURN_OUTPUT_BUDGET``.
+try:
+    _TURN_OUTPUT_BUDGET = max(
+        50_000, int(os.environ.get("CORLINMAN_TURN_OUTPUT_BUDGET", "400000"))
+    )
+except ValueError:
+    _TURN_OUTPUT_BUDGET = 400_000
+
+# Preview kept inline when a result is spilled to disk.
+_SPILL_PREVIEW_HEAD = 1_500
+_SPILL_PREVIEW_TAIL = 1_500
+
+
+def _spill_tool_result(content: str, call_id: str) -> str:
+    """Write an oversized ``content`` to a temp file; return a handle + preview.
+
+    Best-effort: on any I/O failure we degrade to the in-place head/tail
+    truncation so a disk problem never bricks the turn. The returned
+    string carries a ``[tool result spilled to <path>]`` marker plus a
+    head/tail preview so the model still sees the gist and can re-read the
+    file via a tool if it needs the full payload.
+    """
+    n = len(content)
+    try:
+        import tempfile
+
+        fd, path = tempfile.mkstemp(
+            prefix=f"corlinman-tool-{call_id[:16]}-", suffix=".txt"
+        )
+        with os.fdopen(fd, "w", encoding="utf-8", errors="replace") as fh:
+            fh.write(content)
+    except OSError as exc:
+        logger.warning(
+            "reasoning_loop.tool_spill_failed", call_id=call_id, error=str(exc)
+        )
+        return _truncate_tool_result(content)
+    head = content[:_SPILL_PREVIEW_HEAD]
+    tail = content[-_SPILL_PREVIEW_TAIL:]
+    logger.info(
+        "reasoning_loop.tool_result_spilled",
+        call_id=call_id,
+        chars=n,
+        path=path,
+    )
+    return (
+        f"[tool result spilled to {path} — {n} chars total; "
+        "re-read that file for the full output]\n"
+        f"{head}\n…[middle elided]…\n{tail}"
+    )
+
+
 def _truncate_tool_result(content: str) -> str:
     """Cap a tool result at ``_TOOL_RESULT_CAP`` chars, keeping head + tail.
 
@@ -874,6 +1009,9 @@ class ReasoningLoop:
         tool_result_timeout: float = 0.05,
         event_emitter: EventEmitter | None = None,
         fallback_models: list[str] | None = None,
+        hook_runner: Any | None = None,
+        autonomous: bool = False,
+        turn_token_budget: int | None = None,
     ) -> None:
         """``provider`` must implement :class:`corlinman_providers.base.CorlinmanProvider`.
 
@@ -899,6 +1037,25 @@ class ReasoningLoop:
             "claude-sonnet-4-6",
             "claude-haiku-4-5",
         ]
+        # C3: optional hook runner (corlinman_hooks.HookRunner). When
+        # present the loop calls ``run_stop(ctx)`` at the no-tool-calls
+        # turn-end and honours a returned veto / inject_message. None →
+        # the loop no-ops the hook call entirely (defensive: all call
+        # sites guard on this).
+        self._hook_runner = hook_runner
+        # gap loop-token-budget-continuation: when ``autonomous`` is set
+        # (scheduled / background runs) and a ``turn_token_budget`` is
+        # configured, the loop injects a 'continue' nudge at the
+        # no-tool-calls turn-end while the turn is well under budget and
+        # progress isn't diminishing. OFF by default — interactive turns
+        # must end exactly when the model stops.
+        self._autonomous = bool(autonomous)
+        self._turn_token_budget = turn_token_budget
+        # Number of auto-continue nudges already injected this turn, plus
+        # the previous round's reply length for the diminishing-returns
+        # check. Reset per ``run()``.
+        self._auto_continue_count = 0
+        self._auto_continue_last_len = 0
         # WP9: accumulated session cost in USD across all turns.
         self._session_cost_usd: float = 0.0
         # Per-turn correlation id + monotonic sequence counter. Reset at
@@ -1176,6 +1333,9 @@ class ReasoningLoop:
         self._turn_id = uuid.uuid4().hex
         self._sequence = 0
         self._turn_started_ns = time.monotonic_ns()
+        # Reset per-turn auto-continue accounting (gated; see __init__).
+        self._auto_continue_count = 0
+        self._auto_continue_last_len = 0
         # W1.1: emit a TurnStart envelope. ``user_text_preview`` /
         # ``system_message_preview`` are cheap excerpts (first 200 chars)
         # so the SSE consumer can render a turn header without pulling
@@ -1206,6 +1366,10 @@ class ReasoningLoop:
         turn_cost_usd: float = 0.0
         # WP11: effective model — may switch to a fallback on ModelNotFoundError.
         effective_model: str = start.model
+        # Cumulative chars of tool output appended to history this turn.
+        # Crossing ``_TURN_OUTPUT_BUDGET`` flips subsequent oversized
+        # results to spill-to-disk (see ``_extend_with_tool_round``).
+        turn_output_spent: int = 0
 
         while rounds < _MAX_ROUNDS:
             if self._cancelled.is_set():
@@ -1230,6 +1394,15 @@ class ReasoningLoop:
             messages = _drain_injected_user_messages(
                 messages, self._pending_user_messages
             )
+            # gap no-history-dedup: collapse consecutive verbatim
+            # user/assistant turns (double-sent prompts, echoed turns)
+            # before the budget check, preserving tool_call/tool_result
+            # pairing. Identity-preserving when nothing is dropped, so
+            # the token cache stays valid in the common case.
+            messages_before_dedup = messages
+            messages = _dedup_consecutive_turns(messages)
+            if messages is not messages_before_dedup:
+                self._invalidate_token_cache()
             # T2.3: cap context before each provider call. The first
             # pass after a tool round may elide; subsequent passes are
             # idempotent on already-elided history (the sentinel is
@@ -1330,9 +1503,10 @@ class ReasoningLoop:
                         BillingError,
                         ContextOverflowError,
                         ModelNotFoundError,
+                        OverloadedError,
                     )
 
-                    # WP10: context overflow → shrink 20% and retry once
+                    # WP10: context overflow → shrink and retry once
                     # (only safe before streaming started).
                     _overflow = (
                         isinstance(exc, ContextOverflowError)
@@ -1342,11 +1516,33 @@ class ReasoningLoop:
                     )
                     if _overflow and not _overflow_retried and not _streaming_started:
                         _overflow_retried = True
-                        tighter_budget = int(context_budget * 0.80)
+                        # When the provider tells us the actual window
+                        # (``ContextOverflowError.limit``), size the new
+                        # budget as ``limit - estimated_input - buffer`` so
+                        # the retry is just under the real ceiling instead
+                        # of a blind 20% haircut. Fall back to the haircut
+                        # when no limit is reported.
+                        _limit = getattr(exc, "limit", None)
+                        if isinstance(_limit, int) and _limit > 0:
+                            _input_est = self.messages_total_token_estimate(messages)
+                            _buffer = max(
+                                int(_limit * _CONTEXT_OUTPUT_RESERVE_FRACTION),
+                                2_000,
+                            )
+                            tighter_budget = max(8_000, _limit - _buffer)
+                            # Guard against a limit that's already below our
+                            # estimate doing nothing — also apply the 20%
+                            # haircut floor so we always shrink.
+                            tighter_budget = min(
+                                tighter_budget, int(context_budget * 0.80)
+                            )
+                        else:
+                            tighter_budget = int(context_budget * 0.80)
                         logger.warning(
                             "reasoning_loop.context_overflow_shrink",
                             original_budget=context_budget,
                             tighter_budget=tighter_budget,
+                            reported_limit=_limit,
                             model=effective_model,
                         )
                         context_budget = tighter_budget
@@ -1409,6 +1605,41 @@ class ReasoningLoop:
                         tool_calls_this_round = []
                         continue  # retry after backoff
 
+                    # gap loop-cross-model-fallback / no-model-fallback-chain:
+                    # SUSTAINED overload — the WP7 retry budget above is
+                    # exhausted (``_retry_attempt`` has reached its cap) and
+                    # the error is still an overload / sustained 429/529. If
+                    # a fallback model is configured, swap to it and replay
+                    # the turn (bounded by the chain length). Only safe
+                    # before streaming started.
+                    _sustained_overload = (
+                        isinstance(exc, OverloadedError)
+                        or "overloaded" in str(exc).lower()
+                        or "529" in str(exc)
+                    )
+                    if (
+                        _sustained_overload
+                        and not _streaming_started
+                        and _fallback_idx < len(self._fallback_models)
+                    ):
+                        _old_model = effective_model
+                        effective_model = self._fallback_models[_fallback_idx]
+                        _fallback_idx += 1
+                        # Reset the retry budget so the fallback model gets a
+                        # fresh set of transient retries before it too is
+                        # escalated to the next link in the chain.
+                        _retry_attempt = 0
+                        logger.warning(
+                            "reasoning_loop.model_fallback",
+                            from_model=_old_model,
+                            to_model=effective_model,
+                            error=str(exc),
+                            cause="sustained_overload",
+                        )
+                        tool_calls_this_round = []
+                        _streaming_started = False
+                        continue  # replay turn on fallback model
+
                     # Unrecoverable — surface the error.
                     logger.warning("reasoning_loop.error", error=str(exc))
                     reason = getattr(exc, "reason", "unknown")
@@ -1438,6 +1669,27 @@ class ReasoningLoop:
 
             # No tool calls → we're done; emit the terminal Done and exit.
             if not tool_calls_this_round:
+                # C3: give a Stop hook the chance to veto turn-end and/or
+                # inject a follow-up message. Defensive — no-ops entirely
+                # when no hook runner is wired. A returned ``stop=True``
+                # forces the turn to end even if the hook also injected;
+                # otherwise an ``inject_message`` re-opens the loop.
+                _stop_inject = await self._maybe_run_stop_hook(finish_reason)
+                if _stop_inject is not None:
+                    messages = _append_user_turn(messages, _stop_inject)
+                    self._invalidate_token_cache()
+                    continue  # re-run with the injected follow-up
+
+                # gap loop-token-budget-continuation: optional, gated
+                # auto-continue for autonomous/scheduled runs. Injects a
+                # 'continue' nudge while the turn is well under budget and
+                # progress isn't diminishing. No-op for interactive turns.
+                _nudge = self._maybe_auto_continue(messages, last_usage)
+                if _nudge is not None:
+                    messages = _append_user_turn(messages, _nudge)
+                    self._invalidate_token_cache()
+                    continue  # re-run with the auto-continue nudge
+
                 await self._emit(
                     TurnComplete(
                         finish_reason=finish_reason,
@@ -1447,7 +1699,11 @@ class ReasoningLoop:
                         cost_status="estimated" if turn_cost_usd > 0 else None,
                     )
                 )
-                yield DoneEvent(finish_reason=finish_reason, usage=last_usage)
+                yield DoneEvent(
+                    finish_reason=finish_reason,
+                    usage=last_usage,
+                    usd_cost=turn_cost_usd if turn_cost_usd > 0 else None,
+                )
                 return
 
             # W1.1: emit ToolStateRunning for each pending call BEFORE
@@ -1496,7 +1752,11 @@ class ReasoningLoop:
                         cost_status="estimated" if turn_cost_usd > 0 else None,
                     )
                 )
-                yield DoneEvent(finish_reason=finish_reason, usage=last_usage)
+                yield DoneEvent(
+                    finish_reason=finish_reason,
+                    usage=last_usage,
+                    usd_cost=turn_cost_usd if turn_cost_usd > 0 else None,
+                )
                 return
 
             # W1.1: emit ToolStateCompleted for each result. We treat
@@ -1521,8 +1781,18 @@ class ReasoningLoop:
 
             # Otherwise, append an assistant message recording the calls
             # followed by one tool message per result and keep looping.
+            # Thread the per-turn tool-output budget so very large results
+            # spill to disk once the turn's cumulative output is high.
             messages = _extend_with_tool_round(
-                messages, tool_calls_this_round, results
+                messages,
+                tool_calls_this_round,
+                results,
+                turn_output_spent=turn_output_spent,
+            )
+            # Track the per-turn cumulative tool-output chars (string
+            # results only — multimodal lists are forwarded verbatim).
+            turn_output_spent += sum(
+                len(r.content) for r in results if isinstance(r.content, str)
             )
             if any(_is_awaiting_placeholder(r.content) for r in results):
                 # Prevent a doom loop: if every result is a placeholder, the
@@ -1536,7 +1806,11 @@ class ReasoningLoop:
                         cost_status="estimated" if turn_cost_usd > 0 else None,
                     )
                 )
-                yield DoneEvent(finish_reason=finish_reason, usage=last_usage)
+                yield DoneEvent(
+                    finish_reason=finish_reason,
+                    usage=last_usage,
+                    usd_cost=turn_cost_usd if turn_cost_usd > 0 else None,
+                )
                 return
 
         # Rounds exhausted — surface a terminal Done with "length" so the
@@ -1550,7 +1824,11 @@ class ReasoningLoop:
                 cost_status="estimated" if turn_cost_usd > 0 else None,
             )
         )
-        yield DoneEvent(finish_reason="length", usage=last_usage)
+        yield DoneEvent(
+            finish_reason="length",
+            usage=last_usage,
+            usd_cost=turn_cost_usd if turn_cost_usd > 0 else None,
+        )
 
     async def _run_one_round(
         self, start: ChatStart, messages: Sequence[dict[str, Any]]
@@ -1893,6 +2171,122 @@ class ReasoningLoop:
             return None
         return [got[c.call_id] for c in calls]
 
+    async def _maybe_run_stop_hook(self, finish_reason: str) -> str | None:
+        """C3: invoke the Stop hook at turn-end, if a hook runner is wired.
+
+        Returns the message to inject (re-opening the loop) when the hook
+        either vetoes the stop or supplies an ``inject_message`` — and the
+        hook did NOT also force ``stop=True``. Returns ``None`` to let the
+        turn end normally.
+
+        Defensive on every axis: no hook runner → ``None``; a hook runner
+        without a ``run_stop`` coroutine → ``None``; any exception inside
+        the hook → logged and treated as ``None`` so a broken hook can
+        never wedge the loop.
+        """
+        runner = getattr(self, "_hook_runner", None)
+        if runner is None:
+            return None
+        run_stop = getattr(runner, "run_stop", None)
+        if run_stop is None:
+            return None
+        ctx = {
+            "session_key": self._session_key,
+            "turn_id": self._turn_id,
+            "finish_reason": finish_reason,
+        }
+        try:
+            decision = run_stop(ctx)
+            if asyncio.iscoroutine(decision):
+                decision = await decision
+        except Exception as exc:  # noqa: BLE001 — hook must never break the loop
+            logger.warning("reasoning_loop.stop_hook_error", error=str(exc))
+            return None
+        if decision is None:
+            return None
+        # ``stop=True`` is an explicit "end now" — honour it even if a
+        # message was also supplied (the message is dropped).
+        if bool(getattr(decision, "stop", False)):
+            return None
+        inject = getattr(decision, "inject_message", None)
+        allow = bool(getattr(decision, "allow", True))
+        if isinstance(inject, str) and inject.strip():
+            logger.info(
+                "reasoning_loop.stop_hook_continue",
+                session=self._session_key,
+                vetoed=not allow,
+            )
+            return inject
+        # The hook vetoed stop (allow=False) but gave no message — nudge
+        # the model to keep going with a minimal continuation prompt.
+        if not allow:
+            logger.info(
+                "reasoning_loop.stop_hook_veto", session=self._session_key
+            )
+            return "Please continue."
+        return None
+
+    def _maybe_auto_continue(
+        self,
+        messages: Sequence[dict[str, Any]],
+        last_usage: dict[str, int] | None,
+    ) -> str | None:
+        """gap loop-token-budget-continuation: gated auto-continue nudge.
+
+        Returns a 'continue' nudge string to inject when ALL hold:
+
+        * ``self._autonomous`` is set (scheduled / background run);
+        * a ``self._turn_token_budget`` is configured;
+        * the turn's estimated tokens are below ``budget * 0.9``;
+        * progress is not diminishing — the last round produced more than
+          a trivial amount of output relative to the prior round;
+        * we have not exceeded a small hard cap on nudges per turn.
+
+        Returns ``None`` (turn ends normally) for every interactive turn
+        and whenever any guard fails. Off by default.
+        """
+        if not self._autonomous or not self._turn_token_budget:
+            return None
+        # Hard cap so a stuck model can't be nudged forever.
+        if self._auto_continue_count >= 3:
+            return None
+        used = self.messages_total_token_estimate(messages)
+        if used >= int(self._turn_token_budget * 0.9):
+            return None
+        # Diminishing-returns guard: estimate this round's output size.
+        # Prefer the provider-reported output_tokens; else fall back to a
+        # cheap measure (the trailing assistant message length / 4).
+        cur_len = 0
+        if last_usage is not None:
+            cur_len = int(last_usage.get("output_tokens", 0) or 0)
+        if cur_len == 0:
+            for m in reversed(messages):
+                if m.get("role") == "assistant":
+                    cur_len = len(_message_text(m)) // 4
+                    break
+        # If the previous nudge produced << the round before it, the model
+        # is winding down — stop nudging.
+        if (
+            self._auto_continue_count > 0
+            and self._auto_continue_last_len > 0
+            and cur_len < self._auto_continue_last_len * 0.25
+        ):
+            return None
+        self._auto_continue_count += 1
+        self._auto_continue_last_len = cur_len
+        logger.info(
+            "reasoning_loop.auto_continue",
+            session=self._session_key,
+            count=self._auto_continue_count,
+            tokens_used=used,
+            budget=self._turn_token_budget,
+        )
+        return (
+            "Continue working toward the goal. Budget remaining — if the "
+            "task is genuinely complete, say so explicitly and stop; "
+            "otherwise proceed with the next concrete step."
+        )
+
 
 def _finalise_tool_call(
     call_id: str,
@@ -2013,10 +2407,95 @@ def _dedup_tool_results(
     return deduped
 
 
+def _content_hash(content: Any) -> str:
+    """Stable content fingerprint for turn-dedup.
+
+    Hashes the user-visible text of a message ``content`` (string or
+    multimodal list). Non-text parts contribute their ``type`` marker so
+    two image-bearing turns aren't collapsed just because their text is
+    equal. Returns a hex digest; pure / no-I/O.
+    """
+    import hashlib
+
+    if isinstance(content, str):
+        material = content
+    elif isinstance(content, list):
+        bits: list[str] = []
+        for p in content:
+            if isinstance(p, dict):
+                t = p.get("text")
+                if isinstance(t, str):
+                    bits.append(t)
+                else:
+                    bits.append(f"\x00{p.get('type', '?')}")
+        material = "\x01".join(bits)
+    else:
+        material = repr(content)
+    return hashlib.sha256(material.encode("utf-8", errors="replace")).hexdigest()
+
+
+def _dedup_consecutive_turns(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Drop a turn that exactly repeats the immediately-preceding turn.
+
+    Gap ``no-history-dedup``: providers and channels occasionally re-send
+    an identical user prompt (double-tap, retry, group-chat echo) or the
+    loop re-appends an identical plain-assistant turn. A content-hash
+    pass collapses *consecutive* duplicates of the SAME role so the
+    context window isn't padded with verbatim repeats.
+
+    Pairing safety — never collapses a turn that participates in the
+    tool-call protocol:
+
+    * an ``assistant`` turn carrying ``tool_calls`` (its shell must stay
+      to match the following ``role="tool"`` results);
+    * any ``role="tool"`` message (orphaning a ``tool_call_id`` breaks
+      the transcript);
+    * ``system`` messages (seed prompt / summaries).
+
+    Only plain ``user`` / ``assistant`` text turns are eligible. Returns
+    the input list unchanged (identity preserved) when nothing was
+    dropped so callers can rely on it.
+    """
+    if len(messages) < 2:
+        return messages
+
+    out: list[dict[str, Any]] = []
+    dropped = 0
+    prev_role: str | None = None
+    prev_hash: str | None = None
+    for msg in messages:
+        role = msg.get("role")
+        has_tool_calls = bool(msg.get("tool_calls"))
+        eligible = role in ("user", "assistant") and not has_tool_calls
+        if eligible:
+            h = _content_hash(msg.get("content"))
+            if role == prev_role and h == prev_hash:
+                dropped += 1
+                continue
+            prev_role = role
+            prev_hash = h
+        else:
+            # A non-eligible message breaks the consecutive run so a
+            # later identical eligible turn is not mistakenly collapsed
+            # across an intervening tool round.
+            prev_role = None
+            prev_hash = None
+        out.append(msg)
+
+    if not dropped:
+        return messages
+    logger.info("reasoning_loop.history_deduped", dropped=dropped)
+    return out
+
+
 def _extend_with_tool_round(
     messages: Sequence[dict[str, Any]],
     calls: list[ToolCallEvent],
     results: list[ToolResult],
+    *,
+    turn_output_spent: int = 0,
 ) -> list[dict[str, Any]]:
     """Return ``messages`` extended with the assistant tool_calls message
     and one ``role="tool"`` message per result.
@@ -2024,6 +2503,14 @@ def _extend_with_tool_round(
     WP19: Deduplicates results whose (tool_name, args, content) triple was
     already seen in ``messages`` to prevent context bloat from repeated
     identical tool calls.
+
+    Spill (gap-fill): a result larger than ``_TOOL_RESULT_SPILL_CAP`` — or
+    any result once the turn's cumulative tool output (``turn_output_spent``,
+    supplied by the caller) crosses ``_TURN_OUTPUT_BUDGET`` — is written to
+    a temp file and replaced in-history with a short handle + preview,
+    instead of the per-result head/tail truncation. ``turn_output_spent``
+    defaults to ``0`` so legacy call sites (and direct unit tests) keep the
+    plain-truncation behaviour and the historical list return type.
     """
     # WP19: dedup before extending history.
     results = _dedup_tool_results(results, messages, calls)
@@ -2055,15 +2542,44 @@ def _extend_with_tool_round(
         if isinstance(r.content, list):
             tool_content: str | list[dict[str, Any]] = r.content
         else:
-            tool_content = _truncate_tool_result(r.content)
-        extended.append(
-            {
-                "role": "tool",
-                "tool_call_id": r.call_id,
-                "content": tool_content,
-            }
-        )
+            _running_spent = turn_output_spent + len(r.content)
+            turn_output_spent = _running_spent
+            # Spill when this single result is huge, OR the turn's
+            # cumulative tool output has crossed the budget and this
+            # result is itself non-trivial.
+            if len(r.content) >= _TOOL_RESULT_SPILL_CAP or (
+                _running_spent >= _TURN_OUTPUT_BUDGET
+                and len(r.content) > _TOOL_RESULT_CAP
+            ):
+                tool_content = _spill_tool_result(r.content, r.call_id)
+            else:
+                tool_content = _truncate_tool_result(r.content)
+        tool_msg: dict[str, Any] = {
+            "role": "tool",
+            "tool_call_id": r.call_id,
+            "content": tool_content,
+        }
+        # C4: mark error results so the provider's message translation can
+        # emit ``is_error: true`` on the Anthropic tool_result block. The
+        # flag rides on the message dict under the ``_is_error`` key and is
+        # only set when the result actually errored (absent == not an
+        # error, so existing providers that ignore the key are unaffected).
+        if r.is_error:
+            tool_msg["_is_error"] = True
+        extended.append(tool_msg)
     return extended
+
+
+def _append_user_turn(
+    messages: Sequence[dict[str, Any]], text: str
+) -> list[dict[str, Any]]:
+    """Return a NEW list with one ``{"role": "user", "content": text}`` turn
+    appended. Used by the C3 Stop-hook continue path and the gated
+    auto-continue nudge to re-open the loop with a follow-up instruction.
+    """
+    out = list(messages)
+    out.append({"role": "user", "content": text})
+    return out
 
 
 def _drain_injected_user_messages(

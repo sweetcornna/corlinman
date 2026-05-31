@@ -60,13 +60,62 @@ from __future__ import annotations
 import fnmatch
 import json
 import os
+import shlex
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any
 
 ALLOW: str = "allow"
 DENY: str = "deny"
 LOG: str = "log"
-_VALID_ACTIONS = (ALLOW, DENY, LOG)
+#: ``ask`` — defer to an interactive approval prompt (routed through the
+#: :class:`~corlinman_agent.approval_gate.ApprovalGate`). gap
+#: ``permissions-no-ask-action``: previously the gate only knew
+#: allow/deny/log, so there was no way to express "let a human decide".
+ASK: str = "ask"
+_VALID_ACTIONS = (ALLOW, DENY, LOG, ASK)
+
+
+class PermissionMode(str, Enum):
+    """Coarse operating mode layered ABOVE the per-tool rule list.
+
+    gap ``permissions-no-permission-mode``. Mirrors Claude Code's
+    permission modes. The mode is consulted only when the rule list does
+    not produce an explicit ``allow`` / ``deny`` / ``ask`` for a tool:
+
+    * :attr:`DEFAULT` — fall through to the gate's ``default_action`` /
+      strict-mode fallback (legacy behaviour).
+    * :attr:`ACCEPT_EDITS` — auto-allow file-edit tools (write/edit/patch)
+      without prompting; everything else falls through to default.
+    * :attr:`PLAN` — deny every mutating tool (planning only, no side
+      effects); read-only tools still fall through to default.
+    * :attr:`BYPASS` — allow everything (no gating). Operator opt-in for
+      trusted automation.
+
+    Stored as lowercase strings to match a ``mode = "..."`` config knob.
+    """
+
+    DEFAULT = "default"
+    ACCEPT_EDITS = "acceptEdits"
+    PLAN = "plan"
+    BYPASS = "bypass"
+
+    @classmethod
+    def coerce(cls, raw: Any) -> PermissionMode:
+        """Best-effort parse; unknown / falsy values map to :attr:`DEFAULT`."""
+        if isinstance(raw, PermissionMode):
+            return raw
+        if isinstance(raw, str):
+            for member in cls:
+                if member.value.lower() == raw.strip().lower():
+                    return member
+        return cls.DEFAULT
+
+
+#: File-editing tools that :attr:`PermissionMode.ACCEPT_EDITS` auto-allows.
+_EDIT_TOOLS: frozenset[str] = frozenset(
+    {"write_file", "edit_file", "apply_patch", "revert_changes"}
+)
 
 #: The "mutating" tools — strict mode flips these to ``deny`` by default.
 #: Read-only tools (read/list/search/web/calc/todo/subagent/blackboard)
@@ -154,11 +203,27 @@ class PermissionRule:
     Optional ``match`` narrows the rule to a particular model / session
     / user. When ``match`` is :data:`None` the rule fires for any
     context (legacy behaviour).
+
+    gap ``permissions-no-per-arg-rules``: ``arg_pattern`` narrows a rule to
+    a particular argument value. Two spellings, mirroring Claude Code's
+    ``Bash(rm:*)`` / opencode's command globs:
+
+    * The ``tool(pattern)`` sugar in a rule's ``tool`` string is parsed at
+      construction — e.g. ``"run_shell(rm:*)"`` sets ``tool="run_shell"``
+      and ``arg_pattern="rm:*"``.
+    * ``arg_pattern`` may also be supplied explicitly.
+
+    The pattern is matched (fnmatch, case-sensitive) against the call's
+    *primary argument* — for ``run_shell`` that is the ``command`` arg's
+    first token + ``:`` + the full command (so ``rm:*`` matches any
+    ``rm ...`` invocation), and for file tools it is the ``path`` arg.
+    Falling back to the whole JSON when no primary arg is found.
     """
 
     tool: str
     action: str
     match: RuleMatch | None = None
+    arg_pattern: str | None = None
 
     def __post_init__(self) -> None:
         if self.action not in _VALID_ACTIONS:
@@ -166,14 +231,78 @@ class PermissionRule:
                 f"invalid permission action {self.action!r}; "
                 f"expected one of {_VALID_ACTIONS}"
             )
+        # Parse the ``tool(pattern)`` sugar once at construction. ``frozen``
+        # dataclasses forbid plain attribute assignment, so use
+        # ``object.__setattr__`` to backfill the parsed fields.
+        if self.arg_pattern is None and "(" in self.tool and self.tool.endswith(")"):
+            head, _, tail = self.tool.partition("(")
+            pattern = tail[:-1].strip()
+            object.__setattr__(self, "tool", head.strip())
+            if pattern:
+                object.__setattr__(self, "arg_pattern", pattern)
 
     def applies_to(self, tool: str, ctx: PermissionContext) -> bool:
-        """First-match-wins predicate combining tool + context check."""
+        """First-match-wins predicate combining tool + context check.
+
+        Legacy / args-unaware: a rule carrying an ``arg_pattern`` only
+        matches here when the pattern is the catch-all ``"*"`` (so the
+        args-aware :meth:`PermissionGate.resolve_with_args` is required to
+        honour a narrowing pattern). This keeps the old tool+ctx call sites
+        from accidentally over-matching an arg-scoped rule.
+        """
         if self.tool != tool and self.tool != "*":
+            return False
+        if self.arg_pattern is not None and self.arg_pattern != "*":
             return False
         if self.match is None or self.match.is_empty():
             return True
         return self.match.matches(ctx)
+
+    def applies_to_args(
+        self, tool: str, ctx: PermissionContext, arg_value: str | None
+    ) -> bool:
+        """Args-aware predicate: tool + context + optional arg pattern."""
+        if self.tool != tool and self.tool != "*":
+            return False
+        if self.match is not None and not self.match.is_empty():
+            if not self.match.matches(ctx):
+                return False
+        if self.arg_pattern is None or self.arg_pattern == "*":
+            return True
+        if arg_value is None:
+            return False
+        return fnmatch.fnmatchcase(arg_value, self.arg_pattern)
+
+
+def extract_primary_arg(tool: str, args: dict[str, Any] | None) -> str | None:
+    """Return the value a per-arg rule matches against for ``tool``.
+
+    For ``run_shell`` the value is ``<first-token>:<full command>`` so a
+    pattern like ``rm:*`` matches any ``rm ...`` invocation while ``*`` and
+    a bare-command glob still work. For file tools (write/edit/read/patch)
+    it is the ``path`` arg. Otherwise the first string value in ``args``.
+    ``None`` when nothing usable is present.
+    """
+    if not isinstance(args, dict) or not args:
+        return None
+    if tool == "run_shell":
+        command = args.get("command")
+        if isinstance(command, str) and command.strip():
+            try:
+                tokens = shlex.split(command)
+            except ValueError:
+                tokens = command.split()
+            head = tokens[0] if tokens else command.strip().split(" ", 1)[0]
+            return f"{head}:{command.strip()}"
+        return None
+    if tool in _EDIT_TOOLS or tool in ("read_file", "list_files", "search_files"):
+        path = args.get("path") or args.get("file") or args.get("filename")
+        if isinstance(path, str) and path:
+            return path
+    for value in args.values():
+        if isinstance(value, str) and value:
+            return value
+    return None
 
 
 class PermissionGate:
@@ -188,7 +317,7 @@ class PermissionGate:
     - otherwise the gate's ``default_action`` (constructor arg) decides.
     """
 
-    __slots__ = ("_default", "_rules", "_strict")
+    __slots__ = ("_default", "_last_match_wins", "_mode", "_rules", "_strict")
 
     def __init__(
         self,
@@ -196,6 +325,8 @@ class PermissionGate:
         *,
         default_action: str = ALLOW,
         strict: bool = False,
+        mode: PermissionMode | str = PermissionMode.DEFAULT,
+        last_match_wins: bool = False,
     ) -> None:
         if default_action not in _VALID_ACTIONS:
             raise ValueError(
@@ -205,6 +336,13 @@ class PermissionGate:
         self._rules: tuple[PermissionRule, ...] = tuple(rules or [])
         self._default = default_action
         self._strict = strict
+        self._mode = PermissionMode.coerce(mode)
+        # gap permissions-no-per-arg-rules: when ``last_match_wins`` is set
+        # the LAST matching rule decides (opencode / shell-config semantics)
+        # instead of the first. Layered rule sources stack later (more
+        # specific) layers AFTER earlier ones, so last-match-wins lets a
+        # project-level rule override a global default.
+        self._last_match_wins = last_match_wins
 
     @property
     def rules(self) -> tuple[PermissionRule, ...]:
@@ -213,6 +351,22 @@ class PermissionGate:
     @property
     def strict(self) -> bool:
         return self._strict
+
+    @property
+    def mode(self) -> PermissionMode:
+        return self._mode
+
+    def _mode_override(self, tool: str) -> str | None:
+        """Return a mode-driven action for ``tool``, or ``None`` to fall
+        through to the rule list / default. Consulted only when no explicit
+        rule matched."""
+        if self._mode is PermissionMode.BYPASS:
+            return ALLOW
+        if self._mode is PermissionMode.ACCEPT_EDITS and tool in _EDIT_TOOLS:
+            return ALLOW
+        if self._mode is PermissionMode.PLAN and tool in MUTATING_TOOLS:
+            return DENY
+        return None
 
     def decide(self, tool: str) -> str:
         """Return ``"allow" | "deny" | "log"`` for ``tool``.
@@ -231,16 +385,13 @@ class PermissionGate:
         session_key: str | None = None,
         user_id: str | None = None,
     ) -> str:
-        """Context-aware decision; first matching rule wins."""
+        """Context-aware decision; first matching rule wins (or last when
+        ``last_match_wins`` is set)."""
         ctx = PermissionContext(
             model=model, session_key=session_key, user_id=user_id
         )
-        for rule in self._rules:
-            if rule.applies_to(tool, ctx):
-                return rule.action
-        if self._strict and tool in MUTATING_TOOLS:
-            return DENY
-        return self._default
+        action, _ = self.resolve(tool, ctx)
+        return action
 
     def resolve(
         self,
@@ -249,10 +400,46 @@ class PermissionGate:
     ) -> tuple[str, int | None]:
         """Same decision as :meth:`decide_with_context` but also returns
         the index of the matched rule (or ``None`` when the default /
-        strict-mode fallback fired). Used by :meth:`audit_log_entry`."""
+        mode / strict-mode fallback fired). Used by :meth:`audit_log_entry`.
+
+        Args-unaware: arg-scoped rules only match here when their pattern is
+        the catch-all ``"*"`` (see :meth:`PermissionRule.applies_to`)."""
+        return self.resolve_with_args(tool, ctx, None)
+
+    def resolve_with_args(
+        self,
+        tool: str,
+        ctx: PermissionContext,
+        args: dict[str, Any] | None,
+    ) -> tuple[str, int | None]:
+        """Args-aware decision honouring per-argument / command patterns.
+
+        gap ``permissions-no-per-arg-rules``. The primary argument value is
+        extracted via :func:`extract_primary_arg` and matched against each
+        rule's ``arg_pattern`` (fnmatch). Match order respects
+        ``last_match_wins``. ``BYPASS`` mode short-circuits to ``allow``
+        before any rule; ``acceptEdits`` / ``plan`` apply only when no rule
+        matched.
+        """
+        # BYPASS wins over everything — operator opted out of gating.
+        if self._mode is PermissionMode.BYPASS:
+            return ALLOW, None
+
+        arg_value = extract_primary_arg(tool, args)
+        matched: tuple[str, int] | None = None
         for idx, rule in enumerate(self._rules):
-            if rule.applies_to(tool, ctx):
-                return rule.action, idx
+            if rule.applies_to_args(tool, ctx, arg_value):
+                matched = (rule.action, idx)
+                if not self._last_match_wins:
+                    break
+        if matched is not None:
+            return matched
+
+        # No explicit rule — consult the operating mode, then strict-mode,
+        # then the gate default.
+        mode_action = self._mode_override(tool)
+        if mode_action is not None:
+            return mode_action, None
         if self._strict and tool in MUTATING_TOOLS:
             return DENY, None
         return self._default, None
@@ -282,6 +469,7 @@ class PermissionGate:
             "user_id": ctx.user_id,
             "rule_index": rule_index,
             "strict": self._strict,
+            "mode": self._mode.value,
         }
 
     @classmethod
@@ -290,38 +478,104 @@ class PermissionGate:
 
         - ``CORLINMAN_AGENT_PERMISSIONS`` — JSON list of rules.
         - ``CORLINMAN_AGENT_STRICT_MODE`` — truthy enables strict mode.
+        - ``CORLINMAN_AGENT_PERMISSION_MODE`` — one of
+          ``default``/``acceptEdits``/``plan``/``bypass``.
+        - ``CORLINMAN_AGENT_PERMISSION_LAST_MATCH_WINS`` — truthy flips the
+          gate to last-match-wins ordering.
 
         Malformed JSON or invalid actions log a warning and degrade to
         the default (allow-all) — never raises into agent boot.
         """
-        rules: list[PermissionRule] = []
-        raw = os.environ.get("CORLINMAN_AGENT_PERMISSIONS", "").strip()
-        if raw:
-            try:
-                parsed = json.loads(raw)
-            except json.JSONDecodeError:
-                parsed = None
-            if isinstance(parsed, list):
-                for entry in parsed:
-                    if not isinstance(entry, dict):
-                        continue
-                    tool = entry.get("tool")
-                    action = entry.get("action")
-                    if not isinstance(tool, str) or not tool.strip():
-                        continue
-                    if action not in _VALID_ACTIONS:
-                        continue
-                    match_block = _parse_match(entry.get("match"))
-                    rules.append(
-                        PermissionRule(
-                            tool=tool.strip(),
-                            action=action,
-                            match=match_block,
-                        )
-                    )
+        rules = parse_rule_list(os.environ.get("CORLINMAN_AGENT_PERMISSIONS", ""))
         strict_raw = os.environ.get("CORLINMAN_AGENT_STRICT_MODE", "").strip().lower()
         strict = strict_raw in ("1", "true", "yes", "on")
-        return cls(rules, strict=strict)
+        mode = PermissionMode.coerce(
+            os.environ.get("CORLINMAN_AGENT_PERMISSION_MODE", "")
+        )
+        lmw_raw = (
+            os.environ.get("CORLINMAN_AGENT_PERMISSION_LAST_MATCH_WINS", "")
+            .strip()
+            .lower()
+        )
+        last_match_wins = lmw_raw in ("1", "true", "yes", "on")
+        return cls(
+            rules, strict=strict, mode=mode, last_match_wins=last_match_wins
+        )
+
+    @classmethod
+    def from_layered_sources(
+        cls,
+        *layers: Any,
+        strict: bool = False,
+        mode: PermissionMode | str = PermissionMode.DEFAULT,
+        last_match_wins: bool = True,
+    ) -> PermissionGate:
+        """Build a gate by STACKING rule layers (gap layered rule sources).
+
+        ``layers`` is an ordered sequence of rule sources, each a JSON
+        string OR an already-parsed ``list`` of rule dicts. Earlier layers
+        are less specific (e.g. global defaults); later layers (e.g. a
+        per-project / per-session overlay) stack AFTER them. With the
+        default ``last_match_wins=True`` a later layer's matching rule
+        overrides an earlier one — the standard "project beats global"
+        precedence. Each layer is parsed tolerantly; a bad layer is skipped.
+        """
+        rules: list[PermissionRule] = []
+        for layer in layers:
+            if layer is None:
+                continue
+            if isinstance(layer, str):
+                rules.extend(parse_rule_list(layer))
+            elif isinstance(layer, list):
+                rules.extend(parse_rule_list(json.dumps(layer)))
+        return cls(
+            rules, strict=strict, mode=mode, last_match_wins=last_match_wins
+        )
+
+
+def parse_rule_list(raw: str) -> list[PermissionRule]:
+    """Parse a JSON rule list (the ``CORLINMAN_AGENT_PERMISSIONS`` shape).
+
+    Each entry is ``{"tool": ..., "action": ..., "match": {...}?,
+    "arg_pattern": ...?}``. The ``tool(pattern)`` sugar inside ``tool`` is
+    honoured by :class:`PermissionRule`. Tolerant: a non-list, a non-dict
+    entry, an invalid action, or a missing tool is skipped — never raises.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    rules: list[PermissionRule] = []
+    for entry in parsed:
+        if not isinstance(entry, dict):
+            continue
+        tool = entry.get("tool")
+        action = entry.get("action")
+        if not isinstance(tool, str) or not tool.strip():
+            continue
+        if action not in _VALID_ACTIONS:
+            continue
+        match_block = _parse_match(entry.get("match"))
+        arg_pattern = entry.get("arg_pattern")
+        if not isinstance(arg_pattern, str) or not arg_pattern:
+            arg_pattern = None
+        try:
+            rules.append(
+                PermissionRule(
+                    tool=tool.strip(),
+                    action=action,
+                    match=match_block,
+                    arg_pattern=arg_pattern,
+                )
+            )
+        except ValueError:
+            continue
+    return rules
 
 
 def _parse_match(raw: Any) -> RuleMatch | None:
@@ -356,11 +610,15 @@ def _parse_match(raw: Any) -> RuleMatch | None:
 
 __all__ = [
     "ALLOW",
+    "ASK",
     "DENY",
     "LOG",
     "MUTATING_TOOLS",
     "PermissionContext",
     "PermissionGate",
+    "PermissionMode",
     "PermissionRule",
     "RuleMatch",
+    "extract_primary_arg",
+    "parse_rule_list",
 ]
