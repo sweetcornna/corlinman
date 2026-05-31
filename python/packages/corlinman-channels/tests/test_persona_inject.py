@@ -220,6 +220,7 @@ class TestInjectorActive:
         assert "PERSONA-BODY-MARK" in req.messages[0].content
         # No emoji block when no asset store.
         assert "## Available emoji" not in req.messages[0].content
+        assert req.persona_id == "grantley"
 
     @pytest.mark.asyncio
     async def test_persona_body_and_emoji_block_present(self) -> None:
@@ -256,3 +257,4 @@ class TestInjectorActive:
         )
         assert req.messages[0].role == "system"
         assert "MEOW" in req.messages[0].content
+        assert req.persona_id == "kitty"

@@ -2589,6 +2589,11 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     _parent_loop.turn_id if _parent_loop is not None else None
                 )
                 _sup, _acquire = self._get_subagent_caps()
+                model_error = self._validate_subagent_many_model_overrides(
+                    event.args_json
+                )
+                if model_error is not None:
+                    return json.dumps({"tasks": [], "error": model_error})
                 # BUG-04: reserve one seq per sibling so the fan-out's
                 # children don't collide with each other or with a later
                 # single spawn in the same turn. Count the tasks defensively
@@ -2598,11 +2603,6 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 _many_base = self._next_child_seq(
                     start.session_key or "", _many_count
                 )
-                model_error = self._validate_subagent_many_model_overrides(
-                    event.args_json
-                )
-                if model_error is not None:
-                    return json.dumps({"tasks": [], "error": model_error})
                 return await dispatch_subagent_spawn_many(
                     args_json=event.args_json,
                     parent_ctx=parent_ctx,
@@ -4492,6 +4492,9 @@ def _to_agent_start(pb_start: agent_pb2.ChatStart) -> AgentChatStart:
         for m in pb_start.messages
     ]
     attachments = [_to_agent_attachment(a) for a in pb_start.attachments]
+    extra: dict[str, Any] = {}
+    if pb_start.persona_id:
+        extra["persona_id"] = pb_start.persona_id
     return AgentChatStart(
         model=pb_start.model,
         messages=messages,
@@ -4500,6 +4503,7 @@ def _to_agent_start(pb_start: agent_pb2.ChatStart) -> AgentChatStart:
         temperature=pb_start.temperature or None,
         max_tokens=pb_start.max_tokens or None,
         attachments=attachments,
+        extra=extra,
     )
 
 

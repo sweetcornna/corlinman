@@ -423,6 +423,21 @@ async def test_servicer_uses_persona_id_as_placeholder_agent_id() -> None:
     }
 
 
+def test_proto_chat_start_persona_id_maps_to_extra() -> None:
+    from corlinman_grpc import agent_pb2
+    from corlinman_server.agent_servicer import _to_agent_start
+
+    start = _to_agent_start(
+        agent_pb2.ChatStart(
+            model="gpt-4o-mini",
+            session_key="sess-life",
+            persona_id="grantley",
+        )
+    )
+
+    assert start.extra == {"persona_id": "grantley"}
+
+
 @pytest.mark.asyncio
 async def test_servicer_skips_blank_auto_agent_id_metadata() -> None:
     from corlinman_agent.reasoning_loop import ChatStart

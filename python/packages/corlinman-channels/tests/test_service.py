@@ -3388,6 +3388,7 @@ class TestPersonaInjectionMultiChannel:
         assert "PERSONA-BODY-MARK" in sys_msg.content
         assert "## Available emoji" in sys_msg.content
         assert "- happy: /abs/happy.png" in sys_msg.content
+        assert req.persona_id == "grantley"
 
     @pytest.mark.asyncio
     async def test_telegram_injects_persona_and_emoji_block(self) -> None:

@@ -56,6 +56,10 @@ message ChatStart {
   // attachments are sidecar so channels can pass through URLs without
   // reshaping the primary content block.
   repeated Attachment attachments = 12;
+  // Persona id bound by channel humanlike injection. The agent servicer
+  // mirrors this into ChatStart.extra["persona_id"] so persona.life_*
+  // placeholders resolve against the same life-state row the persona tools use.
+  string persona_id = 13;
 }
 
 // Non-text input attached to a chat turn. Mirrors the Rust
