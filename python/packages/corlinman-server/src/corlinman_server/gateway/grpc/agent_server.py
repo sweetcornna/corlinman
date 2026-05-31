@@ -219,6 +219,7 @@ async def serve_agent(
     *,
     event_emitter: Any | None = None,
     subagent_dispatcher: Any | None = None,
+    subagent_config: dict[str, Any] | None = None,
 ) -> None:
     """Bind a ``grpc.aio`` server hosting the ``Agent`` service and serve
     until ``shutdown`` fires.
@@ -288,6 +289,7 @@ async def serve_agent(
             event_emitter=event_emitter,
             hook_runner=hook_runner,
             subagent_dispatcher=subagent_dispatcher,
+            subagent_config=subagent_config,
         ),
         server,
     )
@@ -365,12 +367,15 @@ def serve_agent_in_background(
         extras = getattr(state, "extras", None)
         if isinstance(extras, dict):
             subagent_dispatcher = extras.get("subagent_dispatcher")
+    cfg = getattr(state, "config", None) or {}
+    subagent_config = cfg.get("subagent") if isinstance(cfg, dict) else None
     task = asyncio.create_task(
         serve_agent(
             bind,
             cancel,
             event_emitter=event_emitter,
             subagent_dispatcher=subagent_dispatcher,
+            subagent_config=subagent_config,
         ),
         name="gateway.grpc.agent_server",
     )

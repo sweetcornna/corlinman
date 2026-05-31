@@ -163,6 +163,19 @@ cheap = "claude-haiku-4-5-20251001"
 # provider = "ollama"
 
 # ---------------------------------------------------------------------------
+# [subagent] — supervisor caps for model-facing subagent_spawn* tools.
+# ---------------------------------------------------------------------------
+[subagent]
+# One parent session can run at most this many child agents concurrently.
+max_concurrent_per_parent = 10
+# Tenant-wide backstop across all parent sessions.
+max_concurrent_per_tenant = 15
+# A child at depth >= this value cannot spawn another child.
+max_depth = 1
+# Upper bound for each child's requested wall-clock timeout.
+max_wall_seconds_ceiling = 300
+
+# ---------------------------------------------------------------------------
 # [channels] — cross-channel reply behaviour (applies to every adapter).
 # ---------------------------------------------------------------------------
 [channels]

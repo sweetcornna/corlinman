@@ -1,6 +1,4 @@
-"""Rust→Python config handshake (Feature C last-mile).
-
-Python port of ``rust/crates/corlinman-gateway/src/py_config.rs``.
+"""Python AI-plane config handshake (Feature C last-mile).
 
 Once Python *is* the runtime the Rust→Python file drop is partially
 redundant — the same process that owns the live config can simply pass
@@ -17,7 +15,8 @@ We keep the renderer / writer pair anyway, for three reasons:
 3. The schema is small and the test suite anchors it — re-implementing
    it later if a sibling regresses the shape would be needless churn.
 
-The JSON shape mirrors the Rust ``render_py_config`` byte-for-byte:
+The JSON shape preserves the existing Python AI-plane handshake and carries
+the sections the agent process needs at boot:
 
 .. code-block:: json
 
@@ -35,12 +34,18 @@ The JSON shape mirrors the Rust ``render_py_config`` byte-for-byte:
       "embedding": {
         "provider": "openai", "model": "text-embedding-3-small",
         "dimension": 1536, "enabled": true, "params": {}
+      },
+      "subagent": {
+        "max_concurrent_per_parent": 10,
+        "max_concurrent_per_tenant": 15,
+        "max_depth": 1,
+        "max_wall_seconds_ceiling": 300
       }
     }
 
 The Python config object can be either a :class:`pydantic.BaseModel`,
 a :class:`dict`, or any object whose ``providers`` / ``models.aliases``
-/ ``embedding`` attributes behave like the Rust ``Config`` does. The
+/ ``embedding`` / ``subagent`` attributes behave like the gateway config. The
 renderer is duck-typed (``getattr`` + ``hasattr``) so a future config
 schema rev doesn't break the handshake.
 """
@@ -155,11 +160,13 @@ def render_py_config(cfg: Any) -> dict[str, Any]:
         aliases_out[str(alias_name)] = rendered
 
     embedding = _render_embedding(_attr(cfg, "embedding", None))
+    subagent = _render_subagent(_attr(cfg, "subagent", None))
 
     return {
         "providers": providers,
         "aliases": aliases_out,
         "embedding": embedding,
+        "subagent": subagent,
     }
 
 
@@ -216,6 +223,26 @@ def _render_embedding(emb: Any) -> dict[str, Any] | None:
         "enabled": bool(_attr(emb, "enabled", True)),
         "params": _params_to_json(_attr(emb, "params", {})),
     }
+
+
+def _render_subagent(section: Any) -> dict[str, Any] | None:
+    if section is None:
+        return None
+    rendered: dict[str, Any] = {}
+    for key in (
+        "max_concurrent_per_parent",
+        "max_concurrent_per_tenant",
+        "max_depth",
+        "max_wall_seconds_ceiling",
+    ):
+        value = _attr(section, key, None)
+        if isinstance(value, bool) or value is None:
+            continue
+        try:
+            rendered[key] = int(value)
+        except (TypeError, ValueError):
+            continue
+    return rendered or None
 
 
 def _kind_for(name: str, entry: Any) -> str | None:
@@ -314,9 +341,8 @@ def _attr(obj: Any, name: str, default: Any) -> Any:
 def write_py_config_sync(cfg: Any, path: Path | str) -> None:
     """Synchronously render + atomically write the JSON drop.
 
-    Atomicity: write to a sibling ``<path>.new``, then ``os.rename`` —
-    matches the Rust ``write_py_config_sync`` byte-for-byte so the reader
-    side (``corlinman_server.main._ReloadingProviderResolver``) sees a
+    Atomicity: write to a sibling ``<path>.new``, then ``os.rename`` so
+    the reader side (``corlinman_server.main._ReloadingProviderResolver``) sees a
     fully-formed file on every mtime bump.
     """
     target = Path(path)
