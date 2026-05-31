@@ -34,9 +34,9 @@ yet usable end-to-end.
 - [x] **LOW — inline + `run_in_background`.** `subagent.spawn_inline` now
   uses the same async store/dispatcher path as named background spawns and
   persists the inline prompt/model on the background request.
-- [ ] **LOW — per-session `child_seq` counter.** Single spawns pass `child_seq=0`
-  so sequential inline/named spawns in one turn can share a mangled child id
-  (observability only).
+- [x] **LOW — per-session `child_seq` counter.** Servicer dispatch now reserves
+  per-session child sequence ids across named, inline, and `spawn_many` calls so
+  sequential spawns cannot reuse the same mangled child id.
 - [ ] **LOW — eager model-override validation.** An invalid `model` alias only
   surfaces at child dispatch (`FinishReason.ERROR`); validate up front.
 

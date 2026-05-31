@@ -564,6 +564,138 @@ async def test_servicer_dispatches_spawn_many_round_trip(
 
 
 @pytest.mark.asyncio
+async def test_servicer_allocates_child_seq_across_single_spawns(
+    tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sequential single spawns in one session must not reuse child_seq=0.
+
+    Named ``subagent_spawn`` and ad-hoc ``subagent_spawn_inline`` both derive
+    child ids from ``ParentContext.child_context(..., child_seq)``. If the
+    servicer hardcodes child_seq=0 for every single-spawn call, the two child
+    sessions collide in observability even though they were separate tool
+    calls.
+    """
+    from corlinman_agent.agents.card import AgentCard
+    from corlinman_agent.agents.registry import AgentCardRegistry
+    from corlinman_agent.reasoning_loop import ChatStart, ToolCallEvent
+    from corlinman_server.agent_servicer import CorlinmanAgentServicer
+
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+    servicer = CorlinmanAgentServicer(provider_resolver=lambda _m: _FakeProvider([]))
+    async def _no_persona_state_store() -> None:
+        return None
+
+    servicer._get_persona_state_store = _no_persona_state_store  # type: ignore[method-assign]
+    servicer._builtin_agents = AgentCardRegistry(
+        {
+            "researcher": AgentCard(
+                name="researcher", description="", system_prompt="you research"
+            )
+        }
+    )
+    provider = _FakeProvider(_token_stream(["did the work"]))
+    start = ChatStart(
+        model="orchestrator",
+        messages=[],
+        tools=[],
+        session_key="tenant-a::sess-seq",
+    )
+
+    named_event = ToolCallEvent(
+        call_id="spawn-named",
+        plugin="subagent",
+        tool="subagent_spawn",
+        args_json=json.dumps({"agent": "researcher", "goal": "first"}).encode(),
+    )
+    inline_event = ToolCallEvent(
+        call_id="spawn-inline",
+        plugin="subagent",
+        tool="subagent_spawn_inline",
+        args_json=json.dumps(
+            {
+                "goal": "second",
+                "system_prompt": "you are an inline helper",
+            }
+        ).encode(),
+    )
+
+    named = json.loads(await servicer._dispatch_builtin(named_event, start, provider))
+    inline = json.loads(await servicer._dispatch_builtin(inline_event, start, provider))
+
+    assert named["finish_reason"] == "stop"
+    assert inline["finish_reason"] == "stop"
+    assert named["child_session_key"].endswith("::child::0")
+    assert inline["child_session_key"].endswith("::child::1")
+    assert named["child_agent_id"].endswith("::researcher::0")
+    assert inline["child_agent_id"].endswith("::inline::1")
+
+
+@pytest.mark.asyncio
+async def test_servicer_reserves_child_seq_range_for_spawn_many(
+    tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A later single spawn must not reuse a spawn_many sibling child_seq."""
+    from corlinman_agent.agents.card import AgentCard
+    from corlinman_agent.agents.registry import AgentCardRegistry
+    from corlinman_agent.reasoning_loop import ChatStart, ToolCallEvent
+    from corlinman_server.agent_servicer import CorlinmanAgentServicer
+
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+    servicer = CorlinmanAgentServicer(provider_resolver=lambda _m: _FakeProvider([]))
+
+    async def _no_persona_state_store() -> None:
+        return None
+
+    servicer._get_persona_state_store = _no_persona_state_store  # type: ignore[method-assign]
+    servicer._builtin_agents = AgentCardRegistry(
+        {
+            "researcher": AgentCard(
+                name="researcher", description="", system_prompt="you research"
+            ),
+            "editor": AgentCard(
+                name="editor", description="", system_prompt="you edit"
+            ),
+        }
+    )
+    provider = _FakeProvider(_token_stream(["did the work"]))
+    start = ChatStart(
+        model="orchestrator",
+        messages=[],
+        tools=[],
+        session_key="tenant-a::sess-many-then-one",
+    )
+
+    many_event = ToolCallEvent(
+        call_id="spawn-many",
+        plugin="subagent",
+        tool="subagent_spawn_many",
+        args_json=json.dumps(
+            {
+                "tasks": [
+                    {"agent": "researcher", "goal": "first"},
+                    {"agent": "editor", "goal": "second"},
+                ]
+            }
+        ).encode(),
+    )
+    single_event = ToolCallEvent(
+        call_id="spawn-single",
+        plugin="subagent",
+        tool="subagent_spawn",
+        args_json=json.dumps({"agent": "researcher", "goal": "third"}).encode(),
+    )
+
+    many = json.loads(await servicer._dispatch_builtin(many_event, start, provider))
+    single = json.loads(await servicer._dispatch_builtin(single_event, start, provider))
+
+    assert many["tasks"][0]["child_session_key"].endswith("::child::0")
+    assert many["tasks"][1]["child_session_key"].endswith("::child::1")
+    assert single["finish_reason"] == "stop"
+    assert single["child_session_key"].endswith("::child::2")
+    assert single["child_agent_id"].endswith("::researcher::2")
+
+
+@pytest.mark.asyncio
 async def test_servicer_spawn_seeds_child_persona_state(
     tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
