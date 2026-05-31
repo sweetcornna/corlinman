@@ -282,6 +282,9 @@ class EvolutionProposal:
     auto_rollback_reason: str | None = None
     # Phase 4 W2 free-form metadata blob.
     metadata: Json | None = None
+    # Phase 4 W1 4-1A tenant scope — mirrors EvolutionSignal.tenant_id.
+    # Defaulted so existing positional / keyword constructors stay valid.
+    tenant_id: str = DEFAULT_TENANT_ID
 
 
 @dataclass

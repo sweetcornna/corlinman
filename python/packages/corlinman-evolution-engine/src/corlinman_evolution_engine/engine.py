@@ -509,6 +509,11 @@ async def _emit_budget_signal(
     the kind with the most skips this run; ties resolve alphabetically so
     the signal is deterministic across replays.
     """
+    # TODO(BUG-09b): no run-level tenant in scope — run_once spans all
+    # tenants in one pass and the budget gate is enforced globally per-kind,
+    # so the skips summarised here may belong to several tenants. The signal
+    # therefore lands at the column DEFAULT 'default'; threading a single
+    # tenant would mis-attribute it. Revisit if run_once becomes per-tenant.
     skips = summary.budget_skips_by_kind
     # Sort by (-count, kind) so highest-count wins; alphabetical breaks ties.
     target_kind = min(skips.items(), key=lambda kv: (-kv[1], kv[0]))[0]

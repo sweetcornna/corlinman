@@ -347,6 +347,59 @@ def _should_run_legacy_migration(cfg: Any | None) -> bool:
     return bool(enabled) and bool(migrate)
 
 
+def _tenant_scope_params(cfg: Any | None) -> tuple[bool, frozenset, Any]:
+    """Derive ``(enabled, allowed, fallback)`` for the tenant-scope
+    middleware from the loaded ``[tenants]`` config section.
+
+    SEC-06b: the middleware is installed unconditionally so handlers
+    always observe a resolved ``request.state.tenant``. The single-tenant
+    happy path keeps ``enabled=False`` (the byte-for-byte legacy
+    behaviour: every request transparently resolves to the ``"default"``
+    tenant and nothing is ever rejected). A multi-tenant operator opts in
+    via ``[tenants].enabled = true`` + ``[tenants].allowed`` and the
+    middleware then validates ``?tenant=`` / ``X-Corlinman-Tenant``
+    against the allow-set, still falling back to the default when no slug
+    is supplied.
+
+    Tolerant of dict / dataclass / ``None`` config shapes (mirrors
+    :func:`_should_run_legacy_migration`). On any parse hiccup we return
+    the safe disabled default rather than raising — boot must never fail
+    on this.
+    """
+    from corlinman_server.tenancy import TenantId, default_tenant
+
+    fallback = default_tenant()
+    allowed: frozenset = frozenset({fallback})
+    if cfg is None:
+        return (False, allowed, fallback)
+
+    tenants = _extract_section(cfg, "tenants")
+    if tenants is None:
+        return (False, allowed, fallback)
+
+    enabled = bool(_extract_section(tenants, "enabled"))
+
+    default_slug = _extract_section(tenants, "default")
+    if isinstance(default_slug, str) and default_slug.strip():
+        try:
+            fallback = TenantId.new(default_slug.strip())
+        except Exception:  # noqa: BLE001 — keep the legacy default
+            fallback = default_tenant()
+
+    allowed_set: set = {fallback}
+    raw_allowed = _extract_section(tenants, "allowed")
+    if isinstance(raw_allowed, (list, tuple)):
+        for slug in raw_allowed:
+            if not isinstance(slug, str) or not slug.strip():
+                continue
+            try:
+                allowed_set.add(TenantId.new(slug.strip()))
+            except Exception:  # noqa: BLE001 — skip a malformed entry
+                continue
+
+    return (enabled, frozenset(allowed_set), fallback)
+
+
 def _emit_py_config_drop(cfg: Any | None) -> None:
     """Best-effort write of the JSON handshake file.
 
@@ -3105,6 +3158,40 @@ def build_app(
             except Exception as exc:  # pragma: no cover — sibling-owned
                 logger.warning(
                     "gateway.middleware.install_failed", error=str(exc)
+                )
+
+        # SEC-06b: install the tenant-scope middleware so every ``/admin/*``
+        # and ``/v1/*`` handler observes a resolved ``request.state.tenant``
+        # instead of trusting a raw ``?tenant=`` query param. The middleware
+        # was exported but never wired. It is additive — installed AFTER the
+        # api-key gate so on ``/v1/*`` the api-key-pinned tenant (set from
+        # the verified key row) still wins: the api-key middleware runs
+        # inner and overwrites ``request.state.tenant`` unconditionally,
+        # while tenant-scope only seeds a value for the surfaces the api-key
+        # gate doesn't cover (notably ``/admin/api_keys*``). Single-tenant
+        # default: ``enabled=False`` → every request transparently resolves
+        # to the ``"default"`` tenant and nothing is ever rejected.
+        install_tenant_scope = getattr(
+            middleware_mod, "install_tenant_scope_middleware", None
+        )
+        if install_tenant_scope is not None:
+            try:
+                ts_enabled, ts_allowed, ts_fallback = _tenant_scope_params(cfg)
+                install_tenant_scope(
+                    app,
+                    enabled=ts_enabled,
+                    allowed=ts_allowed,
+                    fallback=ts_fallback,
+                )
+                logger.info(
+                    "gateway.tenant_scope.installed",
+                    enabled=ts_enabled,
+                    allowed=sorted(t.as_str() for t in ts_allowed),
+                    fallback=ts_fallback.as_str(),
+                )
+            except Exception as exc:  # pragma: no cover — sibling-owned
+                logger.warning(
+                    "gateway.tenant_scope.install_failed", error=str(exc)
                 )
 
     # Mount every routes submodule. Each submodule exposes a different

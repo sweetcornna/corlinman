@@ -256,6 +256,16 @@ class SlackAdapter:
             raise ConfigError("SlackConfig.app_token is empty")
         if not config.bot_token:
             raise ConfigError("SlackConfig.bot_token is empty")
+        # CMP-07-parity: the run_slack_channel entrypoint constructs this
+        # adapter near the top of the run path, so bootstrap the operator
+        # commands-dir + skill commands here (same helper Telegram / QQ-OneBot
+        # / Feishu use). Deferred import dodges the service<->channel import
+        # cycle; the helper is idempotent (guards on _COMMAND_EXTENSIONS_LOADED).
+        from corlinman_channels.service import (  # noqa: PLC0415
+            bootstrap_command_extensions,
+        )
+
+        bootstrap_command_extensions()
         self._cfg = config
         self._owns_client = http_client is None
         self._client = http_client or httpx.AsyncClient(timeout=httpx.Timeout(30.0))

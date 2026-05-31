@@ -597,15 +597,22 @@ class AdminDb:
                 )
         return rows
 
-    async def revoke_api_key(self, key_id: str) -> bool:
-        """Revoke a key by ``key_id``. Returns ``True`` when a row was
-        actually flipped (active → revoked); ``False`` when the row
-        was already revoked or doesn't exist. Idempotent."""
+    async def revoke_api_key(self, tenant_id: TenantId, key_id: str) -> bool:
+        """Revoke a key by ``(tenant_id, key_id)``. Returns ``True`` when
+        a row was actually flipped (active → revoked); ``False`` when the
+        row was already revoked, doesn't exist, or belongs to another
+        tenant. Idempotent.
+
+        SEC-06a: the ``tenant_id`` predicate is mandatory — without it any
+        tenant could revoke any other tenant's key purely by id. Callers
+        must pass the tenant resolved from the request scope, never a
+        client-supplied value.
+        """
         now = _unix_now_ms()
         cursor = await self._conn.execute(
             "UPDATE tenant_api_keys SET revoked_at_ms = ? "
-            "WHERE key_id = ? AND revoked_at_ms IS NULL",
-            (now, key_id),
+            "WHERE key_id = ? AND tenant_id = ? AND revoked_at_ms IS NULL",
+            (now, key_id, tenant_id.as_str()),
         )
         affected = cursor.rowcount
         await cursor.close()

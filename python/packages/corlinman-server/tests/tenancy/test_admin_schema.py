@@ -301,8 +301,9 @@ async def test_list_api_keys_orders_by_created_desc_and_excludes_revoked(
     assert listed[1].key_id == k2.row.key_id
     assert listed[2].key_id == k1.row.key_id
 
-    # Revoke the middle one — list excludes it.
-    assert await db.revoke_api_key(k2.row.key_id) is True
+    # Revoke the middle one — list excludes it. (SEC-06a: revoke is now
+    # tenant-scoped, so pass the owning tenant.)
+    assert await db.revoke_api_key(acme, k2.row.key_id) is True
 
     listed_after = await db.list_api_keys(acme)
     assert len(listed_after) == 2
@@ -310,7 +311,7 @@ async def test_list_api_keys_orders_by_created_desc_and_excludes_revoked(
     assert listed_after[1].key_id == k1.row.key_id
 
     # Re-revoking is a no-op miss (idempotent).
-    assert await db.revoke_api_key(k2.row.key_id) is False
+    assert await db.revoke_api_key(acme, k2.row.key_id) is False
 
 
 async def test_verify_api_key_round_trip_and_bumps_last_used(
@@ -354,7 +355,7 @@ async def test_verify_api_key_rejects_revoked_token(db: AdminDb) -> None:
 
     # Revoke + post-revoke verify must miss even though the hash is
     # still present in the table.
-    assert await db.revoke_api_key(minted.row.key_id) is True
+    assert await db.revoke_api_key(acme, minted.row.key_id) is True
     assert await db.verify_api_key(minted.token) is None
 
 

@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel
 
 from corlinman_server.gateway.routes_admin_a._auth_shim import (
@@ -119,21 +119,33 @@ def _require_admin_db(state: AdminState) -> AdminDb:
     return state.admin_db
 
 
-def _resolve_tenant(state: AdminState, tenant_q: str | None) -> TenantId:
+def _resolve_tenant(
+    state: AdminState, request: Request, tenant_q: str | None
+) -> TenantId:
     """Resolve the request's tenant.
 
     Order of precedence:
 
-    1. ``?tenant=...`` query string (the Rust ``tenant_scope`` middleware
-       reads this from request extensions; the Python port surfaces it
-       via the query param until the real middleware lands).
+    1. ``request.state.tenant`` — the :class:`TenantId` pinned by the
+       tenant-scope middleware (SEC-06b). This is the source of truth:
+       the middleware validates ``?tenant=`` / ``X-Corlinman-Tenant``
+       against the operator-allowed set and falls back to the default
+       tenant when none is supplied, so a client-supplied ``?tenant=``
+       can no longer override the resolved scope for api-key ops.
     2. ``state.default_tenant`` configured on the bootstrapped
        :class:`AdminState`.
     3. :func:`corlinman_server.tenancy.default_tenant` — the legacy
        single-tenant ``"default"`` slug.
 
-    A malformed slug yields **400 ``invalid_tenant_slug``**.
+    The raw ``?tenant=`` query (``tenant_q``) is accepted only for its
+    OpenAPI signature + back-compat with deployments that never mount the
+    middleware: it is consulted *after* the middleware-resolved value and
+    only when that is absent. A malformed slug yields
+    **400 ``invalid_tenant_slug``**.
     """
+    resolved = getattr(request.state, "tenant", None)
+    if isinstance(resolved, TenantId):
+        return resolved
     if tenant_q:
         try:
             return TenantId.new(tenant_q)
@@ -168,11 +180,12 @@ def router() -> APIRouter:
     )
     async def mint_key(
         body: MintBody,
+        request: Request,
         state: Annotated[AdminState, Depends(get_admin_state)],
         tenant: Annotated[str | None, Query()] = None,
     ) -> MintResponse:
         db = _require_admin_db(state)
-        tenant_id = _resolve_tenant(state, tenant)
+        tenant_id = _resolve_tenant(state, request, tenant)
 
         scope = body.scope.strip()
         if not scope:
@@ -203,11 +216,12 @@ def router() -> APIRouter:
         summary="List active API keys for the resolved tenant",
     )
     async def list_keys(
+        request: Request,
         state: Annotated[AdminState, Depends(get_admin_state)],
         tenant: Annotated[str | None, Query()] = None,
     ) -> ApiKeyListOut:
         db = _require_admin_db(state)
-        tenant_id = _resolve_tenant(state, tenant)
+        tenant_id = _resolve_tenant(state, request, tenant)
         try:
             rows = await db.list_api_keys(tenant_id)
         except Exception as exc:
@@ -238,16 +252,19 @@ def router() -> APIRouter:
     )
     async def revoke_key(
         key_id: str,
+        request: Request,
         state: Annotated[AdminState, Depends(get_admin_state)],
         tenant: Annotated[str | None, Query()] = None,
     ) -> RevokeOut:
         db = _require_admin_db(state)
-        # Resolve the tenant for parity even though revoke is keyed on
-        # ``key_id`` alone — the middleware would have rejected an
-        # invalid slug before reaching us.
-        _ = _resolve_tenant(state, tenant)
+        # SEC-06a/06b: revoke is now tenant-scoped at the DB layer, so the
+        # resolved tenant must be threaded through. The tenant comes from
+        # ``request.state.tenant`` (pinned by the tenant-scope middleware),
+        # falling back to the configured default when the middleware isn't
+        # mounted — never from the raw ``?tenant=`` query param.
+        tenant_id = _resolve_tenant(state, request, tenant)
         try:
-            revoked = await db.revoke_api_key(key_id)
+            revoked = await db.revoke_api_key(tenant_id, key_id)
         except Exception as exc:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

@@ -351,6 +351,78 @@ def _resolve_connection(store: Any) -> Any:
     return getattr(store, "conn", None) or getattr(store, "connection", None) or store
 
 
+def _auto_rollback_config(state: AdminState) -> Any:
+    """Build the :class:`EvolutionAutoRollbackConfig` the operator apply
+    route threads into the :class:`EvolutionApplier`.
+
+    BUG-08-wire: without it the applier captures the apply-time metrics
+    baseline over the conservative *default* ``signal_window_secs``,
+    which the AutoRollback monitor (which re-samples over the
+    operator-configured window) then diffs asymmetrically → false
+    breaches. Sourcing the config from the live ``[evolution.auto_rollback]``
+    snapshot — the same section the scheduled CLI reads via
+    ``corlinman_auto_rollback.cli._load_auto_rollback_config`` — keeps
+    the two windows symmetric.
+
+    Returns ``None`` when the auto-rollback package can't be imported so
+    the caller falls back to the bare constructor (still a valid, if
+    default-windowed, baseline). Missing / malformed config sections
+    collapse to the package defaults, mirroring the CLI loader.
+    """
+    try:
+        from corlinman_auto_rollback import (  # noqa: PLC0415
+            AutoRollbackThresholds,
+            EvolutionAutoRollbackConfig,
+        )
+    except ImportError:
+        return None
+
+    cfg = config_snapshot(state)
+    evolution = cfg.get("evolution") if isinstance(cfg, dict) else None
+    ar = evolution.get("auto_rollback") if isinstance(evolution, dict) else None
+    if not isinstance(ar, dict):
+        return EvolutionAutoRollbackConfig()
+
+    th = AutoRollbackThresholds()
+    th_raw = ar.get("thresholds")
+    if isinstance(th_raw, dict):
+        try:
+            th = AutoRollbackThresholds(
+                default_err_rate_delta_pct=float(
+                    th_raw.get(
+                        "default_err_rate_delta_pct", th.default_err_rate_delta_pct
+                    )
+                ),
+                default_p95_latency_delta_pct=float(
+                    th_raw.get(
+                        "default_p95_latency_delta_pct",
+                        th.default_p95_latency_delta_pct,
+                    )
+                ),
+                signal_window_secs=int(
+                    th_raw.get("signal_window_secs", th.signal_window_secs)
+                ),
+                min_baseline_signals=int(
+                    th_raw.get("min_baseline_signals", th.min_baseline_signals)
+                ),
+            )
+        except (TypeError, ValueError):
+            # A malformed knob falls back to the conservative defaults
+            # rather than 500ing the apply — the baseline shape stays
+            # valid either way.
+            th = AutoRollbackThresholds()
+
+    try:
+        grace = int(ar.get("grace_window_hours", 72))
+    except (TypeError, ValueError):
+        grace = 72
+    return EvolutionAutoRollbackConfig(
+        enabled=bool(ar.get("enabled", False)),
+        grace_window_hours=grace,
+        thresholds=th,
+    )
+
+
 def _project_proposal(p: Any) -> ProposalOut:
     """Map a typed :class:`EvolutionProposal` (from
     :mod:`corlinman_evolution_store`) onto the wire envelope. Defensive
@@ -798,7 +870,9 @@ def router() -> APIRouter:  # noqa: C901 — single APIRouter factory, mirrors R
         except ImportError:
             return _evolution_disabled()
 
-        applier = EvolutionApplier(_resolve_connection(store))
+        applier = EvolutionApplier(
+            _resolve_connection(store), config=_auto_rollback_config(state)
+        )
         try:
             history = await applier.apply(ProposalId(id))
         except NotFoundApplyError:
@@ -860,7 +934,9 @@ def router() -> APIRouter:  # noqa: C901 — single APIRouter factory, mirrors R
 
         reason = (body.reason if body is not None else None) or "operator: unknown"
 
-        applier = EvolutionApplier(_resolve_connection(store))
+        applier = EvolutionApplier(
+            _resolve_connection(store), config=_auto_rollback_config(state)
+        )
         try:
             await applier.revert(ProposalId(id), reason)
         except NotFoundRevertError:

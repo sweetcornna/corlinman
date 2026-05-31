@@ -298,7 +298,7 @@ _PROPOSAL_COLUMNS = (
     "created_at, decided_at, decided_by, applied_at, rollback_of, "
     "eval_run_id, baseline_metrics_json, "
     "auto_rollback_at, auto_rollback_reason, "
-    "metadata"
+    "metadata, tenant_id"
 )
 
 
@@ -338,8 +338,8 @@ class ProposalsRepo:
                  (id, kind, target, diff, reasoning, risk, budget_cost, status,
                   shadow_metrics, signal_ids, trace_ids,
                   created_at, decided_at, decided_by, applied_at, rollback_of,
-                  metadata)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                  metadata, tenant_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 proposal.id,
                 proposal.kind.as_str(),
@@ -358,6 +358,7 @@ class ProposalsRepo:
                 proposal.applied_at,
                 proposal.rollback_of,
                 metadata,
+                proposal.tenant_id,
             ),
         )
         await self._conn.commit()
@@ -388,7 +389,7 @@ class ProposalsRepo:
             " WHERE tenant_id = ? AND kind = ? "
             "   AND status IN ('applied', 'rolled_back') "
             "   AND applied_at IS NOT NULL",
-            (DEFAULT_TENANT_ID, proposal.kind.as_str()),
+            (proposal.tenant_id, proposal.kind.as_str()),
         )
         row = await cursor.fetchone()
         await cursor.close()
@@ -693,6 +694,7 @@ def _decode_proposal(row: aiosqlite.Row | tuple[Any, ...]) -> EvolutionProposal:
         auto_rollback_at=None if row[18] is None else int(row[18]),
         auto_rollback_reason=None if row[19] is None else str(row[19]),
         metadata=metadata,
+        tenant_id=str(row[21]),
     )
 
 
