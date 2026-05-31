@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from corlinman_agent.coding import (
     CODING_TOOLS,
     coding_tool_schemas,
@@ -1320,3 +1321,158 @@ def test_edit_file_no_state_no_staleness_check(tmp_path: Path) -> None:
     )
     assert res["replacements"] == 1
     assert path.read_text() == "x = 2\n"
+
+
+# ---------------------------------------------------------------------------
+# read-before-edit guard (Claude-Code parity)
+# ---------------------------------------------------------------------------
+
+
+def test_edit_unread_existing_file_with_state_is_rejected(tmp_path: Path) -> None:
+    """A state-threaded edit to a file the agent never read is refused."""
+    from corlinman_agent.coding import FileState
+
+    path = tmp_path / "f.py"
+    path.write_text("x = 1\n")
+    state = FileState()
+
+    res = json.loads(
+        dispatch_edit_file(
+            args_json=_args(path="f.py", old_string="x = 1", new_string="x = 2"),
+            workspace=tmp_path,
+            state=state,
+        )
+    )
+    assert res["error"].startswith("file_not_read")
+    # File untouched — the blind edit was blocked.
+    assert path.read_text() == "x = 1\n"
+
+
+def test_edit_after_read_with_state_proceeds(tmp_path: Path) -> None:
+    """Reading first satisfies the guard."""
+    from corlinman_agent.coding import FileState
+
+    path = tmp_path / "f.py"
+    path.write_text("x = 1\n")
+    state = FileState()
+    dispatch_read_file(args_json=_args(path="f.py"), workspace=tmp_path, state=state)
+    res = json.loads(
+        dispatch_edit_file(
+            args_json=_args(path="f.py", old_string="x = 1", new_string="x = 2"),
+            workspace=tmp_path,
+            state=state,
+        )
+    )
+    assert res["replacements"] == 1
+    assert path.read_text() == "x = 2\n"
+
+
+def test_consecutive_edits_with_state_allowed(tmp_path: Path) -> None:
+    """A second edit to a just-edited file (no re-read) is still allowed —
+    the edit marks the path seen even though it drops the read cache."""
+    from corlinman_agent.coding import FileState
+
+    path = tmp_path / "f.py"
+    path.write_text("a = 1\nb = 2\n")
+    state = FileState()
+    dispatch_read_file(args_json=_args(path="f.py"), workspace=tmp_path, state=state)
+    dispatch_edit_file(
+        args_json=_args(path="f.py", old_string="a = 1", new_string="a = 10"),
+        workspace=tmp_path,
+        state=state,
+    )
+    res = json.loads(
+        dispatch_edit_file(
+            args_json=_args(path="f.py", old_string="b = 2", new_string="b = 20"),
+            workspace=tmp_path,
+            state=state,
+        )
+    )
+    assert res["replacements"] == 1
+    assert path.read_text() == "a = 10\nb = 20\n"
+
+
+def test_write_then_edit_with_state_allowed(tmp_path: Path) -> None:
+    """A file the agent just wrote can be edited without a redundant read."""
+    from corlinman_agent.coding import FileState
+
+    state = FileState()
+    dispatch_write_file(
+        args_json=_args(path="g.py", content="k = 1\n"),
+        workspace=tmp_path,
+        state=state,
+    )
+    res = json.loads(
+        dispatch_edit_file(
+            args_json=_args(path="g.py", old_string="k = 1", new_string="k = 2"),
+            workspace=tmp_path,
+            state=state,
+        )
+    )
+    assert res["replacements"] == 1
+    assert (tmp_path / "g.py").read_text() == "k = 2\n"
+
+
+def test_read_before_edit_guard_env_opt_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CORLINMAN_REQUIRE_READ_BEFORE_EDIT=0 disables the guard."""
+    from corlinman_agent.coding import FileState
+
+    monkeypatch.setenv("CORLINMAN_REQUIRE_READ_BEFORE_EDIT", "0")
+    path = tmp_path / "f.py"
+    path.write_text("x = 1\n")
+    state = FileState()
+    res = json.loads(
+        dispatch_edit_file(
+            args_json=_args(path="f.py", old_string="x = 1", new_string="x = 2"),
+            workspace=tmp_path,
+            state=state,
+        )
+    )
+    assert res["replacements"] == 1
+
+
+def test_filestate_was_seen_tracks_reads_and_writes(tmp_path: Path) -> None:
+    from corlinman_agent.coding import FileState
+
+    path = tmp_path / "f.txt"
+    path.write_text("hi\n")
+    state = FileState()
+    assert state.was_seen(path) is False
+    dispatch_read_file(args_json=_args(path="f.txt"), workspace=tmp_path, state=state)
+    assert state.was_seen(path) is True
+    # forget drops the cache but the path stays "seen".
+    state.forget(path)
+    assert state.cached_read(path) is None
+    assert state.was_seen(path) is True
+
+
+# ---------------------------------------------------------------------------
+# read_file truncation guidance (pre-read token-gate parity)
+# ---------------------------------------------------------------------------
+
+
+def test_read_file_truncation_emits_next_offset_and_hint(tmp_path: Path) -> None:
+    """A truncated read points the model at the next offset instead of a
+    silent head slice it would just re-read."""
+    from corlinman_agent.coding._common import MAX_READ_CHARS
+
+    # Build a file whose numbered render comfortably exceeds the char cap.
+    line = "x" * 200
+    n_lines = (MAX_READ_CHARS // 200) + 50
+    path = tmp_path / "big.txt"
+    path.write_text("\n".join(line for _ in range(n_lines)) + "\n")
+
+    res = json.loads(
+        dispatch_read_file(
+            args_json=_args(path="big.txt", offset=1, limit=n_lines),
+            workspace=tmp_path,
+        )
+    )
+    assert res["truncated"] is True
+    assert isinstance(res["next_offset"], int)
+    assert res["next_offset"] > 1
+    assert "hint" in res
+    # next_offset is the first line NOT fully shown.
+    assert res["shown"][1] == res["next_offset"] - 1

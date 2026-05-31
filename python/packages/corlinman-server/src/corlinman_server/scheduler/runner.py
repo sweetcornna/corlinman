@@ -520,11 +520,89 @@ async def dispatch(spec: JobSpec, bus: HookBus, app_state: object | None = None)
             )
         return
 
-    # run_agent: not yet implemented end-to-end (no agent-runner
-    # registry exists yet, unlike the run_tool BUILTIN_ACTIONS path).
-    # Surface as an EngineRunFailed with error_kind "unsupported_action"
-    # so the gateway's evolution observer sees the failure on the bus
-    # rather than a silent drop.
+    if spec.action.kind == "run_agent":
+        # WP15: run_agent dispatch — invoke the agent runner when one
+        # is registered on ``app_state``. The gateway lifespan sets
+        # ``app.state.agent_runner_fn`` to an async callable that
+        # accepts a prompt string and returns a result dict.
+        #
+        # Lookup order:
+        #  1. ``app_state.agent_runner_fn`` — the preferred wiring path
+        #     set by the gateway startup lifespan (a coroutine function).
+        #  2. ``app_state.agent_runner`` — legacy attribute name kept for
+        #     back-compat with deployments that set it directly.
+        #  3. Neither present → surface ``runner_not_registered`` on the
+        #     hook bus so the operator can see the job fired but the
+        #     runner wasn't wired, rather than a generic "unsupported".
+        prompt = spec.action.prompt
+        if not prompt:
+            _logger.warning(
+                "scheduler: run_agent action has empty prompt; skipping",
+                extra={"job": spec.name, "run_id": run_id},
+            )
+            await _emit_failed(bus, run_id, "run_agent_empty_prompt", None)
+            return
+
+        runner_fn = None
+        if app_state is not None:
+            runner_fn = getattr(app_state, "agent_runner_fn", None)
+            if runner_fn is None:
+                runner_fn = getattr(app_state, "agent_runner", None)
+
+        if runner_fn is None:
+            _logger.warning(
+                "scheduler: run_agent has no registered runner; "
+                "set app.state.agent_runner_fn to wire it",
+                extra={"job": spec.name, "run_id": run_id},
+            )
+            await _emit_failed(bus, run_id, "runner_not_registered", None)
+            return
+
+        _logger.info(
+            "scheduler: run_agent job firing",
+            extra={"job": spec.name, "run_id": run_id, "prompt_preview": prompt[:200]},
+        )
+        started = time.monotonic()
+        try:
+            result = await runner_fn(prompt)
+            duration_ms = int((time.monotonic() - started) * 1000)
+            _logger.info(
+                "scheduler: run_agent job completed",
+                extra={
+                    "job": spec.name,
+                    "run_id": run_id,
+                    "duration_ms": duration_ms,
+                    "result_type": type(result).__name__,
+                },
+            )
+            event: _HookEventBase = HookEvent.EngineRunCompleted(
+                run_id=run_id, proposals_generated=0, duration_ms=duration_ms
+            )
+        except Exception as exc:  # noqa: BLE001 — surface on bus, never crash scheduler
+            duration_ms = int((time.monotonic() - started) * 1000)
+            _logger.error(
+                "scheduler: run_agent job raised",
+                extra={
+                    "job": spec.name,
+                    "run_id": run_id,
+                    "duration_ms": duration_ms,
+                    "error": str(exc),
+                },
+            )
+            event = HookEvent.EngineRunFailed(
+                run_id=run_id, error_kind="run_agent_exception", exit_code=None
+            )
+        try:
+            await bus.emit(event)
+        except Exception as exc:  # noqa: BLE001 — emit failures are non-fatal
+            _logger.warning(
+                "scheduler: hook emit failed",
+                extra={"job": spec.name, "run_id": run_id, "error": str(exc)},
+            )
+        return
+
+    # Unknown action kind — surface as unsupported_action on the bus so the
+    # gateway's evolution observer sees the failure rather than a silent drop.
     _logger.warning(
         "scheduler: action kind not yet implemented; skipping fire",
         extra={"job": spec.name, "run_id": run_id, "kind": spec.action.kind},

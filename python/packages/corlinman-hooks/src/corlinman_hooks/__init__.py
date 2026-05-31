@@ -44,6 +44,7 @@ from corlinman_hooks.error import (
 )
 from corlinman_hooks.event import HookEvent
 from corlinman_hooks.priority import CancelToken, HookPriority
+from corlinman_hooks.runner import HookRunner
 
 __all__ = [
     "CancelToken",
@@ -53,6 +54,7 @@ __all__ = [
     "HookError",
     "HookEvent",
     "HookPriority",
+    "HookRunner",
     "HookSubscription",
     "Lagged",
     "RecvError",

@@ -56,10 +56,16 @@ from corlinman_agent.subagent.runner import (
 )
 from corlinman_agent.subagent.tool_wrapper import (
     AGENT_NOT_FOUND_ERROR,
+    AGENT_RECV_MESSAGE_TOOL,
+    AGENT_SEND_MESSAGE_TOOL,
     ARGS_INVALID_ERROR,
     BACKGROUND_NOT_IMPLEMENTED_ERROR,
     SUBAGENT_SPAWN_MANY_MAX_TASKS,
     UNKNOWN_SUBAGENT_TYPE_ERROR,
+    agent_recv_message_tool_schema,
+    agent_send_message_tool_schema,
+    dispatch_recv_message,
+    dispatch_send_message,
     dispatch_subagent_spawn,
     dispatch_subagent_spawn_inline,
     dispatch_subagent_spawn_many,
@@ -70,6 +76,8 @@ from corlinman_agent.subagent.tool_wrapper import (
 
 __all__ = [
     "AGENT_NOT_FOUND_ERROR",
+    "AGENT_RECV_MESSAGE_TOOL",
+    "AGENT_SEND_MESSAGE_TOOL",
     "ARGS_INVALID_ERROR",
     "BACKGROUND_NOT_IMPLEMENTED_ERROR",
     "DEFAULT_MAX_DEPTH",
@@ -86,6 +94,10 @@ __all__ = [
     "TaskResult",
     "TaskSpec",
     "ToolCallSummary",
+    "agent_recv_message_tool_schema",
+    "agent_send_message_tool_schema",
+    "dispatch_recv_message",
+    "dispatch_send_message",
     "dispatch_subagent_spawn",
     "dispatch_subagent_spawn_inline",
     "dispatch_subagent_spawn_many",

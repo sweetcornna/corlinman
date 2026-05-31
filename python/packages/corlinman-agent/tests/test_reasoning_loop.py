@@ -1496,3 +1496,93 @@ def test_compact_history_accepts_prev_estimate_kwarg() -> None:
         assert walked == []
     finally:
         rl_mod._estimate_tokens = saved  # type: ignore[assignment]
+
+
+# ---------------------------------------------------------------------------
+# model-aware compaction budget (_resolve_context_budget)
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_context_budget_uses_model_window_minus_reserve(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A provider that declares a context window sizes the budget from it
+    (window minus a capped reserve), not the flat default."""
+    from corlinman_agent import reasoning_loop as rl
+
+    monkeypatch.delenv("CORLINMAN_CONTEXT_BUDGET", raising=False)
+    monkeypatch.setattr(rl, "_CONTEXT_BUDGET_OVERRIDE", None)
+
+    class _P:
+        def context_window(self, model: str) -> int | None:
+            return 200_000 if model == "big" else None
+
+    budget = rl._resolve_context_budget(_P(), "big")
+    # 200k - min(0.15*200k=30k, cap 48k) = 170k
+    assert budget == 200_000 - 30_000
+
+
+def test_resolve_context_budget_reserve_is_capped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """For a huge window the reserve is capped (not 15%)."""
+    from corlinman_agent import reasoning_loop as rl
+
+    monkeypatch.delenv("CORLINMAN_CONTEXT_BUDGET", raising=False)
+    monkeypatch.setattr(rl, "_CONTEXT_BUDGET_OVERRIDE", None)
+
+    class _P:
+        def context_window(self, model: str) -> int | None:
+            return 1_000_000
+
+    budget = rl._resolve_context_budget(_P(), "m")
+    assert budget == 1_000_000 - rl._CONTEXT_OUTPUT_RESERVE_CAP
+
+
+def test_resolve_context_budget_falls_back_without_accessor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A provider with no context_window accessor → flat default."""
+    from corlinman_agent import reasoning_loop as rl
+
+    monkeypatch.delenv("CORLINMAN_CONTEXT_BUDGET", raising=False)
+    monkeypatch.setattr(rl, "_CONTEXT_BUDGET_OVERRIDE", None)
+
+    budget = rl._resolve_context_budget(object(), "anything")
+    assert budget == rl._CONTEXT_BUDGET_DEFAULT
+
+
+def test_resolve_context_budget_override_pins_every_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicit operator override wins over the model window."""
+    from corlinman_agent import reasoning_loop as rl
+
+    monkeypatch.setattr(rl, "_CONTEXT_BUDGET_OVERRIDE", 50_000)
+
+    class _P:
+        def context_window(self, model: str) -> int | None:
+            return 200_000
+
+    assert rl._resolve_context_budget(_P(), "big") == 50_000
+
+
+def test_resolve_context_budget_bad_accessor_value_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-positive / non-int / raising accessor falls back to default."""
+    from corlinman_agent import reasoning_loop as rl
+
+    monkeypatch.delenv("CORLINMAN_CONTEXT_BUDGET", raising=False)
+    monkeypatch.setattr(rl, "_CONTEXT_BUDGET_OVERRIDE", None)
+
+    class _Zero:
+        def context_window(self, model: str) -> int:
+            return 0
+
+    class _Raises:
+        def context_window(self, model: str) -> int:
+            raise RuntimeError("boom")
+
+    assert rl._resolve_context_budget(_Zero(), "m") == rl._CONTEXT_BUDGET_DEFAULT
+    assert rl._resolve_context_budget(_Raises(), "m") == rl._CONTEXT_BUDGET_DEFAULT

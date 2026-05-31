@@ -109,16 +109,16 @@ async def test_dispatch_subprocess_missing_binary_emits_spawn_failed() -> None:
 
 
 async def test_unsupported_action_emits_failed() -> None:
-    """``RunAgent`` (and ``RunTool``) are not wired end-to-end yet, so
-    a dispatch must surface ``error_kind = "unsupported_action"`` on
-    the bus — operators see the missing wiring instead of a silent drop."""
+    """``RunAgent`` dispatch with no runner wired must surface
+    ``error_kind = "runner_not_registered"`` on the bus — operators see the
+    missing wiring instead of a silent drop."""
     bus = HookBus(16)
     sub = bus.subscribe(HookPriority.NORMAL)
     spec = _spec_for(JobAction.run_agent(prompt="x"))
     await dispatch(spec, bus)
     evt = await _next_event(sub)
     assert isinstance(evt, HookEvent.EngineRunFailed), f"got {evt!r}"
-    assert evt.error_kind == "unsupported_action"
+    assert evt.error_kind == "runner_not_registered"
 
 
 async def test_cancel_stops_job_loop_promptly() -> None:

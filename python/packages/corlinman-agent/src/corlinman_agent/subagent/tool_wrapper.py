@@ -1630,13 +1630,258 @@ async def dispatch_subagent_spawn_inline(
     )
 
 
+# ---------------------------------------------------------------------------
+# Coordinator messaging — send_message / recv_message
+# ---------------------------------------------------------------------------
+
+#: Tool name for the send direction (registered in the parent's tool set).
+AGENT_SEND_MESSAGE_TOOL: str = "agent_send_message"
+
+#: Tool name for the receive direction.
+AGENT_RECV_MESSAGE_TOOL: str = "agent_recv_message"
+
+
+def agent_send_message_tool_schema() -> dict[str, Any]:
+    """Return the OpenAI-shaped tool descriptor for ``agent_send_message``.
+
+    Allows one running agent to push a message into another agent's
+    in-process mailbox.  The target is identified by its ``agent_id``
+    (the ``ParentContext.parent_agent_id`` string).  The call is
+    non-blocking — it enqueues and returns immediately with a
+    ``{"sent": true, "to": "<agent_id>", "queued_at": <float>}``
+    envelope so the sender can continue its own reasoning loop.
+    """
+    return {
+        "type": "function",
+        "function": {
+            "name": AGENT_SEND_MESSAGE_TOOL,
+            "description": (
+                "Send a text message to another running agent by its "
+                "agent_id. The message is placed in the target's "
+                "mailbox immediately; the target can retrieve it with "
+                "agent_recv_message. Returns a confirmation envelope "
+                "with a monotonic queued_at timestamp."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "to_agent_id": {
+                        "type": "string",
+                        "description": (
+                            "The recipient agent's agent_id — the "
+                            "mangled ParentContext.parent_agent_id "
+                            "string (e.g. "
+                            "'root::researcher::0')."
+                        ),
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "The text payload to deliver.",
+                    },
+                    "reply_to_turn": {
+                        "type": "integer",
+                        "description": (
+                            "Optional: the parent-loop turn number this "
+                            "message replies to, so the receiver can "
+                            "correlate context.  Omit if not applicable."
+                        ),
+                    },
+                },
+                "required": ["to_agent_id", "message"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def agent_recv_message_tool_schema() -> dict[str, Any]:
+    """Return the OpenAI-shaped tool descriptor for ``agent_recv_message``.
+
+    Allows an agent to dequeue the next message from its own mailbox.
+    If the mailbox is empty and ``timeout_secs`` is 0 (or omitted) the
+    call returns immediately with ``{"message": null}``.  Pass a
+    positive ``timeout_secs`` to wait for a message.
+    """
+    return {
+        "type": "function",
+        "function": {
+            "name": AGENT_RECV_MESSAGE_TOOL,
+            "description": (
+                "Retrieve the next message from your own mailbox. "
+                "Returns the message payload or null if the mailbox is "
+                "empty (or no message arrives before timeout_secs "
+                "elapses). Use agent_send_message from another agent to "
+                "populate this mailbox."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "timeout_secs": {
+                        "type": "number",
+                        "description": (
+                            "How long to wait for a message (seconds). "
+                            "0 or omitted = non-blocking poll. Positive "
+                            "float = block up to that many seconds."
+                        ),
+                        "minimum": 0,
+                    },
+                },
+                "required": [],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+async def dispatch_send_message(
+    *,
+    args_json: bytes | str,
+    parent_ctx: ParentContext,
+) -> str:
+    """Dispatch one ``agent_send_message`` tool call.
+
+    Parses ``args_json`` (keys: ``to_agent_id``, ``message``,
+    optionally ``reply_to_turn``), enqueues the message in the target's
+    in-process mailbox, and returns a JSON confirmation envelope:
+
+    .. code-block:: json
+
+        {"sent": true, "to": "<agent_id>", "queued_at": 1234.56}
+
+    On parse failure returns an error envelope:
+
+    .. code-block:: json
+
+        {"sent": false, "error": "args_invalid: <details>"}
+
+    Never raises.
+    """
+    from corlinman_agent.subagent.mailbox import send_to_agent  # local import: keep light
+
+    try:
+        raw = json.loads(args_json)
+        if not isinstance(raw, dict):
+            raise ValueError("expected JSON object")
+        to_agent_id: str = raw["to_agent_id"]
+        message: str = raw["message"]
+        if not isinstance(to_agent_id, str) or not to_agent_id:
+            raise ValueError("to_agent_id must be a non-empty string")
+        if not isinstance(message, str):
+            raise ValueError("message must be a string")
+        reply_to_turn: int | None = raw.get("reply_to_turn")
+        if reply_to_turn is not None and not isinstance(reply_to_turn, int):
+            raise ValueError("reply_to_turn must be an integer or null")
+    except (KeyError, ValueError, json.JSONDecodeError) as exc:
+        logger.warning(
+            "subagent.dispatch_send_message.args_invalid",
+            session=parent_ctx.parent_session_key,
+            error=str(exc),
+        )
+        return json.dumps(
+            {"sent": False, "error": f"{ARGS_INVALID_ERROR}: {exc}"}
+        )
+
+    queued_at = await send_to_agent(
+        from_agent_id=parent_ctx.parent_agent_id,
+        to_agent_id=to_agent_id,
+        message=message,
+        reply_to_turn=reply_to_turn,
+    )
+    logger.debug(
+        "subagent.send_message.enqueued",
+        from_agent=parent_ctx.parent_agent_id,
+        to_agent=to_agent_id,
+        queued_at=queued_at,
+    )
+    return json.dumps({"sent": True, "to": to_agent_id, "queued_at": queued_at})
+
+
+async def dispatch_recv_message(
+    *,
+    args_json: bytes | str,
+    parent_ctx: ParentContext,
+) -> str:
+    """Dispatch one ``agent_recv_message`` tool call.
+
+    Parses ``args_json`` (optional key: ``timeout_secs``), dequeues the
+    next message from the calling agent's mailbox, and returns a JSON
+    envelope:
+
+    With a message:
+
+    .. code-block:: json
+
+        {
+          "message": "hello",
+          "from_agent_id": "root::coordinator::0",
+          "reply_to_turn": null,
+          "queued_at": 1234.56
+        }
+
+    Empty mailbox / timeout:
+
+    .. code-block:: json
+
+        {"message": null}
+
+    Never raises.
+    """
+    from corlinman_agent.subagent.mailbox import recv_from_mailbox  # local import
+
+    timeout_secs: float | None = None
+    try:
+        raw = json.loads(args_json)
+        if not isinstance(raw, dict):
+            raise ValueError("expected JSON object")
+        ts = raw.get("timeout_secs")
+        if ts is not None:
+            timeout_secs = float(ts)
+            if timeout_secs < 0:
+                raise ValueError("timeout_secs must be >= 0")
+    except (ValueError, json.JSONDecodeError) as exc:
+        logger.warning(
+            "subagent.dispatch_recv_message.args_invalid",
+            session=parent_ctx.parent_session_key,
+            error=str(exc),
+        )
+        return json.dumps(
+            {"message": None, "error": f"{ARGS_INVALID_ERROR}: {exc}"}
+        )
+
+    msg = await recv_from_mailbox(
+        parent_ctx.parent_agent_id, timeout_secs=timeout_secs
+    )
+    if msg is None:
+        return json.dumps({"message": None})
+
+    logger.debug(
+        "subagent.recv_message.dequeued",
+        agent=parent_ctx.parent_agent_id,
+        from_agent=msg["from_agent_id"],
+    )
+    return json.dumps(
+        {
+            "message": msg["message"],
+            "from_agent_id": msg["from_agent_id"],
+            "reply_to_turn": msg["reply_to_turn"],
+            "queued_at": msg["queued_at"],
+        }
+    )
+
+
 __all__ = [
     "AGENT_NOT_FOUND_ERROR",
+    "AGENT_RECV_MESSAGE_TOOL",
+    "AGENT_SEND_MESSAGE_TOOL",
     "ARGS_INVALID_ERROR",
     "BACKGROUND_NOT_IMPLEMENTED_ERROR",
     "SUBAGENT_SPAWN_MANY_MAX_TASKS",
     "UNKNOWN_SUBAGENT_TYPE_ERROR",
     "SupervisorAcquire",
+    "agent_recv_message_tool_schema",
+    "agent_send_message_tool_schema",
+    "dispatch_recv_message",
+    "dispatch_send_message",
     "dispatch_subagent_spawn",
     "dispatch_subagent_spawn_inline",
     "dispatch_subagent_spawn_many",

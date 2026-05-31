@@ -453,3 +453,24 @@ def test_registry_conflict_prefers_classbased_and_warns() -> None:
     ]
     assert conflicts, f"expected a provider.declarative_conflict WARNING; got {captured}"
     assert conflicts[0]["id"] == "openai"
+
+
+def test_context_window_returns_declared_length_by_wire_id() -> None:
+    """context_window(model) resolves the declared context_length by wire id,
+    and returns None for an unknown model (→ loop falls back to its default)."""
+    spec = DeclarativeProviderSpec(
+        id="ctxprov",
+        name="Ctx Gateway",
+        base_url="https://gateway.invalid/v1",
+        auth_kind="bearer_api_key",
+        auth_config={"env_var": "CTXPROV_API_KEY"},
+        request_format="openai_compatible",
+        models={
+            "default": ModelSpec(id="ctx-small", context_length=32_768),
+            "long": ModelSpec(id="ctx-long", context_length=1_000_000),
+        },
+    )
+    provider = DeclarativeProvider(spec, api_key="sk-test")
+    assert provider.context_window("ctx-small") == 32_768
+    assert provider.context_window("ctx-long") == 1_000_000
+    assert provider.context_window("not-declared") is None

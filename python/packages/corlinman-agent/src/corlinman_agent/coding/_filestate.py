@@ -26,10 +26,16 @@ class FileState:
     relative / symlink variants land on the same key.
     """
 
-    __slots__ = ("_entries",)
+    __slots__ = ("_entries", "_seen")
 
     def __init__(self) -> None:
         self._entries: dict[str, tuple[float, str]] = {}
+        # Paths the agent has observed this turn — read, written, or
+        # edited. Distinct from ``_entries`` (the re-read cache) because
+        # ``forget`` clears the cache after a write/edit while the agent
+        # has still *seen* the file; the read-before-edit guard keys off
+        # this set, not the cache.
+        self._seen: set[str] = set()
 
     # ------------------------------------------------------------------
     # Cache surface
@@ -37,7 +43,9 @@ class FileState:
 
     def record_read(self, path: Path, mtime: float, content: str) -> None:
         """Remember the (mtime, content) we just read for ``path``."""
-        self._entries[self._key(path)] = (float(mtime), content)
+        key = self._key(path)
+        self._entries[key] = (float(mtime), content)
+        self._seen.add(key)
 
     def cached_read(self, path: Path) -> str | None:
         """Return the cached content iff the file's current mtime matches.
@@ -80,9 +88,30 @@ class FileState:
             return False
         return current_mtime != recorded_mtime
 
+    def mark_seen(self, path: Path) -> None:
+        """Record that the agent has observed ``path`` this turn without
+        populating the re-read cache.
+
+        Call after a write/edit (alongside :meth:`forget`): the agent
+        produced these bytes, so a follow-up edit to the same file is
+        legitimate even though the cache entry was just dropped. Backs
+        the read-before-edit guard.
+        """
+        self._seen.add(self._key(path))
+
+    def was_seen(self, path: Path) -> bool:
+        """True iff the agent has read, written, or edited ``path`` this
+        turn. The read-before-edit guard rejects an edit to an existing
+        file for which this is ``False``."""
+        return self._key(path) in self._seen
+
     def forget(self, path: Path) -> None:
-        """Drop any record for ``path`` — call after a write/edit so the
-        next read re-fetches and re-pins the new mtime."""
+        """Drop the re-read cache entry for ``path`` — call after a
+        write/edit so the next read re-fetches and re-pins the new mtime.
+
+        Leaves :meth:`was_seen` intact (the agent has still seen the
+        file), so pair it with :meth:`mark_seen` on the write/edit path.
+        """
         self._entries.pop(self._key(path), None)
 
     # ------------------------------------------------------------------

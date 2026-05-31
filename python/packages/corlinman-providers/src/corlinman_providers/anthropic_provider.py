@@ -350,18 +350,38 @@ class AnthropicProvider:
         elif style == "bearer":
             # OAuth path: the Anthropic SDK supports ``auth_token=`` which
             # sets ``Authorization: Bearer <token>`` and suppresses the
-            # default ``x-api-key`` header.
-            client = AsyncAnthropic(auth_token=token)
+            # default ``x-api-key`` header. Identity headers are required
+            # so the Anthropic API recognises the OAuth subscription token.
+            _OAUTH_EXTRA_HEADERS = {
+                "anthropic-beta": "oauth-2025-04-20",
+                "x-app": "cli",
+                "user-agent": "claude-cli/2.1.88 (claude-code)",
+            }
+            client = AsyncAnthropic(auth_token=token, default_headers=_OAUTH_EXTRA_HEADERS)
         else:
             client = AsyncAnthropic(api_key=token)
         system, anthropic_messages = _split_system(messages)
+        if style == "bearer":
+            _cc_prefix = "You are Claude Code, Anthropic's official CLI for Claude.\n\n"
+            system = (_cc_prefix + system) if system else _cc_prefix
+        if system:
+            _system_param = [
+                {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
+            ]
+        else:
+            _system_param = None
+        # WP8: inject cache_control on the last 2 user-turn messages when the
+        # model supports prompt caching and the system prompt is >= 1024 chars
+        # (approximately 256 tokens — enough to make caching worthwhile).
+        if _supports_prompt_caching(model) and len(system or "") >= 1024:
+            anthropic_messages = _inject_user_cache_control(anthropic_messages, n_turns=2)
         kwargs: dict[str, Any] = {
             "model": model,
             "messages": anthropic_messages,
             "max_tokens": max_tokens if max_tokens else 1024,
         }
-        if system:
-            kwargs["system"] = system
+        if _system_param:
+            kwargs["system"] = _system_param
         if temperature is not None:
             kwargs["temperature"] = temperature
         if tools:
@@ -369,55 +389,84 @@ class AnthropicProvider:
         if extra:
             kwargs.update(extra)
 
+        import asyncio
+
+        _max_retries = 3
+        _attempt = 0
         try:
-            async with client.messages.stream(**kwargs) as stream:
-                # Per-block state: which content blocks are tool_use vs text.
-                open_tool_ids: dict[int, str] = {}
-                async for event in stream:
-                    etype = getattr(event, "type", None)
-                    if etype == "content_block_start":
-                        block = getattr(event, "content_block", None)
-                        idx = getattr(event, "index", 0)
-                        if getattr(block, "type", None) == "tool_use":
-                            call_id = getattr(block, "id", "") or ""
-                            name = getattr(block, "name", "") or ""
-                            open_tool_ids[idx] = call_id
-                            yield ProviderChunk(
-                                kind="tool_call_start",
-                                tool_call_id=call_id,
-                                tool_name=name,
-                            )
-                    elif etype == "content_block_delta":
-                        delta = getattr(event, "delta", None)
-                        dtype = getattr(delta, "type", None)
-                        idx = getattr(event, "index", 0)
-                        if dtype == "text_delta":
-                            text = getattr(delta, "text", "") or ""
-                            if text:
-                                yield ProviderChunk(kind="token", text=text)
-                        elif dtype == "input_json_delta":
-                            partial = getattr(delta, "partial_json", "") or ""
-                            call_id = open_tool_ids.get(idx, "")
-                            if call_id:
-                                yield ProviderChunk(
-                                    kind="tool_call_delta",
-                                    tool_call_id=call_id,
-                                    arguments_delta=partial,
-                                )
-                    elif etype == "content_block_stop":
-                        idx = getattr(event, "index", 0)
-                        call_id = open_tool_ids.pop(idx, None)
-                        if call_id:
-                            yield ProviderChunk(
-                                kind="tool_call_end",
-                                tool_call_id=call_id,
-                            )
-                    # Other event types (message_start, message_delta,
-                    # message_stop) carry only accounting data we pick up via
-                    # get_final_message below.
-                final = await stream.get_final_message()
-                finish = _map_stop_reason(getattr(final, "stop_reason", None))
-                yield ProviderChunk(kind="done", finish_reason=finish)
+            while True:
+                try:
+                    async with client.messages.stream(**kwargs) as stream:
+                        # Per-block state: which content blocks are tool_use vs text.
+                        open_tool_ids: dict[int, str] = {}
+                        async for event in stream:
+                            etype = getattr(event, "type", None)
+                            if etype == "content_block_start":
+                                block = getattr(event, "content_block", None)
+                                idx = getattr(event, "index", 0)
+                                if getattr(block, "type", None) == "tool_use":
+                                    call_id = getattr(block, "id", "") or ""
+                                    name = getattr(block, "name", "") or ""
+                                    open_tool_ids[idx] = call_id
+                                    yield ProviderChunk(
+                                        kind="tool_call_start",
+                                        tool_call_id=call_id,
+                                        tool_name=name,
+                                    )
+                            elif etype == "content_block_delta":
+                                delta = getattr(event, "delta", None)
+                                dtype = getattr(delta, "type", None)
+                                idx = getattr(event, "index", 0)
+                                if dtype == "text_delta":
+                                    text = getattr(delta, "text", "") or ""
+                                    if text:
+                                        yield ProviderChunk(kind="token", text=text)
+                                elif dtype == "input_json_delta":
+                                    partial = getattr(delta, "partial_json", "") or ""
+                                    call_id = open_tool_ids.get(idx, "")
+                                    if call_id:
+                                        yield ProviderChunk(
+                                            kind="tool_call_delta",
+                                            tool_call_id=call_id,
+                                            arguments_delta=partial,
+                                        )
+                            elif etype == "content_block_stop":
+                                idx = getattr(event, "index", 0)
+                                call_id = open_tool_ids.pop(idx, None)
+                                if call_id:
+                                    yield ProviderChunk(
+                                        kind="tool_call_end",
+                                        tool_call_id=call_id,
+                                    )
+                            # Other event types (message_start, message_delta,
+                            # message_stop) carry only accounting data we pick up via
+                            # get_final_message below.
+                        final = await stream.get_final_message()
+                        finish = _map_stop_reason(getattr(final, "stop_reason", None))
+                        _raw_usage = getattr(final, "usage", None)
+                        _usage_dict = None
+                        if _raw_usage is not None:
+                            _usage_dict = {}
+                            for _uk in (
+                                "input_tokens",
+                                "output_tokens",
+                                "cache_read_input_tokens",
+                                "cache_creation_input_tokens",
+                            ):
+                                _uv = getattr(_raw_usage, _uk, None)
+                                if isinstance(_uv, int):
+                                    _usage_dict[_uk] = _uv
+                            if not _usage_dict:
+                                _usage_dict = None
+                        yield ProviderChunk(kind="done", finish_reason=finish, usage=_usage_dict)
+                    break  # success — exit retry loop
+                except (RateLimitError, OverloadedError) as _retry_exc:
+                    if _attempt >= _max_retries:
+                        raise
+                    _retry_ms = getattr(_retry_exc, "retry_after_ms", None)
+                    _delay = (_retry_ms / 1000.0) if isinstance(_retry_ms, int) else (2.0 ** _attempt)
+                    await asyncio.sleep(min(_delay, 60.0))
+                    _attempt += 1
         except CorlinmanError:
             raise
         except Exception as exc:
@@ -464,6 +513,88 @@ async def _safe_close(client: Any) -> None:
             await result
     except Exception as exc:  # pragma: no cover — defensive close-path guard
         logger.warning("anthropic.client_close_failed", error=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# WP8: Prompt caching helpers
+# ---------------------------------------------------------------------------
+
+# Model prefixes that support the cache_control: {type: ephemeral} extension.
+# claude-3-haiku, claude-3-5-*, claude-3-7-*, claude-opus-4, claude-sonnet-4-*
+_CACHING_MODEL_PREFIXES: tuple[str, ...] = (
+    "claude-3-haiku",
+    "claude-3-5",
+    "claude-3-7",
+    "claude-opus-4",
+    "claude-sonnet-4",
+    "claude-haiku-4",
+)
+
+
+def _supports_prompt_caching(model: str) -> bool:
+    """Return True when ``model`` supports the ``cache_control`` extension."""
+    return any(model.startswith(p) for p in _CACHING_MODEL_PREFIXES)
+
+
+def _inject_user_cache_control(
+    messages: list[dict[str, Any]], *, n_turns: int = 2
+) -> list[dict[str, Any]]:
+    """Return a copy of ``messages`` with cache_control on the last N user turns.
+
+    Injects ``{"cache_control": {"type": "ephemeral"}}`` on the last text
+    block of the last ``n_turns`` user-role messages. This tells Anthropic's
+    API to treat those messages as part of the stable prompt prefix and cache
+    them, reducing input-token costs on subsequent rounds that replay the same
+    history.
+
+    Only modifies user-turn string content (converts to list form) or the
+    last text block in an existing list. Tool-result blocks are left as-is
+    (they appear as ``role="user"`` in Anthropic's wire format but carry
+    ``type="tool_result"`` blocks — we don't cache those).
+
+    Returns the input list unchanged if there are fewer than 1 user turns
+    (passthrough, idempotent for short conversations).
+    """
+    # Find the indices of user-role messages (in reverse order).
+    user_indices = [i for i, m in enumerate(messages) if m.get("role") == "user"]
+    if not user_indices:
+        return messages
+
+    # Work on a shallow copy; only the targeted messages are deep-copied.
+    result = list(messages)
+    marked = 0
+    for idx in reversed(user_indices):
+        if marked >= n_turns:
+            break
+        msg = result[idx]
+        content = msg.get("content")
+        if isinstance(content, str):
+            # Convert plain string → list with cache_control on the single block.
+            new_msg = dict(msg)
+            new_msg["content"] = [
+                {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
+            ]
+            result[idx] = new_msg
+            marked += 1
+        elif isinstance(content, list) and content:
+            # Find the last text block and annotate it.
+            new_content = list(content)
+            for bi in range(len(new_content) - 1, -1, -1):
+                blk = new_content[bi]
+                if isinstance(blk, dict) and blk.get("type") in ("text", "tool_result"):
+                    if blk.get("type") == "tool_result":
+                        # Skip tool_result blocks — caching those is less useful
+                        # and may confuse the API.
+                        continue
+                    new_blk = dict(blk)
+                    new_blk["cache_control"] = {"type": "ephemeral"}
+                    new_content[bi] = new_blk
+                    break
+            new_msg = dict(msg)
+            new_msg["content"] = new_content
+            result[idx] = new_msg
+            marked += 1
+    return result
 
 
 def _split_system(messages: Sequence[Any]) -> tuple[str | None, list[dict[str, Any]]]:

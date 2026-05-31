@@ -65,15 +65,26 @@ from corlinman_agent.hooks import LoggingHookEmitter
 from corlinman_agent.image import (
     IMAGE_GENERATE_TOOL,
     IMAGE_WITH_REFS_TOOL,
+    VISION_ANALYZE_TOOL,
     dispatch_image_generate,
     dispatch_image_with_refs,
+    dispatch_vision_analyze,
     image_generate_tool_schema,
     image_with_refs_tool_schema,
+    vision_analyze_tool_schema,
 )
 from corlinman_agent.interactive import (
     ASK_USER_TOOL,
     ask_user_tool_schema,
     dispatch_ask_user,
+)
+from corlinman_agent.memory import (
+    MEMORY_SEARCH_TOOL,
+    MEMORY_TOOLS,
+    SESSION_SEARCH_TOOL,
+    dispatch_memory_search,
+    dispatch_session_search,
+    memory_tool_schemas,
 )
 from corlinman_agent.permission import (
     DENY as _PERM_DENY,
@@ -240,10 +251,11 @@ BUILTIN_TOOLS: frozenset[str] = frozenset(
         ASK_USER_TOOL,
         IMAGE_WITH_REFS_TOOL,
         IMAGE_GENERATE_TOOL,
+        VISION_ANALYZE_TOOL,
         QZONE_PUBLISH_TOOL,
         AGENT_STATUS_CARD_TOOL,
     }
-) | CODING_TOOLS | PERSONA_TOOLS | PERSONA_LIFE_TOOLS | QZONE_COMMENT_TOOLS
+) | CODING_TOOLS | PERSONA_TOOLS | PERSONA_LIFE_TOOLS | QZONE_COMMENT_TOOLS | MEMORY_TOOLS
 
 #: The three subagent-spawn tools. A spawned child is refused these by
 #: :meth:`AgentServicer._make_child_tool_executor` (v1.12.3) — recursive
@@ -372,11 +384,13 @@ def _builtin_tool_schemas() -> list[dict[str, Any]]:
         ask_user_tool_schema(),
         image_with_refs_tool_schema(),
         image_generate_tool_schema(),
+        vision_analyze_tool_schema(),
         qzone_publish_tool_schema(),
         _agent_status_card_tool_schema(),
         *qzone_comment_tool_schemas(),
         *persona_tool_schemas(),
         *persona_life_tool_schemas(),
+        *memory_tool_schemas(),
         # Multi-agent surface: the main agent can call an existing
         # registered agent (subagent_spawn / spawn_many) OR spin up a
         # temporary purpose-built one (subagent_spawn_inline). Advertised
@@ -802,6 +816,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         aliases: Mapping[str, AliasEntry] | None = None,
         context_assembler: Any | None = None,
         hook_bus: Any | None = None,
+        hook_runner: Any | None = None,
         permission_gate: PermissionGate | None = None,
         event_emitter: Any | None = None,
     ) -> None:
@@ -894,6 +909,12 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # no telemetry hook fan-out (the structlog event logs still
         # fire).
         self._hook_bus = hook_bus
+        # Shell-command hooks — optional ``corlinman_hooks.HookRunner``.
+        # When set, ``_dispatch_builtin`` runs ``pre_{tool}`` / ``pre_tool``
+        # hooks *before* dispatch; a non-zero exit code blocks the call and
+        # returns ``{"error": "blocked by hook: ..."}`` to the model.
+        # ``None`` means no shell hook enforcement (all tools proceed).
+        self._hook_runner = hook_runner
         # T3.1 permission gate — declarative allow/deny/log per tool.
         # Constructed from env when not explicitly supplied so a stock
         # boot still gets one (default: allow-all).
@@ -2019,6 +2040,45 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 call_id=event.call_id,
             )
 
+        # Shell-command hook gate: run ``pre_{tool}`` / ``pre_tool`` hook.
+        # Non-zero exit → block the call and return an error envelope to the
+        # model. The async variant is used here so the event loop is not
+        # blocked by subprocess I/O.
+        if self._hook_runner is not None:
+            try:
+                _args_dict: dict[str, Any] = {}
+                try:
+                    _raw = event.args_json.decode("utf-8", "replace")
+                    _args_dict = json.loads(_raw) if _raw.strip() else {}
+                    if not isinstance(_args_dict, dict):
+                        _args_dict = {}
+                except (json.JSONDecodeError, ValueError):
+                    pass
+                _should_proceed, _block_msg = await self._hook_runner.run_pre_tool_async(
+                    event.tool, _args_dict
+                )
+                if not _should_proceed:
+                    _reason = _block_msg or "hook blocked"
+                    logger.info(
+                        "agent.tool.hook_blocked",
+                        tool=event.tool,
+                        call_id=event.call_id,
+                        message=_reason,
+                    )
+                    self._emit_tool_called(
+                        event, start, ok=False, duration_ms=0,
+                        error_code="hook_blocked"
+                    )
+                    return json.dumps(
+                        {"error": f"blocked by hook: {_reason}", "tool": event.tool}
+                    )
+            except Exception as exc:  # noqa: BLE001 — hook failure must not break dispatch
+                logger.warning(
+                    "agent.tool.hook_runner_error",
+                    tool=event.tool,
+                    error=str(exc),
+                )
+
         started_at = time.perf_counter()
         ok = True
         error_code: str | None = None
@@ -2352,6 +2412,17 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     args_json=event.args_json,
                     provider=provider,
                 )
+            if event.tool == VISION_ANALYZE_TOOL:
+                # WP13: vision_analyze — reads an image from workspace or
+                # URL and returns a multimodal content-block list so vision
+                # models can see the image inline in the tool-result turn.
+                # No workspace kwarg needed — dispatch_vision_analyze falls
+                # back to resolve_workspace() which reads the same
+                # CORLINMAN_AGENT_WORKSPACE env var that all coding tools
+                # use when workspace=None.
+                return dispatch_vision_analyze(
+                    args_json=event.args_json,
+                )
             if event.tool == QZONE_PUBLISH_TOOL:
                 # W5 — qzone_publish. The dispatcher does its own
                 # OneBot credential fetch (via CORLINMAN_NAPCAT_HTTP_URL
@@ -2391,6 +2462,27 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     return await dispatch_qzone_post_comment(args_json=event.args_json)
                 if event.tool == QZONE_LIST_FRIENDS_TOOL:
                     return await dispatch_qzone_list_friends(args_json=event.args_json)
+            if event.tool in MEMORY_TOOLS:
+                # WP17: agent-callable memory search. ``memory_host`` is
+                # resolved from ``app_state`` (set during gateway lifespan).
+                # When not wired, dispatchers return empty results rather
+                # than raising, so the model can handle unavailability.
+                _memory_host = None
+                if hasattr(self, "_app_state") and self._app_state is not None:
+                    _memory_host = getattr(self._app_state, "memory_host", None)
+                _ms_session_key = start.session_key or None
+                if event.tool == MEMORY_SEARCH_TOOL:
+                    return await dispatch_memory_search(
+                        args_json=event.args_json,
+                        memory_host=_memory_host,
+                        session_key=_ms_session_key,
+                    )
+                if event.tool == SESSION_SEARCH_TOOL:
+                    return await dispatch_session_search(
+                        args_json=event.args_json,
+                        memory_host=_memory_host,
+                        session_key=_ms_session_key,
+                    )
             if event.tool == SEND_ATTACHMENT_TOOL:
                 # No-op stub on the agent side. The real upload happens
                 # in the channel handler (handle_one_telegram /

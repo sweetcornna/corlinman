@@ -56,6 +56,9 @@ from corlinman_server.gateway.routes_admin_b import (
     evolution as _evolution,
 )
 from corlinman_server.gateway.routes_admin_b import (
+    hooks as _hooks,
+)
+from corlinman_server.gateway.routes_admin_b import (
     image_provider as _image_provider,
 )
 from corlinman_server.gateway.routes_admin_b import (
@@ -129,6 +132,7 @@ def build_router() -> APIRouter:
         _credentials,
         _curator,
         _evolution,
+        _hooks,
         _image_provider,
         _logs,
         _memory,

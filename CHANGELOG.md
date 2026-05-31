@@ -4,6 +4,124 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — Agent-parity gap fills (audit Waves A–E)
+
+> Full implementation sweep from the 2026-05-31 three-way gap audit
+> (corlinman vs claude-code / hermes-agent / openclaw — 50 verified gaps in
+> `audit/gap-fill-2026-05-30/GAP_REPORT.md`). Waves A–E shipped across 6
+> packages; all tests green. Identity-store (already wired), TTS backend
+> (no Python API), and EvolutionApplier real-apply (Rust→Python migration
+> collision) are the only items intentionally left for later.
+
+### Added (Wave E — hooks / coordinator / multiagent)
+- **Blocking/discoverable hooks.** `HookRunner` class in `corlinman-agent`
+  intercepts every tool dispatch via `pre_tool`/`post_tool`/`notification`
+  events; if a registered shell command exits non-zero the tool call is blocked
+  and the model receives the hook's stdout as the error message. Hooks are
+  configured via the agent config `hooks` dict. A `GET /admin/hooks` endpoint
+  lists active hooks. (cc parity — claude-code hooks.)
+- **Agent mailbox / `send_message` + `recv_message` tools.** An in-process
+  `AGENT_MAILBOXES: dict[str, asyncio.Queue]` store lets agents address each
+  other by `agent_id`. `dispatch_send_message` enqueues a message;
+  `dispatch_recv_message` dequeues with optional timeout. Registered in
+  `BUILTIN_TOOLS` and `_dispatch_builtin`. (hermes coordinator parity.)
+
+### Added (Wave D — wiring revivals)
+- **`run_agent` cron dispatcher.** `scheduler/runner.py` now has a full
+  `RunAgent` dispatch branch that invokes `app_state.agent_runner_fn` and
+  emits `EngineRunCompleted` / `EngineRunFailed` on the hook bus; degrades
+  gracefully to `error_kind="runner_not_registered"` when no runner is wired.
+- **Agent-callable `memory_search` + `session_search` tools.** New
+  `corlinman_agent/memory/` package registers both tools in `BUILTIN_TOOLS`;
+  they query a pluggable `memory_host` interface and degrade to empty results
+  when none is wired. (hermes long-memory parity.)
+- **History dedup.** `_dedup_tool_results()` strips exact duplicate
+  `(tool_name, args_json, content)` triples from prior history turns before
+  each `_extend_with_tool_round`, replacing repeated content with a sentinel
+  so tool-call-id chains stay structurally valid.
+- **CJK-aware token estimator.** Text segments containing CJK Unified
+  Ideographs (U+4E00–U+9FFF) are multiplied by 1.5× in `_estimate_chars()`,
+  correcting the systematic under-budget that caused CJK-heavy turns to
+  overflow the context window.
+
+### Added (Wave C — multimodal)
+- **Multimodal `read_file`.** `dispatch_read_file` now detects image
+  extensions (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`) and returns a
+  `list[dict]` image content block (base64 data-URL) instead of a text
+  envelope, letting vision-capable models inspect images in the workspace.
+- **`vision_analyze` tool.** New `corlinman_agent/image/analyze.py` module
+  — accepts `{path}` (workspace file) or `{url}` (https URL) plus optional
+  `{question}` and returns a multimodal content-block list the model can
+  reason over. Registered in `BUILTIN_TOOLS`.
+- **`ToolResult` content-block plumbing.** `ToolResult.content` widened from
+  `str` to `str | list[dict[str, Any]]`; `_extend_with_tool_round` forwards
+  list content verbatim (bypasses `_truncate_tool_result`) so image parts
+  produced by tools reach the provider API unchanged.
+
+### Added (Wave B — reliability)
+- **Retry with exponential backoff.** The reasoning loop retries on HTTP 429,
+  500, 502, 503, 504, `RateLimitError`, and `OverloadedError` — up to 3
+  attempts, only before the first streaming event is emitted. (hermes parity.)
+- **Prompt caching on last 2 user turns.** `AnthropicProvider` injects
+  `cache_control: {type: ephemeral}` on the system prompt and the two most
+  recent user turns when the model supports caching and the system prompt
+  exceeds 256 estimated tokens. Reduces repeat-request cost on long sessions.
+- **Per-model USD cost tracking.** `_MODEL_COSTS` table + `_estimate_turn_cost_usd()`
+  accumulate `turn_cost_usd` and `session_cost_usd`; both are populated on
+  every `TurnComplete` emit. `ReasoningLoop.session_cost_usd` property exposed.
+- **Context-overflow shrink-and-retry.** `ContextOverflowError` (and matching
+  string patterns) tightens `context_budget` by 20%, re-compacts history, and
+  retries the call once before propagating the error.
+- **Model fallback chain.** `ReasoningLoop.__init__` accepts `fallback_models`
+  (default `["claude-sonnet-4-6", "claude-haiku-4-5"]`); on
+  `ModelNotFoundError`, billing errors, or quota exhaustion the loop switches
+  to the next model before streaming starts.
+
+### Added (Wave A — remaining)
+- **`[MSG_BREAK]` bubble splitting.** All 7 channel senders (QQ, Telegram,
+  Discord, Slack, Feishu, QQ Official, WeChat Official) now split outbound
+  text on `[MSG_BREAK]` and send each segment as a separate message with a
+  0.3 s inter-bubble delay. The `grantley` persona was emitting the raw token
+  to users; it no longer does.
+- **OAuth identity headers.** `AnthropicProvider` detects OAuth bearer tokens
+  and adds `anthropic-beta: oauth-2025-04-20`, `x-app: cli`,
+  `user-agent: claude-cli/2.1.88 (claude-code)`, and a "You are Claude Code"
+  system-prompt prefix so Claude subscription tokens are accepted by the API.
+- **Config hot-reload wiring.** The existing `ConfigWatcher` instance (stored
+  on `AppState`) is now copied into `admin_b_state.extras["config_watcher"]`
+  during the lifespan startup block; `POST /admin/config/reload` was silently
+  receiving `None` from `state.extras.get("config_watcher")` before this fix.
+  A `config_swap_fn` closure is also wired to keep `state.config`,
+  `app.state.corlinman_config`, and `ConfigWatcher._snapshot` consistent on
+  manual `POST /admin/config` writes.
+
+### Added
+- **Model-aware compaction budget.** `ReasoningLoop` now sizes its per-round
+  context budget from the model's declared context window
+  (`window − reserved_output`, reserve capped at 48k) instead of a flat 120k
+  constant, via a best-effort `provider.context_window(model)` accessor
+  (implemented on `DeclarativeProvider`, returning the matching
+  `ModelSpec.context_length`). A 1M-token model no longer compacts at 120k and a
+  32k model no longer overflows. `$CORLINMAN_CONTEXT_BUDGET` still pins every
+  model when set; providers without the accessor keep the flat default
+  unchanged. (`RESEARCH_AGENT_PARITY` A1 / claude-code `getEffectiveContextWindowSize`.)
+- **read_file truncation guidance.** A truncated read now cuts on a line
+  boundary and returns `next_offset` + a `hint` (continue from offset / narrow /
+  use `search_files`) instead of a silent head slice the model would just
+  re-read. (parity B1.)
+
+### Changed
+- **Read-before-edit guard (claude-code parity B5/C5).** When a `FileState` is
+  threaded (the production agent path), `edit_file` now refuses to edit an
+  existing file the agent never read or wrote this turn (`file_not_read`), since
+  `is_stale` returns `False` for an unrecorded path and a blind edit could
+  clobber unseen bytes. A new `FileState._seen` set tracks observed paths and
+  survives the post-write/edit cache `forget`, so read→edit, write→edit, and
+  consecutive edits all proceed; the re-read cache semantics are unchanged.
+  **Behavior change for deployments** — the model may need to read before a
+  cross-turn edit (it self-corrects); disable with
+  `CORLINMAN_REQUIRE_READ_BEFORE_EDIT=0`.
+
 ## [1.13.2] — 2026-05-30 — Subagent persona-state seeding fix
 
 ### Fixed

@@ -21,6 +21,8 @@ from pathlib import Path
 
 import httpx
 
+from corlinman_channels.common import split_on_msg_break
+
 __all__ = [
     "MAX_UPLOAD_BYTES",
     "PhotoSource",
@@ -245,17 +247,26 @@ class TelegramSender:
         the caller is responsible for the cap. ``text`` on the button
         face is the user-visible label (no Telegram-side cap beyond the
         4096-char message body).
+
+        Text containing ``[MSG_BREAK]`` markers is split into multiple
+        bubbles sent sequentially; the last message id is returned.
         """
-        body: dict[str, object] = {"chat_id": chat_id, "text": text}
-        if reply_to_message_id is not None:
-            body["reply_to_message_id"] = reply_to_message_id
-        if inline_keyboard:
-            body["reply_markup"] = {"inline_keyboard": inline_keyboard}
-        try:
-            resp = await self.client.post(self._endpoint("sendMessage"), json=body)
-        except httpx.HTTPError as exc:
-            raise SendHttpError(str(exc)) from exc
-        return await _parse_envelope(resp)
+        bubbles = split_on_msg_break(text)
+        last_id = 0
+        for i, bubble in enumerate(bubbles):
+            body: dict[str, object] = {"chat_id": chat_id, "text": bubble}
+            # Only thread reply_to on the first bubble so the chain reads naturally.
+            if reply_to_message_id is not None and i == 0:
+                body["reply_to_message_id"] = reply_to_message_id
+            # Inline keyboard attaches only to the last bubble.
+            if inline_keyboard and i == len(bubbles) - 1:
+                body["reply_markup"] = {"inline_keyboard": inline_keyboard}
+            try:
+                resp = await self.client.post(self._endpoint("sendMessage"), json=body)
+            except httpx.HTTPError as exc:
+                raise SendHttpError(str(exc)) from exc
+            last_id = await _parse_envelope(resp)
+        return last_id
 
     async def answer_callback_query(
         self,

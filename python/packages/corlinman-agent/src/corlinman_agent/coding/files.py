@@ -11,7 +11,9 @@ Each ``dispatch_*`` returns a JSON envelope string for
 
 from __future__ import annotations
 
+import base64
 import json
+import mimetypes
 import os
 from pathlib import Path
 from typing import Any
@@ -36,6 +38,23 @@ from corlinman_agent.coding._filestate import FileState
 # protection on that platform.
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
+
+def _require_read_before_edit() -> bool:
+    """Claude-Code-style read-before-edit guard toggle.
+
+    When a :class:`FileState` is threaded (the production agent path),
+    refuse to edit an existing file the model never read (or wrote) this
+    turn — a blind edit to unseen bytes is the classic destructive
+    footgun. Default on; set ``CORLINMAN_REQUIRE_READ_BEFORE_EDIT=0``
+    (``false``/``no``) to disable, e.g. for tooling that edits files it
+    produced out-of-band. Read at call time so tests/operators can flip
+    it via the environment.
+    """
+    return os.environ.get(
+        "CORLINMAN_REQUIRE_READ_BEFORE_EDIT", "1"
+    ).strip().lower() not in {"0", "false", "no", ""}
+
+
 logger = structlog.get_logger(__name__)
 
 READ_FILE_TOOL: str = "read_file"
@@ -45,6 +64,24 @@ LIST_FILES_TOOL: str = "list_files"
 
 #: Directory entries never surfaced by ``list_files`` — noise / unsafe.
 _LIST_SKIP = {".git", "__pycache__", "node_modules", ".venv", ".mypy_cache"}
+
+#: File extensions treated as binary image files by ``read_file``.
+#: Reading these as UTF-8 text would produce garbage; instead the tool
+#: encodes them as base64 and returns a multimodal content-block list so
+#: vision models can see the image inline in the tool-result turn.
+IMAGE_EXTENSIONS: frozenset[str] = frozenset(
+    {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+)
+
+#: Explicit MIME overrides for the most common image formats; falls back
+#: to :func:`mimetypes.guess_type` for anything not in this table.
+_IMAGE_MIME: dict[str, str] = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -58,9 +95,11 @@ def read_file_tool_schema() -> dict[str, Any]:
         "function": {
             "name": READ_FILE_TOOL,
             "description": (
-                "Read a UTF-8 text file from the agent workspace. Returns "
-                "the file content with 1-based line numbers. Use offset/limit "
-                "to page through large files."
+                "Read a file from the agent workspace. Text files return "
+                "content with 1-based line numbers; use offset/limit to page "
+                "through large files. Image files (.png, .jpg, .jpeg, .gif, "
+                ".webp) are returned as a base64-encoded image content block "
+                "so vision models can inspect them directly."
             ),
             "parameters": {
                 "type": "object",
@@ -190,8 +229,19 @@ def dispatch_read_file(
     args_json: bytes | str,
     workspace: Path | None = None,
     state: FileState | None = None,
-) -> str:
-    """Read a workspace file. Returns a JSON envelope; never raises.
+) -> str | list[dict[str, Any]]:
+    """Read a workspace file. Returns a JSON envelope (str) for text files or a
+    multimodal content-block list for image files; never raises.
+
+    **Text files** — returns a JSON string with line-numbered content plus
+    pagination metadata (same as before).
+
+    **Image files** (.png, .jpg, .jpeg, .gif, .webp) — returns a
+    ``list[dict]`` containing a single ``image_url`` content block with the
+    image encoded as a ``data:`` URL.  Callers that only handle ``str`` results
+    will receive the list unchanged; the reasoning-loop's
+    :func:`_extend_with_tool_round` forwards it verbatim to the provider so
+    vision models see the image inline.
 
     When a per-turn ``state`` is supplied and the file's mtime is
     unchanged since the previous read in this turn, the cached content
@@ -211,6 +261,29 @@ def dispatch_read_file(
         return _err({"path": raw.get("path"), "error": "file_not_found"})
     if not path.is_file():
         return _err({"path": raw.get("path"), "error": "not_a_file"})
+
+    # --- Image files: encode as base64 content-block list ---------------
+    # Binary image data cannot be decoded as UTF-8 and is useless as text
+    # to a vision model anyway. Return a multimodal content-block list so
+    # the provider sees the image inline in the tool-result turn.
+    if path.suffix.lower() in IMAGE_EXTENSIONS:
+        try:
+            raw_bytes = path.read_bytes()
+        except OSError as exc:
+            return _err({"path": raw.get("path"), "error": f"read_failed: {exc}"})
+        suffix_lower = path.suffix.lower()
+        mime = _IMAGE_MIME.get(suffix_lower)
+        if mime is None:
+            guessed, _ = mimetypes.guess_type(path.name)
+            mime = guessed or "application/octet-stream"
+        b64 = base64.b64encode(raw_bytes).decode("ascii")
+        data_url = f"data:{mime};base64,{b64}"
+        return [
+            {
+                "type": "image_url",
+                "image_url": {"url": data_url},
+            }
+        ]
 
     offset = raw.get("offset", 1)
     limit = raw.get("limit", 500)
@@ -241,18 +314,32 @@ def dispatch_read_file(
         f"{offset + i}\t{ln}" for i, ln in enumerate(chunk)
     )
     truncated = len(numbered) > MAX_READ_CHARS
+    result: dict[str, Any] = {
+        "path": workspace_rel(ws, path),
+        "content": numbered,
+        "lines": total,
+        "shown": [offset, min(offset + limit - 1, total)],
+        "truncated": truncated,
+    }
     if truncated:
-        numbered = numbered[:MAX_READ_CHARS]
-    return json.dumps(
-        {
-            "path": workspace_rel(ws, path),
-            "content": numbered,
-            "lines": total,
-            "shown": [offset, min(offset + limit - 1, total)],
-            "truncated": truncated,
-        },
-        ensure_ascii=False,
-    )
+        # Don't silently hand back a head slice with no way forward —
+        # the model would just re-read the same head. Cut on a line
+        # boundary, report exactly which lines survived, and point at
+        # the next offset so a follow-up read continues instead of
+        # repeating. (`search_files` is the better tool for jumping to a
+        # known section; the hint says so.)
+        kept = numbered[:MAX_READ_CHARS]
+        complete_lines = kept.count("\n")  # fully-terminated numbered lines
+        next_offset = offset + complete_lines
+        result["content"] = kept
+        result["shown"] = [offset, max(offset, next_offset - 1)]
+        result["next_offset"] = next_offset if next_offset <= total else None
+        result["hint"] = (
+            f"output truncated at {MAX_READ_CHARS} chars — continue from "
+            "next_offset, narrow with offset/limit, or use search_files to "
+            "jump to the relevant section"
+        )
+    return json.dumps(result, ensure_ascii=False)
 
 
 def dispatch_write_file(
@@ -317,7 +404,11 @@ def dispatch_write_file(
     except OSError as exc:
         return _err({"path": raw.get("path"), "error": f"write_failed: {exc}"})
     if state is not None:
+        # Invalidate the stale read cache but mark the path seen — the
+        # agent authored these bytes, so it may edit the file this turn
+        # without a redundant read first.
         state.forget(path)
+        state.mark_seen(path)
     return json.dumps(
         {
             "path": workspace_rel(ws, path),
@@ -430,6 +521,25 @@ def dispatch_edit_file(
     if not path.is_file():
         return _err({"path": raw.get("path"), "error": "file_not_found"})
 
+    # Read-before-edit guard: an edit to an existing file the agent never
+    # observed this turn is a blind mutation of unseen bytes. Only enforced
+    # when a FileState is threaded (the production path); state=None callers
+    # (most unit tests, ad-hoc tooling) are unaffected.
+    if (
+        state is not None
+        and _require_read_before_edit()
+        and not state.was_seen(path)
+    ):
+        return _err(
+            {
+                "path": raw.get("path"),
+                "error": (
+                    "file_not_read: read the file before editing it — call "
+                    "read_file first so the edit matches the current bytes"
+                ),
+            }
+        )
+
     if state is not None and state.is_stale(path):
         return _err(
             {"path": raw.get("path"), "error": "file_changed_since_read"}
@@ -521,7 +631,10 @@ def dispatch_edit_file(
     except OSError as exc:
         return _err({"path": raw.get("path"), "error": f"write_failed: {exc}"})
     if state is not None:
+        # Drop the stale cache entry but keep the path "seen" — the agent
+        # just edited it, so a follow-up edit this turn is legitimate.
         state.forget(path)
+        state.mark_seen(path)
     payload: dict[str, Any] = {
         "path": workspace_rel(ws, path),
         "replacements": replacements,
@@ -572,6 +685,7 @@ def dispatch_list_files(
 
 __all__ = [
     "EDIT_FILE_TOOL",
+    "IMAGE_EXTENSIONS",
     "LIST_FILES_TOOL",
     "READ_FILE_TOOL",
     "WRITE_FILE_TOOL",

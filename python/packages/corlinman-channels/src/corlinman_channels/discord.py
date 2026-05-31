@@ -67,6 +67,7 @@ from corlinman_channels.common import (
     ConfigError,
     InboundEvent,
     TransportError,
+    split_on_msg_break,
 )
 
 __all__ = [
@@ -537,32 +538,40 @@ class DiscordSender:
         text: str,
         reply_to_message_id: str | None = None,
     ) -> str:
-        """POST ``/channels/{id}/messages``. Returns the new message id.
+        """POST ``/channels/{id}/messages``. Returns the last new message id.
 
         When ``reply_to_message_id`` is supplied the message is posted as
         an inline reply via ``message_reference`` so the addressing stays
         clear in the channel — parallel to the Telegram ``reply_to``.
+
+        Text containing ``[MSG_BREAK]`` markers is split into multiple
+        bubbles sent sequentially; only the first bubble carries the reply
+        reference. The last message id is returned.
         """
-        body: dict[str, Any] = {"content": text}
-        if reply_to_message_id is not None:
-            body["message_reference"] = {"message_id": reply_to_message_id}
-        try:
-            resp = await self.client.post(
-                f"{self.base}/channels/{channel_id}/messages",
-                json=body,
-                headers={"Authorization": f"Bot {self.token}"},
-            )
-        except httpx.HTTPError as exc:
-            raise TransportError(f"discord sendMessage failed: {exc}") from exc
-        if resp.status_code >= 400:
-            raise TransportError(
-                f"discord sendMessage HTTP {resp.status_code}: {resp.text}"
-            )
-        try:
-            env = resp.json()
-        except ValueError as exc:
-            raise TransportError(f"discord sendMessage invalid JSON: {exc}") from exc
-        return str(env.get("id", "")) if isinstance(env, dict) else ""
+        bubbles = split_on_msg_break(text)
+        last_id = ""
+        for i, bubble in enumerate(bubbles):
+            body: dict[str, Any] = {"content": bubble}
+            if reply_to_message_id is not None and i == 0:
+                body["message_reference"] = {"message_id": reply_to_message_id}
+            try:
+                resp = await self.client.post(
+                    f"{self.base}/channels/{channel_id}/messages",
+                    json=body,
+                    headers={"Authorization": f"Bot {self.token}"},
+                )
+            except httpx.HTTPError as exc:
+                raise TransportError(f"discord sendMessage failed: {exc}") from exc
+            if resp.status_code >= 400:
+                raise TransportError(
+                    f"discord sendMessage HTTP {resp.status_code}: {resp.text}"
+                )
+            try:
+                env = resp.json()
+            except ValueError as exc:
+                raise TransportError(f"discord sendMessage invalid JSON: {exc}") from exc
+            last_id = str(env.get("id", "")) if isinstance(env, dict) else ""
+        return last_id
 
     async def trigger_typing(self, channel_id: str) -> None:
         """POST ``/channels/{id}/typing``. Shows "<Bot> is typing…" for

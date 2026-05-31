@@ -259,6 +259,12 @@ class InboundAdapter(Protocol):
         ...
 
 
+def split_on_msg_break(text: str) -> list[str]:
+    """Split on the [MSG_BREAK] persona marker into separate message bubbles."""
+    parts = [p.strip() for p in text.split("[MSG_BREAK]") if p.strip()]
+    return parts if parts else [text]
+
+
 __all__ = [
     "Attachment",
     "AttachmentKind",
@@ -270,4 +276,5 @@ __all__ = [
     "TransportError",
     "UnsupportedError",
     "UserId",
+    "split_on_msg_break",
 ]

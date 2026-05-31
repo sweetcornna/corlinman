@@ -130,6 +130,7 @@ from corlinman_channels.commands import (
     run_command_handler,
 )
 from corlinman_channels.common import InboundEvent, TransportError
+from corlinman_channels.common import split_on_msg_break as _split_on_msg_break
 from corlinman_channels.discord import (
     DEFAULT_GATEWAY_URL,
     DEFAULT_REST_BASE,
@@ -1321,27 +1322,33 @@ async def handle_one_qq(
     # on natural boundaries below that — same behaviour as Telegram /
     # Discord / Slack / Feishu — instead of letting NapCat silently
     # cut off the reply.
-    chunks = chunk_reply(body, _QQ_TEXT_LIMIT)
-    # Surface the shareable agent-status link on the LAST chunk (one per
-    # turn), when the feature is configured. Dropped gracefully by
-    # ``try_append_footer`` if attaching would overflow the QQ cap.
+    #
+    # [MSG_BREAK] bubble-split: if the body contains the persona marker,
+    # send each segment as a separate QQ message with a short pause.
+    bubbles = _split_on_msg_break(body)
     _qq_status_line = _status_link_line(req.binding.session_key())
-    if _qq_status_line and chunks:
-        chunks[-1] = try_append_footer(
-            chunks[-1], _qq_status_line, _QQ_TEXT_LIMIT
-        )
-    if len(chunks) > 1:
-        _log.info(
-            "qq reply split user=%s len=%d chunks=%d",
-            event.user_id,
-            len(body),
-            len(chunks),
-        )
-    for idx, chunk in enumerate(chunks):
-        action = _build_reply_action(
-            event, chunk, prepend_at_mention=(idx == 0)
-        )
-        await adapter.send_action(action)
+    for bubble_idx, bubble in enumerate(bubbles):
+        chunks = chunk_reply(bubble, _QQ_TEXT_LIMIT)
+        # Surface the shareable agent-status link on the LAST chunk of the
+        # LAST bubble only (one link per turn).
+        if _qq_status_line and chunks and bubble_idx == len(bubbles) - 1:
+            chunks[-1] = try_append_footer(
+                chunks[-1], _qq_status_line, _QQ_TEXT_LIMIT
+            )
+        if len(chunks) > 1:
+            _log.info(
+                "qq reply split user=%s len=%d chunks=%d",
+                event.user_id,
+                len(bubble),
+                len(chunks),
+            )
+        for idx, chunk in enumerate(chunks):
+            action = _build_reply_action(
+                event, chunk, prepend_at_mention=(idx == 0 and bubble_idx == 0)
+            )
+            await adapter.send_action(action)
+        if bubble_idx < len(bubbles) - 1:
+            await asyncio.sleep(0.3)
     if inbox is not None and inbox_id is not None:
         try:
             await inbox.mark_done(inbox_id)
@@ -2478,69 +2485,111 @@ async def handle_one_telegram(
     # the logger instead of propagating, so a 429 or "blocked by user"
     # at the very end never crashes the channel loop.
     #
-    # Multi-message split: when the body exceeds Telegram's
-    # editMessageText limit we no longer truncate with a "[已截断]"
-    # marker — we split on natural boundaries and send chunks 2..N as
-    # follow-up sendMessage calls keyed to the original reply target,
-    # so the user gets the full response.
-    chunks = _chunk_for_telegram(body)
-    # W4.1 — append the post-turn observability footer to the LAST chunk
-    # only (one footer per turn). ``try_append_footer`` drops it
-    # gracefully if attaching would push the chunk past the cap.
+    # [MSG_BREAK] bubble-split: split on the persona bubble-break marker
+    # first, then apply Telegram's char-limit chunking within each bubble.
+    # The placeholder edit applies to the first chunk of the first bubble
+    # only; subsequent bubbles are always fresh sendMessage calls.
+    bubbles = _split_on_msg_break(body)
     footer = _build_footer_for_outcome(
         outcome, footer_state, session_key=inbound.binding.session_key()
     )
-    if footer:
-        chunks[-1] = try_append_footer(chunks[-1], footer, _TELEGRAM_TEXT_LIMIT)
-
-    # If the agent called ``ask_user`` with canned options, surface them
-    # as a clickable inline keyboard on the final reply. We send a fresh
-    # message (rather than editing the placeholder) because the bot API
-    # does NOT support ``editMessageText`` + ``inline_keyboard`` on a
-    # message that was sent without one — the cleaner path is a new
-    # send, and the placeholder is overwritten with a benign final
-    # status line so the user isn't left looking at "✍️ 生成回复中...".
-    # When the body splits across multiple chunks we keep the keyboard
-    # on the last (or only) chunk so the buttons sit visually after the
-    # final reply text.
     keyboard = _build_ask_user_keyboard(spinner.last_ask_user_args)
+
+    # keyboard path — ask_user inline buttons attach to the last chunk of
+    # the last bubble so the buttons sit visually after all reply text.
     if keyboard is not None:
         try:
-            # Edit the placeholder with chunk 0 (no buttons; buttons
-            # land on the final send below).
-            if placeholder_id is not None:
-                await sender.edit_message_text(
-                    chat_id, placeholder_id, chunks[0]
+            all_bubble_chunks = [_chunk_for_telegram(b) for b in bubbles]
+            # footer on the last chunk of the last bubble
+            if footer and all_bubble_chunks:
+                all_bubble_chunks[-1][-1] = try_append_footer(
+                    all_bubble_chunks[-1][-1], footer, _TELEGRAM_TEXT_LIMIT
                 )
-            # Middle chunks (if any) as plain follow-ups.
-            for chunk in chunks[1:-1]:
-                await sender.send_message(
-                    chat_id, chunk, reply_to_message_id=reply_to
-                )
-            # Last chunk carries the keyboard.
-            await sender.send_message(
-                chat_id,
-                chunks[-1] if len(chunks) > 1 else chunks[0],
-                reply_to_message_id=reply_to,
-                inline_keyboard=keyboard,
-            )
+            for b_idx, b_chunks in enumerate(all_bubble_chunks):
+                is_first_bubble = b_idx == 0
+                is_last_bubble = b_idx == len(all_bubble_chunks) - 1
+                if is_first_bubble and placeholder_id is not None:
+                    # Edit the placeholder with bubble-0 chunk-0.
+                    # When this is also the last bubble, the keyboard goes on
+                    # the very last chunk — which may be the same chunk-0 or
+                    # a later follow-up.
+                    if is_last_bubble:
+                        # Single bubble: edit placeholder with all but last
+                        # chunk, then send last chunk with keyboard.
+                        await sender.edit_message_text(
+                            chat_id, placeholder_id, b_chunks[0]
+                        )
+                        for chunk in b_chunks[1:-1]:
+                            await sender.send_message(
+                                chat_id, chunk, reply_to_message_id=reply_to
+                            )
+                        # Send last chunk (may equal b_chunks[0] if only one
+                        # chunk) with the keyboard.
+                        final_chunk = b_chunks[-1] if len(b_chunks) > 1 else b_chunks[0]
+                        await sender.send_message(
+                            chat_id,
+                            final_chunk,
+                            reply_to_message_id=reply_to,
+                            inline_keyboard=keyboard,
+                        )
+                    else:
+                        # More bubbles follow: edit placeholder, send remaining
+                        # chunks of this bubble (no keyboard yet).
+                        await sender.edit_message_text(
+                            chat_id, placeholder_id, b_chunks[0]
+                        )
+                        for chunk in b_chunks[1:]:
+                            await sender.send_message(
+                                chat_id, chunk, reply_to_message_id=reply_to
+                            )
+                elif is_last_bubble:
+                    # Middle chunks of last bubble (no buttons yet).
+                    for chunk in b_chunks[:-1]:
+                        await sender.send_message(
+                            chat_id, chunk, reply_to_message_id=reply_to
+                        )
+                    # Very last chunk carries the keyboard.
+                    await sender.send_message(
+                        chat_id,
+                        b_chunks[-1],
+                        reply_to_message_id=reply_to,
+                        inline_keyboard=keyboard,
+                    )
+                else:
+                    for chunk in b_chunks:
+                        await sender.send_message(
+                            chat_id, chunk, reply_to_message_id=reply_to
+                        )
+                if not is_last_bubble:
+                    await asyncio.sleep(0.3)
             telegram_record_reply_sent(inbound, inbound_ts_ms=inbound_ts_ms)
         except Exception as exc:  # noqa: BLE001
             _log.warning("telegram final emit with buttons failed: %s", exc)
         return
 
     try:
-        if placeholder_id is not None:
-            await sender.edit_message_text(chat_id, placeholder_id, chunks[0])
-        else:
-            await sender.send_message(
-                chat_id, chunks[0], reply_to_message_id=reply_to
+        all_bubble_chunks = [_chunk_for_telegram(b) for b in bubbles]
+        # W4.1 footer on the last chunk of the last bubble only.
+        if footer and all_bubble_chunks:
+            all_bubble_chunks[-1][-1] = try_append_footer(
+                all_bubble_chunks[-1][-1], footer, _TELEGRAM_TEXT_LIMIT
             )
-        # Follow-up chunks (only when the body actually split).
-        for chunk in chunks[1:]:
-            await sender.send_message(
-                chat_id, chunk, reply_to_message_id=reply_to
-            )
+        for b_idx, b_chunks in enumerate(all_bubble_chunks):
+            is_first_bubble = b_idx == 0
+            is_last_bubble = b_idx == len(all_bubble_chunks) - 1
+            if is_first_bubble and placeholder_id is not None:
+                await sender.edit_message_text(chat_id, placeholder_id, b_chunks[0])
+                for chunk in b_chunks[1:]:
+                    await sender.send_message(
+                        chat_id, chunk, reply_to_message_id=reply_to
+                    )
+            else:
+                for chunk in b_chunks:
+                    await sender.send_message(
+                        chat_id, chunk, reply_to_message_id=reply_to
+                    )
+            if not is_last_bubble:
+                await asyncio.sleep(0.3)
         telegram_record_reply_sent(inbound, inbound_ts_ms=inbound_ts_ms)
     except Exception as exc:  # noqa: BLE001
         _log.warning("telegram final emit failed: %s", exc)
@@ -3115,27 +3164,39 @@ async def handle_one_discord(
                     _log.warning("discord final emit failed: %s", exc)
             return
 
-    chunks = chunk_reply(body, _DISCORD_TEXT_LIMIT)
-    if len(chunks) > 1:
-        _log.info(
-            "discord reply split len=%d chunks=%d", len(body), len(chunks)
-        )
+    # [MSG_BREAK] bubble-split: split on the persona bubble-break marker,
+    # then apply Discord's char-limit chunking within each bubble.
+    bubbles = _split_on_msg_break(body)
     footer = _build_footer_for_outcome(
         outcome, footer_state, session_key=inbound.binding.session_key()
     )
-    if footer:
-        chunks[-1] = try_append_footer(chunks[-1], footer, _DISCORD_TEXT_LIMIT)
     try:
-        if placeholder_id is not None:
-            await sender.edit_message(channel_id, placeholder_id, chunks[0])
-        else:
-            await sender.send_message(
-                channel_id, chunks[0], reply_to_message_id=reply_to
+        all_bubble_chunks = [chunk_reply(b, _DISCORD_TEXT_LIMIT) for b in bubbles]
+        # footer on the last chunk of the last bubble only.
+        if footer and all_bubble_chunks:
+            all_bubble_chunks[-1][-1] = try_append_footer(
+                all_bubble_chunks[-1][-1], footer, _DISCORD_TEXT_LIMIT
             )
-        for chunk in chunks[1:]:
-            await sender.send_message(
-                channel_id, chunk, reply_to_message_id=reply_to
-            )
+        for b_idx, b_chunks in enumerate(all_bubble_chunks):
+            is_first_bubble = b_idx == 0
+            is_last_bubble = b_idx == len(all_bubble_chunks) - 1
+            if len(b_chunks) > 1:
+                _log.info(
+                    "discord reply split len=%d chunks=%d", len(bubbles[b_idx]), len(b_chunks)
+                )
+            if is_first_bubble and placeholder_id is not None:
+                await sender.edit_message(channel_id, placeholder_id, b_chunks[0])
+                for chunk in b_chunks[1:]:
+                    await sender.send_message(
+                        channel_id, chunk, reply_to_message_id=reply_to
+                    )
+            else:
+                for chunk in b_chunks:
+                    await sender.send_message(
+                        channel_id, chunk, reply_to_message_id=reply_to
+                    )
+            if not is_last_bubble:
+                await asyncio.sleep(0.3)
         # Admin health: count a successful outbound + mark the inbound
         # entry responded.
         _channel_record_sent(DISCORD_HEALTH)
@@ -3386,23 +3447,35 @@ async def handle_one_slack(
                     _log.warning("slack final emit failed: %s", exc)
             return
 
-    chunks = chunk_reply(body, _SLACK_TEXT_LIMIT)
-    if len(chunks) > 1:
-        _log.info(
-            "slack reply split len=%d chunks=%d", len(body), len(chunks)
-        )
+    # [MSG_BREAK] bubble-split: split on the persona bubble-break marker,
+    # then apply Slack's char-limit chunking within each bubble.
+    bubbles = _split_on_msg_break(body)
     footer = _build_footer_for_outcome(
         outcome, footer_state, session_key=inbound.binding.session_key()
     )
-    if footer:
-        chunks[-1] = try_append_footer(chunks[-1], footer, _SLACK_TEXT_LIMIT)
     try:
-        if placeholder_ts is not None:
-            await sender.update_message(channel, placeholder_ts, chunks[0])
-        else:
-            await sender.send_message(channel, chunks[0], thread_ts=thread_ts)
-        for chunk in chunks[1:]:
-            await sender.send_message(channel, chunk, thread_ts=thread_ts)
+        all_bubble_chunks = [chunk_reply(b, _SLACK_TEXT_LIMIT) for b in bubbles]
+        # footer on the last chunk of the last bubble only.
+        if footer and all_bubble_chunks:
+            all_bubble_chunks[-1][-1] = try_append_footer(
+                all_bubble_chunks[-1][-1], footer, _SLACK_TEXT_LIMIT
+            )
+        for b_idx, b_chunks in enumerate(all_bubble_chunks):
+            is_first_bubble = b_idx == 0
+            is_last_bubble = b_idx == len(all_bubble_chunks) - 1
+            if len(b_chunks) > 1:
+                _log.info(
+                    "slack reply split len=%d chunks=%d", len(bubbles[b_idx]), len(b_chunks)
+                )
+            if is_first_bubble and placeholder_ts is not None:
+                await sender.update_message(channel, placeholder_ts, b_chunks[0])
+                for chunk in b_chunks[1:]:
+                    await sender.send_message(channel, chunk, thread_ts=thread_ts)
+            else:
+                for chunk in b_chunks:
+                    await sender.send_message(channel, chunk, thread_ts=thread_ts)
+            if not is_last_bubble:
+                await asyncio.sleep(0.3)
         # Admin health: count a successful outbound + mark the inbound
         # entry responded.
         _channel_record_sent(SLACK_HEALTH)
@@ -3655,27 +3728,39 @@ async def handle_one_feishu(
                     _log.warning("feishu final emit failed: %s", exc)
             return
 
-    chunks = chunk_reply(body, _FEISHU_TEXT_LIMIT)
-    if len(chunks) > 1:
-        _log.info(
-            "feishu reply split len=%d chunks=%d", len(body), len(chunks)
-        )
+    # [MSG_BREAK] bubble-split: split on the persona bubble-break marker,
+    # then apply Feishu's char-limit chunking within each bubble.
+    bubbles = _split_on_msg_break(body)
     footer = _build_footer_for_outcome(
         outcome, footer_state, session_key=inbound.binding.session_key()
     )
-    if footer:
-        chunks[-1] = try_append_footer(chunks[-1], footer, _FEISHU_TEXT_LIMIT)
     try:
-        if placeholder_id is not None:
-            await sender.update_message(placeholder_id, chunks[0])
-        else:
-            await sender.send_message(
-                chat_id, chunks[0], reply_to_message_id=reply_to
+        all_bubble_chunks = [chunk_reply(b, _FEISHU_TEXT_LIMIT) for b in bubbles]
+        # footer on the last chunk of the last bubble only.
+        if footer and all_bubble_chunks:
+            all_bubble_chunks[-1][-1] = try_append_footer(
+                all_bubble_chunks[-1][-1], footer, _FEISHU_TEXT_LIMIT
             )
-        for chunk in chunks[1:]:
-            await sender.send_message(
-                chat_id, chunk, reply_to_message_id=reply_to
-            )
+        for b_idx, b_chunks in enumerate(all_bubble_chunks):
+            is_first_bubble = b_idx == 0
+            is_last_bubble = b_idx == len(all_bubble_chunks) - 1
+            if len(b_chunks) > 1:
+                _log.info(
+                    "feishu reply split len=%d chunks=%d", len(bubbles[b_idx]), len(b_chunks)
+                )
+            if is_first_bubble and placeholder_id is not None:
+                await sender.update_message(placeholder_id, b_chunks[0])
+                for chunk in b_chunks[1:]:
+                    await sender.send_message(
+                        chat_id, chunk, reply_to_message_id=reply_to
+                    )
+            else:
+                for chunk in b_chunks:
+                    await sender.send_message(
+                        chat_id, chunk, reply_to_message_id=reply_to
+                    )
+            if not is_last_bubble:
+                await asyncio.sleep(0.3)
         # Admin health: count a successful outbound + mark the inbound
         # entry responded.
         _channel_record_sent(FEISHU_HEALTH)
@@ -4082,11 +4167,20 @@ async def handle_one_qq_official(
         return
     # Append the shareable agent-status link when configured (empty-safe).
     _qqo_status_line = _status_link_line(inbound.binding.session_key())
-    if _qqo_status_line:
-        final = try_append_footer(final, _qqo_status_line)
 
+    # [MSG_BREAK] bubble-split: send each persona bubble as a separate
+    # QQ Official message with a short pause between them. The status link
+    # is appended to the last bubble only.
+    bubbles = _split_on_msg_break(final)
     try:
-        await _qq_official_send_text(sender, inbound, final)
+        for b_idx, bubble in enumerate(bubbles):
+            is_last_bubble = b_idx == len(bubbles) - 1
+            bubble_text = bubble
+            if _qqo_status_line and is_last_bubble:
+                bubble_text = try_append_footer(bubble_text, _qqo_status_line)
+            await _qq_official_send_text(sender, inbound, bubble_text)
+            if not is_last_bubble:
+                await asyncio.sleep(0.3)
     except Exception as exc:  # noqa: BLE001
         _log.warning("qq_official final send failed: %s", exc)
         if inbox is not None and inbox_id is not None:
@@ -4370,16 +4464,27 @@ async def handle_one_wechat_official(
     # Append the shareable status link to the customer-service push (NOT the
     # length-capped passive XML), so the user gets a live trajectory link.
     _wx_status_line = _status_link_line(inbound.binding.session_key())
-    if _wx_status_line and push_body:
-        push_body = try_append_footer(push_body, _wx_status_line)
     if push_body and push_body.strip():
-        try:
-            await sender.send_text_customer(openid, push_body)
-        except Exception as exc:
-            _log.warning(
-                "wechat_official customer/send failed user=%s err=%s",
-                openid, exc,
-            )
+        # [MSG_BREAK] bubble-split: send each persona bubble as a separate
+        # WeChat customer-service message with a short pause between them.
+        # The status link is appended to the last bubble only.
+        push_bubbles = _split_on_msg_break(push_body)
+        for pb_idx, bubble in enumerate(push_bubbles):
+            is_last = pb_idx == len(push_bubbles) - 1
+            bubble_text = bubble
+            if _wx_status_line and is_last:
+                bubble_text = try_append_footer(bubble_text, _wx_status_line)
+            if not bubble_text.strip():
+                continue
+            try:
+                await sender.send_text_customer(openid, bubble_text)
+            except Exception as exc:
+                _log.warning(
+                    "wechat_official customer/send failed user=%s err=%s",
+                    openid, exc,
+                )
+            if not is_last:
+                await asyncio.sleep(0.3)
 
 
 # ---------------------------------------------------------------------------

@@ -2148,6 +2148,40 @@ def build_app(
             watcher_task = _start_config_watcher(app, state, config_path)
             if watcher_task is not None:
                 background.append(watcher_task)
+            # Bridge: publish the live ConfigWatcher onto admin_b_state so
+            # ``POST /admin/config/reload`` (which reads
+            # ``state.extras["config_watcher"]`` from the AdminState
+            # singleton) can drive a manual reload.  Without this copy the
+            # endpoint always returns 503 ``config_reload_disabled`` even
+            # though a real watcher is running.
+            _watcher_instance = getattr(state, "config_watcher", None)
+            if _watcher_instance is not None and admin_b_state is not None:
+                with suppress(AttributeError, TypeError):
+                    admin_b_state.extras["config_watcher"] = _watcher_instance
+                # Also wire ``config_swap_fn`` so that
+                # ``POST /admin/config`` (manual TOML edit + write-to-disk)
+                # can update the live snapshot on AppState *and* inside the
+                # ConfigWatcher's internal ArcSwap-equivalent
+                # (_AtomicSnapshot).  The watcher's ``on_reload`` callback
+                # already handles fs-triggered reloads; ``config_swap_fn``
+                # is the admin-POST path where the new TOML is written
+                # *by the operator* rather than detected by the fs watcher.
+                def _config_swap_fn(new_cfg: Any) -> None:
+                    with suppress(AttributeError, TypeError):
+                        state.config = new_cfg
+                    with suppress(AttributeError, TypeError):
+                        app.state.corlinman_config = new_cfg
+                    _snap = getattr(_watcher_instance, "_snapshot", None)
+                    if _snap is not None and hasattr(_snap, "store"):
+                        with suppress(Exception):
+                            _snap.store(new_cfg)
+
+                with suppress(AttributeError, TypeError):
+                    admin_b_state.extras["config_swap_fn"] = _config_swap_fn
+                logger.debug(
+                    "gateway.config_reload.watcher_bridged_to_admin_b",
+                    path=str(config_path),
+                )
         except Exception as exc:  # pragma: no cover — defensive
             logger.warning(
                 "gateway.config_reload.watcher_start_failed", error=str(exc)

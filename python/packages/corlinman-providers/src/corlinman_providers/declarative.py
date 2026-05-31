@@ -193,6 +193,20 @@ class DeclarativeProvider:
         """Return every :class:`ModelSpec` declared by the underlying spec."""
         return list(self._spec.models.values())
 
+    def context_window(self, model: str) -> int | None:
+        """Best-effort context-window (tokens) for the wire id ``model``.
+
+        Returns the declared ``context_length`` of the matching
+        :class:`ModelSpec` (matched by wire ``id``), or ``None`` when this
+        provider doesn't declare ``model``. The agent reasoning loop
+        consults this to size its compaction budget per-model instead of a
+        flat constant; ``None`` simply falls back to that constant.
+        """
+        for spec in self._spec.models.values():
+            if spec.id == model:
+                return spec.context_length
+        return None
+
     @property
     def spec(self) -> DeclarativeProviderSpec:
         return self._spec

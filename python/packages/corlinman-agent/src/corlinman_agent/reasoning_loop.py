@@ -60,6 +60,89 @@ from corlinman_agent.events import Event as TypedEvent
 logger = structlog.get_logger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# WP9: Per-model USD cost coefficients ($ per 1M tokens, ~2026 pricing).
+# Covers the Claude family; unknown models fall through to zero cost.
+# ---------------------------------------------------------------------------
+
+_MODEL_COSTS: dict[str, tuple[float, float, float]] = {
+    # (input_usd_per_1m, output_usd_per_1m, cache_read_usd_per_1m)
+    "claude-opus-4": (15.0, 75.0, 1.5),
+    "claude-sonnet-4-6": (3.0, 15.0, 0.30),
+    "claude-3-7-sonnet": (3.0, 15.0, 0.30),
+    "claude-3-5-sonnet": (3.0, 15.0, 0.30),
+    "claude-3-5-haiku": (0.8, 4.0, 0.08),
+    "claude-3-haiku": (0.25, 1.25, 0.03),
+    "claude-haiku-4-5": (0.8, 4.0, 0.08),
+}
+
+
+def _estimate_turn_cost_usd(model: str, usage: dict[str, int]) -> float:
+    """Return estimated USD cost for one provider call.
+
+    Looks up the model prefix in ``_MODEL_COSTS``; falls back to zero for
+    unknown models. Pure / no-I/O.
+    """
+    # Match by prefix so minor version suffixes don't break lookups.
+    rates: tuple[float, float, float] | None = None
+    for key, vals in _MODEL_COSTS.items():
+        if model.startswith(key) or key in model:
+            rates = vals
+            break
+    if rates is None:
+        return 0.0
+    in_rate, out_rate, cache_rate = rates
+    input_tok = usage.get("input_tokens", 0)
+    output_tok = usage.get("output_tokens", 0)
+    cache_tok = usage.get("cache_read_input_tokens", 0)
+    return (
+        input_tok * in_rate / 1_000_000
+        + output_tok * out_rate / 1_000_000
+        + cache_tok * cache_rate / 1_000_000
+    )
+
+
+# ---------------------------------------------------------------------------
+# WP7: Retry classifier for the reasoning-loop model call.
+# Delegates to the provider error taxonomy defined in corlinman_providers.
+# ---------------------------------------------------------------------------
+
+
+def _loop_retryable(exc: BaseException) -> float | None:
+    """Classify a provider exception for loop-level retry.
+
+    Returns a non-negative float (delay hint in seconds, ``0.0`` = use
+    exponential backoff) when the error is transient; ``None`` when it is
+    permanent and should propagate immediately.
+
+    This classifier is intentionally conservative: only clear HTTP-level
+    transient errors are retried so mid-stream duplicates are impossible
+    (the provider only enters the retry window before the first chunk).
+    """
+    from corlinman_providers.failover import (
+        ContextOverflowError,
+        ModelNotFoundError,
+        OverloadedError,
+        RateLimitError,
+    )
+
+    # Never retry context overflow or model-not-found here — those have
+    # dedicated handling (WP10, WP11) upstream of this classifier.
+    if isinstance(exc, (ContextOverflowError, ModelNotFoundError)):
+        return None
+    if isinstance(exc, RateLimitError):
+        ms = getattr(exc, "retry_after_ms", None)
+        return (ms / 1000.0) if isinstance(ms, int) and ms > 0 else 0.0
+    if isinstance(exc, OverloadedError):
+        return 0.0
+    # Generic HTTP 429/500/502/503/504 in the exception string (openai SDK etc.)
+    msg = str(exc)
+    for code in ("429", "500", "502", "503", "504"):
+        if code in msg:
+            return 0.0
+    return None
+
+
 # Cap on `result_summary` in :class:`ToolStateCompleted`. Plan §1.1
 # constrains this to <= 4 KB — anything larger gets head/tail truncated
 # the same way :func:`_truncate_tool_result` handles the in-history
@@ -164,13 +247,19 @@ class ErrorEvent:
 class ToolResult:
     """Tool-execution result pushed back into the loop by the caller.
 
-    ``content`` is the stringified result payload that becomes the
-    ``content`` of the ``role="tool"`` message appended to the chat
-    history on the next provider call.
+    ``content`` is the result payload that becomes the ``content`` of the
+    ``role="tool"`` message appended to the chat history on the next provider
+    call.  Two shapes are supported:
+
+    * ``str`` — the plain-text / JSON-envelope path used by all existing tools.
+    * ``list[dict[str, Any]]`` — a multimodal content-block list (e.g.
+      ``[{"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}]``).
+      These are forwarded verbatim to the provider without any truncation so the
+      model can see image output inline in the tool-result turn.
     """
 
     call_id: str
-    content: str
+    content: str | list[dict[str, Any]]
     is_error: bool = False
 
 
@@ -218,10 +307,66 @@ _TOOL_RESULT_TAIL_CHARS = 5_000
 # 3 assistant rounds plus the seed system/user messages stay verbatim.
 # Override with ``$CORLINMAN_CONTEXT_BUDGET``; floor mirrors
 # ``_TOOL_RESULT_CAP``'s pattern.
+# Flat fallback budget when neither an operator override nor a
+# model-declared context window is available.
+_CONTEXT_BUDGET_DEFAULT = 120_000
+
+# Operator override. When ``$CORLINMAN_CONTEXT_BUDGET`` is set it PINS the
+# budget for every model (model-aware sizing is skipped); unset → derive
+# per-model from the provider's declared context window (see
+# :func:`_resolve_context_budget`).
+_CONTEXT_BUDGET_ENV_RAW = os.environ.get("CORLINMAN_CONTEXT_BUDGET")
 try:
-    _CONTEXT_BUDGET = max(8_000, int(os.environ.get("CORLINMAN_CONTEXT_BUDGET", "120000")))
+    _CONTEXT_BUDGET_OVERRIDE: int | None = (
+        max(8_000, int(_CONTEXT_BUDGET_ENV_RAW))
+        if _CONTEXT_BUDGET_ENV_RAW is not None
+        else None
+    )
 except ValueError:
-    _CONTEXT_BUDGET = 120_000
+    _CONTEXT_BUDGET_OVERRIDE = None
+
+# Back-compat alias: the resolved flat budget (override if set, else the
+# default). Kept because tests and other modules import this symbol; the
+# live loop now sizes per-model via :func:`_resolve_context_budget`.
+_CONTEXT_BUDGET = _CONTEXT_BUDGET_OVERRIDE or _CONTEXT_BUDGET_DEFAULT
+
+# When deriving the budget from a model's full context window, reserve a
+# slice for the response + safety margin (a fraction, capped in absolute
+# terms so a 1M window doesn't reserve an absurd amount).
+_CONTEXT_OUTPUT_RESERVE_FRACTION = 0.15
+_CONTEXT_OUTPUT_RESERVE_CAP = 48_000
+
+
+def _resolve_context_budget(provider: Any, model: str | None) -> int:
+    """Pick the per-round compaction budget (estimated tokens) for ``model``.
+
+    Precedence:
+
+    1. ``$CORLINMAN_CONTEXT_BUDGET`` operator override — pins every model;
+    2. the provider's declared context window for ``model`` minus a
+       reserved-output margin (model-aware sizing — a 1M-token model no
+       longer compacts at a flat 120k, and a 32k model no longer overflows);
+    3. the flat :data:`_CONTEXT_BUDGET_DEFAULT`.
+
+    Best-effort and never raises: a provider with no ``context_window``
+    accessor, or one returning a non-positive / non-int value, falls
+    through to the default.
+    """
+    if _CONTEXT_BUDGET_OVERRIDE is not None:
+        return _CONTEXT_BUDGET_OVERRIDE
+    accessor = getattr(provider, "context_window", None)
+    if accessor is not None and model:
+        try:
+            window = accessor(model)
+        except Exception:  # noqa: BLE001 — best-effort; never break the loop
+            window = None
+        if isinstance(window, int) and window > 0:
+            reserve = min(
+                int(window * _CONTEXT_OUTPUT_RESERVE_FRACTION),
+                _CONTEXT_OUTPUT_RESERVE_CAP,
+            )
+            return max(8_000, window - reserve)
+    return _CONTEXT_BUDGET_DEFAULT
 
 # Sentinel string written into elided ``role="tool"`` messages. Keep
 # short — it's sub-budget by construction so subsequent
@@ -287,6 +432,42 @@ _SUMMARY_PROMPT = (
 )
 
 
+def _has_cjk(text: str) -> bool:
+    """Return True if ``text`` contains any CJK Unified Ideograph.
+
+    WP20: CJK characters are encoded in 1-4 bytes but each ideograph is
+    typically 1-2 LLM tokens, not the ~0.25 tokens/char the ASCII heuristic
+    assumes. Detecting CJK presence lets :func:`_estimate_chars` scale up
+    the char count so the token budget is not systematically under-estimated
+    for Chinese/Japanese/Korean content.
+
+    Only checks the Basic CJK Unified Ideographs block (U+4E00-U+9FFF) —
+    the superset of characters that accounts for >99% of everyday CJK text.
+    """
+    for ch in text:
+        cp = ord(ch)
+        if 0x4E00 <= cp <= 0x9FFF:
+            return True
+    return False
+
+
+def _cjk_adjusted_chars(text: str) -> int:
+    """Return the CJK-adjusted character weight of ``text``.
+
+    WP20: When ``text`` contains CJK ideographs, multiply the raw character
+    count by 1.5 (conservative correction — each ideograph is ~1-2 tokens vs.
+    the ``chars // 4`` ASCII baseline which would under-count by ~6x).
+
+    For ASCII-only text this returns ``len(text)`` unchanged so existing
+    token estimates are not perturbed.
+    """
+    if not text:
+        return 0
+    if _has_cjk(text):
+        return int(len(text) * 1.5)
+    return len(text)
+
+
 def _estimate_chars(messages: Sequence[dict[str, Any]]) -> int:
     """Sum the user-visible character count across ``messages``.
 
@@ -304,18 +485,23 @@ def _estimate_chars(messages: Sequence[dict[str, Any]]) -> int:
     and divide-by-4 at retrieval time, which gives exact equality with
     ``_estimate_tokens(messages)`` (rather than the off-by-one errors
     you get from summing per-slice ``chars // 4`` results).
+
+    WP20: CJK text is adjusted via :func:`_cjk_adjusted_chars` so that
+    Chinese / Japanese / Korean ideographs are weighted ~1.5x heavier than
+    the flat ``chars // 4`` ASCII heuristic (a CJK char is 1-2 tokens, not
+    0.25 tokens).
     """
     total_chars = 0
     for msg in messages:
         content = msg.get("content")
         if isinstance(content, str):
-            total_chars += len(content)
+            total_chars += _cjk_adjusted_chars(content)
         elif isinstance(content, list):
             for part in content:
                 if isinstance(part, dict):
                     text = part.get("text")
                     if isinstance(text, str):
-                        total_chars += len(text)
+                        total_chars += _cjk_adjusted_chars(text)
         tool_calls = msg.get("tool_calls")
         if isinstance(tool_calls, list):
             for tc in tool_calls:
@@ -325,7 +511,7 @@ def _estimate_chars(messages: Sequence[dict[str, Any]]) -> int:
                 if isinstance(fn, dict):
                     args = fn.get("arguments")
                     if isinstance(args, str):
-                        total_chars += len(args)
+                        total_chars += _cjk_adjusted_chars(args)
     return total_chars
 
 
@@ -687,6 +873,7 @@ class ReasoningLoop:
         *,
         tool_result_timeout: float = 0.05,
         event_emitter: EventEmitter | None = None,
+        fallback_models: list[str] | None = None,
     ) -> None:
         """``provider`` must implement :class:`corlinman_providers.base.CorlinmanProvider`.
 
@@ -697,10 +884,23 @@ class ReasoningLoop:
         every legacy yield through a corresponding
         :class:`EventEnvelope` so live SSE / journal consumers see the
         same stream the channel adapter sees.
+
+        ``fallback_models`` (WP11) is an ordered list of model ids to try
+        when the primary model returns ``ModelNotFoundError`` or a quota
+        error. Defaults to ``["claude-sonnet-4-6", "claude-haiku-4-5"]``
+        when ``None``.
         """
         self._provider = provider
         self._tool_result_timeout = tool_result_timeout
         self._event_emitter = event_emitter
+        # WP11: fallback model chain. Tried in order when the primary model
+        # returns ModelNotFoundError or BillingError on the first attempt.
+        self._fallback_models: list[str] = fallback_models if fallback_models is not None else [
+            "claude-sonnet-4-6",
+            "claude-haiku-4-5",
+        ]
+        # WP9: accumulated session cost in USD across all turns.
+        self._session_cost_usd: float = 0.0
         # Per-turn correlation id + monotonic sequence counter. Reset at
         # the top of every :meth:`run` invocation.
         self._turn_id: str = ""
@@ -764,6 +964,16 @@ class ReasoningLoop:
         ``run()``). Pair with :attr:`turn_id` for observability emit.
         """
         return self._session_key
+
+    @property
+    def session_cost_usd(self) -> float:
+        """WP9: Accumulated estimated USD cost across all turns in this session.
+
+        Updated after each provider round that returns usage data. Zero
+        when the model is not in ``_MODEL_COSTS`` or no usage has been
+        reported yet. Read-only.
+        """
+        return self._session_cost_usd
 
     async def _emit(self, event: TypedEvent) -> None:
         """Wrap ``event`` in an :class:`EventEnvelope` and forward it.
@@ -981,11 +1191,21 @@ class ReasoningLoop:
             list(start.messages), start.attachments
         )
         rounds = 0
+        # Per-model compaction budget: a 1M-token model no longer
+        # compacts at a flat 120k, and a small model no longer overflows.
+        # Stable for the turn (provider + model don't change mid-turn).
+        context_budget = _resolve_context_budget(self._provider, start.model)
         # T1.4: most-recently-seen provider usage across rounds. The
         # outer DoneEvent carries the LAST round's value (the cost meter
         # is called once per turn and pricing-by-final-round matches the
         # provider's own report).
         last_usage: dict[str, int] | None = None
+        # WP9: per-turn accumulated cost (reset each turn so TurnComplete
+        # reflects only this turn's cost; _session_cost_usd accumulates across
+        # all turns on the instance).
+        turn_cost_usd: float = 0.0
+        # WP11: effective model — may switch to a fallback on ModelNotFoundError.
+        effective_model: str = start.model
 
         while rounds < _MAX_ROUNDS:
             if self._cancelled.is_set():
@@ -1026,7 +1246,7 @@ class ReasoningLoop:
             messages_before_compact = messages
             messages = await _compact_history(
                 messages,
-                budget=_CONTEXT_BUDGET,
+                budget=context_budget,
                 provider=self._provider,
                 model=start.model,
                 prev_estimate=prev_estimate,
@@ -1043,39 +1263,164 @@ class ReasoningLoop:
             tool_calls_this_round: list[ToolCallEvent] = []
             finish_reason = "stop"
 
-            try:
-                async for event in self._run_one_round(start, messages):
-                    if isinstance(event, ToolCallEvent):
-                        tool_calls_this_round.append(event)
-                        yield event
-                    elif isinstance(event, DoneEvent):
-                        finish_reason = event.finish_reason
-                        if event.usage is not None:
-                            last_usage = event.usage
-                    elif isinstance(event, ErrorEvent):
-                        await self._emit(
-                            TurnErrored(
-                                reason=event.reason,
-                                message=event.message,
-                                elapsed_ms=self._elapsed_ms(),
-                            )
-                        )
-                        yield event
-                        return
-                    else:
-                        yield event
-            except Exception as exc:
-                logger.warning("reasoning_loop.error", error=str(exc))
-                reason = getattr(exc, "reason", "unknown")
-                await self._emit(
-                    TurnErrored(
-                        reason=reason,
-                        message=str(exc),
-                        elapsed_ms=self._elapsed_ms(),
+            # WP10/WP11: allow one context-overflow shrink-and-retry and one
+            # model-fallback retry per round. These flags ensure we never loop
+            # infinitely on edge cases.
+            _overflow_retried = False
+            _fallback_idx = 0  # next index into self._fallback_models
+
+            # WP7/WP10/WP11: retry state for this round.
+            # Retry is only attempted BEFORE any event has been yielded;
+            # once we start streaming tokens we cannot retry without
+            # duplicating output, so any mid-stream exception falls
+            # through to the normal error path.
+            _retry_attempt = 0
+            _max_retry_attempts = 3
+            _streaming_started = False
+
+            while True:
+                # WP11: rebuild ChatStart with the effective model (may have
+                # changed via fallback on a prior pass of this inner while).
+                _round_start = start if effective_model == start.model else (
+                    ChatStart(
+                        model=effective_model,
+                        messages=start.messages,
+                        tools=start.tools,
+                        session_key=start.session_key,
+                        temperature=start.temperature,
+                        max_tokens=start.max_tokens,
+                        attachments=start.attachments,
+                        extra=start.extra,
                     )
                 )
-                yield ErrorEvent(message=str(exc), reason=reason)
-                return
+                try:
+                    async for event in self._run_one_round(_round_start, messages):
+                        # Once the first event arrives, mark streaming started.
+                        # Any subsequent exception cannot be retried safely.
+                        _streaming_started = True
+                        if isinstance(event, ToolCallEvent):
+                            tool_calls_this_round.append(event)
+                            yield event
+                        elif isinstance(event, DoneEvent):
+                            finish_reason = event.finish_reason
+                            if event.usage is not None:
+                                last_usage = event.usage
+                                # WP9: accumulate cost on every round with usage.
+                                _round_cost = _estimate_turn_cost_usd(
+                                    effective_model, event.usage
+                                )
+                                turn_cost_usd += _round_cost
+                                self._session_cost_usd += _round_cost
+                        elif isinstance(event, ErrorEvent):
+                            await self._emit(
+                                TurnErrored(
+                                    reason=event.reason,
+                                    message=event.message,
+                                    elapsed_ms=self._elapsed_ms(),
+                                )
+                            )
+                            yield event
+                            return
+                        else:
+                            yield event
+                    break  # round completed successfully
+
+                except Exception as exc:
+                    from corlinman_providers.failover import (
+                        BillingError,
+                        ContextOverflowError,
+                        ModelNotFoundError,
+                    )
+
+                    # WP10: context overflow → shrink 20% and retry once
+                    # (only safe before streaming started).
+                    _overflow = (
+                        isinstance(exc, ContextOverflowError)
+                        or "context_length_exceeded" in str(exc)
+                        or "context window" in str(exc).lower()
+                        or "maximum context" in str(exc).lower()
+                    )
+                    if _overflow and not _overflow_retried and not _streaming_started:
+                        _overflow_retried = True
+                        tighter_budget = int(context_budget * 0.80)
+                        logger.warning(
+                            "reasoning_loop.context_overflow_shrink",
+                            original_budget=context_budget,
+                            tighter_budget=tighter_budget,
+                            model=effective_model,
+                        )
+                        context_budget = tighter_budget
+                        messages = await _compact_history(
+                            messages,
+                            budget=context_budget,
+                            provider=self._provider,
+                            model=effective_model,
+                            fast_path_only=True,
+                        )
+                        self._invalidate_token_cache()
+                        tool_calls_this_round = []
+                        _streaming_started = False
+                        continue  # retry with smaller context
+
+                    # WP11: model not found / quota → try next fallback model
+                    # (only safe before streaming started).
+                    _model_fail = isinstance(exc, (ModelNotFoundError, BillingError)) or (
+                        "model_not_found" in str(exc)
+                        or "insufficient_quota" in str(exc)
+                    )
+                    if (
+                        _model_fail
+                        and not _streaming_started
+                        and _fallback_idx < len(self._fallback_models)
+                    ):
+                        _old_model = effective_model
+                        effective_model = self._fallback_models[_fallback_idx]
+                        _fallback_idx += 1
+                        logger.warning(
+                            "reasoning_loop.model_fallback",
+                            from_model=_old_model,
+                            to_model=effective_model,
+                            error=str(exc),
+                        )
+                        tool_calls_this_round = []
+                        _streaming_started = False
+                        continue  # retry with fallback model
+
+                    # WP7: transient 429/5xx retry before streaming started.
+                    _delay = _loop_retryable(exc)
+                    if (
+                        _delay is not None
+                        and not _streaming_started
+                        and _retry_attempt < _max_retry_attempts - 1
+                    ):
+                        _retry_attempt += 1
+                        _backoff = (
+                            _delay if _delay > 0
+                            else min(0.5 * float(2 ** (_retry_attempt - 1)), 16.0)
+                        )
+                        logger.warning(
+                            "reasoning_loop.retry",
+                            attempt=_retry_attempt,
+                            delay=_backoff,
+                            error=str(exc),
+                            model=effective_model,
+                        )
+                        await asyncio.sleep(_backoff)
+                        tool_calls_this_round = []
+                        continue  # retry after backoff
+
+                    # Unrecoverable — surface the error.
+                    logger.warning("reasoning_loop.error", error=str(exc))
+                    reason = getattr(exc, "reason", "unknown")
+                    await self._emit(
+                        TurnErrored(
+                            reason=reason,
+                            message=str(exc),
+                            elapsed_ms=self._elapsed_ms(),
+                        )
+                    )
+                    yield ErrorEvent(message=str(exc), reason=reason)
+                    return
 
             if self._cancelled.is_set():
                 await self._emit(
@@ -1098,6 +1443,8 @@ class ReasoningLoop:
                         finish_reason=finish_reason,
                         usage=last_usage or {},
                         elapsed_ms=self._elapsed_ms(),
+                        estimated_cost_usd=turn_cost_usd if turn_cost_usd > 0 else None,
+                        cost_status="estimated" if turn_cost_usd > 0 else None,
                     )
                 )
                 yield DoneEvent(finish_reason=finish_reason, usage=last_usage)
@@ -1145,6 +1492,8 @@ class ReasoningLoop:
                         finish_reason=finish_reason,
                         usage=last_usage or {},
                         elapsed_ms=self._elapsed_ms(),
+                        estimated_cost_usd=turn_cost_usd if turn_cost_usd > 0 else None,
+                        cost_status="estimated" if turn_cost_usd > 0 else None,
                     )
                 )
                 yield DoneEvent(finish_reason=finish_reason, usage=last_usage)
@@ -1183,6 +1532,8 @@ class ReasoningLoop:
                         finish_reason=finish_reason,
                         usage=last_usage or {},
                         elapsed_ms=self._elapsed_ms(),
+                        estimated_cost_usd=turn_cost_usd if turn_cost_usd > 0 else None,
+                        cost_status="estimated" if turn_cost_usd > 0 else None,
                     )
                 )
                 yield DoneEvent(finish_reason=finish_reason, usage=last_usage)
@@ -1195,6 +1546,8 @@ class ReasoningLoop:
                 finish_reason="length",
                 usage=last_usage or {},
                 elapsed_ms=self._elapsed_ms(),
+                estimated_cost_usd=turn_cost_usd if turn_cost_usd > 0 else None,
+                cost_status="estimated" if turn_cost_usd > 0 else None,
             )
         )
         yield DoneEvent(finish_reason="length", usage=last_usage)
@@ -1572,13 +1925,109 @@ def _finalise_tool_call(
     )
 
 
+def _dedup_tool_results(
+    results: list[ToolResult],
+    messages: Sequence[dict[str, Any]],
+    calls: list[ToolCallEvent],
+) -> list[ToolResult]:
+    """WP19: Drop tool results whose (tool_name, args_json, content) triple
+    was already seen in the conversation history.
+
+    Prevents context bloat when the model repeatedly calls the same tool
+    with the same arguments and receives identical output — a common pattern
+    in ill-specified tasks where the agent's context window fills up with
+    exact duplicates before it finally gives up.
+
+    Strategy
+    --------
+    1. Build a set of ``(tool_name, args_json_str, content_str)`` tuples
+       from every prior ``role="tool"`` message that has a matching
+       ``role="assistant"`` tool_call entry in history.
+    2. For each new result, compute its triple.  If already seen, replace
+       its content with a short ``"[duplicate tool result — already in history]"``
+       sentinel so the tool-call chain stays structurally valid (orphan
+       tool_call_id would confuse providers) but no new tokens are consumed.
+
+    Only string content is checked for duplicates; multimodal list content is
+    always forwarded verbatim.
+    """
+    if not results or not messages:
+        return results
+
+    # Build a lookup: tool_call_id → (tool_name, args_json_str) from prior
+    # assistant messages in history.
+    prior_call_map: dict[str, tuple[str, str]] = {}
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            continue
+        tool_calls = msg.get("tool_calls")
+        if not isinstance(tool_calls, list):
+            continue
+        for tc in tool_calls:
+            if not isinstance(tc, dict):
+                continue
+            fn = tc.get("function") or {}
+            name = fn.get("name", "")
+            args = fn.get("arguments", "")
+            cid = tc.get("id", "")
+            if cid:
+                prior_call_map[cid] = (name, args)
+
+    # Collect (tool_name, args_str, content_str) triples from prior tool messages.
+    seen: set[tuple[str, str, str]] = set()
+    for msg in messages:
+        if msg.get("role") != "tool":
+            continue
+        cid = msg.get("tool_call_id", "")
+        content = msg.get("content")
+        if not isinstance(content, str):
+            continue  # skip multimodal — never dedup
+        name_args = prior_call_map.get(cid, ("", ""))
+        seen.add((name_args[0], name_args[1], content))
+
+    # Build the call map for the CURRENT batch.
+    current_call_map: dict[str, tuple[str, str]] = {
+        c.call_id: (c.tool, c.args_json.decode("utf-8", errors="replace"))
+        for c in calls
+    }
+
+    deduped: list[ToolResult] = []
+    for r in results:
+        if isinstance(r.content, list):
+            # Multimodal — never dedup.
+            deduped.append(r)
+            continue
+        name_args = current_call_map.get(r.call_id, ("", ""))
+        triple = (name_args[0], name_args[1], r.content)
+        if triple in seen:
+            deduped.append(
+                ToolResult(
+                    call_id=r.call_id,
+                    content="[duplicate tool result — already in history]",
+                    is_error=False,
+                )
+            )
+        else:
+            seen.add(triple)
+            deduped.append(r)
+    return deduped
+
+
 def _extend_with_tool_round(
     messages: Sequence[dict[str, Any]],
     calls: list[ToolCallEvent],
     results: list[ToolResult],
 ) -> list[dict[str, Any]]:
     """Return ``messages`` extended with the assistant tool_calls message
-    and one ``role="tool"`` message per result."""
+    and one ``role="tool"`` message per result.
+
+    WP19: Deduplicates results whose (tool_name, args, content) triple was
+    already seen in ``messages`` to prevent context bloat from repeated
+    identical tool calls.
+    """
+    # WP19: dedup before extending history.
+    results = _dedup_tool_results(results, messages, calls)
+
     extended: list[dict[str, Any]] = list(messages)
     extended.append(
         {
@@ -1601,11 +2050,17 @@ def _extend_with_tool_round(
         # T1.1: cap each tool result before it lands in history. The
         # truncation is permanent — on the next round we re-send this
         # exact (already-capped) content, so this "freezes" the result.
+        # Multimodal content-block lists (e.g. image_url parts) are
+        # forwarded verbatim — _truncate_tool_result only handles str.
+        if isinstance(r.content, list):
+            tool_content: str | list[dict[str, Any]] = r.content
+        else:
+            tool_content = _truncate_tool_result(r.content)
         extended.append(
             {
                 "role": "tool",
                 "tool_call_id": r.call_id,
-                "content": _truncate_tool_result(r.content),
+                "content": tool_content,
             }
         )
     return extended
