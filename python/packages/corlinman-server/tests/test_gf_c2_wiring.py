@@ -23,9 +23,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 from corlinman_server.gateway.core.state import AppState
-
 
 # ---------------------------------------------------------------------------
 # AppState C2 slots
@@ -94,7 +92,6 @@ async def test_wire_c2_persona_resolver_reads_agent_state(
     life tools write to — a mood set on that row resolves through it."""
     from corlinman_persona import PersonaState
     from corlinman_persona.store import PersonaStore
-
     from corlinman_server.gateway.lifecycle.entrypoint import _wire_c2_handles
 
     # Seed a persona-state row first.
@@ -122,10 +119,9 @@ async def test_wire_c2_persona_resolver_reads_agent_state(
 
 
 def test_identity_route_503_until_store_assigned() -> None:
-    from fastapi import HTTPException
-
     from corlinman_server.gateway.routes_admin_a.identity import _require_store
     from corlinman_server.gateway.routes_admin_a.state import AdminState
+    from fastapi import HTTPException
 
     st = AdminState()
     assert st.identity_store is None
@@ -208,7 +204,6 @@ async def test_catch_up_fires_missed_run(tmp_path: Path) -> None:
     """A per-minute job with no recorded history fires once on startup
     via the catch-up path (the most-recent due firing is within grace)."""
     from corlinman_hooks import HookBus
-
     from corlinman_server.scheduler import SchedulerStore
     from corlinman_server.scheduler.cron import parse
     from corlinman_server.scheduler.runner import (

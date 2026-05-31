@@ -10,7 +10,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from corlinman_server.gateway.origin_learn import (
     OriginLearningMiddleware,
     load_remembered_origin,

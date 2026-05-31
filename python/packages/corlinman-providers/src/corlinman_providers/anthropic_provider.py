@@ -555,7 +555,6 @@ class AnthropicProvider:
         if extra:
             kwargs.update(extra)
 
-        import asyncio
 
         _max_retries = 3
         _attempt = 0

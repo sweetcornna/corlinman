@@ -1479,7 +1479,7 @@ def unknown_command_notice(text: str, *, max_suggestions: int = 3) -> str | None
 
     def _shared_prefix_len(a: str, b: str) -> int:
         n = 0
-        for ca, cb in zip(a, b):
+        for ca, cb in zip(a, b, strict=False):
             if ca == cb:
                 n += 1
             else:

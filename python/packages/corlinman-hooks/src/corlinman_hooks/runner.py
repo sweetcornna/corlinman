@@ -53,9 +53,10 @@ import importlib.util
 import json
 import logging
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 __all__ = ["HookDecision", "HookRunner", "emit_collect"]
 
@@ -637,7 +638,7 @@ class HookRunner:
                         proc.communicate(payload.encode()),
                         timeout=_HOOK_TIMEOUT,
                     )
-                except (TimeoutError, asyncio.TimeoutError):
+                except TimeoutError:
                     proc.kill()
                     await proc.wait()
                     _log.warning("hook.pre_tool.timeout", extra={"tool": tool_name, "cmd": cmd})

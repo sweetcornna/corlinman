@@ -196,7 +196,7 @@ def wrapper_overhead(source: str) -> int:
     Exposed so callers can subtract it from their ``max_chars`` budget
     *before* truncating the body, guaranteeing the wrapped result fits.
     """
-    nonce, begin, end = _markers(source)
+    _nonce, begin, end = _markers(source)
     # Render with an empty body to measure the constant overhead. The
     # nonce length is fixed, so any nonce gives the same count.
     skeleton = _render(begin, end, _NOTICE, source, body="")

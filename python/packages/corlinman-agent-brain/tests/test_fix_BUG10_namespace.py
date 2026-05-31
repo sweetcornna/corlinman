@@ -11,7 +11,6 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-
 from corlinman_agent_brain.index_sync import (
     IndexSyncClient,
     IndexSyncConfig,

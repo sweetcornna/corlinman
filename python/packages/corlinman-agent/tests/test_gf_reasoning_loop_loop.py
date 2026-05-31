@@ -45,7 +45,6 @@ from corlinman_agent.reasoning_loop import (
 from corlinman_providers.base import ProviderChunk
 from corlinman_providers.failover import (
     ContextOverflowError,
-    ModelNotFoundError,
     OverloadedError,
     RateLimitError,
 )

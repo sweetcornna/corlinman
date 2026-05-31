@@ -40,7 +40,6 @@ from corlinman_providers.anthropic_provider import (
 )
 from corlinman_providers.failover import RateLimitError
 
-
 # ---------------------------------------------------------------------------
 # Capturing fake client — records the kwargs passed to ``messages.stream``.
 # ---------------------------------------------------------------------------

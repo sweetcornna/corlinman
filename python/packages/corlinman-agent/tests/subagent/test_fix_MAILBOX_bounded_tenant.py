@@ -16,8 +16,8 @@ import asyncio
 
 import pytest
 from corlinman_agent.subagent.mailbox import (
-    DEFAULT_MAILBOX_MAXSIZE,
     AGENT_MAILBOXES,
+    DEFAULT_MAILBOX_MAXSIZE,
     clear_mailbox,
     get_or_create_mailbox,
     recv_from_mailbox,

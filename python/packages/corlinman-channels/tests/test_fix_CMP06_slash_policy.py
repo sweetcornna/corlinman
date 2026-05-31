@@ -69,7 +69,7 @@ async def test_allowlist_policy_refuses_non_admin_handler() -> None:
     result = await run_command_handler(spec, ctx, policy=policy, is_dm=False)
     # Before the fix the policy is ignored and the handler runs.
     assert "secret" not in _RAN
-    assert result.reply is not None and "secret" in result.reply.lower() or (
+    assert (result.reply is not None and "secret" in result.reply.lower()) or (
         result.reply is not None
     )
     assert result.ephemeral is True

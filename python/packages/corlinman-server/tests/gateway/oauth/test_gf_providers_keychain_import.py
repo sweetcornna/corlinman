@@ -19,8 +19,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-import pytest
 import corlinman_server.gateway.oauth.claude_code_import as cci
+import pytest
 from corlinman_server.gateway.oauth.claude_code_import import (
     read_claude_code_credentials,
 )

@@ -398,7 +398,7 @@ class AlbumDebouncer:
     :meth:`flush_ready` / :meth:`flush_all`.
     """
 
-    __slots__ = ("_buffers", "_window_secs", "_clock")
+    __slots__ = ("_buffers", "_clock", "_window_secs")
 
     def __init__(
         self,

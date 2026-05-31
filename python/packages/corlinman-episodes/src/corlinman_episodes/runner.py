@@ -427,7 +427,7 @@ def _session_user_id(session_key: str) -> str:
 
 def _onboarding_session_keys(
     *,
-    sessions_db: "Path",
+    sessions_db: Path,
     tenant_id: str,
     onboarding_first_n: int,
 ) -> frozenset[str]:

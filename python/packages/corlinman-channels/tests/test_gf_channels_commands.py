@@ -8,7 +8,6 @@ notice helper, and the skills->command bridge.
 from __future__ import annotations
 
 import pytest
-
 from corlinman_channels.commands import (
     CommandSpec,
     SlashAccessPolicy,
