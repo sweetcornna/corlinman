@@ -4,6 +4,44 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.15.2] — 2026-05-31 — Deferred audit items: multi-tenant authz hardening + residual wiring
+
+> The latent multi-tenant authz items + residual wiring follow-ons deferred
+> from v1.15.1. Reproduce-first; full non-live suite green; real-run-verified
+> on the production VPS that the holes close AND the existing single-operator
+> default-tenant chat + admin flows are unaffected (chat key → 200 `pong`;
+> an `embeddings`-scope key → 403 `insufficient_scope` on /v1/chat).
+
+### Security — multi-tenant authz (latent; activates when multi-tenant is enabled)
+- **`revoke_api_key` is tenant-scoped** (`tenant_id` + `key_id`) — a tenant can
+  no longer revoke another tenant's key by id. (SEC-06a)
+- **`TenantScopeMiddleware` is installed** for `/admin/*` and `/v1/*` with a
+  transparent default-tenant fallback (single-operator deployments unaffected:
+  `enabled=False` → everything resolves to `default`). API-key routes read the
+  middleware-resolved tenant instead of a client-supplied `?tenant=`. (SEC-06b)
+- **API-key `scope` is enforced** — `/v1/chat*` requires the `chat` scope (which
+  existing prod chat keys hold); a narrower scope (e.g. `embeddings`) is 403'd
+  `insufficient_scope`. Scoped to the chat endpoints only (plugin callbacks,
+  models, voice, memory, canvas remain api-key-authenticated but not
+  chat-scope-gated); super-scopes (`*`/`full`/`admin`) bypass. (SEC-09)
+- **Evolution proposals persist `tenant_id`** and the meta-recursion cooldown is
+  per-`(tenant, kind)` instead of one global cooldown. (BUG-09)
+
+### Wiring / reliability
+- Auto-rollback operator-apply routes thread the configured signal window so the
+  apply-time metrics baseline matches the monitor's window (was a default-window
+  mismatch that could trigger false breaches). (BUG-08 caller)
+- Discord / Slack / QQ-official / WeChat runners bootstrap command extensions —
+  commands-dir + skill commands + `$ARGUMENTS` now work on these channels too
+  (parity with Telegram / QQ-OneBot / Feishu). (CMP-07 parity)
+- Subagent mailbox queues are bounded (drop-oldest overflow, env-tunable) and
+  tenant-namespaceable — bounded memory under a flooding sender.
+
+### Not done by design
+- `evolution-engine` budget-signal `tenant_id` (BUG-09b): `EvolutionEngine.run_once`
+  is a single multi-tenant pass with a global per-kind budget gate, so there is
+  no run-level tenant to attribute the signal to (TODO left in `engine.py`).
+
 ## [1.15.1] — 2026-05-31 — Whole-project audit fixes (security / DoS / reliability / completeness)
 
 > A 16-auditor whole-project review (`audit/audit-2026-05-31/PLAN.md`) found 32
