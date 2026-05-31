@@ -597,9 +597,21 @@ def dispatch_read_file(
         # known section; the hint says so.)
         kept = numbered[:MAX_READ_CHARS]
         complete_lines = kept.count("\n")  # fully-terminated numbered lines
-        next_offset = offset + complete_lines
-        result["content"] = kept
-        result["shown"] = [offset, max(offset, next_offset - 1)]
+        if complete_lines == 0:
+            # A single line longer than MAX_READ_CHARS leaves no newline in
+            # the slice, so ``offset + 0 == offset`` would point the model
+            # back at the same head — an infinite paging loop (BUG-05).
+            # Emit a clipped representation of just that one line with an
+            # explicit marker (mirroring ``search._clip_line``) and still
+            # advance the cursor past it so paging always progresses.
+            clipped = numbered[:MAX_READ_CHARS] + " …(line truncated)"
+            next_offset = offset + 1
+            result["content"] = clipped
+            result["shown"] = [offset, offset]
+        else:
+            next_offset = offset + complete_lines
+            result["content"] = kept
+            result["shown"] = [offset, max(offset, next_offset - 1)]
         result["next_offset"] = next_offset if next_offset <= total else None
         result["hint"] = (
             f"output truncated at {MAX_READ_CHARS} chars — continue from "

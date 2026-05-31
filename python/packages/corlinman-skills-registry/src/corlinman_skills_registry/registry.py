@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import threading
 from collections.abc import Callable, Iterator
 from datetime import datetime
 from pathlib import Path
@@ -34,6 +35,20 @@ from .skill import Skill
 from .usage import SkillUsage, bump_patch, bump_use, bump_view, read_usage
 
 log = structlog.get_logger(__name__)
+
+# A directory fingerprint: the sorted set of ``(path, st_mtime_ns,
+# st_size)`` tuples for every ``*.md`` file found under a root. Two scans
+# that produce the same fingerprint describe an unchanged tree, so the
+# cached parse can be reused without re-reading any file.
+_DirFingerprint = tuple[tuple[str, int, int], ...]
+
+# Module-level cache mapping ``(resolved_root, bundled)`` -> (fingerprint,
+# parsed skills). Guarded by a lock because the curator factory builds
+# registries from request handlers that may run on different threads.
+# Bounded implicitly by the number of distinct skill roots on disk (a
+# handful of profiles), so no eviction policy is needed.
+_LOAD_CACHE: dict[tuple[str, bool], tuple[_DirFingerprint, dict[str, Skill]]] = {}
+_LOAD_CACHE_LOCK = threading.Lock()
 
 
 class SkillRegistry:
@@ -95,10 +110,24 @@ class SkillRegistry:
             )
             return cls(skills)
 
-        # Iterative DFS to mirror the Rust ``stack: Vec<PathBuf>`` walk.
-        # We deliberately do NOT use ``Path.rglob`` so the traversal order
-        # and error surface match the Rust implementation: each readdir /
-        # stat / read error becomes a ``SkillIoError``.
+        # ------------------------------------------------------------------
+        # Stat-only fingerprint walk (PERF-03)
+        # ------------------------------------------------------------------
+        # The curator's ``/admin/curator/profiles`` endpoint is UI-polled
+        # and rebuilds a fresh registry per profile on every request. To
+        # keep an unchanged poll cheap, we first do a stat-only DFS that
+        # collects every ``*.md`` path plus its ``(mtime_ns, size)``. If
+        # that fingerprint matches the one we cached on a prior load, the
+        # tree is unchanged and we return the cached parse — no
+        # ``read_text`` / ``yaml.safe_load`` / sidecar reads at all.
+        #
+        # We still walk the tree with the iterative DFS that mirrors the
+        # Rust ``stack: Vec<PathBuf>`` traversal so the discovery order and
+        # error surface (each readdir / stat error -> ``SkillIoError``)
+        # stay identical. ``os.scandir`` + ``entry.stat`` reads only inode
+        # metadata, never file contents.
+        md_files: list[Path] = []
+        fingerprint_parts: list[tuple[str, int, int]] = []
         stack: list[Path] = [root_path]
         while stack:
             current = stack.pop()
@@ -124,42 +153,78 @@ class SkillRegistry:
                     continue
 
                 try:
-                    text = entry_path.read_text(encoding="utf-8")
+                    st = entry.stat(follow_symlinks=False)
                 except OSError as err:
                     raise SkillIoError(err) from err
+                md_files.append(entry_path)
+                fingerprint_parts.append(
+                    (str(entry_path), st.st_mtime_ns, st.st_size)
+                )
 
-                skill = parse_skill(entry_path, text)
+        fingerprint: _DirFingerprint = tuple(sorted(fingerprint_parts))
+        cache_key = (str(root_path.resolve()), bool(bundled))
 
-                # ------------------------------------------------------
-                # Lifecycle inference (W4)
-                # ------------------------------------------------------
-                # Legacy SKILL.md files don't carry ``origin`` /
-                # ``created_at``. Fill them from the load context + sidecar
-                # without rewriting the file — the caller decides when to
-                # persist (W4.3 curator transitions, W4.4 background fork).
-                if bundled and skill.origin == "user-requested":
-                    # ``parse_skill`` returns the default ``user-requested``
-                    # for missing frontmatter; promote to ``bundled`` when
-                    # this root was declared bundled.
-                    if not _frontmatter_has_origin(text):
-                        skill.origin = "bundled"
+        with _LOAD_CACHE_LOCK:
+            cached = _LOAD_CACHE.get(cache_key)
+        if cached is not None and cached[0] == fingerprint:
+            # Unchanged tree — hand back a copy of the cached parse so a
+            # caller mutating skill objects (e.g. the curator pin/unpin
+            # writeback) doesn't poison the shared cache entry.
+            log.debug(
+                "skills load cache hit; reusing parse",
+                path=str(root_path),
+                count=len(cached[1]),
+            )
+            return cls(dict(cached[1]))
 
-                if skill.created_at is None:
-                    # Prefer the timestamp recorded in the sidecar (it's
-                    # the actual first-seen moment from a prior load).
-                    usage = read_usage(entry_path.parent)
-                    if usage.created_at is not None:
-                        skill.created_at = usage.created_at
+        # ------------------------------------------------------------------
+        # Parse phase (cache miss)
+        # ------------------------------------------------------------------
+        for entry_path in md_files:
+            try:
+                text = entry_path.read_text(encoding="utf-8")
+            except OSError as err:
+                raise SkillIoError(err) from err
 
-                existing = skills.get(skill.name)
-                if existing is not None:
-                    raise DuplicateNameError(
-                        name=skill.name,
-                        first=existing.source_path,
-                        second=entry_path,
-                    )
-                log.debug("loaded skill", name=skill.name, path=str(entry_path))
-                skills[skill.name] = skill
+            skill = parse_skill(entry_path, text)
+
+            # ------------------------------------------------------
+            # Lifecycle inference (W4)
+            # ------------------------------------------------------
+            # Legacy SKILL.md files don't carry ``origin`` /
+            # ``created_at``. Fill them from the load context + sidecar
+            # without rewriting the file — the caller decides when to
+            # persist (W4.3 curator transitions, W4.4 background fork).
+            if bundled and skill.origin == "user-requested":
+                # ``parse_skill`` returns the default ``user-requested``
+                # for missing frontmatter; promote to ``bundled`` when
+                # this root was declared bundled.
+                if not _frontmatter_has_origin(text):
+                    skill.origin = "bundled"
+
+            if skill.created_at is None:
+                # Prefer the timestamp recorded in the sidecar (it's
+                # the actual first-seen moment from a prior load).
+                usage = read_usage(entry_path.parent)
+                if usage.created_at is not None:
+                    skill.created_at = usage.created_at
+
+            existing = skills.get(skill.name)
+            if existing is not None:
+                raise DuplicateNameError(
+                    name=skill.name,
+                    first=existing.source_path,
+                    second=entry_path,
+                )
+            log.debug("loaded skill", name=skill.name, path=str(entry_path))
+            skills[skill.name] = skill
+
+        # Memoise this parse against the tree fingerprint so an unchanged
+        # subsequent poll short-circuits to the cache-hit branch above.
+        # Store a private copy so later mutations to the returned
+        # registry's skills don't bleed into the cached snapshot.
+        with _LOAD_CACHE_LOCK:
+            _LOAD_CACHE[cache_key] = (fingerprint, dict(skills))
 
         return cls(skills)
 

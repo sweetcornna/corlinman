@@ -46,6 +46,10 @@ from corlinman_agent.coding._common import (
     resolve_in_workspace,
     resolve_workspace,
 )
+from corlinman_agent.web._common import (
+    WebFetchUnsafeHostError,
+    is_safe_host,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -158,9 +162,18 @@ def dispatch_vision_analyze(
         parts.append({"type": "text", "text": question.strip()})
 
     if url_arg:
-        # URL path — forward the URL directly (provider downloads it).
-        if not isinstance(url_arg, str) or not url_arg.startswith(("http://", "https://")):
-            return _err("invalid_args", "'url' must be an http:// or https:// URL")
+        # URL path — the provider downloads it SERVER-SIDE, so an
+        # unvalidated url is a textbook SSRF (e.g. http://169.254.169.254
+        # cloud-metadata exfiltration). The schema promises https-only, so
+        # reject http:// outright, then run the same SSRF guard web_fetch
+        # uses before forwarding (SEC-08).
+        if not isinstance(url_arg, str) or not url_arg.startswith("https://"):
+            return _err("invalid_args", "'url' must be an https:// URL")
+        try:
+            is_safe_host(url_arg)
+        except WebFetchUnsafeHostError as exc:
+            logger.warning("vision_analyze.unsafe_host", url=url_arg, reason=str(exc))
+            return _err("unsafe_host", str(exc))
         parts.append(
             {
                 "type": "image_url",

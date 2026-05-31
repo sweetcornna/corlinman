@@ -106,6 +106,18 @@ _UNARY_OPS: dict[type[ast.unaryop], Callable[..., Any]] = {
 #: Guard against ``9**9**9``-style resource exhaustion.
 _MAX_POW_EXPONENT = 1_000
 
+#: Ceiling on the bit-length of any integer that a ``BinOp`` produces. The
+#: per-Pow exponent cap above bounds a SINGLE power, but a NESTED chain like
+#: ``(((10**1000)**1000)**1000)**1000`` keeps every exponent at the cap while
+#: multiplying them together — the result grows to ~10**12 digits and the
+#: synchronous bignum math pins the CPU / exhausts memory before the
+#: arithmetic-error guard ever sees it (SEC-03). Bounding the RESULT
+#: magnitude after each integer op short-circuits the whole class in ms.
+#: ~16 kbit ≈ 5_000 decimal digits — far above any legitimate calculator
+#: answer, well below CPython's default int-string-conversion limit (4300
+#: digits) so we reject before the value even becomes hard to render.
+_MAX_RESULT_BITS = 16_384
+
 
 def calculator_tool_schema() -> dict[str, Any]:
     """OpenAI-shaped tool descriptor for ``calculator``."""
@@ -172,7 +184,14 @@ def _eval_node(node: ast.AST) -> Any:
         if op_type is ast.Pow and isinstance(right, (int, float)):
             if abs(right) > _MAX_POW_EXPONENT:
                 raise _UnsafeExpressionError("exponent too large")
-        return impl(left, right)
+        result = impl(left, right)
+        # Bound the RESULT magnitude, not just the per-op exponent: a nested
+        # power chain keeps every exponent at the cap while the running value
+        # explodes (SEC-03). ``bit_length`` is O(1)-ish and never stringifies
+        # the int, so the check is cheap even on a value too big to render.
+        if isinstance(result, int) and result.bit_length() > _MAX_RESULT_BITS:
+            raise _UnsafeExpressionError("expression too large")
+        return result
     if isinstance(node, ast.UnaryOp):
         impl = _UNARY_OPS.get(type(node.op))
         if impl is None:

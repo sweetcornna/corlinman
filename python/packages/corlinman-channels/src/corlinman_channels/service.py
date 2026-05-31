@@ -128,6 +128,7 @@ from corlinman_channels.commands import (
     is_command_admin,
     match_command_with_args,
     run_command_handler,
+    slash_access_policy_from_env,
 )
 from corlinman_channels.common import AlbumDebouncer, InboundEvent, TransportError
 from corlinman_channels.common import format_attribution_prefix as _attribution
@@ -199,6 +200,7 @@ __all__ = [
     "SlackChannelParams",
     "TelegramChannelParams",
     "WeChatOfficialChannelParams",
+    "bootstrap_command_extensions",
     "handle_one_discord",
     "handle_one_feishu",
     "handle_one_qq",
@@ -351,6 +353,7 @@ async def run_qq_channel(
     Mirrors the Rust ``run_qq_channel`` function. Raises ``ValueError``
     on missing required config (matches Rust ``anyhow::bail!`` shape).
     """
+    bootstrap_command_extensions()
     cfg = params.config
     ws_url = _attr(cfg, "ws_url", "")
     if not ws_url:
@@ -702,6 +705,9 @@ async def _qq_dispatch_loop(
     if inbox is None:
         inbox = await _try_open_inbox()
     semaphore = asyncio.Semaphore(_channel_max_concurrency("QQ"))
+    # CMP-06 — resolve the slash-access policy once at loop start. ``None``
+    # (no env config) keeps the historical allow-by-default behaviour.
+    slash_policy = slash_access_policy_from_env()
     pending: set[asyncio.Task[None]] = set()
     try:
         while not cancel.is_set():
@@ -712,11 +718,23 @@ async def _qq_dispatch_loop(
             payload = ev.payload
             if not isinstance(payload, MessageEvent):
                 continue
-            req = router.dispatch(payload)
+            req = router.dispatch(payload, slash_policy=slash_policy)
             if req is None:
                 _log.debug("qq message filtered by router user=%s text=%r", payload.user_id, payload.raw_message[:80])
                 continue
             _log.info("qq message accepted user=%s text=%r model=%s", payload.user_id, payload.raw_message[:80], params.model)
+            # CMP-06 — a matched command denied by the slash-access policy.
+            # The router already replaced ``content`` with the refusal text
+            # and cleared ``command_spec``; send the refusal back and skip
+            # both the handler and the agent turn.
+            if req.command_refused:
+                try:
+                    await adapter.send_action(
+                        _build_reply_action(payload, req.content)
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    _log.warning("qq command-refusal send failed: %s", exc)
+                continue
             # Command-handler short-circuit (direct execution path).
             # When the router matched a command whose spec
             # carries a handler, run it now and reply directly via the
@@ -2002,9 +2020,36 @@ class TelegramChannelParams:
     test environments and pre-W4.1 deployments running unchanged."""
 
 
+def _inbound_is_dm(ev: InboundEvent[Any]) -> bool:
+    """Best-effort "is this a 1:1 / private chat" check for CMP-06.
+
+    Reads the transport-specific chat-type hint off the raw payload when
+    present (Telegram ``chat.type == "private"``, Feishu ``chat_type ==
+    "p2p"``); falls back to the binding convention where private chats
+    keep ``thread == sender``. Conservative: an unknown shape is treated
+    as a group so a ``DM_ONLY`` command never leaks into a shared chat.
+    """
+    payload = ev.payload if isinstance(ev.payload, dict) else None
+    if isinstance(payload, dict):
+        chat_obj = payload.get("chat")
+        if isinstance(chat_obj, dict):
+            ct = str(chat_obj.get("type", "") or "")
+            if ct:
+                return ct == "private"
+        msg = payload.get("message")
+        if isinstance(msg, dict):
+            ct = str(msg.get("chat_type", "") or "")
+            if ct:
+                return ct == "p2p"
+    b = ev.binding
+    return bool(b.thread) and b.thread == b.sender
+
+
 async def _telegram_try_dispatch_command(
     ev: InboundEvent[Any],
     sender: TelegramSender,
+    *,
+    slash_policy: Any = None,
 ) -> bool:
     """Run a handler command for ``ev`` if one matches; else return False.
 
@@ -2037,7 +2082,18 @@ async def _telegram_try_dispatch_command(
         return False
     spec, args_text = match
     if spec.handler is None:
-        # Prelude-only spec — let the agent path handle it.
+        # Prelude-only spec — normally let the agent path own it. But a
+        # SlashAccessPolicy denial must still intercept here (CMP-06):
+        # send the refusal and return True so the literal command never
+        # reaches the agent as a wizard prelude.
+        if slash_policy is not None and not slash_policy.allows(
+            spec,
+            ev.binding,
+            is_dm=_inbound_is_dm(ev),
+            is_admin=is_command_admin(ev.binding),
+        ):
+            await _telegram_send_command_refusal(ev, sender, spec, slash_policy)
+            return True
         return False
     try:
         ctx = CommandContext(
@@ -2047,7 +2103,12 @@ async def _telegram_try_dispatch_command(
             binding=ev.binding,
             is_admin=is_command_admin(ev.binding),
         )
-        result = await run_command_handler(spec, ctx)
+        # CMP-06 — run_command_handler consults the policy (if any) and
+        # returns an ephemeral refusal without invoking the handler when
+        # the caller isn't permitted.
+        result = await run_command_handler(
+            spec, ctx, policy=slash_policy, is_dm=_inbound_is_dm(ev)
+        )
     except Exception as exc:  # noqa: BLE001 — never crash the dispatch loop
         _log.exception("telegram command handler crashed: %s", exc)
         return True
@@ -2080,6 +2141,44 @@ async def _telegram_try_dispatch_command(
     except Exception as exc:  # noqa: BLE001
         _log.warning("telegram command reply send failed: %s", exc)
     return True
+
+
+async def _telegram_send_command_refusal(
+    ev: InboundEvent[Any],
+    sender: TelegramSender,
+    spec: Any,
+    slash_policy: Any,
+) -> None:
+    """Send a CMP-06 slash-access refusal for a prelude-only command.
+
+    Mirrors the wording the handler path returns via
+    :func:`run_command_handler`. Best-effort: a non-int chat id or a send
+    failure is logged, never raised.
+    """
+    from corlinman_channels.commands import SlashAccessTier  # noqa: PLC0415
+
+    alias = spec.aliases[0] if spec.aliases else spec.name
+    tier = slash_policy.tier_for(spec)
+    if tier == SlashAccessTier.DM_ONLY:
+        reply = f"❌ {alias} 仅支持私聊使用。"
+    else:
+        reply = f"❌ {alias} is restricted to administrators."
+    try:
+        chat_id = int(ev.binding.thread)
+    except ValueError:
+        _log.warning(
+            "telegram command-refusal skipped: thread not int chat_id=%r",
+            ev.binding.thread,
+        )
+        return
+    try:
+        await sender.send_message(
+            chat_id,
+            reply,
+            reply_to_message_id=int(ev.message_id) if ev.message_id else None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("telegram command-refusal send failed: %s", exc)
 
 
 def _telegram_apply_command_prelude(
@@ -2117,12 +2216,13 @@ def _telegram_apply_command_prelude(
     match = match_command_with_args(text)
     if match is None:
         return ev
-    spec, _ = match
+    spec, args_text = match
     if spec.handler is not None or spec.wizard_prelude is None:
         return ev
     from dataclasses import replace as _dc_replace  # noqa: PLC0415 — local seam
 
-    rewritten = apply_command_prelude(text, spec)
+    # CMP-07: substitute $ARGUMENTS / $1..$N with the typed args.
+    rewritten = apply_command_prelude(text, spec, args_text=args_text)
     _log.info(
         "telegram command_prelude_substituted cmd=%s prelude_len=%d",
         spec.name,
@@ -2140,6 +2240,7 @@ async def run_telegram_channel(
     Mirrors Rust ``run_telegram_channel`` in ``telegram/service.rs``.
     Inbound long-poll + outbound replies via :class:`TelegramSender`.
     """
+    bootstrap_command_extensions()
     cfg = params.config
     bot_token = _attr(cfg, "bot_token", "")
     if not bot_token:
@@ -2166,6 +2267,9 @@ async def run_telegram_channel(
         except Exception as exc:  # noqa: BLE001 — never block the channel
             _log.warning("telegram on_sender_ready callback failed: %s", exc)
     semaphore = asyncio.Semaphore(_channel_max_concurrency("TELEGRAM"))
+    # CMP-06 — resolve the slash-access policy once. ``None`` keeps the
+    # historical allow-by-default behaviour.
+    slash_policy = slash_access_policy_from_env()
     pending: set[asyncio.Task[None]] = set()
     try:
         async with adapter:
@@ -2190,7 +2294,9 @@ async def run_telegram_channel(
                 # prelude via _telegram_apply_command_prelude — that
                 # closes the seam the QQ path gets for free from
                 # router.dispatch.
-                if await _telegram_try_dispatch_command(ev, sender):
+                if await _telegram_try_dispatch_command(
+                    ev, sender, slash_policy=slash_policy
+                ):
                     continue
                 chat_service = params.chat_service
                 if chat_service is None:
@@ -2818,6 +2924,78 @@ async def _drive_spinner(
             )
             return outcome
     return outcome
+
+
+# ---------------------------------------------------------------------------
+# Command-extension bootstrap (CMP-07): commands-dir *.md + skill→command
+# ---------------------------------------------------------------------------
+# Loads operator-authored ``<data_dir>/commands/*.md`` into the slash-command
+# registry and bridges a default skill command, once per process. Idempotent:
+# a second call is a no-op so each ``run_*_channel`` can call it freely.
+
+_COMMAND_EXTENSIONS_LOADED: bool = False
+
+
+def _commands_data_dir() -> Path:
+    """Resolve ``<data_dir>/commands`` (CMP-07 loader root).
+
+    Mirrors the env-var precedence used elsewhere in this package:
+    ``$CORLINMAN_DATA_DIR`` → ``~/.corlinman``.
+    """
+    raw = os.environ.get("CORLINMAN_DATA_DIR")
+    base = Path(raw) if raw else Path.home() / ".corlinman"
+    return base / "commands"
+
+
+def bootstrap_command_extensions() -> None:
+    """Register operator commands-dir ``*.md`` + a default skill command.
+
+    CMP-07: ``register_commands_from_dir`` / ``register_skill_command`` are
+    implemented but had no production caller. Each ``run_*_channel`` calls
+    this once at start so a ``<data_dir>/commands/foo.md`` (with a
+    ``$ARGUMENTS`` placeholder) becomes an invokable ``/foo`` on every
+    channel + the web playground.
+
+    Path-traversal safe: :func:`load_commands_dir` only globs ``*.md``
+    directly under the dir and reads them as UTF-8 text — it never follows
+    a name into another directory and never executes the file. A missing
+    dir yields an empty list. Idempotent across calls (and re-seed on
+    reload is a no-op because ``register_command`` skips name/alias
+    collisions).
+    """
+    global _COMMAND_EXTENSIONS_LOADED
+    if _COMMAND_EXTENSIONS_LOADED:
+        return
+    _COMMAND_EXTENSIONS_LOADED = True
+    from corlinman_channels.commands import (  # noqa: PLC0415
+        register_commands_from_dir,
+        register_skill_command,
+    )
+
+    try:
+        loaded = register_commands_from_dir(_commands_data_dir())
+        if loaded:
+            _log.info(
+                "channels.commands_dir loaded %d command(s): %s",
+                len(loaded),
+                ", ".join(s.name for s in loaded),
+            )
+    except Exception as exc:  # noqa: BLE001 — never block channel start
+        _log.warning("channels.commands_dir load failed: %s", exc)
+
+    # Bridge the bundled ``configure-persona`` skill to a /configure-persona
+    # slash command so the skill's invocation surface is reachable from
+    # chat. Idempotent: returns None when the name/alias already exists.
+    try:
+        register_skill_command(
+            name="configure-persona",
+            summary="通过 configure-persona 技能配置 persona",
+            aliases=("/配置技能",),
+            category="Skills",
+            args_hint="[name]",
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("channels.skill_command bridge failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -3561,6 +3739,7 @@ async def run_feishu_channel(
     :func:`run_telegram_channel`. Raises ``ValueError`` on missing
     required config.
     """
+    bootstrap_command_extensions()
     cfg = params.config
     app_id = _attr(cfg, "app_id", "")
     app_secret = _attr(cfg, "app_secret", "")

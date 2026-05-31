@@ -15,6 +15,8 @@ import base64
 import json
 from pathlib import Path
 
+import pytest
+
 from corlinman_agent.image import (
     VISION_ANALYZE_TOOL,
     dispatch_vision_analyze,
@@ -135,7 +137,11 @@ def test_empty_question_not_prepended(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_https_url_forwarded_directly() -> None:
+def test_https_url_forwarded_directly(monkeypatch: pytest.MonkeyPatch) -> None:
+    # SEC-08 fix runs is_safe_host() (real DNS) on forwarded URLs; this test
+    # exercises the safe-host forward-block shape, so stub the SSRF guard to
+    # accept. The reject path is covered by test_fix_SEC08_vision_ssrf.py.
+    monkeypatch.setattr("corlinman_agent.image.analyze.is_safe_host", lambda url: None)
     url = "https://example.com/image.png"
     result = dispatch_vision_analyze(args_json=_args(url=url))
 
@@ -146,7 +152,8 @@ def test_https_url_forwarded_directly() -> None:
     assert block["image_url"]["url"] == url
 
 
-def test_https_url_with_question() -> None:
+def test_https_url_with_question(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("corlinman_agent.image.analyze.is_safe_host", lambda url: None)
     url = "https://example.com/diagram.jpg"
     result = dispatch_vision_analyze(
         args_json=_args(url=url, question="Describe the architecture")

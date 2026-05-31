@@ -838,6 +838,25 @@ def _session_cache_cap() -> int:
     return max(64, n)
 
 
+# SEC-03: wall-clock budget for the in-process calculator. ``dispatch_calculator``
+# is CPU-bound and synchronous; a pathological expression (e.g. a nested-pow
+# bignum bomb) could otherwise stall the whole event loop. We run it off-loop
+# via ``asyncio.to_thread`` under this timeout so a runaway compute returns a
+# clean error envelope and the loop stays responsive. Operators can tune it.
+_DEFAULT_CALCULATOR_TIMEOUT_S = 5.0
+
+
+def _calculator_timeout_secs() -> float:
+    raw = os.environ.get("CORLINMAN_CALCULATOR_TIMEOUT_S")
+    if not raw:
+        return _DEFAULT_CALCULATOR_TIMEOUT_S
+    try:
+        v = float(raw)
+    except ValueError:
+        return _DEFAULT_CALCULATOR_TIMEOUT_S
+    return v if v > 0 else _DEFAULT_CALCULATOR_TIMEOUT_S
+
+
 class _SessionLockCache:
     """LRU-bounded ``session_key`` → :class:`asyncio.Lock` map.
 
@@ -1101,6 +1120,17 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # the ``ask`` action don't pay for it. The resolver (if any) is
         # resolved from ``app_state.approval_resolver`` at build time.
         self._approval_gate: ApprovalGate | None = None
+        # CMP-04: an explicitly-wired prompt-and-wait approval resolver. When
+        # set (via :meth:`set_approval_resolver`) it overrides the
+        # ``app_state.approval_resolver`` lookup so a deployment without a
+        # gateway AppState (the standalone server) can still make ``ask``
+        # verdicts interactive instead of always fail-closing to deny.
+        self._approval_resolver: Any | None = None
+        # CONTRACT C2/C3: optional gateway AppState. Set by the lifespan via
+        # :meth:`set_app_state` so the hook-runner / approval-resolver /
+        # memory-host lookups that read ``self._app_state`` resolve to a real
+        # object. ``None`` keeps every such lookup degrading cleanly.
+        self._app_state: Any | None = None
         # T4.1 per-turn journal — opens lazily on first chat turn so a
         # smoke-test agent boot is unaffected. ``False`` once an init
         # failure has been logged so we don't retry every request.
@@ -1124,13 +1154,29 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # populated under the session lock right before ``loop.run()``
         # starts, cleared in the same handler's ``finally``.
         self._active_loops: dict[str, ReasoningLoop] = {}
-        # gap skills-no-progressive-disclosure: skills the model has pulled
-        # the body of (via the on-demand ``Skill`` tool) this process,
-        # mapped to their ``allowed_tools`` list. Used to narrow what tools
-        # a skill may invoke once active (empty list == no restriction,
-        # matching today's carry-only semantics). Process-scoped + bounded
-        # by natural skill count; cleared on no key when not active.
-        self._active_skills: dict[str, list[str]] = {}
+        # BUG-04: per-parent-session monotonic spawn counter. Each
+        # ``subagent_spawn`` / ``_inline`` consumes one seq; ``_many``
+        # consumes ``len(tasks)``. Threaded into the dispatch as ``child_seq``
+        # so same-card spawns within one turn don't collide on
+        # session_key/agent_id/persona/mailbox (which derive from
+        # ``::child::<seq>``). LRU-bounded like the other session-keyed maps.
+        self._child_seq_counters: OrderedDict[str, int] = OrderedDict()
+        # gap skills-no-progressive-disclosure / SEC-01: skills active for a
+        # session, keyed by ``session_key`` so one session's allowed-tools
+        # narrowing can never leak across sessions/tenants on this shared
+        # singleton servicer. Inner map is ``skill_name -> allowed_tools``.
+        # Populated on an on-demand ``Skill`` pull (``_record_active_skill``)
+        # AND, for CMP-02, lazily from the injected/always-on/card skills of
+        # the current session (computed servicer-side from the card +
+        # ``_DEFAULT_ALWAYS_SKILLS`` config). Cleared at turn/session end in
+        # the Chat handler's ``finally``. LRU-bounded with the same cap as
+        # the session-lock cache so a long-running gateway can't grow it
+        # without bound.
+        self._active_skills: OrderedDict[str, dict[str, list[str]]] = OrderedDict()
+        # Sessions whose injected/always-on/card skill set has already been
+        # folded into ``_active_skills`` this turn — so we compute it at most
+        # once per session rather than on every tool dispatch.
+        self._injected_skills_computed: set[str] = set()
 
     async def Chat(  # noqa: N802 — gRPC method name
         self,
@@ -1873,6 +1919,10 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 # ``_unregister_active_loop`` so a fresh turn that
                 # arrived after this handler exited isn't clobbered.
                 _unregister_active_loop(start.session_key, loop)
+                # SEC-01: clear this session's active-skill narrowing at the
+                # turn boundary so a skill pulled this turn can't keep
+                # narrowing every later turn for the session forever.
+                self._clear_active_skills(start.session_key)
             inbound_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await inbound_task
@@ -2297,7 +2347,14 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # never trap itself. An empty list == no restriction (carry-only
         # semantics) so an active skill that declares no allowed-tools does
         # not narrow anything.
-        _denied_by_skill = self._skill_allowed_tools_block(event.tool)
+        # CMP-02: fold the session's injected/always-on/card skills into the
+        # per-session active-skill map before the gate so their allowed-tools
+        # is enforced too (not just on-demand ``Skill`` pulls).
+        _skill_session_key = getattr(start, "session_key", "") or ""
+        self._ensure_injected_skills_recorded(start, _skill_session_key)
+        _denied_by_skill = self._skill_allowed_tools_block(
+            event.tool, _skill_session_key
+        )
         if _denied_by_skill is not None:
             logger.info(
                 "agent.tool.skill_allowed_tools_block",
@@ -2431,6 +2488,9 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     parent_ctx=parent_ctx,
                     agent_registry=registry,
                     provider=provider,
+                    # BUG-04: distinct per-turn child_seq so same-card spawns
+                    # don't collide on session_key/agent_id/persona/mailbox.
+                    child_seq=self._next_child_seq(start.session_key or ""),
                     parent_tools=list(start.tools or []),
                     # The child runner's ``_seed_child_persona`` writes a
                     # persona-STATE row (mood/fatigue) keyed by (tenant_id,
@@ -2471,11 +2531,21 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     _parent_loop.turn_id if _parent_loop is not None else None
                 )
                 _sup, _acquire = self._get_subagent_caps()
+                # BUG-04: reserve one seq per sibling so the fan-out's
+                # children don't collide with each other or with a later
+                # single spawn in the same turn. Count the tasks defensively
+                # (a malformed payload reserves 1 — the dispatch then rejects
+                # with its own args-invalid envelope).
+                _many_count = self._count_spawn_many_tasks(event.args_json)
+                _many_base = self._next_child_seq(
+                    start.session_key or "", _many_count
+                )
                 return await dispatch_subagent_spawn_many(
                     args_json=event.args_json,
                     parent_ctx=parent_ctx,
                     agent_registry=registry,
                     provider=provider,
+                    base_child_seq=_many_base,
                     parent_tools=list(start.tools or []),
                     # The child runner's ``_seed_child_persona`` writes a
                     # persona-STATE row (mood/fatigue) keyed by (tenant_id,
@@ -2513,6 +2583,8 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     args_json=event.args_json,
                     parent_ctx=parent_ctx,
                     provider=provider,
+                    # BUG-04: distinct per-turn child_seq (see single path).
+                    child_seq=self._next_child_seq(start.session_key or ""),
                     parent_tools=list(start.tools or []),
                     supervisor_acquire=_acquire,
                     max_depth=_sup.policy.max_depth,
@@ -2538,8 +2610,12 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             if event.tool == SKILL_TOOL:
                 # gap skills-no-progressive-disclosure: pull a skill body
                 # on demand after the model selects it from the narrowed
-                # catalog the context assembler injected.
-                return self._dispatch_skill_tool(event.args_json)
+                # catalog the context assembler injected. SEC-01: record the
+                # pull against THIS session_key so its allowed-tools never
+                # leaks across sessions.
+                return self._dispatch_skill_tool(
+                    event.args_json, start.session_key or ""
+                )
             if event.tool == BLACKBOARD_READ_TOOL:
                 return dispatch_blackboard_read(
                     args_json=event.args_json,
@@ -2558,7 +2634,28 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             if event.tool == WEB_SEARCH_TOOL:
                 return await dispatch_web_search(args_json=event.args_json)
             if event.tool == CALCULATOR_TOOL:
-                return dispatch_calculator(args_json=event.args_json)
+                # SEC-03: ``dispatch_calculator`` is synchronous + CPU-bound.
+                # Offload to a worker thread under a wall-clock timeout so a
+                # pathological expression cannot stall the event loop. The
+                # result-magnitude guard inside calculator.py is a separate
+                # (LANE-C) defense; this is the loop-liveness guarantee.
+                try:
+                    return await asyncio.wait_for(
+                        asyncio.to_thread(
+                            dispatch_calculator, args_json=event.args_json
+                        ),
+                        timeout=_calculator_timeout_secs(),
+                    )
+                except asyncio.TimeoutError:
+                    return json.dumps(
+                        {
+                            "error": (
+                                "calculator_timeout: expression exceeded the "
+                                f"{_calculator_timeout_secs()}s compute budget"
+                            ),
+                            "tool": event.tool,
+                        }
+                    )
             # Coding tools — workspace-confined file ops + shell.
             if event.tool == READ_FILE_TOOL:
                 return dispatch_read_file(args_json=event.args_json, state=file_state)
@@ -3145,6 +3242,35 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             return json.dumps(
                 {"ok": False, "error": "no_session", "message": "no session to stop"}
             )
+        # SEC-02: this tool is advertised to the model, so a caller-supplied
+        # ``session_key`` must be ownership-gated — a misbehaving agent must
+        # not be able to abort an arbitrary session by guessing its key. Allow
+        # only the current session itself or one of its descendant child
+        # sessions (``<current>::child::...``). The operator HTTP route
+        # (``POST /admin/sessions/{key}/cancel``) calls ``cancel_session``
+        # directly and stays unscoped.
+        if current_session_key:
+            child_prefix = f"{current_session_key}::child::"
+            if not (
+                target_session == current_session_key
+                or target_session.startswith(child_prefix)
+            ):
+                logger.warning(
+                    "agent.subagent_stop.not_authorized",
+                    requested=target_session,
+                    caller=current_session_key,
+                )
+                return json.dumps(
+                    {
+                        "ok": False,
+                        "error": "not_authorized_for_session",
+                        "message": (
+                            "may only stop the current session or one of its "
+                            "spawned child sessions"
+                        ),
+                        "session_key": target_session,
+                    }
+                )
         try:
             status, turn_id = cancel_session(target_session, reason=reason_str)
         except Exception as exc:  # noqa: BLE001 — never raise from dispatch
@@ -3159,15 +3285,18 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             }
         )
 
-    def _dispatch_skill_tool(self, args_json: bytes | str) -> str:
+    def _dispatch_skill_tool(
+        self, args_json: bytes | str, session_key: str
+    ) -> str:
         """Dispatch the on-demand ``Skill`` tool — return a skill body.
 
         gap ``skills-no-progressive-disclosure``. Looks the skill up in the
         in-agent :class:`SkillRegistry` (reached via the context
         assembler), runs ``check_requirements``, and returns its
-        ``body_markdown``. Records the skill as active for the session so
-        allowed-tools enforcement (when a skill carries one) can gate
-        subsequent calls. Never raises.
+        ``body_markdown``. SEC-01: records the skill as active for
+        ``session_key`` (not process-globally) so allowed-tools enforcement
+        (when a skill carries one) gates subsequent calls in THIS session
+        only. Never raises.
         """
         try:
             decoded = (
@@ -3211,8 +3340,9 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 ensure_ascii=False,
             )
         # Mark active so allowed-tools enforcement can narrow the catalog.
+        # SEC-01: scoped to THIS session_key, never process-global.
         allowed = list(getattr(skill, "allowed_tools", None) or [])
-        self._active_skills[name] = allowed
+        self._record_active_skill(session_key, name, allowed)
         return json.dumps(
             {
                 "ok": True,
@@ -3278,14 +3408,63 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         ``ask`` to deny. Built once and reused.
         """
         if self._approval_gate is None:
-            resolver = None
-            app_state = getattr(self, "_app_state", None)
-            if app_state is not None:
-                resolver = getattr(app_state, "approval_resolver", None)
+            # CMP-04: prefer an explicitly-wired resolver (set via
+            # :meth:`set_approval_resolver` — works in the standalone server
+            # with no gateway AppState), falling back to
+            # ``app_state.approval_resolver``. When neither is present the
+            # gate stays fail-closed for ``ask`` but logs a clear warning so
+            # an operator can see the verdict is denying for lack of a wired
+            # approval surface rather than by policy.
+            resolver = getattr(self, "_approval_resolver", None)
+            if resolver is None:
+                app_state = getattr(self, "_app_state", None)
+                if app_state is not None:
+                    resolver = getattr(app_state, "approval_resolver", None)
+            if resolver is None:
+                logger.warning(
+                    "agent.approval.no_resolver_wired",
+                    detail=(
+                        "ASK verdicts will fail-closed to deny; wire an "
+                        "approval_resolver via set_approval_resolver() to "
+                        "make them interactive"
+                    ),
+                )
             self._approval_gate = ApprovalGate(
                 self._permission_gate, resolver=resolver
             )
         return self._approval_gate
+
+    def set_approval_resolver(self, resolver: Any | None) -> None:
+        """Wire the prompt-and-wait approval resolver (CMP-04).
+
+        ``resolver`` is an async callable ``(tool, args, ctx) -> bool``. Set
+        by a deployment that has a channel-side approval surface so an ``ask``
+        permission verdict becomes interactive instead of fail-closing to
+        deny. Rebuilds the lazily-cached gate so a later first ``ask`` picks
+        up the new resolver.
+        """
+        self._approval_resolver = resolver
+        self._approval_gate = None
+
+    def set_app_state(self, app_state: Any | None) -> None:
+        """Wire the gateway AppState (CONTRACT C2/C3).
+
+        Lets the hook-runner / approval-resolver / memory-host lookups that
+        read ``self._app_state`` resolve to a real object. Resets the cached
+        approval gate so it re-resolves the resolver from the new state.
+        """
+        self._app_state = app_state
+        self._approval_gate = None
+
+    def set_hook_runner(self, hook_runner: Any | None) -> None:
+        """Wire the pre-tool :class:`HookRunner` (BUG-01).
+
+        main.py / serve_agent build a runner from ``[hooks]`` + the hooks dir
+        and call this so the standalone agent's blocking pre-tool gate is
+        actually live (previously only the gateway lifespan built one, in a
+        separate process, leaving the standalone server's gate inert).
+        """
+        self._hook_runner = hook_runner
 
     async def _approval_decide(
         self,
@@ -3319,24 +3498,112 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 return runner
         return getattr(self, "_hook_runner", None)
 
-    def _skill_allowed_tools_block(self, tool: str) -> list[str] | None:
+    def _record_active_skill(
+        self, session_key: str, name: str, allowed_tools: list[str]
+    ) -> None:
+        """Record ``name`` as active for ``session_key`` with its allowed-tools.
+
+        SEC-01: the active-skill map is keyed by ``session_key`` so one
+        session's narrowing never leaks across sessions/tenants. LRU-bounded
+        (same cap as the session-lock cache) so a long-running gateway can't
+        grow it without bound. ``session_key=""`` (one-shot HTTP callers) is
+        tolerated as a no-op — there is no turn boundary to clear it.
+        """
+        if not session_key:
+            return
+        bucket = self._active_skills.get(session_key)
+        if bucket is None:
+            bucket = {}
+            self._active_skills[session_key] = bucket
+        else:
+            self._active_skills.move_to_end(session_key)
+        bucket[name] = list(allowed_tools or [])
+        cap = _session_cache_cap()
+        while len(self._active_skills) > cap:
+            evicted, _ = self._active_skills.popitem(last=False)
+            self._injected_skills_computed.discard(evicted)
+
+    def _clear_active_skills(self, session_key: str) -> None:
+        """Drop the active-skill entry for ``session_key`` (turn/session end).
+
+        SEC-01: called from the Chat handler's ``finally`` so an active-skill
+        restriction can never narrow a later turn forever.
+        """
+        if not session_key:
+            return
+        self._active_skills.pop(session_key, None)
+        self._injected_skills_computed.discard(session_key)
+
+    def _ensure_injected_skills_recorded(
+        self, start: AgentChatStart, session_key: str
+    ) -> None:
+        """Fold the session's injected/always-on/card skills into the active map.
+
+        CMP-02: the context assembler injects ``_DEFAULT_ALWAYS_SKILLS`` plus
+        the bound card's ``skill_refs`` bodies into the prompt every turn, but
+        never registers them for allowed-tools enforcement — so their
+        allowed-tools was silently unenforced. We recompute that injected set
+        servicer-side (the same union the assembler uses: defaults + the
+        peeked card's refs) and record each skill's ``allowed_tools`` against
+        ``session_key``, in ADDITION to any on-demand ``Skill`` pulls. Done at
+        most once per session-turn. Never raises — enforcement degrades to
+        "no injected restriction" on any lookup failure.
+        """
+        if not session_key or session_key in self._injected_skills_computed:
+            return
+        self._injected_skills_computed.add(session_key)
+        try:
+            registry = self._get_skill_registry()
+            if registry is None:
+                return
+            refs: list[str] = list(_DEFAULT_ALWAYS_SKILLS)
+            bound_card = self._peek_agent_binding(start)
+            if bound_card is not None and getattr(bound_card, "skill_refs", None):
+                for ref in bound_card.skill_refs:
+                    if ref not in refs:
+                        refs.append(ref)
+            for name in refs:
+                skill = registry.get(name)
+                if skill is None:
+                    continue
+                allowed = list(getattr(skill, "allowed_tools", None) or [])
+                # Don't clobber an on-demand pull's record for the same name.
+                bucket = self._active_skills.get(session_key)
+                if bucket is not None and name in bucket:
+                    continue
+                self._record_active_skill(session_key, name, allowed)
+        except Exception as exc:  # noqa: BLE001 — enforcement is best-effort
+            logger.warning(
+                "agent.skills.injected_enforcement_failed",
+                session=session_key,
+                error=str(exc),
+            )
+
+    def _skill_allowed_tools_block(
+        self, tool: str, session_key: str
+    ) -> list[str] | None:
         """Return the allowed-tools list when ``tool`` is blocked, else ``None``.
 
-        gap skills-no-progressive-disclosure (enforcement half). When one or
-        more skills are active (their bodies pulled via the ``Skill`` tool)
-        AND at least one carries a non-empty ``allowed_tools`` list, the
-        union of those lists narrows what the model may call. A tool outside
-        the union is blocked. Skills with an empty allowed-tools list impose
-        no restriction. The control tools (``Skill`` / ``subagent_stop``)
-        are always permitted so the model can never trap itself. Returns the
-        (sorted) allowed union when blocking, or ``None`` when permitted.
+        gap skills-no-progressive-disclosure (enforcement half) + SEC-01 +
+        CMP-02. Reads ONLY the active skills for ``session_key`` (the union of
+        on-demand-pulled skills AND injected/always-on/card skills folded in
+        by :meth:`_ensure_injected_skills_recorded`). When at least one active
+        skill carries a non-empty ``allowed_tools`` list, that union narrows
+        what the model may call; a tool outside the union is blocked. Skills
+        with an empty allowed-tools list impose no restriction. The control
+        tools (``Skill`` / ``subagent_stop``) always pass so the model can
+        never trap itself. Returns the (sorted) allowed union when blocking,
+        or ``None`` when permitted.
         """
         active = getattr(self, "_active_skills", None)
-        if not active:
+        if not active or not session_key:
+            return None
+        bucket = active.get(session_key)
+        if not bucket:
             return None
         union: set[str] = set()
         any_restriction = False
-        for allowed in active.values():
+        for allowed in bucket.values():
             if allowed:
                 any_restriction = True
                 union.update(allowed)
@@ -3349,6 +3616,51 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         if tool in union:
             return None
         return sorted(union)
+
+    def _next_child_seq(self, parent_session_key: str, count: int = 1) -> int:
+        """Reserve ``count`` child-sequence numbers for ``parent_session_key``.
+
+        BUG-04: returns the base seq for this allocation and advances the
+        per-parent monotonic counter by ``count`` so same-card spawns within
+        one turn (single + inline consume 1, ``_many`` consumes
+        ``len(tasks)``) get distinct ``::child::<seq>`` derivations. Without
+        this every spawn used seq 0 and collided on
+        session_key/agent_id/persona/mailbox. CPython asyncio is
+        single-threaded so the read-modify-write needs no extra lock.
+        LRU-bounded with the session-cache cap.
+        """
+        if not parent_session_key:
+            return 0
+        base = self._child_seq_counters.get(parent_session_key, 0)
+        self._child_seq_counters[parent_session_key] = base + max(0, count)
+        self._child_seq_counters.move_to_end(parent_session_key)
+        cap = _session_cache_cap()
+        while len(self._child_seq_counters) > cap:
+            self._child_seq_counters.popitem(last=False)
+        return base
+
+    @staticmethod
+    def _count_spawn_many_tasks(args_json: bytes | str) -> int:
+        """Best-effort count of the ``tasks`` list in a spawn_many payload.
+
+        BUG-04: used to reserve one child_seq per sibling. A malformed /
+        non-list payload returns 1 so the seq counter still advances by at
+        least one and the dispatch surfaces its own args-invalid error.
+        """
+        try:
+            raw = (
+                args_json.decode("utf-8", "replace")
+                if isinstance(args_json, (bytes, bytearray))
+                else (args_json or "")
+            )
+            obj = json.loads(raw) if raw.strip() else {}
+        except (json.JSONDecodeError, ValueError):
+            return 1
+        if isinstance(obj, dict):
+            tasks = obj.get("tasks")
+            if isinstance(tasks, list) and tasks:
+                return len(tasks)
+        return 1
 
     def _get_subagent_caps(self) -> tuple[Any, Callable[[Any], Any]]:
         """Return ``(supervisor, acquire)`` for the subagent spawn tools.

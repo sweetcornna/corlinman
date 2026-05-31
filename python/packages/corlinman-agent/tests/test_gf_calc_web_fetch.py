@@ -86,10 +86,10 @@ def test_no_prompt_envelope_shape_stable_and_wrapped() -> None:
     } <= set(out.keys())
     assert out["status"] == 200
     assert out["title"] == "Doc"
-    # ``text`` is the RAW fetched body (not delimiter-wrapped) — that is the
-    # tool's stable public contract; injection framing is applied at the
-    # model-render layer, not baked into this field.
-    assert _BEGIN not in out["text"] and _END not in out["text"]
+    # ``text`` is the fetched body FENCED in randomized untrusted-content
+    # markers (SEC-04) — parity with web_search; the schema promises the
+    # body is treated as data, never as instructions.
+    assert _BEGIN in out["text"] and _END in out["text"]
     assert "First & paragraph." in out["text"]
     assert "Second paragraph." in out["text"]
     # Short page: no paging needed.

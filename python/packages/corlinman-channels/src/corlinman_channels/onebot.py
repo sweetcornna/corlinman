@@ -284,12 +284,35 @@ def _parse_segment(raw: dict[str, Any]) -> MessageSegment:
     return parser(data)
 
 
+def _coerce_int(value: Any, default: int = 0) -> int:
+    """Best-effort int coercion that never raises.
+
+    OneBot fields like ``self_id`` / ``user_id`` / ``message_id`` / ``time``
+    are expected to be numeric, but a misbehaving upstream client can ship a
+    non-numeric value (string, null, float-as-string). A bare ``int()`` there
+    raises and unwinds the reader pump, dropping the whole WS connection
+    (reconnect churn / message loss). Falling back to ``default`` keeps the
+    frame parseable so one bad value can't tear down the connection.
+    """
+    if isinstance(value, bool):
+        # bool is an int subclass; treat it as the default rather than 0/1.
+        return default
+    if isinstance(value, int):
+        return value
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def parse_event(raw: dict[str, Any]) -> Event:
     """Decode one OneBot event dict into the matching :data:`Event`.
 
     Unknown ``post_type`` collapses to :class:`UnknownEvent` so the reader
     loop can survive spec drift — matches the Rust ``Event::Unknown``
-    fall-through behaviour.
+    fall-through behaviour. Numeric fields are coerced via
+    :func:`_coerce_int`, which falls back to ``0`` on a malformed value so a
+    single bad frame can't raise and drop the WS connection.
     """
     post_type = raw.get("post_type")
     if post_type == "message":
@@ -312,12 +335,12 @@ def parse_event(raw: dict[str, Any]) -> Event:
         message_raw = raw.get("message") or []
         segments = [_parse_segment(s) for s in message_raw if isinstance(s, dict)]
         return MessageEvent(
-            self_id=int(raw.get("self_id", 0)),
+            self_id=_coerce_int(raw.get("self_id", 0)),
             message_type=msg_type,
-            user_id=int(raw.get("user_id", 0)),
-            message_id=int(raw.get("message_id", 0)),
+            user_id=_coerce_int(raw.get("user_id", 0)),
+            message_id=_coerce_int(raw.get("message_id", 0)),
             message=segments,
-            time=int(raw.get("time", 0)),
+            time=_coerce_int(raw.get("time", 0)),
             sub_type=raw.get("sub_type"),
             group_id=raw.get("group_id"),
             raw_message=str(raw.get("raw_message", "")),
@@ -325,23 +348,23 @@ def parse_event(raw: dict[str, Any]) -> Event:
         )
     if post_type == "notice":
         return NoticeEvent(
-            self_id=int(raw.get("self_id", 0)),
+            self_id=_coerce_int(raw.get("self_id", 0)),
             notice_type=str(raw.get("notice_type", "")),
-            time=int(raw.get("time", 0)),
+            time=_coerce_int(raw.get("time", 0)),
             group_id=raw.get("group_id"),
             user_id=raw.get("user_id"),
         )
     if post_type == "meta_event":
         return MetaEvent(
-            self_id=int(raw.get("self_id", 0)),
+            self_id=_coerce_int(raw.get("self_id", 0)),
             meta_event_type=str(raw.get("meta_event_type", "")),
-            time=int(raw.get("time", 0)),
+            time=_coerce_int(raw.get("time", 0)),
         )
     if post_type == "request":
         return RequestEvent(
-            self_id=int(raw.get("self_id", 0)),
+            self_id=_coerce_int(raw.get("self_id", 0)),
             request_type=str(raw.get("request_type", "")),
-            time=int(raw.get("time", 0)),
+            time=_coerce_int(raw.get("time", 0)),
             user_id=raw.get("user_id"),
             group_id=raw.get("group_id"),
             flag=raw.get("flag"),

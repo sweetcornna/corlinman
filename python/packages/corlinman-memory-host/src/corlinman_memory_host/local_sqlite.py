@@ -118,6 +118,24 @@ CREATE TABLE IF NOT EXISTS memory_host_docs (
 );
 CREATE INDEX IF NOT EXISTS idx_memory_host_docs_namespace_node
     ON memory_host_docs(namespace, node_id);
+
+-- Normalized forward-link edges hoisted out of ``memory_host_docs.metadata``
+-- so back-links resolve via an indexed ``dst_node_id`` lookup instead of a
+-- full-namespace JSON scan (PERF-02). One row per (src node, dst node)
+-- ``links`` entry; rows are keyed by ``chunk_id`` so an upsert can replace a
+-- doc's whole edge set atomically and ON DELETE CASCADE keeps it consistent
+-- when the owning chunk goes away.
+CREATE TABLE IF NOT EXISTS memory_host_links (
+    chunk_id INTEGER NOT NULL,
+    namespace TEXT NOT NULL,
+    src_node_id TEXT NOT NULL,
+    dst_node_id TEXT NOT NULL,
+    FOREIGN KEY(chunk_id) REFERENCES chunks(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_memory_host_links_chunk
+    ON memory_host_links(chunk_id);
+CREATE INDEX IF NOT EXISTS idx_memory_host_links_backlink
+    ON memory_host_links(namespace, dst_node_id);
 """
 
 
@@ -370,6 +388,46 @@ class _SqliteStore:
         # already the higher-is-better orientation).
         return [(int(r["rowid"]), -float(r["score"])) for r in rows]
 
+    async def search_bm25_in_namespace(
+        self,
+        text: str,
+        top_k: int,
+        namespace: str,
+    ) -> list[tuple[int, float]]:
+        """Run an FTS5 BM25 search restricted to a single ``namespace``.
+
+        Pushes the namespace predicate into SQL via a JOIN on ``chunks``
+        (using ``idx_chunks_namespace``) instead of pre-materialising the
+        whole-namespace id set and inlining it as ``rowid IN (?,?,...)``.
+        This keeps the bind count fixed (two params) regardless of
+        namespace size, so it never trips ``SQLITE_MAX_VARIABLE_NUMBER``
+        and the work stays O(top_k) rather than O(namespace) (PERF-01).
+
+        Returns ``(chunk_id, score)`` pairs in descending score order,
+        same higher-is-better contract as :meth:`search_bm25_with_filter`.
+        """
+        if top_k <= 0:
+            return []
+        sql = (
+            "SELECT f.rowid AS rowid, bm25(chunks_fts) AS score "
+            "FROM chunks_fts f "
+            "JOIN chunks c ON c.id = f.rowid "
+            "WHERE chunks_fts MATCH ? AND c.namespace = ? "
+            "ORDER BY score ASC LIMIT ?"
+        )
+        params: tuple[Any, ...] = (text, namespace, top_k)
+        try:
+            async with self._conn.execute(sql, params) as cur:
+                rows = await cur.fetchall()
+        except aiosqlite.OperationalError as exc:
+            # Same forgiving handling as ``search_bm25_with_filter``: a
+            # query that doesn't tokenise yields an empty result, not an
+            # error.
+            if "fts5" in str(exc).lower() or "malformed" in str(exc).lower():
+                return []
+            raise
+        return [(int(r["rowid"]), -float(r["score"])) for r in rows]
+
     # ---- memory_host_docs --------------------------------------------------
 
     async def ensure_memory_host_metadata_schema(self) -> None:
@@ -381,6 +439,52 @@ class _SqliteStore:
             await self._conn.executescript(_MEMORY_HOST_DOCS_SCHEMA_SQL)
             await self._conn.commit()
             self._memory_host_schema_ready = True
+        # Backfill the normalized edge table for any pre-existing docs that
+        # were upserted before ``memory_host_links`` existed (PERF-02). Runs
+        # at most once per connection and is a no-op for a fresh DB or one
+        # already migrated. Guarded by a probe so we never re-scan an
+        # already-populated edge table on every open.
+        await self._backfill_links_if_needed()
+
+    async def _backfill_links_if_needed(self) -> None:
+        async with self._lock:
+            async with self._conn.execute(
+                "SELECT EXISTS(SELECT 1 FROM memory_host_links) AS has_edges"
+            ) as cur:
+                row = await cur.fetchone()
+            if row is not None and int(row["has_edges"]):
+                # Edges already present → assume migrated; nothing to do.
+                return
+            async with self._conn.execute(
+                "SELECT chunk_id, namespace, metadata, node_id "
+                "FROM memory_host_docs WHERE node_id IS NOT NULL"
+            ) as cur:
+                rows = await cur.fetchall()
+            inserts: list[tuple[int, str, str, str]] = []
+            for r in rows:
+                node_id = r["node_id"]
+                if node_id is None:
+                    continue
+                raw = r["metadata"]
+                try:
+                    metadata = json.loads(raw) if raw else None
+                except json.JSONDecodeError:
+                    metadata = None
+                if not isinstance(metadata, dict):
+                    continue
+                links = _dedupe_strings(_json_string_array(metadata.get("links")))
+                ns = str(r["namespace"])
+                cid = int(r["chunk_id"])
+                for dst in links:
+                    inserts.append((cid, ns, str(node_id), dst))
+            if inserts:
+                await self._conn.executemany(
+                    "INSERT INTO memory_host_links"
+                    "(chunk_id, namespace, src_node_id, dst_node_id) "
+                    "VALUES (?, ?, ?, ?)",
+                    inserts,
+                )
+                await self._conn.commit()
 
     async def upsert_memory_host_metadata(
         self,
@@ -400,6 +504,61 @@ class _SqliteStore:
                 (chunk_id, namespace, metadata, node_id),
             )
             await self._conn.commit()
+
+    async def replace_memory_host_links(
+        self,
+        chunk_id: int,
+        namespace: str,
+        src_node_id: str | None,
+        dst_node_ids: list[str],
+    ) -> None:
+        """Replace the forward-link edge set for one chunk atomically.
+
+        Deletes any prior edges keyed by ``chunk_id`` then inserts one row
+        per ``dst_node_id``. A doc with no ``node_id`` (no ``src``) or no
+        ``links`` simply leaves zero rows. Part of the same lock-guarded
+        transaction window as the metadata upsert so the edge table and
+        ``memory_host_docs`` never diverge for a chunk (PERF-02)."""
+        async with self._lock:
+            await self._conn.execute(
+                "DELETE FROM memory_host_links WHERE chunk_id = ?", (chunk_id,)
+            )
+            if src_node_id is not None and dst_node_ids:
+                await self._conn.executemany(
+                    "INSERT INTO memory_host_links"
+                    "(chunk_id, namespace, src_node_id, dst_node_id) "
+                    "VALUES (?, ?, ?, ?)",
+                    [
+                        (chunk_id, namespace, src_node_id, dst)
+                        for dst in dst_node_ids
+                    ],
+                )
+            await self._conn.commit()
+
+    async def backlink_src_node_ids(
+        self, dst_node_ids: list[str], namespace: str | None
+    ) -> list[str]:
+        """Return the ``src_node_id`` of every edge pointing at one of
+        ``dst_node_ids`` (i.e. nodes that link *to* a seed).
+
+        Resolved via ``idx_memory_host_links_backlink`` so the cost scales
+        with the seed set and the matching edges, not the namespace size
+        (PERF-02). Returns deduped ids in stable ascending order."""
+        if not dst_node_ids:
+            return []
+        placeholders = ",".join("?" * len(dst_node_ids))
+        sql = (
+            "SELECT DISTINCT src_node_id FROM memory_host_links "
+            f"WHERE dst_node_id IN ({placeholders})"
+        )
+        params: list[Any] = list(dst_node_ids)
+        if namespace is not None:
+            sql += " AND namespace = ?"
+            params.append(namespace)
+        sql += " ORDER BY src_node_id ASC"
+        async with self._conn.execute(sql, params) as cur:
+            rows = await cur.fetchall()
+        return [str(r["src_node_id"]) for r in rows]
 
     async def memory_host_metadata_by_chunk_ids(
         self, chunk_ids: list[int]
@@ -556,25 +715,22 @@ class LocalSqliteHost(MemoryHost):
         if req.top_k == 0 or not req.text.strip():
             return []
 
-        # Namespace pushdown: same path as the Rust adapter — collect
-        # the chunk id whitelist before running BM25.
-        allowed_ids: list[int] | None = None
-        if req.namespace is not None:
-            try:
-                allowed_ids = await self._store.filter_chunk_ids_by_namespace(
-                    [req.namespace]
-                )
-            except aiosqlite.Error as exc:
-                raise MemoryHostError(
-                    f"LocalSqliteHost: namespace filter: {exc}"
-                ) from exc
-
         await self._ensure_metadata_schema()
 
+        # Namespace pushdown: when a namespace is requested, push the
+        # predicate into SQL via a JOIN on ``chunks`` (PERF-01) rather than
+        # pre-materialising the whole-namespace id set and inlining it as
+        # ``rowid IN (?,?,...)`` — that scaled O(namespace) per turn and
+        # crashed past ``SQLITE_MAX_VARIABLE_NUMBER`` for large namespaces.
         try:
-            hits = await self._store.search_bm25_with_filter(
-                req.text, req.top_k, allowed_ids
-            )
+            if req.namespace is not None:
+                hits = await self._store.search_bm25_in_namespace(
+                    req.text, req.top_k, req.namespace
+                )
+            else:
+                hits = await self._store.search_bm25_with_filter(
+                    req.text, req.top_k, None
+                )
         except aiosqlite.Error as exc:
             raise MemoryHostError(f"LocalSqliteHost: BM25 search: {exc}") from exc
 
@@ -859,10 +1015,15 @@ class LocalSqliteHost(MemoryHost):
         # ``node_id`` is hoisted out so the indexed column can be used by
         # ``memory_host_chunk_ids_by_node_ids`` without a full scan.
         node_id: str | None = None
+        links: list[str] = []
         if isinstance(metadata, dict):
             n = metadata.get("node_id")
             if isinstance(n, str):
                 node_id = n
+            # Forward links are hoisted into the normalized edge table so
+            # back-links resolve via an indexed lookup instead of a
+            # full-namespace JSON scan (PERF-02).
+            links = _dedupe_strings(_json_string_array(metadata.get("links")))
         # The Rust impl serialises ``metadata: &Value`` via ``.to_string()``
         # which uses the default ``serde_json`` formatter. ``json.dumps``
         # without ``ensure_ascii=False`` matches that closely enough for
@@ -871,6 +1032,9 @@ class LocalSqliteHost(MemoryHost):
         try:
             await self._store.upsert_memory_host_metadata(
                 chunk_id, namespace, metadata_json, node_id
+            )
+            await self._store.replace_memory_host_links(
+                chunk_id, namespace, node_id, links
             )
         except aiosqlite.Error as exc:
             raise MemoryHostError(
@@ -933,27 +1097,24 @@ class LocalSqliteHost(MemoryHost):
         seed_node_ids: list[str],
         namespace: str | None,
     ) -> list[str]:
+        # Short-circuit when no seed carries a node id — there is nothing
+        # for an edge to point at, so no back-links can exist.
         if not seed_node_ids:
             return []
+        # Resolve back-links via the normalized edge table's indexed
+        # ``dst_node_id`` lookup: ``WHERE namespace=? AND dst_node_id IN
+        # (seed_node_ids)`` returns exactly the linking source nodes. Cost
+        # scales with the seed set + matching edges, not the namespace size
+        # — replaces the prior O(namespace) JSON-decode scan (PERF-02).
         try:
-            rows = await self._store.list_memory_host_metadata(namespace)
+            srcs = await self._store.backlink_src_node_ids(
+                seed_node_ids, namespace
+            )
         except aiosqlite.Error as exc:
             raise MemoryHostError(
-                f"LocalSqliteHost: scan graph metadata: {exc}"
+                f"LocalSqliteHost: query backlink edges: {exc}"
             ) from exc
-        seed_set = set(seed_node_ids)
-        out: list[str] = []
-        for row in rows:
-            try:
-                metadata = json.loads(row.metadata) if row.metadata else None
-            except json.JSONDecodeError:
-                metadata = None
-            links = _json_string_array(
-                metadata.get("links") if isinstance(metadata, dict) else None
-            )
-            if any(link in seed_set for link in links) and row.node_id is not None:
-                out.append(row.node_id)
-        return _dedupe_strings(out)
+        return _dedupe_strings(srcs)
 
     async def _chunk_ids_for_node_ids(
         self, node_ids: list[str], namespace: str | None

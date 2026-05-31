@@ -161,12 +161,17 @@ class BatchSyncReport:
 # ---------------------------------------------------------------------------
 
 
-def node_to_memory_doc(node: KnowledgeNode) -> dict[str, Any]:
+def node_to_memory_doc(
+    node: KnowledgeNode, *, namespace: str = "agent-brain"
+) -> dict[str, Any]:
     """Convert a KnowledgeNode into the MemoryDoc JSON format.
 
     Content is built from title + summary + key_facts for maximum
     retrieval relevance. Metadata carries the structured fields for
     filtering (kind, scope, status, tags, etc).
+
+    ``namespace`` must match the namespace used at query time so that the
+    upsert/query round-trip stays symmetric (see BUG-10).
     """
     content_parts: list[str] = [node.title]
     if node.summary:
@@ -199,7 +204,7 @@ def node_to_memory_doc(node: KnowledgeNode) -> dict[str, Any]:
     return {
         "content": content,
         "metadata": metadata,
-        "namespace": "agent-brain",
+        "namespace": namespace,
     }
 
 
@@ -308,7 +313,7 @@ class IndexSyncClient:
 
     async def upsert_node(self, node: KnowledgeNode) -> SyncResult:
         """Upsert a single KnowledgeNode into the vector index."""
-        doc = node_to_memory_doc(node)
+        doc = node_to_memory_doc(node, namespace=self._config.namespace)
         url = f"{self.base_url}/upsert"
 
         for attempt in range(self._config.max_retries):

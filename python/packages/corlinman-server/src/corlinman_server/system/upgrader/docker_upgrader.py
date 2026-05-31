@@ -169,8 +169,10 @@ class DockerUpgrader:
         """Mint a request + spawn the background upgrade task.
 
         Single-flight is enforced here: if any status in the store is
-        ``queued``/``running``/``stalled`` we raise
-        :class:`UpgradeAlreadyRunning` and the route maps to ``409``.
+        ``queued``/``running`` we raise :class:`UpgradeAlreadyRunning`
+        and the route maps to ``409``. Terminal states (``succeeded`` /
+        ``failed`` / ``stalled``) do NOT block a fresh request — a
+        ``stalled`` upgrade is retryable, not a permanent lock (BUG-02).
         """
         in_flight = await self._store.current_in_flight()
         if in_flight is not None:

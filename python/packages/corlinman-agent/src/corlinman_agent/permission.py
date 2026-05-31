@@ -50,8 +50,9 @@ Config sources (in precedence order):
        ]
 
 2. **``$CORLINMAN_AGENT_STRICT_MODE``** = ``1`` — denies every mutating
-   tool (write_file, edit_file, apply_patch, run_shell, revert_changes)
-   unless rule (1) explicitly allows it.
+   tool (write_file, edit_file, apply_patch, run_shell, revert_changes,
+   qzone_publish, memory_write, send_attachment, text_to_speech) unless
+   rule (1) explicitly allows it.
 3. otherwise the default is ``allow`` for every tool.
 """
 
@@ -132,6 +133,14 @@ MUTATING_TOOLS: frozenset[str] = frozenset(
         # via the user's logged-in QQ account. Treat as mutating so
         # strict-mode deployments must explicitly opt in.
         "qzone_publish",
+        # ``memory_write`` persists state to the agent's long-term memory
+        # store — a durable side effect that survives the turn.
+        "memory_write",
+        # ``send_attachment`` / ``text_to_speech`` push content OUT to the
+        # chat channel (a file / a synthesised audio clip). Outbound side
+        # effects with real blast radius, so strict mode must opt in.
+        "send_attachment",
+        "text_to_speech",
     }
 )
 
@@ -259,9 +268,20 @@ class PermissionRule:
         return self.match.matches(ctx)
 
     def applies_to_args(
-        self, tool: str, ctx: PermissionContext, arg_value: str | None
+        self,
+        tool: str,
+        ctx: PermissionContext,
+        arg_value: str | list[str] | None,
     ) -> bool:
-        """Args-aware predicate: tool + context + optional arg pattern."""
+        """Args-aware predicate: tool + context + optional arg pattern.
+
+        ``arg_value`` may be a single string OR a list of candidate strings
+        (e.g. ``run_shell`` resolves every command basename across compound
+        segments — see :func:`extract_arg_candidates`). When a list is given
+        the rule fires if its pattern matches **any** candidate, so a deny
+        rule like ``run_shell(rm:*)`` catches ``cd /tmp && rm -rf x`` and
+        ``sh -c "rm -rf /"`` as well as the bare ``rm`` form.
+        """
         if self.tool != tool and self.tool != "*":
             return False
         if self.match is not None and not self.match.is_empty():
@@ -271,7 +291,11 @@ class PermissionRule:
             return True
         if arg_value is None:
             return False
-        return fnmatch.fnmatchcase(arg_value, self.arg_pattern)
+        candidates = [arg_value] if isinstance(arg_value, str) else arg_value
+        return any(
+            fnmatch.fnmatchcase(candidate, self.arg_pattern)
+            for candidate in candidates
+        )
 
 
 def extract_primary_arg(tool: str, args: dict[str, Any] | None) -> str | None:
@@ -303,6 +327,46 @@ def extract_primary_arg(tool: str, args: dict[str, Any] | None) -> str | None:
         if isinstance(value, str) and value:
             return value
     return None
+
+
+def extract_arg_candidates(
+    tool: str, args: dict[str, Any] | None
+) -> str | list[str] | None:
+    """Return ALL per-arg match candidates for ``tool``.
+
+    Like :func:`extract_primary_arg` but, for ``run_shell``, resolves EVERY
+    command basename across compound / piped / sh-dash-c / env-prefixed /
+    path-qualified forms (via
+    :func:`corlinman_agent.coding.shell.extract_command_names`) and returns one
+    ``"<basename>:<full command>"`` candidate per resolved command. A per-arg
+    deny rule (``run_shell(rm:*)``) then fires if it matches ANY candidate —
+    closing the SEC-05 bypass where only the first shlex token was matched.
+
+    For every other tool it delegates to :func:`extract_primary_arg` (a single
+    string). ``None`` when nothing usable is present.
+    """
+    if not isinstance(args, dict) or not args:
+        return None
+    if tool == "run_shell":
+        command = args.get("command")
+        if not isinstance(command, str) or not command.strip():
+            return None
+        command = command.strip()
+        # Lazy import to avoid a hard coupling at module import time; the
+        # shell helper lives in the coding subpackage.
+        try:
+            from corlinman_agent.coding.shell import extract_command_names
+
+            names = extract_command_names(command)
+        except Exception:  # noqa: BLE001 — degrade to the legacy single value
+            names = []
+        if not names:
+            # Fall back to the legacy first-token form so an empty resolution
+            # never silently disables a deny rule.
+            single = extract_primary_arg(tool, args)
+            return single
+        return [f"{name}:{command}" for name in names]
+    return extract_primary_arg(tool, args)
 
 
 class PermissionGate:
@@ -425,7 +489,7 @@ class PermissionGate:
         if self._mode is PermissionMode.BYPASS:
             return ALLOW, None
 
-        arg_value = extract_primary_arg(tool, args)
+        arg_value = extract_arg_candidates(tool, args)
         matched: tuple[str, int] | None = None
         for idx, rule in enumerate(self._rules):
             if rule.applies_to_args(tool, ctx, arg_value):
@@ -619,6 +683,7 @@ __all__ = [
     "PermissionMode",
     "PermissionRule",
     "RuleMatch",
+    "extract_arg_candidates",
     "extract_primary_arg",
     "parse_rule_list",
 ]

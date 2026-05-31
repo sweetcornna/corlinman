@@ -147,10 +147,16 @@ async def test_persistence_round_trip_across_instances(tmp_path: Path) -> None:
     store1 = UpgradeStateStore(persist)
     req = _make_req(request_id="req-PERSIST", tag="v9.9.9")
     await store1.begin(req)
+    # Use a TERMINAL state for the round-trip: BUG-02's fix makes
+    # _load_from_disk reconcile a non-terminal (queued/running) record to
+    # ``stalled`` on reopen (an in-flight task cannot survive a restart), so a
+    # ``running`` status would NOT round-trip verbatim by design. A terminal
+    # ``succeeded`` status is the right audit-trail round-trip case. (The
+    # orphan reconcile itself is covered by the BUG-02 repro test.)
     await store1.update(
         "req-PERSIST",
-        state="running",
-        phase="pulling",
+        state="succeeded",
+        phase="done",
         started_at=4242,
     )
     await store1.append_log("req-PERSIST", "hello world\n")
@@ -160,8 +166,8 @@ async def test_persistence_round_trip_across_instances(tmp_path: Path) -> None:
     recovered = await store2.get("req-PERSIST")
     assert recovered is not None
     assert recovered.tag == "v9.9.9"
-    assert recovered.state == "running"
-    assert recovered.phase == "pulling"
+    assert recovered.state == "succeeded"
+    assert recovered.phase == "done"
     assert recovered.started_at == 4242
     assert recovered.log_excerpt == "hello world\n"
 
@@ -207,6 +213,8 @@ def test_is_terminal_includes_stalled() -> None:
         finished_at=2,
     )
     assert status.is_terminal() is True
-    # ``is_in_flight`` semantics ("still occupying a slot") is unchanged
-    # and intentional — operators still see stalled in current_in_flight.
-    assert status.is_in_flight() is True
+    # BUG-02 fix: ``stalled`` is terminal-only and must NOT count as in-flight.
+    # It was double-classified (terminal AND in-flight), so current_in_flight()
+    # kept returning a stalled record forever and start() raised
+    # UpgradeAlreadyRunning permanently. stalled now frees the slot.
+    assert status.is_in_flight() is False

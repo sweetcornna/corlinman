@@ -30,7 +30,9 @@ from typing import Any, Protocol
 
 from corlinman_channels.commands import (
     CommandSpec,
+    SlashAccessPolicy,
     apply_command_prelude,
+    is_command_admin,
     match_command_with_args,
     unknown_command_notice,
 )
@@ -167,6 +169,13 @@ class RoutedRequest:
     the user and skip the agent turn. ``None`` for every normal message
     (including matched commands and plain prose)."""
 
+    command_refused: bool = False
+    """``True`` when a matched command was denied by the active
+    :class:`~corlinman_channels.commands.SlashAccessPolicy` (CMP-06). The
+    refusal text is carried on ``content`` and ``command_spec`` is cleared
+    so the caller sends ``content`` back and skips both the handler and the
+    agent turn. ``False`` for every permitted / unmatched message."""
+
     @property
     def session_key(self) -> str:
         """Forward to :meth:`ChannelBinding.session_key` so callers
@@ -253,6 +262,7 @@ class ChannelRouter:
         event: MessageEvent,
         *,
         enable_commands: bool = True,
+        slash_policy: SlashAccessPolicy | None = None,
     ) -> RoutedRequest | None:
         """Apply the keyword/mention gate + rate-limit checks and
         return a :class:`RoutedRequest` if the message should be
@@ -341,18 +351,42 @@ class ChannelRouter:
         command_spec: CommandSpec | None = None
         command_args = ""
         unknown_notice: str | None = None
+        command_refused = False
         if enable_commands:
             match = match_command_with_args(text)
             if match is not None:
                 spec, args_text = match
-                command_spec = spec
-                command_args = args_text
-                if spec.handler is None and spec.wizard_prelude is not None:
-                    # Pure-prelude command — preserve legacy rewrite.
-                    content = apply_command_prelude(text, spec)
-                # Handler-bearing specs leave ``content`` as the literal
-                # text; the caller invokes the handler and posts its
-                # reply via the adapter.
+                # CMP-06 — consult the slash-access policy before the
+                # command is allowed to take any effect. ``is_dm`` is True
+                # for private chats; an ALLOWLIST/ADMIN tier checks the
+                # admin allowlist, a DM_ONLY tier refuses in a group. When
+                # no policy is attached this whole block is skipped and the
+                # historical allow-by-default behaviour is preserved.
+                is_dm = event.message_type == MessageType.PRIVATE
+                if slash_policy is not None and not slash_policy.allows(
+                    spec,
+                    binding,
+                    is_dm=is_dm,
+                    is_admin=is_command_admin(binding),
+                ):
+                    # Denied — surface a refusal on ``content`` and clear
+                    # the spec so neither the handler nor the agent turn
+                    # runs. The caller sends ``content`` back verbatim.
+                    content = _policy_refusal_text(spec, slash_policy, is_dm)
+                    command_refused = True
+                else:
+                    command_spec = spec
+                    command_args = args_text
+                    if spec.handler is None and spec.wizard_prelude is not None:
+                        # Pure-prelude command. CMP-07: substitute
+                        # ``$ARGUMENTS`` / ``$1``..``$N`` with the typed args
+                        # so a commands-dir ``*.md`` body receives them.
+                        content = apply_command_prelude(
+                            text, spec, args_text=args_text
+                        )
+                    # Handler-bearing specs leave ``content`` as the literal
+                    # text; the caller invokes the handler and posts its
+                    # reply via the adapter.
             else:
                 # No command matched. When the text *looks* like a slash
                 # command (leading-slash, command-shaped first token) but
@@ -370,6 +404,7 @@ class ChannelRouter:
             command_spec=command_spec,
             command_args=command_args,
             unknown_command_notice=unknown_notice,
+            command_refused=command_refused,
         )
 
     # ------------------------------------------------------------------
@@ -420,6 +455,27 @@ class ChannelRouter:
 # ---------------------------------------------------------------------------
 # Module-private helpers
 # ---------------------------------------------------------------------------
+
+
+def _policy_refusal_text(
+    spec: CommandSpec,
+    policy: SlashAccessPolicy,
+    is_dm: bool,
+) -> str:
+    """Refusal text for a command denied by the slash-access policy (CMP-06).
+
+    Mirrors the wording of ``commands._policy_refusal`` so the channel
+    surface (handler path) and the router-side prelude path read the same
+    to the user. ``is_dm`` is accepted for symmetry but the tier alone
+    determines the message.
+    """
+    from corlinman_channels.commands import SlashAccessTier
+
+    alias = spec.aliases[0] if spec.aliases else spec.name
+    tier = policy.tier_for(spec)
+    if tier == SlashAccessTier.DM_ONLY:
+        return f"❌ {alias} 仅支持私聊使用。"
+    return f"❌ {alias} is restricted to administrators."
 
 
 def _flatten_and_trim(

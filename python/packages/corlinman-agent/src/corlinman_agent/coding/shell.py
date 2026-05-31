@@ -35,6 +35,7 @@ import asyncio
 import json
 import os
 import re
+import shlex
 import signal
 import sys
 import time
@@ -197,6 +198,85 @@ def _preexec_apply_rlimits() -> None:
 #: Splits a command line into top-level segments on shell operators so a
 #: denied pattern hidden after ``;`` / ``|`` / ``&&`` is still caught.
 _SEGMENT_SPLIT = re.compile(r"[;&|]+|\bthen\b|\bdo\b")
+
+#: A leading ``NAME=value`` shell variable assignment (e.g. ``FOO=bar cmd``).
+#: These prefix a command without being the command, so they're skipped when
+#: resolving the real command name in :func:`extract_command_names`.
+_ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+#: Command shells whose ``-c <string>`` payload is itself a command line we
+#: must recurse into so a denied pattern wrapped in ``sh -c "rm -rf /"`` is
+#: still resolved.
+_SHELL_WRAPPERS: frozenset[str] = frozenset(
+    {"sh", "bash", "dash", "zsh", "ksh", "ash", "fish"}
+)
+
+
+def extract_command_names(command: str, *, _depth: int = 0) -> list[str]:
+    """Resolve every command *basename* invoked by a shell command line.
+
+    Splits the line into top-level segments on shell operators (reusing
+    :data:`_SEGMENT_SPLIT`), then for each segment:
+
+    * skips leading ``NAME=value`` env assignments and a bare ``env`` /
+      ``command`` / ``exec`` prefix (so ``env FOO=bar rm`` resolves to ``rm``);
+    * normalises the first real token to its path basename (so ``/bin/rm``
+      resolves to ``rm``);
+    * recurses into the ``-c`` payload of a shell wrapper (so the inner
+      command of ``sh -c "rm -rf /"`` is resolved too).
+
+    Returns the de-duplicated list of basenames in first-seen order. Used by
+    the permission gate so a per-arg deny rule like ``run_shell(rm:*)`` can be
+    applied to ALL resolved commands, not just the first shlex token. Tolerant:
+    a tokenisation failure falls back to a whitespace split; never raises.
+    """
+    if _depth > 4 or not command or not command.strip():
+        return []
+    names: list[str] = []
+
+    def _add(name: str) -> None:
+        base = os.path.basename(name).strip()
+        if base and base not in names:
+            names.append(base)
+
+    for segment in _SEGMENT_SPLIT.split(command):
+        segment = segment.strip()
+        if not segment:
+            continue
+        try:
+            tokens = shlex.split(segment)
+        except ValueError:
+            tokens = segment.split()
+        idx = 0
+        # Skip leading env assignments and an ``env`` / ``command`` / ``exec``
+        # wrapper that merely re-dispatches the next token.
+        while idx < len(tokens):
+            tok = tokens[idx]
+            if _ENV_ASSIGN.match(tok):
+                idx += 1
+                continue
+            if os.path.basename(tok) in ("env", "command", "exec", "nohup"):
+                idx += 1
+                # ``env -i`` / ``env -u VAR`` flags also precede the command.
+                while idx < len(tokens) and tokens[idx].startswith("-"):
+                    idx += 1
+                continue
+            break
+        if idx >= len(tokens):
+            continue
+        head = tokens[idx]
+        _add(head)
+        # Recurse into a shell wrapper's ``-c`` payload.
+        if os.path.basename(head) in _SHELL_WRAPPERS:
+            for j in range(idx + 1, len(tokens) - 1):
+                if tokens[j] == "-c":
+                    for inner in extract_command_names(
+                        tokens[j + 1], _depth=_depth + 1
+                    ):
+                        if inner not in names:
+                            names.append(inner)
+                    break
+    return names
 
 
 def run_shell_tool_schema() -> dict[str, Any]:
@@ -372,5 +452,6 @@ async def dispatch_run_shell(
 __all__ = [
     "RUN_SHELL_TOOL",
     "dispatch_run_shell",
+    "extract_command_names",
     "run_shell_tool_schema",
 ]

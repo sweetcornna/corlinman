@@ -13,11 +13,17 @@ SEC-007: after credentials verify, the shim consults
 ``state.must_change_password`` (falling back to ``routes_admin_a``'s
 canonical state — that's where the seed flag lives — when the per-bundle
 state doesn't carry the field). If the flag is set, only the rotation +
-introspection paths in :data:`_PW_CHANGE_ALLOWED_PATHS` may proceed;
-every other route is short-circuited with ``403 password_change_required``.
+introspection paths in :data:`_PW_CHANGE_ALLOWED_PATHS` (and the onboard
+wizard subtree in :data:`_PW_CHANGE_ALLOWED_PREFIXES`) may proceed; every
+other route is short-circuited with ``403 password_change_required``.
 This closes the first-boot window during which the seeded ``admin/root``
 credentials were accepted by every ``/admin/*`` route — see audit issue
 SEC-007 in ``audit/evidence/cleanup/SEC-007/``.
+
+CMP-01: the first-run onboard wizard runs *through* this shim, so its
+``/admin/onboard/finalize-*`` routes are allowlisted (subtree prefix)
+during the forced rotation — otherwise a fresh install can't reach
+``POST /admin/onboard/finalize-password`` to clear the flag.
 """
 
 from __future__ import annotations
@@ -37,11 +43,20 @@ from corlinman_server.gateway.routes_admin_a.state import get_admin_state
 
 # SEC-007: while ``must_change_password`` is set on the admin state, only
 # the rotation + introspection paths are allowed to run. Everything else
-# is 403'd. The paths below are all mounted **outside** this shim today
-# (their handlers do their own per-request credential check), so listing
-# them here is belt-and-braces — if a future refactor accidentally moves
-# one inside ``require_admin_dependency`` the allowlist keeps recovery
-# possible. Exact-match only — no prefix matching — so ``/admin/password``
+# is 403'd.
+#
+# CMP-01: the first-run onboard wizard *does* flow through this shim — the
+# ``routes_admin_b`` onboard router mounts ``Depends(require_admin)`` — so
+# its routes must be on the allowlist or a fresh install can never rotate
+# the seeded ``admin/root`` credentials (the rotation itself happens via
+# ``POST /admin/onboard/finalize-password``). The wizard fans out across
+# ``/admin/onboard/finalize-skip``, ``-account``, ``-password``,
+# ``-persona``, and ``-image-provider``, so a single exact path can't
+# cover it; we allow the whole ``/admin/onboard/`` subtree via the prefix
+# in :data:`_PW_CHANGE_ALLOWED_PREFIXES` below plus the bare
+# ``/admin/onboard`` entry route here.
+#
+# The remaining entries are exact-match (no prefix) so ``/admin/password``
 # can never accidentally allow ``/admin/password-reset/...`` or vice
 # versa. Health endpoints (``/healthz``, ``/readyz``) live outside the
 # ``/admin/*`` tree and do not flow through this shim, so they don't
@@ -54,16 +69,32 @@ _PW_CHANGE_ALLOWED_PATHS: frozenset[str] = frozenset(
         "/admin/password",
         "/admin/username",
         "/admin/onboard",
-        # Onboard finalize lands the initial provider config after
-        # admin credentials exist; it has to stay reachable so a
-        # forced rotation can complete end-to-end.
-        "/admin/onboard/finalize",
         # Host-token recovery flow — mounted outside this shim today
         # but listed defensively so it stays reachable if it ever moves.
         "/admin/password-reset/request",
         "/admin/password-reset/complete",
     }
 )
+
+# CMP-01: path prefixes whose entire subtree is reachable during the
+# forced first-run rotation. The onboard wizard's ``finalize-*`` steps all
+# live under ``/admin/onboard/`` and must stay reachable so a fresh install
+# can complete onboarding (and rotate the seeded password) end-to-end. The
+# trailing slash is deliberate so the prefix can't broaden to a sibling
+# route like ``/admin/onboard-export`` — only true children match.
+_PW_CHANGE_ALLOWED_PREFIXES: tuple[str, ...] = ("/admin/onboard/",)
+
+
+def _pw_change_path_allowed(path: str) -> bool:
+    """True iff ``path`` may run while ``must_change_password`` is set.
+
+    Exact match against :data:`_PW_CHANGE_ALLOWED_PATHS`, then a prefix
+    match against :data:`_PW_CHANGE_ALLOWED_PREFIXES` (onboard wizard
+    subtree). Everything else is 403'd.
+    """
+    if path in _PW_CHANGE_ALLOWED_PATHS:
+        return True
+    return any(path.startswith(prefix) for prefix in _PW_CHANGE_ALLOWED_PREFIXES)
 
 
 def _unauthorized(reason: str) -> HTTPException:
@@ -226,13 +257,14 @@ def authenticate_admin_request(request: Request, state: Any | None = None) -> An
         request.state.admin_session = None
         authenticated_principal = username
 
-    # SEC-007: credentials verified — now enforce the post-auth
-    # must_change_password gate. Exact-path allowlist only (no prefix
-    # match). The five-or-so rotation routes mount outside this shim
-    # today so they're already exempt; the list below is defensive in
-    # case a future refactor moves one inside ``require_admin_dependency``.
+    # SEC-007 / CMP-01: credentials verified — now enforce the post-auth
+    # must_change_password gate. The allowlist is exact-match for the
+    # rotation/introspection routes plus a prefix match for the onboard
+    # wizard subtree (``/admin/onboard/*``), which mounts *through* this
+    # shim and must stay reachable so a fresh install can finish
+    # onboarding and rotate the seeded credentials end-to-end.
     if _must_change_password_active(active_state):
-        if request.url.path not in _PW_CHANGE_ALLOWED_PATHS:
+        if not _pw_change_path_allowed(request.url.path):
             raise _password_change_required()
 
     return authenticated_principal
@@ -245,6 +277,7 @@ def require_admin_dependency(request: Request) -> Any:
 
 __all__ = [
     "_PW_CHANGE_ALLOWED_PATHS",
+    "_PW_CHANGE_ALLOWED_PREFIXES",
     "authenticate_admin_request",
     "require_admin_dependency",
 ]

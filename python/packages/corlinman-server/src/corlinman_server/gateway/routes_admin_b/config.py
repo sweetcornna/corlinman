@@ -39,6 +39,29 @@ from corlinman_server.gateway.routes_admin_b.state import (
 
 REDACTED_SENTINEL = "***REDACTED***"
 
+# SEC-07: leaf keys whose *inline string* value is a secret and must be
+# replaced with :data:`REDACTED_SENTINEL` in ``GET /admin/config``. This
+# covers the channel bot/app tokens (telegram/slack/discord/feishu), the
+# NapCat access token, WeChat verify token + app secret, and the OAuth
+# credential leaves. Env-ref forms (``{ env = "FOO" }``) stay readable —
+# only a literal cleartext string is redacted, matching the ``api_key.env``
+# carve-out the original ``_redact`` documented.
+_SECRET_LEAF_KEYS = frozenset(
+    {
+        "bot_token",
+        "app_token",
+        "token",
+        "napcat_access_token",
+        "refresh_token",
+        "access_token",
+        "client_secret",
+        "webhook_secret",
+        "app_secret",
+        "password_hash",
+        "secret_key",
+    }
+)
+
 
 # ---------------------------------------------------------------------------
 # Wire shapes
@@ -101,16 +124,32 @@ def _hash8(text: str) -> str:
 
 def _redact(cfg: Any) -> Any:
     """Walk the config dict and replace literal secret values with the
-    redaction sentinel. Mirrors the Rust ``Config::redacted`` shape:
-    only ``api_key.value`` / ``admin.password_hash`` style fields are
-    redacted; ``api_key.env`` references stay readable."""
+    redaction sentinel.
+
+    Mirrors the Rust ``Config::redacted`` shape: ``api_key.value`` /
+    ``admin.password_hash`` style fields are redacted while ``api_key.env``
+    references stay readable. SEC-07 extends this to the channel/OAuth
+    secret leaves in :data:`_SECRET_LEAF_KEYS` so a ``GET /admin/config``
+    no longer leaks ``channels.telegram.bot_token`` /
+    ``channels.qq.napcat_access_token`` / OAuth tokens etc. Only an inline
+    *non-empty string* value is redacted; env-ref dicts (``{ env = ".." }``)
+    are recursed into so they remain readable."""
     if isinstance(cfg, dict):
         out: dict[str, Any] = {}
         for k, v in cfg.items():
             if k == "api_key" and isinstance(v, dict) and "value" in v:
                 out[k] = {**v, "value": REDACTED_SENTINEL}
-            elif k in {"password_hash", "secret_key"} and v:
+            elif k in _SECRET_LEAF_KEYS and isinstance(v, str) and v:
                 out[k] = REDACTED_SENTINEL
+            elif (
+                k in _SECRET_LEAF_KEYS
+                and isinstance(v, dict)
+                and isinstance(v.get("value"), str)
+                and v["value"]
+            ):
+                # SecretRef inline form (``{ value = ".." }``): redact the
+                # inline value, keep any ``env`` reference readable.
+                out[k] = {**v, "value": REDACTED_SENTINEL}
             elif isinstance(v, dict):
                 out[k] = _redact(v)
             elif isinstance(v, list):
@@ -134,12 +173,22 @@ def _has_redacted(cfg: Any) -> bool:
 def _merge_secrets_from(new: Any, base: Any) -> Any:
     """Replace any ``REDACTED_SENTINEL`` values in ``new`` with the real
     value from ``base`` at the same path. Mirrors Rust
-    ``Config::merge_redacted_secrets_from`` semantics."""
+    ``Config::merge_redacted_secrets_from`` semantics.
+
+    SEC-07: when ``new`` echoes the sentinel for a key that is *absent*
+    from ``base`` (no live value to restore — e.g. a secret the operator
+    added then re-submitted the GET'd snapshot), the key is **dropped**
+    rather than written as the literal ``None`` or left as the sentinel.
+    Writing ``None`` would clobber a present secret on disk, and leaving
+    the sentinel would trip the ``redacted_sentinel_in_payload`` guard."""
     if isinstance(new, dict) and isinstance(base, dict):
         out = {}
         for k, v in new.items():
             if k in base:
                 out[k] = _merge_secrets_from(v, base[k])
+            elif isinstance(v, str) and v == REDACTED_SENTINEL:
+                # Redacted echo with no live base value → drop it.
+                continue
             else:
                 out[k] = v
         return out

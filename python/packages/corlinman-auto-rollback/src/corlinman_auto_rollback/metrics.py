@@ -69,11 +69,22 @@ class MetricSnapshot:
         path. ``raw`` not being an object, or any of the four required
         fields being absent / wrong-typed, raises :class:`ValueError`
         so the monitor's fail-safe "skip on bad baseline" branch fires
-        instead of guessing."""
+        instead of guessing.
+
+        An *empty* dict is the one tolerated exception: it is the
+        legacy "no-baseline" sentinel some older apply rows persisted
+        before the applier captured a real snapshot. Decoding it to an
+        empty-counts snapshot (rather than raising) lets the monitor's
+        ``min_baseline_signals`` quiet-target guard skip it safely
+        instead of counting it as a hard error forever."""
         if not isinstance(raw, dict):
             raise ValueError(
                 f"MetricSnapshot.from_dict: expected JSON object, got {type(raw).__name__}"
             )
+        if not raw:
+            # Legacy no-baseline sentinel: an empty-counts snapshot the
+            # quiet-target guard skips, not a malformed-baseline error.
+            return cls(target="", captured_at_ms=0, window_secs=0, counts={})
         try:
             target = str(raw["target"])
             captured_at_ms = int(raw["captured_at_ms"])

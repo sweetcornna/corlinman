@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from collections.abc import AsyncIterator
 from contextlib import suppress
@@ -55,6 +56,8 @@ from typing import Any
 import httpx
 import websockets
 from websockets.asyncio.client import ClientConnection
+
+_log = logging.getLogger(__name__)
 
 from corlinman_channels.common import (
     Attachment,
@@ -222,9 +225,16 @@ def is_mentioning_bot(message: dict[str, Any], bot_open_id: str) -> bool:
 
     Feishu resolves mentions into a ``mentions`` array; each entry has an
     ``id`` object whose ``open_id`` identifies the mentioned user/bot.
+
+    When ``bot_open_id`` is unknown (the ``GET /open-apis/bot/v3/info``
+    resolution in :meth:`FeishuAdapter._resolve_bot_open_id` failed), we fall
+    back to :func:`_text_mentions_bot` — any resolved mention in the body is
+    treated as addressing the bot. This is intentionally looser than the
+    open-id match but recovers the common case (a transient bot-info outage)
+    instead of dropping every group message (CMP-08).
     """
     if not bot_open_id:
-        return False
+        return _text_mentions_bot(message)
     for mention in message.get("mentions") or []:
         if not isinstance(mention, dict):
             continue
@@ -235,6 +245,27 @@ def is_mentioning_bot(message: dict[str, Any], bot_open_id: str) -> bool:
         if mention.get("open_id") == bot_open_id:
             return True
     return False
+
+
+def _text_mentions_bot(message: dict[str, Any]) -> bool:
+    """Fallback mention heuristic used when the bot ``open_id`` is unknown.
+
+    Feishu only populates the ``mentions`` array / inserts ``@_user_N``
+    placeholders in the flattened text when a chat member was actually
+    @-mentioned. A bot in a group receives a group message only when it is
+    addressed (mentioned) — so the presence of any resolved mention is a
+    reasonable "this is for me" signal when we can't match the open id
+    precisely. Returns ``True`` when the message carries a non-empty
+    ``mentions`` array OR an ``@_user_N`` placeholder in its text body.
+    """
+    import re
+
+    mentions = message.get("mentions") or []
+    if isinstance(mentions, list) and any(
+        isinstance(m, dict) for m in mentions
+    ):
+        return True
+    return bool(re.search(r"@_user_\d+", extract_text(message)))
 
 
 def binding_from_event(event_message: dict[str, Any], bot_open_id: str) -> ChannelBinding:
@@ -319,14 +350,66 @@ class FeishuAdapter:
 
         The initial token exchange must succeed so we fail fast on bad
         credentials — the Telegram adapter does the same with ``getMe``.
+        After the token lands we resolve the bot's own ``open_id`` so the
+        group @mention gate can recognise messages addressed to the bot;
+        without it ``is_mentioning_bot`` short-circuits to ``False`` and
+        every group message is dropped (CMP-08).
         """
         if self._reader_task is not None:
             return
         await self._refresh_token()
+        await self._resolve_bot_open_id()
         self._closed = False
         self._reader_task = asyncio.create_task(
             self._connection_loop(), name="feishu-longconn"
         )
+
+    async def _resolve_bot_open_id(self) -> str:
+        """Fetch the bot's own ``open_id`` via ``GET /open-apis/bot/v3/info``.
+
+        Sets :attr:`_bot_open_id` so :func:`is_mentioning_bot` can match a
+        group @mention against the bot. Best-effort: a transient failure
+        (network, non-zero ``code``, missing field) logs and leaves the id
+        empty rather than crashing the channel start — the inbound iterator
+        falls back to a text-based ``@_user_N`` mention heuristic when the
+        open id is unknown (see :meth:`inbound`). Returns the resolved id
+        (``""`` when unresolved).
+        """
+        token = await self._refresh_token()
+        try:
+            resp = await self._client.get(
+                f"{self._cfg.api_base}/open-apis/bot/v3/info",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        except httpx.HTTPError as exc:
+            _log.warning("feishu bot/v3/info fetch failed: %s", exc)
+            return self._bot_open_id
+        if resp.status_code >= 400:
+            _log.warning(
+                "feishu bot/v3/info HTTP %s — group @mention gate degraded "
+                "to text fallback",
+                resp.status_code,
+            )
+            return self._bot_open_id
+        try:
+            env = resp.json()
+        except ValueError as exc:
+            _log.warning("feishu bot/v3/info invalid JSON: %s", exc)
+            return self._bot_open_id
+        if not isinstance(env, dict) or env.get("code") != 0:
+            code = env.get("code") if isinstance(env, dict) else "?"
+            _log.warning("feishu bot/v3/info error code %s", code)
+            return self._bot_open_id
+        bot = env.get("bot")
+        open_id = bot.get("open_id") if isinstance(bot, dict) else None
+        if isinstance(open_id, str) and open_id:
+            self._bot_open_id = open_id
+        else:
+            _log.warning(
+                "feishu bot/v3/info returned no open_id — group @mention "
+                "gate degraded to text fallback"
+            )
+        return self._bot_open_id
 
     async def close(self) -> None:
         """Stop the long-connection loop and (if we own it) the client."""

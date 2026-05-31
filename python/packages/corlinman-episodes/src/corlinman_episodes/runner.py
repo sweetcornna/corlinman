@@ -46,6 +46,9 @@ from corlinman_episodes.importance import score
 from corlinman_episodes.sources import (
     SourceBundle,
     SourcePaths,
+    _ro_connect,
+    _table_exists,
+    _ts_to_ms,
     collect_bundles,
     select_window,
     window_too_small,
@@ -242,12 +245,23 @@ async def episodes_run_once(
                     swept_stale_runs=tuple(swept),
                 )
 
+            # Per-user "first N sessions" set drives the ONBOARDING
+            # classification. Computed once over the whole sessions
+            # history (not just the window) so a returning user's
+            # later in-window session isn't mis-tagged onboarding.
+            onboarding_keys = _onboarding_session_keys(
+                sessions_db=sources.sessions_db,
+                tenant_id=tenant_id,
+                onboarding_first_n=config.onboarding_first_n,
+            )
+
             written, reused = await _distill_and_persist(
                 store=store,
                 bundles=bundles,
                 config=config,
                 tenant_id=tenant_id,
                 provider=summary_provider,
+                onboarding_keys=onboarding_keys,
             )
             await store.finish_run(
                 run.run_id,
@@ -298,11 +312,17 @@ async def _distill_and_persist(
     config: EpisodesConfig,
     tenant_id: str,
     provider: SummaryProvider | SummaryFn,
+    onboarding_keys: frozenset[str],
 ) -> tuple[int, int]:
     """Per-bundle: classify → score → distill → insert.
 
     Returns ``(written, reused)`` — ``reused`` counts bundles whose
     natural-key probe already had a row from a prior crashed pass.
+
+    ``onboarding_keys`` is the per-user "first N sessions" set computed
+    by :func:`_onboarding_session_keys`; a bundle whose ``session_key``
+    is in the set classifies as ``ONBOARDING`` (which the importance
+    scorer credits ``+0.1`` for).
 
     PERF-008: episodes are accumulated in bundle order and persisted
     via a single :meth:`EpisodesStore.insert_episodes` batch at the end
@@ -313,7 +333,11 @@ async def _distill_and_persist(
     reused = 0
     to_insert: list[Episode] = []
     for bundle in bundles:
-        kind = classify(bundle)
+        is_onboarding = (
+            bundle.session_key is not None
+            and bundle.session_key in onboarding_keys
+        )
+        kind = classify(bundle, is_onboarding=is_onboarding)
         importance = score(bundle, kind)
 
         existing = await store.find_episode_by_natural_key(
@@ -383,6 +407,84 @@ def _session_keys(bundle: SourceBundle) -> list[str]:
             keys.append(hook.session_key)
             seen.add(hook.session_key)
     return keys
+
+
+def _session_user_id(session_key: str) -> str:
+    """Derive the per-user identity bucket from a ``session_key``.
+
+    Production session keys are ``<channel>:<channel_user_id>`` (see
+    ``corlinman-gateway routes/chat.rs`` ``parse_session_key``). The
+    "first-N sessions of a new user" rule counts per user, so we key on
+    the ``channel_user_id`` suffix — the same person reaching us across
+    two channels shares one onboarding budget. Keys without a ``:`` (or
+    a trailing empty suffix) fall back to the whole key.
+    """
+    _, sep, suffix = session_key.partition(":")
+    if sep and suffix:
+        return suffix
+    return session_key
+
+
+def _onboarding_session_keys(
+    *,
+    sessions_db: "Path",
+    tenant_id: str,
+    onboarding_first_n: int,
+) -> frozenset[str]:
+    """Session keys that fall in the per-user "first N sessions" window.
+
+    Reads ``sessions.sqlite`` read-only, computes each session_key's
+    first-seen timestamp, groups keys by :func:`_session_user_id`, and
+    returns the union of each user's earliest ``onboarding_first_n``
+    keys (ranked by ``(first_seen_ts, session_key)`` so ties are
+    deterministic). The whole sessions history is scanned — not just
+    the distillation window — so a returning user's later session isn't
+    mis-tagged onboarding when an early session aged out of the window.
+
+    ``onboarding_first_n <= 0`` disables the rule (empty set). A missing
+    DB / table degrades to "no onboarding keys", matching the
+    no-rows-on-clean-checkout stance of the source collectors.
+    """
+    if onboarding_first_n <= 0:
+        return frozenset()
+
+    # session_key -> earliest parseable ts seen for that key.
+    first_seen: dict[str, int] = {}
+    with _ro_connect(sessions_db) as conn:
+        if not _table_exists(conn, "sessions"):
+            return frozenset()
+        has_tenant = bool(
+            conn.execute(
+                "SELECT 1 FROM pragma_table_info('sessions') "
+                "WHERE name='tenant_id'"
+            ).fetchone()
+        )
+        if has_tenant:
+            cur = conn.execute(
+                "SELECT session_key, ts FROM sessions WHERE tenant_id = ?",
+                (tenant_id,),
+            )
+        else:
+            cur = conn.execute("SELECT session_key, ts FROM sessions")
+        for row in cur.fetchall():
+            key = str(row[0])
+            ts_ms = _ts_to_ms(row[1])
+            prior = first_seen.get(key)
+            if prior is None or ts_ms < prior:
+                first_seen[key] = ts_ms
+        cur.close()
+
+    # Rank each user's keys by first-seen ts; keep the earliest N.
+    per_user: dict[str, list[tuple[int, str]]] = {}
+    for key, ts_ms in first_seen.items():
+        per_user.setdefault(_session_user_id(key), []).append((ts_ms, key))
+
+    onboarding: set[str] = set()
+    for keys in per_user.values():
+        keys.sort()
+        for _ts, key in keys[:onboarding_first_n]:
+            onboarding.add(key)
+    return frozenset(onboarding)
 
 
 async def _record_skipped_empty(

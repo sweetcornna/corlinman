@@ -271,8 +271,22 @@ async def serve_agent(
     # the servicer so every ReasoningLoop it constructs tees envelopes
     # into the journal + live SSE subscribers. ``None`` keeps the
     # legacy yield-only path active for the test smoke / degraded boot.
+    #
+    # BUG-01: build + pass a pre-tool HookRunner so the co-hosted agent's
+    # blocking PreToolDispatch gate is live (mirrors main._serve). Best-
+    # effort — a build failure degrades to no runner, identical to before.
+    hook_runner: Any | None = None
+    try:
+        from corlinman_server.main import _build_hook_runner
+
+        hook_runner = _build_hook_runner()
+    except Exception as exc:  # noqa: BLE001 — no hooks degrades fine
+        log.warning("gateway.grpc.agent.hook_runner_failed", error=str(exc))
     agent_pb2_grpc.add_AgentServicer_to_server(
-        CorlinmanAgentServicer(event_emitter=event_emitter), server
+        CorlinmanAgentServicer(
+            event_emitter=event_emitter, hook_runner=hook_runner
+        ),
+        server,
     )
     try:
         server.add_insecure_port(bind)

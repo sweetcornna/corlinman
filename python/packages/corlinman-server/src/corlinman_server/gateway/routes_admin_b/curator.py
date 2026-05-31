@@ -338,6 +338,43 @@ def _all_profile_slugs(store) -> list[str]:
     return sorted(str(p.slug) for p in profiles)
 
 
+# DDL-default curator thresholds, mirrored from
+# ``corlinman_evolution_store.schema`` so the /profiles route can fill in
+# the histogram row for a profile that has no persisted curator_state yet
+# WITHOUT firing a per-slug SELECT (PERF-03). These match the column
+# DEFAULTs and the private ``_default_curator_state`` in the store repo.
+_CURATOR_DEFAULT_INTERVAL_HOURS = 168
+_CURATOR_DEFAULT_STALE_AFTER_DAYS = 30
+_CURATOR_DEFAULT_ARCHIVE_AFTER_DAYS = 90
+
+
+def _default_curator_state(slug: str) -> Any | None:
+    """Build the default :class:`CuratorState` for a profile with no
+    persisted row. Returns ``None`` if the evolution-store package isn't
+    importable, so the caller can fall back to ``curator_repo.get``.
+
+    Kept here (not on the repo) so the bulk-list path stays a single query:
+    ``list_all`` returns only persisted rows, and unreviewed profiles get
+    this synthetic default instead of an extra round trip each."""
+    try:
+        from corlinman_evolution_store import (  # noqa: PLC0415
+            CuratorState,
+        )
+    except ImportError:
+        return None
+    return CuratorState(
+        profile_slug=slug,
+        last_review_at=None,
+        last_review_duration_ms=None,
+        last_review_summary=None,
+        run_count=0,
+        paused=False,
+        interval_hours=_CURATOR_DEFAULT_INTERVAL_HOURS,
+        stale_after_days=_CURATOR_DEFAULT_STALE_AFTER_DAYS,
+        archive_after_days=_CURATOR_DEFAULT_ARCHIVE_AFTER_DAYS,
+    )
+
+
 async def _run_curator_now(
     *,
     state: AdminState,
@@ -449,9 +486,32 @@ def router() -> APIRouter:  # noqa: C901 — single APIRouter factory, mirrors s
         curator_repo = _curator_repo(admin_state)
 
         slugs = _all_profile_slugs(store)
+        # PERF-03: fetch every profile's curator_state in ONE query instead
+        # of an ``await curator_repo.get(slug)`` per slug. ``list_all`` only
+        # returns slugs that have a persisted row; profiles that have never
+        # been reviewed are missing from the map and get the same DDL-default
+        # struct ``CuratorStateRepo.get`` would synthesise — built locally so
+        # an unreviewed profile costs zero extra SELECTs.
+        list_all = getattr(curator_repo, "list_all", None)
+        if callable(list_all):
+            state_rows = await list_all()
+            state_by_slug = {row.profile_slug: row for row in state_rows}
+        else:
+            # Older/fake repos without ``list_all`` degrade to per-slug
+            # fetches rather than 500.
+            state_by_slug = {}
         rows: list[ProfileCuratorOut] = []
         for slug in slugs:
-            state_row = await curator_repo.get(slug)
+            state_row = state_by_slug.get(slug)
+            if state_row is None:
+                # No persisted row yet — synthesise the default in-process
+                # (matches ``CuratorStateRepo.get``'s never-None contract)
+                # rather than firing a per-slug SELECT. Falls back to
+                # ``curator_repo.get`` only if the default struct can't be
+                # built (e.g. evolution-store not importable).
+                state_row = _default_curator_state(slug)
+                if state_row is None:
+                    state_row = await curator_repo.get(slug)
             # Registry load is best-effort — if a profile has no skills
             # dir yet we still want to surface its curator state.
             try:

@@ -153,7 +153,9 @@ def test_web_fetch_plain_text_passthrough() -> None:
             )
         )
     )
-    assert out["text"] == "just plain text"
+    # Body is fenced in untrusted-content markers (SEC-04); the prose is
+    # present inside the fence.
+    assert "just plain text" in out["text"]
     assert out["title"] is None
 
 
@@ -217,17 +219,21 @@ def test_web_fetch_respects_max_chars() -> None:
             200, text="abcdefghij" * 50, headers={"content-type": "text/plain"}
         )
 
+    # ``max_chars`` now bounds the FENCED string (SEC-04). The fence has a
+    # fixed overhead subtracted from the budget before the body is sliced,
+    # so the whole returned text still fits the cap. Use a cap above the
+    # fence overhead so the budget math is meaningful.
     out = json.loads(
         asyncio.run(
             dispatch_web_fetch(
                 args_json=json.dumps(
-                    {"url": "https://example.com/x", "max_chars": 25}
+                    {"url": "https://example.com/x", "max_chars": 500}
                 ),
                 transport=_transport(handler),
             )
         )
     )
-    assert len(out["text"]) == 25
+    assert len(out["text"]) <= 500
     assert out["truncated"] is True
 
 
@@ -611,7 +617,7 @@ def test_web_fetch_follows_safe_redirect_chain() -> None:
         )
     )
     assert out["status"] == 200
-    assert out["text"] == "ok-body"
+    assert "ok-body" in out["text"]  # body is fenced (SEC-04)
     # final_url must report the LOGICAL hostname URL, not the pinned IP.
     assert out["final_url"] == "https://example.com/final"
 
@@ -654,7 +660,7 @@ def test_web_fetch_allow_private_override_admits_loopback(
         )
     )
     assert out["status"] == 200
-    assert out["text"] == "local-only"
+    assert "local-only" in out["text"]  # body is fenced (SEC-04)
 
 
 def test_web_search_drops_unsafe_result_urls(
@@ -788,7 +794,7 @@ def test_web_fetch_pins_validated_ip_against_dns_rebind(
         f"expected pin to {public_ip!r}"
     )
     assert out["status"] == 200
-    assert out["text"] == "REACHED"
+    assert "REACHED" in out["text"]  # body is fenced (SEC-04)
 
 
 def test_web_fetch_pins_validated_ip_on_each_redirect_hop(
@@ -840,7 +846,7 @@ def test_web_fetch_pins_validated_ip_on_each_redirect_hop(
     )
 
     assert out["status"] == 200
-    assert out["text"] == "HOP-OK"
+    assert "HOP-OK" in out["text"]  # body is fenced (SEC-04)
     # The redirect hop must have landed on the validated public ip, never
     # the rebound metadata endpoint.
     assert internal_ip not in connected_to, (

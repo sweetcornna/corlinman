@@ -45,6 +45,13 @@ class EpisodesConfig:
     last_week_top_n: int = 5
     cold_archive_days: int = 180
     run_stale_after_secs: int = 1800
+    #: A bundle is classified ``ONBOARDING`` when its session is among
+    #: the user's first ``onboarding_first_n`` sessions (ranked by
+    #: first-seen ts across all of that user's session_keys). Mirrors
+    #: the ``ONBOARDING_FIRST_N`` knob in the D1 design doc
+    #: (§Configuration / §"first-N sessions of a new user_id").
+    #: ``0`` disables the onboarding rule entirely.
+    onboarding_first_n: int = 3
 
 
 __all__ = ["DEFAULT_TENANT_ID", "EpisodesConfig"]

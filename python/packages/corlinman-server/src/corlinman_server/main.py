@@ -66,6 +66,54 @@ def _build_hook_bus() -> Any:
         _HOOK_BUS = None
     return _HOOK_BUS
 
+
+def _build_hook_runner() -> Any | None:
+    """Build the pre-tool :class:`HookRunner` for the standalone server.
+
+    BUG-01: the blocking ``PreToolDispatch`` gate only ran when a HookRunner
+    was wired into the servicer, but only the gateway *lifespan* (a separate
+    process) ever built one — the standalone ``corlinman-python-server`` never
+    received it, so the gate was inert while the telemetry event still fired.
+    This mirrors the gateway's ``[hooks]`` + ``CORLINMAN_HOOKS_DIR`` (falling
+    back to ``<data_dir>/hooks``) discovery so a stock standalone boot gets a
+    live gate. Best-effort: any failure (missing ``corlinman-hooks``, bad hook
+    dir) degrades to ``None`` and the server boots with the gate disabled.
+    """
+    try:
+        from corlinman_hooks.runner import HookRunner
+
+        data_dir = _resolve_data_dir()
+        # The agent-level shell-hook config lives under ``[hooks]`` of the
+        # py-config drop the gateway writes; absent that we just discover
+        # file-based HOOK.yaml hooks from the hooks dir.
+        hooks_cfg: dict[str, Any] = {}
+        path = os.environ.get("CORLINMAN_PY_CONFIG")
+        if path:
+            try:
+                data = json.loads(Path(path).read_text(encoding="utf-8"))
+                section = data.get("hooks") if isinstance(data, dict) else None
+                if isinstance(section, dict):
+                    hooks_cfg = {"hooks": section}
+            except Exception as exc:  # noqa: BLE001 — config read is best-effort
+                logger.warning("hooks.runner.config_read_failed", error=str(exc))
+        hooks_dir_env = os.environ.get("CORLINMAN_HOOKS_DIR")
+        hooks_dir: Path | None
+        if hooks_dir_env:
+            hooks_dir = Path(hooks_dir_env)
+        else:
+            default_hooks_dir = data_dir / "hooks"
+            hooks_dir = default_hooks_dir if default_hooks_dir.is_dir() else None
+        runner = HookRunner(hooks_cfg, hooks_dir=hooks_dir)
+        logger.info(
+            "hooks.runner.ready",
+            hooks_dir=str(hooks_dir) if hooks_dir else None,
+            discovered=getattr(runner, "discovered_events", {}),
+        )
+        return runner
+    except Exception as exc:  # noqa: BLE001 — no hooks degrades fine
+        logger.warning("hooks.runner.init_failed", error=str(exc))
+        return None
+
 logger = structlog.get_logger(__name__)
 
 _DEFAULT_SOCKET: Final[str] = "/tmp/corlinman-py.sock"
@@ -314,13 +362,18 @@ async def _serve() -> int:
     # (the servicer treats it as "no hook fan-out") so a stripped-down
     # build without ``corlinman-hooks`` still boots.
     hook_bus = _build_hook_bus()
+    # BUG-01: build the pre-tool hook runner so the standalone server's
+    # blocking PreToolDispatch gate is actually live (not just telemetry).
+    hook_runner = _build_hook_runner()
 
     if os.environ.get("CORLINMAN_TEST_MOCK_PROVIDER") is not None:
         # Test smoke path: leave provider_resolver unset so the Agent
         # servicer activates its offline mock provider instead of falling
         # through to legacy real-provider prefix matching.
         logger.info("providers.registered", count=0, enabled=0, aliases=0)
-        agent_servicer = CorlinmanAgentServicer(hook_bus=hook_bus)
+        agent_servicer = CorlinmanAgentServicer(
+            hook_bus=hook_bus, hook_runner=hook_runner
+        )
     else:
         py_config_path = os.environ.get("CORLINMAN_PY_CONFIG")
         resolver = _ReloadingProviderResolver(py_config_path)
@@ -332,6 +385,7 @@ async def _serve() -> int:
             provider_resolver=resolver,
             aliases=resolver.aliases,
             hook_bus=hook_bus,
+            hook_runner=hook_runner,
         )
     agent_pb2_grpc.add_AgentServicer_to_server(agent_servicer, server)
 

@@ -2821,11 +2821,20 @@ def build_app(
                     await task
             # P14 teardown: close the external MCP client manager so
             # stdio child processes / ws connections are released.
-            mcp_manager = state.extras.get("mcp_manager")
+            # Read ``extras`` defensively: a degraded boot uses
+            # ``_DegradedAppState`` (``__slots__`` = config/data_dir, no
+            # ``extras``), so an unguarded ``state.extras`` would raise
+            # AttributeError out of this ``finally`` and abort every
+            # remaining teardown step below — leaking the C2 sqlite stores.
+            _extras = getattr(state, "extras", None)
+            mcp_manager = (
+                _extras.get("mcp_manager") if isinstance(_extras, dict) else None
+            )
             if mcp_manager is not None:
                 with suppress(Exception):
                     await mcp_manager.aclose()
-                state.extras.pop("mcp_manager", None)
+                if isinstance(_extras, dict):
+                    _extras.pop("mcp_manager", None)
             # W5.0 teardown: close the evolution sqlite cleanly so the
             # WAL file is checkpointed and tests don't leave stale
             # file handles open on Windows.

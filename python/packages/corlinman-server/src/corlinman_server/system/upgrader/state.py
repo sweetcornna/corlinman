@@ -108,7 +108,13 @@ class UpgradeStatus:
         return self.state in ("succeeded", "failed", "stalled")
 
     def is_in_flight(self) -> bool:
-        return self.state in ("queued", "running", "stalled")
+        # ``stalled`` is intentionally NOT in-flight: it is a terminal,
+        # operator-visible warning (helper unit missing / gateway
+        # restarted mid-upgrade). Counting it as in-flight made
+        # ``current_in_flight()`` return it forever, so every retry 409'd
+        # with UpgradeAlreadyRunning — a permanent upgrade lockout
+        # (BUG-02). Only the genuinely-resumable states occupy the slot.
+        return self.state in ("queued", "running")
 
 
 # ---------------------------------------------------------------------------
@@ -121,10 +127,11 @@ class UpgradeStateStore:
 
     On every transition the full state map is flushed atomically to
     ``persist_path`` (``.tmp`` + :func:`os.replace`). Construction loads
-    any existing file so a restart mid-upgrade preserves the audit trail
-    — though the in-flight task itself does not resume (W1.2 may flag
-    stranded jobs as ``state="stalled"``; for W1.1 we just keep the
-    record).
+    any existing file so a restart mid-upgrade preserves the audit trail.
+    The in-flight task itself does not resume, so :meth:`_load_from_disk`
+    reconciles any non-terminal (``queued``/``running``) record to the
+    terminal ``stalled`` warning — otherwise it would wedge
+    :meth:`current_in_flight` forever and lock out all future upgrades.
     """
 
     def __init__(self, persist_path: Path) -> None:
@@ -178,12 +185,13 @@ class UpgradeStateStore:
                     )
                 except (KeyError, TypeError, ValueError):
                     continue
+        reconciled = False
         if isinstance(statuses, dict):
             for rid, raw_status in statuses.items():
                 if not isinstance(raw_status, dict):
                     continue
                 try:
-                    self._statuses[rid] = UpgradeStatus(
+                    status = UpgradeStatus(
                         request_id=str(raw_status["request_id"]),
                         tag=str(raw_status["tag"]),
                         state=raw_status["state"],
@@ -195,6 +203,28 @@ class UpgradeStateStore:
                     )
                 except (KeyError, TypeError, ValueError):
                     continue
+                # Cold-start reconciliation: a ``queued``/``running``
+                # record persisted before the gateway restarted has NO
+                # live background task to resume it — its work is gone.
+                # Leaving it non-terminal would make ``current_in_flight``
+                # return it forever and lock out all future upgrades
+                # (BUG-02). Flip it to the terminal ``stalled`` warning so
+                # operators see what happened and a retry is allowed.
+                if status.state in ("queued", "running"):
+                    status.state = "stalled"
+                    status.phase = "stalled"
+                    status.error = "gateway_restarted_mid_upgrade"
+                    if status.finished_at is None:
+                        status.finished_at = _now_ms()
+                    reconciled = True
+                self._statuses[rid] = status
+        # Persist the reconciliation so the on-disk audit trail reflects
+        # the terminal ``stalled`` outcome immediately (otherwise a peer
+        # reader could still see the orphaned ``running`` record until the
+        # next mutation flushes). ``_flush_locked`` only writes; it does
+        # not need the asyncio lock held during single-threaded __init__.
+        if reconciled:
+            self._flush_locked()
 
     def _flush_locked(self) -> None:
         """Atomically persist current state. Caller MUST hold ``self._lock``."""
@@ -276,10 +306,12 @@ class UpgradeStateStore:
             return UpgradeStatus(**asdict(current))
 
     async def current_in_flight(self) -> UpgradeStatus | None:
-        """Return any status with state in ``{queued, running, stalled}``.
+        """Return any status with state in ``{queued, running}``.
 
         At most one should ever exist; the caller is responsible for
-        enforcing single-flight at the request site.
+        enforcing single-flight at the request site. Terminal states
+        (incl. ``stalled`` and an orphaned-on-restart record) are NOT
+        in-flight, so a retry is always permitted after one.
         """
         async with self._lock:
             for status in self._statuses.values():

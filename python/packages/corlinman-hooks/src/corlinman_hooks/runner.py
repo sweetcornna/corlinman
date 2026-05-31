@@ -414,6 +414,30 @@ class HookRunner:
                 result.reason = decision.reason
         return result
 
+    @staticmethod
+    def _merge_pre_tool_tiers(specific: HookDecision, generic: HookDecision) -> HookDecision:
+        """Fold the specific (``pre_<tool>``) and generic (``pre_tool``)
+        allow-path verdicts into a single :class:`HookDecision`.
+
+        Both tiers are allow at this point (a deny short-circuits earlier).
+        ``mutated_args`` / ``inject_message`` / ``stop`` / ``reason`` are
+        carried forward in specific-then-generic order (last write wins for
+        the mutate/inject slots, ``stop`` OR-folds, first ``reason`` sticks).
+        Shared by both :meth:`run_pre_tool` and :meth:`run_pre_tool_async`
+        so the sync and async paths never diverge.
+        """
+        merged = HookDecision.allow_all()
+        for d in (specific, generic):
+            if d.mutated_args is not None:
+                merged.mutated_args = d.mutated_args
+            if d.inject_message is not None:
+                merged.inject_message = d.inject_message
+            if d.stop:
+                merged.stop = True
+            if d.reason and not merged.reason:
+                merged.reason = d.reason
+        return merged
+
     # ------------------------------------------------------------------
     # Synchronous decision API (C3): used inside ``_emit_pre_tool_dispatch``
     # + tests. Returns a HookDecision (tuple-compatible for back-compat).
@@ -476,17 +500,7 @@ class HookRunner:
             if not generic.allow:
                 return generic
             # Merge mutate/inject from both tiers (specific then generic).
-            merged = HookDecision.allow_all()
-            for d in (specific, generic):
-                if d.mutated_args is not None:
-                    merged.mutated_args = d.mutated_args
-                if d.inject_message is not None:
-                    merged.inject_message = d.inject_message
-                if d.stop:
-                    merged.stop = True
-                if d.reason and not merged.reason:
-                    merged.reason = d.reason
-            return merged
+            return self._merge_pre_tool_tiers(specific, generic)
         return HookDecision.allow_all()
 
     def run_stop(self, ctx: dict[str, Any] | None = None) -> HookDecision:
@@ -641,13 +655,19 @@ class HookRunner:
                         extra={"tool": tool_name, "returncode": proc_rc, "message": msg},
                     )
                     return HookDecision.deny(msg or "blocked by hook")
-        # In-process handlers are synchronous — reuse the sync fold.
+        # In-process handlers are synchronous — reuse the sync fold so the
+        # async path carries the specific tier's mutated_args/inject_message
+        # exactly like ``run_pre_tool`` does (BUG-03).
         if self._handlers.get("pre_tool") or self._handlers.get(f"pre_{tool_name}"):
             handler_payload = {"tool": tool_name, "args": args, "ctx": ctx or {}}
             specific = self._run_handlers(f"pre_{tool_name}", handler_payload)
             if not specific.allow:
                 return specific
-            return self._run_handlers("pre_tool", handler_payload)
+            generic = self._run_handlers("pre_tool", handler_payload)
+            if not generic.allow:
+                return generic
+            # Merge mutate/inject from both tiers (specific then generic).
+            return self._merge_pre_tool_tiers(specific, generic)
         return HookDecision.allow_all()
 
 

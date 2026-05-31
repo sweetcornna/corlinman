@@ -134,7 +134,11 @@ async def test_happy_path_writes_one_episode(
     _seed_minimal_conversation(sessions_db=sessions_db, base_ms=base_ms)
 
     summary = await episodes_run_once(
-        config=_config(),
+        # onboarding_first_n=0 disables the CMP-03 onboarding classification so
+        # this generic happy-path assertion stays on CONVERSATION (the seeded
+        # window is a brand-new user's first session, which now classifies as
+        # ONBOARDING by default — covered by the CMP-03 onboarding test).
+        config=_config(onboarding_first_n=0),
         episodes_db=episodes_db,
         sources=sources,
         summary_provider=make_constant_provider("a brief chat"),

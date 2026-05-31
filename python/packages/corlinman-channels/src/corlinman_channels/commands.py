@@ -79,6 +79,7 @@ __all__ = [
     "register_skill_command",
     "run_command_handler",
     "runtime_registry",
+    "slash_access_policy_from_env",
     "substitute_arguments",
     "telegram_bot_commands",
     "unknown_command_notice",
@@ -778,21 +779,34 @@ def match_command_with_args(text: str) -> tuple[CommandSpec, str] | None:
     return _scan_match(stripped)
 
 
-def apply_command_prelude(text: str, spec: CommandSpec) -> str:
+def apply_command_prelude(
+    text: str,
+    spec: CommandSpec,
+    *,
+    args_text: str | None = None,
+) -> str:
     """Return the wizard prelude that should replace ``text``.
 
-    Today this is a thin wrapper that returns ``spec.wizard_prelude``
-    verbatim (the ``text`` argument is accepted but unused). When the
-    spec has no prelude (handler-only command), returns ``text``
+    When the spec has no prelude (handler-only command), returns ``text``
     unchanged — the playground / chat_bootstrap layer then leaves the
     literal text alone, and the channel layer is expected to invoke
     the handler via :func:`run_command_handler` instead.
+
+    CMP-07: when ``args_text`` is supplied (the text the user typed after
+    the matched alias), ``$ARGUMENTS`` / ``$1``..``$N`` tokens in the
+    prelude are substituted via :func:`substitute_arguments`. This is what
+    makes a ``commands/foo.md`` body with a ``$ARGUMENTS`` placeholder
+    actually receive the user's args. ``None`` (the default) preserves the
+    historical verbatim behaviour for callers that don't have the args
+    handy (e.g. the web playground's static rewrite).
     """
-    del text  # reserved for future arg-token interpolation
+    del text  # the literal text is not injected; the prelude replaces it
     if spec.wizard_prelude is None:
         # Handler-only spec; nothing to inject. Caller (e.g.
         # chat_bootstrap) treats this as "no rewrite".
         return spec.wizard_prelude  # type: ignore[return-value]
+    if args_text is not None:
+        return substitute_arguments(spec.wizard_prelude, args_text)
     return spec.wizard_prelude
 
 
@@ -801,9 +815,37 @@ def apply_command_prelude(text: str, spec: CommandSpec) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _policy_refusal(
+    spec: CommandSpec,
+    policy: SlashAccessPolicy,
+    binding: ChannelBinding,
+    *,
+    is_dm: bool,
+    is_admin: bool,
+) -> CommandResult | None:
+    """Return a refusal :class:`CommandResult` when ``policy`` denies ``spec``.
+
+    Returns ``None`` when the policy permits the call (the caller proceeds).
+    Centralises CMP-06 enforcement so both the sync and async dispatch
+    wrappers share one denial message + tier-aware wording.
+    """
+    if policy.allows(spec, binding, is_dm=is_dm, is_admin=is_admin):
+        return None
+    alias = spec.aliases[0] if spec.aliases else spec.name
+    tier = policy.tier_for(spec)
+    if tier == SlashAccessTier.DM_ONLY:
+        msg = f"❌ {alias} 仅支持私聊使用。"
+    else:
+        msg = f"❌ {alias} is restricted to administrators."
+    return CommandResult(reply=msg, ephemeral=True)
+
+
 async def run_command_handler(
     spec: CommandSpec,
     ctx: CommandContext,
+    *,
+    policy: SlashAccessPolicy | None = None,
+    is_dm: bool = False,
 ) -> CommandResult:
     """Invoke ``spec.handler`` and return its :class:`CommandResult`.
 
@@ -811,6 +853,14 @@ async def run_command_handler(
     gating happens here so callers don't need to duplicate the check
     — when ``spec.admin_only`` is set and ``ctx.is_admin`` is ``False``
     the handler is never called and a fixed denial reply is returned.
+
+    When ``policy`` is supplied (CMP-06), :meth:`SlashAccessPolicy.allows`
+    is consulted before the handler runs. ``is_dm`` flags whether the
+    inbound came from a 1:1 chat so a ``DM_ONLY`` command is refused in a
+    group. A denied call never invokes the handler — it returns an
+    ephemeral refusal :class:`CommandResult` instead. ``None`` (default)
+    preserves the historical allow-by-default behaviour (only the
+    ``admin_only`` flag gates).
 
     Raises :class:`ValueError` if the spec has no handler.
     """
@@ -825,6 +875,12 @@ async def run_command_handler(
             "is an admin-only command.",
             ephemeral=True,
         )
+    if policy is not None:
+        refusal = _policy_refusal(
+            spec, policy, ctx.binding, is_dm=is_dm, is_admin=ctx.is_admin
+        )
+        if refusal is not None:
+            return refusal
     res: Any = spec.handler(ctx)
     if inspect.isawaitable(res):
         res = await res
@@ -839,6 +895,9 @@ async def run_command_handler(
 def _run_command_handler_sync(
     spec: CommandSpec,
     ctx: CommandContext,
+    *,
+    policy: SlashAccessPolicy | None = None,
+    is_dm: bool = False,
 ) -> CommandResult:
     """Sync convenience wrapper around :func:`run_command_handler`.
 
@@ -846,6 +905,9 @@ def _run_command_handler_sync(
     chat_bootstrap rewrite path). Refuses to run async handlers in this
     mode — they would deadlock the event loop — and falls back to a
     short "(not supported on this surface)" reply.
+
+    Honours the same ``policy`` / ``is_dm`` CMP-06 gate as
+    :func:`run_command_handler`.
     """
     if spec.handler is None:
         raise ValueError(
@@ -858,6 +920,12 @@ def _run_command_handler_sync(
             "is an admin-only command.",
             ephemeral=True,
         )
+    if policy is not None:
+        refusal = _policy_refusal(
+            spec, policy, ctx.binding, is_dm=is_dm, is_admin=ctx.is_admin
+        )
+        if refusal is not None:
+            return refusal
     if asyncio.iscoroutinefunction(spec.handler):
         return CommandResult(
             reply=(
@@ -1295,6 +1363,59 @@ class SlashAccessPolicy:
         if is_admin is None:
             is_admin = is_command_admin(binding)
         return bool(is_admin)
+
+
+#: Env vars that configure the slash-access policy (CMP-06).
+#:
+#: * ``CORLINMAN_SLASH_DEFAULT_TIER`` — the global default tier applied to
+#:   commands without an explicit per-name entry (``public`` / ``dm_only`` /
+#:   ``allowlist`` / ``admin``). Unset / unrecognised → ``public`` (the
+#:   historical allow-by-default polarity).
+#: * ``CORLINMAN_SLASH_TIERS`` — comma list of ``<name>=<tier>`` per-command
+#:   overrides (e.g. ``persona=dm_only,status=allowlist``).
+_SLASH_DEFAULT_TIER_ENV: str = "CORLINMAN_SLASH_DEFAULT_TIER"
+_SLASH_TIERS_ENV: str = "CORLINMAN_SLASH_TIERS"
+
+
+def _parse_tier(raw: str) -> SlashAccessTier | None:
+    """Map an env-string to a :class:`SlashAccessTier`. ``None`` on miss."""
+    try:
+        return SlashAccessTier(raw.strip().lower())
+    except ValueError:
+        return None
+
+
+def slash_access_policy_from_env() -> SlashAccessPolicy | None:
+    """Build a :class:`SlashAccessPolicy` from the environment (CMP-06).
+
+    Returns ``None`` when neither env var is set / both are no-ops, so the
+    dispatch path stays on the historical allow-by-default behaviour (no
+    policy consulted). A deployment opts in by setting
+    ``CORLINMAN_SLASH_DEFAULT_TIER`` (flip the global polarity) and/or
+    ``CORLINMAN_SLASH_TIERS`` (per-command overrides).
+    """
+    default_raw = os.environ.get(_SLASH_DEFAULT_TIER_ENV, "").strip()
+    tiers_raw = os.environ.get(_SLASH_TIERS_ENV, "").strip()
+    if not default_raw and not tiers_raw:
+        return None
+
+    default_tier = _parse_tier(default_raw) or SlashAccessTier.PUBLIC
+    tiers: dict[str, SlashAccessTier] = {}
+    for item in tiers_raw.split(","):
+        item = item.strip()
+        if not item or "=" not in item:
+            continue
+        name, _, tier_str = item.partition("=")
+        name = name.strip().lstrip("/")
+        tier = _parse_tier(tier_str)
+        if name and tier is not None:
+            tiers[name] = tier
+
+    if default_tier == SlashAccessTier.PUBLIC and not tiers:
+        # Nothing actually restricts anything — keep allow-by-default and
+        # avoid the per-dispatch policy check.
+        return None
+    return SlashAccessPolicy(tiers=tiers, default_tier=default_tier)
 
 
 # ---------------------------------------------------------------------------

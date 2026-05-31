@@ -48,6 +48,15 @@ from corlinman_evolution_store import (
     RepoError,
 )
 
+from corlinman_auto_rollback.config import (
+    AutoRollbackThresholds,
+    EvolutionAutoRollbackConfig,
+)
+from corlinman_auto_rollback.metrics import (
+    MetricSnapshot,
+    capture_snapshot,
+    watched_event_kinds,
+)
 from corlinman_auto_rollback.revert import (
     HistoryMissingRevertError,
     InternalRevertError,
@@ -175,14 +184,31 @@ class EvolutionApplier:
     protocol.
     """
 
-    def __init__(self, conn: object) -> None:
+    def __init__(
+        self,
+        conn: object,
+        config: EvolutionAutoRollbackConfig | None = None,
+    ) -> None:
         """``conn`` is the shared :class:`aiosqlite.Connection` (or any
         handle the three repos accept). Construct it from
-        ``EvolutionStore.conn``."""
+        ``EvolutionStore.conn``.
+
+        ``config`` carries the AutoRollback thresholds — only its
+        ``signal_window_secs`` is used here, to capture the apply-time
+        metrics baseline over the *same* window length the monitor will
+        re-sample with (a symmetric window prevents a false breach from
+        sample-window mismatch). When omitted (e.g. the manual
+        operator-action admin route, which doesn't yet thread the
+        config), the conservative default thresholds apply so the
+        baseline is still a valid, monitor-decodable snapshot rather
+        than the empty ``{}`` that the strict decoder rejects."""
         self._conn = conn
         self._proposals = ProposalsRepo(conn)  # type: ignore[arg-type]
         self._history = HistoryRepo(conn)  # type: ignore[arg-type]
         self._intent_log = IntentLogRepo(conn)  # type: ignore[arg-type]
+        self._thresholds: AutoRollbackThresholds = (
+            config.thresholds if config is not None else AutoRollbackThresholds()
+        )
 
     # -- forward apply ------------------------------------------------------
 
@@ -269,6 +295,7 @@ class EvolutionApplier:
         """
         now = _now_ms()
         inverse_diff = _build_inverse_diff(proposal)
+        metrics_baseline = await self._capture_baseline(proposal, now)
         history_row = EvolutionHistory(
             proposal_id=proposal_id,
             kind=proposal.kind,
@@ -276,7 +303,7 @@ class EvolutionApplier:
             before_sha=_sha256_hex(inverse_diff),
             after_sha=_sha256_hex(proposal.diff),
             inverse_diff=inverse_diff,
-            metrics_baseline={},
+            metrics_baseline=metrics_baseline,
             applied_at=now,
         )
         try:
@@ -295,6 +322,51 @@ class EvolutionApplier:
 
         history_row.id = history_id
         return history_row
+
+    async def _capture_baseline(
+        self, proposal: EvolutionProposal, now_ms: int
+    ) -> dict:
+        """Snapshot the proposal target's signal counts *before* the
+        apply takes effect so the monitor has a real baseline to diff
+        against inside the grace window.
+
+        Mirrors the monitor's own capture: same per-kind whitelist
+        (:func:`watched_event_kinds`) and the same
+        ``signal_window_secs`` window length, so the two snapshots diff
+        cleanly. A kind without a whitelist yields a snapshot with an
+        empty ``counts`` dict (but a fully-populated, monitor-decodable
+        envelope) — never the bare ``{}`` that the strict
+        :meth:`MetricSnapshot.from_dict` decoder rejects.
+
+        A capture failure (e.g. the signals table is missing) must not
+        sink the whole apply: fall back to an empty-counts snapshot of
+        the same shape, which is still a valid baseline (it just records
+        "no pre-apply signals seen").
+        """
+        watched = watched_event_kinds(proposal.kind)
+        try:
+            snapshot = await capture_snapshot(
+                self._conn,  # type: ignore[arg-type]
+                proposal.target,
+                watched,
+                self._thresholds.signal_window_secs,
+                now_ms,
+            )
+        except Exception as exc:  # capture is best-effort, baseline shape still valid
+            logger.warning(
+                "apply: baseline capture_snapshot failed; storing empty-counts"
+                " baseline (proposal_id=%s, target=%s, error=%s)",
+                proposal.id,
+                proposal.target,
+                exc,
+            )
+            snapshot = MetricSnapshot(
+                target=proposal.target,
+                captured_at_ms=now_ms,
+                window_secs=self._thresholds.signal_window_secs,
+                counts={k: 0 for k in watched},
+            )
+        return snapshot.to_dict()
 
     async def _stamp_intent_failed(self, intent_id: int, reason: str) -> None:
         try:
