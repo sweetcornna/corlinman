@@ -208,6 +208,7 @@ from corlinman_agent.reasoning_loop import (
 from corlinman_agent.skills import SkillRegistry
 from corlinman_agent.subagent import (
     SUBAGENT_SPAWN_INLINE_TOOL,
+    SUBAGENT_SPAWN_MANY_MAX_TASKS,
     SUBAGENT_SPAWN_MANY_TOOL,
     SUBAGENT_SPAWN_TOOL,
     ParentContext,
@@ -919,6 +920,26 @@ class _SessionLockCache:
             self._data.pop(key, None)
 
 
+class _ChildSeqCounter:
+    """LRU-bounded per-session child sequence allocator."""
+
+    def __init__(self, cap: int) -> None:
+        self._cap = max(64, int(cap))
+        self._data: OrderedDict[str, int] = OrderedDict()
+
+    def reserve(self, session_key: str, *, count: int = 1) -> int:
+        count = max(1, int(count))
+        next_seq = self._data.get(session_key, 0)
+        self._data[session_key] = next_seq + count
+        self._data.move_to_end(session_key)
+        self._evict_if_over_cap()
+        return next_seq
+
+    def _evict_if_over_cap(self) -> None:
+        while len(self._data) > self._cap:
+            self._data.popitem(last=False)
+
+
 class _CostMeter:
     """Per-session token accumulator.
 
@@ -1148,6 +1169,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         self._session_locks: _SessionLockCache = _SessionLockCache(
             _session_cache_cap()
         )
+        self._child_seq_counter = _ChildSeqCounter(_session_cache_cap())
         # Claude-Code-style mid-turn supplements: while a turn is in
         # flight for ``session_key``, a second Chat RPC for the SAME
         # session_key shouldn't queue up behind the lock — instead the
@@ -2224,6 +2246,31 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
 
         return _execute
 
+    def _reserve_subagent_child_seq(
+        self, session_key: str | None, *, count: int = 1
+    ) -> int:
+        return self._child_seq_counter.reserve(session_key or "session", count=count)
+
+    @staticmethod
+    def _spawn_many_child_count(args_json: bytes | str) -> int:
+        try:
+            raw = (
+                args_json.decode("utf-8", "replace")
+                if isinstance(args_json, bytes)
+                else args_json
+            )
+            payload = json.loads(raw) if raw.strip() else {}
+        except (json.JSONDecodeError, ValueError):
+            return 1
+        if not isinstance(payload, dict):
+            return 1
+        tasks = payload.get("tasks")
+        if not isinstance(tasks, list):
+            return 1
+        if not tasks or len(tasks) > SUBAGENT_SPAWN_MANY_MAX_TASKS:
+            return 1
+        return len(tasks)
+
     async def _dispatch_builtin(
         self,
         event: ToolCallEvent,
@@ -2494,6 +2541,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     # don't collide on session_key/agent_id/persona/mailbox.
                     child_seq=self._next_child_seq(start.session_key or ""),
                     parent_tools=list(start.tools or []),
+                    child_seq=self._reserve_subagent_child_seq(start.session_key),
                     # The child runner's ``_seed_child_persona`` writes a
                     # persona-STATE row (mood/fatigue) keyed by (tenant_id,
                     # child_agent_id) and calls ``store.get/upsert(...,
@@ -2550,6 +2598,10 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     provider=provider,
                     base_child_seq=_many_base,
                     parent_tools=list(start.tools or []),
+                    base_child_seq=self._reserve_subagent_child_seq(
+                        start.session_key,
+                        count=self._spawn_many_child_count(event.args_json),
+                    ),
                     # The child runner's ``_seed_child_persona`` writes a
                     # persona-STATE row (mood/fatigue) keyed by (tenant_id,
                     # child_agent_id) and calls ``store.get/upsert(...,
@@ -2591,6 +2643,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     child_seq=self._next_child_seq(start.session_key or ""),
                     parent_tools=list(start.tools or []),
                     supervisor_acquire=_acquire,
+                    child_seq=self._reserve_subagent_child_seq(start.session_key),
                     max_depth=_sup.policy.max_depth,
                     max_wall_seconds_ceiling=_sup.policy.max_wall_seconds_ceiling,
                     # v1.12.2: the ephemeral inline card never binds a
