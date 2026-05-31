@@ -819,6 +819,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         hook_runner: Any | None = None,
         permission_gate: PermissionGate | None = None,
         event_emitter: Any | None = None,
+        subagent_dispatcher: Any | None = None,
     ) -> None:
         """Construct the servicer.
 
@@ -885,6 +886,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # subagent supervisor. ``None`` keeps the legacy yield-only path
         # active (no SSE / journal fan-out) for tests + degraded boots.
         self._event_emitter: Any | None = event_emitter
+        self._subagent_dispatcher: Any | None = subagent_dispatcher
         self._provider_pool: RunnerPool[CorlinmanProvider] = RunnerPool(
             max_warm_per_key=int(os.environ.get("CORLINMAN_RUNNER_POOL_WARM", "2")),
             max_active_total=int(os.environ.get("CORLINMAN_RUNNER_POOL_MAX", "8")),
@@ -2135,6 +2137,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     event_emitter=self._event_emitter,
                     parent_turn_id=_parent_turn_id,
                     parent_session_key=start.session_key or None,
+                    subagent_dispatcher=self._subagent_dispatcher,
                 )
             if event.tool == SUBAGENT_SPAWN_MANY_TOOL:
                 registry = self._get_agent_registry()
@@ -2174,6 +2177,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     event_emitter=self._event_emitter,
                     parent_turn_id=_parent_turn_id,
                     parent_session_key=start.session_key or None,
+                    subagent_dispatcher=self._subagent_dispatcher,
                 )
             if event.tool == SUBAGENT_SPAWN_INLINE_TOOL:
                 # Ad-hoc / temporary purpose-built child (Claude-Code's
@@ -2203,6 +2207,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     event_emitter=self._event_emitter,
                     parent_turn_id=_parent_turn_id,
                     parent_session_key=start.session_key or None,
+                    subagent_dispatcher=self._subagent_dispatcher,
                 )
             if event.tool == BLACKBOARD_READ_TOOL:
                 return dispatch_blackboard_read(

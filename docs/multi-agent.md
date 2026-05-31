@@ -200,8 +200,11 @@ envelope). The only differences:
   inherits the parent's tool set, still bounded by `tool_allowlist` ∩ parent's tools
   (escalation rejected). An inline agent can never exceed the parent's authority.
 - **Ephemeral** — not persisted; it exists only for that one call.
-- **Background not yet supported** — `run_in_background` rejects with
-  `run_in_background_not_implemented` (deferred to a later wave).
+- **Background dispatch path** — when `run_in_background` is true and the
+  gateway has a dispatcher wired, the inline request is registered in the same
+  async store as named background spawns. The inline system prompt/model are
+  persisted on the request so the detached runner can rebuild the ephemeral
+  card.
 
 Together, `subagent_spawn` (call an existing agent) + `subagent_spawn_inline` (create a
 temporary one) give the main agent both dispatch modes. All spawn tools are now
@@ -212,22 +215,15 @@ at the servicer entry point).
 
 ## Background dispatch
 
-> **Status (as of v1.9.x): NOT YET IMPLEMENTED.** Setting
-> `run_in_background: true` currently returns a clean rejection envelope
-> (`finish_reason=REJECTED`, `error="run_in_background_not_implemented"`)
-> and the spawn does **not** run detached — use the default (synchronous,
-> foreground) spawn instead. The gateway ships an `AsyncSubagentDispatcher`
-> + persistent task store, but the dispatcher's `run_child_factory` is not
-> wired to a real child runner, and `agent_servicer` does not yet thread
-> the dispatcher into the spawn tool path. A complete implementation also
-> needs: the parent-side tool snapshot + model + depth + `max_wall_seconds`
-> persisted onto `SubagentRequest` (today only metadata is stored, so a
-> background child cannot inherit the parent's tools and would be
-> pure-LLM-only); the `start_turn_for_subagent_notification` journal helper
-> (missing from every backend, so the "synthetic user msg" below is
-> currently a no-op); routing through the Rust supervisor so all three
-> R3-004 caps apply; and a boot-time sweep to reconcile orphaned
-> `running` rows after a restart. Tracked in `audit/ARCH_DEBT.md`.
+> **Status:** the tool path can now admit `run_in_background: true` into the
+> shared `AsyncSubagentDispatcher` + persistent task store when the gateway has
+> a dispatcher wired. Inline background requests preserve the ephemeral
+> `system_prompt` and `model` on `SubagentRequest`. Degraded/external-server
+> boots without a dispatcher still return the clean
+> `run_in_background_not_implemented` rejection. Remaining full-detach work:
+> the lifecycle factory must drive a real child runner instead of the current
+> backstop, and the parent-side tool snapshot / journal notification helper
+> still need to be wired for complete end-to-end detached execution.
 
 The intended design (once implemented): when `run_in_background: true`,
 the tool returns the moment the supervisor has admitted the request — the

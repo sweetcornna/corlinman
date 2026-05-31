@@ -11,6 +11,7 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 from contextlib import nullcontext
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -200,6 +201,57 @@ async def test_inline_run_in_background_rejected() -> None:
     )
     assert out["finish_reason"] == FinishReason.REJECTED.value
     assert out["error"] == BACKGROUND_NOT_IMPLEMENTED_ERROR
+
+
+async def test_inline_run_in_background_uses_async_dispatcher() -> None:
+    class _FakeBackgroundDispatcher:
+        def __init__(self) -> None:
+            self.requests: list[Any] = []
+
+        async def dispatch_async(self, req: Any) -> Any:
+            self.requests.append(req)
+            return SimpleNamespace(
+                request_id=req.request_id,
+                child_session_key=f"{req.parent_session_key}::child::background",
+                state="running",
+            )
+
+    dispatcher = _FakeBackgroundDispatcher()
+    provider = _FakeProvider()
+
+    out = json.loads(
+        await dispatch_subagent_spawn_inline(
+            args_json=_args(
+                goal="g",
+                system_prompt="you are a background specialist",
+                name="Background Specialist",
+                description="background check",
+                run_in_background=True,
+            ),
+            parent_ctx=_parent_ctx(),
+            provider=provider,
+            subagent_dispatcher=dispatcher,
+        )
+    )
+
+    launched = json.loads(out["output_text"])
+    assert out["finish_reason"] == FinishReason.STOP.value
+    assert launched["status"] == "async_launched"
+    assert launched["subagent_type"] == "background-specialist"
+    assert launched["description"] == "background check"
+    assert launched["state"] == "running"
+    assert provider.calls == 0
+
+    assert len(dispatcher.requests) == 1
+    req = dispatcher.requests[0]
+    assert req.parent_session_key == "root"
+    assert req.parent_agent_id == "main"
+    assert req.subagent_type == "background-specialist"
+    assert req.goal == "g"
+    assert req.description == "background check"
+    assert req.tenant_id == "tenant-a"
+    assert req.inline_system_prompt == "you are a background specialist"
+    assert req.inline_model is None
 
 
 # ---------------------------------------------------------------------------
