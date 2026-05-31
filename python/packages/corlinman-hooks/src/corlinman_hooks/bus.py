@@ -461,7 +461,8 @@ class HookBus:
                 continue
             if inspect.isawaitable(result):
                 try:
-                    result = await result
+                    await result
+                    result = None
                 except Exception:  # noqa: BLE001 — isolate async subscriber failure
                     _log.exception("hook subscriber coroutine raised; isolated")
                     continue

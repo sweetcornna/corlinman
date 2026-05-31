@@ -1600,7 +1600,11 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                             emitter=self._event_emitter,
                         )
 
-                        def _summarise(rj: str) -> tuple[str, bool]:
+                        def _summarise(
+                            rj: str | list[dict[str, Any]]
+                        ) -> tuple[str, bool]:
+                            if not isinstance(rj, str):
+                                return json.dumps(rj), False
                             is_err = False
                             try:
                                 parsed = json.loads(rj or "{}")
@@ -1636,20 +1640,21 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                         _result_is_error = False
                         _result_err_summary = ""
                         try:
-                            _parsed = json.loads(result_json or "{}")
-                            if isinstance(_parsed, dict):
-                                if _parsed.get("error"):
-                                    _result_is_error = True
-                                    _result_err_summary = str(
-                                        _parsed["error"]
-                                    )[:200]
-                                elif _parsed.get("is_error"):
-                                    _result_is_error = True
-                                    _result_err_summary = str(
-                                        _parsed.get("error_summary")
-                                        or _parsed.get("message")
-                                        or ""
-                                    )[:200]
+                            if isinstance(result_json, str):
+                                _parsed = json.loads(result_json or "{}")
+                                if isinstance(_parsed, dict):
+                                    if _parsed.get("error"):
+                                        _result_is_error = True
+                                        _result_err_summary = str(
+                                            _parsed["error"]
+                                        )[:200]
+                                    elif _parsed.get("is_error"):
+                                        _result_is_error = True
+                                        _result_err_summary = str(
+                                            _parsed.get("error_summary")
+                                            or _parsed.get("message")
+                                            or ""
+                                        )[:200]
                         except (json.JSONDecodeError, TypeError, ValueError):
                             pass
                         logger.info(
@@ -2218,9 +2223,10 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         async def _execute(child_event: ToolCallEvent) -> str:
             if child_event.tool in _SUBAGENT_SPAWN_TOOLS:
                 return json.dumps({"error": "subagent_no_recursive_spawn"})
-            return await self._dispatch_builtin(
+            result = await self._dispatch_builtin(
                 child_event, start, provider, file_state
             )
+            return result if isinstance(result, str) else json.dumps(result)
 
         return _execute
 
@@ -2274,7 +2280,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         start: AgentChatStart,
         provider: CorlinmanProvider,
         file_state: FileState | None = None,
-    ) -> str:
+    ) -> str | list[dict[str, Any]]:
         """Route an in-process builtin tool to its handler.
 
         Returns the JSON-encoded result string that the loop feeds back
@@ -4289,10 +4295,10 @@ def _context_metadata(start: AgentChatStart) -> dict[str, str]:
 def _metadata_id(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
-    value = value.strip()
-    if not value or value == "auto":
+    stripped = value.strip()
+    if not stripped or stripped == "auto":
         return None
-    return value
+    return stripped
 
 
 def _current_tool_names(start: AgentChatStart) -> frozenset[str]:

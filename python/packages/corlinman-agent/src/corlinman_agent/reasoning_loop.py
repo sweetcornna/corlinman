@@ -1794,7 +1794,10 @@ class ReasoningLoop:
             turn_output_spent += sum(
                 len(r.content) for r in results if isinstance(r.content, str)
             )
-            if any(_is_awaiting_placeholder(r.content) for r in results):
+            if any(
+                isinstance(r.content, str) and _is_awaiting_placeholder(r.content)
+                for r in results
+            ):
                 # Prevent a doom loop: if every result is a placeholder, the
                 # next round will ask for the same tool again.
                 await self._emit(

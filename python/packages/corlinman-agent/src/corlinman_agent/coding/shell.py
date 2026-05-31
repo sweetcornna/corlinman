@@ -40,7 +40,7 @@ import signal
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import structlog
 
@@ -170,15 +170,15 @@ def _preexec_apply_rlimits() -> None:
         if rlim_id is None:
             return
         try:
-            _cur_soft, cur_hard = resource.getrlimit(rlim_id)
+            _cur_soft, cur_hard = cast(Any, resource).getrlimit(rlim_id)
             # Cannot raise hard limit without privilege; respect it.
             new_hard = (
                 min(hard, cur_hard)
-                if cur_hard != resource.RLIM_INFINITY
+                if cur_hard != cast(Any, resource).RLIM_INFINITY
                 else hard
             )
             new_soft = min(soft, new_hard)
-            resource.setrlimit(rlim_id, (new_soft, new_hard))
+            cast(Any, resource).setrlimit(rlim_id, (new_soft, new_hard))
         except (ValueError, OSError):  # type: ignore[attr-defined]
             # Kernel refused or limit unsupported — every other limit
             # still applies. Swallow rather than blow the spawn.
@@ -193,7 +193,7 @@ def _preexec_apply_rlimits() -> None:
     _apply("RLIMIT_NPROC", _RLIMIT_NPROC, _RLIMIT_NPROC)
     _apply("RLIMIT_NOFILE", _RLIMIT_NOFILE, _RLIMIT_NOFILE)
     # New session — so killpg(getpgid(pid)) reaps the whole process tree.
-    os.setsid()
+    cast(Any, os).setsid()
 
 #: Splits a command line into top-level segments on shell operators so a
 #: denied pattern hidden after ``;`` / ``|`` / ``&&`` is still caught.

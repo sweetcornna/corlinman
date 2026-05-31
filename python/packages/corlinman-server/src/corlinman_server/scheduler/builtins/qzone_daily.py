@@ -76,7 +76,7 @@ import os
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from corlinman_server.scheduler.builtins.registry import (
     BuiltinContext,
@@ -635,10 +635,10 @@ async def _resolve_life_block(
                 ("状态", state),
                 ("当前剧情线", arc),
             ]
-            lines = [f"- {label}：{val}" for label, val in rows if val]
-            if lines:
+            resolver_lines = [f"- {label}：{val}" for label, val in rows if val]
+            if resolver_lines:
                 return "## 我最近的生活（写说说时自然带上，别逐条念）\n" + "\n".join(
-                    lines
+                    resolver_lines
                 )
 
     # Strategy 2: read the open runtime persona-state store directly so we
@@ -663,9 +663,12 @@ async def _resolve_life_block(
         sj = getattr(row, "state_json", None)
         if not isinstance(sj, dict):
             return None
-        life = sj.get("life") if isinstance(sj.get("life"), dict) else {}
-        current = life.get("current") if isinstance(life.get("current"), dict) else {}
-        diary = sj.get("diary") if isinstance(sj.get("diary"), list) else []
+        raw_life = sj.get("life")
+        life = cast(dict[str, Any], raw_life) if isinstance(raw_life, dict) else {}
+        raw_current = life.get("current")
+        current = cast(dict[str, Any], raw_current) if isinstance(raw_current, dict) else {}
+        raw_diary = sj.get("diary")
+        diary = cast(list[Any], raw_diary) if isinstance(raw_diary, list) else []
         lines: list[str] = []
         for label, key in (
             ("此刻心情", "mood"),

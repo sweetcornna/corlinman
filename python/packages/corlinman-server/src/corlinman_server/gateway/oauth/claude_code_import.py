@@ -56,7 +56,7 @@ def read_claude_code_credentials(
     corlinman gateway routes them to the Anthropic provider.
     """
     explicit_path = path is not None
-    target = Path(path) if explicit_path else CLAUDE_CODE_CREDENTIALS_DEFAULT_PATH
+    target = path if path is not None else CLAUDE_CODE_CREDENTIALS_DEFAULT_PATH
     if not target.exists():
         # File absent. Newer Claude Code (>= 2.1.114) keeps the bundle in the
         # macOS login Keychain instead of the JSON file — try that fallback

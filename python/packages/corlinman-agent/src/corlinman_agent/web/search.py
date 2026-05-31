@@ -277,7 +277,12 @@ def _wrap_results(
         wrapped.append(new_hit)
     # De-dup flags while preserving order.
     seen: set[str] = set()
-    unique_flags = [f for f in flags if not (f in seen or seen.add(f))]
+    unique_flags: list[str] = []
+    for flag in flags:
+        if flag in seen:
+            continue
+        seen.add(flag)
+        unique_flags.append(flag)
     return wrapped, unique_flags
 
 

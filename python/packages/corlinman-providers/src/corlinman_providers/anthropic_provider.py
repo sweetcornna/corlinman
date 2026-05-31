@@ -614,7 +614,7 @@ class AnthropicProvider:
                         final = await stream.get_final_message()
                         finish = _map_stop_reason(getattr(final, "stop_reason", None))
                         _raw_usage = getattr(final, "usage", None)
-                        _usage_dict = None
+                        _usage_dict: dict[str, int] | None = None
                         if _raw_usage is not None:
                             _usage_dict = {}
                             for _uk in (

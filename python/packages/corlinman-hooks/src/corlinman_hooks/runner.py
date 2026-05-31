@@ -56,7 +56,7 @@ import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 __all__ = ["HookDecision", "HookRunner", "emit_collect"]
 
@@ -377,7 +377,7 @@ class HookRunner:
         if fn is None or not callable(fn):
             _log.warning("hook.discover.handler_not_callable", extra={"ref": handler_ref})
             return None
-        return fn
+        return cast(_Handler, fn)
 
     def _run_handlers(self, event: str, payload: dict[str, Any]) -> HookDecision:
         """Run every discovered in-process handler for ``event`` and fold

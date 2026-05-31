@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from datetime import UTC
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from corlinman_hooks import HookBus, HookEvent
 
@@ -611,7 +611,7 @@ async def dispatch(spec: JobSpec, bus: HookBus, app_state: object | None = None)
                         "result_type": type(result).__name__,
                     },
                 )
-                event: _HookEventBase = HookEvent.EngineRunCompleted(
+                agent_event: _HookEventBase = HookEvent.EngineRunCompleted(
                     run_id=run_id, proposals_generated=0, duration_ms=duration_ms
                 )
                 # Channel delivery seam: surface the reply on the structlog
@@ -640,7 +640,7 @@ async def dispatch(spec: JobSpec, bus: HookBus, app_state: object | None = None)
                         "error": _agent_err,
                     },
                 )
-                event = HookEvent.EngineRunFailed(
+                agent_event = HookEvent.EngineRunFailed(
                     run_id=run_id,
                     error_kind=_agent_err or "run_agent_failed",
                     exit_code=None,
@@ -657,7 +657,7 @@ async def dispatch(spec: JobSpec, bus: HookBus, app_state: object | None = None)
                     "error": str(exc),
                 },
             )
-            event = HookEvent.EngineRunFailed(
+            agent_event = HookEvent.EngineRunFailed(
                 run_id=run_id, error_kind="run_agent_exception", exit_code=None
             )
         await _maybe_record(
@@ -671,7 +671,7 @@ async def dispatch(spec: JobSpec, bus: HookBus, app_state: object | None = None)
             duration_ms=duration_ms,
         )
         try:
-            await bus.emit(event)
+            await bus.emit(agent_event)
         except Exception as exc:  # noqa: BLE001 — emit failures are non-fatal
             _logger.warning(
                 "scheduler: hook emit failed",
@@ -933,12 +933,13 @@ def _resolve_scheduler_store(app_state: object | None) -> object | None:
     catch-up-free without any wiring."""
     if app_state is None:
         return None
-    store = getattr(app_state, "scheduler_store", None)
+    store = cast(object | None, getattr(app_state, "scheduler_store", None))
     if store is not None:
         return store
     handle = getattr(app_state, "corlinman_scheduler_handle", None)
     if handle is not None:
-        return getattr(handle, "store", None)
+        store = cast(object | None, getattr(handle, "store", None))
+        return store if store is not None else None
     return None
 
 
