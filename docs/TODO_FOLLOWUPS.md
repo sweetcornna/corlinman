@@ -42,11 +42,11 @@ yet usable end-to-end.
   launching children and rejects unknown aliases with `model_alias_invalid`.
 
 ## Persona life — follow-up
-- [ ] **MED — `{{persona.life_*}}` placeholder surfacing depends on
-  `agent_id == persona_id`.** Life-state is keyed by `persona_id`, but the
-  `PersonaResolver` resolves by `ctx.metadata["agent_id"]`, which
-  `_context_metadata` does not stamp today. Wire `agent_id` into the placeholder
-  ctx (or document the single-persona convention).
+- [x] **MED — `{{persona.life_*}}` placeholder surfacing depends on
+  `agent_id == persona_id`.** Servicer context assembly now stamps the
+  placeholder metadata with `agent_id` from an explicit `start.extra["agent_id"]`
+  or, for humanlike channel bindings, falls back to `start.extra["persona_id"]`
+  so life-state writes and placeholder reads share the same persona key.
 
 ## Release / ops
 - [ ] **HIGH — publish v1.11.0 + v1.12.0 to GitHub.** Both are committed +

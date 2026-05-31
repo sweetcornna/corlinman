@@ -4276,7 +4276,23 @@ def _context_metadata(start: AgentChatStart) -> dict[str, str]:
     md: dict[str, str] = {}
     if start.session_key:
         md["session_key"] = start.session_key
+    extra = getattr(start, "extra", None) or {}
+    if isinstance(extra, dict):
+        agent_id = _metadata_id(extra.get("agent_id"))
+        if agent_id is None:
+            agent_id = _metadata_id(extra.get("persona_id"))
+        if agent_id is not None:
+            md["agent_id"] = agent_id
     return md
+
+
+def _metadata_id(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if not value or value == "auto":
+        return None
+    return value
 
 
 def _current_tool_names(start: AgentChatStart) -> frozenset[str]:

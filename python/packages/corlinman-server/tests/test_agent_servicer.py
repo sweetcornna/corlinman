@@ -356,6 +356,96 @@ async def test_servicer_assembles_context_before_provider_call() -> None:
 
 
 @pytest.mark.asyncio
+async def test_servicer_stamps_agent_id_into_placeholder_metadata() -> None:
+    """Persona-life placeholders are keyed by ``metadata["agent_id"]``.
+
+    A caller that explicitly binds a persona/agent through
+    ``ChatStart.extra["agent_id"]`` must have that id threaded into the
+    context-assembler metadata; otherwise ``{{persona.life_*}}`` renders
+    against the empty agent id and silently disappears.
+    """
+    from corlinman_agent.reasoning_loop import ChatStart
+
+    assembler = _FakeContextAssembler()
+    servicer = CorlinmanAgentServicer(
+        provider_resolver=lambda _m: _FakeProvider([]),
+        context_assembler=assembler,
+    )
+    start = ChatStart(
+        model="gpt-4o-mini",
+        session_key="sess-life",
+        messages=[
+            {
+                "role": "system",
+                "content": "Location: {{persona.life_location}}",
+            }
+        ],
+        extra={"agent_id": "grantley"},
+    )
+
+    await servicer._assemble_context(start)
+
+    assert assembler.calls
+    assert assembler.calls[0]["metadata"] == {
+        "session_key": "sess-life",
+        "agent_id": "grantley",
+    }
+
+
+@pytest.mark.asyncio
+async def test_servicer_uses_persona_id_as_placeholder_agent_id() -> None:
+    """Humanlike channel binding uses ``extra["persona_id"]`` today.
+
+    Persona-life tools write state under that persona id, while the
+    placeholder adapter reads ``metadata["agent_id"]``. When no explicit
+    ``agent_id`` exists, bridge the channel persona id into the placeholder
+    lookup id so ``{{persona.life_*}}`` resolves against the same row.
+    """
+    from corlinman_agent.reasoning_loop import ChatStart
+
+    assembler = _FakeContextAssembler()
+    servicer = CorlinmanAgentServicer(
+        provider_resolver=lambda _m: _FakeProvider([]),
+        context_assembler=assembler,
+    )
+    start = ChatStart(
+        model="gpt-4o-mini",
+        session_key="sess-life",
+        messages=[{"role": "system", "content": "{{persona.life_location}}"}],
+        extra={"persona_id": "grantley"},
+    )
+
+    await servicer._assemble_context(start)
+
+    assert assembler.calls[0]["metadata"] == {
+        "session_key": "sess-life",
+        "agent_id": "grantley",
+    }
+
+
+@pytest.mark.asyncio
+async def test_servicer_skips_blank_auto_agent_id_metadata() -> None:
+    from corlinman_agent.reasoning_loop import ChatStart
+
+    for extra in ({}, {"agent_id": ""}, {"agent_id": "  "}, {"agent_id": "auto"}):
+        assembler = _FakeContextAssembler()
+        servicer = CorlinmanAgentServicer(
+            provider_resolver=lambda _m: _FakeProvider([]),
+            context_assembler=assembler,
+        )
+        start = ChatStart(
+            model="gpt-4o-mini",
+            session_key="sess-life",
+            messages=[{"role": "system", "content": "{{persona.life_location}}"}],
+            extra=dict(extra),
+        )
+
+        await servicer._assemble_context(start)
+
+        assert assembler.calls[0]["metadata"] == {"session_key": "sess-life"}
+
+
+@pytest.mark.asyncio
 async def test_servicer_registry_end_to_end_resolves_alias() -> None:
     """Wire a real ``ProviderRegistry`` + alias map through the servicer."""
     from corlinman_providers import ProviderKind, ProviderSpec
