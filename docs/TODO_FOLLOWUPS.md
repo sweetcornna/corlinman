@@ -37,8 +37,9 @@ yet usable end-to-end.
 - [x] **LOW — per-session `child_seq` counter.** Servicer dispatch now reserves
   per-session child sequence ids across named, inline, and `spawn_many` calls so
   sequential spawns cannot reuse the same mangled child id.
-- [ ] **LOW — eager model-override validation.** An invalid `model` alias only
-  surfaces at child dispatch (`FinishReason.ERROR`); validate up front.
+- [x] **LOW — eager model-override validation.** Servicer dispatch validates
+  `model` overrides for named, inline, and `spawn_many` subagent calls before
+  launching children and rejects unknown aliases with `model_alias_invalid`.
 
 ## Persona life — follow-up
 - [ ] **MED — `{{persona.life_*}}` placeholder surfacing depends on

@@ -813,6 +813,176 @@ async def test_servicer_threads_parent_tools_into_spawn(
     assert "tool_allowlist_escalation" in payload["error"]
 
 
+@pytest.mark.asyncio
+async def test_servicer_rejects_unknown_subagent_model_override_up_front(
+    tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Invalid per-spawn model aliases must fail before the child is run."""
+    from corlinman_agent.agents.card import AgentCard
+    from corlinman_agent.agents.registry import AgentCardRegistry
+    from corlinman_agent.reasoning_loop import ChatStart, ToolCallEvent
+    from corlinman_server.agent_servicer import CorlinmanAgentServicer
+
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+
+    def resolver(model: str) -> Any:
+        if model == "parent-model":
+            return _FakeProvider(_token_stream(["parent"]))
+        raise KeyError(model)
+
+    child_provider = _FakeProvider(_token_stream(["child should not run"]))
+    servicer = CorlinmanAgentServicer(provider_resolver=resolver)
+
+    async def _no_persona_state_store() -> None:
+        return None
+
+    servicer._get_persona_state_store = _no_persona_state_store  # type: ignore[method-assign]
+    servicer._builtin_agents = AgentCardRegistry(
+        {
+            "researcher": AgentCard(
+                name="researcher", description="", system_prompt="you research"
+            )
+        }
+    )
+    start = ChatStart(
+        model="parent-model",
+        messages=[],
+        tools=[],
+        session_key="tenant-a::sess-model-override",
+    )
+    event = ToolCallEvent(
+        call_id="spawn-bad-model",
+        plugin="subagent",
+        tool="subagent_spawn",
+        args_json=json.dumps(
+            {
+                "agent": "researcher",
+                "goal": "use a bad model",
+                "model": "missing-child-model",
+            }
+        ).encode(),
+    )
+
+    payload = json.loads(
+        await servicer._dispatch_builtin(event, start, child_provider)
+    )
+
+    assert payload["finish_reason"] == "rejected"
+    assert payload["error"] == "model_alias_invalid: 'missing-child-model'"
+    assert child_provider.last_kwargs == {}
+
+
+@pytest.mark.asyncio
+async def test_servicer_rejects_unknown_inline_model_override_up_front(
+    tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Inline spawns use the same eager model override validation."""
+    from corlinman_agent.reasoning_loop import ChatStart, ToolCallEvent
+    from corlinman_server.agent_servicer import CorlinmanAgentServicer
+
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+
+    def resolver(model: str) -> Any:
+        if model == "parent-model":
+            return _FakeProvider(_token_stream(["parent"]))
+        raise KeyError(model)
+
+    child_provider = _FakeProvider(_token_stream(["child should not run"]))
+    servicer = CorlinmanAgentServicer(provider_resolver=resolver)
+    start = ChatStart(
+        model="parent-model",
+        messages=[],
+        tools=[],
+        session_key="tenant-a::sess-inline-model-override",
+    )
+    event = ToolCallEvent(
+        call_id="spawn-inline-bad-model",
+        plugin="subagent",
+        tool="subagent_spawn_inline",
+        args_json=json.dumps(
+            {
+                "goal": "use a bad inline model",
+                "system_prompt": "you are temporary",
+                "model": "missing-inline-model",
+            }
+        ).encode(),
+    )
+
+    payload = json.loads(
+        await servicer._dispatch_builtin(event, start, child_provider)
+    )
+
+    assert payload["finish_reason"] == "rejected"
+    assert payload["error"] == "model_alias_invalid: 'missing-inline-model'"
+    assert child_provider.last_kwargs == {}
+
+
+@pytest.mark.asyncio
+async def test_servicer_rejects_unknown_spawn_many_model_override_up_front(
+    tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """spawn_many validates each sibling model override before fan-out."""
+    from corlinman_agent.agents.card import AgentCard
+    from corlinman_agent.agents.registry import AgentCardRegistry
+    from corlinman_agent.reasoning_loop import ChatStart, ToolCallEvent
+    from corlinman_server.agent_servicer import CorlinmanAgentServicer
+
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+
+    def resolver(model: str) -> Any:
+        if model == "parent-model":
+            return _FakeProvider(_token_stream(["parent"]))
+        raise KeyError(model)
+
+    child_provider = _FakeProvider(_token_stream(["child should not run"]))
+    servicer = CorlinmanAgentServicer(provider_resolver=resolver)
+
+    async def _no_persona_state_store() -> None:
+        return None
+
+    servicer._get_persona_state_store = _no_persona_state_store  # type: ignore[method-assign]
+    servicer._builtin_agents = AgentCardRegistry(
+        {
+            "researcher": AgentCard(
+                name="researcher", description="", system_prompt="you research"
+            )
+        }
+    )
+    start = ChatStart(
+        model="parent-model",
+        messages=[],
+        tools=[],
+        session_key="tenant-a::sess-many-model-override",
+    )
+    event = ToolCallEvent(
+        call_id="spawn-many-bad-model",
+        plugin="subagent",
+        tool="subagent_spawn_many",
+        args_json=json.dumps(
+            {
+                "tasks": [
+                    {"agent": "researcher", "goal": "use the parent model"},
+                    {
+                        "agent": "researcher",
+                        "goal": "use a bad child model",
+                        "model": "missing-task-model",
+                    },
+                ]
+            }
+        ).encode(),
+    )
+
+    payload = json.loads(
+        await servicer._dispatch_builtin(event, start, child_provider)
+    )
+
+    assert payload == {
+        "tasks": [],
+        "error": "model_alias_invalid: 'missing-task-model'",
+    }
+    assert child_provider.last_kwargs == {}
+
+
 # ---------------------------------------------------------------------------
 # v0.7.1 warm pool: prewarm_providers surface
 # ---------------------------------------------------------------------------
