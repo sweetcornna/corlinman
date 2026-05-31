@@ -4,6 +4,86 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.15.1] — 2026-05-31 — Whole-project audit fixes (security / DoS / reliability / completeness)
+
+> A 16-auditor whole-project review (`audit/audit-2026-05-31/PLAN.md`) found 32
+> issues (0 Critical). This release fixes the 27 High+Medium items with a
+> reproduce-first discipline (a failing test proved each bug before the fix);
+> full non-live suite green (~4097, 0 fail); every fix real-run-verified on the
+> production VPS (both units), incl. the hook gate, calculator bomb, SSRF,
+> shell-deny, memory recall, and a live chat. The 12 Low + the latent
+> multi-tenant-only authz items (SEC-06/09, BUG-09) are deferred.
+
+### Security (model-reachable / DoS)
+- **Skill allowed-tools no longer leaks across sessions.** `_active_skills` was
+  process-global on the singleton servicer (any session's skill pull narrowed
+  every other session and never reset); re-keyed per session and cleared at
+  turn end. (SEC-01)
+- **`subagent_stop`/`cancel_session` is ownership-gated** — a session can only
+  cancel itself or a descendant child, not any session by key. (SEC-02)
+- **Scientific calculator can't bomb the event loop** — result-bit-length guard
+  rejects nested-power bignums, and `dispatch_calculator` runs via
+  `to_thread`+`wait_for`. (SEC-03)
+- **`web_fetch` now fences fetched bodies** in untrusted-content markers as its
+  schema promises (was a dead import). (SEC-04)
+- **`run_shell` per-arg deny rules can't be bypassed** by compound/subshell/
+  path/env-prefixed command shapes — every `;|&` segment is normalized and
+  matched. (SEC-05)
+- **`GET /admin/config` redacts channel bot/app tokens + the NapCat token**
+  (were returned in cleartext). (SEC-07)
+- **`vision_analyze` runs the SSRF host guard** and rejects `http://`
+  (https-only), closing a provider-side SSRF to cloud-metadata. (SEC-08)
+
+### Bugs / reliability
+- **The blocking pre-tool hook gate now actually runs in the production split
+  topology** — the standalone agent builds + holds a `HookRunner` (it was only
+  built in the gateway process, so the gate was silently inert). (BUG-01)
+- **Stalled/orphaned upgrades no longer wedge the upgrader forever** — `stalled`
+  is terminal-only and a cold-start reconciles orphaned `running` records, so a
+  retry is allowed. (BUG-02)
+- Async pre-tool path merges specific+generic hook decisions (was dropping
+  `mutated_args`/`inject_message`). (BUG-03)
+- Per-parent `child_seq` counter prevents same-card subagent spawns from
+  colliding on session/agent id. (BUG-04)
+- `read_file` advances past a single over-long line instead of looping on the
+  same offset. (BUG-05)
+- Degraded-boot teardown reads `state.extras` defensively (was aborting all
+  shutdown cleanup, leaking stores). (BUG-06)
+- OneBot `parse_event` tolerates malformed fields instead of tearing down the QQ
+  WebSocket. (BUG-07)
+- Auto-rollback applier writes a real metrics baseline (was `{}`, which the
+  monitor always rejected). (BUG-08)
+- agent-brain IndexSync upsert + query share the configured namespace. (BUG-10)
+
+### Performance
+- Namespace-scoped memory recall uses a JOIN instead of an `IN(...)` bind list
+  that crashed past SQLite's variable limit. (PERF-01)
+- Graph back-links resolve without JSON-decoding the whole namespace per
+  recall. (PERF-02)
+- `GET /admin/curator/profiles` mtime-caches the skill registry (no full
+  SKILL.md re-walk per poll). (PERF-03)
+
+### Completeness
+- `must_change_password` no longer 403s the onboarding `finalize-*` routes, so a
+  fresh install can complete the wizard. (CMP-01)
+- allowed-tools is enforced for injected/always-on/card skills too, not just
+  on-demand `Skill()` pulls. (CMP-02)
+- Episodes `ONBOARDING` kind is reachable via an `onboarding_first_n` knob.
+  (CMP-03)
+- The permission `ask` verdict is now wirable (resolver setter); strict mode
+  denies `memory_write`/`send_attachment`/`text_to_speech`. (CMP-04/05)
+- `SlashAccessPolicy` is enforced and the commands-dir loader + `$ARGUMENTS`
+  substitution are wired. (CMP-06/07)
+- Feishu resolves its bot `open_id` so the group @mention gate works. (CMP-08)
+
+### Notes
+- Residual follow-ons (flagged, not blocking): the auto-rollback operator-apply
+  routes should thread the rollback config to enable baseline capture there;
+  per-channel-runner command-extension bootstrap (Discord/Slack) for full
+  CMP-07 parity; an interactive `ask` resolver needs a prompt channel the
+  headless agent lacks. Deferred latent multi-tenant authz (SEC-06/09, BUG-09)
+  remains for a multi-tenant hardening pass.
+
 ## [1.15.0] — 2026-05-31 — Agent-parity second wave: new tools, tool-craft, reliability extensions
 
 > Follow-on to the v1.14.0 agent-parity work, driven by a fresh three-way
