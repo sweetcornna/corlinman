@@ -4,7 +4,89 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — Agent-parity gap fills (audit Waves A–E)
+## [1.15.0] — 2026-05-31 — Agent-parity second wave: new tools, tool-craft, reliability extensions
+
+> Follow-on to the v1.14.0 agent-parity work, driven by a fresh three-way
+> re-audit vs claude-code / hermes-agent / openclaw. Implemented across 12
+> file-disjoint lanes + 2 wiring agents; full non-live suite green
+> (~4097 passed, 0 failed); deployed and prod-verified on a native VPS
+> (real chat OK, `doctor` 9/9, new tools registered).
+>
+> **Honesty note:** the re-audit was partly anchored to a gaps list that
+> predated v1.14.0, so a subset of these changes *refine or extend* features
+> v1.14.0 already shipped (scientific calculator, Anthropic prompt-caching,
+> `run_agent` cron, the `HookRunner` core) rather than adding them fresh. The
+> genuinely net-new items are called out below.
+
+### Added (net-new)
+- **`read_file` multimodal:** PDF (per-page text via optional `pypdf`/
+  `pdfminer`, base64 fallback) and Jupyter `.ipynb` (cells + outputs) branches.
+- **`search_files` ripgrep parity:** `output_mode` (content / files_with_matches
+  / count), case-insensitive, `-A/-B/-C` context lines, glob/type pre-filter,
+  verbatim (un-stripped) match lines, mtime-sorted filename mode.
+- **`web_fetch` extraction:** optional `prompt` param → HTML→Markdown (optional
+  `markdownify`/`html2text`, stdlib fallback) + `next_offset` paging; untrusted-
+  content suspicious-pattern detection surfaced as a separate signal.
+- **New agent tools:** `text_to_speech`, `memory_write` / `session_search` /
+  `memory_read` (over the existing FTS store), and an opt-in `execute_code`
+  REPL (disabled by default; not advertised unless enabled), plus a model-
+  callable `subagent_stop`.
+- **MCP server:** `ToolAnnotations` (readOnly/destructive/idempotent hints,
+  title, outputSchema) + `tools/list_changed` notifications (capability now
+  advertises `listChanged: true`).
+- **Hooks:** `emit_collect` decision path + new lifecycle events
+  (SessionStart/End/Reset, Pre/PostCompact, Stop, PreToolDispatch) +
+  file-based `HOOK.yaml`/`handler.py` discovery, extending the v1.14.0
+  `HookRunner`.
+- **Skills:** carry previously-dropped frontmatter (whenToUse / paths /
+  platforms / model / effort / hooks), `disable_model_invocation`, and a
+  tarball sha256 + static-scan trust gate.
+- **Permissions:** `ask` verdict via the approval gate, per-argument/command
+  pattern rules, permission modes (acceptEdits/plan/bypass/default).
+- **Edit fidelity:** CRLF/BOM/curly-quote match-time normalization with EOL/
+  encoding round-trip, a tier-4 block-anchor fuzzy matcher, and a changed-
+  region diff snippet in edit/write results.
+- **Persona/identity wiring:** `persona_resolver` + `agent_id` stamping so
+  `{{persona.*}}` placeholders resolve; identity store assigned + `/admin/
+  identity*` routes un-503'd + verification-phrase sweep scheduled.
+- **Session/cancel primitives** (`Session` bundle, `cancel.combine`).
+- **Channels:** `[MSG_BREAK]` outbound bubble split (fixes a user-visible
+  token leak), inbound attachment/album handling + sender/reply attribution,
+  a commands-dir loader with `$ARGUMENTS` substitution + ACL + unknown-command
+  notice.
+
+### Changed / refined (on top of v1.14.0)
+- **Anthropic provider:** added `tool_result` `is_error`, `anthropic-ratelimit-
+  unified-reset` parsing, single-flight OAuth refresh + one-shot 401 recovery,
+  macOS Keychain credential import, and a richer `ContextOverflowError`
+  (parsed limit) for loop-side shrink-retry — alongside the pre-existing
+  prompt-caching. Removed an adapter-level retry loop that double-retried and
+  could block on `Retry-After` (transient retries stay with the SDK; cross-call
+  backoff/fallback live in the reasoning loop).
+- **Reasoning loop:** wired retry/backoff + cross-model fallback on sustained
+  overload, history dedup, CJK/multimodal-aware token estimate, per-model USD
+  cost on the done event, and context-overflow shrink-retry.
+- **Config hot-reload** is now **opt-in** (`CORLINMAN_CONFIG_HOT_RELOAD` /
+  `[server].config_hot_reload`, default off) — a per-boot fs-observer otherwise
+  accrued OS watch handles; added a best-effort `/admin/config/schema`.
+- **Memory recall:** opt-in query-time exponential decay re-rank + residual-
+  pyramid boost (BM25 side; dense-vector recall remains deferred).
+
+### Fixed
+- **Native upgrader:** `resolve_upgrader` forwarded an `audit_log` kwarg that no
+  upgrader `__init__` accepts (and `data_dir` to the docker impl), so the
+  in-app upgrader silently failed to initialise on native deploys
+  (`gateway.system.upgrader_init_failed`). Pre-existing in v1.14.0; surfaced
+  during real-operation testing and fixed.
+
+### Deferred (in-flight collision / heavy-dep — reported, not built)
+- Coordinator durable mailbox / re-addressable teammates (collides with the
+  live subagent subsystem), EvolutionApplier materialisation (Rust→Python
+  migration boundary), dense-vector recall (embedding deps; RAM-constrained
+  hosts), MCP outbound Streamable-HTTP/SSE transports, and destructive
+  session-control slash commands (`/clear` `/reset` `/stop`).
+
+## [1.14.0] — 2026-05-31 — Agent-parity gap fills (audit Waves A–E)
 
 > Full implementation sweep from the 2026-05-31 three-way gap audit
 > (corlinman vs claude-code / hermes-agent / openclaw — 50 verified gaps in
