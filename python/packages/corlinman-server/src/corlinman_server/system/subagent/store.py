@@ -122,6 +122,13 @@ class SubagentRequest:
     #: Defaults to ``"default"`` so callers in single-tenant deployments
     #: and persisted rows from before this field existed keep working.
     tenant_id: str = "default"
+    #: Optional system prompt for an inline, ephemeral background agent.
+    #: ``None`` marks the normal named-card path. When present, the
+    #: background run-child factory can rebuild the same in-memory card
+    #: that foreground ``subagent_spawn_inline`` would have used.
+    inline_system_prompt: str | None = None
+    #: Optional model binding carried by the inline ephemeral card.
+    inline_model: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)
@@ -252,6 +259,10 @@ class SubagentTaskStore:
                         requested_at=int(raw_req["requested_at"]),
                         requested_by=raw_req.get("requested_by"),
                         tenant_id=str(raw_req.get("tenant_id") or "default"),
+                        inline_system_prompt=raw_req.get(
+                            "inline_system_prompt"
+                        ),
+                        inline_model=raw_req.get("inline_model"),
                     )
                 except (KeyError, TypeError, ValueError):
                     continue

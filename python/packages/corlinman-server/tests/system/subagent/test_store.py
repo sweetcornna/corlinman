@@ -166,6 +166,36 @@ async def test_persistence_round_trip_across_instances(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_inline_request_fields_roundtrip_across_instances(
+    tmp_path: Path,
+) -> None:
+    persist = tmp_path / ".subagent-state.json"
+    store1 = SubagentTaskStore(persist)
+    req = SubagentRequest(
+        request_id="req-inline",
+        parent_session_key="sess-inline",
+        parent_agent_id="agent-parent",
+        subagent_type="inline-reviewer",
+        goal="review this change",
+        description="inline review",
+        requested_at=_now_ms(),
+        requested_by="model",
+        tenant_id="tenant-a",
+        inline_system_prompt="You are a temporary code reviewer.",
+        inline_model="gpt-4o-mini",
+    )
+    await store1.begin(req)
+
+    store2 = SubagentTaskStore(persist)
+    fetched = await store2.get_request("req-inline")
+
+    assert fetched is not None
+    assert fetched.subagent_type == "inline-reviewer"
+    assert fetched.inline_system_prompt == "You are a temporary code reviewer."
+    assert fetched.inline_model == "gpt-4o-mini"
+
+
+@pytest.mark.asyncio
 async def test_set_killed_flips_state(tmp_path: Path) -> None:
     store = SubagentTaskStore(tmp_path / ".subagent-state.json")
     req = _make_req()
