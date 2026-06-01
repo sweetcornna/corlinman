@@ -149,6 +149,7 @@ class _ReloadingProviderResolver:
         self._data_dir = _resolve_data_dir()
         self._registry = ProviderRegistry([], data_dir=self._data_dir)
         self._aliases: dict[str, AliasEntry] = {}
+        self._subagent_config: dict[str, Any] = {}
         if path:
             self._reload_if_changed()
 
@@ -167,9 +168,10 @@ class _ReloadingProviderResolver:
         if self._mtime is not None and mtime == self._mtime:
             return
         is_first_load = self._mtime is None
-        specs, aliases = _load_config()
+        specs, aliases, subagent_config = _load_config()
         self._registry = ProviderRegistry(specs, data_dir=self._data_dir)
         self._aliases = aliases
+        self._subagent_config = subagent_config
         self._mtime = mtime
         event = "providers.registered" if is_first_load else "providers.reloaded"
         logger.info(
@@ -184,6 +186,11 @@ class _ReloadingProviderResolver:
         """Snapshot of the current alias map."""
         return dict(self._aliases)
 
+    @property
+    def subagent_config(self) -> dict[str, Any]:
+        """Snapshot of the current ``[subagent]`` policy config."""
+        return dict(self._subagent_config)
+
     def __call__(
         self,
         alias_or_model: str,
@@ -196,7 +203,7 @@ class _ReloadingProviderResolver:
         )
 
 
-def _load_config() -> tuple[list[ProviderSpec], dict[str, AliasEntry]]:
+def _load_config() -> tuple[list[ProviderSpec], dict[str, AliasEntry], dict[str, Any]]:
     """Read the Python-side config from ``CORLINMAN_PY_CONFIG`` if set.
 
     The Rust gateway writes a JSON file with ``providers`` + ``aliases``
@@ -211,7 +218,11 @@ def _load_config() -> tuple[list[ProviderSpec], dict[str, AliasEntry]]:
                          "enabled": true, "params": {...}}, ...],
           "aliases":   {"<alias>": {"provider": "...",
                                     "model": "...",
-                                    "params": {...}}, ...}
+                                    "params": {...}}, ...},
+          "subagent":  {"max_concurrent_per_parent": 10,
+                        "max_concurrent_per_tenant": 15,
+                        "max_depth": 1,
+                        "max_wall_seconds_ceiling": 300}
         }
 
     When the env var is unset we return empty collections — the registry
@@ -227,12 +238,12 @@ def _load_config() -> tuple[list[ProviderSpec], dict[str, AliasEntry]]:
     """
     path = os.environ.get("CORLINMAN_PY_CONFIG")
     if not path:
-        return [], {}
+        return [], {}, {}
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
     except Exception as exc:
         logger.warning("py_config.load_failed", path=path, error=str(exc))
-        return [], {}
+        return [], {}, {}
 
     specs: list[ProviderSpec] = []
     for entry in data.get("providers", []) or []:
@@ -252,7 +263,12 @@ def _load_config() -> tuple[list[ProviderSpec], dict[str, AliasEntry]]:
                     "py_config.alias_invalid", alias=name, error=str(exc)
                 )
 
-    return specs, aliases
+    subagent: dict[str, Any] = {}
+    raw_subagent: Any = data.get("subagent") or {}
+    if isinstance(raw_subagent, dict):
+        subagent = dict(raw_subagent)
+
+    return specs, aliases, subagent
 
 
 def _bind_address() -> str:
@@ -371,8 +387,12 @@ async def _serve() -> int:
         # servicer activates its offline mock provider instead of falling
         # through to legacy real-provider prefix matching.
         logger.info("providers.registered", count=0, enabled=0, aliases=0)
+        specs, aliases, subagent_config = _load_config()
+        _ = (specs, aliases)
         agent_servicer = CorlinmanAgentServicer(
-            hook_bus=hook_bus, hook_runner=hook_runner
+            hook_bus=hook_bus,
+            hook_runner=hook_runner,
+            subagent_config=subagent_config,
         )
     else:
         py_config_path = os.environ.get("CORLINMAN_PY_CONFIG")
@@ -386,6 +406,7 @@ async def _serve() -> int:
             aliases=resolver.aliases,
             hook_bus=hook_bus,
             hook_runner=hook_runner,
+            subagent_config=resolver.subagent_config,
         )
     agent_pb2_grpc.add_AgentServicer_to_server(agent_servicer, server)
 

@@ -179,6 +179,29 @@ def test_dict_shaped_config_also_works() -> None:
     assert v["aliases"]["fast"]["model"] == "gpt-4o-mini"
 
 
+def test_render_includes_subagent_section() -> None:
+    cfg = {
+        "providers": {},
+        "models": {"aliases": {}},
+        "embedding": None,
+        "subagent": {
+            "max_concurrent_per_parent": 2,
+            "max_concurrent_per_tenant": 4,
+            "max_depth": 3,
+            "max_wall_seconds_ceiling": 120,
+        },
+    }
+
+    v = render_py_config(cfg)
+
+    assert v["subagent"] == {
+        "max_concurrent_per_parent": 2,
+        "max_concurrent_per_tenant": 4,
+        "max_depth": 3,
+        "max_wall_seconds_ceiling": 120,
+    }
+
+
 def test_default_py_config_path_uses_data_dir_env(tmp_path: Path) -> None:
     """``$CORLINMAN_DATA_DIR`` takes precedence over $HOME."""
     old = os.environ.get("CORLINMAN_DATA_DIR")

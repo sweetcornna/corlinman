@@ -1088,6 +1088,28 @@ async def test_servicer_rejects_unknown_spawn_many_model_override_up_front(
     assert child_provider.last_kwargs == {}
 
 
+def test_servicer_subagent_config_sets_supervisor_policy() -> None:
+    """``[subagent]`` config must drive the lazy SupervisorPolicy."""
+    from corlinman_server.agent_servicer import CorlinmanAgentServicer
+
+    servicer = CorlinmanAgentServicer(
+        provider_resolver=lambda _m: _FakeProvider([]),
+        subagent_config={
+            "max_concurrent_per_parent": 2,
+            "max_concurrent_per_tenant": 4,
+            "max_depth": 3,
+            "max_wall_seconds_ceiling": 120,
+        },
+    )
+
+    supervisor, _acquire = servicer._get_subagent_caps()
+
+    assert supervisor.policy.max_concurrent_per_parent == 2
+    assert supervisor.policy.max_concurrent_per_tenant == 4
+    assert supervisor.policy.max_depth == 3
+    assert supervisor.policy.max_wall_seconds_ceiling == 120
+
+
 # ---------------------------------------------------------------------------
 # v0.7.1 warm pool: prewarm_providers surface
 # ---------------------------------------------------------------------------

@@ -3272,8 +3272,9 @@ def build_app(
                         ``path != shell`` keeps the shell file's own route
                         (/status/__shell__) resolving normally.
                         """
+                        normalized = path.replace("\\", "/").lstrip("/")
                         for prefix, shell in _DYNAMIC_SHELLS.items():
-                            if path.startswith(prefix) and path != shell:
+                            if normalized.startswith(prefix) and normalized != shell:
                                 try:
                                     resp = await super().get_response(shell, scope)
                                 except StarletteHTTPException:

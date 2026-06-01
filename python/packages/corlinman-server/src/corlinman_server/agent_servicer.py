@@ -350,6 +350,13 @@ _SUBAGENT_SPAWN_TOOLS: frozenset[str] = frozenset(
     {SUBAGENT_SPAWN_TOOL, SUBAGENT_SPAWN_MANY_TOOL, SUBAGENT_SPAWN_INLINE_TOOL}
 )
 
+_SUBAGENT_POLICY_KEYS: tuple[str, ...] = (
+    "max_concurrent_per_parent",
+    "max_concurrent_per_tenant",
+    "max_depth",
+    "max_wall_seconds_ceiling",
+)
+
 #: Skills injected into EVERY chat turn regardless of whether the message
 #: invokes an agent card (v1.12.3). Stage-3 skill injection is otherwise
 #: gated on a ``{{角色}}`` token, so the main chat agent never saw any skill
@@ -584,6 +591,29 @@ def _builtin_tool_schemas() -> list[dict[str, Any]]:
 #: customisation, route that through the gateway tool list (which
 #: still wins on name clash) instead of mutating this snapshot.
 _CACHED_BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = _builtin_tool_schemas()
+
+
+def _subagent_policy_kwargs(config: Any | None) -> dict[str, int]:
+    if not isinstance(config, Mapping):
+        return {}
+    values: dict[str, int] = {}
+    for key in _SUBAGENT_POLICY_KEYS:
+        parsed = _positive_int_or_none(config.get(key))
+        if parsed is not None:
+            values[key] = parsed
+    return values
+
+
+def _positive_int_or_none(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed < 1:
+        return None
+    return parsed
 
 
 def _inject_builtin_tools(start: AgentChatStart) -> None:
@@ -1011,6 +1041,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         permission_gate: PermissionGate | None = None,
         event_emitter: Any | None = None,
         subagent_dispatcher: Any | None = None,
+        subagent_config: Mapping[str, Any] | None = None,
     ) -> None:
         """Construct the servicer.
 
@@ -1066,6 +1097,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # concurrency counts consistent. ``Any`` typing keeps the
         # corlinman_subagent import lazy.
         self._subagent_supervisor: Any | None = None
+        self._subagent_config: dict[str, Any] = dict(subagent_config or {})
         # v0.7.1 warm pool. Operators can call ``prewarm_providers`` at
         # boot to resolve known aliases before the first user request;
         # the SDK auth handshake then happens off the hot path. The
@@ -3735,13 +3767,13 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
     def _get_subagent_caps(self) -> tuple[Any, Callable[[Any], Any]]:
         """Return ``(supervisor, acquire)`` for the subagent spawn tools.
 
-        Lazy-constructs the shared in-process :class:`Supervisor` (default
-        policy: 10 per-parent, 15 per-tenant, depth 1) and an ``acquire``
-        adapter that turns the supervisor's raise-on-reject ``try_acquire``
-        into the dispatcher's "return a Slot context-manager, or a reject-
-        reason string" contract. Threaded into every spawn / spawn_many /
+        Lazy-constructs the shared in-process :class:`Supervisor` from the
+        ``[subagent]`` policy config, then returns an ``acquire`` adapter
+        that turns the supervisor's raise-on-reject ``try_acquire`` into the
+        dispatcher's "return a Slot context-manager, or a reject-reason
+        string" contract. Threaded into every spawn / spawn_many /
         spawn_inline dispatch so depth + concurrency + tenant caps are
-        actually enforced at this entry point (previously omitted).
+        actually enforced at this entry point.
         """
         sup = self._subagent_supervisor
         if sup is None:
@@ -3750,7 +3782,9 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 SupervisorPolicy,
             )
 
-            sup = Supervisor(SupervisorPolicy())
+            sup = Supervisor(
+                SupervisorPolicy(**_subagent_policy_kwargs(self._subagent_config))
+            )
             self._subagent_supervisor = sup
 
         from corlinman_subagent.errors import AcquireRejectError  # noqa: PLC0415

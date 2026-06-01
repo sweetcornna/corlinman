@@ -289,6 +289,55 @@ def test_serve_in_background_returns_none_when_disabled(
     assert agent_server.serve_agent_in_background(_State(), cancel) is None
 
 
+@pytest.mark.asyncio
+async def test_serve_in_background_threads_subagent_config(
+    monkeypatch: pytest.MonkeyPatch,
+    _clear_bind_env: None,
+) -> None:
+    monkeypatch.delenv("CORLINMAN_GRPC_AGENT_INPROC", raising=False)
+    monkeypatch.setenv("CORLINMAN_PY_PORT", "55556")
+    seen: dict[str, object] = {}
+
+    async def _fake_serve_agent(
+        bind: str,
+        shutdown: asyncio.Event,
+        *,
+        event_emitter: object | None = None,
+        subagent_dispatcher: object | None = None,
+        subagent_config: dict | None = None,
+    ) -> None:
+        seen["bind"] = bind
+        seen["event_emitter"] = event_emitter
+        seen["subagent_dispatcher"] = subagent_dispatcher
+        seen["subagent_config"] = subagent_config
+
+    monkeypatch.setattr(agent_server, "serve_agent", _fake_serve_agent)
+    cancel = asyncio.Event()
+    state = _State(
+        {
+            "agent": {"in_process": True},
+            "subagent": {
+                "max_concurrent_per_parent": 2,
+                "max_concurrent_per_tenant": 4,
+                "max_depth": 3,
+                "max_wall_seconds_ceiling": 120,
+            },
+        }
+    )
+
+    task = agent_server.serve_agent_in_background(state, cancel)
+    assert task is not None
+    await task
+
+    assert seen["bind"] == "127.0.0.1:55556"
+    assert seen["subagent_config"] == {
+        "max_concurrent_per_parent": 2,
+        "max_concurrent_per_tenant": 4,
+        "max_depth": 3,
+        "max_wall_seconds_ceiling": 120,
+    }
+
+
 # ─── end-to-end: co-hosted server + GrpcAgentChatBackend ─────────────
 
 
