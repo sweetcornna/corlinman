@@ -30,9 +30,6 @@ export function BrandMark({
           <div className="text-[14.5px] font-semibold tracking-[-0.015em] text-tp-ink">
             corlinman
           </div>
-          <div className="font-mono text-[10.5px] text-tp-ink-3">
-            v1.6.0 · Persona
-          </div>
         </div>
       )}
     </div>

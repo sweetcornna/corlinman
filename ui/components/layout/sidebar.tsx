@@ -428,9 +428,6 @@ export function Sidebar({ user }: SidebarProps) {
               >
                 {user ?? "admin"}
               </div>
-              <div className="truncate font-mono text-[10px] text-tp-ink-3">
-                v0.3.0
-              </div>
             </div>
             <button
               type="button"
