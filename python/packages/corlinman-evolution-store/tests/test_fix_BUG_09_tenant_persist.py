@@ -5,7 +5,6 @@ global DEFAULT_TENANT_ID constant."""
 from __future__ import annotations
 
 import pytest
-
 from corlinman_evolution_store import EvolutionStore
 from corlinman_evolution_store.repo import (
     EvolutionGuardConfig,

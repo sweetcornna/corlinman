@@ -1010,6 +1010,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         hook_runner: Any | None = None,
         permission_gate: PermissionGate | None = None,
         event_emitter: Any | None = None,
+        subagent_dispatcher: Any | None = None,
     ) -> None:
         """Construct the servicer.
 
@@ -1076,6 +1077,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # subagent supervisor. ``None`` keeps the legacy yield-only path
         # active (no SSE / journal fan-out) for tests + degraded boots.
         self._event_emitter: Any | None = event_emitter
+        self._subagent_dispatcher: Any | None = subagent_dispatcher
         self._provider_pool: RunnerPool[CorlinmanProvider] = RunnerPool(
             max_warm_per_key=int(os.environ.get("CORLINMAN_RUNNER_POOL_WARM", "2")),
             max_active_total=int(os.environ.get("CORLINMAN_RUNNER_POOL_MAX", "8")),
@@ -1598,7 +1600,11 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                             emitter=self._event_emitter,
                         )
 
-                        def _summarise(rj: str) -> tuple[str, bool]:
+                        def _summarise(
+                            rj: str | list[dict[str, Any]]
+                        ) -> tuple[str, bool]:
+                            if not isinstance(rj, str):
+                                return json.dumps(rj), False
                             is_err = False
                             try:
                                 parsed = json.loads(rj or "{}")
@@ -1634,20 +1640,21 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                         _result_is_error = False
                         _result_err_summary = ""
                         try:
-                            _parsed = json.loads(result_json or "{}")
-                            if isinstance(_parsed, dict):
-                                if _parsed.get("error"):
-                                    _result_is_error = True
-                                    _result_err_summary = str(
-                                        _parsed["error"]
-                                    )[:200]
-                                elif _parsed.get("is_error"):
-                                    _result_is_error = True
-                                    _result_err_summary = str(
-                                        _parsed.get("error_summary")
-                                        or _parsed.get("message")
-                                        or ""
-                                    )[:200]
+                            if isinstance(result_json, str):
+                                _parsed = json.loads(result_json or "{}")
+                                if isinstance(_parsed, dict):
+                                    if _parsed.get("error"):
+                                        _result_is_error = True
+                                        _result_err_summary = str(
+                                            _parsed["error"]
+                                        )[:200]
+                                    elif _parsed.get("is_error"):
+                                        _result_is_error = True
+                                        _result_err_summary = str(
+                                            _parsed.get("error_summary")
+                                            or _parsed.get("message")
+                                            or ""
+                                        )[:200]
                         except (json.JSONDecodeError, TypeError, ValueError):
                             pass
                         logger.info(
@@ -2216,11 +2223,56 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         async def _execute(child_event: ToolCallEvent) -> str:
             if child_event.tool in _SUBAGENT_SPAWN_TOOLS:
                 return json.dumps({"error": "subagent_no_recursive_spawn"})
-            return await self._dispatch_builtin(
+            result = await self._dispatch_builtin(
                 child_event, start, provider, file_state
             )
+            return result if isinstance(result, str) else json.dumps(result)
 
         return _execute
+
+    def _validate_subagent_model_override(self, args_json: bytes | str) -> str | None:
+        return self._validate_model_override_in_args(self._parse_args_dict(args_json))
+
+    def _validate_subagent_many_model_overrides(
+        self, args_json: bytes | str
+    ) -> str | None:
+        args = self._parse_args_dict(args_json)
+        tasks = args.get("tasks")
+        if not isinstance(tasks, list):
+            return None
+        for task in tasks:
+            if not isinstance(task, dict):
+                continue
+            error = self._validate_model_override_in_args(task)
+            if error is not None:
+                return error
+        return None
+
+    def _validate_model_override_in_args(self, args: Mapping[str, Any]) -> str | None:
+        model = args.get("model")
+        if model is None or model == "":
+            return None
+        if not isinstance(model, str):
+            return None
+        try:
+            _call_resolver(self._resolve, model, self._aliases)
+        except KeyError:
+            return f"model_alias_invalid: {model!r}"
+        return None
+
+    @staticmethod
+    def _subagent_rejected_json(parent_ctx: ParentContext, *, error: str) -> str:
+        return json.dumps(
+            {
+                "output_text": "",
+                "tool_calls_made": [],
+                "child_session_key": parent_ctx.parent_session_key,
+                "child_agent_id": parent_ctx.parent_agent_id,
+                "elapsed_ms": 0,
+                "finish_reason": "rejected",
+                "error": error,
+            }
+        )
 
     async def _dispatch_builtin(
         self,
@@ -2228,7 +2280,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         start: AgentChatStart,
         provider: CorlinmanProvider,
         file_state: FileState | None = None,
-    ) -> str:
+    ) -> str | list[dict[str, Any]]:
         """Route an in-process builtin tool to its handler.
 
         Returns the JSON-encoded result string that the loop feeds back
@@ -2483,6 +2535,11 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     _parent_loop.turn_id if _parent_loop is not None else None
                 )
                 _sup, _acquire = self._get_subagent_caps()
+                model_error = self._validate_subagent_model_override(event.args_json)
+                if model_error is not None:
+                    return self._subagent_rejected_json(
+                        parent_ctx, error=model_error
+                    )
                 return await dispatch_subagent_spawn(
                     args_json=event.args_json,
                     parent_ctx=parent_ctx,
@@ -2519,6 +2576,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     event_emitter=self._event_emitter,
                     parent_turn_id=_parent_turn_id,
                     parent_session_key=start.session_key or None,
+                    subagent_dispatcher=self._subagent_dispatcher,
                 )
             if event.tool == SUBAGENT_SPAWN_MANY_TOOL:
                 registry = self._get_agent_registry()
@@ -2531,6 +2589,11 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     _parent_loop.turn_id if _parent_loop is not None else None
                 )
                 _sup, _acquire = self._get_subagent_caps()
+                model_error = self._validate_subagent_many_model_overrides(
+                    event.args_json
+                )
+                if model_error is not None:
+                    return json.dumps({"tasks": [], "error": model_error})
                 # BUG-04: reserve one seq per sibling so the fan-out's
                 # children don't collide with each other or with a later
                 # single spawn in the same turn. Count the tasks defensively
@@ -2568,6 +2631,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     event_emitter=self._event_emitter,
                     parent_turn_id=_parent_turn_id,
                     parent_session_key=start.session_key or None,
+                    subagent_dispatcher=self._subagent_dispatcher,
                 )
             if event.tool == SUBAGENT_SPAWN_INLINE_TOOL:
                 # Ad-hoc / temporary purpose-built child (Claude-Code's
@@ -2579,6 +2643,11 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     _parent_loop.turn_id if _parent_loop is not None else None
                 )
                 _sup, _acquire = self._get_subagent_caps()
+                model_error = self._validate_subagent_model_override(event.args_json)
+                if model_error is not None:
+                    return self._subagent_rejected_json(
+                        parent_ctx, error=model_error
+                    )
                 return await dispatch_subagent_spawn_inline(
                     args_json=event.args_json,
                     parent_ctx=parent_ctx,
@@ -2599,6 +2668,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     event_emitter=self._event_emitter,
                     parent_turn_id=_parent_turn_id,
                     parent_session_key=start.session_key or None,
+                    subagent_dispatcher=self._subagent_dispatcher,
                 )
             if event.tool == SUBAGENT_STOP_TOOL:
                 # gap subagents-no-stop-tool: route to the operator stop
@@ -2646,7 +2716,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                         ),
                         timeout=_calculator_timeout_secs(),
                     )
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     return json.dumps(
                         {
                             "error": (
@@ -4212,7 +4282,23 @@ def _context_metadata(start: AgentChatStart) -> dict[str, str]:
     md: dict[str, str] = {}
     if start.session_key:
         md["session_key"] = start.session_key
+    extra = getattr(start, "extra", None) or {}
+    if isinstance(extra, dict):
+        agent_id = _metadata_id(extra.get("agent_id"))
+        if agent_id is None:
+            agent_id = _metadata_id(extra.get("persona_id"))
+        if agent_id is not None:
+            md["agent_id"] = agent_id
     return md
+
+
+def _metadata_id(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    if not stripped or stripped == "auto":
+        return None
+    return stripped
 
 
 def _current_tool_names(start: AgentChatStart) -> frozenset[str]:
@@ -4406,6 +4492,9 @@ def _to_agent_start(pb_start: agent_pb2.ChatStart) -> AgentChatStart:
         for m in pb_start.messages
     ]
     attachments = [_to_agent_attachment(a) for a in pb_start.attachments]
+    extra: dict[str, Any] = {}
+    if pb_start.persona_id:
+        extra["persona_id"] = pb_start.persona_id
     return AgentChatStart(
         model=pb_start.model,
         messages=messages,
@@ -4414,6 +4503,7 @@ def _to_agent_start(pb_start: agent_pb2.ChatStart) -> AgentChatStart:
         temperature=pb_start.temperature or None,
         max_tokens=pb_start.max_tokens or None,
         attachments=attachments,
+        extra=extra,
     )
 
 

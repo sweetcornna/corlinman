@@ -23,7 +23,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-
 from corlinman_skills_registry import Skill, SkillRequirements
 from corlinman_skills_registry.parse import (
     SkillHashMismatchError,

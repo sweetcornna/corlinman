@@ -27,12 +27,10 @@ from __future__ import annotations
 
 import asyncio
 import time
-import uuid
 from pathlib import Path
 
 import pytest
 from corlinman_server.system.upgrader import (
-    UpgradeAlreadyRunning,
     UpgradeRequest,
     UpgradeStateStore,
     UpgradeStatus,

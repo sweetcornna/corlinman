@@ -122,7 +122,6 @@ def test_gf_skills_meta_catalog_excludes_disabled(tmp_path: Path) -> None:
 
 def test_gf_skills_meta_registry_rejects_bad_hooks_shape(tmp_path: Path) -> None:
     import pytest
-
     from corlinman_agent.skills.registry import SkillLoadError
 
     path = _write(

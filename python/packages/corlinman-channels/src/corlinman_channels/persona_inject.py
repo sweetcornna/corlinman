@@ -215,3 +215,4 @@ async def inject_persona_if_enabled(
 
     sys_msg = SimpleNamespace(role="system", content=content)
     request.messages = [sys_msg, *list(request.messages)]
+    request.persona_id = resolved_persona_id

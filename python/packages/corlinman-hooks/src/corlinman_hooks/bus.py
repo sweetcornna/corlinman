@@ -29,7 +29,7 @@ import weakref
 from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, overload
+from typing import TYPE_CHECKING, Any, cast, overload
 
 from corlinman_hooks.error import Closed, HookCancelledError, Lagged
 from corlinman_hooks.priority import CancelToken, HookPriority
@@ -461,7 +461,7 @@ class HookBus:
                 continue
             if inspect.isawaitable(result):
                 try:
-                    result = await result
+                    result = await cast(Awaitable[Any], result)
                 except Exception:  # noqa: BLE001 — isolate async subscriber failure
                     _log.exception("hook subscriber coroutine raised; isolated")
                     continue

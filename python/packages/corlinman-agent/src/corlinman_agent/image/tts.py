@@ -6,19 +6,12 @@ resolver picks up either tool's output). The model calls
 ``text_to_speech`` to turn a string into an audio file, then passes the
 returned ``path`` to ``send_attachment`` to deliver it.
 
-Backend resolution (first reachable wins) — all OPTIONAL, never a hard
-dependency on the VPS:
+Backend resolution is OPTIONAL, never a hard dependency on the VPS:
 
-1. A server-side voice/TTS backend, if one is importable. The voice
-   pipeline (``corlinman_server.gateway.routes_voice``) is a realtime
-   websocket service with no synchronous "text -> bytes" entry point we
-   can borrow here, so this hook is kept as a defensive ``try/except``
-   around an optional ``synthesize_speech`` callable that a future
-   in-process backend may expose. Absent today → falls through.
-2. The OpenAI ``/audio/speech`` endpoint, reached with the active
+1. The OpenAI ``/audio/speech`` endpoint, reached with the active
    provider's credentials (same ``getattr`` dance as
    :mod:`corlinman_agent.image.generate`). Used when a key is reachable.
-3. Neither available → a graceful ``{"ok": False, "error":
+2. When unavailable → a graceful ``{"ok": False, "error":
    "tts_unavailable", ...}`` envelope so the model can keep reasoning
    instead of crashing.
 
@@ -216,33 +209,6 @@ def _provider_credentials(provider: Any) -> tuple[str | None, str | None]:
     return (str(api_key) if api_key else None), (str(base_url) if base_url else None)
 
 
-async def _try_server_backend(text: str, voice: str) -> bytes | None:
-    """Best-effort reuse of an in-process server-side TTS backend.
-
-    There is no synchronous text->bytes entry point in the realtime
-    voice pipeline today, so this resolves a callable defensively and
-    returns ``None`` when none is importable. A future in-process
-    backend can expose ``synthesize_speech(text, voice) -> bytes`` (sync
-    or async) under ``corlinman_server.gateway.routes_voice`` and it will
-    be picked up here automatically.
-    """
-    try:  # pragma: no cover — optional, absent in the default tree
-        from corlinman_server.gateway.routes_voice import (  # type: ignore
-            synthesize_speech,
-        )
-    except Exception:  # noqa: BLE001 — module / symbol absent → fall through
-        return None
-    try:  # pragma: no cover — exercised only when a backend ships
-        result = synthesize_speech(text, voice)
-        if hasattr(result, "__await__"):
-            result = await result  # type: ignore[assignment]
-        if isinstance(result, (bytes, bytearray)):
-            return bytes(result)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("text_to_speech.server_backend_failed", error=str(exc))
-    return None
-
-
 async def _try_openai_speech(
     *,
     text: str,
@@ -330,32 +296,25 @@ async def dispatch_text_to_speech(
     audio_bytes: bytes | None = None
     backend = "openai"
 
-    # 1) Prefer an in-process server-side backend if one is importable.
-    server_audio = await _try_server_backend(text, voice)
-    if server_audio is not None:
-        audio_bytes = server_audio
-        backend = "server"
-    else:
-        # 2) Fall back to the OpenAI /audio/speech endpoint.
-        try:
-            audio_bytes = await _try_openai_speech(
-                text=text,
-                voice=voice,
-                fmt=fmt,
-                provider=provider,
-                transport=transport,
-            )
-        except RuntimeError as exc:
-            # No credentials / HTTP error — graceful unavailable.
-            logger.info("text_to_speech.unavailable", reason=str(exc))
-            return _err("tts_unavailable", str(exc))
-        except httpx.TimeoutException as exc:
-            return _err("tts_timeout", str(exc))
-        except httpx.HTTPError as exc:
-            return _err("tts_http_error", str(exc))
-        except Exception as exc:  # noqa: BLE001 — dispatcher must never raise
-            logger.exception("text_to_speech.unexpected")
-            return _err("tts_failed", str(exc))
+    try:
+        audio_bytes = await _try_openai_speech(
+            text=text,
+            voice=voice,
+            fmt=fmt,
+            provider=provider,
+            transport=transport,
+        )
+    except RuntimeError as exc:
+        # No credentials / HTTP error — graceful unavailable.
+        logger.info("text_to_speech.unavailable", reason=str(exc))
+        return _err("tts_unavailable", str(exc))
+    except httpx.TimeoutException as exc:
+        return _err("tts_timeout", str(exc))
+    except httpx.HTTPError as exc:
+        return _err("tts_http_error", str(exc))
+    except Exception as exc:  # noqa: BLE001 — dispatcher must never raise
+        logger.exception("text_to_speech.unexpected")
+        return _err("tts_failed", str(exc))
 
     if not audio_bytes:
         return _err("tts_unavailable", "synthesis returned no audio")

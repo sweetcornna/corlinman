@@ -469,6 +469,6 @@ __all__ = [
     "extract_bearer_token",
     "install_api_key_middleware",
     "parse_scopes",
-    "required_scope_for_path",
     "require_api_key",
+    "required_scope_for_path",
 ]

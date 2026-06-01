@@ -96,7 +96,7 @@ async def test_decay_on_ranks_recent_chunk_higher(
             time_decay_now_s=float(now),
         )
     )
-    assert [hit.id for hit in hits][0] == new_id, (
+    assert next(hit.id for hit in hits) == new_id, (
         "with decay on, the recent chunk must rank first"
     )
     by_id = {hit.id: hit.score for hit in hits}

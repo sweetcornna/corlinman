@@ -229,7 +229,7 @@ class ApprovalGate:
                 result = await asyncio.wait_for(coro, timeout=self._ask_timeout_s)
             else:
                 result = await coro
-        except (TimeoutError, asyncio.TimeoutError):
+        except TimeoutError:
             logger.info("agent.approval.ask_timeout", tool=tool)
             return False
         except Exception as exc:  # noqa: BLE001 — fail-closed on resolver error

@@ -16,7 +16,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 from corlinman_agent.image import (
     VISION_ANALYZE_TOOL,
     dispatch_vision_analyze,

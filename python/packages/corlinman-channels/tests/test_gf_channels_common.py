@@ -18,7 +18,6 @@ from corlinman_channels.common import (
     sticker_placeholder,
 )
 
-
 # ---------------------------------------------------------------------------
 # MSG_BREAK split (channels-msg-break-leak)
 # ---------------------------------------------------------------------------

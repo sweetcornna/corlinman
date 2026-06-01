@@ -31,20 +31,22 @@ yet usable end-to-end.
 ## Dynamic subagents — follow-ups
 - [ ] **MED — make supervisor policy configurable** via `[subagent]` config
   (today hardcoded defaults: depth 2, 3/parent, 15/tenant).
-- [ ] **LOW — inline + `run_in_background`.** `subagent.spawn_inline` rejects
-  background with `run_in_background_not_implemented`; wire the async store path.
-- [ ] **LOW — per-session `child_seq` counter.** Single spawns pass `child_seq=0`
-  so sequential inline/named spawns in one turn can share a mangled child id
-  (observability only).
-- [ ] **LOW — eager model-override validation.** An invalid `model` alias only
-  surfaces at child dispatch (`FinishReason.ERROR`); validate up front.
+- [x] **LOW — inline + `run_in_background`.** `subagent.spawn_inline` now
+  uses the same async store/dispatcher path as named background spawns and
+  persists the inline prompt/model on the background request.
+- [x] **LOW — per-session `child_seq` counter.** Servicer dispatch now reserves
+  per-session child sequence ids across named, inline, and `spawn_many` calls so
+  sequential spawns cannot reuse the same mangled child id.
+- [x] **LOW — eager model-override validation.** Servicer dispatch validates
+  `model` overrides for named, inline, and `spawn_many` subagent calls before
+  launching children and rejects unknown aliases with `model_alias_invalid`.
 
 ## Persona life — follow-up
-- [ ] **MED — `{{persona.life_*}}` placeholder surfacing depends on
-  `agent_id == persona_id`.** Life-state is keyed by `persona_id`, but the
-  `PersonaResolver` resolves by `ctx.metadata["agent_id"]`, which
-  `_context_metadata` does not stamp today. Wire `agent_id` into the placeholder
-  ctx (or document the single-persona convention).
+- [x] **MED — `{{persona.life_*}}` placeholder surfacing depends on
+  `agent_id == persona_id`.** Servicer context assembly now stamps the
+  placeholder metadata with `agent_id` from an explicit `start.extra["agent_id"]`
+  or, for humanlike channel bindings, falls back to `start.extra["persona_id"]`
+  so life-state writes and placeholder reads share the same persona key.
 
 ## Release / ops
 - [ ] **HIGH — publish v1.11.0 + v1.12.0 to GitHub.** Both are committed +

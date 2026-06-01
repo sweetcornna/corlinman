@@ -21,7 +21,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from corlinman_server.gateway.lifecycle import entrypoint as ep
 from corlinman_server.gateway.lifecycle.entrypoint import (
     _DegradedAppState,

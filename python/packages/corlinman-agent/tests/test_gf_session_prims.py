@@ -12,7 +12,6 @@ import pytest
 from corlinman_agent.cancel import combine, with_timeout
 from corlinman_agent.session import Session
 
-
 # ---------------------------------------------------------------------------
 # Session
 # ---------------------------------------------------------------------------

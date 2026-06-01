@@ -21,6 +21,8 @@ from corlinman_providers import TimeoutError as CorlinmanTimeoutError
 
 logger = structlog.get_logger(__name__)
 
+_BACKGROUND_TASKS: set[asyncio.Task[None]] = set()
+
 
 def combine(*events: asyncio.Event) -> asyncio.Event:
     """Merge several cancel signals into one event firing on *any* input.
@@ -69,7 +71,9 @@ def combine(*events: asyncio.Event) -> asyncio.Event:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
 
-    asyncio.ensure_future(_reap())
+    reap_task = asyncio.ensure_future(_reap())
+    _BACKGROUND_TASKS.add(reap_task)
+    reap_task.add_done_callback(_BACKGROUND_TASKS.discard)
     return combined
 
 

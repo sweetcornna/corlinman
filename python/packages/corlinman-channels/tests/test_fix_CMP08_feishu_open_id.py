@@ -11,7 +11,6 @@ from ``GET /open-apis/bot/v3/info``, so a group @mention is detected.
 from __future__ import annotations
 
 import asyncio
-from typing import Any
 
 import httpx
 import pytest

@@ -19,6 +19,7 @@ Uniquely named so it never collides with the sibling lanes' tests.
 from __future__ import annotations
 
 import asyncio
+import sys
 
 import pytest
 from corlinman_hooks import HookBus, HookEvent
@@ -117,7 +118,10 @@ def test_gf_hooks_module_emit_collect_empty_when_no_handlers():
 
 
 def test_gf_hooks_run_pre_tool_shell_deny_sets_allow_false():
-    runner = HookRunner({"hooks": {"pre_tool": "echo no-way; exit 1"}})
+    cmd = "echo no-way; exit 1"
+    if sys.platform == "win32":
+        cmd = 'cmd /c "echo no-way && exit 1"'
+    runner = HookRunner({"hooks": {"pre_tool": cmd}})
     decision = runner.run_pre_tool("run_shell", {"cmd": "rm -rf /"})
     assert decision.allow is False
     assert "no-way" in (decision.reason or "")

@@ -298,7 +298,7 @@ async def dispatch_memory_search(
         ]
         return json.dumps({"results": results, "total": len(results)})
     except Exception as exc:  # noqa: BLE001 — never raise from dispatcher
-        _logger.warning("memory_search.query_failed", error=str(exc))
+        _logger.warning("memory_search.query_failed", extra={"error": str(exc)})
         return json.dumps(
             {"results": [], "total": 0, "note": f"query_failed: {exc}"}
         )
@@ -351,7 +351,7 @@ async def dispatch_session_search(
         ]
         return json.dumps({"results": results, "total": len(results)})
     except Exception as exc:  # noqa: BLE001 — never raise from dispatcher
-        _logger.warning("session_search.query_failed", error=str(exc))
+        _logger.warning("session_search.query_failed", extra={"error": str(exc)})
         return json.dumps(
             {"results": [], "total": 0, "note": f"query_failed: {exc}"}
         )
@@ -410,7 +410,7 @@ async def dispatch_memory_write(
             {"ok": True, "id": str(note_id), "namespace": namespace}
         )
     except Exception as exc:  # noqa: BLE001 — never raise from dispatcher
-        _logger.warning("memory_write.upsert_failed", error=str(exc))
+        _logger.warning("memory_write.upsert_failed", extra={"error": str(exc)})
         return json.dumps({"ok": False, "error": f"write_failed: {exc}"})
 
 
@@ -463,7 +463,7 @@ async def dispatch_memory_read(
         ]
         return json.dumps({"results": results, "total": len(results)})
     except Exception as exc:  # noqa: BLE001 — never raise from dispatcher
-        _logger.warning("memory_read.query_failed", error=str(exc))
+        _logger.warning("memory_read.query_failed", extra={"error": str(exc)})
         return json.dumps(
             {"results": [], "total": 0, "note": f"query_failed: {exc}"}
         )

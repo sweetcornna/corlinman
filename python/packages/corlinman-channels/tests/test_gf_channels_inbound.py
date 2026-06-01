@@ -13,7 +13,6 @@ import json
 from corlinman_channels.common import AttachmentKind
 from corlinman_channels.telegram_media import attachment_file_id
 
-
 # ---------------------------------------------------------------------------
 # Telegram Message.to_attachments + body_text + sender name
 # ---------------------------------------------------------------------------

@@ -399,13 +399,6 @@ async def dispatch_subagent_spawn(
                     error=BACKGROUND_NOT_IMPLEMENTED_ERROR,
                 )
             )
-        return await _dispatch_via_background(
-            parsed=parsed,
-            parent_ctx=parent_ctx,
-            agent_registry=agent_registry,
-            subagent_dispatcher=subagent_dispatcher,
-            child_seq=child_seq,
-        )
 
     # ── 2. Resolve the agent card. W1.1 / v1.12.2 ────────────────────
     # ``get_or_builtin_default`` returns the explicit card when the LLM
@@ -447,6 +440,18 @@ async def dispatch_subagent_spawn(
                 reason=FinishReason.REJECTED,
                 error=error,
             )
+        )
+    if parsed.run_in_background:
+        return await _dispatch_via_background(
+            request=_BackgroundSpawnRequest(
+                spec=parsed.spec,
+                subagent_type=card.name,
+                description=parsed.description,
+                used_legacy_agent_field=parsed.used_legacy_agent_field,
+            ),
+            parent_ctx=parent_ctx,
+            subagent_dispatcher=subagent_dispatcher,
+            child_seq=child_seq,
         )
     # Hand off to the shared post-resolution driver (clamp → acquire slot
     # → emit → run_child → emit → envelope). ``subagent_spawn_inline``
@@ -768,6 +773,18 @@ class _ParsedSpawnArgs:
     used_legacy_agent_field: bool
 
 
+@dataclass(slots=True, frozen=True)
+class _BackgroundSpawnRequest:
+    """Validated request data for the shared background-dispatch path."""
+
+    spec: TaskSpec
+    subagent_type: str
+    description: str | None
+    used_legacy_agent_field: bool
+    inline_system_prompt: str | None = None
+    inline_model: str | None = None
+
+
 def _decode_args_dict(args_json: bytes | str) -> dict[str, Any]:
     """Decode ``args_json`` to a JSON object dict.
 
@@ -933,9 +950,8 @@ def _rejected_result(
 
 async def _dispatch_via_background(
     *,
-    parsed: _ParsedSpawnArgs,
+    request: _BackgroundSpawnRequest,
     parent_ctx: ParentContext,
-    agent_registry: AgentCardRegistry,
     subagent_dispatcher: Any,
     child_seq: int,
 ) -> str:
@@ -948,14 +964,10 @@ async def _dispatch_via_background(
     user-role notification the dispatcher injects into the parent
     session's journal on terminal state.
 
-    Resolution rules:
-
-    * ``subagent_type`` resolves through the registry just like the
-      foreground path. An unknown type rejects with the same
-      ``unknown_subagent_type`` / ``agent_not_found`` sentinel so the
-      LLM's branching prompt is shape-stable across foreground vs
-      background calls.
-    * Tenant-quota refusal surfaces as
+    The caller resolves named-card requests before entering this helper;
+    inline requests pass the already slugified ephemeral card name plus
+    the inline prompt/model so the background factory can rebuild the
+    same card later. Tenant-quota refusal surfaces as
       ``finish_reason=REJECTED, error="supervisor: tenant_quota_exceeded"``
       so the LLM sees the same sentinel string the foreground path uses.
     """
@@ -981,26 +993,6 @@ async def _dispatch_via_background(
             )
         )
 
-    # Card resolution — mirrors the foreground path. We don't need the
-    # full card object here (the dispatcher's run_child_factory does the
-    # second lookup at execution time); we only need to know whether the
-    # name is valid so the rejection envelope can carry the right
-    # sentinel.
-    card = agent_registry.get_or_builtin_default(parsed.subagent_type)
-    if card is None:
-        sentinel = (
-            AGENT_NOT_FOUND_ERROR
-            if parsed.used_legacy_agent_field
-            else UNKNOWN_SUBAGENT_TYPE_ERROR
-        )
-        return _result_json(
-            _rejected_result(
-                parent_ctx=parent_ctx,
-                reason=FinishReason.REJECTED,
-                error=f"{sentinel}: {parsed.subagent_type!r}",
-            )
-        )
-
     request_id = str(uuid.uuid4())
     import time as _time
 
@@ -1008,12 +1000,14 @@ async def _dispatch_via_background(
         request_id=request_id,
         parent_session_key=parent_ctx.parent_session_key,
         parent_agent_id=parent_ctx.parent_agent_id,
-        subagent_type=card.name,
-        goal=parsed.spec.goal,
-        description=parsed.description,
+        subagent_type=request.subagent_type,
+        goal=request.spec.goal,
+        description=request.description,
         requested_at=int(_time.time() * 1000),
         requested_by=None,
         tenant_id=parent_ctx.tenant_id,
+        inline_system_prompt=request.inline_system_prompt,
+        inline_model=request.inline_model,
     )
 
     try:
@@ -1030,7 +1024,7 @@ async def _dispatch_via_background(
         logger.exception(
             "subagent.dispatch.background_dispatch_failed",
             session=parent_ctx.parent_session_key,
-            subagent_type=card.name,
+            subagent_type=request.subagent_type,
         )
         return _result_json(
             _rejected_result(
@@ -1045,8 +1039,8 @@ async def _dispatch_via_background(
     payload = {
         "status": "async_launched",
         "request_id": status.request_id,
-        "subagent_type": card.name,
-        "description": parsed.description,
+        "subagent_type": request.subagent_type,
+        "description": request.description,
         "child_session_key": status.child_session_key,
         "state": status.state,
     }
@@ -1058,7 +1052,7 @@ async def _dispatch_via_background(
         output_text=json.dumps(payload),
         tool_calls_made=[],
         child_session_key=status.child_session_key or "",
-        child_agent_id=card.name,
+        child_agent_id=request.subagent_type,
         elapsed_ms=0,
         finish_reason=FinishReason.STOP,
         error=None,
@@ -1245,6 +1239,7 @@ async def dispatch_subagent_spawn_many(
     event_emitter: Any | None = None,
     parent_turn_id: str | None = None,
     parent_session_key: str | None = None,
+    subagent_dispatcher: Any | None = None,
 ) -> str:
     """Translate one ``subagent_spawn_many`` tool call into a JSON
     envelope of :class:`TaskResult` siblings, run concurrently.
@@ -1308,6 +1303,7 @@ async def dispatch_subagent_spawn_many(
             event_emitter=event_emitter,
             parent_turn_id=parent_turn_id,
             parent_session_key=parent_session_key,
+            subagent_dispatcher=subagent_dispatcher,
         )
         for i, task_args in enumerate(task_specs)
     ]
@@ -1562,6 +1558,7 @@ async def dispatch_subagent_spawn_inline(
     event_emitter: Any | None = None,
     parent_turn_id: str | None = None,
     parent_session_key: str | None = None,
+    subagent_dispatcher: Any | None = None,
 ) -> str:
     """Translate one ``subagent_spawn_inline`` tool call into a JSON
     :class:`TaskResult` envelope.
@@ -1590,16 +1587,33 @@ async def dispatch_subagent_spawn_inline(
             )
         )
 
-    # Inline + background isn't wired yet (the ephemeral child would need
-    # the same async store path as a named background spawn). Reject
-    # cleanly so the model retries foreground.
     if parsed.run_in_background:
-        return _result_json(
-            _rejected_result(
-                parent_ctx=parent_ctx,
-                reason=FinishReason.REJECTED,
-                error=BACKGROUND_NOT_IMPLEMENTED_ERROR,
+        if subagent_dispatcher is None:
+            return _result_json(
+                _rejected_result(
+                    parent_ctx=parent_ctx,
+                    reason=FinishReason.REJECTED,
+                    error=BACKGROUND_NOT_IMPLEMENTED_ERROR,
+                )
             )
+        card = build_ephemeral_card(
+            name=parsed.name,
+            system_prompt=parsed.system_prompt,
+            description=parsed.description,
+            model=parsed.model,
+        )
+        return await _dispatch_via_background(
+            request=_BackgroundSpawnRequest(
+                spec=parsed.spec,
+                subagent_type=card.name,
+                description=parsed.description,
+                used_legacy_agent_field=False,
+                inline_system_prompt=parsed.system_prompt,
+                inline_model=parsed.model,
+            ),
+            parent_ctx=parent_ctx,
+            subagent_dispatcher=subagent_dispatcher,
+            child_seq=child_seq,
         )
 
     # Build the ephemeral card in memory — never touches the registry.

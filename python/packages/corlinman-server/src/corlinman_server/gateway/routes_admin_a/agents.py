@@ -66,7 +66,7 @@ class AgentSummaryOut(BaseModel):
     last_modified: str | None = None
     # W1.2: tier the registry resolved this card from. ``"built-in"``
     # rows are immutable from the API surface.
-    source: Literal["built-in", "user", "project"] | None = None
+    source: Literal["built-in", "user", "project", "inline"] | None = None
     # W1.2: copy of the card's ``description`` field (or ``None`` if the
     # file is a raw scan that we couldn't parse).
     description: str | None = None

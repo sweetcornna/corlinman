@@ -417,6 +417,7 @@ def _build_chat_start(req: InternalChatRequest) -> agent_pb2.ChatStart:
         stream=req.stream,
         provider_config_json=b"",
         attachments=attachments,
+        persona_id=req.persona_id or "",
     )
     if binding is not None:
         start.binding.CopyFrom(binding)

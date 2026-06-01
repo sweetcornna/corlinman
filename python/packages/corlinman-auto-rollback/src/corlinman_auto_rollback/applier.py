@@ -364,7 +364,7 @@ class EvolutionApplier:
                 target=proposal.target,
                 captured_at_ms=now_ms,
                 window_secs=self._thresholds.signal_window_secs,
-                counts={k: 0 for k in watched},
+                counts=dict.fromkeys(watched, 0),
             )
         return snapshot.to_dict()
 

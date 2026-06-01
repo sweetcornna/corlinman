@@ -16,7 +16,7 @@ import os
 import re
 import socket
 from html.parser import HTMLParser
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx
 import structlog
@@ -205,8 +205,8 @@ class _StdlibMarkdownParser(HTMLParser):
     optional converter is installed.
     """
 
-    _SKIP = {"script", "style", "noscript", "template", "svg", "head"}
-    _HEADINGS = {"h1": "# ", "h2": "## ", "h3": "### ", "h4": "#### ", "h5": "##### ", "h6": "###### "}
+    _SKIP: ClassVar[set[str]] = {"script", "style", "noscript", "template", "svg", "head"}
+    _HEADINGS: ClassVar[dict[str, str]] = {"h1": "# ", "h2": "## ", "h3": "### ", "h4": "#### ", "h5": "##### ", "h6": "###### "}
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)

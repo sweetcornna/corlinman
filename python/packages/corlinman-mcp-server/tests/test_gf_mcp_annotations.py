@@ -7,7 +7,7 @@ Tests live alongside the package suite but are uniquely named
 
 from __future__ import annotations
 
-import asyncio
+from typing import ClassVar
 
 import pytest
 from corlinman_mcp_server.adapters import SessionContext
@@ -28,7 +28,6 @@ from corlinman_mcp_server.types import (
 )
 
 from .conftest import StubPluginRegistry, StubPluginRuntime, make_plugin_entry
-
 
 # ---------------------------------------------------------------------
 # ToolAnnotations / ToolDescriptor serialization round-trip
@@ -119,8 +118,8 @@ def test_extract_annotations_degrades_on_bridge_without_attrs():
 
 def test_extract_annotations_from_mapping():
     class RichTool:
-        annotations = {"readOnlyHint": False, "destructiveHint": True}
-        output_schema = {"type": "object"}
+        annotations: ClassVar[dict[str, bool]] = {"readOnlyHint": False, "destructiveHint": True}
+        output_schema: ClassVar[dict[str, str]] = {"type": "object"}
 
     ann = _tool_annotations(RichTool())
     assert ann is not None
@@ -139,7 +138,7 @@ def test_extract_annotations_passthrough_toolannotations_obj():
 
 def test_extract_empty_annotation_mapping_returns_none():
     class RichTool:
-        annotations: dict = {}
+        annotations: ClassVar[dict[str, object]] = {}
 
     assert _tool_annotations(RichTool()) is None
 

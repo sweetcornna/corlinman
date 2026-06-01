@@ -356,6 +356,111 @@ async def test_servicer_assembles_context_before_provider_call() -> None:
 
 
 @pytest.mark.asyncio
+async def test_servicer_stamps_agent_id_into_placeholder_metadata() -> None:
+    """Persona-life placeholders are keyed by ``metadata["agent_id"]``.
+
+    A caller that explicitly binds a persona/agent through
+    ``ChatStart.extra["agent_id"]`` must have that id threaded into the
+    context-assembler metadata; otherwise ``{{persona.life_*}}`` renders
+    against the empty agent id and silently disappears.
+    """
+    from corlinman_agent.reasoning_loop import ChatStart
+
+    assembler = _FakeContextAssembler()
+    servicer = CorlinmanAgentServicer(
+        provider_resolver=lambda _m: _FakeProvider([]),
+        context_assembler=assembler,
+    )
+    start = ChatStart(
+        model="gpt-4o-mini",
+        session_key="sess-life",
+        messages=[
+            {
+                "role": "system",
+                "content": "Location: {{persona.life_location}}",
+            }
+        ],
+        extra={"agent_id": "grantley"},
+    )
+
+    await servicer._assemble_context(start)
+
+    assert assembler.calls
+    assert assembler.calls[0]["metadata"] == {
+        "session_key": "sess-life",
+        "agent_id": "grantley",
+    }
+
+
+@pytest.mark.asyncio
+async def test_servicer_uses_persona_id_as_placeholder_agent_id() -> None:
+    """Humanlike channel binding uses ``extra["persona_id"]`` today.
+
+    Persona-life tools write state under that persona id, while the
+    placeholder adapter reads ``metadata["agent_id"]``. When no explicit
+    ``agent_id`` exists, bridge the channel persona id into the placeholder
+    lookup id so ``{{persona.life_*}}`` resolves against the same row.
+    """
+    from corlinman_agent.reasoning_loop import ChatStart
+
+    assembler = _FakeContextAssembler()
+    servicer = CorlinmanAgentServicer(
+        provider_resolver=lambda _m: _FakeProvider([]),
+        context_assembler=assembler,
+    )
+    start = ChatStart(
+        model="gpt-4o-mini",
+        session_key="sess-life",
+        messages=[{"role": "system", "content": "{{persona.life_location}}"}],
+        extra={"persona_id": "grantley"},
+    )
+
+    await servicer._assemble_context(start)
+
+    assert assembler.calls[0]["metadata"] == {
+        "session_key": "sess-life",
+        "agent_id": "grantley",
+    }
+
+
+def test_proto_chat_start_persona_id_maps_to_extra() -> None:
+    from corlinman_grpc import agent_pb2
+    from corlinman_server.agent_servicer import _to_agent_start
+
+    start = _to_agent_start(
+        agent_pb2.ChatStart(
+            model="gpt-4o-mini",
+            session_key="sess-life",
+            persona_id="grantley",
+        )
+    )
+
+    assert start.extra == {"persona_id": "grantley"}
+
+
+@pytest.mark.asyncio
+async def test_servicer_skips_blank_auto_agent_id_metadata() -> None:
+    from corlinman_agent.reasoning_loop import ChatStart
+
+    for extra in ({}, {"agent_id": ""}, {"agent_id": "  "}, {"agent_id": "auto"}):
+        assembler = _FakeContextAssembler()
+        servicer = CorlinmanAgentServicer(
+            provider_resolver=lambda _m: _FakeProvider([]),
+            context_assembler=assembler,
+        )
+        start = ChatStart(
+            model="gpt-4o-mini",
+            session_key="sess-life",
+            messages=[{"role": "system", "content": "{{persona.life_location}}"}],
+            extra=dict(extra),
+        )
+
+        await servicer._assemble_context(start)
+
+        assert assembler.calls[0]["metadata"] == {"session_key": "sess-life"}
+
+
+@pytest.mark.asyncio
 async def test_servicer_registry_end_to_end_resolves_alias() -> None:
     """Wire a real ``ProviderRegistry`` + alias map through the servicer."""
     from corlinman_providers import ProviderKind, ProviderSpec
@@ -564,6 +669,138 @@ async def test_servicer_dispatches_spawn_many_round_trip(
 
 
 @pytest.mark.asyncio
+async def test_servicer_allocates_child_seq_across_single_spawns(
+    tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sequential single spawns in one session must not reuse child_seq=0.
+
+    Named ``subagent_spawn`` and ad-hoc ``subagent_spawn_inline`` both derive
+    child ids from ``ParentContext.child_context(..., child_seq)``. If the
+    servicer hardcodes child_seq=0 for every single-spawn call, the two child
+    sessions collide in observability even though they were separate tool
+    calls.
+    """
+    from corlinman_agent.agents.card import AgentCard
+    from corlinman_agent.agents.registry import AgentCardRegistry
+    from corlinman_agent.reasoning_loop import ChatStart, ToolCallEvent
+    from corlinman_server.agent_servicer import CorlinmanAgentServicer
+
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+    servicer = CorlinmanAgentServicer(provider_resolver=lambda _m: _FakeProvider([]))
+    async def _no_persona_state_store() -> None:
+        return None
+
+    servicer._get_persona_state_store = _no_persona_state_store  # type: ignore[method-assign]
+    servicer._builtin_agents = AgentCardRegistry(
+        {
+            "researcher": AgentCard(
+                name="researcher", description="", system_prompt="you research"
+            )
+        }
+    )
+    provider = _FakeProvider(_token_stream(["did the work"]))
+    start = ChatStart(
+        model="orchestrator",
+        messages=[],
+        tools=[],
+        session_key="tenant-a::sess-seq",
+    )
+
+    named_event = ToolCallEvent(
+        call_id="spawn-named",
+        plugin="subagent",
+        tool="subagent_spawn",
+        args_json=json.dumps({"agent": "researcher", "goal": "first"}).encode(),
+    )
+    inline_event = ToolCallEvent(
+        call_id="spawn-inline",
+        plugin="subagent",
+        tool="subagent_spawn_inline",
+        args_json=json.dumps(
+            {
+                "goal": "second",
+                "system_prompt": "you are an inline helper",
+            }
+        ).encode(),
+    )
+
+    named = json.loads(await servicer._dispatch_builtin(named_event, start, provider))
+    inline = json.loads(await servicer._dispatch_builtin(inline_event, start, provider))
+
+    assert named["finish_reason"] == "stop"
+    assert inline["finish_reason"] == "stop"
+    assert named["child_session_key"].endswith("::child::0")
+    assert inline["child_session_key"].endswith("::child::1")
+    assert named["child_agent_id"].endswith("::researcher::0")
+    assert inline["child_agent_id"].endswith("::inline::1")
+
+
+@pytest.mark.asyncio
+async def test_servicer_reserves_child_seq_range_for_spawn_many(
+    tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A later single spawn must not reuse a spawn_many sibling child_seq."""
+    from corlinman_agent.agents.card import AgentCard
+    from corlinman_agent.agents.registry import AgentCardRegistry
+    from corlinman_agent.reasoning_loop import ChatStart, ToolCallEvent
+    from corlinman_server.agent_servicer import CorlinmanAgentServicer
+
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+    servicer = CorlinmanAgentServicer(provider_resolver=lambda _m: _FakeProvider([]))
+
+    async def _no_persona_state_store() -> None:
+        return None
+
+    servicer._get_persona_state_store = _no_persona_state_store  # type: ignore[method-assign]
+    servicer._builtin_agents = AgentCardRegistry(
+        {
+            "researcher": AgentCard(
+                name="researcher", description="", system_prompt="you research"
+            ),
+            "editor": AgentCard(
+                name="editor", description="", system_prompt="you edit"
+            ),
+        }
+    )
+    provider = _FakeProvider(_token_stream(["did the work"]))
+    start = ChatStart(
+        model="orchestrator",
+        messages=[],
+        tools=[],
+        session_key="tenant-a::sess-many-then-one",
+    )
+
+    many_event = ToolCallEvent(
+        call_id="spawn-many",
+        plugin="subagent",
+        tool="subagent_spawn_many",
+        args_json=json.dumps(
+            {
+                "tasks": [
+                    {"agent": "researcher", "goal": "first"},
+                    {"agent": "editor", "goal": "second"},
+                ]
+            }
+        ).encode(),
+    )
+    single_event = ToolCallEvent(
+        call_id="spawn-single",
+        plugin="subagent",
+        tool="subagent_spawn",
+        args_json=json.dumps({"agent": "researcher", "goal": "third"}).encode(),
+    )
+
+    many = json.loads(await servicer._dispatch_builtin(many_event, start, provider))
+    single = json.loads(await servicer._dispatch_builtin(single_event, start, provider))
+
+    assert many["tasks"][0]["child_session_key"].endswith("::child::0")
+    assert many["tasks"][1]["child_session_key"].endswith("::child::1")
+    assert single["finish_reason"] == "stop"
+    assert single["child_session_key"].endswith("::child::2")
+    assert single["child_agent_id"].endswith("::researcher::2")
+
+
+@pytest.mark.asyncio
 async def test_servicer_spawn_seeds_child_persona_state(
     tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -679,6 +916,176 @@ async def test_servicer_threads_parent_tools_into_spawn(
     # success with no tools).
     assert payload["finish_reason"] == "rejected"
     assert "tool_allowlist_escalation" in payload["error"]
+
+
+@pytest.mark.asyncio
+async def test_servicer_rejects_unknown_subagent_model_override_up_front(
+    tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Invalid per-spawn model aliases must fail before the child is run."""
+    from corlinman_agent.agents.card import AgentCard
+    from corlinman_agent.agents.registry import AgentCardRegistry
+    from corlinman_agent.reasoning_loop import ChatStart, ToolCallEvent
+    from corlinman_server.agent_servicer import CorlinmanAgentServicer
+
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+
+    def resolver(model: str) -> Any:
+        if model == "parent-model":
+            return _FakeProvider(_token_stream(["parent"]))
+        raise KeyError(model)
+
+    child_provider = _FakeProvider(_token_stream(["child should not run"]))
+    servicer = CorlinmanAgentServicer(provider_resolver=resolver)
+
+    async def _no_persona_state_store() -> None:
+        return None
+
+    servicer._get_persona_state_store = _no_persona_state_store  # type: ignore[method-assign]
+    servicer._builtin_agents = AgentCardRegistry(
+        {
+            "researcher": AgentCard(
+                name="researcher", description="", system_prompt="you research"
+            )
+        }
+    )
+    start = ChatStart(
+        model="parent-model",
+        messages=[],
+        tools=[],
+        session_key="tenant-a::sess-model-override",
+    )
+    event = ToolCallEvent(
+        call_id="spawn-bad-model",
+        plugin="subagent",
+        tool="subagent_spawn",
+        args_json=json.dumps(
+            {
+                "agent": "researcher",
+                "goal": "use a bad model",
+                "model": "missing-child-model",
+            }
+        ).encode(),
+    )
+
+    payload = json.loads(
+        await servicer._dispatch_builtin(event, start, child_provider)
+    )
+
+    assert payload["finish_reason"] == "rejected"
+    assert payload["error"] == "model_alias_invalid: 'missing-child-model'"
+    assert child_provider.last_kwargs == {}
+
+
+@pytest.mark.asyncio
+async def test_servicer_rejects_unknown_inline_model_override_up_front(
+    tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Inline spawns use the same eager model override validation."""
+    from corlinman_agent.reasoning_loop import ChatStart, ToolCallEvent
+    from corlinman_server.agent_servicer import CorlinmanAgentServicer
+
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+
+    def resolver(model: str) -> Any:
+        if model == "parent-model":
+            return _FakeProvider(_token_stream(["parent"]))
+        raise KeyError(model)
+
+    child_provider = _FakeProvider(_token_stream(["child should not run"]))
+    servicer = CorlinmanAgentServicer(provider_resolver=resolver)
+    start = ChatStart(
+        model="parent-model",
+        messages=[],
+        tools=[],
+        session_key="tenant-a::sess-inline-model-override",
+    )
+    event = ToolCallEvent(
+        call_id="spawn-inline-bad-model",
+        plugin="subagent",
+        tool="subagent_spawn_inline",
+        args_json=json.dumps(
+            {
+                "goal": "use a bad inline model",
+                "system_prompt": "you are temporary",
+                "model": "missing-inline-model",
+            }
+        ).encode(),
+    )
+
+    payload = json.loads(
+        await servicer._dispatch_builtin(event, start, child_provider)
+    )
+
+    assert payload["finish_reason"] == "rejected"
+    assert payload["error"] == "model_alias_invalid: 'missing-inline-model'"
+    assert child_provider.last_kwargs == {}
+
+
+@pytest.mark.asyncio
+async def test_servicer_rejects_unknown_spawn_many_model_override_up_front(
+    tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """spawn_many validates each sibling model override before fan-out."""
+    from corlinman_agent.agents.card import AgentCard
+    from corlinman_agent.agents.registry import AgentCardRegistry
+    from corlinman_agent.reasoning_loop import ChatStart, ToolCallEvent
+    from corlinman_server.agent_servicer import CorlinmanAgentServicer
+
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+
+    def resolver(model: str) -> Any:
+        if model == "parent-model":
+            return _FakeProvider(_token_stream(["parent"]))
+        raise KeyError(model)
+
+    child_provider = _FakeProvider(_token_stream(["child should not run"]))
+    servicer = CorlinmanAgentServicer(provider_resolver=resolver)
+
+    async def _no_persona_state_store() -> None:
+        return None
+
+    servicer._get_persona_state_store = _no_persona_state_store  # type: ignore[method-assign]
+    servicer._builtin_agents = AgentCardRegistry(
+        {
+            "researcher": AgentCard(
+                name="researcher", description="", system_prompt="you research"
+            )
+        }
+    )
+    start = ChatStart(
+        model="parent-model",
+        messages=[],
+        tools=[],
+        session_key="tenant-a::sess-many-model-override",
+    )
+    event = ToolCallEvent(
+        call_id="spawn-many-bad-model",
+        plugin="subagent",
+        tool="subagent_spawn_many",
+        args_json=json.dumps(
+            {
+                "tasks": [
+                    {"agent": "researcher", "goal": "use the parent model"},
+                    {
+                        "agent": "researcher",
+                        "goal": "use a bad child model",
+                        "model": "missing-task-model",
+                    },
+                ]
+            }
+        ).encode(),
+    )
+
+    payload = json.loads(
+        await servicer._dispatch_builtin(event, start, child_provider)
+    )
+
+    assert payload == {
+        "tasks": [],
+        "error": "model_alias_invalid: 'missing-task-model'",
+    }
+    assert child_provider.last_kwargs == {}
 
 
 # ---------------------------------------------------------------------------

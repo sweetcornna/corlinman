@@ -235,6 +235,14 @@ class InternalChatRequest(BaseModel):
     when it needs one.
     """
 
+    persona_id: str | None = None
+    """Persona row id bound by channel humanlike injection.
+
+    The gRPC agent path carries this into ``ChatStart.extra["persona_id"]``
+    so persona-life placeholders and persona-life tools read/write the
+    same persona-scoped state.
+    """
+
 
 # ─── Usage / events / errors ──────────────────────────────────────────
 

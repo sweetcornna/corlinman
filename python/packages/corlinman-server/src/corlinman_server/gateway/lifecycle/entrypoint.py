@@ -69,7 +69,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import structlog
 
@@ -2501,9 +2501,9 @@ def build_app(
         try:
             from corlinman_mcp_server import McpClientManager
 
-            mcp_manager = McpClientManager.from_config(state.config)
-            await mcp_manager.connect_all()
-            state.extras["mcp_manager"] = mcp_manager
+            _mcp_manager = McpClientManager.from_config(state.config)
+            await _mcp_manager.connect_all()
+            state.extras["mcp_manager"] = _mcp_manager
             logger.info("gateway.mcp.manager_connected")
         except Exception as exc:
             logger.warning("gateway.mcp.manager_failed", error=str(exc))
@@ -2880,12 +2880,12 @@ def build_app(
             # AttributeError out of this ``finally`` and abort every
             # remaining teardown step below — leaking the C2 sqlite stores.
             _extras = getattr(state, "extras", None)
-            mcp_manager = (
+            teardown_mcp_manager = (
                 _extras.get("mcp_manager") if isinstance(_extras, dict) else None
             )
-            if mcp_manager is not None:
+            if teardown_mcp_manager is not None:
                 with suppress(Exception):
-                    await mcp_manager.aclose()
+                    await cast(Any, teardown_mcp_manager).aclose()
                 if isinstance(_extras, dict):
                     _extras.pop("mcp_manager", None)
             # W5.0 teardown: close the evolution sqlite cleanly so the
@@ -2906,12 +2906,12 @@ def build_app(
             # shutdown doesn't orphan child-driving tasks against a
             # tearing-down provider / journal. Idempotent + safe when the
             # dispatcher was never wired.
-            subagent_dispatcher = getattr(
+            teardown_subagent_dispatcher = getattr(
                 app.state, "corlinman_subagent_dispatcher", None
             )
-            if subagent_dispatcher is not None:
+            if teardown_subagent_dispatcher is not None:
                 try:
-                    await subagent_dispatcher.shutdown()
+                    await cast(Any, teardown_subagent_dispatcher).shutdown()
                 except Exception as exc:  # pragma: no cover — defensive
                     logger.warning(
                         "gateway.subagent.dispatcher_shutdown_failed",

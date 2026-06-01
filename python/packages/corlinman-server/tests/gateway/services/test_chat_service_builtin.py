@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 from corlinman_grpc._generated.corlinman.v1 import agent_pb2
-from corlinman_server.gateway.services.chat_service import _run_chat
+from corlinman_server.gateway.services.chat_service import _build_chat_start, _run_chat
 from corlinman_server.gateway_api import (
     DoneEvent,
     InternalChatRequest,
@@ -77,3 +77,11 @@ async def test_builtin_prefix_strips_and_skips_executor() -> None:
     assert tool_events[0].tool == "web_search"
     assert executor.calls == []
     assert any(isinstance(ev, DoneEvent) for ev in events)
+
+
+def test_build_chat_start_carries_persona_id_metadata() -> None:
+    req = InternalChatRequest(model="x", messages=[], persona_id="grantley")
+
+    start = _build_chat_start(req)
+
+    assert start.persona_id == "grantley"
