@@ -3349,6 +3349,28 @@ def build_app(
                     "gateway.middleware.install_failed", error=str(exc)
                 )
 
+            # Wire the admin-session bridge so the in-app chat UI (which
+            # authenticates with the ``corlinman_session`` cookie, not an API
+            # key) can reach ``/v1/chat/completions``. Set on the published
+            # state AFTER install so a wiring failure degrades the bridge
+            # gracefully (chat needs an API key) instead of taking down the
+            # whole ``/v1`` gate. The resolver validates the cookie lazily at
+            # request time via ``get_admin_state()``, so it does not matter
+            # that the live session store is created lazily on first login.
+            try:
+                from corlinman_server.gateway.routes_admin_a._auth_shim import (
+                    admin_session_tenant,
+                )
+
+                api_key_state = getattr(app.state, "api_key_auth", None)
+                if api_key_state is not None:
+                    api_key_state.admin_session_resolver = admin_session_tenant
+            except Exception as exc:  # pragma: no cover — sibling-owned
+                logger.warning(
+                    "gateway.middleware.admin_bridge_wire_failed",
+                    error=str(exc),
+                )
+
         # SEC-06b: install the tenant-scope middleware so every ``/admin/*``
         # and ``/v1/*`` handler observes a resolved ``request.state.tenant``
         # instead of trusting a raw ``?tenant=`` query param. The middleware

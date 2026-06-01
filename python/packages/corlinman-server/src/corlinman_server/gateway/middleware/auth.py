@@ -33,6 +33,7 @@ whichever entry point a route picks.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -74,6 +75,21 @@ DEFAULT_PROTECTED_PREFIXES: tuple[str, ...] = ("/v1/",)
 DEFAULT_REQUIRED_SCOPES: tuple[tuple[str, str], ...] = (("/v1/chat", "chat"),)
 
 
+#: Path prefixes where a logged-in admin *browser session* may stand in for
+#: an API key (the in-app chat UI). Deliberately narrow: only the chat
+#: endpoints, which the gateway serves to the same-origin admin dashboard.
+#: Every other protected ``/v1/`` surface (memory, canvas, plugin callbacks)
+#: still requires a real bearer key. See :func:`_path_allows_admin_session`
+#: and the bridge branch in :meth:`ApiKeyAuthMiddleware.dispatch`.
+ADMIN_SESSION_BRIDGE_PREFIXES: tuple[str, ...] = ("/v1/chat",)
+
+
+def _path_allows_admin_session(path: str) -> bool:
+    """Whether ``path`` may be reached by a bridged admin browser session."""
+
+    return any(path.startswith(p) for p in ADMIN_SESSION_BRIDGE_PREFIXES)
+
+
 @dataclass
 class ApiKeyAuthState:
     """Cloneable bundle of state the API-key middleware reads on every
@@ -92,6 +108,15 @@ class ApiKeyAuthState:
     #: verifies. Defaults to ``/v1/`` → ``"chat"``. Mutable so an operator
     #: can tighten / extend the map without re-installing the middleware.
     required_scopes: tuple[tuple[str, str], ...] = DEFAULT_REQUIRED_SCOPES
+    #: Admin-session bridge: a ``request -> TenantId | None`` callable that
+    #: returns the operator's tenant when the request carries a valid admin
+    #: browser session (the ``corlinman_session`` cookie), else ``None``.
+    #: When wired, the middleware lets the in-app chat UI reach
+    #: ``/v1/chat`` (see :data:`ADMIN_SESSION_BRIDGE_PREFIXES`) without an
+    #: API key. ``None`` (the default) keeps the surface strictly
+    #: bearer-only. Injected at boot so this module never imports the admin
+    #: route bundle (avoids an import cycle) and stays trivially testable.
+    admin_session_resolver: Callable[[Request], TenantId | None] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -257,6 +282,42 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
         if not _path_is_protected(request.url.path, state.protected_prefixes):
             return await call_next(request)
 
+        token = extract_bearer_token(request)
+
+        # Admin-session bridge (chat only): let a logged-in admin browser use
+        # the in-app chat without minting an API key. Consulted ONLY when no
+        # bearer / X-API-Key is present (SDK + curl behaviour is unchanged)
+        # and ONLY on the chat endpoints (:data:`ADMIN_SESSION_BRIDGE_PREFIXES`).
+        # Fails closed: a request without a valid admin session cookie returns
+        # ``None`` here and falls through to the normal 401 below — so the
+        # cookieless contract the regression tests pin is preserved. Works
+        # even before any API key is minted (``admin_db`` may still be
+        # ``None``). CSRF-safe: the session cookie is ``SameSite=Strict``, so
+        # a cross-site POST never carries it.
+        if (
+            token is None
+            and state.admin_session_resolver is not None
+            and _path_allows_admin_session(request.url.path)
+        ):
+            try:
+                bridged_tenant = state.admin_session_resolver(request)
+            except Exception as exc:  # noqa: BLE001 — never 500 on the bridge
+                logger.warning(
+                    "api_key_auth.admin_bridge_error",
+                    path=request.url.path,
+                    error=str(exc),
+                )
+                bridged_tenant = None
+            if bridged_tenant is not None:
+                # An authenticated admin is implicitly super-scoped, so the
+                # SEC-09 chat-scope check is intentionally bypassed. No
+                # ApiKeyRow exists for a session, so leave ``api_key`` unset
+                # (None) and mark the request as bridged for observability.
+                request.state.tenant = bridged_tenant
+                request.state.api_key = None
+                request.state.admin_session_bridged = True
+                return await call_next(request)
+
         if state.admin_db is None:
             # Fail closed: protected route but nothing to verify against.
             logger.warning(
@@ -265,7 +326,6 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
             )
             return _unauthorized("admin_db_not_configured")
 
-        token = extract_bearer_token(request)
         if token is None:
             return _unauthorized("missing_authorization")
 
@@ -316,6 +376,7 @@ def install_api_key_middleware(
     admin_db: AdminDb | None = None,
     protected_prefixes: tuple[str, ...] = DEFAULT_PROTECTED_PREFIXES,
     required_scopes: tuple[tuple[str, str], ...] = DEFAULT_REQUIRED_SCOPES,
+    admin_session_resolver: Callable[[Request], TenantId | None] | None = None,
 ) -> ApiKeyAuthState:
     """Attach :class:`ApiKeyAuthMiddleware` to ``app``.
 
@@ -331,6 +392,7 @@ def install_api_key_middleware(
         admin_db=admin_db,
         protected_prefixes=protected_prefixes,
         required_scopes=required_scopes,
+        admin_session_resolver=admin_session_resolver,
     )
     app.state.api_key_auth = state
     app.add_middleware(ApiKeyAuthMiddleware, state=state)
@@ -461,6 +523,7 @@ def require_api_key(required_scope: str | None = None) -> Any:
 
 
 __all__ = [
+    "ADMIN_SESSION_BRIDGE_PREFIXES",
     "DEFAULT_PROTECTED_PREFIXES",
     "DEFAULT_REQUIRED_SCOPES",
     "ApiKeyAuthMiddleware",
