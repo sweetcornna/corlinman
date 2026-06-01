@@ -46,6 +46,8 @@ const REQUIRED_ROUTES = [
   'channels/feishu.html',
   'channels/wechat_official.html',
   'channels/qq_official.html',
+  'marketplace.html',
+  'marketplace/acceleration.html',
 ];
 
 const NOT_FOUND_ROUTE = '404.html';

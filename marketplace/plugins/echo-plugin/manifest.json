@@ -1,0 +1,10 @@
+{
+  "name": "echo-plugin",
+  "version": "0.1.0",
+  "description": "A minimal example plugin that echoes its input. Seeds and smoke-tests the corlinman marketplace plugin install path.",
+  "entry": "echo.py",
+  "permissions": [],
+  "requires": {
+    "env": []
+  }
+}

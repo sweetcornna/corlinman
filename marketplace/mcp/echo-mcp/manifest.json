@@ -1,0 +1,20 @@
+{
+  "name": "echo-mcp",
+  "transport": "stdio",
+  "command": "python",
+  "args": ["-m", "echo_mcp"],
+  "env": {
+    "ECHO_MCP_GREETING": "hello"
+  },
+  "requires": {
+    "env": []
+  },
+  "enabled": true,
+  "setup": [
+    "This is an McpServerSpec-shaped document (name, transport, command, args, env).",
+    "stdio transport: the gateway launches `command` + `args` as a child process and speaks newline-delimited JSON-RPC over its stdio.",
+    "`requires.env` lists environment variable names the operator must supply before enabling the server; it is empty here because echo-mcp needs no secrets.",
+    "`env` carries non-secret defaults injected into the child process. Override `ECHO_MCP_GREETING` to change the greeting.",
+    "No tarball: MCP items ship the manifest itself. The gateway downloads this manifest, validates it parses as JSON, and persists it as a server spec (no sha256 required)."
+  ]
+}

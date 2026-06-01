@@ -391,6 +391,101 @@ class McpClientManager:
             tools=len(tools),
         )
 
+    # -- Runtime hot-plug --
+
+    async def add_server(
+        self, spec: McpServerSpec, *, replace: bool = False
+    ) -> McpManagedServer:
+        """Register ``spec`` under ``spec.name`` at runtime.
+
+        Raises :class:`ValueError` if a server of that name already
+        exists and ``replace`` is false. When ``replace`` is true an
+        existing server is torn down first. If the manager is already
+        connected and the spec is enabled, the new server is brought up
+        immediately; otherwise it is merely registered and a later
+        :meth:`connect_all` brings it up. Returns the
+        :class:`McpManagedServer` either way — connection failures are
+        folded into its ``status``/``error``, never raised.
+        """
+        existing = self._servers.get(spec.name)
+        if existing is not None:
+            if not replace:
+                raise ValueError(
+                    f"mcp server {spec.name!r} already registered"
+                )
+            await self._teardown(existing)
+        managed = McpManagedServer(spec=spec)
+        self._servers[spec.name] = managed
+        if self._connected and spec.enabled:
+            await self._bring_up(managed)
+        return managed
+
+    async def remove_server(self, name: str) -> bool:
+        """Tear down and forget the named server. Returns whether it
+        existed. Never raises — a peer ``close()`` failure is suppressed.
+        """
+        managed = self._servers.get(name)
+        if managed is None:
+            return False
+        await self._teardown(managed)
+        del self._servers[name]
+        return True
+
+    async def restart_one(self, name: str) -> bool:
+        """Tear down then re-connect the named server. Returns whether it
+        existed. A disabled spec is reset to ``pending`` but not brought
+        up. Connection failures fold into ``status``/``error``.
+        """
+        managed = self._servers.get(name)
+        if managed is None:
+            return False
+        await self._teardown(managed)
+        managed.status = "pending"
+        managed.error = None
+        if managed.spec.enabled:
+            await self._bring_up(managed)
+        return True
+
+    async def enable_one(self, name: str) -> bool:
+        """Mark the named server enabled and bring it up if it is not
+        already ready. Returns whether it existed. Connection failures
+        fold into ``status``/``error``.
+        """
+        managed = self._servers.get(name)
+        if managed is None:
+            return False
+        managed.spec.enabled = True
+        if not managed.is_ready:
+            managed.status = "pending"
+            managed.error = None
+            await self._bring_up(managed)
+        return True
+
+    async def disable_one(self, name: str) -> bool:
+        """Mark the named server disabled and drop its live peer. Returns
+        whether it existed. The server is recorded as ``error`` with the
+        ``"disabled"`` marker so it no longer contributes tools.
+        """
+        managed = self._servers.get(name)
+        if managed is None:
+            return False
+        managed.spec.enabled = False
+        await self._teardown(managed)
+        managed.status = "error"
+        managed.error = "disabled"
+        return True
+
+    async def _teardown(self, managed: McpManagedServer) -> None:
+        """Close ``managed``'s live peer (suppressing any close error) and
+        clear its connection state — leaving ``status``/``error`` for the
+        caller to set."""
+        peer = managed.peer
+        if peer is not None:
+            with contextlib.suppress(Exception):
+                await peer.close()
+        managed.peer = None
+        managed.tools = []
+
     async def _connect_peer(self, spec: McpServerSpec) -> McpClientPeer:
         """Open the transport for ``spec``. Raises
         :class:`McpClientError` on failure."""

@@ -65,6 +65,12 @@ from corlinman_server.gateway.routes_admin_b import (
     logs as _logs,
 )
 from corlinman_server.gateway.routes_admin_b import (
+    marketplace_settings as _marketplace_settings,
+)
+from corlinman_server.gateway.routes_admin_b import (
+    mcp_market as _mcp_market,
+)
+from corlinman_server.gateway.routes_admin_b import (
     memory as _memory,
 )
 from corlinman_server.gateway.routes_admin_b import (
@@ -81,6 +87,9 @@ from corlinman_server.gateway.routes_admin_b import (
 )
 from corlinman_server.gateway.routes_admin_b import (
     personas as _personas,
+)
+from corlinman_server.gateway.routes_admin_b import (
+    plugin_market as _plugin_market,
 )
 from corlinman_server.gateway.routes_admin_b import (
     plugins as _plugins,
@@ -135,12 +144,15 @@ def build_router() -> APIRouter:
         _hooks,
         _image_provider,
         _logs,
+        _marketplace_settings,
+        _mcp_market,
         _memory,
         _models,
         _napcat,
         _oauth,
         _onboard,
         _personas,
+        _plugin_market,
         _plugins,
         _providers,
         _rag,

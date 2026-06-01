@@ -1,0 +1,49 @@
+{
+  "schema": 1,
+  "generated_at": "2026-06-01T06:31:48Z",
+  "items": [
+    {
+      "kind": "mcp",
+      "slug": "echo-mcp",
+      "name": "echo-mcp",
+      "description": "",
+      "transport": "stdio",
+      "latest_version": "1.0.0",
+      "versions": [
+        "1.0.0"
+      ],
+      "manifest": "mcp/echo-mcp/manifest.json",
+      "requires": {
+        "env": []
+      },
+      "updated_at": "2026-06-01T06:31:48Z"
+    },
+    {
+      "kind": "plugin",
+      "slug": "echo-plugin",
+      "name": "echo-plugin",
+      "description": "A minimal example plugin that echoes its input. Seeds and smoke-tests the corlinman marketplace plugin install path.",
+      "latest_version": "0.1.0",
+      "versions": [
+        "0.1.0"
+      ],
+      "tarball": "dist/plugins/echo-plugin-0.1.0.tar.gz",
+      "sha256": "7e7629c13204bf6f5e997a122befb4a3f339940e04252f840926ffa1fd3fbcf6",
+      "updated_at": "2026-06-01T06:31:48Z"
+    },
+    {
+      "kind": "skill",
+      "slug": "hello-skill",
+      "name": "hello-skill",
+      "description": "A minimal example skill used to seed and smoke-test the corlinman marketplace registry. Use when you need a tiny, known-good skill to verify install/extraction wiring end to end, or as a template for authoring a real SKILL.md.",
+      "latest_version": "1.0.0",
+      "versions": [
+        "1.0.0"
+      ],
+      "tarball": "dist/skills/hello-skill-1.0.0.tar.gz",
+      "sha256": "e71dfa517930d970f0f0b4c82c1687fb119f6405ed1165d8225d481c7b61c6ac",
+      "updated_at": "2026-06-01T06:31:48Z",
+      "emoji": "👋"
+    }
+  ]
+}

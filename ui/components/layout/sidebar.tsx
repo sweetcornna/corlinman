@@ -35,6 +35,7 @@ import {
   Send,
   Settings,
   Sparkles,
+  Store,
   Terminal,
   Timer,
   Users,
@@ -105,6 +106,10 @@ const OPERATOR_ITEMS: NavEntry[] = [
   // Scheduler because it's a chat-personality knob that pairs with model
   // configuration, not a developer concern.
   { href: "/persona", labelKey: "nav.persona", icon: Sparkles },
+  // Marketplace — unified browse + install hub for skills, MCP servers, and
+  // plugins (all GitHub-backed). Operator-facing discovery surface, so it
+  // lives in the default sidebar rather than behind dev-mode.
+  { href: "/marketplace", labelKey: "nav.marketplace", icon: Store },
   {
     kind: "group",
     id: "channels",
@@ -162,6 +167,12 @@ const DEV_ITEMS: NavEntry[] = [
   { href: "/agents", labelKey: "nav.agents", icon: Bot, isDeveloper: true },
   { href: "/skills", labelKey: "nav.skills", icon: Wrench, isDeveloper: true },
   { href: "/plugins", labelKey: "nav.plugins", icon: Boxes, isDeveloper: true },
+  {
+    href: "/marketplace/acceleration",
+    labelKey: "nav.marketplaceAcceleration",
+    icon: Zap,
+    isDeveloper: true,
+  },
   { href: "/hooks", labelKey: "nav.hooks", icon: Zap, isDeveloper: true },
   { href: "/rag", labelKey: "nav.rag", icon: Database, isDeveloper: true },
   { href: "/profiles", labelKey: "nav.profiles", icon: Users, isDeveloper: true },

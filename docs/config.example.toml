@@ -530,6 +530,57 @@ dir = "skills"
 autoload = true
 
 # ---------------------------------------------------------------------------
+# [marketplace] — hot-pluggable Skills / MCP / Plugin marketplace.
+#
+# The gateway browses + installs three kinds of extension (skills, MCP
+# servers, plugins) from a single curated GitHub registry repo by
+# default. Skills auto-activate on the next 30 s registry refresh;
+# MCP servers + plugins install *staged* (registered but inert) and
+# require an explicit Enable to hot-load (they run external code).
+# ---------------------------------------------------------------------------
+[marketplace]
+# The curated registry repo holding index.json + per-item content
+# (dist/*.tar.gz for skills/plugins, mcp/<slug>/manifest.json for MCP).
+# Override if you fork the registry.
+registry_repo = "sweetcornna/corlinman-marketplace"
+registry_ref = "main"
+
+# Default catalog source: "github" (the registry repo above) or
+# "clawhub" (the legacy clawhub.ai skill hub — skills only).
+default_source = "github"
+
+# Keep the legacy clawhub.ai skill source available as a fallback/toggle.
+clawhub_enabled = false
+
+# Optional GitHub PAT for the registry fetches. Only needed for a private
+# registry or to lift the 60/hr anon rate limit. NEVER sent through a
+# third-party acceleration proxy (see github_proxy) — only attached when
+# talking to GitHub directly or to a self-hosted mirror.
+# github_token = { env = "CORLINMAN_GITHUB_TOKEN" }
+
+# ---------------------------------------------------------------------------
+# [marketplace.github_proxy] — China-region GitHub acceleration.
+#
+# Rewrites every GitHub URL (index.json + downloads) through a mirror so
+# hosts that can't reach github.com / raw.githubusercontent.com reliably
+# still get a fast catalog + install.
+#   mode    = off  | auto | on
+#             auto enables on a China signal: assume_region below,
+#             CORLINMAN_REGION=cn, or a TZ like Asia/Shanghai.
+#   preset  = ghproxy   — prefix style: <base>/<original-github-url>
+#             jsdelivr   — raw repo content via cdn.jsdelivr.net/gh/...
+#             mirror     — host-swap to mirror_host (a self-hosted proxy)
+#             custom     — prefix style using your own base
+# ---------------------------------------------------------------------------
+[marketplace.github_proxy]
+mode = "auto"
+preset = "ghproxy"
+base = "https://ghproxy.com/"
+mirror_host = ""
+# Force the auto decision regardless of timezone/env: "cn" | "global" | "".
+assume_region = ""
+
+# ---------------------------------------------------------------------------
 # [variables] — TVStxt variable stores. Paths are relative to data_dir;
 # `hot_reload = true` watches each directory for changes.
 #
