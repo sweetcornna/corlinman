@@ -1,0 +1,22 @@
+{
+  "name": "everything",
+  "display_name": "Everything",
+  "description": "Reference server exercising prompts, resources, and tools (good for testing).",
+  "transport": "stdio",
+  "command": "npx",
+  "args": [
+    "-y",
+    "@modelcontextprotocol/server-everything"
+  ],
+  "env": {},
+  "requires": {
+    "env": []
+  },
+  "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/everything",
+  "license": "MIT",
+  "category": "dev",
+  "setup": [
+    "Requires Node.js (npx) on the host.",
+    "Replace any <PLACEHOLDER> arg (e.g. <ALLOWED_DIR>) before enabling."
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "name": "sequential-thinking",
+  "display_name": "Sequential Thinking",
+  "description": "Structured, reflective multi-step problem solving.",
+  "transport": "stdio",
+  "command": "npx",
+  "args": [
+    "-y",
+    "@modelcontextprotocol/server-sequential-thinking"
+  ],
+  "env": {},
+  "requires": {
+    "env": []
+  },
+  "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/sequentialthinking",
+  "license": "MIT",
+  "category": "dev",
+  "setup": [
+    "Requires Node.js (npx) on the host.",
+    "Replace any <PLACEHOLDER> arg (e.g. <ALLOWED_DIR>) before enabling."
+  ]
+}

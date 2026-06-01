@@ -30,8 +30,8 @@ def main() -> int:
         print(f"unexpected schema: {index.get('schema')!r}", file=sys.stderr)
         return 1
     items = index.get("items") or []
-    if len(items) != 3:
-        print(f"expected 3 items, got {len(items)}", file=sys.stderr)
+    if not items:
+        print("index has no items", file=sys.stderr)
         return 1
 
     ok = True

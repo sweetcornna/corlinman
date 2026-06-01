@@ -1,0 +1,19 @@
+# Canonical corlinman plugin manifest (discovered + hot-loaded by the gateway).
+manifest_version = 1
+name = "text-tools"
+version = "0.1.0"
+description = "Text utilities: uppercase, lowercase, reverse, and word count for a line of input."
+author = "corlinman marketplace"
+plugin_type = "sync"
+
+[entry_point]
+command = "python3"
+args = ["text_tools.py"]
+
+[communication]
+timeout_ms = 5000
+
+[[capabilities.tools]]
+name = "text_transform"
+description = "Transform a line of text (op: upper|lower|reverse|wordcount)."
+parameters = { type = "object", properties = { text = { type = "string" } } }

@@ -1,0 +1,21 @@
+{
+  "name": "time",
+  "display_name": "Time",
+  "description": "Current time and timezone conversion utilities.",
+  "transport": "stdio",
+  "command": "uvx",
+  "args": [
+    "mcp-server-time"
+  ],
+  "env": {},
+  "requires": {
+    "env": []
+  },
+  "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/time",
+  "license": "MIT",
+  "category": "productivity",
+  "setup": [
+    "Requires uv (uvx) on the host.",
+    "Replace any <PLACEHOLDER> arg (e.g. <ALLOWED_DIR>) before enabling."
+  ]
+}

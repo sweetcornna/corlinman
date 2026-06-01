@@ -1,0 +1,21 @@
+{
+  "name": "fetch",
+  "display_name": "Fetch",
+  "description": "Fetch a URL and convert its content to markdown for LLM use.",
+  "transport": "stdio",
+  "command": "uvx",
+  "args": [
+    "mcp-server-fetch"
+  ],
+  "env": {},
+  "requires": {
+    "env": []
+  },
+  "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/fetch",
+  "license": "MIT",
+  "category": "web",
+  "setup": [
+    "Requires uv (uvx) on the host.",
+    "Replace any <PLACEHOLDER> arg (e.g. <ALLOWED_DIR>) before enabling."
+  ]
+}

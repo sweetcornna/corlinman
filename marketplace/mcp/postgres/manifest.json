@@ -1,0 +1,23 @@
+{
+  "name": "postgres",
+  "display_name": "PostgreSQL",
+  "description": "Read-only PostgreSQL access with schema inspection. (archived upstream; still runnable)",
+  "transport": "stdio",
+  "command": "npx",
+  "args": [
+    "-y",
+    "@modelcontextprotocol/server-postgres",
+    "<POSTGRES_URL>"
+  ],
+  "env": {},
+  "requires": {
+    "env": []
+  },
+  "homepage": "https://github.com/modelcontextprotocol/servers-archived/tree/main/src/postgres",
+  "license": "MIT",
+  "category": "database",
+  "setup": [
+    "Requires Node.js (npx) on the host.",
+    "Replace any <PLACEHOLDER> arg (e.g. <ALLOWED_DIR>) before enabling."
+  ]
+}

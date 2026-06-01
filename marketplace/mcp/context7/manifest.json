@@ -1,0 +1,22 @@
+{
+  "name": "context7",
+  "display_name": "Context7 (Upstash)",
+  "description": "Inject up-to-date, version-specific library docs into context.",
+  "transport": "stdio",
+  "command": "npx",
+  "args": [
+    "-y",
+    "@upstash/context7-mcp"
+  ],
+  "env": {},
+  "requires": {
+    "env": []
+  },
+  "homepage": "https://github.com/upstash/context7",
+  "license": "MIT",
+  "category": "dev",
+  "setup": [
+    "Requires Node.js (npx) on the host.",
+    "Replace any <PLACEHOLDER> arg (e.g. <ALLOWED_DIR>) before enabling."
+  ]
+}

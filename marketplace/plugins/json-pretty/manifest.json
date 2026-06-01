@@ -1,0 +1,10 @@
+{
+  "name": "json-pretty",
+  "version": "0.1.0",
+  "description": "Pretty-print and validate a JSON document read from stdin.",
+  "entry": "json_pretty.py",
+  "permissions": [],
+  "requires": {
+    "env": []
+  }
+}

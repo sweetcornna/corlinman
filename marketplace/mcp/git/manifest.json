@@ -1,0 +1,23 @@
+{
+  "name": "git",
+  "display_name": "Git",
+  "description": "Read, search, and manipulate a local Git repository.",
+  "transport": "stdio",
+  "command": "uvx",
+  "args": [
+    "mcp-server-git",
+    "--repository",
+    "<REPO_PATH>"
+  ],
+  "env": {},
+  "requires": {
+    "env": []
+  },
+  "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/git",
+  "license": "MIT",
+  "category": "dev",
+  "setup": [
+    "Requires uv (uvx) on the host.",
+    "Replace any <PLACEHOLDER> arg (e.g. <ALLOWED_DIR>) before enabling."
+  ]
+}

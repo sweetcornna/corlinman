@@ -1,0 +1,22 @@
+{
+  "name": "memory",
+  "display_name": "Memory",
+  "description": "Knowledge-graph-based persistent memory for the agent.",
+  "transport": "stdio",
+  "command": "npx",
+  "args": [
+    "-y",
+    "@modelcontextprotocol/server-memory"
+  ],
+  "env": {},
+  "requires": {
+    "env": []
+  },
+  "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/memory",
+  "license": "MIT",
+  "category": "memory",
+  "setup": [
+    "Requires Node.js (npx) on the host.",
+    "Replace any <PLACEHOLDER> arg (e.g. <ALLOWED_DIR>) before enabling."
+  ]
+}

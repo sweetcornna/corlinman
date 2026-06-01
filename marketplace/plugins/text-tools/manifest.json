@@ -1,0 +1,10 @@
+{
+  "name": "text-tools",
+  "version": "0.1.0",
+  "description": "Text utilities: uppercase, lowercase, reverse, and word count for a line of input.",
+  "entry": "text_tools.py",
+  "permissions": [],
+  "requires": {
+    "env": []
+  }
+}
