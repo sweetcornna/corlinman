@@ -1,0 +1,22 @@
+{
+  "name": "puppeteer",
+  "display_name": "Puppeteer",
+  "description": "Headless-browser automation and scraping. (archived upstream; still runnable)",
+  "transport": "stdio",
+  "command": "npx",
+  "args": [
+    "-y",
+    "@modelcontextprotocol/server-puppeteer"
+  ],
+  "env": {},
+  "requires": {
+    "env": []
+  },
+  "homepage": "https://github.com/modelcontextprotocol/servers-archived/tree/main/src/puppeteer",
+  "license": "MIT",
+  "category": "web",
+  "setup": [
+    "Requires Node.js (npx) on the host.",
+    "Replace any <PLACEHOLDER> arg (e.g. <ALLOWED_DIR>) before enabling."
+  ]
+}

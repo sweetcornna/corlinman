@@ -1,0 +1,23 @@
+{
+  "name": "filesystem",
+  "display_name": "Filesystem",
+  "description": "Secure local file operations with configurable allowed directories.",
+  "transport": "stdio",
+  "command": "npx",
+  "args": [
+    "-y",
+    "@modelcontextprotocol/server-filesystem",
+    "<ALLOWED_DIR>"
+  ],
+  "env": {},
+  "requires": {
+    "env": []
+  },
+  "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem",
+  "license": "MIT",
+  "category": "filesystem",
+  "setup": [
+    "Requires Node.js (npx) on the host.",
+    "Replace any <PLACEHOLDER> arg (e.g. <ALLOWED_DIR>) before enabling."
+  ]
+}

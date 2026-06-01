@@ -279,6 +279,70 @@ def _wire_status_links(cfg: Any | None, data_dir: Path) -> bool:
     return explicit
 
 
+async def _wire_plugin_hotload(
+    state: Any,
+    admin_b_state: Any,
+    plugin_store: Any,
+    data_dir: Path,
+) -> None:
+    """Build the live :class:`PluginRegistry` + wire true plugin hot-load.
+
+    Constructs the registry from the env-configured roots, syncs in the
+    *enabled* marketplace plugins under ``<data_dir>/plugins`` (so their
+    tools are callable), and publishes:
+
+    * ``state.plugin_registry`` — read by ``build_tool_executor`` at the
+      sibling-bootstrap that runs right after this, so the agent tool
+      plane binds the registry.
+    * ``admin_b_state.plugins`` — so ``/admin/plugins`` reflects it.
+    * ``admin_b_state.extras["plugin_registry_reload"]`` — the callable the
+      ``/admin/plugins/market/{slug}/{enable,disable}`` routes fire to
+      re-sync the live registry to the persisted enabled set with no
+      restart.
+
+    Best-effort: any failure (missing providers package, slotted degraded
+    state) logs and leaves the plugin plane simply unwired.
+    """
+    try:
+        from corlinman_providers.plugins import PluginRegistry, roots_from_env_var
+        from corlinman_providers.plugins.discovery import Origin
+
+        from corlinman_server.system.marketplace.plugin_runtime import (
+            make_reload_hook,
+            sync_registry,
+        )
+    except Exception as exc:  # pragma: no cover — providers package absent
+        logger.warning("gateway.marketplace.plugin_runtime_missing", error=str(exc))
+        return
+
+    plugins_dir = data_dir / "plugins"
+
+    def _enabled_slugs() -> set[str]:
+        try:
+            return {row.slug for row in plugin_store.list() if row.enabled}
+        except Exception:  # pragma: no cover — store hiccup → nothing enabled
+            return set()
+
+    try:
+        registry = PluginRegistry.from_roots(
+            list(roots_from_env_var("CORLINMAN_PLUGIN_DIRS", Origin.CONFIG))
+        )
+        await sync_registry(registry, plugins_dir, _enabled_slugs())
+        state.plugin_registry = registry
+        admin_b_state.plugins = registry
+        admin_b_state.extras["plugin_registry_reload"] = make_reload_hook(
+            registry, plugins_dir, _enabled_slugs
+        )
+        logger.info(
+            "gateway.marketplace.plugin_registry_wired",
+            plugins=len(registry),
+        )
+    except Exception as exc:  # pragma: no cover — best-effort
+        logger.warning(
+            "gateway.marketplace.plugin_registry_failed", error=str(exc)
+        )
+
+
 def _load_config(path: Path | None) -> Any | None:
     """Best-effort config load.
 
@@ -2355,9 +2419,6 @@ def build_app(
                 from corlinman_server.gateway.routes_admin_b.skills import (
                     SkillInstallTaskStore,
                 )
-                from corlinman_server.system.skill_hub import (
-                    ClawHubClient,
-                )
 
                 # ``ClawHubClient`` doesn't take an audit log directly
                 # (the installer writes the ``skill.installed`` rows;
@@ -2366,7 +2427,48 @@ def build_app(
                 # earlier in this same block, so the install routes
                 # pick it up through state when they call into the
                 # installer.
-                clawhub_client = ClawHubClient()
+                # Marketplace source (GitHub registry by default). The
+                # same GitHub source backs all three markets: the skills
+                # tab is served either by the legacy ClawHubClient
+                # (``default_source = "clawhub"``) or by a GitHub-backed
+                # adapter presenting the same client surface — so the
+                # ``/admin/skills/hub/*`` routes + installer are unchanged
+                # — while the MCP + plugin markets read this same source
+                # off ``admin_b_state.extras["marketplace_source"]``.
+                from corlinman_server.system.marketplace import (
+                    load_marketplace_config,
+                )
+                from corlinman_server.system.marketplace.accel import (
+                    GithubAccelerator,
+                )
+                from corlinman_server.system.marketplace.github_source import (
+                    GitHubSource,
+                )
+                from corlinman_server.system.marketplace.skill_adapter import (
+                    SkillHubSourceAdapter,
+                )
+                from corlinman_server.system.skill_hub import (
+                    ClawHubClient,
+                )
+
+                _mp_cfg = load_marketplace_config(state.config)
+                marketplace_source = GitHubSource(
+                    repo=_mp_cfg.registry_repo,
+                    ref=_mp_cfg.registry_ref,
+                    accel=GithubAccelerator(_mp_cfg.accel),
+                    token=_mp_cfg.github_token,
+                )
+                admin_b_state.extras["marketplace_source"] = marketplace_source
+                app.state.corlinman_marketplace_source = marketplace_source
+
+                clawhub_client: Any
+                if (
+                    _mp_cfg.default_source == "clawhub"
+                    and _mp_cfg.clawhub_enabled
+                ):
+                    clawhub_client = ClawHubClient()
+                else:
+                    clawhub_client = SkillHubSourceAdapter(marketplace_source)
                 skill_install_store = SkillInstallTaskStore()
                 admin_b_state.clawhub_client = clawhub_client
                 admin_b_state.skill_install_store = skill_install_store
@@ -2500,11 +2602,81 @@ def build_app(
         # ``finally``.
         try:
             from corlinman_mcp_server import McpClientManager
+            from corlinman_mcp_server.client_manager import McpServerSpec
 
             _mcp_manager = McpClientManager.from_config(state.config)
+
+            # Marketplace-installed MCP servers persist across restarts in
+            # ``<data_dir>/mcp_servers.sqlite``. Register every stored spec
+            # *before* connect_all so enabled ones come up and disabled
+            # (staged-but-not-enabled) ones stay registered-yet-idle.
+            _mcp_store = None
+            if resolved_data_dir is not None:
+                try:
+                    from corlinman_server.system.marketplace.mcp_store import (
+                        McpServerStore,
+                    )
+
+                    _mcp_store = McpServerStore(
+                        resolved_data_dir / "mcp_servers.sqlite"
+                    )
+                    for _row in _mcp_store.list():
+                        try:
+                            _spec = McpServerSpec.from_mapping(
+                                _row.name,
+                                {**_row.spec, "enabled": _row.enabled},
+                            )
+                            await _mcp_manager.add_server(_spec, replace=True)
+                        except Exception as exc:  # pragma: no cover
+                            logger.warning(
+                                "gateway.mcp.store_spec_skipped",
+                                server=_row.name,
+                                error=str(exc),
+                            )
+                except Exception as exc:  # pragma: no cover — best-effort
+                    logger.warning(
+                        "gateway.mcp.store_open_failed", error=str(exc)
+                    )
+
             await _mcp_manager.connect_all()
             state.extras["mcp_manager"] = _mcp_manager
             logger.info("gateway.mcp.manager_connected")
+
+            # Light up the marketplace admin routes: the McpAdapter is the
+            # seam the EXISTING /admin/plugins/{name}/{enable,disable,
+            # restart} routes already call via extras["mcp_adapter"], and
+            # the new /admin/mcp/* + /admin/plugins/market/* routes resolve
+            # their stores + source off these same admin_b extras.
+            if admin_b_state is not None:
+                try:
+                    from corlinman_server.gateway.routes_admin_b.mcp_adapter import (
+                        McpAdapter,
+                    )
+
+                    admin_b_state.extras["mcp_adapter"] = McpAdapter(
+                        _mcp_manager, _mcp_store
+                    )
+                    if resolved_data_dir is not None:
+                        from corlinman_server.system.marketplace.plugin_store import (
+                            PluginStore,
+                        )
+
+                        _plugin_store = PluginStore(
+                            resolved_data_dir / "plugins.sqlite"
+                        )
+                        admin_b_state.extras["plugin_store"] = _plugin_store
+                        admin_b_state.extras["data_dir"] = resolved_data_dir
+                        await _wire_plugin_hotload(
+                            state,
+                            admin_b_state,
+                            _plugin_store,
+                            resolved_data_dir,
+                        )
+                    logger.info("gateway.marketplace.wired")
+                except Exception as exc:  # pragma: no cover — best-effort
+                    logger.warning(
+                        "gateway.marketplace.wire_failed", error=str(exc)
+                    )
         except Exception as exc:
             logger.warning("gateway.mcp.manager_failed", error=str(exc))
 
@@ -3006,6 +3178,23 @@ def build_app(
                     )
                 app.state.corlinman_clawhub_client = None
                 app.state.corlinman_skill_install_store = None
+
+            # Marketplace teardown: release the GitHub source's httpx
+            # client. In GitHub mode the skills adapter above shares this
+            # same object, so it may already be closed — aclose is
+            # idempotent. Safe when none was wired.
+            marketplace_source_handle = getattr(
+                app.state, "corlinman_marketplace_source", None
+            )
+            if marketplace_source_handle is not None:
+                try:
+                    await marketplace_source_handle.aclose()
+                except Exception as exc:  # pragma: no cover — defensive
+                    logger.warning(
+                        "gateway.marketplace.source_close_failed",
+                        error=str(exc),
+                    )
+                app.state.corlinman_marketplace_source = None
 
             # R1-001 teardown: close the AdminDb sqlite handle opened
             # above so the WAL file is checkpointed and tests don't

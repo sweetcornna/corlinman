@@ -1,0 +1,21 @@
+# Canonical corlinman plugin manifest (the format the live PluginRegistry
+# discovers + hot-loads). The sibling manifest.json is kept only as a
+# human-readable summary; the gateway reads THIS file.
+manifest_version = 1
+name = "echo-plugin"
+version = "0.1.0"
+description = "A minimal example plugin that echoes its input. Seeds and smoke-tests the corlinman marketplace plugin install + hot-load path."
+author = "corlinman"
+plugin_type = "sync"
+
+[entry_point]
+command = "python3"
+args = ["echo.py"]
+
+[communication]
+timeout_ms = 5000
+
+[[capabilities.tools]]
+name = "echo"
+description = "Echo back the provided text line."
+parameters = { type = "object", properties = { text = { type = "string" } }, required = ["text"] }

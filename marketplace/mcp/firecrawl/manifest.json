@@ -1,0 +1,25 @@
+{
+  "name": "firecrawl",
+  "display_name": "Firecrawl",
+  "description": "Web scraping, crawling, search, and structured extraction.",
+  "transport": "stdio",
+  "command": "npx",
+  "args": [
+    "-y",
+    "firecrawl-mcp"
+  ],
+  "env": {},
+  "requires": {
+    "env": [
+      "FIRECRAWL_API_KEY"
+    ]
+  },
+  "homepage": "https://github.com/mendableai/firecrawl-mcp-server",
+  "license": "MIT",
+  "category": "web",
+  "setup": [
+    "Requires Node.js (npx) on the host.",
+    "Provide these secrets at enable time: FIRECRAWL_API_KEY.",
+    "Replace any <PLACEHOLDER> arg (e.g. <ALLOWED_DIR>) before enabling."
+  ]
+}

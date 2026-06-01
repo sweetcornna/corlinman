@@ -1,0 +1,19 @@
+# Canonical corlinman plugin manifest (discovered + hot-loaded by the gateway).
+manifest_version = 1
+name = "json-pretty"
+version = "0.1.0"
+description = "Pretty-print and validate a JSON document read from stdin."
+author = "corlinman marketplace"
+plugin_type = "sync"
+
+[entry_point]
+command = "python3"
+args = ["json_pretty.py"]
+
+[communication]
+timeout_ms = 5000
+
+[[capabilities.tools]]
+name = "json_pretty"
+description = "Read JSON from stdin and emit a 2-space pretty-printed form (or an error)."
+parameters = { type = "object", properties = { text = { type = "string" } } }

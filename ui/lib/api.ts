@@ -2726,3 +2726,282 @@ export function streamHubInstallEvents(
   });
   return es;
 }
+
+// ===========================================================================
+// Marketplace — MCP servers + Plugin market + GitHub-acceleration settings.
+//
+// Backend is the frozen contract documented in the Marketplace plan. All
+// endpoints live behind `/admin/*` admin auth and reuse the same
+// `credentials: "include"` cookie the rest of this client sends.
+//
+//   MCP market      → /admin/mcp/market, /admin/mcp/market/{slug}
+//   MCP install     → /admin/mcp/install
+//   MCP servers     → /admin/mcp/servers, DELETE /admin/mcp/{name}
+//   MCP lifecycle   → POST /admin/plugins/{name}/{enable,disable,restart}
+//   Plugin market   → /admin/plugins/market(/{slug})(/install|enable|disable)
+//   Accel settings  → /admin/marketplace/settings, /admin/marketplace/accel/test
+//
+// The MCP-market `rows` array carries the same summary shape used by both
+// the MCP and Plugin browse grids, so both reuse `<MarketCard>`.
+// ===========================================================================
+
+/** One row in the MCP market grid. The Plugin market reuses this shape
+ * minus `transport` / `requires_env` (which are MCP-only fields). */
+export interface McpMarketItem {
+  slug: string;
+  name: string;
+  description: string;
+  latest_version: string;
+  emoji: string | null;
+  /** MCP transport ("stdio" | "http" | …). Plugin rows leave this null. */
+  transport: string | null;
+  stars: number;
+  downloads: number;
+  /** ISO-8601 UTC. */
+  updated_at: string;
+  tags: string[];
+  /** Env var names the server requires at install time. */
+  requires_env: string[];
+}
+
+/** Plugin market row — same shape as `McpMarketItem`; `transport` /
+ * `requires_env` are present on the wire but not meaningful for plugins. */
+export type PluginMarketItem = McpMarketItem;
+
+export interface McpMarketResponse {
+  rows: McpMarketItem[];
+  next_cursor: string | null;
+  offline: boolean;
+  error: string | null;
+}
+
+export interface PluginMarketResponse {
+  rows: PluginMarketItem[];
+  next_cursor: string | null;
+  offline: boolean;
+  error: string | null;
+}
+
+/** A staged/installed MCP server with live status. */
+export interface InstalledMcpServer {
+  name: string;
+  source: string;
+  version: string;
+  enabled: boolean;
+  transport: string | null;
+  status: "ready" | "error" | "pending" | "stopped";
+  tools: number;
+  error: string | null;
+  installed_at: string;
+  updated_at: string;
+}
+
+/** A staged/installed plugin-market row. */
+export interface InstalledPluginRow {
+  slug: string;
+  version: string;
+  source: string;
+  enabled: boolean;
+  installed_at: string;
+  updated_at: string;
+}
+
+// ---- MCP market ------------------------------------------------------------
+
+/** GET /admin/mcp/market?cursor=&limit= */
+export function listMcpMarket(opts?: {
+  cursor?: string | null;
+  limit?: number;
+}): Promise<McpMarketResponse> {
+  const params = new URLSearchParams();
+  if (opts?.cursor) params.set("cursor", opts.cursor);
+  if (opts?.limit !== undefined) params.set("limit", String(opts.limit));
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  return apiFetch<McpMarketResponse>(`/admin/mcp/market${suffix}`);
+}
+
+/** GET /admin/mcp/market/{slug} — detail with `requires_env` populated. */
+export function getMcpMarketItem(slug: string): Promise<McpMarketItem> {
+  return apiFetch<McpMarketItem>(
+    `/admin/mcp/market/${encodeURIComponent(slug)}`,
+  );
+}
+
+/** POST /admin/mcp/install — stages the server (installed, disabled). When
+ * the market item declares `requires_env`, the caller MUST collect those
+ * values and pass them in `env`. */
+export function installMcpServer(body: {
+  slug: string;
+  version?: string;
+  env?: Record<string, string>;
+}): Promise<InstalledMcpServer> {
+  return apiFetch<InstalledMcpServer>("/admin/mcp/install", {
+    method: "POST",
+    body,
+  });
+}
+
+/** GET /admin/mcp/servers — installed servers with live status. */
+export function listMcpServers(): Promise<InstalledMcpServer[]> {
+  return apiFetch<InstalledMcpServer[]>("/admin/mcp/servers");
+}
+
+/** DELETE /admin/mcp/{name} — uninstall a server. */
+export function deleteMcpServer(
+  name: string,
+): Promise<{ ok: boolean; name: string; removed: boolean }> {
+  return apiFetch<{ ok: boolean; name: string; removed: boolean }>(
+    `/admin/mcp/${encodeURIComponent(name)}`,
+    { method: "DELETE" },
+  );
+}
+
+// MCP lifecycle is served by the existing plugins seam (hot-connect).
+
+/** POST /admin/plugins/{name}/enable — hot-connects the MCP server. */
+export function enableMcpServer(
+  name: string,
+): Promise<{ name: string; disabled: false }> {
+  return apiFetch<{ name: string; disabled: false }>(
+    `/admin/plugins/${encodeURIComponent(name)}/enable`,
+    { method: "POST" },
+  );
+}
+
+/** POST /admin/plugins/{name}/disable — stops + disconnects the server. */
+export function disableMcpServer(
+  name: string,
+): Promise<{ name: string; disabled: true; stopped: true }> {
+  return apiFetch<{ name: string; disabled: true; stopped: true }>(
+    `/admin/plugins/${encodeURIComponent(name)}/disable`,
+    { method: "POST" },
+  );
+}
+
+/** POST /admin/plugins/{name}/restart — restarts the server connection. */
+export function restartMcpServer(
+  name: string,
+): Promise<{ name: string; status: "restarted" }> {
+  return apiFetch<{ name: string; status: "restarted" }>(
+    `/admin/plugins/${encodeURIComponent(name)}/restart`,
+    { method: "POST" },
+  );
+}
+
+// ---- Plugin market ---------------------------------------------------------
+
+/** GET /admin/plugins/market */
+export function listPluginMarket(opts?: {
+  cursor?: string | null;
+  limit?: number;
+}): Promise<PluginMarketResponse> {
+  const params = new URLSearchParams();
+  if (opts?.cursor) params.set("cursor", opts.cursor);
+  if (opts?.limit !== undefined) params.set("limit", String(opts.limit));
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  return apiFetch<PluginMarketResponse>(`/admin/plugins/market${suffix}`);
+}
+
+/** GET /admin/plugins/market/{slug} */
+export function getPluginMarketItem(slug: string): Promise<PluginMarketItem> {
+  return apiFetch<PluginMarketItem>(
+    `/admin/plugins/market/${encodeURIComponent(slug)}`,
+  );
+}
+
+/** POST /admin/plugins/market/install — stages the plugin (HTTP 201). */
+export function installPluginMarket(body: {
+  slug: string;
+  version?: string;
+}): Promise<InstalledPluginRow> {
+  return apiFetch<InstalledPluginRow>("/admin/plugins/market/install", {
+    method: "POST",
+    body,
+  });
+}
+
+/** POST /admin/plugins/market/{slug}/enable — `applies` is "now" or
+ * "next_restart"; callers SHOULD surface the latter to the operator. */
+export function enablePluginMarket(slug: string): Promise<{
+  slug: string;
+  enabled: true;
+  applies: "now" | "next_restart";
+  row: InstalledPluginRow;
+}> {
+  return apiFetch(
+    `/admin/plugins/market/${encodeURIComponent(slug)}/enable`,
+    { method: "POST" },
+  );
+}
+
+/** POST /admin/plugins/market/{slug}/disable */
+export function disablePluginMarket(
+  slug: string,
+): Promise<InstalledPluginRow> {
+  return apiFetch<InstalledPluginRow>(
+    `/admin/plugins/market/${encodeURIComponent(slug)}/disable`,
+    { method: "POST" },
+  );
+}
+
+/** DELETE /admin/plugins/market/{slug} */
+export function deletePluginMarket(slug: string): Promise<{
+  ok: boolean;
+  slug: string;
+  bundle_removed: boolean;
+  index_removed: boolean;
+}> {
+  return apiFetch(`/admin/plugins/market/${encodeURIComponent(slug)}`, {
+    method: "DELETE",
+  });
+}
+
+// ---- Acceleration settings (read-only) -------------------------------------
+
+export interface MarketplaceAccel {
+  mode: "off" | "auto" | "on";
+  preset: "ghproxy" | "jsdelivr" | "mirror" | "custom";
+  base: string;
+  mirror_host: string;
+  assume_region: string;
+  enabled: boolean;
+}
+
+export interface MarketplaceSettings {
+  registry_repo: string;
+  registry_ref: string;
+  default_source: string;
+  clawhub_enabled: boolean;
+  github_token_set: boolean;
+  index_url: string;
+  accelerated_index_url: string;
+  accel: MarketplaceAccel;
+}
+
+/** GET /admin/marketplace/settings — read-only; editing is done via the
+ * Config TOML editor under `[marketplace.github_proxy]`. */
+export function getMarketplaceSettings(): Promise<MarketplaceSettings> {
+  return apiFetch<MarketplaceSettings>("/admin/marketplace/settings");
+}
+
+/** One leg of an acceleration probe (direct or accelerated). */
+export interface ProbeLeg {
+  url: string;
+  ok: boolean;
+  status: number | null;
+  ms: number | null;
+  error: string | null;
+}
+
+export interface AccelTestResult {
+  enabled: boolean;
+  direct: ProbeLeg;
+  accelerated: ProbeLeg;
+}
+
+/** POST /admin/marketplace/accel/test — probe direct vs accelerated. */
+export function testMarketplaceAccel(): Promise<AccelTestResult> {
+  return apiFetch<AccelTestResult>("/admin/marketplace/accel/test", {
+    method: "POST",
+  });
+}

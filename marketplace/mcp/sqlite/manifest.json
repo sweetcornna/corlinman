@@ -1,0 +1,23 @@
+{
+  "name": "sqlite",
+  "display_name": "SQLite",
+  "description": "Query and inspect a SQLite database. (archived upstream; still runnable)",
+  "transport": "stdio",
+  "command": "uvx",
+  "args": [
+    "mcp-server-sqlite",
+    "--db-path",
+    "<DB_PATH>"
+  ],
+  "env": {},
+  "requires": {
+    "env": []
+  },
+  "homepage": "https://github.com/modelcontextprotocol/servers-archived/tree/main/src/sqlite",
+  "license": "MIT",
+  "category": "database",
+  "setup": [
+    "Requires uv (uvx) on the host.",
+    "Replace any <PLACEHOLDER> arg (e.g. <ALLOWED_DIR>) before enabling."
+  ]
+}

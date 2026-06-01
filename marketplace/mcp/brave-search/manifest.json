@@ -1,0 +1,25 @@
+{
+  "name": "brave-search",
+  "display_name": "Brave Search",
+  "description": "Web + local search via the Brave Search API. (archived upstream; still runnable)",
+  "transport": "stdio",
+  "command": "npx",
+  "args": [
+    "-y",
+    "@modelcontextprotocol/server-brave-search"
+  ],
+  "env": {},
+  "requires": {
+    "env": [
+      "BRAVE_API_KEY"
+    ]
+  },
+  "homepage": "https://github.com/modelcontextprotocol/servers-archived/tree/main/src/brave-search",
+  "license": "MIT",
+  "category": "search",
+  "setup": [
+    "Requires Node.js (npx) on the host.",
+    "Provide these secrets at enable time: BRAVE_API_KEY.",
+    "Replace any <PLACEHOLDER> arg (e.g. <ALLOWED_DIR>) before enabling."
+  ]
+}

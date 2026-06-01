@@ -382,7 +382,7 @@ wheels = [
 
 [[package]]
 name = "corlinman"
-version = "1.15.2"
+version = "1.16.0"
 source = { virtual = "." }
 dependencies = [
     { name = "corlinman-agent" },
@@ -736,7 +736,7 @@ requires-dist = [{ name = "aiosqlite", specifier = ">=0.20" }]
 
 [[package]]
 name = "corlinman-server"
-version = "1.13.2"
+version = "1.16.0"
 source = { editable = "python/packages/corlinman-server" }
 dependencies = [
     { name = "aiosqlite" },

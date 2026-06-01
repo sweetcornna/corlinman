@@ -1,0 +1,22 @@
+{
+  "name": "playwright",
+  "display_name": "Playwright (Microsoft)",
+  "description": "Browser automation: navigate, inspect, screenshot, interact.",
+  "transport": "stdio",
+  "command": "npx",
+  "args": [
+    "-y",
+    "@playwright/mcp@latest"
+  ],
+  "env": {},
+  "requires": {
+    "env": []
+  },
+  "homepage": "https://github.com/microsoft/playwright-mcp",
+  "license": "Apache-2.0",
+  "category": "web",
+  "setup": [
+    "Requires Node.js (npx) on the host.",
+    "Replace any <PLACEHOLDER> arg (e.g. <ALLOWED_DIR>) before enabling."
+  ]
+}

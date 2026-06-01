@@ -1,0 +1,25 @@
+{
+  "name": "google-maps",
+  "display_name": "Google Maps",
+  "description": "Geocoding, place search, directions, distance. (archived upstream; still runnable)",
+  "transport": "stdio",
+  "command": "npx",
+  "args": [
+    "-y",
+    "@modelcontextprotocol/server-google-maps"
+  ],
+  "env": {},
+  "requires": {
+    "env": [
+      "GOOGLE_MAPS_API_KEY"
+    ]
+  },
+  "homepage": "https://github.com/modelcontextprotocol/servers-archived/tree/main/src/google-maps",
+  "license": "MIT",
+  "category": "maps",
+  "setup": [
+    "Requires Node.js (npx) on the host.",
+    "Provide these secrets at enable time: GOOGLE_MAPS_API_KEY.",
+    "Replace any <PLACEHOLDER> arg (e.g. <ALLOWED_DIR>) before enabling."
+  ]
+}

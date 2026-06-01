@@ -1,0 +1,26 @@
+{
+  "name": "gitlab",
+  "display_name": "GitLab",
+  "description": "GitLab project management and file operations. (archived upstream; still runnable)",
+  "transport": "stdio",
+  "command": "npx",
+  "args": [
+    "-y",
+    "@modelcontextprotocol/server-gitlab"
+  ],
+  "env": {},
+  "requires": {
+    "env": [
+      "GITLAB_PERSONAL_ACCESS_TOKEN",
+      "GITLAB_API_URL"
+    ]
+  },
+  "homepage": "https://github.com/modelcontextprotocol/servers-archived/tree/main/src/gitlab",
+  "license": "MIT",
+  "category": "dev",
+  "setup": [
+    "Requires Node.js (npx) on the host.",
+    "Provide these secrets at enable time: GITLAB_PERSONAL_ACCESS_TOKEN, GITLAB_API_URL.",
+    "Replace any <PLACEHOLDER> arg (e.g. <ALLOWED_DIR>) before enabling."
+  ]
+}

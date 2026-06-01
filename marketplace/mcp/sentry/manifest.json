@@ -1,0 +1,23 @@
+{
+  "name": "sentry",
+  "display_name": "Sentry",
+  "description": "Retrieve and analyze Sentry.io issues. (archived upstream; still runnable)",
+  "transport": "stdio",
+  "command": "uvx",
+  "args": [
+    "mcp-server-sentry",
+    "--auth-token",
+    "<SENTRY_AUTH_TOKEN>"
+  ],
+  "env": {},
+  "requires": {
+    "env": []
+  },
+  "homepage": "https://github.com/modelcontextprotocol/servers-archived/tree/main/src/sentry",
+  "license": "MIT",
+  "category": "dev",
+  "setup": [
+    "Requires uv (uvx) on the host.",
+    "Replace any <PLACEHOLDER> arg (e.g. <ALLOWED_DIR>) before enabling."
+  ]
+}

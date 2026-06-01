@@ -1,0 +1,29 @@
+{
+  "name": "github",
+  "display_name": "GitHub (official)",
+  "description": "Official GitHub MCP server — repos, issues, PRs, actions. Requires Docker.",
+  "transport": "stdio",
+  "command": "docker",
+  "args": [
+    "run",
+    "-i",
+    "--rm",
+    "-e",
+    "GITHUB_PERSONAL_ACCESS_TOKEN",
+    "ghcr.io/github/github-mcp-server"
+  ],
+  "env": {},
+  "requires": {
+    "env": [
+      "GITHUB_PERSONAL_ACCESS_TOKEN"
+    ]
+  },
+  "homepage": "https://github.com/github/github-mcp-server",
+  "license": "MIT",
+  "category": "dev",
+  "setup": [
+    "Requires Docker on the host.",
+    "Provide these secrets at enable time: GITHUB_PERSONAL_ACCESS_TOKEN.",
+    "Replace any <PLACEHOLDER> arg (e.g. <ALLOWED_DIR>) before enabling."
+  ]
+}

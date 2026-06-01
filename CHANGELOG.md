@@ -4,6 +4,36 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.0] — 2026-06-01 — Marketplace: Skills / MCP / Plugins (GitHub-backed, hot-plug) + mascot
+
+### Added
+- Unified **marketplace** for skills, MCP servers, and plugins, served from a
+  curated GitHub registry repo (`sweetcornna/corlinman-marketplace`) with
+  sha256-verified downloads; the legacy clawhub.ai source is retained behind a
+  toggle. New package `corlinman_server.system.marketplace`.
+- **GitHub-acceleration** for China-region hosts (`[marketplace.github_proxy]`:
+  `off`/`auto`/`on`; presets ghproxy / jsdelivr / mirror / custom). The token
+  is never sent through a third-party proxy.
+- **MCP hot-plug**: install staged, enable to hot-connect a live server; new
+  `/admin/mcp/*` routes; the previously-dead `/admin/plugins/{name}/{enable,
+  disable,restart}` seam is now wired via `McpAdapter`. Installed specs persist
+  in `<data_dir>/mcp_servers.sqlite` and reconnect on boot.
+- **Plugin true hot-load**: install staged, enable to load into the live
+  `PluginRegistry` with no restart; new `/admin/plugins/market/*` routes; specs
+  persist in `<data_dir>/plugins.sqlite`.
+- Admin UI: `/marketplace` (Skills / MCP / Plugins tabs), an Acceleration
+  settings page, and an in-app bilingual **Contribute** guide.
+- Seeded catalog: 21 MCP servers, 10 skills, 3 example plugins, plus a
+  contribution guide + `build-registry.py` in the registry repo.
+
+### Changed
+- The brand glyph is now the corlinman mascot.
+
+### Fixed
+- Removed stale hardcoded version strings from the sidebar and brand mark — the
+  canonical version is surfaced on `/admin/system`. Bumped `corlinman-server`
+  to match the release version.
+
 ## [1.15.2] — 2026-05-31 — Deferred audit items: multi-tenant authz hardening + residual wiring
 
 > The latent multi-tenant authz items + residual wiring follow-ons deferred

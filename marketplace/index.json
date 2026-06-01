@@ -1,0 +1,535 @@
+{
+  "schema": 1,
+  "generated_at": "2026-06-01T07:28:33Z",
+  "items": [
+    {
+      "kind": "mcp",
+      "slug": "brave-search",
+      "name": "brave-search",
+      "description": "Web + local search via the Brave Search API. (archived upstream; still runnable)",
+      "transport": "stdio",
+      "latest_version": "1.0.0",
+      "versions": [
+        "1.0.0"
+      ],
+      "manifest": "mcp/brave-search/manifest.json",
+      "requires": {
+        "env": [
+          "BRAVE_API_KEY"
+        ]
+      },
+      "updated_at": "2026-06-01T07:28:33Z"
+    },
+    {
+      "kind": "mcp",
+      "slug": "context7",
+      "name": "context7",
+      "description": "Inject up-to-date, version-specific library docs into context.",
+      "transport": "stdio",
+      "latest_version": "1.0.0",
+      "versions": [
+        "1.0.0"
+      ],
+      "manifest": "mcp/context7/manifest.json",
+      "requires": {
+        "env": []
+      },
+      "updated_at": "2026-06-01T07:28:33Z"
+    },
+    {
+      "kind": "mcp",
+      "slug": "echo-mcp",
+      "name": "echo-mcp",
+      "description": "",
+      "transport": "stdio",
+      "latest_version": "1.0.0",
+      "versions": [
+        "1.0.0"
+      ],
+      "manifest": "mcp/echo-mcp/manifest.json",
+      "requires": {
+        "env": []
+      },
+      "updated_at": "2026-06-01T07:28:33Z"
+    },
+    {
+      "kind": "mcp",
+      "slug": "everything",
+      "name": "everything",
+      "description": "Reference server exercising prompts, resources, and tools (good for testing).",
+      "transport": "stdio",
+      "latest_version": "1.0.0",
+      "versions": [
+        "1.0.0"
+      ],
+      "manifest": "mcp/everything/manifest.json",
+      "requires": {
+        "env": []
+      },
+      "updated_at": "2026-06-01T07:28:33Z"
+    },
+    {
+      "kind": "mcp",
+      "slug": "fetch",
+      "name": "fetch",
+      "description": "Fetch a URL and convert its content to markdown for LLM use.",
+      "transport": "stdio",
+      "latest_version": "1.0.0",
+      "versions": [
+        "1.0.0"
+      ],
+      "manifest": "mcp/fetch/manifest.json",
+      "requires": {
+        "env": []
+      },
+      "updated_at": "2026-06-01T07:28:33Z"
+    },
+    {
+      "kind": "mcp",
+      "slug": "filesystem",
+      "name": "filesystem",
+      "description": "Secure local file operations with configurable allowed directories.",
+      "transport": "stdio",
+      "latest_version": "1.0.0",
+      "versions": [
+        "1.0.0"
+      ],
+      "manifest": "mcp/filesystem/manifest.json",
+      "requires": {
+        "env": []
+      },
+      "updated_at": "2026-06-01T07:28:33Z"
+    },
+    {
+      "kind": "mcp",
+      "slug": "firecrawl",
+      "name": "firecrawl",
+      "description": "Web scraping, crawling, search, and structured extraction.",
+      "transport": "stdio",
+      "latest_version": "1.0.0",
+      "versions": [
+        "1.0.0"
+      ],
+      "manifest": "mcp/firecrawl/manifest.json",
+      "requires": {
+        "env": [
+          "FIRECRAWL_API_KEY"
+        ]
+      },
+      "updated_at": "2026-06-01T07:28:33Z"
+    },
+    {
+      "kind": "mcp",
+      "slug": "git",
+      "name": "git",
+      "description": "Read, search, and manipulate a local Git repository.",
+      "transport": "stdio",
+      "latest_version": "1.0.0",
+      "versions": [
+        "1.0.0"
+      ],
+      "manifest": "mcp/git/manifest.json",
+      "requires": {
+        "env": []
+      },
+      "updated_at": "2026-06-01T07:28:33Z"
+    },
+    {
+      "kind": "mcp",
+      "slug": "github",
+      "name": "github",
+      "description": "Official GitHub MCP server — repos, issues, PRs, actions. Requires Docker.",
+      "transport": "stdio",
+      "latest_version": "1.0.0",
+      "versions": [
+        "1.0.0"
+      ],
+      "manifest": "mcp/github/manifest.json",
+      "requires": {
+        "env": [
+          "GITHUB_PERSONAL_ACCESS_TOKEN"
+        ]
+      },
+      "updated_at": "2026-06-01T07:28:33Z"
+    },
+    {
+      "kind": "mcp",
+      "slug": "gitlab",
+      "name": "gitlab",
+      "description": "GitLab project management and file operations. (archived upstream; still runnable)",
+      "transport": "stdio",
+      "latest_version": "1.0.0",
+      "versions": [
+        "1.0.0"
+      ],
+      "manifest": "mcp/gitlab/manifest.json",
+      "requires": {
+        "env": [
+          "GITLAB_PERSONAL_ACCESS_TOKEN",
+          "GITLAB_API_URL"
+        ]
+      },
+      "updated_at": "2026-06-01T07:28:33Z"
+    },
+    {
+      "kind": "mcp",
+      "slug": "google-maps",
+      "name": "google-maps",
+      "description": "Geocoding, place search, directions, distance. (archived upstream; still runnable)",
+      "transport": "stdio",
+      "latest_version": "1.0.0",
+      "versions": [
+        "1.0.0"
+      ],
+      "manifest": "mcp/google-maps/manifest.json",
+      "requires": {
+        "env": [
+          "GOOGLE_MAPS_API_KEY"
+        ]
+      },
+      "updated_at": "2026-06-01T07:28:33Z"
+    },
+    {
+      "kind": "mcp",
+      "slug": "memory",
+      "name": "memory",
+      "description": "Knowledge-graph-based persistent memory for the agent.",
+      "transport": "stdio",
+      "latest_version": "1.0.0",
+      "versions": [
+        "1.0.0"
+      ],
+      "manifest": "mcp/memory/manifest.json",
+      "requires": {
+        "env": []
+      },
+      "updated_at": "2026-06-01T07:28:33Z"
+    },
+    {
+      "kind": "mcp",
+      "slug": "playwright",
+      "name": "playwright",
+      "description": "Browser automation: navigate, inspect, screenshot, interact.",
+      "transport": "stdio",
+      "latest_version": "1.0.0",
+      "versions": [
+        "1.0.0"
+      ],
+      "manifest": "mcp/playwright/manifest.json",
+      "requires": {
+        "env": []
+      },
+      "updated_at": "2026-06-01T07:28:33Z"
+    },
+    {
+      "kind": "mcp",
+      "slug": "postgres",
+      "name": "postgres",
+      "description": "Read-only PostgreSQL access with schema inspection. (archived upstream; still runnable)",
+      "transport": "stdio",
+      "latest_version": "1.0.0",
+      "versions": [
+        "1.0.0"
+      ],
+      "manifest": "mcp/postgres/manifest.json",
+      "requires": {
+        "env": []
+      },
+      "updated_at": "2026-06-01T07:28:33Z"
+    },
+    {
+      "kind": "mcp",
+      "slug": "puppeteer",
+      "name": "puppeteer",
+      "description": "Headless-browser automation and scraping. (archived upstream; still runnable)",
+      "transport": "stdio",
+      "latest_version": "1.0.0",
+      "versions": [
+        "1.0.0"
+      ],
+      "manifest": "mcp/puppeteer/manifest.json",
+      "requires": {
+        "env": []
+      },
+      "updated_at": "2026-06-01T07:28:33Z"
+    },
+    {
+      "kind": "mcp",
+      "slug": "redis",
+      "name": "redis",
+      "description": "Interact with a Redis key-value store. (archived upstream; still runnable)",
+      "transport": "stdio",
+      "latest_version": "1.0.0",
+      "versions": [
+        "1.0.0"
+      ],
+      "manifest": "mcp/redis/manifest.json",
+      "requires": {
+        "env": []
+      },
+      "updated_at": "2026-06-01T07:28:33Z"
+    },
+    {
+      "kind": "mcp",
+      "slug": "sentry",
+      "name": "sentry",
+      "description": "Retrieve and analyze Sentry.io issues. (archived upstream; still runnable)",
+      "transport": "stdio",
+      "latest_version": "1.0.0",
+      "versions": [
+        "1.0.0"
+      ],
+      "manifest": "mcp/sentry/manifest.json",
+      "requires": {
+        "env": []
+      },
+      "updated_at": "2026-06-01T07:28:33Z"
+    },
+    {
+      "kind": "mcp",
+      "slug": "sequential-thinking",
+      "name": "sequential-thinking",
+      "description": "Structured, reflective multi-step problem solving.",
+      "transport": "stdio",
+      "latest_version": "1.0.0",
+      "versions": [
+        "1.0.0"
+      ],
+      "manifest": "mcp/sequential-thinking/manifest.json",
+      "requires": {
+        "env": []
+      },
+      "updated_at": "2026-06-01T07:28:33Z"
+    },
+    {
+      "kind": "mcp",
+      "slug": "slack",
+      "name": "slack",
+      "description": "Slack channel management and messaging. (archived upstream; still runnable)",
+      "transport": "stdio",
+      "latest_version": "1.0.0",
+      "versions": [
+        "1.0.0"
+      ],
+      "manifest": "mcp/slack/manifest.json",
+      "requires": {
+        "env": [
+          "SLACK_BOT_TOKEN",
+          "SLACK_TEAM_ID"
+        ]
+      },
+      "updated_at": "2026-06-01T07:28:33Z"
+    },
+    {
+      "kind": "mcp",
+      "slug": "sqlite",
+      "name": "sqlite",
+      "description": "Query and inspect a SQLite database. (archived upstream; still runnable)",
+      "transport": "stdio",
+      "latest_version": "1.0.0",
+      "versions": [
+        "1.0.0"
+      ],
+      "manifest": "mcp/sqlite/manifest.json",
+      "requires": {
+        "env": []
+      },
+      "updated_at": "2026-06-01T07:28:33Z"
+    },
+    {
+      "kind": "mcp",
+      "slug": "time",
+      "name": "time",
+      "description": "Current time and timezone conversion utilities.",
+      "transport": "stdio",
+      "latest_version": "1.0.0",
+      "versions": [
+        "1.0.0"
+      ],
+      "manifest": "mcp/time/manifest.json",
+      "requires": {
+        "env": []
+      },
+      "updated_at": "2026-06-01T07:28:33Z"
+    },
+    {
+      "kind": "plugin",
+      "slug": "echo-plugin",
+      "name": "echo-plugin",
+      "description": "A minimal example plugin that echoes its input. Seeds and smoke-tests the corlinman marketplace plugin install path.",
+      "latest_version": "0.1.0",
+      "versions": [
+        "0.1.0"
+      ],
+      "tarball": "dist/plugins/echo-plugin-0.1.0.tar.gz",
+      "sha256": "7e7629c13204bf6f5e997a122befb4a3f339940e04252f840926ffa1fd3fbcf6",
+      "updated_at": "2026-06-01T07:28:33Z"
+    },
+    {
+      "kind": "plugin",
+      "slug": "json-pretty",
+      "name": "json-pretty",
+      "description": "Pretty-print and validate a JSON document read from stdin.",
+      "latest_version": "0.1.0",
+      "versions": [
+        "0.1.0"
+      ],
+      "tarball": "dist/plugins/json-pretty-0.1.0.tar.gz",
+      "sha256": "dde34340cd1cc0d4dd23c4f8f5e94cfb681851e4aa18a91be8accd83540a0b79",
+      "updated_at": "2026-06-01T07:28:33Z"
+    },
+    {
+      "kind": "plugin",
+      "slug": "text-tools",
+      "name": "text-tools",
+      "description": "Text utilities: uppercase, lowercase, reverse, and word count for a line of input.",
+      "latest_version": "0.1.0",
+      "versions": [
+        "0.1.0"
+      ],
+      "tarball": "dist/plugins/text-tools-0.1.0.tar.gz",
+      "sha256": "c630fc6a92501a245fd9c505123021b00e14c8bec540d2c4f7635f27a77050ad",
+      "updated_at": "2026-06-01T07:28:33Z"
+    },
+    {
+      "kind": "skill",
+      "slug": "brainstorming",
+      "name": "brainstorming",
+      "description": "You MUST use this before any creative work - creating features, building components, adding functionality, or modifying behavior. Explores user intent, requirements and design before implementation.",
+      "latest_version": "1.0.0",
+      "versions": [
+        "1.0.0"
+      ],
+      "tarball": "dist/skills/brainstorming-1.0.0.tar.gz",
+      "sha256": "f8b26035eeaea591fb64f6d48524e1e5a76cc9f371ea8b41f162a433895d3d3a",
+      "updated_at": "2026-06-01T07:28:33Z",
+      "emoji": "💡"
+    },
+    {
+      "kind": "skill",
+      "slug": "conventional-commits",
+      "name": "conventional-commits",
+      "description": "Write git commit messages that follow the Conventional Commits v1.0.0 specification.",
+      "latest_version": "1.0.0",
+      "versions": [
+        "1.0.0"
+      ],
+      "tarball": "dist/skills/conventional-commits-1.0.0.tar.gz",
+      "sha256": "85c09922148f8f1739449d90d609e99290553c02861adc6042fd38bbada5bf3c",
+      "updated_at": "2026-06-01T07:28:33Z",
+      "emoji": "🔖"
+    },
+    {
+      "kind": "skill",
+      "slug": "frontend-design",
+      "name": "frontend-design",
+      "description": "Create distinctive, production-grade frontend interfaces with high design quality. Use this skill when the user asks to build web components, pages, artifacts, posters, or applications. Generates creative, polished UI that avoids generic AI aesthetics.",
+      "latest_version": "1.0.0",
+      "versions": [
+        "1.0.0"
+      ],
+      "tarball": "dist/skills/frontend-design-1.0.0.tar.gz",
+      "sha256": "59f5b431a26a22a5210ffc26c9afaf6cd1729769580a48b8a0f44fae44d01248",
+      "updated_at": "2026-06-01T07:28:33Z",
+      "emoji": "🎨"
+    },
+    {
+      "kind": "skill",
+      "slug": "hello-skill",
+      "name": "hello-skill",
+      "description": "A minimal example skill used to seed and smoke-test the corlinman marketplace registry. Use when you need a tiny, known-good skill to verify install/extraction wiring end to end, or as a template for authoring a real SKILL.md.",
+      "latest_version": "1.0.0",
+      "versions": [
+        "1.0.0"
+      ],
+      "tarball": "dist/skills/hello-skill-1.0.0.tar.gz",
+      "sha256": "e71dfa517930d970f0f0b4c82c1687fb119f6405ed1165d8225d481c7b61c6ac",
+      "updated_at": "2026-06-01T07:28:33Z",
+      "emoji": "👋"
+    },
+    {
+      "kind": "skill",
+      "slug": "mcp-builder",
+      "name": "mcp-builder",
+      "description": "Guide for creating high-quality MCP (Model Context Protocol) servers that enable LLMs to interact with external services through well-designed tools. Use when building MCP servers to integrate external APIs or services, whether in Python (FastMCP) or Node/TypeScript (MCP SDK).",
+      "latest_version": "1.0.0",
+      "versions": [
+        "1.0.0"
+      ],
+      "tarball": "dist/skills/mcp-builder-1.0.0.tar.gz",
+      "sha256": "e3b8fcbc45de2462ab15c17e17fbd2ffd783844163015987ff60cc052f558c2b",
+      "updated_at": "2026-06-01T07:28:33Z",
+      "emoji": "🔌"
+    },
+    {
+      "kind": "skill",
+      "slug": "skill-creator",
+      "name": "skill-creator",
+      "description": "Create new skills, modify and improve existing skills, and measure skill performance. Use when users want to create a skill from scratch, edit, or optimize an existing skill, run evals to test a skill, benchmark skill performance, or optimize a skill's description for better triggering accuracy.",
+      "latest_version": "1.0.0",
+      "versions": [
+        "1.0.0"
+      ],
+      "tarball": "dist/skills/skill-creator-1.0.0.tar.gz",
+      "sha256": "b043d20917cd71d0aeb1f06410661481742769f1106c2a6e99a7c1244b13320a",
+      "updated_at": "2026-06-01T07:28:33Z",
+      "emoji": "🛠️"
+    },
+    {
+      "kind": "skill",
+      "slug": "systematic-debugging",
+      "name": "systematic-debugging",
+      "description": "Use when encountering any bug, test failure, or unexpected behavior, before proposing fixes",
+      "latest_version": "1.0.0",
+      "versions": [
+        "1.0.0"
+      ],
+      "tarball": "dist/skills/systematic-debugging-1.0.0.tar.gz",
+      "sha256": "0f08898179d6734c7c987bcea22e1a7601a5425314ce20c1eab596d846e2cfb1",
+      "updated_at": "2026-06-01T07:28:33Z",
+      "emoji": "🐛"
+    },
+    {
+      "kind": "skill",
+      "slug": "test-driven-development",
+      "name": "test-driven-development",
+      "description": "Use when implementing any feature or bugfix, before writing implementation code",
+      "latest_version": "1.0.0",
+      "versions": [
+        "1.0.0"
+      ],
+      "tarball": "dist/skills/test-driven-development-1.0.0.tar.gz",
+      "sha256": "adfee4c88d2fee34680afa983e8b7317ac9a478cc00e9d4c6b141aa9007d29a7",
+      "updated_at": "2026-06-01T07:28:33Z",
+      "emoji": "✅"
+    },
+    {
+      "kind": "skill",
+      "slug": "webapp-testing",
+      "name": "webapp-testing",
+      "description": "Toolkit for interacting with and testing local web applications using Playwright. Supports verifying frontend functionality, debugging UI behavior, capturing browser screenshots, and viewing browser logs.",
+      "latest_version": "1.0.0",
+      "versions": [
+        "1.0.0"
+      ],
+      "tarball": "dist/skills/webapp-testing-1.0.0.tar.gz",
+      "sha256": "faf42d0d623e1472ed284705a4c9256e039eaa166901af805670e9d7e323a08e",
+      "updated_at": "2026-06-01T07:28:33Z",
+      "emoji": "🧪"
+    },
+    {
+      "kind": "skill",
+      "slug": "writing-plans",
+      "name": "writing-plans",
+      "description": "Use when you have a spec or requirements for a multi-step task, before touching code",
+      "latest_version": "1.0.0",
+      "versions": [
+        "1.0.0"
+      ],
+      "tarball": "dist/skills/writing-plans-1.0.0.tar.gz",
+      "sha256": "ba0944949878cd58a752734a8fb8d19be7dc06419f1ce1ec93c1d31d200f9845",
+      "updated_at": "2026-06-01T07:28:33Z",
+      "emoji": "📝"
+    }
+  ]
+}

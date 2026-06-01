@@ -1,0 +1,26 @@
+{
+  "name": "slack",
+  "display_name": "Slack",
+  "description": "Slack channel management and messaging. (archived upstream; still runnable)",
+  "transport": "stdio",
+  "command": "npx",
+  "args": [
+    "-y",
+    "@modelcontextprotocol/server-slack"
+  ],
+  "env": {},
+  "requires": {
+    "env": [
+      "SLACK_BOT_TOKEN",
+      "SLACK_TEAM_ID"
+    ]
+  },
+  "homepage": "https://github.com/modelcontextprotocol/servers-archived/tree/main/src/slack",
+  "license": "MIT",
+  "category": "communication",
+  "setup": [
+    "Requires Node.js (npx) on the host.",
+    "Provide these secrets at enable time: SLACK_BOT_TOKEN, SLACK_TEAM_ID.",
+    "Replace any <PLACEHOLDER> arg (e.g. <ALLOWED_DIR>) before enabling."
+  ]
+}

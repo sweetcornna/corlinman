@@ -121,13 +121,14 @@ describe("Sidebar", () => {
     expect(entries[entries.length - 2]).toBe(SIDEBAR_SYSTEM_ENTRY);
   });
 
-  it("resolveSidebarEntries appends all 11 dev pages when devMode is on", () => {
+  it("resolveSidebarEntries appends all dev pages when devMode is on", () => {
     const entries = resolveSidebarEntries(true);
     // OPERATOR + DEV + system + dev-settings.
     expect(entries).toHaveLength(
       SIDEBAR_OPERATOR_ITEMS.length + SIDEBAR_DEV_ITEMS.length + 2,
     );
-    expect(SIDEBAR_DEV_ITEMS).toHaveLength(10);
+    // 10 original dev pages + the Marketplace Acceleration & Contribute sub-links.
+    expect(SIDEBAR_DEV_ITEMS).toHaveLength(12);
     // All dev items carry the isDeveloper flag.
     for (const entry of SIDEBAR_DEV_ITEMS) {
       expect("isDeveloper" in entry && entry.isDeveloper === true).toBe(true);
