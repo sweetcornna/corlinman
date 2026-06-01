@@ -48,6 +48,7 @@ const REQUIRED_ROUTES = [
   'channels/qq_official.html',
   'marketplace.html',
   'marketplace/acceleration.html',
+  'marketplace/contribute.html',
 ];
 
 const NOT_FOUND_ROUTE = '404.html';

@@ -3,7 +3,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { useTranslation } from "react-i18next";
-import { Search, Zap } from "lucide-react";
+import { Search, Zap, GitPullRequest } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { GlassPanel } from "@/components/ui/glass-panel";
@@ -86,6 +86,14 @@ export function MarketplaceHeader({ offline = false }: MarketplaceHeaderProps) {
           >
             <Zap className="h-3.5 w-3.5" aria-hidden />
             {t("marketplace.accelLink")}
+          </Link>
+          <Link
+            href="/marketplace/contribute"
+            className="inline-flex items-center gap-2 rounded-lg border border-tp-glass-edge bg-tp-glass-inner px-3 py-2 text-[13px] font-medium text-tp-ink-2 transition-colors hover:bg-tp-glass-inner-hover hover:text-tp-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40"
+            data-testid="marketplace-contribute-link"
+          >
+            <GitPullRequest className="h-3.5 w-3.5" aria-hidden />
+            {t("marketplace.contributeLink")}
           </Link>
         </div>
       </div>

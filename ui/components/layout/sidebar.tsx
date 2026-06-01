@@ -173,6 +173,12 @@ const DEV_ITEMS: NavEntry[] = [
     icon: Zap,
     isDeveloper: true,
   },
+  {
+    href: "/marketplace/contribute",
+    labelKey: "nav.marketplaceContribute",
+    icon: GitFork,
+    isDeveloper: true,
+  },
   { href: "/hooks", labelKey: "nav.hooks", icon: Zap, isDeveloper: true },
   { href: "/rag", labelKey: "nav.rag", icon: Database, isDeveloper: true },
   { href: "/profiles", labelKey: "nav.profiles", icon: Users, isDeveloper: true },

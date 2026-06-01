@@ -127,8 +127,8 @@ describe("Sidebar", () => {
     expect(entries).toHaveLength(
       SIDEBAR_OPERATOR_ITEMS.length + SIDEBAR_DEV_ITEMS.length + 2,
     );
-    // 10 original dev pages + the Marketplace Acceleration sub-link.
-    expect(SIDEBAR_DEV_ITEMS).toHaveLength(11);
+    // 10 original dev pages + the Marketplace Acceleration & Contribute sub-links.
+    expect(SIDEBAR_DEV_ITEMS).toHaveLength(12);
     // All dev items carry the isDeveloper flag.
     for (const entry of SIDEBAR_DEV_ITEMS) {
       expect("isDeveloper" in entry && entry.isDeveloper === true).toBe(true);

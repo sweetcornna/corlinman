@@ -376,6 +376,7 @@ export const en = {
     dashboard: "Dashboard",
     marketplace: "Marketplace",
     marketplaceAcceleration: "Acceleration",
+    marketplaceContribute: "Contribute",
     plugins: "Plugins",
     skills: "Skills",
     agents: "Agents",
@@ -2063,6 +2064,7 @@ export const en = {
       plugins: "Plugins",
     },
     accelLink: "Acceleration settings",
+    contributeLink: "Contribute yours",
     common: {
       browseTab: "Browse",
       installedTab: "Installed",
@@ -2178,6 +2180,51 @@ export const en = {
         "Values here are read-only. Edit them under Config in the [marketplace.github_proxy] section of the TOML.",
       offlineTitle: "Settings unavailable",
       offlineHint: "The gateway did not return marketplace settings.",
+    },
+    contribute: {
+      title: "Submit your own",
+      subtitle:
+        "Publish a custom skill, MCP server, or plugin to the marketplace for everyone — by opening a pull request to the registry repo.",
+      leadPill: "Open a PR · get listed",
+      howTitle: "How it works",
+      howBody:
+        "The marketplace is a curated GitHub repo. You add your item, open a PR, and once it's reviewed and merged it goes live for every corlinman user on their next refresh — no release required.",
+      stepForkTitle: "Fork the registry",
+      stepForkBody:
+        "Fork sweetcornna/corlinman-marketplace and clone it locally.",
+      stepAddTitle: "Add your item",
+      stepAddBody:
+        "Create one item under skills/, mcp/, or plugins/ with a lowercase, kebab-case slug (shapes below).",
+      stepBuildTitle: "Build & validate",
+      stepBuildBody:
+        "Run the build + validate scripts so index.json, the dist/ tarballs, and the sha256 hashes stay in sync.",
+      stepPrTitle: "Open a PR",
+      stepPrBody:
+        "Commit your source files plus the regenerated index.json and dist/, then open a pull request.",
+      kindsTitle: "What you can submit",
+      filesLabel: "Files you add",
+      skillTitle: "Skill",
+      skillBody:
+        "A SKILL.md with YAML frontmatter (name + a specific, trigger-worthy description) and a markdown body of instructions. Installs into the active profile and auto-activates.",
+      mcpTitle: "MCP server",
+      mcpBody:
+        "A manifest.json launch spec (transport + command/args, or a url). Put API keys in requires.env — they're prompted at enable time, never hardcoded. Installs staged; enable to hot-connect.",
+      pluginTitle: "Plugin",
+      pluginBody:
+        "A bundle with a plugin-manifest.toml (the hot-load manifest) plus an entry script. Installs staged; enable to hot-load with no restart.",
+      prTitle: "Open the pull request",
+      prBody: "From the repo root, run these, commit the result, and open your PR:",
+      checklistTitle: "PR checklist",
+      check1: "One item, kebab-case slug, clear description.",
+      check2: "build-registry.py run; index.json + dist/ committed and in sync.",
+      check3: "validate-index.py passes.",
+      check4: "MCP: package name verified; secrets only in requires.env.",
+      check5: "No secrets, no obfuscated code, no network calls at import time.",
+      securityTitle: "Review & safety",
+      securityBody:
+        "MCP servers and plugins install staged — inert until you explicitly enable them. Downloads are sha256-pinned and verified on install. PRs are reviewed for declared-vs-actual behavior and obvious risk.",
+      openRepo: "Open the registry repo",
+      viewGuide: "Full contribution guide",
     },
   },
 

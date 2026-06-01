@@ -361,6 +361,7 @@ export const zhCN = {
     dashboard: "仪表盘",
     marketplace: "市场",
     marketplaceAcceleration: "加速",
+    marketplaceContribute: "贡献",
     plugins: "插件",
     skills: "技能",
     agents: "Agent",
@@ -2018,6 +2019,7 @@ export const zhCN = {
       plugins: "插件",
     },
     accelLink: "加速设置",
+    contributeLink: "贡献你的作品",
     common: {
       browseTab: "浏览",
       installedTab: "已安装",
@@ -2130,6 +2132,50 @@ export const zhCN = {
         "此处为只读。请在配置的 TOML 的 [marketplace.github_proxy] 段落中编辑。",
       offlineTitle: "设置不可用",
       offlineHint: "网关未返回市场设置。",
+    },
+    contribute: {
+      title: "提交你自己的作品",
+      subtitle:
+        "通过向注册表仓库提交 Pull Request，把自定义的技能、MCP 服务器或插件发布到市场，供所有人使用。",
+      leadPill: "提个 PR · 即可上架",
+      howTitle: "工作方式",
+      howBody:
+        "市场是一个经过策展的 GitHub 仓库。你添加自己的条目、提交 PR，经审核合并后，所有 corlinman 用户在下次刷新时即可看到并使用——无需发版。",
+      stepForkTitle: "Fork 注册表",
+      stepForkBody: "Fork sweetcornna/corlinman-marketplace 并克隆到本地。",
+      stepAddTitle: "添加你的条目",
+      stepAddBody:
+        "在 skills/、mcp/ 或 plugins/ 下，用小写短横线 slug 新建一个条目（格式见下）。",
+      stepBuildTitle: "构建并校验",
+      stepBuildBody:
+        "运行构建与校验脚本，让 index.json、dist/ 压缩包和 sha256 保持一致。",
+      stepPrTitle: "提交 PR",
+      stepPrBody:
+        "提交你的源文件以及重新生成的 index.json 和 dist/，然后开一个 Pull Request。",
+      kindsTitle: "可以提交什么",
+      filesLabel: "你要添加的文件",
+      skillTitle: "技能",
+      skillBody:
+        "一个带 YAML frontmatter 的 SKILL.md（name + 一句具体、能触发的 description）加一段 markdown 指令正文。安装到当前 Profile 并自动激活。",
+      mcpTitle: "MCP 服务器",
+      mcpBody:
+        "一个 manifest.json 启动规格（transport + command/args，或 url）。把 API 密钥放进 requires.env——启用时提示填写，绝不硬编码。安装为暂存态，启用即热连接。",
+      pluginTitle: "插件",
+      pluginBody:
+        "一个含 plugin-manifest.toml（热加载清单）加入口脚本的目录包。安装为暂存态，启用即热加载，无需重启。",
+      prTitle: "提交 Pull Request",
+      prBody: "在仓库根目录运行以下命令，提交结果并开 PR：",
+      checklistTitle: "PR 检查清单",
+      check1: "单个条目，小写短横线 slug，描述清晰。",
+      check2: "已运行 build-registry.py；index.json 与 dist/ 已提交且一致。",
+      check3: "validate-index.py 通过。",
+      check4: "MCP：已核实包名；密钥仅放在 requires.env。",
+      check5: "无密钥、无混淆代码、导入时无网络请求。",
+      securityTitle: "审核与安全",
+      securityBody:
+        "MCP 服务器与插件以暂存态安装——在你显式启用前不会运行。下载内容以 sha256 锁定并在安装时校验。PR 会就声明与实际行为是否一致、以及明显风险进行审核。",
+      openRepo: "打开注册表仓库",
+      viewGuide: "完整贡献指南",
     },
   },
 
