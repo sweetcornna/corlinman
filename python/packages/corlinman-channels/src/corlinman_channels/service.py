@@ -4912,65 +4912,58 @@ async def _debounce_albums(
     flushes promptly instead of stalling until the next unrelated
     message arrives.
     """
+    async def _anext() -> InboundEvent[Any]:
+        return await iterator.__anext__()
+
     debouncer = AlbumDebouncer(window_secs)
-    while not cancel.is_set():
-        ev = await _race_iter_or_cancel_timeout(iterator, cancel, window_secs)
-        if ev is _CANCELLED:
-            break
-        if ev is _TIMEOUT:
-            for ready in debouncer.flush_ready():
-                yield ready
-            continue
-        assert isinstance(ev, InboundEvent)
-        for ready in debouncer.feed(ev):
-            yield ready
+    cancel_task = asyncio.create_task(cancel.wait())
+    # The inbound read is started ONCE and kept pending across idle
+    # windows. A ``window_secs`` tick only flushes albums that have gone
+    # quiet — it must NOT cancel this read. Cancelling it raises
+    # ``CancelledError`` inside ``inbound()``, whose
+    # ``except CancelledError: return`` ends the stream permanently; that
+    # silently killed the whole Telegram channel one debounce window
+    # after boot. The read is cancelled only on real shutdown (the
+    # ``finally`` below, reached when ``cancel`` fires or the stream ends).
+    next_task: asyncio.Task[InboundEvent[Any]] | None = None
+    try:
+        while not cancel.is_set():
+            if next_task is None:
+                next_task = asyncio.create_task(_anext())
+            timeout_task = asyncio.create_task(asyncio.sleep(window_secs))
+            try:
+                done, _pending = await asyncio.wait(
+                    {next_task, cancel_task, timeout_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            finally:
+                # Only the disposable timeout arm is torn down each loop;
+                # next_task survives so it can still resolve later.
+                if not timeout_task.done():
+                    timeout_task.cancel()
+            if cancel_task in done:
+                break
+            if next_task in done:
+                try:
+                    ev = next_task.result()
+                except StopAsyncIteration:
+                    next_task = None
+                    break
+                next_task = None
+                for ready in debouncer.feed(ev):
+                    yield ready
+            else:
+                # Idle window elapsed with the read still pending — flush
+                # any album that has gone quiet and keep waiting on it.
+                for ready in debouncer.flush_ready():
+                    yield ready
+    finally:
+        for task in (next_task, cancel_task):
+            if task is not None and not task.done():
+                task.cancel()
     # Drain whatever remains so a trailing album isn't dropped on shutdown.
     for ready in debouncer.flush_all():
         yield ready
-
-
-#: Sentinels distinguishing the three outcomes of
-#: :func:`_race_iter_or_cancel_timeout` (an inbound event, a window
-#: timeout, or cancellation/stream-end) without overloading ``None``
-#: (a legitimate iterator could in principle yield ``None``).
-_TIMEOUT: Any = object()
-_CANCELLED: Any = object()
-
-
-async def _race_iter_or_cancel_timeout(
-    iterator: AsyncIterator[Any],
-    cancel: asyncio.Event,
-    timeout: float,
-) -> Any:
-    """Next item from ``iterator``, or ``_TIMEOUT`` after ``timeout`` s,
-    or ``_CANCELLED`` if ``cancel`` fires / the stream ends.
-
-    Sibling of :func:`_race_iter_or_cancel` with an added timeout arm so
-    the album debouncer can flush a trailing album.
-    """
-    async def _anext() -> Any:
-        return await iterator.__anext__()
-
-    next_task = asyncio.create_task(_anext())
-    cancel_task = asyncio.create_task(cancel.wait())
-    timeout_task = asyncio.create_task(asyncio.sleep(timeout))
-    try:
-        done, _pending = await asyncio.wait(
-            {next_task, cancel_task, timeout_task},
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-    finally:
-        for t in (next_task, cancel_task, timeout_task):
-            if not t.done():
-                t.cancel()
-    if cancel_task in done:
-        return _CANCELLED
-    if next_task in done:
-        try:
-            return next_task.result()
-        except (StopAsyncIteration, asyncio.CancelledError):
-            return _CANCELLED
-    return _TIMEOUT
 
 
 def _build_text_channel_request(

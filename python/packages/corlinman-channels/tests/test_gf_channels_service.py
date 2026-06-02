@@ -130,6 +130,36 @@ async def test_debounce_interleaves_standalone_and_album() -> None:
     assert ids == ["1", "2"]  # standalone + one merged album
 
 
+@pytest.mark.asyncio
+async def test_debounce_survives_idle_window_without_cancel() -> None:
+    """Regression: an idle window must NOT end the stream.
+
+    The debouncer used to cancel the in-flight inbound read on every
+    timeout tick, raising ``CancelledError`` inside ``inbound()`` whose
+    ``except CancelledError: return`` ended the generator for good. That
+    silently killed the whole Telegram channel one debounce window after
+    boot (``channel_exited`` ~1.5s in, no message ever dispatched). With
+    ``cancel`` unset the stream must stay open across many idle windows.
+    """
+    async def gen() -> AsyncIterator[InboundEvent]:
+        yield _ev(1, text="solo")
+        await asyncio.Event().wait()  # block: more messages may arrive later
+
+    cancel = asyncio.Event()  # never set — simulates a healthy, running gateway
+    agen = _debounce_albums(gen(), cancel, window_secs=0.02)
+    try:
+        first = await asyncio.wait_for(agen.__anext__(), timeout=1.0)
+        assert first.message_id == "1"
+        # Sit idle for ~10 windows. Pre-fix this raised StopAsyncIteration;
+        # post-fix the read stays pending, so our wait_for times out — the
+        # healthy outcome that proves the stream is still alive.
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(agen.__anext__(), timeout=0.2)
+    finally:
+        cancel.set()
+        await agen.aclose()
+
+
 # ---------------------------------------------------------------------------
 # Router unknown-command notice
 # ---------------------------------------------------------------------------
