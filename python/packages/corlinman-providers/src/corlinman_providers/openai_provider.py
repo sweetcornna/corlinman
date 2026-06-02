@@ -87,9 +87,22 @@ class OpenAIProvider:
         base_url: str | None = None,
         env_key: str = "OPENAI_API_KEY",
         default_headers: dict[str, str] | None = None,
+        image_model: str | None = None,
+        image_capable: bool = False,
     ) -> None:
         self._api_key = api_key or os.environ.get(env_key) or None
         self._base_url = base_url
+        # Image-generation knobs persisted on the ``[providers.<name>]``
+        # block (``image_model`` / ``image_capable``). The agent image
+        # dispatcher reads ``image_model`` off the *built adapter* via
+        # ``getattr(provider, "image_model", None)`` (see
+        # ``corlinman_agent.image.generate._resolve_runtime_config``), so the
+        # persisted knob is only honoured if we stamp it onto the instance
+        # here — ``ProviderSpec`` carries it but the adapter must surface it.
+        # Public attribute names (no underscore) match the spec field names
+        # the dispatcher's ``getattr`` expects.
+        self.image_model = image_model
+        self.image_capable = image_capable
         # Static headers forwarded on every request. Used by declarative
         # providers whose ``auth_kind == "header"`` carry their credential in
         # a custom header (e.g. ``X-API-Key``) instead of ``Authorization:
@@ -135,6 +148,8 @@ class OpenAIProvider:
         return cls(
             api_key=spec.api_key,
             base_url=spec.base_url,
+            image_model=spec.image_model,
+            image_capable=spec.image_capable,
         )
 
     @classmethod

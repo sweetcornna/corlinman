@@ -139,14 +139,25 @@ def _resolve_config_path(cli_value: str | None) -> Path | None:
     return None
 
 
-def _resolve_data_dir(cli_value: str | None) -> Path:
-    """``--data-dir`` > ``$CORLINMAN_DATA_DIR`` > ``~/.corlinman`` >
-    ``./.corlinman``. Mirrors ``corlinman_gateway::server::resolve_data_dir``."""
+def _resolve_data_dir(cli_value: str | None, cfg: Any | None = None) -> Path:
+    """``--data-dir`` > ``$CORLINMAN_DATA_DIR`` > ``[server].data_dir`` >
+    ``~/.corlinman`` > ``./.corlinman``.
+
+    Mirrors ``corlinman_gateway::server::resolve_data_dir`` but additionally
+    honours ``[server].data_dir`` from the loaded config when no CLI / env
+    override is present — so the value the admin config editor lists (and
+    flags restart-required) actually takes effect on the next restart
+    rather than being silently ignored. CLI / env still win so a launch
+    flag can override a stale config.
+    """
     if cli_value:
         return Path(cli_value)
     env = os.environ.get("CORLINMAN_DATA_DIR")
     if env:
         return Path(env)
+    config_data_dir = _extract_section(_extract_section(cfg, "server"), "data_dir")
+    if isinstance(config_data_dir, str) and config_data_dir.strip():
+        return Path(config_data_dir.strip()).expanduser()
     try:
         return Path.home() / ".corlinman"
     except (RuntimeError, OSError):
@@ -2015,7 +2026,7 @@ def build_app(
         ) from exc
 
     cfg = _load_config(config_path)
-    resolved_data_dir = data_dir or _resolve_data_dir(None)
+    resolved_data_dir = data_dir or _resolve_data_dir(None, cfg)
 
     # Phase 4 W1 4-1A Item 5: one-shot legacy data-file migration. Gated
     # on tenants config; default-off for back-compat.
@@ -2486,11 +2497,34 @@ def build_app(
                 _audit_log = getattr(
                     app.state, "corlinman_audit_log", None
                 )
+                # Thread the operator-configured per-tenant ceiling from
+                # ``[subagent] max_concurrent_per_tenant`` into the
+                # dispatcher. Previously the dispatcher was built without
+                # this kwarg, so it silently fell back to the hardcoded
+                # ``DEFAULT_MAX_CONCURRENT_PER_TENANT`` and any value the
+                # operator set in config had no effect. Only forward a
+                # positive int; anything else (missing / 0 / non-numeric /
+                # bool) leaves the dispatcher on its default.
+                _subagent_cfg = _extract_section(cfg, "subagent")
+                _max_concurrent = _extract_section(
+                    _subagent_cfg, "max_concurrent_per_tenant"
+                )
+                _dispatcher_kwargs: dict[str, Any] = {
+                    "store": subagent_store,
+                    "run_child_factory": _unwired_run_child_factory,
+                    "journal": observability_journal,
+                    "audit_log": _audit_log,
+                }
+                if (
+                    isinstance(_max_concurrent, int)
+                    and not isinstance(_max_concurrent, bool)
+                    and _max_concurrent > 0
+                ):
+                    _dispatcher_kwargs["max_concurrent_per_tenant"] = (
+                        _max_concurrent
+                    )
                 subagent_dispatcher = AsyncSubagentDispatcher(
-                    store=subagent_store,
-                    run_child_factory=_unwired_run_child_factory,
-                    journal=observability_journal,
-                    audit_log=_audit_log,
+                    **_dispatcher_kwargs
                 )
                 if admin_b_state is not None:
                     admin_b_state.subagent_store = subagent_store
@@ -2678,6 +2712,34 @@ def build_app(
                 path=str(evolution_db_path),
                 error=str(exc),
             )
+
+        # Wire the RAG corpus store onto admin_b so /admin/rag/* (stats /
+        # query / rebuild) + /admin/memory/decay/reset un-503. The Rust
+        # gateway opened ``<data_dir>/kb.sqlite`` via
+        # ``corlinman_vector::SqliteStore``; the Python port ships a
+        # subset adapter (:class:`RagStore`) covering exactly the methods
+        # those routes call. Best-effort — an unwritable data dir / open
+        # failure leaves ``rag_store=None`` and the routes keep returning
+        # their typed 503 (``rag_disabled`` / ``memory_admin_disabled``).
+        # Closed in the lifespan-exit ``finally`` so the WAL is
+        # checkpointed.
+        if resolved_data_dir is not None:
+            try:
+                from corlinman_server.gateway.rag_store import RagStore
+
+                kb_path = resolved_data_dir / "kb.sqlite"
+                kb_path.parent.mkdir(parents=True, exist_ok=True)
+                rag_store = await RagStore.open(kb_path)
+                if admin_b_state is not None:
+                    admin_b_state.rag_store = rag_store
+                app.state.corlinman_rag_store = rag_store
+                logger.info("gateway.rag.store_opened", path=str(kb_path))
+            except Exception as exc:  # pragma: no cover — best-effort
+                logger.warning(
+                    "gateway.rag.store_open_failed",
+                    path=str(resolved_data_dir / "kb.sqlite"),
+                    error=str(exc),
+                )
 
         grpc_mod = _lazy_import("corlinman_server.gateway.grpc")
 
@@ -3080,7 +3142,23 @@ def build_app(
         # every firing so ``run_tool`` builtins read a live state.
         try:
             sched_cfg = _effective_scheduler_config(app, cfg)
-            if sched_cfg.jobs:
+            # gap-fill (scheduler-runtime-jobs): we spawn a handle even when
+            # there are zero config/default jobs so admin-created *runtime*
+            # jobs (persisted in ``<data_dir>/scheduler_runtime_jobs.json``)
+            # have a live :class:`SchedulerHandle` to register their tick
+            # loops onto on boot — without this a process with only runtime
+            # jobs would never fire them.
+            _has_runtime_jobs = False
+            try:
+                _rt_path = (
+                    resolved_data_dir / "scheduler_runtime_jobs.json"
+                    if resolved_data_dir is not None
+                    else None
+                )
+                _has_runtime_jobs = bool(_rt_path and _rt_path.is_file())
+            except OSError:  # pragma: no cover — defensive
+                _has_runtime_jobs = False
+            if sched_cfg.jobs or _has_runtime_jobs:
                 from corlinman_hooks import HookBus
 
                 from corlinman_server.scheduler import spawn as _spawn_scheduler
@@ -3124,6 +3202,29 @@ def build_app(
                 app.state.corlinman_scheduler_handle = scheduler_handle
                 if admin_b_state is not None:
                     admin_b_state.scheduler = scheduler_handle
+                    # Publish ``app.state`` onto the admin extras so the
+                    # scheduler routes can (a) mirror runtime-job metadata
+                    # onto ``app_state.scheduler_job_metadata`` (the qzone
+                    # builtin reads it at tick time) and (b) resolve the
+                    # live handle for register/unregister on create / edit /
+                    # pause / resume.
+                    with suppress(AttributeError, TypeError):
+                        admin_b_state.extras["app_state"] = app.state
+                    # Rehydrate the persisted runtime-job overlay + register
+                    # each enabled job's tick loop onto the fresh handle.
+                    # Best-effort — a malformed sidecar leaves the overlay
+                    # empty rather than aborting boot.
+                    try:
+                        from corlinman_server.gateway.routes_admin_b.scheduler import (
+                            rehydrate_runtime_jobs_on_boot,
+                        )
+
+                        rehydrate_runtime_jobs_on_boot(admin_b_state)
+                    except Exception as exc:  # pragma: no cover — best-effort
+                        logger.warning(
+                            "gateway.scheduler.runtime_rehydrate_failed",
+                            error=str(exc),
+                        )
                 logger.info(
                     "gateway.scheduler.spawned",
                     jobs=[j.name for j in sched_cfg.jobs],
@@ -3171,6 +3272,18 @@ def build_app(
                         error=str(exc),
                     )
                 app.state._evolution_store = None
+            # RAG-store teardown: close the kb.sqlite handle opened above so
+            # its WAL is checkpointed and tests don't leak file descriptors.
+            # Idempotent + safe when no store was wired.
+            rag_store_handle = getattr(app.state, "corlinman_rag_store", None)
+            if rag_store_handle is not None:
+                try:
+                    await rag_store_handle.close()
+                except Exception as exc:  # pragma: no cover — defensive
+                    logger.warning(
+                        "gateway.rag.store_close_failed", error=str(exc)
+                    )
+                app.state.corlinman_rag_store = None
             # D12 teardown: cancel + await any in-flight background subagent
             # dispatch tasks BEFORE closing the journal they emit into, so a
             # shutdown doesn't orphan child-driving tasks against a
@@ -3707,13 +3820,48 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def _resolve_bind(cli_host: str | None, cli_port: int | None) -> tuple[str, int]:
-    host = cli_host or os.environ.get("BIND") or DEFAULT_HOST
+def _resolve_bind(
+    cli_host: str | None,
+    cli_port: int | None,
+    cfg: Any | None = None,
+) -> tuple[str, int]:
+    """Resolve ``(host, port)`` to bind on.
+
+    Precedence (first present wins), per field:
+
+    * host: ``--host`` > ``$BIND`` > ``[server].bind`` > :data:`DEFAULT_HOST`.
+    * port: ``--port`` > ``$PORT`` > ``[server].port`` > :data:`DEFAULT_PORT`.
+
+    The ``[server].bind`` / ``[server].port`` fallbacks make the values the
+    admin config editor lists (and flags restart-required) actually honoured
+    on the next restart — previously they were resolved from CLI/env only,
+    so editing them in the UI did nothing even after a restart. CLI / env
+    still win so a launch flag overrides a stale config.
+    """
+    server_cfg = _extract_section(cfg, "server")
+
+    host = cli_host or os.environ.get("BIND")
+    if not host:
+        config_bind = _extract_section(server_cfg, "bind")
+        if isinstance(config_bind, str) and config_bind.strip():
+            host = config_bind.strip()
+    if not host:
+        host = DEFAULT_HOST
+
     if cli_port is not None:
         port = cli_port
     else:
         env_port = os.environ.get("PORT")
-        port = int(env_port) if env_port and env_port.isdigit() else DEFAULT_PORT
+        if env_port and env_port.isdigit():
+            port = int(env_port)
+        else:
+            config_port = _extract_section(server_cfg, "port")
+            if isinstance(config_port, int) and not isinstance(config_port, bool):
+                port = config_port
+            elif isinstance(config_port, str) and config_port.strip().isdigit():
+                port = int(config_port.strip())
+            else:
+                port = DEFAULT_PORT
     return host, port
 
 
@@ -3740,8 +3888,16 @@ async def _serve(args: argparse.Namespace) -> int:
         ) from exc
 
     config_path = _resolve_config_path(args.config)
-    data_dir = Path(args.data_dir) if args.data_dir else _resolve_data_dir(None)
-    host, port = _resolve_bind(args.host, args.port)
+    # Load the config up-front so ``[server].bind`` / ``[server].port`` /
+    # ``[server].data_dir`` can serve as fallbacks below CLI / env when
+    # resolving the bind address + data dir. ``build_app`` re-loads it
+    # internally (it stays self-contained for the test surface); a startup
+    # double-read of a small TOML is negligible.
+    cfg = _load_config(config_path)
+    data_dir = (
+        Path(args.data_dir) if args.data_dir else _resolve_data_dir(None, cfg)
+    )
+    host, port = _resolve_bind(args.host, args.port, cfg)
 
     app = build_app(config_path=config_path, data_dir=data_dir)
 

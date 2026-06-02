@@ -23,7 +23,9 @@ Surfaces (prefix ``/admin/mcp``):
   explicitly afterwards). Returns the registered (disabled) row.
 
 * **Manage** — ``GET /admin/mcp/servers`` returns the adapter's merged
-  installed-+-live view; ``DELETE /admin/mcp/{name}`` uninstalls.
+  installed-+-live view; ``PUT /admin/mcp/{name}`` edits a server's
+  launch spec in place (env/secrets/version/command/url) and
+  hot-reconnects it; ``DELETE /admin/mcp/{name}`` uninstalls.
 
 Enable / disable / restart are *not* duplicated here — they're served by
 the existing ``/admin/plugins/{name}/{enable,disable,restart}`` seam,
@@ -123,6 +125,26 @@ class McpInstallBody(BaseModel):
     slug: str
     version: str | None = None
     env: dict[str, str] = Field(default_factory=dict)
+
+
+class McpReconfigureBody(BaseModel):
+    """Body for ``PUT /admin/mcp/{name}`` — edit an installed/config
+    server's launch spec without a delete + reinstall.
+
+    Every field is optional: an absent field leaves that part of the
+    spec unchanged, while a present ``env`` / ``headers`` *replaces* the
+    stored map wholesale (so an operator can drop a secret). The
+    ``enabled`` flag is deliberately **not** editable here — toggling
+    stays on the ``/admin/plugins/{name}/{enable,disable}`` seam.
+    """
+
+    transport: str | None = None
+    command: str | None = None
+    args: list[str] | None = None
+    env: dict[str, str] | None = None
+    url: str | None = None
+    headers: dict[str, str] | None = None
+    version: str | None = None
 
 
 class McpServerRow(BaseModel):
@@ -527,6 +549,73 @@ def router() -> APIRouter:
             status_code=200,
             content={"ok": True, "name": name, "removed": True},
         )
+
+    # ------------------------------------------------------------------
+    # PUT /admin/mcp/{name}
+    # ------------------------------------------------------------------
+
+    @r.put("/admin/mcp/{name}", response_model=McpServerRow)
+    async def reconfigure_server(
+        admin_state: Annotated[AdminState, Depends(get_admin_state)],
+        body: McpReconfigureBody,
+        name: str = PathParam(
+            ..., description="Installed/config MCP server name."
+        ),
+    ) -> McpServerRow | JSONResponse:
+        """Edit a server's launch spec in place (env/secrets/version/
+        command/url) and re-register it live — no delete + reinstall.
+
+        Works for both marketplace-installed servers and config-declared
+        ones (the latter is materialised into the store so the edit
+        survives a restart). The ``enabled`` flag is preserved; an
+        enabled server is hot-reconnected so the new env takes effect.
+        """
+        adapter = _resolve_adapter(admin_state)
+        if adapter is None:
+            return _error(
+                503,
+                "mcp_adapter_disabled",
+                "no McpAdapter wired into this gateway",
+            )
+        # Only forward the explicitly-set fields so an absent key leaves
+        # that part of the spec untouched (model_dump(exclude_unset)).
+        patch = body.model_dump(exclude_unset=True)
+        version = patch.pop("version", None)
+        try:
+            await adapter.reconfigure(name, patch, version=version)
+        except KeyError:
+            return _error(
+                404,
+                "mcp_not_found",
+                f"no MCP server named {name!r}",
+                name=name,
+            )
+        except ValueError as exc:
+            return _error(422, "reconfigure_invalid", str(exc), name=name)
+        except Exception as exc:  # noqa: BLE001
+            return _error(
+                500,
+                "mcp_reconfigure_failed",
+                str(exc),
+                name=name,
+            )
+        # Re-read the merged + live view so the response reflects the new
+        # spec + reconnection status, matching GET /admin/mcp/servers.
+        try:
+            rows = adapter.servers()
+        except Exception:  # noqa: BLE001
+            rows = []
+        for row in rows:
+            getter = (
+                row.get
+                if isinstance(row, dict)
+                else lambda k, d=None, _r=row: getattr(_r, k, d)
+            )
+            if str(getter("name") or "") == name:
+                return _row_from_installed(row)
+        # Fell through (no store wired, so servers() doesn't surface it) —
+        # still report success with what we know.
+        return McpServerRow(name=name)
 
     return r
 

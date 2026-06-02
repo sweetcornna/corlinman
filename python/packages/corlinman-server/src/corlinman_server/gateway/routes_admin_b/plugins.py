@@ -19,7 +19,8 @@ Backed by ``corlinman_providers.plugins.PluginRegistry`` (W2 port).
 
 from __future__ import annotations
 
-import uuid
+import asyncio
+import json
 from typing import Any
 
 from fastapi import APIRouter, Depends
@@ -257,64 +258,73 @@ def router() -> APIRouter:
             )
 
         timeout_ms = min(body.timeout_ms or 0, 60_000) or None
-        session_key = body.session_key or "admin-invoke"
-        request_id = f"admin-invoke-{uuid.uuid4()}"
 
-        # Resolve the runtime executor — lazy import of
-        # ``corlinman_providers.plugins`` so the import graph stays
-        # narrow at module load.
+        # Resolve the *real* plugin executor — the same
+        # ``build_registry_invoker`` the chat tool-executor uses (see
+        # ``gateway.services.grpc_backend.build_tool_executor``). It owns
+        # ``sync`` / ``async`` spawn-per-call dispatch and, when the
+        # supervisor / MCP client manager are wired, ``service`` / ``mcp``
+        # dispatch too. Lazy-imported so this module's import graph stays
+        # narrow at load. A genuinely missing ``corlinman-grpc`` is the
+        # only path that can no longer wire an executor.
         try:
-            from corlinman_providers.plugins import sandbox  # noqa: PLC0415
-
-            executor = getattr(sandbox, "jsonrpc_execute", None) or getattr(
-                sandbox, "execute", None
+            from corlinman_server.gateway.grpc.plugin_invoker import (  # noqa: PLC0415
+                build_registry_invoker,
             )
-        except ImportError:
-            executor = None
-        if executor is None:
+        except ImportError as exc:
             return JSONResponse(
                 status_code=501,
                 content={
                     "error": "invoke_runtime_unavailable",
                     "message": (
-                        "no JSON-RPC stdio executor is wired in this build;"
-                        " plumb ``corlinman_providers.plugins`` runtime"
+                        "plugin invoker is unavailable in this build "
+                        f"(corlinman-grpc import failed: {exc})"
                     ),
                 },
             )
 
-        cwd = (
-            getattr(entry, "manifest_path", None) or "."
+        # Thread the supervisor + MCP client manager when present so
+        # ``service`` / ``mcp`` plugins test-invoke for real instead of
+        # degrading. Both are best-effort: the supervisor rides on
+        # ``extras['plugin_supervisor']`` (absent in degraded boots) and
+        # the MCP client manager off ``extras['mcp_manager']`` or, failing
+        # that, the ``mcp_adapter`` that wraps it.
+        supervisor = state.extras.get("plugin_supervisor")
+        mcp_manager = state.extras.get("mcp_manager")
+        if mcp_manager is None:
+            adapter = state.extras.get("mcp_adapter")
+            mcp_manager = getattr(adapter, "_manager", None) if adapter else None
+
+        invoker = build_registry_invoker(
+            state.plugins, supervisor=supervisor, mcp_manager=mcp_manager
         )
+        args_json = json.dumps(body.arguments, ensure_ascii=False).encode("utf-8")
+
         try:
-            result = await executor(
-                name=name,
-                tool=body.tool,
-                cwd=str(cwd),
-                manifest=manifest,
-                timeout_ms=timeout_ms,
-                arguments=body.arguments,
-                session_key=session_key,
-                request_id=request_id,
-                trace_id=request_id,
-            )
-        except TypeError:
-            # Fall back to a minimal positional signature when the
-            # executor doesn't accept all kwargs.
-            try:
-                result = await executor(name, body.tool, body.arguments)
-            except Exception as exc:  # noqa: BLE001
-                return JSONResponse(
-                    status_code=500,
-                    content={"error": "invoke_failed", "message": str(exc)},
+            if timeout_ms is not None:
+                result = await asyncio.wait_for(
+                    invoker(name, body.tool, args_json),
+                    timeout=timeout_ms / 1000.0,
                 )
-        except Exception as exc:  # noqa: BLE001
+            else:
+                result = await invoker(name, body.tool, args_json)
+        except TimeoutError:
+            return JSONResponse(
+                status_code=504,
+                content={
+                    "error": "invoke_timeout",
+                    "plugin": name,
+                    "tool": body.tool,
+                    "timeout_ms": timeout_ms,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 — the invoker shouldn't raise
             return JSONResponse(
                 status_code=500,
                 content={"error": "invoke_failed", "message": str(exc)},
             )
 
-        return _plugin_output_to_json(result)
+        return _invocation_to_json(result)
 
     # MCP lifecycle ----------------------------------------------------------
 
@@ -368,41 +378,39 @@ def router() -> APIRouter:
     return r
 
 
-def _plugin_output_to_json(out: Any) -> dict[str, Any]:
-    """Coerce ``PluginOutput`` (success/error/accepted) to the wire shape."""
-    if isinstance(out, dict):
-        return out
-    kind = type(out).__name__
-    if kind in {"Success", "PluginOutputSuccess"}:
-        body = getattr(out, "content", b"") or b""
-        try:
-            text = body.decode("utf-8") if isinstance(body, (bytes, bytearray)) else str(body)
-        except Exception:  # noqa: BLE001
-            text = ""
-        parsed = None
-        try:
-            import json  # noqa: PLC0415
+def _invocation_to_json(out: Any) -> dict[str, Any]:
+    """Coerce a :class:`~corlinman_grpc.agent_client.ToolInvocation` to the
+    admin-invoke wire shape.
 
-            parsed = json.loads(text) if text else None
-        except Exception:  # noqa: BLE001
-            parsed = None
-        return {
-            "status": "success",
-            "duration_ms": getattr(out, "duration_ms", 0),
-            "result": parsed,
-            "result_raw": text,
-        }
-    if kind in {"Error", "PluginOutputError"}:
+    The invoker always returns a ``ToolInvocation`` (``content`` str,
+    ``is_error`` bool, ``duration_ms`` int). On success ``content`` is the
+    raw JSON-RPC ``result`` payload; on a tool-level failure it is a JSON
+    error envelope (``{"error": ..., "message": ...}`` or
+    ``{"error": "plugin_error", "code": ..., "message": ...}``). We parse
+    ``content`` so the UI gets structured JSON when possible while always
+    preserving the raw text under ``result_raw``.
+    """
+    content = getattr(out, "content", "") or ""
+    is_error = bool(getattr(out, "is_error", False))
+    duration_ms = int(getattr(out, "duration_ms", 0) or 0)
+
+    parsed: Any = None
+    try:
+        parsed = json.loads(content) if content else None
+    except (ValueError, TypeError):
+        parsed = None
+
+    if is_error:
+        envelope = parsed if isinstance(parsed, dict) else {}
         return {
             "status": "error",
-            "duration_ms": getattr(out, "duration_ms", 0),
-            "code": getattr(out, "code", "unknown"),
-            "message": getattr(out, "message", ""),
+            "duration_ms": duration_ms,
+            "code": envelope.get("code", envelope.get("error", "unknown")),
+            "message": envelope.get("message", content),
         }
-    if kind in {"AcceptedForLater", "PluginOutputAccepted"}:
-        return {
-            "status": "accepted",
-            "duration_ms": getattr(out, "duration_ms", 0),
-            "task_id": getattr(out, "task_id", ""),
-        }
-    return {"status": "unknown", "repr": repr(out)}
+    return {
+        "status": "success",
+        "duration_ms": duration_ms,
+        "result": parsed,
+        "result_raw": content,
+    }

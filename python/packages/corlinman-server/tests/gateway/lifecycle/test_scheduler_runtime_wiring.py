@@ -57,7 +57,7 @@ async def test_spawn_threads_app_state_into_dispatch(
         captured["app_state"] = app_state
         cancel.set()  # exit the loop after one fire
 
-    async def _no_sleep(deadline, cancel_evt):  # type: ignore[no-untyped-def]
+    async def _no_sleep(deadline, cancel_evt, extra_cancel=None):  # type: ignore[no-untyped-def]
         return False  # never "cancelled while sleeping" → proceed to dispatch
 
     monkeypatch.setattr(_runner, "dispatch", _fake_dispatch)

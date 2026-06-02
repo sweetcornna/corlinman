@@ -38,10 +38,17 @@ class OpenAICompatibleProvider(OpenAIProvider):
         base_url: str,
         api_key: str | None = None,
         instance_name: str | None = None,
+        image_model: str | None = None,
+        image_capable: bool = False,
     ) -> None:
         if not base_url:
             raise ValueError("openai_compatible provider requires a base_url")
-        super().__init__(api_key=api_key, base_url=base_url)
+        super().__init__(
+            api_key=api_key,
+            base_url=base_url,
+            image_model=image_model,
+            image_capable=image_capable,
+        )
         # Shadow the class-level ``name`` so registry lookups (and the
         # logger attr below) report the user-chosen name. mypy complains
         # about re-assigning a ``ClassVar``, so we set it via __dict__.
@@ -58,6 +65,8 @@ class OpenAICompatibleProvider(OpenAIProvider):
             base_url=spec.base_url,
             api_key=spec.api_key,
             instance_name=spec.name,
+            image_model=spec.image_model,
+            image_capable=spec.image_capable,
         )
 
     @classmethod

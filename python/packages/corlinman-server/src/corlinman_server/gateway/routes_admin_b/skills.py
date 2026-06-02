@@ -135,6 +135,25 @@ class SkillsListResponse(BaseModel):
     rows: list[InstalledSkillOut] = Field(default_factory=list)
 
 
+class SkillUpdateBody(BaseModel):
+    """Body for ``PUT /admin/skills/{name}``.
+
+    Every field is optional so the editor can submit a partial patch — only
+    the keys present in the payload are written back. These five fields are
+    runtime-consumed (``registry.py`` parses them off the SKILL.md
+    frontmatter / body and the context assembler honours
+    ``disable_model_invocation`` + ``allowed_tools`` + ``when_to_use``), so a
+    write here changes how the model selects + injects the skill on its next
+    turn. ``body_markdown`` is the prose the assembler injects verbatim.
+    """
+
+    description: str | None = None
+    body_markdown: str | None = None
+    disable_model_invocation: bool | None = None
+    allowed_tools: list[str] | None = None
+    when_to_use: str | None = None
+
+
 class HubSkillRowOut(BaseModel):
     """Compact shape returned by hub search / featured.
 
@@ -1044,6 +1063,131 @@ def router() -> APIRouter:
                     "message": str(exc),
                 },
             ) from exc
+
+        usage = _registry_usage(registry, skill.name)
+        skills_dir = _resolve_profile_skills_dir(admin_state, profile)
+        bundled = _bundled_skill_filenames()
+        origin = (
+            _derive_origin(skill, skills_dir, bundled)
+            if skills_dir is not None
+            else str(getattr(skill, "origin", "user"))
+        )
+        return InstalledSkillOut(
+            name=str(skill.name),
+            description=str(getattr(skill, "description", "")),
+            version=str(getattr(skill, "version", "1.0.0")),
+            state=str(getattr(skill, "state", "active")),
+            origin=origin,
+            pinned=bool(skill.pinned),
+            use_count=int(usage.use_count if usage else 0),
+            last_used_at=_iso(usage.last_used_at if usage else None),
+            created_at=_iso(getattr(skill, "created_at", None)),
+        )
+
+    # ------------------------------------------------------------------
+    # PUT /admin/skills/{name}
+    # ------------------------------------------------------------------
+
+    @r.put(
+        "/admin/skills/{name}",
+        response_model=InstalledSkillOut,
+    )
+    async def update_skill(
+        admin_state: Annotated[AdminState, Depends(get_admin_state)],
+        body: SkillUpdateBody,
+        name: str = PathParam(..., description="Skill name."),
+        profile: Annotated[str, Query()] = "default",
+    ) -> InstalledSkillOut:
+        """Edit one skill's runtime-consumed body + metadata in place.
+
+        Loads the skill off the profile registry, applies the subset of
+        fields present in ``body`` (description / body_markdown /
+        disable_model_invocation / allowed_tools / when_to_use), then writes
+        the SKILL.md back to disk so the edit survives a restart. All five
+        fields are read by :mod:`corlinman_skills_registry` on the next load
+        and honoured by the context assembler — this is the operator-facing
+        edit surface (the curator's autonomous lifecycle is a separate
+        path). Same writeback semantics as :func:`pin_skill`.
+        """
+        registry = _load_registry(admin_state, profile)
+        skill = registry.get(name)
+        if skill is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "skill_not_found",
+                    "profile": profile,
+                    "skill": name,
+                },
+            )
+
+        # Apply only the fields the editor actually sent — a partial patch
+        # must not blank an unedited field. ``exclude_unset`` distinguishes
+        # "not in payload" from "explicitly set to null/empty".
+        patch = body.model_dump(exclude_unset=True)
+        new_body: str | None = None
+        if "description" in patch and patch["description"] is not None:
+            skill.description = str(patch["description"])
+        if "disable_model_invocation" in patch:
+            skill.disable_model_invocation = bool(
+                patch["disable_model_invocation"]
+            )
+        if "allowed_tools" in patch and patch["allowed_tools"] is not None:
+            skill.allowed_tools = [str(t) for t in patch["allowed_tools"]]
+        if "when_to_use" in patch:
+            wtu = patch["when_to_use"]
+            # Empty string clears the hint back to "absent" so the
+            # round-tripped frontmatter drops the key entirely.
+            skill.when_to_use = (
+                str(wtu) if isinstance(wtu, str) and wtu.strip() else None
+            )
+        if "body_markdown" in patch and patch["body_markdown"] is not None:
+            new_body = str(patch["body_markdown"])
+            skill.body_markdown = new_body
+
+        try:
+            from corlinman_skills_registry import (
+                write_skill_md,
+            )
+        except ImportError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "error": "skills_registry_missing",
+                    "message": str(exc),
+                },
+            ) from exc
+
+        source = skill.source_path
+        try:
+            # ``write_skill_md`` defaults ``body`` to ``skill.body_markdown``
+            # when not passed; we already mutated it above, so the explicit
+            # arg is only needed to be unambiguous about the edited body.
+            write_skill_md(source, skill, new_body)
+        except OSError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "error": "skill_write_failed",
+                    "profile": profile,
+                    "skill": name,
+                    "message": str(exc),
+                },
+            ) from exc
+
+        # Best-effort audit row so operator edits show up alongside hub
+        # installs + pins on the /admin/system Audit card.
+        audit_log = getattr(admin_state, "audit_log", None)
+        if audit_log is not None:
+            with contextlib.suppress(Exception):
+                await audit_log.append(
+                    event="skill.edited",
+                    details={
+                        "name": name,
+                        "profile": profile,
+                        "fields": sorted(patch.keys()),
+                    },
+                )
 
         usage = _registry_usage(registry, skill.name)
         skills_dir = _resolve_profile_skills_dir(admin_state, profile)

@@ -18,13 +18,21 @@ It couples two halves of the MCP-server lifecycle:
 Every mutation keeps the two in sync: an enable flips the live peer up
 *and* persists ``enabled=1`` so the next boot reconnects it; an install
 persists a row ``enabled=0`` without ever touching the live pool (the
-operator enables it explicitly afterwards). Both handles are optional —
-a degraded boot may wire neither — so every method tolerates ``None``
-gracefully rather than raising.
+operator enables it explicitly afterwards). A *config-declared* server
+(one that exists in the live pool because it was read from the TOML
+``[mcp]`` table, with no store row) is the tricky case: toggling it must
+materialise a store row carrying its captured launch spec — otherwise
+the next boot re-reads the unchanged TOML and the toggle silently
+reverts. Because boot registers stored specs *after* config ones with
+``replace=True``, that materialised row's ``enabled`` flag then wins.
+``reconfigure`` follows the same rule for edits to env / command / url.
+Both handles are optional — a degraded boot may wire neither — so every
+method tolerates ``None`` gracefully rather than raising.
 """
 
 from __future__ import annotations
 
+import dataclasses
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -66,13 +74,13 @@ class McpAdapter:
         ``None`` manager / ``None`` store.
         """
         existed = await self._manager_call("enable_one", name)
-        self._store_set_enabled(name, True)
+        self._persist_enabled(name, True)
         return existed
 
     async def disable_one(self, name: str) -> bool:
         """Drop the named server's live peer *and* persist ``enabled=0``."""
         existed = await self._manager_call("disable_one", name)
-        self._store_set_enabled(name, False)
+        self._persist_enabled(name, False)
         return existed
 
     async def restart_one(self, name: str) -> bool:
@@ -165,6 +173,104 @@ class McpAdapter:
         log.info("mcp_adapter.removed", name=name, deleted=deleted)
         return deleted
 
+    async def reconfigure(
+        self,
+        name: str,
+        patch: dict[str, Any],
+        *,
+        version: str | None = None,
+    ) -> Any | None:
+        """Edit an installed/config server's launch spec **in place**.
+
+        ``patch`` is a shallow override map merged over the server's
+        current launch spec — the keys an operator may legitimately want
+        to change without a delete + reinstall: ``env`` (secrets),
+        ``command`` / ``args`` (stdio launch), ``url`` / ``headers``
+        (ws/http), and ``transport``. ``env`` / ``headers`` *replace*
+        their counterpart wholesale (so an operator can drop a secret),
+        which mirrors the install-time env merge being explicit.
+
+        The merged spec is re-persisted to the store (capturing the live
+        spec first for a config-declared server that has no store row yet,
+        so the edit survives a restart) and re-registered with the live
+        manager via ``add_server(replace=True)``; an enabled server is
+        reconnected immediately so the new env/command takes effect
+        without a separate restart.
+
+        Returns the persisted row (or ``None`` when no store is wired);
+        raises ``KeyError`` when the server is unknown to both halves.
+        """
+        if not name:
+            raise ValueError("MCP server name must be non-empty")
+        base = self._current_spec_mapping(name)
+        if base is None:
+            raise KeyError(name)
+
+        enabled = bool(base.get("enabled", False))
+        merged: dict[str, Any] = {**base}
+        # Whitelist the operator-editable keys; ignore anything else so a
+        # caller can't smuggle in a name change or the enabled flag here
+        # (toggling stays on the enable/disable seam).
+        for key in ("transport", "command", "url"):
+            if key in patch and patch[key] is not None:
+                merged[key] = patch[key]
+        if "args" in patch and patch["args"] is not None:
+            merged["args"] = [str(a) for a in patch["args"]]
+        if "env" in patch and patch["env"] is not None:
+            merged["env"] = {
+                str(k): str(v) for k, v in dict(patch["env"]).items()
+            }
+        if "headers" in patch and patch["headers"] is not None:
+            merged["headers"] = {
+                str(k): str(v) for k, v in dict(patch["headers"]).items()
+            }
+        merged["enabled"] = enabled
+
+        prev_source = self._store_source(name)
+        resolved_version = version if version is not None else (
+            self._store_version(name)
+        )
+
+        # Persist first so a manager hiccup can't desync the durable row.
+        row = None
+        if self._store is not None:
+            try:
+                row = self._store.upsert(
+                    name,
+                    merged,
+                    source=prev_source or "config",
+                    version=resolved_version,
+                    enabled=enabled,
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "mcp_adapter.reconfigure_store_failed",
+                    name=name,
+                    error=str(exc),
+                )
+
+        # Re-register live so the new spec takes effect; an enabled server
+        # is reconnected by add_server (replace tears down the old peer).
+        if self._manager is not None:
+            try:
+                from corlinman_mcp_server.client_manager import McpServerSpec
+
+                mspec = McpServerSpec.from_mapping(name, merged)
+                await self._manager.add_server(mspec, replace=True)
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "mcp_adapter.reconfigure_register_failed",
+                    name=name,
+                    error=str(exc),
+                )
+        log.info(
+            "mcp_adapter.reconfigured",
+            name=name,
+            enabled=enabled,
+            version=resolved_version,
+        )
+        return row
+
     # -- merged listing -------------------------------------------------
 
     def servers(self) -> list[dict[str, Any]]:
@@ -247,22 +353,128 @@ class McpAdapter:
             res = await res
         return bool(res)
 
-    def _store_set_enabled(self, name: str, enabled: bool) -> None:
-        """Persist the enabled flag, tolerating a missing store / a row
-        that isn't installed (a config-file server has no store row)."""
+    def _persist_enabled(self, name: str, enabled: bool) -> None:
+        """Durably record the enabled flag.
+
+        For a marketplace-installed server the row already exists, so a
+        cheap ``set_enabled`` flips the flag. For a *config-declared*
+        server there is no store row yet — ``set_enabled`` would raise
+        ``McpServerNotFound`` and the toggle would silently revert on the
+        next restart (boot re-reads the unchanged TOML). To make the
+        toggle durable we capture the server's live launch spec and
+        ``upsert`` it into the store (``source="config"``); because boot
+        registers stored specs *after* config ones with
+        ``replace=True``, the stored enabled flag then wins on restart.
+        Tolerates a missing store / a server unknown to both halves.
+        """
         if self._store is None:
             return
         try:
             self._store.set_enabled(name, enabled)
+            return
         except Exception as exc:  # noqa: BLE001
-            # McpServerNotFound is expected for config-file servers that
-            # were never installed via the marketplace; log + move on.
+            from corlinman_server.system.marketplace.mcp_store import (
+                McpServerNotFound,
+            )
+
+            if not isinstance(exc, McpServerNotFound):
+                log.warning(
+                    "mcp_adapter.store_set_enabled_failed",
+                    name=name,
+                    enabled=enabled,
+                    error=str(exc),
+                )
+                return
+        # No store row — this is a config-declared server. Persist its
+        # live spec so the toggle survives a restart.
+        spec_map = self._live_spec_mapping(name)
+        if spec_map is None:
             log.debug(
                 "mcp_adapter.store_set_enabled_skipped",
                 name=name,
                 enabled=enabled,
+            )
+            return
+        spec_map["enabled"] = enabled
+        try:
+            self._store.upsert(
+                name,
+                spec_map,
+                source="config",
+                version=None,
+                enabled=enabled,
+            )
+            log.info(
+                "mcp_adapter.config_server_persisted",
+                name=name,
+                enabled=enabled,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "mcp_adapter.config_server_persist_failed",
+                name=name,
+                enabled=enabled,
                 error=str(exc),
             )
+
+    def _live_spec_mapping(self, name: str) -> dict[str, Any] | None:
+        """Project the live manager's spec for ``name`` to a config-shaped
+        mapping (the keys ``McpServerSpec.from_mapping`` reads back),
+        or ``None`` when the server isn't in the live pool."""
+        managed = self._live_index().get(name)
+        if managed is None:
+            return None
+        spec = getattr(managed, "spec", None)
+        if spec is None:
+            return None
+        try:
+            raw = dataclasses.asdict(spec)
+        except TypeError:
+            return None
+        # Drop the name (it's the store key) so a later from_mapping(name)
+        # owns it; keep transport/command/args/env/url/headers/timeouts.
+        raw.pop("name", None)
+        return dict(raw)
+
+    def _current_spec_mapping(self, name: str) -> dict[str, Any] | None:
+        """The launch spec to edit: the persisted row's spec when one
+        exists (authoritative + carries the enabled flag), else the live
+        spec for a config-declared server. ``None`` when unknown to
+        both."""
+        if self._store is not None:
+            try:
+                row = self._store.get(name)
+            except Exception:  # noqa: BLE001
+                row = None
+            if row is not None:
+                base = dict(getattr(row, "spec", {}) or {})
+                base["enabled"] = bool(getattr(row, "enabled", False))
+                return base
+        live = self._live_spec_mapping(name)
+        if live is not None:
+            managed = self._live_index().get(name)
+            spec = getattr(managed, "spec", None)
+            live["enabled"] = bool(getattr(spec, "enabled", False))
+            return live
+        return None
+
+    def _store_source(self, name: str) -> str | None:
+        if self._store is None:
+            return None
+        try:
+            row = self._store.get(name)
+        except Exception:  # noqa: BLE001
+            return None
+        return getattr(row, "source", None) if row is not None else None
+
+    def _store_version(self, name: str) -> str | None:
+        if self._store is None:
+            return None
+        try:
+            row = self._store.get(name)
+        except Exception:  # noqa: BLE001
+            return None
+        return getattr(row, "version", None) if row is not None else None
 
     def _store_list(self) -> list[Any]:
         if self._store is None:

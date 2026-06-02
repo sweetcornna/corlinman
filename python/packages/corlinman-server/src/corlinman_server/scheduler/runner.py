@@ -812,7 +812,15 @@ class SchedulerHandle:
     await them after flipping the cancel event.
     """
 
-    __slots__ = ("_app_state", "_bus", "_cancel", "_specs", "_tasks")
+    __slots__ = (
+        "_app_state",
+        "_bus",
+        "_cancel",
+        "_job_cancels",
+        "_job_tasks",
+        "_specs",
+        "_tasks",
+    )
 
     def __init__(
         self,
@@ -832,12 +840,76 @@ class SchedulerHandle:
         self._specs: dict[str, JobSpec] = dict(specs) if specs else {}
         self._bus = bus
         self._app_state = app_state
+        # Hot-registered runtime jobs (admin POST/edit/resume). Each gets
+        # its own cancel event so :meth:`unregister` (pause/disable/edit)
+        # stops *one* loop without touching the rest. The shared
+        # ``cancel`` event still stops everyone at lifespan shutdown.
+        self._job_cancels: dict[str, asyncio.Event] = {}
+        self._job_tasks: dict[str, asyncio.Task[None]] = {}
 
     @property
     def tasks(self) -> list[asyncio.Task[None]]:
         """The per-job tick tasks. Read-only for inspection; tests use
         this to assert "spawn returned N tasks for N parseable jobs"."""
         return list(self._tasks)
+
+    def has_job(self, name: str) -> bool:
+        """True when a tick loop (boot-spawned or hot-registered) is
+        currently running for ``name``. Used by the admin routes to
+        decide whether a pause/resume call needs to (un)register a loop."""
+        return name in self._job_tasks or name in self._specs
+
+    def register(self, spec: JobSpec) -> bool:
+        """Hot-register a runtime job's tick loop (admin create/resume).
+
+        Spawns one per-job tick loop guarded by a *fresh* per-job cancel
+        event chained to the shared shutdown event. Re-registering the
+        same ``name`` first tears the old loop down so an edited cron
+        takes effect without a duplicate firing. Returns ``True`` when a
+        loop was (re)started; ``False`` when no bus is wired (the handle
+        was built without one — nothing to fire into).
+
+        Best-effort: requires a running event loop. The admin routes call
+        this from within the request handler (always inside the loop).
+        """
+        if self._bus is None:
+            return False
+        self.unregister(spec.name)
+        job_cancel = asyncio.Event()
+        self._job_cancels[spec.name] = job_cancel
+        self._specs[spec.name] = spec
+        task = asyncio.create_task(
+            _run_job_loop(
+                spec,
+                self._bus,
+                self._cancel,
+                self._app_state,
+                catch_up=False,
+                extra_cancel=job_cancel,
+            ),
+            name=f"scheduler-rt-{spec.name}",
+        )
+        self._job_tasks[spec.name] = task
+        self._tasks.append(task)
+        return True
+
+    def unregister(self, name: str) -> None:
+        """Cancel a hot-registered job's tick loop (admin pause/disable/
+        delete). Idempotent: a ``name`` with no live loop is a no-op.
+
+        The spec is dropped from the trigger registry too so a stale
+        paused job can't be ``trigger()``-ed against an outdated cron;
+        the admin route re-supplies it on resume.
+        """
+        job_cancel = self._job_cancels.pop(name, None)
+        if job_cancel is not None:
+            job_cancel.set()
+        task = self._job_tasks.pop(name, None)
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(ValueError):
+                self._tasks.remove(task)
+        self._specs.pop(name, None)
 
     async def trigger(self, name: str) -> None:
         """Fire job ``name`` immediately, out-of-band of its cron.
@@ -881,31 +953,46 @@ class SchedulerHandle:
         await asyncio.gather(*self._tasks, return_exceptions=True)
 
 
-async def _sleep_until(deadline: float, cancel: asyncio.Event) -> bool:
+async def _sleep_until(
+    deadline: float,
+    cancel: asyncio.Event,
+    extra_cancel: asyncio.Event | None = None,
+) -> bool:
     """Sleep until ``deadline`` (monotonic seconds) or until cancel fires.
 
     Returns ``True`` if the sleep was interrupted by cancel, ``False``
     if the deadline elapsed normally. The two-arm select mirrors the
     Rust ``tokio::select! { cancel.cancelled(); sleep(wait); }``
     pattern.
+
+    ``extra_cancel`` is the optional per-job cancel event a hot-registered
+    runtime job carries (admin pause/edit). Either event waking ends the
+    sleep and is reported as cancelled so the loop exits promptly.
     """
     now = time.monotonic()
     wait = max(0.0, deadline - now)
     if wait <= 0:
-        return cancel.is_set()
+        return cancel.is_set() or (extra_cancel is not None and extra_cancel.is_set())
     cancel_task = asyncio.create_task(cancel.wait(), name="scheduler-cancel-wait")
     sleep_task = asyncio.create_task(asyncio.sleep(wait), name="scheduler-sleep")
+    watch = {cancel_task, sleep_task}
+    extra_task: asyncio.Task[bool] | None = None
+    if extra_cancel is not None:
+        extra_task = asyncio.create_task(
+            extra_cancel.wait(), name="scheduler-job-cancel-wait"
+        )
+        watch.add(extra_task)
     try:
         done, _pending = await asyncio.wait(
-            {cancel_task, sleep_task}, return_when=asyncio.FIRST_COMPLETED
+            watch, return_when=asyncio.FIRST_COMPLETED
         )
     finally:
-        for t in (cancel_task, sleep_task):
+        for t in watch:
             if not t.done():
                 t.cancel()
                 with contextlib.suppress(BaseException):
                     await t
-    return cancel_task in done
+    return cancel_task in done or (extra_task is not None and extra_task in done)
 
 
 #: Default missed-run catch-up grace window (seconds). When the gateway
@@ -1015,6 +1102,14 @@ async def _maybe_catch_up(
     await dispatch(spec, bus, app_state)
 
 
+def _stop_requested(
+    cancel: asyncio.Event, extra_cancel: asyncio.Event | None
+) -> bool:
+    """True when either the shared shutdown event or this job's own
+    pause/edit event has fired."""
+    return cancel.is_set() or (extra_cancel is not None and extra_cancel.is_set())
+
+
 async def _run_job_loop(
     spec: JobSpec,
     bus: HookBus,
@@ -1022,6 +1117,7 @@ async def _run_job_loop(
     app_state: object | None = None,
     *,
     catch_up: bool = True,
+    extra_cancel: asyncio.Event | None = None,
 ) -> None:
     """Per-job tick loop. Mirrors Rust ``runtime::run_job_loop``.
 
@@ -1043,7 +1139,7 @@ async def _run_job_loop(
     from datetime import datetime
 
     _logger.info("scheduler: job loop started", extra={"job": spec.name})
-    if catch_up and not cancel.is_set():
+    if catch_up and not _stop_requested(cancel, extra_cancel):
         try:
             await _maybe_catch_up(spec, bus, app_state)
         except Exception as exc:  # noqa: BLE001 — never crash the loop
@@ -1052,7 +1148,7 @@ async def _run_job_loop(
                 extra={"job": spec.name, "error": str(exc)},
             )
     while True:
-        if cancel.is_set():
+        if _stop_requested(cancel, extra_cancel):
             _logger.info("scheduler: cancelled; exiting", extra={"job": spec.name})
             return
         now_wall = datetime.now(tz=UTC)
@@ -1073,7 +1169,7 @@ async def _run_job_loop(
                 "wait_secs": int(wait_secs),
             },
         )
-        cancelled = await _sleep_until(deadline_mono, cancel)
+        cancelled = await _sleep_until(deadline_mono, cancel, extra_cancel)
         if cancelled:
             _logger.info(
                 "scheduler: cancelled while sleeping; exiting", extra={"job": spec.name}
@@ -1082,7 +1178,7 @@ async def _run_job_loop(
         # Re-check the cancel flag before firing — the sleep could
         # have completed in the same tick as a cancel signal. Mirrors
         # the Rust ``if cancel.is_cancelled() { return; }`` guard.
-        if cancel.is_set():
+        if _stop_requested(cancel, extra_cancel):
             _logger.info(
                 "scheduler: cancelled before fire; exiting", extra={"job": spec.name}
             )
@@ -1137,6 +1233,42 @@ def spawn(
     )
 
 
+def runtime_job_spec(name: str, cron: str, action_type: str) -> JobSpec | None:
+    """Build a :class:`JobSpec` for a runtime (admin-created) job.
+
+    Runtime jobs carry an ``action_type`` slug (e.g.
+    ``"qzone.daily_publish"``) rather than the nested config-action
+    shape. The slug is a ``"<plugin>.<tool>"`` builtin key, so we map it
+    onto a ``run_tool`` :class:`ActionSpec` — exactly what
+    :func:`dispatch` routes through the builtin registry. The per-job
+    metadata (persona_id / prompt_template / qq_account) is *not* carried
+    on the spec; the builtin reads it off ``app_state.
+    scheduler_job_metadata[name]`` (the admin route mirrors it there).
+
+    Returns ``None`` when the cron fails to parse or the ``action_type``
+    has no ``"<plugin>.<tool>"`` shape so the caller skips the job
+    rather than spawning a loop that can never fire.
+    """
+    if "." not in action_type:
+        return None
+    plugin, _, tool = action_type.partition(".")
+    if not plugin or not tool:
+        return None
+    try:
+        schedule = parse(cron)
+    except Exception as exc:  # noqa: BLE001 — mirror JobSpec.from_config
+        _logger.warning(
+            "scheduler: dropping runtime job with unparseable cron",
+            extra={"job": name, "cron": cron, "error": str(exc)},
+        )
+        return None
+    return JobSpec(
+        name=name,
+        cron=schedule,
+        action=ActionSpec(kind="run_tool", plugin=plugin, tool=tool),
+    )
+
+
 __all__ = [
     "ActionSpec",
     "JobAction",
@@ -1148,5 +1280,6 @@ __all__ = [
     "SubprocessOutcomeKind",
     "dispatch",
     "run_subprocess",
+    "runtime_job_spec",
     "spawn",
 ]

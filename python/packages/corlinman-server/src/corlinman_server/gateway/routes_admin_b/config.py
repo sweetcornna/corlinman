@@ -409,6 +409,7 @@ def router() -> APIRouter:
             "system",
             "identity",
             "persona",
+            "subagent",
         )
         snap = dict(config_snapshot())
         sections = sorted(set(known_sections) | set(snap.keys()))
