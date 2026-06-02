@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "generated_at": "2026-06-01T07:28:33Z",
+  "generated_at": "2026-06-02T09:47:44Z",
   "items": [
     {
       "kind": "mcp",
@@ -18,7 +18,7 @@
           "BRAVE_API_KEY"
         ]
       },
-      "updated_at": "2026-06-01T07:28:33Z"
+      "updated_at": "2026-06-02T09:47:44Z"
     },
     {
       "kind": "mcp",
@@ -34,7 +34,7 @@
       "requires": {
         "env": []
       },
-      "updated_at": "2026-06-01T07:28:33Z"
+      "updated_at": "2026-06-02T09:47:44Z"
     },
     {
       "kind": "mcp",
@@ -50,7 +50,7 @@
       "requires": {
         "env": []
       },
-      "updated_at": "2026-06-01T07:28:33Z"
+      "updated_at": "2026-06-02T09:47:44Z"
     },
     {
       "kind": "mcp",
@@ -66,7 +66,7 @@
       "requires": {
         "env": []
       },
-      "updated_at": "2026-06-01T07:28:33Z"
+      "updated_at": "2026-06-02T09:47:44Z"
     },
     {
       "kind": "mcp",
@@ -82,7 +82,7 @@
       "requires": {
         "env": []
       },
-      "updated_at": "2026-06-01T07:28:33Z"
+      "updated_at": "2026-06-02T09:47:44Z"
     },
     {
       "kind": "mcp",
@@ -98,7 +98,7 @@
       "requires": {
         "env": []
       },
-      "updated_at": "2026-06-01T07:28:33Z"
+      "updated_at": "2026-06-02T09:47:44Z"
     },
     {
       "kind": "mcp",
@@ -116,7 +116,7 @@
           "FIRECRAWL_API_KEY"
         ]
       },
-      "updated_at": "2026-06-01T07:28:33Z"
+      "updated_at": "2026-06-02T09:47:44Z"
     },
     {
       "kind": "mcp",
@@ -132,7 +132,7 @@
       "requires": {
         "env": []
       },
-      "updated_at": "2026-06-01T07:28:33Z"
+      "updated_at": "2026-06-02T09:47:44Z"
     },
     {
       "kind": "mcp",
@@ -150,7 +150,7 @@
           "GITHUB_PERSONAL_ACCESS_TOKEN"
         ]
       },
-      "updated_at": "2026-06-01T07:28:33Z"
+      "updated_at": "2026-06-02T09:47:44Z"
     },
     {
       "kind": "mcp",
@@ -169,7 +169,7 @@
           "GITLAB_API_URL"
         ]
       },
-      "updated_at": "2026-06-01T07:28:33Z"
+      "updated_at": "2026-06-02T09:47:44Z"
     },
     {
       "kind": "mcp",
@@ -187,7 +187,7 @@
           "GOOGLE_MAPS_API_KEY"
         ]
       },
-      "updated_at": "2026-06-01T07:28:33Z"
+      "updated_at": "2026-06-02T09:47:44Z"
     },
     {
       "kind": "mcp",
@@ -203,7 +203,7 @@
       "requires": {
         "env": []
       },
-      "updated_at": "2026-06-01T07:28:33Z"
+      "updated_at": "2026-06-02T09:47:44Z"
     },
     {
       "kind": "mcp",
@@ -219,7 +219,7 @@
       "requires": {
         "env": []
       },
-      "updated_at": "2026-06-01T07:28:33Z"
+      "updated_at": "2026-06-02T09:47:44Z"
     },
     {
       "kind": "mcp",
@@ -235,7 +235,7 @@
       "requires": {
         "env": []
       },
-      "updated_at": "2026-06-01T07:28:33Z"
+      "updated_at": "2026-06-02T09:47:44Z"
     },
     {
       "kind": "mcp",
@@ -251,7 +251,7 @@
       "requires": {
         "env": []
       },
-      "updated_at": "2026-06-01T07:28:33Z"
+      "updated_at": "2026-06-02T09:47:44Z"
     },
     {
       "kind": "mcp",
@@ -267,7 +267,7 @@
       "requires": {
         "env": []
       },
-      "updated_at": "2026-06-01T07:28:33Z"
+      "updated_at": "2026-06-02T09:47:44Z"
     },
     {
       "kind": "mcp",
@@ -283,7 +283,7 @@
       "requires": {
         "env": []
       },
-      "updated_at": "2026-06-01T07:28:33Z"
+      "updated_at": "2026-06-02T09:47:44Z"
     },
     {
       "kind": "mcp",
@@ -299,7 +299,7 @@
       "requires": {
         "env": []
       },
-      "updated_at": "2026-06-01T07:28:33Z"
+      "updated_at": "2026-06-02T09:47:44Z"
     },
     {
       "kind": "mcp",
@@ -318,7 +318,7 @@
           "SLACK_TEAM_ID"
         ]
       },
-      "updated_at": "2026-06-01T07:28:33Z"
+      "updated_at": "2026-06-02T09:47:44Z"
     },
     {
       "kind": "mcp",
@@ -334,7 +334,7 @@
       "requires": {
         "env": []
       },
-      "updated_at": "2026-06-01T07:28:33Z"
+      "updated_at": "2026-06-02T09:47:44Z"
     },
     {
       "kind": "mcp",
@@ -350,7 +350,20 @@
       "requires": {
         "env": []
       },
-      "updated_at": "2026-06-01T07:28:33Z"
+      "updated_at": "2026-06-02T09:47:44Z"
+    },
+    {
+      "kind": "plugin",
+      "slug": "any-search",
+      "name": "any-search",
+      "description": "Real-time web and vertical-domain search via AnySearch, including domain listing, batch search, and URL content extraction.",
+      "latest_version": "1.0.0",
+      "versions": [
+        "1.0.0"
+      ],
+      "tarball": "dist/plugins/any-search-1.0.0.tar.gz",
+      "sha256": "ff993630d24754d53c9f56eae672711d65d61a6c3a773cbe0a40888cd1328f51",
+      "updated_at": "2026-06-02T09:47:44Z"
     },
     {
       "kind": "plugin",
@@ -363,7 +376,7 @@
       ],
       "tarball": "dist/plugins/echo-plugin-0.1.0.tar.gz",
       "sha256": "7e7629c13204bf6f5e997a122befb4a3f339940e04252f840926ffa1fd3fbcf6",
-      "updated_at": "2026-06-01T07:28:33Z"
+      "updated_at": "2026-06-02T09:47:44Z"
     },
     {
       "kind": "plugin",
@@ -376,7 +389,7 @@
       ],
       "tarball": "dist/plugins/json-pretty-0.1.0.tar.gz",
       "sha256": "dde34340cd1cc0d4dd23c4f8f5e94cfb681851e4aa18a91be8accd83540a0b79",
-      "updated_at": "2026-06-01T07:28:33Z"
+      "updated_at": "2026-06-02T09:47:44Z"
     },
     {
       "kind": "plugin",
@@ -389,7 +402,46 @@
       ],
       "tarball": "dist/plugins/text-tools-0.1.0.tar.gz",
       "sha256": "c630fc6a92501a245fd9c505123021b00e14c8bec540d2c4f7635f27a77050ad",
-      "updated_at": "2026-06-01T07:28:33Z"
+      "updated_at": "2026-06-02T09:47:44Z"
+    },
+    {
+      "kind": "plugin",
+      "slug": "tinyfish-browser",
+      "name": "tinyfish-browser",
+      "description": "Search the web and fetch rendered page content via TinyFish APIs, including JS-heavy pages.",
+      "latest_version": "1.0.0",
+      "versions": [
+        "1.0.0"
+      ],
+      "tarball": "dist/plugins/tinyfish-browser-1.0.0.tar.gz",
+      "sha256": "0cf742de9628d3fa77b53bf6424f3e1ae4a5dcec7a960c7cd17e66d455c01c51",
+      "updated_at": "2026-06-02T09:47:44Z"
+    },
+    {
+      "kind": "plugin",
+      "slug": "v-search",
+      "name": "v-search",
+      "description": "Concurrent semantic search across grounding, Grok, Tavily, and Kimi Search backends, with optional synthesis into a research-style result.",
+      "latest_version": "1.0.0",
+      "versions": [
+        "1.0.0"
+      ],
+      "tarball": "dist/plugins/v-search-1.0.0.tar.gz",
+      "sha256": "e5225496173394a9f21a43b1352f3abe87bbcaae65c29c9de2e5845f595c90fb",
+      "updated_at": "2026-06-02T09:47:44Z"
+    },
+    {
+      "kind": "plugin",
+      "slug": "zhihu-search",
+      "name": "zhihu-search",
+      "description": "Search Zhihu via the official OpenAPI, with separate tools for site search and global search plus structured metadata for AI use.",
+      "latest_version": "1.0.0",
+      "versions": [
+        "1.0.0"
+      ],
+      "tarball": "dist/plugins/zhihu-search-1.0.0.tar.gz",
+      "sha256": "bc7d56194753e14df8641b05b19157fa05abce6b478eb13dfa8d64d976188201",
+      "updated_at": "2026-06-02T09:47:44Z"
     },
     {
       "kind": "skill",
@@ -402,7 +454,7 @@
       ],
       "tarball": "dist/skills/brainstorming-1.0.0.tar.gz",
       "sha256": "f8b26035eeaea591fb64f6d48524e1e5a76cc9f371ea8b41f162a433895d3d3a",
-      "updated_at": "2026-06-01T07:28:33Z",
+      "updated_at": "2026-06-02T09:47:44Z",
       "emoji": "💡"
     },
     {
@@ -416,7 +468,7 @@
       ],
       "tarball": "dist/skills/conventional-commits-1.0.0.tar.gz",
       "sha256": "85c09922148f8f1739449d90d609e99290553c02861adc6042fd38bbada5bf3c",
-      "updated_at": "2026-06-01T07:28:33Z",
+      "updated_at": "2026-06-02T09:47:44Z",
       "emoji": "🔖"
     },
     {
@@ -430,7 +482,7 @@
       ],
       "tarball": "dist/skills/frontend-design-1.0.0.tar.gz",
       "sha256": "59f5b431a26a22a5210ffc26c9afaf6cd1729769580a48b8a0f44fae44d01248",
-      "updated_at": "2026-06-01T07:28:33Z",
+      "updated_at": "2026-06-02T09:47:44Z",
       "emoji": "🎨"
     },
     {
@@ -444,7 +496,7 @@
       ],
       "tarball": "dist/skills/hello-skill-1.0.0.tar.gz",
       "sha256": "e71dfa517930d970f0f0b4c82c1687fb119f6405ed1165d8225d481c7b61c6ac",
-      "updated_at": "2026-06-01T07:28:33Z",
+      "updated_at": "2026-06-02T09:47:44Z",
       "emoji": "👋"
     },
     {
@@ -458,7 +510,7 @@
       ],
       "tarball": "dist/skills/mcp-builder-1.0.0.tar.gz",
       "sha256": "e3b8fcbc45de2462ab15c17e17fbd2ffd783844163015987ff60cc052f558c2b",
-      "updated_at": "2026-06-01T07:28:33Z",
+      "updated_at": "2026-06-02T09:47:44Z",
       "emoji": "🔌"
     },
     {
@@ -472,7 +524,7 @@
       ],
       "tarball": "dist/skills/skill-creator-1.0.0.tar.gz",
       "sha256": "b043d20917cd71d0aeb1f06410661481742769f1106c2a6e99a7c1244b13320a",
-      "updated_at": "2026-06-01T07:28:33Z",
+      "updated_at": "2026-06-02T09:47:44Z",
       "emoji": "🛠️"
     },
     {
@@ -486,7 +538,7 @@
       ],
       "tarball": "dist/skills/systematic-debugging-1.0.0.tar.gz",
       "sha256": "0f08898179d6734c7c987bcea22e1a7601a5425314ce20c1eab596d846e2cfb1",
-      "updated_at": "2026-06-01T07:28:33Z",
+      "updated_at": "2026-06-02T09:47:44Z",
       "emoji": "🐛"
     },
     {
@@ -500,7 +552,7 @@
       ],
       "tarball": "dist/skills/test-driven-development-1.0.0.tar.gz",
       "sha256": "adfee4c88d2fee34680afa983e8b7317ac9a478cc00e9d4c6b141aa9007d29a7",
-      "updated_at": "2026-06-01T07:28:33Z",
+      "updated_at": "2026-06-02T09:47:44Z",
       "emoji": "✅"
     },
     {
@@ -514,7 +566,7 @@
       ],
       "tarball": "dist/skills/webapp-testing-1.0.0.tar.gz",
       "sha256": "faf42d0d623e1472ed284705a4c9256e039eaa166901af805670e9d7e323a08e",
-      "updated_at": "2026-06-01T07:28:33Z",
+      "updated_at": "2026-06-02T09:47:44Z",
       "emoji": "🧪"
     },
     {
@@ -528,7 +580,7 @@
       ],
       "tarball": "dist/skills/writing-plans-1.0.0.tar.gz",
       "sha256": "ba0944949878cd58a752734a8fb8d19be7dc06419f1ce1ec93c1d31d200f9845",
-      "updated_at": "2026-06-01T07:28:33Z",
+      "updated_at": "2026-06-02T09:47:44Z",
       "emoji": "📝"
     }
   ]

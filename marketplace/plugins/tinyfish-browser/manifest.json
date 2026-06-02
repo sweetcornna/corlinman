@@ -1,0 +1,13 @@
+{
+  "name": "tinyfish-browser",
+  "version": "1.0.0",
+  "description": "Search the web and fetch rendered page content via TinyFish APIs, including JS-heavy pages.",
+  "entry": "tinyfish_browser.js",
+  "permissions": [],
+  "requires": {
+    "env": [
+      "TINYFISH_API_KEY",
+      "DebugMode"
+    ]
+  }
+}

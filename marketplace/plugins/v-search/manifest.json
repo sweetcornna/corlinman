@@ -1,0 +1,28 @@
+{
+  "name": "v-search",
+  "version": "1.0.0",
+  "description": "Concurrent semantic search across grounding, Grok, Tavily, and Kimi Search backends, with optional synthesis into a research-style result.",
+  "entry": "v_search.js",
+  "permissions": [],
+  "requires": {
+    "env": [
+      "SearchMode",
+      "VSearchKey",
+      "VSearchUrl",
+      "VSearchModel",
+      "GrokModel",
+      "TavilyKey",
+      "TavilyModel",
+      "SummaryKey",
+      "SummaryUrl",
+      "SummaryModel",
+      "VSearchMaxToken",
+      "MaxConcurrent",
+      "HTTP_PROXY",
+      "KimiSearchUrl",
+      "KimiSearchKey",
+      "KimiSearchMaxResults",
+      "KimiSearchIncludeContent"
+    ]
+  }
+}
