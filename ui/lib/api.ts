@@ -2470,6 +2470,19 @@ export interface InstalledSkillRow {
   use_count: number;
   last_used_at: string | null;
   created_at: string | null;
+  // Editor-facing fields — mirror the writable keys on `SkillUpdateBody`.
+  // The gateway populates these when its skill-registry factory is wired
+  // (the disk-only fallback leaves them at the defaults below). The edit
+  // drawer seeds its form from these and round-trips via
+  // `updateInstalledSkill`.
+  /** Raw SKILL.md prose injected into the assembler verbatim. */
+  body_markdown: string;
+  /** Model-selection hint parsed off the frontmatter; `null` when absent. */
+  when_to_use: string | null;
+  /** Tool allowlist scoped to this skill's turns. */
+  allowed_tools: string[];
+  /** When `true` the model can't auto-invoke the skill (manual-only). */
+  disable_model_invocation: boolean;
 }
 
 export interface InstalledSkillsResponse {

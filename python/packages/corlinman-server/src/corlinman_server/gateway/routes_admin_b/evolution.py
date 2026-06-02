@@ -196,6 +196,53 @@ class HistoryEntryOut(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Settings wire shapes (GET/PUT /admin/evolution/settings)
+# ---------------------------------------------------------------------------
+#
+# The meta-approver allow-list (``[admin].meta_approver_users``) plus the
+# budget (``[evolution.budget]``) and auto-rollback (``[evolution.auto_rollback]``)
+# tunables all live in the config TOML, but there was no admin surface to
+# edit them — so the empty default of ``meta_approver_users`` 403'd every
+# meta approval out of the box with no way to opt anyone in. These two
+# routes give the UI a focused read/write seam over just those three
+# sections, persisting through the same atomic config-write path
+# ``/admin/config`` uses (``admin_write_lock`` + temp-file replace +
+# ``config_swap_fn`` publish + py-config re-emit).
+
+
+class AutoRollbackThresholdsModel(BaseModel):
+    default_err_rate_delta_pct: float = 0.0
+    default_p95_latency_delta_pct: float = 0.0
+    signal_window_secs: int = 0
+    min_baseline_signals: int = 0
+
+
+class AutoRollbackSettings(BaseModel):
+    enabled: bool = False
+    grace_window_hours: int = 72
+    thresholds: AutoRollbackThresholdsModel = Field(
+        default_factory=AutoRollbackThresholdsModel
+    )
+
+
+class BudgetSettings(BaseModel):
+    enabled: bool = False
+    weekly_total: int = 0
+    per_kind: dict[str, int] = Field(default_factory=dict)
+
+
+class EvolutionSettings(BaseModel):
+    meta_approver_users: list[str] = Field(default_factory=list)
+    budget: BudgetSettings = Field(default_factory=BudgetSettings)
+    auto_rollback: AutoRollbackSettings = Field(default_factory=AutoRollbackSettings)
+
+
+class PutSettingsResponse(BaseModel):
+    status: str  # "ok"
+    settings: EvolutionSettings
+
+
+# ---------------------------------------------------------------------------
 # Error envelopes (mirror the Rust JSON shapes byte-for-byte)
 # ---------------------------------------------------------------------------
 
@@ -322,6 +369,23 @@ def _meta_approver_required(user: str, kind: str) -> JSONResponse:
             "user": user,
             "kind": kind,
         },
+    )
+
+
+def _config_path_unset() -> JSONResponse:
+    return JSONResponse(
+        status_code=503,
+        content={
+            "error": "config_path_unset",
+            "message": "gateway booted without a config file path",
+        },
+    )
+
+
+def _settings_write_failed(message: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=500,
+        content={"error": "write_failed", "message": message},
     )
 
 
@@ -486,6 +550,156 @@ def _assert_meta_approver(
 
 def _decidable(status_str: str) -> bool:
     return status_str in _DECIDABLE_STATUSES
+
+
+def _read_settings(state: AdminState) -> EvolutionSettings:
+    """Project the live config snapshot onto :class:`EvolutionSettings`.
+
+    Defensive against missing / malformed sections so a partially
+    configured (or empty) snapshot collapses to the model defaults
+    rather than raising — mirrors the read-side leniency the budget
+    route already relies on."""
+    cfg = config_snapshot(state)
+    admin_cfg = cfg.get("admin") if isinstance(cfg, dict) else None
+    evo_cfg = cfg.get("evolution") if isinstance(cfg, dict) else None
+
+    approvers: list[str] = []
+    if isinstance(admin_cfg, dict):
+        raw = admin_cfg.get("meta_approver_users")
+        if isinstance(raw, list):
+            approvers = [str(u) for u in raw]
+
+    budget_raw = evo_cfg.get("budget") if isinstance(evo_cfg, dict) else None
+    budget = BudgetSettings()
+    if isinstance(budget_raw, dict):
+        per_kind: dict[str, int] = {}
+        raw_pk = budget_raw.get("per_kind")
+        if isinstance(raw_pk, dict):
+            for k, v in raw_pk.items():
+                try:
+                    per_kind[str(k)] = int(v)
+                except (TypeError, ValueError):
+                    continue
+        try:
+            weekly_total = int(budget_raw.get("weekly_total", 0))
+        except (TypeError, ValueError):
+            weekly_total = 0
+        budget = BudgetSettings(
+            enabled=bool(budget_raw.get("enabled", False)),
+            weekly_total=weekly_total,
+            per_kind=per_kind,
+        )
+
+    ar_raw = evo_cfg.get("auto_rollback") if isinstance(evo_cfg, dict) else None
+    auto_rollback = AutoRollbackSettings()
+    if isinstance(ar_raw, dict):
+        th = AutoRollbackThresholdsModel()
+        th_raw = ar_raw.get("thresholds")
+        if isinstance(th_raw, dict):
+            try:
+                th = AutoRollbackThresholdsModel(
+                    default_err_rate_delta_pct=float(
+                        th_raw.get("default_err_rate_delta_pct", 0.0)
+                    ),
+                    default_p95_latency_delta_pct=float(
+                        th_raw.get("default_p95_latency_delta_pct", 0.0)
+                    ),
+                    signal_window_secs=int(th_raw.get("signal_window_secs", 0)),
+                    min_baseline_signals=int(th_raw.get("min_baseline_signals", 0)),
+                )
+            except (TypeError, ValueError):
+                th = AutoRollbackThresholdsModel()
+        try:
+            grace = int(ar_raw.get("grace_window_hours", 72))
+        except (TypeError, ValueError):
+            grace = 72
+        auto_rollback = AutoRollbackSettings(
+            enabled=bool(ar_raw.get("enabled", False)),
+            grace_window_hours=grace,
+            thresholds=th,
+        )
+
+    return EvolutionSettings(
+        meta_approver_users=approvers,
+        budget=budget,
+        auto_rollback=auto_rollback,
+    )
+
+
+def _apply_settings(cfg: dict[str, Any], settings: EvolutionSettings) -> dict[str, Any]:
+    """Return a deep-ish copy of ``cfg`` with the three managed sections
+    overwritten from ``settings``. Only the keys this surface owns are
+    touched — every other key in ``[admin]`` / ``[evolution]`` is
+    preserved so we don't clobber unrelated config the operator set via
+    the raw ``/admin/config`` editor."""
+    import copy as _copy  # noqa: PLC0415
+
+    out = _copy.deepcopy(cfg) if isinstance(cfg, dict) else {}
+
+    admin_section = out.get("admin")
+    if not isinstance(admin_section, dict):
+        admin_section = {}
+    admin_section["meta_approver_users"] = list(settings.meta_approver_users)
+    out["admin"] = admin_section
+
+    evo_section = out.get("evolution")
+    if not isinstance(evo_section, dict):
+        evo_section = {}
+    evo_section["budget"] = {
+        "enabled": settings.budget.enabled,
+        "weekly_total": settings.budget.weekly_total,
+        "per_kind": dict(settings.budget.per_kind),
+    }
+    evo_section["auto_rollback"] = {
+        "enabled": settings.auto_rollback.enabled,
+        "grace_window_hours": settings.auto_rollback.grace_window_hours,
+        "thresholds": {
+            "default_err_rate_delta_pct": (
+                settings.auto_rollback.thresholds.default_err_rate_delta_pct
+            ),
+            "default_p95_latency_delta_pct": (
+                settings.auto_rollback.thresholds.default_p95_latency_delta_pct
+            ),
+            "signal_window_secs": (
+                settings.auto_rollback.thresholds.signal_window_secs
+            ),
+            "min_baseline_signals": (
+                settings.auto_rollback.thresholds.min_baseline_signals
+            ),
+        },
+    }
+    out["evolution"] = evo_section
+    return out
+
+
+def _toml_dumps_settings(cfg: dict[str, Any]) -> str:
+    try:
+        import tomli_w  # noqa: PLC0415
+
+        return tomli_w.dumps(cfg)
+    except ImportError:  # pragma: no cover
+        import toml  # type: ignore  # noqa: PLC0415
+
+        return str(toml.dumps(cfg))
+
+
+async def _publish_settings(state: AdminState, cfg: dict[str, Any]) -> None:
+    """Best-effort hot-swap + py-config re-emit, matching ``/admin/config``."""
+    swap_fn = state.extras.get("config_swap_fn")
+    if swap_fn is not None:
+        res = swap_fn(cfg)
+        if hasattr(res, "__await__"):
+            await res
+    if state.py_config_path is not None:
+        try:
+            from corlinman_server.gateway.lifecycle import (  # noqa: PLC0415
+                write_py_config,
+            )
+        except ImportError:
+            return
+        res2 = write_py_config(cfg, state.py_config_path)
+        if hasattr(res2, "__await__"):
+            await res2
 
 
 # ---------------------------------------------------------------------------
@@ -687,6 +901,41 @@ def router() -> APIRouter:  # noqa: C901 — single APIRouter factory, mirrors R
                 )
             )
         return [e.model_dump() for e in out]
+
+    @r.get("/admin/evolution/settings", response_model=EvolutionSettings)
+    async def get_settings():
+        # Registered before ``/admin/evolution/{id}`` so the literal
+        # ``settings`` path wins the FastAPI match (same first-registration
+        # discipline the ``budget`` / ``history`` routes follow above).
+        state = get_admin_state()
+        return _read_settings(state).model_dump()
+
+    @r.put("/admin/evolution/settings", response_model=PutSettingsResponse)
+    async def put_settings(body: EvolutionSettings):
+        state = get_admin_state()
+        if state.config_path is None:
+            return _config_path_unset()
+
+        async with state.admin_write_lock:
+            current = dict(config_snapshot(state))
+            merged = _apply_settings(current, body)
+            try:
+                serialised = _toml_dumps_settings(merged)
+            except Exception as exc:  # noqa: BLE001
+                return _settings_write_failed(f"serialise: {exc}")
+            path = state.config_path
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                tmp = path.with_suffix(path.suffix + ".new")
+                tmp.write_text(serialised, encoding="utf-8")
+                tmp.replace(path)
+            except OSError as exc:
+                return _settings_write_failed(str(exc))
+            await _publish_settings(state, merged)
+
+        # Echo the persisted projection so the UI can reconcile without a
+        # follow-up GET (the merge may normalise per-kind ints etc).
+        return PutSettingsResponse(status="ok", settings=body).model_dump()
 
     @r.get("/admin/evolution/{id}", response_model=ProposalOut)
     async def get_proposal(id: str):

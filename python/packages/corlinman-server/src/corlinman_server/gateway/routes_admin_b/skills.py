@@ -128,6 +128,15 @@ class InstalledSkillOut(BaseModel):
     use_count: int = 0
     last_used_at: str | None = None
     created_at: str | None = None
+    # Editor-facing fields — populated when the registry factory is wired
+    # (the disk-only fallback can't parse the SKILL.md body cheaply, so it
+    # leaves these at their empty defaults). These mirror the writable keys
+    # on :class:`SkillUpdateBody` so the UI's edit drawer can round-trip a
+    # row through ``PUT /admin/skills/{name}`` without a second fetch.
+    body_markdown: str = ""
+    when_to_use: str | None = None
+    allowed_tools: list[str] = Field(default_factory=list)
+    disable_model_invocation: bool = False
 
 
 class SkillsListResponse(BaseModel):
@@ -624,6 +633,10 @@ def _build_row(
     created_at: str | None = None
     use_count = 0
     last_used_at: str | None = None
+    body_markdown = ""
+    when_to_use: str | None = None
+    allowed_tools: list[str] = []
+    disable_model_invocation = False
 
     if registry is not None:
         skill = registry.get(name) if hasattr(registry, "get") else None
@@ -633,6 +646,15 @@ def _build_row(
             state_str = str(getattr(skill, "state", state_str))
             pinned = bool(getattr(skill, "pinned", pinned))
             created_at = _iso(getattr(skill, "created_at", None))
+            body_markdown = str(getattr(skill, "body_markdown", "") or "")
+            wtu = getattr(skill, "when_to_use", None)
+            when_to_use = str(wtu) if wtu else None
+            allowed_tools = [
+                str(t) for t in (getattr(skill, "allowed_tools", None) or [])
+            ]
+            disable_model_invocation = bool(
+                getattr(skill, "disable_model_invocation", False)
+            )
             usage = _registry_usage(registry, name)
             if usage is not None:
                 use_count = int(getattr(usage, "use_count", 0) or 0)
@@ -648,6 +670,40 @@ def _build_row(
         use_count=use_count,
         last_used_at=last_used_at,
         created_at=created_at,
+        body_markdown=body_markdown,
+        when_to_use=when_to_use,
+        allowed_tools=allowed_tools,
+        disable_model_invocation=disable_model_invocation,
+    )
+
+
+def _skill_to_out(skill: Any, *, origin: str, usage: Any | None) -> InstalledSkillOut:
+    """Project a registry ``Skill`` onto the wire envelope.
+
+    Shared by :func:`pin_skill` / :func:`update_skill` / the registry pass in
+    :func:`list_skills` so the editor-facing fields (body / when_to_use /
+    allowed_tools / disable_model_invocation) stay in lockstep with
+    :func:`_build_row` without re-typing the ``getattr`` ladder four times.
+    """
+    wtu = getattr(skill, "when_to_use", None)
+    return InstalledSkillOut(
+        name=str(skill.name),
+        description=str(getattr(skill, "description", "")),
+        version=str(getattr(skill, "version", "1.0.0")),
+        state=str(getattr(skill, "state", "active")),
+        origin=origin,
+        pinned=bool(getattr(skill, "pinned", False)),
+        use_count=int(usage.use_count if usage else 0),
+        last_used_at=_iso(usage.last_used_at if usage else None),
+        created_at=_iso(getattr(skill, "created_at", None)),
+        body_markdown=str(getattr(skill, "body_markdown", "") or ""),
+        when_to_use=str(wtu) if wtu else None,
+        allowed_tools=[
+            str(t) for t in (getattr(skill, "allowed_tools", None) or [])
+        ],
+        disable_model_invocation=bool(
+            getattr(skill, "disable_model_invocation", False)
+        ),
     )
 
 
@@ -978,19 +1034,7 @@ def router() -> APIRouter:
                 )
                 usage = _registry_usage(registry, name)
                 rows.append(
-                    InstalledSkillOut(
-                        name=name,
-                        description=str(getattr(skill, "description", "")),
-                        version=str(getattr(skill, "version", "1.0.0")),
-                        state=str(getattr(skill, "state", "active")),
-                        origin=origin,
-                        pinned=bool(getattr(skill, "pinned", False)),
-                        use_count=int(usage.use_count if usage else 0),
-                        last_used_at=_iso(
-                            usage.last_used_at if usage else None
-                        ),
-                        created_at=_iso(getattr(skill, "created_at", None)),
-                    )
+                    _skill_to_out(skill, origin=origin, usage=usage)
                 )
 
         rows.sort(key=lambda row: row.name)
@@ -1072,17 +1116,7 @@ def router() -> APIRouter:
             if skills_dir is not None
             else str(getattr(skill, "origin", "user"))
         )
-        return InstalledSkillOut(
-            name=str(skill.name),
-            description=str(getattr(skill, "description", "")),
-            version=str(getattr(skill, "version", "1.0.0")),
-            state=str(getattr(skill, "state", "active")),
-            origin=origin,
-            pinned=bool(skill.pinned),
-            use_count=int(usage.use_count if usage else 0),
-            last_used_at=_iso(usage.last_used_at if usage else None),
-            created_at=_iso(getattr(skill, "created_at", None)),
-        )
+        return _skill_to_out(skill, origin=origin, usage=usage)
 
     # ------------------------------------------------------------------
     # PUT /admin/skills/{name}
@@ -1197,17 +1231,7 @@ def router() -> APIRouter:
             if skills_dir is not None
             else str(getattr(skill, "origin", "user"))
         )
-        return InstalledSkillOut(
-            name=str(skill.name),
-            description=str(getattr(skill, "description", "")),
-            version=str(getattr(skill, "version", "1.0.0")),
-            state=str(getattr(skill, "state", "active")),
-            origin=origin,
-            pinned=bool(skill.pinned),
-            use_count=int(usage.use_count if usage else 0),
-            last_used_at=_iso(usage.last_used_at if usage else None),
-            created_at=_iso(getattr(skill, "created_at", None)),
-        )
+        return _skill_to_out(skill, origin=origin, usage=usage)
 
     # ------------------------------------------------------------------
     # DELETE /admin/skills/{name}

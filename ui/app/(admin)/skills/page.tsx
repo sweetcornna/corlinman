@@ -21,8 +21,10 @@ import {
   deleteInstalledSkill,
   listInstalledSkills,
   pinInstalledSkill,
+  updateInstalledSkill,
   type InstalledSkillRow,
   type InstalledSkillsResponse,
+  type SkillUpdateBody,
 } from "@/lib/api";
 import { useActiveProfile } from "@/lib/context/active-profile";
 import { SkillsHeader } from "@/components/skills/skills-header";
@@ -32,6 +34,7 @@ import {
   type InstalledFilterValue,
 } from "@/components/skills/installed-list";
 import { HubTab } from "@/components/skills/hub-tab";
+import { SkillDrawer } from "@/components/skills/skill-drawer";
 
 /**
  * Skills admin page — Tidepool cutover + W2.1 backend wire.
@@ -73,6 +76,9 @@ export default function SkillsPage() {
   const [pendingDelete, setPendingDelete] =
     React.useState<InstalledSkillRow | null>(null);
   const [deleteConfirmName, setDeleteConfirmName] = React.useState("");
+  // Row the edit drawer is open on (null = closed). Holds the full row so
+  // the drawer can seed its form without a second fetch.
+  const [editRow, setEditRow] = React.useState<InstalledSkillRow | null>(null);
 
   const { slug } = useActiveProfile();
   const query = useQuery<InstalledSkillsResponse>({
@@ -178,6 +184,42 @@ export default function SkillsPage() {
     },
   });
 
+  // ---- edit mutation ------------------------------------------------------
+  // Drives the editable SkillDrawer. The drawer hands us a changed-field
+  // patch on Save; on success we patch the cached list (so the grid + any
+  // open badge reflect the edit instantly) and close the drawer.
+  const updateMutation = useMutation({
+    mutationFn: ({ name, patch }: { name: string; patch: SkillUpdateBody }) =>
+      updateInstalledSkill(name, patch, slug),
+    onSuccess: (updated) => {
+      queryClient.setQueryData<InstalledSkillsResponse | undefined>(
+        ["admin", "skills", slug],
+        (prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            rows: prev.rows.map((row) =>
+              row.name === updated.name ? updated : row,
+            ),
+          };
+        },
+      );
+      toast.success(t("skills.drawer.saveSuccess", { name: updated.name }));
+      setEditRow(null);
+    },
+    onError: (err, vars) => {
+      const msg =
+        err instanceof CorlinmanApiError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : String(err);
+      toast.error(
+        t("skills.drawer.saveFailed", { name: vars.name, message: msg }),
+      );
+    },
+  });
+
   // Track in-flight names so the InstalledList can disable just the
   // relevant buttons. `useMutation` exposes the pending variables, so
   // we wrap them in a Set keyed by name.
@@ -212,6 +254,17 @@ export default function SkillsPage() {
     setPendingDelete(row);
     setDeleteConfirmName("");
   }, []);
+
+  const handleOpen = React.useCallback((row: InstalledSkillRow) => {
+    setEditRow(row);
+  }, []);
+
+  const handleSave = React.useCallback(
+    async (name: string, patch: SkillUpdateBody) => {
+      await updateMutation.mutateAsync({ name, patch });
+    },
+    [updateMutation],
+  );
 
   // ---- filter chips -------------------------------------------------------
 
@@ -385,6 +438,7 @@ export default function SkillsPage() {
           rows={rows}
           onPin={handlePin}
           onDelete={handleDelete}
+          onOpen={handleOpen}
           search={search}
           filter={filter}
           pinBusy={pinBusy}
@@ -439,6 +493,21 @@ export default function SkillsPage() {
           await deleteMutation.mutateAsync(pendingDelete.name);
         }}
         testId="installed-delete-confirm"
+      />
+
+      {/* Editable skill drawer — opens on row click. The drawer owns its
+          form state + the changed-field diff; the page owns the PUT
+          mutation via `handleSave`. */}
+      <SkillDrawer
+        skill={editRow}
+        open={editRow !== null}
+        onOpenChange={(o) => {
+          // Ignore close requests while a save is mid-flight; the drawer
+          // also blocks outside-click dismiss in that window.
+          if (!o && !updateMutation.isPending) setEditRow(null);
+        }}
+        onSave={handleSave}
+        saving={updateMutation.isPending}
       />
     </motion.div>
   );
