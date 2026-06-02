@@ -1,21 +1,24 @@
-"""Zero-config public-origin learning.
+"""Restricted public-origin learning.
 
 The agent status-card links (and the ``agent_status_card`` tool) need a
 public base URL — ``https://host`` — to build a tappable
-``{public_url}/status/{token}`` link. Operators *can* set it explicitly via
-``[server].public_url`` / ``CORLINMAN_PUBLIC_URL``, but to keep setup
-friction-free we also **learn** it from real inbound HTTP requests:
+``{public_url}/status/{token}`` link. Operators should set it explicitly via
+``[server].public_url`` / ``CORLINMAN_PUBLIC_URL`` in production, but as a
+restricted fallback we can **learn** an allow-listed origin from real inbound
+HTTP requests:
 
 * A request that arrives through the real public hostname (e.g. a browser
   opening the admin UI, or a chat user tapping a status link) carries the
-  origin in its ``Host`` / ``X-Forwarded-Host`` + ``X-Forwarded-Proto``
-  headers. :class:`OriginLearningMiddleware` extracts that origin and
+  origin in its ``Host`` header, or in ``X-Forwarded-Host`` +
+  ``X-Forwarded-Proto`` only when the client is a trusted reverse proxy.
+  :class:`OriginLearningMiddleware` extracts that origin and
   persists it to ``<data_dir>/public_origin`` (one line, atomic write,
   only when it changes).
 * The channel reply path (gateway process) and the ``agent_status_card``
   tool (separate agent process) both fall back to this learned file when no
   explicit ``public_url`` is configured — so the first real request through
-  the public hostname lights the feature up everywhere, no restart needed.
+  an allowed public hostname can light the feature up everywhere, no restart
+  needed.
 
 Loopback / bind-placeholder hosts (``localhost``, ``127.0.0.1``,
 ``0.0.0.0``, ``::1``, ``testserver``) are ignored: a health check or a
@@ -26,15 +29,18 @@ consulted.
 
 from __future__ import annotations
 
+import ipaddress
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 __all__ = [
     "REMEMBERED_ORIGIN_FILENAME",
     "OriginLearningMiddleware",
+    "is_trusted_proxy",
     "load_remembered_origin",
     "origin_from_headers",
     "remember_origin",
@@ -76,31 +82,137 @@ def _strip_default_port(host: str, scheme: str) -> str:
     return host
 
 
+def _host_part(host: str) -> str:
+    """Return the comparison host (lowercase, port stripped)."""
+    value = host.strip().lower()
+    if value.startswith("["):
+        end = value.find("]")
+        return value[: end + 1] if end != -1 else value
+    if value.count(":") == 1:
+        return value.rsplit(":", 1)[0]
+    return value
+
+
+def _canonical_origin(origin: str) -> str | None:
+    """Normalize ``scheme://host`` enough for allow-list comparison."""
+    value = origin.strip()
+    if not value:
+        return None
+    parsed = urlsplit(value if "://" in value else f"//{value}")
+    host = parsed.netloc or parsed.path
+    if not host:
+        return None
+    scheme = (parsed.scheme or "").lower()
+    if scheme and scheme not in {"http", "https"}:
+        return None
+    host = _strip_default_port(host.lower(), scheme or "http")
+    return f"{scheme}://{host}" if scheme else host
+
+
+def _origin_allowed(
+    origin: str, allowed_public_origins: Iterable[str] | None
+) -> bool:
+    """Return whether ``origin`` is permitted to be learned.
+
+    ``None`` preserves the historical no-allow-list mode for direct helper
+    callers. An empty iterable is an explicit deny-all list, which is what the
+    gateway installs when auto-learning is enabled without operator allow-list
+    configuration. Entries may be full origins (``https://bot.example.com``) or
+    bare hosts (``bot.example.com``).
+    """
+    if allowed_public_origins is None:
+        return True
+
+    candidate = _canonical_origin(origin)
+    if candidate is None:
+        return False
+    candidate_host = _canonical_origin(
+        candidate.removeprefix("http://").removeprefix("https://")
+    )
+
+    for raw in allowed_public_origins:
+        allowed = _canonical_origin(str(raw))
+        if not allowed:
+            continue
+        if "://" in allowed:
+            if candidate == allowed:
+                return True
+            continue
+        if candidate_host == allowed:
+            return True
+    return False
+
+
+def is_trusted_proxy(client: object, trusted_proxies: Iterable[str] | None) -> bool:
+    """Return True when the ASGI ``scope['client']`` IP is trusted.
+
+    ``trusted_proxies`` accepts literal IPs or CIDR ranges (for example
+    ``127.0.0.1`` or ``10.0.0.0/8``). Invalid entries are ignored so a bad
+    config cannot break request handling.
+    """
+    if not trusted_proxies:
+        return False
+    host = None
+    if isinstance(client, (list, tuple)) and client:
+        host = client[0]
+    elif isinstance(client, str):
+        host = client
+    if not host:
+        return False
+    try:
+        addr = ipaddress.ip_address(str(host).strip())
+    except ValueError:
+        return False
+    for raw in trusted_proxies:
+        value = str(raw).strip()
+        if not value:
+            continue
+        try:
+            network = ipaddress.ip_network(value, strict=False)
+        except ValueError:
+            continue
+        if addr in network:
+            return True
+    return False
+
+
 def origin_from_headers(
-    headers: dict[str, str], fallback_scheme: str = "http"
+    headers: dict[str, str],
+    fallback_scheme: str = "http",
+    *,
+    use_forwarded: bool = False,
+    allowed_public_origins: Iterable[str] | None = None,
 ) -> str | None:
     """Derive ``scheme://host`` from request headers, or ``None``.
 
     ``headers`` keys are treated case-insensitively (pass a dict with
-    lowercased keys). Honors ``X-Forwarded-Proto`` / ``X-Forwarded-Host``
-    (reverse-proxy chain — takes the leftmost hop) and falls back to the
-    bare ``Host`` header. Returns ``None`` for loopback / placeholder hosts
-    so they are never learned.
+    lowercased keys). ``X-Forwarded-Proto`` / ``X-Forwarded-Host`` are honored
+    only when ``use_forwarded`` is true (the middleware sets this only for
+    trusted reverse-proxy clients); otherwise the ASGI scheme + bare ``Host``
+    header are used. Loopback / placeholder hosts and origins outside
+    ``allowed_public_origins`` are not learned.
     """
     get = lambda k: headers.get(k)  # noqa: E731 - tiny local accessor
-    scheme = (
-        _first_forwarded(get("x-forwarded-proto")) or fallback_scheme or "http"
-    ).lower()
+    scheme = fallback_scheme or "http"
+    if use_forwarded:
+        scheme = _first_forwarded(get("x-forwarded-proto")) or scheme
+    scheme = scheme.lower()
     if scheme not in ("http", "https"):
         scheme = "http"
-    host = _first_forwarded(get("x-forwarded-host")) or get("host")
+
+    host = get("host")
+    if use_forwarded:
+        host = _first_forwarded(get("x-forwarded-host")) or host
     if not host:
         return None
     host = host.strip()
-    host_only = host.rsplit(":", 1)[0] if ":" in host and not host.endswith("]") else host
-    if host_only.lower() in _NON_PUBLIC_HOSTS:
+    if _host_part(host) in _NON_PUBLIC_HOSTS:
         return None
-    return f"{scheme}://{_strip_default_port(host, scheme)}"
+
+    origin = f"{scheme}://{_strip_default_port(host, scheme)}"
+    if not _origin_allowed(origin, allowed_public_origins):
+        return None
+    return origin
 
 
 def load_remembered_origin(data_dir: Path | None) -> str:
@@ -114,7 +226,12 @@ def load_remembered_origin(data_dir: Path | None) -> str:
         return ""
 
 
-def remember_origin(data_dir: Path | None, origin: str) -> bool:
+def remember_origin(
+    data_dir: Path | None,
+    origin: str,
+    *,
+    allowed_public_origins: Iterable[str] | None = None,
+) -> bool:
     """Persist ``origin`` under ``data_dir`` iff it changed.
 
     Returns ``True`` when the file was (re)written, ``False`` otherwise
@@ -123,6 +240,8 @@ def remember_origin(data_dir: Path | None, origin: str) -> bool:
     """
     path = remembered_origin_path(data_dir)
     if path is None or not origin:
+        return False
+    if not _origin_allowed(origin, allowed_public_origins):
         return False
     if load_remembered_origin(data_dir) == origin:
         return False
@@ -157,11 +276,15 @@ class OriginLearningMiddleware:
         data_dir: Path | None,
         explicitly_configured: bool = False,
         on_learn: Callable[[str], None] | None = None,
+        allowed_public_origins: Iterable[str] | None = None,
+        trusted_proxies: Iterable[str] | None = None,
     ) -> None:
         self.app = app
         self._data_dir = data_dir
         self._enabled = data_dir is not None and not explicitly_configured
         self._on_learn = on_learn
+        self._allowed_public_origins = tuple(allowed_public_origins or ())
+        self._trusted_proxies = tuple(trusted_proxies or ())
         # Seed the debounce cache from any previously-learned value so we
         # don't rewrite an identical origin on the first request after boot.
         self._last = load_remembered_origin(data_dir) if self._enabled else ""
@@ -184,10 +307,20 @@ class OriginLearningMiddleware:
             k.decode("latin-1").lower(): v.decode("latin-1") for k, v in raw
         }
         fallback_scheme = str(scope.get("scheme") or "http")
-        origin = origin_from_headers(headers, fallback_scheme)
+        use_forwarded = is_trusted_proxy(scope.get("client"), self._trusted_proxies)
+        origin = origin_from_headers(
+            headers,
+            fallback_scheme,
+            use_forwarded=use_forwarded,
+            allowed_public_origins=self._allowed_public_origins,
+        )
         if not origin or origin == self._last:
             return
-        if remember_origin(self._data_dir, origin):
+        if remember_origin(
+            self._data_dir,
+            origin,
+            allowed_public_origins=self._allowed_public_origins,
+        ):
             self._last = origin
             if self._on_learn is not None:
                 try:
