@@ -86,7 +86,6 @@ class LoginRequest(BaseModel):
 
 
 class LoginResponse(BaseModel):
-    token: str
     expires_in: int
 
 
@@ -317,7 +316,7 @@ def router() -> APIRouter:
         response.headers["set-cookie"] = _set_cookie_header(
             token, max_age, secure=_request_is_https(request)
         )
-        return LoginResponse(token=token, expires_in=max_age)
+        return LoginResponse(expires_in=max_age)
 
     @r.post(
         "/admin/logout",
