@@ -1,0 +1,15 @@
+{
+  "name": "digital-oracle",
+  "version": "1.0.0",
+  "description": "Financial market intelligence plugin for structured macro, rates, commodities, equities, crypto, options, and prediction-market data with provider discovery and a global macro dashboard.",
+  "entry": "digital_oracle.py",
+  "permissions": [],
+  "requires": {
+    "env": [
+      "DIGITAL_ORACLE_SEC_EMAIL",
+      "DIGITAL_ORACLE_PROXY_URL",
+      "DIGITAL_ORACLE_PROXY_PORT",
+      "DIGITAL_ORACLE_DEBUG"
+    ]
+  }
+}

@@ -1,0 +1,28 @@
+manifest_version = 1
+name = "digital-oracle"
+version = "1.0.0"
+description = "Financial market intelligence plugin for structured macro, rates, commodities, equities, crypto, options, and prediction-market data."
+author = "Skye"
+plugin_type = "sync"
+
+[entry_point]
+command = "python3"
+args = ["digital_oracle.py"]
+
+[communication]
+timeout_ms = 180000
+
+[[capabilities.tools]]
+name = "list_providers"
+description = "List supported Digital Oracle providers, common arguments, and setup notes."
+parameters = { type = "object", properties = {} }
+
+[[capabilities.tools]]
+name = "fetch_market_data"
+description = "Fetch one market-data provider synchronously with provider-specific arguments."
+parameters = { type = "object", properties = { provider = { type = "string", description = "Provider id such as yahoo, polymarket, treasury, coingecko, yfinance_options, edgar, or web." }, params = { type = "object", description = "Optional provider-specific arguments object. Root-level fields are also accepted." }, symbol = { type = "string" }, ticker = { type = "string" }, interval = { type = "string", enum = ["d", "w", "m"] }, limit = { type = "integer" }, query = { type = "string" }, start_date = { type = "string" }, end_date = { type = "string" }, commodity_name = { type = "string" }, curve_kind = { type = "string" }, year = { type = "integer" }, series_ticker = { type = "string" }, event_ticker = { type = "string" }, indicator = { type = "string" }, currency = { type = "string" }, kind = { type = "string" }, expiration = { type = "string" }, coin_ids = { oneOf = [{ type = "array", items = { type = "string" } }, { type = "string" }] }, countries = { oneOf = [{ type = "array", items = { type = "string" } }, { type = "string" }] } }, required = ["provider"], additionalProperties = true }
+
+[[capabilities.tools]]
+name = "get_global_macro_dashboard"
+description = "Fetch a multi-signal global macro dashboard across rates, commodities, crypto, and risk assets."
+parameters = { type = "object", properties = { risk_assets = { oneOf = [{ type = "array", items = { type = "string" } }, { type = "string" }] }, coin_ids = { oneOf = [{ type = "array", items = { type = "string" } }, { type = "string" }] }, countries = { oneOf = [{ type = "array", items = { type = "string" } }, { type = "string" }] } }, additionalProperties = true }

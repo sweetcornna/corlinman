@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "generated_at": "2026-06-01T07:28:33Z",
+  "generated_at": "2026-06-02T09:50:20Z",
   "items": [
     {
       "kind": "mcp",
@@ -351,6 +351,19 @@
         "env": []
       },
       "updated_at": "2026-06-01T07:28:33Z"
+    },
+    {
+      "kind": "plugin",
+      "slug": "digital-oracle",
+      "name": "digital-oracle",
+      "description": "Financial market intelligence plugin for structured macro, rates, commodities, equities, crypto, options, and prediction-market data with provider discovery and a global macro dashboard.",
+      "latest_version": "1.0.0",
+      "versions": [
+        "1.0.0"
+      ],
+      "tarball": "dist/plugins/digital-oracle-1.0.0.tar.gz",
+      "sha256": "9c4a4aae127037ca7b206ec06926e4563858e44914ee1ebfad7e2a34f0bd7463",
+      "updated_at": "2026-06-02T09:50:20Z"
     },
     {
       "kind": "plugin",
