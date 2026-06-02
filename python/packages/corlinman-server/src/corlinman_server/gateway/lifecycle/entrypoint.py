@@ -1536,6 +1536,58 @@ def _repo_agents_dir() -> Path:
     return Path("agents")
 
 
+def _make_channels_writer(app: Any, admin_a_state: Any) -> Any:
+    """Build the ``channels_writer`` callback the ``/admin/channels`` routes
+    invoke to persist live channel-config edits (per-group keywords + the
+    per-channel humanlike toggle).
+
+    In prod this slot was never wired — only a test set it — so every
+    ``PUT /admin/channels/{channel}/humanlike`` (and the keywords PUT)
+    503'd ``channels_writer_missing``. The routes mutate
+    ``admin_a_state.channels_config`` in place and the live humanlike
+    resolver reads the same nested tables, so the edit already takes effect
+    immediately; this writer makes it durable across restarts by patching
+    the ``[channels]`` table in ``config.toml`` atomically. Scoped to the
+    channels section so unrelated sections on disk are left untouched.
+    """
+
+    async def _writer(channels_cfg: dict[str, Any]) -> None:
+        cfg_path = getattr(admin_a_state, "config_path", None)
+        if cfg_path is None:
+            raise RuntimeError("config_path unset; cannot persist channels config")
+        cfg_path = Path(cfg_path)
+        import tomllib
+
+        try:
+            on_disk = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            live = getattr(app.state, "config", None)
+            on_disk = dict(live) if isinstance(live, dict) else {}
+        on_disk["channels"] = channels_cfg
+
+        try:
+            import tomli_w
+
+            serialised = tomli_w.dumps(on_disk)
+        except ImportError:  # pragma: no cover — tomli_w is a hard dep
+            import toml
+
+            serialised = toml.dumps(on_disk)
+
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = cfg_path.with_suffix(cfg_path.suffix + ".new")
+        tmp.write_text(serialised, encoding="utf-8")
+        tmp.replace(cfg_path)
+
+        # Keep the live full config in sync so a later full-config read /
+        # snapshot reflects the channel edit too.
+        live = getattr(app.state, "config", None)
+        if isinstance(live, dict):
+            live["channels"] = channels_cfg
+
+    return _writer
+
+
 def _build_agent_registry_stack(
     data_dir: Path | None,
 ) -> tuple[Any | None, Any | None]:
@@ -1770,6 +1822,15 @@ def _mount_routes(
                     agent_registry_reload=_agent_registry_reload,
                 )
                 set_admin_a(admin_a_state)
+                # Wire the channels-config write-back. Without this every
+                # /admin/channels keywords + humanlike PUT 503s
+                # ``channels_writer_missing`` (the slot was only ever set in
+                # a test). The live resolver already reads the in-place
+                # edit, so this just makes it durable across restarts.
+                with suppress(Exception):
+                    admin_a_state.channels_writer = _make_channels_writer(
+                        app, admin_a_state
+                    )
             app.include_router(admin_a.build_router())
         except Exception as exc:  # pragma: no cover — sibling-owned
             logger.warning("gateway.routes_admin_a.mount_failed", error=str(exc))
