@@ -1,13 +1,18 @@
 import type { SchedulerJob } from "@/lib/api";
 
 /**
- * Derived row status for a scheduler job — the backend today exposes only
- * `last_status` (free-form string) and `next_fire_at` (nullable), so we
- * derive a 3-way status the UI can filter on.
+ * Derived row status for a scheduler job.
  *
  *   - `errored`  — last_status indicates failure (err / fail / …)
- *   - `paused`   — no upcoming fire time (cron inert / disabled)
- *   - `enabled`  — scheduled and not errored
+ *   - `paused`   — explicitly disabled (`enabled === false`) OR no upcoming
+ *                  fire time on a row that carries no `enabled` flag
+ *   - `enabled`  — running (`enabled === true`) or scheduled and not errored
+ *
+ * Runtime jobs (`source === "runtime"`) carry an explicit `enabled` flag,
+ * so we honour that first — a freshly-resumed runtime job shows `enabled`
+ * even before the backend publishes a `next_fire_at`. Config-derived rows
+ * have no `enabled` field, so they fall back to the legacy `next_fire_at`
+ * heuristic.
  *
  * Keep the derivation pure + exported so tests and the page share the same
  * branch logic.
@@ -17,6 +22,8 @@ export type SchedulerStatus = "enabled" | "paused" | "errored";
 export function deriveStatus(job: SchedulerJob): SchedulerStatus {
   const ls = (job.last_status ?? "").toLowerCase();
   if (ls.includes("err") || ls.includes("fail")) return "errored";
+  if (job.enabled === false) return "paused";
+  if (job.enabled === true) return "enabled";
   if (!job.next_fire_at) return "paused";
   return "enabled";
 }

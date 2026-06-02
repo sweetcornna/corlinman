@@ -318,12 +318,36 @@ export interface SchedulerJob {
   name: string;
   cron: string;
   timezone: string | null;
-  action_kind: "run_agent" | "run_tool";
+  action_kind: string;
   next_fire_at: string | null;
   last_status: string | null;
+  // W6 extras — present on `source === "runtime"` rows only. Optional so
+  // the legacy config-derived rows keep type-checking.
+  action_type?: string | null;
+  enabled?: boolean;
+  persona_id?: string | null;
+  prompt_template?: string | null;
+  qq_account?: string | null;
+  /** `"config"` for `[[scheduler.jobs]]` rows; `"runtime"` for
+   * operator-created jobs (editable / pausable from the UI). */
+  source?: "config" | "runtime";
 }
 export function fetchSchedulerJobs(): Promise<SchedulerJob[]> {
   return apiFetch<SchedulerJob[]>("/admin/scheduler/jobs");
+}
+/** Pause a runtime scheduler job (sets `enabled=false`, stops its loop). */
+export function pauseSchedulerJob(name: string): Promise<SchedulerJob> {
+  return apiFetch<SchedulerJob>(
+    `/admin/scheduler/jobs/${encodeURIComponent(name)}/pause`,
+    { method: "POST" },
+  );
+}
+/** Resume a runtime scheduler job (sets `enabled=true`, restarts its loop). */
+export function resumeSchedulerJob(name: string): Promise<SchedulerJob> {
+  return apiFetch<SchedulerJob>(
+    `/admin/scheduler/jobs/${encodeURIComponent(name)}/resume`,
+    { method: "POST" },
+  );
 }
 export interface SchedulerHistory {
   job: string;
@@ -2474,6 +2498,34 @@ export function pinInstalledSkill(
   );
 }
 
+/**
+ * Partial patch for `PUT /admin/skills/{name}`. Every field is optional —
+ * only keys present in the object are written back to the SKILL.md. The
+ * five fields below are runtime-consumed (the registry parses them off
+ * frontmatter/body and the context assembler honours
+ * `disable_model_invocation` / `allowed_tools` / `when_to_use`).
+ */
+export interface SkillUpdateBody {
+  description?: string;
+  body_markdown?: string;
+  disable_model_invocation?: boolean;
+  allowed_tools?: string[];
+  when_to_use?: string;
+}
+
+/** PUT /admin/skills/{name}?profile=… — edit body + runtime metadata. */
+export function updateInstalledSkill(
+  name: string,
+  body: SkillUpdateBody,
+  profile: string = "default",
+): Promise<InstalledSkillRow> {
+  const qs = new URLSearchParams({ profile }).toString();
+  return apiFetch<InstalledSkillRow>(
+    `/admin/skills/${encodeURIComponent(name)}?${qs}`,
+    { method: "PUT", body },
+  );
+}
+
 /** DELETE /admin/skills/{name}?profile=… — uninstall. 409
  * `bundled_protected` when the row ships with corlinman. */
 export function deleteInstalledSkill(
@@ -2853,6 +2905,33 @@ export function deleteMcpServer(
   return apiFetch<{ ok: boolean; name: string; removed: boolean }>(
     `/admin/mcp/${encodeURIComponent(name)}`,
     { method: "DELETE" },
+  );
+}
+
+/** Editable launch-spec fields for {@link reconfigureMcpServer}. An absent
+ * field leaves that part of the spec unchanged; a present `env`/`headers`
+ * replaces the stored map wholesale. `enabled` is NOT editable here —
+ * toggling stays on enable/disable. */
+export interface McpReconfigureBody {
+  transport?: string;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
+  headers?: Record<string, string>;
+  version?: string;
+}
+
+/** PUT /admin/mcp/{name} — edit a server's launch spec in place (env,
+ * secrets, version, command, url) without a delete + reinstall. An enabled
+ * server is hot-reconnected so the new env takes effect. */
+export function reconfigureMcpServer(
+  name: string,
+  body: McpReconfigureBody,
+): Promise<InstalledMcpServer> {
+  return apiFetch<InstalledMcpServer>(
+    `/admin/mcp/${encodeURIComponent(name)}`,
+    { method: "PUT", body },
   );
 }
 
