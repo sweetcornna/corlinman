@@ -2840,21 +2840,29 @@ export const en = {
   persona: {
     title: "Persona — human-like chat",
     subtitle:
-      "Give the agent a fixed persona on the QQ channel. Useful for fan communities + roleplay groups.",
-    // QQ humanlike toggle card
-    toggleTitle: "QQ OneBot · humanlike mode",
+      "Give the agent a fixed persona per channel. Useful for fan communities + roleplay groups.",
+    // Per-channel humanlike toggle card
+    toggleTitle: "Humanlike mode",
     toggleDescription:
-      "When enabled, the agent replies on QQ as the selected persona — same character voice across DMs and groups.",
-    toggleLabel: "Enable humanlike mode on QQ OneBot",
+      "When enabled, the agent replies on the selected channel as the chosen persona — same character voice across DMs and groups.",
+    toggleLabel: "Enable humanlike mode",
+    channelSelectLabel: "Channel",
+    channelName: {
+      qq: "QQ (OneBot)",
+      telegram: "Telegram",
+      discord: "Discord",
+      slack: "Slack",
+      feishu: "Feishu",
+    },
     personaSelectLabel: "Active persona",
     personaSelectPlaceholder: "Pick a persona…",
     save: "Save",
     statusOn: "Status: enabled → {{name}}",
     statusOff: "Status: disabled",
     statusOnNoPersona: "Status: enabled — no persona selected yet",
-    saveSucceeded: "QQ humanlike updated",
+    saveSucceeded: "Humanlike updated",
     saveFailed: "Save failed: {{msg}}",
-    loadHumanlikeFailed: "Could not load the QQ humanlike state: {{msg}}",
+    loadHumanlikeFailed: "Could not load the humanlike state: {{msg}}",
     // Personas list section
     listTitle: "Personas",
     listSubtitle:

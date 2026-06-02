@@ -85,6 +85,12 @@ vi.mock("@/lib/api/personas", async () => {
     ...actual,
     fetchPersonas: () => fetchPersonasMock(),
     fetchQqHumanlike: () => fetchQqHumanlikeMock(),
+    // The card now calls the parameterized helpers; the persona page tests
+    // exercise the default channel (qq), so route them to the same mocks so
+    // the existing per-test setup keeps driving the card unchanged.
+    fetchHumanlike: (_channel: unknown) => fetchQqHumanlikeMock(),
+    setHumanlike: (_channel: unknown, payload: QqHumanlikeState) =>
+      setQqHumanlikeMock(payload),
     createPersona: (p: NewPersona) => createPersonaMock(p),
     updatePersona: (id: string, patch: PartialPersona) =>
       updatePersonaMock(id, patch),

@@ -2779,21 +2779,29 @@ export const zhCN = {
   persona: {
     title: "Persona — 拟人化聊天",
     subtitle:
-      "为 QQ 通道指定固定 persona。适合粉丝群与角色扮演群组。",
-    // QQ humanlike toggle card
-    toggleTitle: "QQ OneBot · 拟人化模式",
+      "为每个通道指定固定 persona。适合粉丝群与角色扮演群组。",
+    // 各通道拟人化开关卡片
+    toggleTitle: "拟人化模式",
     toggleDescription:
-      "开启后，bot 会在 QQ 上以选中的 persona 回复 — 私聊与群聊声音一致。",
-    toggleLabel: "在 QQ OneBot 上启用拟人化模式",
+      "开启后，bot 会在选中的通道上以所选 persona 回复 — 私聊与群聊声音一致。",
+    toggleLabel: "启用拟人化模式",
+    channelSelectLabel: "通道",
+    channelName: {
+      qq: "QQ（OneBot）",
+      telegram: "Telegram",
+      discord: "Discord",
+      slack: "Slack",
+      feishu: "飞书",
+    },
     personaSelectLabel: "当前 persona",
     personaSelectPlaceholder: "选择 persona…",
     save: "保存",
     statusOn: "状态：启用 → {{name}}",
     statusOff: "状态：关闭",
     statusOnNoPersona: "状态：启用 — 但尚未选择 persona",
-    saveSucceeded: "QQ 拟人化设置已更新",
+    saveSucceeded: "拟人化设置已更新",
     saveFailed: "保存失败：{{msg}}",
-    loadHumanlikeFailed: "无法加载 QQ 拟人化状态：{{msg}}",
+    loadHumanlikeFailed: "无法加载拟人化状态：{{msg}}",
     // Personas list section
     listTitle: "Persona 列表",
     listSubtitle:

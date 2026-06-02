@@ -21,12 +21,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   PERSONAS_LIST_PATH,
   QQ_HUMANLIKE_PATH,
+  SUPPORTED_HUMANLIKE_CHANNELS,
   createPersona,
   deletePersona,
+  fetchHumanlike,
   fetchPersona,
   fetchPersonas,
   fetchQqHumanlike,
+  humanlikePath,
   personaPath,
+  setHumanlike,
   setQqHumanlike,
   updatePersona,
 } from "./personas";
@@ -324,5 +328,47 @@ describe("setQqHumanlike", () => {
     await expect(
       setQqHumanlike({ enabled: true, persona_id: null }),
     ).rejects.toThrow();
+  });
+});
+
+describe("parameterized humanlike (all channels)", () => {
+  it("exposes the five supported channels", () => {
+    expect([...SUPPORTED_HUMANLIKE_CHANNELS]).toEqual([
+      "qq",
+      "telegram",
+      "discord",
+      "slack",
+      "feishu",
+    ]);
+  });
+
+  it("builds /admin/channels/{channel}/humanlike per channel", () => {
+    expect(humanlikePath("telegram")).toBe("/admin/channels/telegram/humanlike");
+    expect(humanlikePath("feishu")).toBe("/admin/channels/feishu/humanlike");
+    // qq wrapper still anchors at the same path
+    expect(humanlikePath("qq")).toBe(QQ_HUMANLIKE_PATH);
+  });
+
+  it("fetchHumanlike hits the channel-specific path", async () => {
+    const { fn, calls } = makeFetchStub(() =>
+      jsonResponse(200, { enabled: true, persona_id: "grantley" }),
+    );
+    vi.stubGlobal("fetch", fn);
+    const state = await fetchHumanlike("telegram");
+    expect(state).toEqual({ enabled: true, persona_id: "grantley" });
+    expect(calls[0]?.url).toContain("/admin/channels/telegram/humanlike");
+  });
+
+  it("setHumanlike PUTs to the channel-specific path", async () => {
+    const { fn, calls } = makeFetchStub((init) =>
+      jsonResponse(
+        200,
+        init.body ? JSON.parse(String(init.body)) : { enabled: false, persona_id: null },
+      ),
+    );
+    vi.stubGlobal("fetch", fn);
+    await setHumanlike("discord", { enabled: true, persona_id: "grantley" });
+    expect(calls[0]?.url).toContain("/admin/channels/discord/humanlike");
+    expect(calls[0]?.init.method).toBe("PUT");
   });
 });

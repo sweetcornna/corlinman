@@ -73,12 +73,15 @@ export interface PartialPersona {
   system_prompt?: string;
 }
 
-/** QQ humanlike toggle. `persona_id` is the slug of the active persona;
- * `null` means no persona is bound yet. */
-export interface QqHumanlikeState {
+/** A channel's humanlike toggle. `persona_id` is the slug of the active
+ * persona; `null` means no persona is bound yet. */
+export interface HumanlikeState {
   enabled: boolean;
   persona_id: string | null;
 }
+
+/** @deprecated alias kept for back-compat — use {@link HumanlikeState}. */
+export type QqHumanlikeState = HumanlikeState;
 
 /** Tagged sentinel for `deletePersona` so the UI can branch on
  * "builtin tried to delete → 404" without inspecting exception messages. */
@@ -97,7 +100,25 @@ export function personaPath(id: string): string {
   return `/admin/personas/${encodeURIComponent(id)}`;
 }
 
-/** GET / PUT path for the QQ humanlike state. */
+/** Channels that support the humanlike system-prompt injection. Mirrors
+ * the backend `SUPPORTED_HUMANLIKE_CHANNELS` (personas.py). */
+export const SUPPORTED_HUMANLIKE_CHANNELS = [
+  "qq",
+  "telegram",
+  "discord",
+  "slack",
+  "feishu",
+] as const;
+
+export type HumanlikeChannel = (typeof SUPPORTED_HUMANLIKE_CHANNELS)[number];
+
+/** GET / PUT path for a channel's humanlike state. */
+export function humanlikePath(channel: HumanlikeChannel): string {
+  return `/admin/channels/${channel}/humanlike`;
+}
+
+/** GET / PUT path for the QQ humanlike state. Kept for back-compat; new
+ * call sites should use {@link humanlikePath}. */
 export const QQ_HUMANLIKE_PATH = "/admin/channels/qq/humanlike";
 
 /* ------------------------------------------------------------------ */
@@ -188,8 +209,8 @@ export async function deletePersona(id: string): Promise<DeletePersonaResult> {
  * `persona_id` is the slug of the persona that's currently active when
  * `enabled === true`, or `null` when the toggle has never been set.
  */
-export function fetchQqHumanlike(): Promise<QqHumanlikeState> {
-  return apiFetch<QqHumanlikeState>(QQ_HUMANLIKE_PATH);
+export function fetchQqHumanlike(): Promise<HumanlikeState> {
+  return fetchHumanlike("qq");
 }
 
 /**
@@ -200,9 +221,32 @@ export function fetchQqHumanlike(): Promise<QqHumanlikeState> {
  * Wire shape echoes the request body back as confirmation.
  */
 export function setQqHumanlike(
-  payload: QqHumanlikeState,
-): Promise<QqHumanlikeState> {
-  return apiFetch<QqHumanlikeState>(QQ_HUMANLIKE_PATH, {
+  payload: HumanlikeState,
+): Promise<HumanlikeState> {
+  return setHumanlike("qq", payload);
+}
+
+/**
+ * `GET /admin/channels/{channel}/humanlike` — current state of the toggle
+ * for any supported channel (qq / telegram / discord / slack / feishu).
+ */
+export function fetchHumanlike(
+  channel: HumanlikeChannel,
+): Promise<HumanlikeState> {
+  return apiFetch<HumanlikeState>(humanlikePath(channel));
+}
+
+/**
+ * `PUT /admin/channels/{channel}/humanlike` — writes the toggle. The
+ * humanlike resolver re-reads the persisted block on the next inbound
+ * message, so the change takes effect without a channel restart. Wire
+ * shape echoes the request body back as confirmation.
+ */
+export function setHumanlike(
+  channel: HumanlikeChannel,
+  payload: HumanlikeState,
+): Promise<HumanlikeState> {
+  return apiFetch<HumanlikeState>(humanlikePath(channel), {
     method: "PUT",
     body: payload,
   });
