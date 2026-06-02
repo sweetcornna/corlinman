@@ -1588,6 +1588,50 @@ def _make_channels_writer(app: Any, admin_a_state: Any) -> Any:
     return _writer
 
 
+def _make_config_swap_fn(app: Any, state: Any) -> Any:
+    """Build the ``config_swap_fn`` the ``POST /admin/config`` route calls
+    after it writes the edited TOML to disk.
+
+    Previously this was wired ONLY when the fs-watcher (``ConfigWatcher``)
+    was running, which is off by default — so on a normal deploy an editor
+    save wrote disk but never updated the running process (``_publish_snapshot``
+    no-op'd, yet the UI toasted success). Wiring it unconditionally makes the
+    save publish to the live in-memory snapshot (``state.config`` /
+    ``app.state.corlinman_config``) and re-run the *idempotent* hot-reloadable
+    bootstraps for whichever top-level sections changed (today: providers /
+    models — they rebuild ``provider_registry`` in place). Sections whose
+    runtime is built once at boot (channels / agents / scheduler / ...) still
+    need a restart — that is a separate, riskier teardown-rebuild lane and is
+    surfaced honestly via ``_detect_restart_fields``.
+    """
+
+    def _config_swap_fn(new_cfg: Any) -> None:
+        old = getattr(state, "config", None)
+        changed: list[str] = []
+        if isinstance(old, dict) and isinstance(new_cfg, dict):
+            changed = [
+                k
+                for k in (set(old) | set(new_cfg))
+                if old.get(k) != new_cfg.get(k)
+            ]
+        with suppress(AttributeError, TypeError):
+            state.config = new_cfg
+        with suppress(AttributeError, TypeError):
+            app.state.corlinman_config = new_cfg
+        # Keep a running ConfigWatcher's snapshot in sync when one exists.
+        _watcher = getattr(state, "config_watcher", None)
+        _snap = getattr(_watcher, "_snapshot", None) if _watcher else None
+        if _snap is not None and hasattr(_snap, "store"):
+            with suppress(Exception):
+                _snap.store(new_cfg)
+        # Re-apply the idempotent bootstraps for the sections that changed.
+        if changed:
+            with suppress(Exception):
+                _reapply_hot_reloadable(state, changed)
+
+    return _config_swap_fn
+
+
 def _build_agent_registry_stack(
     data_dir: Path | None,
 ) -> tuple[Any | None, Any | None]:
@@ -2821,29 +2865,22 @@ def build_app(
             if _watcher_instance is not None and admin_b_state is not None:
                 with suppress(AttributeError, TypeError):
                     admin_b_state.extras["config_watcher"] = _watcher_instance
-                # Also wire ``config_swap_fn`` so that
-                # ``POST /admin/config`` (manual TOML edit + write-to-disk)
-                # can update the live snapshot on AppState *and* inside the
-                # ConfigWatcher's internal ArcSwap-equivalent
-                # (_AtomicSnapshot).  The watcher's ``on_reload`` callback
-                # already handles fs-triggered reloads; ``config_swap_fn``
-                # is the admin-POST path where the new TOML is written
-                # *by the operator* rather than detected by the fs watcher.
-                def _config_swap_fn(new_cfg: Any) -> None:
-                    with suppress(AttributeError, TypeError):
-                        state.config = new_cfg
-                    with suppress(AttributeError, TypeError):
-                        app.state.corlinman_config = new_cfg
-                    _snap = getattr(_watcher_instance, "_snapshot", None)
-                    if _snap is not None and hasattr(_snap, "store"):
-                        with suppress(Exception):
-                            _snap.store(new_cfg)
-
+            # Wire ``config_swap_fn`` UNCONDITIONALLY (even when the
+            # fs-watcher is off, the default) so ``POST /admin/config``
+            # publishes the operator's TOML edit to the live in-memory
+            # snapshot and re-applies the idempotent providers/models
+            # bootstraps — otherwise a save wrote disk but never reached the
+            # running process (``_publish_snapshot`` no-op'd on a missing fn
+            # while the UI still toasted success).
+            if admin_b_state is not None:
                 with suppress(AttributeError, TypeError):
-                    admin_b_state.extras["config_swap_fn"] = _config_swap_fn
+                    admin_b_state.extras["config_swap_fn"] = _make_config_swap_fn(
+                        app, state
+                    )
                 logger.debug(
-                    "gateway.config_reload.watcher_bridged_to_admin_b",
-                    path=str(config_path),
+                    "gateway.config_reload.swap_fn_wired",
+                    path=str(config_path) if config_path else None,
+                    watcher=_watcher_instance is not None,
                 )
         except Exception as exc:  # pragma: no cover — defensive
             logger.warning(

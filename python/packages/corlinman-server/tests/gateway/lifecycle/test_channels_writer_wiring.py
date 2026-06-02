@@ -15,7 +15,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from corlinman_server.gateway.lifecycle.entrypoint import _make_channels_writer
+from corlinman_server.gateway.lifecycle.entrypoint import (
+    _make_channels_writer,
+    _make_config_swap_fn,
+)
 
 
 def _fake_app(config: dict) -> SimpleNamespace:
@@ -61,3 +64,20 @@ async def test_writer_raises_without_config_path() -> None:
     writer = _make_channels_writer(app, admin_a_state)
     with pytest.raises(RuntimeError):
         await writer({"telegram": {"humanlike": {"enabled": False, "persona_id": None}}})
+
+
+def test_config_swap_fn_publishes_to_live_snapshot() -> None:
+    """Regression: POST /admin/config used to write disk but never update the
+    running process because config_swap_fn was only wired when the
+    (off-by-default) fs-watcher existed. The unconditionally-wired swap fn
+    must publish the new TOML to the live in-memory snapshot."""
+    state = SimpleNamespace(config={"models": {"default": "old"}}, config_watcher=None)
+    app = _fake_app(state.config)
+    swap = _make_config_swap_fn(app, state)
+
+    new_cfg = {"models": {"default": "new"}}
+    swap(new_cfg)  # must not raise even though providers reapply is a no-op here
+
+    assert state.config is new_cfg
+    assert state.config["models"]["default"] == "new"
+    assert app.state.corlinman_config is new_cfg
