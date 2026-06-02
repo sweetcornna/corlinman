@@ -17,11 +17,14 @@ from __future__ import annotations
 import asyncio
 import datetime as _dt
 import hmac
+import math
 import re
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Any, cast
 
+import structlog
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -74,10 +77,81 @@ _DUMMY_PASSWORD_HASH = _HASHER.hash("corlinman-timing-equalizer")
 # winner's state.
 _FALLBACK_ADMIN_WRITE_LOCK = asyncio.Lock()
 
+logger = structlog.get_logger(__name__)
+
+# Login brute-force guard. The fixed window is deliberately short enough
+# to avoid operator lockouts after typo bursts while still slowing online
+# guessing attacks against a single client-IP/username pair.
+LOGIN_FAILURE_LIMIT = 5
+LOGIN_FAILURE_WINDOW_SECONDS = 60
+
 
 # ---------------------------------------------------------------------------
 # Wire shapes
 # ---------------------------------------------------------------------------
+
+
+class AdminLoginFailureStore:
+    """Small in-memory fixed-window limiter for ``/admin/login`` failures.
+
+    Keys include both client IP and submitted username so a typo burst for
+    one operator identity does not lock every admin username behind the same
+    proxy, while repeated guesses for the same pair are throttled.
+    """
+
+    def __init__(
+        self,
+        *,
+        limit: int = LOGIN_FAILURE_LIMIT,
+        window_seconds: int = LOGIN_FAILURE_WINDOW_SECONDS,
+        now: Callable[[], float] | None = None,
+    ) -> None:
+        self.limit = limit
+        self.window_seconds = window_seconds
+        self._now = now
+        self._lock = threading.Lock()
+        self._failures: dict[tuple[str, str], tuple[int, float]] = {}
+
+    def _clock(self) -> float:
+        if self._now is not None:
+            return self._now()
+        return _dt.datetime.now(_dt.UTC).timestamp()
+
+    def retry_after(self, *, client_ip: str, username: str) -> int | None:
+        """Return remaining lockout seconds when the key is throttled."""
+        key = (client_ip, username)
+        now = self._clock()
+        with self._lock:
+            item = self._failures.get(key)
+            if item is None:
+                return None
+            count, reset_at = item
+            if now >= reset_at:
+                self._failures.pop(key, None)
+                return None
+            if count >= self.limit:
+                return max(1, math.ceil(reset_at - now))
+            return None
+
+    def record_failure(self, *, client_ip: str, username: str) -> int | None:
+        """Increment the failure count and return a Retry-After if locked."""
+        key = (client_ip, username)
+        now = self._clock()
+        with self._lock:
+            count, reset_at = self._failures.get(key, (0, now + self.window_seconds))
+            if now >= reset_at:
+                count = 0
+                reset_at = now + self.window_seconds
+            count += 1
+            self._failures[key] = (count, reset_at)
+            if count >= self.limit:
+                return max(1, math.ceil(reset_at - now))
+            return None
+
+    def clear(self, *, client_ip: str, username: str) -> None:
+        """Forget failure history for a successfully authenticated pair."""
+        with self._lock:
+            self._failures.pop((client_ip, username), None)
 
 
 class LoginRequest(BaseModel):
@@ -154,6 +228,35 @@ def argon2_verify(password: str, encoded: str) -> bool:
         # than 500. The Rust side does the same via the typed
         # ``PasswordHash::new`` error returning false.
         return False
+
+
+def _client_ip(request: Request) -> str:
+    """Best-effort client IP extraction for login throttling keys."""
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        first = forwarded.split(",", 1)[0].strip()
+        if first:
+            return first
+    if request.client is not None and request.client.host:
+        return request.client.host
+    return "unknown"
+
+
+def _login_failure_store(state: AdminState) -> AdminLoginFailureStore:
+    """Return the state-scoped login limiter, creating it lazily."""
+    store = getattr(state, "login_failure_store", None)
+    if store is None:
+        store = AdminLoginFailureStore()
+        state.login_failure_store = store
+    return cast(AdminLoginFailureStore, store)
+
+
+def _too_many_login_attempts(retry_after: int) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail={"error": "too_many_login_attempts"},
+        headers={"Retry-After": str(retry_after)},
+    )
 
 
 def _request_is_https(request: Request) -> bool:
@@ -299,6 +402,20 @@ def router() -> APIRouter:
         if state.admin_username is None or state.admin_password_hash is None:
             raise _service_unavailable("admin_not_configured")
 
+        client_ip = _client_ip(request)
+        failure_store = _login_failure_store(state)
+        retry_after = failure_store.retry_after(
+            client_ip=client_ip, username=body.username
+        )
+        if retry_after is not None:
+            logger.warning(
+                "admin.login.rate_limited",
+                client_ip=client_ip,
+                username=body.username,
+                retry_after=retry_after,
+            )
+            raise _too_many_login_attempts(retry_after)
+
         # SEC-011: constant-time username compare + ALWAYS run the argon2
         # verify (against the real hash on a username match, the dummy
         # hash otherwise) so the response time can't leak whether the
@@ -308,7 +425,23 @@ def router() -> APIRouter:
         verify_hash = state.admin_password_hash if username_ok else _DUMMY_PASSWORD_HASH
         password_ok = argon2_verify(body.password, verify_hash)
         if not (username_ok and password_ok):
+            retry_after = failure_store.record_failure(
+                client_ip=client_ip, username=body.username
+            )
+            logger.warning(
+                "admin.login.failed",
+                client_ip=client_ip,
+                username=body.username,
+                rate_limited=retry_after is not None,
+            )
+            if retry_after is not None:
+                raise _too_many_login_attempts(retry_after)
             raise _unauthorized("invalid_credentials")
+
+        failure_store.clear(client_ip=client_ip, username=body.username)
+        logger.info(
+            "admin.login.succeeded", client_ip=client_ip, username=body.username
+        )
 
         store = _ensure_session_store(state)
         token = store.create(body.username)

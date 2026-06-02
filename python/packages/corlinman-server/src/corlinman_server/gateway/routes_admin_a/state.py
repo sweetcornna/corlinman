@@ -75,6 +75,10 @@ class AdminState:
     # :func:`build_default_state` — tests construct one explicitly when
     # they need to exercise the cookie path.
     session_store: Any | None = None
+    # In-memory ``/admin/login`` failure counter keyed by client IP and
+    # submitted username. Built lazily by ``auth.py``; tests may inject a
+    # fake-clock-backed store to avoid sleeping through the fixed window.
+    login_failure_store: Any | None = None
     # Serialises the verify-then-write critical section in onboard +
     # password rotation routes. Optional so tests that don't need it
     # don't have to construct it; ``_admin_auth_lock`` in
