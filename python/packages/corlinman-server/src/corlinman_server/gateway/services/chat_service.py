@@ -230,8 +230,13 @@ async def _run_chat(
     Returned by :meth:`ChatService.run`; callers ``async for ev in s``
     just as Rust callers ``while let Some(ev) = s.next().await``.
     """
-    start = _build_chat_start(req)
     try:
+        # Build the proto request inside the try so a malformed request
+        # (e.g. a channel-built ``SimpleNamespace`` missing an optional
+        # field) degrades to a terminal ErrorEvent the caller can surface
+        # as "[corlinman error] ..." instead of escaping as a raw
+        # exception that silently kills the turn with no reply.
+        start = _build_chat_start(req)
         tx, rx = await backend.start(start)
     except Exception as err:  # noqa: BLE001 — surface as terminal error
         yield ErrorEvent(error=_internal_error_from_exception(err))
@@ -417,7 +422,11 @@ def _build_chat_start(req: InternalChatRequest) -> agent_pb2.ChatStart:
         stream=req.stream,
         provider_config_json=b"",
         attachments=attachments,
-        persona_id=req.persona_id or "",
+        # Channel turns hand in a lightweight ``SimpleNamespace`` request
+        # that carries no ``persona_id`` unless humanlike persona injection
+        # is enabled (off by default), so read it tolerantly. The pydantic
+        # ``InternalChatRequest`` from the web path always carries it.
+        persona_id=getattr(req, "persona_id", None) or "",
     )
     if binding is not None:
         start.binding.CopyFrom(binding)

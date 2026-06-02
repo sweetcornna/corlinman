@@ -1493,6 +1493,10 @@ def _build_internal_request(
         temperature=None,
         attachments=attachments,
         binding=req.binding,
+        # Shape-match InternalChatRequest. Persona injection overwrites this
+        # with a real id when humanlike is enabled; default None keeps the
+        # server-side proto builder's tolerant read happy.
+        persona_id=None,
     )
 
 
@@ -5009,6 +5013,10 @@ def _build_text_channel_request(
             _to_server_attachment_shape(a) for a in inbound.attachments
         ],
         binding=inbound.binding,
+        # Shape-match InternalChatRequest. Persona injection overwrites this
+        # with a real id when humanlike is enabled; default None keeps the
+        # server-side proto builder's tolerant read happy.
+        persona_id=None,
     )
 
 
