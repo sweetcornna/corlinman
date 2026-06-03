@@ -301,6 +301,31 @@ describe("PersonaPage — editor modal", () => {
     expect(idInput).not.toBeDisabled();
   });
 
+  it("bounds the create editor body so long forms can scroll with the wheel", async () => {
+    fetchPersonasMock.mockResolvedValue([SAMPLE_BUILTIN]);
+    stubHumanlikeOff();
+
+    render(
+      <Harness>
+        <PersonaPage />
+      </Harness>,
+    );
+
+    await screen.findByTestId("persona-row-grantley");
+    fireEvent.click(screen.getByTestId("persona-new"));
+
+    const editor = await screen.findByTestId("persona-editor");
+    expect(editor).toHaveClass(
+      "flex",
+      "max-h-[85vh]",
+      "flex-col",
+      "overflow-hidden",
+    );
+
+    const scrollRegion = screen.getByTestId("persona-editor-scroll");
+    expect(scrollRegion).toHaveClass("min-h-0", "flex-1", "overflow-y-auto");
+  });
+
   it("opens the edit editor pre-populated, locks the slug, and PATCHes on save", async () => {
     fetchPersonasMock.mockResolvedValue([SAMPLE_BUILTIN, SAMPLE_CUSTOM]);
     updatePersonaMock.mockResolvedValue({
