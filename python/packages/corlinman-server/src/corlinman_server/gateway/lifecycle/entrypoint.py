@@ -66,7 +66,7 @@ import os
 import signal
 import sys
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any, cast
@@ -168,6 +168,37 @@ def _resolve_cors_origins() -> list[str]:
     """Parse the opt-in browser UI CORS allowlist."""
     raw = os.environ.get("CORLINMAN_CORS_ORIGINS", "")
     return [origin.strip() for origin in raw.split(",") if origin.strip()]
+
+
+def _coerce_str_list(value: Any) -> list[str]:
+    """Parse config/env list values into trimmed strings."""
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return []
+
+
+def _resolve_allowed_public_origins(cfg: Any | None) -> list[str]:
+    """Allowed origins for zero-config public-origin learning.
+
+    Config and env values are additive. The middleware treats an empty resolved
+    list as deny-all, so automatic learning never trusts arbitrary Host headers.
+    """
+    server_cfg = _extract_section(cfg, "server")
+    configured = _coerce_str_list(
+        _extract_section(server_cfg, "allowed_public_origins")
+    )
+    env = _coerce_str_list(os.environ.get("CORLINMAN_ALLOWED_PUBLIC_ORIGINS"))
+    return configured + [item for item in env if item not in configured]
+
+
+def _resolve_trusted_proxies(cfg: Any | None) -> list[str]:
+    """Trusted reverse-proxy IP/CIDR ranges for X-Forwarded-* origin learning."""
+    server_cfg = _extract_section(cfg, "server")
+    configured = _coerce_str_list(_extract_section(server_cfg, "trusted_proxies"))
+    env = _coerce_str_list(os.environ.get("CORLINMAN_TRUSTED_PROXIES"))
+    return configured + [item for item in env if item not in configured]
 
 
 def _status_links_explicitly_configured(cfg: Any | None) -> bool:
@@ -1709,6 +1740,38 @@ def _build_agent_registry_stack(
     return registry, _reload
 
 
+def _mapping_section(value: Any, key: str) -> Mapping[str, Any]:
+    """Return a dict-like config section or an empty mapping."""
+    if not isinstance(value, Mapping):
+        return {}
+    section = value.get(key)
+    return section if isinstance(section, Mapping) else {}
+
+
+def _admin_session_cookie_secure_from_config(config: Any) -> bool | None:
+    """Resolve optional ``[admin].session_cookie_secure`` from config."""
+    admin = _mapping_section(config, "admin")
+    value = admin.get("session_cookie_secure")
+    return value if isinstance(value, bool) else None
+
+
+def _trusted_forwarded_proto_proxies_from_config(config: Any) -> tuple[str, ...]:
+    """Resolve trusted proxy CIDRs from ``[server]`` config."""
+    server = _mapping_section(config, "server")
+    value = server.get("trusted_forwarded_proto_proxies")
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, list | tuple):
+        return tuple(str(item) for item in value)
+    return ()
+
+
+def _trust_forwarded_proto_from_config(config: Any) -> bool:
+    """Resolve the ``[server].trust_forwarded_proto`` compatibility flag."""
+    server = _mapping_section(config, "server")
+    return bool(server.get("trust_forwarded_proto"))
+
+
 # ---------------------------------------------------------------------------
 # Routes composition (parallel-agent contracts diverge per submodule)
 # ---------------------------------------------------------------------------
@@ -1778,6 +1841,16 @@ def _mount_routes(
                 # must_change_password are populated by the lifespan once
                 # ``ensure_admin_credentials`` resolves the disk state.
                 data_dir = getattr(state, "data_dir", None)
+                config_snapshot = getattr(state, "config", None)
+                session_cookie_secure = _admin_session_cookie_secure_from_config(
+                    config_snapshot
+                )
+                trust_forwarded_proto = _trust_forwarded_proto_from_config(
+                    config_snapshot
+                )
+                trusted_forwarded_proto_proxies = (
+                    _trusted_forwarded_proto_proxies_from_config(config_snapshot)
+                )
                 # Wave 3.1: wire the profile registry. Best-effort —
                 # if the profiles submodule fails to import we leave
                 # ``profile_store=None`` and the /admin/profiles* routes
@@ -1871,6 +1944,9 @@ def _mount_routes(
                     data_dir=data_dir,
                     config_path=admin_config_path,
                     admin_write_lock=asyncio.Lock(),
+                    session_cookie_secure=session_cookie_secure,
+                    trust_forwarded_proto=trust_forwarded_proto,
+                    trusted_forwarded_proto_proxies=trusted_forwarded_proto_proxies,
                     profile_store=profile_store,
                     persona_store=None,
                     agent_registry=_agent_registry,
@@ -3472,12 +3548,12 @@ def build_app(
 
     # Zero-config public-origin learning. When no explicit public_url is
     # set, this middleware learns the public base URL from the first real
-    # inbound request through the public hostname (honoring
-    # X-Forwarded-Proto/Host behind a reverse proxy) and persists it to
-    # ``<data_dir>/public_origin``. The ``on_learn`` callback re-arms the
-    # channel status-link feature live, so the first browser/status-link
-    # hit lights up the "🔗 实时状态" link in chat replies — no operator
-    # action, no restart. Stands down entirely when public_url is explicit.
+    # inbound request through an allowed public hostname (honoring
+    # X-Forwarded-Proto/Host only from configured trusted proxies) and
+    # persists it to ``<data_dir>/public_origin``. The ``on_learn`` callback
+    # re-arms the channel status-link feature live, so the first
+    # browser/status-link hit lights up the "🔗 实时状态" link in chat replies —
+    # no operator action, no restart. Stands down entirely when public_url is explicit.
     try:
         from corlinman_server.gateway.origin_learn import (
             OriginLearningMiddleware,
@@ -3497,6 +3573,8 @@ def build_app(
             data_dir=resolved_data_dir,
             explicitly_configured=_status_links_explicitly_configured(cfg),
             on_learn=_rearm_status_links_on_learn,
+            allowed_public_origins=_resolve_allowed_public_origins(cfg),
+            trusted_proxies=_resolve_trusted_proxies(cfg),
         )
     except Exception as exc:  # noqa: BLE001 - never block boot on learning
         logger.warning("gateway.origin_learn.install_failed", error=str(exc))

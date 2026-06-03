@@ -17,9 +17,10 @@ SEC-009
 -------
 ``_set_cookie_header`` emitted the session cookie without the ``Secure``
 flag. The fix adds ``Secure`` *conditionally* — only when the request
-arrived over https (``X-Forwarded-Proto: https`` or
-``request.url.scheme == 'https'``) — so the documented upstream-TLS
-deploy gets ``Secure`` while plain-http local/dev still works.
+arrived over https (direct TLS or ``X-Forwarded-Proto: https`` from a
+trusted proxy) — so the documented upstream-TLS deploy gets ``Secure``
+while plain-http local/dev still works, and untrusted clients cannot spoof
+forwarded headers.
 """
 
 from __future__ import annotations
@@ -67,10 +68,12 @@ def configured_state(tmp_path: Path) -> Iterator[AdminState]:
         set_admin_state(None)
 
 
-def _client(state: AdminState) -> TestClient:
+def _client(
+    state: AdminState, *, remote_addr: str = "testclient", base_url: str = "http://testserver"
+) -> TestClient:
     app = FastAPI()
     app.include_router(auth_router())
-    return TestClient(app)
+    return TestClient(app, base_url=base_url, client=(remote_addr, 50000))
 
 
 # ---------------------------------------------------------------------------
@@ -132,9 +135,7 @@ def test_login_uses_compare_digest_for_username(
         json={"username": "not-the-admin", "password": "whatever"},
     )
     assert resp.status_code == 401, resp.text
-    assert any(
-        "not-the-admin" in pair or "admin" in pair for pair in seen
-    ), (
+    assert any("not-the-admin" in pair or "admin" in pair for pair in seen), (
         "hmac.compare_digest was not used to compare the username — "
         "SEC-011 timing oracle on the username comparison"
     )
@@ -150,7 +151,9 @@ def test_login_correct_credentials_still_succeed(
         json={"username": "admin", "password": "s3cret-pw"},
     )
     assert resp.status_code == 200, resp.text
-    assert resp.json()["expires_in"] > 0
+    body = resp.json()
+    assert body["expires_in"] > 0
+    assert "token" not in body
     assert resp.cookies.get(SESSION_COOKIE_NAME)
 
 
@@ -173,11 +176,29 @@ def test_login_correct_username_wrong_password_fails(
 # ---------------------------------------------------------------------------
 
 
-def test_set_cookie_has_secure_when_forwarded_proto_https(
+def test_untrusted_forwarded_proto_https_does_not_set_secure(
     configured_state: AdminState,
 ) -> None:
-    """``X-Forwarded-Proto: https`` → Set-Cookie carries ``Secure``."""
-    client = _client(configured_state)
+    """Untrusted peers cannot spoof ``X-Forwarded-Proto`` to affect Secure."""
+    client = _client(configured_state, remote_addr="203.0.113.10")
+    resp = client.post(
+        "/admin/login",
+        json={"username": "admin", "password": "s3cret-pw"},
+        headers={"X-Forwarded-Proto": "https"},
+    )
+    assert resp.status_code == 200, resp.text
+    set_cookie = resp.headers.get("set-cookie", "")
+    assert "Secure" not in set_cookie, (
+        f"untrusted X-Forwarded-Proto must not influence Secure: {set_cookie!r}"
+    )
+
+
+def test_set_cookie_has_secure_when_trusted_forwarded_proto_https(
+    configured_state: AdminState,
+) -> None:
+    """Trusted proxy + ``X-Forwarded-Proto: https`` sets ``Secure``."""
+    configured_state.trusted_forwarded_proto_proxies = ("10.0.0.0/24",)
+    client = _client(configured_state, remote_addr="10.0.0.7")
     resp = client.post(
         "/admin/login",
         json={"username": "admin", "password": "s3cret-pw"},
@@ -186,8 +207,43 @@ def test_set_cookie_has_secure_when_forwarded_proto_https(
     assert resp.status_code == 200, resp.text
     set_cookie = resp.headers.get("set-cookie", "")
     assert "Secure" in set_cookie, (
-        f"Set-Cookie missing Secure under https (SEC-009): {set_cookie!r}"
+        f"Set-Cookie missing Secure for trusted proxy https: {set_cookie!r}"
     )
+
+
+def test_set_cookie_has_secure_when_forced_by_admin_config(
+    configured_state: AdminState,
+) -> None:
+    """``[admin].session_cookie_secure = true`` wins over auto inference."""
+    configured_state.session_cookie_secure = True
+    client = _client(configured_state, remote_addr="203.0.113.10")
+    resp = client.post(
+        "/admin/login",
+        json={"username": "admin", "password": "s3cret-pw"},
+        headers={"X-Forwarded-Proto": "http"},
+    )
+    assert resp.status_code == 200, resp.text
+    set_cookie = resp.headers.get("set-cookie", "")
+    assert "Secure" in set_cookie, (
+        f"forced session cookie secure did not append Secure: {set_cookie!r}"
+    )
+
+
+def test_clear_cookie_keeps_secure_when_forced_by_admin_config(
+    configured_state: AdminState,
+) -> None:
+    """Logout clearing mirrors login cookie attributes when Secure is forced."""
+    configured_state.session_cookie_secure = True
+    client = _client(configured_state, remote_addr="203.0.113.10")
+    login = client.post("/admin/login", json={"username": "admin", "password": "s3cret-pw"})
+    assert login.status_code == 200, login.text
+
+    resp = client.post("/admin/logout")
+
+    assert resp.status_code == 204, resp.text
+    set_cookie = resp.headers.get("set-cookie", "")
+    assert "Max-Age=0" in set_cookie
+    assert "Secure" in set_cookie, f"clear cookie must mirror forced Secure setting: {set_cookie!r}"
 
 
 def test_set_cookie_omits_secure_for_plain_http(
@@ -208,3 +264,113 @@ def test_set_cookie_omits_secure_for_plain_http(
     # Sanity: the other hardening attributes survive.
     assert "HttpOnly" in set_cookie
     assert "SameSite=Strict" in set_cookie
+
+
+# ---------------------------------------------------------------------------
+# Login failure throttling — fixed-window limiter keyed by IP + username
+# ---------------------------------------------------------------------------
+
+
+def _install_fake_login_limiter(
+    state: AdminState, *, limit: int = 3, window_seconds: int = 10
+) -> dict[str, float]:
+    clock = {"now": 1_000.0}
+    state.login_failure_store = auth_mod.AdminLoginFailureStore(
+        limit=limit,
+        window_seconds=window_seconds,
+        now=lambda: clock["now"],
+    )
+    return clock
+
+
+def test_login_wrong_passwords_trigger_429(
+    configured_state: AdminState,
+) -> None:
+    """Consecutive bad passwords for the same client IP + username hit 429."""
+    _install_fake_login_limiter(configured_state)
+    client = _client(configured_state)
+    headers = {"X-Forwarded-For": "203.0.113.10"}
+
+    for _ in range(2):
+        resp = client.post(
+            "/admin/login",
+            json={"username": "admin", "password": "wrong-password"},
+            headers=headers,
+        )
+        assert resp.status_code == 401, resp.text
+
+    limited = client.post(
+        "/admin/login",
+        json={"username": "admin", "password": "wrong-password"},
+        headers=headers,
+    )
+    assert limited.status_code == 429, limited.text
+    assert limited.headers["Retry-After"] == "10"
+    detail = limited.json().get("detail", limited.json())
+    assert detail["error"] == "too_many_login_attempts"
+
+
+def test_login_limiter_allows_retry_after_window(
+    configured_state: AdminState,
+) -> None:
+    """Once the fixed window expires, the same pair can try again."""
+    clock = _install_fake_login_limiter(configured_state)
+    client = _client(configured_state)
+    headers = {"X-Forwarded-For": "203.0.113.20"}
+
+    for _ in range(3):
+        resp = client.post(
+            "/admin/login",
+            json={"username": "admin", "password": "wrong-password"},
+            headers=headers,
+        )
+    assert resp.status_code == 429, resp.text
+
+    clock["now"] += 11
+    retry = client.post(
+        "/admin/login",
+        json={"username": "admin", "password": "wrong-password"},
+        headers=headers,
+    )
+    assert retry.status_code == 401, retry.text
+    detail = retry.json().get("detail", retry.json())
+    assert detail["error"] == "invalid_credentials"
+
+
+def test_login_success_resets_failure_count(
+    configured_state: AdminState,
+) -> None:
+    """A successful login clears the IP/username failure counter."""
+    _install_fake_login_limiter(configured_state)
+    client = _client(configured_state)
+    headers = {"X-Forwarded-For": "203.0.113.30"}
+
+    for _ in range(2):
+        resp = client.post(
+            "/admin/login",
+            json={"username": "admin", "password": "wrong-password"},
+            headers=headers,
+        )
+        assert resp.status_code == 401, resp.text
+
+    ok = client.post(
+        "/admin/login",
+        json={"username": "admin", "password": "s3cret-pw"},
+        headers=headers,
+    )
+    assert ok.status_code == 200, ok.text
+
+    for _ in range(2):
+        resp = client.post(
+            "/admin/login",
+            json={"username": "admin", "password": "wrong-password"},
+            headers=headers,
+        )
+        assert resp.status_code == 401, resp.text
+
+    limited = client.post(
+        "/admin/login",
+        json={"username": "admin", "password": "wrong-password"},
+        headers=headers,
+    )
+    assert limited.status_code == 429, limited.text

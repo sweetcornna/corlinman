@@ -1,0 +1,33 @@
+manifest_version = 1
+name = "any-search"
+version = "1.0.0"
+description = "Real-time web and vertical-domain search via AnySearch, including domain listing, batch search, and URL content extraction."
+author = "Skye"
+plugin_type = "sync"
+
+[entry_point]
+command = "node"
+args = ["any_search.js"]
+
+[communication]
+timeout_ms = 45000
+
+[[capabilities.tools]]
+name = "any_search_search"
+description = "Run an AnySearch search query with optional vertical domain, content type, freshness, zone, and result count filters."
+parameters = { type = "object", properties = { query = { type = "string", description = "Search query." }, domain = { type = "string", description = "Optional vertical domain such as finance, academic, security, or code." }, sub_domain = { type = "string", description = "Optional AnySearch sub-domain route such as finance.us_stock or academic.doi." }, sub_domain_params = { type = "object", description = "Optional extra parameters required by the chosen sub-domain." }, content_types = { oneOf = [{ type = "string" }, { type = "array", items = { type = "string" } }], description = "Optional content types: web, news, code, doc, academic, data, image, video, audio." }, zone = { type = "string", description = "Optional region hint: cn or intl." }, freshness = { type = "string", description = "Optional freshness window: day, week, month, year." }, max_results = { type = "integer", description = "Optional result count, clamped to 1-100." } }, required = ["query"], additionalProperties = false }
+
+[[capabilities.tools]]
+name = "any_search_list_domains"
+description = "List AnySearch vertical domains, or fetch the metadata for one or up to five domains."
+parameters = { type = "object", properties = { domain = { type = "string", description = "Optional single domain." }, domains = { oneOf = [{ type = "string" }, { type = "array", items = { type = "string" } }], description = "Optional list of up to five domains." } }, additionalProperties = false }
+
+[[capabilities.tools]]
+name = "any_search_batch_search"
+description = "Run one to five AnySearch queries in parallel."
+parameters = { type = "object", properties = { queries = { oneOf = [{ type = "string" }, { type = "array", items = { oneOf = [{ type = "string" }, { type = "object" }] } }], description = "One to five query strings or query objects." } }, required = ["queries"], additionalProperties = false }
+
+[[capabilities.tools]]
+name = "any_search_extract"
+description = "Extract readable content from a web page URL via AnySearch."
+parameters = { type = "object", properties = { url = { type = "string", description = "HTTP or HTTPS URL to extract." } }, required = ["url"], additionalProperties = false }

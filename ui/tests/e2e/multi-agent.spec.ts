@@ -37,7 +37,7 @@ async function installAuthStubs(page: Page): Promise<void> {
       status: 200,
       contentType: "application/json",
       headers: { "set-cookie": "corlinman_session=stub; Path=/; HttpOnly" },
-      body: JSON.stringify({ token: "stub-token", expires_in: 3600 }),
+      body: JSON.stringify({ expires_in: 3600 }),
     });
   });
   await page.route("**/admin/me", async (route: Route) => {

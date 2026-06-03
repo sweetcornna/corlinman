@@ -17,11 +17,15 @@ from __future__ import annotations
 import asyncio
 import datetime as _dt
 import hmac
+import ipaddress
+import math
 import re
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Any, cast
 
+import structlog
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -74,10 +78,81 @@ _DUMMY_PASSWORD_HASH = _HASHER.hash("corlinman-timing-equalizer")
 # winner's state.
 _FALLBACK_ADMIN_WRITE_LOCK = asyncio.Lock()
 
+logger = structlog.get_logger(__name__)
+
+# Login brute-force guard. The fixed window is deliberately short enough
+# to avoid operator lockouts after typo bursts while still slowing online
+# guessing attacks against a single client-IP/username pair.
+LOGIN_FAILURE_LIMIT = 5
+LOGIN_FAILURE_WINDOW_SECONDS = 60
+
 
 # ---------------------------------------------------------------------------
 # Wire shapes
 # ---------------------------------------------------------------------------
+
+
+class AdminLoginFailureStore:
+    """Small in-memory fixed-window limiter for ``/admin/login`` failures.
+
+    Keys include both client IP and submitted username so a typo burst for
+    one operator identity does not lock every admin username behind the same
+    proxy, while repeated guesses for the same pair are throttled.
+    """
+
+    def __init__(
+        self,
+        *,
+        limit: int = LOGIN_FAILURE_LIMIT,
+        window_seconds: int = LOGIN_FAILURE_WINDOW_SECONDS,
+        now: Callable[[], float] | None = None,
+    ) -> None:
+        self.limit = limit
+        self.window_seconds = window_seconds
+        self._now = now
+        self._lock = threading.Lock()
+        self._failures: dict[tuple[str, str], tuple[int, float]] = {}
+
+    def _clock(self) -> float:
+        if self._now is not None:
+            return self._now()
+        return _dt.datetime.now(_dt.UTC).timestamp()
+
+    def retry_after(self, *, client_ip: str, username: str) -> int | None:
+        """Return remaining lockout seconds when the key is throttled."""
+        key = (client_ip, username)
+        now = self._clock()
+        with self._lock:
+            item = self._failures.get(key)
+            if item is None:
+                return None
+            count, reset_at = item
+            if now >= reset_at:
+                self._failures.pop(key, None)
+                return None
+            if count >= self.limit:
+                return max(1, math.ceil(reset_at - now))
+            return None
+
+    def record_failure(self, *, client_ip: str, username: str) -> int | None:
+        """Increment the failure count and return a Retry-After if locked."""
+        key = (client_ip, username)
+        now = self._clock()
+        with self._lock:
+            count, reset_at = self._failures.get(key, (0, now + self.window_seconds))
+            if now >= reset_at:
+                count = 0
+                reset_at = now + self.window_seconds
+            count += 1
+            self._failures[key] = (count, reset_at)
+            if count >= self.limit:
+                return max(1, math.ceil(reset_at - now))
+            return None
+
+    def clear(self, *, client_ip: str, username: str) -> None:
+        """Forget failure history for a successfully authenticated pair."""
+        with self._lock:
+            self._failures.pop((client_ip, username), None)
 
 
 class LoginRequest(BaseModel):
@@ -86,7 +161,6 @@ class LoginRequest(BaseModel):
 
 
 class LoginResponse(BaseModel):
-    token: str
     expires_in: int
 
 
@@ -156,23 +230,110 @@ def argon2_verify(password: str, encoded: str) -> bool:
         return False
 
 
-def _request_is_https(request: Request) -> bool:
+def _client_ip(request: Request) -> str:
+    """Best-effort client IP extraction for login throttling keys."""
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        first = forwarded.split(",", 1)[0].strip()
+        if first:
+            return first
+    if request.client is not None and request.client.host:
+        return request.client.host
+    return "unknown"
+
+
+def _login_failure_store(state: AdminState) -> AdminLoginFailureStore:
+    """Return the state-scoped login limiter, creating it lazily."""
+    store = getattr(state, "login_failure_store", None)
+    if store is None:
+        store = AdminLoginFailureStore()
+        state.login_failure_store = store
+    return cast(AdminLoginFailureStore, store)
+
+
+def _too_many_login_attempts(retry_after: int) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail={"error": "too_many_login_attempts"},
+        headers={"Retry-After": str(retry_after)},
+    )
+
+
+def _remote_ip(request: Request) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """Best-effort peer IP extraction from Starlette's request scope."""
+    client = request.client
+    if client is None or not client.host:
+        return None
+    try:
+        return ipaddress.ip_address(client.host)
+    except ValueError:
+        return None
+
+
+def _trusted_forwarded_proto_cidrs(
+    state: AdminState,
+) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+    """Return configured trusted proxy CIDRs for ``X-Forwarded-Proto``.
+
+    ``[server].trusted_forwarded_proto_proxies`` is the production knob.
+    For compatibility with the simpler ``[server].trust_forwarded_proto =
+    true`` shape, boot wiring may set ``trust_forwarded_proto`` without
+    explicit CIDRs; in that case only loopback peers are trusted. That keeps
+    the flag useful for the documented local reverse-proxy deploy without
+    trusting arbitrary clients that can spoof forwarded headers.
+    """
+    raw_cidrs = tuple(getattr(state, "trusted_forwarded_proto_proxies", ()) or ())
+    if not raw_cidrs and bool(getattr(state, "trust_forwarded_proto", False)):
+        raw_cidrs = ("127.0.0.0/8", "::1/128")
+
+    networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+    for raw in raw_cidrs:
+        try:
+            networks.append(ipaddress.ip_network(str(raw), strict=False))
+        except ValueError:
+            # Invalid operator config should fail closed for this request;
+            # boot-time validation can grow around the dict-shaped config later.
+            continue
+    return tuple(networks)
+
+
+def _request_from_trusted_forwarded_proto_proxy(request: Request, state: AdminState) -> bool:
+    """True when the direct peer may supply ``X-Forwarded-Proto``."""
+    remote = _remote_ip(request)
+    if remote is None:
+        return False
+    return any(remote in network for network in _trusted_forwarded_proto_cidrs(state))
+
+
+def _request_is_https(request: Request, state: AdminState) -> bool:
     """True iff the request reached us over TLS.
 
-    Honours the upstream-TLS-termination deploy: a reverse proxy that
-    terminates TLS forwards ``X-Forwarded-Proto: https`` over a plain
-    loopback hop, so the raw ``request.url.scheme`` is ``http`` there.
-    We trust the forwarded header (the proxy is part of the trust
-    boundary in the documented deploy) and fall back to the connection
-    scheme for the direct-TLS case."""
+    Reverse-proxy TLS termination is supported, but ``X-Forwarded-Proto`` is
+    only honored when the direct peer is a configured trusted proxy. Direct
+    clients can otherwise spoof the header and trick the admin login into
+    emitting a ``Secure`` cookie on plain HTTP.
+    """
     forwarded = request.headers.get("x-forwarded-proto")
-    if forwarded is not None:
+    if forwarded is not None and _request_from_trusted_forwarded_proto_proxy(request, state):
         # The header can carry a comma-separated proxy chain; the
         # client-facing (left-most) hop is what matters.
         first = forwarded.split(",", 1)[0].strip().lower()
         if first == "https":
             return True
     return request.url.scheme == "https"
+
+
+def _session_cookie_secure(request: Request, state: AdminState) -> bool:
+    """Resolve whether the admin session cookie should carry ``Secure``.
+
+    ``[admin].session_cookie_secure`` is an explicit operator override and
+    therefore wins over auto-detection from request scheme / trusted proxy
+    headers. ``None`` preserves the previous automatic behavior.
+    """
+    configured = getattr(state, "session_cookie_secure", None)
+    if configured is not None:
+        return bool(configured)
+    return _request_is_https(request, state)
 
 
 def _set_cookie_header(token: str, max_age_seconds: int, *, secure: bool) -> str:
@@ -195,12 +356,12 @@ def _set_cookie_header(token: str, max_age_seconds: int, *, secure: bool) -> str
     return header
 
 
-def _clear_cookie_header() -> str:
+def _clear_cookie_header(*, secure: bool) -> str:
     """``Set-Cookie`` header value that clears the session cookie."""
-    return (
-        f"{SESSION_COOKIE_NAME}=; "
-        f"HttpOnly; SameSite=Strict; Path=/; Max-Age=0"
-    )
+    header = f"{SESSION_COOKIE_NAME}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"
+    if secure:
+        header += "; Secure"
+    return header
 
 
 def _iso(dt: _dt.datetime) -> str:
@@ -243,15 +404,11 @@ def _service_unavailable(error: str, message: str | None = None) -> HTTPExceptio
     payload: dict[str, Any] = {"error": error}
     if message is not None:
         payload["message"] = message
-    return HTTPException(
-        status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=payload
-    )
+    return HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=payload)
 
 
 def _unauthorized(error: str) -> HTTPException:
-    return HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED, detail={"error": error}
-    )
+    return HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail={"error": error})
 
 
 async def _atomic_write(path: Path, contents: str) -> None:
@@ -299,6 +456,20 @@ def router() -> APIRouter:
         if state.admin_username is None or state.admin_password_hash is None:
             raise _service_unavailable("admin_not_configured")
 
+        client_ip = _client_ip(request)
+        failure_store = _login_failure_store(state)
+        retry_after = failure_store.retry_after(
+            client_ip=client_ip, username=body.username
+        )
+        if retry_after is not None:
+            logger.warning(
+                "admin.login.rate_limited",
+                client_ip=client_ip,
+                username=body.username,
+                retry_after=retry_after,
+            )
+            raise _too_many_login_attempts(retry_after)
+
         # SEC-011: constant-time username compare + ALWAYS run the argon2
         # verify (against the real hash on a username match, the dummy
         # hash otherwise) so the response time can't leak whether the
@@ -308,16 +479,34 @@ def router() -> APIRouter:
         verify_hash = state.admin_password_hash if username_ok else _DUMMY_PASSWORD_HASH
         password_ok = argon2_verify(body.password, verify_hash)
         if not (username_ok and password_ok):
+            retry_after = failure_store.record_failure(
+                client_ip=client_ip, username=body.username
+            )
+            logger.warning(
+                "admin.login.failed",
+                client_ip=client_ip,
+                username=body.username,
+                rate_limited=retry_after is not None,
+            )
+            if retry_after is not None:
+                raise _too_many_login_attempts(retry_after)
             raise _unauthorized("invalid_credentials")
+
+        failure_store.clear(client_ip=client_ip, username=body.username)
+        logger.info(
+            "admin.login.succeeded", client_ip=client_ip, username=body.username
+        )
 
         store = _ensure_session_store(state)
         token = store.create(body.username)
-        max_age = store.ttl_seconds() if hasattr(store, "ttl_seconds") else state.session_ttl_seconds
+        max_age = (
+            store.ttl_seconds() if hasattr(store, "ttl_seconds") else state.session_ttl_seconds
+        )
 
         response.headers["set-cookie"] = _set_cookie_header(
-            token, max_age, secure=_request_is_https(request)
+            token, max_age, secure=_session_cookie_secure(request, state)
         )
-        return LoginResponse(token=token, expires_in=max_age)
+        return LoginResponse(expires_in=max_age)
 
     @r.post(
         "/admin/logout",
@@ -339,7 +528,9 @@ def router() -> APIRouter:
         # 204 NO_CONTENT must not have a body; build the response
         # explicitly so FastAPI doesn't append JSON null.
         out = Response(status_code=status.HTTP_204_NO_CONTENT)
-        out.headers["set-cookie"] = _clear_cookie_header()
+        out.headers["set-cookie"] = _clear_cookie_header(
+            secure=_session_cookie_secure(request, state)
+        )
         return out
 
     @r.get(
@@ -391,9 +582,7 @@ def router() -> APIRouter:
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail={
                     "error": "weak_password",
-                    "message": (
-                        f"password must be at least {MIN_PASSWORD_LEN} characters"
-                    ),
+                    "message": (f"password must be at least {MIN_PASSWORD_LEN} characters"),
                 },
             )
 
@@ -422,9 +611,7 @@ def router() -> APIRouter:
         if state.session_store is None:
             raise _service_unavailable("session_store_missing")
         token = _read_session_cookie(request)
-        session = (
-            state.session_store.validate(token) if token else None
-        )
+        session = state.session_store.validate(token) if token else None
         if session is None:
             raise _unauthorized("unauthenticated")
 
@@ -441,9 +628,7 @@ def router() -> APIRouter:
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                     detail={
                         "error": "weak_password",
-                        "message": (
-                            f"password must be at least {MIN_PASSWORD_LEN} characters"
-                        ),
+                        "message": (f"password must be at least {MIN_PASSWORD_LEN} characters"),
                     },
                 )
             await _persist_admin_credentials(
@@ -471,9 +656,7 @@ def router() -> APIRouter:
         if state.session_store is None:
             raise _service_unavailable("session_store_missing")
         token = _read_session_cookie(request)
-        session = (
-            state.session_store.validate(token) if token else None
-        )
+        session = state.session_store.validate(token) if token else None
         if session is None:
             raise _unauthorized("unauthenticated")
 
@@ -483,9 +666,7 @@ def router() -> APIRouter:
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail={
                     "error": "invalid_username",
-                    "message": (
-                        f"username must be 1..{USERNAME_MAX_LEN} characters"
-                    ),
+                    "message": (f"username must be 1..{USERNAME_MAX_LEN} characters"),
                 },
             )
         if _USERNAME_RE.match(new_username) is None:
@@ -494,8 +675,7 @@ def router() -> APIRouter:
                 detail={
                     "error": "invalid_username",
                     "message": (
-                        "username must contain only ASCII letters, "
-                        "digits, underscores, and hyphens"
+                        "username must contain only ASCII letters, digits, underscores, and hyphens"
                     ),
                 },
             )
@@ -649,9 +829,7 @@ def _toml_escape(s: str) -> str:
     return s.replace("\\", "\\\\").replace('"', '\\"')
 
 
-def _rename_active_session(
-    state: AdminState, old_username: str, new_username: str
-) -> None:
+def _rename_active_session(state: AdminState, old_username: str, new_username: str) -> None:
     """Rewrite every active session row that points at ``old_username``
     so subsequent ``session_user_mismatch`` checks pass.
 

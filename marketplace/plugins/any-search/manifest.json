@@ -1,0 +1,14 @@
+{
+  "name": "any-search",
+  "version": "1.0.0",
+  "description": "Real-time web and vertical-domain search via AnySearch, including domain listing, batch search, and URL content extraction.",
+  "entry": "any_search.js",
+  "permissions": [],
+  "requires": {
+    "env": [
+      "ANYSEARCH_API_KEY",
+      "ANYSEARCH_ENDPOINT",
+      "ANYSEARCH_TIMEOUT_MS"
+    ]
+  }
+}
