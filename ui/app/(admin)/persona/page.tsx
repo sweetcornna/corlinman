@@ -742,7 +742,7 @@ function PersonaEditorDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="flex max-h-[85vh] max-w-3xl flex-col overflow-hidden"
+        className="flex max-h-[85vh] max-w-3xl flex-col overflow-y-auto"
         data-testid="persona-editor"
       >
         <DialogHeader className="shrink-0">
@@ -757,7 +757,7 @@ function PersonaEditorDialog({
         </DialogHeader>
 
         <div
-          className="min-h-0 flex-1 overflow-y-auto pr-1"
+          className="pr-1"
           data-testid="persona-editor-scroll"
         >
           <div className="grid gap-3">
