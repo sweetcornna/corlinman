@@ -6,8 +6,12 @@
 
 - [ ] feat: new user-facing behavior
 - [ ] fix: bug fix or regression repair
-- [ ] chore: tooling, CI, dependencies, or maintenance
+- [ ] refactor: internal change with no intended behavior difference
+- [ ] test: tests only
+- [ ] perf: performance optimization
 - [ ] docs: documentation only
+- [ ] chore: tooling, dependencies, or maintenance
+- [ ] ci: CI / workflow change
 
 <!-- PR title must follow Conventional Commits: type(scope): concise change.
      scope = affected package/area, e.g. channels, gateway, providers, ui,

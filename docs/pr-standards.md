@@ -116,9 +116,13 @@ The workflow only calls GitHub's label API — it does not check out or execute 
 
 ## 7. Ownership & CODEOWNERS Routing
 
-Touching another team's area requires that team's review. Owner-areas map to real `python/packages/...` and `ui/` paths (never to any other language tree). The canonical mapping below mirrors the architecture module map ([docs/architecture-modules.md](architecture-modules.md)).
+Touching another team's area requires that team's review. Owner-areas map to real `python/packages/...`, `ui/`, and `apps/swift-mac/` paths. The canonical mapping below mirrors the architecture module map ([docs/architecture-modules.md](architecture-modules.md)). CODEOWNERS uses **last-match-wins**, so a package-wide default line is listed first and the narrower subpath lines below it override for those areas.
 
 ```text
+# Server package default (top-level files like agent_servicer.py / main.py /
+# tests; the gateway/* and other subpaths below override per area)
+python/packages/corlinman-server/                                                  @corlinman/gateway-lead
+
 # Core Gateway Orchestration
 python/packages/corlinman-server/src/corlinman_server/gateway/lifecycle/           @corlinman/gateway-lead
 python/packages/corlinman-server/src/corlinman_server/gateway/core/                @corlinman/gateway-lead
@@ -154,7 +158,7 @@ python/packages/corlinman-agent-brain/                                          
 python/packages/corlinman-channels/                                                @corlinman/channels-gateway-team
 
 # Provider Abstraction & Plugin Platform
-python/packages/corlinman-providers/src/corlinman_providers/                       @corlinman/provider-adapters-team
+python/packages/corlinman-providers/                                               @corlinman/provider-adapters-team
 python/packages/corlinman-providers/src/corlinman_providers/plugins/               @corlinman/plugin-platform-team
 
 # Data & Knowledge Layer

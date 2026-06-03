@@ -242,6 +242,11 @@ Group the 25 packages + gateway monolith into **8 independent owner-areas**, eac
 ## CODEOWNERS File
 
 ```text
+# Server package default (top-level files like agent_servicer.py / main.py /
+# tests; the gateway/* and other subpaths below override per area).
+# CODEOWNERS is last-match-wins, so this broad line must come first.
+python/packages/corlinman-server/                                                  @corlinman/gateway-lead
+
 # Core Gateway Orchestration
 python/packages/corlinman-server/src/corlinman_server/gateway/lifecycle/           @corlinman/gateway-lead
 python/packages/corlinman-server/src/corlinman_server/gateway/core/                @corlinman/gateway-lead
@@ -277,7 +282,7 @@ python/packages/corlinman-agent-brain/                                          
 python/packages/corlinman-channels/                                                @corlinman/channels-gateway-team
 
 # Provider Abstraction & Plugin Platform
-python/packages/corlinman-providers/src/corlinman_providers/                       @corlinman/provider-adapters-team
+python/packages/corlinman-providers/                                               @corlinman/provider-adapters-team
 python/packages/corlinman-providers/src/corlinman_providers/plugins/               @corlinman/plugin-platform-team
 
 # Data & Knowledge Layer
