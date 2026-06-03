@@ -40,8 +40,8 @@ import pytest_asyncio
 from corlinman_agent.events import EventEnvelope, TextDelta, TurnComplete
 from corlinman_server.agent_journal import AgentJournal
 from corlinman_server.gateway.observability import JournalBackedEmitter
-from corlinman_server.gateway.routes_admin_b import sessions_events
-from corlinman_server.gateway.routes_admin_b.sessions_events import (
+from corlinman_server.gateway.routes_admin_b.infra import sessions_events
+from corlinman_server.gateway.routes_admin_b.infra.sessions_events import (
     _parse_last_event_id,
     _sse_stream,
 )

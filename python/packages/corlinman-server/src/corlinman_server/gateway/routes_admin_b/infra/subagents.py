@@ -17,7 +17,7 @@ Five endpoints, all admin-gated:
   /admin/subagents overview panel.
 * ``POST /admin/subagents/{id}/kill`` — operator kill switch.
 
-Pattern mirrors :mod:`corlinman_server.gateway.routes_admin_b.system`'s
+Pattern mirrors :mod:`corlinman_server.gateway.routes_admin_b.infra.system`'s
 ``/admin/system/upgrade/{id}/events`` route: 10s SSE heartbeat,
 terminal-state stream closure, typed JSON error envelopes.
 """

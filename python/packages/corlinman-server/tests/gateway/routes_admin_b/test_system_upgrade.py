@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from corlinman_server.gateway.routes_admin_b import system as system_routes
+from corlinman_server.gateway.routes_admin_b.infra import system as system_routes
 from corlinman_server.gateway.routes_admin_b.state import (
     AdminState,
     set_admin_state,
@@ -85,7 +85,7 @@ class _StubUpgrader:
             # ``UpgradeAlreadyRunning`` wraps an :class:`UpgradeStatus`
             # carrying request_id + tag + state; we synthesise a
             # matching one for the mock.
-            from corlinman_server.gateway.routes_admin_b.system import (
+            from corlinman_server.gateway.routes_admin_b.infra.system import (
                 UpgradeAlreadyRunning,
             )
 

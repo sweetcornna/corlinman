@@ -2930,7 +2930,7 @@ def build_app(
                     # Best-effort — a malformed sidecar leaves the overlay
                     # empty rather than aborting boot.
                     try:
-                        from corlinman_server.gateway.routes_admin_b.scheduler import (
+                        from corlinman_server.gateway.routes_admin_b.infra.scheduler import (
                             rehydrate_runtime_jobs_on_boot,
                         )
 

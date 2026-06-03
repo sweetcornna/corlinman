@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest_asyncio
 from corlinman_agent.events import EventEnvelope, TurnComplete
 from corlinman_server.agent_journal import AgentJournal
-from corlinman_server.gateway.routes_admin_b import sessions_cost
+from corlinman_server.gateway.routes_admin_b.infra import sessions_cost
 from corlinman_server.gateway.routes_admin_b.state import (
     AdminState,
     require_admin,

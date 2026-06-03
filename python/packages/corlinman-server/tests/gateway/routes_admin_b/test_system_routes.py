@@ -10,7 +10,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from corlinman_server.gateway.routes_admin_b import system as system_routes
+from corlinman_server.gateway.routes_admin_b.infra import system as system_routes
 from corlinman_server.gateway.routes_admin_b.state import (
     AdminState,
     set_admin_state,

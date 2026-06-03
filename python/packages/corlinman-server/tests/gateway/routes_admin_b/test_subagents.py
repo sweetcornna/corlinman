@@ -19,7 +19,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from corlinman_server.gateway.routes_admin_b import subagents as subagent_routes
+from corlinman_server.gateway.routes_admin_b.infra import subagents as subagent_routes
 from corlinman_server.gateway.routes_admin_b.state import (
     AdminState,
     set_admin_state,

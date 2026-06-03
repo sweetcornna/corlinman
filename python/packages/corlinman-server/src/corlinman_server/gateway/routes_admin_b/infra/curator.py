@@ -27,7 +27,7 @@ The ``signals_repo`` handle is best-effort: when wired, run/preview emit
 the same ``EVENT_*`` rows the scheduler-driven curator does; when not
 wired, the routes still succeed and just skip signal emission.
 
-Mirrors the Rust pattern from ``routes_admin_b/evolution.py`` — typed
+Mirrors the Rust pattern from ``routes_admin_b/infra/evolution.py`` — typed
 pydantic v2 request/response shapes, error envelopes via ``HTTPException``
 detail dicts, deferred imports of the optional store packages so a
 partially-installed gateway still imports this module.

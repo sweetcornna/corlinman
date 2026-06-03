@@ -19,7 +19,7 @@ from corlinman_evolution_store import (
     EvolutionStore,
     SignalsRepo,
 )
-from corlinman_server.gateway.routes_admin_b import curator as curator_routes
+from corlinman_server.gateway.routes_admin_b.infra import curator as curator_routes
 from corlinman_server.gateway.routes_admin_b.state import (
     AdminState,
     set_admin_state,

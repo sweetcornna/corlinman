@@ -35,7 +35,7 @@ from corlinman_evolution_store import (
     ProposalId,
     ProposalsRepo,
 )
-from corlinman_server.gateway.routes_admin_b import evolution as evolution_routes
+from corlinman_server.gateway.routes_admin_b.infra import evolution as evolution_routes
 from corlinman_server.gateway.routes_admin_b.state import (
     AdminState,
     set_admin_state,

@@ -50,22 +50,7 @@ from corlinman_server.gateway.routes_admin_b import (
     credentials as _credentials,
 )
 from corlinman_server.gateway.routes_admin_b import (
-    curator as _curator,
-)
-from corlinman_server.gateway.routes_admin_b import (
-    evolution as _evolution,
-)
-from corlinman_server.gateway.routes_admin_b import (
-    hooks as _hooks,
-)
-from corlinman_server.gateway.routes_admin_b import (
     image_provider as _image_provider,
-)
-from corlinman_server.gateway.routes_admin_b import (
-    logs as _logs,
-)
-from corlinman_server.gateway.routes_admin_b import (
-    memory as _memory,
 )
 from corlinman_server.gateway.routes_admin_b import (
     models as _models,
@@ -88,19 +73,34 @@ from corlinman_server.gateway.routes_admin_b import (
 from corlinman_server.gateway.routes_admin_b import (
     rag as _rag,
 )
-from corlinman_server.gateway.routes_admin_b import (
+from corlinman_server.gateway.routes_admin_b.infra import (
+    curator as _curator,
+)
+from corlinman_server.gateway.routes_admin_b.infra import (
+    evolution as _evolution,
+)
+from corlinman_server.gateway.routes_admin_b.infra import (
+    hooks as _hooks,
+)
+from corlinman_server.gateway.routes_admin_b.infra import (
+    logs as _logs,
+)
+from corlinman_server.gateway.routes_admin_b.infra import (
+    memory as _memory,
+)
+from corlinman_server.gateway.routes_admin_b.infra import (
     scheduler as _scheduler,
 )
-from corlinman_server.gateway.routes_admin_b import (
+from corlinman_server.gateway.routes_admin_b.infra import (
     sessions_cost as _sessions_cost,
 )
-from corlinman_server.gateway.routes_admin_b import (
+from corlinman_server.gateway.routes_admin_b.infra import (
     sessions_events as _sessions_events,
 )
-from corlinman_server.gateway.routes_admin_b import (
+from corlinman_server.gateway.routes_admin_b.infra import (
     subagents as _subagents,
 )
-from corlinman_server.gateway.routes_admin_b import (
+from corlinman_server.gateway.routes_admin_b.infra import (
     system as _system,
 )
 from corlinman_server.gateway.routes_admin_b.marketplace import (
