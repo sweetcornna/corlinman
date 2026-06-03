@@ -1,7 +1,7 @@
 """``/admin/personas/use-default`` — first-run "use default persona" hook.
 
 This module is the admin_b half of the persona surface. The full
-persona CRUD lives in ``routes_admin_a.personas`` (Persona Studio); this
+persona CRUD lives in ``routes_admin_a.studio.personas`` (Persona Studio); this
 file only adds the **B5** endpoint required by the first-run wizard so
 the wizard can pick the built-in ``grantley`` persona without leaving
 ``routes_admin_b``.

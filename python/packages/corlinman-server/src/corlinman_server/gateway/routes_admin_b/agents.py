@@ -11,7 +11,7 @@ This module exposes the read/write surface so the admin UI can
 inventory the parsed bindings and edit them inline. We deliberately
 mount under ``/admin/agents/bindings`` (and ``/admin/agents/{name}/
 binding``) rather than the bare ``/admin/agents`` paths the plan
-sketches: the existing ``routes_admin_a/agents.py`` already owns
+sketches: the existing ``routes_admin_a/studio/agents.py`` already owns
 ``GET /admin/agents`` (lists ``*.md`` files for the Monaco editor)
 and admin_a mounts before admin_b on the live FastAPI app, so a bare
 ``GET /admin/agents`` here would be silently shadowed. Distinct
@@ -43,7 +43,7 @@ the binding shape is locked to ``model`` + ``provider`` +
 edit other yaml fields go through ``/admin/agents/{name}`` in
 routes_admin_a (Monaco editor).
 
-Path-traversal defence mirrors ``routes_admin_a/agents.py``: the
+Path-traversal defence mirrors ``routes_admin_a/studio/agents.py``: the
 ``name`` segment must be a bare stem (no ``/``, ``\\``, or ``..``).
 """
 
@@ -118,7 +118,7 @@ class StatusOk(BaseModel):
 def _agents_dir_for(state: AdminState) -> Path:
     """Resolve the ``agents/`` directory under the state's data dir.
 
-    Mirrors the routes_admin_a/agents.py helper but lives here so the
+    Mirrors the routes_admin_a/studio/agents.py helper but lives here so the
     two modules don't share a private symbol. Falls back to ``cwd()``
     when ``data_dir`` is unset (matches the routes_admin_a behaviour
     so deployments without ``AdminState.data_dir`` still surface a
@@ -131,7 +131,7 @@ def _agents_dir_for(state: AdminState) -> Path:
 def _validate_agent_name(name: str) -> None:
     """Reject empty names, path separators, or any ``..`` segment.
 
-    Path-traversal defence identical to ``routes_admin_a/agents.py``.
+    Path-traversal defence identical to ``routes_admin_a/studio/agents.py``.
     """
     if not name or "/" in name or "\\" in name or ".." in name:
         raise HTTPException(

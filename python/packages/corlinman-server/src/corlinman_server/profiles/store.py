@@ -18,7 +18,7 @@ Design choices
 * **Sync sqlite3, not aiosqlite.** Profile mutations are infrequent
   (operator UI clicks) and tiny (a row + maybe a directory copy). The
   sync API keeps the API itself sync, which is what the FastAPI routes
-  in ``routes_admin_a/profiles.py`` want — they call into the store
+  in ``routes_admin_a/studio/profiles.py`` want — they call into the store
   directly from ``async def`` handlers but the underlying work is tiny.
   This matches the pattern in
   :mod:`corlinman_server.tenancy.admin_schema` which is also synchronous

@@ -11,7 +11,7 @@ Two surfaces:
 * :class:`ProfileStore` — SQLite-backed CRUD over the ``profiles`` table
   + filesystem materialisation. Used by the
   ``/admin/profiles*`` routes in
-  :mod:`corlinman_server.gateway.routes_admin_a.profiles`.
+  :mod:`corlinman_server.gateway.routes_admin_a.studio.profiles`.
 * :func:`ensure_profile_dirs` and friends — pure path helpers, importable
   without spinning up SQLite.
 

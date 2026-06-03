@@ -204,7 +204,7 @@ def _iso(dt: datetime | None) -> str | None:
 
 def _profile_store(state: AdminState):
     """Return the wired profile store or raise 503. Mirrors the same
-    helper in routes_admin_a/profiles.py — kept private here so the
+    helper in routes_admin_a/studio/profiles.py — kept private here so the
     routes can fail fast with a single readable envelope."""
     store = getattr(state, "profile_store", None)
     if store is None:
