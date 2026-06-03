@@ -26,15 +26,13 @@ purely the index.
 
 from __future__ import annotations
 
-import contextlib
 import datetime as _dt
-import sqlite3
-import threading
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import structlog
+
+from corlinman_server.system.marketplace._sqlite_store import PersistentSqliteStore
 
 logger = structlog.get_logger(__name__)
 
@@ -144,7 +142,7 @@ def _validate_slug(slug: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-class PluginStore:
+class PluginStore(PersistentSqliteStore):
     """CRUD wrapper over the ``plugins`` table.
 
     Construct with the SQLite file path the index should live at. The
@@ -158,37 +156,7 @@ class PluginStore:
     matching :class:`corlinman_server.profiles.store.ProfileStore`.
     """
 
-    def __init__(self, db_path: Path) -> None:
-        """Open (or create) the index DB at ``db_path``.
-
-        The parent directory is created on demand so callers can point at a
-        not-yet-materialised data dir.
-        """
-        self._db_path = Path(db_path)
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._lock = threading.Lock()
-        self._conn = sqlite3.connect(
-            str(self._db_path),
-            check_same_thread=False,
-            isolation_level=None,  # autocommit
-        )
-        # WAL + foreign-keys mirrors the rest of corlinman's sqlite stores.
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA synchronous=NORMAL")
-        self._conn.execute("PRAGMA foreign_keys=ON")
-        self._conn.executescript(_SCHEMA_SQL)
-
-    # ---- lifecycle ----------------------------------------------------------
-
-    def close(self) -> None:
-        """Close the underlying connection. Idempotent."""
-        with self._lock, contextlib.suppress(sqlite3.Error):
-            self._conn.close()
-
-    @property
-    def db_path(self) -> Path:
-        """Absolute path to the backing SQLite file."""
-        return self._db_path
+    _SCHEMA_SQL = _SCHEMA_SQL
 
     # ---- internal helpers ---------------------------------------------------
 

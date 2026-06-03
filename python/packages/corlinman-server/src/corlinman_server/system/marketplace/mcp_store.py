@@ -35,16 +35,14 @@ preserves the original ``installed_at`` and bumps ``updated_at``; an
 
 from __future__ import annotations
 
-import contextlib
 import datetime as _dt
 import json
-import sqlite3
-import threading
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import structlog
+
+from corlinman_server.system.marketplace._sqlite_store import PersistentSqliteStore
 
 logger = structlog.get_logger(__name__)
 
@@ -163,7 +161,7 @@ def _validate_name(name: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-class McpServerStore:
+class McpServerStore(PersistentSqliteStore):
     """CRUD wrapper over the ``mcp_servers`` table.
 
     Construct with the path to the SQLite file that should hold the
@@ -178,32 +176,7 @@ class McpServerStore:
     ``sqlite3.OperationalError: database is locked`` on the read side.
     """
 
-    def __init__(self, db_path: Path) -> None:
-        self._db_path = Path(db_path)
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._lock = threading.Lock()
-        self._conn = sqlite3.connect(
-            str(self._db_path),
-            check_same_thread=False,
-            isolation_level=None,  # autocommit
-        )
-        # WAL + foreign-keys mirrors the rest of corlinman's sqlite stores.
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA synchronous=NORMAL")
-        self._conn.execute("PRAGMA foreign_keys=ON")
-        self._conn.executescript(_SCHEMA_SQL)
-
-    # ---- lifecycle ----------------------------------------------------------
-
-    def close(self) -> None:
-        """Close the underlying connection. Idempotent."""
-        with self._lock, contextlib.suppress(sqlite3.Error):
-            self._conn.close()
-
-    @property
-    def db_path(self) -> Path:
-        """Path to the SQLite file backing the registry."""
-        return self._db_path
+    _SCHEMA_SQL = _SCHEMA_SQL
 
     # ---- internal helpers ---------------------------------------------------
 
