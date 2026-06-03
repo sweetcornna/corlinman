@@ -84,6 +84,19 @@ class AdminState:
     # don't have to construct it; ``_admin_auth_lock`` in
     # ``auth.py`` falls back to a module-level lock when absent.
     admin_write_lock: Any | None = None
+    # Explicit operator override for the admin session cookie's ``Secure``
+    # flag. ``None`` means infer from HTTPS / trusted proxy headers; ``True``
+    # or ``False`` wins over inference. Wired from
+    # ``[admin].session_cookie_secure`` when present.
+    session_cookie_secure: bool | None = None
+    # Whether to consider ``X-Forwarded-Proto`` at all. Even when enabled,
+    # auth.py only reads the header if the direct peer is in
+    # ``trusted_forwarded_proto_proxies`` (or loopback when this flag is set
+    # without explicit CIDRs). Wired from ``[server].trust_forwarded_proto``.
+    trust_forwarded_proto: bool = False
+    # CIDR list of reverse proxies allowed to supply ``X-Forwarded-Proto``;
+    # wired from ``[server].trusted_forwarded_proto_proxies``.
+    trusted_forwarded_proto_proxies: tuple[str, ...] = ()
 
     # -- /admin/approvals --------------------------------------------
     #
