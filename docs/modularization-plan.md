@@ -35,7 +35,7 @@ Ranked by the collaboration-pain evidence in the maps: frequency of merge confli
 |---|---------|-------------------------------|
 | **1.1** | **`AdminState` god-object + `extras` dict.** Shared across admin-a (200+ lines, 30+ optional fields, 11 sub-routers) *and* admin-b (228 lines, 27 modules). | Every new subsystem adds a field; every boot site wires it; every test reconstructs it. The free-form `extras` dict is keyed by convention (`scheduler_runtime_jobs`, `config_swap_fn`, `config_watcher`, `hook_runner`, `skill_registry_factory`, …) with **no type safety and no key registry** — competing writers to the same key silently break tests. |
 | **1.2** | **`entrypoint.py` (4040 LOC) is the single boot hotspot.** | Holds config loading, state building, route mounting, lifespan with 30+ wiring tasks, admin seed, scheduler-job registration, C2 handles, persona stores, plugin hotload, identity sweep, update checker, config watcher. *Every* gateway boot feature lands here. It also builds/mutates `AdminState` across 3 separate code sites, so 1.1 and 1.2 are coupled. |
-| **1.3** | **Config-write duplication across admin surfaces.** `_write_config_atomic` is copy-pasted in 4 modules (`onboard`, `models`, `providers`, `credentials`); `_redact` and config sub-key merging duplicated. | No shared config-mutation layer. Atomicity guarantees, TOML-writer fallbacks, and error codes can't be changed in one place — they must be changed in 4, in parallel, by different owners. This directly collides with the **config-coverage initiative** (see §5). |
+| **1.3** | **Config-write helper lives in a route module.** `_write_config_atomic` is a *single* definition in `routes_admin_b/onboard.py`, imported by `credentials.py` and `providers.py` — making `onboard` a de-facto shared utility. (Earlier work already collapsed the copies; the two `_redact()` functions — `config.py`'s dict-redactor vs `providers.py`'s message-scrubber — are *different*, not duplicates.) | The atomic-write seam sits in a route module instead of a neutral `gateway.core` leaf, coupling config modules to `onboard`. **✅ Done in Phase 1 (PR #55):** relocated to `gateway/core/config_mutation.py`. |
 
 ### Tier 2 — Per-area god-files that serialize a single team
 
@@ -70,7 +70,7 @@ Concrete, independently-ownable modules. Each is an **extraction of existing cod
 
 ### 3.2 `admin-config` — shared config-mutation layer
 
-- **What moves:** the duplicated `_write_config_atomic`, `_redact`, `config_snapshot`, sub-key merge helpers (today copied across `onboard`, `models`, `providers`, `credentials`) into one `gateway/core/config_mutation.py`. The five admin-b config modules import from it.
+- **What moves:** `_write_config_atomic` (single definition in `routes_admin_b/onboard.py`, imported by `credentials.py` / `providers.py`) into one neutral `gateway/core/config_mutation.py` leaf; the config modules import from there instead of from `onboard`. **✅ Landed in Phase 1 (PR #55).** Note: the two `_redact()` functions are *different* (config dict-redactor vs message-scrubber) and were deliberately **not** merged.
 - **Public contract:** `write_config_atomic(path, patch) -> Result`, `redact(cfg)`, `snapshot(cfg)` — one definition of atomicity, TOML-writer fallback, and error codes.
 - **import-linter contract:** a **`forbidden`** rule: no module *other than* the designated config modules may import `config_mutation` internals, and `config_mutation` may not import any `routes_admin_*` module (keeps it a leaf the config-coverage initiative can target). Owner: `@corlinman/admin-backend-team` (config sub-owner).
 
@@ -146,14 +146,14 @@ Today a new subsystem edits the *one* `AdminState` dataclass (conflict with ever
 
 Each phase is **one small, reviewable, independently-shippable PR** with a **backward-compat re-export shim** at the old path. Phases are ordered to minimize conflict with **PR #53 (feat/marketplace, +9.5k, touches `entrypoint.py` / middleware / channels)** and the **config-coverage initiative**.
 
-> Sequencing principle: do the *additive, non-`entrypoint`* extractions first (parallel-safe with PR #53), land `entrypoint`-touching phases only in the window after PR #53 merges, and do config-mutation early so the config-coverage initiative can build coverage against the *new* single seam instead of 4 copies.
+> Sequencing principle: do the *additive, non-`entrypoint`* extractions first (parallel-safe with PR #53), land `entrypoint`-touching phases only in the window after PR #53 merges, and do config-mutation early so the config-coverage initiative can build coverage against the *new* neutral seam instead of reaching through the `onboard` route module.
 
 ### Phase 0 — Add the import-linter contract skeleton (no code moves)
 Add the new contracts (§6) in **disabled/report-only** mode where the boundary doesn't yet exist, enabled where it already holds. Establishes the ratchet. *Conflict surface: none.*
 
-### Phase 1 — `admin-config` config-mutation layer (Tier-1 #1.3)
-Extract `config_mutation.py`; the 5 config modules import it; leave thin re-export shims in each original module.
-**Coordination point — config-coverage initiative:** land this *before or jointly with* the coverage push so new tests target the single seam. *Conflict with PR #53: low.*
+### Phase 1 — `admin-config` config-mutation layer (Tier-1 #1.3) — ✅ DONE (PR #55)
+Relocated `_write_config_atomic` → `gateway/core/config_mutation.py` (`write_config_atomic`); repointed `onboard`/`credentials`/`providers`, kept a re-export shim, added unit tests. Scope-corrected against the live tree (single def, not 4 copies; the two `_redact()` left untouched). Future config helpers (snapshot, sub-key merge) can join this leaf as they're touched.
+**Coordination point — config-coverage initiative:** new config-write tests should target this single seam.
 
 ### Phase 2 — Provider & system internal de-duplication (Tier-3 #3.2, #3.6)
 `system`: introduce `AsyncJsonPersistentStore<T>`, `ExtensionStore<T>`, `HardenedTarballInstaller` bases. `providers`: group schema modules + add `adapters → specs` layering. All package-internal, single-owner, **zero `entrypoint.py` / `AdminState` contact** → fully parallel with PR #53. *Conflict: none.*
@@ -241,7 +241,7 @@ Refines the owner-areas in `architecture-modules.md` CODEOWNERS. Placeholder han
 | **`extras` consumers break mid-migration.** | 27 modules read `extras[...]` by convention. | Phase 3 keeps `extras` as a logging read-through shim; deleted only in Phase 9 after all consumers migrate. |
 | **Deploy / compat regressions.** | Boot wiring spread across 3 sites; `lifecycle/__init__` re-exports `build_app`. | Re-export shims at every old import path; `build_app` stays exported; no wire-protocol/config-format change; the boot-time slot validator (Phase 9) converts silent mis-wiring into a loud pre-traffic failure. |
 | **Collision with PR #53 (`feat/marketplace`, entrypoint/middleware/channels).** | Stated in-flight constraint. | Sequencing (§5): Phases 1–4, 7 are PR-#53-safe; Phases **5, 6, 8, 9 gated behind PR #53 merge** and rebased after. |
-| **Collision with config-coverage initiative.** | Stated in-flight constraint. | Phase 1 (`config_mutation`) lands *with/before* the coverage push so coverage targets one seam, not 4 copies. |
+| **Collision with config-coverage initiative.** | Stated in-flight constraint. | Phase 1 (`config_mutation`) lands *with/before* the coverage push so coverage targets one neutral seam rather than the `onboard` route module. |
 | **Scheduler ↔ gateway back-import** (`qzone_daily` imports `routes_admin_b.scheduler`). | platform map. | `admin-infrastructure` (Phase 6) passes scheduler job specs *into* `corlinman_server.scheduler` via explicit wiring; forbidden-import contract prevents new back-imports. |
 
 ---
@@ -254,7 +254,7 @@ Refines the owner-areas in `architecture-modules.md` CODEOWNERS. Placeholder han
 | `routes_admin_b` shape | 16.9K in one bundle | 3 independent bundles (config / marketplace / infra), each `independence`-fenced | Phases 5–6; import-linter |
 | `AdminState.extras` keys | 27+ untyped string keys | 0 (typed slices + boot validator) | Phase 9 |
 | `AdminState` merge load | 6+ contributors/month on one dataclass | field changes localized to per-area slice files | git-blame churn |
-| Config-write definitions | `_write_config_atomic` × 4 copies | 1 (`config_mutation`) | Phase 1; grep = 1 def |
+| Config-write seam location | `_write_config_atomic` defined in a route module (`onboard`) | relocated to `gateway/core/config_mutation` leaf | ✅ Phase 1 / PR #55 |
 | Cross-bundle cycles | 3 documented chains | 0 (enforced) | import-linter contracts |
 | Monolith gateway LOC | 56K | < 40K via extraction | cumulative |
 | Behavior preserved | — | full test suite green at **every** phase; re-export shims keep old paths importable | per-PR CI |

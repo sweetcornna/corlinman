@@ -6,7 +6,7 @@
 模块归属与 owner-area 划分见 [docs/pr-standards.md](docs/pr-standards.md)。Codex PR 评审流程见
 [.github/CODEX_REVIEW.md](.github/CODEX_REVIEW.md)。
 
-仓库现在是 **全 Python**（由 `uv` 管理的 workspace）加一个 Node/pnpm 的 `ui/` 前端。没有其他语言平面。
+仓库主体是 **Python**（由 `uv` 管理的 workspace）加一个 Node/pnpm 的 `ui/` 前端；另有一个原生 macOS 客户端 `apps/swift-mac/`（Swift，由 `swift-mac` workflow 在该路径变更时构建测试）。
 
 ## 1. 开发环境搭建
 
@@ -209,8 +209,14 @@ docs(pr): document Codex PR review flow
 | --- | --- |
 | `feat` | 新功能（对用户可见） |
 | `fix` | bug 修复 |
-| `chore` | 构建、依赖、CI、脚本、维护 |
+| `refactor` | 不改行为的结构调整（如本次模块化各阶段） |
+| `test` | 加测试或测试基础设施 |
+| `perf` | 性能优化 |
 | `docs` | 仅文档 |
+| `chore` | 构建、依赖、脚本、维护 |
+| `ci` | CI / workflow 改动 |
+
+（`release` 仅用于发版提交。以上是仓库 `git log` 里实际出现的类型。）
 
 `scope` 是受影响的 package / 区域，例如 `channels` / `gateway` / `providers` / `ui` / `marketplace` / `proto` / `docs`，也可以更细（如 `gateway/auth`、`admin/config`、`persona/ui`、`telegram`）。多个 scope 用 `/` 分隔或省略。
 

@@ -8,7 +8,7 @@ The repository is mostly **Python** (a `uv`-managed workspace of 25 `python/pack
 
 - **One concern per PR.** Split large refactors into a structural PR followed by behavior PRs.
 - **Conventional Commits title:** `type(scope): concise change`.
-  - `type` ∈ `feat` | `fix` | `chore` | `docs`.
+  - `type` ∈ `feat` | `fix` | `refactor` | `test` | `perf` | `docs` | `chore` | `ci` (the types actually in the repo's `git log`; `release` is reserved for release commits).
   - `scope` = the affected package/area, e.g. `channels`, `gateway`, `providers`, `ui`, `marketplace`, `proto`, `docs` — or finer, e.g. `gateway/auth`, `admin/config`, `persona/ui`, `telegram`. Run `git log --oneline -30` to confirm the in-repo style.
   - Subject is imperative present tense: `add X`, `fix Y`.
 - **Behavior proof is required** for user-visible or UI-facing changes: tests, screenshots, video, logs, curl output, or before/after notes.
@@ -211,7 +211,7 @@ apps/swift-mac/                                                                 
 
 ## 8. Merge Checklist
 
-- [ ] All 8 gate jobs green (`py-test` flakiness handled per §3).
+- [ ] The 7 `gate` jobs green, plus `proto-sync` (and `swift-mac` if `apps/swift-mac/**` changed) — `py-test` flakiness handled per §3.
 - [ ] Conventional Commits title.
 - [ ] Tests added/updated; behavior proof attached for user-visible changes.
 - [ ] `uv run lint-imports` passes — no new reverse imports.
