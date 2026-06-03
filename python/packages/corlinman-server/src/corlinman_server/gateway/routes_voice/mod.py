@@ -45,12 +45,38 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, WebSocket
-from pydantic import BaseModel, ConfigDict, Field
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 from corlinman_server.gateway.middleware.auth import (
     ApiKeyAuthState,
-    extract_bearer_token,
+)
+
+# --- god-file split: symbols extracted to sibling modules, re-imported here
+# so every external importer (gateway/__init__, tests) keeps working unchanged.
+# ``WS_TOKEN_SUBPROTOCOL_PREFIX`` + the 8 close/timeout constants +
+# ``VoiceRouterConfig`` + ``ConfigLoader`` are re-exported for __all__ /
+# external importers; ``_authenticate_ws`` / ``_read_start_frame`` + its
+# exceptions are referenced by ``run_voice_session`` below.
+from corlinman_server.gateway.routes_voice._auth_helpers import (
+    _authenticate_ws,
+)
+from corlinman_server.gateway.routes_voice._constants_config import (
+    CLOSE_CODE_AUTH_DENIED,
+    CLOSE_CODE_NORMAL,
+    CLOSE_CODE_PROTOCOL_ERROR,
+    CLOSE_CODE_PROVIDER_ERROR,
+    CLOSE_CODE_VOICE_DISABLED,
+    DEFAULT_START_TIMEOUT_SECONDS,
+    DEFAULT_TICK_INTERVAL_SECONDS,
+    WS_TOKEN_SUBPROTOCOL_PREFIX,
+    ConfigLoader,
+    VoiceRouterConfig,
+)
+from corlinman_server.gateway.routes_voice._start_frame_parsing import (
+    _read_start_frame,
+    _StartDisconnect,
+    _StartMalformed,
+    _StartTimeout,
 )
 from corlinman_server.gateway.routes_voice.approval import (
     ApprovalDecisionKind,
@@ -68,7 +94,6 @@ from corlinman_server.gateway.routes_voice.cost import (
     CLOSE_CODE_BUDGET,
     BudgetDenyReason,
     InMemoryVoiceSpend,
-    VoiceConfig,
     VoiceSpend,
     evaluate_budget,
     next_utc_midnight,
@@ -127,90 +152,8 @@ logger = logging.getLogger("corlinman_server.gateway.routes_voice")
 
 
 # ---------------------------------------------------------------------------
-# Close codes
-# ---------------------------------------------------------------------------
-
-CLOSE_CODE_NORMAL: int = 1000
-"""RFC 6455 normal closure (graceful end)."""
-
-CLOSE_CODE_PROTOCOL_ERROR: int = 1002
-"""RFC 6455 protocol error — bad subprotocol, missing ``start`` frame,
-or an unrecoverable control-frame parse failure."""
-
-CLOSE_CODE_VOICE_DISABLED: int = 4000
-"""Application-level close code: ``[voice] enabled = false`` at the
-moment the upgrade completed. Pre-upgrade this is surfaced as an HTTP
-503; mid-upgrade only used if a hot-reload flips the flag between
-accept and the budget check."""
-
-CLOSE_CODE_AUTH_DENIED: int = 4401
-"""Application-level close code: the WebSocket handshake carried no
-valid tenant API key. The HTTP :class:`ApiKeyAuthMiddleware` cannot run
-for WebSocket scopes, so the ``/v1/voice`` handler enforces the same
-:meth:`AdminDb.verify_api_key` check itself and closes with this
-``4401`` (the WS analogue of HTTP 401) before any provider session is
-opened or any per-tenant budget is touched."""
-
-CLOSE_CODE_PROVIDER_ERROR: int = 4003
-"""Application-level close code: the upstream provider failed to start
-or terminated with an error mid-session."""
-
-DEFAULT_TICK_INTERVAL_SECONDS: float = 1.0
-"""Per-design tick cadence for the budget enforcer. Once per second is
-the same as the Rust implementation."""
-
-DEFAULT_START_TIMEOUT_SECONDS: float = 5.0
-"""How long to wait for the client's first ``start`` control frame
-before treating the session as a protocol error and closing 1002.
-Matches the Rust route handler's 5-second timeout."""
-
-
-# ---------------------------------------------------------------------------
 # Router-level config + state
 # ---------------------------------------------------------------------------
-
-
-class VoiceRouterConfig(BaseModel):
-    """Pydantic v2 carrier for the live ``[voice]`` config snapshot.
-
-    The route handler reads a snapshot per request so a hot-reload that
-    flips ``enabled`` (or any of the budget / sample-rate knobs) takes
-    effect on the next connect without rebuilding the router.
-
-    Mirrors :class:`corlinman_server.gateway.routes_voice.cost.VoiceConfig`
-    one-for-one but as a Pydantic model so callers wiring this from
-    ``config.toml`` get validation for free. :meth:`to_cost_config`
-    projects back onto the frozen dataclass the cost / budget layers
-    consume.
-    """
-
-    model_config = ConfigDict(extra="ignore", frozen=True)
-
-    enabled: bool = False
-    budget_minutes_per_tenant_per_day: int = Field(default=0, ge=0)
-    max_session_seconds: int = Field(default=0, ge=0)
-    provider_alias: str = ""
-    sample_rate_hz_in: int = Field(default=16_000, gt=0)
-    sample_rate_hz_out: int = Field(default=24_000, gt=0)
-    retain_audio: bool = False
-    default_tenant: str = "default"
-
-    def to_cost_config(self) -> VoiceConfig:
-        return VoiceConfig(
-            enabled=self.enabled,
-            budget_minutes_per_tenant_per_day=self.budget_minutes_per_tenant_per_day,
-            max_session_seconds=self.max_session_seconds,
-            provider_alias=self.provider_alias,
-            sample_rate_hz_in=self.sample_rate_hz_in,
-            sample_rate_hz_out=self.sample_rate_hz_out,
-            retain_audio=self.retain_audio,
-        )
-
-
-ConfigLoader = Callable[[], VoiceRouterConfig]
-"""Live ``[voice]`` config snapshot loader. The handler calls this on
-every connect — wire a closure that reads the current ``ArcSwap`` /
-``RWLock`` / ``contextvar`` shaped snapshot."""
 
 
 @dataclass
@@ -1244,202 +1187,6 @@ async def _pump_ticker(
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
-
-
-def _resolve_auth_state(
-    state: VoiceState, websocket: WebSocket
-) -> ApiKeyAuthState | None:
-    """Resolve the :class:`ApiKeyAuthState` to authenticate against.
-
-    Prefers the explicitly-wired :attr:`VoiceState.auth_state`; otherwise
-    falls back to ``websocket.app.state.api_key_auth`` (the same instance
-    the HTTP :class:`ApiKeyAuthMiddleware` publishes at boot). Returns
-    ``None`` only when neither is present — the direct unit-test driver,
-    where the in-memory socket has no ``app`` and the test builds a
-    :class:`VoiceState` without an ``auth_state``.
-    """
-    if state.auth_state is not None:
-        return state.auth_state
-    app = getattr(websocket, "app", None)
-    app_state = getattr(app, "state", None)
-    candidate = getattr(app_state, "api_key_auth", None)
-    if isinstance(candidate, ApiKeyAuthState):
-        return candidate
-    return None
-
-
-WS_TOKEN_SUBPROTOCOL_PREFIX: str = "corlinman.voice.token."
-"""Prefix for the browser-compatible token-carrying subprotocol.
-
-The browser ``WebSocket`` API cannot set request headers, so a browser
-client passes its tenant API key as a *second* offered subprotocol —
-``new WebSocket(url, ["corlinman.voice.v1", "corlinman.voice.token." +
-token])``. The server reads the token off this entry but echoes back
-only the canonical :data:`SUBPROTOCOL` (never the token entry), so the
-secret rides the ``Sec-WebSocket-Protocol`` request header — which
-uvicorn's access log does NOT record — instead of the query string,
-which is logged verbatim on every connect. See R5-S1 / the
-``?api_key=`` leak this replaces.
-"""
-
-
-def _extract_ws_token(websocket: WebSocket) -> str | None:
-    """Pull the bearer token a WebSocket client supplied.
-
-    Header path first — ``Authorization: Bearer <token>`` then
-    ``X-API-Key`` — reusing :func:`extract_bearer_token` so the WS gate
-    accepts exactly the same headers the HTTP gate does. As a
-    browser-compatible fallback (the WebSocket API can't set request
-    headers), a token offered via the ``Sec-WebSocket-Protocol``
-    subprotocol list as ``corlinman.voice.token.<token>`` is honoured —
-    the standard, browser-settable WS auth channel that, unlike a
-    query-string parameter, does NOT land in uvicorn's access log.
-
-    The query string is deliberately NOT consulted: uvicorn logs the
-    full path-with-query on every WS accept (and on the 4401 deny path,
-    which accepts before close), so a ``?api_key=`` fallback would write
-    the tenant key verbatim to the access log on every connect.
-    """
-    token = extract_bearer_token(websocket)
-    if token:
-        return token
-    return _extract_subprotocol_token(
-        websocket.headers.get("sec-websocket-protocol")
-    )
-
-
-def _extract_subprotocol_token(header: str | None) -> str | None:
-    """Extract a ``corlinman.voice.token.<token>`` value from the
-    comma-separated ``Sec-WebSocket-Protocol`` offer list.
-
-    The first token-carrying entry wins; the canonical
-    :data:`SUBPROTOCOL` entry and any blanks are skipped. Returns
-    ``None`` when no token entry is present.
-    """
-    if not header:
-        return None
-    for raw in header.split(","):
-        entry = raw.strip()
-        if entry.startswith(WS_TOKEN_SUBPROTOCOL_PREFIX):
-            token = entry[len(WS_TOKEN_SUBPROTOCOL_PREFIX):].strip()
-            if token:
-                return token
-    return None
-
-
-async def _authenticate_ws(
-    state: VoiceState, websocket: WebSocket
-) -> tuple[bool, str | None]:
-    """Authenticate the WebSocket handshake against the tenant API-key
-    store, mirroring :class:`ApiKeyAuthMiddleware`.
-
-    Returns ``(allowed, authenticated_tenant)``:
-
-    * ``(True, None)`` — no auth state is resolvable at all (the direct
-      unit-test driver). The caller proceeds without a key check.
-    * ``(True, "<tenant-slug>")`` — a valid key was verified; the caller
-      must bind the session to this tenant.
-    * ``(False, None)`` — auth is required (an :class:`ApiKeyAuthState`
-      is wired) but the key was missing / invalid / unverifiable. The
-      caller must close :data:`CLOSE_CODE_AUTH_DENIED` without opening a
-      provider session.
-    """
-    auth_state = _resolve_auth_state(state, websocket)
-    if auth_state is None:
-        # No gate wired (direct unit-test driver). Production always
-        # publishes ``app.state.api_key_auth`` at boot.
-        return True, None
-
-    if auth_state.admin_db is None:
-        # Fail closed — same posture as the HTTP middleware when the
-        # protected route has nothing to verify against.
-        logger.warning("voice: auth required but no admin_db configured; denying")
-        return False, None
-
-    token = _extract_ws_token(websocket)
-    if token is None:
-        logger.debug("voice: handshake missing api key; denying")
-        return False, None
-
-    try:
-        row = await auth_state.admin_db.verify_api_key(token)
-    except Exception:  # noqa: BLE001 — surface as auth-denied, log details
-        logger.warning("voice: api key verification raised; denying", exc_info=True)
-        return False, None
-
-    if row is None:
-        logger.debug("voice: handshake api key invalid/revoked; denying")
-        return False, None
-
-    return True, str(row.tenant_id)
-
-
-class _StartTimeout(Exception):
-    """Raised by :func:`_read_start_frame` when no frame arrives in
-    :data:`DEFAULT_START_TIMEOUT_SECONDS`."""
-
-
-class _StartMalformed(Exception):
-    """Raised by :func:`_read_start_frame` when the first frame doesn't
-    parse as a control envelope."""
-
-
-class _StartDisconnect(Exception):
-    """Raised by :func:`_read_start_frame` when the client hangs up
-    before sending any frame."""
-
-
-async def _read_start_frame(
-    websocket: WebSocket, timeout_seconds: float
-) -> tuple[ClientControl, ClientControl | None]:
-    """Read the mandatory first control frame.
-
-    Returns ``(start_frame, deferred)`` where ``deferred`` is a non-
-    ``start`` control frame that was received first and must be replayed
-    to the inbound pump. The Rust analogue allows a non-start first
-    frame as a tolerated protocol violation; we forward it instead of
-    closing the socket.
-    """
-    try:
-        msg = await asyncio.wait_for(websocket.receive(), timeout=timeout_seconds)
-    except TimeoutError as exc:
-        raise _StartTimeout("no start frame within timeout") from exc
-    except WebSocketDisconnect as exc:
-        raise _StartDisconnect("disconnected before start") from exc
-
-    msg_type = msg.get("type")
-    if msg_type == "websocket.disconnect":
-        raise _StartDisconnect("disconnected before start")
-    if msg_type != "websocket.receive":
-        raise _StartMalformed(f"unexpected first message type: {msg_type}")
-
-    text = msg.get("text")
-    if text is None:
-        # The Rust handler treats binary-before-start as a protocol
-        # error too. We're stricter than the Rust path here for safety;
-        # a future iter can fall back to "buffer + forward".
-        raise _StartMalformed("first frame must be a `start` control text frame")
-
-    try:
-        control = parse_client_control(text)
-    except ControlParseError as exc:
-        raise _StartMalformed(str(exc)) from exc
-
-    if control.type == ClientControl.START:
-        return control, None
-    # Non-start control frame: synthesise a default `start` so the
-    # session can proceed, and forward the original frame to the inbound
-    # pump as `deferred`.
-    return (
-        ClientControl(
-            type=ClientControl.START,
-            session_key=None,
-            agent_id=None,
-            sample_rate_hz=None,
-            format=None,
-        ),
-        control,
-    )
 
 
 async def _handle_client_control(

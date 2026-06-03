@@ -32,22 +32,34 @@ from corlinman_grpc._generated.corlinman.v1 import (
     common_pb2,
 )
 from corlinman_grpc.agent_client import (
-    AgentClient,
-    ChatStream,
     PlaceholderExecutor,
     ToolExecutor,
 )
-from corlinman_grpc.agent_client.types import FailoverReason as GrpcFailoverReason
 
 from corlinman_server import telemetry
-from corlinman_server.gateway_api import (
-    Attachment as ApiAttachment,
+
+# ─── Re-exports from extracted siblings ───────────────────────────────
+# These names were moved into sibling modules but are re-exported here so
+# external importers (agent_servicer.py, services/__init__.py,
+# grpc_backend.py, tests) keep working via
+# ``from ...chat_service import X`` unchanged.
+from corlinman_server.gateway.services._frame_handlers import (
+    _BUILTIN_DONE_PREFIX,
+    _BUILTIN_OBSERVATION_PREFIX,
+    _internal_error_from_exception,
+    _next_frame,
+    _suppress_cancelled,
+)
+from corlinman_server.gateway.services._grpc_backend_impl import (
+    GrpcAgentChatBackend,
+)
+from corlinman_server.gateway.services._proto_converters import (
+    _attachment_to_proto,
+    _binding_to_proto,
+    _reason_from_proto,
+    _role_to_proto,
 )
 from corlinman_server.gateway_api import (
-    AttachmentKind as ApiAttachmentKind,
-)
-from corlinman_server.gateway_api import (
-    ChannelBinding,
     ChatEventStream,
     ChatServiceBase,
     DoneEvent,
@@ -57,9 +69,6 @@ from corlinman_server.gateway_api import (
     TokenDeltaEvent,
     ToolCallEvent,
     ToolResultEvent,
-)
-from corlinman_server.gateway_api import (
-    Role as ApiRole,
 )
 from corlinman_server.gateway_api import (
     Usage as ApiUsage,
@@ -73,14 +82,6 @@ __all__ = [
 
 
 log = logging.getLogger(__name__)
-
-
-# Plugin names starting with this prefix are reserved for the agent servicer's observation-only frames. Real plugins MUST NOT use this prefix.
-_BUILTIN_OBSERVATION_PREFIX = "_builtin:"
-# Companion prefix the servicer uses to broadcast "tool finished" events
-# after an in-process builtin returns. The ``args_json`` payload of these
-# frames carries ``{"duration_ms", "is_error", "error_summary"}``.
-_BUILTIN_DONE_PREFIX = "_builtin_done:"
 
 
 # ─── Backend protocol ────────────────────────────────────────────────
@@ -431,165 +432,3 @@ def _build_chat_start(req: InternalChatRequest) -> agent_pb2.ChatStart:
     if binding is not None:
         start.binding.CopyFrom(binding)
     return start
-
-
-def _binding_to_proto(b: ChannelBinding) -> common_pb2.ChannelBinding:
-    """Convert the in-process :class:`ChannelBinding` to its protobuf
-    twin. The ``session_key`` field on the proto side is the pre-derived
-    key so the Python agent doesn't need to re-hash. Mirrors
-    :rust:`binding_to_proto`."""
-    return common_pb2.ChannelBinding(
-        channel=b.channel,
-        account=b.account,
-        thread=b.thread,
-        sender=b.sender,
-        session_key=b.session_key(),
-    )
-
-
-def _attachment_to_proto(a: ApiAttachment) -> agent_pb2.Attachment:
-    """Convert :class:`ApiAttachment` → protobuf ``Attachment``. The
-    enum mapping is explicit — silently defaulting to ``UNSPECIFIED``
-    would drop multimodal inputs without a trace. Mirrors
-    :rust:`attachment_to_proto`."""
-    if a.kind == ApiAttachmentKind.IMAGE:
-        kind = agent_pb2.ATTACHMENT_KIND_IMAGE
-    elif a.kind == ApiAttachmentKind.AUDIO:
-        kind = agent_pb2.ATTACHMENT_KIND_AUDIO
-    elif a.kind == ApiAttachmentKind.VIDEO:
-        kind = agent_pb2.ATTACHMENT_KIND_VIDEO
-    elif a.kind == ApiAttachmentKind.FILE:
-        kind = agent_pb2.ATTACHMENT_KIND_FILE
-    else:  # pragma: no cover — exhaustive over StrEnum
-        kind = agent_pb2.ATTACHMENT_KIND_UNSPECIFIED
-    return agent_pb2.Attachment(
-        kind=kind,
-        url=a.url or "",
-        bytes=a.bytes_ or b"",
-        mime=a.mime or "",
-        file_name=a.file_name or "",
-    )
-
-
-def _role_to_proto(role: ApiRole) -> common_pb2.Role:
-    if role == ApiRole.USER:
-        return common_pb2.USER
-    if role == ApiRole.ASSISTANT:
-        return common_pb2.ASSISTANT
-    if role == ApiRole.SYSTEM:
-        return common_pb2.SYSTEM
-    if role == ApiRole.TOOL:
-        return common_pb2.TOOL
-    return common_pb2.ROLE_UNSPECIFIED  # pragma: no cover
-
-
-# Lowercase string discriminants matching ``InternalChatError.reason``.
-# Same set as ``corlinman_grpc.agent_client.types.FailoverReason``.
-_REASON_FROM_PROTO: dict[int, str] = {
-    int(GrpcFailoverReason.UNSPECIFIED): "unspecified",
-    int(GrpcFailoverReason.BILLING): "billing",
-    int(GrpcFailoverReason.RATE_LIMIT): "rate_limit",
-    int(GrpcFailoverReason.AUTH): "auth",
-    int(GrpcFailoverReason.AUTH_PERMANENT): "auth_permanent",
-    int(GrpcFailoverReason.TIMEOUT): "timeout",
-    int(GrpcFailoverReason.MODEL_NOT_FOUND): "model_not_found",
-    int(GrpcFailoverReason.FORMAT): "format",
-    int(GrpcFailoverReason.CONTEXT_OVERFLOW): "context_overflow",
-    int(GrpcFailoverReason.OVERLOADED): "overloaded",
-    int(GrpcFailoverReason.UNKNOWN): "unknown",
-}
-
-
-def _reason_from_proto(code: int) -> str:
-    """Mirror :rust:`reason_from_proto` — unknown codes fall back to
-    ``"unspecified"`` so a future proto enum addition doesn't crash
-    the event stream."""
-    return _REASON_FROM_PROTO.get(code, "unspecified")
-
-
-def _internal_error_from_exception(exc: BaseException) -> InternalChatError:
-    """Lift a connector/transport exception to
-    :class:`InternalChatError`. Mirrors the Rust
-    ``InternalChatError::from(CorlinmanError)`` blanket impl."""
-    reason = getattr(exc, "reason", None)
-    if isinstance(reason, str) and reason:
-        return InternalChatError(reason=reason, message=str(exc))
-    return InternalChatError(reason="unknown", message=str(exc))
-
-
-# ─── Frame helpers ────────────────────────────────────────────────────
-
-
-async def _next_frame(
-    rx: AsyncIterator[agent_pb2.ServerFrame],
-) -> agent_pb2.ServerFrame | None:
-    """Drain the next frame from an async iterator, returning ``None``
-    on clean end-of-stream so the caller can synthesise a terminal
-    ``Done`` event (mirrors the Rust ``Option<...>`` shape)."""
-    try:
-        return await rx.__anext__()
-    except StopAsyncIteration:
-        return None
-
-
-class _suppress_cancelled:
-    """Tiny ctx mgr to swallow ``asyncio.CancelledError`` raised by
-    awaiting a cancelled task. Equivalent of
-    ``contextlib.suppress(asyncio.CancelledError)`` but with the
-    explicit naming the chat-service flow expects."""
-
-    def __enter__(self) -> None:  # pragma: no cover — trivial
-        return None
-
-    def __exit__(self, _exc_type, exc, _tb) -> bool:  # noqa: ANN001
-        return isinstance(exc, asyncio.CancelledError)
-
-
-# ─── gRPC-backed production backend ──────────────────────────────────
-
-
-class GrpcAgentChatBackend:
-    """Production :class:`ChatBackend` that dials the Python agent over
-    ``grpc.aio``.
-
-    Wraps an :class:`AgentClient`. Each :meth:`start` call opens a new
-    bidi ``Agent.Chat`` stream and sends ``ChatStart`` as the first
-    frame; the returned ``(tx, rx)`` pair is the same shape the
-    :class:`ChatService` consumer expects.
-
-    The ``tx`` queue is the same bounded queue the underlying
-    :class:`ChatStream` uses internally — see
-    :data:`corlinman_grpc.agent_client.CHANNEL_CAPACITY`.
-    """
-
-    def __init__(self, client: AgentClient) -> None:
-        self._client = client
-
-    async def start(
-        self,
-        start: agent_pb2.ChatStart,
-    ) -> tuple[asyncio.Queue[Any], AsyncIterator[agent_pb2.ServerFrame]]:
-        stream: ChatStream = await self._client.chat()
-        # First frame must be ``ChatStart`` (cf. Rust ``ChatBackend::start``).
-        await stream.send(agent_pb2.ClientFrame(start=start))
-        # Hand callers the same internal queue the stream writes into so
-        # ``tool_result`` / ``cancel`` frames flow back into the bidi
-        # half-channel without an extra queue layer.
-        tx: asyncio.Queue[Any] = stream._tx  # noqa: SLF001 — same-package access
-        return tx, _ServerFrameIter(stream)
-
-
-class _ServerFrameIter:
-    """Async iterator wrapper around :class:`ChatStream` that yields
-    raw protobuf frames (the inner half-channel reads them directly
-    via ``grpc.aio``'s ``__aiter__``)."""
-
-    def __init__(self, stream: ChatStream) -> None:
-        self._stream = stream
-        self._aiter = stream.__aiter__()
-
-    def __aiter__(self) -> _ServerFrameIter:
-        return self
-
-    async def __anext__(self) -> agent_pb2.ServerFrame:
-        return await self._aiter.__anext__()

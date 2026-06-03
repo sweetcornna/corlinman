@@ -30,11 +30,14 @@ from typing import Any
 import pytest
 from corlinman_providers.base import ProviderChunk
 from corlinman_providers.mock import MockProvider
+
+# ``_apply_tool_calls`` moved to the ``_skill_dispatch`` sibling during the
+# god-file split; import it from its canonical home.
+from corlinman_server.gateway.evolution._skill_dispatch import _apply_tool_calls
 from corlinman_server.gateway.evolution.background_review import (
     WHITELISTED_TOOLS,
     BackgroundReviewReport,
     ReviewWriteRecord,
-    _apply_tool_calls,
     load_prompt,
     spawn_background_review,
 )
