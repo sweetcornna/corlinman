@@ -42,13 +42,14 @@ uv sync --all-packages --dev
 uv run ruff check .
 uv run mypy python/packages/
 uv run lint-imports
+uv run pytest -m "not live_llm and not live_transport"   # the py-test job; see §3 — prefer `uv run pytest <path>` locally
 pnpm install --frozen-lockfile
 pnpm -C ui typecheck
 pnpm -C ui lint
 pnpm -C ui test
 ```
 
-For tests, prefer targeted runs (`uv run pytest <path>`) — see the caveat below.
+For tests, prefer targeted runs (`uv run pytest <path>`) over the full suite — see the §3 hang caveat.
 
 ## 3. Known Caveat: `py-test` Hangs to the 6h CI Cap
 

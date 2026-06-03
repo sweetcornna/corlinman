@@ -271,7 +271,7 @@ docs(pr): document Codex PR review flow
 
 工作语言中英皆可（docs 里为了中文用户以中文为主，技术术语保留英文；代码 comment 英文）。尊重他人、就事论事。
 
-安全漏洞请**不要**公开开 issue。私下联系维护者报告。
+安全漏洞请**不要**公开开 issue，改用 GitHub 的私密上报：仓库 **Security → Report a vulnerability**（Private Vulnerability Reporting）。若该入口未开，请私信仓库维护者（GitHub 主页 owner）后再走私密披露，不要在公开 issue/PR 里贴细节。
 
 ## 延伸阅读
 

@@ -2,7 +2,7 @@
 
 **corlinman Python monorepo · gateway monolith decomposition**
 Status: PLAN ONLY — no code is moved or edited by this document.
-Source of truth: the 14 module maps + `architecture-modules.md` (current-state module map, CODEOWNERS).
+Source of truth: [`docs/architecture-modules.md`](architecture-modules.md) (the committed current-state module map + CODEOWNERS), distilled from a read-only module survey of the repo.
 
 ---
 
