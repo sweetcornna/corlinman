@@ -2270,7 +2270,7 @@ def build_app(
         # cache file is flushed.
         if admin_b_state is not None:
             try:
-                from corlinman_server.gateway.routes_admin_b.marketplace.skills import (
+                from corlinman_server.gateway.routes_admin_b.marketplace._skills_lib import (
                     SkillInstallTaskStore,
                 )
 

@@ -203,7 +203,7 @@ class AdminState:
     # when the hub is unreachable.
     #
     # ``skill_install_store`` is the in-process
-    # :class:`~corlinman_server.gateway.routes_admin_b.marketplace.skills.SkillInstallTaskStore`
+    # :class:`~corlinman_server.gateway.routes_admin_b.marketplace._skills_lib.SkillInstallTaskStore`
     # the lifecycle constructs alongside the client. The install POST
     # handler registers one row per request_id; the SSE handler reads
     # state transitions off the same store. A ``None`` slot returns a
