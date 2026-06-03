@@ -166,12 +166,12 @@ class TestProviderTest:
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_client.get = AsyncMock(return_value=mock_resp)
 
-        from corlinman_server.gateway.routes_admin_b.config_admin.providers import (
+        from corlinman_server.gateway.routes_admin_b.config_admin._providers_lib import (
             _query_provider_models,
         )
 
         with patch(
-            "corlinman_server.gateway.routes_admin_b.config_admin.providers._httpx",
+            "corlinman_server.gateway.routes_admin_b.config_admin._providers_lib._httpx",
             create=True,
         ):
             # Re-test via the underlying helper directly, mocking httpx
@@ -269,7 +269,7 @@ class TestProviderModels:
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_client.get = AsyncMock(return_value=mock_resp)
 
-        from corlinman_server.gateway.routes_admin_b.config_admin.providers import (
+        from corlinman_server.gateway.routes_admin_b.config_admin._providers_lib import (
             _query_provider_models,
         )
 

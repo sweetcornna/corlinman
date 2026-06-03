@@ -24,6 +24,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from corlinman_server.gateway.routes_admin_b.config_admin import (
+    _providers_lib,
+)
 from corlinman_server.gateway.routes_admin_b.config_admin import providers as providers_routes
 from corlinman_server.gateway.routes_admin_b.state import (
     AdminState,
@@ -88,7 +91,9 @@ def _stub_probe(monkeypatch: pytest.MonkeyPatch, models: list[str] | None) -> No
             return {"ok": False, "models": [], "latency_ms": 0, "error": "stubbed"}
         return {"ok": True, "models": list(models), "latency_ms": 1, "error": None}
 
-    monkeypatch.setattr(providers_routes, "_query_provider_models", _fake)
+    # ``_autobind_default_alias`` lives in ``_providers_lib`` and resolves
+    # ``_query_provider_models`` from that module's globals, so patch it there.
+    monkeypatch.setattr(_providers_lib, "_query_provider_models", _fake)
 
 
 def test_upsert_enable_autobinds_default_from_probed_models(
