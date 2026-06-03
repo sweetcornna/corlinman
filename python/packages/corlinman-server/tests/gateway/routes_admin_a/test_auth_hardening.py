@@ -150,7 +150,9 @@ def test_login_correct_credentials_still_succeed(
         json={"username": "admin", "password": "s3cret-pw"},
     )
     assert resp.status_code == 200, resp.text
-    assert resp.json()["expires_in"] > 0
+    body = resp.json()
+    assert body["expires_in"] > 0
+    assert "token" not in body
     assert resp.cookies.get(SESSION_COOKIE_NAME)
 
 

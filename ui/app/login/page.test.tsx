@@ -31,7 +31,7 @@ describe("LoginPage", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () =>
-        new Response(JSON.stringify({ token: "t", expires_in: 86400 }), {
+        new Response(JSON.stringify({ expires_in: 86400 }), {
           status: 200,
           headers: { "content-type": "application/json" },
         }),
@@ -83,7 +83,7 @@ describe("LoginPage", () => {
           );
         }
         return new Response(
-          JSON.stringify({ token: "t", expires_in: 86400 }),
+          JSON.stringify({ expires_in: 86400 }),
           { status: 200, headers: { "content-type": "application/json" } },
         );
       }),
@@ -135,7 +135,7 @@ describe("LoginPage", () => {
             );
           }
           return new Response(
-            JSON.stringify({ token: "t", expires_in: 86400 }),
+            JSON.stringify({ expires_in: 86400 }),
             { status: 200, headers: { "content-type": "application/json" } },
           );
         }),

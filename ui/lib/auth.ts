@@ -14,9 +14,10 @@ export interface LoginRequest {
   password: string;
 }
 
-/** Response body of `POST /admin/login`. `token` mirrors the cookie. */
+/**
+ * Response body of `POST /admin/login`; the session itself is HttpOnly cookie-only.
+ */
 export interface LoginResponse {
-  token: string;
   expires_in: number;
 }
 
