@@ -14,7 +14,7 @@ POST that echoes the sentinel back is re-merged from the live snapshot
 
 from __future__ import annotations
 
-from corlinman_server.gateway.routes_admin_b.config import (
+from corlinman_server.gateway.routes_admin_b.config_admin.config import (
     REDACTED_SENTINEL,
     _has_redacted,
     _merge_secrets_from,

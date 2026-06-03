@@ -41,19 +41,7 @@ from corlinman_server.gateway.routes_admin_b import (
     agents as _agents,
 )
 from corlinman_server.gateway.routes_admin_b import (
-    config as _config,
-)
-from corlinman_server.gateway.routes_admin_b import (
     corlinman_channel as _corlinman_channel,
-)
-from corlinman_server.gateway.routes_admin_b import (
-    credentials as _credentials,
-)
-from corlinman_server.gateway.routes_admin_b import (
-    image_provider as _image_provider,
-)
-from corlinman_server.gateway.routes_admin_b import (
-    models as _models,
 )
 from corlinman_server.gateway.routes_admin_b import (
     napcat as _napcat,
@@ -62,16 +50,28 @@ from corlinman_server.gateway.routes_admin_b import (
     oauth as _oauth,
 )
 from corlinman_server.gateway.routes_admin_b import (
-    onboard as _onboard,
-)
-from corlinman_server.gateway.routes_admin_b import (
     personas as _personas,
 )
 from corlinman_server.gateway.routes_admin_b import (
-    providers as _providers,
-)
-from corlinman_server.gateway.routes_admin_b import (
     rag as _rag,
+)
+from corlinman_server.gateway.routes_admin_b.config_admin import (
+    config as _config,
+)
+from corlinman_server.gateway.routes_admin_b.config_admin import (
+    credentials as _credentials,
+)
+from corlinman_server.gateway.routes_admin_b.config_admin import (
+    image_provider as _image_provider,
+)
+from corlinman_server.gateway.routes_admin_b.config_admin import (
+    models as _models,
+)
+from corlinman_server.gateway.routes_admin_b.config_admin import (
+    onboard as _onboard,
+)
+from corlinman_server.gateway.routes_admin_b.config_admin import (
+    providers as _providers,
 )
 from corlinman_server.gateway.routes_admin_b.infra import (
     curator as _curator,

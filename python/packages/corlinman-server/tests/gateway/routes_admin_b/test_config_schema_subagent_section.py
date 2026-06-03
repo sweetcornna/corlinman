@@ -13,7 +13,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 import pytest
-from corlinman_server.gateway.routes_admin_b import config as config_routes
+from corlinman_server.gateway.routes_admin_b.config_admin import config as config_routes
 from corlinman_server.gateway.routes_admin_b.state import (
     AdminState,
     set_admin_state,

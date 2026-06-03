@@ -21,8 +21,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
-from corlinman_server.gateway.routes_admin_b import providers
-from corlinman_server.gateway.routes_admin_b.providers import (
+from corlinman_server.gateway.routes_admin_b.config_admin import providers
+from corlinman_server.gateway.routes_admin_b.config_admin.providers import (
     _MODELS_CACHE_TTL_SECONDS,
     _clear_models_cache,
 )

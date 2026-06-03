@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from corlinman_server.gateway.routes_admin_b import providers as providers_routes
+from corlinman_server.gateway.routes_admin_b.config_admin import providers as providers_routes
 from corlinman_server.gateway.routes_admin_b.state import (
     AdminState,
     set_admin_state,

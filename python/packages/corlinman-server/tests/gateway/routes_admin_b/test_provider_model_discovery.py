@@ -13,7 +13,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from corlinman_server.gateway.routes_admin_b import credentials, providers
+from corlinman_server.gateway.routes_admin_b.config_admin import credentials, providers
 from corlinman_server.gateway.routes_admin_b.state import (
     AdminState,
     set_admin_state,
@@ -166,12 +166,12 @@ class TestProviderTest:
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_client.get = AsyncMock(return_value=mock_resp)
 
-        from corlinman_server.gateway.routes_admin_b.providers import (
+        from corlinman_server.gateway.routes_admin_b.config_admin.providers import (
             _query_provider_models,
         )
 
         with patch(
-            "corlinman_server.gateway.routes_admin_b.providers._httpx",
+            "corlinman_server.gateway.routes_admin_b.config_admin.providers._httpx",
             create=True,
         ):
             # Re-test via the underlying helper directly, mocking httpx
@@ -269,7 +269,7 @@ class TestProviderModels:
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_client.get = AsyncMock(return_value=mock_resp)
 
-        from corlinman_server.gateway.routes_admin_b.providers import (
+        from corlinman_server.gateway.routes_admin_b.config_admin.providers import (
             _query_provider_models,
         )
 

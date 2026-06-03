@@ -29,6 +29,6 @@ def test_write_config_atomic_reports_serialise_failure(tmp_path: Path) -> None:
 
 def test_onboard_reexport_shim_points_at_the_same_callable() -> None:
     # Old import path must keep working for backward compatibility.
-    from corlinman_server.gateway.routes_admin_b.onboard import _write_config_atomic
+    from corlinman_server.gateway.routes_admin_b.config_admin.onboard import _write_config_atomic
 
     assert _write_config_atomic is write_config_atomic

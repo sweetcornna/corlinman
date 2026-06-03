@@ -14,7 +14,7 @@ walks the same steps the web ``/onboard`` wizard does:
 
 The TOML write shape is intentionally identical to what
 ``POST /admin/onboard/finalize`` emits in
-:mod:`corlinman_server.gateway.routes_admin_b.onboard` so an operator
+:mod:`corlinman_server.gateway.routes_admin_b.config_admin.onboard` so an operator
 can mix the CLI and the UI without diverging on-disk layouts.
 
 We don't go through the HTTP endpoint — that requires a running
@@ -71,7 +71,7 @@ def _supported_kinds() -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Config IO — mirrors gateway/routes_admin_b/onboard.py::_write_config_atomic
+# Config IO — mirrors gateway/routes_admin_b/config_admin/onboard.py::_write_config_atomic
 # ---------------------------------------------------------------------------
 
 
@@ -93,7 +93,7 @@ def _atomic_write_toml(path: Path, cfg: dict[str, Any]) -> None:
     """Serialise ``cfg`` to TOML and ``<path>.new`` → ``os.replace`` swap.
 
     Mirrors :func:`_write_config_atomic` from
-    ``gateway/routes_admin_b/onboard.py`` so the on-disk shape is
+    ``gateway/routes_admin_b/config_admin/onboard.py`` so the on-disk shape is
     bit-identical between the CLI and the web wizard.
     """
     try:

@@ -46,7 +46,7 @@ from corlinman_server.gateway.routes_admin_a.state import (
     AdminState,
     get_admin_state,
 )
-from corlinman_server.gateway.routes_admin_b.config import (
+from corlinman_server.gateway.routes_admin_b.config_admin.config import (
     REDACTED_SENTINEL,
     _merge_secrets_from,
 )

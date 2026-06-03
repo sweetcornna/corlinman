@@ -28,7 +28,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from corlinman_server.gateway.routes_admin_b.providers import (
+from corlinman_server.gateway.routes_admin_b.config_admin.providers import (
     _query_provider_models,
 )
 

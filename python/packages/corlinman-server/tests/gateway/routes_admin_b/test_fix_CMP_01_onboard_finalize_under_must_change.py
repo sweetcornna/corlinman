@@ -39,7 +39,7 @@ from corlinman_server.gateway.routes_admin_a.state import (
 from corlinman_server.gateway.routes_admin_a.state import (
     set_admin_state as set_admin_state_a,
 )
-from corlinman_server.gateway.routes_admin_b.onboard import router as onboard_router
+from corlinman_server.gateway.routes_admin_b.config_admin.onboard import router as onboard_router
 from corlinman_server.gateway.routes_admin_b.state import (
     AdminState as AdminStateB,
 )

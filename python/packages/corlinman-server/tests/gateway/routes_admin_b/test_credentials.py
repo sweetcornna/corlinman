@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from corlinman_server.gateway.routes_admin_b import credentials
+from corlinman_server.gateway.routes_admin_b.config_admin import credentials
 from corlinman_server.gateway.routes_admin_b.state import (
     AdminState,
     set_admin_state,
