@@ -41,7 +41,9 @@ from pydantic import BaseModel
 
 logger = structlog.get_logger(__name__)
 
-from corlinman_server.gateway.routes_admin_b.onboard import _write_config_atomic
+from corlinman_server.gateway.core.config_mutation import (
+    write_config_atomic as _write_config_atomic,
+)
 from corlinman_server.gateway.routes_admin_b.state import (
     AdminState,
     config_snapshot,

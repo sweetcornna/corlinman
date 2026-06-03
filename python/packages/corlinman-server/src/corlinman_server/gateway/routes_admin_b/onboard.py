@@ -41,6 +41,9 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from corlinman_server.gateway.core.config_mutation import (
+    write_config_atomic as _write_config_atomic,
+)
 from corlinman_server.gateway.routes_admin_b.state import (
     config_snapshot,
     get_admin_state,
@@ -238,38 +241,6 @@ def _read_session_cookie_from_request(request: Request) -> str | None:
     if raw is None:
         return None
     return extract_cookie(raw, SESSION_COOKIE_NAME)
-
-
-def _write_config_atomic(path: Any, cfg: dict[str, Any]) -> JSONResponse | None:
-    """Serialise ``cfg`` to TOML and atomically replace ``path``.
-
-    Pick the ``tomli_w`` writer with a ``toml`` fallback, dump to a
-    sibling ``.new`` file, then rename onto the target. Returns ``None``
-    on success, or a :class:`JSONResponse` describing the failure for
-    callers to short-circuit with.
-    """
-    try:
-        try:
-            import tomli_w  # noqa: PLC0415
-        except ImportError:  # pragma: no cover — fallback path
-            import toml as tomli_w  # type: ignore  # noqa: PLC0415
-        serialised = tomli_w.dumps(cfg)  # type: ignore[attr-defined]
-    except Exception as exc:  # noqa: BLE001
-        return JSONResponse(
-            status_code=500,
-            content={"error": "serialise_failed", "message": str(exc)},
-        )
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(path.suffix + ".new")
-        tmp.write_text(serialised, encoding="utf-8")
-        tmp.replace(path)
-    except OSError as exc:
-        return JSONResponse(
-            status_code=500,
-            content={"error": "write_failed", "message": str(exc)},
-        )
-    return None
 
 
 # ---------------------------------------------------------------------------
