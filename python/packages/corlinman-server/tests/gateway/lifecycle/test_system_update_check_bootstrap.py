@@ -26,11 +26,13 @@ import pytest
 
 fastapi = pytest.importorskip("fastapi")
 from corlinman_server.gateway.lifecycle.entrypoint import (  # noqa: E402
+    build_app,
+    list_default_scheduler_jobs,
+)
+from corlinman_server.gateway.lifecycle.scheduler_integration import (  # noqa: E402
     DEFAULT_UPDATE_CHECK_JOB_NAME,
     _config_has_scheduler_job,
     _register_default_update_check_job,
-    build_app,
-    list_default_scheduler_jobs,
 )
 from fastapi.testclient import TestClient  # noqa: E402
 
