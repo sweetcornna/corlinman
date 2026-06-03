@@ -210,3 +210,113 @@ def test_set_cookie_omits_secure_for_plain_http(
     # Sanity: the other hardening attributes survive.
     assert "HttpOnly" in set_cookie
     assert "SameSite=Strict" in set_cookie
+
+
+# ---------------------------------------------------------------------------
+# Login failure throttling — fixed-window limiter keyed by IP + username
+# ---------------------------------------------------------------------------
+
+
+def _install_fake_login_limiter(
+    state: AdminState, *, limit: int = 3, window_seconds: int = 10
+) -> dict[str, float]:
+    clock = {"now": 1_000.0}
+    state.login_failure_store = auth_mod.AdminLoginFailureStore(
+        limit=limit,
+        window_seconds=window_seconds,
+        now=lambda: clock["now"],
+    )
+    return clock
+
+
+def test_login_wrong_passwords_trigger_429(
+    configured_state: AdminState,
+) -> None:
+    """Consecutive bad passwords for the same client IP + username hit 429."""
+    _install_fake_login_limiter(configured_state)
+    client = _client(configured_state)
+    headers = {"X-Forwarded-For": "203.0.113.10"}
+
+    for _ in range(2):
+        resp = client.post(
+            "/admin/login",
+            json={"username": "admin", "password": "wrong-password"},
+            headers=headers,
+        )
+        assert resp.status_code == 401, resp.text
+
+    limited = client.post(
+        "/admin/login",
+        json={"username": "admin", "password": "wrong-password"},
+        headers=headers,
+    )
+    assert limited.status_code == 429, limited.text
+    assert limited.headers["Retry-After"] == "10"
+    detail = limited.json().get("detail", limited.json())
+    assert detail["error"] == "too_many_login_attempts"
+
+
+def test_login_limiter_allows_retry_after_window(
+    configured_state: AdminState,
+) -> None:
+    """Once the fixed window expires, the same pair can try again."""
+    clock = _install_fake_login_limiter(configured_state)
+    client = _client(configured_state)
+    headers = {"X-Forwarded-For": "203.0.113.20"}
+
+    for _ in range(3):
+        resp = client.post(
+            "/admin/login",
+            json={"username": "admin", "password": "wrong-password"},
+            headers=headers,
+        )
+    assert resp.status_code == 429, resp.text
+
+    clock["now"] += 11
+    retry = client.post(
+        "/admin/login",
+        json={"username": "admin", "password": "wrong-password"},
+        headers=headers,
+    )
+    assert retry.status_code == 401, retry.text
+    detail = retry.json().get("detail", retry.json())
+    assert detail["error"] == "invalid_credentials"
+
+
+def test_login_success_resets_failure_count(
+    configured_state: AdminState,
+) -> None:
+    """A successful login clears the IP/username failure counter."""
+    _install_fake_login_limiter(configured_state)
+    client = _client(configured_state)
+    headers = {"X-Forwarded-For": "203.0.113.30"}
+
+    for _ in range(2):
+        resp = client.post(
+            "/admin/login",
+            json={"username": "admin", "password": "wrong-password"},
+            headers=headers,
+        )
+        assert resp.status_code == 401, resp.text
+
+    ok = client.post(
+        "/admin/login",
+        json={"username": "admin", "password": "s3cret-pw"},
+        headers=headers,
+    )
+    assert ok.status_code == 200, ok.text
+
+    for _ in range(2):
+        resp = client.post(
+            "/admin/login",
+            json={"username": "admin", "password": "wrong-password"},
+            headers=headers,
+        )
+        assert resp.status_code == 401, resp.text
+
+    limited = client.post(
+        "/admin/login",
+        json={"username": "admin", "password": "wrong-password"},
+        headers=headers,
+    )
+    assert limited.status_code == 429, limited.text
