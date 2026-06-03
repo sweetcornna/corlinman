@@ -10,7 +10,6 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-
 DEFAULT_BASE_URL = "https://developer.zhihu.com"
 DEFAULT_TIMEOUT_SECONDS = 5
 
@@ -100,7 +99,7 @@ def request_zhihu(query: str, count: int, search_type: str) -> dict[str, Any]:
             body_text = response.read().decode("utf-8", errors="replace")
     except HTTPError as error:
         body_text = error.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"HTTP {error.code}: {body_text[:1000]}")
+        raise RuntimeError(f"HTTP {error.code}: {body_text[:1000]}") from error
     except (TimeoutError, URLError) as error:
         raise RuntimeError(f"HTTP request failed (timeout or network error): {error}") from error
 

@@ -7,9 +7,6 @@ import pytest
 from corlinman_providers.plugins.discovery import Origin
 from corlinman_server.gateway.grpc.plugin_invoker import build_registry_invoker
 
-from .test_plugin_invoker import _write_plugin
-
-
 MARKETPLACE_PLUGINS = (
     "any-search",
     "zhihu-search",
