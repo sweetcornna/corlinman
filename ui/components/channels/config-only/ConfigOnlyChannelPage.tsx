@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 import { GlassPanel } from "@/components/ui/glass-panel";
 import { ChannelShell } from "@/components/channels/channel-shell";
 import { ChannelEnableSwitch } from "@/components/channels/channel-enable-switch";
+import { ChannelConfigEditor } from "@/components/channels/ChannelConfigEditor";
 import { useMotionVariants } from "@/lib/motion";
 import type { ChannelName } from "@/lib/api";
 import type { ConfigOnlyStatusResponse } from "@/lib/api/full-inbox-channel";
@@ -105,6 +106,11 @@ export function ConfigOnlyChannelPage({
               status={status}
               nsKey={nsKey}
               testIdPrefix={testIdPrefix}
+            />
+            <ChannelConfigEditor
+              channel={channel}
+              configKeys={status?.config_keys ?? {}}
+              onSaved={() => void statusQuery.refetch()}
             />
           </>
         )}

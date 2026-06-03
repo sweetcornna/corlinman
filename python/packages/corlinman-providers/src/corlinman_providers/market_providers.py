@@ -42,6 +42,8 @@ def _build_compat(
         base_url=base_url,
         api_key=spec.api_key,
         instance_name=spec.name,
+        image_model=spec.image_model,
+        image_capable=spec.image_capable,
     )
     # Stamp the user-visible kind on the instance so admin listings report
     # `mistral` / `cohere` / etc. instead of generic `openai_compatible`.

@@ -263,6 +263,112 @@ def test_list_skills_tags_origin_for_bundled_hub_and_user(
 
 
 # ---------------------------------------------------------------------------
+# 1b. PUT /admin/skills/{name} — edit body + runtime metadata
+# ---------------------------------------------------------------------------
+
+
+def _wire_registry_factory(admin_state: AdminState) -> None:
+    """Point ``skill_registry_factory`` at the on-disk profile skills dir.
+
+    The PUT route loads the skill off the registry and writes it back, so
+    these tests need a live :class:`SkillRegistry` factory (the disk-walk
+    listing endpoints don't).
+    """
+    from corlinman_skills_registry import SkillRegistry
+
+    def factory(_profile: str) -> Any:
+        return SkillRegistry.load_from_dir(_profile_dir(admin_state))
+
+    admin_state.skill_registry_factory = factory  # type: ignore[attr-defined]
+
+
+def test_update_skill_writes_runtime_fields_back_to_disk(
+    admin_state: AdminState,
+) -> None:
+    from corlinman_skills_registry.parse import parse_skill
+
+    skills_dir = _profile_dir(admin_state)
+    target = skills_dir / "scratchpad"
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "SKILL.md").write_text(
+        "---\nname: scratchpad\ndescription: original desc\n---\n"
+        "# scratchpad\noriginal body\n",
+        encoding="utf-8",
+    )
+    _wire_registry_factory(admin_state)
+
+    client = _client(admin_state, hub=_make_hub_stub())
+    resp = client.put(
+        "/admin/skills/scratchpad",
+        json={
+            "description": "Edited summary.",
+            "body_markdown": "# scratchpad\nedited body\n",
+            "disable_model_invocation": True,
+            "allowed_tools": ["web_search.query", "fs.read"],
+            "when_to_use": "when you need a scratch buffer",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    row = resp.json()
+    assert row["name"] == "scratchpad"
+    assert row["description"] == "Edited summary."
+
+    # The five fields must round-trip through the SKILL.md on disk so the
+    # registry picks them up on its next load (runtime-consumed).
+    md_path = target / "SKILL.md"
+    reparsed = parse_skill(md_path, md_path.read_text(encoding="utf-8"))
+    assert reparsed.description == "Edited summary."
+    assert reparsed.disable_model_invocation is True
+    assert reparsed.allowed_tools == ["web_search.query", "fs.read"]
+    assert reparsed.when_to_use == "when you need a scratch buffer"
+    assert "edited body" in reparsed.body_markdown
+
+
+def test_update_skill_partial_patch_leaves_other_fields(
+    admin_state: AdminState,
+) -> None:
+    from corlinman_skills_registry.parse import parse_skill
+
+    skills_dir = _profile_dir(admin_state)
+    target = skills_dir / "buffer"
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "SKILL.md").write_text(
+        "---\nname: buffer\ndescription: original desc\n"
+        "allowed-tools:\n  - keep.me\n---\n# buffer\nkeep this body\n",
+        encoding="utf-8",
+    )
+    _wire_registry_factory(admin_state)
+
+    client = _client(admin_state, hub=_make_hub_stub())
+    # Only patch when_to_use — everything else must be preserved.
+    resp = client.put(
+        "/admin/skills/buffer",
+        json={"when_to_use": "only this changed"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    md_path = target / "SKILL.md"
+    reparsed = parse_skill(md_path, md_path.read_text(encoding="utf-8"))
+    assert reparsed.when_to_use == "only this changed"
+    assert reparsed.description == "original desc"
+    assert reparsed.allowed_tools == ["keep.me"]
+    assert "keep this body" in reparsed.body_markdown
+
+
+def test_update_skill_unknown_name_returns_404(
+    admin_state: AdminState,
+) -> None:
+    _profile_dir(admin_state)
+    _wire_registry_factory(admin_state)
+    client = _client(admin_state, hub=_make_hub_stub())
+    resp = client.put(
+        "/admin/skills/does-not-exist",
+        json={"description": "x"},
+    )
+    assert resp.status_code == 404, resp.text
+
+
+# ---------------------------------------------------------------------------
 # 2. DELETE /admin/skills/{bundled} → 409
 # ---------------------------------------------------------------------------
 

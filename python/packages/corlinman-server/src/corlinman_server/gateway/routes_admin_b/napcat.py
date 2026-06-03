@@ -34,7 +34,7 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 from corlinman_server.gateway.routes_admin_b.state import (
@@ -257,6 +257,15 @@ class _NapcatClient:
         self._credential = str(credential)
         return self._credential
 
+    async def get_credential(self) -> str | None:
+        """Public accessor for the exchanged WebUI Bearer credential.
+
+        Returns ``None`` when no ``access_token`` is configured (NapCat
+        WebUI then runs unauthenticated). Performs the token -> Credential
+        exchange (cached for the client's lifetime) via :meth:`_login`.
+        """
+        return await self._login()
+
     async def post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
         credential = await self._login()
         headers = {"Authorization": f"Bearer {credential}"} if credential else {}
@@ -313,6 +322,57 @@ class _NapcatClient:
             status="confirmed" if is_login else "error",
             account=account,
         )
+
+
+# ---------------------------------------------------------------------------
+# Server-side WebUI credential injection (nginx ``auth_request`` seam)
+# ---------------------------------------------------------------------------
+#
+# The admin UI embeds NapCat's first-party WebUI (``<iframe src="/webui">``).
+# NapCat's WebUI authenticates client-side: it exchanges a URL ``?token=`` for
+# a short Credential it stashes in ``localStorage`` and sends as a Bearer on
+# its ``/api/*`` calls. That breaks intermittently — a stale/expired Credential
+# left in the browser (e.g. after NapCat rotated its signing secret) makes the
+# WebUI land unauthenticated and every ``获取QQ列表`` call returns
+# ``{"code":-1,"message":"Unauthorized"}``.
+#
+# To make it robust we let the gateway mint the Credential server-side and the
+# reverse proxy inject it as the ``Authorization`` header on every NapCat
+# ``/api/*`` request (via nginx ``auth_request`` -> ``/internal/napcat-credential``).
+# The browser's stored Credential becomes irrelevant. The endpoint is gated by
+# ``require_admin`` (the napcat router dependency) so the Credential never leaks
+# to a non-admin, even though the gateway also listens on a public port.
+
+_NAPCAT_CRED_TTL_S = 60.0
+#: ``{"value": <cred str>, "exp": <unix ts>}`` — process-global cache so the
+#: per-request auth_request hop doesn't re-exchange against NapCat every time.
+_NAPCAT_CRED_CACHE: dict[str, Any] = {"value": "", "exp": 0.0}
+
+
+async def _cached_napcat_credential() -> str:
+    """Return a (cached) NapCat WebUI Bearer credential, or ``""`` if none.
+
+    Cached for :data:`_NAPCAT_CRED_TTL_S` seconds (the credential is stable);
+    refreshed lazily on expiry. Never raises — a failure to reach NapCat or a
+    missing ``access_token`` yields ``""`` so the proxy degrades to the
+    WebUI's own (legacy) auth path rather than erroring.
+    """
+    now = time.time()
+    cached = _NAPCAT_CRED_CACHE
+    if cached["value"] and now < cached["exp"]:
+        return str(cached["value"])
+    cfg = dict(config_snapshot())
+    url, token = _resolve_napcat_url(cfg)
+    cred = ""
+    if url and token:
+        try:
+            async with _NapcatClient(url, token) as client:
+                cred = await client.get_credential() or ""
+        except Exception:  # noqa: BLE001 — never fail the proxy over a credential
+            cred = ""
+    cached["value"] = cred
+    cached["exp"] = now + _NAPCAT_CRED_TTL_S
+    return cred
 
 
 # ---------------------------------------------------------------------------
@@ -405,6 +465,23 @@ def router() -> APIRouter:
                 },
             ), path
         return _NapcatClient(url, token), None, path
+
+    @r.get("/internal/napcat-credential")
+    async def napcat_credential() -> Response:
+        """Return a fresh NapCat WebUI Bearer credential in a header.
+
+        Consumed by the reverse proxy's ``auth_request`` on every NapCat
+        ``/api/*`` request: nginx copies ``X-Napcat-Credential`` into the
+        upstream ``Authorization`` header so the embedded WebUI is
+        authenticated server-side regardless of the browser's stored
+        credential. Always 200 (so ``auth_request`` never blocks ``/api``);
+        the header is omitted when no credential is available, letting the
+        proxy fall back to the request's own ``Authorization``. Gated by the
+        router's ``require_admin`` dependency.
+        """
+        cred = await _cached_napcat_credential()
+        headers = {"X-Napcat-Credential": cred} if cred else {}
+        return Response(status_code=200, headers=headers)
 
     @r.post("/admin/channels/qq/qrcode", response_model=QrcodeOut)
     async def qrcode():

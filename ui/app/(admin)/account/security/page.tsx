@@ -34,6 +34,7 @@ import {
 } from "@/lib/auth";
 import { CorlinmanApiError } from "@/lib/api";
 import { useMustChangePassword } from "@/components/admin/must-change-password-context";
+import { ApiKeysCard } from "@/components/admin/api-keys-card";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -151,6 +152,8 @@ export default function AccountSecurityPage() {
           void refreshMe();
         }}
       />
+
+      <ApiKeysCard />
     </div>
   );
 }

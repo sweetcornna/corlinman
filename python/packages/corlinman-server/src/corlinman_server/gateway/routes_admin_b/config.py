@@ -212,12 +212,29 @@ def _detect_restart_fields(old: dict[str, Any], new: dict[str, Any]) -> list[str
     cmp("server.bind", old_server.get("bind"), new_server.get("bind"))
     cmp("server.data_dir", old_server.get("data_dir"), new_server.get("data_dir"))
 
-    old_ch = (old.get("channels") or {}).get("qq") or {}
-    new_ch = (new.get("channels") or {}).get("qq") or {}
-    cmp("channels.qq.enabled", old_ch.get("enabled", False), new_ch.get("enabled", False))
-    old_tg = (old.get("channels") or {}).get("telegram") or {}
-    new_tg = (new.get("channels") or {}).get("telegram") or {}
-    cmp("channels.telegram.enabled", old_tg.get("enabled", False), new_tg.get("enabled", False))
+    # Enabling/disabling a channel starts/stops its inbound adapter, which
+    # only happens at boot (the channels bootstrap is not hot-reloaded), so
+    # every channel's ``enabled`` flip is restart-required. Cover all of
+    # them — previously only qq+telegram were flagged, so flipping e.g.
+    # discord.enabled showed no restart warning.
+    old_channels = old.get("channels") or {}
+    new_channels = new.get("channels") or {}
+    for _ch in (
+        "qq",
+        "telegram",
+        "discord",
+        "slack",
+        "feishu",
+        "qq_official",
+        "wechat_official",
+    ):
+        old_c = old_channels.get(_ch) or {}
+        new_c = new_channels.get(_ch) or {}
+        cmp(
+            f"channels.{_ch}.enabled",
+            old_c.get("enabled", False),
+            new_c.get("enabled", False),
+        )
 
     old_log = old.get("logging") or {}
     new_log = new.get("logging") or {}
@@ -392,6 +409,7 @@ def router() -> APIRouter:
             "system",
             "identity",
             "persona",
+            "subagent",
         )
         snap = dict(config_snapshot())
         sections = sorted(set(known_sections) | set(snap.keys()))

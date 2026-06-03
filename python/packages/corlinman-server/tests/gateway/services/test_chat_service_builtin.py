@@ -17,6 +17,7 @@ from corlinman_grpc._generated.corlinman.v1 import agent_pb2
 from corlinman_server.gateway.services.chat_service import _build_chat_start, _run_chat
 from corlinman_server.gateway_api import (
     DoneEvent,
+    ErrorEvent,
     InternalChatRequest,
     ToolCallEvent,
 )
@@ -85,3 +86,54 @@ def test_build_chat_start_carries_persona_id_metadata() -> None:
     start = _build_chat_start(req)
 
     assert start.persona_id == "grantley"
+
+
+def _channel_style_request() -> Any:
+    """A lightweight ``SimpleNamespace`` shaped exactly like the request the
+    channel adapters hand to ``chat_service.run`` — note the absence of a
+    ``persona_id`` attribute, which is the default when humanlike persona
+    injection is off (see ``corlinman_channels.service``)."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        model="x",
+        messages=[SimpleNamespace(role="user", content="hi")],
+        session_key="tg:1:2",
+        stream=True,
+        max_tokens=None,
+        temperature=None,
+        attachments=[],
+        binding=None,
+    )
+
+
+def test_build_chat_start_tolerates_request_without_persona_id() -> None:
+    """Regression (commit 0622848): a channel ``SimpleNamespace`` request
+    carries no ``persona_id`` attribute by default. The proto builder must
+    read it tolerantly (-> "") rather than raising ``AttributeError``, which
+    previously crashed every channel turn before any reply was sent."""
+    start = _build_chat_start(_channel_style_request())
+
+    assert start.persona_id == ""
+
+
+@pytest.mark.asyncio
+async def test_run_chat_with_channel_request_missing_persona_id_streams_to_done() -> None:
+    """End-to-end guard: a channel-style request (no ``persona_id``) must
+    stream to a terminal ``DoneEvent`` instead of escaping ``_run_chat`` as a
+    raw ``AttributeError`` that the channel reply loop never converts into a
+    user-visible reply or error."""
+    backend = _ScriptedBackend(
+        [agent_pb2.ServerFrame(done=agent_pb2.Done(finish_reason="stop"))]
+    )
+    executor = _RecordingExecutor()
+
+    events = [
+        ev
+        async for ev in _run_chat(
+            backend, executor, _channel_style_request(), asyncio.Event()
+        )
+    ]
+
+    assert any(isinstance(ev, DoneEvent) for ev in events)
+    assert not any(isinstance(ev, ErrorEvent) for ev in events)

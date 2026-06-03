@@ -26,9 +26,11 @@ import { formatCountdown, formatRelative, type SchedulerStatus } from "./schedul
  *   - `selected` state paints the amber left accent bar; `errored` paints
  *     a subtle red accent.
  *
- * Only `Run now` maps to a backed API today (`triggerSchedulerJob`). The
- * other icons are rendered for layout parity and disabled with a tooltip
- * — we don't pretend to wire features the backend doesn't support.
+ * `Run now` (`triggerSchedulerJob`) and Pause/Resume
+ * (`pauseSchedulerJob` / `resumeSchedulerJob`) map to backed APIs. Pause /
+ * Resume only apply to runtime jobs (`source === "runtime"`) — config-derived
+ * rows have no `enabled` gate, so the toggle is disabled for them with a
+ * tooltip. Edit/overflow are still layout-only.
  */
 
 const RING_TOTAL_MS = 60_000; // drain window — ring fills when >1 min away.
@@ -41,8 +43,13 @@ export interface SchedulerRowProps {
   selected?: boolean;
   /** True while `triggerSchedulerJob` is in flight for this row. */
   triggering?: boolean;
+  /** True while a pause/resume mutation is in flight for this row. */
+  pausing?: boolean;
   onSelect: (name: string) => void;
   onTrigger: (name: string) => void;
+  /** Pause/resume a runtime job. Omitted (or no-op) for config rows. */
+  onPause?: (name: string) => void;
+  onResume?: (name: string) => void;
 }
 
 export function SchedulerRow({
@@ -51,12 +58,19 @@ export function SchedulerRow({
   now,
   selected = false,
   triggering = false,
+  pausing = false,
   onSelect,
   onTrigger,
+  onPause,
+  onResume,
 }: SchedulerRowProps) {
   const { t } = useTranslation();
   const errored = status === "errored";
   const paused = status === "paused";
+  // Pause/resume only apply to operator-created runtime jobs — config rows
+  // carry no `enabled` gate, so the toggle stays disabled with a tooltip.
+  const isRuntime = job.source === "runtime";
+  const canToggle = isRuntime && (paused ? Boolean(onResume) : Boolean(onPause));
 
   return (
     <div
@@ -147,8 +161,20 @@ export function SchedulerRow({
                 ? t("scheduler.tp.actionResume")
                 : t("scheduler.tp.actionPause")
             }
-            disabled
-            title={t("scheduler.tp.actionSoon")}
+            disabled={!canToggle || pausing}
+            title={
+              isRuntime
+                ? paused
+                  ? t("scheduler.tp.actionResume")
+                  : t("scheduler.tp.actionPause")
+                : t("scheduler.tp.actionConfigJob")
+            }
+            testId={`scheduler-toggle-${job.name}`}
+            onClick={() => {
+              if (!canToggle || pausing) return;
+              if (paused) onResume?.(job.name);
+              else onPause?.(job.name);
+            }}
           >
             {paused ? (
               <Play className="h-3.5 w-3.5" aria-hidden />

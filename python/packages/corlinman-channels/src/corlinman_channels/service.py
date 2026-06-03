@@ -53,6 +53,16 @@ import httpx
 
 _log = logging.getLogger(__name__)
 
+#: Tool names that dispatch sub-agent(s). The moment one of these surfaces as
+#: a ``tool_call`` event mid-turn, the channel handler surfaces the shareable
+#: agent-status link EARLY (as a standalone message) so the user can watch the
+#: fan-out live instead of only receiving the link once the turn ends. Mirrors
+#: the constants in ``corlinman_agent.subagent.runner`` (kept duplicated here so
+#: this package never imports ``corlinman-agent`` just for three strings).
+_SUBAGENT_SPAWN_TOOLS: frozenset[str] = frozenset(
+    {"subagent_spawn", "subagent_spawn_many", "subagent_spawn_inline"}
+)
+
 
 async def _try_open_inbox() -> Any:
     """T4.3 — best-effort lazy open of the durable inbox.
@@ -1193,6 +1203,10 @@ async def handle_one_qq(
     # is_error, error_summary). Rendered by _qq_format_activity_summary
     # and prepended to the final reply if non-empty.
     activity: list[tuple[str, str, int | None, bool, str]] = []
+    # Surface the live status link as soon as the first sub-agent is
+    # dispatched (QQ has no editable spinner, so this is a standalone
+    # message); de-dups against the end-of-turn append below.
+    _qq_status_link_sent = False
     try:
         stream = chat_service.run(request, cancel)
         async for chat_ev in stream:
@@ -1219,6 +1233,23 @@ async def handle_one_qq(
                 break
             elif kind == "tool_call":
                 tool_name = getattr(chat_ev, "tool", "") or ""
+                if (
+                    not _qq_status_link_sent
+                    and tool_name in _SUBAGENT_SPAWN_TOOLS
+                ):
+                    _qq_link = _status_link_line(req.binding.session_key())
+                    if _qq_link:
+                        try:
+                            await adapter.send_action(
+                                _build_reply_action(
+                                    event, _qq_link, prepend_at_mention=False
+                                )
+                            )
+                            _qq_status_link_sent = True
+                        except Exception as exc:  # noqa: BLE001
+                            _log.warning(
+                                "qq early status link send failed: %s", exc
+                            )
                 if tool_name == _SEND_ATTACHMENT_TOOL:
                     # Real upload; the agent-side dispatch is a no-op
                     # stub so the loop continues — we do the work here.
@@ -1357,7 +1388,10 @@ async def handle_one_qq(
     # [MSG_BREAK] bubble-split: if the body contains the persona marker,
     # send each segment as a separate QQ message with a short pause.
     bubbles = _split_on_msg_break(body)
-    _qq_status_line = _status_link_line(req.binding.session_key())
+    # Skip the end-of-turn link if it was already pushed mid-turn.
+    _qq_status_line = (
+        "" if _qq_status_link_sent else _status_link_line(req.binding.session_key())
+    )
     for bubble_idx, bubble in enumerate(bubbles):
         chunks = chunk_reply(bubble, _QQ_TEXT_LIMIT)
         # Surface the shareable agent-status link on the LAST chunk of the
@@ -1459,6 +1493,10 @@ def _build_internal_request(
         temperature=None,
         attachments=attachments,
         binding=req.binding,
+        # Shape-match InternalChatRequest. Persona injection overwrites this
+        # with a real id when humanlike is enabled; default None keeps the
+        # server-side proto builder's tolerant read happy.
+        persona_id=None,
     )
 
 
@@ -2573,8 +2611,19 @@ async def handle_one_telegram(
             # at the end.
             _log.warning("telegram placeholder send failed: %s", exc)
 
+        async def _emit_status_link(line: str) -> None:
+            await sender.send_message(
+                chat_id, line, reply_to_message_id=reply_to
+            )
+
         outcome = await _drive_spinner(
-            spinner, chat_service, inbound, model, cancel, request=request
+            spinner,
+            chat_service,
+            inbound,
+            model,
+            cancel,
+            request=request,
+            on_subagent_spawn=_emit_status_link,
         )
     finally:
         typing_task.cancel()
@@ -2753,6 +2802,10 @@ class _DriveSpinnerOutcome:
     supplemented: bool = False
     tool_call_count: int = 0
     started_at_ms: int = 0
+    #: Set True once the early "watch me work" status link has been sent
+    #: this turn (the first time a sub-agent spawn tool fired). The caller's
+    #: end-of-turn footer reads this to avoid re-appending the same link.
+    status_link_emitted: bool = False
 
 
 @dataclass(slots=True)
@@ -2865,6 +2918,7 @@ async def _drive_spinner(
     cancel: asyncio.Event,
     *,
     request: Any | None = None,
+    on_subagent_spawn: Callable[[str], Awaitable[None]] | None = None,
 ) -> _DriveSpinnerOutcome:
     """Stream ``chat_service.run`` events into ``spinner``.
 
@@ -2887,6 +2941,13 @@ async def _drive_spinner(
     system_prompt by :func:`_inject_persona_if_enabled`) by the caller;
     when omitted the legacy unaugmented request is built here so the
     pre-W7 call sites still work unchanged.
+
+    ``on_subagent_spawn`` (optional) is an async callback invoked with the
+    formatted status-link line the first time a sub-agent spawn tool
+    (``subagent_spawn`` / ``_many`` / ``_inline``) is seen this turn. The
+    channel uses it to push the link as a standalone message so the user
+    can open the live status view immediately; ``outcome.status_link_emitted``
+    is then set so the end-of-turn footer does not append the link twice.
     """
     import time as _time
 
@@ -2910,6 +2971,28 @@ async def _drive_spinner(
             # produced an attachment.
             if tool_name and tool_name != _SEND_ATTACHMENT_TOOL:
                 outcome.tool_call_count += 1
+            # The first time a sub-agent spawn tool fires, surface the live
+            # status link EARLY (a brand-new standalone message via the
+            # channel-supplied callback — NOT an edit of the spinner
+            # placeholder, which the next on_tool_call render would clobber)
+            # so the user can watch the fan-out instead of waiting for the
+            # turn to finish. Best-effort: a send failure must never break
+            # the stream, and we only mark it emitted on success so the
+            # end-of-turn footer still appends the link as a fallback.
+            if (
+                on_subagent_spawn is not None
+                and not outcome.status_link_emitted
+                and tool_name in _SUBAGENT_SPAWN_TOOLS
+            ):
+                line = _status_link_line(inbound.binding.session_key())
+                if line:
+                    try:
+                        await on_subagent_spawn(line)
+                        outcome.status_link_emitted = True
+                    except Exception as exc:  # noqa: BLE001
+                        _log.warning(
+                            "early status link emit failed: %s", exc
+                        )
             await spinner.on_tool_call(ev)
         elif kind == "tool_result":
             await spinner.on_tool_result(ev)
@@ -3100,7 +3183,12 @@ def _build_footer_for_outcome(
             else outcome.tool_call_count
         )
         w41 = format_turn_footer(elapsed_ms, tool_calls, cost, cost_status)
-    status_line = _status_link_line(session_key)
+    # Skip the status link here when it was already pushed mid-turn (the
+    # first sub-agent spawn surfaced it as a standalone message) so the user
+    # never gets the same link twice in one turn.
+    status_line = (
+        "" if outcome.status_link_emitted else _status_link_line(session_key)
+    )
     if w41 and status_line:
         return f"{w41}\n{status_line}"
     return w41 or status_line
@@ -3337,8 +3425,19 @@ async def handle_one_discord(
         except Exception as exc:  # noqa: BLE001
             _log.warning("discord placeholder send failed: %s", exc)
 
+        async def _emit_status_link(line: str) -> None:
+            await sender.send_message(
+                channel_id, line, reply_to_message_id=reply_to
+            )
+
         outcome = await _drive_spinner(
-            spinner, chat_service, inbound, model, cancel, request=request
+            spinner,
+            chat_service,
+            inbound,
+            model,
+            cancel,
+            request=request,
+            on_subagent_spawn=_emit_status_link,
         )
     finally:
         typing_task.cancel()
@@ -3625,8 +3724,17 @@ async def handle_one_slack(
         except Exception as exc:  # noqa: BLE001
             _log.warning("slack placeholder send failed: %s", exc)
 
+        async def _emit_status_link(line: str) -> None:
+            await sender.send_message(channel, line, thread_ts=thread_ts)
+
         outcome = await _drive_spinner(
-            spinner, chat_service, inbound, model, cancel, request=request
+            spinner,
+            chat_service,
+            inbound,
+            model,
+            cancel,
+            request=request,
+            on_subagent_spawn=_emit_status_link,
         )
     finally:
         if observability_task is not None:
@@ -3907,8 +4015,19 @@ async def handle_one_feishu(
         except Exception as exc:  # noqa: BLE001
             _log.warning("feishu placeholder send failed: %s", exc)
 
+        async def _emit_status_link(line: str) -> None:
+            await sender.send_message(
+                chat_id, line, reply_to_message_id=reply_to
+            )
+
         outcome = await _drive_spinner(
-            spinner, chat_service, inbound, model, cancel, request=request
+            spinner,
+            chat_service,
+            inbound,
+            model,
+            cancel,
+            request=request,
+            on_subagent_spawn=_emit_status_link,
         )
     finally:
         if observability_task is not None:
@@ -4292,6 +4411,9 @@ async def handle_one_qq_official(
     text_parts: list[str] = []
     tool_lines: list[str] = []
     status_lines: list[str] = []
+    # Push the live status link as a standalone message the moment the first
+    # sub-agent spawns (QQ-official is non-editable); de-dups end-of-turn.
+    _qqo_status_link_sent = False
     error_message: str | None = None
     supplemented = False
     try:
@@ -4307,6 +4429,24 @@ async def handle_one_qq_official(
                 text_parts.append(getattr(chat_ev, "text", "") or "")
             elif kind == "tool_call":
                 tool_name = getattr(chat_ev, "tool", "") or ""
+                if (
+                    not _qqo_status_link_sent
+                    and tool_name in _SUBAGENT_SPAWN_TOOLS
+                ):
+                    _qqo_link = _status_link_line(
+                        inbound.binding.session_key()
+                    )
+                    if _qqo_link:
+                        try:
+                            await _qq_official_send_text(
+                                sender, inbound, _qqo_link
+                            )
+                            _qqo_status_link_sent = True
+                        except Exception as exc:  # noqa: BLE001
+                            _log.warning(
+                                "qq_official early status link send failed: %s",
+                                exc,
+                            )
                 if tool_name == _SEND_ATTACHMENT_TOOL:
                     status = await _qq_official_send_attachment(
                         sender, inbound, chat_ev
@@ -4374,7 +4514,12 @@ async def handle_one_qq_official(
     if not final.strip():
         return
     # Append the shareable agent-status link when configured (empty-safe).
-    _qqo_status_line = _status_link_line(inbound.binding.session_key())
+    # Skip it if already pushed mid-turn at first sub-agent spawn.
+    _qqo_status_line = (
+        ""
+        if _qqo_status_link_sent
+        else _status_link_line(inbound.binding.session_key())
+    )
 
     # [MSG_BREAK] bubble-split: send each persona bubble as a separate
     # QQ Official message with a short pause between them. The status link
@@ -4601,6 +4746,11 @@ async def handle_one_wechat_official(
     text_parts: list[str] = []
     error_message: str | None = None
     supplemented = False
+    # WeChat has no live status surface, but a sub-agent fan-out can run
+    # for minutes — push the live status link as a customer-service message
+    # the moment the first sub-agent spawns so the user can watch. De-dups
+    # against the end-of-turn append below.
+    _wx_status_link_sent = False
     try:
         stream = chat_service.run(request, cancel)
         async for ev in stream:
@@ -4616,6 +4766,24 @@ async def handle_one_wechat_official(
                     ev, "message", ""
                 )
                 break
+            elif kind == "tool_call" and not _wx_status_link_sent:
+                tool_name = getattr(ev, "tool", "") or ""
+                if tool_name in _SUBAGENT_SPAWN_TOOLS:
+                    _wx_link = _status_link_line(
+                        inbound.binding.session_key()
+                    )
+                    if _wx_link:
+                        try:
+                            await sender.send_text_customer(
+                                inbound.binding.sender, _wx_link
+                            )
+                            _wx_status_link_sent = True
+                        except Exception as exc:  # noqa: BLE001
+                            _log.warning(
+                                "wechat_official early status link send "
+                                "failed: %s",
+                                exc,
+                            )
             # tool_call / tool_result frames are informational only —
             # WeChat has no live status surface (no edit, no typing
             # indicator) so we silently drop them. ``todo_write`` is
@@ -4671,7 +4839,12 @@ async def handle_one_wechat_official(
     push_body = remainder if passive_delivered else body
     # Append the shareable status link to the customer-service push (NOT the
     # length-capped passive XML), so the user gets a live trajectory link.
-    _wx_status_line = _status_link_line(inbound.binding.session_key())
+    # Skip it if already pushed mid-turn at first sub-agent spawn.
+    _wx_status_line = (
+        ""
+        if _wx_status_link_sent
+        else _status_link_line(inbound.binding.session_key())
+    )
     if push_body and push_body.strip():
         # [MSG_BREAK] bubble-split: send each persona bubble as a separate
         # WeChat customer-service message with a short pause between them.
@@ -4739,65 +4912,58 @@ async def _debounce_albums(
     flushes promptly instead of stalling until the next unrelated
     message arrives.
     """
+    async def _anext() -> InboundEvent[Any]:
+        return await iterator.__anext__()
+
     debouncer = AlbumDebouncer(window_secs)
-    while not cancel.is_set():
-        ev = await _race_iter_or_cancel_timeout(iterator, cancel, window_secs)
-        if ev is _CANCELLED:
-            break
-        if ev is _TIMEOUT:
-            for ready in debouncer.flush_ready():
-                yield ready
-            continue
-        assert isinstance(ev, InboundEvent)
-        for ready in debouncer.feed(ev):
-            yield ready
+    cancel_task = asyncio.create_task(cancel.wait())
+    # The inbound read is started ONCE and kept pending across idle
+    # windows. A ``window_secs`` tick only flushes albums that have gone
+    # quiet — it must NOT cancel this read. Cancelling it raises
+    # ``CancelledError`` inside ``inbound()``, whose
+    # ``except CancelledError: return`` ends the stream permanently; that
+    # silently killed the whole Telegram channel one debounce window
+    # after boot. The read is cancelled only on real shutdown (the
+    # ``finally`` below, reached when ``cancel`` fires or the stream ends).
+    next_task: asyncio.Task[InboundEvent[Any]] | None = None
+    try:
+        while not cancel.is_set():
+            if next_task is None:
+                next_task = asyncio.create_task(_anext())
+            timeout_task = asyncio.create_task(asyncio.sleep(window_secs))
+            try:
+                done, _pending = await asyncio.wait(
+                    {next_task, cancel_task, timeout_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            finally:
+                # Only the disposable timeout arm is torn down each loop;
+                # next_task survives so it can still resolve later.
+                if not timeout_task.done():
+                    timeout_task.cancel()
+            if cancel_task in done:
+                break
+            if next_task in done:
+                try:
+                    ev = next_task.result()
+                except StopAsyncIteration:
+                    next_task = None
+                    break
+                next_task = None
+                for ready in debouncer.feed(ev):
+                    yield ready
+            else:
+                # Idle window elapsed with the read still pending — flush
+                # any album that has gone quiet and keep waiting on it.
+                for ready in debouncer.flush_ready():
+                    yield ready
+    finally:
+        for task in (next_task, cancel_task):
+            if task is not None and not task.done():
+                task.cancel()
     # Drain whatever remains so a trailing album isn't dropped on shutdown.
     for ready in debouncer.flush_all():
         yield ready
-
-
-#: Sentinels distinguishing the three outcomes of
-#: :func:`_race_iter_or_cancel_timeout` (an inbound event, a window
-#: timeout, or cancellation/stream-end) without overloading ``None``
-#: (a legitimate iterator could in principle yield ``None``).
-_TIMEOUT: Any = object()
-_CANCELLED: Any = object()
-
-
-async def _race_iter_or_cancel_timeout(
-    iterator: AsyncIterator[Any],
-    cancel: asyncio.Event,
-    timeout: float,
-) -> Any:
-    """Next item from ``iterator``, or ``_TIMEOUT`` after ``timeout`` s,
-    or ``_CANCELLED`` if ``cancel`` fires / the stream ends.
-
-    Sibling of :func:`_race_iter_or_cancel` with an added timeout arm so
-    the album debouncer can flush a trailing album.
-    """
-    async def _anext() -> Any:
-        return await iterator.__anext__()
-
-    next_task = asyncio.create_task(_anext())
-    cancel_task = asyncio.create_task(cancel.wait())
-    timeout_task = asyncio.create_task(asyncio.sleep(timeout))
-    try:
-        done, _pending = await asyncio.wait(
-            {next_task, cancel_task, timeout_task},
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-    finally:
-        for t in (next_task, cancel_task, timeout_task):
-            if not t.done():
-                t.cancel()
-    if cancel_task in done:
-        return _CANCELLED
-    if next_task in done:
-        try:
-            return next_task.result()
-        except (StopAsyncIteration, asyncio.CancelledError):
-            return _CANCELLED
-    return _TIMEOUT
 
 
 def _build_text_channel_request(
@@ -4840,6 +5006,10 @@ def _build_text_channel_request(
             _to_server_attachment_shape(a) for a in inbound.attachments
         ],
         binding=inbound.binding,
+        # Shape-match InternalChatRequest. Persona injection overwrites this
+        # with a real id when humanlike is enabled; default None keeps the
+        # server-side proto builder's tolerant read happy.
+        persona_id=None,
     )
 
 

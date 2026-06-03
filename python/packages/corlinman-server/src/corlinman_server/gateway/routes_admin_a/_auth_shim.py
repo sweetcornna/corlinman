@@ -275,9 +275,58 @@ def require_admin_dependency(request: Request) -> Any:
     return authenticate_admin_request(request)
 
 
+def admin_session_tenant(request: Request, state: Any | None = None) -> Any | None:
+    """Non-raising cookie-only admin check for the ``/v1`` api-key bridge.
+
+    Returns the operator's :class:`~corlinman_server.tenancy.TenantId` when
+    the request carries a **valid** ``corlinman_session`` cookie (an
+    authenticated admin browser session), else ``None``.
+
+    Unlike :func:`authenticate_admin_request` this never raises, never falls
+    back to HTTP Basic, and never sets a ``WWW-Authenticate`` header — it
+    answers exactly one question ("is this a logged-in admin?") so
+    :class:`~corlinman_server.gateway.middleware.auth.ApiKeyAuthMiddleware`
+    can let the in-app chat UI reach ``/v1/chat/completions`` without the
+    operator minting an API key. The browser already ships the HttpOnly,
+    ``SameSite=Strict`` session cookie on same-origin requests; that
+    ``SameSite=Strict`` attribute is the CSRF guard for the bridged POST.
+
+    Fails closed: a missing/invalid cookie (or an unconfigured session
+    store) yields ``None`` so the caller falls through to the normal 401.
+    The seeded-credential rotation gate (SEC-007) still applies — while
+    ``must_change_password`` is set the bridge stays closed, so a fresh
+    install behaves the same on ``/v1/chat`` as it does on ``/admin/*``.
+    """
+    active_state = state if state is not None else get_admin_state()
+
+    session_store = getattr(active_state, "session_store", None)
+    if session_store is None:
+        return None
+    token = _read_session_cookie(request)
+    if token is None:
+        return None
+    session = session_store.validate(token)
+    if session is None:
+        return None
+    if _must_change_password_active(active_state):
+        return None
+
+    # Reflect the resolved principal for downstream handlers / observability,
+    # mirroring the cookie branch of authenticate_admin_request.
+    user = getattr(session, "user", None)
+    if isinstance(user, str):
+        request.state.admin_user = user
+    request.state.admin_session = session
+
+    from corlinman_server.tenancy import default_tenant
+
+    return getattr(active_state, "default_tenant", None) or default_tenant()
+
+
 __all__ = [
     "_PW_CHANGE_ALLOWED_PATHS",
     "_PW_CHANGE_ALLOWED_PREFIXES",
+    "admin_session_tenant",
     "authenticate_admin_request",
     "require_admin_dependency",
 ]

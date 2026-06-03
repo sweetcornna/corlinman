@@ -4,22 +4,34 @@
  * `<McpInstalledList>` — installed MCP servers with live status + lifecycle.
  *
  * Each card shows a status badge (ready/error/pending/stopped), the tool
- * count, and Enable/Disable/Restart/Delete actions. Enable/Disable/Restart
- * are served by the existing plugins seam; Delete uninstalls the server.
- * The parent page owns the data query; this component owns the per-row
- * mutations + the delete confirm dialog.
+ * count, and Enable/Disable/Restart/Reconfigure/Delete actions.
+ * Enable/Disable/Restart are served by the existing plugins seam;
+ * Reconfigure edits the launch spec (env/secrets/version/command/url) in
+ * place via PUT /admin/mcp/{name}; Delete uninstalls the server. The
+ * parent page owns the data query; this component owns the per-row
+ * mutations + the delete confirm + reconfigure dialogs.
  */
 
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { Power, PowerOff, RotateCw, Trash2 } from "lucide-react";
+import { Power, PowerOff, RotateCw, Settings2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
 import { GlassPanel } from "@/components/ui/glass-panel";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { useMotion } from "@/components/ui/motion-safe";
 import {
   CorlinmanApiError,
@@ -27,7 +39,9 @@ import {
   disableMcpServer,
   enableMcpServer,
   listMcpServers,
+  reconfigureMcpServer,
   restartMcpServer,
+  type McpReconfigureBody,
   type InstalledMcpServer,
 } from "@/lib/api";
 
@@ -58,6 +72,8 @@ export function McpInstalledList(): React.JSX.Element {
   const { t } = useTranslation();
   const qc = useQueryClient();
   const [pendingDelete, setPendingDelete] =
+    React.useState<InstalledMcpServer | null>(null);
+  const [pendingReconfigure, setPendingReconfigure] =
     React.useState<InstalledMcpServer | null>(null);
 
   const query = useQuery<InstalledMcpServer[]>({
@@ -122,11 +138,25 @@ export function McpInstalledList(): React.JSX.Element {
     onError: (err, name) => reportError("delete", name, err),
   });
 
+  const reconfigure = useMutation({
+    mutationFn: (vars: { name: string; body: McpReconfigureBody }) =>
+      reconfigureMcpServer(vars.name, vars.body),
+    onSuccess: (_r, vars) => {
+      toast.success(
+        t("marketplace.mcp.installed.reconfigureSuccess", { name: vars.name }),
+      );
+      setPendingReconfigure(null);
+      refetch();
+    },
+    onError: (err, vars) => reportError("reconfigure", vars.name, err),
+  });
+
   const busy = (name: string) =>
     (enable.isPending && enable.variables === name) ||
     (disable.isPending && disable.variables === name) ||
     (restart.isPending && restart.variables === name) ||
-    (remove.isPending && remove.variables === name);
+    (remove.isPending && remove.variables === name) ||
+    (reconfigure.isPending && reconfigure.variables?.name === name);
 
   if (query.isPending) {
     return <ListSkeleton />;
@@ -181,10 +211,26 @@ export function McpInstalledList(): React.JSX.Element {
             onEnable={() => enable.mutate(row.name)}
             onDisable={() => disable.mutate(row.name)}
             onRestart={() => restart.mutate(row.name)}
+            onReconfigure={() => setPendingReconfigure(row)}
             onDelete={() => setPendingDelete(row)}
           />
         ))}
       </section>
+
+      <McpReconfigureDialog
+        row={pendingReconfigure}
+        busy={reconfigure.isPending}
+        onOpenChange={(o) => {
+          if (!o) setPendingReconfigure(null);
+        }}
+        onSubmit={async (body) => {
+          if (!pendingReconfigure) return;
+          await reconfigure.mutateAsync({
+            name: pendingReconfigure.name,
+            body,
+          });
+        }}
+      />
 
       <ConfirmDialog
         open={pendingDelete !== null}
@@ -217,6 +263,7 @@ interface McpServerCardProps {
   onEnable: () => void;
   onDisable: () => void;
   onRestart: () => void;
+  onReconfigure: () => void;
   onDelete: () => void;
 }
 
@@ -226,6 +273,7 @@ function McpServerCard({
   onEnable,
   onDisable,
   onRestart,
+  onReconfigure,
   onDelete,
 }: McpServerCardProps) {
   const { t } = useTranslation();
@@ -327,6 +375,16 @@ function McpServerCard({
             <RotateCw className="h-3.5 w-3.5" aria-hidden />
             {t("marketplace.mcp.installed.restart")}
           </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={busy}
+            onClick={onReconfigure}
+            data-testid={`mcp-reconfigure-${row.name}`}
+          >
+            <Settings2 className="h-3.5 w-3.5" aria-hidden />
+            {t("marketplace.mcp.installed.reconfigure")}
+          </Button>
           <button
             type="button"
             disabled={busy}
@@ -348,6 +406,194 @@ function McpServerCard({
       </GlassPanel>
     </div>
   );
+}
+
+interface McpReconfigureDialogProps {
+  row: InstalledMcpServer | null;
+  busy: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSubmit: (body: McpReconfigureBody) => void | Promise<void>;
+}
+
+/**
+ * Inline edit form for an installed/config MCP server's launch spec.
+ *
+ * The merged-list endpoint doesn't return the raw command/args/env (they
+ * may carry secrets), so the form starts blank: only fields the operator
+ * actually fills are sent (the backend leaves untouched keys alone). The
+ * one exception is `version`, which is non-secret and pre-filled. `env`
+ * is entered as newline-separated `KEY=value` pairs and, when present,
+ * REPLACES the stored env map wholesale — matching the backend contract.
+ */
+function McpReconfigureDialog({
+  row,
+  busy,
+  onOpenChange,
+  onSubmit,
+}: McpReconfigureDialogProps) {
+  const { t } = useTranslation();
+  const [command, setCommand] = React.useState("");
+  const [args, setArgs] = React.useState("");
+  const [url, setUrl] = React.useState("");
+  const [version, setVersion] = React.useState("");
+  const [env, setEnv] = React.useState("");
+
+  const name = row?.name ?? "";
+
+  // Reset the form whenever a different row opens the dialog.
+  React.useEffect(() => {
+    setCommand("");
+    setArgs("");
+    setUrl("");
+    setVersion(row?.version ?? "");
+    setEnv("");
+  }, [row]);
+
+  function buildBody(): McpReconfigureBody {
+    const body: McpReconfigureBody = {};
+    if (command.trim()) body.command = command.trim();
+    if (args.trim()) {
+      body.args = args.trim().split(/\s+/);
+    }
+    if (url.trim()) body.url = url.trim();
+    if (version.trim() && version.trim() !== (row?.version ?? "")) {
+      body.version = version.trim();
+    }
+    const envMap = parseEnvLines(env);
+    if (envMap !== null) body.env = envMap;
+    return body;
+  }
+
+  return (
+    <Dialog open={row !== null} onOpenChange={onOpenChange}>
+      <DialogContent data-testid="mcp-reconfigure-content">
+        <DialogHeader>
+          <DialogTitle>
+            {t("marketplace.mcp.installed.reconfigureTitle", { name })}
+          </DialogTitle>
+          <DialogDescription className="text-sm text-tp-ink-3">
+            {t("marketplace.mcp.installed.reconfigureBody")}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="grid gap-3">
+          <Field label={t("marketplace.mcp.installed.fieldVersion")}>
+            <Input
+              value={version}
+              onChange={(e) => setVersion(e.target.value)}
+              data-testid="mcp-reconfigure-version"
+            />
+          </Field>
+          <Field
+            label={t("marketplace.mcp.installed.fieldCommand")}
+            hint={t("marketplace.mcp.installed.fieldUnchangedHint")}
+          >
+            <Input
+              value={command}
+              onChange={(e) => setCommand(e.target.value)}
+              data-testid="mcp-reconfigure-command"
+            />
+          </Field>
+          <Field
+            label={t("marketplace.mcp.installed.fieldArgs")}
+            hint={t("marketplace.mcp.installed.fieldUnchangedHint")}
+          >
+            <Input
+              value={args}
+              onChange={(e) => setArgs(e.target.value)}
+              data-testid="mcp-reconfigure-args"
+            />
+          </Field>
+          <Field
+            label={t("marketplace.mcp.installed.fieldUrl")}
+            hint={t("marketplace.mcp.installed.fieldUnchangedHint")}
+          >
+            <Input
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              data-testid="mcp-reconfigure-url"
+            />
+          </Field>
+          <Field
+            label={t("marketplace.mcp.installed.fieldEnv")}
+            hint={t("marketplace.mcp.installed.fieldEnvHint")}
+          >
+            <textarea
+              value={env}
+              onChange={(e) => setEnv(e.target.value)}
+              rows={4}
+              spellCheck={false}
+              placeholder={"KEY=value"}
+              data-testid="mcp-reconfigure-env"
+              className={cn(
+                "w-full rounded-md border border-tp-glass-edge bg-tp-glass-inner",
+                "px-3 py-2 font-mono text-[12px] text-tp-ink",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-accent/40",
+              )}
+            />
+          </Field>
+        </div>
+
+        <DialogFooter className="gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={busy}
+            onClick={() => onOpenChange(false)}
+            data-testid="mcp-reconfigure-cancel"
+          >
+            {t("marketplace.common.cancel")}
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            disabled={busy}
+            onClick={() => void onSubmit(buildBody())}
+            data-testid="mcp-reconfigure-submit"
+          >
+            {t("marketplace.mcp.installed.reconfigureSave")}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function Field({
+  label,
+  hint,
+  children,
+}: {
+  label: React.ReactNode;
+  hint?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="grid gap-1">
+      <Label className="text-[12px] text-tp-ink-2">{label}</Label>
+      {children}
+      {hint ? <p className="text-[11px] text-tp-ink-4">{hint}</p> : null}
+    </div>
+  );
+}
+
+/** Parse newline-separated `KEY=value` lines into an env map. Returns
+ * `null` when the textarea is empty (→ leave env untouched), or a map
+ * (possibly empty after trimming) when the operator typed something. */
+function parseEnvLines(text: string): Record<string, string> | null {
+  if (!text.trim()) return null;
+  const out: Record<string, string> = {};
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line) continue;
+    const eq = line.indexOf("=");
+    if (eq <= 0) continue;
+    const key = line.slice(0, eq).trim();
+    const value = line.slice(eq + 1).trim();
+    if (key) out[key] = value;
+  }
+  return out;
 }
 
 function ListSkeleton() {

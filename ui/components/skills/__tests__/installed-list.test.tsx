@@ -52,6 +52,10 @@ function row(overrides: Partial<InstalledSkillRow> = {}): InstalledSkillRow {
     use_count: 0,
     last_used_at: null,
     created_at: null,
+    body_markdown: "",
+    when_to_use: null,
+    allowed_tools: [],
+    disable_model_invocation: false,
     ...overrides,
   };
 }

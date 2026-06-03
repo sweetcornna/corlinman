@@ -46,6 +46,10 @@ from corlinman_server.gateway.routes_admin_a.state import (
     AdminState,
     get_admin_state,
 )
+from corlinman_server.gateway.routes_admin_b.config import (
+    REDACTED_SENTINEL,
+    _merge_secrets_from,
+)
 
 # ---------------------------------------------------------------------------
 # Wire shapes
@@ -193,6 +197,119 @@ class ChannelSendOut(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Config-write wire shapes (PUT /admin/channels/{channel}/config)
+# ---------------------------------------------------------------------------
+#
+# One uniform partial-update body for every channel. Only the fields the
+# operator actually sends are written; ``None`` means "leave untouched".
+# Secrets follow the redaction-merge contract from routes_admin_b/config.py:
+# a value equal to ``REDACTED_SENTINEL`` ("***REDACTED***") means "keep the
+# current on-disk value" (so the UI can round-trip the masked status payload
+# without clobbering a live token).
+
+
+class ChannelConfigBody(BaseModel):
+    """Partial channel-config edit. Every field is optional; omitted /
+    ``None`` fields are not touched. The handler projects this onto the
+    channel's editable-field spec so unknown channels / fields are
+    rejected rather than silently written.
+
+    ``secrets`` carries token-bearing leaves keyed by their config name
+    (e.g. ``{"bot_token": "123:abc"}``); a value of ``***REDACTED***``
+    preserves the existing on-disk secret. ``urls`` carries base_url /
+    api_base / gateway_url style endpoints. ``ids`` carries the
+    allowed-target whitelists (``allowed_chat_ids`` / ``allowed_channel_ids``
+    / ``self_ids`` / ``intents``). ``filters`` carries ``keyword_filter``.
+    ``flags`` carries the booleans (``respond_to_all`` /
+    ``require_mention_in_groups`` / ``drop_pending_updates`` / ``sandbox``)."""
+
+    secrets: dict[str, str] | None = None
+    urls: dict[str, str] | None = None
+    ids: dict[str, list[str]] | None = None
+    filters: dict[str, list[str]] | None = None
+    flags: dict[str, bool] | None = None
+
+
+class ChannelConfigOut(BaseModel):
+    """Echo of the persisted NON-SECRET config (same projection the status
+    route returns) plus the set of fields the operator just wrote. Secrets
+    are never echoed — only their key names appear in ``wrote``."""
+
+    status: str
+    wrote: list[str] = Field(default_factory=list)
+    config_keys: dict[str, str | list[str]] = Field(default_factory=dict)
+
+
+# Per-channel editable-field spec consumed by the config-write route.
+# ``secret_keys`` are redaction-merged (never echoed). ``url_keys`` /
+# ``str_id_keys`` / ``int_list_keys`` / ``str_list_keys`` / ``filter_keys``
+# / ``bool_keys`` are written verbatim after coercion + validation. Keys
+# absent from a channel's spec are rejected (``unknown_field``).
+#
+# NOTE ``feishu`` / ``qq_official`` / ``wechat_official`` ``app_id`` is a
+# PUBLIC client id (the matching ``app_secret`` carries the secret), so it
+# lives under ``url_keys`` (plain string), not ``secret_keys``.
+_CHANNEL_EDITABLE: dict[str, dict[str, list[str]]] = {
+    "qq": {
+        "secret_keys": ["access_token"],
+        "url_keys": ["ws_url"],
+        "int_list_keys": ["self_ids"],
+        "str_list_keys": [],
+        "filter_keys": [],
+        "bool_keys": [],
+    },
+    "telegram": {
+        "secret_keys": ["bot_token", "secret_token"],
+        "url_keys": ["base_url", "webhook_url"],
+        "int_list_keys": ["allowed_chat_ids"],
+        "str_list_keys": [],
+        "filter_keys": ["keyword_filter"],
+        "bool_keys": ["require_mention_in_groups", "drop_pending_updates"],
+    },
+    "discord": {
+        "secret_keys": ["bot_token"],
+        "url_keys": ["gateway_url", "rest_base"],
+        "int_list_keys": [],
+        "str_list_keys": ["allowed_channel_ids"],
+        "filter_keys": ["keyword_filter"],
+        "bool_keys": ["respond_to_all"],
+    },
+    "slack": {
+        "secret_keys": ["app_token", "bot_token"],
+        "url_keys": ["api_base"],
+        "int_list_keys": [],
+        "str_list_keys": ["allowed_channel_ids"],
+        "filter_keys": ["keyword_filter"],
+        "bool_keys": ["respond_to_all"],
+    },
+    "feishu": {
+        "secret_keys": ["app_secret"],
+        "url_keys": ["app_id", "api_base"],
+        "int_list_keys": [],
+        "str_list_keys": ["allowed_chat_ids"],
+        "filter_keys": ["keyword_filter"],
+        "bool_keys": ["respond_to_all"],
+    },
+    "wechat_official": {
+        "secret_keys": ["app_secret", "token"],
+        "url_keys": ["app_id", "api_base"],
+        "int_list_keys": [],
+        "str_list_keys": [],
+        "filter_keys": [],
+        "bool_keys": [],
+    },
+    "qq_official": {
+        "secret_keys": ["app_secret"],
+        "url_keys": ["app_id", "api_base"],
+        "int_list_keys": [],
+        "str_list_keys": ["intents"],
+        "filter_keys": [],
+        "bool_keys": ["sandbox"],
+    },
+}
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -299,7 +416,165 @@ def _non_secret_config_keys(
     for key in spec.get("bool_keys", []):
         if key in section:
             out[key] = str(bool(section.get(key)))
+    # Surface the non-secret endpoint overrides (base_url / api_base /
+    # gateway_url / rest_base) so a PUT round-trips visibly in the status
+    # payload. These come from the editable-field spec, never include a
+    # secret leaf, and are only emitted when actually present on disk.
+    edit_spec = _CHANNEL_EDITABLE.get(name, {})
+    secret_leaves = set(edit_spec.get("secret_keys", []))
+    for key in edit_spec.get("url_keys", []):
+        if key in secret_leaves or key in out:
+            continue
+        val = section.get(key)
+        if val is not None:
+            out[key] = str(val)
     return out
+
+
+def _bad_request(error: str, message: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail={"error": error, "message": message},
+    )
+
+
+def _apply_channel_config(
+    name: str, section: dict[str, Any], body: ChannelConfigBody
+) -> list[str]:
+    """Mutate ``section`` in place from a validated :class:`ChannelConfigBody`.
+
+    Only keys present in the channel's editable spec are accepted; any
+    other key raises 400 ``unknown_field``. Secrets honour the
+    redaction-merge contract (``***REDACTED***`` == keep current value).
+    Returns the sorted list of field names that were actually written so
+    the response can echo them (secret *names* only — never their values)."""
+    spec = _CHANNEL_EDITABLE.get(name)
+    if spec is None:  # pragma: no cover — route validates the name first
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "unknown_channel", "channel": name},
+        )
+    wrote: list[str] = []
+
+    # -- secrets (redaction-merge) ----------------------------------
+    if body.secrets:
+        allowed = set(spec["secret_keys"])
+        for key, val in body.secrets.items():
+            if key not in allowed:
+                raise _bad_request(
+                    "unknown_field",
+                    f"{key} is not an editable secret for {name}",
+                )
+            base_val = section.get(key)
+            # A redacted echo means "keep the live value". Refuse it when
+            # there is no live value behind the sentinel — otherwise
+            # _merge_secrets_from collapses it to None and we'd clobber /
+            # null out the secret on disk (the exact failure config.py's
+            # _merge_secrets_from docstring warns about).
+            if val == REDACTED_SENTINEL and not (
+                isinstance(base_val, str) and base_val
+            ):
+                raise _bad_request(
+                    "redacted_sentinel_in_payload",
+                    f"{key} echoed ***REDACTED*** but no live value exists",
+                )
+            # Mirror routes_admin_b/config.py _merge_secrets_from: a
+            # redacted echo keeps the live value; a fresh value overwrites.
+            section[key] = _merge_secrets_from(val, base_val)
+            wrote.append(key)
+
+    # -- urls / endpoints + non-secret ids (app_id) -----------------
+    if body.urls:
+        allowed = set(spec["url_keys"])
+        for key, val in body.urls.items():
+            if key not in allowed:
+                raise _bad_request(
+                    "unknown_field", f"{key} is not an editable url for {name}"
+                )
+            sval = str(val).strip()
+            section[key] = sval
+            wrote.append(key)
+
+    # -- id whitelists (int for self_ids/allowed_chat_ids on qq/tg) -
+    if body.ids:
+        int_allowed = set(spec["int_list_keys"])
+        str_allowed = set(spec["str_list_keys"])
+        for key, vals in body.ids.items():
+            if key in int_allowed:
+                coerced: list[int] = []
+                for v in vals:
+                    try:
+                        coerced.append(int(str(v).strip()))
+                    except ValueError as exc:
+                        raise _bad_request(
+                            "invalid_id",
+                            f"{key} entries must be numeric ids: {v!r}",
+                        ) from exc
+                section[key] = coerced
+                wrote.append(key)
+            elif key in str_allowed:
+                section[key] = [str(v).strip() for v in vals if str(v).strip()]
+                wrote.append(key)
+            else:
+                raise _bad_request(
+                    "unknown_field", f"{key} is not an editable id list for {name}"
+                )
+
+    # -- keyword filters --------------------------------------------
+    if body.filters:
+        allowed = set(spec["filter_keys"])
+        for key, vals in body.filters.items():
+            if key not in allowed:
+                raise _bad_request(
+                    "unknown_field",
+                    f"{key} is not an editable filter for {name}",
+                )
+            cleaned = [str(v).strip() for v in vals]
+            if any(not v for v in cleaned):
+                raise _bad_request(
+                    "invalid_keyword", f"{key} entries must be non-empty"
+                )
+            section[key] = cleaned
+            wrote.append(key)
+
+    # -- boolean flags ----------------------------------------------
+    if body.flags:
+        allowed = set(spec["bool_keys"])
+        for key, flag_val in body.flags.items():
+            if key not in allowed:
+                raise _bad_request(
+                    "unknown_field", f"{key} is not an editable flag for {name}"
+                )
+            section[key] = bool(flag_val)
+            wrote.append(key)
+
+    return sorted(set(wrote))
+
+
+async def _persist_channels(state: AdminState) -> None:
+    """Run the wired ``channels_writer`` over the live ``channels_config``.
+    503 when no writer is wired, 500 on a write failure — same envelopes
+    the QQ keywords route uses."""
+    writer = state.channels_writer
+    if writer is None or state.channels_config is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "error": "channels_writer_missing",
+                "message": "gateway booted without a writable channels config",
+            },
+        )
+    try:
+        ret = writer(state.channels_config)
+        if inspect.isawaitable(ret):
+            await ret
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 — surface as a 500 envelope
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error": "write_failed", "message": str(exc)},
+        ) from exc
 
 
 def _channel_health(name: str) -> dict[str, Any]:
@@ -485,6 +760,62 @@ def router() -> APIRouter:
         return KeywordsOut(
             status="ok",
             group_keywords=dict(qq.get("group_keywords", {})),
+        )
+
+    # -- Generic per-channel config write ----------------------------
+    #
+    # One PUT handles every channel's editable fields — secrets
+    # (bot_token / app_token / app_secret / token / access_token /
+    # secret_token, redaction-merged), base_url / api_base / gateway_url /
+    # rest_base / ws_url, the allowed-target whitelists + keyword_filter,
+    # and the per-channel booleans. The body is a partial update: only the
+    # sub-maps the operator sends are touched. The section is auto-stubbed
+    # so the wizard can write a config before flipping ``enabled`` (a
+    # restart-gated field — see _detect_restart_fields in config.py).
+
+    @r.put(
+        "/admin/channels/{channel}/config",
+        response_model=ChannelConfigOut,
+        summary="Persist a channel's editable secrets / urls / filters",
+    )
+    async def put_channel_config(
+        channel: str,
+        body: ChannelConfigBody,
+        state: Annotated[AdminState, Depends(get_admin_state)],
+    ) -> ChannelConfigOut:
+        if channel not in _CHANNEL_EDITABLE:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "unknown_channel",
+                    "channel": channel,
+                    "supported": sorted(_CHANNEL_EDITABLE),
+                },
+            )
+        if state.channels_config is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "error": "channels_writer_missing",
+                    "message": (
+                        "gateway booted without a writable channels config"
+                    ),
+                },
+            )
+        section = state.channels_config.get(channel)
+        if not isinstance(section, dict):
+            # Auto-stub so an operator can pre-fill a channel they're about
+            # to enable; the channel stays dormant until enabled=true lands.
+            section = {}
+            state.channels_config[channel] = section
+
+        wrote = _apply_channel_config(channel, section, body)
+        await _persist_channels(state)
+
+        return ChannelConfigOut(
+            status="ok",
+            wrote=wrote,
+            config_keys=_non_secret_config_keys(channel, section),
         )
 
     # -- Telegram ----------------------------------------------------
@@ -775,6 +1106,8 @@ def router() -> APIRouter:
 
 
 __all__ = [
+    "ChannelConfigBody",
+    "ChannelConfigOut",
     "ChannelConfigStatusOut",
     "ChannelMessagesOut",
     "ChannelSendBody",

@@ -139,14 +139,25 @@ def _resolve_config_path(cli_value: str | None) -> Path | None:
     return None
 
 
-def _resolve_data_dir(cli_value: str | None) -> Path:
-    """``--data-dir`` > ``$CORLINMAN_DATA_DIR`` > ``~/.corlinman`` >
-    ``./.corlinman``. Mirrors ``corlinman_gateway::server::resolve_data_dir``."""
+def _resolve_data_dir(cli_value: str | None, cfg: Any | None = None) -> Path:
+    """``--data-dir`` > ``$CORLINMAN_DATA_DIR`` > ``[server].data_dir`` >
+    ``~/.corlinman`` > ``./.corlinman``.
+
+    Mirrors ``corlinman_gateway::server::resolve_data_dir`` but additionally
+    honours ``[server].data_dir`` from the loaded config when no CLI / env
+    override is present — so the value the admin config editor lists (and
+    flags restart-required) actually takes effect on the next restart
+    rather than being silently ignored. CLI / env still win so a launch
+    flag can override a stale config.
+    """
     if cli_value:
         return Path(cli_value)
     env = os.environ.get("CORLINMAN_DATA_DIR")
     if env:
         return Path(env)
+    config_data_dir = _extract_section(_extract_section(cfg, "server"), "data_dir")
+    if isinstance(config_data_dir, str) and config_data_dir.strip():
+        return Path(config_data_dir.strip()).expanduser()
     try:
         return Path.home() / ".corlinman"
     except (RuntimeError, OSError):
@@ -1567,6 +1578,102 @@ def _repo_agents_dir() -> Path:
     return Path("agents")
 
 
+def _make_channels_writer(app: Any, admin_a_state: Any) -> Any:
+    """Build the ``channels_writer`` callback the ``/admin/channels`` routes
+    invoke to persist live channel-config edits (per-group keywords + the
+    per-channel humanlike toggle).
+
+    In prod this slot was never wired — only a test set it — so every
+    ``PUT /admin/channels/{channel}/humanlike`` (and the keywords PUT)
+    503'd ``channels_writer_missing``. The routes mutate
+    ``admin_a_state.channels_config`` in place and the live humanlike
+    resolver reads the same nested tables, so the edit already takes effect
+    immediately; this writer makes it durable across restarts by patching
+    the ``[channels]`` table in ``config.toml`` atomically. Scoped to the
+    channels section so unrelated sections on disk are left untouched.
+    """
+
+    async def _writer(channels_cfg: dict[str, Any]) -> None:
+        cfg_path = getattr(admin_a_state, "config_path", None)
+        if cfg_path is None:
+            raise RuntimeError("config_path unset; cannot persist channels config")
+        cfg_path = Path(cfg_path)
+        import tomllib
+
+        try:
+            on_disk = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            live = getattr(app.state, "config", None)
+            on_disk = dict(live) if isinstance(live, dict) else {}
+        on_disk["channels"] = channels_cfg
+
+        try:
+            import tomli_w
+
+            serialised = tomli_w.dumps(on_disk)
+        except ImportError:  # pragma: no cover — tomli_w is a hard dep
+            import toml
+
+            serialised = toml.dumps(on_disk)
+
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = cfg_path.with_suffix(cfg_path.suffix + ".new")
+        tmp.write_text(serialised, encoding="utf-8")
+        tmp.replace(cfg_path)
+
+        # Keep the live full config in sync so a later full-config read /
+        # snapshot reflects the channel edit too.
+        live = getattr(app.state, "config", None)
+        if isinstance(live, dict):
+            live["channels"] = channels_cfg
+
+    return _writer
+
+
+def _make_config_swap_fn(app: Any, state: Any) -> Any:
+    """Build the ``config_swap_fn`` the ``POST /admin/config`` route calls
+    after it writes the edited TOML to disk.
+
+    Previously this was wired ONLY when the fs-watcher (``ConfigWatcher``)
+    was running, which is off by default — so on a normal deploy an editor
+    save wrote disk but never updated the running process (``_publish_snapshot``
+    no-op'd, yet the UI toasted success). Wiring it unconditionally makes the
+    save publish to the live in-memory snapshot (``state.config`` /
+    ``app.state.corlinman_config``) and re-run the *idempotent* hot-reloadable
+    bootstraps for whichever top-level sections changed (today: providers /
+    models — they rebuild ``provider_registry`` in place). Sections whose
+    runtime is built once at boot (channels / agents / scheduler / ...) still
+    need a restart — that is a separate, riskier teardown-rebuild lane and is
+    surfaced honestly via ``_detect_restart_fields``.
+    """
+
+    def _config_swap_fn(new_cfg: Any) -> None:
+        old = getattr(state, "config", None)
+        changed: list[str] = []
+        if isinstance(old, dict) and isinstance(new_cfg, dict):
+            changed = [
+                k
+                for k in (set(old) | set(new_cfg))
+                if old.get(k) != new_cfg.get(k)
+            ]
+        with suppress(AttributeError, TypeError):
+            state.config = new_cfg
+        with suppress(AttributeError, TypeError):
+            app.state.corlinman_config = new_cfg
+        # Keep a running ConfigWatcher's snapshot in sync when one exists.
+        _watcher = getattr(state, "config_watcher", None)
+        _snap = getattr(_watcher, "_snapshot", None) if _watcher else None
+        if _snap is not None and hasattr(_snap, "store"):
+            with suppress(Exception):
+                _snap.store(new_cfg)
+        # Re-apply the idempotent bootstraps for the sections that changed.
+        if changed:
+            with suppress(Exception):
+                _reapply_hot_reloadable(state, changed)
+
+    return _config_swap_fn
+
+
 def _build_agent_registry_stack(
     data_dir: Path | None,
 ) -> tuple[Any | None, Any | None]:
@@ -1846,6 +1953,15 @@ def _mount_routes(
                     agent_registry_reload=_agent_registry_reload,
                 )
                 set_admin_a(admin_a_state)
+                # Wire the channels-config write-back. Without this every
+                # /admin/channels keywords + humanlike PUT 503s
+                # ``channels_writer_missing`` (the slot was only ever set in
+                # a test). The live resolver already reads the in-place
+                # edit, so this just makes it durable across restarts.
+                with suppress(Exception):
+                    admin_a_state.channels_writer = _make_channels_writer(
+                        app, admin_a_state
+                    )
             app.include_router(admin_a.build_router())
         except Exception as exc:  # pragma: no cover — sibling-owned
             logger.warning("gateway.routes_admin_a.mount_failed", error=str(exc))
@@ -1986,7 +2102,7 @@ def build_app(
         ) from exc
 
     cfg = _load_config(config_path)
-    resolved_data_dir = data_dir or _resolve_data_dir(None)
+    resolved_data_dir = data_dir or _resolve_data_dir(None, cfg)
 
     # Phase 4 W1 4-1A Item 5: one-shot legacy data-file migration. Gated
     # on tenants config; default-off for back-compat.
@@ -2457,11 +2573,34 @@ def build_app(
                 _audit_log = getattr(
                     app.state, "corlinman_audit_log", None
                 )
+                # Thread the operator-configured per-tenant ceiling from
+                # ``[subagent] max_concurrent_per_tenant`` into the
+                # dispatcher. Previously the dispatcher was built without
+                # this kwarg, so it silently fell back to the hardcoded
+                # ``DEFAULT_MAX_CONCURRENT_PER_TENANT`` and any value the
+                # operator set in config had no effect. Only forward a
+                # positive int; anything else (missing / 0 / non-numeric /
+                # bool) leaves the dispatcher on its default.
+                _subagent_cfg = _extract_section(cfg, "subagent")
+                _max_concurrent = _extract_section(
+                    _subagent_cfg, "max_concurrent_per_tenant"
+                )
+                _dispatcher_kwargs: dict[str, Any] = {
+                    "store": subagent_store,
+                    "run_child_factory": _unwired_run_child_factory,
+                    "journal": observability_journal,
+                    "audit_log": _audit_log,
+                }
+                if (
+                    isinstance(_max_concurrent, int)
+                    and not isinstance(_max_concurrent, bool)
+                    and _max_concurrent > 0
+                ):
+                    _dispatcher_kwargs["max_concurrent_per_tenant"] = (
+                        _max_concurrent
+                    )
                 subagent_dispatcher = AsyncSubagentDispatcher(
-                    store=subagent_store,
-                    run_child_factory=_unwired_run_child_factory,
-                    journal=observability_journal,
-                    audit_log=_audit_log,
+                    **_dispatcher_kwargs
                 )
                 if admin_b_state is not None:
                     admin_b_state.subagent_store = subagent_store
@@ -2650,6 +2789,34 @@ def build_app(
                 error=str(exc),
             )
 
+        # Wire the RAG corpus store onto admin_b so /admin/rag/* (stats /
+        # query / rebuild) + /admin/memory/decay/reset un-503. The Rust
+        # gateway opened ``<data_dir>/kb.sqlite`` via
+        # ``corlinman_vector::SqliteStore``; the Python port ships a
+        # subset adapter (:class:`RagStore`) covering exactly the methods
+        # those routes call. Best-effort — an unwritable data dir / open
+        # failure leaves ``rag_store=None`` and the routes keep returning
+        # their typed 503 (``rag_disabled`` / ``memory_admin_disabled``).
+        # Closed in the lifespan-exit ``finally`` so the WAL is
+        # checkpointed.
+        if resolved_data_dir is not None:
+            try:
+                from corlinman_server.gateway.rag_store import RagStore
+
+                kb_path = resolved_data_dir / "kb.sqlite"
+                kb_path.parent.mkdir(parents=True, exist_ok=True)
+                rag_store = await RagStore.open(kb_path)
+                if admin_b_state is not None:
+                    admin_b_state.rag_store = rag_store
+                app.state.corlinman_rag_store = rag_store
+                logger.info("gateway.rag.store_opened", path=str(kb_path))
+            except Exception as exc:  # pragma: no cover — best-effort
+                logger.warning(
+                    "gateway.rag.store_open_failed",
+                    path=str(resolved_data_dir / "kb.sqlite"),
+                    error=str(exc),
+                )
+
         grpc_mod = _lazy_import("corlinman_server.gateway.grpc")
 
         cancel = asyncio.Event()
@@ -2836,29 +3003,22 @@ def build_app(
             if _watcher_instance is not None and admin_b_state is not None:
                 with suppress(AttributeError, TypeError):
                     admin_b_state.extras["config_watcher"] = _watcher_instance
-                # Also wire ``config_swap_fn`` so that
-                # ``POST /admin/config`` (manual TOML edit + write-to-disk)
-                # can update the live snapshot on AppState *and* inside the
-                # ConfigWatcher's internal ArcSwap-equivalent
-                # (_AtomicSnapshot).  The watcher's ``on_reload`` callback
-                # already handles fs-triggered reloads; ``config_swap_fn``
-                # is the admin-POST path where the new TOML is written
-                # *by the operator* rather than detected by the fs watcher.
-                def _config_swap_fn(new_cfg: Any) -> None:
-                    with suppress(AttributeError, TypeError):
-                        state.config = new_cfg
-                    with suppress(AttributeError, TypeError):
-                        app.state.corlinman_config = new_cfg
-                    _snap = getattr(_watcher_instance, "_snapshot", None)
-                    if _snap is not None and hasattr(_snap, "store"):
-                        with suppress(Exception):
-                            _snap.store(new_cfg)
-
+            # Wire ``config_swap_fn`` UNCONDITIONALLY (even when the
+            # fs-watcher is off, the default) so ``POST /admin/config``
+            # publishes the operator's TOML edit to the live in-memory
+            # snapshot and re-applies the idempotent providers/models
+            # bootstraps — otherwise a save wrote disk but never reached the
+            # running process (``_publish_snapshot`` no-op'd on a missing fn
+            # while the UI still toasted success).
+            if admin_b_state is not None:
                 with suppress(AttributeError, TypeError):
-                    admin_b_state.extras["config_swap_fn"] = _config_swap_fn
+                    admin_b_state.extras["config_swap_fn"] = _make_config_swap_fn(
+                        app, state
+                    )
                 logger.debug(
-                    "gateway.config_reload.watcher_bridged_to_admin_b",
-                    path=str(config_path),
+                    "gateway.config_reload.swap_fn_wired",
+                    path=str(config_path) if config_path else None,
+                    watcher=_watcher_instance is not None,
                 )
         except Exception as exc:  # pragma: no cover — defensive
             logger.warning(
@@ -3058,7 +3218,23 @@ def build_app(
         # every firing so ``run_tool`` builtins read a live state.
         try:
             sched_cfg = _effective_scheduler_config(app, cfg)
-            if sched_cfg.jobs:
+            # gap-fill (scheduler-runtime-jobs): we spawn a handle even when
+            # there are zero config/default jobs so admin-created *runtime*
+            # jobs (persisted in ``<data_dir>/scheduler_runtime_jobs.json``)
+            # have a live :class:`SchedulerHandle` to register their tick
+            # loops onto on boot — without this a process with only runtime
+            # jobs would never fire them.
+            _has_runtime_jobs = False
+            try:
+                _rt_path = (
+                    resolved_data_dir / "scheduler_runtime_jobs.json"
+                    if resolved_data_dir is not None
+                    else None
+                )
+                _has_runtime_jobs = bool(_rt_path and _rt_path.is_file())
+            except OSError:  # pragma: no cover — defensive
+                _has_runtime_jobs = False
+            if sched_cfg.jobs or _has_runtime_jobs:
                 from corlinman_hooks import HookBus
 
                 from corlinman_server.scheduler import spawn as _spawn_scheduler
@@ -3102,6 +3278,29 @@ def build_app(
                 app.state.corlinman_scheduler_handle = scheduler_handle
                 if admin_b_state is not None:
                     admin_b_state.scheduler = scheduler_handle
+                    # Publish ``app.state`` onto the admin extras so the
+                    # scheduler routes can (a) mirror runtime-job metadata
+                    # onto ``app_state.scheduler_job_metadata`` (the qzone
+                    # builtin reads it at tick time) and (b) resolve the
+                    # live handle for register/unregister on create / edit /
+                    # pause / resume.
+                    with suppress(AttributeError, TypeError):
+                        admin_b_state.extras["app_state"] = app.state
+                    # Rehydrate the persisted runtime-job overlay + register
+                    # each enabled job's tick loop onto the fresh handle.
+                    # Best-effort — a malformed sidecar leaves the overlay
+                    # empty rather than aborting boot.
+                    try:
+                        from corlinman_server.gateway.routes_admin_b.scheduler import (
+                            rehydrate_runtime_jobs_on_boot,
+                        )
+
+                        rehydrate_runtime_jobs_on_boot(admin_b_state)
+                    except Exception as exc:  # pragma: no cover — best-effort
+                        logger.warning(
+                            "gateway.scheduler.runtime_rehydrate_failed",
+                            error=str(exc),
+                        )
                 logger.info(
                     "gateway.scheduler.spawned",
                     jobs=[j.name for j in sched_cfg.jobs],
@@ -3149,6 +3348,18 @@ def build_app(
                         error=str(exc),
                     )
                 app.state._evolution_store = None
+            # RAG-store teardown: close the kb.sqlite handle opened above so
+            # its WAL is checkpointed and tests don't leak file descriptors.
+            # Idempotent + safe when no store was wired.
+            rag_store_handle = getattr(app.state, "corlinman_rag_store", None)
+            if rag_store_handle is not None:
+                try:
+                    await rag_store_handle.close()
+                except Exception as exc:  # pragma: no cover — defensive
+                    logger.warning(
+                        "gateway.rag.store_close_failed", error=str(exc)
+                    )
+                app.state.corlinman_rag_store = None
             # D12 teardown: cancel + await any in-flight background subagent
             # dispatch tasks BEFORE closing the journal they emit into, so a
             # shutdown doesn't orphan child-driving tasks against a
@@ -3427,6 +3638,28 @@ def build_app(
                     "gateway.middleware.install_failed", error=str(exc)
                 )
 
+            # Wire the admin-session bridge so the in-app chat UI (which
+            # authenticates with the ``corlinman_session`` cookie, not an API
+            # key) can reach ``/v1/chat/completions``. Set on the published
+            # state AFTER install so a wiring failure degrades the bridge
+            # gracefully (chat needs an API key) instead of taking down the
+            # whole ``/v1`` gate. The resolver validates the cookie lazily at
+            # request time via ``get_admin_state()``, so it does not matter
+            # that the live session store is created lazily on first login.
+            try:
+                from corlinman_server.gateway.routes_admin_a._auth_shim import (
+                    admin_session_tenant,
+                )
+
+                api_key_state = getattr(app.state, "api_key_auth", None)
+                if api_key_state is not None:
+                    api_key_state.admin_session_resolver = admin_session_tenant
+            except Exception as exc:  # pragma: no cover — sibling-owned
+                logger.warning(
+                    "gateway.middleware.admin_bridge_wire_failed",
+                    error=str(exc),
+                )
+
         # SEC-06b: install the tenant-scope middleware so every ``/admin/*``
         # and ``/v1/*`` handler observes a resolved ``request.state.tenant``
         # instead of trusting a raw ``?tenant=`` query param. The middleware
@@ -3665,13 +3898,48 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def _resolve_bind(cli_host: str | None, cli_port: int | None) -> tuple[str, int]:
-    host = cli_host or os.environ.get("BIND") or DEFAULT_HOST
+def _resolve_bind(
+    cli_host: str | None,
+    cli_port: int | None,
+    cfg: Any | None = None,
+) -> tuple[str, int]:
+    """Resolve ``(host, port)`` to bind on.
+
+    Precedence (first present wins), per field:
+
+    * host: ``--host`` > ``$BIND`` > ``[server].bind`` > :data:`DEFAULT_HOST`.
+    * port: ``--port`` > ``$PORT`` > ``[server].port`` > :data:`DEFAULT_PORT`.
+
+    The ``[server].bind`` / ``[server].port`` fallbacks make the values the
+    admin config editor lists (and flags restart-required) actually honoured
+    on the next restart — previously they were resolved from CLI/env only,
+    so editing them in the UI did nothing even after a restart. CLI / env
+    still win so a launch flag overrides a stale config.
+    """
+    server_cfg = _extract_section(cfg, "server")
+
+    host = cli_host or os.environ.get("BIND")
+    if not host:
+        config_bind = _extract_section(server_cfg, "bind")
+        if isinstance(config_bind, str) and config_bind.strip():
+            host = config_bind.strip()
+    if not host:
+        host = DEFAULT_HOST
+
     if cli_port is not None:
         port = cli_port
     else:
         env_port = os.environ.get("PORT")
-        port = int(env_port) if env_port and env_port.isdigit() else DEFAULT_PORT
+        if env_port and env_port.isdigit():
+            port = int(env_port)
+        else:
+            config_port = _extract_section(server_cfg, "port")
+            if isinstance(config_port, int) and not isinstance(config_port, bool):
+                port = config_port
+            elif isinstance(config_port, str) and config_port.strip().isdigit():
+                port = int(config_port.strip())
+            else:
+                port = DEFAULT_PORT
     return host, port
 
 
@@ -3698,8 +3966,16 @@ async def _serve(args: argparse.Namespace) -> int:
         ) from exc
 
     config_path = _resolve_config_path(args.config)
-    data_dir = Path(args.data_dir) if args.data_dir else _resolve_data_dir(None)
-    host, port = _resolve_bind(args.host, args.port)
+    # Load the config up-front so ``[server].bind`` / ``[server].port`` /
+    # ``[server].data_dir`` can serve as fallbacks below CLI / env when
+    # resolving the bind address + data dir. ``build_app`` re-loads it
+    # internally (it stays self-contained for the test surface); a startup
+    # double-read of a small TOML is negligible.
+    cfg = _load_config(config_path)
+    data_dir = (
+        Path(args.data_dir) if args.data_dir else _resolve_data_dir(None, cfg)
+    )
+    host, port = _resolve_bind(args.host, args.port, cfg)
 
     app = build_app(config_path=config_path, data_dir=data_dir)
 

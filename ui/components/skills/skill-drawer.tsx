@@ -4,32 +4,72 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { Drawer } from "@/components/ui/drawer";
-import { JsonView } from "@/components/ui/json-view";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { CATEGORY_META, categorize } from "./skill-card";
-import type { Skill } from "@/lib/mocks/skills";
+import { parseOrigin } from "./installed-list";
+import type { InstalledSkillRow, SkillUpdateBody } from "@/lib/api";
 
 /**
- * Right-side modal drawer that renders the full skill detail view in
- * Tidepool chrome.
+ * Right-side modal drawer that renders + EDITS one installed skill.
  *
- * The overlay + slide animation + focus-trap + Esc-to-close all come from the
- * shared `<Drawer>` primitive (Radix Dialog under the hood). This component
- * only owns the body layout — sections for meta / description / allowed
- * tools / install / requires / frontmatter / markdown body.
+ * W2.4 wire-up: this used to be dead code keyed on the prototype mock
+ * `Skill` type — it now operates on the live {@link InstalledSkillRow}
+ * returned by `GET /admin/skills` and writes edits back through the
+ * `PUT /admin/skills/{name}` route. The parent page owns the mutation;
+ * this component owns the form state + the changed-field diff it hands
+ * to {@link SkillDrawerProps.onSave}.
  *
- * Frontmatter is rendered via `<JsonView>` with the canonical
- * `metadata.openclaw.{emoji,requires,install}` nesting so the preview matches
- * what lives on disk.
+ * The overlay + slide animation + focus-trap + Esc-to-close all come from
+ * the shared `<Drawer>` primitive (Radix Dialog). The five editable fields
+ * mirror the gateway's `SkillUpdateBody`:
+ *
+ *   - description                  (runtime-consumed summary)
+ *   - when_to_use                  (model-selection hint)
+ *   - allowed_tools                (tool allowlist, one per line)
+ *   - disable_model_invocation     (manual-only toggle)
+ *   - body_markdown                (prose injected verbatim)
  */
 
 export interface SkillDrawerProps {
-  skill: Skill | null;
+  /** The row to view/edit, or `null` when the drawer is closed. */
+  skill: InstalledSkillRow | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /**
+   * Persist a partial patch. The parent owns the API mutation; this
+   * component only emits the subset of fields the operator actually
+   * changed. Resolves on success (drawer closes); rejects so the
+   * parent can surface a toast and keep the drawer open.
+   */
+  onSave?: (name: string, patch: SkillUpdateBody) => Promise<void>;
+  /** Save in-flight — disables the form + footer actions. */
+  saving?: boolean;
 }
 
-export function SkillDrawer({ skill, open, onOpenChange }: SkillDrawerProps) {
+/** Parse the textarea allowlist (one tool per line) into a clean list. */
+function parseToolLines(raw: string): string[] {
+  return raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+}
+
+/** Stable comparison so we only patch fields the operator actually moved. */
+function listsEqual(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((v, i) => v === b[i]);
+}
+
+export function SkillDrawer({
+  skill,
+  open,
+  onOpenChange,
+  onSave,
+  saving,
+}: SkillDrawerProps) {
+  const { t } = useTranslation();
+
   return (
     <Drawer
       open={open}
@@ -37,191 +77,306 @@ export function SkillDrawer({ skill, open, onOpenChange }: SkillDrawerProps) {
       width="lg"
       title={skill?.name ?? ""}
       description={skill?.description}
+      // Block dismiss-while-saving so a mid-write outside-click can't
+      // orphan the mutation; the footer Cancel still closes when idle.
+      dismissable={!saving}
       className="bg-tp-glass-2 backdrop-blur-glass-strong backdrop-saturate-glass-strong"
     >
-      {skill ? <SkillDrawerBody skill={skill} /> : null}
+      {skill ? (
+        <SkillDrawerBody
+          // Remount the form when the target row changes so the seeded
+          // state always reflects the freshly-opened skill.
+          key={skill.name}
+          skill={skill}
+          onSave={onSave}
+          onClose={() => onOpenChange(false)}
+          saving={Boolean(saving)}
+          t={t}
+        />
+      ) : null}
     </Drawer>
   );
 }
 
-function SkillDrawerBody({ skill }: { skill: Skill }) {
-  const { t } = useTranslation();
-  const category = categorize(skill.name, skill.allowed_tools);
+function SkillDrawerBody({
+  skill,
+  onSave,
+  onClose,
+  saving,
+  t,
+}: {
+  skill: InstalledSkillRow;
+  onSave?: (name: string, patch: SkillUpdateBody) => Promise<void>;
+  onClose: () => void;
+  saving: boolean;
+  t: ReturnType<typeof useTranslation>["t"];
+}) {
+  // Seed editable form state from the row. `key={skill.name}` on the
+  // parent guarantees a fresh mount per row, so a plain `useState`
+  // initialiser is the correct seed point.
+  const [description, setDescription] = React.useState(skill.description);
+  const [whenToUse, setWhenToUse] = React.useState(skill.when_to_use ?? "");
+  const [toolsText, setToolsText] = React.useState(
+    (skill.allowed_tools ?? []).join("\n"),
+  );
+  const [disableInvocation, setDisableInvocation] = React.useState(
+    Boolean(skill.disable_model_invocation),
+  );
+  const [body, setBody] = React.useState(skill.body_markdown ?? "");
+
+  const badge = parseOrigin(skill.origin);
+  const category = categorize(skill.name, skill.allowed_tools ?? []);
   const meta = CATEGORY_META[category];
   const CategoryIcon = meta.icon;
 
-  const hasInstall = skill.install.trim().length > 0;
-  const hasRequires = skill.requires.length > 0;
-  const hasTools = skill.allowed_tools.length > 0;
-  const hasBody = skill.body_markdown.trim().length > 0;
+  // Build the changed-field patch. Only keys the operator moved are
+  // included so a save never blanks an untouched field server-side.
+  const patch = React.useMemo<SkillUpdateBody>(() => {
+    const next: SkillUpdateBody = {};
+    if (description !== skill.description) next.description = description;
+    const tools = parseToolLines(toolsText);
+    if (!listsEqual(tools, skill.allowed_tools ?? [])) {
+      next.allowed_tools = tools;
+    }
+    const nextWtu = whenToUse.trim();
+    const prevWtu = (skill.when_to_use ?? "").trim();
+    if (nextWtu !== prevWtu) next.when_to_use = nextWtu;
+    if (disableInvocation !== Boolean(skill.disable_model_invocation)) {
+      next.disable_model_invocation = disableInvocation;
+    }
+    if (body !== (skill.body_markdown ?? "")) next.body_markdown = body;
+    return next;
+  }, [
+    description,
+    toolsText,
+    whenToUse,
+    disableInvocation,
+    body,
+    skill,
+  ]);
 
-  // Reconstruct a minimal frontmatter preview from the Skill shape. This
-  // matches the on-disk layout: `name` + `description` at the top, plus the
-  // `metadata.openclaw.*` + `allowed-tools` we render throughout the page.
-  const frontmatterPreview = React.useMemo(() => {
-    return {
-      name: skill.name,
-      description: skill.description,
-      "allowed-tools": skill.allowed_tools,
-      metadata: {
-        openclaw: {
-          emoji: skill.emoji,
-          requires: skill.requires,
-          install: skill.install,
-        },
-      },
-    };
-  }, [skill]);
+  const dirty = Object.keys(patch).length > 0;
+
+  const handleSave = React.useCallback(async () => {
+    if (!onSave || !dirty || saving) return;
+    await onSave(skill.name, patch);
+  }, [onSave, dirty, saving, skill.name, patch]);
+
+  const fieldCls = cn(
+    "w-full rounded-lg border border-tp-glass-edge bg-tp-glass-inner",
+    "px-3 py-2 text-[13px] text-tp-ink placeholder:text-tp-ink-4",
+    "transition-colors hover:bg-tp-glass-inner-hover",
+    "focus:outline-none focus:ring-2 focus:ring-tp-amber/40",
+    "disabled:opacity-60",
+  );
 
   return (
-    <div className="flex flex-col gap-5 px-5 py-5 text-sm">
-      {/* Meta row — emoji + name (large) + requires pill + source path */}
-      <div className="flex flex-wrap items-center gap-3">
-        <div
-          className={cn(
-            "flex h-11 w-11 shrink-0 items-center justify-center rounded-full",
-            "border border-tp-amber/25 bg-tp-amber-soft text-[20px] leading-none",
-          )}
-          aria-hidden
-        >
-          {skill.emoji ? (
-            <span className="opacity-85">{skill.emoji}</span>
-          ) : (
+    <div className="flex h-full flex-col">
+      <form
+        data-testid="skill-edit-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void handleSave();
+        }}
+        className="flex flex-1 flex-col gap-5 px-5 py-5 text-sm"
+      >
+        {/* Meta row — glyph + name + origin badge */}
+        <div className="flex flex-wrap items-center gap-3">
+          <div
+            className={cn(
+              "flex h-11 w-11 shrink-0 items-center justify-center rounded-full",
+              "border border-tp-amber/25 bg-tp-amber-soft",
+            )}
+            aria-hidden
+          >
             <CategoryIcon className="h-5 w-5 text-tp-amber" />
-          )}
-        </div>
-        <div className="min-w-0 flex-1">
-          <h2 className="truncate text-[18px] font-medium leading-tight tracking-[-0.01em] text-tp-ink">
-            {skill.name}
-          </h2>
-          <div className="mt-0.5 flex flex-wrap items-center gap-2 font-mono text-[10.5px] uppercase tracking-[0.08em] text-tp-ink-4">
-            <span className="inline-flex items-center gap-1">
-              <CategoryIcon className="h-3 w-3" aria-hidden />
-              {meta.label}
-            </span>
-            <span aria-hidden>·</span>
-            <span className="truncate normal-case tracking-normal">
-              {skill.source_path}
-            </span>
+          </div>
+          <div className="min-w-0 flex-1">
+            <h2 className="truncate text-[18px] font-medium leading-tight tracking-[-0.01em] text-tp-ink">
+              {skill.name}
+            </h2>
+            <div className="mt-0.5 flex flex-wrap items-center gap-2 font-mono text-[10.5px] uppercase tracking-[0.08em] text-tp-ink-4">
+              <span className="inline-flex items-center gap-1">
+                <CategoryIcon className="h-3 w-3" aria-hidden />
+                {meta.label}
+              </span>
+              <span aria-hidden>·</span>
+              <span className="normal-case tracking-normal">
+                v{skill.version}
+              </span>
+              <span aria-hidden>·</span>
+              <span className="normal-case tracking-normal">
+                {badge.label}
+                {badge.version ? `@${badge.version}` : ""}
+              </span>
+            </div>
           </div>
         </div>
-        {hasInstall ? (
-          <span
-            className="inline-flex items-center gap-1.5 rounded-full border border-tp-amber/30 bg-tp-amber-soft px-2.5 py-[3px] font-mono text-[10.5px] text-tp-amber"
-            title={skill.install}
-          >
-            <span aria-hidden className="h-[5px] w-[5px] rounded-full bg-tp-amber" />
-            install
+
+        {/* Description */}
+        <Field
+          label={t("skills.drawer.descriptionLabel")}
+          htmlFor="skill-edit-description"
+        >
+          <textarea
+            id="skill-edit-description"
+            data-testid="skill-edit-description"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            disabled={saving}
+            rows={2}
+            placeholder={t("skills.drawer.descriptionPlaceholder")}
+            className={cn(fieldCls, "resize-y leading-[1.55]")}
+          />
+        </Field>
+
+        {/* When to use */}
+        <Field
+          label={t("skills.drawer.whenToUseLabel")}
+          htmlFor="skill-edit-when-to-use"
+          hint={t("skills.drawer.whenToUseHint")}
+        >
+          <textarea
+            id="skill-edit-when-to-use"
+            data-testid="skill-edit-when-to-use"
+            value={whenToUse}
+            onChange={(e) => setWhenToUse(e.target.value)}
+            disabled={saving}
+            rows={2}
+            placeholder={t("skills.drawer.whenToUsePlaceholder")}
+            className={cn(fieldCls, "resize-y leading-[1.55]")}
+          />
+        </Field>
+
+        {/* Allowed tools — one per line */}
+        <Field
+          label={t("skills.drawer.allowedToolsLabel")}
+          htmlFor="skill-edit-allowed-tools"
+          hint={t("skills.drawer.allowedToolsHint")}
+        >
+          <textarea
+            id="skill-edit-allowed-tools"
+            data-testid="skill-edit-allowed-tools"
+            value={toolsText}
+            onChange={(e) => setToolsText(e.target.value)}
+            disabled={saving}
+            rows={3}
+            spellCheck={false}
+            placeholder={t("skills.drawer.allowedToolsPlaceholder")}
+            className={cn(fieldCls, "resize-y font-mono text-[12px] leading-[1.6]")}
+          />
+        </Field>
+
+        {/* Disable model invocation toggle */}
+        <label
+          htmlFor="skill-edit-disable-invocation"
+          className={cn(
+            "flex items-start gap-3 rounded-lg border border-tp-glass-edge",
+            "bg-tp-glass-inner px-3 py-2.5",
+            saving && "opacity-60",
+          )}
+        >
+          <input
+            id="skill-edit-disable-invocation"
+            data-testid="skill-edit-disable-invocation"
+            type="checkbox"
+            checked={disableInvocation}
+            onChange={(e) => setDisableInvocation(e.target.checked)}
+            disabled={saving}
+            className="mt-0.5 h-4 w-4 shrink-0 accent-tp-amber"
+          />
+          <span className="flex flex-col gap-0.5">
+            <span className="text-[13px] font-medium text-tp-ink">
+              {t("skills.drawer.disableInvocationLabel")}
+            </span>
+            <span className="text-[11.5px] leading-[1.5] text-tp-ink-3">
+              {t("skills.drawer.disableInvocationHint")}
+            </span>
           </span>
-        ) : (
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-tp-ok/30 bg-tp-ok-soft px-2.5 py-[3px] font-mono text-[10.5px] text-tp-ok">
-            <span aria-hidden className="h-[5px] w-[5px] rounded-full bg-tp-ok" />
-            ready
-          </span>
-        )}
-      </div>
+        </label>
 
-      {/* Description */}
-      <p className="text-[14px] leading-[1.6] text-tp-ink-2">
-        {skill.description}
-      </p>
-
-      {/* Allowed tools */}
-      <Section title={`${t("skills.tp.detailAllowedTools")} (${skill.allowed_tools.length})`}>
-        {hasTools ? (
-          <ul className="flex flex-wrap gap-1.5">
-            {skill.allowed_tools.map((tool) => (
-              <li
-                key={tool}
-                className="inline-flex items-center rounded-md border border-tp-glass-edge bg-tp-glass-inner px-2 py-[3px] font-mono text-[11px] text-tp-ink-2"
-              >
-                {tool}
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="text-[12.5px] text-tp-ink-4">
-            {t("skills.tp.detailAllowedToolsEmpty")}
-          </p>
-        )}
-      </Section>
-
-      {/* Install */}
-      <Section title={t("skills.tp.detailInstall")}>
-        {hasInstall ? (
-          <pre
+        {/* Body markdown */}
+        <Field
+          label={t("skills.drawer.bodyLabel")}
+          htmlFor="skill-edit-body"
+          hint={t("skills.drawer.bodyHint")}
+        >
+          <textarea
+            id="skill-edit-body"
+            data-testid="skill-edit-body"
+            value={body}
+            onChange={(e) => setBody(e.target.value)}
+            disabled={saving}
+            rows={10}
+            spellCheck={false}
+            placeholder={t("skills.drawer.bodyPlaceholder")}
             className={cn(
-              "rounded-lg border border-tp-glass-edge bg-tp-glass-inner",
-              "p-3 font-mono text-[11.5px] leading-[1.65] text-tp-ink-2",
-              "whitespace-pre-wrap break-words",
+              fieldCls,
+              "resize-y font-mono text-[12.5px] leading-[1.6]",
             )}
+          />
+        </Field>
+      </form>
+
+      {/* Sticky footer actions */}
+      <div className="sticky bottom-0 flex items-center justify-between gap-2 border-t border-tp-glass-edge bg-tp-glass-2 px-5 py-3 backdrop-blur-glass-strong">
+        <span
+          className="text-[11.5px] text-tp-ink-4"
+          data-testid="skill-edit-dirty"
+          aria-live="polite"
+        >
+          {dirty ? t("skills.drawer.unsaved") : t("skills.drawer.noChanges")}
+        </span>
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={onClose}
+            disabled={saving}
+            data-testid="skill-edit-cancel"
           >
-            {skill.install}
-          </pre>
-        ) : (
-          <p className="text-[12.5px] text-tp-ink-4">
-            {t("skills.tp.detailInstallEmpty")}
-          </p>
-        )}
-      </Section>
-
-      {/* Requires */}
-      <Section title={`${t("skills.tp.detailRequires")} (${skill.requires.length})`}>
-        {hasRequires ? (
-          <ul className="flex flex-wrap gap-1.5">
-            {skill.requires.map((req) => (
-              <li
-                key={req}
-                className="inline-flex items-center rounded-md border border-tp-glass-edge bg-tp-glass-inner px-2 py-[3px] font-mono text-[11px] text-tp-ink-2"
-              >
-                {req}
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="text-[12.5px] text-tp-ink-4">
-            {t("skills.tp.detailRequiresEmpty")}
-          </p>
-        )}
-      </Section>
-
-      {/* Frontmatter preview */}
-      <Section title={t("skills.tp.detailFrontmatter")}>
-        <JsonView value={frontmatterPreview} />
-      </Section>
-
-      {/* Body — rendered as whitespace-preserving plain text (no markdown
-          renderer is available in the codebase today; the plain monospace
-          block keeps the raw content readable without pulling a new dep). */}
-      <Section title={t("skills.tp.detailBody")}>
-        {hasBody ? (
-          <p className="whitespace-pre-wrap text-[13.5px] leading-[1.6] text-tp-ink-2">
-            {skill.body_markdown}
-          </p>
-        ) : (
-          <p className="text-[12.5px] text-tp-ink-4">
-            {t("skills.tp.detailBodyEmpty")}
-          </p>
-        )}
-      </Section>
+            {t("common.cancel")}
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            onClick={() => void handleSave()}
+            disabled={!dirty || saving || !onSave}
+            data-testid="skill-edit-save"
+          >
+            {saving ? t("skills.drawer.saving") : t("skills.drawer.save")}
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }
 
-function Section({
-  title,
+function Field({
+  label,
+  htmlFor,
+  hint,
   children,
 }: {
-  title: string;
+  label: string;
+  htmlFor: string;
+  hint?: string;
   children: React.ReactNode;
 }) {
   return (
-    <section className="space-y-2">
-      <h4 className="font-mono text-[10px] uppercase tracking-[0.12em] text-tp-ink-4">
-        {title}
-      </h4>
+    <div className="flex flex-col gap-1.5">
+      <label
+        htmlFor={htmlFor}
+        className="font-mono text-[10px] uppercase tracking-[0.12em] text-tp-ink-4"
+      >
+        {label}
+      </label>
       {children}
-    </section>
+      {hint ? (
+        <p className="text-[11px] leading-[1.5] text-tp-ink-4">{hint}</p>
+      ) : null}
+    </div>
   );
 }
 

@@ -70,6 +70,19 @@ _HISTORY_KEY: str = "scheduler_history"
 #: :func:`_resolve_metadata` helper). The map is keyed by job name.
 _JOB_METADATA_KEY: str = "scheduler_job_metadata"
 
+#: Sentinel slot recording that the runtime-job overlay has already been
+#: rehydrated from the on-disk sidecar this process. Without it the lazy
+#: rehydrate would re-read the sidecar (and clobber in-flight edits) on
+#: every ``_runtime_jobs`` access.
+_RUNTIME_JOBS_LOADED_KEY: str = "scheduler_runtime_jobs_loaded"
+
+#: Filename of the runtime-job persistence sidecar under ``data_dir``.
+#: A plain JSON file (not the config TOML) so admin-created jobs survive
+#: a restart without us having to rewrite — and risk clobbering — the
+#: operator's hand-authored ``corlinman.toml``. Loaded back into the
+#: overlay + re-registered on the live :class:`SchedulerHandle` at boot.
+_RUNTIME_JOBS_FILE: str = "scheduler_runtime_jobs.json"
+
 #: Bounded template-id slug — ``[a-z0-9_-]{1,64}`` mirrors the persona
 #: id rule so the route segment is safe to splice into a filesystem
 #: path without traversal risk.
@@ -126,6 +139,25 @@ class NewJobBody(BaseModel):
     prompt_template: str | None = None
     qq_account: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class EditJobBody(BaseModel):
+    """Body shape for ``PATCH /admin/scheduler/jobs/{name}``.
+
+    Every field is optional — only the ones present are applied. ``name``
+    is taken from the path (a runtime job's name is its identity, so it
+    is not editable here). ``action_type`` may be changed but is
+    re-validated the same way the create route validates it.
+    """
+
+    cron: str | None = None
+    action_type: str | None = None
+    timezone: str | None = None
+    enabled: bool | None = None
+    persona_id: str | None = None
+    prompt_template: str | None = None
+    qq_account: str | None = None
+    metadata: dict[str, Any] | None = None
 
 
 @dataclass
@@ -187,14 +219,182 @@ def _runtime_jobs(state: AdminState) -> dict[str, _RuntimeJob]:
     """Return the mutable runtime-job overlay map.
 
     Keyed by job name. The map is created on first access so callers
-    never have to remember to seed it.
+    never have to remember to seed it. On the *first* access of a
+    process the on-disk sidecar (:data:`_RUNTIME_JOBS_FILE`) is
+    rehydrated into it so admin-created jobs survive a restart. The
+    rehydrate runs exactly once (guarded by
+    :data:`_RUNTIME_JOBS_LOADED_KEY`) so an in-flight edit is never
+    clobbered by a re-read.
     """
     table = state.extras.get(_RUNTIME_JOBS_KEY)
-    if isinstance(table, dict):
-        return table
-    new: dict[str, _RuntimeJob] = {}
-    state.extras[_RUNTIME_JOBS_KEY] = new
-    return new
+    if not isinstance(table, dict):
+        table = {}
+        state.extras[_RUNTIME_JOBS_KEY] = table
+    if not state.extras.get(_RUNTIME_JOBS_LOADED_KEY):
+        state.extras[_RUNTIME_JOBS_LOADED_KEY] = True
+        _rehydrate_runtime_jobs(state, table)
+    return table
+
+
+def _runtime_jobs_path(state: AdminState) -> Path | None:
+    """Resolve ``<data_dir>/scheduler_runtime_jobs.json`` (or ``None``
+    when no data dir is wired — the overlay then lives in memory only)."""
+    if state.data_dir is None:
+        return None
+    return state.data_dir / _RUNTIME_JOBS_FILE
+
+
+def _rehydrate_runtime_jobs(
+    state: AdminState, table: dict[str, _RuntimeJob]
+) -> None:
+    """Load persisted runtime jobs from the sidecar into ``table``.
+
+    Best-effort + fully defensive: a missing / unreadable / malformed
+    file leaves the overlay empty so a corrupt sidecar never blocks the
+    admin surface. Each loaded row also re-syncs its metadata so the
+    qzone builtin's per-job metadata map is repopulated on boot, and
+    (when a live scheduler handle is attached) re-registers an *enabled*
+    job's tick loop so it actually fires after the restart.
+    """
+    path = _runtime_jobs_path(state)
+    if path is None:
+        return
+    try:
+        if not path.is_file():
+            return
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return
+    rows = raw.get("jobs") if isinstance(raw, dict) else None
+    if not isinstance(rows, list):
+        return
+    for entry in rows:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name")
+        if not isinstance(name, str) or not _JOB_NAME_RE.match(name):
+            continue
+        rj = _RuntimeJob(
+            name=name,
+            cron=str(entry.get("cron", "")),
+            action_type=str(entry.get("action_type", "")),
+            timezone=entry.get("timezone"),
+            enabled=bool(entry.get("enabled", True)),
+            persona_id=entry.get("persona_id"),
+            prompt_template=entry.get("prompt_template"),
+            qq_account=entry.get("qq_account"),
+            metadata=dict(entry.get("metadata") or {}),
+            last_run_at_ms=entry.get("last_run_at_ms"),
+            last_run_ok=entry.get("last_run_ok"),
+            last_qzone_url=entry.get("last_qzone_url"),
+            last_error=entry.get("last_error"),
+            created_at_ms=int(entry.get("created_at_ms") or 0),
+            updated_at_ms=int(entry.get("updated_at_ms") or 0),
+        )
+        table[name] = rj
+        _sync_metadata(state, rj)
+        if rj.enabled:
+            _register_runtime_loop(state, rj)
+
+
+def _persist_runtime_jobs(state: AdminState) -> None:
+    """Write the runtime-job overlay to the on-disk sidecar.
+
+    Best-effort: a write failure logs nothing and never propagates —
+    persistence is durability insurance, not load-bearing for the
+    in-process overlay which already reflects the mutation. Uses the
+    same atomic ``write tmp + replace`` dance the config writer uses so
+    a crash mid-write can't truncate the sidecar.
+    """
+    path = _runtime_jobs_path(state)
+    if path is None:
+        return
+    rows = [_runtime_job_to_dict(rj) for rj in _runtime_jobs(state).values()]
+    payload = json.dumps({"version": 1, "jobs": rows}, ensure_ascii=False, indent=2)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".new")
+        tmp.write_text(payload, encoding="utf-8")
+        tmp.replace(path)
+    except OSError:
+        return
+
+
+def _runtime_job_to_dict(rj: _RuntimeJob) -> dict[str, Any]:
+    """Serialise a runtime job to the sidecar's JSON row shape."""
+    return {
+        "name": rj.name,
+        "cron": rj.cron,
+        "action_type": rj.action_type,
+        "timezone": rj.timezone,
+        "enabled": rj.enabled,
+        "persona_id": rj.persona_id,
+        "prompt_template": rj.prompt_template,
+        "qq_account": rj.qq_account,
+        "metadata": dict(rj.metadata),
+        "last_run_at_ms": rj.last_run_at_ms,
+        "last_run_ok": rj.last_run_ok,
+        "last_qzone_url": rj.last_qzone_url,
+        "last_error": rj.last_error,
+        "created_at_ms": rj.created_at_ms,
+        "updated_at_ms": rj.updated_at_ms,
+    }
+
+
+def _scheduler_handle(state: AdminState) -> Any | None:
+    """Resolve the live :class:`SchedulerHandle`, if one is attached.
+
+    Prefer the explicit ``state.scheduler`` slot the lifespan wires; fall
+    back to the ``app_state.corlinman_scheduler_handle`` the boot path
+    publishes. ``None`` keeps every registration call a safe no-op (the
+    common dev / test case with no live scheduler runtime)."""
+    handle = state.scheduler
+    if handle is not None:
+        return handle
+    app_state = state.extras.get("app_state")
+    if app_state is not None:
+        return getattr(app_state, "corlinman_scheduler_handle", None)
+    return None
+
+
+def _register_runtime_loop(state: AdminState, rj: _RuntimeJob) -> None:
+    """Register (or re-register) a runtime job's live tick loop.
+
+    No-op when no scheduler handle is attached, when the handle lacks the
+    ``register`` method (older handle shape), or when the job's cron /
+    action_type can't be mapped to a runnable spec. Re-syncs metadata
+    first so the qzone builtin sees the current persona/prompt at the
+    next firing. Fully best-effort — a registration failure never blocks
+    the admin mutation that triggered it.
+    """
+    handle = _scheduler_handle(state)
+    if handle is None or not hasattr(handle, "register"):
+        return
+    _sync_metadata(state, rj)
+    try:
+        from corlinman_server.scheduler import runtime_job_spec
+    except Exception:  # pragma: no cover — defensive
+        return
+    spec = runtime_job_spec(rj.name, rj.cron, rj.action_type)
+    if spec is None:
+        return
+    try:
+        handle.register(spec)
+    except Exception:  # noqa: BLE001 — best-effort; mutation already applied
+        return
+
+
+def _unregister_runtime_loop(state: AdminState, name: str) -> None:
+    """Cancel a runtime job's live tick loop (pause / disable / delete).
+
+    No-op when no handle is attached or it lacks ``unregister``."""
+    handle = _scheduler_handle(state)
+    if handle is None or not hasattr(handle, "unregister"):
+        return
+    try:
+        handle.unregister(name)
+    except Exception:  # noqa: BLE001 — best-effort
+        return
 
 
 def _job_metadata(state: AdminState) -> dict[str, dict[str, Any]]:
@@ -359,6 +559,8 @@ def _store_job(state: AdminState, body: NewJobBody) -> _RuntimeJob:
         existing.metadata = _compose_metadata(body)
         existing.updated_at_ms = now
         _sync_metadata(state, existing)
+        _apply_enabled_state(state, existing)
+        _persist_runtime_jobs(state)
         return existing
 
     job = _RuntimeJob(
@@ -376,7 +578,76 @@ def _store_job(state: AdminState, body: NewJobBody) -> _RuntimeJob:
     )
     table[body.name] = job
     _sync_metadata(state, job)
+    _apply_enabled_state(state, job)
+    _persist_runtime_jobs(state)
     return job
+
+
+def _apply_enabled_state(state: AdminState, rj: _RuntimeJob) -> None:
+    """Reconcile the live tick loop with the job's ``enabled`` flag.
+
+    ``enabled`` jobs (re)register a tick loop — re-registering also picks
+    up an edited cron without a duplicate firing because
+    :meth:`SchedulerHandle.register` tears the old loop down first.
+    ``enabled=false`` jobs unregister their loop so a paused job stops
+    firing. This is the gate that makes ``enabled`` actually mean
+    something rather than being a cosmetic flag.
+    """
+    if rj.enabled:
+        _register_runtime_loop(state, rj)
+    else:
+        _unregister_runtime_loop(state, rj.name)
+
+
+def _set_enabled_route(name: str, *, enabled: bool) -> Any:
+    """Shared pause/resume body. Flips a runtime job's ``enabled`` flag,
+    reconciles its live tick loop, and re-persists the sidecar.
+
+    Returns the refreshed :class:`JobOut` (200) or a typed error
+    envelope. A resume re-validates the cron + qzone args so a job that
+    was paused while broken can't resume into a loop that never fires."""
+    state = get_admin_state()
+    table = _runtime_jobs(state)
+    rj = table.get(name)
+    if rj is None:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "error": "not_found",
+                "resource": "runtime_scheduler_job",
+                "id": name,
+            },
+        )
+    if enabled:
+        ok, err = _validate_cron(rj.cron or "")
+        if not ok:
+            return JSONResponse(
+                status_code=422,
+                content={"error": "invalid_cron", "message": err or ""},
+            )
+        if rj.action_type == QZONE_DAILY_BUILTIN_NAME:
+            ok, err = _validate_qzone_daily(
+                NewJobBody(
+                    name=rj.name,
+                    cron=rj.cron,
+                    action_type=rj.action_type,
+                    persona_id=rj.persona_id,
+                    prompt_template=rj.prompt_template,
+                )
+            )
+            if not ok:
+                return JSONResponse(
+                    status_code=422,
+                    content={
+                        "error": "invalid_qzone_daily_args",
+                        "message": err or "",
+                    },
+                )
+    rj.enabled = enabled
+    rj.updated_at_ms = _now_ms()
+    _apply_enabled_state(state, rj)
+    _persist_runtime_jobs(state)
+    return _runtime_job_to_out(rj)
 
 
 def _compose_metadata(body: NewJobBody) -> dict[str, Any]:
@@ -512,6 +783,104 @@ def router() -> APIRouter:
                 )
         rj = _store_job(state, body)
         return _runtime_job_to_out(rj)
+
+    @r.patch("/admin/scheduler/jobs/{name}", response_model=JobOut)
+    async def edit_job(name: str, body: EditJobBody):
+        """Partial-update a runtime job. Only the fields present in the
+        body are applied; the rest carry over. Config-derived jobs are
+        not editable here (they 404 — edit those in the TOML)."""
+        state = get_admin_state()
+        table = _runtime_jobs(state)
+        rj = table.get(name)
+        if rj is None:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "error": "not_found",
+                    "resource": "runtime_scheduler_job",
+                    "id": name,
+                },
+            )
+        # Compose the post-edit shape so we can re-validate it as a whole
+        # (a cron edit must still parse; a qzone job must keep its args).
+        new_cron = body.cron if body.cron is not None else rj.cron
+        new_action_type = (
+            body.action_type if body.action_type is not None else rj.action_type
+        )
+        merged = NewJobBody(
+            name=name,
+            cron=new_cron,
+            action_type=new_action_type,
+            timezone=body.timezone if body.timezone is not None else rj.timezone,
+            enabled=body.enabled if body.enabled is not None else rj.enabled,
+            persona_id=(
+                body.persona_id if body.persona_id is not None else rj.persona_id
+            ),
+            prompt_template=(
+                body.prompt_template
+                if body.prompt_template is not None
+                else rj.prompt_template
+            ),
+            qq_account=(
+                body.qq_account if body.qq_account is not None else rj.qq_account
+            ),
+            metadata=(
+                body.metadata if body.metadata is not None else dict(rj.metadata)
+            ),
+        )
+        ok, err = _validate_cron(merged.cron or "")
+        if not ok:
+            return JSONResponse(
+                status_code=422,
+                content={"error": "invalid_cron", "message": err or ""},
+            )
+        if merged.action_type == QZONE_DAILY_BUILTIN_NAME:
+            ok, err = _validate_qzone_daily(merged)
+            if not ok:
+                return JSONResponse(
+                    status_code=422,
+                    content={
+                        "error": "invalid_qzone_daily_args",
+                        "message": err or "",
+                    },
+                )
+        updated = _store_job(state, merged)
+        return _runtime_job_to_out(updated)
+
+    @r.post("/admin/scheduler/jobs/{name}/pause", response_model=JobOut)
+    async def pause_job(name: str):
+        """Flip a runtime job to ``enabled=false`` and stop its tick loop."""
+        return _set_enabled_route(name, enabled=False)
+
+    @r.post("/admin/scheduler/jobs/{name}/resume", response_model=JobOut)
+    async def resume_job(name: str):
+        """Flip a runtime job to ``enabled=true`` and (re)start its tick
+        loop. Re-validates the cron / qzone args first so a job that was
+        paused while invalid can't silently resume into a never-firing
+        loop."""
+        return _set_enabled_route(name, enabled=True)
+
+    @r.delete("/admin/scheduler/jobs/{name}")
+    async def delete_job(name: str):
+        """Remove a runtime job: cancel its tick loop, drop it from the
+        overlay + metadata table, and re-persist the sidecar. Config jobs
+        404 (delete those in the TOML)."""
+        state = get_admin_state()
+        table = _runtime_jobs(state)
+        if name not in table:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "error": "not_found",
+                    "resource": "runtime_scheduler_job",
+                    "id": name,
+                },
+            )
+        _unregister_runtime_loop(state, name)
+        table.pop(name, None)
+        _job_metadata(state).pop(name, None)
+        _persist_runtime_jobs(state)
+        return {"ok": True, "deleted": name}
 
     @r.post(
         "/admin/scheduler/qzone/templates/{template_id}/enable",
@@ -739,6 +1108,26 @@ async def _trigger_runtime_qzone_daily(
 # Pure helper for tests — exposed so the test module can stamp records
 # directly without depending on the dataclass internals.
 # ---------------------------------------------------------------------------
+
+
+def rehydrate_runtime_jobs_on_boot(state: AdminState) -> int:
+    """Boot hook — load the persisted runtime-job overlay from the sidecar
+    and register every enabled job's tick loop onto the live handle.
+
+    The gateway lifespan calls this *after* it has published the live
+    :class:`SchedulerHandle` onto ``state.scheduler`` + wired
+    ``state.extras['app_state']``, so :func:`_register_runtime_loop` can
+    resolve the handle and :func:`_sync_metadata` can mirror onto the
+    AppState. Returns the count of jobs loaded (handy for boot logging /
+    tests). Idempotent — a second call is a no-op once the overlay is
+    marked loaded.
+
+    The heavy lifting is :func:`_runtime_jobs`'s lazy rehydrate; this is
+    the explicit, named entrypoint so the lifespan doesn't reach into a
+    private helper.
+    """
+    table = _runtime_jobs(state)
+    return len(table)
 
 
 def make_history_entry(job: str, status: str, source: str = "manual", message: str = "") -> HistoryEntry:

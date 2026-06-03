@@ -66,6 +66,53 @@ def test_resolve_bind_precedence(monkeypatch: pytest.MonkeyPatch) -> None:
     assert _resolve_bind("127.0.0.2", 6006) == ("127.0.0.2", 6006)
 
 
+def test_resolve_bind_falls_back_to_config_server_section(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When neither CLI nor env supply a bind/port, ``[server].bind`` /
+    ``[server].port`` from the loaded config are honoured (so the admin
+    config editor's restart-required fields actually take effect)."""
+    monkeypatch.delenv("BIND", raising=False)
+    monkeypatch.delenv("PORT", raising=False)
+
+    cfg = {"server": {"bind": "0.0.0.0", "port": 8123}}
+    assert _resolve_bind(None, None, cfg) == ("0.0.0.0", 8123)
+
+    # CLI still wins over config.
+    assert _resolve_bind("127.0.0.9", 4321, cfg) == ("127.0.0.9", 4321)
+
+    # Env still wins over config.
+    monkeypatch.setenv("BIND", "10.0.0.1")
+    monkeypatch.setenv("PORT", "9001")
+    assert _resolve_bind(None, None, cfg) == ("10.0.0.1", 9001)
+
+    # No config + no CLI/env → hard defaults (and string ports parse).
+    monkeypatch.delenv("BIND", raising=False)
+    monkeypatch.delenv("PORT", raising=False)
+    assert _resolve_bind(None, None, None) == (DEFAULT_HOST, DEFAULT_PORT)
+    str_port_cfg = {"server": {"port": "7777"}}
+    assert _resolve_bind(None, None, str_port_cfg) == (DEFAULT_HOST, 7777)
+
+
+def test_resolve_data_dir_falls_back_to_config_server_section(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``[server].data_dir`` is honoured below CLI / env."""
+    monkeypatch.delenv("CORLINMAN_DATA_DIR", raising=False)
+
+    cfg = {"server": {"data_dir": str(tmp_path / "from-config")}}
+    assert _resolve_data_dir(None, cfg) == tmp_path / "from-config"
+
+    # CLI wins.
+    assert _resolve_data_dir(str(tmp_path / "from-cli"), cfg) == (
+        tmp_path / "from-cli"
+    )
+
+    # Env wins over config.
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path / "from-env"))
+    assert _resolve_data_dir(None, cfg) == tmp_path / "from-env"
+
+
 def test_resolve_config_path_precedence(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("CORLINMAN_CONFIG", raising=False)
     assert _resolve_config_path(None) is None

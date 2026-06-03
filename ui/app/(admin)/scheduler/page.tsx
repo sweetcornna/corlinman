@@ -16,6 +16,8 @@ import {
 import {
   fetchSchedulerHistory,
   fetchSchedulerJobs,
+  pauseSchedulerJob,
+  resumeSchedulerJob,
   triggerSchedulerJob,
   type SchedulerHistory,
   type SchedulerJob,
@@ -104,6 +106,24 @@ export default function SchedulerPage() {
       const msg = err instanceof Error ? err.message : String(err);
       toast.warning(t("scheduler.triggerFail", { name, msg }));
       qc.invalidateQueries({ queryKey: ["admin", "scheduler", "history"] });
+    },
+  });
+
+  const toggleMutation = useMutation({
+    mutationFn: ({ name, paused }: { name: string; paused: boolean }) =>
+      paused ? resumeSchedulerJob(name) : pauseSchedulerJob(name),
+    onSuccess: (_, { name, paused }) => {
+      toast.success(
+        paused
+          ? t("scheduler.resumed", { name })
+          : t("scheduler.paused", { name }),
+      );
+      qc.invalidateQueries({ queryKey: ["admin", "scheduler", "jobs"] });
+    },
+    onError: (err, { name }) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      toast.warning(t("scheduler.toggleFail", { name, msg }));
+      qc.invalidateQueries({ queryKey: ["admin", "scheduler", "jobs"] });
     },
   });
 
@@ -335,10 +355,20 @@ export default function SchedulerPage() {
                     triggerMutation.isPending &&
                     triggerMutation.variables === job.name
                   }
+                  pausing={
+                    toggleMutation.isPending &&
+                    toggleMutation.variables?.name === job.name
+                  }
                   onSelect={(name) =>
                     setSelectedName((prev) => (prev === name ? null : name))
                   }
                   onTrigger={(name) => triggerMutation.mutate(name)}
+                  onPause={(name) =>
+                    toggleMutation.mutate({ name, paused: false })
+                  }
+                  onResume={(name) =>
+                    toggleMutation.mutate({ name, paused: true })
+                  }
                 />
               );
             })

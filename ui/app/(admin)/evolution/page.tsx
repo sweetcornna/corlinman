@@ -51,6 +51,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { EvolutionSettingsDialog } from "./settings-editor";
 
 /**
  * /evolution — W4.6 curator surface + existing proposal queue
@@ -137,6 +138,7 @@ export default function EvolutionPage() {
   const [thresholdProfile, setThresholdProfile] =
     useState<ProfileCuratorState | null>(null);
   const [confirmRunSlug, setConfirmRunSlug] = useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const invalidateCurator = React.useCallback(() => {
     void qc.invalidateQueries({ queryKey: ["admin", "curator", "profiles"] });
@@ -444,25 +446,37 @@ export default function EvolutionPage() {
         data-testid="curator-section"
         className="flex flex-col gap-4"
       >
-        <header className="flex flex-col gap-1">
-          <h1
-            id="curator-heading"
-            className="font-serif text-2xl text-tp-ink-1"
+        <header className="flex items-start justify-between gap-3">
+          <div className="flex flex-col gap-1">
+            <h1
+              id="curator-heading"
+              className="font-serif text-2xl text-tp-ink-1"
+            >
+              {t("evolution.title")}
+            </h1>
+            <p className="text-[13px] text-tp-ink-3">
+              {t("evolution.subtitle")}
+            </p>
+            <p
+              data-testid="curator-summary"
+              className="text-[12px] text-tp-ink-3"
+            >
+              {t("evolution.summaryCount", {
+                profiles: summary.profiles,
+                stale: summary.stale,
+                archived: summary.archived,
+                agentCreated: summary.agentCreated,
+              })}
+            </p>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setSettingsOpen(true)}
+            data-testid="evolution-settings-open"
           >
-            {t("evolution.title")}
-          </h1>
-          <p className="text-[13px] text-tp-ink-3">{t("evolution.subtitle")}</p>
-          <p
-            data-testid="curator-summary"
-            className="text-[12px] text-tp-ink-3"
-          >
-            {t("evolution.summaryCount", {
-              profiles: summary.profiles,
-              stale: summary.stale,
-              archived: summary.archived,
-              agentCreated: summary.agentCreated,
-            })}
-          </p>
+            {t("evolution.settings.open")}
+          </Button>
         </header>
 
         {curatorQuery.isPending ? (
@@ -673,6 +687,10 @@ export default function EvolutionPage() {
         onConfirm={() => {
           if (confirmRunSlug) void handleRunNow(confirmRunSlug);
         }}
+      />
+      <EvolutionSettingsDialog
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
       />
     </motion.div>
   );

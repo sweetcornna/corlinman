@@ -44,22 +44,24 @@ import {
   AssetUploadError,
   PERSONA_TOTAL_BYTES_CAP,
   REFERENCE_VISIBLE_CAP,
+  SUPPORTED_HUMANLIKE_CHANNELS,
   createPersona,
   deleteAsset,
   deletePersona,
+  fetchHumanlike,
   fetchPersonas,
-  fetchQqHumanlike,
   listAssets,
-  setQqHumanlike,
+  setHumanlike,
   updatePersona,
   uploadAsset,
   type AssetKind,
   type AssetRecord,
   type AssetUploadErrorCode,
+  type HumanlikeChannel,
+  type HumanlikeState,
   type NewPersona,
   type PartialPersona,
   type Persona,
-  type QqHumanlikeState,
 } from "@/lib/api/personas";
 
 /**
@@ -88,7 +90,8 @@ import {
  */
 
 const PERSONAS_QUERY_KEY = ["admin", "personas"] as const;
-const QQ_HUMANLIKE_QUERY_KEY = ["admin", "channels", "qq", "humanlike"] as const;
+const humanlikeQueryKey = (channel: HumanlikeChannel) =>
+  ["admin", "channels", channel, "humanlike"] as const;
 
 /** Lowercase a–z / 0–9 / hyphens, leading char alpha-or-digit. Same
  * shape as the backend slug validator for custom providers — keep it
@@ -102,10 +105,6 @@ export default function PersonaPage() {
   const personasQuery = useQuery<Persona[]>({
     queryKey: PERSONAS_QUERY_KEY,
     queryFn: () => fetchPersonas(),
-  });
-  const humanlikeQuery = useQuery<QqHumanlikeState>({
-    queryKey: QQ_HUMANLIKE_QUERY_KEY,
-    queryFn: () => fetchQqHumanlike(),
   });
 
   const personas = personasQuery.data ?? [];
@@ -203,12 +202,7 @@ export default function PersonaPage() {
         <p className="text-sm text-tp-ink-3">{t("persona.subtitle")}</p>
       </header>
 
-      <QqHumanlikeCard
-        personas={personas}
-        state={humanlikeQuery.data ?? null}
-        isLoading={humanlikeQuery.isPending}
-        loadError={humanlikeQuery.error ?? null}
-      />
+      <HumanlikeCard personas={personas} />
 
       <section
         className="space-y-3"
@@ -332,39 +326,43 @@ export default function PersonaPage() {
  * operator hits Save, mirroring the explicit-save pattern in the rest
  * of the admin (Models, Providers).
  */
-function QqHumanlikeCard({
-  personas,
-  state,
-  isLoading,
-  loadError,
-}: {
-  personas: Persona[];
-  state: QqHumanlikeState | null;
-  isLoading: boolean;
-  loadError: Error | null;
-}) {
+function HumanlikeCard({ personas }: { personas: Persona[] }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
 
-  // Local edit state, seeded from the query data once it lands.
+  // Which channel's humanlike block we're editing. The backend supports
+  // qq/telegram/discord/slack/feishu uniformly; the live resolver re-reads
+  // the persisted block per inbound message, so a save takes effect without
+  // a channel restart.
+  const [channel, setChannel] = React.useState<HumanlikeChannel>("qq");
+
+  const humanlikeQuery = useQuery<HumanlikeState>({
+    queryKey: humanlikeQueryKey(channel),
+    queryFn: () => fetchHumanlike(channel),
+  });
+  const state = humanlikeQuery.data ?? null;
+  const isLoading = humanlikeQuery.isPending;
+  const loadError = humanlikeQuery.error ?? null;
+
+  // Local edit state, re-seeded from the persisted state of the *current*
+  // channel. Keyed on channel so switching channels reflects that channel's
+  // saved values rather than carrying over the previous edit.
   const [enabled, setEnabled] = React.useState(false);
   const [personaId, setPersonaId] = React.useState<string | null>(null);
-  const [seeded, setSeeded] = React.useState(false);
 
   React.useEffect(() => {
-    if (state && !seeded) {
-      setEnabled(state.enabled);
-      setPersonaId(state.persona_id);
-      setSeeded(true);
-    }
-  }, [state, seeded]);
+    setEnabled(state?.enabled ?? false);
+    setPersonaId(state?.persona_id ?? null);
+  }, [channel, state?.enabled, state?.persona_id]);
 
   const mutation = useMutation({
-    mutationFn: async (next: QqHumanlikeState) => setQqHumanlike(next),
+    mutationFn: async (next: HumanlikeState) => setHumanlike(channel, next),
     onSuccess: async (next) => {
       toast.success(t("persona.saveSucceeded"));
-      queryClient.setQueryData<QqHumanlikeState>(QQ_HUMANLIKE_QUERY_KEY, next);
-      await queryClient.invalidateQueries({ queryKey: QQ_HUMANLIKE_QUERY_KEY });
+      queryClient.setQueryData<HumanlikeState>(humanlikeQueryKey(channel), next);
+      await queryClient.invalidateQueries({
+        queryKey: humanlikeQueryKey(channel),
+      });
     },
     onError: (err) => {
       toast.error(
@@ -417,6 +415,32 @@ function QqHumanlikeCard({
             {t("persona.loadHumanlikeFailed", { msg: loadError.message })}
           </div>
         ) : null}
+
+        <div className="space-y-2">
+          <Label
+            htmlFor="humanlike-channel"
+            className="text-xs uppercase tracking-wider text-tp-ink-3"
+          >
+            {t("persona.channelSelectLabel")}
+          </Label>
+          <select
+            id="humanlike-channel"
+            value={channel}
+            onChange={(e) => setChannel(e.target.value as HumanlikeChannel)}
+            data-testid="humanlike-channel-select"
+            className={cn(
+              "emboss-inset flex h-10 w-full rounded-md px-3 py-1 text-sm transition-colors",
+              "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+              "appearance-none bg-tp-glass-inner",
+            )}
+          >
+            {SUPPORTED_HUMANLIKE_CHANNELS.map((c) => (
+              <option key={c} value={c}>
+                {t(`persona.channelName.${c}`)}
+              </option>
+            ))}
+          </select>
+        </div>
 
         <div className="flex items-center justify-between gap-4 rounded-md border border-tp-glass-edge bg-tp-glass-inner px-3 py-2">
           <Label htmlFor="qq-humanlike-toggle" className="text-sm">

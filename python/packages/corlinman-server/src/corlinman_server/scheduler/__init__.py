@@ -57,6 +57,7 @@ from corlinman_server.scheduler.runner import (
     SubprocessOutcomeKind,
     dispatch,
     run_subprocess,
+    runtime_job_spec,
     spawn,
 )
 
@@ -88,5 +89,6 @@ __all__ = [
     "register_builtin",
     "run_builtin",
     "run_subprocess",
+    "runtime_job_spec",
     "spawn",
 ]

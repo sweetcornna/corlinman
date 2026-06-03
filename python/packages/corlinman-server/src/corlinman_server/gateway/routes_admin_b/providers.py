@@ -149,14 +149,21 @@ def _params_schema_for(kind: str) -> dict[str, Any]:
     """Lazy lookup of ``corlinman_providers`` schema. Empty dict on miss."""
     canonical_kind = _normalize_kind(kind)
     try:
-        from corlinman_providers import specs
+        from corlinman_providers.registry import _KIND_TO_CLASS
+        from corlinman_providers.specs import ProviderKind
 
-        getter = getattr(specs, "params_schema_for", None)
+        # ``specs`` has no ``params_schema_for`` — the schema lives as a
+        # per-kind ``params_schema()`` classmethod on the provider adapter
+        # (openai_provider.py / anthropic_provider.py / ...). Map the
+        # canonical kind to its class and read it; without this the
+        # DynamicParamsForm was always the permissive fallback (untyped).
+        cls = _KIND_TO_CLASS.get(ProviderKind(canonical_kind))
+        getter = getattr(cls, "params_schema", None)
         if getter is not None:
-            schema = getter(canonical_kind)
+            schema = getter()
             if isinstance(schema, dict):
                 return schema
-    except (ImportError, AttributeError, Exception):
+    except Exception:  # noqa: BLE001 — fall back to the permissive schema
         pass
     return {"type": "object", "additionalProperties": True}
 

@@ -318,12 +318,36 @@ export interface SchedulerJob {
   name: string;
   cron: string;
   timezone: string | null;
-  action_kind: "run_agent" | "run_tool";
+  action_kind: string;
   next_fire_at: string | null;
   last_status: string | null;
+  // W6 extras — present on `source === "runtime"` rows only. Optional so
+  // the legacy config-derived rows keep type-checking.
+  action_type?: string | null;
+  enabled?: boolean;
+  persona_id?: string | null;
+  prompt_template?: string | null;
+  qq_account?: string | null;
+  /** `"config"` for `[[scheduler.jobs]]` rows; `"runtime"` for
+   * operator-created jobs (editable / pausable from the UI). */
+  source?: "config" | "runtime";
 }
 export function fetchSchedulerJobs(): Promise<SchedulerJob[]> {
   return apiFetch<SchedulerJob[]>("/admin/scheduler/jobs");
+}
+/** Pause a runtime scheduler job (sets `enabled=false`, stops its loop). */
+export function pauseSchedulerJob(name: string): Promise<SchedulerJob> {
+  return apiFetch<SchedulerJob>(
+    `/admin/scheduler/jobs/${encodeURIComponent(name)}/pause`,
+    { method: "POST" },
+  );
+}
+/** Resume a runtime scheduler job (sets `enabled=true`, restarts its loop). */
+export function resumeSchedulerJob(name: string): Promise<SchedulerJob> {
+  return apiFetch<SchedulerJob>(
+    `/admin/scheduler/jobs/${encodeURIComponent(name)}/resume`,
+    { method: "POST" },
+  );
 }
 export interface SchedulerHistory {
   job: string;
@@ -2446,6 +2470,19 @@ export interface InstalledSkillRow {
   use_count: number;
   last_used_at: string | null;
   created_at: string | null;
+  // Editor-facing fields — mirror the writable keys on `SkillUpdateBody`.
+  // The gateway populates these when its skill-registry factory is wired
+  // (the disk-only fallback leaves them at the defaults below). The edit
+  // drawer seeds its form from these and round-trips via
+  // `updateInstalledSkill`.
+  /** Raw SKILL.md prose injected into the assembler verbatim. */
+  body_markdown: string;
+  /** Model-selection hint parsed off the frontmatter; `null` when absent. */
+  when_to_use: string | null;
+  /** Tool allowlist scoped to this skill's turns. */
+  allowed_tools: string[];
+  /** When `true` the model can't auto-invoke the skill (manual-only). */
+  disable_model_invocation: boolean;
 }
 
 export interface InstalledSkillsResponse {
@@ -2471,6 +2508,34 @@ export function pinInstalledSkill(
   return apiFetch<InstalledSkillRow>(
     `/admin/skills/${encodeURIComponent(name)}/pin?${qs}`,
     { method: "POST", body: { pinned } },
+  );
+}
+
+/**
+ * Partial patch for `PUT /admin/skills/{name}`. Every field is optional —
+ * only keys present in the object are written back to the SKILL.md. The
+ * five fields below are runtime-consumed (the registry parses them off
+ * frontmatter/body and the context assembler honours
+ * `disable_model_invocation` / `allowed_tools` / `when_to_use`).
+ */
+export interface SkillUpdateBody {
+  description?: string;
+  body_markdown?: string;
+  disable_model_invocation?: boolean;
+  allowed_tools?: string[];
+  when_to_use?: string;
+}
+
+/** PUT /admin/skills/{name}?profile=… — edit body + runtime metadata. */
+export function updateInstalledSkill(
+  name: string,
+  body: SkillUpdateBody,
+  profile: string = "default",
+): Promise<InstalledSkillRow> {
+  const qs = new URLSearchParams({ profile }).toString();
+  return apiFetch<InstalledSkillRow>(
+    `/admin/skills/${encodeURIComponent(name)}?${qs}`,
+    { method: "PUT", body },
   );
 }
 
@@ -2853,6 +2918,33 @@ export function deleteMcpServer(
   return apiFetch<{ ok: boolean; name: string; removed: boolean }>(
     `/admin/mcp/${encodeURIComponent(name)}`,
     { method: "DELETE" },
+  );
+}
+
+/** Editable launch-spec fields for {@link reconfigureMcpServer}. An absent
+ * field leaves that part of the spec unchanged; a present `env`/`headers`
+ * replaces the stored map wholesale. `enabled` is NOT editable here —
+ * toggling stays on enable/disable. */
+export interface McpReconfigureBody {
+  transport?: string;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
+  headers?: Record<string, string>;
+  version?: string;
+}
+
+/** PUT /admin/mcp/{name} — edit a server's launch spec in place (env,
+ * secrets, version, command, url) without a delete + reinstall. An enabled
+ * server is hot-reconnected so the new env takes effect. */
+export function reconfigureMcpServer(
+  name: string,
+  body: McpReconfigureBody,
+): Promise<InstalledMcpServer> {
+  return apiFetch<InstalledMcpServer>(
+    `/admin/mcp/${encodeURIComponent(name)}`,
+    { method: "PUT", body },
   );
 }
 

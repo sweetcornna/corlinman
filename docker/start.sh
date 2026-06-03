@@ -2,10 +2,9 @@
 set -e
 export CORLINMAN_PY_CONFIG=/data/py-config.json
 
-# Pre-render py-config.json in Python so the env is set before either
-# process boots. Rust gateway also writes this file (identical schema)
-# on config reload — this bootstrap lets python see providers on its
-# very first resolve.
+# Pre-render py-config.json in Python so the env is set before the
+# gateway boots. The gateway also rewrites this file on config reload —
+# this bootstrap lets python see providers on its very first resolve.
 /opt/venv/bin/python3 - <<PY
 import os, json, tomllib
 cfg_path = os.environ.get("CORLINMAN_CONFIG", "/data/config.toml")

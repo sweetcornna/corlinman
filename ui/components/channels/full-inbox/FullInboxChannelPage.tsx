@@ -11,6 +11,7 @@ import { GlassPanel } from "@/components/ui/glass-panel";
 import { StatChip } from "@/components/ui/stat-chip";
 import { StreamPill, type StreamState } from "@/components/ui/stream-pill";
 import { ChannelEnableSwitch } from "@/components/channels/channel-enable-switch";
+import { ChannelConfigEditor } from "@/components/channels/ChannelConfigEditor";
 import { useMotion } from "@/components/ui/motion-safe";
 import { useMotionVariants } from "@/lib/motion";
 import type { ChannelName } from "@/lib/api";
@@ -153,6 +154,14 @@ export function FullInboxChannelPage({
       <StatsRow status={status} live={!offline} nsKey={nsKey} />
 
       <ConfigPanel status={status} nsKey={nsKey} testIdPrefix={testIdPrefix} />
+
+      {status ? (
+        <ChannelConfigEditor
+          channel={channel}
+          configKeys={status.config_keys ?? {}}
+          onSaved={() => void statusQuery.refetch()}
+        />
+      ) : null}
 
       <UpdatesFeed
         nsKey={nsKey}

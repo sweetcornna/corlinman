@@ -87,6 +87,7 @@ const SECTION_HEADERS = [
   "skills",
   "variables",
   "agents",
+  "subagent",
   "tools",
   "telegram",
   "vector",
