@@ -1,8 +1,36 @@
 # Modularization Roadmap
 
 **corlinman Python monorepo · gateway monolith decomposition**
-Status: PLAN ONLY — no code is moved or edited by this document.
 Source of truth: [`docs/architecture-modules.md`](architecture-modules.md) (the committed current-state module map + CODEOWNERS), distilled from a read-only module survey of the repo.
+
+---
+
+## Execution status (live-verified, 2026-06-03)
+
+Each phase below was re-verified against the **current** tree before any work — the
+original roadmap is a pre-#53 snapshot and several premises turned out stale. The
+clean, behavior-preserving extractions are **done and merged**; the remainder are
+either stale-premised, hard-coupled, or high-risk boot-path refactors that need
+staged, reviewed work (do **not** blind-merge them).
+
+| Phase | Status | Notes |
+| --- | --- | --- |
+| **1 — config_mutation** | ✅ **merged** (#55) | Relocated the atomic config writer to `gateway/core/config_mutation.py`. Premise was stale (single def in `onboard`, not 4 copies; the two `_redact()` are different — left alone). |
+| **2 — `PersistentSqliteStore`** | ✅ **merged** (#56) | Extracted the sqlite connection/pragma/lock/lifecycle plumbing shared by `plugin_store` + `mcp_store`. Conservative (CRUD stays in subclasses → byte-identical behavior). |
+| **0 — boundary contracts** | ✅ **merged** (#57) | import-linter `forbidden` contract locks the two new leaves as leaves. |
+| **2 (installer base)** | ⛔ **deferred** | `UnsafeTarballError ⊂ SkillInstallError` and is raised by the shared `_do_extract`; neutralizing it changes the exception hierarchy (`skills.py` catches both). Needs a dedicated exception refactor, not a clean move. |
+| **2 (upgrader/subagent)** | ⛔ **skip** | Only ~45% overlap, divergent reconciliation semantics, modest savings. |
+| **3 — AdminState `extras`/slices** | ⚠️ **high-risk, needs review** | The #1 hotspot, but: 30 runtime sites + boot-path wiring in `entrypoint.py`; all reads use `.get()` (no direct-index reads). A typed/reject-unknown rewrite risks breaking tests that use `extras` as scratch; a warn-only shim is low value. Real win = typed per-area slices, but that's a staged boot refactor, not a blind merge. |
+| **4 — persona facade / break cycle** | ❌ **premise stale** | `ensure_default_persona_active` lives in admin_**b** (not admin_a), and admin_a ↔ admin_b are **bidirectionally** coupled across ~6 files each way. Breaking one persona import is cosmetic; the intra-gateway cycle is not CI-enforced today anyway. |
+| **6 — provider adapters→specs layering** | ❌ **premise stale** | `registry.py` and `declarative.py` (the "schema" group) **do** import the concrete adapters (factory pattern), so an `adapters→specs`/`specs-never-imports-adapters` contract does **not** hold. |
+| **5 — admin-marketplace bundle** / **6 — admin-infrastructure bundle** | 🔶 **possible, high-churn** | Behavior-preserving file moves + re-export shims; validated by mypy+tests. Real but moderate value (coupling stays behind shims) and high churn through the `extras`-coupled modules. |
+| **7 — admin-a god-file splits** | ⚠️ **needs review** | `auth.py` is security-sensitive (just hardened in the security PRs); split carefully + reviewed. |
+| **8 — entrypoint.py decomposition** | ⚠️ **largest / highest-risk** | 4040-LOC boot orchestrator; pure staged work behind review. |
+
+**Net:** the cleanly-achievable, behavior-preserving modularization is complete and
+merged. The remaining structural phases require the per-PR review cadence (Codex +
+human) rather than autonomous self-merge, because the roadmap premises are frequently
+stale and the changes touch the production boot path.
 
 ---
 
