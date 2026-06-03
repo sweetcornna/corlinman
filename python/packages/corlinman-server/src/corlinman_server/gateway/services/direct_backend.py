@@ -49,59 +49,31 @@ from corlinman_grpc._generated.corlinman.v1 import (
     common_pb2,
 )
 
+# ─── Extracted helpers (god-file split) ──────────────────────────────
+# Re-exported here (``noqa: F401``) so any code/test referencing them as
+# ``direct_backend.<name>`` keeps resolving; staying code below uses
+# ``_error_frame`` / ``_messages_from_proto`` / ``_sampling_from_proto`` /
+# ``_extra_params`` directly.
+from corlinman_server.gateway.services._error_handling import (
+    _REASON_TO_PROTO,  # noqa: F401 — re-export
+    _error_frame,
+    _error_reason_of,  # noqa: F401 — re-export
+    _reason_to_proto,  # noqa: F401 — re-export
+)
+from corlinman_server.gateway.services._message_translation import (
+    _messages_from_proto,
+    _role_to_str,  # noqa: F401 — re-export
+)
+from corlinman_server.gateway.services._sampling_config import (
+    _extra_params,
+    _sampling_from_proto,
+)
+
 __all__ = [
     "DirectProviderBackend",
 ]
 
 log = logging.getLogger(__name__)
-
-
-# ─── Provider-id → OpenAI failover reason ────────────────────────────
-#
-# ``corlinman_providers.failover.CorlinmanError`` subclasses carry a
-# stable lowercase ``reason`` (see ``failover.py``). ``ServerFrame.error``
-# wants a ``common_pb2.FailoverReason`` enum value, so we map the
-# adapter-side string back onto the proto enum. Anything we don't
-# recognise falls through to ``UNKNOWN`` — a future error class can't
-# crash the frame translation.
-_REASON_TO_PROTO: dict[str, common_pb2.FailoverReason] = {
-    "billing": common_pb2.BILLING,
-    "rate_limit": common_pb2.RATE_LIMIT,
-    "auth": common_pb2.AUTH,
-    "auth_permanent": common_pb2.AUTH_PERMANENT,
-    "timeout": common_pb2.TIMEOUT,
-    "model_not_found": common_pb2.MODEL_NOT_FOUND,
-    "format": common_pb2.FORMAT,
-    "context_overflow": common_pb2.CONTEXT_OVERFLOW,
-    "overloaded": common_pb2.OVERLOADED,
-    "unknown": common_pb2.UNKNOWN,
-    "unspecified": common_pb2.FAILOVER_REASON_UNSPECIFIED,
-}
-
-
-def _reason_to_proto(reason: str | None) -> common_pb2.FailoverReason:
-    """Map a ``CorlinmanError.reason`` string onto the proto enum.
-
-    Unknown / missing reasons collapse to ``UNKNOWN`` so an exception
-    that isn't a typed :class:`CorlinmanError` still produces a valid
-    terminal ``error`` frame.
-    """
-    if not reason:
-        return common_pb2.UNKNOWN
-    return _REASON_TO_PROTO.get(reason, common_pb2.UNKNOWN)
-
-
-def _error_reason_of(exc: BaseException) -> str | None:
-    """Best-effort extract of a ``reason`` discriminant off an exception.
-
-    :class:`corlinman_providers.failover.CorlinmanError` subclasses
-    expose a ``reason`` attribute; anything else returns ``None`` and
-    the caller defaults to ``UNKNOWN``.
-    """
-    reason = getattr(exc, "reason", None)
-    if isinstance(reason, str) and reason:
-        return reason
-    return None
 
 
 # ─── Backend ──────────────────────────────────────────────────────────
@@ -425,92 +397,6 @@ def _alias_entries(models_config: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _messages_from_proto(
-    messages: Any,
-) -> list[dict[str, str]]:
-    """Convert protobuf :class:`common_pb2.Message`s to provider dicts.
-
-    Providers' ``chat_stream`` accepts either dicts or objects with
-    ``role`` / ``content`` attributes (see
-    :func:`corlinman_providers.openai_provider._normalise_message`); a
-    dict is the simplest, vendor-agnostic shape. The proto ``Role`` enum
-    is lowered to the OpenAI string discriminant.
-    """
-    out: list[dict[str, str]] = []
-    for m in messages:
-        msg: dict[str, str] = {
-            "role": _role_to_str(m.role),
-            "content": m.content or "",
-        }
-        if m.name:
-            msg["name"] = m.name
-        if m.tool_call_id:
-            msg["tool_call_id"] = m.tool_call_id
-        out.append(msg)
-    return out
-
-
-def _role_to_str(role: int) -> str:
-    """Lower a proto :class:`common_pb2.Role` value to the OpenAI string."""
-    if role == common_pb2.USER:
-        return "user"
-    if role == common_pb2.ASSISTANT:
-        return "assistant"
-    if role == common_pb2.SYSTEM:
-        return "system"
-    if role == common_pb2.TOOL:
-        return "tool"
-    return "user"
-
-
-def _sampling_from_proto(
-    start: agent_pb2.ChatStart,
-    params: dict[str, Any],
-) -> tuple[float | None, int | None]:
-    """Pick the sampling knobs for the provider call.
-
-    The :class:`ChatService` stamps ``temperature`` / ``max_tokens`` onto
-    :class:`agent_pb2.ChatStart` from the :class:`InternalChatRequest`,
-    but proto scalars have no "unset" — ``temperature`` defaults to
-    ``0.0`` and ``max_tokens`` to ``0``. We treat ``0`` as "not set" and
-    fall back to any provider/alias-level ``params`` default, so an
-    operator's ``[models.aliases.*.params]`` block still applies.
-    """
-    temperature: float | None = None
-    if start.temperature:
-        temperature = float(start.temperature)
-    elif "temperature" in params:
-        with contextlib.suppress(TypeError, ValueError):
-            temperature = float(params["temperature"])
-
-    max_tokens: int | None = None
-    if start.max_tokens:
-        max_tokens = int(start.max_tokens)
-    elif params.get("max_tokens"):
-        with contextlib.suppress(TypeError, ValueError):
-            max_tokens = int(params["max_tokens"])
-
-    return temperature, max_tokens
-
-
-def _extra_params(params: dict[str, Any]) -> dict[str, Any] | None:
-    """Forward non-sampling provider params as the adapter ``extra`` map.
-
-    ``temperature`` / ``max_tokens`` are passed as first-class kwargs, so
-    they're stripped here to avoid a double-set. Everything else (e.g.
-    ``top_p``, ``reasoning_effort``) flows through ``extra`` — the
-    adapters merge it straight into the vendor request kwargs.
-    """
-    if not params:
-        return None
-    extra = {
-        k: v
-        for k, v in params.items()
-        if k not in ("temperature", "max_tokens")
-    }
-    return extra or None
-
-
 def _tool_call_frame(
     call_id: str,
     tool_name: str,
@@ -532,16 +418,6 @@ def _tool_call_frame(
             tool=tool_name or "",
             args_json=(args_json or "{}").encode("utf-8"),
             seq=seq,
-        ),
-    )
-
-
-def _error_frame(exc: BaseException) -> agent_pb2.ServerFrame:
-    """Build a terminal ``ServerFrame.error`` from an exception."""
-    return agent_pb2.ServerFrame(
-        error=common_pb2.ErrorInfo(
-            reason=_reason_to_proto(_error_reason_of(exc)),
-            message=str(exc) or exc.__class__.__name__,
         ),
     )
 
