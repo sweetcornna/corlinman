@@ -39,11 +39,13 @@ from corlinman_server.gateway.routes_admin_a._session_store import (
     SESSION_COOKIE_NAME,
     AdminSessionStore,
 )
-from corlinman_server.gateway.routes_admin_a.api_keys import router as api_keys_router
 from corlinman_server.gateway.routes_admin_a.auth import router as auth_router
 from corlinman_server.gateway.routes_admin_a.state import (
     AdminState,
     set_admin_state,
+)
+from corlinman_server.gateway.routes_admin_a.tenancy.api_keys import (
+    router as api_keys_router,
 )
 from fastapi import FastAPI
 from fastapi.testclient import TestClient

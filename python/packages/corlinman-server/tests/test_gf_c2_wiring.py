@@ -119,8 +119,8 @@ async def test_wire_c2_persona_resolver_reads_agent_state(
 
 
 def test_identity_route_503_until_store_assigned() -> None:
-    from corlinman_server.gateway.routes_admin_a.identity import _require_store
     from corlinman_server.gateway.routes_admin_a.state import AdminState
+    from corlinman_server.gateway.routes_admin_a.tenancy.identity import _require_store
     from fastapi import HTTPException
 
     st = AdminState()

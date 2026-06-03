@@ -38,9 +38,6 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from corlinman_server.gateway.routes_admin_a import (
-    api_keys as _api_keys,
-)
-from corlinman_server.gateway.routes_admin_a import (
     approvals as _approvals,
 )
 from corlinman_server.gateway.routes_admin_a import (
@@ -50,16 +47,10 @@ from corlinman_server.gateway.routes_admin_a import (
     channels as _channels,
 )
 from corlinman_server.gateway.routes_admin_a import (
-    identity as _identity,
-)
-from corlinman_server.gateway.routes_admin_a import (
     password_reset as _password_reset,
 )
 from corlinman_server.gateway.routes_admin_a import (
     sessions as _sessions,
-)
-from corlinman_server.gateway.routes_admin_a import (
-    tenants as _tenants,
 )
 from corlinman_server.gateway.routes_admin_a.state import (
     AdminState,
@@ -74,6 +65,15 @@ from corlinman_server.gateway.routes_admin_a.studio import (
 )
 from corlinman_server.gateway.routes_admin_a.studio import (
     profiles as _profiles,
+)
+from corlinman_server.gateway.routes_admin_a.tenancy import (
+    api_keys as _api_keys,
+)
+from corlinman_server.gateway.routes_admin_a.tenancy import (
+    identity as _identity,
+)
+from corlinman_server.gateway.routes_admin_a.tenancy import (
+    tenants as _tenants,
 )
 
 __all__ = [
