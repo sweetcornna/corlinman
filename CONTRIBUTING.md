@@ -63,7 +63,7 @@ corlinman_server   (顶层 — gRPC 入口 / HTTP+WS 网关 / 管理面)
               └── corlinman_grpc  (底层 — 生成的 stubs + client 基类)
 ```
 
-其余包是同层 peer（memory / evolution / channels / 基础设施等），**不互相 import**，只被上层组装。
+**契约只 root 这 4 个包**。其余 ~21 个包不在契约内，import-linter **不强制**它们之间的依赖——而且部分包本就按设计依赖 peer（如 `corlinman_channels.common` → `corlinman_identity`、`corlinman_evolution_engine` → `corlinman_evolution_store`）。这类 leaf 依赖请保持无环、最小化，但目前不由 CI 强制；受强制的只有这 4 包核心平面。
 
 ### 2.2 完整模块与归属（owner-area）
 
@@ -98,6 +98,7 @@ corlinman_server   (顶层 — gRPC 入口 / HTTP+WS 网关 / 管理面)
 ### 2.3 其它
 
 - `ui/`：所有前端命令用 `pnpm -C ui <script>`。
+- `apps/swift-mac/`：原生 macOS 客户端（Swift）。改到这里时 `swift-mac` workflow 会跑 `swift build`/`swift test`（macOS runner）。
 - `proto/corlinman/v1/*.proto`：proto 定义。生成的 stubs 在 `python/packages/corlinman-grpc/src/corlinman_grpc/_generated/`，**必须提交**——CI 的 `proto-sync` 会校验无 drift。
 - `.importlinter`：Python 平面分层契约，CI 的 `boundary-check` 据此强制模块边界（`uv run lint-imports` 本地自查）。
 - `.github/workflows/ci.yml`：合入门禁。
@@ -120,7 +121,7 @@ git checkout -b feat/marketplace-search-plugins
 
 **小 PR 优先**：一个 PR 一个关注点。大 refactor 拆成多个 PR（先结构调整，再行为变更）。
 
-**尊重模块边界**：Python 核心 gRPC 平面是分层的（`corlinman_server → corlinman_agent → corlinman_providers → corlinman_grpc`，高层可以 import 低层，反向不行；同层 peer 包之间不互相 import）。契约写在 `.importlinter`，本地用 `uv run lint-imports` 自查。新增的反向 import 会被 `boundary-check` 拦住。
+**尊重模块边界**：`.importlinter` 契约只覆盖 4 包核心 gRPC 平面（`corlinman_server → corlinman_agent → corlinman_providers → corlinman_grpc`，高层可 import 低层，反向被 `boundary-check` 拦住）。其余包不在契约内（见 §2.1），但仍应保持依赖无环。本地用 `uv run lint-imports` 自查。
 
 **改 proto 要谨慎**：`proto/corlinman/v1/*.proto` 的字段编号和语义不能向后不兼容。加字段 OK；改字段类型 / 删字段 / 重排编号要先开 issue 讨论。改完务必跑 `bash scripts/gen-proto.sh` 并把重新生成的 stubs 一起提交，否则 `proto-sync` 会失败。
 
@@ -160,7 +161,7 @@ PR 开出来后会走 Codex 自动评审流程（见 §6）。状态标签由
 
 ## 4. 合入门禁（CI Gate）
 
-合入 `main` 前，下面 8 个 job 必须全绿（聚合在 `gate (all required checks)` 这一个必需检查里）：
+聚合检查 `gate (all required checks)` 恰好汇入下面 **7 个** job（`gate.needs`），全绿才能合：
 
 | job | 命令 |
 | --- | --- |
@@ -171,7 +172,13 @@ PR 开出来后会走 Codex 自动评审流程（见 §6）。状态标签由
 | `ui-lint` | `pnpm -C ui lint`（eslint，作用域 `ui/`） |
 | `ui-test` | `pnpm -C ui test`（vitest，作用域 `ui/`） |
 | `boundary-check` | `uv run lint-imports`（import-linter / `.importlinter`） |
-| `proto-sync` | `bash scripts/gen-proto.sh`，然后校验 `_generated/` 下的 stubs 已提交、无 drift |
+
+另有两个检查**不**进聚合（所以 `gate` 绿 ≠ 它们过，要单独看）：
+
+| 检查 | 触发 | 内容 |
+| --- | --- | --- |
+| `proto-sync` | 总是 | `bash scripts/gen-proto.sh`，然后校验 `_generated/` 下的 stubs 已提交、无 drift |
+| `swift-mac` | 仅当 `apps/swift-mac/**`（或其 workflow）变更 | macOS 上 `swift build` / `swift test` |
 
 ### ⚠️ 已知坑：`py-test` 偶发挂到 6 小时 CI 上限
 
@@ -233,13 +240,13 @@ docs(pr): document Codex PR review flow
 
 合入 `main` 前，PR 必须：
 
-- [ ] 8 个门禁 job 全绿（`py-ruff`、`py-mypy`、`py-test`、`ui-typecheck`、`ui-lint`、`ui-test`、`boundary-check`、`proto-sync`）——`py-test` 偶发挂死时按 §4 处理。
+- [ ] `gate` 的 7 个聚合 job 全绿 + `proto-sync` 绿（改了 `apps/swift-mac/` 还要 `swift-mac` 绿）——`py-test` 偶发挂死时按 §4 处理。
 - [ ] Conventional Commits 风格的标题。
 - [ ] 带测试（新 feature 或 bug fix）。
 - [ ] 行为证明已附（对用户可见 / UI 改动尤其需要）。
 - [ ] 改 proto → 重新生成并提交 `_generated/` stubs。
 - [ ] 不引入新的反向 import（`uv run lint-imports` 本地通过）。
-- [ ] 触及别的 owner-area 时，由对应 CODEOWNERS approve（见 [docs/pr-standards.md](docs/pr-standards.md)）。
+- [ ] 触及别的 owner-area 时，按 [docs/pr-standards.md](docs/pr-standards.md) §7 的 owner-map **手动**请对应团队 review（仓库暂无 `.github/CODEOWNERS` 文件，不会自动指派）。
 - [ ] Codex 评审已过或已请求（见 §6）。
 
 **禁止**：

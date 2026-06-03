@@ -27,7 +27,7 @@
 
 ## CI Gate
 
-All required jobs (aggregated by `gate (all required checks)`) must be green before merge:
+The 7 jobs aggregated by `gate (all required checks)` must be green before merge:
 
 - [ ] `py-ruff` — `uv run ruff check .`
 - [ ] `py-mypy` — `uv run mypy python/packages/`
@@ -36,7 +36,11 @@ All required jobs (aggregated by `gate (all required checks)`) must be green bef
 - [ ] `ui-lint` — eslint over `ui/`
 - [ ] `ui-test` — vitest over `ui/`
 - [ ] `boundary-check` — `uv run lint-imports` (import-linter / `.importlinter`)
-- [ ] `proto-sync` — `bash scripts/gen-proto.sh`, then regenerated stubs are committed with no drift
+
+Separate checks (not in the `gate` aggregate — confirm independently):
+
+- [ ] `proto-sync` — `bash scripts/gen-proto.sh`, regenerated stubs committed with no drift
+- [ ] `swift-mac` — green if this PR touched `apps/swift-mac/**` (else N/A)
 
 > ⚠️ **Known flaky:** `py-test` intermittently **hangs to the 6h CI cap**. This is a known infra issue that also affects `main`; the same tests pass locally on Python 3.12/3.13. It is **not your failure** — just **rerun the job**. A green gate may need a lucky rerun or an admin merge. Locally, run targeted tests with `uv run pytest <path>` instead of the whole suite.
 
@@ -56,8 +60,9 @@ Rollback plan:
 
 ## Ownership
 
-<!-- If this PR crosses an owner-area, ensure the relevant CODEOWNERS are
-     requested. See docs/pr-standards.md for the area → owner mapping. -->
+<!-- There is no .github/CODEOWNERS file yet, so reviewers are NOT auto-requested.
+     If this PR crosses an owner-area, manually request the relevant team using the
+     area → owner map in docs/pr-standards.md §7. -->
 
 ## Codex Review
 
@@ -75,5 +80,5 @@ This repo runs an automatic Codex review on PR creation and after each push; sta
 
 - [ ] PR title follows Conventional Commits.
 - [ ] Tests added/updated; behavior proof attached for user-visible changes.
-- [ ] CODEOWNERS for every touched owner-area requested.
+- [ ] Reviewers for every touched owner-area manually requested per `docs/pr-standards.md` §7 (no `.github/CODEOWNERS` exists yet).
 - [ ] No `--no-verify` or hook-skipping used.

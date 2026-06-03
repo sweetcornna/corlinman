@@ -2,7 +2,7 @@
 
 This document defines how pull requests are opened, reviewed, gated, and routed to owners in **corlinman**. It complements [CONTRIBUTING.md](../CONTRIBUTING.md) (developer setup and workflow), the [pull request template](../.github/PULL_REQUEST_TEMPLATE.md), and the [Codex review flow](../.github/CODEX_REVIEW.md).
 
-The repository is **all-Python** (a `uv`-managed workspace of 25 `python/packages/corlinman-*` packages, with `corlinman-server` the largest at ~85K LOC) plus a Node 20 / pnpm frontend in `ui/`. There is no other language plane.
+The repository is mostly **Python** (a `uv`-managed workspace of 25 `python/packages/corlinman-*` packages, with `corlinman-server` the largest at ~85K LOC) plus a Node 20 / pnpm frontend in `ui/`. There is also a native **Swift** macOS client in `apps/swift-mac/`, built and tested by the `swift-mac` workflow when that path changes.
 
 ## 1. PR Hygiene
 
@@ -16,7 +16,7 @@ The repository is **all-Python** (a `uv`-managed workspace of 25 `python/package
 
 ## 2. The Merge Gate
 
-Branch protection requires a single aggregated check, `gate (all required checks)`, which fans in the following jobs from `.github/workflows/ci.yml`. **All must be green.**
+The aggregated check `gate (all required checks)` (in `.github/workflows/ci.yml`) fans in **exactly these 7 jobs** (`gate.needs`). **All must be green.**
 
 | Job | Command |
 | --- | --- |
@@ -27,7 +27,13 @@ Branch protection requires a single aggregated check, `gate (all required checks
 | `ui-lint` | eslint over `ui/` |
 | `ui-test` | vitest over `ui/` |
 | `boundary-check` | `uv run lint-imports` (import-linter, config in `.importlinter`) |
-| `proto-sync` | `bash scripts/gen-proto.sh`, then verify the generated stubs under `python/packages/corlinman-grpc/src/corlinman_grpc/_generated/` are committed with no drift |
+
+Two more checks run **outside** the aggregate (so a green `gate` does **not** imply they passed — verify them separately):
+
+| Check | When | What |
+| --- | --- | --- |
+| `proto-sync` | always | `bash scripts/gen-proto.sh`, then verify the generated stubs under `python/packages/corlinman-grpc/src/corlinman_grpc/_generated/` are committed with no drift |
+| `swift-mac` | only when `apps/swift-mac/**` (or its workflow) changes | `swift build` / `swift test` on macOS for the native client |
 
 Reproduce the gate locally before pushing:
 
@@ -66,7 +72,9 @@ corlinman_server   (top — gRPC entrypoint)
               └── corlinman_grpc  (bottom — generated stubs + client base)
 ```
 
-Higher layers may import lower layers; the reverse is forbidden, and same-layer peer packages must not import each other. Verify locally with `uv run lint-imports`. A small set of grandfathered upward imports is tracked in `.importlinter`'s `ignore_imports` — do not add new ones.
+Within this core plane, higher layers may import lower layers and the reverse is **forbidden** (enforced). A small set of grandfathered upward imports is tracked in `.importlinter`'s `ignore_imports` — do not add new ones. Verify locally with `uv run lint-imports`.
+
+**Scope note:** the contract roots **only** these four packages. The other ~21 packages are *not* in the contract, so import-linter does **not** forbid them from depending on each other — and several already do by design (e.g. `corlinman_channels.common` → `corlinman_identity`, `corlinman_evolution_engine` → `corlinman_evolution_store`). Keep such leaf dependencies acyclic and minimal, but they are not CI-enforced today; only the four-package core plane is.
 
 ## 5. Proto Changes (`proto-sync`)
 
@@ -187,9 +195,12 @@ python/packages/corlinman-server/src/corlinman_server/system/                   
 
 # Frontend
 ui/                                                                                @corlinman/voice-chat-platform-team
+
+# Native macOS client (Swift)
+apps/swift-mac/                                                                    @corlinman/voice-chat-platform-team
 ```
 
-> This block is a **proposal** mirroring the module map. To activate it, copy it into a real `.github/CODEOWNERS` file and replace the placeholder `@corlinman/<area>` handles with actual GitHub teams.
+> **This block is a proposal — there is no `.github/CODEOWNERS` file in the repo yet.** The `@corlinman/<area>` handles are placeholders. To activate it, copy the block into a real `.github/CODEOWNERS` and replace every handle with an **actual** GitHub team (an unknown handle silently assigns no reviewer). **Until that file exists, GitHub does not auto-request these owners** — route reviews to the relevant area manually using this map. Keep this block in sync with the one in [docs/architecture-modules.md](architecture-modules.md).
 
 ### Cross-team seams (need approval from both owner-areas)
 
@@ -205,5 +216,5 @@ ui/                                                                             
 - [ ] Tests added/updated; behavior proof attached for user-visible changes.
 - [ ] `uv run lint-imports` passes — no new reverse imports.
 - [ ] Proto stubs regenerated and committed if `*.proto` changed.
-- [ ] CODEOWNERS for every touched owner-area have approved; cross-team seams signed off by both areas.
+- [ ] Reviewers requested for every touched owner-area per the §7 map (manually, until a real `.github/CODEOWNERS` exists); cross-team seams signed off by both areas.
 - [ ] Codex review passed or freshly requested; PR status labels reflect the current head.
