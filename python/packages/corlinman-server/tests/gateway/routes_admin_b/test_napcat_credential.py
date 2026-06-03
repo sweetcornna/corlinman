@@ -11,7 +11,13 @@ caching + fail-soft contract of :func:`_cached_napcat_credential`.
 from __future__ import annotations
 
 import pytest
-from corlinman_server.gateway.routes_admin_b import napcat as nc
+
+# Patch the module where ``_cached_napcat_credential`` actually does its name
+# lookups: the helper + client + cred-cache were extracted into ``_napcat_lib``
+# (``napcat.py`` re-exports them for the route handlers). monkeypatching the
+# route module would miss the lib-internal ``config_snapshot`` / ``_NapcatClient``
+# references, so target the lib directly.
+from corlinman_server.gateway.routes_admin_b import _napcat_lib as nc
 
 _QQ_CFG = {
     "channels": {
