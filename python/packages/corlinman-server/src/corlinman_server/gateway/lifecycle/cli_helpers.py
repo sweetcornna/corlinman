@@ -31,17 +31,15 @@ from typing import Any
 
 import structlog
 
+from corlinman_server.gateway.lifecycle.bootstrap_constants import (
+    DEFAULT_HOST,
+    DEFAULT_PORT,
+)
 from corlinman_server.gateway.lifecycle.config_resolve import (
     _extract_section,
 )
 
 logger = structlog.get_logger(__name__)
-
-#: Mirrors ``corlinman_gateway::main::resolve_addr`` — same defaults so a
-#: deployment-script that sets ``PORT`` / ``BIND`` against the Rust
-#: binary keeps working against the Python port.
-DEFAULT_HOST: str = "127.0.0.1"
-DEFAULT_PORT: int = 6005
 
 
 def _lazy_import(dotted: str) -> Any | None:
