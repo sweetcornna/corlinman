@@ -18,10 +18,7 @@ import asyncio
 import datetime as _dt
 import hmac
 import ipaddress
-import math
-import re
 import threading
-from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Any, cast
 
@@ -29,11 +26,28 @@ import structlog
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from pydantic import BaseModel
 
 from corlinman_server.gateway.lifecycle.admin_seed import (
     _merge_admin_block,
     _render_admin_block,
+)
+from corlinman_server.gateway.routes_admin_a._auth_lib import (
+    _USERNAME_RE,
+    DEFAULT_SESSION_TTL_SECS,
+    MIN_PASSWORD_LEN,
+    USERNAME_MAX_LEN,
+    AdminLoginFailureStore,
+    ChangePasswordRequest,
+    ChangeUsernameRequest,
+    LoginRequest,
+    LoginResponse,
+    MeResponse,
+    OnboardRequest,
+    _client_ip,
+    _iso,
+    _service_unavailable,
+    _too_many_login_attempts,
+    _unauthorized,
 )
 from corlinman_server.gateway.routes_admin_a._session_store import (
     SESSION_COOKIE_NAME,
@@ -44,20 +58,6 @@ from corlinman_server.gateway.routes_admin_a.state import (
     AdminState,
     get_admin_state,
 )
-
-# Minimum length operators must use when picking the admin password.
-MIN_PASSWORD_LEN = 8
-
-# Username constraints. Mirrors the slug regex hermes uses for profiles —
-# ASCII alphanumerics + ``_`` + ``-`` only, capped so the UI can render
-# the value without truncation gymnastics.
-USERNAME_MAX_LEN = 64
-_USERNAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
-
-# Default idle TTL for admin sessions (24 hours). Mirrors
-# ``DEFAULT_SESSION_TTL_SECS`` on the Rust side.
-DEFAULT_SESSION_TTL_SECS = 86_400
-
 
 # ``argon2-cffi`` is the shared hashing implementation already pinned
 # in the server package's deps. Constructed once at module import time
@@ -79,128 +79,6 @@ _DUMMY_PASSWORD_HASH = _HASHER.hash("corlinman-timing-equalizer")
 _FALLBACK_ADMIN_WRITE_LOCK = asyncio.Lock()
 
 logger = structlog.get_logger(__name__)
-
-# Login brute-force guard. The fixed window is deliberately short enough
-# to avoid operator lockouts after typo bursts while still slowing online
-# guessing attacks against a single client-IP/username pair.
-LOGIN_FAILURE_LIMIT = 5
-LOGIN_FAILURE_WINDOW_SECONDS = 60
-
-
-# ---------------------------------------------------------------------------
-# Wire shapes
-# ---------------------------------------------------------------------------
-
-
-class AdminLoginFailureStore:
-    """Small in-memory fixed-window limiter for ``/admin/login`` failures.
-
-    Keys include both client IP and submitted username so a typo burst for
-    one operator identity does not lock every admin username behind the same
-    proxy, while repeated guesses for the same pair are throttled.
-    """
-
-    def __init__(
-        self,
-        *,
-        limit: int = LOGIN_FAILURE_LIMIT,
-        window_seconds: int = LOGIN_FAILURE_WINDOW_SECONDS,
-        now: Callable[[], float] | None = None,
-    ) -> None:
-        self.limit = limit
-        self.window_seconds = window_seconds
-        self._now = now
-        self._lock = threading.Lock()
-        self._failures: dict[tuple[str, str], tuple[int, float]] = {}
-
-    def _clock(self) -> float:
-        if self._now is not None:
-            return self._now()
-        return _dt.datetime.now(_dt.UTC).timestamp()
-
-    def retry_after(self, *, client_ip: str, username: str) -> int | None:
-        """Return remaining lockout seconds when the key is throttled."""
-        key = (client_ip, username)
-        now = self._clock()
-        with self._lock:
-            item = self._failures.get(key)
-            if item is None:
-                return None
-            count, reset_at = item
-            if now >= reset_at:
-                self._failures.pop(key, None)
-                return None
-            if count >= self.limit:
-                return max(1, math.ceil(reset_at - now))
-            return None
-
-    def record_failure(self, *, client_ip: str, username: str) -> int | None:
-        """Increment the failure count and return a Retry-After if locked."""
-        key = (client_ip, username)
-        now = self._clock()
-        with self._lock:
-            count, reset_at = self._failures.get(key, (0, now + self.window_seconds))
-            if now >= reset_at:
-                count = 0
-                reset_at = now + self.window_seconds
-            count += 1
-            self._failures[key] = (count, reset_at)
-            if count >= self.limit:
-                return max(1, math.ceil(reset_at - now))
-            return None
-
-    def clear(self, *, client_ip: str, username: str) -> None:
-        """Forget failure history for a successfully authenticated pair."""
-        with self._lock:
-            self._failures.pop((client_ip, username), None)
-
-
-class LoginRequest(BaseModel):
-    username: str
-    password: str
-
-
-class LoginResponse(BaseModel):
-    expires_in: int
-
-
-class MeResponse(BaseModel):
-    user: str
-    created_at: str
-    expires_at: str
-    # ``True`` while the in-memory credentials are still the first-boot
-    # default (``admin``/``root``). The UI watches this flag and force-
-    # redirects to ``/account/security`` after login so the operator
-    # picks a real password before doing anything else. The
-    # ``/admin/password`` endpoint flips it (and persists the flip to
-    # the on-disk ``[admin]`` block) once a fresh password lands.
-    must_change_password: bool = False
-
-
-class OnboardRequest(BaseModel):
-    username: str
-    password: str
-
-
-class ChangePasswordRequest(BaseModel):
-    old_password: str
-    new_password: str
-
-
-class ChangeUsernameRequest(BaseModel):
-    """Wire shape for ``POST /admin/username``.
-
-    Mirrors the rotate-password pattern: the operator authenticates with
-    their *current* password (in addition to the session cookie) before
-    we accept the rename. We never read or rewrite ``new_password`` here
-    — the existing argon2 hash is re-persisted verbatim alongside the
-    new username so a single endpoint covers the "I picked a bad
-    username during onboarding" recovery path without forcing a fresh
-    password rotation.
-    """
-
-    old_password: str
-    new_username: str
 
 
 # ---------------------------------------------------------------------------
@@ -230,18 +108,6 @@ def argon2_verify(password: str, encoded: str) -> bool:
         return False
 
 
-def _client_ip(request: Request) -> str:
-    """Best-effort client IP extraction for login throttling keys."""
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        first = forwarded.split(",", 1)[0].strip()
-        if first:
-            return first
-    if request.client is not None and request.client.host:
-        return request.client.host
-    return "unknown"
-
-
 def _login_failure_store(state: AdminState) -> AdminLoginFailureStore:
     """Return the state-scoped login limiter, creating it lazily."""
     store = getattr(state, "login_failure_store", None)
@@ -249,14 +115,6 @@ def _login_failure_store(state: AdminState) -> AdminLoginFailureStore:
         store = AdminLoginFailureStore()
         state.login_failure_store = store
     return cast(AdminLoginFailureStore, store)
-
-
-def _too_many_login_attempts(retry_after: int) -> HTTPException:
-    return HTTPException(
-        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-        detail={"error": "too_many_login_attempts"},
-        headers={"Retry-After": str(retry_after)},
-    )
 
 
 def _remote_ip(request: Request) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
@@ -364,11 +222,6 @@ def _clear_cookie_header(*, secure: bool) -> str:
     return header
 
 
-def _iso(dt: _dt.datetime) -> str:
-    """RFC-3339 / ISO-8601 UTC string."""
-    return dt.astimezone(_dt.UTC).isoformat().replace("+00:00", "Z")
-
-
 def _ensure_session_store(state: AdminState) -> AdminSessionStore:
     """Return the active session store, creating a default one when the
     bootstrapper didn't pre-build one. We **mutate** the state so
@@ -398,17 +251,6 @@ def _read_session_cookie(request: Request) -> str | None:
     if raw is None:
         return None
     return extract_cookie(raw, SESSION_COOKIE_NAME)
-
-
-def _service_unavailable(error: str, message: str | None = None) -> HTTPException:
-    payload: dict[str, Any] = {"error": error}
-    if message is not None:
-        payload["message"] = message
-    return HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=payload)
-
-
-def _unauthorized(error: str) -> HTTPException:
-    return HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail={"error": error})
 
 
 async def _atomic_write(path: Path, contents: str) -> None:
