@@ -151,6 +151,10 @@ python/packages/corlinman-providers/src/corlinman_providers/plugins/            
 
 # Data & Knowledge Layer
 python/packages/corlinman-memory-host/                                             @corlinman/memory-backend-team
+python/packages/corlinman-episodes/                                                @corlinman/memory-backend-team
+python/packages/corlinman-tagmemo/                                                 @corlinman/memory-backend-team
+python/packages/corlinman-user-model/                                              @corlinman/memory-backend-team
+python/packages/corlinman-replay/                                                  @corlinman/memory-backend-team
 python/packages/corlinman-evolution-engine/                                        @corlinman/evolution-engine-team
 python/packages/corlinman-evolution-store/                                         @corlinman/evolution-engine-team
 python/packages/corlinman-shadow-tester/                                           @corlinman/evolution-engine-team

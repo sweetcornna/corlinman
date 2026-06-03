@@ -50,10 +50,56 @@ pnpm -C ui typecheck                                      # 前端类型检查
 
 ## 2. 仓库结构
 
-- `python/packages/corlinman-*`：25 个 workspace 包。`corlinman-server` 是最大的一个（gateway 单体，约 85K LOC），其余按职责拆成 agent / providers / channels / memory-host / evolution-* / grpc / hooks 等。
-- `ui/`：Node 20 + pnpm 的前端。所有前端命令用 `pnpm -C ui <script>`。
-- `proto/corlinman/v1/*.proto`：proto 定义。生成出来的 stubs 在 `python/packages/corlinman-grpc/src/corlinman_grpc/_generated/`，**必须提交**——CI 的 `proto-sync` 会校验它们没有 drift。
-- `.importlinter`：Python 平面的分层契约（layers contract），CI 的 `boundary-check` 据此强制模块边界。
+仓库是一个 `uv` workspace：`python/packages/corlinman-*` 下 25 个 Python 包 + `ui/` 前端 + `proto/` 接口。完整的现状模块地图（职责、公开接口、依赖、耦合热点）见 [docs/architecture-modules.md](docs/architecture-modules.md)；模块化路线图见 [docs/modularization-plan.md](docs/modularization-plan.md)。
+
+### 2.1 分层
+
+Python 核心 gRPC 平面自上而下分层（`.importlinter` 强制，高层可 import 低层，反向禁止）：
+
+```
+corlinman_server   (顶层 — gRPC 入口 / HTTP+WS 网关 / 管理面)
+  └── corlinman_agent       (推理循环 + 工具)
+        └── corlinman_providers   (provider 适配 + 插件平台)
+              └── corlinman_grpc  (底层 — 生成的 stubs + client 基类)
+```
+
+其余包是同层 peer（memory / evolution / channels / 基础设施等），**不互相 import**，只被上层组装。
+
+### 2.2 完整模块与归属（owner-area）
+
+`corlinman-server`（约 85K LOC，gateway 单体）按内部子包划分归属：
+
+| 区域（`corlinman_server/...`） | 职责 | owner-area |
+| --- | --- | --- |
+| `gateway/lifecycle` `gateway/core` `gateway/middleware` | 启动编排、`AppState`/`AdminState`、中间件 | `@corlinman/gateway-lead` |
+| `gateway/routes` `gateway/routes_voice` `gateway/oauth` | 公共 API、语音 WS、OAuth 流 | `@corlinman/voice-chat-platform-team` |
+| `gateway/routes_admin_a` | 管理控制面（凭据/会话/租户/persona CRUD） | `@corlinman/admin-control-plane-team` |
+| `gateway/routes_admin_b` | 管理后端（config/models/providers/skills/evolution/scheduler 等 27 个子路由） | `@corlinman/admin-backend-team` |
+| `gateway/services` `gateway/evolution` `gateway/channels_runtime` `gateway/grpc` `gateway/providers` `gateway/placeholder` `gateway/mcp` `gateway/observability` `gateway_api` | 运行时编排：chat pipeline、演化、channel 接线、gRPC 桥、provider 注册 | `@corlinman/runtime-orchestration-team` |
+| `system` | 更新检查、审计日志、marketplace/skill-hub、subagent 宿主 | `@corlinman/system-integration-team` |
+| `scheduler` `tenancy` `persona` `profiles` `cli` `tools` `bundled_skills` | 平台服务：调度、多租户、persona、profiles、CLI | `@corlinman/platform-services-team` |
+
+独立包：
+
+| 包 | 职责 | owner-area |
+| --- | --- | --- |
+| `corlinman-agent` `corlinman-agent-brain` | 多轮 agentic 推理循环、工具套件、子 agent 派生、上下文组装 | `@corlinman/reasoning-agent-team` |
+| `corlinman-channels` | 7 个 channel 适配器（QQ/Telegram/Discord/Slack/Feishu/WeChat/LogStream）、入站归一化、限流、状态回写 | `@corlinman/channels-gateway-team` |
+| `corlinman-providers`（`specs`/`registry`/`declarative`/`capabilities` + 各 vendor 适配） | 统一 provider 协议、错误归一、配置 specs | `@corlinman/provider-adapters-team` |
+| `corlinman-providers/.../plugins` | 插件清单/沙箱/生命周期/审批/发现 | `@corlinman/plugin-platform-team` |
+| `corlinman-memory-host` `corlinman-episodes` `corlinman-tagmemo` `corlinman-user-model` `corlinman-replay` | 混合记忆检索、情节、标签记忆、用户模型、会话回放 | `@corlinman/memory-backend-team` |
+| `corlinman-evolution-engine` `corlinman-evolution-store` `corlinman-shadow-tester` `corlinman-auto-rollback` | 演化环：信号聚类 → 提案 → 影子测试 → 自动回滚 | `@corlinman/evolution-engine-team` |
+| `corlinman-goals` | 目标跟踪、反思评分、证据窗口 | `@corlinman/goals-intelligence-team` |
+| `corlinman-persona` `corlinman-identity` `corlinman-grpc` `corlinman-wstool` `corlinman-nodebridge` `corlinman-skills-registry` `corlinman-subagent` `corlinman-hooks` `corlinman-mcp-server` `corlinman-canvas` | 基础设施：会话/身份、gRPC stubs、分布式工具总线、设备桥、skill 注册、子 agent 监督、hook 总线、MCP server、canvas 渲染 | `@corlinman/foundation-infrastructure-team` |
+| `ui/` | Next.js 前端（Node 20 + pnpm） | `@corlinman/voice-chat-platform-team` |
+
+> owner-area 与 CODEOWNERS 路由的权威映射在 [docs/pr-standards.md](docs/pr-standards.md) §7。改动跨 owner-area 时需对应团队 review。
+
+### 2.3 其它
+
+- `ui/`：所有前端命令用 `pnpm -C ui <script>`。
+- `proto/corlinman/v1/*.proto`：proto 定义。生成的 stubs 在 `python/packages/corlinman-grpc/src/corlinman_grpc/_generated/`，**必须提交**——CI 的 `proto-sync` 会校验无 drift。
+- `.importlinter`：Python 平面分层契约，CI 的 `boundary-check` 据此强制模块边界（`uv run lint-imports` 本地自查）。
 - `.github/workflows/ci.yml`：合入门禁。
 
 ## 3. 开发工作流
