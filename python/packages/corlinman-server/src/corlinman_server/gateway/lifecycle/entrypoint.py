@@ -159,6 +159,37 @@ def _resolve_cors_origins() -> list[str]:
     return [origin.strip() for origin in raw.split(",") if origin.strip()]
 
 
+def _coerce_str_list(value: Any) -> list[str]:
+    """Parse config/env list values into trimmed strings."""
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return []
+
+
+def _resolve_allowed_public_origins(cfg: Any | None) -> list[str]:
+    """Allowed origins for zero-config public-origin learning.
+
+    Config and env values are additive. The middleware treats an empty resolved
+    list as deny-all, so automatic learning never trusts arbitrary Host headers.
+    """
+    server_cfg = _extract_section(cfg, "server")
+    configured = _coerce_str_list(
+        _extract_section(server_cfg, "allowed_public_origins")
+    )
+    env = _coerce_str_list(os.environ.get("CORLINMAN_ALLOWED_PUBLIC_ORIGINS"))
+    return configured + [item for item in env if item not in configured]
+
+
+def _resolve_trusted_proxies(cfg: Any | None) -> list[str]:
+    """Trusted reverse-proxy IP/CIDR ranges for X-Forwarded-* origin learning."""
+    server_cfg = _extract_section(cfg, "server")
+    configured = _coerce_str_list(_extract_section(server_cfg, "trusted_proxies"))
+    env = _coerce_str_list(os.environ.get("CORLINMAN_TRUSTED_PROXIES"))
+    return configured + [item for item in env if item not in configured]
+
+
 def _status_links_explicitly_configured(cfg: Any | None) -> bool:
     """True when an operator set ``public_url`` via config or env.
 
@@ -3306,12 +3337,12 @@ def build_app(
 
     # Zero-config public-origin learning. When no explicit public_url is
     # set, this middleware learns the public base URL from the first real
-    # inbound request through the public hostname (honoring
-    # X-Forwarded-Proto/Host behind a reverse proxy) and persists it to
-    # ``<data_dir>/public_origin``. The ``on_learn`` callback re-arms the
-    # channel status-link feature live, so the first browser/status-link
-    # hit lights up the "🔗 实时状态" link in chat replies — no operator
-    # action, no restart. Stands down entirely when public_url is explicit.
+    # inbound request through an allowed public hostname (honoring
+    # X-Forwarded-Proto/Host only from configured trusted proxies) and
+    # persists it to ``<data_dir>/public_origin``. The ``on_learn`` callback
+    # re-arms the channel status-link feature live, so the first
+    # browser/status-link hit lights up the "🔗 实时状态" link in chat replies —
+    # no operator action, no restart. Stands down entirely when public_url is explicit.
     try:
         from corlinman_server.gateway.origin_learn import (
             OriginLearningMiddleware,
@@ -3331,6 +3362,8 @@ def build_app(
             data_dir=resolved_data_dir,
             explicitly_configured=_status_links_explicitly_configured(cfg),
             on_learn=_rearm_status_links_on_learn,
+            allowed_public_origins=_resolve_allowed_public_origins(cfg),
+            trusted_proxies=_resolve_trusted_proxies(cfg),
         )
     except Exception as exc:  # noqa: BLE001 - never block boot on learning
         logger.warning("gateway.origin_learn.install_failed", error=str(exc))

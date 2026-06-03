@@ -19,14 +19,22 @@ data_dir = "~/.corlinman"
 # ("{public_url}/status/{token}") that channels append to replies and that
 # the `agent_status_card` tool mints.
 #
-# LEAVE EMPTY for zero-config: the gateway auto-detects this from the first
-# real request that arrives through your public hostname (honoring
-# X-Forwarded-Proto/Host behind a reverse proxy) and remembers it in
-# <data_dir>/public_origin — so status links light up automatically once you
-# open the admin UI or tap a link through the real domain. Set it explicitly
-# only to pin a specific origin or surface links before the first such
-# request. The CORLINMAN_PUBLIC_URL env var overrides both.
+# PRODUCTION: prefer setting this explicitly (or CORLINMAN_PUBLIC_URL) so
+# shareable links never depend on request-header learning.
+#
+# RESTRICTED FALLBACK: leave empty only when you also configure
+# allowed_public_origins below. In that mode the gateway auto-detects the
+# origin from the first real request that arrives through an allowed public
+# hostname and remembers it in <data_dir>/public_origin. X-Forwarded-Proto/Host
+# are read only when the immediate client IP matches trusted_proxies.
+# The CORLINMAN_PUBLIC_URL env var overrides both.
 public_url = ""
+# Comma-separated env addition: CORLINMAN_ALLOWED_PUBLIC_ORIGINS. Empty means
+# automatic learning is disabled; hosts outside this list are never persisted.
+allowed_public_origins = ["https://bot.example.com"]
+# IPs/CIDRs allowed to supply X-Forwarded-Proto / X-Forwarded-Host for origin
+# learning. Env addition: CORLINMAN_TRUSTED_PROXIES (comma-separated).
+trusted_proxies = ["127.0.0.1", "10.0.0.0/8"]
 
 # ---------------------------------------------------------------------------
 # [admin] — credentials for /admin/* routes (basic auth, argon2id hash).

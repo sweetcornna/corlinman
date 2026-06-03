@@ -3241,8 +3241,8 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             # Zero-config fallback: the gateway learns the public origin from
             # real inbound requests and persists it to
             # ``<data_dir>/public_origin`` (see gateway.origin_learn). Read it
-            # so the tool produces a link with no operator configuration at
-            # all once anyone has hit the gateway through its public hostname.
+            # so the tool can use the restricted auto-learning fallback once
+            # a request has arrived through an explicitly allowed public origin.
             learned = _read_learned_public_origin()
             if learned:
                 public_url = learned.strip().rstrip("/")
@@ -3254,9 +3254,9 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     "message": (
                         "shareable status links need the gateway's public "
                         "base URL — set CORLINMAN_PUBLIC_URL or "
-                        "[server].public_url, or simply open the admin UI / a "
-                        "status link once through the public hostname so it "
-                        "can be auto-detected."
+                        "[server].public_url. Restricted auto-learning is a "
+                        "fallback only: configure [server].allowed_public_origins "
+                        "first, then open the gateway through that public origin."
                     ),
                 },
                 ensure_ascii=False,
