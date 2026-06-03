@@ -41,3 +41,19 @@ ignore_imports =
     corlinman_agent.persona.dispatch -> corlinman_server.persona
     corlinman_agent.subagent.tool_wrapper -> corlinman_server.system.subagent
     corlinman_agent.subagent.tool_wrapper -> corlinman_server.gateway.observability.emitter
+
+; --- Modularization roadmap: lock the extracted leaves as leaves ---------------
+; config_mutation (Phase 1) and _sqlite_store (Phase 2) are neutral leaves that
+; the route/admin/service layers depend on. They must never import back up into
+; those layers (which would re-introduce the coupling the extraction removed).
+[importlinter:contract:gateway-extracted-leaves]
+name = extracted gateway/system leaves stay leaves
+type = forbidden
+source_modules =
+    corlinman_server.gateway.core.config_mutation
+    corlinman_server.system.marketplace._sqlite_store
+forbidden_modules =
+    corlinman_server.gateway.routes_admin_a
+    corlinman_server.gateway.routes_admin_b
+    corlinman_server.gateway.services
+    corlinman_server.gateway.lifecycle
