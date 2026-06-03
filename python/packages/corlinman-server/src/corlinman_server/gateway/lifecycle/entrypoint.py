@@ -66,7 +66,7 @@ import os
 import signal
 import sys
 import uuid
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any, cast
@@ -76,6 +76,16 @@ import structlog
 from corlinman_server.gateway.lifecycle.admin_seed import (
     ensure_admin_credentials,
     resolve_admin_config_path,
+)
+from corlinman_server.gateway.lifecycle.config_resolve import (
+    _admin_session_cookie_secure_from_config,
+    _extract_section,
+    _resolve_allowed_public_origins,
+    _resolve_cors_origins,
+    _resolve_trusted_proxies,
+    _status_links_explicitly_configured,
+    _trust_forwarded_proto_from_config,
+    _trusted_forwarded_proto_proxies_from_config,
 )
 from corlinman_server.gateway.lifecycle.legacy_migration import (
     migrate_legacy_data_files,
@@ -162,56 +172,6 @@ def _resolve_data_dir(cli_value: str | None, cfg: Any | None = None) -> Path:
         return Path.home() / ".corlinman"
     except (RuntimeError, OSError):
         return Path(".corlinman")
-
-
-def _resolve_cors_origins() -> list[str]:
-    """Parse the opt-in browser UI CORS allowlist."""
-    raw = os.environ.get("CORLINMAN_CORS_ORIGINS", "")
-    return [origin.strip() for origin in raw.split(",") if origin.strip()]
-
-
-def _coerce_str_list(value: Any) -> list[str]:
-    """Parse config/env list values into trimmed strings."""
-    if isinstance(value, str):
-        return [item.strip() for item in value.split(",") if item.strip()]
-    if isinstance(value, (list, tuple, set)):
-        return [str(item).strip() for item in value if str(item).strip()]
-    return []
-
-
-def _resolve_allowed_public_origins(cfg: Any | None) -> list[str]:
-    """Allowed origins for zero-config public-origin learning.
-
-    Config and env values are additive. The middleware treats an empty resolved
-    list as deny-all, so automatic learning never trusts arbitrary Host headers.
-    """
-    server_cfg = _extract_section(cfg, "server")
-    configured = _coerce_str_list(
-        _extract_section(server_cfg, "allowed_public_origins")
-    )
-    env = _coerce_str_list(os.environ.get("CORLINMAN_ALLOWED_PUBLIC_ORIGINS"))
-    return configured + [item for item in env if item not in configured]
-
-
-def _resolve_trusted_proxies(cfg: Any | None) -> list[str]:
-    """Trusted reverse-proxy IP/CIDR ranges for X-Forwarded-* origin learning."""
-    server_cfg = _extract_section(cfg, "server")
-    configured = _coerce_str_list(_extract_section(server_cfg, "trusted_proxies"))
-    env = _coerce_str_list(os.environ.get("CORLINMAN_TRUSTED_PROXIES"))
-    return configured + [item for item in env if item not in configured]
-
-
-def _status_links_explicitly_configured(cfg: Any | None) -> bool:
-    """True when an operator set ``public_url`` via config or env.
-
-    When explicit, the learned-origin auto-detection must stand down so a
-    health-check / loopback request can't shadow the operator's choice.
-    """
-    server_cfg = _extract_section(cfg, "server")
-    config_public_url = _extract_section(server_cfg, "public_url")
-    if isinstance(config_public_url, str) and config_public_url.strip():
-        return True
-    return bool(os.environ.get("CORLINMAN_PUBLIC_URL", "").strip())
 
 
 def _wire_status_links(cfg: Any | None, data_dir: Path) -> bool:
@@ -821,21 +781,6 @@ def _config_has_scheduler_job(cfg: Any | None, name: str) -> bool:
         if isinstance(entry_name, str) and entry_name == name:
             return True
     return False
-
-
-def _extract_section(obj: Any, key: str) -> Any:
-    """Read ``obj[key]`` / ``obj.key`` tolerantly.
-
-    Mirrors the ``_should_run_legacy_migration`` helper's discipline:
-    the config may arrive as a plain dict (production loader), a
-    dataclass-shaped wrapper (tests), or ``None`` (degraded boot). One
-    helper keeps every caller's branch logic single-line.
-    """
-    if obj is None:
-        return None
-    if isinstance(obj, dict):
-        return obj.get(key)
-    return getattr(obj, key, None)
 
 
 def _register_default_update_check_job(
@@ -1738,38 +1683,6 @@ def _build_agent_registry_stack(
             return None
 
     return registry, _reload
-
-
-def _mapping_section(value: Any, key: str) -> Mapping[str, Any]:
-    """Return a dict-like config section or an empty mapping."""
-    if not isinstance(value, Mapping):
-        return {}
-    section = value.get(key)
-    return section if isinstance(section, Mapping) else {}
-
-
-def _admin_session_cookie_secure_from_config(config: Any) -> bool | None:
-    """Resolve optional ``[admin].session_cookie_secure`` from config."""
-    admin = _mapping_section(config, "admin")
-    value = admin.get("session_cookie_secure")
-    return value if isinstance(value, bool) else None
-
-
-def _trusted_forwarded_proto_proxies_from_config(config: Any) -> tuple[str, ...]:
-    """Resolve trusted proxy CIDRs from ``[server]`` config."""
-    server = _mapping_section(config, "server")
-    value = server.get("trusted_forwarded_proto_proxies")
-    if isinstance(value, str):
-        return (value,)
-    if isinstance(value, list | tuple):
-        return tuple(str(item) for item in value)
-    return ()
-
-
-def _trust_forwarded_proto_from_config(config: Any) -> bool:
-    """Resolve the ``[server].trust_forwarded_proto`` compatibility flag."""
-    server = _mapping_section(config, "server")
-    return bool(server.get("trust_forwarded_proto"))
 
 
 # ---------------------------------------------------------------------------
