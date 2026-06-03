@@ -1,0 +1,23 @@
+manifest_version = 1
+name = "zhihu-search"
+version = "1.0.0"
+description = "Search Zhihu via the official OpenAPI, with separate tools for site search and global search plus structured metadata for AI use."
+author = "Skye"
+plugin_type = "sync"
+
+[entry_point]
+command = "python3"
+args = ["zhihu_search.py"]
+
+[communication]
+timeout_ms = 15000
+
+[[capabilities.tools]]
+name = "zhihu_site_search"
+description = "Search Zhihu site content such as answers and articles. Returns Markdown plus structured fields including vote and comment counts."
+parameters = { type = "object", properties = { query = { type = "string", description = "Search query." }, count = { type = "integer", description = "Optional result count, clamped to 1-10." } }, required = ["query"], additionalProperties = false }
+
+[[capabilities.tools]]
+name = "zhihu_global_search"
+description = "Run Zhihu global search. Returns Markdown plus structured fields including title, URL, author, summary, and edit time."
+parameters = { type = "object", properties = { query = { type = "string", description = "Search query." }, count = { type = "integer", description = "Optional result count, clamped to 1-20." } }, required = ["query"], additionalProperties = false }

@@ -1,0 +1,16 @@
+{
+  "name": "zhihu-search",
+  "version": "1.0.0",
+  "description": "Search Zhihu via the official OpenAPI, with separate tools for site search and global search plus structured metadata for AI use.",
+  "entry": "zhihu_search.py",
+  "permissions": [],
+  "requires": {
+    "env": [
+      "ZHIHU_ACCESS_SECRET",
+      "ZHIHU_OPENAPI_BASE_URL",
+      "ZHIHU_ZHIHU_SEARCH_URL",
+      "ZHIHU_GLOBAL_SEARCH_URL",
+      "ZHIHU_SEARCH_TIMEOUT_SECONDS"
+    ]
+  }
+}

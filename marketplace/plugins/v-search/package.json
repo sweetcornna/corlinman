@@ -1,0 +1,14 @@
+{
+  "name": "v-search",
+  "version": "1.0.0",
+  "description": "Concurrent semantic search across grounding, Grok, Tavily, and Kimi Search backends.",
+  "main": "v_search.js",
+  "type": "commonjs",
+  "license": "ISC",
+  "dependencies": {
+    "@tavily/core": "^0.7.2",
+    "axios": "^1.15.0",
+    "dotenv": "^17.4.2",
+    "https-proxy-agent": "^9.0.0"
+  }
+}

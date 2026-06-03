@@ -1,0 +1,23 @@
+manifest_version = 1
+name = "tinyfish-browser"
+version = "1.0.0"
+description = "Search the web and fetch rendered page content via TinyFish APIs, including JS-heavy pages."
+author = "Skye"
+plugin_type = "sync"
+
+[entry_point]
+command = "node"
+args = ["tinyfish_browser.js"]
+
+[communication]
+timeout_ms = 120000
+
+[[capabilities.tools]]
+name = "tinyfish_search"
+description = "Run a TinyFish web search with optional location, language, page, and thumbnail settings."
+parameters = { type = "object", properties = { query = { type = "string", description = "Search query." }, location = { type = "string", description = "Optional country code such as US, CN, or JP." }, language = { type = "string", description = "Optional language code such as en, zh, or ja." }, page = { type = "integer", description = "Optional page number from 0 to 10." }, thumbnails = { type = "boolean", description = "Whether to include thumbnail URLs." } }, required = ["query"], additionalProperties = false }
+
+[[capabilities.tools]]
+name = "tinyfish_fetch"
+description = "Fetch one to ten URLs via TinyFish's rendered browser pipeline, returning Markdown, HTML, or JSON plus optional link extraction."
+parameters = { type = "object", properties = { urls = { oneOf = [{ type = "string" }, { type = "array", items = { type = "string" } }], description = "One to ten URLs to fetch." }, format = { type = "string", description = "Output format: markdown, html, or json." }, links = { type = "boolean", description = "Whether to extract page links." }, image_links = { type = "boolean", description = "Whether to extract page image links." }, include_html_head = { type = "boolean", description = "When format is html, include head tags." } }, required = ["urls"], additionalProperties = false }
