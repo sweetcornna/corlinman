@@ -44,7 +44,7 @@ The 7 jobs aggregated by `gate (all required checks)` must be green before merge
 Separate checks (not in the `gate` aggregate — confirm independently):
 
 - [ ] `proto-sync` — `bash scripts/gen-proto.sh`, regenerated stubs committed with no drift
-- [ ] `swift-mac` — green if this PR touched `apps/swift-mac/**` (else N/A)
+- [ ] `swift-mac` — green if this PR touched `apps/swift-mac/**` or `.github/workflows/swift-mac.yml` (else N/A)
 
 > ⚠️ **Known flaky:** `py-test` intermittently **hangs to the 6h CI cap**. This is a known infra issue that also affects `main`; the same tests pass locally on Python 3.12/3.13. It is **not your failure** — just **rerun the job**. A green gate may need a lucky rerun or an admin merge. Locally, run targeted tests with `uv run pytest <path>` instead of the whole suite.
 
