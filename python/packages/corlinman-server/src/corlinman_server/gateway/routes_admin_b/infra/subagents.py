@@ -28,146 +28,31 @@ import asyncio
 import json
 import time
 from collections.abc import AsyncIterator
-from dataclasses import asdict
-from typing import Any, cast
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field
 
+from corlinman_server.gateway.routes_admin_b.infra._subagents_lib import (
+    _SUBAGENT_SSE_HEARTBEAT_SECONDS,
+    SubagentListResponse,
+    SubagentStatusResponse,
+    _error,
+    _resolve_actor,
+    _resolve_dispatcher,
+    _resolve_event_emitter,
+    _resolve_store,
+    _status_to_response,
+)
 from corlinman_server.gateway.routes_admin_b.state import (
-    AdminState,
     get_admin_state,
     require_admin,
 )
 from corlinman_server.system.subagent import (
-    AsyncSubagentDispatcher,
-    SubagentStatus,
-    SubagentTaskStore,
     TenantQuotaExceeded,
 )
 
 __all__ = ["router"]
-
-
-# SSE keepalive cadence — matches sessions_events.py / system.py so
-# proxies/reverse-proxies idle on the same timer everywhere.
-_SUBAGENT_SSE_HEARTBEAT_SECONDS: float = 10.0
-
-
-# Terminal states that close the per-child SSE stream. Matches the
-# store's terminal set; spelled out here so the route file is
-# self-contained and a future addition to the state union is an explicit
-# code change rather than a silent drift.
-_TERMINAL_STATES: frozenset[str] = frozenset(
-    {"succeeded", "failed", "timeout", "killed"}
-)
-
-
-# ---------------------------------------------------------------------------
-# Wire shapes
-# ---------------------------------------------------------------------------
-
-
-class SubagentStatusResponse(BaseModel):
-    """Pydantic mirror of :class:`SubagentStatus`."""
-
-    request_id: str
-    parent_session_key: str
-    subagent_type: str
-    description: str | None = None
-    state: str
-    started_at: int | None = None
-    finished_at: int | None = None
-    child_session_key: str | None = None
-    finish_reason: str | None = None
-    tool_calls_made: int = 0
-    elapsed_ms: int = 0
-    error: str | None = None
-    summary: str = ""
-    log_tail: str = ""
-
-
-class SubagentListResponse(BaseModel):
-    rows: list[SubagentStatusResponse] = Field(default_factory=list)
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _status_to_response(status: SubagentStatus) -> SubagentStatusResponse:
-    return SubagentStatusResponse(**asdict(status))
-
-
-def _error(
-    status_code: int,
-    error: str,
-    message: str,
-    **extra: Any,
-) -> JSONResponse:
-    body: dict[str, Any] = {"error": error, "message": message}
-    body.update(extra)
-    return JSONResponse(status_code=status_code, content=body)
-
-
-def _resolve_dispatcher(
-    state: AdminState,
-) -> AsyncSubagentDispatcher | None:
-    """Read the dispatcher handle off AdminState (duck-typed)."""
-    dispatcher = getattr(state, "subagent_dispatcher", None)
-    if dispatcher is None:
-        return None
-    # Duck-typed acceptance — tests pass a fake exposing the same
-    # ``dispatch_async`` / ``kill`` / ``store`` surface.
-    if hasattr(dispatcher, "dispatch_async") or hasattr(dispatcher, "store"):
-        # Duck-typed boundary: tests pass a fake exposing the same surface.
-        return cast("AsyncSubagentDispatcher", dispatcher)
-    return None
-
-
-def _resolve_store(state: AdminState) -> SubagentTaskStore | None:
-    """Resolve the store directly off state, or via the dispatcher."""
-    store = getattr(state, "subagent_store", None)
-    if store is not None and hasattr(store, "get"):
-        # Duck-typed boundary: tests pass a fake exposing ``get``.
-        return cast("SubagentTaskStore", store)
-    dispatcher = _resolve_dispatcher(state)
-    if dispatcher is None:
-        return None
-    inner = getattr(dispatcher, "store", None)
-    if inner is not None and hasattr(inner, "get"):
-        return cast("SubagentTaskStore", inner)
-    return None
-
-
-def _resolve_event_emitter(state: AdminState) -> Any | None:
-    emitter = getattr(state, "event_emitter", None)
-    if emitter is None:
-        return None
-    if hasattr(emitter, "subscribe"):
-        return emitter
-    return None
-
-
-def _resolve_actor(request: Request) -> str:
-    """Best-effort extract a username from the auth context.
-
-    Same precedence the upgrade routes use (``request.state.admin_user``
-    first, then ``admin_session``). Falls back to ``"admin"``.
-    """
-    user = getattr(request.state, "admin_user", None)
-    if isinstance(user, str) and user:
-        return user
-    session = getattr(request.state, "admin_session", None)
-    if session is not None:
-        username = getattr(session, "username", None) or getattr(
-            session, "user", None
-        )
-        if isinstance(username, str) and username:
-            return username
-    return "admin"
 
 
 # ---------------------------------------------------------------------------
