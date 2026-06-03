@@ -24,6 +24,64 @@ from typing import Any
 
 from fastapi import HTTPException, Request
 
+# Canonical registry of AdminState.extras runtime-handle keys. Closing the key
+# set adds typo protection: extras was the single biggest merge hotspot in this
+# tree because every wave parked a new string-keyed handle on it with no type
+# safety and no way to catch a typo'd or competing key.
+_ADMIN_EXTRAS_KEYS: frozenset[str] = frozenset(
+    {
+        "snapshot",
+        "mcp_adapter",
+        "config_watcher",
+        "app_state",
+        "models_source",
+        "config_swap_fn",
+        "scheduler_runtime_jobs",
+        "scheduler_runtime_jobs_loaded",
+        "scheduler_job_metadata",
+        "scheduler_history",
+        "mcp_manager",
+        "system_last_forced_check_ts",
+        "plugin_registry_reload",
+        "marketplace_source",
+        "hook_runner",
+        "skill_hub_client",
+        "plugin_supervisor",
+        "plugin_store",
+        "persona_state_store",
+        "data_dir",
+        "chat",
+    }
+)
+
+
+class AdminExtras(dict[str, Any]):
+    """Key-validated registry for ``AdminState`` runtime handles.
+
+    A **real ``dict`` subclass** — storage is the dict itself — so every
+    existing access pattern keeps working byte-for-byte: ``extras["k"]``,
+    ``extras.get("k")``, ``extras["k"] = v``, ``extras.pop(...)``,
+    ``bool(extras)`` (empty -> falsy), and the ``isinstance(extras, dict)``
+    guards in providers / plugin_market / mcp_market / skills / lifecycle.
+
+    The only added behavior: :meth:`__setitem__` rejects any key outside
+    :data:`_ADMIN_EXTRAS_KEYS`. That turns the old "park a new string key on a
+    shared dict" hotspot into a single declared registry — a typo'd or
+    competing/undocumented key now fails loudly at the write instead of
+    silently shadowing another wave's handle.
+    """
+
+    __slots__ = ()
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        if key not in _ADMIN_EXTRAS_KEYS:
+            raise KeyError(
+                f"unknown AdminState.extras key {key!r}; declared keys are "
+                f"{sorted(_ADMIN_EXTRAS_KEYS)} (add it to _ADMIN_EXTRAS_KEYS "
+                f"in state.py if this is a new runtime handle)"
+            )
+        super().__setitem__(key, value)
+
 
 @dataclass
 class AdminState:
@@ -94,10 +152,12 @@ class AdminState:
     # other.
     admin_write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
-    # Mapping of any extra subsystem handles a particular route module
-    # needs (e.g. scheduler_history). Kept as a free-form bag so the
-    # boot path can wire one-offs without growing the dataclass.
-    extras: dict[str, Any] = field(default_factory=dict)
+    # Typed bag of extra subsystem handles a particular route module
+    # needs (e.g. scheduler_history). Was a free-form ``dict`` — now an
+    # :class:`AdminExtras` with a closed, named slot set so typos raise
+    # instead of silently writing a dead key. Stays dict-compatible for
+    # the existing ``state.extras[...]`` / ``.get(...)`` call sites.
+    extras: AdminExtras = field(default_factory=AdminExtras)
 
     # -- W4.6: curator UI surface ---------------------------------------
     #
