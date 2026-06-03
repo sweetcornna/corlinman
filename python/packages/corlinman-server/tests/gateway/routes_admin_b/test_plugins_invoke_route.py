@@ -30,7 +30,7 @@ from corlinman_providers.plugins import (
     PluginManifest,
     PluginRegistry,
 )
-from corlinman_server.gateway.routes_admin_b import plugins
+from corlinman_server.gateway.routes_admin_b.marketplace import plugins
 from corlinman_server.gateway.routes_admin_b.state import (
     AdminState,
     set_admin_state,

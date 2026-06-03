@@ -65,12 +65,6 @@ from corlinman_server.gateway.routes_admin_b import (
     logs as _logs,
 )
 from corlinman_server.gateway.routes_admin_b import (
-    marketplace_settings as _marketplace_settings,
-)
-from corlinman_server.gateway.routes_admin_b import (
-    mcp_market as _mcp_market,
-)
-from corlinman_server.gateway.routes_admin_b import (
     memory as _memory,
 )
 from corlinman_server.gateway.routes_admin_b import (
@@ -89,12 +83,6 @@ from corlinman_server.gateway.routes_admin_b import (
     personas as _personas,
 )
 from corlinman_server.gateway.routes_admin_b import (
-    plugin_market as _plugin_market,
-)
-from corlinman_server.gateway.routes_admin_b import (
-    plugins as _plugins,
-)
-from corlinman_server.gateway.routes_admin_b import (
     providers as _providers,
 )
 from corlinman_server.gateway.routes_admin_b import (
@@ -110,13 +98,25 @@ from corlinman_server.gateway.routes_admin_b import (
     sessions_events as _sessions_events,
 )
 from corlinman_server.gateway.routes_admin_b import (
-    skills as _skills,
-)
-from corlinman_server.gateway.routes_admin_b import (
     subagents as _subagents,
 )
 from corlinman_server.gateway.routes_admin_b import (
     system as _system,
+)
+from corlinman_server.gateway.routes_admin_b.marketplace import (
+    marketplace_settings as _marketplace_settings,
+)
+from corlinman_server.gateway.routes_admin_b.marketplace import (
+    mcp_market as _mcp_market,
+)
+from corlinman_server.gateway.routes_admin_b.marketplace import (
+    plugin_market as _plugin_market,
+)
+from corlinman_server.gateway.routes_admin_b.marketplace import (
+    plugins as _plugins,
+)
+from corlinman_server.gateway.routes_admin_b.marketplace import (
+    skills as _skills,
 )
 from corlinman_server.gateway.routes_admin_b.state import AdminState, set_admin_state
 

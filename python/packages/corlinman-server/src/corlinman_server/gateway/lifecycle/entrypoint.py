@@ -2270,7 +2270,7 @@ def build_app(
         # cache file is flushed.
         if admin_b_state is not None:
             try:
-                from corlinman_server.gateway.routes_admin_b.skills import (
+                from corlinman_server.gateway.routes_admin_b.marketplace.skills import (
                     SkillInstallTaskStore,
                 )
 
@@ -2531,7 +2531,7 @@ def build_app(
             # their stores + source off these same admin_b extras.
             if admin_b_state is not None:
                 try:
-                    from corlinman_server.gateway.routes_admin_b.mcp_adapter import (
+                    from corlinman_server.gateway.routes_admin_b.marketplace.mcp_adapter import (
                         McpAdapter,
                     )
 

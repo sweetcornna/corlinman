@@ -18,8 +18,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from corlinman_server.gateway.routes_admin_b import mcp_market
-from corlinman_server.gateway.routes_admin_b.mcp_adapter import McpAdapter
+from corlinman_server.gateway.routes_admin_b.marketplace import mcp_market
+from corlinman_server.gateway.routes_admin_b.marketplace.mcp_adapter import (
+    McpAdapter,
+)
 from corlinman_server.gateway.routes_admin_b.state import (
     AdminState,
     set_admin_state,

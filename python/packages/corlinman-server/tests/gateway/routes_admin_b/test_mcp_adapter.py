@@ -24,7 +24,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from corlinman_server.gateway.routes_admin_b.mcp_adapter import McpAdapter
+from corlinman_server.gateway.routes_admin_b.marketplace.mcp_adapter import (
+    McpAdapter,
+)
 from corlinman_server.system.marketplace.mcp_store import McpServerStore
 
 # ---------------------------------------------------------------------------

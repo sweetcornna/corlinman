@@ -3,7 +3,7 @@
 The MCP twin of ``skills.py``. Wires the admin UI's "MCP servers" page to
 the unified marketplace (:mod:`corlinman_server.system.marketplace`) and
 the live-pool ↔ store bridge (:class:`~corlinman_server.gateway.
-routes_admin_b.mcp_adapter.McpAdapter`).
+routes_admin_b.marketplace.mcp_adapter.McpAdapter`).
 
 Surfaces (prefix ``/admin/mcp``):
 

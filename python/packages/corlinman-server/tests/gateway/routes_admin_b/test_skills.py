@@ -30,12 +30,13 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 # TODO(W1-ROUTES): once
-# ``corlinman_server.gateway.routes_admin_b.skills`` lands, the
+# ``corlinman_server.gateway.routes_admin_b.marketplace.skills`` lands, the
 # ``importorskip`` becomes a regular import.
 skill_routes = pytest.importorskip(
-    "corlinman_server.gateway.routes_admin_b.skills",
+    "corlinman_server.gateway.routes_admin_b.marketplace.skills",
     reason=(
-        "TODO(W1-ROUTES): waiting on gateway/routes_admin_b/skills.py "
+        "TODO(W1-ROUTES): waiting on "
+        "gateway/routes_admin_b/marketplace/skills.py "
         "from the sibling agent before these tests can execute."
     ),
 )
