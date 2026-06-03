@@ -1,11 +1,12 @@
-# Contributing to corlinman
+# 为 corlinman 贡献代码
 
-感谢你考虑为 corlinman 贡献代码。本文说清楚：怎么搭开发环境、提交 PR 的规则、代码风格要求。
+感谢你考虑为 corlinman 贡献代码。本文说清楚三件事：怎么搭开发环境、提交 PR 的规则、代码风格要求。
 
-**前置**：先读 [docs/README.md](docs/README.md) 和 [docs/architecture.md](docs/architecture.md)
-了解系统全貌。计划文件单一事实来源在
-`/Users/cornna/.claude/plans/openclaw-rust-python-corlinma-graceful-meerkat.md`，所有架构
-决策以那里为准。
+**前置**：先读 [docs/README.md](docs/README.md) 和 [docs/architecture.md](docs/architecture.md) 了解系统全貌；
+模块归属与 owner-area 划分见 [docs/pr-standards.md](docs/pr-standards.md)。Codex PR 评审流程见
+[.github/CODEX_REVIEW.md](.github/CODEX_REVIEW.md)。
+
+仓库现在是 **全 Python**（由 `uv` 管理的 workspace）加一个 Node/pnpm 的 `ui/` 前端。没有其他语言平面。
 
 ## 1. 开发环境搭建
 
@@ -14,127 +15,139 @@
 ```bash
 git clone https://github.com/<org>/corlinman.git
 cd corlinman
-./scripts/dev-setup.sh
+bash scripts/dev-setup.sh
 ```
 
-`dev-setup.sh` 做了这些事：
+`dev-setup.sh` 做了这些事（幂等，可重复跑）：
 
-1. 检查 toolchain：Rust 1.95（由 `rust-toolchain.toml` 锁定）、Python 3.12、Node 20、pnpm 9、`uv` 和 `cargo-nextest`。缺哪个给装哪个的 hint。
-2. `cargo fetch` + `uv sync` + `pnpm install`，把三个包管理器的依赖拉齐。
-3. 跑 `scripts/gen-proto.sh` 一次，生成 Rust tonic 和 Python grpcio stubs。
-4. 把 `core.hooksPath` 指到 `.git-hooks/`，安装 pre-commit 钩子。
+1. 检查 toolchain：Python ≥ 3.12、Node 20、pnpm（建议 `corepack enable`）、`uv`、`protobuf-compiler`。缺哪个给装哪个的 hint。
+2. 把 `core.hooksPath` 指到 `.git-hooks/`，安装 pre-commit 钩子。
+3. `uv sync --all-packages --dev` 把整个 workspace 装进虚拟环境。
+4. `pnpm install` 装前端依赖。
+5. 跑一次 `scripts/gen-proto.sh`，生成 Python gRPC stubs。
+
+如果想手动搭，等价命令是：
+
+```bash
+uv sync --all-packages --dev        # Python workspace（25 个包）+ dev 工具
+pnpm install --frozen-lockfile      # ui/ 前端依赖
+bash scripts/gen-proto.sh           # 生成 proto stubs（需要 protobuf-compiler）
+```
 
 之后常用命令：
 
 ```bash
-cargo build                          # 编译所有 Rust crate
-cargo nextest run                    # 跑 Rust 测试
-uv run pytest -m "not live"          # 跑 Python 测试（非 live lane）
-pnpm --filter ui test                # 跑前端测试
-corlinman dev                        # 本地起 gateway + Python agent，支持热重载
+uv run pytest <path>                                      # 跑指定路径的 Python 测试（推荐）
+uv run pytest -m "not live_llm and not live_transport"   # 跑非 live lane 的全套（CI 用的口径）
+uv run ruff check .                                       # lint
+uv run mypy python/packages/                              # 类型检查
+uv run lint-imports                                       # 模块边界（import-linter）检查
+pnpm -C ui test                                           # 前端测试（vitest）
+pnpm -C ui typecheck                                      # 前端类型检查
 ```
 
-## 2. 开发工作流
+> **提示**：本地不要随便跑整套 pytest，见下面 §4 关于 `py-test` 偶发挂死的说明。优先用 `uv run pytest <path>` 跑你改到的目标测试。
 
-### 2.1 起新分支
+## 2. 仓库结构
+
+- `python/packages/corlinman-*`：25 个 workspace 包。`corlinman-server` 是最大的一个（gateway 单体，约 85K LOC），其余按职责拆成 agent / providers / channels / memory-host / evolution-* / grpc / hooks 等。
+- `ui/`：Node 20 + pnpm 的前端。所有前端命令用 `pnpm -C ui <script>`。
+- `proto/corlinman/v1/*.proto`：proto 定义。生成出来的 stubs 在 `python/packages/corlinman-grpc/src/corlinman_grpc/_generated/`，**必须提交**——CI 的 `proto-sync` 会校验它们没有 drift。
+- `.importlinter`：Python 平面的分层契约（layers contract），CI 的 `boundary-check` 据此强制模块边界。
+- `.github/workflows/ci.yml`：合入门禁。
+
+## 3. 开发工作流
+
+### 3.1 起新分支
 
 ```bash
 git checkout main
 git pull
-git checkout -b feat/plugin-manifest-watcher
+git checkout -b feat/marketplace-search-plugins
 ```
 
 分支命名：`<type>/<short-slug>`，`type` 和下面 commit 规范里的相同。
 
-### 2.2 写代码
+### 3.2 写代码
 
-参考 [docs/architecture.md](docs/architecture.md) 找你要改的 crate / package。每个 crate
-会在自己目录下放一份简短 README（M1 起）说内部模块划分。改之前先看一眼。
+参考 [docs/architecture.md](docs/architecture.md) 和 [docs/pr-standards.md](docs/pr-standards.md) 找你要改的 package / 区域以及它的 owner-area。
 
 **小 PR 优先**：一个 PR 一个关注点。大 refactor 拆成多个 PR（先结构调整，再行为变更）。
 
-**改 proto 要谨慎**：`proto/corlinman/v1/*.proto` 的字段编号和语义不能向后不兼容。加字段
-OK；改字段类型 / 删字段 / 重排编号要先开 issue 讨论。
+**尊重模块边界**：Python 核心 gRPC 平面是分层的（`corlinman_server → corlinman_agent → corlinman_providers → corlinman_grpc`，高层可以 import 低层，反向不行；同层 peer 包之间不互相 import）。契约写在 `.importlinter`，本地用 `uv run lint-imports` 自查。新增的反向 import 会被 `boundary-check` 拦住。
 
-### 2.3 提交前
+**改 proto 要谨慎**：`proto/corlinman/v1/*.proto` 的字段编号和语义不能向后不兼容。加字段 OK；改字段类型 / 删字段 / 重排编号要先开 issue 讨论。改完务必跑 `bash scripts/gen-proto.sh` 并把重新生成的 stubs 一起提交，否则 `proto-sync` 会失败。
 
-pre-commit 会自动跑，但最好手动先跑一遍：
+### 3.3 提交前
+
+pre-commit 钩子（`.git-hooks/pre-commit`）会对暂存的文件自动跑 `uv run ruff check`、`uv run mypy`、`pnpm -C ui typecheck`。但合入门禁更严格，最好手动先跑一遍门禁等价命令：
 
 ```bash
-cargo fmt
-cargo clippy --all-targets -- -D warnings
-uv run ruff check python/
-uv run ruff format python/
-uv run mypy python/
-pnpm --filter ui typecheck
-pnpm --filter ui lint
+uv run ruff check .
+uv run mypy python/packages/
+uv run lint-imports
+uv run pytest <你改到的路径>
+pnpm -C ui typecheck
+pnpm -C ui lint
+pnpm -C ui test
 ```
 
-有紧急情况（生产 hotfix，CI 挂但你确定你改的部分没问题）可以用逃生舱：
+紧急情况（生产 hotfix，钩子在本地误报但你确定改的部分没问题）可以用逃生舱：
+
 ```bash
 FAST_COMMIT=1 git commit ...
 ```
-但 CI 上不会有 `FAST_COMMIT`，PR 仍会被 lint 拦住。
 
-### 2.4 提 PR
+但 CI 上不会有 `FAST_COMMIT`，PR 仍会被门禁拦住。
+
+### 3.4 提 PR
 
 ```bash
-git push -u origin feat/plugin-manifest-watcher
-# 然后 GH 页面 open PR，或 gh cli
+git push -u origin feat/marketplace-search-plugins
 gh pr create
 ```
 
-PR 模板会要求你填：**改动摘要**、**动机**、**测试计划**、**Changelog 条目**（按
-[keep a changelog](https://keepachangelog.com/) 格式）。
+PR 模板（[.github/PULL_REQUEST_TEMPLATE.md](.github/PULL_REQUEST_TEMPLATE.md)）会要求你填：**改动摘要**、**类型**、**行为证明（Behavior Proof）**、**风险/回滚**、**关联 issue**。
 
-## 3. 代码风格
+PR 开出来后会走 Codex 自动评审流程（见 §6）。状态标签由
+[.github/workflows/pr-status-labels.yml](.github/workflows/pr-status-labels.yml) 自动打，不用你手动管。
 
-### 3.1 Rust
+## 4. 合入门禁（CI Gate）
 
-- `rustfmt` 默认配置（仓库不改 `rustfmt.toml`）。
-- `clippy` 以 `-D warnings` 运行；确实要 `allow` 就在 attribute 上注释理由。
-- 错误类型统一用 `corlinman-core::error::CorlinmanError`，不自己定义 crate 级 Error。
-- 日志一律 `tracing::` 宏，带上 `subsystem=...` 字段。不用 `println!`。
-- 公开函数必须有 rustdoc。模块级文档写"这个模块管什么"一句话。
-- async 里不要 `unwrap()`，也不要 `.await` 同步锁。需要同步锁就用 `parking_lot` 且锁范围最小。
+合入 `main` 前，下面 8 个 job 必须全绿（聚合在 `gate (all required checks)` 这一个必需检查里）：
 
-### 3.2 Python
+| job | 命令 |
+| --- | --- |
+| `py-ruff` | `uv run ruff check .` |
+| `py-mypy` | `uv run mypy python/packages/` |
+| `py-test` | `uv run pytest -m "not live_llm and not live_transport"` |
+| `ui-typecheck` | `pnpm -C ui typecheck` |
+| `ui-lint` | `pnpm -C ui lint`（eslint，作用域 `ui/`） |
+| `ui-test` | `pnpm -C ui test`（vitest，作用域 `ui/`） |
+| `boundary-check` | `uv run lint-imports`（import-linter / `.importlinter`） |
+| `proto-sync` | `bash scripts/gen-proto.sh`，然后校验 `_generated/` 下的 stubs 已提交、无 drift |
 
-- `ruff` 配置在 `pyproject.toml`，line-length 100，启用 `E, F, I, N, UP, B, SIM, RUF`。
-- 类型注解**全覆盖**，`mypy --strict` 通过（配置在 `pyproject.toml`）。
-- `pydantic v2` strict 模式做所有配置和 IPC 载荷校验。
-- 日志用 `structlog.get_logger(__name__).bind(subsystem=...)`；不用 `print` 或 stdlib logging。
-- 自定义异常继承 `corlinman_agent.errors.CorlinmanError`。
-- async 函数里的 `try/except` 必须单独处理 `asyncio.CancelledError` 并 re-raise。
+### ⚠️ 已知坑：`py-test` 偶发挂到 6 小时 CI 上限
 
-### 3.3 TypeScript / UI
+`py-test` job **会偶尔挂死，一路顶到 6 小时的 CI 上限**。这是一个已知的基础设施 flaky 问题，**`main` 上也会发生**，跟你的改动通常没关系——同一套测试在本地 Python 3.12 / 3.13 上能正常跑过、正常通过。
 
-- `ui/` 用 Next.js 默认的 TS 和 ESLint 配置（App Router 15 模板）。
-- 组件文件 PascalCase；工具模块小写 kebab。
-- 不要 `any`；真需要用 `unknown` + narrow。
-- shadcn/ui 组件从 `@/components/ui/*` import；不要直接改生成出来的基础组件，写 wrapper。
+给贡献者的指引：
 
-## 4. 测试要求
-
-- **新代码必须带测试**。改 bug 必须先写一个能复现的失败测试，再修。
-- **Rust**：单测写在模块同文件 `#[cfg(test)] mod tests`；集成测试在 `tests/`；快照用
-  `insta`；属性测试用 `proptest`。
-- **Python**：`tests/` 下 `pytest`；live lane（真打 provider API）标 `@pytest.mark.live`，
-  默认 `-m "not live"` 跳过。
-- **跨进程**：参考 `qa/scenarios/*.yaml`，新契约加一个 scenario。
-- **性能敏感的改动**：跑 `corlinman qa bench` 对比 main 的 histogram，PR 描述里贴数字。
+- **这不是你的锅**。先别去 debug 你的 diff。
+- **直接 rerun 这个 job**。绿色门禁有时候需要一次走运的 rerun，或者由 admin merge。
+- **本地别跑整套**。用 `uv run pytest <path>` 跑你改到的目标测试来获得快速反馈，不要本地复现整套挂死。
+- 如果某次 rerun 仍然挂死，在 PR 里 ping 维护者，由 admin 走门禁合入。
 
 ## 5. 提交信息约定（Conventional Commits）
 
-格式：`<type>(<scope>): <subject>`，正文和 footer 可选。
+格式：`<type>(<scope>): <subject>`，正文和 footer 可选。本仓库实际就这么用（跑 `git log --oneline -30` 看真实风格），例如：
 
 ```
-feat(plugins): support async plugin callback via /plugin-callback
-
-Adds oneshot::Sender wakeup keyed by taskId. Gateway middleware
-parses taskId from query, matches pending task, sends payload.
-
-Closes #42
+feat(marketplace): add search plugin bundles and docs
+fix(channels): restore replies — tolerate persona_id-less channel requests
+fix(gateway/auth): bridge admin session to /v1/chat so in-app chat works
+chore: add PR status label automation
+docs(pr): document Codex PR review flow
 ```
 
 允许的 `type`：
@@ -143,69 +156,70 @@ Closes #42
 | --- | --- |
 | `feat` | 新功能（对用户可见） |
 | `fix` | bug 修复 |
+| `chore` | 构建、依赖、CI、脚本、维护 |
 | `docs` | 仅文档 |
-| `refactor` | 不改行为的结构调整 |
-| `test` | 加测试或测试基础设施 |
-| `chore` | 构建、依赖、CI、脚本 |
-| `perf` | 性能优化（带 bench 数字） |
 
-`scope` 是受影响的 crate / package / 组件，如 `plugins` / `gateway` / `agent` / `ui` / `proto` /
-`docs`。多个 scope 用 `/` 分隔或省略。
+`scope` 是受影响的 package / 区域，例如 `channels` / `gateway` / `providers` / `ui` / `marketplace` / `proto` / `docs`，也可以更细（如 `gateway/auth`、`admin/config`、`persona/ui`、`telegram`）。多个 scope 用 `/` 分隔或省略。
 
 **subject 用现在时祈使句**：`add X`、`fix Y`，不是 `added` / `adds`。
 
-**不合格的 commit** 会被 `commitlint`（pre-commit 钩子里）拒。
+## 6. Codex 评审流程
 
-## 6. PR 要求
+本仓库用一套 PR 状态系统，让评审者从标签就能看出当前状态，而不用从头读时间线。完整说明见 [.github/CODEX_REVIEW.md](.github/CODEX_REVIEW.md)，默认流程：
 
-合入 `main` 前所有 PR 必须：
+1. 开一个聚焦的 PR，标题用 `type(scope): concise change`。
+2. 对用户可见的改动附上行为证明：测试、截图、视频、日志、curl 输出或 before/after 说明。
+3. 让 Codex 自动评审跑起来（建仓配置为：PR 创建时评审，之后每次 push 再评审一次）。
+4. 评审结果看起来 stale 时，在 PR 里评论 `@codex review`。
+5. 把 Codex 的 `eyes` reaction 当作"已收到"，然后等真正的评审评论或 👍。
+6. 从最新的 bot 评论、评审线程和证据来判断 PR 状态——不要只信 stale 标签。
 
-- [ ] 所有 CI 检查绿（fmt、clippy、ruff、mypy、typecheck、nextest、pytest non-live、UI test、
-  QA scenarios 1-5）
-- [ ] 至少一个 reviewer approve
-- [ ] Conventional Commits 标题
-- [ ] 带测试（新 feature 或 bug fix）
-- [ ] 文档同步更新：
-  - 改 proto → 更新 [docs/architecture.md](docs/architecture.md) §5 "proto 服务速览"
-  - 改 config schema → 更新 [docs/architecture.md](docs/architecture.md) §7 数据与配置组织
-  - 改插件 runtime 行为 → 更新 [docs/plugin-authoring.md](docs/plugin-authoring.md)
-  - 新增 metric / 可运维项 → 更新 [docs/runbook.md](docs/runbook.md)
-- [ ] `CHANGELOG.md` 条目（M8 之后强制）
+状态标签由 `pr-status-labels.yml` 自动维护，常见的有：`codex:needs-review`、`codex:review-requested`、`codex:reviewed`、`codex:needs-rerun`、`codex:setup-issue`，以及 `status: 🔁 re-review loop`、`status: 🛠️ actively grinding`、`status: 📣 needs proof`、`status: 👀 ready for maintainer look`、`status: ⏳ waiting on author`、`status: ✅ merge-ready`、`status: 🚧 blocked`。证明类标签：`proof: missing` / `proof: supplied` / `proof: sufficient` / `proof: 📸 screenshot` / `proof: 🎥 video`。
+
+## 7. 测试要求
+
+- **新代码必须带测试**。改 bug 必须先写一个能复现的失败测试，再修。
+- **Python**：测试用 `pytest`，写在各包的 `tests/` 下。live lane（真打 provider API / 真起 channel 端点）用 marker 标注：`@pytest.mark.live_llm`、`@pytest.mark.live_transport`，CI 默认 `-m "not live_llm and not live_transport"` 跳过。
+- **前端**：`ui/` 用 vitest（`pnpm -C ui test`）。
+- 本地优先用 `uv run pytest <path>` 跑目标测试（见 §4）。
+
+## 8. PR 合入清单
+
+合入 `main` 前，PR 必须：
+
+- [ ] 8 个门禁 job 全绿（`py-ruff`、`py-mypy`、`py-test`、`ui-typecheck`、`ui-lint`、`ui-test`、`boundary-check`、`proto-sync`）——`py-test` 偶发挂死时按 §4 处理。
+- [ ] Conventional Commits 风格的标题。
+- [ ] 带测试（新 feature 或 bug fix）。
+- [ ] 行为证明已附（对用户可见 / UI 改动尤其需要）。
+- [ ] 改 proto → 重新生成并提交 `_generated/` stubs。
+- [ ] 不引入新的反向 import（`uv run lint-imports` 本地通过）。
+- [ ] 触及别的 owner-area 时，由对应 CODEOWNERS approve（见 [docs/pr-standards.md](docs/pr-standards.md)）。
+- [ ] Codex 评审已过或已请求（见 §6）。
 
 **禁止**：
-- `--no-verify` 绕过 hooks（CI 会重跑拦住，浪费时间）
-- 一个 PR 同时改 3+ 不相关的 feature
-- 大量 drive-by formatting（写你改的函数就好）
 
-## 7. 分支策略
+- `--no-verify` / `FAST_COMMIT` 绕过钩子来推 PR（CI 会重跑拦住，浪费时间）。
+- 一个 PR 同时改 3+ 不相关的 feature。
+- 大量 drive-by formatting（写你改的函数就好）。
 
-- `main` —— 受保护。只能通过 PR 合入。线性历史（squash merge 或 rebase merge）。
-- `feature/*` / `feat/*` / `fix/*` —— 短期分支，从 `main` 拉，合回 `main`。
-- `release/1.x` —— 发布分支（M8 之后引入）。只接受 cherry-pick 的 fix。
+## 9. 分支策略
+
+- `main` —— 通过 PR 合入，要求门禁全绿。
+- `feat/*` / `fix/*` / `chore/*` —— 短期分支，从 `main` 拉，合回 `main`。
 - 不鼓励长期 topic branch；拆小 PR 勤合 main。
 
-## 8. 行为准则
+## 10. 行为准则
 
-工作语言中英皆可（docs 里为了中文用户以中文为主，技术术语保留英文；代码 comment 英文）。
-尊重他人、就事论事、不人身攻击。
+工作语言中英皆可（docs 里为了中文用户以中文为主，技术术语保留英文；代码 comment 英文）。尊重他人、就事论事。
 
-安全漏洞请**不要**公开开 issue。发邮件到 `TODO: security contact email` 报告（维护者补）。
-
-## 9. 还没决定的东西（M0 待定）
-
-以下在 M0 过程中会定稿，当前都是占位：
-
-- 具体 GitHub organization 名（影响镜像 namespace、crate publish target）
-- LICENSE 的署名（现在是 `MIT` 但 copyright holder 还空）
-- security contact 邮箱
-- Code of Conduct 文件（大概率用 Contributor Covenant 2.1）
-
-如果你的 PR 触到这些，PR 描述里 ping 维护者讨论。
+安全漏洞请**不要**公开开 issue。私下联系维护者报告。
 
 ## 延伸阅读
 
-- 架构: [docs/architecture.md](docs/architecture.md)
-- 插件作者: [docs/plugin-authoring.md](docs/plugin-authoring.md)
+- 架构与模块图: [docs/architecture.md](docs/architecture.md)
+- 现状模块地图: [docs/architecture-modules.md](docs/architecture-modules.md)
+- 模块化路线图: [docs/modularization-plan.md](docs/modularization-plan.md)
+- PR 标准与 CODEOWNERS 路由: [docs/pr-standards.md](docs/pr-standards.md)
+- Codex 评审流程: [.github/CODEX_REVIEW.md](.github/CODEX_REVIEW.md)
+- CI 各 job 期望: [docs/ci-status.md](docs/ci-status.md)
 - 运维手册: [docs/runbook.md](docs/runbook.md)
-- 里程碑: [docs/milestones.md](docs/milestones.md)
-- 完整计划: `/Users/cornna/.claude/plans/openclaw-rust-python-corlinma-graceful-meerkat.md`
