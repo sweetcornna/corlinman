@@ -137,6 +137,7 @@ from corlinman_server.gateway.lifecycle.scheduler_integration import (
     DEFAULT_UPDATE_CHECK_JOB_NAME,
     _effective_scheduler_config,
     _register_default_darwin_curate_job,
+    _register_default_persona_decay_job,
     _register_default_update_check_job,
 )
 
@@ -528,6 +529,17 @@ def build_app(
         except Exception as exc:  # pragma: no cover — defensive
             logger.warning(
                 "gateway.evolution.darwin_curate_job.init_failed",
+                error=str(exc),
+            )
+
+        # R2 persona-liveness — schedule the hourly mood/fatigue decay
+        # sweep so persona state actually drifts toward baseline instead
+        # of being frozen forever. Independent best-effort, same as above.
+        try:
+            _register_default_persona_decay_job(app, cfg)
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning(
+                "gateway.persona.decay_job.init_failed",
                 error=str(exc),
             )
 

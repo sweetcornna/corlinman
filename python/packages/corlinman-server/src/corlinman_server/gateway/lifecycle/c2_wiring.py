@@ -184,6 +184,47 @@ def _build_agent_runner_fn(state: Any) -> Any:
     return _runner
 
 
+async def _seed_builtin_persona_state(state_store: Any) -> None:
+    """Insert a default-shaped persona-STATE row for the built-in grantley
+    persona when absent (gap persona-life-resolver-dead boot-seed).
+
+    The :class:`~corlinman_persona.PersonaResolver` reads
+    ``{{persona.mood/fatigue/recent_topics/life_*}}`` off the
+    ``agent_state.sqlite`` row keyed ``(tenant_id="default",
+    agent_id="grantley")``. No other lifecycle creates that row, so without
+    this seed the resolver returns ``""`` for every placeholder until the
+    agent's ``persona_life_*`` tools happen to write one.
+
+    Idempotent — mirrors :func:`corlinman_persona.seeder.seed_from_card`'s
+    insert-if-absent semantics: an existing row is **never** overwritten
+    (mutations there belong to the EvolutionLoop / persona tools). We don't
+    reuse ``seed_from_card`` because it requires an on-disk agent-card YAML
+    path; the built-in grantley body ships as markdown, not a card, so we
+    upsert a defaults-only :class:`PersonaState` directly.
+    """
+    from corlinman_persona.state import PersonaState
+
+    from corlinman_server.persona.default_grantley import DEFAULT_GRANTLEY_ID
+
+    existing = await state_store.get(DEFAULT_GRANTLEY_ID)
+    if existing is not None:
+        return
+    await state_store.upsert(
+        PersonaState(
+            agent_id=DEFAULT_GRANTLEY_ID,
+            mood="neutral",
+            fatigue=0.0,
+            recent_topics=[],
+            # ``upsert`` stamps updated_at with "now" because we pass 0.
+            updated_at_ms=0,
+            state_json={},
+        )
+    )
+    logger.info(
+        "gateway.c2.persona_state_seeded", agent_id=DEFAULT_GRANTLEY_ID
+    )
+
+
 async def _wire_c2_handles(
     app: Any, state: Any, admin_a_state: Any, data_dir: Path, cfg: Any | None
 ) -> None:
@@ -230,6 +271,7 @@ async def _wire_c2_handles(
         state_store = await _StateStore.open_or_create(
             data_dir / "agent_state.sqlite"
         )
+        await _seed_builtin_persona_state(state_store)
         resolver = PersonaResolver(state_store)
         state.persona_resolver = resolver
         # Stash the open store handle so the lifespan-exit can close it and

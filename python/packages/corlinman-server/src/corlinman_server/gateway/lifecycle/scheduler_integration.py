@@ -46,6 +46,11 @@ DEFAULT_UPDATE_CHECK_JOB_NAME: str = "system.update_check"
 #: ``EVOLUTION_DARWIN_CURATE_BUILTIN_NAME`` builtin by string match.
 DEFAULT_EVOLUTION_DARWIN_CURATE_JOB_NAME: str = "evolution.darwin_curate"
 
+#: Canonical name of the R2 hourly persona mood/fatigue decay sweep.
+#: Same ``<plugin>.<tool>`` convention so the scheduler resolves the
+#: ``PERSONA_DECAY_BUILTIN_NAME`` builtin by string match.
+DEFAULT_PERSONA_DECAY_JOB_NAME: str = "persona.decay"
+
 
 def _config_has_scheduler_job(cfg: Any | None, name: str) -> bool:
     """``True`` when the loaded config already carries a job by ``name``.
@@ -214,6 +219,73 @@ def _register_default_darwin_curate_job(app: Any, cfg: Any | None) -> None:
 
     logger.info(
         "gateway.evolution.darwin_curate_job.registered",
+        name=name,
+        cron=cron_expr,
+    )
+
+
+def _register_default_persona_decay_job(app: Any, cfg: Any | None) -> None:
+    """R2 persona-liveness — stash a default ``persona.decay`` scheduler
+    job on ``app.state`` alongside the W2.2 update-check + W3 darwin jobs.
+
+    Without this nothing ever sweeps mood/fatigue decay, so a fresh
+    install's mood stays ``"neutral"`` / fatigue stays ``0.0`` forever.
+
+    Same operator-override / de-dupe discipline as
+    :func:`_register_default_darwin_curate_job`:
+
+    * Explicit ``[[scheduler.jobs]] name = "persona.decay"`` already in
+      config → silent no-op so the operator's cron wins.
+    * Otherwise → append a :class:`SchedulerJob` firing hourly at
+      ``"0 0 */1 * * * *"`` (top of every hour). Action is
+      ``JobAction.run_tool(plugin="persona", tool="decay")`` which the
+      scheduler dispatches to the :data:`PERSONA_DECAY_BUILTIN_NAME`
+      builtin.
+
+    Log lines use the ``gateway.persona.decay_job.*`` prefix so the
+    wiring is greppable across boot logs.
+    """
+    name = DEFAULT_PERSONA_DECAY_JOB_NAME
+    if _config_has_scheduler_job(cfg, name):
+        logger.info(
+            "gateway.persona.decay_job.skipped_explicit_config",
+            name=name,
+        )
+        return
+
+    # Hourly — mood/fatigue drift is gradual but the per-row elapsed-hours
+    # math means a tick that fires under a busy window still applies the
+    # right amount of decay (the builtin reads each row's updated_at).
+    cron_expr = "0 0 */1 * * * *"
+
+    try:
+        from corlinman_server.scheduler import JobAction, SchedulerJob
+
+        job = SchedulerJob(
+            name=name,
+            cron=cron_expr,
+            action=JobAction.run_tool(
+                plugin="persona",
+                tool="decay",
+            ),
+        )
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning(
+            "gateway.persona.decay_job.build_failed",
+            error=str(exc),
+        )
+        return
+
+    existing = getattr(app.state, "corlinman_default_scheduler_jobs", None)
+    if not isinstance(existing, list):
+        existing = []
+    if any(getattr(j, "name", None) == name for j in existing):
+        return
+    existing.append(job)
+    app.state.corlinman_default_scheduler_jobs = existing
+
+    logger.info(
+        "gateway.persona.decay_job.registered",
         name=name,
         cron=cron_expr,
     )

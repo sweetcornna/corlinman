@@ -545,3 +545,60 @@ async def test_chat_timeout_returns_typed_envelope(monkeypatch: pytest.MonkeyPat
     assert out["ok"] is False
     assert out["error"] == "chat_timeout"
     assert any("qzone_publish" in name for name in out["tools_called"])
+
+
+# ---------------------------------------------------------------------------
+# R4 regression: persona_id forwarded into InternalChatRequest (B2 fix)
+# ---------------------------------------------------------------------------
+
+
+async def test_internal_chat_request_carries_persona_id() -> None:
+    """scheduler-fired qzone turn must bind persona_id on the request.
+
+    R4 root-cause: ``_build_internal_chat_request`` constructed the
+    request without ``persona_id``, so ``ChatStart.extra["persona_id"]``
+    was absent — the agent servicer saw no bound persona and
+    ``image_with_refs`` / persona-life tools silently fell back to
+    requiring an explicit model arg. Regression asserts the field is
+    wired through.
+    """
+    store = _FakePersonaStore(
+        {"grantley": _FakePersona(id="grantley", system_prompt="You are a tiger.")}
+    )
+    chat = _ScriptedChatService(
+        events=[
+            _qzone_tool_call(),
+            _qzone_tool_result(
+                payload={
+                    "ok": True,
+                    "tid": "tid-r4",
+                    "qzone_url": "https://user.qzone.qq.com/1234/mood/tid-r4",
+                    "uin": "1234",
+                    "images": 0,
+                    "generated": False,
+                },
+            ),
+            DoneEvent(finish_reason="stop"),
+        ],
+    )
+    metadata = {
+        "persona_id": "grantley",
+        "prompt_template": "Post daily update.",
+    }
+    ctx = BuiltinContext(
+        app_state=_make_app_state(
+            chat=chat, persona_store=store, metadata=metadata
+        ),
+        name="grantley.daily_qzone",
+    )
+    out = await _qzone_daily_publish_action(ctx)
+
+    assert out["ok"] is True, out
+    assert len(chat.requests) == 1
+    req = chat.requests[0]
+    # R4 fix: persona_id must be present on the request so the agent
+    # servicer wires ChatStart.extra["persona_id"] for persona binding.
+    assert req.persona_id == "grantley", (
+        "InternalChatRequest.persona_id must be forwarded from job metadata "
+        "(R4 regression: was None before B2 fix)"
+    )

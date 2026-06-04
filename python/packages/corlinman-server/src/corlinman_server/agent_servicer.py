@@ -2933,17 +2933,16 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 return await dispatch_image_with_refs(
                     args_json=event.args_json,
                     provider=provider,
-                    # The child runner's ``_seed_child_persona`` writes a
-                    # persona-STATE row (mood/fatigue) keyed by (tenant_id,
-                    # child_agent_id) and calls ``store.get/upsert(...,
-                    # tenant_id=...)``. That is the corlinman-persona STATE
-                    # store (``agent_state.sqlite``), NOT the system-prompt
-                    # registry (``personas.sqlite``) whose ``get()`` takes no
-                    # tenant_id. Passing the registry here made every child
-                    # spawn log ``persona_seed_failed: unexpected keyword
-                    # 'tenant_id'`` (best-effort, so spawns still ran but
-                    # seeding silently never happened). Use the state store.
-                    persona_store=await self._get_persona_state_store(),
+                    # dispatch_image_with_refs calls ``persona_store.get(
+                    # persona_id)`` (no tenant_id) to look up the persona
+                    # body / system-prompt row from ``personas.sqlite``.
+                    # That is the PERSONA-BODY registry opened by
+                    # ``_get_persona_store()``.  The life-STATE store
+                    # (``agent_state.sqlite``, opened by
+                    # ``_get_persona_state_store()``) holds mood/fatigue rows,
+                    # not persona bodies — passing it here meant image_with_refs
+                    # could not resolve the persona's reference 立绘.
+                    persona_store=await self._get_persona_store(),
                     asset_store=await self._get_persona_asset_store(),
                     bound_persona_id=bound_persona_id,
                 )
