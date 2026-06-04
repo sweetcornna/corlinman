@@ -2,19 +2,12 @@ import type { Metadata } from "next";
 import "./globals.css";
 import { GeistSans } from "geist/font/sans";
 import { GeistMono } from "geist/font/mono";
-import { Instrument_Serif } from "next/font/google";
 import { Providers } from "@/components/providers";
 
 // Tidepool display serif (Phase 0). Used only where explicitly opted in
 // via `font-serif` (hero greeting, uptime streak card, italic emphasis).
-// Single weight + italic keeps the payload under ~30KB total.
-const instrumentSerif = Instrument_Serif({
-  weight: "400",
-  style: ["normal", "italic"],
-  subsets: ["latin"],
-  display: "swap",
-  variable: "--font-instrument-serif",
-});
+// The CSS variable is defined in globals.css using local system fallbacks so
+// Docker builds do not depend on Google Fonts availability.
 
 export const metadata: Metadata = {
   title: "corlinman admin",
@@ -61,7 +54,7 @@ export default function RootLayout({
     <html
       lang="zh-CN"
       suppressHydrationWarning
-      className={`${GeistSans.variable} ${GeistMono.variable} ${instrumentSerif.variable}`}
+      className={`${GeistSans.variable} ${GeistMono.variable}`}
     >
       <head>
         <script dangerouslySetInnerHTML={{ __html: BOOT }} />

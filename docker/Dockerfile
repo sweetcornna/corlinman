@@ -66,7 +66,7 @@ COPY pyproject.toml uv.lock README.md ./
 COPY python ./python
 COPY proto ./proto
 COPY scripts/gen-proto.sh ./scripts/gen-proto.sh
-RUN sed -i 's/\r$//' ./scripts/gen-proto.sh
+RUN sed -i 's/\r$//' scripts/gen-proto.sh && chmod +x scripts/gen-proto.sh
 
 # Docker contexts can contain ignored local bytecode directories from packages
 # that no longer exist. uv's workspace glob treats every python/packages/*

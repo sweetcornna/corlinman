@@ -53,3 +53,12 @@ def test_docker_runtime_installs_gateway_package_not_every_workspace_member() ->
 
     assert "uv sync --package corlinman-server --frozen --no-dev" in dockerfile
     assert "uv sync --all-packages --frozen --no-dev" not in dockerfile
+
+
+def test_dockerfile_normalizes_shell_scripts_for_windows_checkouts() -> None:
+    dockerfile = (REPO_ROOT / "docker" / "Dockerfile").read_text(
+        encoding="utf-8"
+    )
+
+    assert "sed -i 's/\\r$//' scripts/gen-proto.sh" in dockerfile
+    assert "sed -i 's/\\r$//' /app/start.sh" in dockerfile

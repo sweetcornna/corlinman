@@ -150,7 +150,8 @@ const config: Config = {
       fontFamily: {
         sans: ["var(--font-geist-sans)", "ui-sans-serif", "system-ui", "sans-serif"],
         // Tidepool (Phase 0): display serif for hero / streak / italic emphasis.
-        // Loaded via next/font in app/layout.tsx as --font-instrument-serif.
+        // Defined in globals.css with local system fallbacks so Docker builds
+        // never need Google Fonts access.
         serif: [
           "var(--font-instrument-serif)",
           "Instrument Serif",
