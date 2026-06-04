@@ -115,6 +115,8 @@ export const SUPPORTED_HUMANLIKE_CHANNELS = [
   "discord",
   "slack",
   "feishu",
+  "qq_official",
+  "wechat_official",
 ] as const;
 
 export type HumanlikeChannel = (typeof SUPPORTED_HUMANLIKE_CHANNELS)[number];

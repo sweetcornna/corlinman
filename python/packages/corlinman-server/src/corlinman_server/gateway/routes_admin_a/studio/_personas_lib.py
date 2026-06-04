@@ -354,13 +354,22 @@ def _qq_humanlike_block(state: AdminState) -> dict[str, Any]:
     return _channel_humanlike_block(state, "qq")
 
 
-#: Channels that support the humanlike system-prompt injection. WeChat
-#: Official + QQ Official are intentionally excluded — the former is
-#: webhook-only and doesn't currently surface a persona path, and the
-#: latter does its own per-platform message formatting that doesn't sit
-#: alongside the spinner / footer machinery this initiative depends on.
+#: Channels that support the humanlike system-prompt injection. The two
+#: "official" platforms (QQ Official ``api.sgroup.qq.com`` + WeChat
+#: Official webhook) were wired into the humanlike resolver in Wave 2, so
+#: their runtime persona binding is now toggleable here too — leaving them
+#: out 404'd ``PUT /admin/channels/{qq_official,wechat_official}/humanlike``
+#: and operators couldn't flip the binding the channel runtime reads.
 SUPPORTED_HUMANLIKE_CHANNELS: frozenset[str] = frozenset(
-    {"qq", "telegram", "discord", "slack", "feishu"}
+    {
+        "qq",
+        "telegram",
+        "discord",
+        "slack",
+        "feishu",
+        "qq_official",
+        "wechat_official",
+    }
 )
 
 

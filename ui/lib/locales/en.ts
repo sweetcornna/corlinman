@@ -2977,6 +2977,8 @@ export const en = {
       discord: "Discord",
       slack: "Slack",
       feishu: "Feishu",
+      qq_official: "QQ Official",
+      wechat_official: "WeChat Official",
     },
     personaSelectLabel: "Active persona",
     personaSelectPlaceholder: "Pick a persona…",

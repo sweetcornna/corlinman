@@ -424,6 +424,172 @@ def test_import_bundle_missing_persona_json_errors(tmp_path: Path, db_paths) -> 
     assert result.exit_code != 0
 
 
+@pytest.mark.parametrize("evil_id", ["../escape", "a/b", "..", "foo/../bar"])
+def test_import_rejects_path_traversal_id(
+    tmp_path: Path, db_paths, evil_id: str
+) -> None:
+    """A bundle whose id contains path separators / dot segments is
+    rejected before any row is created or asset blob is written."""
+    persona_db, _, __, data_dir = db_paths
+    out_dir = tmp_path / "export"
+
+    # The on-disk bundle dir name is benign; the *id inside* persona.json is
+    # the attacker-controlled value that would escape the asset tree.
+    bundle = out_dir / "benign"
+    bundle.mkdir(parents=True, exist_ok=True)
+    (bundle / "persona.json").write_text(
+        json.dumps(
+            {
+                "format_version": 1,
+                "id": evil_id,
+                "display_name": "Evil",
+                "short_summary": "evil",
+                "system_prompt": "evil body",
+                "is_builtin": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = _RUNNER.invoke(
+        cli,
+        [
+            "persona-import",
+            "--in", str(out_dir),
+            "--persona-db", str(persona_db),
+            "--data-dir", str(data_dir),
+        ],
+    )
+    # Must error out with a clear slug message …
+    assert result.exit_code != 0
+    assert "slug" in result.output.lower()
+    # … and must NOT have created any persona row for the crafted id.
+
+    async def _check() -> Persona | None:
+        ps = await PersonaStore.open(persona_db)
+        try:
+            return await ps.get(evil_id)
+        finally:
+            await ps.close()
+
+    assert asyncio.run(_check()) is None
+
+
+def test_import_skips_existing_custom_without_overwrite(
+    tmp_path: Path, db_paths
+) -> None:
+    """Importing over an existing *custom* persona without --overwrite skips
+    (mirrors the builtin guard) and leaves the row untouched."""
+    persona_db, _, __, data_dir = db_paths
+    out_dir = tmp_path / "export"
+
+    asyncio.run(_insert_custom(persona_db, "vivian", "Vivian Original"))
+
+    bundle = out_dir / "vivian"
+    bundle.mkdir(parents=True, exist_ok=True)
+    (bundle / "persona.json").write_text(
+        json.dumps(
+            {
+                "format_version": 1,
+                "id": "vivian",
+                "display_name": "Vivian Updated",
+                "short_summary": "updated summary",
+                "system_prompt": "Updated body.",
+                "is_builtin": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    # No --overwrite → should skip, exit nonzero, and not mutate the row.
+    result = _RUNNER.invoke(
+        cli,
+        [
+            "persona-import",
+            "--in", str(out_dir),
+            "--persona-db", str(persona_db),
+            "--data-dir", str(data_dir),
+        ],
+    )
+    assert result.exit_code != 0
+    assert "skip" in result.output.lower()
+
+    async def _check() -> Persona | None:
+        ps = await PersonaStore.open(persona_db)
+        try:
+            return await ps.get("vivian")
+        finally:
+            await ps.close()
+
+    persona = asyncio.run(_check())
+    assert persona is not None
+    assert persona.display_name == "Vivian Original"
+
+    # With --overwrite the same bundle now updates the row.
+    result2 = _RUNNER.invoke(
+        cli,
+        [
+            "persona-import",
+            "--in", str(out_dir),
+            "--overwrite",
+            "--persona-db", str(persona_db),
+            "--data-dir", str(data_dir),
+        ],
+    )
+    assert result2.exit_code == 0, result2.output
+
+    persona2 = asyncio.run(_check())
+    assert persona2 is not None
+    assert persona2.display_name == "Vivian Updated"
+    assert persona2.system_prompt == "Updated body."
+
+
+def test_reexport_clears_stale_files(tmp_path: Path, db_paths) -> None:
+    """Re-exporting into a dir that holds files from a prior export removes
+    the stale files so a later import can't resurrect deleted data."""
+    persona_db, asset_sqlite, asset_base, data_dir = db_paths
+    out_dir = tmp_path / "export"
+
+    asyncio.run(_insert_custom(persona_db, "vivian", "Vivian"))
+    asyncio.run(_add_asset(asset_sqlite, asset_base, "vivian", "front"))
+
+    def _export() -> None:
+        result = _RUNNER.invoke(
+            cli,
+            [
+                "persona-export",
+                "--id", "vivian",
+                "--out", str(out_dir),
+                "--persona-db", str(persona_db),
+                "--data-dir", str(data_dir),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+
+    # First export: asset + its meta sidecar land on disk.
+    _export()
+    bundle = out_dir / "vivian"
+    assert (bundle / "assets" / "reference" / "front.png").is_file()
+    assert (bundle / "assets" / "reference" / "front.meta.json").is_file()
+
+    # Drop the asset, then re-export.
+    async def _delete_asset() -> None:
+        pas = await PersonaAssetStore.open(asset_sqlite, asset_base)
+        try:
+            await pas.delete("vivian", "reference", "front")
+        finally:
+            await pas.close()
+
+    asyncio.run(_delete_asset())
+    _export()
+
+    # The stale blob + meta from the first export must be gone — no resurrection.
+    assert not (bundle / "assets" / "reference" / "front.png").exists()
+    assert not (bundle / "assets" / "reference" / "front.meta.json").exists()
+    # persona.json itself is rewritten and still present.
+    assert (bundle / "persona.json").is_file()
+
+
 def test_export_import_round_trips_life_seeds(tmp_path: Path, db_paths) -> None:
     """A persona's life-seeds override file survives export -> import."""
     from corlinman_agent.persona.life import _override_seed_path

@@ -2915,6 +2915,8 @@ export const zhCN = {
       discord: "Discord",
       slack: "Slack",
       feishu: "飞书",
+      qq_official: "QQ 官方机器人",
+      wechat_official: "微信公众号",
     },
     personaSelectLabel: "当前 persona",
     personaSelectPlaceholder: "选择 persona…",

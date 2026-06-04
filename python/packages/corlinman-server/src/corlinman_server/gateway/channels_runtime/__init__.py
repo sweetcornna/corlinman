@@ -764,10 +764,19 @@ def build_channel_tasks(
         try:
             from corlinman_channels import run_wechat_official_channel
 
+            # NB: asset_store is intentionally NOT threaded to wechat_official.
+            # Passing it would make inject_persona_if_enabled append the emoji
+            # block, which tells the model to call ``send_attachment`` — but the
+            # WeChat-official handler (handle_one_wechat_official) only handles
+            # the status-link tool and silently drops send_attachment, so the
+            # emoji would never be delivered. The persona system_prompt is still
+            # injected (persona_store stays wired); we just omit the asset path.
+            # qq_official keeps its asset_store — its handler DOES deliver
+            # send_attachment (handle_one_qq_official / _SEND_ATTACHMENT_TOOL).
             params = _build_wechat_official_params(
                 wx_cfg, model, chat_service,
                 persona_store=persona_store,
-                asset_store=asset_store,
+                asset_store=None,
             )
             task = asyncio.create_task(
                 _run_channel(

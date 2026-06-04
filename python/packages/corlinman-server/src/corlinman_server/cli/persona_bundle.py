@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -92,7 +93,11 @@ async def export_persona(
         return 1
 
     # ---- bundle dir ----
+    # Start from a clean directory so stale blobs / .meta.json / life_seeds
+    # from a prior export can't resurrect deleted data on a later import.
     bundle = out_dir / persona_id
+    if bundle.exists():
+        shutil.rmtree(bundle)
     bundle.mkdir(parents=True, exist_ok=True)
 
     # ---- persona.json ----
@@ -232,6 +237,23 @@ async def import_persona(
 
     persona_id: str = data["id"]
 
+    # ---- slug guard ----
+    # The id is interpolated into the persona row AND asset blob paths
+    # (<asset_base>/<id>/<kind>/<sha>). A crafted id with path separators or
+    # dot segments would escape the asset tree, so reject it up front before
+    # any create / asset-restore happens.
+    from corlinman_agent.persona.life import (  # type: ignore[import-untyped]
+        _valid_persona_slug,
+    )
+
+    if not _valid_persona_slug(persona_id):
+        click.echo(
+            f"error: bundle persona id {persona_id!r} is not a valid slug "
+            "([a-z0-9_-]); refusing to import.",
+            err=True,
+        )
+        return 1
+
     # ---- open persona store ----
     ps = await PersonaStore.open(persona_db)
     try:
@@ -241,6 +263,14 @@ async def import_persona(
             click.echo(
                 f"skip: '{persona_id}' is a builtin row — use --overwrite "
                 "to force.",
+                err=True,
+            )
+            return 1
+
+        if existing is not None and not existing.is_builtin and not overwrite:
+            click.echo(
+                f"skip: '{persona_id}' already exists — use --overwrite "
+                "to replace it.",
                 err=True,
             )
             return 1

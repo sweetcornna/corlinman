@@ -30,6 +30,7 @@ forwards a count of how many rows changed.
 from __future__ import annotations
 
 import logging
+import math
 import time
 from pathlib import Path
 from typing import Any
@@ -45,6 +46,16 @@ _logger = logging.getLogger("corlinman_server.scheduler.builtins.persona_decay")
 #: Builtin name used in ``JobAction.run_tool(plugin="persona", tool="decay")``.
 #: The dot-joined form matches the scheduler's ``<plugin>.<tool>`` convention.
 PERSONA_DECAY_BUILTIN_NAME: str = "persona.decay"
+
+#: ``state_json`` key holding the topic-aging anchor (unix ms). The
+#: fatigue clock rides ``updated_at_ms``, which we restamp to "now" on
+#: every sweep so fatigue recovery never double-counts. The topic clock
+#: must instead accumulate across sweeps — ``recent_topics`` ages off a
+#: per-*day* rule, and an hourly sweep restamping the fatigue clock would
+#: pin ``floor(hours/24)`` at 0 forever, so topics would never age out.
+#: We anchor the topic clock separately here and only advance it by whole
+#: days actually consumed, preserving the sub-day remainder.
+_TOPIC_DECAY_ANCHOR_KEY: str = "_topic_decay_anchor_ms"
 
 
 __all__ = [
@@ -116,17 +127,50 @@ async def _persona_decay_action(
             rows = await store.list_all(tenant_id=tenant_id)
             changed = 0
             for row in rows:
-                hours = max(0.0, (now_ms - row.updated_at_ms) / 3_600_000.0)
-                decayed = apply_decay(row, hours, config)
+                # Fatigue clock: elapsed since the last sweep. We restamp
+                # ``updated_at_ms`` to "now" below so this never
+                # double-counts hourly recovery.
+                fatigue_hours = max(0.0, (now_ms - row.updated_at_ms) / 3_600_000.0)
+
+                # Topic clock: a separate anchor that only advances by
+                # whole days consumed, so the per-day topic drop survives
+                # frequent sweeps that keep restamping the fatigue clock.
+                # Fall back to ``updated_at_ms`` (then "now") for rows
+                # written before this anchor existed.
+                anchor_ms = (
+                    row.state_json.get(_TOPIC_DECAY_ANCHOR_KEY)
+                    or row.updated_at_ms
+                    or now_ms
+                )
+                topic_hours = max(0.0, (now_ms - anchor_ms) / 3_600_000.0)
+
+                decayed = apply_decay(
+                    row,
+                    fatigue_hours,
+                    config,
+                    topic_hours_elapsed=topic_hours,
+                )
+
+                # Advance the anchor only by the whole days actually
+                # consumed, preserving the sub-day remainder so topics
+                # keep aging toward the next day boundary.
+                days_dropped = math.floor(topic_hours / 24.0)
+                if days_dropped >= 1:
+                    new_anchor_ms = anchor_ms + days_dropped * 24 * 3_600_000
+                else:
+                    new_anchor_ms = anchor_ms
+                new_state_json = dict(decayed.state_json)
+                new_state_json[_TOPIC_DECAY_ANCHOR_KEY] = new_anchor_ms
+
                 new_state = PersonaState(
                     agent_id=decayed.agent_id,
                     mood=decayed.mood,
                     fatigue=decayed.fatigue,
                     recent_topics=decayed.recent_topics,
                     # Stamp "now" so the next sweep doesn't double-count
-                    # the elapsed hours.
+                    # the elapsed hours on the fatigue clock.
                     updated_at_ms=now_ms,
-                    state_json=decayed.state_json,
+                    state_json=new_state_json,
                 )
                 await store.upsert(new_state, tenant_id=tenant_id)
                 if (

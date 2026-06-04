@@ -411,6 +411,81 @@ async def test_build_channel_tasks_threads_chat_service_into_params(
 
 
 # ---------------------------------------------------------------------------
+# official channels — asset_store threading (Codex #5)
+# ---------------------------------------------------------------------------
+
+
+async def test_official_channels_asset_store_threading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """qq_official KEEPS its asset_store (its handler delivers
+    ``send_attachment``); wechat_official is built WITHOUT one so
+    ``inject_persona_if_enabled`` never appends an emoji block telling
+    the model to call a tool wechat_official silently drops. The persona
+    store is still wired to both so the system_prompt keeps injecting."""
+    sentinel_assets = object()
+    sentinel_personas = object()
+    captured: dict[str, Any] = {}
+
+    async def _fake_run_qq_official(params: Any, cancel: asyncio.Event) -> None:
+        captured["qq_official_asset_store"] = params.asset_store
+        captured["qq_official_persona_store"] = params.persona_store
+        await cancel.wait()
+
+    async def _fake_run_wechat_official(
+        params: Any, cancel: asyncio.Event
+    ) -> None:
+        captured["wechat_official_asset_store"] = params.asset_store
+        captured["wechat_official_persona_store"] = params.persona_store
+        await cancel.wait()
+
+    import corlinman_channels
+
+    monkeypatch.setattr(
+        corlinman_channels, "run_qq_official_channel", _fake_run_qq_official
+    )
+    monkeypatch.setattr(
+        corlinman_channels,
+        "run_wechat_official_channel",
+        _fake_run_wechat_official,
+    )
+
+    cancel = asyncio.Event()
+    tasks = channels_runtime.build_channel_tasks(
+        {
+            "qq_official": {
+                "enabled": True,
+                "app_id": "qq-app",
+                "app_secret": "qq-secret",
+            },
+            "wechat_official": {
+                "enabled": True,
+                "app_id": "wx-app",
+                "app_secret": "wx-secret",
+                "token": "wx-token",
+            },
+        },
+        model="claude-x",
+        chat_service=object(),
+        cancel=cancel,
+        persona_store=sentinel_personas,
+        asset_store=sentinel_assets,
+    )
+    try:
+        assert len(tasks) == 2
+        await asyncio.sleep(0.05)  # let the task bodies run
+        # qq_official handler delivers send_attachment → keep the assets.
+        assert captured["qq_official_asset_store"] is sentinel_assets
+        # wechat_official drops send_attachment → must NOT receive assets.
+        assert captured["wechat_official_asset_store"] is None
+        # …but both keep the persona store so the system_prompt still injects.
+        assert captured["qq_official_persona_store"] is sentinel_personas
+        assert captured["wechat_official_persona_store"] is sentinel_personas
+    finally:
+        await _drain(tasks)
+
+
+# ---------------------------------------------------------------------------
 # cancellation contract — lifespan does task.cancel()
 # ---------------------------------------------------------------------------
 

@@ -342,13 +342,15 @@ describe("setQqHumanlike", () => {
 });
 
 describe("parameterized humanlike (all channels)", () => {
-  it("exposes the five supported channels", () => {
+  it("exposes the supported channels (incl. the two official platforms)", () => {
     expect([...SUPPORTED_HUMANLIKE_CHANNELS]).toEqual([
       "qq",
       "telegram",
       "discord",
       "slack",
       "feishu",
+      "qq_official",
+      "wechat_official",
     ]);
   });
 
