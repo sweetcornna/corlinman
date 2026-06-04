@@ -280,6 +280,45 @@ class TestTestEndpoint:
 
 
 class TestModelsEndpoint:
+    def test_probe_models_from_draft_openai_compatible_provider_without_persisting(
+        self,
+        client: TestClient,
+        state_and_snapshot: tuple[AdminState, dict[str, Any]],
+    ) -> None:
+        """The add-provider dialog can discover models before saving.
+
+        This uses a draft body rather than a configured provider name and
+        must not mutate the TOML-backed provider registry.
+        """
+        _, snapshot = state_and_snapshot
+        snapshot.clear()
+        snapshot.update({"providers": {}})
+
+        mock_resp = _mock_httpx_response(
+            status_code=200,
+            json_body={"data": [{"id": "relay-model-a"}, {"id": "relay-model-b"}]},
+        )
+        async_client = _mock_async_client(mock_resp)
+        with patch("httpx.AsyncClient", return_value=async_client):
+            resp = client.post(
+                "/admin/providers/probe-models",
+                json={
+                    "kind": "openai_compatible",
+                    "base_url": "https://relay.example/v1",
+                    "api_key": {"value": "sk-test"},
+                    "params": {},
+                },
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert [m["id"] for m in body["models"]] == [
+            "relay-model-a",
+            "relay-model-b",
+        ]
+        assert snapshot == {"providers": {}}
+        async_client.get.assert_awaited_once()
+
     def test_models_endpoint_openai_proxy(
         self,
         client: TestClient,

@@ -78,6 +78,13 @@ class ProviderUpsert(BaseModel):
     params: dict[str, Any] | None = None
 
 
+class ProviderModelProbe(BaseModel):
+    kind: str
+    base_url: str | None = None
+    api_key: dict[str, Any] | None = None
+    params: dict[str, Any] | None = None
+
+
 class ProviderPatch(BaseModel):
     kind: str | None = None
     enabled: bool | None = None
@@ -615,6 +622,29 @@ def _resolve_api_key(entry: dict[str, Any]) -> str:
     return ""
 
 
+def _provider_models_url(base_url: str) -> str:
+    """Return the OpenAI-shape model-list URL for an operator base URL.
+
+    Operators commonly paste either the origin (``https://relay``), an API
+    root (``https://relay/api``), or the versioned root
+    (``https://relay/api/v1``). Treat a trailing ``/v1`` as already
+    versioned so the probe does not request ``/v1/v1/models``.
+    """
+    from urllib.parse import urlsplit, urlunsplit
+
+    parts = urlsplit(str(base_url).strip().rstrip("/"))
+    path = parts.path.rstrip("/")
+    if path.endswith("/models"):
+        models_path = path
+    elif path.endswith("/v1"):
+        models_path = f"{path}/models"
+    else:
+        models_path = f"{path}/v1/models"
+    if not models_path.startswith("/"):
+        models_path = f"/{models_path}"
+    return urlunsplit((parts.scheme, parts.netloc, models_path, "", ""))
+
+
 async def _query_provider_models(
     name: str, cfg: dict[str, Any]
 ) -> dict[str, Any]:
@@ -695,7 +725,7 @@ async def _query_provider_models(
             "error": f"unsafe_host: {exc}",
         }
 
-    url = base_url.rstrip("/") + "/v1/models"
+    url = _provider_models_url(base_url)
     headers: dict[str, str] = {}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"

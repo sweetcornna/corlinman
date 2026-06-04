@@ -280,6 +280,48 @@ class TestProviderModels:
         assert "model-a" in result["models"]
         assert "model-b" in result["models"]
 
+    @pytest.mark.asyncio
+    async def test_base_url_ending_with_v1_uses_single_v1_segment(
+        self,
+        providers_state: tuple[AdminState, dict[str, Any]],
+    ) -> None:
+        """OpenAI-compatible relays commonly expose ``.../v1`` as base_url.
+
+        The probe must request ``.../v1/models`` rather than duplicating the
+        version segment into ``.../v1/v1/models``.
+        """
+        _, _snapshot = providers_state
+        cfg = {
+            "providers": {
+                "relay": {
+                    "kind": "openai_compatible",
+                    "api_key": "sk-test",
+                    "base_url": "https://relay.example/api/v1",
+                    "enabled": True,
+                }
+            }
+        }
+
+        mock_resp = _mock_httpx_response(
+            status_code=200,
+            json_body={"data": [{"id": "relay-model-a"}]},
+        )
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.get = AsyncMock(return_value=mock_resp)
+
+        from corlinman_server.gateway.routes_admin_b.config_admin._providers_lib import (
+            _query_provider_models,
+        )
+
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            result = await _query_provider_models("relay", cfg)
+
+        assert result["ok"] is True
+        mock_client.get.assert_awaited_once()
+        assert mock_client.get.await_args.args[0] == "https://relay.example/api/v1/models"
+
 
 # ---------------------------------------------------------------------------
 # Tests: GET /admin/credentials/codex/status
