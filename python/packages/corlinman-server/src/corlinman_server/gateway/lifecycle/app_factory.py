@@ -18,20 +18,32 @@ cycle because ``entrypoint`` imports *from* this module, not the reverse.
 from __future__ import annotations
 
 import asyncio
+import os
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
 import structlog
+from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import (
+    HTTPException as StarletteHTTPException,
+)
+from starlette.types import Scope
 
 from corlinman_server.gateway.lifecycle.cli_helpers import (
     _lazy_import,
+    _tenant_scope_params,
 )
 from corlinman_server.gateway.lifecycle.config_loading import (
     _reapply_hot_reloadable,
+    _wire_status_links,
 )
 from corlinman_server.gateway.lifecycle.config_resolve import (
     _admin_session_cookie_secure_from_config,
+    _resolve_allowed_public_origins,
+    _resolve_cors_origins,
+    _resolve_trusted_proxies,
+    _status_links_explicitly_configured,
     _trust_forwarded_proto_from_config,
     _trusted_forwarded_proto_proxies_from_config,
 )
@@ -722,3 +734,333 @@ def _mount_routes(
             logger.warning("gateway.routes_admin_b.mount_failed", error=str(exc))
 
     return admin_a_state, admin_b_state
+
+
+# ---------------------------------------------------------------------------
+# Middleware install (order is LOAD-BEARING — Starlette applies middleware in
+# REVERSE add order, so build_app must call these in the SAME sequence as the
+# original inline blocks)
+# ---------------------------------------------------------------------------
+
+
+def _install_cors_middleware(app: Any) -> None:
+    """Install the CORS middleware when explicit origins are configured.
+
+    Side-effect-only extraction of build_app's inline CORS block; resolves
+    the origins internally via :func:`_resolve_cors_origins`.
+    """
+    cors_origins = _resolve_cors_origins()
+    if cors_origins:
+        try:
+            from fastapi.middleware.cors import CORSMiddleware
+
+            app.add_middleware(
+                CORSMiddleware,
+                allow_origins=cors_origins,
+                allow_credentials=True,
+                allow_methods=[
+                    "GET",
+                    "POST",
+                    "PUT",
+                    "PATCH",
+                    "DELETE",
+                    "OPTIONS",
+                ],
+                allow_headers=[
+                    "authorization",
+                    "content-type",
+                    "x-corlinman-source",
+                ],
+            )
+        except ImportError as exc:  # pragma: no cover
+            logger.warning("gateway.cors.middleware_missing", error=str(exc))
+
+
+def _install_origin_learning_middleware(
+    app: Any, cfg: Any | None, resolved_data_dir: Path
+) -> None:
+    """Install the zero-config public-origin learning middleware.
+
+    Side-effect-only extraction of build_app's inline block, including the
+    ``_rearm_status_links_on_learn`` on-learn callback that re-arms the
+    channel status-link feature live via :func:`_wire_status_links`.
+    """
+    # Zero-config public-origin learning. When no explicit public_url is
+    # set, this middleware learns the public base URL from the first real
+    # inbound request through an allowed public hostname (honoring
+    # X-Forwarded-Proto/Host only from configured trusted proxies) and
+    # persists it to ``<data_dir>/public_origin``. The ``on_learn`` callback
+    # re-arms the channel status-link feature live, so the first
+    # browser/status-link hit lights up the "🔗 实时状态" link in chat replies —
+    # no operator action, no restart. Stands down entirely when public_url is explicit.
+    try:
+        from corlinman_server.gateway.origin_learn import (
+            OriginLearningMiddleware,
+        )
+
+        def _rearm_status_links_on_learn(_origin: str) -> None:
+            try:
+                _wire_status_links(cfg, resolved_data_dir)
+            except Exception as exc:  # noqa: BLE001 - best-effort re-arm
+                logger.warning(
+                    "gateway.channels.status_links_rearm_failed",
+                    error=str(exc),
+                )
+
+        app.add_middleware(
+            OriginLearningMiddleware,
+            data_dir=resolved_data_dir,
+            explicitly_configured=_status_links_explicitly_configured(cfg),
+            on_learn=_rearm_status_links_on_learn,
+            allowed_public_origins=_resolve_allowed_public_origins(cfg),
+            trusted_proxies=_resolve_trusted_proxies(cfg),
+        )
+    except Exception as exc:  # noqa: BLE001 - never block boot on learning
+        logger.warning("gateway.origin_learn.install_failed", error=str(exc))
+
+
+def _install_security_middleware(app: Any, cfg: Any | None) -> None:
+    """Install the api-key gate + admin-session bridge + tenant-scope.
+
+    Side-effect-only extraction of build_app's inline region. All three
+    share the single ``middleware_mod`` lookup; the install order is
+    preserved verbatim (api-key gate installed BEFORE tenant-scope) because
+    on ``/v1/*`` the api-key-pinned tenant must win.
+    """
+    # Middleware before routes — order matters for ASGI stack walks.
+    #
+    # R1-001 security fix: install the ``/v1/*`` API-key gate at app
+    # construction time. The middleware ships with ``admin_db=None`` (it
+    # fails closed → 401 ``admin_db_not_configured``); the lifespan
+    # below rebinds the real :class:`AdminDb` handle onto
+    # ``app.state.api_key_auth.admin_db`` once the on-disk
+    # ``tenants.sqlite`` is opened. Installing here (synchronously) is
+    # mandatory because ``app.add_middleware`` is rejected once
+    # FastAPI has started serving — we can't defer the install into
+    # the lifespan even though the admin DB open itself must be async.
+    middleware_mod = _lazy_import("corlinman_server.gateway.middleware")
+    if middleware_mod is not None:
+        install_api_key = getattr(
+            middleware_mod, "install_api_key_middleware", None
+        )
+        if install_api_key is not None:
+            # R2-001 security fix: extend the protected-prefix list to
+            # cover the legacy bare aliases that ``gateway/routes/*`` mount
+            # alongside the canonical ``/v1/...`` paths (e.g. ``/memory/upsert``
+            # mirrors ``/v1/memory/upsert``; same for canvas, channels, and
+            # the plugin callback). R1-001 only added ``/v1/`` so an
+            # unauthenticated attacker could still hit the alias and wipe
+            # memory docs, render canvas content, subscribe to canvas SSE
+            # streams (exfiltrating live operator output), or poison parked
+            # agent loops via fake plugin callbacks. ``/wechat/*`` is
+            # intentionally excluded — it carries its own vendor-signed
+            # nonce/timestamp envelope that does not use bearer tokens.
+            try:
+                install_api_key(
+                    app,
+                    admin_db=None,
+                    protected_prefixes=(
+                        "/v1/",
+                        "/memory/",
+                        "/canvas/",
+                        # Gate the specific legacy webhook alias, NOT the bare
+                        # ``/channels/`` prefix. The bare prefix also matches the
+                        # static UI page routes (``/channels/qq``,
+                        # ``/channels/telegram``, … and the per-channel admin
+                        # pages), which a browser fetches without a bearer — so a
+                        # bare prefix returned 401 ``missing_authorization`` for
+                        # every channel admin page *before* the static UI mount
+                        # was reached (the user-visible "channel pages cannot be
+                        # accessed" bug). The only real bearer API under
+                        # ``/channels/`` is the Telegram webhook legacy alias
+                        # (gateway/routes/channels.py); keep that protected. The
+                        # canonical ``/v1/channels/...`` stays gated by ``/v1/``
+                        # above, and the in-app channel API lives under
+                        # ``/api/channels/*`` (its own admin-session auth).
+                        "/channels/telegram/webhook",
+                        "/plugin-callback/",
+                    ),
+                )
+            except Exception as exc:  # pragma: no cover — sibling-owned
+                logger.warning(
+                    "gateway.middleware.install_failed", error=str(exc)
+                )
+
+            # Wire the admin-session bridge so the in-app chat UI (which
+            # authenticates with the ``corlinman_session`` cookie, not an API
+            # key) can reach ``/v1/chat/completions``. Set on the published
+            # state AFTER install so a wiring failure degrades the bridge
+            # gracefully (chat needs an API key) instead of taking down the
+            # whole ``/v1`` gate. The resolver validates the cookie lazily at
+            # request time via ``get_admin_state()``, so it does not matter
+            # that the live session store is created lazily on first login.
+            try:
+                from corlinman_server.gateway.routes_admin_a._auth_shim import (
+                    admin_session_tenant,
+                )
+
+                api_key_state = getattr(app.state, "api_key_auth", None)
+                if api_key_state is not None:
+                    api_key_state.admin_session_resolver = admin_session_tenant
+            except Exception as exc:  # pragma: no cover — sibling-owned
+                logger.warning(
+                    "gateway.middleware.admin_bridge_wire_failed",
+                    error=str(exc),
+                )
+
+        # SEC-06b: install the tenant-scope middleware so every ``/admin/*``
+        # and ``/v1/*`` handler observes a resolved ``request.state.tenant``
+        # instead of trusting a raw ``?tenant=`` query param. The middleware
+        # was exported but never wired. It is additive — installed AFTER the
+        # api-key gate so on ``/v1/*`` the api-key-pinned tenant (set from
+        # the verified key row) still wins: the api-key middleware runs
+        # inner and overwrites ``request.state.tenant`` unconditionally,
+        # while tenant-scope only seeds a value for the surfaces the api-key
+        # gate doesn't cover (notably ``/admin/api_keys*``). Single-tenant
+        # default: ``enabled=False`` → every request transparently resolves
+        # to the ``"default"`` tenant and nothing is ever rejected.
+        install_tenant_scope = getattr(
+            middleware_mod, "install_tenant_scope_middleware", None
+        )
+        if install_tenant_scope is not None:
+            try:
+                ts_enabled, ts_allowed, ts_fallback = _tenant_scope_params(cfg)
+                install_tenant_scope(
+                    app,
+                    enabled=ts_enabled,
+                    allowed=ts_allowed,
+                    fallback=ts_fallback,
+                )
+                logger.info(
+                    "gateway.tenant_scope.installed",
+                    enabled=ts_enabled,
+                    allowed=sorted(t.as_str() for t in ts_allowed),
+                    fallback=ts_fallback.as_str(),
+                )
+            except Exception as exc:  # pragma: no cover — sibling-owned
+                logger.warning(
+                    "gateway.tenant_scope.install_failed", error=str(exc)
+                )
+
+
+# ---------------------------------------------------------------------------
+# UI static fall-through mount
+# ---------------------------------------------------------------------------
+
+# Next static-export dynamic routes (e.g. /status/[token])
+# are exported as a SINGLE placeholder shell — for
+# /status/[token] with generateStaticParams()->[{token:
+# "__shell__"}] + dynamicParams=false, that's
+# ``status/__shell__.html``. A real request like
+# /status/<signed-token> has no file of its own, so we map
+# any unmatched path under such a prefix onto its shell;
+# the client then reads the token from window.location.
+# (key = URL prefix, value = exported shell file.)
+_DYNAMIC_SHELLS: dict[str, str] = {
+    "status/": "status/__shell__.html",
+}
+
+
+class _NextStaticFiles(StaticFiles):
+    async def _dynamic_shell(self, path: str, scope: Scope):
+        """Serve the exported shell for a path under a known
+        dynamic-route prefix (e.g. /status/<token> ->
+        status/__shell__.html), else ``None``.
+
+        ``path != shell`` keeps the shell file's own route
+        (/status/__shell__) resolving normally.
+        """
+        normalized = path.replace("\\", "/").lstrip("/")
+        for prefix, shell in _DYNAMIC_SHELLS.items():
+            if normalized.startswith(prefix) and normalized != shell:
+                try:
+                    resp = await super().get_response(shell, scope)
+                except StarletteHTTPException:
+                    return None
+                if resp.status_code != 404:
+                    return resp
+                return None
+        return None
+
+    async def get_response(self, path: str, scope: Scope):
+        leaf = path.rsplit("/", 1)[-1]
+        if path and not path.endswith("/") and "." not in leaf:
+            try:
+                response = await super().get_response(
+                    f"{path}.html",
+                    scope,
+                )
+            except StarletteHTTPException as fallback_exc:
+                if fallback_exc.status_code != 404:
+                    raise
+            else:
+                if response.status_code != 404:
+                    return response
+
+        # With ``html=True`` StaticFiles RETURNS a 404.html
+        # response (status 404) for a missing file rather than
+        # raising — so we must inspect the status, not just
+        # catch. Either way, before serving that 404 we try
+        # the dynamic-segment shell (covers tokens with dots
+        # in the path, which skip the .html branch above).
+        try:
+            response = await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if exc.status_code != 404:
+                raise
+            shell = await self._dynamic_shell(path, scope)
+            if shell is not None:
+                return shell
+            try:
+                return await super().get_response("404.html", scope)
+            except StarletteHTTPException as fallback_exc:
+                if fallback_exc.status_code == 404:
+                    raise exc from fallback_exc
+                raise
+        if response.status_code == 404:
+            shell = await self._dynamic_shell(path, scope)
+            if shell is not None:
+                return shell
+        return response
+
+
+def _mount_ui_static(app: Any) -> None:
+    """Mount the baked Next.js static export as the fall-through handler.
+
+    Side-effect-only extraction of build_app's inline UI block: resolves
+    ``$CORLINMAN_UI_DIR`` and, when it points at a real directory, mounts
+    the :class:`_NextStaticFiles` app at ``/`` so every browser path not
+    claimed by an explicit API route resolves against the bundle.
+    """
+    # UI static fall-through. The docker image bakes the Next.js static
+    # export into ``/app/ui-static``; this mount serves it for any path
+    # not already claimed by an API route. SPA-style HTML routes
+    # (/account/security, /profiles, /credentials, /evolution …) resolve
+    # via the pre-rendered ``<route>.html`` files Next emits. Without
+    # this mount the gateway answers every browser hit with 404 even
+    # when the bundle is present on disk.
+    ui_dir_env = os.environ.get("CORLINMAN_UI_DIR")
+    if ui_dir_env:
+        ui_path = Path(ui_dir_env)
+        if ui_path.is_dir():
+            try:
+                # Mount last so all explicit API routes (incl. /health,
+                # /admin/*, /v1/*, /onboard) win in route resolution.
+                app.mount(
+                    "/",
+                    _NextStaticFiles(directory=str(ui_path), html=True),
+                    name="ui",
+                )
+                logger.info(
+                    "gateway.ui.static_mounted", path=str(ui_path)
+                )
+            except Exception as exc:  # pragma: no cover — best effort
+                logger.warning(
+                    "gateway.ui.static_mount_failed",
+                    path=str(ui_path),
+                    error=str(exc),
+                )
+        else:
+            logger.warning(
+                "gateway.ui.static_dir_missing", path=str(ui_path)
+            )
