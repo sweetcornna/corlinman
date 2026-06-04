@@ -425,6 +425,7 @@ export const en = {
     qq: "QQ Channel",
     telegram: "Telegram",
     scheduler: "Scheduler",
+    schedulerQzone: "QZone publishing",
     approvals: "Approvals",
     evolution: "Evolution",
     models: "Models",
@@ -2976,6 +2977,8 @@ export const en = {
       discord: "Discord",
       slack: "Slack",
       feishu: "Feishu",
+      qq_official: "QQ Official",
+      wechat_official: "WeChat Official",
     },
     personaSelectLabel: "Active persona",
     personaSelectPlaceholder: "Pick a persona…",
@@ -3084,6 +3087,61 @@ export const en = {
     assetsErrDuplicateLabel:
       "An asset with this label already exists — pick a different name or delete the old one first.",
     assetsErrUploadFailed: "Upload failed: {{msg}}",
+    // W3 — reset-to-default (built-in personas only)
+    resetToDefaultEnabledTooltip:
+      "Re-seed this built-in persona's body from the shipped default.",
+    resetConfirmTitle: "Reset to default?",
+    resetConfirmBody:
+      "This re-seeds the built-in persona's prompt + summary from the shipped default. Custom edits to this persona will be overwritten.",
+    resetConfirmAction: "Reset",
+    resetSucceeded: "Persona reset to default",
+    resetFailed: "Reset failed: {{msg}}",
+    // W3 — asset label rename (PATCH assets/{aid})
+    assetsRename: "Rename",
+    assetsRenameSave: "Save",
+    assetsRenameCancel: "Cancel",
+    assetsRenameHint: "Rename — a–z, 0–9, _, - (1–64 chars).",
+    assetsRenameSucceeded: "Renamed to {{label}}",
+    assetsRenameFailed: "Rename failed: {{msg}}",
+    // W3 — avatar
+    avatarAlt: "{{name}} avatar",
+    // W3 — life layer (mood / fatigue / topics + decay + diary + seeds)
+    lifeTitle: "Life state",
+    lifeDescription:
+      "The persona's live mood, fatigue and recent topics. Editing here also seeds the row manually.",
+    lifeMood: "Mood",
+    lifeMoodPlaceholder: "neutral",
+    lifeFatigue: "Fatigue (0–1)",
+    lifeRecentTopics: "Recent topics",
+    lifeRecentTopicsHint: "Comma-separated — most recent first.",
+    lifeUpdatedAt: "Last updated: {{when}}",
+    lifeUpdatedNever: "Last updated: never (showing defaults)",
+    lifeSave: "Save life state",
+    lifeSaveSucceeded: "Life state saved",
+    lifeSaveFailed: "Could not save life state: {{msg}}",
+    lifeLoadFailed: "Could not load life state: {{msg}}",
+    lifeErrFatigueRange: "Fatigue must be a number between 0 and 1",
+    lifeRunDecay: "Run decay now",
+    lifeDecayRunning: "Running…",
+    lifeDecaySucceeded: "Decay applied ({{rows}} row(s))",
+    lifeDecayFailed: "Decay failed: {{msg}}",
+    // W3 — diary viewer (read-only)
+    diaryTitle: "Diary",
+    diaryDescription: "Recent diary entries (newest last). Read-only.",
+    diaryEmpty: "No diary entries yet.",
+    diaryLoadFailed: "Could not load the diary: {{msg}}",
+    // W3 — life-seeds YAML editor
+    seedsTitle: "Life seeds (YAML)",
+    seedsDescription:
+      "The effective seed pack. Saving writes an operator override file for this persona.",
+    seedsSourceOverride: "Source: operator override",
+    seedsSourceBundled: "Source: bundled default",
+    seedsSourceGeneric: "Source: generic fallback",
+    seedsSave: "Save override",
+    seedsSaveSucceeded: "Life seeds saved",
+    seedsSaveFailed: "Could not save the seeds: {{msg}}",
+    seedsLoadFailed: "Could not load the seeds: {{msg}}",
+    seedsErrInvalidYaml: "Invalid YAML — fix the syntax and try again.",
   },
 
   // W1.2 — TopNav update bubble (chip that lights up when a newer

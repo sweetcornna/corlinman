@@ -47,6 +47,7 @@ from corlinman_server.gateway.status_revocation import current_epoch
 from corlinman_server.gateway.status_token import (
     resolve_signing_key,
     verify_status_token,
+    verify_status_token_full,
 )
 
 __all__ = ["router"]
@@ -164,7 +165,9 @@ def _summarise_turn(row: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-async def _load_snapshot(journal: Any, session_key: str) -> dict[str, Any]:
+async def _load_snapshot(
+    journal: Any, session_key: str, persona_id: str | None = None
+) -> dict[str, Any]:
     """Build the StatusSnapshot dict for ``session_key`` from the journal."""
     redact = _redaction_enabled()
     turns_rows = await journal.list_session_turns(session_key)
@@ -189,6 +192,7 @@ async def _load_snapshot(journal: Any, session_key: str) -> dict[str, Any]:
     updated_at = events[-1].get("timestamp_ms") if events else None
     return {
         "session_key": session_key,
+        "persona_id": persona_id,
         "status": _derive_status(turns_rows),
         "turns": [_summarise_turn(r) for r in turns_rows],
         "events": events,
@@ -197,9 +201,12 @@ async def _load_snapshot(journal: Any, session_key: str) -> dict[str, Any]:
     }
 
 
-def _empty_snapshot(session_key: str) -> dict[str, Any]:
+def _empty_snapshot(
+    session_key: str, persona_id: str | None = None
+) -> dict[str, Any]:
     return {
         "session_key": session_key,
+        "persona_id": persona_id,
         "status": "idle",
         "turns": [],
         "events": [],
@@ -208,27 +215,41 @@ def _empty_snapshot(session_key: str) -> dict[str, Any]:
     }
 
 
-def _resolve_session(token: str) -> str | None:
-    """Verify ``token`` and return the session_key it authorizes, else None.
+def _resolve_session(token: str) -> tuple[str | None, str | None]:
+    """Verify ``token`` and return ``(session_key, persona_id)``, else ``(None, None)``.
+
+    ``persona_id`` (F2) is the optional bound persona baked into the token so
+    the public status card can show that persona's avatar.
 
     Revocation-aware (#34): the session_key isn't known until the token is
     verified, so we verify in two passes. The first pass (``current_epoch=0``)
     just checks signature + expiry and tells us *which* session the token
-    claims. We then look up that session's live revocation epoch and re-verify
-    against it — so a token minted before a ``revoke_session`` (its baked-in
-    epoch now trails the stored one) fails the second pass and the route 403s.
+    claims (and its persona_id). We then look up that session's live revocation
+    epoch and re-verify against it — so a token minted before a
+    ``revoke_session`` (its baked-in epoch now trails the stored one) fails the
+    second pass and the route 403s.
     """
     data_dir = _data_dir()
     key = resolve_signing_key(data_dir)
-    session_key = verify_status_token(token, key)
+    result = verify_status_token_full(token, key)
+    if result is None:
+        # Forged / malformed / expired signature — verify_status_token_full
+        # returns None (not a tuple) so the public route 403s cleanly.
+        return (None, None)
+    session_key, persona_id = result
     if session_key is None:
-        return None
+        return (None, None)
     epoch = current_epoch(data_dir, session_key)
     if epoch <= 0:
         # Nothing revoked for this session — the first pass already proved
         # the token valid, so skip the redundant re-verify.
-        return session_key
-    return verify_status_token(token, key, current_epoch=epoch)
+        return (session_key, persona_id)
+    # Revocation re-verify (pass 2). persona_id is signed in the same token,
+    # so the pass-1 value stands once the signature is re-confirmed.
+    confirmed = verify_status_token(token, key, current_epoch=epoch)
+    if confirmed is None:
+        return (None, None)
+    return (confirmed, persona_id)
 
 
 def router() -> APIRouter:
@@ -240,7 +261,7 @@ def router() -> APIRouter:
         request: Request,
         token: str = PathParam(..., min_length=8),
     ) -> JSONResponse:
-        session_key = _resolve_session(token)
+        session_key, persona_id = _resolve_session(token)
         if session_key is None:
             return JSONResponse(
                 status_code=403,
@@ -249,11 +270,17 @@ def router() -> APIRouter:
         journal = getattr(request.app.state, "corlinman_journal", None)
         if journal is None:
             # Feature wired but observability journal absent (degraded boot).
-            return JSONResponse(status_code=200, content=_empty_snapshot(session_key))
+            return JSONResponse(
+                status_code=200,
+                content=_empty_snapshot(session_key, persona_id),
+            )
         try:
-            snap = await _load_snapshot(journal, session_key)
+            snap = await _load_snapshot(journal, session_key, persona_id)
         except Exception:  # noqa: BLE001 - never 500 a public read
-            return JSONResponse(status_code=200, content=_empty_snapshot(session_key))
+            return JSONResponse(
+                status_code=200,
+                content=_empty_snapshot(session_key, persona_id),
+            )
         return JSONResponse(status_code=200, content=snap)
 
     @api.get("/status/{token}/events/live")
@@ -262,7 +289,7 @@ def router() -> APIRouter:
         token: str = PathParam(..., min_length=8),
         last_event_id: str | None = Query(default=None),
     ) -> Any:
-        session_key = _resolve_session(token)
+        session_key, _ = _resolve_session(token)
         if session_key is None:
             return JSONResponse(
                 status_code=403,

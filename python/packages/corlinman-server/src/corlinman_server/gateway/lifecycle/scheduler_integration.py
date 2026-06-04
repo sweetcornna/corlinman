@@ -46,6 +46,29 @@ DEFAULT_UPDATE_CHECK_JOB_NAME: str = "system.update_check"
 #: ``EVOLUTION_DARWIN_CURATE_BUILTIN_NAME`` builtin by string match.
 DEFAULT_EVOLUTION_DARWIN_CURATE_JOB_NAME: str = "evolution.darwin_curate"
 
+#: Canonical name of the R2 hourly persona mood/fatigue decay sweep.
+#: Same ``<plugin>.<tool>`` convention so the scheduler resolves the
+#: ``PERSONA_DECAY_BUILTIN_NAME`` builtin by string match.
+DEFAULT_PERSONA_DECAY_JOB_NAME: str = "persona.decay"
+
+#: Canonical name of the daily autonomous life-advance sweep.
+#: Default-off — only auto-registered when
+#: ``[persona.life_advance] enabled = true`` in the gateway config.
+DEFAULT_PERSONA_LIFE_ADVANCE_JOB_NAME: str = "persona.life_advance"
+
+#: Canonical name of the R8 PASSIVE daily EvolutionEngine run-once pass
+#: (L2). Default-off — only auto-registered when ``[evolution.engine]
+#: enabled = true`` in the gateway config. Same ``<plugin>.<tool>``
+#: convention so the scheduler resolves the
+#: ``EVOLUTION_ENGINE_RUN_ONCE_BUILTIN_NAME`` builtin by string match.
+DEFAULT_EVOLUTION_ENGINE_JOB_NAME: str = "evolution.engine_run_once"
+
+#: Canonical name of the R8 PASSIVE shadow-test pass (L3). Default-off —
+#: only auto-registered when ``[evolution.shadow] enabled = true`` in the
+#: gateway config. Fires ~30 min after the engine run so any proposals the
+#: engine just minted are in the queue before the shadow sandbox sweeps.
+DEFAULT_EVOLUTION_SHADOW_JOB_NAME: str = "evolution.shadow_test"
+
 
 def _config_has_scheduler_job(cfg: Any | None, name: str) -> bool:
     """``True`` when the loaded config already carries a job by ``name``.
@@ -214,6 +237,332 @@ def _register_default_darwin_curate_job(app: Any, cfg: Any | None) -> None:
 
     logger.info(
         "gateway.evolution.darwin_curate_job.registered",
+        name=name,
+        cron=cron_expr,
+    )
+
+
+def _register_default_persona_decay_job(app: Any, cfg: Any | None) -> None:
+    """R2 persona-liveness — stash a default ``persona.decay`` scheduler
+    job on ``app.state`` alongside the W2.2 update-check + W3 darwin jobs.
+
+    Without this nothing ever sweeps mood/fatigue decay, so a fresh
+    install's mood stays ``"neutral"`` / fatigue stays ``0.0`` forever.
+
+    Same operator-override / de-dupe discipline as
+    :func:`_register_default_darwin_curate_job`:
+
+    * Explicit ``[[scheduler.jobs]] name = "persona.decay"`` already in
+      config → silent no-op so the operator's cron wins.
+    * Otherwise → append a :class:`SchedulerJob` firing hourly at
+      ``"0 0 */1 * * * *"`` (top of every hour). Action is
+      ``JobAction.run_tool(plugin="persona", tool="decay")`` which the
+      scheduler dispatches to the :data:`PERSONA_DECAY_BUILTIN_NAME`
+      builtin.
+
+    Log lines use the ``gateway.persona.decay_job.*`` prefix so the
+    wiring is greppable across boot logs.
+    """
+    name = DEFAULT_PERSONA_DECAY_JOB_NAME
+    if _config_has_scheduler_job(cfg, name):
+        logger.info(
+            "gateway.persona.decay_job.skipped_explicit_config",
+            name=name,
+        )
+        return
+
+    # Hourly — mood/fatigue drift is gradual but the per-row elapsed-hours
+    # math means a tick that fires under a busy window still applies the
+    # right amount of decay (the builtin reads each row's updated_at).
+    cron_expr = "0 0 */1 * * * *"
+
+    try:
+        from corlinman_server.scheduler import JobAction, SchedulerJob
+
+        job = SchedulerJob(
+            name=name,
+            cron=cron_expr,
+            action=JobAction.run_tool(
+                plugin="persona",
+                tool="decay",
+            ),
+        )
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning(
+            "gateway.persona.decay_job.build_failed",
+            error=str(exc),
+        )
+        return
+
+    existing = getattr(app.state, "corlinman_default_scheduler_jobs", None)
+    if not isinstance(existing, list):
+        existing = []
+    if any(getattr(j, "name", None) == name for j in existing):
+        return
+    existing.append(job)
+    app.state.corlinman_default_scheduler_jobs = existing
+
+    logger.info(
+        "gateway.persona.decay_job.registered",
+        name=name,
+        cron=cron_expr,
+    )
+
+
+def _register_default_persona_life_advance_job(app: Any, cfg: Any | None) -> None:
+    """Default-off daily life-advance sweep — only registers when
+    ``[persona.life_advance] enabled = true`` in the gateway config.
+
+    The builtin (``persona.life_advance``) is **always registered** at
+    import time. The *default scheduler job* is appended to
+    ``app.state.corlinman_default_scheduler_jobs`` only when the operator
+    has opted in via the config flag. This mirrors how
+    :func:`_register_default_update_check_job` is guarded behind
+    ``update_cfg.enabled`` — the builtin is wired regardless; the cron job
+    is not.
+
+    Gate logic:
+
+    * ``[persona.life_advance] enabled`` absent or ``false`` → silent no-op
+      (the default).
+    * Explicit ``[[scheduler.jobs]] name = "persona.life_advance"`` in
+      config → silent no-op so the operator's cron / timezone wins.
+    * Both conditions pass → append a :class:`SchedulerJob` firing daily at
+      ``"0 0 4 * * * *"`` (04:00 UTC, after the decay + darwin windows).
+
+    Log lines use the ``gateway.persona.life_advance_job.*`` prefix.
+    """
+    name = DEFAULT_PERSONA_LIFE_ADVANCE_JOB_NAME
+
+    # Read the config flag [persona.life_advance] enabled.
+    from corlinman_server.gateway.lifecycle.entrypoint import _extract_section
+
+    persona_section = _extract_section(cfg, "persona")
+    life_advance_section = _extract_section(persona_section, "life_advance")
+    enabled_raw = _extract_section(life_advance_section, "enabled")
+    # Default is False — the job only runs when the operator explicitly sets
+    # enabled = true.
+    enabled = bool(enabled_raw) if isinstance(enabled_raw, bool) else False
+    if not enabled:
+        logger.debug(
+            "gateway.persona.life_advance_job.skipped_not_enabled",
+            name=name,
+        )
+        return
+
+    if _config_has_scheduler_job(cfg, name):
+        logger.info(
+            "gateway.persona.life_advance_job.skipped_explicit_config",
+            name=name,
+        )
+        return
+
+    # Daily at 04:00 UTC — clear of the hourly decay window (*/1) and the
+    # 03:30 darwin scan so the three jobs don't cluster at the same tick.
+    cron_expr = "0 0 4 * * * *"
+
+    try:
+        from corlinman_server.scheduler import JobAction, SchedulerJob
+
+        job = SchedulerJob(
+            name=name,
+            cron=cron_expr,
+            action=JobAction.run_tool(
+                plugin="persona",
+                tool="life_advance",
+            ),
+        )
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning(
+            "gateway.persona.life_advance_job.build_failed",
+            error=str(exc),
+        )
+        return
+
+    existing = getattr(app.state, "corlinman_default_scheduler_jobs", None)
+    if not isinstance(existing, list):
+        existing = []
+    if any(getattr(j, "name", None) == name for j in existing):
+        return
+    existing.append(job)
+    app.state.corlinman_default_scheduler_jobs = existing
+
+    logger.info(
+        "gateway.persona.life_advance_job.registered",
+        name=name,
+        cron=cron_expr,
+    )
+
+
+def _register_default_evolution_engine_job(app: Any, cfg: Any | None) -> None:
+    """R8 PASSIVE (L2) — default-off daily EvolutionEngine run-once pass.
+    Only registers the cron job when ``[evolution.engine] enabled = true``
+    in the gateway config.
+
+    The builtin (``evolution.engine_run_once``) is **always registered** at
+    import time. The *default scheduler job* is appended to
+    ``app.state.corlinman_default_scheduler_jobs`` only when the operator
+    has opted in via the config flag — same discipline as
+    :func:`_register_default_persona_life_advance_job`.
+
+    Gate logic:
+
+    * ``[evolution.engine] enabled`` absent or ``false`` → silent no-op
+      (the default).
+    * Explicit ``[[scheduler.jobs]] name = "evolution.engine_run_once"`` in
+      config → silent no-op so the operator's cron / timezone wins.
+    * Both conditions pass → append a :class:`SchedulerJob` firing daily at
+      ``"0 10 4 * * * *"`` (04:10 UTC, after the 03:30 darwin scan so the
+      engine clusters darwin's freshly-emitted ``skill.quality.issue``
+      signals on the same night).
+
+    Log lines use the ``gateway.evolution.engine_job.*`` prefix.
+    """
+    name = DEFAULT_EVOLUTION_ENGINE_JOB_NAME
+
+    # Read the config flag [evolution.engine] enabled.
+    from corlinman_server.gateway.lifecycle.entrypoint import _extract_section
+
+    evolution_section = _extract_section(cfg, "evolution")
+    engine_section = _extract_section(evolution_section, "engine")
+    enabled_raw = _extract_section(engine_section, "enabled")
+    # Default is False — the job only runs when the operator explicitly sets
+    # enabled = true.
+    enabled = bool(enabled_raw) if isinstance(enabled_raw, bool) else False
+    if not enabled:
+        logger.debug(
+            "gateway.evolution.engine_job.skipped_not_enabled",
+            name=name,
+        )
+        return
+
+    if _config_has_scheduler_job(cfg, name):
+        logger.info(
+            "gateway.evolution.engine_job.skipped_explicit_config",
+            name=name,
+        )
+        return
+
+    # Daily at 04:10 UTC — after the 03:30 darwin rubric scan so the engine
+    # picks up darwin's signals on the same nightly pass; a distinct minute
+    # from the 04:00 decay / life-advance ticks.
+    cron_expr = "0 10 4 * * * *"
+
+    try:
+        from corlinman_server.scheduler import JobAction, SchedulerJob
+
+        job = SchedulerJob(
+            name=name,
+            cron=cron_expr,
+            action=JobAction.run_tool(
+                plugin="evolution",
+                tool="engine_run_once",
+            ),
+        )
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning(
+            "gateway.evolution.engine_job.build_failed",
+            error=str(exc),
+        )
+        return
+
+    existing = getattr(app.state, "corlinman_default_scheduler_jobs", None)
+    if not isinstance(existing, list):
+        existing = []
+    if any(getattr(j, "name", None) == name for j in existing):
+        return
+    existing.append(job)
+    app.state.corlinman_default_scheduler_jobs = existing
+
+    logger.info(
+        "gateway.evolution.engine_job.registered",
+        name=name,
+        cron=cron_expr,
+    )
+
+
+def _register_default_evolution_shadow_job(app: Any, cfg: Any | None) -> None:
+    """R8 PASSIVE (L3) — default-off daily ShadowTester pass. Only registers
+    the cron job when ``[evolution.shadow] enabled = true`` in the gateway
+    config.
+
+    The builtin (``evolution.shadow_test``) is **always registered** at
+    import time. The *default scheduler job* is appended to
+    ``app.state.corlinman_default_scheduler_jobs`` only when the operator
+    has opted in via the config flag — same discipline as
+    :func:`_register_default_evolution_engine_job`.
+
+    Gate logic:
+
+    * ``[evolution.shadow] enabled`` absent or ``false`` → silent no-op
+      (the default).
+    * Explicit ``[[scheduler.jobs]] name = "evolution.shadow_test"`` in
+      config → silent no-op so the operator's cron / timezone wins.
+    * Both conditions pass → append a :class:`SchedulerJob` firing daily at
+      ``"0 40 4 * * * *"`` (04:40 UTC, ~30 min after the engine run so the
+      proposals the engine just minted are in the queue before the shadow
+      sandbox sweeps them).
+
+    Log lines use the ``gateway.evolution.shadow_job.*`` prefix.
+    """
+    name = DEFAULT_EVOLUTION_SHADOW_JOB_NAME
+
+    # Read the config flag [evolution.shadow] enabled.
+    from corlinman_server.gateway.lifecycle.entrypoint import _extract_section
+
+    evolution_section = _extract_section(cfg, "evolution")
+    shadow_section = _extract_section(evolution_section, "shadow")
+    enabled_raw = _extract_section(shadow_section, "enabled")
+    # Default is False — the job only runs when the operator explicitly sets
+    # enabled = true.
+    enabled = bool(enabled_raw) if isinstance(enabled_raw, bool) else False
+    if not enabled:
+        logger.debug(
+            "gateway.evolution.shadow_job.skipped_not_enabled",
+            name=name,
+        )
+        return
+
+    if _config_has_scheduler_job(cfg, name):
+        logger.info(
+            "gateway.evolution.shadow_job.skipped_explicit_config",
+            name=name,
+        )
+        return
+
+    # Daily at 04:30 UTC — ~30 min after the 04:00 engine run so any
+    # proposals it just minted are in the queue before the shadow sandbox
+    # sweeps them.
+    cron_expr = "0 40 4 * * * *"
+
+    try:
+        from corlinman_server.scheduler import JobAction, SchedulerJob
+
+        job = SchedulerJob(
+            name=name,
+            cron=cron_expr,
+            action=JobAction.run_tool(
+                plugin="evolution",
+                tool="shadow_test",
+            ),
+        )
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning(
+            "gateway.evolution.shadow_job.build_failed",
+            error=str(exc),
+        )
+        return
+
+    existing = getattr(app.state, "corlinman_default_scheduler_jobs", None)
+    if not isinstance(existing, list):
+        existing = []
+    if any(getattr(j, "name", None) == name for j in existing):
+        return
+    existing.append(job)
+    app.state.corlinman_default_scheduler_jobs = existing
+
+    logger.info(
+        "gateway.evolution.shadow_job.registered",
         name=name,
         cron=cron_expr,
     )

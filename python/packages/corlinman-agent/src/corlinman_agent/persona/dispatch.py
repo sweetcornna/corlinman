@@ -24,6 +24,8 @@ gateway-owned sqlite handle.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import time
 import urllib.parse
@@ -36,6 +38,8 @@ logger = structlog.get_logger(__name__)
 
 
 __all__ = [
+    "dispatch_persona_attach_asset_from_attachment",
+    "dispatch_persona_attach_asset_from_data",
     "dispatch_persona_attach_asset_from_url",
     "dispatch_persona_create",
     "dispatch_persona_delete",
@@ -179,6 +183,155 @@ def _store_required(store: Any, kind: str) -> str | None:
             f"{kind} is not wired in this deployment",
         )
     return None
+
+
+def _resolve_persona_id(
+    args: dict[str, Any], bound_persona_id: str | None
+) -> str | None:
+    """Resolve the target persona id for an attach call.
+
+    Resolution order matches ``image_with_refs``: an explicit
+    ``persona_id`` arg (used by the ``/persona`` wizard, which may be
+    editing a persona other than the channel's bound one) wins; otherwise
+    we fall back to ``bound_persona_id`` — the persona the channel bound
+    on this turn (``start.extra['persona_id']``). The model never needs
+    to know its own slug for the common "save this as my 立绘" path.
+    Returns ``None`` when neither source yields a non-empty id.
+    """
+    raw = args.get("persona_id")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    if isinstance(bound_persona_id, str) and bound_persona_id.strip():
+        return bound_persona_id.strip()
+    return None
+
+
+#: ``(magic_prefix, mime)`` table for sniffing image bytes when the
+#: caller supplied no explicit MIME (raw base64 / a data-URI without a
+#: media type). Kept tiny — the four shapes the asset store accepts.
+_IMAGE_MAGIC: tuple[tuple[bytes, str], ...] = (
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+)
+
+
+def _sniff_image_mime(body: bytes) -> str | None:
+    """Best-effort image MIME sniff from leading magic bytes.
+
+    Returns the matched MIME or ``None`` (caller falls through to the
+    asset store's validator, which rejects unknown shapes with the
+    canonical ``AssetMimeRejected`` envelope). WEBP needs the RIFF +
+    ``WEBP`` fourcc so it isn't confused with plain RIFF containers.
+    """
+    for prefix, mime in _IMAGE_MAGIC:
+        if body.startswith(prefix):
+            return mime
+    if len(body) >= 12 and body[:4] == b"RIFF" and body[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def _parse_data_payload(data: str) -> tuple[bytes, str | None] | str:
+    """Decode a ``data:`` URI or a bare base64 string into image bytes.
+
+    Returns ``(bytes_, mime_or_None)`` on success or a JSON error
+    envelope string on failure. A ``data:image/png;base64,<...>`` URI
+    yields its declared MIME; a bare base64 blob yields ``None`` for the
+    MIME so the caller sniffs / falls back to the store validator.
+    """
+    raw = data.strip()
+    declared_mime: str | None = None
+    b64_part = raw
+    if raw.startswith("data:"):
+        # data:[<mediatype>][;base64],<data>
+        try:
+            header, b64_part = raw.split(",", 1)
+        except ValueError:
+            return _err(
+                "invalid_args",
+                "malformed data URI: missing ',' separator",
+            )
+        meta = header[len("data:"):]
+        if ";base64" not in meta:
+            return _err(
+                "invalid_args",
+                "only base64-encoded data URIs are supported",
+            )
+        media = meta.split(";", 1)[0].strip().lower()
+        if media:
+            declared_mime = media
+    # Tolerate whitespace/newlines that some channels fold into long
+    # base64 blobs.
+    b64_clean = "".join(b64_part.split())
+    try:
+        body_bytes = base64.b64decode(b64_clean, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        return _err("invalid_args", f"base64 decode failed: {exc}")
+    if not body_bytes:
+        return _err("invalid_args", "decoded payload was empty")
+    return body_bytes, declared_mime
+
+
+async def _store_asset(
+    *,
+    persona_store: Any,
+    asset_store: Any,
+    persona_id: str,
+    kind: str,
+    label: str,
+    body_bytes: bytes,
+    mime: str,
+    file_name: str,
+) -> str:
+    """Shared tail for the three attach dispatchers: 404-fast on a
+    missing persona, then ``asset_store.put`` with the canonical error
+    mapping. Returns a JSON envelope. Never raises."""
+    try:
+        from corlinman_server.persona import (  # noqa: PLC0415
+            AssetMimeRejected,
+            AssetQuotaExceeded,
+            AssetTooLarge,
+        )
+    except ImportError as exc:
+        logger.warning("persona.attach_asset.import_failed", error=str(exc))
+        return _err("persona_store_unavailable", str(exc))
+
+    try:
+        row = await persona_store.get(persona_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "persona.attach_asset.persona_lookup_failed", persona_id=persona_id
+        )
+        return _err("persona_get_failed", str(exc))
+    if row is None:
+        return _err("persona_not_found", f"no persona with id {persona_id!r}")
+
+    try:
+        record = await asset_store.put(
+            persona_id,
+            kind,
+            label,
+            bytes_=body_bytes,
+            mime=mime,
+            file_name=file_name,
+        )
+    except AssetMimeRejected as exc:
+        return _err("unsupported_mime", str(exc))
+    except AssetTooLarge as exc:
+        return _err("asset_too_large", str(exc))
+    except AssetQuotaExceeded as exc:
+        return _err("quota_exceeded", str(exc))
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "persona.attach_asset.put_failed",
+            persona_id=persona_id,
+            kind=kind,
+            label=label,
+        )
+        return _err("asset_store_failed", str(exc))
+    return _ok({"asset": _asset_summary(record)})
 
 
 # ---------------------------------------------------------------------------
@@ -446,9 +599,16 @@ async def dispatch_persona_attach_asset_from_url(
     args_json: bytes | str,
     persona_store: Any,
     asset_store: Any,
+    bound_persona_id: str | None = None,
     transport: httpx.BaseTransport | None = None,
 ) -> str:
     """``persona_attach_asset_from_url`` — fetch + store one asset.
+
+    ``bound_persona_id`` is the persona bound to the active channel turn
+    (``start.extra['persona_id']``); when the model omits ``persona_id``
+    the call attaches to that bound persona so "save this as my 立绘"
+    works without the model knowing its own slug. The explicit
+    ``persona_id`` arg still wins (the ``/persona`` wizard path).
 
     The optional ``transport`` arg is a unit-test seam — production
     callers leave it ``None`` so :mod:`httpx` opens its standard
@@ -471,8 +631,7 @@ async def dispatch_persona_attach_asset_from_url(
         return _err("persona_store_unavailable", str(exc))
 
     args = _decode(args_json)
-    raw_pid = args.get("persona_id")
-    pid = raw_pid.strip() if isinstance(raw_pid, str) else ""
+    pid = _resolve_persona_id(args, bound_persona_id)
     kind = args.get("kind")
     raw_label = args.get("label")
     label = raw_label.strip() if isinstance(raw_label, str) else ""
@@ -484,10 +643,16 @@ async def dispatch_persona_attach_asset_from_url(
         if isinstance(file_name_raw, str) and file_name_raw.strip()
         else None
     )
-    if not pid or not label or not url or kind not in ("emoji", "reference"):
+    if not pid:
+        return _err(
+            "persona_unresolved",
+            "no persona_id supplied and no persona bound to this turn — "
+            "pass persona_id explicitly",
+        )
+    if not label or not url or kind not in ("emoji", "reference"):
         return _err(
             "invalid_args",
-            "persona_id, kind (emoji|reference), label and url are required",
+            "kind (emoji|reference), label and url are required",
         )
     if not (url.startswith("http://") or url.startswith("https://")):
         return _err(
@@ -587,3 +752,239 @@ async def dispatch_persona_attach_asset_from_url(
         )
         return _err("asset_store_failed", str(exc))
     return _ok({"asset": _asset_summary(record)})
+
+
+# ---------------------------------------------------------------------------
+# Attach-from-data (inline base64 / data-URI) dispatcher
+# ---------------------------------------------------------------------------
+
+
+async def dispatch_persona_attach_asset_from_data(
+    *,
+    args_json: bytes | str,
+    persona_store: Any,
+    asset_store: Any,
+    bound_persona_id: str | None = None,
+) -> str:
+    """``persona_attach_asset_from_data`` — store an inline image blob.
+
+    The ``data`` arg is either a ``data:image/<type>;base64,<...>`` URI
+    or a bare base64 string. This is the in-band path for "the user
+    pasted / sent an image and I want to save it as this persona's
+    立绘 / emoji" without an intermediate URL. ``persona_id`` follows the
+    same explicit > bound resolution as ``persona_attach_asset_from_url``.
+    """
+    if (err := _store_required(persona_store, "persona_store")) is not None:
+        return err
+    if (err := _store_required(asset_store, "persona_asset_store")) is not None:
+        return err
+
+    args = _decode(args_json)
+    pid = _resolve_persona_id(args, bound_persona_id)
+    kind = args.get("kind")
+    raw_label = args.get("label")
+    label = raw_label.strip() if isinstance(raw_label, str) else ""
+    raw_data = args.get("data")
+    data = raw_data if isinstance(raw_data, str) else ""
+    mime_raw = args.get("mime")
+    explicit_mime = (
+        mime_raw.strip().lower()
+        if isinstance(mime_raw, str) and mime_raw.strip()
+        else None
+    )
+    file_name_raw = args.get("file_name")
+    file_name = (
+        file_name_raw.strip()
+        if isinstance(file_name_raw, str) and file_name_raw.strip()
+        else None
+    )
+    if not pid:
+        return _err(
+            "persona_unresolved",
+            "no persona_id supplied and no persona bound to this turn — "
+            "pass persona_id explicitly",
+        )
+    if not label or not data or kind not in ("emoji", "reference"):
+        return _err(
+            "invalid_args",
+            "kind (emoji|reference), label and data are required",
+        )
+
+    decoded = _parse_data_payload(data)
+    if isinstance(decoded, str):
+        return decoded  # already a JSON error envelope
+    body_bytes, declared_mime = decoded
+    if len(body_bytes) > _MAX_DOWNLOAD_BYTES:
+        return _err(
+            "download_too_large",
+            f"decoded payload exceeded {_MAX_DOWNLOAD_BYTES} bytes",
+        )
+
+    # MIME precedence: explicit arg > data-URI media type > magic sniff.
+    # Fall through to the store validator (octet-stream) when nothing
+    # resolves so the rejection wears the canonical envelope.
+    mime = (
+        explicit_mime
+        or declared_mime
+        or _sniff_image_mime(body_bytes)
+        or "application/octet-stream"
+    )
+    if file_name is None:
+        ext = {
+            "image/png": "png",
+            "image/jpeg": "jpg",
+            "image/webp": "webp",
+            "image/gif": "gif",
+        }.get(mime, "bin")
+        file_name = f"{label}.{ext}"
+
+    return await _store_asset(
+        persona_store=persona_store,
+        asset_store=asset_store,
+        persona_id=pid,
+        kind=kind,
+        label=label,
+        body_bytes=body_bytes,
+        mime=mime,
+        file_name=file_name,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Attach-from-inbound-attachment dispatcher
+# ---------------------------------------------------------------------------
+
+
+def _attachment_field(att: Any, name: str) -> Any:
+    """Read ``name`` off an inbound attachment regardless of whether it
+    arrives as a dataclass (``corlinman_agent.reasoning_loop.Attachment``)
+    or a plain dict (defensive — the servicer hands us the dataclass)."""
+    if isinstance(att, dict):
+        return att.get(name)
+    return getattr(att, name, None)
+
+
+async def dispatch_persona_attach_asset_from_attachment(
+    *,
+    args_json: bytes | str,
+    persona_store: Any,
+    asset_store: Any,
+    attachments: Any = None,
+    bound_persona_id: str | None = None,
+) -> str:
+    """``persona_attach_asset_from_attachment`` — save an image the user
+    sent in THIS turn to the bound persona's asset pack.
+
+    ``attachments`` is the inbound ``start.attachments`` sequence the
+    servicer passes through. The model picks one by zero-based
+    ``attachment_index`` (default 0 — the first / only image). Image
+    bytes that already live on disk (``att.bytes_``) are stored directly;
+    when a channel only forwarded a ``url`` we have nothing to ingest
+    in-band, so the call returns an ``attachment_not_ingestible`` envelope
+    telling the model to fall back to ``persona_attach_asset_from_url``.
+    """
+    if (err := _store_required(persona_store, "persona_store")) is not None:
+        return err
+    if (err := _store_required(asset_store, "persona_asset_store")) is not None:
+        return err
+
+    args = _decode(args_json)
+    pid = _resolve_persona_id(args, bound_persona_id)
+    kind = args.get("kind")
+    raw_label = args.get("label")
+    label = raw_label.strip() if isinstance(raw_label, str) else ""
+    idx_raw = args.get("attachment_index", 0)
+    if not pid:
+        return _err(
+            "persona_unresolved",
+            "no persona_id supplied and no persona bound to this turn — "
+            "pass persona_id explicitly",
+        )
+    if not label or kind not in ("emoji", "reference"):
+        return _err(
+            "invalid_args",
+            "kind (emoji|reference) and label are required",
+        )
+    if isinstance(idx_raw, bool) or not isinstance(idx_raw, int):
+        return _err(
+            "invalid_args", "'attachment_index' must be a non-negative integer"
+        )
+    if idx_raw < 0:
+        return _err(
+            "invalid_args", "'attachment_index' must be a non-negative integer"
+        )
+
+    items = list(attachments) if attachments is not None else []
+    # Limit to image attachments — emoji / 立绘 are images by definition,
+    # and indexing only over images is what the model expects ("the
+    # picture I sent").
+    images = [
+        a for a in items if (_attachment_field(a, "kind") or "image") == "image"
+    ]
+    if not images:
+        return _err(
+            "no_attachment",
+            "no inbound image attachment on this turn to save",
+        )
+    if idx_raw >= len(images):
+        return _err(
+            "attachment_index_out_of_range",
+            f"attachment_index {idx_raw} but only {len(images)} image "
+            "attachment(s) on this turn",
+        )
+    att = images[idx_raw]
+    body_bytes = _attachment_field(att, "bytes_")
+    if not isinstance(body_bytes, (bytes, bytearray)) or not body_bytes:
+        # Channel forwarded a URL-only attachment — the bytes never
+        # reached the agent. Point the model at the URL tool so the
+        # save still succeeds end-to-end.
+        att_url = _attachment_field(att, "url")
+        if isinstance(att_url, str) and att_url.strip():
+            return _err(
+                "attachment_not_ingestible",
+                "this attachment carries only a url, not inline bytes — "
+                "retry with persona_attach_asset_from_url using url="
+                f"{att_url.strip()!r}",
+            )
+        return _err(
+            "attachment_not_ingestible",
+            "this attachment carries neither inline bytes nor a url",
+        )
+    body_bytes = bytes(body_bytes)
+    if len(body_bytes) > _MAX_DOWNLOAD_BYTES:
+        return _err(
+            "download_too_large",
+            f"attachment exceeded {_MAX_DOWNLOAD_BYTES} bytes",
+        )
+
+    att_mime = _attachment_field(att, "mime")
+    mime = (
+        att_mime.strip().lower()
+        if isinstance(att_mime, str) and att_mime.strip()
+        else (_sniff_image_mime(body_bytes) or "application/octet-stream")
+    )
+    att_name = _attachment_field(att, "file_name")
+    file_name = (
+        att_name.strip()
+        if isinstance(att_name, str) and att_name.strip()
+        else None
+    )
+    if file_name is None:
+        ext = {
+            "image/png": "png",
+            "image/jpeg": "jpg",
+            "image/webp": "webp",
+            "image/gif": "gif",
+        }.get(mime, "bin")
+        file_name = f"{label}.{ext}"
+
+    return await _store_asset(
+        persona_store=persona_store,
+        asset_store=asset_store,
+        persona_id=pid,
+        kind=kind,
+        label=label,
+        body_bytes=body_bytes,
+        mime=mime,
+        file_name=file_name,
+    )

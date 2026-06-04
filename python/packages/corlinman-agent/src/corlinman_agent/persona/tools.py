@@ -27,6 +27,10 @@ PERSONA_UPDATE_TOOL: str = "persona_update"
 PERSONA_DELETE_TOOL: str = "persona_delete"
 PERSONA_LIST_ASSETS_TOOL: str = "persona_list_assets"
 PERSONA_ATTACH_ASSET_FROM_URL_TOOL: str = "persona_attach_asset_from_url"
+PERSONA_ATTACH_ASSET_FROM_DATA_TOOL: str = "persona_attach_asset_from_data"
+PERSONA_ATTACH_ASSET_FROM_ATTACHMENT_TOOL: str = (
+    "persona_attach_asset_from_attachment"
+)
 
 #: Convenience set so the servicer can do ``BUILTIN_TOOLS | PERSONA_TOOLS``.
 PERSONA_TOOLS: frozenset[str] = frozenset(
@@ -38,6 +42,8 @@ PERSONA_TOOLS: frozenset[str] = frozenset(
         PERSONA_DELETE_TOOL,
         PERSONA_LIST_ASSETS_TOOL,
         PERSONA_ATTACH_ASSET_FROM_URL_TOOL,
+        PERSONA_ATTACH_ASSET_FROM_DATA_TOOL,
+        PERSONA_ATTACH_ASSET_FROM_ATTACHMENT_TOOL,
     }
 )
 
@@ -252,6 +258,32 @@ def persona_list_assets_tool_schema() -> dict[str, Any]:
     }
 
 
+#: Shared description for the ``persona_id`` arg across the three attach
+#: tools — explains the explicit > bound resolution so the model knows it
+#: can omit the id when acting AS the persona it is bound to.
+_ATTACH_PERSONA_ID_HINT: str = (
+    f"Target persona id ({_SLUG_HINT}). Must already exist. OMIT this "
+    "when saving an asset for the persona you are currently speaking as "
+    "(e.g. \"save this as my 立绘\") — the server infers the bound "
+    "persona from the conversation. Pass it explicitly only when "
+    "editing a DIFFERENT persona (the /persona wizard path)."
+)
+
+#: Shared ``kind`` arg description.
+_ATTACH_KIND_HINT: str = (
+    "Asset bucket — ``reference`` is the persona's 立绘 / character "
+    "reference image (fed to image_with_refs); ``emoji`` is a "
+    "sticker / facial-expression image (sent via send_attachment)."
+)
+
+#: Shared ``label`` arg description.
+_ATTACH_LABEL_HINT: str = (
+    "Slot label within the bucket (e.g. ``happy`` / ``front``). "
+    "Re-using an existing label REPLACES that slot. Lowercase, 1-64 "
+    "chars, only [a-z0-9_-]."
+)
+
+
 def persona_attach_asset_from_url_tool_schema() -> dict[str, Any]:
     """``persona_attach_asset_from_url`` — download + store an asset."""
     return {
@@ -261,7 +293,7 @@ def persona_attach_asset_from_url_tool_schema() -> dict[str, Any]:
             "description": (
                 "Download an image from a URL and attach it to a "
                 "persona as an emoji (``kind=emoji``) or reference "
-                "image (``kind=reference``). The server fetches with a "
+                "立绘 (``kind=reference``). The server fetches with a "
                 "30s timeout, validates MIME (png/jpeg/webp/gif), and "
                 "caps the download at 10 MiB. Returns the stored "
                 "AssetRecord on success."
@@ -271,27 +303,16 @@ def persona_attach_asset_from_url_tool_schema() -> dict[str, Any]:
                 "properties": {
                     "persona_id": {
                         "type": "string",
-                        "description": (
-                            f"Target persona id ({_SLUG_HINT}). Must "
-                            "already exist."
-                        ),
+                        "description": _ATTACH_PERSONA_ID_HINT,
                     },
                     "kind": {
                         "type": "string",
                         "enum": ["emoji", "reference"],
-                        "description": (
-                            "Asset bucket — emoji ride via "
-                            "send_attachment, reference images feed "
-                            "image_with_refs."
-                        ),
+                        "description": _ATTACH_KIND_HINT,
                     },
                     "label": {
                         "type": "string",
-                        "description": (
-                            "Slot label within the bucket "
-                            "(e.g. ``happy`` / ``front``). Lowercase, "
-                            "1-64 chars, only [a-z0-9_-]."
-                        ),
+                        "description": _ATTACH_LABEL_HINT,
                     },
                     "url": {
                         "type": "string",
@@ -307,7 +328,120 @@ def persona_attach_asset_from_url_tool_schema() -> dict[str, Any]:
                         ),
                     },
                 },
-                "required": ["persona_id", "kind", "label", "url"],
+                "required": ["kind", "label", "url"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def persona_attach_asset_from_data_tool_schema() -> dict[str, Any]:
+    """``persona_attach_asset_from_data`` — store an inline base64 image."""
+    return {
+        "type": "function",
+        "function": {
+            "name": PERSONA_ATTACH_ASSET_FROM_DATA_TOOL,
+            "description": (
+                "Attach an image you already hold as inline data (a "
+                "``data:image/...;base64,...`` URI or a bare base64 "
+                "string) to a persona as an emoji or reference 立绘. "
+                "Use this when the image bytes are in hand rather than "
+                "at a fetchable URL. Validates MIME (png/jpeg/webp/gif) "
+                "and caps the decoded payload at 10 MiB. Returns the "
+                "stored AssetRecord on success."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "persona_id": {
+                        "type": "string",
+                        "description": _ATTACH_PERSONA_ID_HINT,
+                    },
+                    "kind": {
+                        "type": "string",
+                        "enum": ["emoji", "reference"],
+                        "description": _ATTACH_KIND_HINT,
+                    },
+                    "label": {
+                        "type": "string",
+                        "description": _ATTACH_LABEL_HINT,
+                    },
+                    "data": {
+                        "type": "string",
+                        "description": (
+                            "The image as a ``data:`` URI "
+                            "(``data:image/png;base64,iVBORw0...``) or a "
+                            "bare base64 string. Whitespace/newlines are "
+                            "tolerated."
+                        ),
+                    },
+                    "mime": {
+                        "type": "string",
+                        "description": (
+                            "Optional MIME override (png/jpeg/webp/gif). "
+                            "Defaults to the data-URI media type, then a "
+                            "magic-byte sniff."
+                        ),
+                    },
+                    "file_name": {
+                        "type": "string",
+                        "description": (
+                            "Optional original file name; defaults to "
+                            "``<label>.<ext>``."
+                        ),
+                    },
+                },
+                "required": ["kind", "label", "data"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def persona_attach_asset_from_attachment_tool_schema() -> dict[str, Any]:
+    """``persona_attach_asset_from_attachment`` — save an inbound image."""
+    return {
+        "type": "function",
+        "function": {
+            "name": PERSONA_ATTACH_ASSET_FROM_ATTACHMENT_TOOL,
+            "description": (
+                "Save an image the USER sent in the CURRENT turn to a "
+                "persona as an emoji or reference 立绘. Pick the image "
+                "with ``attachment_index`` (0 = the first / only image "
+                "the user attached this turn). Use this for "
+                "\"save this picture as my 立绘\" when the user just "
+                "uploaded a picture. If the inbound attachment carried "
+                "only a URL (no inline bytes), this returns "
+                "``attachment_not_ingestible`` with the URL — retry "
+                "with persona_attach_asset_from_url. Returns the stored "
+                "AssetRecord on success."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "persona_id": {
+                        "type": "string",
+                        "description": _ATTACH_PERSONA_ID_HINT,
+                    },
+                    "kind": {
+                        "type": "string",
+                        "enum": ["emoji", "reference"],
+                        "description": _ATTACH_KIND_HINT,
+                    },
+                    "label": {
+                        "type": "string",
+                        "description": _ATTACH_LABEL_HINT,
+                    },
+                    "attachment_index": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": (
+                            "Zero-based index into the image attachments "
+                            "the user sent THIS turn. Defaults to 0."
+                        ),
+                    },
+                },
+                "required": ["kind", "label"],
                 "additionalProperties": False,
             },
         },
@@ -326,10 +460,14 @@ def persona_tool_schemas() -> list[dict[str, Any]]:
         persona_delete_tool_schema(),
         persona_list_assets_tool_schema(),
         persona_attach_asset_from_url_tool_schema(),
+        persona_attach_asset_from_data_tool_schema(),
+        persona_attach_asset_from_attachment_tool_schema(),
     ]
 
 
 __all__ = [
+    "PERSONA_ATTACH_ASSET_FROM_ATTACHMENT_TOOL",
+    "PERSONA_ATTACH_ASSET_FROM_DATA_TOOL",
     "PERSONA_ATTACH_ASSET_FROM_URL_TOOL",
     "PERSONA_CREATE_TOOL",
     "PERSONA_DELETE_TOOL",
@@ -338,6 +476,8 @@ __all__ = [
     "PERSONA_LIST_TOOL",
     "PERSONA_TOOLS",
     "PERSONA_UPDATE_TOOL",
+    "persona_attach_asset_from_attachment_tool_schema",
+    "persona_attach_asset_from_data_tool_schema",
     "persona_attach_asset_from_url_tool_schema",
     "persona_create_tool_schema",
     "persona_delete_tool_schema",

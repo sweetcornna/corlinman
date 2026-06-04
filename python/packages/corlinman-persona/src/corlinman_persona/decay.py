@@ -42,6 +42,7 @@ def apply_decay(
     state: PersonaState,
     hours_elapsed: float,
     config: DecayConfig,
+    topic_hours_elapsed: float | None = None,
 ) -> PersonaState:
     """Return a new ``PersonaState`` with decay applied.
 
@@ -54,22 +55,42 @@ def apply_decay(
       - ``mood``: if it was ``"tired"`` and the new fatigue dropped
         below :attr:`DecayConfig.tired_to_neutral_below`, flip to
         ``"neutral"``. Other mood labels are left alone.
-      - ``recent_topics``: drop ``floor(hours_elapsed / 24) *
-        recent_topics_decay_per_day`` of the oldest entries. Drop is
-        clamped at the list length (over-aged states bottom out at empty).
+      - ``recent_topics``: drop ``floor(topic_hours / 24) *
+        recent_topics_decay_per_day`` of the oldest entries, where
+        ``topic_hours`` is ``topic_hours_elapsed`` when supplied else
+        ``hours_elapsed``. Drop is clamped at the list length (over-aged
+        states bottom out at empty).
       - ``updated_at_ms`` is left to the store layer; this function does
         not invent timestamps.
+
+    ``topic_hours_elapsed`` decouples the topic-aging clock from the
+    fatigue clock. Fatigue (and the ``"tired"`` → ``"neutral"`` flip)
+    always tracks ``hours_elapsed``; the ``recent_topics`` drop tracks
+    ``topic_hours_elapsed`` instead when it is provided. This lets a
+    high-frequency sweep recover fatigue every tick while still aging
+    topics off a slower, cumulative day clock. When ``None`` (the
+    default) topic aging falls back to ``hours_elapsed`` — identical to
+    the original single-clock behaviour, so existing callers, the
+    ``decay-once`` CLI, and prior tests are unaffected.
     """
-    if hours_elapsed <= 0:
+    topic_hours = hours_elapsed if topic_hours_elapsed is None else topic_hours_elapsed
+    # No-op only when BOTH clocks are non-positive. With a decoupled topic
+    # clock, fatigue time can be 0 (row just stamped) while topic time has
+    # accrued past a day — we must still age topics in that case.
+    if hours_elapsed <= 0 and topic_hours <= 0:
         return state
 
-    new_fatigue = max(0.0, state.fatigue - hours_elapsed * config.fatigue_recovery_per_hour)
+    new_fatigue = (
+        max(0.0, state.fatigue - hours_elapsed * config.fatigue_recovery_per_hour)
+        if hours_elapsed > 0
+        else state.fatigue
+    )
 
     new_mood = state.mood
     if state.mood == "tired" and new_fatigue < config.tired_to_neutral_below:
         new_mood = "neutral"
 
-    days_elapsed = math.floor(hours_elapsed / 24.0)
+    days_elapsed = math.floor(topic_hours / 24.0) if topic_hours > 0 else 0
     drop_count = days_elapsed * config.recent_topics_decay_per_day
     if drop_count <= 0:
         new_topics = list(state.recent_topics)

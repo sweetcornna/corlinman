@@ -55,6 +55,13 @@ export interface Persona {
   created_at_ms: number;
   /** Unix milliseconds. */
   updated_at_ms: number;
+  /**
+   * Admin blob URL of the persona's avatar — the first emoji asset, else
+   * the first reference (立绘) asset, else `null` when the persona has no
+   * uploaded assets. Mirrors the gateway's `PersonaOut.avatar_url`. Safe
+   * to drop straight into an `<img src>` (same-origin admin path).
+   */
+  avatar_url: string | null;
 }
 
 /** Body shape for `POST /admin/personas`. */
@@ -108,6 +115,8 @@ export const SUPPORTED_HUMANLIKE_CHANNELS = [
   "discord",
   "slack",
   "feishu",
+  "qq_official",
+  "wechat_official",
 ] as const;
 
 export type HumanlikeChannel = (typeof SUPPORTED_HUMANLIKE_CHANNELS)[number];
@@ -342,9 +351,40 @@ export function personaAssetsPath(personaId: string, kind?: AssetKind): string {
   return kind ? `${base}?kind=${kind}` : base;
 }
 
-/** Per-asset path (GET serves the blob, DELETE removes it). */
+/** Per-asset path (GET serves the blob, DELETE removes it, PATCH renames). */
 export function personaAssetItemPath(personaId: string, assetId: string): string {
   return `/admin/personas/${encodeURIComponent(personaId)}/assets/${encodeURIComponent(assetId)}`;
+}
+
+/**
+ * `PATCH /admin/personas/{id}/assets/{aid}` — rename an asset's label.
+ * Returns the updated `AssetRecord`. The label must match {@link
+ * ASSET_LABEL_RE}; the backend re-validates and 400s a bad slug or 409s a
+ * collision (we surface those through {@link AssetUploadError} so the
+ * editor can reuse the same per-code toast switch as upload).
+ */
+export async function renameAsset(
+  personaId: string,
+  assetId: string,
+  label: string,
+): Promise<AssetRecord> {
+  try {
+    return await apiFetch<AssetRecord>(
+      personaAssetItemPath(personaId, assetId),
+      { method: "PATCH", body: { label } },
+    );
+  } catch (err) {
+    if (
+      err instanceof CorlinmanApiError &&
+      err.status !== undefined &&
+      err.status < 500
+    ) {
+      const status = err.status;
+      const { code, message } = parseAssetUploadError(status, err.message);
+      throw new AssetUploadError(code, status, message);
+    }
+    throw err;
+  }
 }
 
 /**
@@ -485,4 +525,129 @@ export async function deleteAsset(
     if (is404(err)) return;
     throw err;
   }
+}
+
+/* ------------------------------------------------------------------ */
+/*                       Persona life layer                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The persona's live mood/fatigue/topic state, keyed `(tenant="default",
+ * agent_id=persona.id)` on `agent_state.sqlite`. Mirrors the gateway's
+ * life-state model. When no row exists the backend returns the documented
+ * defaults (`mood="neutral"`, `fatigue=0`, `recent_topics=[]`,
+ * `state_json={}`, `updated_at_ms=0`) rather than 404, so the editor can
+ * always render a form.
+ */
+export interface LifeState {
+  mood: string;
+  /** 0.0 (rested) … 1.0 (exhausted). */
+  fatigue: number;
+  recent_topics: string[];
+  /** Free-form blob — holds `diary`, decay bookkeeping, seed overrides. */
+  state_json: Record<string, unknown>;
+  /** Unix milliseconds; `0` means "no row yet (defaults)". */
+  updated_at_ms: number;
+}
+
+/** Body shape for `PATCH …/life-state`. Omit a field to leave it
+ * unchanged; the row is upserted (it also doubles as the manual
+ * seed/override path). */
+export interface LifeStatePatch {
+  mood?: string;
+  fatigue?: number;
+  recent_topics?: string[];
+}
+
+/** One diary line from `state_json["diary"]` (newest last). */
+export interface DiaryEntry {
+  /** Unix milliseconds. */
+  ts: number;
+  text: string;
+}
+
+/** Where the effective life-seed pack was resolved from:
+ *   - `override` — operator file at `<DATA_DIR>/persona_life/{id}.events.yaml`
+ *   - `bundled`  — shipped `life_seeds/{id}.yaml`
+ *   - `generic`  — the catch-all fallback pack. */
+export type LifeSeedsSource = "override" | "bundled" | "generic";
+
+/** Response of `GET …/life-seeds`. */
+export interface LifeSeeds {
+  yaml: string;
+  source: LifeSeedsSource;
+}
+
+/** `GET /admin/personas/{id}/life-state` — current mood/fatigue/topics.
+ * 404 only when the *persona* is missing; an absent state row yields
+ * defaults (never 404). */
+export function fetchLifeState(personaId: string): Promise<LifeState> {
+  return apiFetch<LifeState>(`${personaPath(personaId)}/life-state`);
+}
+
+/** `PATCH /admin/personas/{id}/life-state` — upsert the state row. Also
+ * serves as the manual seed/override path. */
+export function patchLifeState(
+  personaId: string,
+  patch: LifeStatePatch,
+): Promise<LifeState> {
+  return apiFetch<LifeState>(`${personaPath(personaId)}/life-state`, {
+    method: "PATCH",
+    body: patch,
+  });
+}
+
+/** `GET /admin/personas/{id}/diary?limit=N` — diary tail (newest last),
+ * unwrapped from the `{ entries }` envelope. */
+export async function fetchDiary(
+  personaId: string,
+  limit = 50,
+): Promise<DiaryEntry[]> {
+  const res = await apiFetch<{ entries: DiaryEntry[] }>(
+    `${personaPath(personaId)}/diary?limit=${encodeURIComponent(String(limit))}`,
+  );
+  return res.entries ?? [];
+}
+
+/** `GET /admin/personas/{id}/life-seeds` — effective seed pack as YAML +
+ * its resolution source. */
+export function fetchLifeSeeds(personaId: string): Promise<LifeSeeds> {
+  return apiFetch<LifeSeeds>(`${personaPath(personaId)}/life-seeds`);
+}
+
+/** `PUT /admin/personas/{id}/life-seeds` — write the operator override
+ * file. The backend validates the YAML parses (400 otherwise) and writes
+ * `<DATA_DIR>/persona_life/{id}.events.yaml`. */
+export function putLifeSeeds(
+  personaId: string,
+  yaml: string,
+): Promise<{ ok: boolean }> {
+  return apiFetch<{ ok: boolean }>(`${personaPath(personaId)}/life-seeds`, {
+    method: "PUT",
+    body: { yaml },
+  });
+}
+
+/** `POST /admin/personas/{id}/reset-to-default` — re-seed a built-in
+ * persona's body from `default_grantley.{py,md}`. 400 when the persona is
+ * not built-in. */
+export function resetPersonaToDefault(
+  personaId: string,
+): Promise<{ ok: boolean }> {
+  return apiFetch<{ ok: boolean }>(
+    `${personaPath(personaId)}/reset-to-default`,
+    { method: "POST" },
+  );
+}
+
+/** `POST /admin/personas/{id}/decay` — run the mood/fatigue decay sweep
+ * for this persona's row now. Returns the number of rows the sweep
+ * touched. */
+export function runPersonaDecay(
+  personaId: string,
+): Promise<{ rows_changed: number }> {
+  return apiFetch<{ rows_changed: number }>(
+    `${personaPath(personaId)}/decay`,
+    { method: "POST" },
+  );
 }

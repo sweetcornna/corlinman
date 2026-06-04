@@ -82,6 +82,29 @@ export interface StatusSnapshot {
   started_at_ms?: number;
   /** epoch-ms of the most recent activity, if the backend supplies it. */
   updated_at_ms?: number;
+  /**
+   * Slug of the persona bound to this conversation (F2). Optional — present
+   * only when the conversation runs "in character" and the backend surfaces
+   * it (the signed status token carries it). When set, the page renders the
+   * persona's avatar via {@link personaAvatarUrl} (the public, unauthenticated
+   * `/public/personas/{id}/avatar` route). Absent → no avatar chip.
+   */
+  persona_id?: string;
+}
+
+/**
+ * Build the public, unauthenticated avatar URL for a persona (F2).
+ *
+ * Points at the gateway's `GET /public/personas/{id}/avatar` route, which
+ * 302-redirects to the persona's first emoji (else reference 立绘) asset blob.
+ * Persona art is not secret, so — like the status routes — this carries no
+ * credentials. Returns `null` for an empty slug so callers can branch cleanly.
+ */
+export function personaAvatarUrl(personaId: string | undefined): string | null {
+  if (!personaId) return null;
+  return `${GATEWAY_BASE_URL}/public/personas/${encodeURIComponent(
+    personaId,
+  )}/avatar`;
 }
 
 /** Thrown by {@link fetchStatusSnapshot} so the page can branch on `expired`

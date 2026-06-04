@@ -41,9 +41,15 @@ class PersonaOut(BaseModel):
     is_builtin: bool
     created_at_ms: int
     updated_at_ms: int
+    # Admin-blob URL of the persona's avatar — the first ``emoji`` asset,
+    # else the first ``reference`` 立绘, else ``None`` when the persona has
+    # no assets. Filled in by the route layer (it needs the asset store);
+    # :meth:`from_row` leaves it ``None`` so non-asset-aware callers stay
+    # correct.
+    avatar_url: str | None = None
 
     @classmethod
-    def from_row(cls, p: Persona) -> PersonaOut:
+    def from_row(cls, p: Persona, *, avatar_url: str | None = None) -> PersonaOut:
         return cls(
             id=p.id,
             display_name=p.display_name,
@@ -52,6 +58,7 @@ class PersonaOut(BaseModel):
             is_builtin=p.is_builtin,
             created_at_ms=p.created_at_ms,
             updated_at_ms=p.updated_at_ms,
+            avatar_url=avatar_url,
         )
 
 
@@ -117,6 +124,78 @@ class AssetListOut(BaseModel):
     assets: list[AssetOut]
 
 
+class AssetLabelPatch(BaseModel):
+    """Rename one asset's slot label (``PATCH …/assets/{aid}``)."""
+
+    label: str
+
+
+# ---- Persona-liveness wire shapes (R3 life-state / diary / seeds) --------
+
+
+class LifeStateOut(BaseModel):
+    """Wire view of one ``agent_persona_state`` row (the runtime
+    persona-STATE store, keyed ``(tenant_id="default", agent_id=id)``).
+
+    Mirrors :class:`corlinman_persona.PersonaState` but flattens it to the
+    shared API contract: ``recent_topics`` as a string list, ``state_json``
+    as the free-form dict, and ``updated_at_ms`` defaulting to ``0`` when no
+    row exists yet."""
+
+    mood: str
+    fatigue: float
+    recent_topics: list[str]
+    state_json: dict[str, Any]
+    updated_at_ms: int
+
+
+class LifeStatePatch(BaseModel):
+    """Partial upsert of the runtime persona-STATE row. Every field is
+    optional; omitted fields are preserved from the existing row (or the
+    contract defaults when no row exists). Doubles as a manual seed /
+    override path for an operator priming a persona's mood/fatigue."""
+
+    mood: str | None = Field(default=None, max_length=200)
+    fatigue: float | None = Field(default=None, ge=0.0, le=1.0)
+    recent_topics: list[str] | None = None
+
+
+class DiaryEntryOut(BaseModel):
+    """One diary line, normalised to the shared contract shape. The
+    underlying ``state_json["diary"]`` records (written by the agent's
+    ``persona_life_diary_add`` tool) carry an ISO ``ts`` + ``entry`` text;
+    we surface them as ``ts`` (epoch-ms, ``0`` when unparseable) + ``text``."""
+
+    ts: int
+    text: str
+
+
+class DiaryOut(BaseModel):
+    entries: list[DiaryEntryOut]
+
+
+class LifeSeedsOut(BaseModel):
+    """The effective event-seed pack rendered as YAML text, plus which
+    layer it resolved from (operator override → bundled pack → generic)."""
+
+    yaml: str
+    source: Literal["override", "bundled", "generic"]
+
+
+class LifeSeedsIn(BaseModel):
+    """Operator-authored event-seed override (raw YAML body)."""
+
+    yaml: str
+
+
+class OkOut(BaseModel):
+    ok: bool
+
+
+class DecayOut(BaseModel):
+    rows_changed: int
+
+
 # Slot label naming rule — same shape as persona ids. Forbidding
 # slashes / dot-segments stops a malicious caller from prying open
 # the persona dir structure via crafted labels.
@@ -169,6 +248,66 @@ async def _require_persona(
         )
 
 
+async def _avatar_url_for(
+    asset_store: PersonaAssetStore | None, persona_id: str
+) -> str | None:
+    """Resolve a persona's avatar blob URL.
+
+    Prefers the persona's first ``emoji`` asset, falling back to its first
+    ``reference`` 立绘, and returns ``None`` when the persona has no assets
+    (or no asset store is wired). The URL shape matches
+    :meth:`AssetOut.from_record` so the UI can drop it straight into an
+    ``<img src=…>``. ``list()`` already returns assets sorted by
+    ``label ASC`` so "first" is stable across calls.
+    """
+    if asset_store is None:
+        return None
+    for kind in ("emoji", "reference"):
+        assets = await asset_store.list(persona_id, kind=kind)
+        if assets:
+            a = assets[0]
+            return f"/admin/personas/{a.persona_id}/assets/{a.id}"
+    return None
+
+
+def _life_state_db_path(state: AdminState) -> Any:
+    """Resolve the runtime persona-STATE DB path (``agent_state.sqlite``).
+
+    The life-STATE store is opened lazily per-request off ``data_dir`` —
+    the same path ``c2_wiring`` / the ``persona.decay`` builtin use — so
+    these routes don't need a second long-lived handle wired onto
+    :class:`AdminState`. 503s ``data_dir_missing`` when the gateway booted
+    without a writable data dir."""
+    if state.data_dir is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "error": "data_dir_missing",
+                "message": "gateway booted without a writable data dir",
+            },
+        )
+    return state.data_dir / "agent_state.sqlite"
+
+
+def _parse_iso_ms(value: Any) -> int:
+    """Best-effort ISO-8601 (or already-numeric) → epoch-ms.
+
+    The diary records written by ``persona_life_diary_add`` store ``ts`` as
+    an ISO timestamp; an operator-seeded row may store an int. Returns
+    ``0`` for anything unparseable rather than raising — the diary read
+    path must never 500 on a single malformed entry."""
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str) and value.strip():
+        from datetime import datetime  # noqa: PLC0415 — lazy, read-path only
+
+        try:
+            return int(datetime.fromisoformat(value).timestamp() * 1000)
+        except ValueError:
+            return 0
+    return 0
+
+
 def _validate_label(label: str) -> str:
     label = (label or "").strip()
     if not _LABEL_PATTERN.match(label):
@@ -215,13 +354,22 @@ def _qq_humanlike_block(state: AdminState) -> dict[str, Any]:
     return _channel_humanlike_block(state, "qq")
 
 
-#: Channels that support the humanlike system-prompt injection. WeChat
-#: Official + QQ Official are intentionally excluded — the former is
-#: webhook-only and doesn't currently surface a persona path, and the
-#: latter does its own per-platform message formatting that doesn't sit
-#: alongside the spinner / footer machinery this initiative depends on.
+#: Channels that support the humanlike system-prompt injection. The two
+#: "official" platforms (QQ Official ``api.sgroup.qq.com`` + WeChat
+#: Official webhook) were wired into the humanlike resolver in Wave 2, so
+#: their runtime persona binding is now toggleable here too — leaving them
+#: out 404'd ``PUT /admin/channels/{qq_official,wechat_official}/humanlike``
+#: and operators couldn't flip the binding the channel runtime reads.
 SUPPORTED_HUMANLIKE_CHANNELS: frozenset[str] = frozenset(
-    {"qq", "telegram", "discord", "slack", "feishu"}
+    {
+        "qq",
+        "telegram",
+        "discord",
+        "slack",
+        "feishu",
+        "qq_official",
+        "wechat_official",
+    }
 )
 
 

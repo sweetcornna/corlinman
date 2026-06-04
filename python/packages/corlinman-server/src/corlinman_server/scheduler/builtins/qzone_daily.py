@@ -186,6 +186,7 @@ async def _qzone_daily_publish_action(context: BuiltinContext) -> dict[str, Any]
             session_key=session_key,
             system_prompt=system_prompt,
             user_turn=prompt_template,
+            persona_id=persona_id,
         )
         if request is None:
             return {**base, "ok": False,
@@ -743,11 +744,18 @@ def _build_internal_chat_request(
     session_key: str,
     system_prompt: str,
     user_turn: str,
+    persona_id: str | None = None,
 ) -> Any | None:
     """Construct an :class:`InternalChatRequest` for the scheduler turn.
 
     Imported lazily so a degraded gateway boot that excluded
     ``corlinman_server.gateway_api`` doesn't crash the registry import.
+
+    ``persona_id`` is forwarded onto the request so the agent servicer
+    wires ``ChatStart.extra["persona_id"]`` — without it the scheduler-
+    fired turn has no persona binding, so persona-life placeholders and
+    ``image_with_refs`` / ``qzone_publish`` persona resolution all fall
+    back to requiring an explicit ``persona_id`` arg from the model.
     """
     try:
         from corlinman_server.gateway_api.types import (
@@ -774,6 +782,7 @@ def _build_internal_chat_request(
         temperature=None,
         attachments=[],
         binding=None,
+        persona_id=persona_id,
     )
 
 

@@ -19,17 +19,26 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  AssetUploadError,
   PERSONAS_LIST_PATH,
   QQ_HUMANLIKE_PATH,
   SUPPORTED_HUMANLIKE_CHANNELS,
   createPersona,
   deletePersona,
+  fetchDiary,
   fetchHumanlike,
+  fetchLifeSeeds,
+  fetchLifeState,
   fetchPersona,
   fetchPersonas,
   fetchQqHumanlike,
   humanlikePath,
+  patchLifeState,
   personaPath,
+  putLifeSeeds,
+  renameAsset,
+  resetPersonaToDefault,
+  runPersonaDecay,
   setHumanlike,
   setQqHumanlike,
   updatePersona,
@@ -76,6 +85,7 @@ const SAMPLE_PERSONA = {
   is_builtin: true,
   created_at_ms: 1_777_500_000_000,
   updated_at_ms: 1_777_593_600_000,
+  avatar_url: "/admin/personas/grantley/assets/ast_123",
 } as const;
 
 beforeEach(() => {
@@ -332,13 +342,15 @@ describe("setQqHumanlike", () => {
 });
 
 describe("parameterized humanlike (all channels)", () => {
-  it("exposes the five supported channels", () => {
+  it("exposes the supported channels (incl. the two official platforms)", () => {
     expect([...SUPPORTED_HUMANLIKE_CHANNELS]).toEqual([
       "qq",
       "telegram",
       "discord",
       "slack",
       "feishu",
+      "qq_official",
+      "wechat_official",
     ]);
   });
 
@@ -370,5 +382,139 @@ describe("parameterized humanlike (all channels)", () => {
     await setHumanlike("discord", { enabled: true, persona_id: "grantley" });
     expect(calls[0]?.url).toContain("/admin/channels/discord/humanlike");
     expect(calls[0]?.init.method).toBe("PUT");
+  });
+});
+
+describe("persona life layer", () => {
+  it("fetchLifeState GETs the life-state path", async () => {
+    const { fn, calls } = makeFetchStub(() =>
+      jsonResponse(200, {
+        mood: "neutral",
+        fatigue: 0,
+        recent_topics: [],
+        state_json: {},
+        updated_at_ms: 0,
+      }),
+    );
+    vi.stubGlobal("fetch", fn);
+    const state = await fetchLifeState("grantley");
+    expect(state.mood).toBe("neutral");
+    expect(state.recent_topics).toEqual([]);
+    expect(calls[0]?.url).toContain("/admin/personas/grantley/life-state");
+    expect(calls[0]?.init.method ?? "GET").toBe("GET");
+  });
+
+  it("patchLifeState PATCHes only the supplied fields", async () => {
+    const { fn, calls } = makeFetchStub((init) =>
+      jsonResponse(200, {
+        mood: "tired",
+        fatigue: 0.7,
+        recent_topics: ["weather"],
+        state_json: {},
+        updated_at_ms: 1_777_600_000_000,
+        ...(init.body ? JSON.parse(String(init.body)) : {}),
+      }),
+    );
+    vi.stubGlobal("fetch", fn);
+    const updated = await patchLifeState("grantley", { mood: "tired", fatigue: 0.7 });
+    expect(updated.mood).toBe("tired");
+    expect(calls[0]?.init.method).toBe("PATCH");
+    const body = JSON.parse(String(calls[0]?.init.body ?? "{}"));
+    expect(body).toEqual({ mood: "tired", fatigue: 0.7 });
+  });
+
+  it("fetchDiary unwraps the { entries } envelope + forwards the limit", async () => {
+    const { fn, calls } = makeFetchStub(() =>
+      jsonResponse(200, { entries: [{ ts: 1, text: "hello" }] }),
+    );
+    vi.stubGlobal("fetch", fn);
+    const entries = await fetchDiary("grantley", 25);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.text).toBe("hello");
+    expect(calls[0]?.url).toContain("/admin/personas/grantley/diary?limit=25");
+  });
+
+  it("fetchDiary tolerates a missing entries field", async () => {
+    const { fn } = makeFetchStub(() => jsonResponse(200, {}));
+    vi.stubGlobal("fetch", fn);
+    expect(await fetchDiary("grantley")).toEqual([]);
+  });
+
+  it("fetchLifeSeeds GETs the life-seeds path", async () => {
+    const { fn, calls } = makeFetchStub(() =>
+      jsonResponse(200, { yaml: "events: []\n", source: "bundled" }),
+    );
+    vi.stubGlobal("fetch", fn);
+    const seeds = await fetchLifeSeeds("grantley");
+    expect(seeds.source).toBe("bundled");
+    expect(calls[0]?.url).toContain("/admin/personas/grantley/life-seeds");
+  });
+
+  it("putLifeSeeds PUTs the yaml body", async () => {
+    const { fn, calls } = makeFetchStub(() => jsonResponse(200, { ok: true }));
+    vi.stubGlobal("fetch", fn);
+    const res = await putLifeSeeds("grantley", "events: []\n");
+    expect(res.ok).toBe(true);
+    expect(calls[0]?.init.method).toBe("PUT");
+    const body = JSON.parse(String(calls[0]?.init.body ?? "{}"));
+    expect(body).toEqual({ yaml: "events: []\n" });
+  });
+
+  it("resetPersonaToDefault POSTs to reset-to-default", async () => {
+    const { fn, calls } = makeFetchStub(() => jsonResponse(200, { ok: true }));
+    vi.stubGlobal("fetch", fn);
+    const res = await resetPersonaToDefault("grantley");
+    expect(res.ok).toBe(true);
+    expect(calls[0]?.url).toContain("/admin/personas/grantley/reset-to-default");
+    expect(calls[0]?.init.method).toBe("POST");
+  });
+
+  it("runPersonaDecay POSTs to decay + returns rows_changed", async () => {
+    const { fn, calls } = makeFetchStub(() =>
+      jsonResponse(200, { rows_changed: 1 }),
+    );
+    vi.stubGlobal("fetch", fn);
+    const res = await runPersonaDecay("grantley");
+    expect(res.rows_changed).toBe(1);
+    expect(calls[0]?.url).toContain("/admin/personas/grantley/decay");
+    expect(calls[0]?.init.method).toBe("POST");
+  });
+});
+
+describe("renameAsset", () => {
+  it("PATCHes the asset item path with the new label", async () => {
+    const { fn, calls } = makeFetchStub(() =>
+      jsonResponse(200, {
+        id: "ast_1",
+        persona_id: "grantley",
+        kind: "reference",
+        label: "new-label",
+        file_name: "a.png",
+        mime: "image/png",
+        size_bytes: 10,
+        sha256: "x",
+        created_at_ms: 1,
+        url: "/admin/personas/grantley/assets/ast_1",
+      }),
+    );
+    vi.stubGlobal("fetch", fn);
+    const updated = await renameAsset("grantley", "ast_1", "new-label");
+    expect(updated.label).toBe("new-label");
+    expect(calls[0]?.url).toContain(
+      "/admin/personas/grantley/assets/ast_1",
+    );
+    expect(calls[0]?.init.method).toBe("PATCH");
+    const body = JSON.parse(String(calls[0]?.init.body ?? "{}"));
+    expect(body).toEqual({ label: "new-label" });
+  });
+
+  it("maps a 409 collision into an AssetUploadError", async () => {
+    const { fn } = makeFetchStub(() =>
+      jsonResponse(409, { detail: { error: "duplicate_label" } }),
+    );
+    vi.stubGlobal("fetch", fn);
+    await expect(renameAsset("grantley", "ast_1", "dup")).rejects.toBeInstanceOf(
+      AssetUploadError,
+    );
   });
 });

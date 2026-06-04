@@ -28,6 +28,9 @@ from corlinman_server.cli.config import config as config_group
 from corlinman_server.cli.doctor import doctor as doctor_cmd
 from corlinman_server.cli.init import init as init_cmd
 from corlinman_server.cli.onboard import onboard as onboard_cmd
+from corlinman_server.cli.persona import migrate_persona_body as migrate_persona_body_cmd
+from corlinman_server.cli.persona import persona_export as persona_export_cmd
+from corlinman_server.cli.persona import persona_import as persona_import_cmd
 from corlinman_server.cli.plugins import plugins as plugins_group
 from corlinman_server.cli.replay import replay as replay_cmd
 from corlinman_server.cli.tenant import tenant as tenant_group
@@ -56,6 +59,9 @@ cli.add_command(plugins_group)
 cli.add_command(config_group)
 cli.add_command(tenant_group)
 cli.add_command(replay_cmd)
+cli.add_command(migrate_persona_body_cmd)
+cli.add_command(persona_export_cmd)
+cli.add_command(persona_import_cmd)
 
 
 # --- STUB ports -----------------------------------------------------------

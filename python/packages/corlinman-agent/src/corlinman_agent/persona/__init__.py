@@ -25,6 +25,8 @@ arg so this module stays import-decoupled from the server package
 from __future__ import annotations
 
 from corlinman_agent.persona.dispatch import (
+    dispatch_persona_attach_asset_from_attachment,
+    dispatch_persona_attach_asset_from_data,
     dispatch_persona_attach_asset_from_url,
     dispatch_persona_create,
     dispatch_persona_delete,
@@ -50,6 +52,8 @@ from corlinman_agent.persona.life import (
     persona_life_tool_schemas,
 )
 from corlinman_agent.persona.tools import (
+    PERSONA_ATTACH_ASSET_FROM_ATTACHMENT_TOOL,
+    PERSONA_ATTACH_ASSET_FROM_DATA_TOOL,
     PERSONA_ATTACH_ASSET_FROM_URL_TOOL,
     PERSONA_CREATE_TOOL,
     PERSONA_DELETE_TOOL,
@@ -58,6 +62,8 @@ from corlinman_agent.persona.tools import (
     PERSONA_LIST_TOOL,
     PERSONA_TOOLS,
     PERSONA_UPDATE_TOOL,
+    persona_attach_asset_from_attachment_tool_schema,
+    persona_attach_asset_from_data_tool_schema,
     persona_attach_asset_from_url_tool_schema,
     persona_create_tool_schema,
     persona_delete_tool_schema,
@@ -69,6 +75,8 @@ from corlinman_agent.persona.tools import (
 )
 
 __all__ = [
+    "PERSONA_ATTACH_ASSET_FROM_ATTACHMENT_TOOL",
+    "PERSONA_ATTACH_ASSET_FROM_DATA_TOOL",
     "PERSONA_ATTACH_ASSET_FROM_URL_TOOL",
     "PERSONA_CREATE_TOOL",
     "PERSONA_DELETE_TOOL",
@@ -84,6 +92,8 @@ __all__ = [
     "PERSONA_LIST_TOOL",
     "PERSONA_TOOLS",
     "PERSONA_UPDATE_TOOL",
+    "dispatch_persona_attach_asset_from_attachment",
+    "dispatch_persona_attach_asset_from_data",
     "dispatch_persona_attach_asset_from_url",
     "dispatch_persona_create",
     "dispatch_persona_delete",
@@ -97,6 +107,8 @@ __all__ = [
     "dispatch_persona_list",
     "dispatch_persona_list_assets",
     "dispatch_persona_update",
+    "persona_attach_asset_from_attachment_tool_schema",
+    "persona_attach_asset_from_data_tool_schema",
     "persona_attach_asset_from_url_tool_schema",
     "persona_create_tool_schema",
     "persona_delete_tool_schema",

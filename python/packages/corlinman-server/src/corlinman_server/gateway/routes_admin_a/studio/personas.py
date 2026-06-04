@@ -30,7 +30,7 @@ Unknown ``{channel}`` slugs 404 ``unknown_channel``.
 from __future__ import annotations
 
 import inspect
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import (
     APIRouter,
@@ -57,17 +57,29 @@ from corlinman_server.gateway.routes_admin_a.state import (
 # handlers reference so this file stays focused on the route core.
 from corlinman_server.gateway.routes_admin_a.studio._personas_lib import (
     SUPPORTED_HUMANLIKE_CHANNELS,
+    AssetLabelPatch,
     AssetListOut,
     AssetOut,
     CreateBody,
+    DecayOut,
+    DiaryEntryOut,
+    DiaryOut,
     HumanlikeIn,
     HumanlikeOut,
+    LifeSeedsIn,
+    LifeSeedsOut,
+    LifeStateOut,
+    LifeStatePatch,
     ListOut,
+    OkOut,
     PatchBody,
     PersonaOut,
     _asset_store,
+    _avatar_url_for,
     _channel_humanlike_block,
     _channels_writer,
+    _life_state_db_path,
+    _parse_iso_ms,
     _persona_store,
     _require_persona,
     _validate_channel_name,
@@ -83,6 +95,10 @@ from corlinman_server.persona import (
     PersonaError,
     PersonaExists,
     PersonaProtected,
+)
+from corlinman_server.persona.asset_store import (
+    AssetExists,
+    AssetNotFound,
 )
 
 # ---------------------------------------------------------------------------
@@ -104,7 +120,15 @@ def router() -> APIRouter:
     ) -> ListOut:
         store = _persona_store(state)
         rows = await store.list()
-        return ListOut(personas=[PersonaOut.from_row(p) for p in rows])
+        # ``persona_asset_store`` may be ``None`` on a degraded boot — the
+        # avatar resolver returns ``None`` for every persona in that case
+        # rather than 503ing the whole list.
+        asset_store = state.persona_asset_store
+        out: list[PersonaOut] = []
+        for p in rows:
+            avatar = await _avatar_url_for(asset_store, p.id)
+            out.append(PersonaOut.from_row(p, avatar_url=avatar))
+        return ListOut(personas=out)
 
     @r.get(
         "/admin/personas/{persona_id}",
@@ -122,7 +146,8 @@ def router() -> APIRouter:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={"error": "persona_not_found", "id": persona_id},
             )
-        return PersonaOut.from_row(p)
+        avatar = await _avatar_url_for(state.persona_asset_store, persona_id)
+        return PersonaOut.from_row(p, avatar_url=avatar)
 
     @r.post(
         "/admin/personas",
@@ -156,7 +181,8 @@ def router() -> APIRouter:
                 status_code=status.HTTP_409_CONFLICT,
                 detail={"error": "persona_exists", "id": body.id},
             ) from exc
-        return PersonaOut.from_row(persona)
+        avatar = await _avatar_url_for(state.persona_asset_store, persona.id)
+        return PersonaOut.from_row(persona, avatar_url=avatar)
 
     @r.patch(
         "/admin/personas/{persona_id}",
@@ -189,7 +215,8 @@ def router() -> APIRouter:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={"error": "persona_not_found", "id": persona_id},
             ) from exc
-        return PersonaOut.from_row(persona)
+        avatar = await _avatar_url_for(state.persona_asset_store, persona_id)
+        return PersonaOut.from_row(persona, avatar_url=avatar)
 
     @r.delete(
         "/admin/personas/{persona_id}",
@@ -363,6 +390,377 @@ def router() -> APIRouter:
                 detail={"error": "asset_not_found", "id": asset_id},
             )
         return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    @r.patch(
+        "/admin/personas/{persona_id}/assets/{asset_id}",
+        response_model=AssetOut,
+        summary="Rename one asset's slot label",
+    )
+    async def patch_persona_asset(
+        persona_id: str,
+        asset_id: str,
+        body: AssetLabelPatch,
+        state: Annotated[AdminState, Depends(get_admin_state)],
+    ) -> AssetOut:
+        asset_store = _asset_store(state)
+        label = _validate_label(body.label)
+        # Confirm the asset both exists AND belongs to this persona before
+        # the rename — same path-confusion guard the serve/delete routes use.
+        record = await asset_store.get_by_id(asset_id)
+        if record is None or record.persona_id != persona_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"error": "asset_not_found", "id": asset_id},
+            )
+        try:
+            updated = await asset_store.relabel_by_id(asset_id, label)
+        except AssetNotFound as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"error": "asset_not_found", "id": asset_id},
+            ) from exc
+        except AssetExists as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"error": "duplicate_label", "label": label},
+            ) from exc
+        return AssetOut.from_record(updated)
+
+    # ----- Persona-liveness: life-state / diary / seeds / decay (R3) ---
+
+    @r.get(
+        "/admin/personas/{persona_id}/life-state",
+        response_model=LifeStateOut,
+        summary="Read a persona's runtime life-state row",
+    )
+    async def get_life_state(
+        persona_id: str,
+        state: Annotated[AdminState, Depends(get_admin_state)],
+    ) -> LifeStateOut:
+        await _require_persona(_persona_store(state), persona_id)
+        # Lazy-import the runtime persona-STATE store — it lives in the
+        # separately-packaged ``corlinman_persona`` distribution (the
+        # ``agent_state.sqlite`` DB), NOT the gateway-internal PersonaStore.
+        from corlinman_persona.store import (
+            DEFAULT_TENANT_ID,
+        )
+        from corlinman_persona.store import (
+            PersonaStore as StateStore,
+        )
+
+        db = _life_state_db_path(state)
+        async with StateStore(db) as store:
+            row = await store.get(persona_id, tenant_id=DEFAULT_TENANT_ID)
+        if row is None:
+            # No row yet → contract defaults (mood neutral, fatigue 0, …).
+            return LifeStateOut(
+                mood="neutral",
+                fatigue=0.0,
+                recent_topics=[],
+                state_json={},
+                updated_at_ms=0,
+            )
+        return LifeStateOut(
+            mood=row.mood,
+            fatigue=row.fatigue,
+            recent_topics=list(row.recent_topics),
+            state_json=row.state_json,
+            updated_at_ms=row.updated_at_ms,
+        )
+
+    @r.patch(
+        "/admin/personas/{persona_id}/life-state",
+        response_model=LifeStateOut,
+        summary="Upsert a persona's runtime life-state (manual seed/override)",
+    )
+    async def patch_life_state(
+        persona_id: str,
+        body: LifeStatePatch,
+        state: Annotated[AdminState, Depends(get_admin_state)],
+    ) -> LifeStateOut:
+        await _require_persona(_persona_store(state), persona_id)
+        from corlinman_persona.state import PersonaState
+        from corlinman_persona.store import (
+            DEFAULT_TENANT_ID,
+        )
+        from corlinman_persona.store import (
+            PersonaStore as StateStore,
+        )
+
+        db = _life_state_db_path(state)
+        async with StateStore(db) as store:
+            current = await store.get(persona_id, tenant_id=DEFAULT_TENANT_ID)
+            base = current or PersonaState(agent_id=persona_id)
+            merged = PersonaState(
+                agent_id=persona_id,
+                mood=body.mood if body.mood is not None else base.mood,
+                fatigue=(
+                    body.fatigue if body.fatigue is not None else base.fatigue
+                ),
+                recent_topics=(
+                    list(body.recent_topics)
+                    if body.recent_topics is not None
+                    else list(base.recent_topics)
+                ),
+                # ``upsert`` stamps "now" because we pass 0; this is a manual
+                # edit so a fresh timestamp is correct.
+                updated_at_ms=0,
+                state_json=base.state_json,
+            )
+            await store.upsert(merged, tenant_id=DEFAULT_TENANT_ID)
+            row = await store.get(persona_id, tenant_id=DEFAULT_TENANT_ID)
+        # ``row`` is never None right after a successful upsert.
+        assert row is not None
+        return LifeStateOut(
+            mood=row.mood,
+            fatigue=row.fatigue,
+            recent_topics=list(row.recent_topics),
+            state_json=row.state_json,
+            updated_at_ms=row.updated_at_ms,
+        )
+
+    @r.get(
+        "/admin/personas/{persona_id}/diary",
+        response_model=DiaryOut,
+        summary="Read a persona's private diary tail",
+    )
+    async def get_diary(
+        persona_id: str,
+        state: Annotated[AdminState, Depends(get_admin_state)],
+        limit: int = 50,
+    ) -> DiaryOut:
+        await _require_persona(_persona_store(state), persona_id)
+        from corlinman_persona.store import (
+            DEFAULT_TENANT_ID,
+        )
+        from corlinman_persona.store import (
+            PersonaStore as StateStore,
+        )
+
+        # Clamp the tail to a sane window so a huge ``limit`` can't fan out.
+        tail = max(0, min(int(limit), 500))
+        db = _life_state_db_path(state)
+        async with StateStore(db) as store:
+            row = await store.get(persona_id, tenant_id=DEFAULT_TENANT_ID)
+        diary_raw = []
+        if row is not None:
+            raw = row.state_json.get("diary")
+            if isinstance(raw, list):
+                diary_raw = raw
+        # Newest-last tail. Each record may carry ``entry`` (agent tool
+        # shape) or ``text`` (operator-seeded shape); ``ts`` is ISO or int.
+        sliced = diary_raw[-tail:] if tail else []
+        entries: list[DiaryEntryOut] = []
+        for rec in sliced:
+            if not isinstance(rec, dict):
+                continue
+            text = str(rec.get("text") or rec.get("entry") or "")
+            entries.append(
+                DiaryEntryOut(ts=_parse_iso_ms(rec.get("ts")), text=text)
+            )
+        return DiaryOut(entries=entries)
+
+    @r.get(
+        "/admin/personas/{persona_id}/life-seeds",
+        response_model=LifeSeedsOut,
+        summary="Read a persona's effective event-seed pack (as YAML)",
+    )
+    async def get_life_seeds(
+        persona_id: str,
+        state: Annotated[AdminState, Depends(get_admin_state)],
+    ) -> LifeSeedsOut:
+        await _require_persona(_persona_store(state), persona_id)
+        # Reuse the agent-side resolution so the admin view matches exactly
+        # what ``persona_life_event_seed`` draws from at runtime (server may
+        # import agent — see the import-linter layering contract).
+        import yaml
+        from corlinman_agent.persona.life import (
+            _load_bundled_seeds,
+            _override_seed_path,
+            _resolve_seed_library,
+        )
+
+        data_dir = state.data_dir
+        library = _resolve_seed_library(persona_id, data_dir)
+        source: Literal["override", "bundled", "generic"]
+        if data_dir is not None and _override_seed_path(
+            persona_id, data_dir
+        ).is_file():
+            source = "override"
+        elif _load_bundled_seeds(persona_id) is not None:
+            source = "bundled"
+        else:
+            source = "generic"
+        text = yaml.safe_dump(library, allow_unicode=True, sort_keys=False)
+        return LifeSeedsOut(yaml=text, source=source)
+
+    @r.put(
+        "/admin/personas/{persona_id}/life-seeds",
+        response_model=OkOut,
+        summary="Write a persona's operator event-seed override (YAML)",
+    )
+    async def put_life_seeds(
+        persona_id: str,
+        body: LifeSeedsIn,
+        state: Annotated[AdminState, Depends(get_admin_state)],
+    ) -> OkOut:
+        await _require_persona(_persona_store(state), persona_id)
+        if state.data_dir is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "error": "data_dir_missing",
+                    "message": "gateway booted without a writable data dir",
+                },
+            )
+        import yaml
+        from corlinman_agent.persona.life import (
+            _override_seed_path,
+            _valid_persona_slug,
+        )
+
+        # Guard the slug before it's interpolated into a filename — mirrors
+        # the agent-side ``persona_life_set_seeds`` write path.
+        if not _valid_persona_slug(persona_id):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "error": "invalid_persona_id",
+                    "message": "persona_id must be a slug ([a-z0-9_-])",
+                },
+            )
+        try:
+            parsed = yaml.safe_load(body.yaml)
+        except yaml.YAMLError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"error": "invalid_yaml", "message": str(exc)},
+            ) from exc
+        # A valid-but-non-mapping body (a bare scalar / list) isn't a usable
+        # seed pack — reject it the same way an unparseable body is.
+        if not isinstance(parsed, dict):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "error": "invalid_yaml",
+                    "message": "seed pack must be a YAML mapping of "
+                    "{category: [strings]}",
+                },
+            )
+        path = _override_seed_path(persona_id, state.data_dir)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            # Atomic write via tmp+replace — same pattern the agent tool uses
+            # so a crash mid-write never leaves a half-written override.
+            tmp = path.with_suffix(".yaml.tmp")
+            tmp.write_text(body.yaml, encoding="utf-8")
+            tmp.replace(path)
+        except OSError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={"error": "write_failed", "message": str(exc)},
+            ) from exc
+        return OkOut(ok=True)
+
+    @r.post(
+        "/admin/personas/{persona_id}/reset-to-default",
+        response_model=OkOut,
+        summary="Re-seed a built-in persona body from its default markdown",
+    )
+    async def reset_to_default(
+        persona_id: str,
+        state: Annotated[AdminState, Depends(get_admin_state)],
+    ) -> OkOut:
+        store = _persona_store(state)
+        persona = await store.get(persona_id)
+        if persona is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"error": "persona_not_found", "id": persona_id},
+            )
+        if not persona.is_builtin:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "error": "not_builtin",
+                    "id": persona_id,
+                    "message": "reset-to-default only applies to built-in "
+                    "personas",
+                },
+            )
+        # Today the sole built-in is ``grantley``; re-seed its body from the
+        # shipped markdown. Future builtins would branch on ``persona_id``.
+        from corlinman_server.persona import (
+            DEFAULT_GRANTLEY_DISPLAY_NAME,
+            DEFAULT_GRANTLEY_ID,
+            DEFAULT_GRANTLEY_SUMMARY,
+            load_default_grantley_body,
+        )
+
+        if persona_id != DEFAULT_GRANTLEY_ID:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "error": "no_default_body",
+                    "id": persona_id,
+                    "message": "no shipped default body for this built-in",
+                },
+            )
+        await store.update(
+            persona_id,
+            display_name=DEFAULT_GRANTLEY_DISPLAY_NAME,
+            short_summary=DEFAULT_GRANTLEY_SUMMARY,
+            system_prompt=load_default_grantley_body(),
+        )
+        return OkOut(ok=True)
+
+    @r.post(
+        "/admin/personas/{persona_id}/decay",
+        response_model=DecayOut,
+        summary="Run the mood/fatigue decay sweep for one persona's row",
+    )
+    async def run_decay(
+        persona_id: str,
+        state: Annotated[AdminState, Depends(get_admin_state)],
+    ) -> DecayOut:
+        await _require_persona(_persona_store(state), persona_id)
+        import time
+
+        from corlinman_persona.decay import DecayConfig, apply_decay
+        from corlinman_persona.state import PersonaState
+        from corlinman_persona.store import (
+            DEFAULT_TENANT_ID,
+        )
+        from corlinman_persona.store import (
+            PersonaStore as StateStore,
+        )
+
+        db = _life_state_db_path(state)
+        now_ms = int(time.time() * 1000)
+        config = DecayConfig()
+        changed = 0
+        async with StateStore(db) as store:
+            row = await store.get(persona_id, tenant_id=DEFAULT_TENANT_ID)
+            if row is not None:
+                hours = max(0.0, (now_ms - row.updated_at_ms) / 3_600_000.0)
+                decayed = apply_decay(row, hours, config)
+                new_state = PersonaState(
+                    agent_id=decayed.agent_id,
+                    mood=decayed.mood,
+                    fatigue=decayed.fatigue,
+                    recent_topics=decayed.recent_topics,
+                    # Stamp "now" so a re-run doesn't double-count elapsed time.
+                    updated_at_ms=now_ms,
+                    state_json=decayed.state_json,
+                )
+                await store.upsert(new_state, tenant_id=DEFAULT_TENANT_ID)
+                if (
+                    new_state.mood != row.mood
+                    or new_state.fatigue != row.fatigue
+                    or new_state.recent_topics != row.recent_topics
+                ):
+                    changed = 1
+        return DecayOut(rows_changed=changed)
 
     # ----- Generic per-channel humanlike toggle (W7) ------------------
 

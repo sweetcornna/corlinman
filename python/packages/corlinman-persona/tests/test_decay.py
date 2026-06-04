@@ -132,3 +132,71 @@ def test_state_json_is_passthrough() -> None:
     s = _state(state_json={"trust": 0.7})
     out = apply_decay(s, 24.0, DecayConfig())
     assert out.state_json == {"trust": 0.7}
+
+
+# ---------------------------------------------------------------------------
+# topic_hours_elapsed — decoupled topic-aging clock (Codex finding #1).
+# ---------------------------------------------------------------------------
+
+
+def test_topic_hours_none_matches_single_clock() -> None:
+    """Default ``None`` must behave exactly as the legacy single clock:
+    topic aging falls back to ``hours_elapsed``."""
+    s = _state(recent_topics=["a", "b", "c", "d"])
+    out_default = apply_decay(s, 24.0, DecayConfig(recent_topics_decay_per_day=1))
+    out_explicit_none = apply_decay(
+        s, 24.0, DecayConfig(recent_topics_decay_per_day=1), topic_hours_elapsed=None
+    )
+    assert out_default.recent_topics == ["b", "c", "d"]
+    assert out_explicit_none.recent_topics == ["b", "c", "d"]
+    assert out_default == out_explicit_none
+
+
+def test_topic_clock_drops_on_its_own_clock_while_fatigue_follows_hours() -> None:
+    """With a separate topic clock, fatigue tracks ``hours_elapsed`` while
+    the topic drop tracks ``topic_hours_elapsed``.
+
+    Here only one fatigue-hour elapsed (so almost no recovery) but the
+    topic clock has accumulated two days — topics must still age off.
+    """
+    s = _state(fatigue=1.0, recent_topics=["a", "b", "c", "d"])
+    out = apply_decay(
+        s,
+        1.0,
+        DecayConfig(fatigue_recovery_per_hour=0.1, recent_topics_decay_per_day=1),
+        topic_hours_elapsed=48.0,
+    )
+    # Fatigue followed the 1h fatigue clock: 1.0 - 1 * 0.1 = 0.9.
+    assert out.fatigue == pytest.approx(0.9)
+    # Topics followed the 48h topic clock: floor(48/24) = 2 dropped.
+    assert out.recent_topics == ["c", "d"]
+
+
+def test_topic_clock_under_a_day_keeps_topics_even_when_fatigue_recovers() -> None:
+    """A sub-24h topic clock drops nothing, regardless of the fatigue
+    clock — the bug was hourly sweeps pinning topic drops at 0 forever,
+    but here we assert the inverse: many fatigue hours, < 1 topic day."""
+    s = _state(fatigue=1.0, recent_topics=["a", "b"])
+    out = apply_decay(
+        s,
+        10.0,
+        DecayConfig(fatigue_recovery_per_hour=0.1, recent_topics_decay_per_day=1),
+        topic_hours_elapsed=23.9,
+    )
+    # 10h of fatigue recovery: 1.0 - 10 * 0.1 = 0.0.
+    assert out.fatigue == pytest.approx(0.0)
+    # Topic clock under a day → no drop.
+    assert out.recent_topics == ["a", "b"]
+
+
+def test_topic_clock_zero_or_negative_drops_nothing() -> None:
+    """A non-positive topic clock must never advance topic aging even
+    though the positive fatigue clock keeps the function past its guard."""
+    s = _state(fatigue=0.5, recent_topics=["a", "b", "c"])
+    out = apply_decay(
+        s,
+        5.0,
+        DecayConfig(fatigue_recovery_per_hour=0.1, recent_topics_decay_per_day=1),
+        topic_hours_elapsed=0.0,
+    )
+    assert out.recent_topics == ["a", "b", "c"]

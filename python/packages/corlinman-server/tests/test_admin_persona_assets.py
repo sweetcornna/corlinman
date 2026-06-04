@@ -345,7 +345,18 @@ def test_humanlike_put_then_get_telegram(client: TestClient) -> None:
 
 
 @pytest.mark.parametrize(
-    "channel", ["discord", "slack", "feishu", "qq", "telegram"]
+    "channel",
+    [
+        "discord",
+        "slack",
+        "feishu",
+        "qq",
+        "telegram",
+        # The two "official" platforms were wired into the humanlike
+        # resolver in Wave 2; they must now toggle here too (Codex #4).
+        "qq_official",
+        "wechat_official",
+    ],
 )
 def test_humanlike_put_all_channels_round_trip(
     client: TestClient, channel: str
