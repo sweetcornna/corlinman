@@ -850,10 +850,10 @@ function PersonaEditorDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="flex max-h-[85vh] max-w-3xl flex-col overflow-y-auto"
+        className="flex max-h-[85dvh] max-w-3xl flex-col overflow-hidden"
         data-testid="persona-editor"
       >
-        <DialogHeader className="shrink-0">
+        <DialogHeader className="shrink-0 pr-6">
           <DialogTitle className="flex items-center gap-2.5">
             {existing ? (
               <PersonaAvatar persona={existing} size={28} />
@@ -870,7 +870,7 @@ function PersonaEditorDialog({
         </DialogHeader>
 
         <div
-          className="pr-1"
+          className="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1"
           data-testid="persona-editor-scroll"
         >
           <div className="grid gap-3">
@@ -1004,7 +1004,10 @@ function PersonaEditorDialog({
           </div>
         </div>
 
-        <DialogFooter className="shrink-0 gap-2">
+        <DialogFooter
+          className="shrink-0 gap-2 pt-1"
+          data-testid="persona-editor-footer"
+        >
           {existing?.is_builtin ? (
             <Button
               type="button"
