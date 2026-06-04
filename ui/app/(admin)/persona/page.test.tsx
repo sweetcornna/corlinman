@@ -303,7 +303,7 @@ describe("PersonaPage — editor modal", () => {
     expect(idInput).not.toBeDisabled();
   });
 
-  it("bounds the create editor itself so long forms can scroll with the wheel", async () => {
+  it("keeps the create editor body scrollable while header and footer stay fixed", async () => {
     fetchPersonasMock.mockResolvedValue([SAMPLE_BUILTIN]);
     stubHumanlikeOff();
 
@@ -317,12 +317,22 @@ describe("PersonaPage — editor modal", () => {
     fireEvent.click(screen.getByTestId("persona-new"));
 
     const editor = await screen.findByTestId("persona-editor");
+    const scrollBody = screen.getByTestId("persona-editor-scroll");
+    const footer = screen.getByTestId("persona-editor-footer");
+
     expect(editor).toHaveClass(
       "flex",
-      "max-h-[85vh]",
+      "max-h-[85dvh]",
       "flex-col",
-      "overflow-y-auto",
+      "overflow-hidden",
     );
+    expect(scrollBody).toHaveClass(
+      "min-h-0",
+      "flex-1",
+      "overflow-y-auto",
+      "overscroll-contain",
+    );
+    expect(footer).toHaveClass("shrink-0");
   });
 
   it("opens the edit editor pre-populated, locks the slug, and PATCHes on save", async () => {
