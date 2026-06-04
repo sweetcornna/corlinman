@@ -37,8 +37,10 @@ from corlinman_server.gateway.routes_admin_b._napcat_lib import (
     StatusOut,
     _accounts_path,
     _cached_napcat_credential,
+    _ensure_onebot_websocket_server,
     _load_accounts,
     _NapcatClient,
+    _onebot_websocket_server_from_config,
     _resolve_napcat_url,
     _upsert_account,
 )
@@ -126,6 +128,11 @@ def router() -> APIRouter:
         try:
             async with client:
                 out = await client.check_status()
+                if out.status == "confirmed":
+                    await _ensure_onebot_websocket_server(
+                        client,
+                        _onebot_websocket_server_from_config(dict(config_snapshot())),
+                    )
         except NapcatError as exc:
             return exc.response()
         if out.account is not None:
@@ -166,6 +173,11 @@ def router() -> APIRouter:
         try:
             async with client:
                 out = await client.quick_login(body.uin)
+                if out.status == "confirmed":
+                    await _ensure_onebot_websocket_server(
+                        client,
+                        _onebot_websocket_server_from_config(dict(config_snapshot())),
+                    )
         except NapcatError as exc:
             return exc.response()
         if out.account is not None:

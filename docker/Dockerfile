@@ -14,16 +14,21 @@
 # Build (no China mirror):
 #   docker buildx build -f docker/Dockerfile --target runtime -t corlinman:dev .
 #
-# Build (China mirror — uses Tsinghua PyPI + ghproxy):
+# Build (China mirror — uses mirrored base images + Tsinghua PyPI):
 #   docker buildx build -f docker/Dockerfile --target runtime \
+#       --build-arg PYTHON_BASE_IMAGE=docker.m.daocloud.io/library/python:3.12-slim-bookworm \
+#       --build-arg NODE_BASE_IMAGE=docker.m.daocloud.io/library/node:22-bookworm-slim \
 #       --build-arg PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple \
 #       --build-arg UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
 #       -t corlinman:dev .
 
+ARG PYTHON_BASE_IMAGE=python:3.12-slim-bookworm
+ARG NODE_BASE_IMAGE=node:22-bookworm-slim
+
 # ---------------------------------------------------------------------------
 # Stage 1: builder — install workspace into /opt/venv
 # ---------------------------------------------------------------------------
-FROM python:3.12-slim-bookworm AS py-builder
+FROM ${PYTHON_BASE_IMAGE} AS py-builder
 
 ARG PIP_INDEX=https://pypi.org/simple
 ARG UV_INDEX_URL=https://pypi.org/simple
@@ -57,6 +62,14 @@ COPY pyproject.toml uv.lock README.md ./
 COPY python ./python
 COPY proto ./proto
 COPY scripts/gen-proto.sh ./scripts/gen-proto.sh
+RUN sed -i 's/\r$//' ./scripts/gen-proto.sh
+
+# Docker contexts can contain ignored local bytecode directories from packages
+# that no longer exist. uv's workspace glob treats every python/packages/*
+# directory as a member, so prune directories that do not contain a package
+# manifest before resolving the workspace.
+RUN find python/packages -mindepth 1 -maxdepth 1 -type d \
+        ! -exec test -f "{}/pyproject.toml" \; -print -exec rm -rf {} +
 
 # Sync the entire workspace into /opt/venv. --frozen ensures we use uv.lock.
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv
@@ -71,7 +84,7 @@ RUN bash scripts/gen-proto.sh
 # ---------------------------------------------------------------------------
 # Stage 2: UI builder — produce a static Next.js export in /build/ui/out
 # ---------------------------------------------------------------------------
-FROM node:22-bookworm-slim AS ui-builder
+FROM ${NODE_BASE_IMAGE} AS ui-builder
 
 ARG NPM_REGISTRY=
 
@@ -97,7 +110,7 @@ RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
 # ---------------------------------------------------------------------------
 # Stage 3: runtime — slim image with just the venv + sources + UI static
 # ---------------------------------------------------------------------------
-FROM python:3.12-slim-bookworm AS runtime
+FROM ${PYTHON_BASE_IMAGE} AS runtime
 
 ARG DEBIAN_MIRROR=deb.debian.org
 RUN if [ "$DEBIAN_MIRROR" != "deb.debian.org" ]; then \
@@ -137,6 +150,7 @@ COPY --from=ui-builder /build/ui/out /app/ui-static
 # Default supervisor: launch agent sidecar + gateway in parallel.
 COPY docker/start.sh /app/start.sh
 RUN mkdir -p /data \
+    && sed -i 's/\r$//' /app/start.sh \
     && chmod +x /app/start.sh \
     && chown -R corlinman:corlinman /app /data
 

@@ -65,6 +65,11 @@ class KeywordsOut(BaseModel):
     group_keywords: dict[str, list[str]]
 
 
+class ReconnectOut(BaseModel):
+    status: str
+    changed: bool
+
+
 # ---------------------------------------------------------------------------
 # Telegram wire shapes — match ui/lib/api/telegram.ts field-for-field so the
 # admin page renders real numbers without any frontend edits.
