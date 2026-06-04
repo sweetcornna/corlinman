@@ -15,6 +15,8 @@ import json
 import httpx
 import pytest
 from corlinman_agent.persona import (
+    PERSONA_ATTACH_ASSET_FROM_ATTACHMENT_TOOL,
+    PERSONA_ATTACH_ASSET_FROM_DATA_TOOL,
     PERSONA_ATTACH_ASSET_FROM_URL_TOOL,
     PERSONA_CREATE_TOOL,
     PERSONA_DELETE_TOOL,
@@ -23,6 +25,8 @@ from corlinman_agent.persona import (
     PERSONA_LIST_TOOL,
     PERSONA_TOOLS,
     PERSONA_UPDATE_TOOL,
+    dispatch_persona_attach_asset_from_attachment,
+    dispatch_persona_attach_asset_from_data,
     dispatch_persona_attach_asset_from_url,
     dispatch_persona_create,
     dispatch_persona_delete,
@@ -30,6 +34,8 @@ from corlinman_agent.persona import (
     dispatch_persona_list,
     dispatch_persona_list_assets,
     dispatch_persona_update,
+    persona_attach_asset_from_attachment_tool_schema,
+    persona_attach_asset_from_data_tool_schema,
     persona_attach_asset_from_url_tool_schema,
     persona_create_tool_schema,
     persona_delete_tool_schema,
@@ -39,6 +45,7 @@ from corlinman_agent.persona import (
     persona_tool_schemas,
     persona_update_tool_schema,
 )
+from corlinman_agent.reasoning_loop import Attachment
 from corlinman_server.persona import (
     Persona,
     PersonaAssetStore,
@@ -111,6 +118,13 @@ def test_tool_names_are_wire_stable() -> None:
     assert PERSONA_DELETE_TOOL == "persona_delete"
     assert PERSONA_LIST_ASSETS_TOOL == "persona_list_assets"
     assert PERSONA_ATTACH_ASSET_FROM_URL_TOOL == "persona_attach_asset_from_url"
+    assert (
+        PERSONA_ATTACH_ASSET_FROM_DATA_TOOL == "persona_attach_asset_from_data"
+    )
+    assert (
+        PERSONA_ATTACH_ASSET_FROM_ATTACHMENT_TOOL
+        == "persona_attach_asset_from_attachment"
+    )
     assert PERSONA_TOOLS == frozenset(
         {
             "persona_list",
@@ -120,6 +134,8 @@ def test_tool_names_are_wire_stable() -> None:
             "persona_delete",
             "persona_list_assets",
             "persona_attach_asset_from_url",
+            "persona_attach_asset_from_data",
+            "persona_attach_asset_from_attachment",
         }
     )
 
@@ -134,6 +150,14 @@ def test_tool_names_are_wire_stable() -> None:
         (persona_delete_tool_schema, "persona_delete"),
         (persona_list_assets_tool_schema, "persona_list_assets"),
         (persona_attach_asset_from_url_tool_schema, "persona_attach_asset_from_url"),
+        (
+            persona_attach_asset_from_data_tool_schema,
+            "persona_attach_asset_from_data",
+        ),
+        (
+            persona_attach_asset_from_attachment_tool_schema,
+            "persona_attach_asset_from_attachment",
+        ),
     ],
 )
 def test_schemas_are_openai_shaped(schema_fn, name) -> None:  # type: ignore[no-untyped-def]
@@ -144,10 +168,12 @@ def test_schemas_are_openai_shaped(schema_fn, name) -> None:  # type: ignore[no-
     assert schema["function"]["parameters"]["type"] == "object"
 
 
-def test_persona_tool_schemas_returns_all_seven() -> None:
+def test_persona_tool_schemas_returns_all() -> None:
     schemas = persona_tool_schemas()
     names = {s["function"]["name"] for s in schemas}
     assert names == PERSONA_TOOLS
+    # No duplicate schema entries.
+    assert len(schemas) == len(PERSONA_TOOLS)
 
 
 # ---------------------------------------------------------------------------
@@ -757,3 +783,326 @@ async def test_attach_asset_invalid_args(persona_store, asset_store) -> None:
     )
     assert out["ok"] is False
     assert out["error"] == "invalid_args"
+
+
+# ---------------------------------------------------------------------------
+# persona-inference (bound_persona_id) — the "as grantley, save this as my
+# 立绘" path where the model omits persona_id and the servicer supplies the
+# bound persona from start.extra["persona_id"].
+# ---------------------------------------------------------------------------
+
+
+async def test_attach_from_url_infers_bound_persona(
+    persona_store, asset_store
+) -> None:
+    await _seed(persona_store, pid="grantley")
+    transport = httpx.MockTransport(_png_handler())
+    out = json.loads(
+        await dispatch_persona_attach_asset_from_url(
+            # No persona_id in args — the model doesn't know its slug.
+            args_json=json.dumps(
+                {
+                    "kind": "reference",
+                    "label": "front",
+                    "url": "https://example.com/front.png",
+                }
+            ).encode(),
+            persona_store=persona_store,
+            asset_store=asset_store,
+            bound_persona_id="grantley",
+            transport=transport,
+        )
+    )
+    assert out["ok"] is True
+    assert out["asset"]["persona_id"] == "grantley"
+    assert out["asset"]["kind"] == "reference"
+    assert out["asset"]["label"] == "front"
+
+
+async def test_attach_from_url_explicit_persona_wins_over_bound(
+    persona_store, asset_store
+) -> None:
+    # Wizard path: bound persona is "grantley" but the operator is
+    # editing "vivian" explicitly — the explicit id must win.
+    await _seed(persona_store, pid="vivian")
+    transport = httpx.MockTransport(_png_handler())
+    out = json.loads(
+        await dispatch_persona_attach_asset_from_url(
+            args_json=json.dumps(
+                {
+                    "persona_id": "vivian",
+                    "kind": "reference",
+                    "label": "front",
+                    "url": "https://example.com/front.png",
+                }
+            ).encode(),
+            persona_store=persona_store,
+            asset_store=asset_store,
+            bound_persona_id="grantley",
+            transport=transport,
+        )
+    )
+    assert out["ok"] is True
+    assert out["asset"]["persona_id"] == "vivian"
+
+
+async def test_attach_from_url_no_persona_unresolved(
+    persona_store, asset_store
+) -> None:
+    transport = httpx.MockTransport(_png_handler())
+    out = json.loads(
+        await dispatch_persona_attach_asset_from_url(
+            args_json=json.dumps(
+                {
+                    "kind": "reference",
+                    "label": "front",
+                    "url": "https://example.com/front.png",
+                }
+            ).encode(),
+            persona_store=persona_store,
+            asset_store=asset_store,
+            bound_persona_id=None,
+            transport=transport,
+        )
+    )
+    assert out["ok"] is False
+    assert out["error"] == "persona_unresolved"
+
+
+# ---------------------------------------------------------------------------
+# persona_attach_asset_from_data
+# ---------------------------------------------------------------------------
+
+
+def _png_data_uri() -> str:
+    import base64
+
+    b64 = base64.b64encode(_PNG_MAGIC).decode("ascii")
+    return f"data:image/png;base64,{b64}"
+
+
+async def test_attach_from_data_data_uri_happy(
+    persona_store, asset_store
+) -> None:
+    await _seed(persona_store, pid="grantley")
+    out = json.loads(
+        await dispatch_persona_attach_asset_from_data(
+            args_json=json.dumps(
+                {
+                    "kind": "reference",
+                    "label": "front",
+                    "data": _png_data_uri(),
+                }
+            ).encode(),
+            persona_store=persona_store,
+            asset_store=asset_store,
+            bound_persona_id="grantley",
+        )
+    )
+    assert out["ok"] is True
+    assert out["asset"]["persona_id"] == "grantley"
+    assert out["asset"]["mime"] == "image/png"
+    assert out["asset"]["sha256"] == hashlib.sha256(_PNG_MAGIC).hexdigest()
+    # Bytes round-tripped to disk.
+    record = await asset_store.get("grantley", "reference", "front")
+    assert record is not None
+    assert asset_store.path_for(record).read_bytes() == _PNG_MAGIC
+
+
+async def test_attach_from_data_bare_base64_sniffs_mime(
+    persona_store, asset_store
+) -> None:
+    import base64
+
+    await _seed(persona_store, pid="grantley")
+    bare = base64.b64encode(_PNG_MAGIC).decode("ascii")
+    out = json.loads(
+        await dispatch_persona_attach_asset_from_data(
+            args_json=json.dumps(
+                {"kind": "emoji", "label": "happy", "data": bare}
+            ).encode(),
+            persona_store=persona_store,
+            asset_store=asset_store,
+            bound_persona_id="grantley",
+        )
+    )
+    assert out["ok"] is True
+    # MIME sniffed from the PNG magic bytes (no data-URI media type).
+    assert out["asset"]["mime"] == "image/png"
+
+
+async def test_attach_from_data_bad_base64(
+    persona_store, asset_store
+) -> None:
+    await _seed(persona_store, pid="grantley")
+    out = json.loads(
+        await dispatch_persona_attach_asset_from_data(
+            args_json=json.dumps(
+                {
+                    "kind": "emoji",
+                    "label": "happy",
+                    "data": "not!!valid!!base64",
+                }
+            ).encode(),
+            persona_store=persona_store,
+            asset_store=asset_store,
+            bound_persona_id="grantley",
+        )
+    )
+    assert out["ok"] is False
+    assert out["error"] == "invalid_args"
+
+
+async def test_attach_from_data_no_persona_unresolved(
+    persona_store, asset_store
+) -> None:
+    out = json.loads(
+        await dispatch_persona_attach_asset_from_data(
+            args_json=json.dumps(
+                {
+                    "kind": "emoji",
+                    "label": "happy",
+                    "data": _png_data_uri(),
+                }
+            ).encode(),
+            persona_store=persona_store,
+            asset_store=asset_store,
+            bound_persona_id=None,
+        )
+    )
+    assert out["ok"] is False
+    assert out["error"] == "persona_unresolved"
+
+
+# ---------------------------------------------------------------------------
+# persona_attach_asset_from_attachment
+# ---------------------------------------------------------------------------
+
+
+async def test_attach_from_attachment_happy(
+    persona_store, asset_store
+) -> None:
+    await _seed(persona_store, pid="grantley")
+    attachments = [
+        Attachment(
+            kind="image",
+            bytes_=_PNG_MAGIC,
+            mime="image/png",
+            file_name="selfie.png",
+        )
+    ]
+    out = json.loads(
+        await dispatch_persona_attach_asset_from_attachment(
+            args_json=json.dumps(
+                {"kind": "reference", "label": "front"}
+            ).encode(),
+            persona_store=persona_store,
+            asset_store=asset_store,
+            attachments=attachments,
+            bound_persona_id="grantley",
+        )
+    )
+    assert out["ok"] is True
+    assert out["asset"]["persona_id"] == "grantley"
+    assert out["asset"]["file_name"] == "selfie.png"
+    assert out["asset"]["mime"] == "image/png"
+
+
+async def test_attach_from_attachment_index_selects_second_image(
+    persona_store, asset_store
+) -> None:
+    await _seed(persona_store, pid="grantley")
+    # A non-image attachment is skipped when indexing over images.
+    second = bytes.fromhex("ffd8ffe000104a464946")  # jpeg magic
+    attachments = [
+        Attachment(kind="file", bytes_=b"doc", mime="text/plain"),
+        Attachment(kind="image", bytes_=_PNG_MAGIC, mime="image/png"),
+        Attachment(kind="image", bytes_=second, mime="image/jpeg"),
+    ]
+    out = json.loads(
+        await dispatch_persona_attach_asset_from_attachment(
+            args_json=json.dumps(
+                {
+                    "kind": "reference",
+                    "label": "side",
+                    "attachment_index": 1,
+                }
+            ).encode(),
+            persona_store=persona_store,
+            asset_store=asset_store,
+            attachments=attachments,
+            bound_persona_id="grantley",
+        )
+    )
+    assert out["ok"] is True
+    assert out["asset"]["sha256"] == hashlib.sha256(second).hexdigest()
+
+
+async def test_attach_from_attachment_url_only_bounces(
+    persona_store, asset_store
+) -> None:
+    # A channel that forwarded only a URL (no inline bytes) cannot be
+    # ingested in-band — the tool tells the model to use the URL tool.
+    await _seed(persona_store, pid="grantley")
+    attachments = [
+        Attachment(kind="image", url="https://cdn.example.com/pic.png")
+    ]
+    out = json.loads(
+        await dispatch_persona_attach_asset_from_attachment(
+            args_json=json.dumps(
+                {"kind": "reference", "label": "front"}
+            ).encode(),
+            persona_store=persona_store,
+            asset_store=asset_store,
+            attachments=attachments,
+            bound_persona_id="grantley",
+        )
+    )
+    assert out["ok"] is False
+    assert out["error"] == "attachment_not_ingestible"
+    assert "cdn.example.com/pic.png" in out["message"]
+
+
+async def test_attach_from_attachment_none_present(
+    persona_store, asset_store
+) -> None:
+    await _seed(persona_store, pid="grantley")
+    out = json.loads(
+        await dispatch_persona_attach_asset_from_attachment(
+            args_json=json.dumps(
+                {"kind": "reference", "label": "front"}
+            ).encode(),
+            persona_store=persona_store,
+            asset_store=asset_store,
+            attachments=[],
+            bound_persona_id="grantley",
+        )
+    )
+    assert out["ok"] is False
+    assert out["error"] == "no_attachment"
+
+
+async def test_attach_from_attachment_index_out_of_range(
+    persona_store, asset_store
+) -> None:
+    await _seed(persona_store, pid="grantley")
+    attachments = [
+        Attachment(kind="image", bytes_=_PNG_MAGIC, mime="image/png")
+    ]
+    out = json.loads(
+        await dispatch_persona_attach_asset_from_attachment(
+            args_json=json.dumps(
+                {
+                    "kind": "reference",
+                    "label": "front",
+                    "attachment_index": 5,
+                }
+            ).encode(),
+            persona_store=persona_store,
+            asset_store=asset_store,
+            attachments=attachments,
+            bound_persona_id="grantley",
+        )
+    )
+    assert out["ok"] is False
+    assert out["error"] == "attachment_index_out_of_range"

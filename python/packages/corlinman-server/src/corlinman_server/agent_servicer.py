@@ -144,6 +144,8 @@ from corlinman_agent.permission import (
     PermissionGate,
 )
 from corlinman_agent.persona import (
+    PERSONA_ATTACH_ASSET_FROM_ATTACHMENT_TOOL,
+    PERSONA_ATTACH_ASSET_FROM_DATA_TOOL,
     PERSONA_ATTACH_ASSET_FROM_URL_TOOL,
     PERSONA_CREATE_TOOL,
     PERSONA_DELETE_TOOL,
@@ -159,6 +161,8 @@ from corlinman_agent.persona import (
     PERSONA_LIST_TOOL,
     PERSONA_TOOLS,
     PERSONA_UPDATE_TOOL,
+    dispatch_persona_attach_asset_from_attachment,
+    dispatch_persona_attach_asset_from_data,
     dispatch_persona_attach_asset_from_url,
     dispatch_persona_create,
     dispatch_persona_delete,
@@ -2802,13 +2806,33 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             if event.tool == AGENT_STATUS_CARD_TOOL:
                 # Mint a token-gated link to this conversation's live status
                 # page. Pure (sign a token from the turn's session_key + the
-                # public base URL) — no I/O, so no await.
+                # public base URL) — no I/O, so no await. Bind the turn's
+                # persona (start.extra["persona_id"]) into the token so the
+                # public status card can render that persona's avatar.
+                sc_extra = getattr(start, "extra", None) or {}
+                sc_persona_id: str | None = None
+                if isinstance(sc_extra, dict):
+                    sc_val = sc_extra.get("persona_id")
+                    if isinstance(sc_val, str) and sc_val.strip():
+                        sc_persona_id = sc_val.strip()
                 return self._dispatch_agent_status_card(
-                    event.args_json, start.session_key or ""
+                    event.args_json, start.session_key or "", sc_persona_id
                 )
             if event.tool in PERSONA_TOOLS:
                 persona_store = await self._get_persona_store()
                 persona_asset_store = await self._get_persona_asset_store()
+                # The attach-* tools infer the bound persona from the
+                # channel turn (start.extra["persona_id"]) when the model
+                # omits an explicit persona_id — so "save this as my 立绘"
+                # attaches to the persona the agent is speaking as without
+                # the model knowing its own slug. Same resolution contract
+                # as the image_with_refs / persona_life branches.
+                pa_extra = getattr(start, "extra", None) or {}
+                pa_bound_persona_id: str | None = None
+                if isinstance(pa_extra, dict):
+                    pa_val = pa_extra.get("persona_id")
+                    if isinstance(pa_val, str) and pa_val.strip():
+                        pa_bound_persona_id = pa_val.strip()
                 if event.tool == PERSONA_LIST_TOOL:
                     return await dispatch_persona_list(
                         args_json=event.args_json,
@@ -2850,6 +2874,27 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                         args_json=event.args_json,
                         persona_store=persona_store,
                         asset_store=persona_asset_store,
+                        bound_persona_id=pa_bound_persona_id,
+                    )
+                if event.tool == PERSONA_ATTACH_ASSET_FROM_DATA_TOOL:
+                    return await dispatch_persona_attach_asset_from_data(
+                        args_json=event.args_json,
+                        persona_store=persona_store,
+                        asset_store=persona_asset_store,
+                        bound_persona_id=pa_bound_persona_id,
+                    )
+                if event.tool == PERSONA_ATTACH_ASSET_FROM_ATTACHMENT_TOOL:
+                    # Pass the inbound attachments off the chat ``start``
+                    # frame so the tool can ingest an image the user sent
+                    # THIS turn (start.attachments carries inline bytes
+                    # when the channel populated them; URL-only attachments
+                    # bounce the model to persona_attach_asset_from_url).
+                    return await dispatch_persona_attach_asset_from_attachment(
+                        args_json=event.args_json,
+                        persona_store=persona_store,
+                        asset_store=persona_asset_store,
+                        attachments=getattr(start, "attachments", None),
+                        bound_persona_id=pa_bound_persona_id,
                     )
             if event.tool in PERSONA_LIFE_TOOLS:
                 # persona_life.* — a bound persona's stateful life + private
@@ -3207,7 +3252,10 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         return self._persona_store
 
     def _dispatch_agent_status_card(
-        self, args_json: bytes | str, session_key: str
+        self,
+        args_json: bytes | str,
+        session_key: str,
+        persona_id: str | None = None,
     ) -> str:
         """Mint a shareable status-card URL for ``session_key``.
 
@@ -3293,6 +3341,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             key,
             ttl_seconds=ttl,
             epoch=current_epoch(data_dir, session_key),
+            persona_id=persona_id,
         )
         return json.dumps(
             {

@@ -30,6 +30,7 @@ import { EventTimelineBody } from "@/components/sessions/event-timeline";
 import {
   fetchStatusSnapshot,
   openStatusEventStream,
+  personaAvatarUrl,
   StatusFetchError,
   type StatusSnapshot,
   type StatusState,
@@ -380,12 +381,17 @@ function StatusReady({
     <div className="min-h-dvh bg-background">
       <div className="mx-auto flex w-full max-w-2xl flex-col gap-4 px-4 py-6 sm:px-6 sm:py-10">
         {/* Header — status pill + elapsed + live/offline indicator. No
-            admin nav, no shell: this is a standalone mobile-friendly page. */}
+            admin nav, no shell: this is a standalone mobile-friendly page.
+            When the conversation is bound to a persona (F2) its avatar
+            renders beside the title via the public /public/personas route. */}
         <header className="flex flex-col gap-3">
           <div className="flex items-center justify-between gap-2">
-            <h1 className="text-sm font-semibold tracking-tight text-tp-ink">
-              Agent status
-            </h1>
+            <div className="flex items-center gap-2">
+              <PersonaAvatar personaId={snapshot.persona_id} />
+              <h1 className="text-sm font-semibold tracking-tight text-tp-ink">
+                Agent status
+              </h1>
+            </div>
             <ConnectionDot connected={connected} degraded={degraded} />
           </div>
           <div className="flex flex-wrap items-center gap-3">
@@ -417,6 +423,33 @@ function StatusReady({
         </footer>
       </div>
     </div>
+  );
+}
+
+/**
+ * Persona avatar chip (F2). Renders the bound persona's art (emoji else
+ * reference 立绘) via the public `/public/personas/{id}/avatar` route. Renders
+ * nothing when no persona is bound (`personaId` absent) or after the image
+ * fails to load (the persona has no art / the blob 404s) — the card degrades
+ * cleanly to its persona-less layout.
+ */
+function PersonaAvatar({ personaId }: { personaId: string | undefined }) {
+  const src = personaAvatarUrl(personaId);
+  const [failed, setFailed] = React.useState(false);
+  React.useEffect(() => setFailed(false), [src]);
+  if (!src || failed) return null;
+  // A plain <img> (not next/image): this is a static-export page served by the
+  // gateway, where next/image's loader/optimizer doesn't apply, and the src is
+  // a public capability URL on the gateway origin.
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={src}
+      alt={`${personaId} avatar`}
+      data-testid="status-persona-avatar"
+      onError={() => setFailed(true)}
+      className="size-6 shrink-0 rounded-full border border-tp-glass-edge object-cover"
+    />
   );
 }
 

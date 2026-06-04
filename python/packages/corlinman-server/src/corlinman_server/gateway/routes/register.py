@@ -49,6 +49,7 @@ from corlinman_server.gateway.routes import (
     metrics,
     models,
     plugin_callback,
+    public_personas,
     status,
     wechat_webhook,
 )
@@ -133,6 +134,14 @@ def build_app_router(state: GatewayState) -> APIRouter:
     # reads the journal lazily from app.state, so it needs no GatewayState
     # field here and is always safe to mount.
     parent.include_router(status.router())
+
+    # Public persona art (F2) — GET /public/personas/{id}/assets/{aid} +
+    # /public/personas/{id}/avatar. Mounted at ROOT with NO auth: persona art
+    # (emoji + reference 立绘) is not secret, and the public status card needs
+    # to render a persona avatar without an admin session. The handler reads
+    # the persona asset store lazily from app.state, so — like the status
+    # routes above — it needs no GatewayState field and is always safe to mount.
+    parent.include_router(public_personas.router())
 
     # Plugin callback — type-narrow the registry slot for lazy import safety.
     if state.plugin_async_tasks is not None:
