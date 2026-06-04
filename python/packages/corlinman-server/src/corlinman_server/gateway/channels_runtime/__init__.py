@@ -320,7 +320,12 @@ def _build_slack_params(
 
 
 def _build_qq_official_params(
-    qq_cfg: Mapping[str, Any], model: str, chat_service: Any
+    qq_cfg: Mapping[str, Any],
+    model: str,
+    chat_service: Any,
+    *,
+    persona_store: Any = None,
+    asset_store: Any = None,
 ) -> Any:
     """Build :class:`corlinman_channels.QqOfficialChannelParams` from
     the ``[channels.qq_official]`` config table.
@@ -330,6 +335,11 @@ def _build_qq_official_params(
     credentials may also be supplied via ``QQ_OFFICIAL_APP_ID`` /
     ``QQ_OFFICIAL_APP_SECRET`` env vars so the standard docker deploy
     works without hand-editing TOML.
+
+    The W7 humanlike fields mirror :func:`_build_qq_params` — when the
+    ``[channels.qq_official.humanlike]`` block is set the persona's
+    ``system_prompt`` (plus its emoji block when assets are wired) lands
+    at the head of every QQ-official chat request.
     """
     from corlinman_channels import QqOfficialChannelParams
 
@@ -345,15 +355,26 @@ def _build_qq_official_params(
     if app_secret:
         cfg["app_secret"] = app_secret
 
+    initial_enabled, initial_persona_id = _humanlike_initial(qq_cfg)
     return QqOfficialChannelParams(
         config=cfg,
         model=model,
         chat_service=chat_service,
+        humanlike_enabled=initial_enabled,
+        persona_id=initial_persona_id,
+        persona_store=persona_store,
+        humanlike_resolver=_humanlike_resolver(qq_cfg),
+        asset_store=asset_store,
     )
 
 
 def _build_wechat_official_params(
-    wx_cfg: Mapping[str, Any], model: str, chat_service: Any
+    wx_cfg: Mapping[str, Any],
+    model: str,
+    chat_service: Any,
+    *,
+    persona_store: Any = None,
+    asset_store: Any = None,
 ) -> Any:
     """Build :class:`corlinman_channels.WeChatOfficialChannelParams` from
     the ``[channels.wechat_official]`` config table.
@@ -365,6 +386,11 @@ def _build_wechat_official_params(
     (``app_id`` / ``app_secret`` / ``token``) may also be supplied via
     ``WECHAT_APP_ID`` / ``WECHAT_APP_SECRET`` / ``WECHAT_TOKEN`` env
     vars, mirroring the pattern the other channels use.
+
+    The W7 humanlike fields mirror :func:`_build_feishu_params` — when
+    the ``[channels.wechat_official.humanlike]`` block is set the
+    persona's ``system_prompt`` (plus its emoji block when assets are
+    wired) lands at the head of every WeChat-official chat request.
     """
     from corlinman_channels import WeChatOfficialChannelParams
 
@@ -387,11 +413,17 @@ def _build_wechat_official_params(
 
         register_bot(bot_name, adapter)
 
+    initial_enabled, initial_persona_id = _humanlike_initial(wx_cfg)
     return WeChatOfficialChannelParams(
         config=cfg,
         model=model,
         chat_service=chat_service,
         register_route=_register,
+        humanlike_enabled=initial_enabled,
+        persona_id=initial_persona_id,
+        persona_store=persona_store,
+        humanlike_resolver=_humanlike_resolver(wx_cfg),
+        asset_store=asset_store,
     )
 
 
@@ -663,7 +695,11 @@ def build_channel_tasks(
         try:
             from corlinman_channels import run_qq_official_channel
 
-            params = _build_qq_official_params(qq_off_cfg, model, chat_service)
+            params = _build_qq_official_params(
+                qq_off_cfg, model, chat_service,
+                persona_store=persona_store,
+                asset_store=asset_store,
+            )
             task = asyncio.create_task(
                 _run_channel(
                     "qq_official",
@@ -728,7 +764,11 @@ def build_channel_tasks(
         try:
             from corlinman_channels import run_wechat_official_channel
 
-            params = _build_wechat_official_params(wx_cfg, model, chat_service)
+            params = _build_wechat_official_params(
+                wx_cfg, model, chat_service,
+                persona_store=persona_store,
+                asset_store=asset_store,
+            )
             task = asyncio.create_task(
                 _run_channel(
                     "wechat_official",
@@ -817,9 +857,9 @@ def bootstrap(state: Any) -> list[asyncio.Task[Any]]:
     # The persona store + asset store are opened at admin_a wiring time
     # and parked on the admin_a state. Reach across to them so every
     # humanlike-capable channel (QQ + Telegram + Discord + Slack +
-    # Feishu) can inject the persona system prompt and the W7 emoji
-    # block. Best-effort — missing handles silently disable persona
-    # injection / the emoji block.
+    # Feishu + QQ Official + WeChat Official) can inject the persona
+    # system prompt and the W7 emoji block. Best-effort — missing handles
+    # silently disable persona injection / the emoji block.
     persona_store: Any | None = None
     asset_store: Any | None = None
     admin_a_state: Any | None = None

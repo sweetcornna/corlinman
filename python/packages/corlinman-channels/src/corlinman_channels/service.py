@@ -4128,6 +4128,18 @@ class QqOfficialChannelParams:
     model: str = ""
     chat_service: ChatServiceLike | None = None
 
+    # ---- human-like persona toggle (T-persona) -------------------------
+    # Mirror of the QQ humanlike fields — see :class:`QqChannelParams`.
+    # Off by default; opt-in via ``[channels.qq_official.humanlike]`` (or
+    # the live ``humanlike_resolver``). When on, the per-turn inbound
+    # handler prepends the persona's ``system_prompt`` (plus its emoji
+    # block when assets are wired) at the head of the chat request.
+    humanlike_enabled: bool = False
+    persona_id: str | None = None
+    persona_store: Any = None
+    humanlike_resolver: Any = None
+    asset_store: Any = None
+
 
 async def run_qq_official_channel(
     params: QqOfficialChannelParams,
@@ -4194,6 +4206,7 @@ async def run_qq_official_channel(
                         params.model,
                         sender,
                         cancel,
+                        params=params,
                     ),
                 )
     finally:
@@ -4388,6 +4401,7 @@ async def handle_one_qq_official(
     *,
     inbox: Any = None,
     inbox_id: int | None = None,
+    params: QqOfficialChannelParams | None = None,
 ) -> None:
     """Run one chat turn and post the reply via :class:`QqOfficialSender`.
 
@@ -4408,6 +4422,19 @@ async def handle_one_qq_official(
             _log.warning("qq_official inbox mark_dispatched failed: %s", exc)
 
     request = _build_text_channel_request(inbound, model)
+    # Optionally prepend a persona system_prompt — mirrors the other
+    # humanlike-capable channels. Off by default; opt-in via the
+    # ``[channels.qq_official.humanlike]`` config or the live resolver.
+    if params is not None:
+        await _inject_persona_if_enabled(
+            request,
+            humanlike_enabled=params.humanlike_enabled,
+            persona_id=params.persona_id,
+            persona_store=params.persona_store,
+            humanlike_resolver=params.humanlike_resolver,
+            asset_store=params.asset_store,
+            channel_name="qq_official",
+        )
     text_parts: list[str] = []
     tool_lines: list[str] = []
     status_lines: list[str] = []
@@ -4582,6 +4609,18 @@ class WeChatOfficialChannelParams:
     keeps the adapter alive but no webhook is mounted (useful in tests
     that drive ``adapter.handle_webhook`` directly)."""
 
+    # ---- human-like persona toggle (T-persona) -------------------------
+    # Mirror of the QQ humanlike fields — see :class:`QqChannelParams`.
+    # Off by default; opt-in via ``[channels.wechat_official.humanlike]``
+    # (or the live ``humanlike_resolver``). When on, the per-turn inbound
+    # handler prepends the persona's ``system_prompt`` (plus its emoji
+    # block when assets are wired) at the head of the chat request.
+    humanlike_enabled: bool = False
+    persona_id: str | None = None
+    persona_store: Any = None
+    humanlike_resolver: Any = None
+    asset_store: Any = None
+
 
 async def run_wechat_official_channel(
     params: WeChatOfficialChannelParams,
@@ -4665,6 +4704,7 @@ async def run_wechat_official_channel(
                 sender,
                 cancel,
                 passive_future=passive_future,
+                params=params,
             ),
         )
 
@@ -4728,6 +4768,7 @@ async def handle_one_wechat_official(
     cancel: asyncio.Event,
     *,
     passive_future: asyncio.Future[str] | None = None,
+    params: WeChatOfficialChannelParams | None = None,
 ) -> None:
     """Run one WeChat Official Account turn.
 
@@ -4743,6 +4784,19 @@ async def handle_one_wechat_official(
     (the runner pops the future map entry on the timeout side).
     """
     request = _build_text_channel_request(inbound, model)
+    # Optionally prepend a persona system_prompt — mirrors the other
+    # humanlike-capable channels. Off by default; opt-in via the
+    # ``[channels.wechat_official.humanlike]`` config or the live resolver.
+    if params is not None:
+        await _inject_persona_if_enabled(
+            request,
+            humanlike_enabled=params.humanlike_enabled,
+            persona_id=params.persona_id,
+            persona_store=params.persona_store,
+            humanlike_resolver=params.humanlike_resolver,
+            asset_store=params.asset_store,
+            channel_name="wechat_official",
+        )
     text_parts: list[str] = []
     error_message: str | None = None
     supplemented = False

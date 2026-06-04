@@ -37,9 +37,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
+from typing import Any
 
 from fastapi import APIRouter, Header, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -60,6 +62,8 @@ from corlinman_server.gateway_api import (
     ToolCallEvent,
 )
 from corlinman_server.gateway_api.types import InternalChatEvent
+
+_log = logging.getLogger(__name__)
 
 __all__ = [
     "ChatMessage",
@@ -105,6 +109,13 @@ class ChatRequest(BaseModel):
     max_tokens: int | None = None
     tools: object | None = None
     session_key: str | None = None
+    persona_id: str | None = None
+    """Optional explicit persona binding for the web ``/chat`` path.
+
+    When set (or sent as an ``X-Persona-Id`` header) it overrides the
+    configured ``[web].humanlike.persona_id`` default and force-enables
+    persona injection. OpenAI clients that don't know about it simply
+    leave it unset (and ``extra="allow"`` keeps unknown fields harmless)."""
 
 
 # ─── Model redirect ──────────────────────────────────────────────────
@@ -213,6 +224,151 @@ def _build_internal_request(req: ChatRequest, session_key: str | None) -> Intern
         max_tokens=req.max_tokens,
         temperature=req.temperature,
     )
+
+
+# ─── Web persona injection ───────────────────────────────────────────
+#
+# The 5 chat channels (Telegram/Discord/Slack/Feishu/QQ) prepend a
+# persona ``role="system"`` message to every inbound turn when their
+# ``[channels.{name}.humanlike]`` block is on. The in-app ``/chat`` UI
+# drives ``POST /v1/chat/completions`` and historically NEVER injected a
+# persona — ``persona_id`` was always empty, so 格兰 was out of character
+# on the web (root cause R5 / gap H19).
+#
+# We mirror the channel wiring with a ``[web].humanlike`` block carrying
+# ``enabled`` + ``persona_id``. An explicit ``persona_id`` in the request
+# body (OpenAI bodies allow extra fields) or an ``X-Persona-Id`` header
+# overrides the configured default when present. The persona store +
+# asset store live on the admin_a singleton state (Wave 1) — the same
+# handles the channels read — so we resolve them the same way.
+#
+# We deliberately inline a minimal equivalent of
+# ``corlinman_channels.persona_inject.inject_persona_if_enabled`` rather
+# than calling it directly: that helper prepends a duck-typed
+# ``SimpleNamespace(role="system", ...)`` which is fine for the channels'
+# SimpleNamespace request but would smuggle a non-``Message`` /
+# string-``role`` value into the strict pydantic ``InternalChatRequest``
+# (``Message.role`` is the ``Role`` enum, ``extra="forbid"``). Building a
+# real ``Message(role=Role.SYSTEM, ...)`` keeps the internal request
+# well-typed for the downstream ``ChatService`` / gRPC agent path. We DO
+# reuse the type-agnostic ``compose_persona_emoji_block`` string helper so
+# the emoji block stays byte-identical to the channel output.
+
+
+def _resolve_web_persona(
+    config: Any,
+    req: ChatRequest,
+    header_persona_id: str | None,
+) -> tuple[bool, str | None]:
+    """Resolve ``(humanlike_enabled, persona_id)`` for the web chat path.
+
+    Reads the static ``[web].humanlike`` block from the live config dict
+    (``{enabled, persona_id}``), mirroring the channel
+    ``_humanlike_initial`` reader. An explicit ``persona_id`` from the
+    request body or the ``X-Persona-Id`` header wins over the configured
+    default when present (and force-enables injection — an explicit
+    request-level persona is an intentional opt-in).
+    """
+    enabled = False
+    persona_id: str | None = None
+    if isinstance(config, Mapping):
+        web = config.get("web")
+        if isinstance(web, Mapping):
+            block = web.get("humanlike")
+            if isinstance(block, Mapping):
+                enabled = bool(block.get("enabled", False))
+                cfg_pid = block.get("persona_id")
+                persona_id = cfg_pid if isinstance(cfg_pid, str) else None
+
+    # Explicit request override: body field (extra="allow") then header.
+    override = getattr(req, "persona_id", None)
+    if not isinstance(override, str) or not override.strip():
+        override = header_persona_id
+    if isinstance(override, str) and override.strip():
+        return (True, override.strip())
+
+    return (enabled, persona_id)
+
+
+def _persona_stores() -> tuple[Any, Any]:
+    """Return ``(persona_store, asset_store)`` off the admin_a singleton.
+
+    Both live on the admin_a :class:`AdminState` (opened at boot, Wave 1)
+    — the very handles the channels read. Best-effort: when the state
+    isn't installed (degraded boot / router-only tests) or the slots are
+    still ``None``, return ``(None, None)`` so persona injection silently
+    no-ops rather than crashing the chat request.
+    """
+    try:
+        from corlinman_server.gateway.routes_admin_a import get_admin_state
+
+        admin_a_state = get_admin_state()
+    except Exception:  # noqa: BLE001 — defensive; degraded mode
+        return (None, None)
+    return (
+        getattr(admin_a_state, "persona_store", None),
+        getattr(admin_a_state, "persona_asset_store", None),
+    )
+
+
+async def _inject_web_persona(
+    internal_req: InternalChatRequest,
+    config: Any,
+    req: ChatRequest,
+    header_persona_id: str | None,
+) -> None:
+    """Prepend the bound persona's system prompt to ``internal_req``.
+
+    Mirrors :func:`corlinman_channels.persona_inject.inject_persona_if_enabled`
+    but emits a well-typed :class:`Message` (``role=Role.SYSTEM``) so the
+    strict ``InternalChatRequest`` stays valid for the downstream
+    ``ChatService`` / gRPC agent path. Silently no-ops when the gate is
+    off, no ``persona_id`` is bound, the store is missing, or the persona
+    row is absent / has an empty ``system_prompt``. Any store failure logs
+    a warning and returns without touching the request — persona is
+    decorative; web chat must keep working when it breaks.
+    """
+    enabled, persona_id = _resolve_web_persona(config, req, header_persona_id)
+    if not enabled or not persona_id:
+        return
+
+    persona_store, asset_store = _persona_stores()
+    if persona_store is None:
+        return
+    try:
+        persona = await persona_store.get(persona_id)
+    except Exception as exc:  # noqa: BLE001 — never let store I/O kill chat
+        _log.warning("web chat persona lookup failed: %s", exc)
+        return
+    if persona is None:
+        return
+    body = getattr(persona, "system_prompt", "") or ""
+    if not body.strip():
+        return
+
+    # Reuse the channels' type-agnostic emoji-block composer so the web
+    # block is byte-identical to what the 5 channels produce. Importing
+    # from corlinman_channels is layering-safe: corlinman-server already
+    # depends on corlinman-channels (channels_runtime imports it), and the
+    # package is not part of the .importlinter core-plane layer contract.
+    try:
+        from corlinman_channels.persona_inject import (
+            compose_persona_emoji_block,
+        )
+
+        emoji_block = await compose_persona_emoji_block(persona_id, asset_store)
+    except Exception as exc:  # noqa: BLE001 — emoji block is best-effort
+        _log.warning("web chat emoji block failed: %s", exc)
+        emoji_block = None
+
+    if emoji_block:
+        content = body + "\n\n" + emoji_block + "\n\n---\n"
+    else:
+        content = body + "\n\n---\n"
+
+    sys_msg = Message(role=Role.SYSTEM, content=content)
+    internal_req.messages = [sys_msg, *list(internal_req.messages)]
+    internal_req.persona_id = persona_id
 
 
 def _new_chat_id() -> str:
@@ -422,6 +578,7 @@ def router(state: ChatState | None = None) -> APIRouter:
         req: ChatRequest,
         request: Request,
         x_session_key: str | None = Header(default=None),
+        x_persona_id: str | None = Header(default=None),
     ) -> JSONResponse | StreamingResponse:
         with telemetry.span(
             "chat.completions",
@@ -435,9 +592,12 @@ def router(state: ChatState | None = None) -> APIRouter:
             # gateway the router is composed before the lifespan runs, so
             # pull the live service the ``services.bootstrap`` sibling hook
             # attached to ``AppState.chat`` (docs/contracts/runtime-wiring.md).
+            # ``app_state`` is also the live-config source for the
+            # ``[web].humanlike`` persona block, so grab it even when ``state``
+            # was passed directly (router-only tests leave it ``None``).
+            app_state = getattr(request.app.state, "corlinman", None)
             chat_state = state
             if chat_state is None:
-                app_state = getattr(request.app.state, "corlinman", None)
                 svc = (
                     getattr(app_state, "chat", None)
                     if app_state is not None
@@ -490,6 +650,19 @@ def router(state: ChatState | None = None) -> APIRouter:
 
             session_key = _resolve_session_key(req, x_session_key)
             internal_req = _build_internal_request(req, session_key)
+
+            # H19: inject the bound persona's system prompt so the in-app
+            # ``/chat`` UI is in character, mirroring the 5 chat channels.
+            # Reads ``[web].humanlike`` off the live config + an optional
+            # explicit ``persona_id`` (body field / ``X-Persona-Id`` header).
+            # Best-effort + null-safe: no config / no store / gate off → no-op,
+            # leaving the request exactly as it was (and never breaking the
+            # admin-session auth bridge, which runs in middleware upstream).
+            config = getattr(app_state, "config", None) if app_state else None
+            await _inject_web_persona(internal_req, config, req, x_persona_id)
+            if internal_req.persona_id:
+                _span.set_attribute("chat.persona_id", internal_req.persona_id)
+
             cancel = asyncio.Event()
 
             if req.stream:
