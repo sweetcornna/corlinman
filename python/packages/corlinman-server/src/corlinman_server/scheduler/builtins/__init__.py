@@ -51,6 +51,10 @@ from corlinman_server.scheduler.builtins.persona_decay import (
     PERSONA_DECAY_BUILTIN_NAME,
     _persona_decay_action,
 )
+from corlinman_server.scheduler.builtins.persona_life_advance import (
+    PERSONA_LIFE_ADVANCE_BUILTIN_NAME,
+    _persona_life_advance_action,
+)
 from corlinman_server.scheduler.builtins.qzone_daily import (
     QZONE_DAILY_BUILTIN_NAME,
     _qzone_daily_publish_action,
@@ -71,11 +75,13 @@ __all__ = [
     "BUILTIN_ACTIONS",
     "EVOLUTION_DARWIN_CURATE_BUILTIN_NAME",
     "PERSONA_DECAY_BUILTIN_NAME",
+    "PERSONA_LIFE_ADVANCE_BUILTIN_NAME",
     "QZONE_DAILY_BUILTIN_NAME",
     "BuiltinAction",
     "BuiltinContext",
     "_evolution_darwin_curate_action",
     "_persona_decay_action",
+    "_persona_life_advance_action",
     "_qzone_daily_publish_action",
     "_resolve_update_checker",
     "_system_update_check_action",

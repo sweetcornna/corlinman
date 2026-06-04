@@ -29,6 +29,7 @@ import {
   MessagesSquare,
   MonitorCog,
   Network,
+  Newspaper,
   Plug,
   Radio,
   Route,
@@ -154,6 +155,14 @@ const OPERATOR_ITEMS: NavEntry[] = [
     ],
   },
   { href: "/scheduler", labelKey: "nav.scheduler", icon: Timer },
+  // QZone daily-publishing scheduler surface — operator-facing companion to
+  // the persona life layer (a persona's daily 说说 pipeline), so it sits
+  // right under the generic Scheduler entry.
+  {
+    href: "/scheduler/qzone",
+    labelKey: "nav.schedulerQzone",
+    icon: Newspaper,
+  },
   { href: "/identity", labelKey: "nav.identity", icon: Fingerprint },
 ];
 

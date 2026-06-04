@@ -138,6 +138,7 @@ from corlinman_server.gateway.lifecycle.scheduler_integration import (
     _effective_scheduler_config,
     _register_default_darwin_curate_job,
     _register_default_persona_decay_job,
+    _register_default_persona_life_advance_job,
     _register_default_update_check_job,
 )
 
@@ -540,6 +541,18 @@ def build_app(
         except Exception as exc:  # pragma: no cover — defensive
             logger.warning(
                 "gateway.persona.decay_job.init_failed",
+                error=str(exc),
+            )
+
+        # R3 autonomous life-advance — default-off daily beat. Only
+        # registers the cron job when [persona.life_advance] enabled = true
+        # in the gateway config; the builtin is always wired by the
+        # builtins package import.
+        try:
+            _register_default_persona_life_advance_job(app, cfg)
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning(
+                "gateway.persona.life_advance_job.init_failed",
                 error=str(exc),
             )
 

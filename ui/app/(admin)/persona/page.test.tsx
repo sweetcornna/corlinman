@@ -118,6 +118,7 @@ const SAMPLE_BUILTIN: Persona = {
   is_builtin: true,
   created_at_ms: 1_777_000_000_000,
   updated_at_ms: 1_777_593_600_000,
+  avatar_url: null,
 };
 const SAMPLE_CUSTOM: Persona = {
   id: "alyssa",
@@ -127,6 +128,7 @@ const SAMPLE_CUSTOM: Persona = {
   is_builtin: false,
   created_at_ms: 1_777_400_000_000,
   updated_at_ms: 1_777_500_000_000,
+  avatar_url: null,
 };
 
 beforeEach(() => {
@@ -396,7 +398,7 @@ describe("PersonaPage — editor modal", () => {
     });
   });
 
-  it("renders the disabled reset-to-default + test box affordances", async () => {
+  it("enables reset-to-default for builtins; test box stays disabled", async () => {
     fetchPersonasMock.mockResolvedValue([SAMPLE_BUILTIN]);
     stubHumanlikeOff();
 
@@ -407,10 +409,11 @@ describe("PersonaPage — editor modal", () => {
     );
 
     fireEvent.click(await screen.findByTestId("persona-edit-grantley"));
-    // Reset-to-default only shows when editing a builtin.
+    // Reset-to-default only shows when editing a builtin, and is now live.
     const resetBtn = await screen.findByTestId("persona-reset-default");
-    expect(resetBtn).toBeDisabled();
-    // Test box is always present in the editor; both bits disabled.
+    expect(resetBtn).not.toBeDisabled();
+    // Test box is always present in the editor; both bits still disabled
+    // (no preview endpoint yet — deferred).
     expect(screen.getByTestId("persona-test-input")).toBeDisabled();
     expect(screen.getByTestId("persona-test-button")).toBeDisabled();
   });

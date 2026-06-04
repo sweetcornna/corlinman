@@ -409,6 +409,7 @@ export const zhCN = {
     qq: "QQ 通道",
     telegram: "电报",
     scheduler: "定时任务",
+    schedulerQzone: "QZone 发布",
     approvals: "审批",
     evolution: "演化",
     models: "模型",
@@ -3020,6 +3021,59 @@ export const zhCN = {
     assetsErrDuplicateLabel:
       "已存在同名 label 的素材 — 请换一个名字，或先删除旧的素材。",
     assetsErrUploadFailed: "上传失败：{{msg}}",
+    // W3 — 重置为默认（仅内置 persona）
+    resetToDefaultEnabledTooltip: "用内置默认重新 seed 该 persona 的正文。",
+    resetConfirmTitle: "重置为默认？",
+    resetConfirmBody:
+      "将用内置默认重新 seed 该 persona 的 prompt 与简介。对该 persona 的自定义修改会被覆盖。",
+    resetConfirmAction: "重置",
+    resetSucceeded: "persona 已重置为默认",
+    resetFailed: "重置失败：{{msg}}",
+    // W3 — 素材重命名（PATCH assets/{aid}）
+    assetsRename: "重命名",
+    assetsRenameSave: "保存",
+    assetsRenameCancel: "取消",
+    assetsRenameHint: "重命名 — a–z、0–9、_、-（1–64 字符）。",
+    assetsRenameSucceeded: "已重命名为 {{label}}",
+    assetsRenameFailed: "重命名失败：{{msg}}",
+    // W3 — 头像
+    avatarAlt: "{{name}} 头像",
+    // W3 — 生活状态层（心情 / 疲劳 / 近期话题 + 衰减 + 日记 + 种子）
+    lifeTitle: "生活状态",
+    lifeDescription:
+      "persona 的实时心情、疲劳与近期话题。在此编辑也会手动 seed 该行。",
+    lifeMood: "心情",
+    lifeMoodPlaceholder: "neutral",
+    lifeFatigue: "疲劳（0–1）",
+    lifeRecentTopics: "近期话题",
+    lifeRecentTopicsHint: "用逗号分隔 — 最近的在前。",
+    lifeUpdatedAt: "最后更新：{{when}}",
+    lifeUpdatedNever: "最后更新：从未（显示默认值）",
+    lifeSave: "保存生活状态",
+    lifeSaveSucceeded: "生活状态已保存",
+    lifeSaveFailed: "无法保存生活状态：{{msg}}",
+    lifeLoadFailed: "无法加载生活状态：{{msg}}",
+    lifeErrFatigueRange: "疲劳必须是 0 到 1 之间的数字",
+    lifeRunDecay: "立即执行衰减",
+    lifeDecayRunning: "执行中…",
+    lifeDecaySucceeded: "已应用衰减（{{rows}} 行）",
+    lifeDecayFailed: "衰减失败：{{msg}}",
+    // W3 — 日记查看（只读）
+    diaryTitle: "日记",
+    diaryDescription: "近期日记条目（最新在后）。只读。",
+    diaryEmpty: "暂无日记条目。",
+    diaryLoadFailed: "无法加载日记：{{msg}}",
+    // W3 — 生活种子 YAML 编辑
+    seedsTitle: "生活种子（YAML）",
+    seedsDescription: "当前生效的种子包。保存会为该 persona 写入运营者覆盖文件。",
+    seedsSourceOverride: "来源：运营者覆盖",
+    seedsSourceBundled: "来源：内置默认",
+    seedsSourceGeneric: "来源：通用回退",
+    seedsSave: "保存覆盖",
+    seedsSaveSucceeded: "生活种子已保存",
+    seedsSaveFailed: "无法保存种子：{{msg}}",
+    seedsLoadFailed: "无法加载种子：{{msg}}",
+    seedsErrInvalidYaml: "YAML 无效 — 请修正语法后重试。",
   },
 
   // W1.2 — TopNav update bubble (chip that lights up when a newer

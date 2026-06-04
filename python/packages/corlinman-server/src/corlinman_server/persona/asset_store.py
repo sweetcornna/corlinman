@@ -52,6 +52,7 @@ __all__ = [
     "ALLOWED_MIMES",
     "DEFAULT_MAX_BYTES_PER_ASSET",
     "DEFAULT_MAX_BYTES_PER_PERSONA",
+    "AssetExists",
     "AssetKind",
     "AssetMimeRejected",
     "AssetNotFound",
@@ -151,6 +152,12 @@ class AssetQuotaExceeded(AssetError):
 
 class AssetNotFound(AssetError):
     """Requested asset id / (persona, kind, label) triple is absent."""
+
+
+class AssetExists(AssetError):
+    """A relabel would collide with an existing ``(persona, kind, label)``
+    slot — the table's UNIQUE constraint forbids two slots sharing a label
+    within one bucket."""
 
 
 # ---------------------------------------------------------------------------
@@ -457,6 +464,45 @@ class PersonaAssetStore:
             )
         await self._c.commit()
         return record
+
+    async def relabel_by_id(
+        self, asset_id: str, label: str
+    ) -> AssetRecord:
+        """Rename one asset's ``label`` slot in place (metadata only — the
+        on-disk blob is keyed by sha256, so renaming touches no file).
+
+        Returns the post-write :class:`AssetRecord`. Raises:
+
+          * :class:`AssetNotFound` if ``asset_id`` doesn't exist.
+          * :class:`AssetExists` if ``(persona_id, kind, label)`` already
+            names a *different* asset — the table's UNIQUE constraint
+            forbids two slots sharing a label within one bucket. Renaming
+            to an asset's own current label is a no-op (returns it
+            unchanged) rather than an error.
+        """
+        existing = await self.get_by_id(asset_id)
+        if existing is None:
+            raise AssetNotFound(f"asset not found: {asset_id!r}")
+        if existing.label == label:
+            return existing
+        try:
+            await self._c.execute(
+                "UPDATE persona_assets SET label = ? WHERE id = ?",
+                (label, asset_id),
+            )
+            await self._c.commit()
+        except aiosqlite.IntegrityError as exc:
+            # UNIQUE(persona_id, kind, label) collision — another slot in
+            # the same bucket already owns this label.
+            raise AssetExists(
+                f"label {label!r} already used in persona "
+                f"{existing.persona_id!r} {existing.kind!r} bucket"
+            ) from exc
+        row = await self.get_by_id(asset_id)
+        # ``row`` is None only on a concurrent delete between UPDATE +
+        # SELECT — vanishingly unlikely; the route 500s, which is correct.
+        assert row is not None
+        return row
 
     # ------------------------------------------------------------------
     # Read paths
