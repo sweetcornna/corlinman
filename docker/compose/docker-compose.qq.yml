@@ -34,6 +34,7 @@ services:
     environment:
       NAPCAT_UID: "1000"
       NAPCAT_GID: "1000"
+      WEBUI_TOKEN: "${NAPCAT_WEBUI_TOKEN:-corlinman-local-napcat}"
       # Leave QQ_ACCOUNT unset — users sign in via the admin UI scan flow.
     volumes:
       # Authoritative NapCat state: QQ session, WebUI users, OneBot config.

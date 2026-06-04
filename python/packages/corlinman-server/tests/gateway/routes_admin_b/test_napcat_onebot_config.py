@@ -125,6 +125,35 @@ async def test_ensure_onebot_websocket_server_uses_configured_ws_port() -> None:
     assert server["port"] == 4567
 
 
+def test_onebot_websocket_server_preserves_configured_access_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    literal = nc._onebot_websocket_server_from_config(
+        {
+            "channels": {
+                "qq": {
+                    "ws_url": "ws://napcat:3001",
+                    "access_token": "onebot-token",
+                }
+            }
+        }
+    )
+    assert literal["token"] == "onebot-token"
+
+    monkeypatch.setenv("CORLINMAN_TEST_QQ_ACCESS_TOKEN", "env-onebot-token")
+    env = nc._onebot_websocket_server_from_config(
+        {
+            "channels": {
+                "qq": {
+                    "ws_url": "ws://napcat:3001",
+                    "access_token": {"env": "CORLINMAN_TEST_QQ_ACCESS_TOKEN"},
+                }
+            }
+        }
+    )
+    assert env["token"] == "env-onebot-token"
+
+
 @pytest.mark.asyncio
 async def test_confirmed_qrcode_status_ensures_onebot_server(
     monkeypatch: pytest.MonkeyPatch, tmp_path

@@ -109,6 +109,19 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def _resolve_secret(value: Any) -> str | None:
+    if isinstance(value, dict):
+        if "value" in value and str(value["value"]).strip():
+            return str(value["value"])
+        if "env" in value:
+            env_value = os.environ.get(str(value["env"]))
+            return env_value if env_value else None
+        return None
+    if isinstance(value, str) and value.strip():
+        return value
+    return None
+
+
 def _resolve_napcat_url(cfg: dict[str, Any]) -> tuple[str | None, str | None]:
     """Return ``(url, access_token)``.
 
@@ -133,15 +146,7 @@ def _resolve_napcat_url(cfg: dict[str, Any]) -> tuple[str | None, str | None]:
     if not url or not str(url).strip():
         url = DEFAULT_NAPCAT_URL
     url = str(url).rstrip("/")
-    access_token: str | None = None
-    sec = qq.get("napcat_access_token")
-    if isinstance(sec, dict):
-        if "value" in sec:
-            access_token = str(sec["value"])
-        elif "env" in sec:
-            access_token = os.environ.get(str(sec["env"]))
-    elif isinstance(sec, str) and sec:
-        access_token = sec
+    access_token = _resolve_secret(qq.get("napcat_access_token"))
     if not access_token:
         access_token = os.environ.get("NAPCAT_WEBUI_TOKEN") or os.environ.get(
             "NAPCAT_WEBUI_SECRET_KEY"
@@ -164,6 +169,7 @@ def _onebot_ws_port_from_config(cfg: dict[str, Any]) -> int:
 
 
 def _onebot_websocket_server_from_config(cfg: dict[str, Any]) -> dict[str, Any]:
+    qq = ((cfg.get("channels") or {}).get("qq")) or {}
     return {
         "enable": True,
         "name": ONEBOT_WS_SERVER_NAME,
@@ -172,7 +178,7 @@ def _onebot_websocket_server_from_config(cfg: dict[str, Any]) -> dict[str, Any]:
         "messagePostFormat": "array",
         "reportSelfMessage": False,
         "enableForcePushEvent": True,
-        "token": "",
+        "token": _resolve_secret(qq.get("access_token")) or "",
         "debug": False,
         "heartInterval": 30000,
     }
@@ -356,8 +362,12 @@ def _matches_onebot_server(current: dict[str, Any], desired: dict[str, Any]) -> 
 def _same_onebot_server(current: dict[str, Any], desired: dict[str, Any]) -> bool:
     if current.get("name") == desired["name"]:
         return True
+    current_port = current.get("port")
+    desired_port = desired.get("port")
+    if current_port is None or desired_port is None:
+        return False
     try:
-        return int(current.get("port")) == int(desired["port"])
+        return int(current_port) == int(desired_port)
     except (TypeError, ValueError):
         return False
 
