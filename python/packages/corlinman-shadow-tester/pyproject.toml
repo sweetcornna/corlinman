@@ -13,6 +13,9 @@ dependencies = [
     "PyYAML>=6.0",
 ]
 
+[project.scripts]
+corlinman-shadow-tester = "corlinman_shadow_tester.cli:main"
+
 [tool.uv.sources]
 corlinman-evolution-store = { workspace = true }
 

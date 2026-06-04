@@ -137,6 +137,8 @@ from corlinman_server.gateway.lifecycle.scheduler_integration import (
     DEFAULT_UPDATE_CHECK_JOB_NAME,
     _effective_scheduler_config,
     _register_default_darwin_curate_job,
+    _register_default_evolution_engine_job,
+    _register_default_evolution_shadow_job,
     _register_default_persona_decay_job,
     _register_default_persona_life_advance_job,
     _register_default_update_check_job,
@@ -541,6 +543,30 @@ def build_app(
         except Exception as exc:  # pragma: no cover — defensive
             logger.warning(
                 "gateway.persona.decay_job.init_failed",
+                error=str(exc),
+            )
+
+        # R8 PASSIVE (L2) — default-off daily EvolutionEngine run-once pass.
+        # Only registers the cron job when [evolution.engine] enabled = true
+        # in the gateway config; the builtin is always wired by the builtins
+        # package import. Independent best-effort, same as above.
+        try:
+            _register_default_evolution_engine_job(app, cfg)
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning(
+                "gateway.evolution.engine_job.init_failed",
+                error=str(exc),
+            )
+
+        # R8 PASSIVE (L3) — default-off daily ShadowTester pass. Only
+        # registers the cron job when [evolution.shadow] enabled = true in
+        # the gateway config; the builtin is always wired by the builtins
+        # package import. Independent best-effort, same as above.
+        try:
+            _register_default_evolution_shadow_job(app, cfg)
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning(
+                "gateway.evolution.shadow_job.init_failed",
                 error=str(exc),
             )
 
