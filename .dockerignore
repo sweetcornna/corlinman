@@ -7,6 +7,9 @@
 # Build artifacts
 target/
 **/target/
+target-aarch64-darwin/
+.target-baseline/
+dist/
 
 # Python virtualenvs / bytecode
 .venv/
@@ -15,6 +18,10 @@ __pycache__/
 **/__pycache__/
 *.pyc
 *.pyo
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.import_linter_cache/
 
 # Editor / OS / VCS
 .git/
@@ -39,6 +46,10 @@ ui/out/
 *.log
 tmp/
 .tmp/
+
+# Local runtime state
+.napcat/
+.corlinman/
 
 # Existing image build outputs
 **/*.tar

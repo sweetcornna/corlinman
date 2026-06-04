@@ -32,6 +32,7 @@ FROM ${PYTHON_BASE_IMAGE} AS py-builder
 
 ARG PIP_INDEX=https://pypi.org/simple
 ARG UV_INDEX_URL=https://pypi.org/simple
+ARG UV_HTTP_TIMEOUT=120
 ARG DEBIAN_MIRROR=deb.debian.org
 
 # Optional Debian mirror swap (saves minutes in CN networks).
@@ -52,6 +53,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # Install uv — pinned for reproducibility.
 ENV UV_INSTALL_DIR=/usr/local/bin
 ENV UV_INDEX_URL=${UV_INDEX_URL}
+ENV UV_HTTP_TIMEOUT=${UV_HTTP_TIMEOUT}
 ENV PIP_INDEX_URL=${PIP_INDEX}
 RUN curl -fsSL https://astral.sh/uv/0.5.30/install.sh | sh
 
