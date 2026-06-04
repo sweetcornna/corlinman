@@ -66,6 +66,7 @@ dependencies = [
     # evolution applier (corlinman_auto_rollback / corlinman_evolution_store),
     # the canvas + MCP routes, and the skills admin surface.
     "corlinman-auto-rollback",
+    "corlinman-evolution-engine",
     "corlinman-evolution-store",
     "corlinman-canvas",
     "corlinman-mcp-server",
@@ -108,6 +109,7 @@ corlinman-channels = { workspace = true }
 corlinman-identity = { workspace = true }
 corlinman-memory-host = { workspace = true }
 corlinman-auto-rollback = { workspace = true }
+corlinman-evolution-engine = { workspace = true }
 corlinman-evolution-store = { workspace = true }
 corlinman-canvas = { workspace = true }
 corlinman-mcp-server = { workspace = true }
