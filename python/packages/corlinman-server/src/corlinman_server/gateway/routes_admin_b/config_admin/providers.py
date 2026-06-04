@@ -182,7 +182,7 @@ def router() -> APIRouter:
         return {"status": "ok", "provider": _view_from_entry(body.name, existing).model_dump()}
 
     @r.post("/admin/providers/probe-models")
-    async def probe_provider_models(body: ProviderModelProbe) -> dict[str, Any]:
+    async def probe_provider_models(body: ProviderModelProbe) -> Any:
         """List models for a draft provider config without persisting it.
 
         Used by the Add/Edit provider dialog. This intentionally avoids
