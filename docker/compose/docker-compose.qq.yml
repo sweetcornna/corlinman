@@ -48,6 +48,9 @@ services:
     environment:
       # Admin REST scan-login flow dials NapCat webui here.
       CORLINMAN_NAPCAT_URL: http://napcat:6099
+      # Lets the gateway authenticate to NapCat's WebUI API when it
+      # auto-repairs the OneBot websocket server config.
+      NAPCAT_WEBUI_TOKEN: "${NAPCAT_WEBUI_TOKEN:-corlinman-local-napcat}"
       # OneBot v11 forward-WS bridge for the channel dispatcher.
       # nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket -- internal compose-only OneBot bridge on corlinman-net; use wss:// when crossing hosts.
       QQ_WS_URL: ws://napcat:3001

@@ -16,6 +16,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 from fastapi.responses import JSONResponse
@@ -38,6 +39,13 @@ NAPCAT_TIMEOUT = 6.0
 #     default keeps the scan-login UI working even if that export is missing
 #     (e.g. a hand-rolled native install) instead of a confusing immediate 503.
 DEFAULT_NAPCAT_URL = "http://127.0.0.1:6099"
+DEFAULT_ONEBOT_WS_PORT = 3001
+OB11_CONFIG_GET_PATH = "/api/OB11Config/GetConfig"
+OB11_CONFIG_SET_PATH = "/api/OB11Config/SetConfig"
+ONEBOT_WS_SERVER_NAME = "corlinman"
+ONEBOT_ENSURE_MIN_INTERVAL_S = 10.0
+_ONEBOT_ENSURE_LAST_ATTEMPT: dict[str, float] = {}
+_ONEBOT_ENSURE_TASKS: set[asyncio.Task[None]] = set()
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +142,40 @@ def _resolve_napcat_url(cfg: dict[str, Any]) -> tuple[str | None, str | None]:
             access_token = os.environ.get(str(sec["env"]))
     elif isinstance(sec, str) and sec:
         access_token = sec
+    if not access_token:
+        access_token = os.environ.get("NAPCAT_WEBUI_TOKEN") or os.environ.get(
+            "NAPCAT_WEBUI_SECRET_KEY"
+        )
     return url, access_token
+
+
+def _onebot_ws_port_from_config(cfg: dict[str, Any]) -> int:
+    qq = ((cfg.get("channels") or {}).get("qq")) or {}
+    ws_url = qq.get("ws_url") or os.environ.get("QQ_WS_URL") or ""
+    if not isinstance(ws_url, str) or not ws_url.strip():
+        return DEFAULT_ONEBOT_WS_PORT
+    try:
+        parsed = urlparse(ws_url)
+        if parsed.port is not None:
+            return parsed.port
+    except ValueError:
+        return DEFAULT_ONEBOT_WS_PORT
+    return DEFAULT_ONEBOT_WS_PORT
+
+
+def _onebot_websocket_server_from_config(cfg: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "enable": True,
+        "name": ONEBOT_WS_SERVER_NAME,
+        "host": "0.0.0.0",
+        "port": _onebot_ws_port_from_config(cfg),
+        "messagePostFormat": "array",
+        "reportSelfMessage": False,
+        "enableForcePushEvent": True,
+        "token": "",
+        "debug": False,
+        "heartInterval": 30000,
+    }
 
 
 def _resolve_data_dir(state: AdminState, cfg: dict[str, Any]) -> Path:
@@ -172,9 +213,11 @@ def _extract_ok_data(body: Any) -> dict[str, Any]:
             "napcat_app_error",
             str(body.get("message") or "napcat returned a non-zero code"),
         )
+    if "data" not in body:
+        raise NapcatError("napcat_bad_response", "missing data field")
     data = body.get("data")
     if data is None:
-        raise NapcatError("napcat_bad_response", "missing data field")
+        return {}
     return data if isinstance(data, dict) else {"value": data}
 
 
@@ -304,6 +347,94 @@ class _NapcatClient:
             status="confirmed" if is_login else "error",
             account=account,
         )
+
+
+def _matches_onebot_server(current: dict[str, Any], desired: dict[str, Any]) -> bool:
+    return all(current.get(key) == value for key, value in desired.items())
+
+
+def _same_onebot_server(current: dict[str, Any], desired: dict[str, Any]) -> bool:
+    if current.get("name") == desired["name"]:
+        return True
+    try:
+        return int(current.get("port")) == int(desired["port"])
+    except (TypeError, ValueError):
+        return False
+
+
+async def _ensure_onebot_websocket_server(
+    client: Any, desired_server: dict[str, Any]
+) -> bool:
+    config = await client.post(OB11_CONFIG_GET_PATH, {})
+    network = config.get("network")
+    if not isinstance(network, dict):
+        network = {}
+        config["network"] = network
+    servers = network.get("websocketServers")
+    if not isinstance(servers, list):
+        servers = []
+        network["websocketServers"] = servers
+
+    changed = False
+    for idx, item in enumerate(servers):
+        if not isinstance(item, dict):
+            continue
+        if not _same_onebot_server(item, desired_server):
+            continue
+        if _matches_onebot_server(item, desired_server):
+            return False
+        servers[idx] = {**item, **desired_server}
+        changed = True
+        break
+    if not changed:
+        servers.append(dict(desired_server))
+        changed = True
+
+    await client.post(
+        OB11_CONFIG_SET_PATH,
+        {"config": json_lib.dumps(config, ensure_ascii=False)},
+    )
+    return True
+
+
+async def _ensure_onebot_websocket_server_for_config(cfg: dict[str, Any]) -> bool:
+    url, token = _resolve_napcat_url(cfg)
+    if url is None:
+        return False
+    async with _NapcatClient(url, token) as client:
+        return await _ensure_onebot_websocket_server(
+            client,
+            _onebot_websocket_server_from_config(cfg),
+        )
+
+
+async def _ensure_onebot_websocket_server_silent(cfg: dict[str, Any]) -> None:
+    try:
+        await _ensure_onebot_websocket_server_for_config(cfg)
+    except Exception:
+        pass
+
+
+def _schedule_onebot_websocket_server_ensure(cfg: dict[str, Any]) -> bool:
+    desired = _onebot_websocket_server_from_config(cfg)
+    url, _token = _resolve_napcat_url(cfg)
+    key = f"{url or ''}:{desired['port']}"
+    now = time.monotonic()
+    last = _ONEBOT_ENSURE_LAST_ATTEMPT.get(key, 0.0)
+    if now - last < ONEBOT_ENSURE_MIN_INTERVAL_S:
+        return False
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    _ONEBOT_ENSURE_LAST_ATTEMPT[key] = now
+    task = loop.create_task(
+        _ensure_onebot_websocket_server_silent(cfg),
+        name="napcat-onebot-ensure",
+    )
+    _ONEBOT_ENSURE_TASKS.add(task)
+    task.add_done_callback(_ONEBOT_ENSURE_TASKS.discard)
+    return True
 
 
 # ---------------------------------------------------------------------------
