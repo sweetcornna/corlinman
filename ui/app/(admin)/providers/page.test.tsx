@@ -2,6 +2,7 @@ import * as React from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   cleanup,
+  act,
   fireEvent,
   render,
   screen,
@@ -15,6 +16,9 @@ import type { ProviderView } from "@/lib/api";
 
 const fetchProvidersMock = vi.fn(async (): Promise<ProviderView[]> => []);
 const listCustomProvidersMock = vi.fn(async () => []);
+const getProviderModelsMock = vi.fn(async (name: string) => ({
+  models: [{ id: `${name}-saved-model`, display_name: "Saved Model" }],
+}));
 const probeProviderModelsMock = vi.fn(async (body: unknown) => {
   void body;
   return {
@@ -34,6 +38,7 @@ vi.mock("@/lib/api", async () => {
     upsertProvider: vi.fn(),
     deleteProvider: vi.fn(),
     deleteCustomProvider: vi.fn(),
+    getProviderModels: (name: string) => getProviderModelsMock(name),
     probeProviderModels: (body: unknown) => probeProviderModelsMock(body),
   };
 });
@@ -60,12 +65,32 @@ function renderPage() {
   );
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
+const STORED_LITERAL_PROVIDER: ProviderView = {
+  name: "relay",
+  kind: "openai_compatible",
+  enabled: true,
+  base_url: "https://saved.example/v1",
+  api_key_source: "value",
+  api_key_env_name: null,
+  params: {},
+  params_schema: { type: "object", properties: {} },
+};
+
 describe("ProvidersAdminContent model discovery", () => {
   beforeEach(() => {
     initI18n();
     void i18next.changeLanguage("zh-CN");
     fetchProvidersMock.mockClear();
     listCustomProvidersMock.mockClear();
+    getProviderModelsMock.mockClear();
     probeProviderModelsMock.mockClear();
   });
 
@@ -101,5 +126,58 @@ describe("ProvidersAdminContent model discovery", () => {
     });
     expect(await screen.findByText("relay-model-a")).toBeInTheDocument();
     expect(screen.getByText("relay-model-b")).toBeInTheDocument();
+  });
+
+  it("fetches models from edited draft fields when a saved literal key is hidden", async () => {
+    fetchProvidersMock.mockResolvedValueOnce([STORED_LITERAL_PROVIDER]);
+    renderPage();
+
+    await screen.findByTestId("provider-row-relay");
+    fireEvent.click(screen.getByRole("button", { name: "编辑" }));
+    fireEvent.change(screen.getByLabelText("Base URL"), {
+      target: { value: "https://edited.example/v1" },
+    });
+
+    fireEvent.click(screen.getByTestId("provider-fetch-models-btn"));
+
+    await waitFor(() => {
+      expect(probeProviderModelsMock).toHaveBeenCalledWith({
+        kind: "openai_compatible",
+        base_url: "https://edited.example/v1",
+        params: {},
+      });
+    });
+    expect(getProviderModelsMock).not.toHaveBeenCalled();
+  });
+
+  it("ignores stale model discovery results after the draft changes", async () => {
+    const pending = deferred<{
+      models: { id: string; display_name: string }[];
+    }>();
+    probeProviderModelsMock.mockImplementationOnce(async () => pending.promise);
+    renderPage();
+
+    fireEvent.click(await screen.findByTestId("providers-add-btn"));
+    fireEvent.change(screen.getByLabelText("Base URL"), {
+      target: { value: "https://old.example/v1" },
+    });
+    fireEvent.click(screen.getByTestId("provider-fetch-models-btn"));
+
+    await waitFor(() => {
+      expect(probeProviderModelsMock).toHaveBeenCalledTimes(1);
+    });
+    fireEvent.change(screen.getByLabelText("Base URL"), {
+      target: { value: "https://new.example/v1" },
+    });
+
+    await act(async () => {
+      pending.resolve({
+        models: [{ id: "stale-model", display_name: "Stale Model" }],
+      });
+      await pending.promise;
+    });
+
+    expect(screen.queryByText("stale-model")).not.toBeInTheDocument();
+    expect(screen.getByText("尚未获取模型。")).toBeInTheDocument();
   });
 });

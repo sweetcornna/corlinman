@@ -154,6 +154,35 @@ function toModelProbe(d: DraftProvider): ProviderModelProbeRequest {
   return body;
 }
 
+function sameDiscoveryParams(
+  left: Record<string, unknown>,
+  right: Record<string, unknown>,
+) {
+  return JSON.stringify(left ?? {}) === JSON.stringify(right ?? {});
+}
+
+function shouldUseSavedModelDiscovery(
+  editing: ProviderView | null,
+  draft: DraftProvider,
+) {
+  return (
+    !!editing &&
+    draft.name.trim() === editing.name &&
+    editing.api_key_source === "value" &&
+    draft.api_key_source === "value" &&
+    !draft.api_key_value.trim() &&
+    draft.kind === editing.kind &&
+    draft.base_url.trim() === (editing.base_url ?? "").trim() &&
+    sameDiscoveryParams(draft.params, editing.params ?? {})
+  );
+}
+
+type ModelDiscoveryRequest = {
+  generation: number;
+  draft: DraftProvider;
+  editing: ProviderView | null;
+};
+
 /**
  * Exported as a named function so `/admin/credentials` can mount the
  * same admin content inline (UX merge: providers + credentials are a
@@ -429,11 +458,13 @@ function ProviderEditorDialog({ open, onOpenChange, editing }: EditorProps) {
     models: ProviderModel[];
     error?: string;
   }>({ models: [] });
+  const modelDiscoveryGeneration = React.useRef(0);
   const [paramErrors, setParamErrors] = React.useState<
     Record<string, string>
   >({});
 
   React.useEffect(() => {
+    modelDiscoveryGeneration.current += 1;
     if (open) {
       setDraft(editing ? toDraft(editing) : { ...BLANK_DRAFT });
       setModelDiscovery({ models: [] });
@@ -442,6 +473,7 @@ function ProviderEditorDialog({ open, onOpenChange, editing }: EditorProps) {
   }, [open, editing]);
 
   const updateDraft = React.useCallback((patch: Partial<DraftProvider>) => {
+    modelDiscoveryGeneration.current += 1;
     setDraft((prev) => ({ ...prev, ...patch }));
     setModelDiscovery({ models: [] });
   }, []);
@@ -468,18 +500,19 @@ function ProviderEditorDialog({ open, onOpenChange, editing }: EditorProps) {
   });
 
   const modelDiscoveryMutation = useMutation({
-    mutationFn: async () => {
-      if (
-        editing &&
-        draft.name.trim() === editing.name &&
-        draft.api_key_source === "value" &&
-        !draft.api_key_value.trim()
-      ) {
-        return getProviderModels(editing.name);
-      }
-      return probeProviderModels(toModelProbe(draft));
+    mutationFn: async (request: ModelDiscoveryRequest) => {
+      const res = shouldUseSavedModelDiscovery(
+        request.editing,
+        request.draft,
+      )
+        ? await getProviderModels(request.editing!.name)
+        : await probeProviderModels(toModelProbe(request.draft));
+      return { generation: request.generation, res };
     },
-    onSuccess: (res) => {
+    onSuccess: ({ generation, res }) => {
+      if (generation !== modelDiscoveryGeneration.current) {
+        return;
+      }
       setModelDiscovery({ models: res.models ?? [], error: res.error });
       if (res.error) {
         toast.error(
@@ -489,7 +522,10 @@ function ProviderEditorDialog({ open, onOpenChange, editing }: EditorProps) {
         );
       }
     },
-    onError: (err) => {
+    onError: (err, request) => {
+      if (request.generation !== modelDiscoveryGeneration.current) {
+        return;
+      }
       const msg = err instanceof Error ? err.message : String(err);
       setModelDiscovery({ models: [], error: msg });
       toast.error(t("providers.modelsFetchFailed", { msg }));
@@ -653,7 +689,13 @@ function ProviderEditorDialog({ open, onOpenChange, editing }: EditorProps) {
                   type="button"
                   size="sm"
                   variant="outline"
-                  onClick={() => modelDiscoveryMutation.mutate()}
+                  onClick={() =>
+                    modelDiscoveryMutation.mutate({
+                      generation: modelDiscoveryGeneration.current,
+                      draft,
+                      editing,
+                    })
+                  }
                   disabled={
                     !baseUrlOk || hasErrors || modelDiscoveryMutation.isPending
                   }
