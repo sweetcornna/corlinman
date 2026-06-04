@@ -24,8 +24,8 @@ staged, reviewed work (do **not** blind-merge them).
 | **4 — persona facade / break cycle** | ❌ **premise stale** | `ensure_default_persona_active` lives in admin_**b** (not admin_a), and admin_a ↔ admin_b are **bidirectionally** coupled across ~6 files each way. Breaking one persona import is cosmetic; the intra-gateway cycle is not CI-enforced today anyway. |
 | **6 — provider adapters→specs layering** | ❌ **premise stale** | `registry.py` and `declarative.py` (the "schema" group) **do** import the concrete adapters (factory pattern), so an `adapters→specs`/`specs-never-imports-adapters` contract does **not** hold. |
 | **5 — admin-marketplace bundle** / **6 — admin-infrastructure bundle** | 🔶 **possible, high-churn** | Behavior-preserving file moves + re-export shims; validated by mypy+tests. Real but moderate value (coupling stays behind shims) and high churn through the `extras`-coupled modules. |
-| **7 — admin-a god-file splits** | ⚠️ **needs review** | `auth.py` is security-sensitive (just hardened in the security PRs); split carefully + reviewed. |
-| **8 — entrypoint.py decomposition** | ⚠️ **largest / highest-risk** | 4040-LOC boot orchestrator; pure staged work behind review. |
+| **7 — admin-a god-file splits** | ✅ **done (v1.17.0)** | `auth.py` 931 → 773 via `_auth_lib` — only the mechanical layer (wire-models / constants / login-rate-limiter / pure helpers) moved; **all security logic kept in `auth.py`** (argon2 hash/verify, sessions, cookie/TLS, forwarded-proto trust, credential persistence, locks, router + handlers). Dedicated adversarial security review (VERDICT SAFE). |
+| **8 — entrypoint.py decomposition** | ✅ **done (v1.17.0)** | 3680 → 1769 LOC across 6 reviewed phases: `cli_helpers`, `bootstrap_constants`, `config_loading`, `app_factory`, `c2_wiring` (+ earlier `config_resolve` / `scheduler_integration`), all re-exporting through `entrypoint` (`build_app` + every import path unchanged). Includes the in-`build_app` middleware/UI-static extraction whose registration order was proven byte-identical via `app.user_middleware`. Residual = `build_app` + the irreducible `lifespan` closure + `_serve` + `main`. Beat the `< 2000 LOC` target. See [`PLAN_decompose_cores.md`](PLAN_decompose_cores.md). |
 
 **Net:** the cleanly-achievable, behavior-preserving modularization is complete and
 merged. The remaining structural phases require the per-PR review cadence (Codex +
@@ -278,7 +278,7 @@ Refines the owner-areas in `architecture-modules.md` CODEOWNERS. Placeholder han
 
 | Metric | Baseline | Target | Verified by |
 |---|---|---|---|
-| `entrypoint.py` LOC | 4040 | < 2000 | Phase 8; line count |
+| `entrypoint.py` LOC | 4040 | < 2000 → **✅ 1769 (v1.17.0)** | Phase 8; line count |
 | `routes_admin_b` shape | 16.9K in one bundle | 3 independent bundles (config / marketplace / infra), each `independence`-fenced | Phases 5–6; import-linter |
 | `AdminState.extras` keys | 27+ untyped string keys | 0 (typed slices + boot validator) | Phase 9 |
 | `AdminState` merge load | 6+ contributors/month on one dataclass | field changes localized to per-area slice files | git-blame churn |

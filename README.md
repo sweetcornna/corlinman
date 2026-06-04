@@ -6,7 +6,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/sweetcornna/corlinman/ci.yml?branch=main&label=CI)](https://github.com/sweetcornna/corlinman/actions)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.10.0-brightgreen)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.17.0-brightgreen)](CHANGELOG.md)
 [![Docs](https://img.shields.io/badge/docs-architecture-informational)](docs/architecture.md)
 
 **A self-hosted intelligent-agent platform.** Give a language model durable
@@ -19,13 +19,14 @@ govern with human-in-the-loop approvals.
 > _Live deployment reference: <https://corlinman.cornna.xyz>._
 > _中文介绍章节见文末 ["中文速览"](#中文速览)。_
 >
-> **What's new in 1.10.0** — audit rounds 4–9 + the first fully-green CI
-> gate (ruff + mypy + import-linter), an unauthenticated `/v1/voice`
-> WebSocket closed, Anthropic/Bedrock multi-round + parallel tool calling
-> fixed, the gateway now runs as an unprivileged user on native installs,
-> and a durable SQLite voice session store. See
-> [`CHANGELOG.md`](CHANGELOG.md). _1.10.0 更新概览见
-> [更新日志](CHANGELOG.md)。_
+> **What's new in 1.17.0** — a codebase-modularization release: the boot
+> orchestrator `entrypoint.py` is decomposed 3680 → 1769 LOC, the `auth.py`
+> security core is slimmed (all security logic kept in place), and 26 "god
+> files" across the gateway are split into per-concern sibling modules so
+> contributors can iterate in parallel. **Internal refactor only — no behavior
+> changes, no config/wire-protocol changes, no data migration; a safe upgrade.**
+> See [`CHANGELOG.md`](CHANGELOG.md). _1.17.0 为纯内部模块化重构，行为不变、可安全升级；
+> 详见 [更新日志](CHANGELOG.md)。_
 
 ---
 
@@ -678,15 +679,15 @@ ops/                Grafana dashboard + observability compose
 
 ## Roadmap + status
 
-**v1.10.0** (current) — audit rounds 4–9 + a CI-greening pass + a
-voice-store feature. The whole Python CI gate (ruff + mypy +
-import-linter) is green for the first time; an unauthenticated
-`/v1/voice` WebSocket was closed (token moved off the query string);
-Anthropic/Bedrock multi-round + parallel tool calling fixed; the
-gateway now runs as an unprivileged `corlinman` user on native installs;
-and a durable SQLite voice session store landed (the transcript→chat
-bridge is still deferred). No data migration required. Released
-2026-05-29, tagged `v1.10.0`. Full notes (incl. upgrade notes) in
+**v1.17.0** (current) — codebase modularization for multi-developer
+collaboration: the boot orchestrator `entrypoint.py` decomposed 3680 → 1769
+LOC into focused `lifecycle/` siblings (`cli_helpers`, `bootstrap_constants`,
+`config_loading`, `app_factory`, `c2_wiring`, joining `config_resolve` /
+`scheduler_integration`), the `auth.py` security core slimmed (all security
+logic kept in place), and 26 god-files across the gateway split into
+per-concern sibling modules. Pure internal refactor — no behavior, config, or
+wire-protocol changes and no data migration; a safe upgrade. Tagged `v1.17.0`.
+The complete, up-to-date version history (1.1 → 1.17) lives in
 [`CHANGELOG.md`](CHANGELOG.md).
 
 **v1.1.0** — channel parity (QQ official bot + WeChat 公众号
@@ -770,12 +771,13 @@ MIT. See [`LICENSE`](LICENSE).
 
 ## 中文速览
 
-> **1.10.0 新特性**：审计第 4–9 轮 + 一次 CI 转绿 + 语音存储功能。整条
-> Python CI 门禁（ruff + mypy + import-linter）首次全绿；关闭了未鉴权的
-> `/v1/voice` WebSocket（令牌移出查询串）；修复 Anthropic/Bedrock 多轮 +
-> 并行工具调用；原生安装下 gateway 现以非特权 `corlinman` 用户运行；新增
-> 持久化的 SQLite 语音会话存储（转写→聊天桥接仍延后）。无需数据迁移。
-> 完整说明（含升级须知）见 [更新日志](CHANGELOG.md)。
+> **1.17.0 新特性**：面向多人协作的代码模块化重构。启动编排文件
+> `entrypoint.py` 由 3680 行拆分至 1769 行（拆出 `cli_helpers`、
+> `bootstrap_constants`、`config_loading`、`app_factory`、`c2_wiring` 等
+> `lifecycle/` 兄弟模块）；`auth.py` 安全核心瘦身（所有安全逻辑原地保留）；
+> 网关内 26 个「上帝文件」按职责拆分为兄弟模块，使各负责人可并行开发。
+> 纯内部重构——行为、配置、线协议均无变化，无需数据迁移，可安全升级。
+> 完整说明见 [更新日志](CHANGELOG.md)。
 
 **corlinman 是一个可自托管的智能体平台。** 不只是 LLM 的 API 代理，也不是拖拽工作流的工具箱——它是一套有主张的运行时：让语言模型拥有**持久记忆**、**真实工具**、**多通道接入**、**可审计的运维面板**，全部跑在你自己的机器上。
 

@@ -1,12 +1,18 @@
 # Decomposition plan — remaining risky cores (`entrypoint.py` / `auth.py`)
 
-> Status: **PLAN ONLY — not yet executed.** Produced 2026-06-03 by a deep
-> multi-agent read-only analysis (6 analysis agents + 2 synthesis agents).
-> Line numbers are guidance and **must be re-verified against the live file**
-> at execution time. Every phase uses the proven *extract-and-reimport*
-> pattern (move a cohesive group verbatim into a sibling module, re-import the
-> names so the public surface + `__all__` + all external importers stay
-> byte-for-byte; the sibling never imports its source module → no cycle).
+> Status: **✅ EXECUTED — shipped in v1.17.0.** Produced 2026-06-03 by a deep
+> multi-agent read-only analysis (6 analysis agents + 2 synthesis agents), then
+> executed 2026-06-03/04 across 6 reviewed phases. Outcome: `auth.py` 931 → 773
+> (mechanical layer → `_auth_lib`, all security logic kept); `entrypoint.py`
+> 3680 → 1769 via `cli_helpers` / `bootstrap_constants` / `config_loading` /
+> `app_factory` / `c2_wiring` (the `lifespan` closure is the irreducible
+> residual). Including the in-`build_app` middleware/UI-static extraction whose
+> registration order was proven byte-identical via `app.user_middleware`. The
+> per-phase plan below is retained as the executed record. Every phase used the
+> proven *extract-and-reimport* pattern (move a cohesive group verbatim into a
+> sibling module, re-import the names so the public surface + `__all__` + all
+> external importers stay byte-for-byte; the sibling never imports its source
+> module → no cycle).
 
 These two files were deliberately excluded from the 6 parallel split waves
 (20 god-files, merged through `8ccc6fa`) because they are the boot core and

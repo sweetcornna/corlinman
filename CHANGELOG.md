@@ -4,6 +4,51 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.0] — 2026-06-04 — Codebase modularization for multi-developer collaboration
+
+> **Internal refactor release — no behavior changes, no config/wire-protocol
+> changes, no data migration. Safe upgrade.** Every change is a verbatim
+> *extract-and-reimport* (move a cohesive group of definitions into a sibling
+> module, re-import the names so the public surface stays byte-for-byte), so
+> all external importers keep working unchanged. The goal is to dissolve the
+> "god-file" merge magnets that forced contributors to serialize on a handful
+> of huge files, so owner-areas can now iterate in parallel behind stable
+> seams. Validated per change with ruff + mypy + import-linter + boot smoke +
+> targeted suites; the boot-critical and security-critical splits each passed
+> a dedicated adversarial review.
+
+### Changed
+- **`gateway/lifecycle/entrypoint.py` decomposed: 3680 → 1769 LOC (−52%).** The
+  boot orchestrator is split into focused sibling modules, all re-exporting
+  through `entrypoint` so `build_app` and every import path are unchanged:
+  `cli_helpers` (CLI/config-path helpers), `bootstrap_constants` (constants +
+  scheduler/identity helpers), `config_loading` (config load + hot-reload
+  watcher), `app_factory` (app-state + route builders + middleware/UI-static
+  installers), `c2_wiring` (C2 / plugin-hotload / agent-runner wiring) —
+  joining the earlier `config_resolve` / `scheduler_integration`. The residual
+  is just `build_app` + the irreducible `lifespan` closure + `_serve` + `main`.
+  The in-`build_app` middleware install order is provably byte-identical
+  (verified via `app.user_middleware` with and without CORS configured).
+- **`routes_admin_a/auth.py` 931 → 773 LOC:** the mechanical layer (wire-models,
+  constants, the stateless login-rate-limiter, pure format/error helpers) moved
+  to `_auth_lib`; **all security logic stays in `auth.py`** (argon2 hash/verify,
+  sessions, cookie/TLS, forwarded-proto trust, credential persistence, locks,
+  router + handlers). `__all__` unchanged.
+- **26 god-files decomposed total** across the initiative: both admin route
+  bundles (`routes_admin_a` / `routes_admin_b`) split into per-concern
+  subpackages and per-route `_lib` helper siblings; the largest non-route
+  domain files (`routes_voice/mod`, `evolution/background_review`,
+  `grpc/placeholder`, `grpc/plugin_invoker`, `services/chat_service`,
+  `services/direct_backend`, `evolution/curator`) split into cohesive siblings.
+- Documentation: `docs/architecture-modules.md`, `docs/modularization-plan.md`,
+  and `docs/PLAN_decompose_cores.md` updated to reflect the completed structure;
+  `CONTRIBUTING.md` / PR template carry the module map + owner-areas.
+
+### Fixed
+- Removed remaining stale hardcoded version chrome from the README (badge +
+  "what's new" + roadmap pinned at 1.10.0); the canonical version is surfaced on
+  `/admin/system` and via the package metadata the update-checker reads.
+
 ## [1.16.0] — 2026-06-01 — Marketplace: Skills / MCP / Plugins (GitHub-backed, hot-plug) + mascot
 
 ### Added

@@ -86,8 +86,10 @@ Corlinman is a multi-layered LLM platform with 25+ Python packages organized aro
 The `corlinman-server` gateway is a multi-layer HTTP service:
 
 ```
-entrypoint.py (4040 LOC)
-├─ lifecycle/   (admin_seed, legacy_migration, py_config, starter_skills)
+entrypoint.py (1769 LOC — build_app + lifespan; v1.17.0 decomposed, was 4040)
+├─ lifecycle/   (boot siblings: cli_helpers, bootstrap_constants, config_resolve,
+│                config_loading, app_factory, c2_wiring, scheduler_integration;
+│                + admin_seed, legacy_migration, py_config, starter_skills)
 ├─ middleware/  (auth, admin_auth, admin_session, approval, tenant_scope, trace)
 ├─ core/        (config, config_watcher, state, server, metrics, telemetry, log_broadcast)
 ├─ routes (2.8K LOC, 10 handlers)
@@ -108,7 +110,7 @@ entrypoint.py (4040 LOC)
 
 **Critical Hotspots:**
 
-1. **entrypoint.py (4040 LOC)** — single file orchestrating all boot, config loading, route mounting, lifespan, 30+ wiring tasks, admin seeding, scheduler setup. Merge conflict magnet.
+1. **entrypoint.py — ✅ decomposed in v1.17.0 (4040 → 1769 LOC).** Was the single boot-orchestration merge magnet; config loading, route mounting, state/middleware wiring, and the CLI/agent-runner/c2 helpers now live in dedicated `lifecycle/` siblings (`cli_helpers`, `bootstrap_constants`, `config_loading`, `app_factory`, `c2_wiring`, `config_resolve`, `scheduler_integration`), all re-exported through `entrypoint` so `build_app` and every import path are unchanged. Residual = `build_app` + the irreducible `lifespan` closure + `_serve` + `main`.
 
 2. **routes_admin_b (16.9K LOC across 26 submodules)** — god bundle for admin backend. Top files:
    - `skills.py` (1699 LOC) — skill install, uninstall, CRUD
