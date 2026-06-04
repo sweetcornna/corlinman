@@ -7,8 +7,8 @@ QQ routes (all behind :func:`require_admin_dependency`):
 * ``GET  /admin/channels/qq/status``     — configuration snapshot. Reads
   ``state.channels_config`` which the bootstrapper hands in as a dict
   with the keys ``enabled``, ``ws_url``, ``self_ids``, ``group_keywords``.
-* ``POST /admin/channels/qq/reconnect``  — placeholder; returns 501
-  ``reconnect_unsupported`` matching the Rust contract.
+* ``POST /admin/channels/qq/reconnect``  — ensure NapCat's OneBot
+  websocket server is configured for the gateway.
 * ``POST /admin/channels/qq/keywords``   — updates the
   ``group_keywords`` map and persists via ``state.channels_writer``.
 
@@ -38,6 +38,7 @@ to keep this file small) and are re-imported below.
 from __future__ import annotations
 
 import inspect
+import os
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -56,6 +57,7 @@ from corlinman_server.gateway.routes_admin_a._channels_lib import (
     ChannelStatusOut,
     KeywordsBody,
     KeywordsOut,
+    ReconnectOut,
     StatusOut,
     TelegramConfigOut,
     TelegramSendBody,
@@ -75,6 +77,11 @@ from corlinman_server.gateway.routes_admin_a._channels_lib import (
 from corlinman_server.gateway.routes_admin_a.state import (
     AdminState,
     get_admin_state,
+)
+from corlinman_server.gateway.routes_admin_b._napcat_lib import (
+    NapcatError,
+    _ensure_onebot_websocket_server_for_config,
+    _schedule_onebot_websocket_server_ensure,
 )
 
 # ---------------------------------------------------------------------------
@@ -111,10 +118,16 @@ def router() -> APIRouter:
         except Exception:  # noqa: BLE001
             health = {}
 
+        if bool(qq.get("enabled", False)) and health.get("online") is not True:
+            _schedule_onebot_websocket_server_ensure(
+                {"channels": {"qq": dict(qq)}}
+            )
+
+        ws_url = qq.get("ws_url") or os.environ.get("QQ_WS_URL")
         return StatusOut(
             configured=True,
             enabled=bool(qq.get("enabled", False)),
-            ws_url=qq.get("ws_url"),
+            ws_url=ws_url,
             self_ids=list(qq.get("self_ids", [])),
             group_keywords=dict(qq.get("group_keywords", {})),
             health_online=health.get("online"),
@@ -130,11 +143,12 @@ def router() -> APIRouter:
 
     @r.post(
         "/admin/channels/qq/reconnect",
-        summary="Placeholder — force a QQ ws reconnect (not implemented)",
+        response_model=ReconnectOut,
+        summary="Ensure the QQ OneBot websocket server is reachable",
     )
     async def reconnect(
         state: Annotated[AdminState, Depends(get_admin_state)],
-    ) -> None:
+    ) -> ReconnectOut:
         qq = _qq_config(state)
         if qq is None:
             raise HTTPException(
@@ -144,16 +158,38 @@ def router() -> APIRouter:
                     "message": "no [channels.qq] section in config",
                 },
             )
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail={
-                "error": "reconnect_unsupported",
-                "message": (
-                    "force-reconnect control is not yet implemented; "
-                    "the OneBot client handles reconnect internally"
-                ),
-            },
-        )
+        if not bool(qq.get("enabled", False)):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "channel_disabled",
+                    "message": "[channels.qq] is disabled",
+                },
+            )
+        try:
+            changed = await _ensure_onebot_websocket_server_for_config(
+                {"channels": {"qq": dict(qq)}}
+            )
+        except NapcatError as exc:
+            if "not login" in str(exc).lower():
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "error": "napcat_not_logged_in",
+                        "message": (
+                            "NapCat is not logged in; scan the QQ login QR "
+                            "or use quick-login first"
+                        ),
+                    },
+                ) from exc
+            raise HTTPException(
+                status_code=exc.upstream_status or status.HTTP_502_BAD_GATEWAY,
+                detail={
+                    "error": "reconnect_failed",
+                    "message": str(exc),
+                },
+            ) from exc
+        return ReconnectOut(status="ok", changed=changed)
 
     @r.post(
         "/admin/channels/qq/keywords",

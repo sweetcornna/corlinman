@@ -98,7 +98,10 @@ export default function QqChannelPage() {
 
   const reconnectMutation = useMutation({
     mutationFn: reconnectQq,
-    onSuccess: () => toast.success(t("channels.reconnectRequested")),
+    onSuccess: () => {
+      toast.success(t("channels.reconnectRequested"));
+      qc.invalidateQueries({ queryKey: ["admin", "channels", "qq"] });
+    },
     onError: (err) =>
       toast.warning(err instanceof Error ? err.message : String(err)),
   });

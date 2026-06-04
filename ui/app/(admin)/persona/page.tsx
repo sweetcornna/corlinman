@@ -850,10 +850,10 @@ function PersonaEditorDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="max-h-[90vh] max-w-3xl overflow-y-auto"
+        className="flex max-h-[85vh] max-w-3xl flex-col overflow-y-auto"
         data-testid="persona-editor"
       >
-        <DialogHeader>
+        <DialogHeader className="shrink-0">
           <DialogTitle className="flex items-center gap-2.5">
             {existing ? (
               <PersonaAvatar persona={existing} size={28} />
@@ -869,137 +869,142 @@ function PersonaEditorDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="grid gap-3">
-          <div className="space-y-1">
-            <Label htmlFor="persona-id" className="text-xs uppercase tracking-wider text-tp-ink-3">
-              {t("persona.fieldId")}
-            </Label>
-            <Input
-              id="persona-id"
-              value={id}
-              onChange={(e) => setId(e.target.value)}
-              disabled={existing !== null}
-              data-testid="persona-id-input"
-              placeholder="grantley"
-              className="font-mono"
-            />
-            <p className="text-[11px] text-tp-ink-3">{t("persona.fieldIdHint")}</p>
-            {errors.id ? (
-              <p className="text-xs text-destructive" data-testid="persona-id-error">
-                {errors.id}
-              </p>
-            ) : null}
-          </div>
-
-          <div className="space-y-1">
-            <Label htmlFor="persona-display-name" className="text-xs uppercase tracking-wider text-tp-ink-3">
-              {t("persona.fieldDisplayName")}
-            </Label>
-            <Input
-              id="persona-display-name"
-              value={displayName}
-              onChange={(e) => setDisplayName(e.target.value)}
-              data-testid="persona-display-name-input"
-              placeholder="格兰特利·贝尔"
-            />
-            {errors.display_name ? (
-              <p className="text-xs text-destructive">{errors.display_name}</p>
-            ) : null}
-          </div>
-
-          <div className="space-y-1">
-            <Label htmlFor="persona-short-summary" className="text-xs uppercase tracking-wider text-tp-ink-3">
-              {t("persona.fieldShortSummary")}
-            </Label>
-            <Input
-              id="persona-short-summary"
-              value={shortSummary}
-              onChange={(e) => setShortSummary(e.target.value)}
-              data-testid="persona-short-summary-input"
-              placeholder="..."
-            />
-            <p className="text-[11px] text-tp-ink-3">{t("persona.fieldShortSummaryHint")}</p>
-            {errors.short_summary ? (
-              <p className="text-xs text-destructive">{errors.short_summary}</p>
-            ) : null}
-          </div>
-
-          <div className="space-y-1">
-            <Label htmlFor="persona-system-prompt" className="text-xs uppercase tracking-wider text-tp-ink-3">
-              {t("persona.fieldSystemPrompt")}
-            </Label>
-            <textarea
-              id="persona-system-prompt"
-              value={systemPrompt}
-              onChange={(e) => setSystemPrompt(e.target.value)}
-              data-testid="persona-system-prompt-textarea"
-              placeholder="# Persona name\n…"
-              spellCheck={false}
-              className={cn(
-                "flex min-h-[400px] w-full rounded-md border border-input bg-transparent px-3 py-2 font-mono text-sm shadow-sm",
-                "placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-              )}
-            />
-            <p className="text-[11px] text-tp-ink-3">{t("persona.fieldSystemPromptHint")}</p>
-            {errors.system_prompt ? (
-              <p className="text-xs text-destructive">{errors.system_prompt}</p>
-            ) : null}
-          </div>
-
-          {/* Test box — server has no preview endpoint yet, so the input
-              + button are disabled with a tooltip pointing at the real-
-              world test path (DM @QQbot). Keeps the affordance visible
-              so the operator knows the surface exists; flips on once
-              the backend lands. */}
-          <fieldset
-            className="space-y-1 rounded-md border border-dashed border-tp-glass-edge px-3 py-2"
-            data-testid="persona-test-box"
-          >
-            <Label className="text-xs uppercase tracking-wider text-tp-ink-3">
-              {t("persona.testBoxTitle")}
-            </Label>
-            <div className="flex items-center gap-2">
+        <div
+          className="pr-1"
+          data-testid="persona-editor-scroll"
+        >
+          <div className="grid gap-3">
+            <div className="space-y-1">
+              <Label htmlFor="persona-id" className="text-xs uppercase tracking-wider text-tp-ink-3">
+                {t("persona.fieldId")}
+              </Label>
               <Input
-                disabled
-                placeholder={t("persona.testBoxPlaceholder")}
-                title={t("persona.testBoxTooltip")}
-                data-testid="persona-test-input"
+                id="persona-id"
+                value={id}
+                onChange={(e) => setId(e.target.value)}
+                disabled={existing !== null}
+                data-testid="persona-id-input"
+                placeholder="grantley"
+                className="font-mono"
               />
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                disabled
-                title={t("persona.testBoxTooltip")}
-                data-testid="persona-test-button"
-              >
-                {t("persona.testBoxButton")}
-              </Button>
+              <p className="text-[11px] text-tp-ink-3">{t("persona.fieldIdHint")}</p>
+              {errors.id ? (
+                <p className="text-xs text-destructive" data-testid="persona-id-error">
+                  {errors.id}
+                </p>
+              ) : null}
             </div>
-            <p className="text-[11px] text-tp-ink-3">{t("persona.testBoxTooltip")}</p>
-          </fieldset>
 
-          {/* Asset sections + life layer — only meaningful once the
-              persona has a real id (the URLs all hang off the slug). Until
-              then we show a hint pointing the operator at the Save button. */}
-          {existing ? (
-            <>
-              <PersonaAssetsPanel personaId={existing.id} />
-              <PersonaLifePanel personaId={existing.id} />
-              <PersonaDiaryViewer personaId={existing.id} />
-              <PersonaLifeSeedsEditor personaId={existing.id} />
-            </>
-          ) : (
-            <div
-              className="rounded-md border border-dashed border-tp-glass-edge px-3 py-2 text-xs text-tp-ink-3"
-              data-testid="persona-assets-pending-save"
-            >
-              {t("persona.assetsSaveFirstHint")}
+            <div className="space-y-1">
+              <Label htmlFor="persona-display-name" className="text-xs uppercase tracking-wider text-tp-ink-3">
+                {t("persona.fieldDisplayName")}
+              </Label>
+              <Input
+                id="persona-display-name"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                data-testid="persona-display-name-input"
+                placeholder="格兰特利·贝尔"
+              />
+              {errors.display_name ? (
+                <p className="text-xs text-destructive">{errors.display_name}</p>
+              ) : null}
             </div>
-          )}
+
+            <div className="space-y-1">
+              <Label htmlFor="persona-short-summary" className="text-xs uppercase tracking-wider text-tp-ink-3">
+                {t("persona.fieldShortSummary")}
+              </Label>
+              <Input
+                id="persona-short-summary"
+                value={shortSummary}
+                onChange={(e) => setShortSummary(e.target.value)}
+                data-testid="persona-short-summary-input"
+                placeholder="..."
+              />
+              <p className="text-[11px] text-tp-ink-3">{t("persona.fieldShortSummaryHint")}</p>
+              {errors.short_summary ? (
+                <p className="text-xs text-destructive">{errors.short_summary}</p>
+              ) : null}
+            </div>
+
+            <div className="space-y-1">
+              <Label htmlFor="persona-system-prompt" className="text-xs uppercase tracking-wider text-tp-ink-3">
+                {t("persona.fieldSystemPrompt")}
+              </Label>
+              <textarea
+                id="persona-system-prompt"
+                value={systemPrompt}
+                onChange={(e) => setSystemPrompt(e.target.value)}
+                data-testid="persona-system-prompt-textarea"
+                placeholder="# Persona name\n…"
+                spellCheck={false}
+                className={cn(
+                  "flex min-h-[400px] w-full rounded-md border border-input bg-transparent px-3 py-2 font-mono text-sm shadow-sm",
+                  "placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                )}
+              />
+              <p className="text-[11px] text-tp-ink-3">{t("persona.fieldSystemPromptHint")}</p>
+              {errors.system_prompt ? (
+                <p className="text-xs text-destructive">{errors.system_prompt}</p>
+              ) : null}
+            </div>
+
+            {/* Test box — server has no preview endpoint yet, so the input
+                + button are disabled with a tooltip pointing at the real-
+                world test path (DM @QQbot). Keeps the affordance visible
+                so the operator knows the surface exists; flips on once
+                the backend lands. */}
+            <fieldset
+              className="space-y-1 rounded-md border border-dashed border-tp-glass-edge px-3 py-2"
+              data-testid="persona-test-box"
+            >
+              <Label className="text-xs uppercase tracking-wider text-tp-ink-3">
+                {t("persona.testBoxTitle")}
+              </Label>
+              <div className="flex items-center gap-2">
+                <Input
+                  disabled
+                  placeholder={t("persona.testBoxPlaceholder")}
+                  title={t("persona.testBoxTooltip")}
+                  data-testid="persona-test-input"
+                />
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled
+                  title={t("persona.testBoxTooltip")}
+                  data-testid="persona-test-button"
+                >
+                  {t("persona.testBoxButton")}
+                </Button>
+              </div>
+              <p className="text-[11px] text-tp-ink-3">{t("persona.testBoxTooltip")}</p>
+            </fieldset>
+
+            {/* Asset sections + life layer — only meaningful once the
+                persona has a real id (the URLs all hang off the slug). Until
+                then we show a hint pointing the operator at the Save button. */}
+            {existing ? (
+              <>
+                <PersonaAssetsPanel personaId={existing.id} />
+                <PersonaLifePanel personaId={existing.id} />
+                <PersonaDiaryViewer personaId={existing.id} />
+                <PersonaLifeSeedsEditor personaId={existing.id} />
+              </>
+            ) : (
+              <div
+                className="rounded-md border border-dashed border-tp-glass-edge px-3 py-2 text-xs text-tp-ink-3"
+                data-testid="persona-assets-pending-save"
+              >
+                {t("persona.assetsSaveFirstHint")}
+              </div>
+            )}
+          </div>
         </div>
 
-        <DialogFooter className="gap-2">
+        <DialogFooter className="shrink-0 gap-2">
           {existing?.is_builtin ? (
             <Button
               type="button"

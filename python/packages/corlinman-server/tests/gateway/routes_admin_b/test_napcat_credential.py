@@ -39,7 +39,16 @@ def _reset_cred_cache():
 async def test_empty_when_no_access_token(monkeypatch) -> None:
     # No qq config -> _resolve_napcat_url yields a url but no token -> "".
     monkeypatch.setattr(nc, "config_snapshot", lambda: {})
+    monkeypatch.delenv("NAPCAT_WEBUI_TOKEN", raising=False)
+    monkeypatch.delenv("NAPCAT_WEBUI_SECRET_KEY", raising=False)
     assert await nc._cached_napcat_credential() == ""
+
+
+def test_resolve_napcat_url_uses_webui_token_env(monkeypatch) -> None:
+    monkeypatch.setenv("NAPCAT_WEBUI_TOKEN", "webui-token")
+    url, token = nc._resolve_napcat_url({"channels": {"qq": {}}})
+    assert url == nc.DEFAULT_NAPCAT_URL
+    assert token == "webui-token"
 
 
 @pytest.mark.asyncio
