@@ -650,9 +650,10 @@ def _provider_models_url(base_url: str) -> str:
     """Return the OpenAI-shape model-list URL for an operator base URL.
 
     Operators commonly paste either the origin (``https://relay``), an API
-    root (``https://relay/api``), or the versioned root
-    (``https://relay/api/v1``). Treat a trailing ``/v1`` as already
-    versioned so the probe does not request ``/v1/v1/models``.
+    root (``https://relay/api``), or a versioned root
+    (``https://relay/api/v1``, ``https://relay/api/v4``). Treat a
+    trailing ``/v<digits>`` as already versioned so the probe does not
+    request paths like ``/v1/v1/models`` or ``/v4/v1/models``.
     """
     from urllib.parse import urlsplit, urlunsplit
 
@@ -660,7 +661,7 @@ def _provider_models_url(base_url: str) -> str:
     path = parts.path.rstrip("/")
     if path.endswith("/models"):
         models_path = path
-    elif path.endswith("/v1"):
+    elif re.search(r"/v\d+$", path):
         models_path = f"{path}/models"
     else:
         models_path = f"{path}/v1/models"

@@ -322,6 +322,47 @@ class TestProviderModels:
         mock_client.get.assert_awaited_once()
         assert mock_client.get.await_args.args[0] == "https://relay.example/api/v1/models"
 
+    @pytest.mark.asyncio
+    async def test_glm_default_v4_base_url_uses_models_under_v4(
+        self,
+        providers_state: tuple[AdminState, dict[str, Any]],
+    ) -> None:
+        """GLM exposes an OpenAI-compatible v4 root, not a v1 root."""
+        _, _snapshot = providers_state
+        cfg = {
+            "providers": {
+                "zhipu": {
+                    "kind": "glm",
+                    "api_key": "sk-test",
+                    "enabled": True,
+                }
+            }
+        }
+
+        mock_resp = _mock_httpx_response(
+            status_code=200,
+            json_body={"data": [{"id": "glm-4-flash"}]},
+        )
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.get = AsyncMock(return_value=mock_resp)
+
+        from corlinman_server.gateway.routes_admin_b.config_admin._providers_lib import (
+            _query_provider_models,
+        )
+
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            result = await _query_provider_models("zhipu", cfg)
+
+        assert result["ok"] is True
+        assert result["models"] == ["glm-4-flash"]
+        mock_client.get.assert_awaited_once()
+        assert (
+            mock_client.get.await_args.args[0]
+            == "https://open.bigmodel.cn/api/paas/v4/models"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Tests: GET /admin/credentials/codex/status
