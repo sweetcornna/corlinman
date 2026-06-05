@@ -560,8 +560,11 @@ class TestHandleOneQq:
     ) -> None:
         """WS-1 task 1 — an ``image/*`` send_attachment must ship an inline
         ImageSegment (SendPrivateMsg with an image), NOT an UploadPrivateFile,
-        so the picture lands in the chat instead of the file panel."""
+        so the picture lands in the chat instead of the file panel. The
+        outbound image uses OneBot's ``base64://`` form so NapCat does not
+        need to read corlinman's local filesystem path."""
         import asyncio
+        import base64
         import json
 
         from corlinman_channels.onebot import (
@@ -604,8 +607,10 @@ class TestHandleOneQq:
             f"{[type(a).__name__ for a in adapter.sent]}"
         )
         seg = next(s for s in image_msgs[0].message if isinstance(s, ImageSegment))
-        assert seg.url.startswith("file://")
-        assert seg.url.endswith("sticker.png")
+        assert seg.url == ""
+        assert seg.file == (
+            "base64://" + base64.b64encode(b"\x89PNG\r\n\x1a\nfake").decode("ascii")
+        )
 
     @pytest.mark.asyncio
     async def test_send_attachment_image_group_inline_segment(
@@ -651,6 +656,10 @@ class TestHandleOneQq:
             "expected a SendGroupMsg carrying an ImageSegment; got "
             f"{[type(a).__name__ for a in adapter.sent]}"
         )
+        seg = next(s for s in image_msgs[0].message if isinstance(s, ImageSegment))
+        assert seg.url == ""
+        assert seg.file is not None
+        assert seg.file.startswith("base64://")
 
     @pytest.mark.asyncio
     async def test_input_status_pulse_fires_until_cancelled(self) -> None:

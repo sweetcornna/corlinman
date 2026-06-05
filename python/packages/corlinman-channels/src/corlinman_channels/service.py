@@ -36,6 +36,7 @@ loops stay structurally symmetric with the Rust crate.
 from __future__ import annotations
 
 import asyncio
+import base64
 import collections
 import functools
 import logging
@@ -1046,10 +1047,11 @@ async def _qq_send_attachment(
     is_image = bool(mime and mime.startswith("image/"))
     try:
         if is_image:
-            # NapCat resolves a ``file://`` URL against its own (same-host)
-            # filesystem; an absolute path also works on most builds, but
-            # the ``file://`` form is the documented one for local media.
-            image_url = p.as_uri()
+            # Use OneBot's base64 image form instead of a local file URL.
+            # In Docker, corlinman and NapCat are separate containers; a
+            # persona asset path such as /data/personas/... exists in
+            # corlinman but not necessarily in NapCat.
+            image_file = _qq_local_image_segment_file(p)
             text = caption or ""
             action = _build_reply_action(
                 event,
@@ -1057,7 +1059,7 @@ async def _qq_send_attachment(
                 # No @mention prefix for a bare image — the picture is the
                 # payload; a leading "@user" on an empty caption is noise.
                 prepend_at_mention=bool(text),
-                image_urls=[image_url],
+                image_files=[image_file],
             )
             await adapter.send_action(action)
             _log.info("qq send_attachment inline-image path=%s mime=%s", p, mime)
@@ -1083,6 +1085,18 @@ async def _qq_send_attachment(
         return f"⚠️ 发送文件失败: {display} ({exc})"
     _log.info("qq send_attachment ok path=%s display=%s mime=%s", p, display, mime)
     return f"📎 已发送文件: {display}"
+
+
+def _qq_local_image_segment_file(path: Path) -> str:
+    """Return a OneBot/NapCat ``base64://`` image payload for ``path``.
+
+    Local-path image sends run inside the corlinman container, while
+    NapCat may run in a separate container that cannot read corlinman's
+    ``/data`` mount. Embedding the bytes avoids relying on shared
+    filesystem paths for persona emoji / generated images.
+    """
+    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"base64://{encoded}"
 
 
 async def _pulse(
@@ -1565,15 +1579,17 @@ def _build_reply_action(
     *,
     prepend_at_mention: bool = True,
     image_urls: list[str] | None = None,
+    image_files: list[str] | None = None,
 ) -> Action:
     """Build a ``SendGroupMsg`` / ``SendPrivateMsg`` action.
 
     The message carries a text segment (when ``body`` is non-empty) plus
-    one :class:`ImageSegment` per entry in ``image_urls`` — WS-1 task 1's
-    inline media-send path. The image segments are appended on BOTH the
-    group and private branches, and the OneBot wire layer
-    (``_segment_to_wire``) already serializes them, so an image reply
-    lands inline in the chat.
+    one :class:`ImageSegment` per entry in ``image_urls`` / ``image_files``
+    — WS-1 task 1's inline media-send path. ``image_files`` is for
+    OneBot ``file`` payloads such as ``base64://...``. The image segments
+    are appended on BOTH the group and private branches, and the OneBot
+    wire layer (``_segment_to_wire``) already serializes them, so an
+    image reply lands inline in the chat.
 
     Group messages prepend an ``@sender`` so the reply is clearly
     addressed (matches qqBot.js / Rust). When a long reply is split
@@ -1586,6 +1602,7 @@ def _build_reply_action(
     from corlinman_channels.onebot import ImageSegment
 
     image_segs = [ImageSegment(url=u) for u in (image_urls or []) if u]
+    image_segs.extend(ImageSegment(file=f) for f in (image_files or []) if f)
     if event.message_type == MessageType.GROUP:
         from corlinman_channels.onebot import AtSegment
 
