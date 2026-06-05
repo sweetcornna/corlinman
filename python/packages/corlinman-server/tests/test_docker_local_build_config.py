@@ -73,7 +73,8 @@ def test_docker_proto_regeneration_does_not_resync_workspace() -> None:
     )
 
     assert (
-        'GEN_PROTO_UV_RUN_ARGS="--no-sync --no-dev --package corlinman-grpc"'
+        'GEN_PROTO_UV_RUN_ARGS="--no-sync --no-dev --package corlinman-grpc '
+        '--with grpcio-tools==1.80.0"'
         in dockerfile
     )
     assert "GEN_PROTO_SKIP_FORMAT=1" in dockerfile
@@ -81,3 +82,14 @@ def test_docker_proto_regeneration_does_not_resync_workspace() -> None:
     assert "GEN_PROTO_UV_RUN_ARGS" in gen_proto
     assert 'uv run "${UV_RUN_ARGS[@]}" --quiet python -m grpc_tools.protoc' in gen_proto
     assert 'uv run "${UV_RUN_ARGS[@]}" --quiet python - <<' in gen_proto
+
+
+def test_docker_selective_install_includes_scheduler_runtime_dependencies() -> None:
+    server_pyproject = (
+        REPO_ROOT / "python" / "packages" / "corlinman-server" / "pyproject.toml"
+    ).read_text(encoding="utf-8")
+
+    assert '"corlinman-evolution-engine"' in server_pyproject
+    assert '"corlinman-shadow-tester"' in server_pyproject
+    assert "corlinman-evolution-engine = { workspace = true }" in server_pyproject
+    assert "corlinman-shadow-tester = { workspace = true }" in server_pyproject

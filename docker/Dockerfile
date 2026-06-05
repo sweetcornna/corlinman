@@ -85,7 +85,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # Regenerate proto stubs (the generated files are committed but rebuild
 # defensively — keeps the image self-consistent even if a stale commit
 # slips through).
-RUN GEN_PROTO_UV_RUN_ARGS="--no-sync --no-dev --package corlinman-grpc" \
+RUN GEN_PROTO_UV_RUN_ARGS="--no-sync --no-dev --package corlinman-grpc --with grpcio-tools==1.80.0" \
     GEN_PROTO_SKIP_FORMAT=1 \
     bash scripts/gen-proto.sh
 
