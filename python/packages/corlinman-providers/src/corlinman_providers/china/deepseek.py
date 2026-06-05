@@ -17,11 +17,12 @@ class DeepSeekProvider(OpenAIProvider):
 
     name: ClassVar[str] = "deepseek"
     kind: ClassVar[ProviderKind] = ProviderKind.DEEPSEEK
+    DEFAULT_BASE_URL: ClassVar[str] = "https://api.deepseek.com/v1"
 
     def __init__(self, api_key: str | None = None, base_url: str | None = None) -> None:
         super().__init__(
             api_key=api_key,
-            base_url=base_url or "https://api.deepseek.com/v1",
+            base_url=base_url or self.DEFAULT_BASE_URL,
             env_key="DEEPSEEK_API_KEY",
         )
 

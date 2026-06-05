@@ -319,6 +319,83 @@ class TestModelsEndpoint:
         assert snapshot == {"providers": {}}
         async_client.get.assert_awaited_once()
 
+    def test_probe_models_reuses_existing_literal_key_for_edited_draft(
+        self,
+        client: TestClient,
+        state_and_snapshot: tuple[AdminState, dict[str, Any]],
+    ) -> None:
+        """Edited drafts can probe changed fields without re-pasting a saved key."""
+        _, snapshot = state_and_snapshot
+        snapshot.clear()
+        snapshot.update({
+            "providers": {
+                "relay": {
+                    "kind": "openai_compatible",
+                    "api_key": {"value": "sk-saved"},
+                    "base_url": "https://saved.example/v1",
+                    "enabled": True,
+                }
+            }
+        })
+
+        mock_resp = _mock_httpx_response(
+            status_code=200,
+            json_body={"data": [{"id": "relay-model"}]},
+        )
+        async_client = _mock_async_client(mock_resp)
+        with patch("httpx.AsyncClient", return_value=async_client):
+            resp = client.post(
+                "/admin/providers/probe-models",
+                json={
+                    "kind": "openai_compatible",
+                    "base_url": "https://edited.example/v1",
+                    "existing_name": "relay",
+                    "params": {},
+                },
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["models"][0]["id"] == "relay-model"
+        async_client.get.assert_awaited_once()
+        assert async_client.get.await_args.kwargs["headers"] == {
+            "Authorization": "Bearer sk-saved"
+        }
+
+    def test_probe_models_uses_market_default_base_url_for_draft(
+        self,
+        client: TestClient,
+        state_and_snapshot: tuple[AdminState, dict[str, Any]],
+    ) -> None:
+        """Vendor kinds should probe their adapter default, not OpenAI."""
+        _, snapshot = state_and_snapshot
+        snapshot.clear()
+        snapshot.update({"providers": {}})
+
+        mock_resp = _mock_httpx_response(
+            status_code=200,
+            json_body={"data": [{"id": "llama-3.3-70b-versatile"}]},
+        )
+        async_client = _mock_async_client(mock_resp)
+        with patch("httpx.AsyncClient", return_value=async_client):
+            resp = client.post(
+                "/admin/providers/probe-models",
+                json={
+                    "kind": "groq",
+                    "api_key": {"value": "gsk-test"},
+                    "params": {},
+                },
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["models"][0]["id"] == "llama-3.3-70b-versatile"
+        async_client.get.assert_awaited_once()
+        assert (
+            async_client.get.await_args.args[0]
+            == "https://api.groq.com/openai/v1/models"
+        )
+
     def test_models_endpoint_openai_proxy(
         self,
         client: TestClient,

@@ -144,6 +144,7 @@ describe("ProvidersAdminContent model discovery", () => {
       expect(probeProviderModelsMock).toHaveBeenCalledWith({
         kind: "openai_compatible",
         base_url: "https://edited.example/v1",
+        existing_name: "relay",
         params: {},
       });
     });

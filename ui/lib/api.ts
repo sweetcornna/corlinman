@@ -2317,6 +2317,7 @@ export interface ProviderModelProbeRequest {
   kind: ProviderKind;
   base_url?: string;
   api_key?: { env: string } | { value: string } | null;
+  existing_name?: string;
   params?: Record<string, unknown>;
 }
 

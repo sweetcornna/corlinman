@@ -203,6 +203,24 @@ def router() -> APIRouter:
             entry["base_url"] = body.base_url
         if body.api_key is not None:
             entry["api_key"] = dict(body.api_key)
+        elif body.existing_name:
+            providers_cfg = config_snapshot().get("providers") or {}
+            existing = (
+                providers_cfg.get(body.existing_name)
+                if isinstance(providers_cfg, dict)
+                else None
+            )
+            existing_api_key = (
+                existing.get("api_key") if isinstance(existing, dict) else None
+            )
+            if (
+                isinstance(existing_api_key, dict)
+                and isinstance(existing_api_key.get("value"), str)
+                and existing_api_key.get("value")
+            ):
+                entry["api_key"] = {"value": existing_api_key["value"]}
+            elif isinstance(existing_api_key, str) and existing_api_key:
+                entry["api_key"] = {"value": existing_api_key}
 
         probe_strategy = _zero_cost_probe_kind(normalized_kind)
         if probe_strategy in ("mock", "hardcoded"):

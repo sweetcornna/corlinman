@@ -19,6 +19,14 @@ import re
 from typing import Any
 
 import structlog
+from corlinman_providers.china import DeepSeekProvider, GLMProvider, QwenProvider
+from corlinman_providers.market_providers import (
+    CohereProvider,
+    GroqProvider,
+    MistralProvider,
+    ReplicateProvider,
+    TogetherProvider,
+)
 from corlinman_providers.specs import list_supported_kinds
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -82,6 +90,7 @@ class ProviderModelProbe(BaseModel):
     kind: str
     base_url: str | None = None
     api_key: dict[str, Any] | None = None
+    existing_name: str | None = None
     params: dict[str, Any] | None = None
 
 
@@ -348,6 +357,21 @@ _OPENAI_COMPATIBLE_KINDS: frozenset[str] = frozenset(
         "deepseek",
     }
 )
+
+_OPENAI_COMPATIBLE_DEFAULT_BASE_URLS: dict[str, str] = {
+    "mistral": MistralProvider.DEFAULT_BASE_URL,
+    "cohere": CohereProvider.DEFAULT_BASE_URL,
+    "together": TogetherProvider.DEFAULT_BASE_URL,
+    "groq": GroqProvider.DEFAULT_BASE_URL,
+    "replicate": ReplicateProvider.DEFAULT_BASE_URL,
+    "qwen": QwenProvider.DEFAULT_BASE_URL,
+    "glm": GLMProvider.DEFAULT_BASE_URL,
+    "deepseek": DeepSeekProvider.DEFAULT_BASE_URL,
+}
+
+
+def _default_base_url_for_kind(kind: str) -> str | None:
+    return _OPENAI_COMPATIBLE_DEFAULT_BASE_URLS.get(_normalize_kind(kind))
 
 
 # ---------------------------------------------------------------------------
@@ -709,7 +733,11 @@ async def _query_provider_models(
             api_key = raw_key
         else:
             api_key = ""
-        raw_base = entry_dict.get("base_url") or "https://api.openai.com"
+        raw_base = (
+            entry_dict.get("base_url")
+            or _default_base_url_for_kind(kind)
+            or "https://api.openai.com"
+        )
         base_url = str(raw_base).rstrip("/")
 
     # SEC-008: refuse to dial cloud-metadata / link-local targets with the

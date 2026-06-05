@@ -137,7 +137,23 @@ function toUpsert(d: DraftProvider): ProviderUpsert {
   };
 }
 
-function toModelProbe(d: DraftProvider): ProviderModelProbeRequest {
+function canReuseSavedLiteralKey(
+  editing: ProviderView | null,
+  draft: DraftProvider,
+): editing is ProviderView {
+  return (
+    !!editing &&
+    draft.name.trim() === editing.name &&
+    editing.api_key_source === "value" &&
+    draft.api_key_source === "value" &&
+    !draft.api_key_value.trim()
+  );
+}
+
+function toModelProbe(
+  d: DraftProvider,
+  editing: ProviderView | null,
+): ProviderModelProbeRequest {
   const body: ProviderModelProbeRequest = {
     kind: d.kind,
     params: d.params,
@@ -150,6 +166,8 @@ function toModelProbe(d: DraftProvider): ProviderModelProbeRequest {
     body.api_key = { env: d.api_key_env_name.trim() };
   } else if (d.api_key_source === "value" && d.api_key_value.trim()) {
     body.api_key = { value: d.api_key_value.trim() };
+  } else if (canReuseSavedLiteralKey(editing, d)) {
+    body.existing_name = editing.name;
   }
   return body;
 }
@@ -166,11 +184,7 @@ function shouldUseSavedModelDiscovery(
   draft: DraftProvider,
 ) {
   return (
-    !!editing &&
-    draft.name.trim() === editing.name &&
-    editing.api_key_source === "value" &&
-    draft.api_key_source === "value" &&
-    !draft.api_key_value.trim() &&
+    canReuseSavedLiteralKey(editing, draft) &&
     draft.kind === editing.kind &&
     draft.base_url.trim() === (editing.base_url ?? "").trim() &&
     sameDiscoveryParams(draft.params, editing.params ?? {})
@@ -506,7 +520,7 @@ function ProviderEditorDialog({ open, onOpenChange, editing }: EditorProps) {
         request.draft,
       )
         ? await getProviderModels(request.editing!.name)
-        : await probeProviderModels(toModelProbe(request.draft));
+        : await probeProviderModels(toModelProbe(request.draft, request.editing));
       return { generation: request.generation, res };
     },
     onSuccess: ({ generation, res }) => {
