@@ -62,3 +62,22 @@ def test_dockerfile_normalizes_shell_scripts_for_windows_checkouts() -> None:
 
     assert "sed -i 's/\\r$//' scripts/gen-proto.sh" in dockerfile
     assert "sed -i 's/\\r$//' /app/start.sh" in dockerfile
+
+
+def test_docker_proto_regeneration_does_not_resync_workspace() -> None:
+    dockerfile = (REPO_ROOT / "docker" / "Dockerfile").read_text(
+        encoding="utf-8"
+    )
+    gen_proto = (REPO_ROOT / "scripts" / "gen-proto.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        'GEN_PROTO_UV_RUN_ARGS="--no-sync --no-dev --package corlinman-grpc"'
+        in dockerfile
+    )
+    assert "GEN_PROTO_SKIP_FORMAT=1" in dockerfile
+    assert "RUN bash scripts/gen-proto.sh" not in dockerfile
+    assert "GEN_PROTO_UV_RUN_ARGS" in gen_proto
+    assert 'uv run "${UV_RUN_ARGS[@]}" --quiet python -m grpc_tools.protoc' in gen_proto
+    assert 'uv run "${UV_RUN_ARGS[@]}" --quiet python - <<' in gen_proto

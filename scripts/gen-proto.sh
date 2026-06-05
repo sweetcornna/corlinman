@@ -24,6 +24,15 @@ set -euo pipefail
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$REPO_ROOT"
 
+UV_RUN_ARGS=()
+if [[ -n "${GEN_PROTO_UV_RUN_ARGS:-}" ]]; then
+  # Docker sets this to avoid resyncing root/dev dependencies after its
+  # package-scoped runtime install. The default dev path keeps normal uv
+  # behavior so fresh local environments still get the pinned generator deps.
+  # shellcheck disable=SC2206
+  UV_RUN_ARGS=(${GEN_PROTO_UV_RUN_ARGS})
+fi
+
 PROTO_DIR="proto"
 OUT_DIR="python/packages/corlinman-grpc/src/corlinman_grpc/_generated"
 
@@ -54,7 +63,7 @@ echo "gen-proto: generating ${#PROTOS[@]} proto(s) -> $OUT_DIR"
 # byte-identical across machines); requires `uv sync --dev` first.
 # Compile all .proto files in a single protoc invocation so the generated
 # descriptor-pool wiring is consistent.
-uv run --quiet python -m grpc_tools.protoc \
+uv run "${UV_RUN_ARGS[@]}" --quiet python -m grpc_tools.protoc \
   -I"$PROTO_DIR" \
   --python_out="$OUT_DIR" \
   --pyi_out="$OUT_DIR" \
@@ -70,7 +79,7 @@ touch "$OUT_DIR/corlinman/__init__.py" \
 #   from corlinman.v1 import foo_pb2 as ...
 # ->
 #   from corlinman_grpc._generated.corlinman.v1 import foo_pb2 as ...
-uv run --quiet python - <<'PY'
+uv run "${UV_RUN_ARGS[@]}" --quiet python - <<'PY'
 import pathlib
 import re
 
@@ -95,6 +104,8 @@ PY
 # `**/_generated/**` from linting; without it ruff prints "No Python files
 # found" and leaves the protoc output untouched, causing whitespace drift
 # across developer/CI machines with different protoc point releases.
-uv run --quiet ruff format --isolated "$OUT_DIR" >/dev/null
+if [[ "${GEN_PROTO_SKIP_FORMAT:-0}" != "1" ]]; then
+  uv run "${UV_RUN_ARGS[@]}" --quiet ruff format --isolated "$OUT_DIR" >/dev/null
+fi
 
 echo "gen-proto: ok"
