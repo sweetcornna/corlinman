@@ -31,6 +31,7 @@
     --input: 0 0% 100% / 0.06;
     --ring: 218 78% 50%;
     --radius: 0.5rem;
+    --font-instrument-serif: Georgia, "Times New Roman", serif;
 
     --panel: 0 0% 100% / 0.035;
     --surface: 0 0% 100% / 0.03;

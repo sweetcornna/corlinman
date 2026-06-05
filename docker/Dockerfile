@@ -36,7 +36,9 @@ ARG UV_HTTP_TIMEOUT=120
 ARG DEBIAN_MIRROR=deb.debian.org
 
 # Optional Debian mirror swap (saves minutes in CN networks).
-RUN if [ "$DEBIAN_MIRROR" != "deb.debian.org" ]; then \
+RUN rm -f /etc/apt/sources.list.d/yarn.list /etc/apt/sources.list.d/nodesource.list \
+        /etc/apt/sources.list.d/*yarn* /etc/apt/sources.list.d/*node* \
+    && if [ "$DEBIAN_MIRROR" != "deb.debian.org" ]; then \
         sed -i "s|deb.debian.org|$DEBIAN_MIRROR|g" /etc/apt/sources.list.d/debian.sources \
             || sed -i "s|deb.debian.org|$DEBIAN_MIRROR|g" /etc/apt/sources.list; \
     fi
@@ -64,7 +66,7 @@ COPY pyproject.toml uv.lock README.md ./
 COPY python ./python
 COPY proto ./proto
 COPY scripts/gen-proto.sh ./scripts/gen-proto.sh
-RUN sed -i 's/\r$//' ./scripts/gen-proto.sh
+RUN sed -i 's/\r$//' scripts/gen-proto.sh && chmod +x scripts/gen-proto.sh
 
 # Docker contexts can contain ignored local bytecode directories from packages
 # that no longer exist. uv's workspace glob treats every python/packages/*
@@ -73,15 +75,19 @@ RUN sed -i 's/\r$//' ./scripts/gen-proto.sh
 RUN find python/packages -mindepth 1 -maxdepth 1 -type d \
         ! -exec test -f "{}/pyproject.toml" \; -print -exec rm -rf {} +
 
-# Sync the entire workspace into /opt/venv. --frozen ensures we use uv.lock.
+# Sync the gateway package and its explicit runtime dependencies into /opt/venv.
+# --frozen ensures we use uv.lock; package-scoped sync keeps local Docker
+# rebuilds from depending on unrelated workspace experiments.
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --all-packages --frozen --no-dev
+    uv sync --package corlinman-server --frozen --no-dev
 
 # Regenerate proto stubs (the generated files are committed but rebuild
 # defensively — keeps the image self-consistent even if a stale commit
 # slips through).
-RUN bash scripts/gen-proto.sh
+RUN GEN_PROTO_UV_RUN_ARGS="--no-sync --no-dev --package corlinman-grpc --with grpcio-tools==1.80.0" \
+    GEN_PROTO_SKIP_FORMAT=1 \
+    bash scripts/gen-proto.sh
 
 # ---------------------------------------------------------------------------
 # Stage 2: UI builder — produce a static Next.js export in /build/ui/out
@@ -115,7 +121,9 @@ RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
 FROM ${PYTHON_BASE_IMAGE} AS runtime
 
 ARG DEBIAN_MIRROR=deb.debian.org
-RUN if [ "$DEBIAN_MIRROR" != "deb.debian.org" ]; then \
+RUN rm -f /etc/apt/sources.list.d/yarn.list /etc/apt/sources.list.d/nodesource.list \
+        /etc/apt/sources.list.d/*yarn* /etc/apt/sources.list.d/*node* \
+    && if [ "$DEBIAN_MIRROR" != "deb.debian.org" ]; then \
         sed -i "s|deb.debian.org|$DEBIAN_MIRROR|g" /etc/apt/sources.list.d/debian.sources \
             || sed -i "s|deb.debian.org|$DEBIAN_MIRROR|g" /etc/apt/sources.list; \
     fi
