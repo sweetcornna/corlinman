@@ -39,6 +39,7 @@ corlinman-agent-brain = { workspace = true }
 
 [tool.uv.workspace]
 members = ["python/packages/*"]
+exclude = ["python/packages/corlinman-embedding"]
 
 [tool.uv]
 managed = true
