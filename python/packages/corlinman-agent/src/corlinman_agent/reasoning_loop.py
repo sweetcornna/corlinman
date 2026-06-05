@@ -82,6 +82,39 @@ _MODEL_COSTS: dict[str, tuple[float, float, float, float]] = {
     "claude-haiku-4-5": (0.8, 4.0, 0.08, 1.0),
 }
 
+_INTERNAL_CHAT_EXTRA_KEYS: frozenset[str] = frozenset({
+    "persona_id",
+})
+_CODEX_ONLY_CHAT_EXTRA_KEYS: frozenset[str] = frozenset({
+    "prompt_cache_key",
+})
+
+
+def _provider_kind_value(provider: Any) -> str:
+    kind = getattr(provider, "kind", None)
+    value = getattr(kind, "value", kind)
+    return str(value or "").lower()
+
+
+def _provider_chat_extra(
+    provider: Any, extra: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Return the provider-visible subset of ``ChatStart.extra``.
+
+    ``ChatStart.extra`` also carries turn metadata used by the servicer for
+    tool dispatch. Keep that metadata on the original start object, but never
+    let it become vendor SDK kwargs.
+    """
+    if not extra:
+        return None
+
+    blocked = set(_INTERNAL_CHAT_EXTRA_KEYS)
+    if _provider_kind_value(provider) != "codex":
+        blocked.update(_CODEX_ONLY_CHAT_EXTRA_KEYS)
+
+    filtered = {key: value for key, value in extra.items() if key not in blocked}
+    return filtered or None
+
 
 def _estimate_turn_cost_usd(model: str, usage: dict[str, int]) -> float:
     """Return estimated USD cost for one provider call.
@@ -206,8 +239,9 @@ class ChatStart:
     ``extra`` carries Feature-C provider-specific params (e.g. ``top_p``,
     ``reasoning_effort``, ``safety_settings``) that the servicer computed
     by merging ``[providers.<name>].params`` under
-    ``[models.aliases.<alias>].params``. The loop forwards it verbatim to
-    :meth:`CorlinmanProvider.chat_stream`.
+    ``[models.aliases.<alias>].params``. It may also carry internal turn
+    metadata used by the servicer; the loop filters those keys before
+    calling :meth:`CorlinmanProvider.chat_stream`.
     """
 
     model: str
@@ -1911,7 +1945,7 @@ class ReasoningLoop:
             tools=start.tools or None,
             temperature=start.temperature,
             max_tokens=start.max_tokens,
-            extra=start.extra or None,
+            extra=_provider_chat_extra(self._provider, start.extra),
         )
         async for chunk in stream:
             kind = chunk.kind
