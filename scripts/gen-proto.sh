@@ -33,6 +33,14 @@ if [[ -n "${GEN_PROTO_UV_RUN_ARGS:-}" ]]; then
   UV_RUN_ARGS=(${GEN_PROTO_UV_RUN_ARGS})
 fi
 
+uv_run_quiet() {
+  if [[ ${#UV_RUN_ARGS[@]} -gt 0 ]]; then
+    uv run "${UV_RUN_ARGS[@]}" --quiet "$@"
+  else
+    uv run --quiet "$@"
+  fi
+}
+
 PROTO_DIR="proto"
 OUT_DIR="python/packages/corlinman-grpc/src/corlinman_grpc/_generated"
 
@@ -63,7 +71,7 @@ echo "gen-proto: generating ${#PROTOS[@]} proto(s) -> $OUT_DIR"
 # byte-identical across machines); requires `uv sync --dev` first.
 # Compile all .proto files in a single protoc invocation so the generated
 # descriptor-pool wiring is consistent.
-uv run "${UV_RUN_ARGS[@]}" --quiet python -m grpc_tools.protoc \
+uv_run_quiet python -m grpc_tools.protoc \
   -I"$PROTO_DIR" \
   --python_out="$OUT_DIR" \
   --pyi_out="$OUT_DIR" \
@@ -79,7 +87,7 @@ touch "$OUT_DIR/corlinman/__init__.py" \
 #   from corlinman.v1 import foo_pb2 as ...
 # ->
 #   from corlinman_grpc._generated.corlinman.v1 import foo_pb2 as ...
-uv run "${UV_RUN_ARGS[@]}" --quiet python - <<'PY'
+uv_run_quiet python - <<'PY'
 import pathlib
 import re
 
@@ -105,7 +113,7 @@ PY
 # found" and leaves the protoc output untouched, causing whitespace drift
 # across developer/CI machines with different protoc point releases.
 if [[ "${GEN_PROTO_SKIP_FORMAT:-0}" != "1" ]]; then
-  uv run "${UV_RUN_ARGS[@]}" --quiet ruff format --isolated "$OUT_DIR" >/dev/null
+  uv_run_quiet ruff format --isolated "$OUT_DIR" >/dev/null
 fi
 
 echo "gen-proto: ok"

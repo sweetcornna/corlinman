@@ -1,3 +1,7 @@
+import os
+import shutil
+import subprocess
+import textwrap
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -80,8 +84,62 @@ def test_docker_proto_regeneration_does_not_resync_workspace() -> None:
     assert "GEN_PROTO_SKIP_FORMAT=1" in dockerfile
     assert "RUN bash scripts/gen-proto.sh" not in dockerfile
     assert "GEN_PROTO_UV_RUN_ARGS" in gen_proto
-    assert 'uv run "${UV_RUN_ARGS[@]}" --quiet python -m grpc_tools.protoc' in gen_proto
-    assert 'uv run "${UV_RUN_ARGS[@]}" --quiet python - <<' in gen_proto
+    assert "uv_run_quiet() {" in gen_proto
+    assert "uv_run_quiet python -m grpc_tools.protoc" in gen_proto
+    assert "uv_run_quiet python -" in gen_proto
+
+
+def test_gen_proto_default_path_handles_empty_optional_uv_args(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    script_dir = repo / "scripts"
+    proto_dir = repo / "proto" / "corlinman" / "v1"
+    bin_dir = tmp_path / "bin"
+    script_dir.mkdir(parents=True)
+    proto_dir.mkdir(parents=True)
+    bin_dir.mkdir()
+
+    shutil.copy2(
+        REPO_ROOT / "scripts" / "gen-proto.sh",
+        script_dir / "gen-proto.sh",
+    )
+    (proto_dir / "agent.proto").write_text(
+        'syntax = "proto3"; package corlinman.v1;\n',
+        encoding="utf-8",
+    )
+    (bin_dir / "uv").write_text(
+        textwrap.dedent(
+            """\
+            #!/usr/bin/env bash
+            set -euo pipefail
+            [[ "${1:-}" == "run" ]]
+            shift
+            for arg in "$@"; do
+              case "$arg" in
+                --python_out=*)
+                  out="${arg#--python_out=}"
+                  mkdir -p "$out/corlinman/v1"
+                  touch "$out/corlinman/v1/agent_pb2.py"
+                  touch "$out/corlinman/v1/agent_pb2.pyi"
+                  ;;
+              esac
+            done
+            """
+        ),
+        encoding="utf-8",
+    )
+    (bin_dir / "uv").chmod(0o755)
+
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env.pop("GEN_PROTO_UV_RUN_ARGS", None)
+    env.pop("GEN_PROTO_SKIP_FORMAT", None)
+
+    subprocess.run(
+        ["bash", "scripts/gen-proto.sh"],
+        cwd=repo,
+        env=env,
+        check=True,
+    )
 
 
 def test_docker_selective_install_includes_scheduler_runtime_dependencies() -> None:
