@@ -593,7 +593,7 @@ Internet ──[HTTPS]──▶ Cloudflare (CDN + edge TLS + DDoS)
               │  DNS-01 (no port 80      │
               │  exposed to ACME)        │
               │                          │
-              │  location /admin|/v1...  │── 127.0.0.1:6005 ──▶ corlinman container
+              │  location /admin|/v1...  │── 127.0.0.1:6005 ──▶ corlinman gateway
               │  location /              │── /opt/corlinman/ui-static/ (static files)
               └─────────────────────────┘
 ```
@@ -605,12 +605,18 @@ Internet ──[HTTPS]──▶ Cloudflare (CDN + edge TLS + DDoS)
 - **Static bundle** is served directly by nginx from
   `/opt/corlinman/ui-static/` (rsync target from `ui/out/` on the build
   host). The gateway never fights nginx for static bytes.
-- **Upgrade path** for the UI: rebuild locally, rsync, done — no
-  container restart. For the gateway: rebuild the image, transfer via
-  `docker save | ssh docker load`, `docker compose up -d`.
+- **Hosted demo runtime** is a native systemd deployment: `corlinman.service`
+  for the gateway, `corlinman-agent.service` for the Python agent, and a
+  Docker `corlinman-napcat` sidecar for QQ.
+- **Hosted demo upgrades** pin an explicit release tag, sync the native venv,
+  rebuild `ui/out/`, rsync it to `/opt/corlinman/ui-static/`, then restart the
+  agent and gateway services. See
+  [`docs/RUNBOOK_VPS_PROD_UPDATE.md`](docs/RUNBOOK_VPS_PROD_UPDATE.md).
+- **Docker installs** should use the tagged GHCR image and compose upgrade
+  path from [`deploy/AI_DEPLOY.md`](deploy/AI_DEPLOY.md).
 
-Full runbook with nginx config, acme.sh commands, healthcheck wiring,
-and rollback procedure: [`docs/runbook.md`](docs/runbook.md).
+General troubleshooting, healthcheck wiring, and rollback notes:
+[`docs/runbook.md`](docs/runbook.md).
 
 ---
 

@@ -80,9 +80,9 @@ ssh USER@HOST 'curl -fsSL https://raw.githubusercontent.com/sweetcornna/corlinma
   | bash -s -- --mode native'
 ```
 Same `--china` flag. Native mode does not need docker but does install `uv`,
-clones the repo to `/opt/corlinman/repo`, runs `uv sync --frozen --no-dev`, and
-registers a systemd unit `corlinman.service`. The `/health` poll runs at the end
-of native install too.
+clones the repo to `/opt/corlinman/repo`, runs
+`uv sync --all-packages --frozen --no-dev`, and registers a systemd unit
+`corlinman.service`. The `/health` poll runs at the end of native install too.
 
 ### Phase 2.5 — In-place upgrade (if Phase 0 detected an existing install)
 
@@ -96,12 +96,17 @@ host (looks for `corlinman.service` then `docker ps -a --filter name=corlinman`)
   miss, then `docker compose up -d --no-deps corlinman` (NapCat untouched if
   it was running). Reports before/after image digest.
 - **Native mode**: `git fetch --depth 1 + reset --hard FETCH_HEAD`,
-  `uv sync --frozen --no-dev`, `systemctl restart corlinman.service`. Reports
-  before/after SHA.
+  `uv sync --all-packages --frozen --no-dev`, rebuilds the UI, and
+  `systemctl restart corlinman.service`. Reports before/after SHA.
 
 `$CORLINMAN_DATA_DIR` is **never** touched. Always pass `--version vX.Y.Z` (the
 explicit release tag) for production upgrades; the bare `--upgrade` defaults to
 `main` which is fine for staging but not for prod.
+
+Known production exception: the hosted demo VPS at `43.133.12.98` is a legacy
+root-owned native/systemd install. Do not use this generic native upgrade path
+there until that unit layout is intentionally migrated. Follow
+[`docs/RUNBOOK_VPS_PROD_UPDATE.md`](../docs/RUNBOOK_VPS_PROD_UPDATE.md) instead.
 
 ### Phase 3 — Bootstrap config
 
