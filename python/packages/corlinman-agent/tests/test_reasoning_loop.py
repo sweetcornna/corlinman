@@ -24,6 +24,7 @@ from corlinman_agent import (
     ToolResult,
 )
 from corlinman_providers.base import ProviderChunk
+from corlinman_providers.specs import ProviderKind
 
 
 class _FakeProvider:
@@ -46,8 +47,15 @@ class _ExplodingProvider:
 class _RecordingProvider:
     """Records provider kwargs for boundary tests."""
 
-    def __init__(self, *, name: str = "recording") -> None:
+    def __init__(
+        self,
+        *,
+        name: str = "recording",
+        kind: ProviderKind | str | None = None,
+    ) -> None:
         self.name = name
+        if kind is not None:
+            self.kind = kind
         self.calls: list[dict[str, Any]] = []
 
     async def chat_stream(self, **kwargs: Any) -> AsyncIterator[ProviderChunk]:  # type: ignore[override]
@@ -124,7 +132,7 @@ async def test_internal_chat_extra_is_not_forwarded_to_provider() -> None:
 
 @pytest.mark.asyncio
 async def test_codex_prompt_cache_extra_is_still_forwarded() -> None:
-    prov = _RecordingProvider(name="codex")
+    prov = _RecordingProvider(name="codex", kind=ProviderKind.CODEX)
 
     await _collect(
         ReasoningLoop(prov),
@@ -144,6 +152,30 @@ async def test_codex_prompt_cache_extra_is_still_forwarded() -> None:
         "prompt_cache_key": "session-1",
         "top_p": 0.8,
     }
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_provider_named_codex_drops_codex_only_extra() -> None:
+    prov = _RecordingProvider(
+        name="codex",
+        kind=ProviderKind.OPENAI_COMPATIBLE,
+    )
+
+    await _collect(
+        ReasoningLoop(prov),
+        ChatStart(
+            model="x",
+            messages=[{"role": "user", "content": "hi"}],
+            extra={
+                "persona_id": "grantley",
+                "prompt_cache_key": "session-1",
+                "top_p": 0.8,
+            },
+        ),
+    )
+
+    assert prov.calls
+    assert prov.calls[0]["extra"] == {"top_p": 0.8}
 
 
 @pytest.mark.asyncio

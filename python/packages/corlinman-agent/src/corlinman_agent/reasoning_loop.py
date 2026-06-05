@@ -90,6 +90,12 @@ _CODEX_ONLY_CHAT_EXTRA_KEYS: frozenset[str] = frozenset({
 })
 
 
+def _provider_kind_value(provider: Any) -> str:
+    kind = getattr(provider, "kind", None)
+    value = getattr(kind, "value", kind)
+    return str(value or "").lower()
+
+
 def _provider_chat_extra(
     provider: Any, extra: dict[str, Any] | None
 ) -> dict[str, Any] | None:
@@ -102,9 +108,8 @@ def _provider_chat_extra(
     if not extra:
         return None
 
-    provider_name = str(getattr(provider, "name", "") or "").lower()
     blocked = set(_INTERNAL_CHAT_EXTRA_KEYS)
-    if provider_name != "codex":
+    if _provider_kind_value(provider) != "codex":
         blocked.update(_CODEX_ONLY_CHAT_EXTRA_KEYS)
 
     filtered = {key: value for key, value in extra.items() if key not in blocked}
