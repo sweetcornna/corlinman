@@ -557,7 +557,9 @@ def _segment_to_wire(seg: MessageSegment) -> dict[str, Any]:
     if isinstance(seg, AtSegment):
         return {"type": "at", "data": {"qq": seg.qq}}
     if isinstance(seg, ImageSegment):
-        data: dict[str, Any] = {"url": seg.url}
+        data: dict[str, Any] = {}
+        if seg.url:
+            data["url"] = seg.url
         if seg.file is not None:
             data["file"] = seg.file
         return {"type": "image", "data": data}
