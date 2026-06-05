@@ -4,6 +4,45 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.0] — 2026-06-05 — Persona liveness, provider discovery, and deployment hardening
+
+> Feature + hardening release. This ships the Grantley persona liveness wave,
+> default-off evolution scheduler jobs, draft provider model discovery, and the
+> deployment fixes needed for reliable local/full Docker image builds. It also
+> closes the QQ/NapCat follow-ons found during the audit pass. Existing config
+> remains compatible; the new scheduler/evolution jobs are opt-in/default-off.
+
+### Added
+- **Persona liveness is now wired end-to-end.** Personas are surfaced across the
+  conversation paths, gain life-state admin API/UI support, can upload and serve
+  per-persona visual assets, and can be exported/imported from the CLI. The
+  scheduler now includes builtins for persona decay, life advance, and QZone
+  daily work, with regression coverage for the chat, admin, asset, and CLI
+  flows.
+- **Default-off R8 passive evolution jobs.** The evolution engine `run_once`
+  and shadow-test scheduler builtins are available without changing existing
+  operator behavior, backed by a new `corlinman-shadow-tester` package and
+  scheduler tests.
+- **Draft provider model discovery.** The admin provider test flow can fetch
+  model lists from draft provider configs while reusing saved keys safely and
+  avoiding stale discovery results.
+
+### Fixed
+- **Local/full Docker image builds are stable again.** The Docker build path now
+  builds from source, carries the selective-install runtime dependencies the
+  gateway actually imports, avoids proto workspace resync drift, and handles
+  empty `uv` arg expansion on bash 3.
+- **Provider calls no longer receive Codex-only extras unless the target
+  provider is Codex.** Internal chat metadata is filtered before normal
+  provider dispatch so non-Codex providers don't see unsupported fields.
+- **QQ/NapCat reliability fixes.** NapCat OneBot auth tokens survive config
+  edits, the OneBot WebSocket server is ensured after login, and QQ local image
+  attachments are sent as OneBot `base64://` image payloads instead of Docker-
+  local `file://` paths.
+- **Persona/admin polish.** Persona editor scrolling is stable after the large
+  liveness UI expansion, and the PR-status label workflow has the write
+  permission it needs.
+
 ## [1.17.0] — 2026-06-04 — Codebase modularization for multi-developer collaboration
 
 > **Internal refactor release — no behavior changes, no config/wire-protocol

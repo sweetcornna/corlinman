@@ -6,7 +6,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/sweetcornna/corlinman/ci.yml?branch=main&label=CI)](https://github.com/sweetcornna/corlinman/actions)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.17.0-brightgreen)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.18.0-brightgreen)](CHANGELOG.md)
 [![Docs](https://img.shields.io/badge/docs-architecture-informational)](docs/architecture.md)
 
 **A self-hosted intelligent-agent platform.** Give a language model durable
@@ -19,14 +19,13 @@ govern with human-in-the-loop approvals.
 > _Live deployment reference: <https://corlinman.cornna.xyz>._
 > _中文介绍章节见文末 ["中文速览"](#中文速览)。_
 >
-> **What's new in 1.17.0** — a codebase-modularization release: the boot
-> orchestrator `entrypoint.py` is decomposed 3680 → 1769 LOC, the `auth.py`
-> security core is slimmed (all security logic kept in place), and 26 "god
-> files" across the gateway are split into per-concern sibling modules so
-> contributors can iterate in parallel. **Internal refactor only — no behavior
-> changes, no config/wire-protocol changes, no data migration; a safe upgrade.**
-> See [`CHANGELOG.md`](CHANGELOG.md). _1.17.0 为纯内部模块化重构，行为不变、可安全升级；
-> 详见 [更新日志](CHANGELOG.md)。_
+> **What's new in 1.18.0** — persona liveness, provider discovery, and
+> deployment hardening: Grantley personas now have life-state UI/API, visual
+> asset upload/serving, export/import, and default-off scheduler jobs; draft
+> provider configs can fetch model lists safely; local/full Docker builds are
+> stable; and QQ/NapCat attachment/auth follow-ons are fixed. Existing config
+> remains compatible. See [`CHANGELOG.md`](CHANGELOG.md). _1.18.0 新增人格生命状态、
+> 模型发现与部署可靠性修复；详见 [更新日志](CHANGELOG.md)。_
 
 ---
 
@@ -679,15 +678,13 @@ ops/                Grafana dashboard + observability compose
 
 ## Roadmap + status
 
-**v1.17.0** (current) — codebase modularization for multi-developer
-collaboration: the boot orchestrator `entrypoint.py` decomposed 3680 → 1769
-LOC into focused `lifecycle/` siblings (`cli_helpers`, `bootstrap_constants`,
-`config_loading`, `app_factory`, `c2_wiring`, joining `config_resolve` /
-`scheduler_integration`), the `auth.py` security core slimmed (all security
-logic kept in place), and 26 god-files across the gateway split into
-per-concern sibling modules. Pure internal refactor — no behavior, config, or
-wire-protocol changes and no data migration; a safe upgrade. Tagged `v1.17.0`.
-The complete, up-to-date version history (1.1 → 1.17) lives in
+**v1.18.0** (current) — persona liveness, provider discovery, and deployment
+hardening: Grantley personas now flow through chat/admin/CLI paths with
+life-state APIs, visual asset upload/serving, export/import, and default-off
+scheduler jobs; draft provider configs can fetch model lists while reusing
+saved keys safely; local/full Docker builds are stable; and the QQ/NapCat
+attachment/auth follow-ons are fixed. Existing config remains compatible.
+Tagged `v1.18.0`. The complete, up-to-date version history (1.1 → 1.18) lives in
 [`CHANGELOG.md`](CHANGELOG.md).
 
 **v1.1.0** — channel parity (QQ official bot + WeChat 公众号
@@ -771,12 +768,11 @@ MIT. See [`LICENSE`](LICENSE).
 
 ## 中文速览
 
-> **1.17.0 新特性**：面向多人协作的代码模块化重构。启动编排文件
-> `entrypoint.py` 由 3680 行拆分至 1769 行（拆出 `cli_helpers`、
-> `bootstrap_constants`、`config_loading`、`app_factory`、`c2_wiring` 等
-> `lifecycle/` 兄弟模块）；`auth.py` 安全核心瘦身（所有安全逻辑原地保留）；
-> 网关内 26 个「上帝文件」按职责拆分为兄弟模块，使各负责人可并行开发。
-> 纯内部重构——行为、配置、线协议均无变化，无需数据迁移，可安全升级。
+> **1.18.0 新特性**：人格生命状态、provider 模型发现与部署可靠性修复。
+> Grantley persona 现在贯通聊天、管理界面与 CLI，支持生命状态 API/UI、
+> 立绘/视觉资产上传与公开访问、导入导出，以及默认关闭的调度任务；
+> 草稿 provider 配置可安全拉取模型列表；本地/full Docker 构建恢复稳定；
+> QQ/NapCat 的鉴权与本地图片发送问题也已修复。现有配置保持兼容。
 > 完整说明见 [更新日志](CHANGELOG.md)。
 
 **corlinman 是一个可自托管的智能体平台。** 不只是 LLM 的 API 代理，也不是拖拽工作流的工具箱——它是一套有主张的运行时：让语言模型拥有**持久记忆**、**真实工具**、**多通道接入**、**可审计的运维面板**，全部跑在你自己的机器上。
