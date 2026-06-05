@@ -4,7 +4,7 @@
 - **Mode**: native systemd gateway + separate Python agent service
 - **Install prefix**: `/opt/corlinman`
 - **Data dir**: `/opt/corlinman/data`
-- **Last verified**: 2026-06-05 20:37 CST, `v1.18.0`
+- **Last verified**: 2026-06-05 22:22 CST, `v1.18.1`
 
 This runbook is for the hosted demo VPS. It is intentionally more specific than
 the generic installer docs because this box has a legacy root-owned native
@@ -170,7 +170,36 @@ curl -fsS http://127.0.0.1:6005/health
 
 Keep the UI backup for at least one release cycle.
 
-## 2026-06-05 deployment record
+## 2026-06-05 22:22 CST deployment record
+
+Release deployed:
+
+- tag: `v1.18.1`
+- commit: `8558071808a47a6080d7c97bcea27472597bc7fc`
+- package: `corlinman-server==1.18.1`
+- UI backup: not changed; this release did not rebuild `ui/out/`
+
+Verification results:
+
+- remote repo reset to `HEAD=8558071808a47a6080d7c97bcea27472597bc7fc`
+- `systemctl is-active corlinman` -> `active`
+- `systemctl is-active corlinman-agent` -> `active`
+- local `/health` -> `{"status":"ok","mode":"ok"}`
+- local `POST /api/QQLogin/RefreshQRcode` without credentials -> `401`
+  JSON `missing_authorization`
+- public `POST /api/QQLogin/RefreshQRcode` without credentials -> `401`
+  JSON `missing_authorization`
+- public `/health`, `/login`, `/marketplace` -> `200`
+- public `/admin/system/info` -> `401`
+- nginx active site contains two exact
+  `location = /api/QQLogin/RefreshQRcode` blocks before the generic NapCat
+  `/api` proxy blocks.
+
+Operational note: the gateway restart took longer than the interactive shell
+timeout, but the new main process came up cleanly; no `systemctl kill` was
+needed for this deployment.
+
+## 2026-06-05 20:37 CST deployment record
 
 Release deployed:
 
