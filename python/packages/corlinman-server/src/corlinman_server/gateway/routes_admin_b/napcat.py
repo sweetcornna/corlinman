@@ -119,6 +119,34 @@ def router() -> APIRouter:
         except NapcatError as exc:
             return exc.response()
 
+    @r.post("/api/QQLogin/RefreshQRcode", include_in_schema=False)
+    async def napcat_webui_refresh_qrcode():
+        """NapCat WebUI-compatible refresh endpoint.
+
+        The embedded first-party WebUI posts to same-origin
+        ``/api/QQLogin/RefreshQRcode``. Production nginx can exact-match that
+        path to the gateway so corlinman validates that the QR actually rotated
+        and can invoke NapCat's restart fallback when the upstream refresh is a
+        no-op. Other NapCat ``/api/*`` paths still proxy straight to NapCat.
+        """
+        state = get_admin_state()
+        client, err, _path = _build_client(state)
+        if err is not None or client is None:
+            return err
+        try:
+            async with client:
+                await client.request_qrcode()
+        except NapcatError as exc:
+            return JSONResponse(
+                status_code=exc.upstream_status or 502,
+                content={
+                    "code": -1,
+                    "message": str(exc),
+                    "data": None,
+                },
+            )
+        return {"code": 0, "message": "success", "data": None}
+
     @r.get("/admin/channels/qq/qrcode/status", response_model=StatusOut)
     async def qrcode_status(token: str = Query("")):
         state = get_admin_state()

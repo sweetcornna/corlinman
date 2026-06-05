@@ -6,7 +6,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/sweetcornna/corlinman/ci.yml?branch=main&label=CI)](https://github.com/sweetcornna/corlinman/actions)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.18.0-brightgreen)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.18.1-brightgreen)](CHANGELOG.md)
 [![Docs](https://img.shields.io/badge/docs-architecture-informational)](docs/architecture.md)
 
 **A self-hosted intelligent-agent platform.** Give a language model durable
@@ -19,13 +19,11 @@ govern with human-in-the-loop approvals.
 > _Live deployment reference: <https://corlinman.cornna.xyz>._
 > _中文介绍章节见文末 ["中文速览"](#中文速览)。_
 >
-> **What's new in 1.18.0** — persona liveness, provider discovery, and
-> deployment hardening: Grantley personas now have life-state UI/API, visual
-> asset upload/serving, export/import, and default-off scheduler jobs; draft
-> provider configs can fetch model lists safely; local/full Docker builds are
-> stable; and QQ/NapCat attachment/auth follow-ons are fixed. Existing config
-> remains compatible. See [`CHANGELOG.md`](CHANGELOG.md). _1.18.0 新增人格生命状态、
-> 模型发现与部署可靠性修复；详见 [更新日志](CHANGELOG.md)。_
+> **What's new in 1.18.1** — NapCat QR refresh hardening: QQ scan-login refresh
+> now verifies that the QR actually changed and can ask NapCat to restart when
+> its refresh API is a no-op. Existing config remains compatible. See
+> [`CHANGELOG.md`](CHANGELOG.md). _1.18.1 修复 NapCat 刷新请求成功但二维码不变的问题；
+> 详见 [更新日志](CHANGELOG.md)。_
 
 ---
 
@@ -684,13 +682,11 @@ ops/                Grafana dashboard + observability compose
 
 ## Roadmap + status
 
-**v1.18.0** (current) — persona liveness, provider discovery, and deployment
-hardening: Grantley personas now flow through chat/admin/CLI paths with
-life-state APIs, visual asset upload/serving, export/import, and default-off
-scheduler jobs; draft provider configs can fetch model lists while reusing
-saved keys safely; local/full Docker builds are stable; and the QQ/NapCat
-attachment/auth follow-ons are fixed. Existing config remains compatible.
-Tagged `v1.18.0`. The complete, up-to-date version history (1.1 → 1.18) lives in
+**v1.18.1** (current) — NapCat QR refresh hardening: QQ scan-login refresh now
+verifies that the QR actually changed, can route the embedded NapCat WebUI
+refresh button through the gateway, and restarts NapCat when its refresh API is
+a no-op. Existing config remains compatible. Tagged `v1.18.1`. The complete,
+up-to-date version history (1.1 → 1.18) lives in
 [`CHANGELOG.md`](CHANGELOG.md).
 
 **v1.1.0** — channel parity (QQ official bot + WeChat 公众号
@@ -774,11 +770,9 @@ MIT. See [`LICENSE`](LICENSE).
 
 ## 中文速览
 
-> **1.18.0 新特性**：人格生命状态、provider 模型发现与部署可靠性修复。
-> Grantley persona 现在贯通聊天、管理界面与 CLI，支持生命状态 API/UI、
-> 立绘/视觉资产上传与公开访问、导入导出，以及默认关闭的调度任务；
-> 草稿 provider 配置可安全拉取模型列表；本地/full Docker 构建恢复稳定；
-> QQ/NapCat 的鉴权与本地图片发送问题也已修复。现有配置保持兼容。
+> **1.18.1 新特性**：NapCat 二维码刷新加固。QQ 扫码登录现在会确认刷新后
+> 的二维码确实变化；如果 NapCat 的刷新 API 返回成功但仍给旧码，gateway 会请求
+> NapCat 重启并等待新码。现有配置保持兼容。
 > 完整说明见 [更新日志](CHANGELOG.md)。
 
 **corlinman 是一个可自托管的智能体平台。** 不只是 LLM 的 API 代理，也不是拖拽工作流的工具箱——它是一套有主张的运行时：让语言模型拥有**持久记忆**、**真实工具**、**多通道接入**、**可审计的运维面板**，全部跑在你自己的机器上。

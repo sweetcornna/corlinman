@@ -42,8 +42,15 @@ DEFAULT_NAPCAT_URL = "http://127.0.0.1:6099"
 DEFAULT_ONEBOT_WS_PORT = 3001
 OB11_CONFIG_GET_PATH = "/api/OB11Config/GetConfig"
 OB11_CONFIG_SET_PATH = "/api/OB11Config/SetConfig"
+QQ_QRCODE_GET_PATH = "/api/QQLogin/GetQQLoginQrcode"
+QQ_QRCODE_REFRESH_PATH = "/api/QQLogin/RefreshQRcode"
+QQ_NAPCAT_RESTART_PATH = "/api/QQLogin/RestartNapCat"
 ONEBOT_WS_SERVER_NAME = "corlinman"
 ONEBOT_ENSURE_MIN_INTERVAL_S = 10.0
+NAPCAT_QRCODE_RETRY_COUNT = 4
+NAPCAT_QRCODE_RETRY_INTERVAL_S = 0.4
+NAPCAT_QRCODE_RESTART_RETRY_COUNT = 18
+NAPCAT_QRCODE_RESTART_WAIT_S = 1.0
 _ONEBOT_ENSURE_LAST_ATTEMPT: dict[str, float] = {}
 _ONEBOT_ENSURE_TASKS: set[asyncio.Task[None]] = set()
 
@@ -148,8 +155,10 @@ def _resolve_napcat_url(cfg: dict[str, Any]) -> tuple[str | None, str | None]:
     url = str(url).rstrip("/")
     access_token = _resolve_secret(qq.get("napcat_access_token"))
     if not access_token:
-        access_token = os.environ.get("NAPCAT_WEBUI_TOKEN") or os.environ.get(
-            "NAPCAT_WEBUI_SECRET_KEY"
+        access_token = (
+            os.environ.get("NAPCAT_WEBUI_TOKEN")
+            or os.environ.get("NAPCAT_WEBUI_SECRET_KEY")
+            or os.environ.get("WEBUI_TOKEN")
         )
     return url, access_token
 
@@ -318,16 +327,87 @@ class _NapcatClient:
             raise NapcatError("napcat_bad_response", str(exc)) from exc
         return _extract_ok_data(payload)
 
-    async def request_qrcode(self) -> QrcodeOut:
-        # Force a refresh — older builds will 404; we swallow that.
-        try:
-            await self.post("/api/QQLogin/RefreshQRcode", {})
-        except NapcatError:
-            pass
-        data = await self.post("/api/QQLogin/GetQQLoginQrcode", {})
+    async def _fetch_qrcode(self) -> str:
+        data = await self.post(QQ_QRCODE_GET_PATH, {})
         qr = data.get("qrcode")
         if not isinstance(qr, str):
             raise NapcatError("napcat_bad_response", "missing data.qrcode")
+        return qr
+
+    async def _wait_for_qrcode_change(
+        self,
+        previous_qr: str | None,
+        *,
+        attempts: int,
+        interval_s: float,
+    ) -> str | None:
+        last_error: NapcatError | None = None
+        for attempt in range(max(attempts, 1)):
+            try:
+                qr = await self._fetch_qrcode()
+            except NapcatError as exc:
+                last_error = exc
+            else:
+                if previous_qr is None or qr != previous_qr:
+                    return qr
+            if attempt < attempts - 1 and interval_s > 0:
+                await asyncio.sleep(interval_s)
+        if previous_qr is None and last_error is not None:
+            raise last_error
+        return None
+
+    async def _restart_napcat_for_qrcode_refresh(self) -> None:
+        try:
+            await self.post(QQ_NAPCAT_RESTART_PATH, {})
+        except NapcatError as exc:
+            if exc.code not in {"napcat_unreachable", "napcat_upstream_error"}:
+                raise NapcatError(
+                    "napcat_qrcode_refresh_noop",
+                    (
+                        "NapCat accepted QR refresh but kept returning the "
+                        f"same login QR code; restart fallback failed: {exc}"
+                    ),
+                    status=exc.upstream_status,
+                ) from exc
+        finally:
+            self._credential = None
+
+    async def request_qrcode(self) -> QrcodeOut:
+        previous_qr: str | None = None
+        try:
+            previous_qr = await self._fetch_qrcode()
+        except NapcatError:
+            # NapCat can briefly have no QR during boot/login recovery. The
+            # refresh call below is the path that asks it to mint one.
+            previous_qr = None
+
+        try:
+            await self.post(QQ_QRCODE_REFRESH_PATH, {})
+        except NapcatError as exc:
+            if previous_qr is None:
+                raise exc
+
+        qr = await self._wait_for_qrcode_change(
+            previous_qr,
+            attempts=NAPCAT_QRCODE_RETRY_COUNT,
+            interval_s=NAPCAT_QRCODE_RETRY_INTERVAL_S,
+        )
+        if qr is None and previous_qr is not None:
+            await self._restart_napcat_for_qrcode_refresh()
+            qr = await self._wait_for_qrcode_change(
+                previous_qr,
+                attempts=NAPCAT_QRCODE_RESTART_RETRY_COUNT,
+                interval_s=NAPCAT_QRCODE_RESTART_WAIT_S,
+            )
+        if qr is None:
+            raise NapcatError(
+                "napcat_qrcode_refresh_noop",
+                (
+                    "NapCat accepted QR refresh but kept returning the same "
+                    "login QR code after restart fallback"
+                ),
+            )
+
         image, url = _classify_qr(qr)
         return QrcodeOut(
             token=str(uuid.uuid4()),

@@ -795,7 +795,7 @@ write_gateway_unit() {
     # still wins over these defaults.
     local qq_env=""
     if [[ -n "$WITH_QQ" ]]; then
-        qq_env=$'Environment=CORLINMAN_NAPCAT_URL=http://127.0.0.1:6099\nEnvironment=QQ_WS_URL=ws://127.0.0.1:3001'
+        qq_env=$'Environment=CORLINMAN_NAPCAT_URL=http://127.0.0.1:6099\nEnvironment=QQ_WS_URL=ws://127.0.0.1:3001\nEnvironment=NAPCAT_WEBUI_TOKEN=corlinman-local-napcat\nEnvironment=WEBUI_TOKEN=corlinman-local-napcat'
     fi
     sudo tee /etc/systemd/system/corlinman.service >/dev/null <<EOF
 [Unit]
@@ -997,10 +997,11 @@ User=${SERVICE_USER}
 Group=${SERVICE_USER}
 WorkingDirectory=${DATA_DIR}
 ExecStart=${appimage}
-EnvironmentFile=-${PREFIX}/.env
 Environment=HOME=${DATA_DIR}
 Environment=NAPCAT_UID=
 Environment=NAPCAT_GID=
+Environment=WEBUI_TOKEN=corlinman-local-napcat
+EnvironmentFile=-${PREFIX}/.env
 Restart=on-failure
 RestartSec=5
 

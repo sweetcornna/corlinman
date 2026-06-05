@@ -4,6 +4,31 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.1] — 2026-06-05 — NapCat QR refresh hardening
+
+> Patch release for QQ scan-login reliability. No config migration is required.
+> Existing NapCat sessions and channel settings remain compatible.
+
+### Fixed
+- **NapCat QR refresh no longer reports success while serving the same stale
+  QR.** The gateway now compares the QR before and after `RefreshQRcode`; if
+  NapCat's best-effort refresh is a no-op, it asks NapCat to restart, clears
+  the stale WebUI credential, and waits for a different QR before returning.
+- **Embedded NapCat WebUI refresh can be routed through corlinman's robust
+  refresh path.** A hidden compatibility route at
+  `POST /api/QQLogin/RefreshQRcode` returns NapCat's normal response envelope
+  while using the gateway no-op detection/restart fallback.
+- **NapCat WebUI token resolution is more tolerant across deployment modes.**
+  The gateway now accepts `WEBUI_TOKEN` in addition to `NAPCAT_WEBUI_TOKEN` and
+  `NAPCAT_WEBUI_SECRET_KEY`, matching NapCat's native environment variable.
+
+### Documentation
+- Added nginx and VPS runbook notes showing that `/api/QQLogin/RefreshQRcode`
+  must exact-match to the gateway before the generic NapCat `/api/` proxy.
+- Added shared `NAPCAT_WEBUI_TOKEN` / `WEBUI_TOKEN` defaults to the env template
+  and native installer so fresh QQ installs keep gateway and NapCat credentials
+  aligned.
+
 ## [1.18.0] — 2026-06-05 — Persona liveness, provider discovery, and deployment hardening
 
 > Feature + hardening release. This ships the Grantley persona liveness wave,

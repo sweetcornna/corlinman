@@ -143,6 +143,35 @@ curl http://localhost:6005/metrics | grep corlinman_backoff_retries_total
 4. 登录态：扫码过期会失败，重扫。
 5. 确认没有两个 corlinman 实例在抢同一个 WS 连接。
 
+### QQ 扫码页点“刷新二维码”但二维码不变
+
+NapCat 的 `RefreshQRcode` API 只表示“刷新请求已发给 QQ 登录内核”，不保证返回时
+`GetQQLoginQrcode` 已经换成新 URL。corlinman 的 gateway 会检测刷新前后 QR 是否相同；
+如果 NapCat 继续返回旧码，会请求 `/api/QQLogin/RestartNapCat`，等待 NapCat 被
+systemd/docker 拉起后再确认新码。
+
+如果你把 NapCat WebUI 通过 nginx 嵌入到同源 `/webui`，必须把 WebUI 自己发出的刷新请求
+先 exact-match 到 gateway，其他 NapCat API 仍然反代到 NapCat。该 exact location 要放在
+通用 `/api/` 反代之前：
+
+```nginx
+location = /api/QQLogin/RefreshQRcode {
+    proxy_pass http://localhost:6005/api/QQLogin/RefreshQRcode;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+同时确认 gateway 和 NapCat 使用同一个 WebUI token：
+
+- docker/compose：设置 `NAPCAT_WEBUI_TOKEN`；compose 会传给 NapCat 的 `WEBUI_TOKEN`。
+- native/systemd：`WEBUI_TOKEN` 由 NapCat 读取；gateway 同时兼容
+  `NAPCAT_WEBUI_TOKEN`、`NAPCAT_WEBUI_SECRET_KEY`、`WEBUI_TOKEN`。
+- 如果 `/internal/napcat-credential` 没有返回 `X-Napcat-Credential`，说明 gateway
+  仍然不知道 NapCat 的 WebUI token。
+
 ## 8. 定时任务没触发
 
 `corlinman-scheduler` 启动时把 `config.toml` 的 `[[scheduler.jobs]]` 里配的 cron job 注册到 `tokio-cron-scheduler`。排查：

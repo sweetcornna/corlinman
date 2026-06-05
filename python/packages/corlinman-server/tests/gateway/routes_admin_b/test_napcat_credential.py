@@ -41,6 +41,7 @@ async def test_empty_when_no_access_token(monkeypatch) -> None:
     monkeypatch.setattr(nc, "config_snapshot", lambda: {})
     monkeypatch.delenv("NAPCAT_WEBUI_TOKEN", raising=False)
     monkeypatch.delenv("NAPCAT_WEBUI_SECRET_KEY", raising=False)
+    monkeypatch.delenv("WEBUI_TOKEN", raising=False)
     assert await nc._cached_napcat_credential() == ""
 
 
@@ -49,6 +50,17 @@ def test_resolve_napcat_url_uses_webui_token_env(monkeypatch) -> None:
     url, token = nc._resolve_napcat_url({"channels": {"qq": {}}})
     assert url == nc.DEFAULT_NAPCAT_URL
     assert token == "webui-token"
+
+
+def test_resolve_napcat_url_accepts_napcat_native_webui_token_env(monkeypatch) -> None:
+    monkeypatch.delenv("NAPCAT_WEBUI_TOKEN", raising=False)
+    monkeypatch.delenv("NAPCAT_WEBUI_SECRET_KEY", raising=False)
+    monkeypatch.setenv("WEBUI_TOKEN", "native-webui-token")
+
+    url, token = nc._resolve_napcat_url({"channels": {"qq": {}}})
+
+    assert url == nc.DEFAULT_NAPCAT_URL
+    assert token == "native-webui-token"
 
 
 @pytest.mark.asyncio

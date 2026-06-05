@@ -19,6 +19,10 @@ layout.
 - Static UI: nginx serves `/opt/corlinman/ui-static/`, populated from
   `ui/out/`.
 - QQ/NapCat: Docker container `corlinman-napcat` on the same host.
+- NapCat QR refresh: nginx must exact-match
+  `/api/QQLogin/RefreshQRcode` to the gateway before the generic NapCat
+  `/api/` proxy, so the embedded WebUI uses corlinman's no-op detection and
+  restart fallback instead of trusting NapCat's best-effort refresh response.
 
 Do **not** run the generic `install.sh --upgrade` path on this host until the
 root-owned systemd layout has been deliberately migrated. The generic native
@@ -114,6 +118,8 @@ curl -fsS -o /tmp/corlinman-openapi.json -w '%{http_code}\n' \
   http://127.0.0.1:6005/openapi.json
 curl -sS -o /dev/null -w '%{http_code}\n' \
   http://127.0.0.1:6005/admin/system/info
+curl -sS -X POST -o /dev/null -w '%{http_code}\n' \
+  http://127.0.0.1:6005/api/QQLogin/RefreshQRcode
 ```
 
 Expected:
@@ -124,6 +130,8 @@ Expected:
 - `/openapi.json` returns `200`.
 - `/admin/system/info` returns `401` without credentials; that means the route
   is registered and auth-gated.
+- `/api/QQLogin/RefreshQRcode` returns `401` without credentials; that means
+  the gateway compatibility route is present and auth-gated.
 
 Public checks:
 
