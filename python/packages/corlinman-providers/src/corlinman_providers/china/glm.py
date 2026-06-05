@@ -24,11 +24,12 @@ class GLMProvider(OpenAIProvider):
 
     name: ClassVar[str] = "glm"
     kind: ClassVar[ProviderKind] = ProviderKind.GLM
+    DEFAULT_BASE_URL: ClassVar[str] = "https://open.bigmodel.cn/api/paas/v4"
 
     def __init__(self, api_key: str | None = None, base_url: str | None = None) -> None:
         super().__init__(
             api_key=api_key,
-            base_url=base_url or "https://open.bigmodel.cn/api/paas/v4",
+            base_url=base_url or self.DEFAULT_BASE_URL,
             env_key="ZHIPU_API_KEY",
         )
 

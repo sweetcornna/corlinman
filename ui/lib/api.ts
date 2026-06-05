@@ -2313,6 +2313,14 @@ export interface ProviderModel {
   created_at?: string;
 }
 
+export interface ProviderModelProbeRequest {
+  kind: ProviderKind;
+  base_url?: string;
+  api_key?: { env: string } | { value: string } | null;
+  existing_name?: string;
+  params?: Record<string, unknown>;
+}
+
 /** GET /admin/providers/{name}/models — proxy/canned model catalog. */
 export async function getProviderModels(
   name: string,
@@ -2321,6 +2329,17 @@ export async function getProviderModels(
   return apiFetch<{ models: ProviderModel[]; error?: string }>(
     `/admin/providers/${encodeURIComponent(name)}/models`,
     { signal: opts.signal },
+  );
+}
+
+/** POST /admin/providers/probe-models — model catalog for an unsaved draft. */
+export async function probeProviderModels(
+  body: ProviderModelProbeRequest,
+  opts: { signal?: AbortSignal } = {},
+): Promise<{ models: ProviderModel[]; error?: string }> {
+  return apiFetch<{ models: ProviderModel[]; error?: string }>(
+    "/admin/providers/probe-models",
+    { method: "POST", body, signal: opts.signal },
   );
 }
 

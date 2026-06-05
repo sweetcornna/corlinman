@@ -52,6 +52,7 @@ from corlinman_server.gateway.routes_admin_b.config_admin._providers_lib import 
     CustomProviderView,
     KindDescriptor,
     ListOut,
+    ProviderModelProbe,
     ProviderPatch,
     ProviderUpsert,
     ProviderView,
@@ -97,6 +98,7 @@ __all__ = [
     "CustomProviderView",
     "KindDescriptor",
     "ListOut",
+    "ProviderModelProbe",
     "ProviderPatch",
     "ProviderUpsert",
     "ProviderView",
@@ -178,6 +180,72 @@ def router() -> APIRouter:
             if err is not None:
                 return err
         return {"status": "ok", "provider": _view_from_entry(body.name, existing).model_dump()}
+
+    @r.post("/admin/providers/probe-models")
+    async def probe_provider_models(body: ProviderModelProbe) -> Any:
+        """List models for a draft provider config without persisting it.
+
+        Used by the Add/Edit provider dialog. This intentionally avoids
+        touching the TOML-backed ``providers`` map; it builds a transient
+        in-memory config and reuses the same safe model-discovery path as
+        ``GET /admin/providers/{name}/models``.
+        """
+        normalized_kind = _normalize_kind(body.kind)
+        if not _is_known_kind(normalized_kind):
+            return _bad("invalid_kind", f"unknown provider kind: {body.kind}")
+
+        entry: dict[str, Any] = {
+            "kind": normalized_kind,
+            "enabled": True,
+            "params": dict(body.params or {}),
+        }
+        if body.base_url is not None:
+            entry["base_url"] = body.base_url
+        if body.api_key is not None:
+            entry["api_key"] = dict(body.api_key)
+        elif body.existing_name:
+            providers_cfg = config_snapshot().get("providers") or {}
+            existing = (
+                providers_cfg.get(body.existing_name)
+                if isinstance(providers_cfg, dict)
+                else None
+            )
+            existing_api_key = (
+                existing.get("api_key") if isinstance(existing, dict) else None
+            )
+            if (
+                isinstance(existing_api_key, dict)
+                and isinstance(existing_api_key.get("value"), str)
+                and existing_api_key.get("value")
+            ):
+                entry["api_key"] = {"value": existing_api_key["value"]}
+            elif isinstance(existing_api_key, str) and existing_api_key:
+                entry["api_key"] = {"value": existing_api_key}
+
+        probe_strategy = _zero_cost_probe_kind(normalized_kind)
+        if probe_strategy in ("mock", "hardcoded"):
+            return {"models": list(_HARDCODED_MODELS.get(normalized_kind, []))}
+        if probe_strategy != "openai_models":
+            return {
+                "models": [],
+                "error": f"kind {normalized_kind!r} has no model-discovery endpoint",
+            }
+
+        draft_name = "__draft__"
+        result = await _query_provider_models_with_retry(
+            draft_name,
+            {"providers": {draft_name: entry}},
+        )
+        api_key = _resolve_api_key(entry)
+        if not result.get("ok"):
+            err = _redact(str(result.get("error") or "upstream_error"), api_key)
+            return {"models": [], "error": err}
+        models = [
+            {"id": mid, "display_name": mid}
+            for mid in (result.get("models") or [])
+            if isinstance(mid, str)
+        ]
+        return {"models": models}
 
     @r.patch("/admin/providers/{name}")
     async def patch_provider(name: str, body: ProviderPatch):

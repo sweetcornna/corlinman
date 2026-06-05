@@ -1431,6 +1431,16 @@ export const en = {
     fieldApiKeyEnvPlaceholder: "ANTHROPIC_API_KEY",
     fieldApiKeyValuePlaceholder: "sk-...",
     fieldEnabled: "Enabled",
+    modelsTitle: "Available models",
+    modelsHint:
+      "Fetches the provider catalog from the current form values without saving.",
+    modelsFetch: "Fetch models",
+    modelsFetching: "Fetching…",
+    modelsEmpty: "No models fetched yet.",
+    modelsFetchFailed: "Fetch models failed: {{msg}}",
+    modelsCopied: "Model id copied",
+    modelsCopyFailed: "Copy failed: {{msg}}",
+    modelsCopyAria: "Copy model {{id}}",
     fieldParams: "Default params",
     fieldParamsHint:
       "Provider-level defaults, overridden by alias.params at call time.",

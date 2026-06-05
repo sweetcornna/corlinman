@@ -18,7 +18,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { motion } from "framer-motion";
-import { Pencil, Plug, Plus, Trash2 } from "lucide-react";
+import { Copy, Loader2, Pencil, Plug, Plus, RefreshCw, Trash2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -46,10 +46,14 @@ import {
   deleteCustomProvider,
   deleteProvider,
   fetchProviders,
+  getProviderModels,
   listCustomProviders,
+  probeProviderModels,
   upsertProvider,
   type CustomProviderRow,
   type ProviderKind,
+  type ProviderModel,
+  type ProviderModelProbeRequest,
   type ProviderUpsert,
   type ProviderView,
 } from "@/lib/api";
@@ -132,6 +136,66 @@ function toUpsert(d: DraftProvider): ProviderUpsert {
     params: d.params,
   };
 }
+
+function canReuseSavedLiteralKey(
+  editing: ProviderView | null,
+  draft: DraftProvider,
+): editing is ProviderView {
+  return (
+    !!editing &&
+    draft.name.trim() === editing.name &&
+    editing.api_key_source === "value" &&
+    draft.api_key_source === "value" &&
+    !draft.api_key_value.trim()
+  );
+}
+
+function toModelProbe(
+  d: DraftProvider,
+  editing: ProviderView | null,
+): ProviderModelProbeRequest {
+  const body: ProviderModelProbeRequest = {
+    kind: d.kind,
+    params: d.params,
+  };
+  const baseUrl = d.base_url.trim();
+  if (baseUrl) {
+    body.base_url = baseUrl;
+  }
+  if (d.api_key_source === "env" && d.api_key_env_name.trim()) {
+    body.api_key = { env: d.api_key_env_name.trim() };
+  } else if (d.api_key_source === "value" && d.api_key_value.trim()) {
+    body.api_key = { value: d.api_key_value.trim() };
+  } else if (canReuseSavedLiteralKey(editing, d)) {
+    body.existing_name = editing.name;
+  }
+  return body;
+}
+
+function sameDiscoveryParams(
+  left: Record<string, unknown>,
+  right: Record<string, unknown>,
+) {
+  return JSON.stringify(left ?? {}) === JSON.stringify(right ?? {});
+}
+
+function shouldUseSavedModelDiscovery(
+  editing: ProviderView | null,
+  draft: DraftProvider,
+) {
+  return (
+    canReuseSavedLiteralKey(editing, draft) &&
+    draft.kind === editing.kind &&
+    draft.base_url.trim() === (editing.base_url ?? "").trim() &&
+    sameDiscoveryParams(draft.params, editing.params ?? {})
+  );
+}
+
+type ModelDiscoveryRequest = {
+  generation: number;
+  draft: DraftProvider;
+  editing: ProviderView | null;
+};
 
 /**
  * Exported as a named function so `/admin/credentials` can mount the
@@ -404,16 +468,29 @@ function ProviderEditorDialog({ open, onOpenChange, editing }: EditorProps) {
   const { t } = useTranslation();
   const qc = useQueryClient();
   const [draft, setDraft] = React.useState<DraftProvider>(BLANK_DRAFT);
+  const [modelDiscovery, setModelDiscovery] = React.useState<{
+    models: ProviderModel[];
+    error?: string;
+  }>({ models: [] });
+  const modelDiscoveryGeneration = React.useRef(0);
   const [paramErrors, setParamErrors] = React.useState<
     Record<string, string>
   >({});
 
   React.useEffect(() => {
+    modelDiscoveryGeneration.current += 1;
     if (open) {
       setDraft(editing ? toDraft(editing) : { ...BLANK_DRAFT });
+      setModelDiscovery({ models: [] });
       setParamErrors({});
     }
   }, [open, editing]);
+
+  const updateDraft = React.useCallback((patch: Partial<DraftProvider>) => {
+    modelDiscoveryGeneration.current += 1;
+    setDraft((prev) => ({ ...prev, ...patch }));
+    setModelDiscovery({ models: [] });
+  }, []);
 
   const schema = editing?.params_schema ?? { type: "object", properties: {} };
   const hasErrors = Object.keys(paramErrors).length > 0;
@@ -435,6 +512,52 @@ function ProviderEditorDialog({ open, onOpenChange, editing }: EditorProps) {
         }),
       ),
   });
+
+  const modelDiscoveryMutation = useMutation({
+    mutationFn: async (request: ModelDiscoveryRequest) => {
+      const res = shouldUseSavedModelDiscovery(
+        request.editing,
+        request.draft,
+      )
+        ? await getProviderModels(request.editing!.name)
+        : await probeProviderModels(toModelProbe(request.draft, request.editing));
+      return { generation: request.generation, res };
+    },
+    onSuccess: ({ generation, res }) => {
+      if (generation !== modelDiscoveryGeneration.current) {
+        return;
+      }
+      setModelDiscovery({ models: res.models ?? [], error: res.error });
+      if (res.error) {
+        toast.error(
+          t("providers.modelsFetchFailed", {
+            msg: res.error,
+          }),
+        );
+      }
+    },
+    onError: (err, request) => {
+      if (request.generation !== modelDiscoveryGeneration.current) {
+        return;
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      setModelDiscovery({ models: [], error: msg });
+      toast.error(t("providers.modelsFetchFailed", { msg }));
+    },
+  });
+
+  async function copyModelId(id: string) {
+    try {
+      await navigator.clipboard.writeText(id);
+      toast.success(t("providers.modelsCopied"));
+    } catch (err) {
+      toast.error(
+        t("providers.modelsCopyFailed", {
+          msg: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    }
+  }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -466,7 +589,7 @@ function ProviderEditorDialog({ open, onOpenChange, editing }: EditorProps) {
                   value={draft.name}
                   disabled={!!editing}
                   onChange={(e) =>
-                    setDraft({ ...draft, name: e.target.value })
+                    updateDraft({ name: e.target.value })
                   }
                   className="font-mono text-xs"
                   placeholder="my-local-llm"
@@ -483,8 +606,7 @@ function ProviderEditorDialog({ open, onOpenChange, editing }: EditorProps) {
                   id="provider-kind"
                   value={draft.kind}
                   onChange={(e) =>
-                    setDraft({
-                      ...draft,
+                    updateDraft({
                       kind: e.target.value as ProviderKind,
                     })
                   }
@@ -507,7 +629,7 @@ function ProviderEditorDialog({ open, onOpenChange, editing }: EditorProps) {
                 id="provider-base-url"
                 value={draft.base_url}
                 onChange={(e) =>
-                  setDraft({ ...draft, base_url: e.target.value })
+                  updateDraft({ base_url: e.target.value })
                 }
                 className="font-mono text-xs"
                 placeholder="https://api.openai.com/v1"
@@ -527,7 +649,7 @@ function ProviderEditorDialog({ open, onOpenChange, editing }: EditorProps) {
                     key={src}
                     type="button"
                     onClick={() =>
-                      setDraft({ ...draft, api_key_source: src })
+                      updateDraft({ api_key_source: src })
                     }
                     className={cn(
                       "flex-1 rounded-md border px-3 py-1.5 text-xs transition-colors",
@@ -548,7 +670,7 @@ function ProviderEditorDialog({ open, onOpenChange, editing }: EditorProps) {
                 <Input
                   value={draft.api_key_env_name}
                   onChange={(e) =>
-                    setDraft({ ...draft, api_key_env_name: e.target.value })
+                    updateDraft({ api_key_env_name: e.target.value })
                   }
                   placeholder={t("providers.fieldApiKeyEnvPlaceholder")}
                   className="font-mono text-xs"
@@ -559,12 +681,94 @@ function ProviderEditorDialog({ open, onOpenChange, editing }: EditorProps) {
                   type="password"
                   value={draft.api_key_value}
                   onChange={(e) =>
-                    setDraft({ ...draft, api_key_value: e.target.value })
+                    updateDraft({ api_key_value: e.target.value })
                   }
                   placeholder={t("providers.fieldApiKeyValuePlaceholder")}
                   className="font-mono text-xs"
                 />
               ) : null}
+            </div>
+
+            <div className="space-y-2 rounded-md border border-tp-glass-edge p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0 space-y-0.5">
+                  <h3 className="text-sm font-semibold">
+                    {t("providers.modelsTitle")}
+                  </h3>
+                  <p className="text-[11px] text-tp-ink-3">
+                    {t("providers.modelsHint")}
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() =>
+                    modelDiscoveryMutation.mutate({
+                      generation: modelDiscoveryGeneration.current,
+                      draft,
+                      editing,
+                    })
+                  }
+                  disabled={
+                    !baseUrlOk || hasErrors || modelDiscoveryMutation.isPending
+                  }
+                  data-testid="provider-fetch-models-btn"
+                >
+                  {modelDiscoveryMutation.isPending ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <RefreshCw className="h-3 w-3" />
+                  )}
+                  {modelDiscoveryMutation.isPending
+                    ? t("providers.modelsFetching")
+                    : t("providers.modelsFetch")}
+                </Button>
+              </div>
+              {modelDiscovery.error ? (
+                <p
+                  className="text-[11px] text-destructive"
+                  data-testid="provider-models-error"
+                >
+                  {modelDiscovery.error}
+                </p>
+              ) : null}
+              {modelDiscovery.models.length > 0 ? (
+                <div
+                  className="grid max-h-40 gap-1 overflow-y-auto pr-1"
+                  data-testid="provider-models-list"
+                >
+                  {modelDiscovery.models.map((m) => (
+                    <div
+                      key={m.id}
+                      className="flex min-h-9 items-center justify-between gap-2 rounded-md border border-tp-glass-edge bg-tp-glass-inner px-2"
+                    >
+                      <span
+                        className="min-w-0 truncate font-mono text-[11px]"
+                        title={m.id}
+                      >
+                        {m.id}
+                      </span>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 shrink-0 px-2"
+                        aria-label={t("providers.modelsCopyAria", {
+                          id: m.id,
+                        })}
+                        onClick={() => copyModelId(m.id)}
+                      >
+                        <Copy className="h-3 w-3" />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-[11px] text-tp-ink-3">
+                  {t("providers.modelsEmpty")}
+                </p>
+              )}
             </div>
 
             <div className="flex items-center gap-3">
@@ -577,7 +781,7 @@ function ProviderEditorDialog({ open, onOpenChange, editing }: EditorProps) {
                 role="switch"
                 aria-checked={draft.enabled}
                 onClick={() =>
-                  setDraft({ ...draft, enabled: !draft.enabled })
+                  updateDraft({ enabled: !draft.enabled })
                 }
                 className={cn(
                   "inline-flex h-6 w-11 items-center rounded-full border border-input backdrop-blur-glass backdrop-saturate-glass transition-colors",
@@ -609,7 +813,7 @@ function ProviderEditorDialog({ open, onOpenChange, editing }: EditorProps) {
               <DynamicParamsForm
                 schema={schema}
                 value={draft.params}
-                onChange={(next) => setDraft({ ...draft, params: next })}
+                onChange={(next) => updateDraft({ params: next })}
                 onErrorsChange={setParamErrors}
                 testIdPrefix="provider-params"
               />

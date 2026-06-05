@@ -19,6 +19,14 @@ import re
 from typing import Any
 
 import structlog
+from corlinman_providers.china import DeepSeekProvider, GLMProvider, QwenProvider
+from corlinman_providers.market_providers import (
+    CohereProvider,
+    GroqProvider,
+    MistralProvider,
+    ReplicateProvider,
+    TogetherProvider,
+)
 from corlinman_providers.specs import list_supported_kinds
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -75,6 +83,14 @@ class ProviderUpsert(BaseModel):
     enabled: bool | None = None
     base_url: str | None = None
     api_key: dict[str, Any] | None = None
+    params: dict[str, Any] | None = None
+
+
+class ProviderModelProbe(BaseModel):
+    kind: str
+    base_url: str | None = None
+    api_key: dict[str, Any] | None = None
+    existing_name: str | None = None
     params: dict[str, Any] | None = None
 
 
@@ -341,6 +357,21 @@ _OPENAI_COMPATIBLE_KINDS: frozenset[str] = frozenset(
         "deepseek",
     }
 )
+
+_OPENAI_COMPATIBLE_DEFAULT_BASE_URLS: dict[str, str] = {
+    "mistral": MistralProvider.DEFAULT_BASE_URL,
+    "cohere": CohereProvider.DEFAULT_BASE_URL,
+    "together": TogetherProvider.DEFAULT_BASE_URL,
+    "groq": GroqProvider.DEFAULT_BASE_URL,
+    "replicate": ReplicateProvider.DEFAULT_BASE_URL,
+    "qwen": QwenProvider.DEFAULT_BASE_URL,
+    "glm": GLMProvider.DEFAULT_BASE_URL,
+    "deepseek": DeepSeekProvider.DEFAULT_BASE_URL,
+}
+
+
+def _default_base_url_for_kind(kind: str) -> str | None:
+    return _OPENAI_COMPATIBLE_DEFAULT_BASE_URLS.get(_normalize_kind(kind))
 
 
 # ---------------------------------------------------------------------------
@@ -615,6 +646,30 @@ def _resolve_api_key(entry: dict[str, Any]) -> str:
     return ""
 
 
+def _provider_models_url(base_url: str) -> str:
+    """Return the OpenAI-shape model-list URL for an operator base URL.
+
+    Operators commonly paste either the origin (``https://relay``), an API
+    root (``https://relay/api``), or a versioned root
+    (``https://relay/api/v1``, ``https://relay/api/v4``). Treat a
+    trailing ``/v<digits>`` as already versioned so the probe does not
+    request paths like ``/v1/v1/models`` or ``/v4/v1/models``.
+    """
+    from urllib.parse import urlsplit, urlunsplit
+
+    parts = urlsplit(str(base_url).strip().rstrip("/"))
+    path = parts.path.rstrip("/")
+    if path.endswith("/models"):
+        models_path = path
+    elif re.search(r"/v\d+$", path):
+        models_path = f"{path}/models"
+    else:
+        models_path = f"{path}/v1/models"
+    if not models_path.startswith("/"):
+        models_path = f"/{models_path}"
+    return urlunsplit((parts.scheme, parts.netloc, models_path, "", ""))
+
+
 async def _query_provider_models(
     name: str, cfg: dict[str, Any]
 ) -> dict[str, Any]:
@@ -679,7 +734,11 @@ async def _query_provider_models(
             api_key = raw_key
         else:
             api_key = ""
-        raw_base = entry_dict.get("base_url") or "https://api.openai.com"
+        raw_base = (
+            entry_dict.get("base_url")
+            or _default_base_url_for_kind(kind)
+            or "https://api.openai.com"
+        )
         base_url = str(raw_base).rstrip("/")
 
     # SEC-008: refuse to dial cloud-metadata / link-local targets with the
@@ -695,7 +754,7 @@ async def _query_provider_models(
             "error": f"unsafe_host: {exc}",
         }
 
-    url = base_url.rstrip("/") + "/v1/models"
+    url = _provider_models_url(base_url)
     headers: dict[str, str] = {}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"

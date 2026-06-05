@@ -22,11 +22,12 @@ class QwenProvider(OpenAIProvider):
 
     name: ClassVar[str] = "qwen"
     kind: ClassVar[ProviderKind] = ProviderKind.QWEN
+    DEFAULT_BASE_URL: ClassVar[str] = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
     def __init__(self, api_key: str | None = None, base_url: str | None = None) -> None:
         super().__init__(
             api_key=api_key,
-            base_url=base_url or "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            base_url=base_url or self.DEFAULT_BASE_URL,
             env_key="DASHSCOPE_API_KEY",
         )
 
