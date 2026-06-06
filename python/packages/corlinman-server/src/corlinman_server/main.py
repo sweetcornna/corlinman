@@ -195,11 +195,14 @@ class _ReloadingProviderResolver:
         self,
         alias_or_model: str,
         aliases: Any = None,
+        provider_hint: str | None = None,
     ) -> tuple[Any, str, dict[str, Any]]:
         _ = aliases  # servicer-supplied aliases ignored; we own the live map
         self._reload_if_changed()
         return self._registry.resolve(
-            alias_or_model=alias_or_model, aliases=self._aliases
+            alias_or_model=alias_or_model,
+            aliases=self._aliases,
+            provider_hint=provider_hint,
         )
 
 
