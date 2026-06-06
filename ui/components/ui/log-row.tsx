@@ -105,7 +105,9 @@ export const LogRow = React.forwardRef<HTMLButtonElement, LogRowProps>(
           />
         ) : null}
 
-        <span className="font-mono text-[11px] text-tp-ink-4">{ts}</span>
+        <span className="min-w-0 font-mono text-[11px] text-tp-ink-4">
+          {ts}
+        </span>
 
         {dense ? (
           <span
@@ -119,15 +121,15 @@ export const LogRow = React.forwardRef<HTMLButtonElement, LogRowProps>(
           </span>
         ) : null}
 
-        <span className="font-mono text-[11.5px] text-tp-ink-3">
+        <span className="min-w-0 truncate font-mono text-[11.5px] text-tp-ink-3">
           {subsystem}
         </span>
 
-        <span className="truncate text-tp-ink-2">{message}</span>
+        <span className="min-w-0 truncate text-tp-ink-2">{message}</span>
 
         <span
           className={cn(
-            "flex items-center gap-2",
+            "flex min-w-0 items-center justify-end gap-2 whitespace-nowrap",
             dense ? "font-mono text-[10.5px] tabular-nums text-tp-ink-4" : "",
           )}
         >

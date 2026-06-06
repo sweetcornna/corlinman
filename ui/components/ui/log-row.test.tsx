@@ -79,4 +79,24 @@ describe("LogRow", () => {
     expect(container.querySelector(".bg-tp-warn")).not.toBeNull();
     expect(container.textContent).not.toContain("warn"); // label not rendered
   });
+
+  it("constrains long subsystem names so they cannot overlap the message", () => {
+    render(
+      <LogRow
+        ts="01:49:55"
+        severity="info"
+        subsystem="corlinman.gateway.admin"
+        message="admin.logs.subscribed (receiver_count=1)"
+        variant="comfortable"
+      />,
+    );
+
+    const subsystem = screen.getByText("corlinman.gateway.admin");
+    const message = screen.getByText("admin.logs.subscribed (receiver_count=1)");
+
+    expect(subsystem).toHaveClass("min-w-0");
+    expect(subsystem).toHaveClass("truncate");
+    expect(message).toHaveClass("min-w-0");
+    expect(message).toHaveClass("truncate");
+  });
 });
