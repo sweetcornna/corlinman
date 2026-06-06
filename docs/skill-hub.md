@@ -1,6 +1,6 @@
 # Skill library + ClawHub
 
-corlinman ships with a starter pack of 16 procedural-knowledge skills
+corlinman ships with a curated starter pack of procedural-knowledge skills
 on day one, and operators can extend that set from `/admin/skills` by
 browsing the [openclaw ClawHub](https://clawhub.ai) — a community
 registry of `SKILL.md` bundles. Installs land directly in the active
@@ -19,7 +19,7 @@ plug into the wider agent runtime — registry, hot reload, and the
 
 Two skill tiers, both backed by the same registry + `skills/` directory:
 
-- **Bundled defaults** — 16 `SKILL.md` files baked into the
+- **Bundled defaults** — `SKILL.md` files baked into the
   `corlinman-server` wheel under `bundled_skills/`. On first boot the
   server copies them into `<data_dir>/profiles/default/skills/` so a
   brand-new install has useful skills the moment it's reachable. The
@@ -230,14 +230,16 @@ something that didn't come from the hub.
 
 ## Bundled starter skills
 
-The 16 starter skills are versioned with the wheel and seeded into
-the default profile on first boot:
+The starter skills are versioned with the wheel and seeded into the
+default profile on first boot. The exact count follows the installed
+wheel; the core bundle includes:
 
 | Skill                            | What it's for                                                     |
 |----------------------------------|-------------------------------------------------------------------|
 | `brainstorming`                  | Front-load creative-work flows with intent / requirements / design. |
 | `code_review`                    | Review pending changes at a given effort level.                   |
 | `deep-research`                  | Multi-pass investigation with citation discipline.                |
+| `document-generator`             | Generate clean CJK-safe Markdown-to-PDF reports.                  |
 | `executing-plans`                | Drive a written implementation plan through review checkpoints.   |
 | `git-worktrees`                  | Isolate feature work in a git worktree before editing.            |
 | `memory`                         | Persistent `MEMORY.md` updates the agent reads each turn.         |
@@ -249,6 +251,7 @@ the default profile on first boot:
 | `systematic-debugging`           | Don't propose fixes until root-cause is identified.               |
 | `test-driven-development`        | Write the failing test first; never gold-plate.                   |
 | `verification-before-completion` | Run the verification commands before claiming "done".             |
+| `visual-output-quality`          | Check PDFs/images/slides for readability, clipping, and overlap.  |
 | `web_search`                     | Browse + cite web sources via the gateway's fetch tools.          |
 | `writing-plans`                  | Produce a spec before touching code on multi-step tasks.          |
 

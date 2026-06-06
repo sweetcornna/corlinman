@@ -9,7 +9,7 @@
 
 ## Context
 
-Memory `[[project-starter-skills-bundle]]` records that on 2026-05-18 we shipped 16 starter skills under `corlinman_server/bundled_skills/` and auto-seed them into `<data_dir>/profiles/default/skills/` on first boot. That part is **done**.
+Memory `[[project-starter-skills-bundle]]` records that on 2026-05-18 we shipped the initial 16 starter skills under `corlinman_server/bundled_skills/` and auto-seed them into `<data_dir>/profiles/default/skills/` on first boot. The bundle has since grown with wheel releases, including document/PDF and visual-output quality defaults. That part is **done**.
 
 Two gaps remain for the user's "bundled defaults + openclaw hub linkage" ask:
 

@@ -20,6 +20,7 @@ import pytest
 from corlinman_agent.reasoning_loop import ChatStart, ToolCallEvent
 from corlinman_providers.base import ProviderChunk
 from corlinman_server.agent_servicer import (
+    _DEFAULT_ALWAYS_SKILLS,
     CorlinmanAgentServicer,
     _register_active_loop,
     _unregister_active_loop,
@@ -312,6 +313,14 @@ async def test_cmp04_ask_resolver_can_be_wired() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_cmp02_default_always_skills_include_document_and_visual_quality() -> None:
+    """The main chat agent must always see the PDF and visual layout
+    guardrails, even when no explicit agent card is invoked."""
+
+    assert "document-generator" in _DEFAULT_ALWAYS_SKILLS
+    assert "visual-output-quality" in _DEFAULT_ALWAYS_SKILLS
+
+
 @pytest.mark.asyncio
 async def test_cmp02_injected_skill_allowed_tools_enforced(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     """A card whose skill_refs include a skill with allowed-tools
@@ -324,26 +333,27 @@ async def test_cmp02_injected_skill_allowed_tools_enforced(tmp_path: Any, monkey
 
     monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
 
-    # Build a skills dir with one restricted skill — note its name must be in
-    # the servicer's _DEFAULT_ALWAYS_SKILLS for the always-on injection path.
-    skills_dir = tmp_path / "skills" / "document-generator"
-    skills_dir.mkdir(parents=True)
-    (skills_dir / "SKILL.md").write_text(
-        "---\n"
-        "name: document-generator\n"
-        "description: test\n"
-        "when_to_use: testing\n"
-        "allowed-tools: [read_file]\n"
-        "---\n"
-        "body\n",
-        encoding="utf-8",
-    )
+    # Build restricted skills whose names must be in the servicer's
+    # _DEFAULT_ALWAYS_SKILLS for the always-on injection path.
+    for name in _DEFAULT_ALWAYS_SKILLS:
+        skills_dir = tmp_path / "skills" / name
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "SKILL.md").write_text(
+            "---\n"
+            f"name: {name}\n"
+            "description: test\n"
+            "when_to_use: testing\n"
+            "allowed-tools: [read_file]\n"
+            "---\n"
+            "body\n",
+            encoding="utf-8",
+        )
 
     registry = SkillRegistry.load_from_dir(tmp_path / "skills")
     # Minimal assembler stand-in: the servicer's _get_skill_registry reads
     # ``._skills``; a real ContextAssembler is not needed for the enforcement
     # path. Empty agent registry → no card peeked → only the always-on
-    # default ("document-generator") is folded in.
+    # defaults are folded in.
     servicer = CorlinmanAgentServicer(
         provider_resolver=lambda _m: _FakeProvider([]),
         context_assembler=SimpleNamespace(_skills=registry),

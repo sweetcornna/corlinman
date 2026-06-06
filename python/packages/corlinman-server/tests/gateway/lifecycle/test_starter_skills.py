@@ -43,7 +43,12 @@ def test_bundled_skills_root_resolves_package_data(
     assert root is not None
     assert root.is_dir()
     # Spot-check a few canonical bundled skills exist.
-    for name in ("plan.md", "test-driven-development.md", "memory.md"):
+    for name in (
+        "plan.md",
+        "test-driven-development.md",
+        "memory.md",
+        "visual-output-quality.md",
+    ):
         assert (root / name).is_file(), f"missing bundled skill: {name}"
     # W1 third-party bundle: huashu-design / nuwa-skill / darwin-skill
     # ship as nested <name>/SKILL.md alongside the flat starter skills.
@@ -81,6 +86,31 @@ def test_bundled_third_party_skills_are_loadable(
         assert skill.description.strip(), (
             f"{expected} has empty description — won't trigger on user queries"
         )
+
+
+def test_bundled_visual_output_quality_skill_is_loadable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The compact visual guardrail skill must ship in the starter bundle.
+
+    Without this package data the always-on ref degrades into a logged
+    missing-skill warning, and main-chat image/PDF generation falls back to
+    improvising layout without screenshot checks.
+    """
+
+    monkeypatch.delenv("CORLINMAN_BUNDLED_SKILLS_DIR", raising=False)
+    from corlinman_skills_registry import SkillRegistry  # noqa: PLC0415
+
+    root = starter_skills.bundled_skills_root()
+    assert root is not None
+    reg = SkillRegistry.load_from_dir(root)
+    skill = reg.get("visual-output-quality")
+
+    assert skill is not None
+    assert "PDF" in skill.description
+    body = (root / "visual-output-quality.md").read_text("utf-8")
+    assert "overlap" in body
+    assert "Playwright" in body
 
 
 def test_bundled_skills_root_env_override_wins(
@@ -254,6 +284,22 @@ def test_seed_starter_skills_seeds_configure_persona(
     # tool list from the playbook.
     assert "persona_create" in body
     assert "ask_user" in body
+
+
+def test_seed_starter_skills_seeds_visual_output_quality(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fresh profiles get the always-on visual quality guardrail."""
+
+    monkeypatch.delenv("CORLINMAN_BUNDLED_SKILLS_DIR", raising=False)
+    target = tmp_path / "skills"
+
+    report = starter_skills.seed_starter_skills(target)
+
+    assert "visual-output-quality.md" in report.copied
+    body = (target / "visual-output-quality.md").read_text("utf-8")
+    assert "name: visual-output-quality" in body
+    assert "no overlap" in body
 
 
 def test_seed_starter_skills_no_bundle_source_is_quiet(

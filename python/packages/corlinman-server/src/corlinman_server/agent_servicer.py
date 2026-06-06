@@ -364,11 +364,16 @@ _SUBAGENT_POLICY_KEYS: tuple[str, ...] = (
 #: Skills injected into EVERY chat turn regardless of whether the message
 #: invokes an agent card (v1.12.3). Stage-3 skill injection is otherwise
 #: gated on a ``{{角色}}`` token, so the main chat agent never saw any skill
-#: and improvised — e.g. hand-rolling a broken PDF. ``document-generator``
-#: gives it the known-good document/PDF recipe on every turn. Missing-skill
-#: refs are non-fatal (logged into ``skill_errors``), so this degrades
-#: cleanly on deploys that haven't seeded the skill yet.
-_DEFAULT_ALWAYS_SKILLS: tuple[str, ...] = ("document-generator",)
+#: and improvised — e.g. hand-rolling a broken PDF or generating an image
+#: with overlapping labels. Keep this list compact: ``document-generator``
+#: carries the PDF recipe, while ``visual-output-quality`` is the lightweight
+#: default quality gate for PDF/image/slide layout checks. Missing-skill refs
+#: are non-fatal (logged into ``skill_errors``), so this degrades cleanly on
+#: deploys that haven't seeded the skill yet.
+_DEFAULT_ALWAYS_SKILLS: tuple[str, ...] = (
+    "document-generator",
+    "visual-output-quality",
+)
 
 
 def _send_attachment_tool_schema() -> dict[str, Any]:
