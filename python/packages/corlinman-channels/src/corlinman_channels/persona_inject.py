@@ -39,16 +39,66 @@ with dozens of emoji slots.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Any
 
 __all__ = [
+    "apply_persona_text_model_binding",
     "compose_persona_emoji_block",
     "inject_persona_if_enabled",
+    "persona_model_binding",
+    "persona_text_model_override",
 ]
 
 
 _log = logging.getLogger(__name__)
+
+
+def persona_model_binding(persona: Any, kind: str) -> tuple[str | None, str | None]:
+    """Return ``(provider, model)`` for one persona model-binding kind."""
+    bindings = getattr(persona, "model_bindings", None)
+    if not isinstance(bindings, Mapping):
+        return None, None
+    binding = bindings.get(kind)
+    provider: Any = None
+    model: Any = None
+    if isinstance(binding, Mapping):
+        provider = binding.get("provider")
+        model = binding.get("model")
+    else:
+        provider = getattr(binding, "provider", None)
+        model = getattr(binding, "model", None)
+
+    clean_provider = provider.strip() if isinstance(provider, str) else None
+    clean_model = model.strip() if isinstance(model, str) else None
+    return clean_provider or None, clean_model or None
+
+
+def persona_text_model_override(persona: Any) -> str | None:
+    """Return a persona's text-model override, if configured.
+
+    Persona Studio persists model routing as ``model_bindings``:
+    ``{"text": {"provider": "...", "model": "..."}, ...}``. The
+    current internal chat request only has a ``model`` field, so the
+    runtime can apply the selected text model immediately while keeping
+    the selected provider stored for provider-aware routing later.
+    """
+    _provider, model = persona_model_binding(persona, "text")
+    return model
+
+
+def apply_persona_text_model_binding(request: Any, persona: Any) -> None:
+    """Apply the persona's text-model override to a mutable request."""
+    provider, model = persona_model_binding(persona, "text")
+    if model is None:
+        return
+    try:
+        request.model = model
+        if provider is not None:
+            request.provider_hint = provider
+    except Exception as exc:  # noqa: BLE001 — model routing is best-effort
+        _log.warning("persona_inject: model override failed: %s", exc)
 
 
 async def compose_persona_emoji_block(
@@ -198,6 +248,7 @@ async def inject_persona_if_enabled(
         return
     if persona is None:
         return
+    apply_persona_text_model_binding(request, persona)
     body = getattr(persona, "system_prompt", "") or ""
     if not body.strip():
         return

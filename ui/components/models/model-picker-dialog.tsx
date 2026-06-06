@@ -65,6 +65,8 @@ export type ModelPickerDialogProps = {
   onClose: () => void;
   initialProvider?: string;
   initialModel?: string;
+  /** When true, a single model click immediately confirms the selection. */
+  confirmOnModelClick?: boolean;
   /**
    * Optional explicit provider list. If omitted, the dialog fetches from
    * `/admin/providers` (only enabled providers are displayed by default).
@@ -82,6 +84,7 @@ export function ModelPickerDialog({
   onClose,
   initialProvider,
   initialModel,
+  confirmOnModelClick = false,
   providers: providersProp,
   onConfirm,
 }: ModelPickerDialogProps) {
@@ -136,11 +139,21 @@ export function ModelPickerDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
+  // If the dialog opens before providers finish loading, seed the
+  // requested initial provider once it becomes available.
+  React.useEffect(() => {
+    if (!open || selectedProvider || !initialProvider) return;
+    if (!providers.some((p) => p.name === initialProvider)) return;
+    setSelectedProvider(initialProvider);
+    setSelectedModel(initialModel ?? "");
+  }, [open, providers, selectedProvider, initialProvider, initialModel]);
+
   // Auto-pick first provider once the list resolves and nothing's selected.
   React.useEffect(() => {
     if (!open || selectedProvider) return;
     if (providers.length === 0) return;
-    if (initialProvider) return; // honour pending init seed
+    if (initialProvider && providers.some((p) => p.name === initialProvider))
+      return; // honour pending init seed
     setSelectedProvider(providers[0]!.name);
   }, [open, providers, selectedProvider, initialProvider]);
 
@@ -297,6 +310,7 @@ export function ModelPickerDialog({
             allModels={allModelsForSelected}
             selectedModel={selectedModel}
             onSelect={setSelectedModel}
+            confirmOnModelClick={confirmOnModelClick}
             onConfirm={(id) => {
               setSelectedModel(id);
               // Wait a tick so the new selectedModel is visible to confirm().
@@ -412,6 +426,7 @@ function ModelColumn({
   allModels,
   selectedModel,
   onSelect,
+  confirmOnModelClick,
   onConfirm,
   modelsFetchErrorLabel,
   loadingLabel,
@@ -423,6 +438,7 @@ function ModelColumn({
   allModels: ModelEntry[];
   selectedModel: string;
   onSelect: (id: string) => void;
+  confirmOnModelClick: boolean;
   onConfirm: (id: string) => void;
   modelsFetchErrorLabel: string;
   loadingLabel: string;
@@ -469,7 +485,10 @@ function ModelColumn({
           <button
             key={m.id}
             type="button"
-            onClick={() => onSelect(m.id)}
+            onClick={() => {
+              onSelect(m.id);
+              if (confirmOnModelClick) onConfirm(m.id);
+            }}
             onDoubleClick={() => onConfirm(m.id)}
             className={cn(
               "flex w-full items-center gap-2 px-3 py-1.5 text-left font-mono text-xs transition-colors hover:bg-tp-glass-inner-hover",

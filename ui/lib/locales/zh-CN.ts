@@ -2976,6 +2976,15 @@ export const zhCN = {
     fieldSystemPrompt: "System prompt（markdown）",
     fieldSystemPromptHint:
       "Markdown 正文。可以引用用户消息、最近记忆、通道上下文。",
+    modelsTitle: "模型路由",
+    modelsDescription:
+      "为这个 persona 单独覆盖文字、图片或语音模型。保持继承时使用全局默认模型。",
+    modelKindText: "文字",
+    modelKindImage: "图片",
+    modelKindVoice: "语音",
+    modelInherit: "继承默认",
+    modelPick: "选择",
+    modelClear: "继承默认",
     saveCreate: "创建 persona",
     saveUpdate: "保存修改",
     saving: "保存中…",

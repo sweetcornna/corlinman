@@ -1261,7 +1261,11 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 model=bound_card.model,
             )
             start.model = bound_card.model
-        provider_hint = bound_card.provider if bound_card is not None else None
+        request_provider_hint = _provider_hint_from_extra(start.extra)
+        provider_hint = (
+            request_provider_hint
+            or (bound_card.provider if bound_card is not None else None)
+        )
 
         try:
             provider, upstream_model, merged_params = _call_resolver(
@@ -2301,6 +2305,57 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             return f"model_alias_invalid: {model!r}"
         return None
 
+    async def _resolve_persona_tool_provider(
+        self,
+        start: AgentChatStart,
+        kind: str,
+        fallback_provider: CorlinmanProvider,
+    ) -> tuple[CorlinmanProvider, str | None]:
+        persona_id = _bound_persona_id_from_start(start)
+        if persona_id is None:
+            return fallback_provider, None
+
+        persona_store = await self._get_persona_store()
+        if persona_store is None:
+            return fallback_provider, None
+
+        try:
+            persona = await persona_store.get(persona_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "agent.persona_model_binding.lookup_failed",
+                persona_id=persona_id,
+                kind=kind,
+                error=str(exc),
+            )
+            return fallback_provider, None
+        if persona is None:
+            return fallback_provider, None
+
+        provider_hint, model = _persona_model_binding_for(persona, kind)
+        if model is None:
+            return fallback_provider, None
+
+        try:
+            bound_provider, upstream_model, _params = _call_resolver(
+                self._resolve,
+                model,
+                self._aliases,
+                provider_hint=provider_hint,
+            )
+        except KeyError as exc:
+            logger.warning(
+                "agent.persona_model_binding.resolve_failed",
+                persona_id=persona_id,
+                kind=kind,
+                provider_hint=provider_hint,
+                model=model,
+                error=str(exc),
+            )
+            return fallback_provider, None
+
+        return bound_provider, upstream_model
+
     @staticmethod
     def _subagent_rejected_json(parent_ctx: ParentContext, *, error: str) -> str:
         return json.dumps(
@@ -2974,15 +3029,17 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 # channel injected it (W4 channel-side wiring lands
                 # later; today the agent falls back to the explicit
                 # ``persona_id`` arg the model passes in).
-                extra = getattr(start, "extra", None) or {}
-                bound_persona_id: str | None = None
-                if isinstance(extra, dict):
-                    val = extra.get("persona_id")
-                    if isinstance(val, str) and val.strip():
-                        bound_persona_id = val.strip()
+                bound_persona_id = _bound_persona_id_from_start(start)
+                image_provider, image_model_override = (
+                    await self._resolve_persona_tool_provider(
+                        start,
+                        "image",
+                        provider,
+                    )
+                )
                 return await dispatch_image_with_refs(
                     args_json=event.args_json,
-                    provider=provider,
+                    provider=image_provider,
                     # dispatch_image_with_refs calls ``persona_store.get(
                     # persona_id)`` (no tenant_id) to look up the persona
                     # body / system-prompt row from ``personas.sqlite``.
@@ -2995,14 +3052,23 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     persona_store=await self._get_persona_store(),
                     asset_store=await self._get_persona_asset_store(),
                     bound_persona_id=bound_persona_id,
+                    model_override=image_model_override,
                 )
             if event.tool == IMAGE_GENERATE_TOOL:
                 # Plain text-to-image: intentionally takes no persona /
                 # asset_store arguments — isolation from image_with_refs
                 # is structural. Never invoked by qzone_publish.
+                image_provider, image_model_override = (
+                    await self._resolve_persona_tool_provider(
+                        start,
+                        "image",
+                        provider,
+                    )
+                )
                 return await dispatch_image_generate(
                     args_json=event.args_json,
-                    provider=provider,
+                    provider=image_provider,
+                    model_override=image_model_override,
                 )
             if event.tool == VISION_ANALYZE_TOOL:
                 # WP13: vision_analyze — reads an image from workspace or
@@ -3024,9 +3090,17 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     return json.dumps(
                         {"ok": False, "error": "text_to_speech_unavailable"}
                     )
+                voice_provider, voice_model_override = (
+                    await self._resolve_persona_tool_provider(
+                        start,
+                        "voice",
+                        provider,
+                    )
+                )
                 return await dispatch_text_to_speech(
                     args_json=event.args_json,
-                    provider=provider,
+                    provider=voice_provider,
+                    model_override=voice_model_override,
                 )
             if event.tool == QZONE_PUBLISH_TOOL:
                 # W5 — qzone_publish. The dispatcher does its own
@@ -3043,14 +3117,22 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     val = qz_extra.get("persona_id")
                     if isinstance(val, str) and val.strip():
                         qz_bound_persona_id = val.strip()
+                qz_image_provider, qz_image_model_override = (
+                    await self._resolve_persona_tool_provider(
+                        start,
+                        "image",
+                        provider,
+                    )
+                )
                 return await dispatch_qzone_publish(
                     args_json=event.args_json,
                     image_with_refs_dispatcher=dispatch_image_with_refs,
                     image_with_refs_kwargs={
-                        "provider": provider,
+                        "provider": qz_image_provider,
                         "persona_store": await self._get_persona_store(),
                         "asset_store": await self._get_persona_asset_store(),
                         "bound_persona_id": qz_bound_persona_id,
+                        "model_override": qz_image_model_override,
                     },
                 )
             if event.tool in QZONE_COMMENT_TOOLS:
@@ -4582,6 +4664,11 @@ def _to_agent_start(pb_start: agent_pb2.ChatStart) -> AgentChatStart:
     extra: dict[str, Any] = {}
     if pb_start.persona_id:
         extra["persona_id"] = pb_start.persona_id
+    provider_hint = _provider_hint_from_provider_config(
+        getattr(pb_start, "provider_config_json", b"") or b""
+    )
+    if provider_hint is not None:
+        extra["provider_hint"] = provider_hint
     return AgentChatStart(
         model=pb_start.model,
         messages=messages,
@@ -4592,6 +4679,56 @@ def _to_agent_start(pb_start: agent_pb2.ChatStart) -> AgentChatStart:
         attachments=attachments,
         extra=extra,
     )
+
+
+def _provider_hint_from_provider_config(raw: bytes) -> str | None:
+    if not raw:
+        return None
+    try:
+        obj = json.loads(bytes(raw).decode("utf-8"))
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(obj, dict):
+        return None
+    return _provider_hint_from_extra(obj)
+
+
+def _provider_hint_from_extra(extra: Mapping[str, Any] | None) -> str | None:
+    if not isinstance(extra, Mapping):
+        return None
+    raw = extra.get("provider_hint")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return None
+
+
+def _bound_persona_id_from_start(start: AgentChatStart) -> str | None:
+    extra = getattr(start, "extra", None) or {}
+    if not isinstance(extra, Mapping):
+        return None
+    raw = extra.get("persona_id")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return None
+
+
+def _persona_model_binding_for(
+    persona: Any,
+    kind: str,
+) -> tuple[str | None, str | None]:
+    bindings = getattr(persona, "model_bindings", None)
+    if not isinstance(bindings, Mapping):
+        return None, None
+    binding = bindings.get(kind)
+    if not isinstance(binding, Mapping):
+        provider = getattr(binding, "provider", None)
+        model = getattr(binding, "model", None)
+    else:
+        provider = binding.get("provider")
+        model = binding.get("model")
+    clean_provider = provider.strip() if isinstance(provider, str) else None
+    clean_model = model.strip() if isinstance(model, str) else None
+    return clean_provider or None, clean_model or None
 
 
 def _decode_tools_json(raw: bytes) -> list[dict[str, Any]]:

@@ -68,19 +68,26 @@ class _FakePersonaStore:
         return self._rows.get(persona_id)
 
 
-def _make_persona(system_prompt: str = "be friendly") -> SimpleNamespace:
+def _make_persona(
+    system_prompt: str = "be friendly",
+    *,
+    model_bindings: dict[str, Any] | None = None,
+) -> SimpleNamespace:
     return SimpleNamespace(
         id="grantley",
         display_name="Grantley",
         short_summary="",
         system_prompt=system_prompt,
         is_builtin=False,
+        model_bindings=model_bindings or {},
     )
 
 
-def _make_request(user_text: str = "hi") -> SimpleNamespace:
+def _make_request(
+    user_text: str = "hi", *, model: str = "default-model"
+) -> SimpleNamespace:
     msg = SimpleNamespace(role="user", content=user_text)
-    return SimpleNamespace(messages=[msg])
+    return SimpleNamespace(messages=[msg], model=model)
 
 
 # ---------------------------------------------------------------------------
@@ -258,3 +265,28 @@ class TestInjectorActive:
         assert req.messages[0].role == "system"
         assert "MEOW" in req.messages[0].content
         assert req.persona_id == "kitty"
+
+    @pytest.mark.asyncio
+    async def test_text_model_binding_overrides_request_model(self) -> None:
+        req = _make_request(model="global-default")
+        store = _FakePersonaStore(
+            {
+                "grantley": _make_persona(
+                    "PERSONA-BODY-MARK",
+                    model_bindings={
+                        "text": {
+                            "provider": "relay",
+                            "model": "gpt-5.5",
+                        }
+                    },
+                )
+            }
+        )
+        await inject_persona_if_enabled(
+            req,
+            humanlike_enabled=True,
+            persona_id="grantley",
+            persona_store=store,
+        )
+        assert req.model == "gpt-5.5"
+        assert req.provider_hint == "relay"

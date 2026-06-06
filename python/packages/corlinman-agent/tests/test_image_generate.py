@@ -24,13 +24,15 @@ from corlinman_agent.image import (
 _GENERATED_PNG = b"\x89PNG\r\n\x1a\n" + b"PLAINIMG" * 8
 
 
-def _ok_handler():
+def _ok_handler(*, expected_model: str | None = None):
     """Return a mock OpenAI Responses handler that asserts no refs
     are sent and returns ``_GENERATED_PNG`` base64-encoded."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert "/responses" in str(request.url)
         body = json.loads(request.content.decode())
+        if expected_model is not None:
+            assert body["model"] == expected_model
         # Single user message, single content part, no input_image.
         assert isinstance(body.get("input"), list) and len(body["input"]) == 1
         content = body["input"][0]["content"]
@@ -110,7 +112,7 @@ async def test_happy_path_writes_workspace_png(tmp_path, monkeypatch) -> None:
     assert out["aspect_ratio"] == "portrait"
     out_path = Path(out["path"])
     assert out_path.is_file()
-    assert "workspace/generated" in str(out_path)
+    assert out_path.parent == tmp_path / "workspace" / "generated"
     assert out_path.suffix == ".png"
     assert out_path.read_bytes() == _GENERATED_PNG
     assert out["size_bytes"] == len(_GENERATED_PNG)
@@ -128,6 +130,24 @@ async def test_aspect_ratio_defaults_to_square(tmp_path, monkeypatch) -> None:
     )
     assert out["ok"] is True
     assert out["aspect_ratio"] == "square"
+
+
+async def test_model_override_reaches_openai_request_body(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+    transport = httpx.MockTransport(
+        _ok_handler(expected_model="persona-image-model")
+    )
+    out = json.loads(
+        await dispatch_image_generate(
+            args_json=json.dumps({"prompt": "anything"}).encode(),
+            provider=_fake_provider(),
+            model_override="persona-image-model",
+            transport=transport,
+        )
+    )
+    assert out["ok"] is True
 
 
 async def test_no_persona_wiring_required(tmp_path, monkeypatch) -> None:

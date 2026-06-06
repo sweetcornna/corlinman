@@ -22,10 +22,12 @@ from corlinman_agent.image.tts import (
 _AUDIO = b"ID3\x04\x00FAKEMP3PAYLOAD" * 4
 
 
-def _ok_handler():
+def _ok_handler(*, expected_model: str | None = None):
     def handler(request: httpx.Request) -> httpx.Response:
         assert "/audio/speech" in str(request.url)
         body = json.loads(request.content.decode())
+        if expected_model is not None:
+            assert body["model"] == expected_model
         assert body["input"]
         assert body["voice"] in (
             "alloy",
@@ -88,6 +90,23 @@ async def test_format_override_changes_extension(tmp_path, monkeypatch) -> None:
     assert env["ok"] is True
     assert env["mime"] == "audio/wav"
     assert Path(env["path"]).suffix == ".wav"
+
+
+async def test_model_override_reaches_speech_request_body(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+    transport = httpx.MockTransport(
+        _ok_handler(expected_model="persona-voice-model")
+    )
+    out = await dispatch_text_to_speech(
+        args_json=json.dumps({"text": "hi"}).encode(),
+        provider=_provider(),
+        model_override="persona-voice-model",
+        transport=transport,
+    )
+    env = json.loads(out)
+    assert env["ok"] is True
 
 
 async def test_missing_text() -> None:
