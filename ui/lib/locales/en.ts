@@ -3039,6 +3039,15 @@ export const en = {
     fieldSystemPrompt: "System prompt (markdown)",
     fieldSystemPromptHint:
       "Markdown body. May reference user message, recent memory, channel context.",
+    modelsTitle: "Model routing",
+    modelsDescription:
+      "Override the default text, image or voice model for this persona. Leave a row inherited to use the global default.",
+    modelKindText: "Text",
+    modelKindImage: "Image",
+    modelKindVoice: "Voice",
+    modelInherit: "Inherit",
+    modelPick: "Choose",
+    modelClear: "Inherit",
     saveCreate: "Create persona",
     saveUpdate: "Save changes",
     saving: "Saving…",

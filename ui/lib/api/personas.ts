@@ -62,7 +62,21 @@ export interface Persona {
    * to drop straight into an `<img src>` (same-origin admin path).
    */
   avatar_url: string | null;
+  /** Persona-level model routing overrides by capability. */
+  model_bindings: PersonaModelBindings;
 }
+
+export type PersonaModelKind = "text" | "image" | "voice";
+
+export interface PersonaModelBinding {
+  provider: string | null;
+  model: string | null;
+}
+
+export type PersonaModelBindings = Record<
+  PersonaModelKind,
+  PersonaModelBinding
+>;
 
 /** Body shape for `POST /admin/personas`. */
 export interface NewPersona {
@@ -70,6 +84,7 @@ export interface NewPersona {
   display_name: string;
   short_summary: string;
   system_prompt: string;
+  model_bindings?: PersonaModelBindings;
 }
 
 /** Body shape for `PATCH /admin/personas/{id}`. All fields optional —
@@ -78,6 +93,7 @@ export interface PartialPersona {
   display_name?: string;
   short_summary?: string;
   system_prompt?: string;
+  model_bindings?: PersonaModelBindings;
 }
 
 /** A channel's humanlike toggle. `persona_id` is the slug of the active

@@ -23,6 +23,7 @@ skipped (they land with the approval pipeline in M6+).
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import AsyncIterator
 from typing import Any, Protocol, runtime_checkable
@@ -412,6 +413,7 @@ def _build_chat_start(req: InternalChatRequest) -> agent_pb2.ChatStart:
     ]
     attachments = [_attachment_to_proto(a) for a in req.attachments]
     binding = _binding_to_proto(req.binding) if req.binding is not None else None
+    provider_config_json = _provider_config_json(req)
 
     start = agent_pb2.ChatStart(
         model=req.model,
@@ -421,7 +423,7 @@ def _build_chat_start(req: InternalChatRequest) -> agent_pb2.ChatStart:
         temperature=float(req.temperature or 0.0),
         max_tokens=int(req.max_tokens or 0),
         stream=req.stream,
-        provider_config_json=b"",
+        provider_config_json=provider_config_json,
         attachments=attachments,
         # Channel turns hand in a lightweight ``SimpleNamespace`` request
         # that carries no ``persona_id`` unless humanlike persona injection
@@ -432,3 +434,13 @@ def _build_chat_start(req: InternalChatRequest) -> agent_pb2.ChatStart:
     if binding is not None:
         start.binding.CopyFrom(binding)
     return start
+
+
+def _provider_config_json(req: InternalChatRequest) -> bytes:
+    provider_hint = getattr(req, "provider_hint", None)
+    if not isinstance(provider_hint, str) or not provider_hint.strip():
+        return b""
+    return json.dumps(
+        {"provider_hint": provider_hint.strip()},
+        separators=(",", ":"),
+    ).encode("utf-8")

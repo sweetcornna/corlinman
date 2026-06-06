@@ -79,6 +79,7 @@ from corlinman_server.gateway.routes_admin_a.studio._personas_lib import (
     _channel_humanlike_block,
     _channels_writer,
     _life_state_db_path,
+    _model_bindings_plain,
     _parse_iso_ms,
     _persona_store,
     _require_persona,
@@ -170,6 +171,7 @@ def router() -> APIRouter:
             display_name=body.display_name,
             short_summary=body.short_summary,
             system_prompt=body.system_prompt,
+            model_bindings=_model_bindings_plain(body.model_bindings) or {},
             is_builtin=False,
             created_at_ms=now,
             updated_at_ms=now,
@@ -201,6 +203,7 @@ def router() -> APIRouter:
                 display_name=body.display_name,
                 short_summary=body.short_summary,
                 system_prompt=body.system_prompt,
+                model_bindings=_model_bindings_plain(body.model_bindings),
             )
         except PersonaProtected as exc:
             raise HTTPException(

@@ -175,9 +175,16 @@ def _resolve_workspace_generated_dir() -> Path:
     return target
 
 
-def _resolve_runtime_config() -> tuple[str, float]:
+def _resolve_runtime_config(
+    *,
+    model_override: str | None = None,
+) -> tuple[str, float]:
     """Return ``(model, timeout_secs)`` from env or defaults."""
-    model = os.environ.get("CORLINMAN_TTS_MODEL") or _DEFAULT_MODEL
+    model = (
+        os.environ.get("CORLINMAN_TTS_MODEL")
+        or model_override
+        or _DEFAULT_MODEL
+    )
     try:
         timeout = float(
             os.environ.get("CORLINMAN_TTS_TIMEOUT_SECS")
@@ -215,6 +222,7 @@ async def _try_openai_speech(
     voice: str,
     fmt: str,
     provider: Any,
+    model_override: str | None,
     transport: httpx.BaseTransport | None,
 ) -> bytes:
     """Call the OpenAI ``/audio/speech`` endpoint. Raises on every
@@ -225,7 +233,7 @@ async def _try_openai_speech(
             "text-to-speech not configured — provider carries no api_key "
             "and OPENAI_API_KEY is unset"
         )
-    model, timeout = _resolve_runtime_config()
+    model, timeout = _resolve_runtime_config(model_override=model_override)
     root = (base_url or "https://api.openai.com/v1").rstrip("/")
     endpoint = f"{root}/audio/speech"
     payload: dict[str, Any] = {
@@ -255,6 +263,7 @@ async def dispatch_text_to_speech(
     *,
     args_json: bytes | str,
     provider: Any = None,
+    model_override: str | None = None,
     transport: httpx.BaseTransport | None = None,
 ) -> str:
     """Dispatch one ``text_to_speech`` tool call into a JSON envelope.
@@ -302,6 +311,7 @@ async def dispatch_text_to_speech(
             voice=voice,
             fmt=fmt,
             provider=provider,
+            model_override=model_override,
             transport=transport,
         )
     except RuntimeError as exc:

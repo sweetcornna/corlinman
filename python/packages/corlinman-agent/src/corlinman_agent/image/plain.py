@@ -142,6 +142,7 @@ async def dispatch_image_generate(
     *,
     args_json: bytes | str,
     provider: Any,
+    model_override: str | None = None,
     transport: httpx.BaseTransport | None = None,
 ) -> str:
     """Dispatch one ``image_generate`` tool call into a JSON envelope.
@@ -181,6 +182,7 @@ async def dispatch_image_generate(
             provider,
             prompt,
             aspect_ratio=aspect,  # type: ignore[arg-type]
+            model_override=model_override,
             transport=transport,
         )
     except ImageProviderUnavailable as exc:

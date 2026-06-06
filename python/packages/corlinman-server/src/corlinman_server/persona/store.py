@@ -32,9 +32,11 @@ WAL + foreign_keys ON, same as the rest of the corlinman SQLite stores.
 
 from __future__ import annotations
 
+import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import aiosqlite
 import structlog
@@ -48,6 +50,7 @@ CREATE TABLE IF NOT EXISTS personas (
     display_name  TEXT NOT NULL,
     short_summary TEXT NOT NULL DEFAULT '',
     system_prompt TEXT NOT NULL,
+    model_bindings_json TEXT NOT NULL DEFAULT '{}',
     is_builtin    INTEGER NOT NULL DEFAULT 0,
     owner_user_id TEXT,
     created_at_ms INTEGER NOT NULL,
@@ -59,7 +62,7 @@ CREATE INDEX IF NOT EXISTS idx_personas_updated_at
 
 
 async def _migrate_personas_table(conn: aiosqlite.Connection) -> None:
-    """Idempotent migration: add ``owner_user_id`` column (+ index) to
+    """Idempotent migration: add newer persona columns (+ index) to
     pre-W1 schemas. SQLite has no ``ADD COLUMN IF NOT EXISTS``; we
     PRAGMA-check first and ALTER only when missing.
 
@@ -78,6 +81,11 @@ async def _migrate_personas_table(conn: aiosqlite.Connection) -> None:
     """
     async with conn.execute("PRAGMA table_info(personas)") as cur:
         cols = {row[1] for row in await cur.fetchall()}
+    if "model_bindings_json" not in cols:
+        await conn.execute(
+            "ALTER TABLE personas ADD COLUMN "
+            "model_bindings_json TEXT NOT NULL DEFAULT '{}'"
+        )
     if "owner_user_id" not in cols:
         await conn.execute("ALTER TABLE personas ADD COLUMN owner_user_id TEXT")
     # Index creation is idempotent and cheap; run unconditionally so a
@@ -87,6 +95,58 @@ async def _migrate_personas_table(conn: aiosqlite.Connection) -> None:
         "ON personas(owner_user_id)"
     )
     await conn.commit()
+
+
+MODEL_BINDING_KINDS: tuple[str, str, str] = ("text", "image", "voice")
+
+
+def _empty_model_bindings() -> dict[str, dict[str, str | None]]:
+    return {
+        kind: {"provider": None, "model": None}
+        for kind in MODEL_BINDING_KINDS
+    }
+
+
+def _normalise_model_bindings(
+    raw: Any,
+) -> dict[str, dict[str, str | None]]:
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+
+    out = _empty_model_bindings()
+    for kind in MODEL_BINDING_KINDS:
+        item = raw.get(kind)
+        if not isinstance(item, dict):
+            continue
+        provider = item.get("provider")
+        model = item.get("model")
+        out[kind] = {
+            "provider": (
+                provider.strip()
+                if isinstance(provider, str) and provider.strip()
+                else None
+            ),
+            "model": (
+                model.strip()
+                if isinstance(model, str) and model.strip()
+                else None
+            ),
+        }
+    return out
+
+
+def _model_bindings_json(raw: Any) -> str:
+    return json.dumps(
+        _normalise_model_bindings(raw),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 @dataclass(frozen=True)
@@ -107,6 +167,9 @@ class Persona:
     created_at_ms: int
     updated_at_ms: int
     owner_user_id: str | None = None
+    model_bindings: dict[str, dict[str, str | None]] = field(
+        default_factory=_empty_model_bindings
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +196,11 @@ def _row_to_persona(row: aiosqlite.Row) -> Persona:
     # W1 migration ran (rare — the migration runs at open()) so use
     # ``.keys()`` to probe; fall back to None for the legacy shape.
     owner = row["owner_user_id"] if "owner_user_id" in row.keys() else None
+    model_bindings = (
+        _normalise_model_bindings(row["model_bindings_json"])
+        if "model_bindings_json" in row.keys()
+        else _empty_model_bindings()
+    )
     return Persona(
         id=row["id"],
         display_name=row["display_name"],
@@ -142,6 +210,7 @@ def _row_to_persona(row: aiosqlite.Row) -> Persona:
         created_at_ms=int(row["created_at_ms"]),
         updated_at_ms=int(row["updated_at_ms"]),
         owner_user_id=owner,
+        model_bindings=model_bindings,
     )
 
 
@@ -218,7 +287,8 @@ class PersonaStore:
         async with self._c.execute(
             """
             SELECT id, display_name, short_summary, system_prompt,
-                   is_builtin, owner_user_id, created_at_ms, updated_at_ms
+                   model_bindings_json, is_builtin, owner_user_id,
+                   created_at_ms, updated_at_ms
               FROM personas
              ORDER BY is_builtin DESC, updated_at_ms DESC, id ASC
             """,
@@ -231,7 +301,8 @@ class PersonaStore:
         async with self._c.execute(
             """
             SELECT id, display_name, short_summary, system_prompt,
-                   is_builtin, owner_user_id, created_at_ms, updated_at_ms
+                   model_bindings_json, is_builtin, owner_user_id,
+                   created_at_ms, updated_at_ms
               FROM personas
              WHERE id = ?
             """,
@@ -276,14 +347,16 @@ class PersonaStore:
                 """
                 INSERT INTO personas (
                     id, display_name, short_summary, system_prompt,
-                    is_builtin, owner_user_id, created_at_ms, updated_at_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    model_bindings_json, is_builtin, owner_user_id,
+                    created_at_ms, updated_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     persona.id,
                     persona.display_name,
                     persona.short_summary,
                     persona.system_prompt,
+                    _model_bindings_json(persona.model_bindings),
                     1 if builtin else 0,
                     persona.owner_user_id,
                     now,
@@ -313,6 +386,7 @@ class PersonaStore:
         display_name: str | None = None,
         short_summary: str | None = None,
         system_prompt: str | None = None,
+        model_bindings: dict[str, Any] | None = None,
     ) -> Persona:
         """Patch a persona row. All keyword args are optional — missing
         fields are preserved verbatim. Returns the post-write row.
@@ -344,6 +418,11 @@ class PersonaStore:
             if system_prompt is not None
             else existing.system_prompt
         )
+        new_model_bindings = (
+            _normalise_model_bindings(model_bindings)
+            if model_bindings is not None
+            else existing.model_bindings
+        )
 
         now = _now_ms()
         await self._c.execute(
@@ -352,10 +431,18 @@ class PersonaStore:
                SET display_name  = ?,
                    short_summary = ?,
                    system_prompt = ?,
+                   model_bindings_json = ?,
                    updated_at_ms = ?
              WHERE id = ?
             """,
-            (new_display, new_summary, new_prompt, now, persona_id),
+            (
+                new_display,
+                new_summary,
+                new_prompt,
+                _model_bindings_json(new_model_bindings),
+                now,
+                persona_id,
+            ),
         )
         await self._c.commit()
 

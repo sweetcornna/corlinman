@@ -84,6 +84,7 @@ _MODEL_COSTS: dict[str, tuple[float, float, float, float]] = {
 
 _INTERNAL_CHAT_EXTRA_KEYS: frozenset[str] = frozenset({
     "persona_id",
+    "provider_hint",
 })
 _CODEX_ONLY_CHAT_EXTRA_KEYS: frozenset[str] = frozenset({
     "prompt_cache_key",
