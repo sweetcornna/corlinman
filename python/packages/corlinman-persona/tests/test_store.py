@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import pytest
 from corlinman_persona.state import RECENT_TOPICS_CAP, PersonaState
@@ -54,6 +55,41 @@ async def test_open_or_create_creates_schema(db_path: Path) -> None:
         assert pk_cols == ["tenant_id", "agent_id"]
     finally:
         await store.close()
+
+
+async def test_open_or_create_closes_connection_when_migration_fails(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Failure after connect must not leave the sqlite handle open."""
+    from corlinman_persona import store as store_mod
+
+    class _FakeConnection:
+        closed = False
+
+        async def execute(self, _sql: str) -> None:
+            return None
+
+        async def commit(self) -> None:
+            return None
+
+        async def close(self) -> None:
+            self.closed = True
+
+    conn = _FakeConnection()
+
+    async def _connect(_path: Path) -> _FakeConnection:
+        return conn
+
+    async def _fail_migration(_conn: Any) -> None:
+        raise RuntimeError("migration failed")
+
+    monkeypatch.setattr(store_mod.aiosqlite, "connect", _connect)
+    monkeypatch.setattr(store_mod, "_migrate_agent_persona_schema", _fail_migration)
+
+    with pytest.raises(RuntimeError, match="migration failed"):
+        await PersonaStore.open_or_create(db_path)
+
+    assert conn.closed is True
 
 
 async def test_get_missing_returns_none(db_path: Path) -> None:
