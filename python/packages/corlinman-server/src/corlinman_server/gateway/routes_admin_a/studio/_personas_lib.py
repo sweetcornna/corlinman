@@ -38,7 +38,7 @@ class PersonaOut(BaseModel):
     display_name: str
     short_summary: str
     system_prompt: str
-    model_bindings: dict[str, "PersonaModelBinding"]
+    model_bindings: dict[str, PersonaModelBinding]
     is_builtin: bool
     created_at_ms: int
     updated_at_ms: int

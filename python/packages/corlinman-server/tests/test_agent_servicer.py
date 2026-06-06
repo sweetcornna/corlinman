@@ -470,9 +470,9 @@ class _PersonaBindingStore:
 async def test_persona_image_binding_routes_image_generate_tool(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    import corlinman_server.agent_servicer as agent_servicer_module
     from corlinman_agent.image import IMAGE_GENERATE_TOOL
     from corlinman_agent.reasoning_loop import ChatStart, ToolCallEvent
-    import corlinman_server.agent_servicer as agent_servicer_module
 
     parent_provider = SimpleNamespace(name="parent-provider")
     image_provider = SimpleNamespace(name="image-provider")
@@ -549,8 +549,8 @@ async def test_persona_image_binding_routes_image_generate_tool(
 async def test_persona_voice_binding_routes_text_to_speech_tool(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from corlinman_agent.reasoning_loop import ChatStart, ToolCallEvent
     import corlinman_server.agent_servicer as agent_servicer_module
+    from corlinman_agent.reasoning_loop import ChatStart, ToolCallEvent
 
     parent_provider = SimpleNamespace(name="parent-provider")
     voice_provider = SimpleNamespace(name="voice-provider")
