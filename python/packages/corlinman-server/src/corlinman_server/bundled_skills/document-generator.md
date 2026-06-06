@@ -21,7 +21,12 @@ metadata:
    ```
    这是项目内置命令（已在 PATH 上），用 Chrome 无头模式渲染，**自动处理中文字体**，
    输出干净排版的 PDF。成功会打印 `[md2pdf] wrote report.pdf (N bytes)`。
-3. **发送**：用 `send_attachment` 把 `report.pdf` 发给用户。
+3. **检查再发送**：发送前必须打开或渲染检查 PDF，至少确认首页：
+   - 中文字体正常，没有乱码、异常空格或逐字拆散。
+   - 标题、段落、表格、代码块没有重叠、裁切、挤出页面。
+   - 页面留白、层级、行高可读，不是密密麻麻的一屏文字。
+   如果发现任何问题，先改 Markdown/HTML 结构再重新渲染。
+4. **发送**：用 `send_attachment` 把 `report.pdf` 发给用户。
 
 ## 绝对不要做（这些就是上次把 PDF 弄乱的原因）
 
@@ -46,5 +51,6 @@ google-chrome --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage 
 
 ## 其它格式
 
-- 需要 **图片/海报/幻灯片**：用 `huashu-design` 技能（HTML→图片/视频）。
+- 需要 **图片/海报/幻灯片**：同时遵守 `visual-output-quality` 的防重叠验收；
+  复杂视觉稿用 `huashu-design` 技能（HTML→图片/视频）。
 - 需要纯文本/Markdown 交付：直接 `write_file` 后 `send_attachment` 发 `.md`。

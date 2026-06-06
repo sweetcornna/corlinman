@@ -170,7 +170,7 @@ Want the model to dispatch a topic-specific agent or to pin a session
 to a specific persona? `/admin/agents` lists what's available,
 `/admin/subagents` shows live dispatches — see [multi-agent](multi-agent.md).
 
-Want more procedural-knowledge skills than the 16 starters that ship
+Want more procedural-knowledge skills than the curated starters that ship
 in-wheel? `/admin/skills` is two tabs: **Installed** lists everything
 in the active profile (bundled rows are read-only, hub installs and
 operator-authored rows can be pinned or removed), and **Browse Hub**
