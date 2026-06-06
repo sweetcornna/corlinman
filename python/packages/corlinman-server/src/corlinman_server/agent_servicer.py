@@ -3944,8 +3944,10 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         Returns the cached handle on subsequent calls; ``None`` on any
         open failure (so the life dispatcher surfaces a typed
         ``persona_state_store_unavailable`` error rather than crashing the
-        turn). Distinct from :meth:`_get_persona_store` — that one is the
-        system_prompt *registry*, this one is the mutable runtime state.
+        turn). Open failures are treated as transient so a later tool call
+        can retry after the filesystem/database recovers. Distinct from
+        :meth:`_get_persona_store` — that one is the system_prompt
+        *registry*, this one is the mutable runtime state.
         """
         if self._persona_state_store is not None:
             return self._persona_state_store
@@ -3966,6 +3968,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 "agent.persona_state_store.init_failed", error=str(exc)
             )
             self._persona_state_store = None
+            self._persona_state_store_init_done = False
         return self._persona_state_store
 
     async def _get_persona_asset_store(self) -> Any | None:

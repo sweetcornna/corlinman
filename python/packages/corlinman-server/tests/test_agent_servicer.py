@@ -1038,6 +1038,37 @@ async def test_servicer_spawn_seeds_child_persona_state(
     child_agent_id = payload["tasks"][0]["child_agent_id"]
     row = await state_store.get(child_agent_id, tenant_id="tenant-a")
     assert row is not None, "subagent spawn must seed the child persona-state row"
+    await servicer.aclose()
+
+
+@pytest.mark.asyncio
+async def test_persona_state_store_retries_after_transient_open_failure(
+    tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A transient sqlite open failure must not disable persona_life forever."""
+    from corlinman_persona.store import PersonaStore
+    from corlinman_server.agent_servicer import CorlinmanAgentServicer
+
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+    real_open = PersonaStore.open_or_create
+    calls = 0
+
+    async def _flaky_open(path: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("transient sqlite open failure")
+        return await real_open(path)
+
+    monkeypatch.setattr(PersonaStore, "open_or_create", _flaky_open)
+
+    servicer = CorlinmanAgentServicer(provider_resolver=lambda _m: _FakeProvider([]))
+    assert await servicer._get_persona_state_store() is None
+
+    state_store = await servicer._get_persona_state_store()
+    assert state_store is not None
+    assert calls == 2
+    await servicer.aclose()
 
 
 @pytest.mark.asyncio
