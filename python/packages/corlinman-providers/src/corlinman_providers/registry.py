@@ -250,12 +250,11 @@ class ProviderRegistry:
              adapter with an empty params map.
           3. If neither hits, raise :class:`KeyError`.
 
-        ``provider_hint`` (W-D1) is an optional preferred provider slot
-        name. When set and the named provider is built + claims support
-        for ``alias_or_model`` (or the spec is enabled and ``cls.supports``
-        accepts it), the hinted provider is returned ahead of the
-        configured-provider scan. Unknown / disabled hints fall through
-        silently — the hint never blocks resolution, it only biases it.
+        ``provider_hint`` (W-D1) is an optional explicit provider slot
+        name. When set, the named provider must exist and be enabled; it
+        is returned directly for raw model ids. Unknown / disabled hints
+        fail instead of falling through to another provider, because a
+        persisted persona binding represents the user's routing choice.
         """
         aliases = aliases or {}
 
@@ -281,8 +280,11 @@ class ProviderRegistry:
         if provider_hint:
             hinted = self._providers.get(provider_hint)
             spec = self._specs.get(provider_hint)
-            if hinted is not None and spec is not None:
-                return hinted, alias_or_model, _runtime_params(spec.params)
+            if hinted is None or spec is None:
+                raise KeyError(
+                    f"provider_hint {provider_hint!r} is unknown or disabled"
+                )
+            return hinted, alias_or_model, _runtime_params(spec.params)
 
         # Configured-provider fallback — raw model id. This keeps config-driven
         # deployments on their declared base_url/api_key even when callers use
