@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from types import SimpleNamespace
 from typing import Any, ClassVar
 
@@ -564,7 +564,10 @@ async def test_persona_voice_binding_routes_text_to_speech_tool(
     ) -> tuple[Any, str, dict[str, Any]]:
         resolve_calls.append((alias_or_model, provider_hint))
         if alias_or_model == "voice-model":
-            return voice_provider, "upstream-voice-model", {}
+            return voice_provider, "upstream-voice-model", {
+                "tts_backend": "fish",
+                "reference_id": "voice-123",
+            }
         return parent_provider, alias_or_model, {}
 
     async def fake_dispatch_text_to_speech(
@@ -572,12 +575,14 @@ async def test_persona_voice_binding_routes_text_to_speech_tool(
         args_json: bytes | str,
         provider: Any,
         model_override: str | None = None,
+        provider_params: Mapping[str, Any] | None = None,
         **_: Any,
     ) -> str:
         return json.dumps(
             {
                 "provider": getattr(provider, "name", None),
                 "model_override": model_override,
+                "provider_params": dict(provider_params or {}),
             }
         )
 
@@ -621,6 +626,10 @@ async def test_persona_voice_binding_routes_text_to_speech_tool(
     assert payload == {
         "provider": "voice-provider",
         "model_override": "upstream-voice-model",
+        "provider_params": {
+            "tts_backend": "fish",
+            "reference_id": "voice-123",
+        },
     }
 
 

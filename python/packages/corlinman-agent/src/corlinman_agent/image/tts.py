@@ -31,6 +31,12 @@ Config read at runtime
   ``gpt-4o-mini-tts``.
 * ``CORLINMAN_TTS_VOICE`` — env override for the default voice; defaults
   to ``alloy``.
+* ``provider_params.tts_backend = "fish"`` — switch the dispatcher to
+  Fish Audio's native ``/v1/tts`` endpoint. ``reference_id`` selects the
+  Fish voice/model clone; ``model_override`` selects the Fish engine
+  (for example ``s2-pro``).
+* ``FISH_AUDIO_API_KEY`` / ``CORLINMAN_TTS_REFERENCE_ID`` — env fallbacks
+  for Fish Audio credentials and voice reference id.
 * ``CORLINMAN_TTS_TIMEOUT_SECS`` — HTTP timeout; defaults to ``60``.
 """
 
@@ -40,6 +46,7 @@ import json
 import os
 import time
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +72,7 @@ TEXT_TO_SPEECH_TOOL: str = "text_to_speech"
 _MAX_INPUT_CHARS: int = 8_000
 
 _DEFAULT_MODEL: str = "gpt-4o-mini-tts"
+_DEFAULT_FISH_MODEL: str = "s2-pro"
 _DEFAULT_VOICE: str = "alloy"
 _DEFAULT_TIMEOUT_SECS: float = 60.0
 
@@ -89,6 +97,32 @@ _FORMATS: dict[str, tuple[str, str]] = {
     "wav": (".wav", "audio/wav"),
 }
 _DEFAULT_FORMAT: str = "mp3"
+
+_FISH_BACKENDS: frozenset[str] = frozenset(
+    {"fish", "fish_audio", "fish-audio"}
+)
+_OPENAI_BACKENDS: frozenset[str] = frozenset(
+    {"openai", "openai_compatible", "openai-compatible"}
+)
+_FISH_BODY_PARAM_KEYS: frozenset[str] = frozenset(
+    {
+        "chunk_length",
+        "condition_on_previous_chunks",
+        "early_stop_threshold",
+        "latency",
+        "max_new_tokens",
+        "min_chunk_length",
+        "normalize",
+        "mp3_bitrate",
+        "opus_bitrate",
+        "prosody",
+        "repetition_penalty",
+        "sample_rate",
+        "seed",
+        "temperature",
+        "top_p",
+    }
+)
 
 
 def text_to_speech_tool_schema() -> dict[str, Any]:
@@ -195,25 +229,81 @@ def _resolve_runtime_config(
     return model, timeout
 
 
-def _provider_credentials(provider: Any) -> tuple[str | None, str | None]:
+def _param_str(params: Mapping[str, Any] | None, key: str) -> str | None:
+    if not params:
+        return None
+    raw = params.get(key)
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return None
+
+
+def _resolve_tts_backend(params: Mapping[str, Any] | None) -> str:
+    backend = (
+        _param_str(params, "tts_backend")
+        or _param_str(params, "backend")
+        or os.environ.get("CORLINMAN_TTS_BACKEND")
+        or "openai"
+    )
+    normalized = backend.strip().lower()
+    if normalized in _FISH_BACKENDS:
+        return "fish"
+    if normalized in _OPENAI_BACKENDS:
+        return "openai"
+    return normalized
+
+
+def _resolve_fish_runtime_config(
+    *,
+    model_override: str | None = None,
+    provider_params: Mapping[str, Any] | None = None,
+) -> tuple[str, float]:
+    model = (
+        (model_override.strip() if isinstance(model_override, str) else None)
+        or _param_str(provider_params, "model")
+        or os.environ.get("CORLINMAN_TTS_MODEL")
+        or _DEFAULT_FISH_MODEL
+    )
+    try:
+        timeout = float(
+            os.environ.get("CORLINMAN_TTS_TIMEOUT_SECS")
+            or _DEFAULT_TIMEOUT_SECS
+        )
+    except (TypeError, ValueError):
+        timeout = _DEFAULT_TIMEOUT_SECS
+    return model, timeout
+
+
+def _provider_credentials(
+    provider: Any,
+    *,
+    env_key: str = "OPENAI_API_KEY",
+) -> tuple[str | None, str | None]:
     """Pull ``(api_key, base_url)`` off the provider adapter.
 
     Mirrors :func:`corlinman_agent.image.generate._provider_credentials`
-    — tries the documented private attrs first, then public, then the
-    ``OPENAI_API_KEY`` env var. Returns ``(None, ...)`` (rather than
+    — tries the documented private attrs first, then public, then an
+    env var. Returns ``(None, ...)`` (rather than
     raising) so the dispatcher can emit a graceful ``tts_unavailable``
     envelope.
     """
     api_key: str | None = (
         getattr(provider, "_api_key", None)
         or getattr(provider, "api_key", None)
-        or os.environ.get("OPENAI_API_KEY")
+        or os.environ.get(env_key)
     )
     base_url: str | None = (
         getattr(provider, "_base_url", None)
         or getattr(provider, "base_url", None)
     )
     return (str(api_key) if api_key else None), (str(base_url) if base_url else None)
+
+
+def _fish_tts_endpoint(base_url: str | None) -> str:
+    root = (base_url or "https://api.fish.audio").rstrip("/")
+    if root.endswith("/v1"):
+        return f"{root}/tts"
+    return f"{root}/v1/tts"
 
 
 async def _try_openai_speech(
@@ -259,11 +349,81 @@ async def _try_openai_speech(
     return response.content
 
 
+async def _try_fish_speech(
+    *,
+    text: str,
+    fmt: str,
+    provider: Any,
+    model_override: str | None,
+    provider_params: Mapping[str, Any] | None,
+    transport: httpx.BaseTransport | None,
+) -> tuple[bytes, str]:
+    """Call Fish Audio's native ``/v1/tts`` endpoint.
+
+    Fish separates the generation engine (``model`` request header) from
+    the speaker identity (``reference_id`` in the JSON body). The latter is
+    intentionally kept in provider params so each persona can bind a
+    different voice without changing the chat model.
+    """
+    api_key, base_url = _provider_credentials(
+        provider,
+        env_key="FISH_AUDIO_API_KEY",
+    )
+    if not api_key:
+        raise RuntimeError(
+            "Fish Audio text-to-speech not configured — provider carries "
+            "no api_key and FISH_AUDIO_API_KEY is unset"
+        )
+
+    reference_id = (
+        _param_str(provider_params, "reference_id")
+        or os.environ.get("CORLINMAN_TTS_REFERENCE_ID")
+    )
+    if not reference_id:
+        raise RuntimeError(
+            "Fish Audio text-to-speech not configured — "
+            "provider params must include reference_id or "
+            "CORLINMAN_TTS_REFERENCE_ID must be set"
+        )
+
+    model, timeout = _resolve_fish_runtime_config(
+        model_override=model_override,
+        provider_params=provider_params,
+    )
+    payload: dict[str, Any] = {
+        "text": text,
+        "reference_id": reference_id,
+        "format": fmt,
+    }
+    for key in _FISH_BODY_PARAM_KEYS:
+        value = provider_params.get(key) if provider_params else None
+        if value is not None:
+            payload[key] = value
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "model": model,
+    }
+    client_kwargs: dict[str, Any] = {"timeout": timeout, "headers": headers}
+    if transport is not None:
+        client_kwargs["transport"] = transport
+    async with httpx.AsyncClient(**client_kwargs) as client:
+        response = await client.post(_fish_tts_endpoint(base_url), json=payload)
+    if response.status_code >= 400:
+        raise RuntimeError(
+            f"fish_tts_http_status: server returned {response.status_code} — "
+            f"{response.text[:300]}"
+        )
+    return response.content, reference_id
+
+
 async def dispatch_text_to_speech(
     *,
     args_json: bytes | str,
     provider: Any = None,
     model_override: str | None = None,
+    provider_params: Mapping[str, Any] | None = None,
     transport: httpx.BaseTransport | None = None,
 ) -> str:
     """Dispatch one ``text_to_speech`` tool call into a JSON envelope.
@@ -297,23 +457,39 @@ async def dispatch_text_to_speech(
     voice = args.get("voice") or _DEFAULT_VOICE
     if voice not in _VOICES:
         voice = _DEFAULT_VOICE
-    fmt = args.get("format") or _DEFAULT_FORMAT
+    fmt = args.get("format") or _param_str(provider_params, "format") or _DEFAULT_FORMAT
     if fmt not in _FORMATS:
         fmt = _DEFAULT_FORMAT
     ext, mime = _FORMATS[fmt]
 
     audio_bytes: bytes | None = None
-    backend = "openai"
+    backend = _resolve_tts_backend(provider_params)
+    reference_id: str | None = None
 
     try:
-        audio_bytes = await _try_openai_speech(
-            text=text,
-            voice=voice,
-            fmt=fmt,
-            provider=provider,
-            model_override=model_override,
-            transport=transport,
-        )
+        if backend == "fish":
+            audio_bytes, reference_id = await _try_fish_speech(
+                text=text,
+                fmt=fmt,
+                provider=provider,
+                model_override=model_override,
+                provider_params=provider_params,
+                transport=transport,
+            )
+        elif backend == "openai":
+            audio_bytes = await _try_openai_speech(
+                text=text,
+                voice=voice,
+                fmt=fmt,
+                provider=provider,
+                model_override=model_override,
+                transport=transport,
+            )
+        else:
+            return _err(
+                "tts_unavailable",
+                f"unsupported tts_backend: {backend}",
+            )
     except RuntimeError as exc:
         # No credentials / HTTP error — graceful unavailable.
         logger.info("text_to_speech.unavailable", reason=str(exc))
@@ -337,16 +513,19 @@ async def dispatch_text_to_speech(
         logger.exception("text_to_speech.write_failed", path=str(out_path))
         return _err("write_failed", str(exc))
 
-    return json.dumps(
-        {
+    payload: dict[str, Any] = {
             "ok": True,
             "path": str(out_path),
             "mime": mime,
             "kind": "audio",
-            "voice": voice,
+            "voice": reference_id or voice,
             "backend": backend,
             "size_bytes": len(audio_bytes),
             "generated_at_ms": int(time.time() * 1000),
-        },
+    }
+    if reference_id is not None:
+        payload["reference_id"] = reference_id
+    return json.dumps(
+        payload,
         ensure_ascii=False,
     )
