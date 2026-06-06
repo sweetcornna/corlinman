@@ -4,6 +4,20 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.2] — 2026-06-06 — Multi-agent status link noise fix
+
+> Patch release for channel reply hygiene. No config migration is required.
+
+### Fixed
+- **Normal channel replies no longer append a live status link.** The
+  shareable `🔗 实时状态` link is now sent only when the parent turn actually
+  dispatches sub-agents via `subagent_spawn`, `subagent_spawn_many`, or
+  `subagent_spawn_inline`.
+- **Multi-agent fan-out still surfaces exactly one status link.** The link is
+  sent as a standalone message when the first sub-agent starts; if that early
+  send fails, the final reply appends one fallback link instead of dropping it
+  or duplicating it.
+
 ## [1.18.1] — 2026-06-05 — NapCat QR refresh hardening
 
 > Patch release for QQ scan-login reliability. No config migration is required.

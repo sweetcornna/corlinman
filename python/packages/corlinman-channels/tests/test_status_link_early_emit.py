@@ -10,7 +10,8 @@ most.
 Fix: the moment the first ``subagent_spawn`` / ``subagent_spawn_many`` /
 ``subagent_spawn_inline`` tool_call is seen mid-turn, the channel pushes the
 link as its own standalone message; the end-of-turn footer then skips the
-link so it is never sent twice. Turns with zero spawns are unchanged.
+link so it is never sent twice. Turns with zero spawns do not get a status
+link at all.
 
 Layers covered here:
 
@@ -18,8 +19,9 @@ Layers covered here:
   mutable-spinner channels (Telegram / Discord / Slack / Feishu). Asserts the
   ``on_subagent_spawn`` callback fires once on the first spawn, never on
   non-spawn tools, and not at all when the link feature is off.
-* :func:`service._build_footer_for_outcome` — the end-of-turn de-dup: when
-  ``outcome.status_link_emitted`` is set, the status line is suppressed.
+* :func:`service._build_footer_for_outcome` — the end-of-turn de-dup/fallback:
+  only turns that actually requested a sub-agent link may append one at the
+  end, and only when the early standalone send did not already succeed.
 * :func:`service.handle_one_qq` — end-to-end on a summary-style channel
   (no shared spinner): the early link is sent as a standalone QQ message and
   the final reply does not re-append it.
@@ -166,6 +168,7 @@ class TestDriveSpinnerEarlyEmit:
             on_subagent_spawn=_cb,
         )
         assert emitted == [_EXPECTED_LINK]
+        assert outcome.status_link_requested is True
         assert outcome.status_link_emitted is True
 
     @pytest.mark.asyncio
@@ -191,12 +194,13 @@ class TestDriveSpinnerEarlyEmit:
             on_subagent_spawn=_cb,
         )
         assert emitted == [_EXPECTED_LINK]
+        assert outcome.status_link_requested is True
         assert outcome.status_link_emitted is True
 
     @pytest.mark.asyncio
     async def test_no_spawn_no_emit(self, status_links_on: None) -> None:
         """A turn that calls ordinary tools (no sub-agent) never surfaces
-        the early link — the end-of-turn footer path handles it instead."""
+        a status link."""
         svc = _ScriptedChatService([
             _Ev(kind="tool_call", tool="web_search"),
             _Ev(kind="token_delta", text="answer"),
@@ -217,6 +221,7 @@ class TestDriveSpinnerEarlyEmit:
             on_subagent_spawn=_cb,
         )
         assert emitted == []
+        assert outcome.status_link_requested is False
         assert outcome.status_link_emitted is False
 
     @pytest.mark.asyncio
@@ -244,6 +249,7 @@ class TestDriveSpinnerEarlyEmit:
             on_subagent_spawn=_cb,
         )
         assert emitted == []
+        assert outcome.status_link_requested is False
         assert outcome.status_link_emitted is False
 
     @pytest.mark.asyncio
@@ -271,8 +277,9 @@ class TestDriveSpinnerEarlyEmit:
             request=SimpleNamespace(),
             on_subagent_spawn=_cb,
         )
-        # Not marked emitted (send failed) → end-of-turn footer still
-        # appends the link as the fallback.
+        # Requested but not marked emitted (send failed) → end-of-turn footer
+        # may still append the link as the fallback.
+        assert outcome.status_link_requested is True
         assert outcome.status_link_emitted is False
         assert "".join(spinner.text_parts) == "survived"
 
@@ -294,14 +301,46 @@ class TestFooterDeDup:
         # Nothing else to render on an emitter-less turn → empty footer.
         assert footer == ""
 
-    def test_footer_keeps_link_when_not_emitted(
+    def test_footer_drops_link_when_no_subagent_requested(
         self, status_links_on: None
     ) -> None:
-        outcome = service._DriveSpinnerOutcome(status_link_emitted=False)
+        outcome = service._DriveSpinnerOutcome(
+            status_link_requested=False,
+            status_link_emitted=False,
+        )
+        footer = service._build_footer_for_outcome(
+            outcome, service._FooterState(), session_key="sess"
+        )
+        assert footer == ""
+
+    def test_footer_keeps_link_when_subagent_requested_but_not_emitted(
+        self, status_links_on: None
+    ) -> None:
+        outcome = service._DriveSpinnerOutcome(
+            status_link_requested=True,
+            status_link_emitted=False,
+        )
         footer = service._build_footer_for_outcome(
             outcome, service._FooterState(), session_key="sess"
         )
         assert footer == _EXPECTED_LINK
+
+    def test_w41_footer_kept_link_dropped_when_no_subagent_requested(
+        self, status_links_on: None
+    ) -> None:
+        outcome = service._DriveSpinnerOutcome(status_link_requested=False)
+        fs = service._FooterState(
+            elapsed_ms=12_000,
+            estimated_cost_usd=0.01,
+            cost_status="estimated",
+            tool_call_count=2,
+            populated=True,
+        )
+        footer = service._build_footer_for_outcome(
+            outcome, fs, session_key="sess"
+        )
+        assert "elapsed:" in footer
+        assert _EXPECTED_LINK not in footer
 
     def test_w41_footer_kept_link_dropped_when_emitted(
         self, status_links_on: None
@@ -369,12 +408,11 @@ class TestQqEndToEndEarlyLink:
         assert _EXPECTED_LINK not in answer_bubble
 
     @pytest.mark.asyncio
-    async def test_no_spawn_link_only_at_end(
+    async def test_no_spawn_no_status_link(
         self, status_links_on: None
     ) -> None:
-        """Regression guard: a turn with NO sub-agent keeps the existing
-        end-of-turn behaviour — the link rides the final bubble, and there
-        is no separate early message."""
+        """Regression guard: a turn with NO sub-agent does not show the
+        live status link in either a standalone message or the final bubble."""
         svc = _ScriptedChatService([
             _Ev(kind="token_delta", text="just a chat reply"),
             _Ev(kind="done"),
@@ -388,7 +426,7 @@ class TestQqEndToEndEarlyLink:
             svc, req, ev, "m", adapter, asyncio.Event()  # type: ignore[arg-type]
         )
         texts = [_action_text(a) for a in adapter.sent]
-        # Single bubble: the reply + appended link, no standalone early msg.
+        # Single bubble: the reply only, no standalone or appended link.
         assert len(texts) == 1
         assert "just a chat reply" in texts[0]
-        assert _EXPECTED_LINK in texts[0]
+        assert _EXPECTED_LINK not in texts[0]

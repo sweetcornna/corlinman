@@ -57,7 +57,7 @@ _log = logging.getLogger(__name__)
 #: Tool names that dispatch sub-agent(s). The moment one of these surfaces as
 #: a ``tool_call`` event mid-turn, the channel handler surfaces the shareable
 #: agent-status link EARLY (as a standalone message) so the user can watch the
-#: fan-out live instead of only receiving the link once the turn ends. Mirrors
+#: fan-out live. Normal, non-fan-out turns do not get status links. Mirrors
 #: the constants in ``corlinman_agent.subagent.runner`` (kept duplicated here so
 #: this package never imports ``corlinman-agent`` just for three strings).
 _SUBAGENT_SPAWN_TOOLS: frozenset[str] = frozenset(
@@ -1217,9 +1217,10 @@ async def handle_one_qq(
     # is_error, error_summary). Rendered by _qq_format_activity_summary
     # and prepended to the final reply if non-empty.
     activity: list[tuple[str, str, int | None, bool, str]] = []
-    # Surface the live status link as soon as the first sub-agent is
-    # dispatched (QQ has no editable spinner, so this is a standalone
-    # message); de-dups against the end-of-turn append below.
+    # Surface the live status link only when a sub-agent is dispatched (QQ has
+    # no editable spinner, so this is a standalone message). If the standalone
+    # send fails, the final reply may append one fallback link.
+    _qq_status_link_requested = False
     _qq_status_link_sent = False
     try:
         stream = chat_service.run(request, cancel)
@@ -1248,11 +1249,13 @@ async def handle_one_qq(
             elif kind == "tool_call":
                 tool_name = getattr(chat_ev, "tool", "") or ""
                 if (
-                    not _qq_status_link_sent
+                    not _qq_status_link_requested
+                    and not _qq_status_link_sent
                     and tool_name in _SUBAGENT_SPAWN_TOOLS
                 ):
                     _qq_link = _status_link_line(req.binding.session_key())
                     if _qq_link:
+                        _qq_status_link_requested = True
                         try:
                             await adapter.send_action(
                                 _build_reply_action(
@@ -1402,9 +1405,13 @@ async def handle_one_qq(
     # [MSG_BREAK] bubble-split: if the body contains the persona marker,
     # send each segment as a separate QQ message with a short pause.
     bubbles = _split_on_msg_break(body)
-    # Skip the end-of-turn link if it was already pushed mid-turn.
+    # Append a fallback link only for an actual sub-agent fan-out whose
+    # standalone early send failed. Ordinary replies must not carry status
+    # links.
     _qq_status_line = (
-        "" if _qq_status_link_sent else _status_link_line(req.binding.session_key())
+        _status_link_line(req.binding.session_key())
+        if _qq_status_link_requested and not _qq_status_link_sent
+        else ""
     )
     for bubble_idx, bubble in enumerate(bubbles):
         chunks = chunk_reply(bubble, _QQ_TEXT_LIMIT)
@@ -2819,9 +2826,13 @@ class _DriveSpinnerOutcome:
     supplemented: bool = False
     tool_call_count: int = 0
     started_at_ms: int = 0
+    #: Set True once this turn actually encountered a sub-agent spawn and a
+    #: status link could be minted. This gates the end-of-turn fallback so
+    #: ordinary replies never show a live status link.
+    status_link_requested: bool = False
     #: Set True once the early "watch me work" status link has been sent
-    #: this turn (the first time a sub-agent spawn tool fired). The caller's
-    #: end-of-turn footer reads this to avoid re-appending the same link.
+    #: this turn. The caller's end-of-turn footer reads this to avoid
+    #: re-appending the same link.
     status_link_emitted: bool = False
 
 
@@ -2965,6 +2976,7 @@ async def _drive_spinner(
     channel uses it to push the link as a standalone message so the user
     can open the live status view immediately; ``outcome.status_link_emitted``
     is then set so the end-of-turn footer does not append the link twice.
+    Turns without sub-agent fan-out never request or append a status link.
     """
     import time as _time
 
@@ -2998,11 +3010,13 @@ async def _drive_spinner(
             # end-of-turn footer still appends the link as a fallback.
             if (
                 on_subagent_spawn is not None
+                and not outcome.status_link_requested
                 and not outcome.status_link_emitted
                 and tool_name in _SUBAGENT_SPAWN_TOOLS
             ):
                 line = _status_link_line(inbound.binding.session_key())
                 if line:
+                    outcome.status_link_requested = True
                     try:
                         await on_subagent_spawn(line)
                         outcome.status_link_emitted = True
@@ -3177,10 +3191,9 @@ def _build_footer_for_outcome(
       authoritative — :class:`_DriveSpinnerOutcome` only provides the
       legacy ``tool_call_count`` fallback for the same turn.
 
-    The shareable status-card link (when ``session_key`` is supplied and the
-    feature is configured via :func:`configure_status_links`) is appended on
-    its own line and is INDEPENDENT of ``populated`` — a user always gets the
-    "watch me work" link even on an emitter-less deployment.
+    The shareable status-card link is appended only as a fallback for turns
+    that actually spawned sub-agents but failed to send the standalone early
+    link. Normal, non-fan-out replies never get a status link.
 
     Returns the empty string when nothing applies; callers (every channel)
     pass the return through :func:`try_append_footer` which is empty-safe.
@@ -3200,11 +3213,12 @@ def _build_footer_for_outcome(
             else outcome.tool_call_count
         )
         w41 = format_turn_footer(elapsed_ms, tool_calls, cost, cost_status)
-    # Skip the status link here when it was already pushed mid-turn (the
-    # first sub-agent spawn surfaced it as a standalone message) so the user
-    # never gets the same link twice in one turn.
+    # Append a status link only as a fallback for sub-agent fan-out turns
+    # where the standalone early send did not succeed.
     status_line = (
-        "" if outcome.status_link_emitted else _status_link_line(session_key)
+        _status_link_line(session_key)
+        if outcome.status_link_requested and not outcome.status_link_emitted
+        else ""
     )
     if w41 and status_line:
         return f"{w41}\n{status_line}"
@@ -4455,8 +4469,9 @@ async def handle_one_qq_official(
     text_parts: list[str] = []
     tool_lines: list[str] = []
     status_lines: list[str] = []
-    # Push the live status link as a standalone message the moment the first
-    # sub-agent spawns (QQ-official is non-editable); de-dups end-of-turn.
+    # Push the live status link only when a sub-agent spawns. If the
+    # standalone send fails, the final reply may append one fallback link.
+    _qqo_status_link_requested = False
     _qqo_status_link_sent = False
     error_message: str | None = None
     supplemented = False
@@ -4474,13 +4489,15 @@ async def handle_one_qq_official(
             elif kind == "tool_call":
                 tool_name = getattr(chat_ev, "tool", "") or ""
                 if (
-                    not _qqo_status_link_sent
+                    not _qqo_status_link_requested
+                    and not _qqo_status_link_sent
                     and tool_name in _SUBAGENT_SPAWN_TOOLS
                 ):
                     _qqo_link = _status_link_line(
                         inbound.binding.session_key()
                     )
                     if _qqo_link:
+                        _qqo_status_link_requested = True
                         try:
                             await _qq_official_send_text(
                                 sender, inbound, _qqo_link
@@ -4557,12 +4574,12 @@ async def handle_one_qq_official(
     final = (summary + body) if summary else body
     if not final.strip():
         return
-    # Append the shareable agent-status link when configured (empty-safe).
-    # Skip it if already pushed mid-turn at first sub-agent spawn.
+    # Append a fallback status link only for actual sub-agent fan-out turns
+    # whose standalone early send failed.
     _qqo_status_line = (
-        ""
-        if _qqo_status_link_sent
-        else _status_link_line(inbound.binding.session_key())
+        _status_link_line(inbound.binding.session_key())
+        if _qqo_status_link_requested and not _qqo_status_link_sent
+        else ""
     )
 
     # [MSG_BREAK] bubble-split: send each persona bubble as a separate
@@ -4819,8 +4836,10 @@ async def handle_one_wechat_official(
     supplemented = False
     # WeChat has no live status surface, but a sub-agent fan-out can run
     # for minutes — push the live status link as a customer-service message
-    # the moment the first sub-agent spawns so the user can watch. De-dups
-    # against the end-of-turn append below.
+    # the moment the first sub-agent spawns so the user can watch. If that
+    # standalone send fails, the final customer-service push may append one
+    # fallback link.
+    _wx_status_link_requested = False
     _wx_status_link_sent = False
     try:
         stream = chat_service.run(request, cancel)
@@ -4837,13 +4856,18 @@ async def handle_one_wechat_official(
                     ev, "message", ""
                 )
                 break
-            elif kind == "tool_call" and not _wx_status_link_sent:
+            elif (
+                kind == "tool_call"
+                and not _wx_status_link_requested
+                and not _wx_status_link_sent
+            ):
                 tool_name = getattr(ev, "tool", "") or ""
                 if tool_name in _SUBAGENT_SPAWN_TOOLS:
                     _wx_link = _status_link_line(
                         inbound.binding.session_key()
                     )
                     if _wx_link:
+                        _wx_status_link_requested = True
                         try:
                             await sender.send_text_customer(
                                 inbound.binding.sender, _wx_link
@@ -4908,13 +4932,13 @@ async def handle_one_wechat_official(
     # so the user still gets the answer.
     openid = inbound.binding.sender
     push_body = remainder if passive_delivered else body
-    # Append the shareable status link to the customer-service push (NOT the
-    # length-capped passive XML), so the user gets a live trajectory link.
-    # Skip it if already pushed mid-turn at first sub-agent spawn.
+    # Append a fallback status link to the customer-service push (NOT the
+    # length-capped passive XML), but only for an actual sub-agent fan-out
+    # whose standalone early send failed.
     _wx_status_line = (
-        ""
-        if _wx_status_link_sent
-        else _status_link_line(inbound.binding.session_key())
+        _status_link_line(inbound.binding.session_key())
+        if _wx_status_link_requested and not _wx_status_link_sent
+        else ""
     )
     if push_body and push_body.strip():
         # [MSG_BREAK] bubble-split: send each persona bubble as a separate

@@ -6,7 +6,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/sweetcornna/corlinman/ci.yml?branch=main&label=CI)](https://github.com/sweetcornna/corlinman/actions)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.18.1-brightgreen)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.18.2-brightgreen)](CHANGELOG.md)
 [![Docs](https://img.shields.io/badge/docs-architecture-informational)](docs/architecture.md)
 
 **A self-hosted intelligent-agent platform.** Give a language model durable
@@ -19,11 +19,12 @@ govern with human-in-the-loop approvals.
 > _Live deployment reference: <https://corlinman.cornna.xyz>._
 > _中文介绍章节见文末 ["中文速览"](#中文速览)。_
 >
-> **What's new in 1.18.1** — NapCat QR refresh hardening: QQ scan-login refresh
-> now verifies that the QR actually changed and can ask NapCat to restart when
-> its refresh API is a no-op. Existing config remains compatible. See
-> [`CHANGELOG.md`](CHANGELOG.md). _1.18.1 修复 NapCat 刷新请求成功但二维码不变的问题；
-> 详见 [更新日志](CHANGELOG.md)。_
+> **What's new in 1.18.2** — channel replies no longer append a live status
+> link on every normal message. The `🔗 实时状态` link appears only when the
+> parent turn dispatches sub-agents, and it is sent once with a final fallback
+> if the early send fails. See [`CHANGELOG.md`](CHANGELOG.md).
+> _1.18.2 修复普通回复每条都带实时状态链接的问题；只有发布多 agent 时，
+> 主 agent 才发送一次副 agent 状态链接。_
 
 ---
 
@@ -682,10 +683,10 @@ ops/                Grafana dashboard + observability compose
 
 ## Roadmap + status
 
-**v1.18.1** (current) — NapCat QR refresh hardening: QQ scan-login refresh now
-verifies that the QR actually changed, can route the embedded NapCat WebUI
-refresh button through the gateway, and restarts NapCat when its refresh API is
-a no-op. Existing config remains compatible. Tagged `v1.18.1`. The complete,
+**v1.18.2** (current) — channel status-link hygiene: normal replies no longer
+append `🔗 实时状态`, while multi-agent fan-out still sends one standalone
+sub-agent status link and keeps a final fallback if the early send fails.
+Existing config remains compatible. Tagged `v1.18.2`. The complete,
 up-to-date version history (1.1 → 1.18) lives in
 [`CHANGELOG.md`](CHANGELOG.md).
 
@@ -770,9 +771,9 @@ MIT. See [`LICENSE`](LICENSE).
 
 ## 中文速览
 
-> **1.18.1 新特性**：NapCat 二维码刷新加固。QQ 扫码登录现在会确认刷新后
-> 的二维码确实变化；如果 NapCat 的刷新 API 返回成功但仍给旧码，gateway 会请求
-> NapCat 重启并等待新码。现有配置保持兼容。
+> **1.18.2 新特性**：普通回复不再每条都附带 `🔗 实时状态`。只有主 agent
+> 触发多 agent fan-out 时，才会发送一次副 agent 状态链接；提前发送失败时，
+> 最终回复会补发一次兜底链接。现有配置保持兼容。
 > 完整说明见 [更新日志](CHANGELOG.md)。
 
 **corlinman 是一个可自托管的智能体平台。** 不只是 LLM 的 API 代理，也不是拖拽工作流的工具箱——它是一套有主张的运行时：让语言模型拥有**持久记忆**、**真实工具**、**多通道接入**、**可审计的运维面板**，全部跑在你自己的机器上。
