@@ -42,6 +42,7 @@ import {
   FIXTURE_TURN_EVENTS,
   MODELS_V2_RESPONSE,
   OAUTH_STATUS_EMPTY,
+  PERSONAS_RESPONSE,
   PROVIDER_KINDS_RESPONSE,
   PROVIDER_MODELS_RESPONSE,
   PROVIDER_TEST_OK,
@@ -54,6 +55,17 @@ import {
 } from "./admin-pages-smoke._fixtures";
 
 const TEST_TIMEOUT_MS = 10_000;
+
+const INFO_NO_UPDATE_RESPONSE = {
+  current: "1.1.1",
+  latest: "1.1.1",
+  available: false,
+  release_url: null,
+  release_notes_md: null,
+  published_at: null,
+  last_checked_at: 1_716_540_000_000,
+  prerelease_seen: [] as string[],
+} as const;
 
 // ---------------------------------------------------------------------------
 // Shared listeners + auth stubs
@@ -382,6 +394,50 @@ async function installModelsStubs(page: Page): Promise<void> {
   });
 }
 
+/** Shared layout queries mounted outside the page under test. */
+async function installAdminLayoutStubs(page: Page): Promise<void> {
+  await page.route("**/admin/system/info*", async (route: Route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(INFO_NO_UPDATE_RESPONSE),
+    });
+  });
+  await page.route("**/admin/profiles*", async (route: Route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify([]),
+    });
+  });
+  await page.route("**/admin/tenants*", async (route: Route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ tenants: [], active: null }),
+    });
+  });
+}
+
+/** Stubs for the `/admin/persona` page and its nested model picker. */
+async function installPersonaStubs(page: Page): Promise<void> {
+  await installModelsStubs(page);
+  await page.route("**/admin/channels/*/humanlike", async (route: Route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ enabled: false, persona_id: null }),
+    });
+  });
+  await page.route("**/admin/personas*", async (route: Route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(PERSONAS_RESPONSE),
+    });
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -391,6 +447,7 @@ test.describe("admin pages smoke — stubs only", () => {
     await pinLocaleEn(page);
     await installAuthStubs(page);
     await installHealthStub(page);
+    await installAdminLayoutStubs(page);
   });
 
   test("sessions list renders a row and clear-all button", async ({
@@ -547,6 +604,34 @@ test.describe("admin pages smoke — stubs only", () => {
     await expect(pick).toBeVisible({ timeout: 10_000 });
     await pick.click();
     await expect(page.getByTestId("model-picker-dialog")).toBeVisible();
+    verify();
+  });
+
+  test("persona editor model picker options are clickable", async ({ page }) => {
+    test.setTimeout(TEST_TIMEOUT_MS);
+    const verify = attachStrictListeners(page);
+    await installPersonaStubs(page);
+
+    await page.goto("/persona");
+
+    const newPersona = page.getByTestId("persona-new");
+    await expect(newPersona).toBeVisible({ timeout: 10_000 });
+    await newPersona.click();
+
+    const editor = page.getByTestId("persona-editor");
+    await expect(editor).toBeVisible();
+
+    await page.getByTestId("persona-model-pick-text").click();
+    const picker = page.getByTestId("model-picker-dialog");
+    await expect(picker).toBeVisible();
+
+    await page.getByTestId("model-picker-provider-openai").click();
+    await page.getByTestId("model-picker-model-gpt-4o-mini").click();
+
+    await expect(picker).toBeHidden();
+    await expect(page.getByTestId("persona-model-binding-text")).toContainText(
+      "openai / gpt-4o-mini",
+    );
     verify();
   });
 });
