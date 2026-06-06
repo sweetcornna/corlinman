@@ -4,7 +4,7 @@
 - **Mode**: native systemd gateway + separate Python agent service
 - **Install prefix**: `/opt/corlinman`
 - **Data dir**: `/opt/corlinman/data`
-- **Last verified**: 2026-06-05 22:22 CST, `v1.18.1`
+- **Last verified**: 2026-06-06 09:33 CST, `v1.18.2`
 
 This runbook is for the hosted demo VPS. It is intentionally more specific than
 the generic installer docs because this box has a legacy root-owned native
@@ -169,6 +169,39 @@ curl -fsS http://127.0.0.1:6005/health
 ```
 
 Keep the UI backup for at least one release cycle.
+
+## 2026-06-06 09:33 CST deployment record
+
+Release deployed:
+
+- tag: `v1.18.2`
+- commit: `bd2789a6da90138c1fac47b3e0f8f887b7beff79`
+- package: `corlinman-server==1.18.2`
+- UI backup: not changed; this release did not rebuild `ui/out/`
+
+Verification results:
+
+- remote repo reset to `HEAD=bd2789a6da90138c1fac47b3e0f8f887b7beff79`
+- `systemctl is-active corlinman` -> `active`
+- `systemctl is-active corlinman-agent` -> `active`
+- local `/health` -> `{"status":"ok","mode":"ok"}`
+- local `/openapi.json` -> `200`
+- local `/admin/system/info` without credentials -> `401`
+- local `POST /api/QQLogin/RefreshQRcode` without credentials -> `401`
+- public `/health`, `/login`, `/marketplace` -> `200`
+- public `/admin/system/info` -> `401`
+- public `POST /api/QQLogin/RefreshQRcode` without credentials -> `401`
+  JSON `missing_authorization`
+- deployed-runtime status-link smoke -> pass:
+  ordinary QQ reply sent only the answer, while a `subagent_spawn` turn sent
+  exactly one standalone `实时状态` link and did not append that link to the
+  final answer bubble.
+
+Operational note: `corlinman.service` entered `deactivating (stop-sigterm)`;
+the gateway had already logged `Application shutdown complete`, so the old
+main process was killed with
+`systemctl kill --kill-who=main -s SIGKILL corlinman`. systemd then completed
+the restart and the new gateway became healthy.
 
 ## 2026-06-05 22:22 CST deployment record
 
