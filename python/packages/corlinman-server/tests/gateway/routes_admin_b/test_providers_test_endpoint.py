@@ -166,6 +166,74 @@ class TestTestEndpoint:
         assert body["models_count"] == 2
         assert "error" not in body or body.get("error") is None
 
+    def test_test_endpoint_fish_tts_skips_openai_models_probe(
+        self,
+        client: TestClient,
+        state_and_snapshot: tuple[AdminState, dict[str, Any]],
+    ) -> None:
+        """Fish Audio TTS providers do not expose OpenAI /v1/models."""
+        _, snapshot = state_and_snapshot
+        snapshot.clear()
+        snapshot.update({
+            "providers": {
+                "fish_audio": {
+                    "kind": "openai_compatible",
+                    "api_key": "fish-key",
+                    "base_url": "https://api.fish.audio",
+                    "enabled": True,
+                    "params": {
+                        "tts_backend": "fish",
+                        "reference_id": "voice-ref",
+                        "format": "mp3",
+                    },
+                }
+            }
+        })
+
+        with patch("httpx.AsyncClient") as async_client_cls:
+            resp = client.post("/admin/providers/fish_audio/test")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["models_count"] == 2
+        assert "Fish Audio TTS" in body["note"]
+        async_client_cls.assert_not_called()
+
+    def test_test_endpoint_fish_tts_honors_reference_id_env_fallback(
+        self,
+        client: TestClient,
+        state_and_snapshot: tuple[AdminState, dict[str, Any]],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The admin probe mirrors the runtime Fish reference-id fallback."""
+        monkeypatch.setenv("CORLINMAN_TTS_REFERENCE_ID", "voice-from-env")
+        _, snapshot = state_and_snapshot
+        snapshot.clear()
+        snapshot.update({
+            "providers": {
+                "fish_audio": {
+                    "kind": "openai_compatible",
+                    "api_key": "fish-key",
+                    "base_url": "https://api.fish.audio",
+                    "enabled": True,
+                    "params": {
+                        "tts_backend": "fish",
+                        "format": "mp3",
+                    },
+                }
+            }
+        })
+
+        with patch("httpx.AsyncClient") as async_client_cls:
+            resp = client.post("/admin/providers/fish_audio/test")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["models_count"] == 2
+        async_client_cls.assert_not_called()
+
     def test_test_endpoint_openai_compatible_auth_fail(
         self,
         client: TestClient,
@@ -579,6 +647,41 @@ class TestModelsEndpoint:
         assert any(i.startswith("claude-") for i in ids)
         # No upstream was contacted — error key absent.
         assert "error" not in body
+
+    def test_models_endpoint_fish_tts_returns_tts_catalog(
+        self,
+        client: TestClient,
+        state_and_snapshot: tuple[AdminState, dict[str, Any]],
+    ) -> None:
+        """Fish Audio TTS providers get a local engine catalog."""
+        _, snapshot = state_and_snapshot
+        snapshot.clear()
+        snapshot.update({
+            "providers": {
+                "fish_audio": {
+                    "kind": "openai_compatible",
+                    "api_key": "fish-key",
+                    "base_url": "https://api.fish.audio",
+                    "enabled": True,
+                    "params": {
+                        "tts_backend": "fish",
+                        "reference_id": "voice-ref",
+                        "format": "mp3",
+                    },
+                }
+            }
+        })
+
+        with patch("httpx.AsyncClient") as async_client_cls:
+            resp = client.get("/admin/providers/fish_audio/models")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["models"] == [
+            {"id": "s2-pro", "display_name": "Fish Audio S2 Pro"},
+            {"id": "s1", "display_name": "Fish Audio S1"},
+        ]
+        async_client_cls.assert_not_called()
 
     def test_models_endpoint_mock_provider(
         self,

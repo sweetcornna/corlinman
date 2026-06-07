@@ -80,6 +80,14 @@ function freshParamRow(): ParamRow {
   };
 }
 
+function presetParamRow(key: string, value: string): ParamRow {
+  return {
+    ...freshParamRow(),
+    key,
+    value,
+  };
+}
+
 export function AddCustomProviderModal({
   open,
   onOpenChange,
@@ -184,6 +192,19 @@ export function AddCustomProviderModal({
     createMutation.mutate(body);
   }
 
+  function applyFishAudioPreset() {
+    setSlug("fish_audio");
+    setSlugTouched(true);
+    setKind("openai_compatible");
+    setBaseUrl("https://api.fish.audio");
+    setParams([
+      presetParamRow("tts_backend", "fish"),
+      presetParamRow("reference_id", ""),
+      presetParamRow("format", "mp3"),
+    ]);
+    setSubmitError(null);
+  }
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-xl">
@@ -197,6 +218,32 @@ export function AddCustomProviderModal({
         </DialogHeader>
 
         <div className="max-h-[60vh] space-y-4 overflow-y-auto pr-1">
+          <div className="space-y-2 rounded-md border border-tp-glass-edge p-3">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h3 className="text-sm font-semibold">Presets</h3>
+                <p className="text-[11px] text-tp-ink-3">
+                  Pre-fill common provider wiring, then adjust secrets and
+                  voice-specific fields.
+                </p>
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                data-testid="custom-provider-preset-fish-audio"
+                onClick={applyFishAudioPreset}
+              >
+                Fish Audio TTS
+              </Button>
+            </div>
+            <p className="text-[11px] text-tp-ink-3">
+              Creates an OpenAI-compatible custom provider with Fish TTS
+              params. Fill <code>reference_id</code> with the trained or
+              public voice id.
+            </p>
+          </div>
+
           {/* slug + kind row */}
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
             <div className="space-y-1.5">

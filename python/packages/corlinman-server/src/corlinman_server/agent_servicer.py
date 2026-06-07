@@ -2310,14 +2310,14 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         start: AgentChatStart,
         kind: str,
         fallback_provider: CorlinmanProvider,
-    ) -> tuple[CorlinmanProvider, str | None]:
+    ) -> tuple[CorlinmanProvider, str | None, dict[str, Any]]:
         persona_id = _bound_persona_id_from_start(start)
         if persona_id is None:
-            return fallback_provider, None
+            return fallback_provider, None, {}
 
         persona_store = await self._get_persona_store()
         if persona_store is None:
-            return fallback_provider, None
+            return fallback_provider, None, {}
 
         try:
             persona = await persona_store.get(persona_id)
@@ -2328,16 +2328,16 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 kind=kind,
                 error=str(exc),
             )
-            return fallback_provider, None
+            return fallback_provider, None, {}
         if persona is None:
-            return fallback_provider, None
+            return fallback_provider, None, {}
 
         provider_hint, model = _persona_model_binding_for(persona, kind)
         if model is None:
-            return fallback_provider, None
+            return fallback_provider, None, {}
 
         try:
-            bound_provider, upstream_model, _params = _call_resolver(
+            bound_provider, upstream_model, params = _call_resolver(
                 self._resolve,
                 model,
                 self._aliases,
@@ -2352,9 +2352,9 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 model=model,
                 error=str(exc),
             )
-            return fallback_provider, None
+            return fallback_provider, None, {}
 
-        return bound_provider, upstream_model
+        return bound_provider, upstream_model, params
 
     @staticmethod
     def _subagent_rejected_json(parent_ctx: ParentContext, *, error: str) -> str:
@@ -3030,7 +3030,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 # later; today the agent falls back to the explicit
                 # ``persona_id`` arg the model passes in).
                 bound_persona_id = _bound_persona_id_from_start(start)
-                image_provider, image_model_override = (
+                image_provider, image_model_override, _image_provider_params = (
                     await self._resolve_persona_tool_provider(
                         start,
                         "image",
@@ -3058,7 +3058,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 # Plain text-to-image: intentionally takes no persona /
                 # asset_store arguments — isolation from image_with_refs
                 # is structural. Never invoked by qzone_publish.
-                image_provider, image_model_override = (
+                image_provider, image_model_override, _image_provider_params = (
                     await self._resolve_persona_tool_provider(
                         start,
                         "image",
@@ -3090,7 +3090,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     return json.dumps(
                         {"ok": False, "error": "text_to_speech_unavailable"}
                     )
-                voice_provider, voice_model_override = (
+                voice_provider, voice_model_override, voice_provider_params = (
                     await self._resolve_persona_tool_provider(
                         start,
                         "voice",
@@ -3101,6 +3101,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     args_json=event.args_json,
                     provider=voice_provider,
                     model_override=voice_model_override,
+                    provider_params=voice_provider_params,
                 )
             if event.tool == QZONE_PUBLISH_TOOL:
                 # W5 — qzone_publish. The dispatcher does its own
@@ -3117,7 +3118,7 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     val = qz_extra.get("persona_id")
                     if isinstance(val, str) and val.strip():
                         qz_bound_persona_id = val.strip()
-                qz_image_provider, qz_image_model_override = (
+                qz_image_provider, qz_image_model_override, _qz_image_params = (
                     await self._resolve_persona_tool_provider(
                         start,
                         "image",

@@ -40,6 +40,7 @@ from corlinman_server.gateway.core.config_mutation import (
 )
 from corlinman_server.gateway.routes_admin_b.config_admin._providers_lib import (
     _BUILTIN_SLOTS,
+    _FISH_TTS_MODELS,
     _HARDCODED_MODELS,
     _KIND_LABELS,
     _MODELS_CACHE,
@@ -61,11 +62,13 @@ from corlinman_server.gateway.routes_admin_b.config_admin._providers_lib import 
     _clear_models_cache,
     _custom_view_from_entry,
     _find_alias_refs,
+    _fish_tts_reference_id,
     _is_known_kind,
     _kind_capabilities,
     _normalize_kind,
     _params_schema_for,
     _persist,
+    _provider_tts_backend,
     _query_provider_models,
     _query_provider_models_with_retry,
     _redact,
@@ -554,6 +557,26 @@ def router() -> APIRouter:
         probe_strategy = _zero_cost_probe_kind(kind)
         api_key = _resolve_api_key(entry or {})
 
+        if _provider_tts_backend(entry if isinstance(entry, dict) else {}) == "fish":
+            if not api_key:
+                return {
+                    "ok": False,
+                    "latency_ms": 0,
+                    "error": "fish_audio_api_key_missing",
+                }
+            if not _fish_tts_reference_id(entry if isinstance(entry, dict) else {}):
+                return {
+                    "ok": False,
+                    "latency_ms": 0,
+                    "error": "fish_audio_reference_id_missing",
+                }
+            return {
+                "ok": True,
+                "latency_ms": 0,
+                "models_count": len(_FISH_TTS_MODELS),
+                "note": "Fish Audio TTS provider; /v1/models probe skipped",
+            }
+
         if probe_strategy == "mock":
             return {"ok": True, "latency_ms": 0, "models_count": 1}
 
@@ -619,6 +642,9 @@ def router() -> APIRouter:
             kind = "codex"
         else:
             kind = _normalize_kind(str((entry or {}).get("kind") or "openai_compatible"))
+
+        if _provider_tts_backend(entry if isinstance(entry, dict) else {}) == "fish":
+            return {"models": list(_FISH_TTS_MODELS)}
 
         probe_strategy = _zero_cost_probe_kind(kind)
 

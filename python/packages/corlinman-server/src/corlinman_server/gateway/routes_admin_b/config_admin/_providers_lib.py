@@ -15,6 +15,7 @@ here.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 from typing import Any
 
@@ -494,6 +495,13 @@ _HARDCODED_MODELS: dict[str, list[dict[str, Any]]] = {
         {"id": "mock", "display_name": "Mock Echo"},
     ],
 }
+_FISH_TTS_BACKENDS: frozenset[str] = frozenset(
+    {"fish", "fish_audio", "fish-audio"}
+)
+_FISH_TTS_MODELS: list[dict[str, str]] = [
+    {"id": "s2-pro", "display_name": "Fish Audio S2 Pro"},
+    {"id": "s1", "display_name": "Fish Audio S1"},
+]
 
 
 # Human-readable labels + descriptions for the kinds descriptor. Used by
@@ -624,6 +632,38 @@ def _zero_cost_probe_kind(kind: str) -> str:
     if k in _HARDCODED_MODELS:
         return "hardcoded"
     return "none"
+
+
+def _provider_tts_backend(entry: dict[str, Any] | None) -> str | None:
+    """Return a custom provider's TTS backend marker, if present."""
+    if not isinstance(entry, dict):
+        return None
+    params = entry.get("params")
+    if not isinstance(params, dict):
+        return None
+    raw = params.get("tts_backend") or params.get("backend")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    normalized = raw.strip().lower()
+    if normalized in _FISH_TTS_BACKENDS:
+        return "fish"
+    return normalized
+
+
+def _fish_tts_reference_id(entry: dict[str, Any] | None) -> str | None:
+    """Return the configured Fish Audio voice reference id, if present."""
+    if not isinstance(entry, dict):
+        return None
+    params = entry.get("params")
+    if not isinstance(params, dict):
+        return None
+    raw = params.get("reference_id")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    env_raw = os.environ.get("CORLINMAN_TTS_REFERENCE_ID")
+    if env_raw and env_raw.strip():
+        return env_raw.strip()
+    return None
 
 
 def _resolve_api_key(entry: dict[str, Any]) -> str:
