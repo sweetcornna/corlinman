@@ -175,6 +175,7 @@ from corlinman_channels.feishu import (
 from corlinman_channels.onebot import (
     Action,
     MessageEvent,
+    MessageSegment,
     MessageType,
     OneBotAdapter,
     OneBotConfig,
@@ -1087,7 +1088,7 @@ async def _qq_send_attachment(
             return f"📎 已发送图片: {display}"
         if is_audio:
             record_file = _qq_local_record_segment_file(p)
-            record_msg = [RecordSegment(file=record_file)]
+            record_msg: list[MessageSegment] = [RecordSegment(file=record_file)]
             if event.message_type == MessageType.GROUP and event.group_id is not None:
                 await adapter.send_action(
                     SendGroupMsg(group_id=event.group_id, message=record_msg)
