@@ -7,7 +7,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 from corlinman_server.gateway.core.config_mutation import (
     publish_config_mutation,
     write_config_atomic,
