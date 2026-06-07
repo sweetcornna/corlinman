@@ -21,6 +21,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from corlinman_server.gateway.core.config_mutation import publish_config_mutation
 from corlinman_server.gateway.routes_admin_b.config_admin._providers_lib import (
     ProviderView,
     _params_schema_for,
@@ -150,6 +151,7 @@ async def _persist_alias_swap(state: AdminState, new_models: dict[str, Any]) -> 
             status_code=500,
             content={"error": "write_failed", "message": str(exc)},
         )
+    await publish_config_mutation(state, cfg)
     return None
 
 

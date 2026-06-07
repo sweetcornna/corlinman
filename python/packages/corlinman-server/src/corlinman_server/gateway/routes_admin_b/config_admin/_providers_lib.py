@@ -32,6 +32,7 @@ from corlinman_providers.specs import list_supported_kinds
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from corlinman_server.gateway.core.config_mutation import publish_config_mutation
 from corlinman_server.gateway.routes_admin_b.state import AdminState
 
 logger = structlog.get_logger(__name__)
@@ -240,6 +241,7 @@ async def _persist(state: AdminState, cfg: dict[str, Any]) -> JSONResponse | Non
             status_code=500,
             content={"error": "write_failed", "message": str(exc)},
         )
+    await publish_config_mutation(state, cfg)
     return None
 
 

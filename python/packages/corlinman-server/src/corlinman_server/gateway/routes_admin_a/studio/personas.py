@@ -32,6 +32,7 @@ from __future__ import annotations
 import inspect
 from typing import Annotated, Literal
 
+import structlog
 from fastapi import (
     APIRouter,
     Depends,
@@ -101,6 +102,31 @@ from corlinman_server.persona.asset_store import (
     AssetExists,
     AssetNotFound,
 )
+
+logger = structlog.get_logger(__name__)
+
+
+async def _refresh_sidecar_provider_registry_after_model_bindings() -> None:
+    """Best-effort refresh for persona model/provider binding saves."""
+    try:
+        from corlinman_server.gateway.core.config_mutation import (  # noqa: PLC0415
+            publish_config_mutation,
+        )
+        from corlinman_server.gateway.routes_admin_b import (  # noqa: PLC0415
+            state as admin_b_state,
+        )
+
+        b_state = getattr(admin_b_state, "_state", None)
+        if b_state is None:
+            return
+        cfg = dict(admin_b_state.config_snapshot(b_state))
+        await publish_config_mutation(b_state, cfg)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "persona.model_bindings.py_config_refresh_failed",
+            error=str(exc),
+        )
+
 
 # ---------------------------------------------------------------------------
 # Router
@@ -183,6 +209,8 @@ def router() -> APIRouter:
                 status_code=status.HTTP_409_CONFLICT,
                 detail={"error": "persona_exists", "id": body.id},
             ) from exc
+        if body.model_bindings:
+            await _refresh_sidecar_provider_registry_after_model_bindings()
         avatar = await _avatar_url_for(state.persona_asset_store, persona.id)
         return PersonaOut.from_row(persona, avatar_url=avatar)
 
@@ -218,6 +246,8 @@ def router() -> APIRouter:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={"error": "persona_not_found", "id": persona_id},
             ) from exc
+        if body.model_bindings is not None:
+            await _refresh_sidecar_provider_registry_after_model_bindings()
         avatar = await _avatar_url_for(state.persona_asset_store, persona_id)
         return PersonaOut.from_row(persona, avatar_url=avatar)
 

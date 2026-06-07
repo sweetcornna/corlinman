@@ -14,11 +14,12 @@ modules depend on this neutral seam rather than on ``onboard``.
 
 from __future__ import annotations
 
+import inspect
 from typing import Any
 
 from fastapi.responses import JSONResponse
 
-__all__ = ["write_config_atomic"]
+__all__ = ["publish_config_mutation", "write_config_atomic"]
 
 
 def write_config_atomic(path: Any, cfg: dict[str, Any]) -> JSONResponse | None:
@@ -51,3 +52,33 @@ def write_config_atomic(path: Any, cfg: dict[str, Any]) -> JSONResponse | None:
             content={"error": "write_failed", "message": str(exc)},
         )
     return None
+
+
+async def publish_config_mutation(state: Any, cfg: dict[str, Any]) -> None:
+    """Publish a saved config mutation to live readers and the Python sidecar.
+
+    Admin routes that atomically rewrite ``config.toml`` must also update the
+    in-process config snapshot and re-emit the ``py-config.json`` provider drop.
+    The sidecar resolver watches that JSON file's mtime, so this is what makes
+    provider/model edits visible without a gateway restart.
+    """
+    extras = getattr(state, "extras", None)
+    get_extra = getattr(extras, "get", None)
+    swap_fn = get_extra("config_swap_fn") if callable(get_extra) else None
+    if swap_fn is not None:
+        res = swap_fn(cfg)
+        if inspect.isawaitable(res):
+            await res
+
+    py_config_path = getattr(state, "py_config_path", None)
+    if py_config_path is None:
+        return
+    try:
+        from corlinman_server.gateway.lifecycle import (  # noqa: PLC0415
+            write_py_config,
+        )
+    except ImportError:
+        return
+    res = write_py_config(cfg, py_config_path)
+    if inspect.isawaitable(res):
+        await res

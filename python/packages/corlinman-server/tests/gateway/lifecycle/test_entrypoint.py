@@ -170,6 +170,20 @@ def test_build_app_degraded_mode_serves_health(tmp_path: Path) -> None:
         assert body["mode"] in {"degraded", "ok"}
 
 
+def test_build_app_wires_admin_b_py_config_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    py_config_path = tmp_path / "py-config.json"
+    monkeypatch.setenv("CORLINMAN_PY_CONFIG", str(py_config_path))
+
+    app = build_app(config_path=tmp_path / "cfg.toml", data_dir=tmp_path / "data")
+
+    admin_b_state = app.state.corlinman_admin_b_state
+    assert admin_b_state is not None
+    assert admin_b_state.py_config_path == py_config_path
+
+
 def test_build_app_serves_next_export_extensionless_routes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

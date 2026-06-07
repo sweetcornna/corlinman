@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -135,3 +136,58 @@ def test_patch_model_bindings_preserves_other_persona_fields(
         "image": {"provider": None, "model": None},
         "voice": {"provider": "voice", "model": "tts-large"},
     }
+
+
+def test_patch_model_bindings_refreshes_sidecar_provider_registry(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    """Saving persona bindings should refresh the Python provider drop."""
+    from corlinman_server.gateway.routes_admin_b.state import (
+        AdminState as AdminBState,
+    )
+    from corlinman_server.gateway.routes_admin_b.state import (
+        set_admin_state as set_admin_b_state,
+    )
+
+    py_config_path = tmp_path / "py-config.json"
+    cfg = {
+        "providers": {
+            "voice-relay": {
+                "kind": "openai_compatible",
+                "enabled": True,
+                "base_url": "https://relay.example/v1",
+                "api_key": {"value": "sk-voice"},
+            }
+        }
+    }
+    set_admin_b_state(
+        AdminBState(config_loader=lambda: cfg, py_config_path=py_config_path)
+    )
+    try:
+        create = client.post(
+            "/admin/personas",
+            json={
+                "id": "hydrangea-sidecar",
+                "display_name": "Hydrangea",
+                "short_summary": "summary",
+                "system_prompt": "prompt",
+            },
+        )
+        assert create.status_code == 201, create.text
+
+        patch = client.patch(
+            "/admin/personas/hydrangea-sidecar",
+            json={
+                "model_bindings": {
+                    "voice": {"provider": "voice-relay", "model": "s2-pro"}
+                }
+            },
+        )
+    finally:
+        set_admin_b_state(None)
+
+    assert patch.status_code == 200, patch.text
+    py_cfg = json.loads(py_config_path.read_text(encoding="utf-8"))
+    providers = {p["name"]: p for p in py_cfg["providers"]}
+    assert providers["voice-relay"]["base_url"] == "https://relay.example/v1"
