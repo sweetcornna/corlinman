@@ -27,9 +27,15 @@
 
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { Check, Search, X } from "lucide-react";
+import { Check, Search } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import {
@@ -246,31 +252,23 @@ export function ModelPickerDialog({
   const providersError = !providersProp && providersQuery.isError;
 
   return (
-    <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4"
-      onClick={(e) => e.target === e.currentTarget && onClose()}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="model-picker-title"
-      data-testid="model-picker-dialog"
+    <Dialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) onClose();
+      }}
     >
-      <div className="relative flex h-[480px] w-full max-w-[600px] flex-col overflow-hidden rounded-lg border border-tp-glass-edge bg-tp-glass-2 shadow-tp-hero">
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label={t("models.picker.cancel")}
-          className="absolute right-3 top-3 rounded-md p-1 text-tp-ink-3 hover:bg-tp-glass-inner-hover hover:text-tp-ink"
-        >
-          <X className="h-4 w-4" />
-        </button>
-
+      <DialogContent
+        className="!z-[100] flex h-[min(480px,85dvh)] !max-w-[600px] flex-col overflow-hidden p-0"
+        data-testid="model-picker-dialog"
+      >
         <header className="border-b border-tp-glass-edge px-4 py-3">
-          <h2
-            id="model-picker-title"
-            className="text-sm font-semibold tracking-tight"
-          >
+          <DialogTitle className="text-sm font-semibold tracking-tight">
             {t("models.picker.title")}
-          </h2>
+          </DialogTitle>
+          <DialogDescription className="sr-only">
+            {t("models.picker.searchPlaceholder")}
+          </DialogDescription>
         </header>
 
         <div className="border-b border-tp-glass-edge px-4 py-2">
@@ -337,8 +335,8 @@ export function ModelPickerDialog({
             {t("models.picker.confirm")}
           </Button>
         </footer>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
