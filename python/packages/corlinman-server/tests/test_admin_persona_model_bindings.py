@@ -12,6 +12,7 @@ import base64
 import json
 from collections.abc import Iterator
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -29,6 +30,17 @@ from corlinman_server.gateway.routes_admin_a.auth import hash_password  # noqa: 
 from corlinman_server.persona import PersonaStore  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
+
+
+class TrackingAsyncLock:
+    def __init__(self) -> None:
+        self.active = False
+
+    async def __aenter__(self) -> None:
+        self.active = True
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        self.active = False
 
 
 def _basic_auth_header() -> str:
@@ -191,3 +203,57 @@ def test_patch_model_bindings_refreshes_sidecar_provider_registry(
     py_cfg = json.loads(py_config_path.read_text(encoding="utf-8"))
     providers = {p["name"]: p for p in py_cfg["providers"]}
     assert providers["voice-relay"]["base_url"] == "https://relay.example/v1"
+
+
+def test_patch_model_bindings_refreshes_under_admin_b_write_lock(
+    client: TestClient,
+) -> None:
+    from corlinman_server.gateway.routes_admin_b.state import (
+        AdminState as AdminBState,
+    )
+    from corlinman_server.gateway.routes_admin_b.state import (
+        set_admin_state as set_admin_b_state,
+    )
+
+    cfg = {"providers": {"voice-relay": {"kind": "openai_compatible"}}}
+    lock = TrackingAsyncLock()
+    observed_locked_states: list[bool] = []
+
+    async def publish_spy(state, next_cfg, **kwargs):
+        observed_locked_states.append(lock.active)
+
+    set_admin_b_state(
+        AdminBState(
+            config_loader=lambda: cfg,
+            admin_write_lock=lock,
+        )
+    )
+    try:
+        create = client.post(
+            "/admin/personas",
+            json={
+                "id": "hydrangea-lock",
+                "display_name": "Hydrangea",
+                "short_summary": "summary",
+                "system_prompt": "prompt",
+            },
+        )
+        assert create.status_code == 201, create.text
+
+        with patch(
+            "corlinman_server.gateway.core.config_mutation.publish_config_mutation",
+            publish_spy,
+        ):
+            resp = client.patch(
+                "/admin/personas/hydrangea-lock",
+                json={
+                    "model_bindings": {
+                        "voice": {"provider": "voice-relay", "model": "s2-pro"}
+                    }
+                },
+            )
+    finally:
+        set_admin_b_state(None)
+
+    assert resp.status_code == 200, resp.text
+    assert observed_locked_states == [True]

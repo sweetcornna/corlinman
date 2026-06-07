@@ -21,7 +21,9 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from corlinman_server.gateway.core.config_mutation import publish_config_mutation
+from corlinman_server.gateway.core.config_mutation import (
+    publish_config_mutation as _publish_config_mutation_core,
+)
 from corlinman_server.gateway.routes_admin_b.config_admin._providers_lib import (
     ProviderView,
     _params_schema_for,
@@ -33,6 +35,21 @@ from corlinman_server.gateway.routes_admin_b.state import (
     get_admin_state,
     require_admin,
 )
+
+
+def _py_config_writer():
+    from corlinman_server.gateway.lifecycle import write_py_config  # noqa: PLC0415
+
+    return write_py_config
+
+
+async def publish_config_mutation(state: Any, cfg: dict[str, Any]) -> None:
+    await _publish_config_mutation_core(
+        state,
+        cfg,
+        py_config_writer=_py_config_writer(),
+    )
+
 
 # ---------------------------------------------------------------------------
 # Wire models

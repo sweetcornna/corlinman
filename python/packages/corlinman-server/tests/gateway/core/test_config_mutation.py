@@ -4,8 +4,14 @@ from __future__ import annotations
 
 import tomllib
 from pathlib import Path
+from types import SimpleNamespace
 
-from corlinman_server.gateway.core.config_mutation import write_config_atomic
+import pytest
+
+from corlinman_server.gateway.core.config_mutation import (
+    publish_config_mutation,
+    write_config_atomic,
+)
 
 
 def test_write_config_atomic_roundtrips_toml(tmp_path: Path) -> None:
@@ -32,3 +38,30 @@ def test_onboard_reexport_shim_points_at_the_same_callable() -> None:
     from corlinman_server.gateway.routes_admin_b.config_admin.onboard import _write_config_atomic
 
     assert _write_config_atomic is write_config_atomic
+
+
+@pytest.mark.asyncio
+async def test_publish_config_mutation_treats_py_config_write_as_best_effort(
+    tmp_path: Path,
+) -> None:
+    cfg = {"providers": {"relay": {"kind": "openai_compatible"}}}
+    swapped: list[dict] = []
+
+    async def swap_fn(next_cfg: dict) -> None:
+        swapped.append(next_cfg)
+
+    async def failing_py_config_writer(next_cfg: dict, path: Path) -> None:
+        raise OSError("sidecar path is unwritable")
+
+    state = SimpleNamespace(
+        extras={"config_swap_fn": swap_fn},
+        py_config_path=tmp_path / "py-config.json",
+    )
+
+    await publish_config_mutation(
+        state,
+        cfg,
+        py_config_writer=failing_py_config_writer,
+    )
+
+    assert swapped == [cfg]

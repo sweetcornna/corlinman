@@ -106,6 +106,12 @@ from corlinman_server.persona.asset_store import (
 logger = structlog.get_logger(__name__)
 
 
+def _py_config_writer():
+    from corlinman_server.gateway.lifecycle import write_py_config  # noqa: PLC0415
+
+    return write_py_config
+
+
 async def _refresh_sidecar_provider_registry_after_model_bindings() -> None:
     """Best-effort refresh for persona model/provider binding saves."""
     try:
@@ -119,8 +125,22 @@ async def _refresh_sidecar_provider_registry_after_model_bindings() -> None:
         b_state = getattr(admin_b_state, "_state", None)
         if b_state is None:
             return
-        cfg = dict(admin_b_state.config_snapshot(b_state))
-        await publish_config_mutation(b_state, cfg)
+        lock = getattr(b_state, "admin_write_lock", None)
+        if lock is None:
+            cfg = dict(admin_b_state.config_snapshot(b_state))
+            await publish_config_mutation(
+                b_state,
+                cfg,
+                py_config_writer=_py_config_writer(),
+            )
+            return
+        async with lock:
+            cfg = dict(admin_b_state.config_snapshot(b_state))
+            await publish_config_mutation(
+                b_state,
+                cfg,
+                py_config_writer=_py_config_writer(),
+            )
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "persona.model_bindings.py_config_refresh_failed",
