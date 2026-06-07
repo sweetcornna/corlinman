@@ -196,9 +196,10 @@ class FaceSegment:
 
 @dataclass(slots=True)
 class RecordSegment:
-    """``{"type": "record", "data": {"url": ...}}``."""
+    """``{"type": "record", "data": {"url": ..., "file": ...}}``."""
 
     url: str = ""
+    file: str | None = None
 
 
 @dataclass(slots=True)
@@ -265,7 +266,7 @@ _SEGMENT_PARSERS: dict[str, Callable[[dict[str, Any]], MessageSegment]] = {
     "image": lambda d: ImageSegment(url=str(d.get("url", "")), file=d.get("file")),
     "reply": lambda d: ReplySegment(id=str(d.get("id", ""))),
     "face": lambda d: FaceSegment(id=str(d.get("id", ""))),
-    "record": lambda d: RecordSegment(url=str(d.get("url", ""))),
+    "record": lambda d: RecordSegment(url=str(d.get("url", "")), file=d.get("file")),
     "video": lambda d: VideoSegment(url=str(d.get("url", "")), file=d.get("file")),
     "file": lambda d: FileSegment(url=str(d.get("url", "")), file=d.get("file")),
     "forward": lambda d: ForwardSegment(id=str(d.get("id", ""))),
@@ -568,7 +569,12 @@ def _segment_to_wire(seg: MessageSegment) -> dict[str, Any]:
     if isinstance(seg, FaceSegment):
         return {"type": "face", "data": {"id": seg.id}}
     if isinstance(seg, RecordSegment):
-        return {"type": "record", "data": {"url": seg.url}}
+        rdata: dict[str, Any] = {}
+        if seg.url:
+            rdata["url"] = seg.url
+        if seg.file is not None:
+            rdata["file"] = seg.file
+        return {"type": "record", "data": rdata}
     if isinstance(seg, VideoSegment):
         vdata: dict[str, Any] = {"url": seg.url}
         if seg.file is not None:
