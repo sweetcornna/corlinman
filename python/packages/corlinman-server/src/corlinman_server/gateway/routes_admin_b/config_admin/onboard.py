@@ -40,6 +40,9 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
 from corlinman_server.gateway.core.config_mutation import (
+    publish_config_mutation as _publish_config_mutation_core,
+)
+from corlinman_server.gateway.core.config_mutation import (
     write_config_atomic as _write_config_atomic,
 )
 from corlinman_server.gateway.routes_admin_b.config_admin._onboard_lib import (
@@ -65,6 +68,20 @@ from corlinman_server.gateway.routes_admin_b.state import (
     get_admin_state,
     require_admin,
 )
+
+
+def _py_config_writer():
+    from corlinman_server.gateway.lifecycle import write_py_config  # noqa: PLC0415
+
+    return write_py_config
+
+
+async def _publish_config_mutation(state: Any, cfg: dict[str, Any]) -> None:
+    await _publish_config_mutation_core(
+        state,
+        cfg,
+        py_config_writer=_py_config_writer(),
+    )
 
 # ---------------------------------------------------------------------------
 # Router
@@ -131,6 +148,7 @@ def router() -> APIRouter:
             err = _write_config_atomic(state.config_path, cfg)
             if err is not None:
                 return err
+            await _publish_config_mutation(state, cfg)
 
         return FinalizeResponse()
 
@@ -193,6 +211,7 @@ def router() -> APIRouter:
             err = _write_config_atomic(state.config_path, cfg)
             if err is not None:
                 return err
+            await _publish_config_mutation(state, cfg)
 
         return FinalizeSkipResponse()
 
@@ -544,6 +563,7 @@ def router() -> APIRouter:
                     err = _write_config_atomic(state.config_path, cfg)
                     if err is not None:
                         return err
+                    await _publish_config_mutation(state, cfg)
 
             return FinalizeImageProviderResponse(
                 choice="reuse",
@@ -595,6 +615,7 @@ def router() -> APIRouter:
             err = _write_config_atomic(state.config_path, cfg)
             if err is not None:
                 return err
+            await _publish_config_mutation(state, cfg)
 
         return FinalizeImageProviderResponse(
             choice="separate",

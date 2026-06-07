@@ -36,6 +36,9 @@ from fastapi import Path as FPath
 from fastapi.responses import JSONResponse, Response
 
 from corlinman_server.gateway.core.config_mutation import (
+    publish_config_mutation as _publish_config_mutation_core,
+)
+from corlinman_server.gateway.core.config_mutation import (
     write_config_atomic as _write_config_atomic,
 )
 from corlinman_server.gateway.routes_admin_b.config_admin._providers_lib import (
@@ -81,6 +84,20 @@ from corlinman_server.gateway.routes_admin_b.state import (
     get_admin_state,
     require_admin,
 )
+
+
+def _py_config_writer():
+    from corlinman_server.gateway.lifecycle import write_py_config  # noqa: PLC0415
+
+    return write_py_config
+
+
+async def _publish_config_mutation(state: Any, cfg: dict[str, Any]) -> None:
+    await _publish_config_mutation_core(
+        state,
+        cfg,
+        py_config_writer=_py_config_writer(),
+    )
 
 # Re-export the moved wire models / helpers so external importers (and tests)
 # that do ``from ...config_admin.providers import <name>`` keep working after
@@ -179,7 +196,11 @@ def router() -> APIRouter:
             cfg["providers"] = providers
             if bool(existing.get("enabled", True)):
                 cfg = await _autobind_default_alias(cfg, body.name, existing)
-            err = await _persist(state, cfg)
+            err = await _persist(
+                state,
+                cfg,
+                py_config_writer=_py_config_writer(),
+            )
             if err is not None:
                 return err
         return {"status": "ok", "provider": _view_from_entry(body.name, existing).model_dump()}
@@ -280,7 +301,11 @@ def router() -> APIRouter:
             cfg["providers"] = providers
             if bool(entry.get("enabled", True)):
                 cfg = await _autobind_default_alias(cfg, name, entry)
-            err = await _persist(state, cfg)
+            err = await _persist(
+                state,
+                cfg,
+                py_config_writer=_py_config_writer(),
+            )
             if err is not None:
                 return err
         return {"status": "ok", "provider": _view_from_entry(name, entry).model_dump()}
@@ -310,7 +335,11 @@ def router() -> APIRouter:
                 )
             providers.pop(name)
             cfg["providers"] = providers
-            err = await _persist(state, cfg)
+            err = await _persist(
+                state,
+                cfg,
+                py_config_writer=_py_config_writer(),
+            )
             if err is not None:
                 return err
         return {"status": "ok", "removed": name}
@@ -418,6 +447,7 @@ def router() -> APIRouter:
             err = _write_config_atomic(state.config_path, cfg)
             if err is not None:
                 return err
+            await _publish_config_mutation(state, cfg)
 
         view = _custom_view_from_entry(body.slug, entry)
         return JSONResponse(status_code=201, content=view.model_dump())
@@ -477,6 +507,7 @@ def router() -> APIRouter:
             err = _write_config_atomic(state.config_path, cfg)
             if err is not None:
                 return err
+            await _publish_config_mutation(state, cfg)
 
         view = _custom_view_from_entry(slug, entry)
         return JSONResponse(status_code=200, content=view.model_dump())
@@ -511,6 +542,7 @@ def router() -> APIRouter:
             err = _write_config_atomic(state.config_path, cfg)
             if err is not None:
                 return err
+            await _publish_config_mutation(state, cfg)
 
         return Response(status_code=204)
 

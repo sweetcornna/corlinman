@@ -20,6 +20,7 @@ temp config file and refresh the in-process snapshot between writes.
 
 from __future__ import annotations
 
+import json
 import tomllib
 from collections.abc import Iterator
 from pathlib import Path
@@ -91,6 +92,11 @@ def _on_disk(state: AdminState) -> dict[str, Any]:
     if not raw.strip():
         return {}
     return tomllib.loads(raw)
+
+
+def _py_config(state: AdminState) -> dict[str, Any]:
+    assert state.py_config_path is not None
+    return json.loads(state.py_config_path.read_text(encoding="utf-8"))
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +189,68 @@ def test_create_list_delete_round_trip(
     assert listed == {"providers": []}
     on_disk = _on_disk(admin_state)
     assert "my-vllm" not in (on_disk.get("providers") or {})
+
+
+def test_create_custom_provider_rewrites_py_config_for_sidecar(
+    client: TestClient,
+    admin_state: AdminState,
+) -> None:
+    """A saved custom provider must be visible to the Python sidecar immediately."""
+    assert admin_state.config_path is not None
+    admin_state.py_config_path = admin_state.config_path.with_name("py-config.json")
+
+    resp = client.post(
+        "/admin/providers/custom",
+        json={
+            "slug": "sidecar",
+            "kind": "openai_compatible",
+            "base_url": "https://relay.example/v1",
+            "api_key": {"value": "sk-sidecar"},
+            "params": {"timeout_seconds": 45},
+        },
+    )
+
+    assert resp.status_code == 201, resp.text
+    py_cfg = _py_config(admin_state)
+    providers = {p["name"]: p for p in py_cfg["providers"]}
+    assert providers["sidecar"]["kind"] == "openai_compatible"
+    assert providers["sidecar"]["base_url"] == "https://relay.example/v1"
+    assert providers["sidecar"]["api_key"] == "sk-sidecar"
+    assert providers["sidecar"]["params"]["timeout_seconds"] == 45
+
+
+def test_patch_and_delete_custom_provider_rewrite_py_config_for_sidecar(
+    client: TestClient,
+    admin_state: AdminState,
+) -> None:
+    """Provider edits and deletes must move the sidecar registry too."""
+    assert admin_state.config_path is not None
+    admin_state.py_config_path = admin_state.config_path.with_name("py-config.json")
+
+    create = client.post(
+        "/admin/providers/custom",
+        json={
+            "slug": "voice-relay",
+            "kind": "openai_compatible",
+            "base_url": "https://old.example/v1",
+        },
+    )
+    assert create.status_code == 201, create.text
+    _reload(admin_state)
+
+    patch = client.patch(
+        "/admin/providers/custom/voice-relay",
+        json={"base_url": "https://new.example/v1"},
+    )
+    assert patch.status_code == 200, patch.text
+    providers = {p["name"]: p for p in _py_config(admin_state)["providers"]}
+    assert providers["voice-relay"]["base_url"] == "https://new.example/v1"
+
+    _reload(admin_state)
+    delete = client.delete("/admin/providers/custom/voice-relay")
+    assert delete.status_code == 204, delete.text
+    providers = {p["name"]: p for p in _py_config(admin_state)["providers"]}
+    assert "voice-relay" not in providers
 
 
 def test_list_excludes_blocks_without_custom_marker(
