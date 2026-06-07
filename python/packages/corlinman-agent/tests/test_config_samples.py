@@ -10,6 +10,8 @@ version first); the test that exercises it is skipped with a TODO.
 
 from __future__ import annotations
 
+import re
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -70,6 +72,19 @@ def test_tvstxt_has_minimum_samples(repo_root: Path) -> None:
     # fixed/ ships a README today; the on-disk tier itself is not yet
     # wired, so we only assert the directory exists.
     assert fixed.is_dir()
+
+
+def test_fish_audio_provider_doc_snippet_is_valid_toml(repo_root: Path) -> None:
+    text = (repo_root / "docs" / "providers.md").read_text(encoding="utf-8")
+    blocks = re.findall(r"```toml\n(.*?)\n```", text, re.DOTALL)
+    matches = [block for block in blocks if 'base_url = "https://api.fish.audio"' in block]
+    assert len(matches) == 1
+
+    parsed = tomllib.loads(matches[0])
+
+    fish = parsed["providers"]["fish_audio"]
+    assert fish["params"]["tts_backend"] == "fish"
+    assert fish["params"]["reference_id"] == "your-fish-reference-id"
 
 
 # --------------------------------------------------------------------- #

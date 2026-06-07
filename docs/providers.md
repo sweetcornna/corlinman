@@ -261,11 +261,11 @@ kind = "openai_compatible"
 api_key = { env = "FISH_AUDIO_API_KEY" }
 base_url = "https://api.fish.audio"
 enabled = true
-params = {
-  tts_backend = "fish",
-  reference_id = "your-fish-reference-id",
-  format = "mp3",
-}
+
+[providers.fish_audio.params]
+tts_backend = "fish"
+reference_id = "your-fish-reference-id"
+format = "mp3"
 ```
 
 Then in the persona editor set the **Voice** binding to provider

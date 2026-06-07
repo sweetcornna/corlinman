@@ -158,6 +158,64 @@ async def test_fish_backend_posts_text_to_v1_tts(tmp_path, monkeypatch) -> None:
     assert Path(env["path"]).read_bytes() == _AUDIO
 
 
+async def test_fish_backend_prefers_fish_env_over_openai_fallback_key(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-secret")
+    monkeypatch.setenv("FISH_AUDIO_API_KEY", "fish-env-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["authorization"] == "Bearer fish-env-key"
+        return httpx.Response(200, content=_AUDIO)
+
+    out = await dispatch_text_to_speech(
+        args_json=json.dumps({"text": "hello fish"}).encode(),
+        provider=SimpleNamespace(
+            _api_key="openai-secret",
+            _base_url="https://api.fish.audio",
+            name="fish",
+        ),
+        model_override="s2-pro",
+        provider_params={
+            "tts_backend": "fish",
+            "reference_id": "voice-123",
+        },
+        transport=httpx.MockTransport(handler),
+    )
+
+    env = json.loads(out)
+    assert env["ok"] is True
+    assert env["backend"] == "fish"
+
+
+async def test_fish_backend_clamps_unsupported_global_format(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        assert body["format"] == "mp3"
+        return httpx.Response(200, content=_AUDIO)
+
+    out = await dispatch_text_to_speech(
+        args_json=json.dumps({"text": "hello fish", "format": "aac"}).encode(),
+        provider=_fish_provider(),
+        model_override="s2-pro",
+        provider_params={
+            "tts_backend": "fish",
+            "reference_id": "voice-123",
+        },
+        transport=httpx.MockTransport(handler),
+    )
+
+    env = json.loads(out)
+    assert env["ok"] is True
+    assert env["mime"] == "audio/mpeg"
+    assert Path(env["path"]).suffix == ".mp3"
+
+
 async def test_fish_backend_requires_reference_id(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("CORLINMAN_TTS_REFERENCE_ID", raising=False)
     monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))

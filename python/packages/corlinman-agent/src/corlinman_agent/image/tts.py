@@ -97,6 +97,7 @@ _FORMATS: dict[str, tuple[str, str]] = {
     "wav": (".wav", "audio/wav"),
 }
 _DEFAULT_FORMAT: str = "mp3"
+_FISH_FORMATS: frozenset[str] = frozenset({"mp3", "opus", "wav"})
 
 _FISH_BACKENDS: frozenset[str] = frozenset(
     {"fish", "fish_audio", "fish-audio"}
@@ -299,6 +300,27 @@ def _provider_credentials(
     return (str(api_key) if api_key else None), (str(base_url) if base_url else None)
 
 
+def _fish_provider_credentials(provider: Any) -> tuple[str | None, str | None]:
+    """Resolve Fish credentials without leaking OpenAI fallback secrets."""
+    fish_env_key = os.environ.get("FISH_AUDIO_API_KEY")
+    provider_key = getattr(provider, "_api_key", None) or getattr(
+        provider,
+        "api_key",
+        None,
+    )
+    openai_env_key = os.environ.get("OPENAI_API_KEY")
+    api_key = fish_env_key or (
+        provider_key
+        if provider_key and str(provider_key) != str(openai_env_key or "")
+        else None
+    )
+    base_url = (
+        getattr(provider, "_base_url", None)
+        or getattr(provider, "base_url", None)
+    )
+    return (str(api_key) if api_key else None), (str(base_url) if base_url else None)
+
+
 def _fish_tts_endpoint(base_url: str | None) -> str:
     root = (base_url or "https://api.fish.audio").rstrip("/")
     if root.endswith("/v1"):
@@ -365,14 +387,11 @@ async def _try_fish_speech(
     intentionally kept in provider params so each persona can bind a
     different voice without changing the chat model.
     """
-    api_key, base_url = _provider_credentials(
-        provider,
-        env_key="FISH_AUDIO_API_KEY",
-    )
+    api_key, base_url = _fish_provider_credentials(provider)
     if not api_key:
         raise RuntimeError(
             "Fish Audio text-to-speech not configured — provider carries "
-            "no api_key and FISH_AUDIO_API_KEY is unset"
+            "no Fish api_key and FISH_AUDIO_API_KEY is unset"
         )
 
     reference_id = (
@@ -460,10 +479,12 @@ async def dispatch_text_to_speech(
     fmt = args.get("format") or _param_str(provider_params, "format") or _DEFAULT_FORMAT
     if fmt not in _FORMATS:
         fmt = _DEFAULT_FORMAT
-    ext, mime = _FORMATS[fmt]
 
     audio_bytes: bytes | None = None
     backend = _resolve_tts_backend(provider_params)
+    if backend == "fish" and fmt not in _FISH_FORMATS:
+        fmt = _DEFAULT_FORMAT
+    ext, mime = _FORMATS[fmt]
     reference_id: str | None = None
 
     try:

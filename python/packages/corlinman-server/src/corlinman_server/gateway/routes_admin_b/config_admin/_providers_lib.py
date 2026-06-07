@@ -15,6 +15,7 @@ here.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 from typing import Any
 
@@ -499,6 +500,7 @@ _FISH_TTS_BACKENDS: frozenset[str] = frozenset(
 )
 _FISH_TTS_MODELS: list[dict[str, str]] = [
     {"id": "s2-pro", "display_name": "Fish Audio S2 Pro"},
+    {"id": "s1", "display_name": "Fish Audio S1"},
 ]
 
 
@@ -658,6 +660,9 @@ def _fish_tts_reference_id(entry: dict[str, Any] | None) -> str | None:
     raw = params.get("reference_id")
     if isinstance(raw, str) and raw.strip():
         return raw.strip()
+    env_raw = os.environ.get("CORLINMAN_TTS_REFERENCE_ID")
+    if env_raw and env_raw.strip():
+        return env_raw.strip()
     return None
 
 
