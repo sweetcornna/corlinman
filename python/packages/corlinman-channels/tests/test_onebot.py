@@ -281,6 +281,18 @@ class TestActionToWire:
         assert "url" not in img["data"]
         assert img["data"]["file"] == "base64://ZmFrZQ=="
 
+    def test_record_segment_serializes_file_without_url(self) -> None:
+        """NapCat accepts OneBot ``file`` payloads such as base64 records."""
+        a = SendPrivateMsg(
+            user_id=8,
+            message=[RecordSegment(file="base64://ZmFrZQ==")],
+        )
+        s = action_to_wire(a)
+        record = s["params"]["message"][0]
+        assert record["type"] == "record"
+        assert "url" not in record["data"]
+        assert record["data"]["file"] == "base64://ZmFrZQ=="
+
     def test_video_and_file_segments_serialize(self) -> None:
         from corlinman_channels.onebot import SendPrivateMsg
 
