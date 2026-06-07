@@ -82,11 +82,20 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --package corlinman-server --frozen --no-dev
 
+# Install proto generation tools into an isolated venv. Keeping these out of
+# /opt/venv preserves the package-scoped runtime sync above.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv venv /opt/proto-tools \
+    && uv pip install --python /opt/proto-tools/bin/python \
+        "grpcio-tools==1.80.0" \
+        "protobuf==6.33.6" \
+        "ruff==0.15.14"
+
 # Regenerate proto stubs (the generated files are committed but rebuild
 # defensively — keeps the image self-consistent even if a stale commit
 # slips through).
-RUN GEN_PROTO_UV_RUN_ARGS="--no-sync --no-dev --package corlinman-grpc --with grpcio-tools==1.80.0" \
-    GEN_PROTO_SKIP_FORMAT=1 \
+RUN UV_PROJECT_ENVIRONMENT=/opt/proto-tools \
+    GEN_PROTO_UV_RUN_ARGS=--no-sync \
     bash scripts/gen-proto.sh
 
 # ---------------------------------------------------------------------------
