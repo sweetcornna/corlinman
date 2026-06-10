@@ -36,12 +36,12 @@ export function QqMessagesPanel({ messages, offline }: QqMessagesPanelProps) {
       as="section"
       className="flex flex-col overflow-hidden"
     >
-      <div className="flex items-center justify-between border-b border-tp-glass-edge px-4 py-3">
+      <div className="flex items-center justify-between border-b border-sg-border px-4 py-3">
         <div className="flex items-center gap-2">
-          <h2 className="text-[13px] font-medium text-tp-ink">
+          <h2 className="text-[13px] font-medium text-sg-ink">
             {t("channels.recentMessages")}
           </h2>
-          <span className="font-mono text-[10.5px] text-tp-ink-4">
+          <span className="font-mono text-[10.5px] text-sg-ink-4">
             {offline ? "—" : `${rows.length}/${MAX_ROWS}`}
           </span>
         </div>
@@ -79,7 +79,7 @@ export function QqMessagesPanel({ messages, offline }: QqMessagesPanelProps) {
 }
 
 const emptyCls = cn(
-  "px-4 py-8 text-center text-[12.5px] text-tp-ink-3",
+  "px-4 py-8 text-center text-[12.5px] text-sg-ink-3",
 );
 
 export default QqMessagesPanel;

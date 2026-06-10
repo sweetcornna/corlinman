@@ -40,22 +40,22 @@ export function SessionRow({ session, onReplay, onDelete }: SessionRowProps) {
   const lastSeen = session.last_seen_at_ms ?? session.last_message_at;
   return (
     <TableRow
-      className="border-b border-tp-glass-edge transition-colors hover:bg-tp-glass-inner-hover"
+      className="border-b border-sg-border"
       data-testid={`session-row-${session.session_key}`}
     >
-      <TableCell className="pl-4 font-mono text-[13px] text-tp-ink">
+      <TableCell className="pl-4 font-mono text-[13px] text-sg-ink">
         {session.session_key}
       </TableCell>
-      <TableCell className="font-mono text-xs text-tp-ink-2">
+      <TableCell className="font-mono text-xs text-sg-ink-4">
         {session.message_count}
       </TableCell>
-      <TableCell className="text-xs text-tp-ink-3">
+      <TableCell className="text-xs text-sg-ink-3">
         <time dateTime={new Date(session.last_message_at).toISOString()}>
           {formatTime(session.last_message_at)}
         </time>
       </TableCell>
       <TableCell
-        className="text-xs text-tp-ink-3"
+        className="text-xs text-sg-ink-3"
         data-testid={`session-last-seen-${session.session_key}`}
       >
         <time dateTime={new Date(lastSeen).toISOString()}>
@@ -101,7 +101,7 @@ export function SessionRow({ session, onReplay, onDelete }: SessionRowProps) {
             aria-label={t("sessions.deleteAriaLabel", {
               key: session.session_key,
             })}
-            className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+            className="text-sg-err hover:bg-sg-err-soft hover:text-sg-err"
           >
             <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
             {t("sessions.delete")}

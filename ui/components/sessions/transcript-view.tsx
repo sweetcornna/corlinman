@@ -40,17 +40,14 @@ export function TranscriptView({ transcript }: TranscriptViewProps) {
     return (
       <div
         role="status"
-        className={cn(
-          "flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed",
-          "border-tp-glass-edge bg-tp-glass-inner px-6 py-10 text-center",
-        )}
+        className="flex flex-col items-center justify-center gap-2 rounded-sg-md border border-dashed border-sg-border bg-sg-inset px-6 py-10 text-center"
         data-testid="transcript-empty"
       >
         <MessageSquareDashed
           aria-hidden="true"
-          className="h-6 w-6 text-tp-ink-3"
+          className="h-6 w-6 text-sg-ink-4"
         />
-        <span className="text-xs text-tp-ink-3">
+        <span className="text-xs text-sg-ink-3">
           {t("sessions.transcriptEmpty")}
         </span>
       </div>
@@ -105,7 +102,7 @@ function TranscriptRow({
       >
         <div
           className={cn(
-            "flex items-center gap-1.5 text-[11px] text-tp-ink-3",
+            "flex items-center gap-1.5 text-[11px] text-sg-ink-4",
             isUser ? "flex-row-reverse" : "flex-row",
           )}
         >
@@ -128,17 +125,15 @@ function TranscriptRow({
         </div>
         <div
           className={cn(
-            "rounded-lg border px-3 py-2 text-[13px] leading-relaxed whitespace-pre-wrap break-words",
-            // Distinct treatment per role — user messages echo the amber
+            "whitespace-pre-wrap break-words rounded-sg-md border px-3 py-2 text-[13px] leading-relaxed",
+            // Distinct treatment per role — user messages echo the cyan
             // accent the rest of the admin uses for "self" actions; the
-            // assistant uses neutral glass; system messages get a dimmer
-            // dashed treatment so they read as out-of-band annotations.
-            isUser &&
-              "border-tp-amber/40 bg-tp-amber/10 text-tp-ink",
-            isAssistant &&
-              "border-tp-glass-edge bg-tp-glass-inner text-tp-ink",
+            // assistant uses a neutral inset well; system messages get a
+            // dimmer dashed treatment so they read as out-of-band notes.
+            isUser && "border-sg-accent/30 bg-sg-accent-soft text-sg-ink",
+            isAssistant && "border-sg-border bg-sg-inset text-sg-ink",
             isSystem &&
-              "border-dashed border-tp-glass-edge bg-tp-glass-inner/40 text-tp-ink-2 italic",
+              "border-dashed border-sg-border bg-sg-inset/60 italic text-sg-ink-3",
           )}
         >
           {message.content}

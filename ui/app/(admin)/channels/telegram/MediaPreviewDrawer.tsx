@@ -16,7 +16,7 @@ import { formatBytes } from "./MessageList";
  *
  * Reuses the shared `<Drawer>` (Radix-Dialog backed) so the dialog role and
  * focus trap are preserved. Visual chrome is rewritten around warm-glass
- * tokens: media sits in a `bg-tp-glass-inner` frame with a dashed amber
+ * tokens: media sits in a `bg-sg-inset` frame with a dashed amber
  * divider separating the metadata rail.
  *
  * Supports all three media kinds so non-photo updates can still be inspected
@@ -84,11 +84,11 @@ export function MediaPreviewDrawer({
           kind === "voice" ? (
             <div
               className={cn(
-                "flex flex-col items-center gap-3 rounded-2xl border border-tp-glass-edge",
-                "bg-tp-glass-inner p-6",
+                "flex flex-col items-center gap-3 rounded-2xl border border-sg-border",
+                "bg-sg-inset p-6",
               )}
             >
-              <Mic className="h-8 w-8 text-tp-amber" aria-hidden="true" />
+              <Mic className="h-8 w-8 text-sg-accent" aria-hidden="true" />
               {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
               <audio controls src={src} className="w-full max-w-lg" />
             </div>
@@ -98,12 +98,12 @@ export function MediaPreviewDrawer({
               target="_blank"
               rel="noreferrer"
               className={cn(
-                "flex items-center gap-3 rounded-2xl border border-tp-glass-edge",
-                "bg-tp-glass-inner p-5 text-[13px] text-tp-ink",
-                "transition-colors hover:bg-tp-glass-inner-hover",
+                "flex items-center gap-3 rounded-2xl border border-sg-border",
+                "bg-sg-inset p-5 text-[13px] text-sg-ink",
+                "transition-colors hover:bg-sg-inset-hover",
               )}
             >
-              <FileText className="h-6 w-6 text-tp-amber" aria-hidden="true" />
+              <FileText className="h-6 w-6 text-sg-accent" aria-hidden="true" />
               <span className="truncate font-mono">
                 {message?.media?.filename ??
                   message?.media?.local_path.split("/").pop() ??
@@ -113,8 +113,8 @@ export function MediaPreviewDrawer({
           ) : (
             <div
               className={cn(
-                "flex items-center justify-center rounded-2xl border border-tp-glass-edge",
-                "bg-tp-glass-inner p-2",
+                "flex items-center justify-center rounded-2xl border border-sg-border",
+                "bg-sg-inset p-2",
               )}
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -130,7 +130,7 @@ export function MediaPreviewDrawer({
             </div>
           )
         ) : (
-          <p className="text-[13px] text-tp-ink-3">
+          <p className="text-[13px] text-sg-ink-3">
             {t("channels.telegram.tp.photoPreviewNone")}
           </p>
         )}
@@ -138,25 +138,25 @@ export function MediaPreviewDrawer({
         {message ? (
           <div className="grid grid-cols-[max-content_1fr] gap-x-5 gap-y-2 text-[12.5px]">
             <MetaLabel>{t("channels.telegram.tp.photoPreviewChat")}</MetaLabel>
-            <div className="font-mono text-tp-ink">
+            <div className="font-mono text-sg-ink">
               {message.chat_title ?? message.chat_id}
             </div>
 
             <MetaLabel>
               {t("channels.telegram.tp.photoPreviewSender")}
             </MetaLabel>
-            <div className="font-mono text-tp-ink">
+            <div className="font-mono text-sg-ink">
               {message.from_username ?? "—"}
             </div>
 
             <MetaLabel>{t("channels.telegram.tp.photoPreviewTime")}</MetaLabel>
-            <div className="font-mono text-tp-ink">
+            <div className="font-mono text-sg-ink">
               {formatTime(message.timestamp_ms)}
             </div>
 
             <MetaLabel>{t("channels.telegram.tp.photoPreviewPath")}</MetaLabel>
             <div
-              className="break-all font-mono text-[11.5px] text-tp-ink-2"
+              className="break-all font-mono text-[11.5px] text-sg-ink-2"
               data-testid="tg-media-path"
             >
               {message.media?.local_path ?? "—"}
@@ -165,7 +165,7 @@ export function MediaPreviewDrawer({
             {message.media?.size_bytes ? (
               <>
                 <MetaLabel>bytes</MetaLabel>
-                <div className="font-mono text-tp-ink-2">
+                <div className="font-mono text-sg-ink-2">
                   {formatBytes(message.media.size_bytes)}
                 </div>
               </>
@@ -176,7 +176,7 @@ export function MediaPreviewDrawer({
                 <MetaLabel>
                   {t("channels.telegram.tp.photoPreviewCaption")}
                 </MetaLabel>
-                <div className="whitespace-pre-wrap break-words text-tp-ink-2">
+                <div className="whitespace-pre-wrap break-words text-sg-ink-2">
                   {message.content}
                 </div>
               </>
@@ -190,7 +190,7 @@ export function MediaPreviewDrawer({
 
 function MetaLabel({ children }: { children: React.ReactNode }) {
   return (
-    <div className="font-mono text-[10.5px] uppercase tracking-[0.1em] text-tp-ink-4">
+    <div className="font-mono text-[10.5px] uppercase tracking-[0.1em] text-sg-ink-4">
       {children}
     </div>
   );

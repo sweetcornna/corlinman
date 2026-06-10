@@ -119,7 +119,7 @@ const STEPS: readonly StepDef[] = [
 
 export default function OnboardPage() {
   return (
-    <div className="relative grid min-h-dvh grid-cols-1 bg-background md:grid-cols-[40%_60%]">
+    <div className="relative grid min-h-dvh grid-cols-1 md:grid-cols-[40%_60%]">
       <div className="absolute right-4 top-4 z-10 flex items-center gap-2">
         <LanguageToggle />
         <ThemeToggle />
@@ -135,31 +135,39 @@ export default function OnboardPage() {
 function HeroColumn() {
   const { t } = useTranslation();
   return (
-    <aside className="relative hidden overflow-hidden border-r border-tp-glass-edge bg-tp-glass-inner md:flex md:flex-col md:justify-between md:p-10">
-      <div className="flex items-center gap-2">
+    <aside className="relative hidden overflow-hidden border-r border-sg-border md:flex md:flex-col md:justify-between md:p-10">
+      {/* Deep-space showcase — nebula glows + grain over the <html> gradient. */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0 sg-drift"
+        style={{
+          backgroundImage:
+            "radial-gradient(760px 520px at 18% 12%, var(--sg-nebula-1), transparent 60%), " +
+            "radial-gradient(620px 480px at 88% 30%, var(--sg-nebula-2), transparent 62%), " +
+            "radial-gradient(560px 420px at 40% 104%, var(--sg-nebula-3), transparent 64%)",
+        }}
+      />
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0 sg-noise opacity-[0.03]"
+      />
+
+      <div className="relative z-10 flex items-center gap-2">
         <BrandMark />
       </div>
-      <div className="relative z-10 space-y-2">
-        <h2 className="text-lg font-semibold tracking-tight">
+      <div className="relative z-10 space-y-3">
+        <h2 className="sg-grad-text text-3xl font-semibold tracking-tight">
           {t("auth.onboardHeroTitle")}
         </h2>
-        <p className="max-w-xs text-sm text-tp-ink-3">
+        <p className="max-w-xs text-sm leading-relaxed text-sg-ink-3">
           {t("auth.onboardHeroBody")}
         </p>
       </div>
-      <div className="flex items-center gap-2 text-xs text-tp-ink-3">
+      <div className="relative z-10 flex items-center gap-2 text-xs text-sg-ink-5">
         <span className="font-mono">v0.6.0</span>
         <span>·</span>
         <span>first-run</span>
       </div>
-      <div
-        className="pointer-events-none absolute inset-0 dot-grid opacity-60"
-        aria-hidden
-      />
-      <div
-        className="pointer-events-none absolute inset-0 bg-[radial-gradient(600px_300px_at_20%_20%,hsl(var(--primary)/0.15),transparent_60%)]"
-        aria-hidden
-      />
     </aside>
   );
 }
@@ -279,7 +287,7 @@ function OnboardWizard() {
       {step === 5 && <ImageProviderStep onDone={() => advance(5)} />}
       {step === 6 && <DoneStep onFinish={handleFinish} />}
 
-      <p className="text-center text-xs text-tp-ink-3">
+      <p className="text-center text-xs text-sg-ink-5">
         {t("auth.onboardHint")}
       </p>
       <span hidden data-testid="onboard-me-checked" data-checked={meChecked} />
@@ -330,23 +338,23 @@ function StepIndicator({
                 isCurrent ? "current" : isDone ? "done" : "pending"
               }
               className={cn(
-                "group flex items-center gap-2 rounded-md px-1 py-1 transition-colors",
+                "group flex items-center gap-2 rounded-sg-sm px-1 py-1 transition-colors",
                 isReachable
-                  ? "cursor-pointer hover:bg-tp-glass-inner"
+                  ? "cursor-pointer hover:bg-sg-inset-hover"
                   : "cursor-default",
               )}
             >
               <span
                 className={cn(
-                  "inline-flex h-7 w-7 items-center justify-center rounded-full border text-xs font-semibold",
+                  "inline-flex h-7 w-7 items-center justify-center rounded-full border text-xs font-semibold transition-all",
                   isCurrent &&
-                    "border-primary bg-primary text-primary-foreground",
+                    "border-sg-accent bg-sg-accent text-white shadow-sg-glow ring-2 ring-sg-accent ring-offset-1 ring-offset-transparent",
                   !isCurrent &&
                     isDone &&
-                    "border-primary/60 bg-primary/10 text-primary",
+                    "border-transparent bg-sg-accent text-white",
                   !isCurrent &&
                     !isDone &&
-                    "border-tp-glass-edge text-tp-ink-3",
+                    "border-sg-border bg-sg-inset text-sg-ink-4",
                 )}
               >
                 {isDone && !isCurrent ? (
@@ -358,7 +366,7 @@ function StepIndicator({
               <span
                 className={cn(
                   "hidden text-xs lg:inline",
-                  isCurrent ? "font-medium" : "text-tp-ink-3",
+                  isCurrent ? "font-medium text-sg-ink" : "text-sg-ink-4",
                 )}
               >
                 {t(s.i18nKey, { defaultValue: s.fallback })}
@@ -368,8 +376,8 @@ function StepIndicator({
               <span
                 aria-hidden
                 className={cn(
-                  "mx-1 h-px flex-1",
-                  completed.has(s.id) ? "bg-primary/40" : "bg-tp-glass-edge",
+                  "mx-1 h-px flex-1 transition-colors",
+                  completed.has(s.id) ? "bg-sg-accent/40" : "bg-sg-border",
                 )}
               />
             ) : null}
@@ -422,10 +430,10 @@ function ApiConfigStep({
   return (
     <>
       <div className="space-y-1">
-        <h1 className="text-xl font-semibold tracking-tight">
+        <h1 className="text-xl font-semibold tracking-tight text-sg-ink">
           {t("onboard.step.api.title", { defaultValue: "配置 API" })}
         </h1>
-        <p className="text-sm text-tp-ink-3">
+        <p className="text-sm text-sg-ink-3">
           {t("auth.onboardHandoffSubtitle")}
         </p>
       </div>
@@ -436,7 +444,7 @@ function ApiConfigStep({
             <Card key={c.href} data-testid={c.testid}>
               <CardHeader className="pb-2">
                 <div className="flex items-center gap-2">
-                  <Icon className="h-4 w-4 text-tp-ink-3" aria-hidden />
+                  <Icon className="h-4 w-4 text-sg-accent" aria-hidden />
                   <CardTitle className="text-base">{c.title}</CardTitle>
                 </div>
                 <CardDescription>{c.body}</CardDescription>
@@ -530,10 +538,10 @@ function UsernameStep({ onDone }: { onDone: () => void }) {
   return (
     <>
       <div className="space-y-1">
-        <h1 className="text-xl font-semibold tracking-tight">
+        <h1 className="text-xl font-semibold tracking-tight text-sg-ink">
           {t("onboard.step.username.title", { defaultValue: "修改默认账号" })}
         </h1>
-        <p className="text-sm text-tp-ink-3">
+        <p className="text-sm text-sg-ink-3">
           {t("onboard.step.username.subtitle", {
             defaultValue: "默认账号是 admin，请改成你自己的用户名。",
           })}
@@ -554,7 +562,7 @@ function UsernameStep({ onDone }: { onDone: () => void }) {
             disabled={submitting}
             data-testid="onboard-username-input"
           />
-          <p className="text-xs text-tp-ink-3">
+          <p className="text-xs text-sg-ink-4">
             {t("account.security.usernameRule", {
               defaultValue: "小写字母、数字、_ 或 -；最多 64 字符",
             })}
@@ -563,7 +571,7 @@ function UsernameStep({ onDone }: { onDone: () => void }) {
         {error ? (
           <p
             role="alert"
-            className="text-sm text-destructive"
+            className="text-sm text-sg-err"
             data-testid="onboard-error"
           >
             {error}
@@ -630,10 +638,10 @@ function PasswordStep({ onDone }: { onDone: () => void }) {
   return (
     <>
       <div className="space-y-1">
-        <h1 className="text-xl font-semibold tracking-tight">
+        <h1 className="text-xl font-semibold tracking-tight text-sg-ink">
           {t("onboard.step.password.title", { defaultValue: "修改默认密码" })}
         </h1>
-        <p className="text-sm text-tp-ink-3">
+        <p className="text-sm text-sg-ink-3">
           {t("onboard.step.password.subtitle", {
             defaultValue: "默认密码是 root。请设置一个安全的新密码。",
           })}
@@ -691,7 +699,7 @@ function PasswordStep({ onDone }: { onDone: () => void }) {
         {error ? (
           <p
             role="alert"
-            className="text-sm text-destructive"
+            className="text-sm text-sg-err"
             data-testid="onboard-error"
           >
             {error}
@@ -789,10 +797,10 @@ function PersonaStep({
   return (
     <>
       <div className="space-y-1">
-        <h1 className="text-xl font-semibold tracking-tight">
+        <h1 className="text-xl font-semibold tracking-tight text-sg-ink">
           {t("onboard.step.persona.title", { defaultValue: "助手个性化" })}
         </h1>
-        <p className="text-sm text-tp-ink-3">
+        <p className="text-sm text-sg-ink-3">
           {t("onboard.step.persona.subtitle", {
             defaultValue: "选择如何初始化助手人格。",
           })}
@@ -810,24 +818,25 @@ function PersonaStep({
               disabled={submitting !== null}
               data-testid={c.testid}
               className={cn(
-                "block w-full rounded-lg border border-tp-glass-edge bg-tp-glass-inner p-4 text-left transition-colors",
-                submitting === null && "hover:border-primary/60 hover:bg-primary/5",
+                "sg-card block w-full rounded-sg-lg p-4 text-left shadow-sg-2 transition-all duration-200",
+                submitting === null &&
+                  "hover:-translate-y-px hover:border-sg-accent/30 hover:shadow-sg-3",
                 submitting !== null && submitting !== c.choice && "opacity-50",
                 "disabled:cursor-wait",
               )}
             >
               <div className="flex items-start gap-3">
-                <span className="mt-0.5 inline-flex h-8 w-8 items-center justify-center rounded-md border border-tp-glass-edge bg-background text-tp-ink-3">
+                <span className="sg-inset mt-0.5 inline-flex h-8 w-8 items-center justify-center rounded-sg-sm text-sg-accent">
                   <Icon className="h-4 w-4" aria-hidden />
                 </span>
                 <div className="flex-1 space-y-0.5">
-                  <div className="text-sm font-medium">
+                  <div className="text-sm font-medium text-sg-ink">
                     {t(c.i18nKey, { defaultValue: c.fallback })}
                   </div>
-                  <div className="text-xs text-tp-ink-3">{c.body}</div>
+                  <div className="text-xs text-sg-ink-3">{c.body}</div>
                 </div>
                 {isLoading ? (
-                  <span className="text-xs text-tp-ink-3">
+                  <span className="text-xs text-sg-ink-4">
                     {t("auth.submitting")}
                   </span>
                 ) : null}
@@ -839,7 +848,7 @@ function PersonaStep({
       {error ? (
         <p
           role="alert"
-          className="text-sm text-destructive"
+          className="text-sm text-sg-err"
           data-testid="onboard-error"
         >
           {error}
@@ -933,13 +942,13 @@ function ImageProviderStep({ onDone }: { onDone: () => void }) {
     return (
       <>
         <div className="space-y-1">
-          <h1 className="text-xl font-semibold tracking-tight">
+          <h1 className="text-xl font-semibold tracking-tight text-sg-ink">
             {t("onboard.step.image.title", { defaultValue: "图片生成 API" })}
           </h1>
         </div>
         <Card data-testid="onboard-image-unsupported">
           <CardHeader className="pb-2">
-            <CardTitle className="flex items-center gap-2 text-base text-destructive">
+            <CardTitle className="flex items-center gap-2 text-base text-sg-err">
               <span aria-hidden>❌</span>
               {t("onboard.image.notSupported", {
                 defaultValue: "当前 API 不支持图片生成",
@@ -1027,10 +1036,10 @@ function ImageProviderStep({ onDone }: { onDone: () => void }) {
   return (
     <>
       <div className="space-y-1">
-        <h1 className="text-xl font-semibold tracking-tight">
+        <h1 className="text-xl font-semibold tracking-tight text-sg-ink">
           {t("onboard.step.image.title", { defaultValue: "图片生成 API" })}
         </h1>
-        <p className="text-sm text-tp-ink-3">
+        <p className="text-sm text-sg-ink-3">
           {t("onboard.step.image.subtitle", {
             defaultValue: "选择如何处理图片生成请求。",
           })}
@@ -1048,24 +1057,25 @@ function ImageProviderStep({ onDone }: { onDone: () => void }) {
               disabled={submitting !== null}
               data-testid={c.testid}
               className={cn(
-                "block w-full rounded-lg border border-tp-glass-edge bg-tp-glass-inner p-4 text-left transition-colors",
-                submitting === null && "hover:border-primary/60 hover:bg-primary/5",
+                "sg-card block w-full rounded-sg-lg p-4 text-left shadow-sg-2 transition-all duration-200",
+                submitting === null &&
+                  "hover:-translate-y-px hover:border-sg-accent/30 hover:shadow-sg-3",
                 submitting !== null && submitting !== c.key && "opacity-50",
                 "disabled:cursor-wait",
               )}
             >
               <div className="flex items-start gap-3">
-                <span className="mt-0.5 inline-flex h-8 w-8 items-center justify-center rounded-md border border-tp-glass-edge bg-background text-tp-ink-3">
+                <span className="sg-inset mt-0.5 inline-flex h-8 w-8 items-center justify-center rounded-sg-sm text-sg-accent">
                   <Icon className="h-4 w-4" aria-hidden />
                 </span>
                 <div className="flex-1 space-y-0.5">
-                  <div className="text-sm font-medium">
+                  <div className="text-sm font-medium text-sg-ink">
                     {t(c.i18nKey, { defaultValue: c.fallback })}
                   </div>
-                  <div className="text-xs text-tp-ink-3">{c.body}</div>
+                  <div className="text-xs text-sg-ink-3">{c.body}</div>
                 </div>
                 {isLoading ? (
-                  <span className="text-xs text-tp-ink-3">
+                  <span className="text-xs text-sg-ink-4">
                     {t("auth.submitting")}
                   </span>
                 ) : null}
@@ -1077,7 +1087,7 @@ function ImageProviderStep({ onDone }: { onDone: () => void }) {
       {error ? (
         <p
           role="alert"
-          className="text-sm text-destructive"
+          className="text-sm text-sg-err"
           data-testid="onboard-error"
         >
           {error}
@@ -1133,10 +1143,10 @@ function SeparateImageProviderForm({
   return (
     <>
       <div className="space-y-1">
-        <h1 className="text-xl font-semibold tracking-tight">
+        <h1 className="text-xl font-semibold tracking-tight text-sg-ink">
           {t("onboard.image.choice.separate", { defaultValue: "单独配置" })}
         </h1>
-        <p className="text-sm text-tp-ink-3">
+        <p className="text-sm text-sg-ink-3">
           {t("onboard.image.separate.subtitle", {
             defaultValue: "为图片生成单独注册一个 OpenAI-compatible Provider。",
           })}
@@ -1206,7 +1216,7 @@ function SeparateImageProviderForm({
         {(localError || error) ? (
           <p
             role="alert"
-            className="text-sm text-destructive"
+            className="text-sm text-sg-err"
             data-testid="onboard-error"
           >
             {localError || error}
@@ -1246,10 +1256,10 @@ function DoneStep({ onFinish }: { onFinish: () => void }) {
   return (
     <>
       <div className="space-y-1">
-        <h1 className="text-xl font-semibold tracking-tight">
+        <h1 className="text-xl font-semibold tracking-tight text-sg-ink">
           {t("auth.onboardHandoffTitle", { defaultValue: "初始化完成" })}
         </h1>
-        <p className="text-sm text-tp-ink-3">
+        <p className="text-sm text-sg-ink-3">
           {t("onboard.done.subtitle", {
             defaultValue: "首次配置已完成。进入管理面板继续探索功能。",
           })}
@@ -1259,12 +1269,12 @@ function DoneStep({ onFinish }: { onFinish: () => void }) {
         <CardHeader className="pb-2">
           <div className="flex items-center gap-2">
             <span
-              className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 text-primary"
+              className="tp-breathe inline-flex h-8 w-8 items-center justify-center rounded-full bg-sg-ok-soft text-sg-ok"
               aria-hidden
             >
               <Check className="h-4 w-4" />
             </span>
-            <CardTitle className="text-base">
+            <CardTitle className="text-base text-sg-ink">
               {t("onboard.done.title", { defaultValue: "你已完成所有步骤" })}
             </CardTitle>
           </div>

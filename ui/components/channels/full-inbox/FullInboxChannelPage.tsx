@@ -224,7 +224,7 @@ function Hero({
         className="pointer-events-none absolute bottom-[-90px] right-[-40px] h-[240px] w-[360px] rounded-full opacity-60 blur-3xl"
         style={{
           background:
-            "radial-gradient(closest-side, var(--tp-amber-glow), transparent 70%)",
+            "radial-gradient(closest-side, var(--sg-accent-glow), transparent 70%)",
         }}
       />
       <div className="relative flex min-w-0 flex-col gap-4">
@@ -240,18 +240,18 @@ function Hero({
             }
             data-testid={`${testIdPrefix}-stream-pill`}
           />
-          <span className="font-mono text-[11px] text-tp-ink-3">
+          <span className="font-mono text-[11px] text-sg-ink-3">
             {status?.configured
               ? t(`${nsKey}.runtimeConfigured`)
               : t(`${nsKey}.runtimeNotConfigured`)}
           </span>
         </div>
 
-        <h1 className="text-balance font-sans text-[28px] font-semibold leading-[1.15] tracking-[-0.025em] text-tp-ink sm:text-[32px]">
+        <h1 className="text-balance font-sans text-[28px] font-semibold leading-[1.15] tracking-[-0.025em] text-sg-ink sm:text-[32px]">
           {title}
         </h1>
 
-        <p className="max-w-[72ch] text-[14.5px] leading-[1.6] text-tp-ink-2">
+        <p className="max-w-[72ch] text-[14.5px] leading-[1.6] text-sg-ink-2">
           {offline
             ? t(`${nsKey}.proseOffline`)
             : !status?.configured
@@ -275,10 +275,10 @@ function Hero({
             onClick={onSendTest}
             data-testid={`${testIdPrefix}-send-test-open`}
             className={cn(
-              "inline-flex items-center gap-2 rounded-lg border border-tp-amber/35 bg-tp-amber-soft px-3 py-2",
-              "text-[13px] font-medium text-tp-amber",
-              "transition-colors hover:bg-[color-mix(in_oklch,var(--tp-amber)_22%,transparent)]",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/50",
+              "inline-flex items-center gap-2 rounded-lg border border-sg-accent/35 bg-sg-accent-soft px-3 py-2",
+              "text-[13px] font-medium text-sg-accent",
+              "transition-colors hover:bg-[color-mix(in_oklch,var(--sg-accent)_22%,transparent)]",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/50",
             )}
           >
             <Send className="h-3.5 w-3.5" aria-hidden />
@@ -290,10 +290,10 @@ function Hero({
             disabled={fetching}
             aria-label={t(`${nsKey}.refreshAria`)}
             className={cn(
-              "inline-flex items-center gap-2 rounded-lg border border-tp-glass-edge bg-tp-glass-inner px-3 py-2",
-              "text-[13px] font-medium text-tp-ink-2",
-              "transition-colors hover:bg-tp-glass-inner-hover hover:text-tp-ink",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
+              "inline-flex items-center gap-2 rounded-lg border border-sg-border bg-sg-inset px-3 py-2",
+              "text-[13px] font-medium text-sg-ink-2",
+              "transition-colors hover:bg-sg-inset-hover hover:text-sg-ink",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
               "disabled:cursor-not-allowed disabled:opacity-70",
             )}
           >
@@ -390,8 +390,8 @@ function ErrorBanner({
       role="alert"
       data-testid={`${testIdPrefix}-last-error-banner`}
       className={cn(
-        "flex items-start gap-2 rounded-xl border border-tp-err/40 bg-tp-err-soft px-3 py-2",
-        "text-[12.5px] text-tp-err",
+        "flex items-start gap-2 rounded-xl border border-sg-err/40 bg-sg-err-soft px-3 py-2",
+        "text-[12.5px] text-sg-err",
         !reduced && "animate-pulse-glow",
       )}
     >
@@ -432,14 +432,14 @@ function ConfigPanel({
         aria-label={t(`${nsKey}.configTitle`)}
       >
         <header>
-          <h2 className="text-[14px] font-medium text-tp-ink">
+          <h2 className="text-[14px] font-medium text-sg-ink">
             {t(`${nsKey}.configTitle`)}
           </h2>
-          <p className="text-[12px] text-tp-ink-3">{t("common.loading", "loading…")}</p>
+          <p className="text-[12px] text-sg-ink-3">{t("common.loading", "loading…")}</p>
         </header>
         <div className="space-y-2">
-          <div className="h-8 animate-pulse rounded-md border border-tp-glass-edge bg-tp-glass-inner/70" />
-          <div className="h-8 animate-pulse rounded-md border border-tp-glass-edge bg-tp-glass-inner/70" />
+          <div className="h-8 animate-pulse rounded-md border border-sg-border bg-sg-inset/70" />
+          <div className="h-8 animate-pulse rounded-md border border-sg-border bg-sg-inset/70" />
         </div>
       </GlassPanel>
     );
@@ -457,18 +457,18 @@ function ConfigPanel({
     >
       <header className="flex items-center justify-between">
         <div>
-          <h2 className="text-[14px] font-medium text-tp-ink">
+          <h2 className="text-[14px] font-medium text-sg-ink">
             {t(`${nsKey}.configTitle`)}
           </h2>
-          <p className="text-[12px] text-tp-ink-3">{t(`${nsKey}.configHint`)}</p>
+          <p className="text-[12px] text-sg-ink-3">{t(`${nsKey}.configHint`)}</p>
         </div>
-        <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-tp-ink-4">
+        <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-sg-ink-4">
           {t(`${nsKey}.configReadOnly`)}
         </span>
       </header>
 
       {entries.length === 0 ? (
-        <p className="rounded-lg border border-dashed border-tp-glass-edge bg-tp-glass-inner p-3 text-[12px] text-tp-ink-4">
+        <p className="rounded-lg border border-dashed border-sg-border bg-sg-inset p-3 text-[12px] text-sg-ink-4">
           {t(`${nsKey}.configEmpty`)}
         </p>
       ) : (
@@ -477,7 +477,7 @@ function ConfigPanel({
             <ConfigField key={key} label={key}>
               {Array.isArray(value) ? (
                 value.length === 0 ? (
-                  <code className="block truncate rounded-md border border-tp-glass-edge bg-tp-glass-inner px-2 py-1 font-mono text-[11.5px] text-tp-ink-4">
+                  <code className="block truncate rounded-md border border-sg-border bg-sg-inset px-2 py-1 font-mono text-[11.5px] text-sg-ink-4">
                     []
                   </code>
                 ) : (
@@ -485,7 +485,7 @@ function ConfigPanel({
                     {value.map((v, i) => (
                       <code
                         key={`${v}-${i}`}
-                        className="rounded-md border border-tp-glass-edge bg-tp-glass-inner px-1.5 py-0.5 font-mono text-[11px] text-tp-ink-2"
+                        className="rounded-md border border-sg-border bg-sg-inset px-1.5 py-0.5 font-mono text-[11px] text-sg-ink-2"
                       >
                         {v}
                       </code>
@@ -494,7 +494,7 @@ function ConfigPanel({
                 )
               ) : (
                 <code
-                  className="block truncate rounded-md border border-tp-glass-edge bg-tp-glass-inner px-2 py-1 font-mono text-[11.5px] text-tp-ink-2"
+                  className="block truncate rounded-md border border-sg-border bg-sg-inset px-2 py-1 font-mono text-[11.5px] text-sg-ink-2"
                   title={value}
                 >
                   {value}
@@ -517,7 +517,7 @@ function ConfigField({
 }) {
   return (
     <div className="space-y-1">
-      <dt className="font-mono text-[10.5px] uppercase tracking-[0.1em] text-tp-ink-4">
+      <dt className="font-mono text-[10.5px] uppercase tracking-[0.1em] text-sg-ink-4">
         {label}
       </dt>
       <dd>{children}</dd>
@@ -547,11 +547,11 @@ function UpdatesFeed({
   const { t } = useTranslation();
   return (
     <GlassPanel variant="soft" as="section" className="flex flex-col">
-      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-tp-glass-edge px-5 py-3">
-        <h2 className="text-[14px] font-medium text-tp-ink">
+      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-sg-border px-5 py-3">
+        <h2 className="text-[14px] font-medium text-sg-ink">
           {t(`${nsKey}.feedTitle`)}
         </h2>
-        <span className="font-mono text-[10.5px] text-tp-ink-4">
+        <span className="font-mono text-[10.5px] text-sg-ink-4">
           {isPending || isError ? "—" : `${messages.length}`}
         </span>
       </header>
@@ -560,7 +560,7 @@ function UpdatesFeed({
         {isPending ? (
           <FeedSkeleton />
         ) : isError ? (
-          <p className="px-5 py-10 text-center font-mono text-[11.5px] text-tp-err">
+          <p className="px-5 py-10 text-center font-mono text-[11.5px] text-sg-err">
             {t(`${nsKey}.feedLoadFailed`, {
               msg: errorMessage ?? "unknown error",
             })}
@@ -583,7 +583,7 @@ function FeedSkeleton() {
       {Array.from({ length: 3 }).map((_, i) => (
         <div
           key={i}
-          className="h-[56px] animate-pulse rounded-xl border border-tp-glass-edge bg-tp-glass-inner/70"
+          className="h-[56px] animate-pulse rounded-xl border border-sg-border bg-sg-inset/70"
         />
       ))}
     </div>

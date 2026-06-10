@@ -7,7 +7,8 @@
  * - Renders one card per turn; each turn shows ordered Parts (text,
  *   reasoning, tool calls).
  *
- * Tidepool: warm amber + faint glassmorphism.
+ * Spatial Glass: turns hang off a vertical accent rail with status-token
+ *   dots; cards are faux-glass (no blur on this scrolling feed).
  */
 "use client";
 
@@ -60,15 +61,12 @@ function renderPart(part: Part): React.ReactNode {
       return (
         <div
           key={part.block_id}
-          className={cn(
-            "whitespace-pre-wrap break-words text-sm leading-relaxed",
-            "text-amber-950 dark:text-amber-50",
-          )}
+          className="whitespace-pre-wrap break-words text-sm leading-relaxed text-sg-ink"
         >
           {part.text}
           {!part.done && (
             <span
-              className="ml-0.5 inline-block h-3.5 w-1 animate-pulse bg-amber-500/80 align-middle"
+              className="ml-0.5 inline-block h-3.5 w-1 animate-pulse bg-sg-accent/80 align-middle"
               aria-hidden
             />
           )}
@@ -87,60 +85,78 @@ function renderPart(part: Part): React.ReactNode {
 /*                          Turn card                             */
 /* -------------------------------------------------------------- */
 
+/** Status-token color for the timeline rail dot, per turn status. */
+const TURN_DOT_TONE: Record<Turn["status"], string> = {
+  streaming: "bg-sg-accent shadow-[0_0_8px] shadow-sg-accent-glow",
+  complete: "bg-sg-ok shadow-[0_0_8px] shadow-sg-ok/40",
+  errored: "bg-sg-err shadow-[0_0_8px] shadow-sg-err/40",
+  cancelling: "bg-sg-warn shadow-[0_0_8px] shadow-sg-warn/40",
+};
+
 function TurnCard({ turn }: { turn: Turn }) {
   const { t } = useTranslation();
 
   return (
-    <article
-      data-testid="timeline-turn-card"
-      data-turn-id={turn.turn_id}
-      data-turn-status={turn.status}
-      className={cn(
-        "rounded-2xl border border-amber-200/50 bg-white/60 p-4 backdrop-blur-md",
-        "dark:border-white/10 dark:bg-black/30",
-        "shadow-sm",
-      )}
-    >
-      <header className="mb-2 flex items-center gap-2 text-[11px] text-amber-700/70 dark:text-amber-200/60">
-        <span className="font-mono opacity-70">#{turn.turn_id.slice(0, 8)}</span>
-        <span className="opacity-50">·</span>
-        <span>{new Date(turn.startedAt).toLocaleTimeString()}</span>
-        {turn.status === "streaming" && (
-          <span className="ml-auto inline-flex items-center gap-1 rounded-sm bg-amber-200/40 px-1.5 py-0.5 font-medium text-amber-900 dark:bg-amber-700/30 dark:text-amber-200">
-            <Loader2 className="size-3 animate-spin" aria-hidden />
-            {t("sessions.timeline.streaming")}
+    <div className="relative pl-5">
+      {/* Status-token dot anchored on the vertical accent rail. */}
+      <span
+        aria-hidden
+        className={cn(
+          "absolute left-[-4.5px] top-4 size-2.5 rounded-full ring-2 ring-sg-card",
+          TURN_DOT_TONE[turn.status],
+        )}
+      />
+      <article
+        data-testid="timeline-turn-card"
+        data-turn-id={turn.turn_id}
+        data-turn-status={turn.status}
+        className="rounded-sg-lg border border-sg-border bg-sg-card-grad p-4 shadow-sg-1"
+      >
+        <header className="mb-2 flex items-center gap-2 text-[11px] text-sg-ink-4">
+          <span className="font-mono text-sg-ink-3">
+            #{turn.turn_id.slice(0, 8)}
           </span>
-        )}
-        {turn.status === "complete" && (
-          <span className="ml-auto rounded-sm bg-emerald-200/40 px-1.5 py-0.5 font-medium text-emerald-900 dark:bg-emerald-700/30 dark:text-emerald-200">
-            {t("sessions.timeline.complete")}
-          </span>
-        )}
-        {turn.status === "errored" && (
-          <span className="ml-auto inline-flex items-center gap-1 rounded-sm bg-red-200/40 px-1.5 py-0.5 font-medium text-red-900 dark:bg-red-700/30 dark:text-red-200">
-            <AlertTriangle className="size-3" aria-hidden />
-            {t("sessions.timeline.errored")}
-          </span>
-        )}
-        {turn.status === "cancelling" && (
-          <span className="ml-auto rounded-sm bg-amber-300/40 px-1.5 py-0.5 font-medium text-amber-900 dark:bg-amber-600/30 dark:text-amber-100">
-            {t("sessions.timeline.cancelling")}
-          </span>
-        )}
-      </header>
-      <div className="space-y-2">
-        {turn.parts.length === 0 ? (
-          <div className="text-xs italic opacity-50">{t("sessions.timeline.empty")}</div>
-        ) : (
-          turn.parts.map(renderPart)
-        )}
-      </div>
-      {turn.errorMessage && (
-        <div className="mt-3 rounded-md border border-red-200/60 bg-red-50/40 px-2 py-1.5 text-xs text-red-900 dark:border-red-400/20 dark:bg-red-950/30 dark:text-red-200">
-          {turn.errorMessage}
+          <span className="opacity-50">·</span>
+          <span>{new Date(turn.startedAt).toLocaleTimeString()}</span>
+          {turn.status === "streaming" && (
+            <span className="ml-auto inline-flex items-center gap-1 rounded-sg-sm border border-sg-accent/30 bg-sg-accent-soft px-1.5 py-0.5 font-medium text-sg-accent">
+              <Loader2 className="size-3 animate-spin" aria-hidden />
+              {t("sessions.timeline.streaming")}
+            </span>
+          )}
+          {turn.status === "complete" && (
+            <span className="ml-auto rounded-sg-sm border border-sg-ok/30 bg-sg-ok-soft px-1.5 py-0.5 font-medium text-sg-ok">
+              {t("sessions.timeline.complete")}
+            </span>
+          )}
+          {turn.status === "errored" && (
+            <span className="ml-auto inline-flex items-center gap-1 rounded-sg-sm border border-sg-err/30 bg-sg-err-soft px-1.5 py-0.5 font-medium text-sg-err">
+              <AlertTriangle className="size-3" aria-hidden />
+              {t("sessions.timeline.errored")}
+            </span>
+          )}
+          {turn.status === "cancelling" && (
+            <span className="ml-auto rounded-sg-sm border border-sg-warn/30 bg-sg-warn-soft px-1.5 py-0.5 font-medium text-sg-warn">
+              {t("sessions.timeline.cancelling")}
+            </span>
+          )}
+        </header>
+        <div className="space-y-2">
+          {turn.parts.length === 0 ? (
+            <div className="text-xs italic text-sg-ink-4">
+              {t("sessions.timeline.empty")}
+            </div>
+          ) : (
+            turn.parts.map(renderPart)
+          )}
         </div>
-      )}
-    </article>
+        {turn.errorMessage && (
+          <div className="mt-3 rounded-sg-sm border border-sg-err/30 bg-sg-err-soft px-2 py-1.5 text-xs text-sg-err">
+            {turn.errorMessage}
+          </div>
+        )}
+      </article>
+    </div>
   );
 }
 
@@ -193,13 +209,13 @@ function TimelineInner({
   return (
     <div className="space-y-3">
       {mode === "live" ? (
-        <div className="flex items-center gap-2 text-[11px] text-amber-700/70 dark:text-amber-200/60">
+        <div className="flex items-center gap-2 text-[11px] text-sg-ink-4">
           <span
             className={cn(
               "inline-block size-2 rounded-full",
               live.connected
-                ? "bg-emerald-500 shadow-[0_0_4px] shadow-emerald-400/60"
-                : "bg-amber-400 animate-pulse",
+                ? "bg-sg-ok shadow-[0_0_6px] shadow-sg-ok/50"
+                : "animate-pulse bg-sg-warn",
             )}
             aria-hidden
           />
@@ -213,19 +229,17 @@ function TimelineInner({
         </div>
       ) : null}
       {turns.length === 0 ? (
-        <div
-          className={cn(
-            "rounded-2xl border border-dashed border-amber-300/60 bg-amber-50/30",
-            "dark:border-white/10 dark:bg-black/20",
-            "p-6 text-center text-sm italic text-amber-700/60 dark:text-amber-200/60",
-          )}
-        >
+        <div className="rounded-sg-lg border border-dashed border-sg-border bg-sg-inset p-6 text-center text-sm italic text-sg-ink-4">
           {mode === "replay"
             ? t("sessions.turn.empty")
             : t("sessions.timeline.waiting")}
         </div>
       ) : (
-        turns.map((turn) => <TurnCard key={turn.turn_id} turn={turn} />)
+        <div className="ml-1 space-y-3 border-l border-sg-accent/30 pl-1">
+          {turns.map((turn) => (
+            <TurnCard key={turn.turn_id} turn={turn} />
+          ))}
+        </div>
       )}
     </div>
   );

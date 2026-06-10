@@ -110,9 +110,9 @@ export function SessionCostCells({
   if (errored) {
     return (
       <>
-        <TableCell className="font-mono text-xs text-tp-ink-3">—</TableCell>
-        <TableCell className="font-mono text-xs text-tp-ink-3">—</TableCell>
-        <TableCell className="font-mono text-xs text-tp-ink-3">—</TableCell>
+        <TableCell className="font-mono text-xs text-sg-ink-4">—</TableCell>
+        <TableCell className="font-mono text-xs text-sg-ink-4">—</TableCell>
+        <TableCell className="font-mono text-xs text-sg-ink-4">—</TableCell>
       </>
     );
   }
@@ -151,8 +151,8 @@ export function SessionCostCells({
           className={cn(
             "inline-flex items-center gap-1 rounded-full border px-2 py-0.5",
             data.total_cost_usd > 0
-              ? "border-amber-400/40 bg-amber-500/10 text-amber-100"
-              : "border-tp-glass-edge bg-tp-glass-inner text-tp-ink-3",
+              ? "border-sg-accent/35 bg-sg-accent-soft text-sg-accent"
+              : "border-sg-border bg-sg-inset text-sg-ink-4",
           )}
           title={
             hasUnknown
@@ -164,13 +164,13 @@ export function SessionCostCells({
         </span>
       </TableCell>
       <TableCell
-        className="font-mono text-xs text-tp-ink-2"
+        className="font-mono text-xs text-sg-ink-4"
         data-testid={`cost-cell-avg-${sessionKey}`}
       >
         {data.turn_count > 0 ? formatDuration(data.avg_turn_ms) : "—"}
       </TableCell>
       <TableCell
-        className="font-mono text-xs text-tp-ink-3"
+        className="font-mono text-xs text-sg-ink-4"
         data-testid={`cost-cell-last-tool-${sessionKey}`}
       >
         {lastToolValue ?? "—"}

@@ -1,9 +1,9 @@
 "use client";
 
 /**
- * Admin login page. Two-column layout: brand + dot-grid art on the left,
- * form on the right. Sits outside the `(admin)` group so it doesn't
- * trigger the auth guard.
+ * Admin login page. Two-column layout: a deep-space brand showcase on the
+ * left, the sign-in form (overlay-tier glass card) on the right. Sits
+ * outside the `(admin)` group so it doesn't trigger the auth guard.
  *
  * Flow:
  *   1. User types username + password → submits.
@@ -55,77 +55,41 @@ export default function LoginPage() {
 function HeroColumn() {
   const { t } = useTranslation();
   return (
-    <aside className="relative hidden overflow-hidden border-r border-tp-glass-edge bg-tp-glass-inner md:flex md:flex-col md:justify-between md:p-10">
-      <div className="flex items-center gap-2">
+    <aside className="relative hidden overflow-hidden border-r border-sg-border md:flex md:flex-col md:justify-between md:p-10">
+      {/* Deep-space showcase — layered nebula glows drift slowly behind the
+          brand copy. The base deep-space gradient is painted on <html>; this
+          aside only adds the accent-hued nebulae + a faint noise grain. */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0 sg-drift"
+        style={{
+          backgroundImage:
+            "radial-gradient(760px 520px at 18% 12%, var(--sg-nebula-1), transparent 60%), " +
+            "radial-gradient(620px 480px at 88% 30%, var(--sg-nebula-2), transparent 62%), " +
+            "radial-gradient(560px 420px at 40% 104%, var(--sg-nebula-3), transparent 64%)",
+        }}
+      />
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0 sg-noise opacity-[0.03]"
+      />
+
+      <div className="relative z-10 flex items-center gap-2">
         <BrandMark />
       </div>
-      <div className="relative z-10 space-y-2">
-        <h2 className="text-lg font-semibold tracking-tight">
+      <div className="relative z-10 space-y-3">
+        <h2 className="sg-grad-text text-3xl font-semibold tracking-tight">
           {t("auth.heroTitle")}
         </h2>
-        <p className="max-w-xs text-sm text-tp-ink-3">
+        <p className="max-w-xs text-sm leading-relaxed text-sg-ink-3">
           {t("auth.heroBody")}
         </p>
       </div>
-      <div className="flex items-center gap-2 text-xs text-tp-ink-3">
+      <div className="relative z-10 flex items-center gap-2 text-xs text-sg-ink-5">
         <span className="font-mono">v0.1.1</span>
         <span>·</span>
         <span>M6 admin</span>
       </div>
-      {/* decorative dot grid — slowly drifts to add life */}
-      <div
-        className="pointer-events-none absolute inset-0 dot-grid opacity-60 login-dot-drift"
-        aria-hidden
-      />
-      {/* shimmer glow — slow diagonal sweep over the radial backdrop */}
-      <div
-        className="pointer-events-none absolute inset-0 login-shimmer-glow"
-        aria-hidden
-      />
-      {/* subtle radial glow */}
-      <div
-        className="pointer-events-none absolute inset-0 bg-[radial-gradient(600px_300px_at_20%_20%,hsl(var(--primary)/0.15),transparent_60%)]"
-        aria-hidden
-      />
-      {/* Component-scoped keyframes. Intensities are low (≤10px drift, 16s
-          period) so the form remains the visual anchor. Reduced-motion is
-          honored via @media at the bottom. */}
-      <style>{`
-        @keyframes login-dot-drift {
-          0%   { background-position: 0px 0px; }
-          100% { background-position: 18px 18px; }
-        }
-        .login-dot-drift {
-          animation: login-dot-drift 16s linear infinite;
-          will-change: background-position;
-        }
-        @keyframes login-shimmer-sweep {
-          0%   { opacity: 0.0; transform: translate3d(-15%, -10%, 0); }
-          50%  { opacity: 0.55; }
-          100% { opacity: 0.0; transform: translate3d(15%, 10%, 0); }
-        }
-        .login-shimmer-glow {
-          background:
-            radial-gradient(
-              420px 220px at 30% 30%,
-              hsl(var(--primary) / 0.16),
-              transparent 70%
-            );
-          animation: login-shimmer-sweep 9s ease-in-out infinite;
-          mix-blend-mode: plus-lighter;
-          will-change: opacity, transform;
-        }
-        @media (prefers-reduced-motion: reduce) {
-          .login-dot-drift,
-          .login-shimmer-glow {
-            animation: none !important;
-          }
-          .login-shimmer-glow {
-            opacity: 0.4;
-            transform: none;
-          }
-        }
-      `}</style>
     </aside>
   );
 }
@@ -185,15 +149,15 @@ function LoginForm() {
   }
 
   return (
-    <div className="w-full max-w-sm space-y-6">
+    <div className="sg-glass-overlay w-full max-w-sm space-y-6 rounded-sg-xl p-8 shadow-sg-4 animate-sg-rise">
       <div className="space-y-1.5 md:hidden">
         <BrandMark />
       </div>
       <div className="space-y-1">
-        <h1 className="text-xl font-semibold tracking-tight">
+        <h1 className="text-xl font-semibold tracking-tight text-sg-ink">
           {t("auth.signIn")}
         </h1>
-        <p className="text-sm text-tp-ink-3">{t("auth.subtitle")}</p>
+        <p className="text-sm text-sg-ink-3">{t("auth.subtitle")}</p>
       </div>
       <form
         onSubmit={onSubmit}
@@ -230,7 +194,7 @@ function LoginForm() {
         {error ? (
           <p
             role="alert"
-            className="text-sm text-destructive"
+            className="text-sm text-sg-err"
             data-testid="login-error"
           >
             {error}
@@ -242,7 +206,7 @@ function LoginForm() {
       </form>
       <ForgotPasswordPanel />
 
-      <p className="text-center text-xs text-tp-ink-3">
+      <p className="text-center text-[11px] text-sg-ink-5">
         {t("auth.sessionHint")}
       </p>
     </div>
@@ -252,12 +216,12 @@ function LoginForm() {
 function LoginFormShell({ disabled }: { disabled?: boolean }) {
   const { t } = useTranslation();
   return (
-    <div className="w-full max-w-sm space-y-6">
+    <div className="sg-glass-overlay w-full max-w-sm space-y-6 rounded-sg-xl p-8 shadow-sg-4">
       <div className="space-y-1">
-        <h1 className="text-xl font-semibold tracking-tight">
+        <h1 className="text-xl font-semibold tracking-tight text-sg-ink">
           {t("auth.signIn")}
         </h1>
-        <p className="text-sm text-tp-ink-3">{t("auth.subtitle")}</p>
+        <p className="text-sm text-sg-ink-3">{t("auth.subtitle")}</p>
       </div>
       <div className="space-y-4">
         <div className="space-y-2">
@@ -382,16 +346,16 @@ function ForgotPasswordPanel() {
 
   return (
     <details
-      className="text-xs text-tp-ink-3"
+      className="text-xs text-sg-ink-3"
       open={open}
       onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}
     >
-      <summary className="cursor-pointer select-none hover:text-tp-ink-2">
+      <summary className="cursor-pointer select-none transition-colors hover:text-sg-ink-2">
         {t("auth.forgotPassword")}
       </summary>
 
       {phase === "idle" && (
-        <div className="mt-2 space-y-3 rounded border border-tp-glass-edge bg-tp-glass-inner p-3 leading-relaxed">
+        <div className="sg-inset mt-2 space-y-3 rounded-sg-md p-3 leading-relaxed">
           <p>{t("auth.resetIntro")}</p>
           <Button
             type="button"
@@ -404,7 +368,7 @@ function ForgotPasswordPanel() {
             {minting ? t("auth.submitting") : t("auth.resetMint")}
           </Button>
           {error ? (
-            <p role="alert" className="text-destructive">
+            <p role="alert" className="text-sg-err">
               {error}
             </p>
           ) : null}
@@ -414,17 +378,17 @@ function ForgotPasswordPanel() {
       {(phase === "minted" || phase === "submitting") && (
         <form
           onSubmit={onSubmit}
-          className="mt-2 space-y-3 rounded border border-tp-glass-edge bg-tp-glass-inner p-3 leading-relaxed"
+          className="sg-inset mt-2 space-y-3 rounded-sg-md p-3 leading-relaxed"
         >
           <div className="space-y-1.5">
-            <p className="font-medium text-tp-ink-2">
+            <p className="font-medium text-sg-ink-2">
               {t("auth.resetStep1Title")}
             </p>
             <p>{t("auth.resetStep1Body")}</p>
-            <pre className="overflow-x-auto rounded bg-black/40 p-2 font-mono text-[11px] text-tp-ink-2">
+            <pre className="overflow-x-auto rounded-sg-sm bg-sg-inset-strong p-2 font-mono text-[11px] text-sg-ink-2">
               cat {tokenPath}
             </pre>
-            <p className="text-tp-ink-3">
+            <p className="text-sg-ink-3">
               {t("auth.resetCountdown", {
                 m: Math.floor(secondsLeft / 60),
                 s: String(secondsLeft % 60).padStart(2, "0"),
@@ -433,7 +397,7 @@ function ForgotPasswordPanel() {
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="reset-token" className="text-tp-ink-2">
+            <Label htmlFor="reset-token" className="text-sg-ink-2">
               {t("auth.resetTokenLabel")}
             </Label>
             <Input
@@ -448,7 +412,7 @@ function ForgotPasswordPanel() {
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="reset-new" className="text-tp-ink-2">
+            <Label htmlFor="reset-new" className="text-sg-ink-2">
               {t("account.security.newPassword")}
             </Label>
             <Input
@@ -463,7 +427,7 @@ function ForgotPasswordPanel() {
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="reset-confirm" className="text-tp-ink-2">
+            <Label htmlFor="reset-confirm" className="text-sg-ink-2">
               {t("account.security.confirmNewPassword")}
             </Label>
             <Input
@@ -479,7 +443,7 @@ function ForgotPasswordPanel() {
           </div>
 
           {error ? (
-            <p role="alert" className="text-destructive">
+            <p role="alert" className="text-sg-err">
               {error}
             </p>
           ) : null}
@@ -506,7 +470,7 @@ function ForgotPasswordPanel() {
             </Button>
           </div>
           {secondsLeft <= 0 && (
-            <p className="text-amber-500">{t("auth.resetTokenExpired")}</p>
+            <p className="text-sg-warn">{t("auth.resetTokenExpired")}</p>
           )}
         </form>
       )}
@@ -514,9 +478,9 @@ function ForgotPasswordPanel() {
       {phase === "done" && (
         <div
           role="status"
-          className="mt-2 space-y-2 rounded border border-emerald-500/40 bg-emerald-500/10 p-3 leading-relaxed"
+          className="mt-2 space-y-2 rounded-sg-md border border-sg-ok/40 bg-sg-ok-soft p-3 leading-relaxed"
         >
-          <p className="font-medium text-emerald-400">
+          <p className="font-medium text-sg-ok">
             {t("auth.resetSuccessTitle")}
           </p>
           <p>{t("auth.resetSuccessBody")}</p>

@@ -1,9 +1,9 @@
 /**
- * Collapsible "Thinking" block. Streams render with a soft amber shimmer
+ * Collapsible "Thinking" block. Streams render with a soft accent shimmer
  * while the underlying block isn't yet `done`; once finished the shimmer
  * stops and the block can be collapsed.
  *
- * Tidepool palette: amber glass card, faded text body.
+ * Spatial Glass: faux-glass card, dimmed mono body in a sunken well.
  */
 "use client";
 
@@ -32,32 +32,26 @@ export function ReasoningBlock({ text, streaming, defaultOpen }: ReasoningBlockP
     <div
       data-testid="reasoning-block"
       data-streaming={streaming ? "true" : "false"}
-      className={cn(
-        "rounded-xl border border-amber-200/40 bg-amber-50/40 backdrop-blur-sm",
-        "dark:border-amber-300/10 dark:bg-amber-950/20",
-        "shadow-sm",
-      )}
+      className="rounded-sg-md border border-sg-border bg-sg-card-grad shadow-sg-1"
     >
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
         className={cn(
-          "flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium",
-          "text-amber-900 dark:text-amber-200",
-          "hover:bg-amber-100/40 dark:hover:bg-amber-900/20",
-          "transition-colors rounded-xl",
+          "flex w-full items-center gap-2 rounded-sg-md px-3 py-2 text-left text-xs font-medium",
+          "text-sg-ink-2 transition-colors hover:bg-sg-accent-soft/40",
         )}
         aria-expanded={open}
       >
         {open ? (
-          <ChevronDown className="size-3.5 shrink-0 opacity-70" aria-hidden />
+          <ChevronDown className="size-3.5 shrink-0 text-sg-ink-4" aria-hidden />
         ) : (
-          <ChevronRight className="size-3.5 shrink-0 opacity-70" aria-hidden />
+          <ChevronRight className="size-3.5 shrink-0 text-sg-ink-4" aria-hidden />
         )}
         <Sparkles
           className={cn(
-            "size-3.5 shrink-0",
-            streaming && "animate-pulse text-amber-500 dark:text-amber-300",
+            "size-3.5 shrink-0 text-sg-ink-4",
+            streaming && "animate-pulse text-sg-accent",
           )}
           aria-hidden
         />
@@ -69,18 +63,19 @@ export function ReasoningBlock({ text, streaming, defaultOpen }: ReasoningBlockP
         <div
           data-testid="reasoning-block-body"
           className={cn(
-            "px-4 pb-3 pt-1 text-xs leading-relaxed",
-            "text-amber-950/80 dark:text-amber-100/70",
-            "whitespace-pre-wrap font-mono",
+            "mx-3 mb-3 rounded-sg-sm bg-sg-inset px-3 py-2 text-[12.5px] leading-relaxed",
+            "whitespace-pre-wrap font-mono text-sg-ink-3",
             streaming && "relative",
           )}
         >
           {text || (
-            <span className="italic opacity-60">{t("sessions.reasoning.empty")}</span>
+            <span className="italic text-sg-ink-4">
+              {t("sessions.reasoning.empty")}
+            </span>
           )}
           {streaming && (
             <span
-              className="ml-0.5 inline-block h-3 w-1 animate-pulse bg-amber-500/70 align-middle"
+              className="ml-0.5 inline-block h-3 w-1 animate-pulse bg-sg-accent/70 align-middle"
               aria-hidden
             />
           )}

@@ -3,6 +3,7 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { cn } from "@/lib/utils";
 import {
   Dialog,
   DialogContent,
@@ -67,12 +68,10 @@ export function ScanLoginDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl border-tp-glass-edge bg-tp-glass-2 backdrop-blur-glass-strong backdrop-saturate-glass-strong">
+      <DialogContent className="max-w-3xl">
         <DialogHeader>
-          <DialogTitle className="text-tp-ink">
-            {t("channels.qq.scanLogin.title")}
-          </DialogTitle>
-          <DialogDescription className="text-tp-ink-3">
+          <DialogTitle>{t("channels.qq.scanLogin.title")}</DialogTitle>
+          <DialogDescription>
             {t("channels.qq.scanLogin.subtitle")}
           </DialogDescription>
         </DialogHeader>
@@ -83,16 +82,38 @@ export function ScanLoginDialog({
               diagnostics={diagnostics}
               error={diagnosticsError}
             />
-            <iframe
-              data-testid="qq-napcat-webui"
-              src="/webui"
-              title="NapCat WebUI"
-              className="h-[620px] w-full rounded-xl border border-tp-glass-edge bg-white"
-            />
+            {/* QR well — sunken glass-inset frame with cyan corner accents
+                bracketing NapCat's first-party WebUI / live QR. */}
+            <div className="relative rounded-sg-lg border border-sg-border bg-sg-inset p-2 shadow-[inset_0_1px_3px_oklch(0_0_0/0.18)]">
+              <CornerAccents />
+              <iframe
+                data-testid="qq-napcat-webui"
+                src="/webui"
+                title="NapCat WebUI"
+                className="relative h-[620px] w-full rounded-sg-md border border-sg-border bg-white"
+              />
+            </div>
           </>
         ) : null}
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * Four L-shaped cyan corner brackets framing the QR well — purely decorative,
+ * token-driven, and pointer-transparent so the iframe stays interactive.
+ */
+function CornerAccents() {
+  const base =
+    "pointer-events-none absolute h-4 w-4 border-sg-accent/60";
+  return (
+    <span aria-hidden>
+      <span className={`${base} left-1 top-1 rounded-tl-sg-sm border-l-2 border-t-2`} />
+      <span className={`${base} right-1 top-1 rounded-tr-sg-sm border-r-2 border-t-2`} />
+      <span className={`${base} bottom-1 left-1 rounded-bl-sg-sm border-b-2 border-l-2`} />
+      <span className={`${base} bottom-1 right-1 rounded-br-sg-sm border-b-2 border-r-2`} />
+    </span>
   );
 }
 
@@ -105,20 +126,20 @@ function NapcatDiagnosticsStrip({
 }) {
   if (error) {
     return (
-      <div className="rounded-lg border border-tp-err/25 bg-tp-err-soft px-3 py-2 text-[12px] text-tp-err">
+      <div className="rounded-sg-md border border-sg-err/30 bg-sg-err-soft px-3 py-2 text-[12px] text-sg-err">
         {error}
       </div>
     );
   }
   if (!diagnostics) {
     return (
-      <div className="rounded-lg border border-tp-glass-edge bg-tp-glass-inner px-3 py-2 text-[12px] text-tp-ink-3">
+      <div className="rounded-sg-md border border-sg-border bg-sg-inset px-3 py-2 text-[12px] text-sg-ink-3">
         NapCat diagnostics: checking
       </div>
     );
   }
   return (
-    <div className="grid grid-cols-2 gap-2 rounded-lg border border-tp-glass-edge bg-tp-glass-inner px-3 py-2 text-[12px] text-tp-ink-2 sm:grid-cols-4">
+    <div className="grid grid-cols-2 gap-2 rounded-sg-md border border-sg-border bg-sg-inset px-3 py-2 text-[12px] text-sg-ink-2 sm:grid-cols-4">
       <DiagnosticItem
         label="mode"
         value={diagnostics.mode}
@@ -152,12 +173,24 @@ function DiagnosticItem({
   value: string;
   testId: string;
 }) {
+  // Tint the status line with sg status tokens: green for "ok", red for known
+  // failure words, neutral ink otherwise (urls, mode names, etc.).
+  const v = value.toLowerCase();
+  const tone =
+    v === "ok" || v === "true"
+      ? "text-sg-ok"
+      : v === "error" || v === "missing" || v === "false" || v === "fail"
+        ? "text-sg-err"
+        : "text-sg-ink-2";
   return (
     <div className="min-w-0">
-      <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-tp-ink-4">
+      <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-sg-ink-4">
         {label}
       </div>
-      <div className="truncate font-mono text-[12px]" data-testid={testId}>
+      <div
+        className={cn("truncate font-mono text-[12px]", tone)}
+        data-testid={testId}
+      >
         {value}
       </div>
     </div>

@@ -26,6 +26,7 @@ import { CostFooter } from "@/components/sessions/cost-footer";
 import { EventTimeline } from "@/components/sessions/event-timeline";
 import { PastTurnsPills } from "@/components/sessions/past-turns-pills";
 import { Button } from "@/components/ui/button";
+import { GlassPanel } from "@/components/ui/glass-panel";
 
 export default function SessionDetailPage() {
   const { t } = useTranslation();
@@ -43,17 +44,17 @@ export default function SessionDetailPage() {
             asChild
             variant="ghost"
             size="sm"
-            className="-ml-2 h-7 px-2 text-tp-ink-3 hover:text-tp-ink"
+            className="-ml-2 h-7 px-2 text-sg-ink-3 hover:text-sg-ink"
           >
             <Link href="/admin/sessions">
               <ChevronLeft className="h-3.5 w-3.5" aria-hidden="true" />
               {t("sessions.title")}
             </Link>
           </Button>
-          <h1 className="font-mono text-lg font-semibold tracking-tight">
+          <h1 className="font-mono text-lg font-semibold tracking-tight text-sg-ink">
             {sessionKey || t("sessions.empty")}
           </h1>
-          <p className="text-sm text-tp-ink-3">{t("sessions.subtitle")}</p>
+          <p className="text-sm text-sg-ink-3">{t("sessions.subtitle")}</p>
         </div>
       </header>
 
@@ -63,13 +64,13 @@ export default function SessionDetailPage() {
         </div>
       ) : null}
 
-      <section className="mt-3 flex-1 rounded-lg border border-tp-glass-edge bg-tp-glass p-4 sm:p-6">
+      <GlassPanel as="section" variant="soft" className="mt-3 flex-1 p-4 sm:p-6">
         {sessionKey ? (
           <EventTimeline sessionKey={sessionKey} />
         ) : (
-          <p className="text-sm text-tp-ink-3">{t("sessions.empty")}</p>
+          <p className="text-sm text-sg-ink-3">{t("sessions.empty")}</p>
         )}
-      </section>
+      </GlassPanel>
 
       {sessionKey ? <CostFooter sessionKey={sessionKey} /> : null}
     </div>

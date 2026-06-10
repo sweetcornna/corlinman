@@ -152,10 +152,10 @@ export default function SessionsPage() {
     <>
       <header className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div className="space-y-1">
-          <h1 className="text-2xl font-semibold tracking-tight">
+          <h1 className="text-2xl font-semibold tracking-tight text-sg-ink">
             {t("sessions.title")}
           </h1>
-          <p className="text-sm text-tp-ink-3">{t("sessions.subtitle")}</p>
+          <p className="text-sm text-sg-ink-3">{t("sessions.subtitle")}</p>
         </div>
         <Button
           type="button"
@@ -165,7 +165,7 @@ export default function SessionsPage() {
           disabled={isDisabled || sessions.length === 0}
           data-testid="sessions-clear-all"
           aria-label={t("sessions.clearAll")}
-          className="self-start text-destructive hover:bg-destructive/10 hover:text-destructive sm:self-auto"
+          className="self-start text-sg-err hover:bg-sg-err-soft hover:text-sg-err sm:self-auto"
         >
           <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
           {t("sessions.clearAll")}
@@ -174,10 +174,14 @@ export default function SessionsPage() {
 
       {isDisabled ? <SessionsDisabledBanner /> : null}
 
-      <section className="overflow-hidden rounded-lg border border-tp-glass-edge bg-tp-glass">
+      <section className="relative overflow-hidden rounded-sg-lg border border-sg-border bg-sg-card-grad shadow-sg-2">
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-x-0 top-0 h-px bg-sg-highlight opacity-80"
+        />
         <Table>
           <TableHeader>
-            <TableRow className="border-b border-tp-glass-edge hover:bg-transparent">
+            <TableRow className="border-b border-sg-border hover:bg-transparent">
               <TableHead className="pl-4">
                 {t("sessions.colSessionKey")}
               </TableHead>
@@ -209,30 +213,30 @@ export default function SessionsPage() {
             {query.isPending ? (
               <SessionsTableSkeleton />
             ) : query.isError ? (
-              <TableRow>
+              <TableRow className="hover:bg-transparent">
                 <TableCell
                   colSpan={8}
-                  className="py-10 text-center text-sm text-destructive"
+                  className="py-10 text-center text-sm text-sg-err"
                   data-testid="sessions-load-failed"
                 >
                   {t("sessions.loadFailed")}: {(query.error as Error).message}
                 </TableCell>
               </TableRow>
             ) : isDisabled ? (
-              <TableRow>
+              <TableRow className="hover:bg-transparent">
                 <TableCell
                   colSpan={8}
-                  className="py-10 text-center text-sm text-tp-ink-3"
+                  className="py-10 text-center text-sm text-sg-ink-3"
                   data-testid="sessions-disabled-row"
                 >
                   {t("sessions.sessionsDisabledHint")}
                 </TableCell>
               </TableRow>
             ) : sessions.length === 0 ? (
-              <TableRow>
+              <TableRow className="hover:bg-transparent">
                 <TableCell
                   colSpan={8}
-                  className="py-10 text-center text-sm text-tp-ink-3"
+                  className="py-10 text-center text-sm text-sg-ink-3"
                   data-testid="sessions-empty"
                 >
                   {t("sessions.empty")}
@@ -294,20 +298,20 @@ function SessionsDisabledBanner() {
     <div
       role="alert"
       className={cn(
-        "flex items-start gap-3 rounded-lg border px-4 py-3",
-        "border-amber-500/40 bg-amber-500/10 text-amber-200",
+        "flex items-start gap-3 rounded-sg-md border px-4 py-3",
+        "border-sg-warn/30 bg-sg-warn-soft text-sg-ink-2",
       )}
       data-testid="sessions-disabled-banner"
     >
       <PowerOff
         aria-hidden="true"
-        className="mt-0.5 h-4 w-4 shrink-0 text-amber-400"
+        className="mt-0.5 h-4 w-4 shrink-0 text-sg-warn"
       />
       <div className="space-y-1">
-        <div className="text-sm font-medium">
+        <div className="text-sm font-semibold text-sg-ink">
           {t("sessions.sessionsDisabledTitle")}
         </div>
-        <div className="text-xs text-amber-200/80">
+        <div className="text-xs text-sg-ink-3">
           {t("sessions.sessionsDisabledHint")}
         </div>
       </div>
@@ -321,7 +325,7 @@ function SessionsTableSkeleton() {
       {Array.from({ length: 3 }).map((_, i) => (
         <TableRow
           key={`session-sk-${i}`}
-          className="border-b border-tp-glass-edge"
+          className="border-b border-sg-border hover:bg-transparent"
         >
           <TableCell className="pl-4">
             <Skeleton className="h-4 w-32" />

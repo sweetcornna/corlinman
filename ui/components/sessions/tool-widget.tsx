@@ -28,23 +28,20 @@ export interface ToolWidgetProps {
 function StateIcon({ state }: { state: ToolPartState }) {
   switch (state.kind) {
     case "pending":
-      return <Circle className="size-3.5 shrink-0 text-amber-700/40" aria-hidden />;
+      return <Circle className="size-3.5 shrink-0 text-sg-ink-5" aria-hidden />;
     case "running":
       return (
         <CircleDot
-          className="size-3.5 shrink-0 animate-pulse text-amber-600 dark:text-amber-400"
+          className="size-3.5 shrink-0 animate-pulse text-sg-accent"
           aria-hidden
         />
       );
     case "completed":
       return (
-        <CircleCheck
-          className="size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400"
-          aria-hidden
-        />
+        <CircleCheck className="size-3.5 shrink-0 text-sg-ok" aria-hidden />
       );
     case "error":
-      return <CircleX className="size-3.5 shrink-0 text-red-600 dark:text-red-400" aria-hidden />;
+      return <CircleX className="size-3.5 shrink-0 text-sg-err" aria-hidden />;
   }
 }
 
@@ -117,56 +114,55 @@ export function ToolWidget({ part }: ToolWidgetProps) {
       data-testid="tool-widget"
       data-tool-name={part.tool_name}
       data-tool-state={part.state.kind}
-      className={cn(
-        "rounded-xl border border-amber-200/40 bg-white/50 backdrop-blur-sm",
-        "dark:border-white/10 dark:bg-black/30",
-        "shadow-sm",
-      )}
+      className="rounded-sg-md border border-sg-border bg-sg-card-grad shadow-sg-1"
     >
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
         data-testid="tool-widget-toggle"
         className={cn(
-          "flex w-full items-center gap-2 px-3 py-2 text-left text-xs",
-          "text-amber-950 dark:text-amber-100",
-          "hover:bg-amber-50/40 dark:hover:bg-amber-900/10",
-          "transition-colors rounded-xl",
+          "flex w-full items-center gap-2 rounded-sg-md px-3 py-2 text-left text-xs",
+          "text-sg-ink-2 transition-colors hover:bg-sg-accent-soft/40",
         )}
         aria-expanded={open}
       >
         {open ? (
-          <ChevronDown className="size-3.5 shrink-0 opacity-50" aria-hidden />
+          <ChevronDown className="size-3.5 shrink-0 text-sg-ink-4" aria-hidden />
         ) : (
-          <ChevronRight className="size-3.5 shrink-0 opacity-50" aria-hidden />
+          <ChevronRight className="size-3.5 shrink-0 text-sg-ink-4" aria-hidden />
         )}
         <StateIcon state={part.state} />
-        <span className="font-mono font-semibold text-amber-900 dark:text-amber-200">
+        <span className="font-mono font-semibold text-sg-ink">
           {part.tool_name}
         </span>
-        <span className="truncate font-mono opacity-60">{summarizeArgs(part.input_json)}</span>
+        <span className="truncate font-mono text-sg-ink-4">
+          {summarizeArgs(part.input_json)}
+        </span>
         <span
           className={cn(
-            "ml-auto shrink-0 rounded-sm px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide",
+            "ml-auto shrink-0 rounded-sg-sm border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide",
             part.state.kind === "running" &&
-              "bg-amber-200/40 text-amber-900 dark:bg-amber-700/30 dark:text-amber-200",
+              "border-sg-accent/30 bg-sg-accent-soft text-sg-accent",
             part.state.kind === "completed" &&
-              "bg-emerald-200/40 text-emerald-900 dark:bg-emerald-700/30 dark:text-emerald-200",
+              "border-sg-ok/30 bg-sg-ok-soft text-sg-ok",
             part.state.kind === "error" &&
-              "bg-red-200/40 text-red-900 dark:bg-red-700/30 dark:text-red-200",
-            part.state.kind === "pending" && "bg-amber-100/40 text-amber-700/70 dark:bg-white/5",
+              "border-sg-err/30 bg-sg-err-soft text-sg-err",
+            part.state.kind === "pending" &&
+              "border-sg-border bg-sg-inset text-sg-ink-4",
           )}
         >
           {t(stateLabelKey)}
         </span>
         {elapsed && (
-          <span className="shrink-0 font-mono text-[10px] opacity-60">{elapsed}</span>
+          <span className="shrink-0 font-mono text-[10px] text-sg-ink-4">
+            {elapsed}
+          </span>
         )}
       </button>
       {open && (
         <div
           data-testid="tool-widget-body"
-          className="border-t border-amber-100/40 px-3 py-2 dark:border-white/5"
+          className="border-t border-sg-border px-3 py-2"
         >
           <Renderer
             toolName={part.tool_name}
@@ -180,7 +176,7 @@ export function ToolWidget({ part }: ToolWidgetProps) {
        *  outside the expandable args/result block so the operator can watch
        *  the child run unfold even when the parent tool body is collapsed. */}
       {part.subagentSessions && part.subagentSessions.length > 0 && (
-        <div className="border-t border-amber-100/40 px-3 py-2 dark:border-white/5">
+        <div className="border-t border-sg-border px-3 py-2">
           {part.subagentSessions.map((session) => (
             <SubagentTree
               key={session.child_session_key}

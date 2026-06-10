@@ -29,20 +29,14 @@ export function BashToolRenderer({ inputJson, output, isError }: ToolRendererPro
 
   return (
     <div className="space-y-2 text-xs">
-      <div
-        className={cn(
-          "rounded-md border border-amber-100/50 bg-black/80 px-3 py-2",
-          "font-mono text-amber-100",
-          "dark:border-white/5",
-        )}
-      >
+      <div className="rounded-sg-md border border-sg-border bg-sg-inset-strong px-3 py-2 font-mono text-[12.5px] text-sg-ink-2">
         <div className="flex items-start gap-2">
-          <Terminal className="mt-0.5 size-3.5 shrink-0 text-amber-400" aria-hidden />
-          <span className="select-none text-amber-400">$</span>
+          <Terminal className="mt-0.5 size-3.5 shrink-0 text-sg-accent" aria-hidden />
+          <span className="select-none text-sg-accent">$</span>
           <span className="whitespace-pre-wrap break-words">{command || "(empty)"}</span>
         </div>
         {args.description && (
-          <div className="mt-1 pl-6 text-[10px] italic text-amber-200/60">
+          <div className="mt-1 pl-6 text-[10px] italic text-sg-ink-4">
             {args.description}
           </div>
         )}
@@ -50,10 +44,10 @@ export function BashToolRenderer({ inputJson, output, isError }: ToolRendererPro
       {output !== undefined && output !== "" && (
         <pre
           className={cn(
-            "max-h-80 overflow-auto rounded-md border px-2 py-1.5 font-mono whitespace-pre-wrap break-words",
+            "max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-sg-md border px-2 py-1.5 font-mono text-[12.5px]",
             isError
-              ? "border-red-200/60 bg-red-50/40 text-red-900 dark:border-red-400/20 dark:bg-red-950/30 dark:text-red-200"
-              : "border-amber-100/50 bg-amber-50/30 text-amber-950/80 dark:border-white/5 dark:bg-black/30 dark:text-amber-100/70",
+              ? "border-sg-err/30 bg-sg-err-soft text-sg-err"
+              : "border-sg-border bg-sg-inset text-sg-ink-3",
           )}
         >
           {output}

@@ -35,7 +35,7 @@ export function InboxMessageList({
 
   if (messages.length === 0) {
     return (
-      <p className="px-5 py-10 text-center text-[12.5px] text-tp-ink-3">
+      <p className="px-5 py-10 text-center text-[12.5px] text-sg-ink-3">
         {t(`${nsKey}.noUpdates`)}
       </p>
     );
@@ -46,7 +46,7 @@ export function InboxMessageList({
       initial="hidden"
       animate="visible"
       variants={variants.stagger}
-      className="flex flex-col divide-y divide-tp-glass-edge"
+      className="flex flex-col divide-y divide-sg-border"
     >
       {messages.map((msg) => {
         const ignored =
@@ -61,21 +61,21 @@ export function InboxMessageList({
             data-testid={`${testIdPrefix}-message-${msg.id}`}
             className={cn(
               "group flex items-start gap-3 px-4 py-3 transition-colors",
-              "hover:bg-tp-glass-inner-hover",
+              "hover:bg-sg-inset-hover",
               ignored && "opacity-60",
             )}
           >
-            <span className="shrink-0 pt-0.5 font-mono text-[11px] tabular-nums text-tp-ink-4">
+            <span className="shrink-0 pt-0.5 font-mono text-[11px] tabular-nums text-sg-ink-4">
               {formatTs(msg.timestamp_ms)}
             </span>
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px]">
                 {msg.from_username ? (
-                  <span className="font-mono font-semibold text-tp-ink">
+                  <span className="font-mono font-semibold text-sg-ink">
                     {msg.from_username}
                   </span>
                 ) : null}
-                <span className="text-tp-ink-3">
+                <span className="text-sg-ink-3">
                   {msg.chat_title
                     ? t(`${nsKey}.groupContext`, { name: msg.chat_title })
                     : t(`${nsKey}.dmContext`)}
@@ -88,7 +88,7 @@ export function InboxMessageList({
                 />
               </div>
               {msg.content ? (
-                <p className="mt-1 line-clamp-2 whitespace-pre-wrap break-words text-[12.5px] text-tp-ink-2">
+                <p className="mt-1 line-clamp-2 whitespace-pre-wrap break-words text-[12.5px] text-sg-ink-2">
                   {msg.content}
                 </p>
               ) : null}
@@ -116,8 +116,8 @@ function RoutingBadge({
   const labelKey = isMention ? `${nsKey}.routeMention` : `${nsKey}.routeGroup`;
   const label = t(labelKey);
   const tone = responded
-    ? "bg-tp-ok-soft text-tp-ok border-tp-ok/25"
-    : "bg-tp-glass-inner-strong text-tp-ink-3 border-tp-glass-edge";
+    ? "bg-sg-ok-soft text-sg-ok border-sg-ok/25"
+    : "bg-sg-inset-strong text-sg-ink-3 border-sg-border";
   return (
     <span
       data-testid={testId}

@@ -109,7 +109,7 @@ export function ChannelConfigEditor({
       <CardContent className="space-y-4">
         {spec.secrets.length > 0 ? (
           <fieldset className="space-y-2">
-            <legend className="text-xs uppercase tracking-wider text-tp-ink-3">
+            <legend className="text-[11px] uppercase tracking-wider text-sg-ink-4">
               {t("channelConfig.secretsLegend")}
             </legend>
             {spec.secrets.map((key) => (
@@ -159,7 +159,7 @@ export function ChannelConfigEditor({
                 onChange={(e) => setField(group, key, e.target.value)}
                 data-testid={`cc-list-${key}`}
               />
-              <p className="text-[11px] text-tp-ink-4">
+              <p className="text-[11px] text-sg-ink-4">
                 {t("channelConfig.listHint")}
               </p>
             </div>
@@ -169,7 +169,7 @@ export function ChannelConfigEditor({
         {spec.flags.map((key) => (
           <div
             key={key}
-            className="flex items-center justify-between gap-4 rounded-md border border-tp-glass-edge bg-tp-glass-inner px-3 py-2"
+            className="flex items-center justify-between gap-4 rounded-sg-md border border-sg-border bg-sg-inset px-3 py-2"
           >
             <Label htmlFor={`cc-${channel}-${key}`} className="text-sm">
               {fieldLabel(key)}

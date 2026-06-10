@@ -7,9 +7,9 @@
  * from `TurnComplete`) come in as props since the reducer doesn't track
  * them.
  *
- * Status badge tones mirror `ToolWidget` (amber=running, emerald=done,
- * red=errored, dim-amber=cancelling) so the visual language stays
- * consistent across live and replay views.
+ * Status badge tones mirror `ToolWidget` (accent=running, ok=done,
+ * err=errored, warn=cancelling) so the visual language stays consistent
+ * across live and replay views.
  *
  * Missing fields render as an em-dash, never zero — operators read this
  * card to figure out *why* a turn behaved a certain way, so an "0
@@ -21,7 +21,6 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { AlertTriangle, CircleCheck, Loader2, Octagon } from "lucide-react";
 
-import { cn } from "@/lib/utils";
 import { useTimeline, type Part, type Turn } from "@/lib/sessions/store";
 import { formatCost, formatDuration } from "./cost-footer";
 
@@ -65,12 +64,9 @@ export function TurnSummaryCard({
     return (
       <article
         data-testid="turn-summary-card"
-        className={cn(
-          "rounded-2xl border border-tp-glass-edge bg-tp-glass p-4",
-          "animate-pulse",
-        )}
+        className="animate-pulse rounded-sg-xl border border-sg-border bg-sg-card-grad p-4 shadow-sg-2"
       >
-        <div className="h-4 w-24 rounded bg-amber-200/30" />
+        <div className="h-4 w-24 rounded bg-sg-inset" />
       </article>
     );
   }
@@ -93,16 +89,12 @@ export function TurnSummaryCard({
   return (
     <article
       data-testid="turn-summary-card"
-      className={cn(
-        "rounded-2xl border border-amber-200/50 bg-white/60 p-4 backdrop-blur-md",
-        "dark:border-white/10 dark:bg-black/30",
-        "shadow-sm",
-      )}
+      className="rounded-sg-xl border border-sg-border bg-sg-card-grad p-4 shadow-sg-2"
     >
       <header className="flex items-center gap-2">
         <StatusBadge status={turn.status} />
-        <div className="ml-auto flex items-center gap-2 text-[11px] text-amber-700/70 dark:text-amber-200/60">
-          <span className="font-mono opacity-70">{turnId.slice(0, 12)}</span>
+        <div className="ml-auto flex items-center gap-2 text-[11px] text-sg-ink-4">
+          <span className="font-mono text-sg-ink-3">{turnId.slice(0, 12)}</span>
         </div>
       </header>
 
@@ -139,9 +131,7 @@ export function TurnSummaryCard({
         </Field>
         <Field label={t("sessions.turn.finishReason")}>
           {finishReason ? (
-            <span className="font-mono text-amber-900 dark:text-amber-100">
-              {finishReason}
-            </span>
+            <span className="font-mono text-sg-accent">{finishReason}</span>
           ) : (
             "—"
           )}
@@ -150,16 +140,12 @@ export function TurnSummaryCard({
 
       {trimmedInput && (
         <div className="mt-4">
-          <div className="text-[11px] uppercase tracking-wide text-tp-ink-3">
+          <div className="text-[11px] uppercase tracking-wide text-sg-ink-4">
             {t("sessions.turn.userInput")}
           </div>
           <div
             data-testid="turn-summary-user-input"
-            className={cn(
-              "mt-1 whitespace-pre-wrap break-words rounded-xl px-3 py-2 text-sm leading-relaxed",
-              "border border-amber-200/40 bg-amber-50/40",
-              "text-amber-950 dark:border-white/10 dark:bg-amber-900/10 dark:text-amber-50",
-            )}
+            className="mt-1 whitespace-pre-wrap break-words rounded-sg-md border border-sg-accent/30 bg-sg-accent-soft px-3 py-2 text-sm leading-relaxed text-sg-ink"
           >
             {trimmedInput}
           </div>
@@ -169,11 +155,7 @@ export function TurnSummaryCard({
       {turn.errorMessage && (
         <div
           data-testid="turn-summary-error"
-          className={cn(
-            "mt-3 rounded-md border px-2 py-1.5 text-xs",
-            "border-red-200/60 bg-red-50/40 text-red-900",
-            "dark:border-red-400/20 dark:bg-red-950/30 dark:text-red-200",
-          )}
+          className="mt-3 rounded-sg-sm border border-sg-err/30 bg-sg-err-soft px-2 py-1.5 text-xs text-sg-err"
         >
           {turn.errorMessage}
         </div>
@@ -196,10 +178,7 @@ function StatusBadge({ status }: { status: Turn["status"] }) {
         <span
           data-testid="turn-summary-badge"
           data-status="streaming"
-          className={cn(
-            "inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[11px] font-medium",
-            "bg-amber-200/40 text-amber-900 dark:bg-amber-700/30 dark:text-amber-200",
-          )}
+          className="inline-flex items-center gap-1 rounded-sg-sm border border-sg-accent/30 bg-sg-accent-soft px-1.5 py-0.5 text-[11px] font-medium text-sg-accent"
         >
           <Loader2 className="size-3 animate-spin" aria-hidden />
           {t("sessions.timeline.streaming")}
@@ -210,10 +189,7 @@ function StatusBadge({ status }: { status: Turn["status"] }) {
         <span
           data-testid="turn-summary-badge"
           data-status="complete"
-          className={cn(
-            "inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[11px] font-medium",
-            "bg-emerald-200/40 text-emerald-900 dark:bg-emerald-700/30 dark:text-emerald-200",
-          )}
+          className="inline-flex items-center gap-1 rounded-sg-sm border border-sg-ok/30 bg-sg-ok-soft px-1.5 py-0.5 text-[11px] font-medium text-sg-ok"
         >
           <CircleCheck className="size-3" aria-hidden />
           {t("sessions.timeline.complete")}
@@ -224,10 +200,7 @@ function StatusBadge({ status }: { status: Turn["status"] }) {
         <span
           data-testid="turn-summary-badge"
           data-status="errored"
-          className={cn(
-            "inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[11px] font-medium",
-            "bg-red-200/40 text-red-900 dark:bg-red-700/30 dark:text-red-200",
-          )}
+          className="inline-flex items-center gap-1 rounded-sg-sm border border-sg-err/30 bg-sg-err-soft px-1.5 py-0.5 text-[11px] font-medium text-sg-err"
         >
           <AlertTriangle className="size-3" aria-hidden />
           {t("sessions.timeline.errored")}
@@ -238,10 +211,7 @@ function StatusBadge({ status }: { status: Turn["status"] }) {
         <span
           data-testid="turn-summary-badge"
           data-status="cancelling"
-          className={cn(
-            "inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[11px] font-medium",
-            "bg-amber-300/40 text-amber-900 dark:bg-amber-600/30 dark:text-amber-100",
-          )}
+          className="inline-flex items-center gap-1 rounded-sg-sm border border-sg-warn/30 bg-sg-warn-soft px-1.5 py-0.5 text-[11px] font-medium text-sg-warn"
         >
           <Octagon className="size-3" aria-hidden />
           {t("sessions.timeline.cancelling")}
@@ -259,12 +229,10 @@ function Field({
 }) {
   return (
     <div className="flex flex-col gap-0.5">
-      <dt className="text-[11px] uppercase tracking-wide text-tp-ink-3">
+      <dt className="text-[11px] uppercase tracking-wide text-sg-ink-4">
         {label}
       </dt>
-      <dd className="font-mono text-sm text-amber-950 dark:text-amber-50">
-        {children}
-      </dd>
+      <dd className="font-mono text-sm text-sg-ink">{children}</dd>
     </div>
   );
 }

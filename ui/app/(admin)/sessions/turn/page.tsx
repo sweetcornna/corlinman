@@ -24,6 +24,7 @@ import { AlertTriangle, ChevronLeft, ChevronRight } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { GlassPanel } from "@/components/ui/glass-panel";
 import { Skeleton } from "@/components/ui/skeleton";
 import { loadTurnEvents, type LiveEvent } from "@/lib/api";
 import { TimelineProvider } from "@/lib/sessions/store";
@@ -142,19 +143,14 @@ export default function TurnDetailPage() {
             userInput={userInput}
             finishReason={finishReason}
           />
-          <section
-            className={cn(
-              "flex-1 rounded-lg border border-tp-glass-edge bg-tp-glass",
-              "p-4 sm:p-6",
-            )}
-          >
+          <GlassPanel as="section" variant="soft" className="flex-1 p-4 sm:p-6">
             <EventTimelineBody
               sessionKey={sessionKey}
               mode="replay"
               turnIdFilter={turnId}
               seedEvents={state.events}
             />
-          </section>
+          </GlassPanel>
         </TimelineProvider>
       )}
     </div>
@@ -176,7 +172,7 @@ function Breadcrumb({
         asChild
         variant="ghost"
         size="sm"
-        className="-ml-2 h-7 w-fit px-2 text-tp-ink-3 hover:text-tp-ink"
+        className="-ml-2 h-7 w-fit px-2 text-sg-ink-3 hover:text-sg-ink"
       >
         <Link href={detailHref}>
           <ChevronLeft className="h-3.5 w-3.5" aria-hidden="true" />
@@ -185,27 +181,27 @@ function Breadcrumb({
       </Button>
       <nav
         aria-label="breadcrumb"
-        className="flex flex-wrap items-center gap-1 text-xs text-tp-ink-3"
+        className="flex flex-wrap items-center gap-1 text-xs text-sg-ink-3"
       >
         <Link
           href="/admin/sessions"
-          className="hover:text-tp-ink hover:underline"
+          className="hover:text-sg-ink hover:underline"
         >
           {t("sessions.title")}
         </Link>
         <ChevronRight className="h-3 w-3 opacity-50" aria-hidden="true" />
         <Link
           href={detailHref}
-          className="font-mono hover:text-tp-ink hover:underline"
+          className="font-mono hover:text-sg-ink hover:underline"
         >
           {sessionKey}
         </Link>
         <ChevronRight className="h-3 w-3 opacity-50" aria-hidden="true" />
-        <span className="font-mono text-tp-ink">
+        <span className="font-mono text-sg-ink">
           {t("sessions.turn.breadcrumb")} {turnId.slice(0, 12)}
         </span>
       </nav>
-      <h1 className="text-2xl font-semibold tracking-tight">
+      <h1 className="text-2xl font-semibold tracking-tight text-sg-ink">
         {t("sessions.turn.title")}
       </h1>
     </header>
@@ -215,7 +211,7 @@ function Breadcrumb({
 function LoadingSkeleton() {
   return (
     <>
-      <div className="rounded-2xl border border-tp-glass-edge bg-tp-glass p-4">
+      <GlassPanel variant="soft" rounded="rounded-sg-xl" className="p-4">
         <Skeleton className="h-4 w-24" />
         <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
           {Array.from({ length: 6 }).map((_, i) => (
@@ -225,19 +221,19 @@ function LoadingSkeleton() {
             </div>
           ))}
         </div>
-      </div>
-      <section className="space-y-3 rounded-lg border border-tp-glass-edge bg-tp-glass p-4 sm:p-6">
+      </GlassPanel>
+      <GlassPanel as="section" variant="soft" className="space-y-3 p-4 sm:p-6">
         {Array.from({ length: 3 }).map((_, i) => (
           <div
             key={`row-${i}`}
-            className="rounded-2xl border border-tp-glass-edge bg-tp-glass-inner p-4"
+            className="rounded-sg-md border border-sg-border bg-sg-inset p-4"
           >
             <Skeleton className="h-3 w-32" />
             <Skeleton className="mt-3 h-3 w-3/4" />
             <Skeleton className="mt-2 h-3 w-1/2" />
           </div>
         ))}
-      </section>
+      </GlassPanel>
     </>
   );
 }
@@ -255,18 +251,19 @@ function ErrorBox({
       role="alert"
       data-testid="turn-load-error"
       className={cn(
-        "flex flex-col gap-3 rounded-2xl border px-4 py-4 sm:flex-row sm:items-center",
-        "border-red-300/60 bg-red-50/60 text-red-900",
-        "dark:border-red-400/30 dark:bg-red-950/30 dark:text-red-200",
+        "flex flex-col gap-3 rounded-sg-md border px-4 py-4 sm:flex-row sm:items-center",
+        "border-sg-err/30 bg-sg-err-soft text-sg-ink-2",
       )}
     >
       <AlertTriangle
-        className="h-4 w-4 shrink-0 text-red-500"
+        className="h-4 w-4 shrink-0 text-sg-err"
         aria-hidden="true"
       />
       <div className="flex-1 text-sm">
-        <div className="font-medium">{t("sessions.turn.loadError")}</div>
-        <div className="mt-0.5 break-words font-mono text-xs opacity-80">
+        <div className="font-semibold text-sg-ink">
+          {t("sessions.turn.loadError")}
+        </div>
+        <div className="mt-0.5 break-words font-mono text-xs text-sg-ink-3">
           {message}
         </div>
       </div>

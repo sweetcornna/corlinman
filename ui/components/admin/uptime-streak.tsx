@@ -35,9 +35,9 @@ export interface UptimeStreakProps extends React.HTMLAttributes<HTMLDivElement> 
 }
 
 const toneBg: Record<NonNullable<DayBar["tone"]>, string> = {
-  ok: "bg-[color-mix(in_oklch,var(--tp-ok)_60%,transparent)]",
-  warn: "bg-[color-mix(in_oklch,var(--tp-warn)_60%,transparent)]",
-  err: "bg-[color-mix(in_oklch,var(--tp-err)_60%,transparent)]",
+  ok: "bg-[color-mix(in_oklch,var(--sg-ok)_60%,transparent)]",
+  warn: "bg-[color-mix(in_oklch,var(--sg-warn)_60%,transparent)]",
+  err: "bg-[color-mix(in_oklch,var(--sg-err)_60%,transparent)]",
 };
 
 export const UptimeStreak = React.forwardRef<HTMLDivElement, UptimeStreakProps>(
@@ -49,34 +49,34 @@ export const UptimeStreak = React.forwardRef<HTMLDivElement, UptimeStreakProps>(
       <div
         ref={ref}
         className={cn(
-          "relative flex flex-col gap-2.5 overflow-hidden rounded-xl border p-4",
-          "bg-tp-glass-inner border-tp-glass-edge",
+          "relative flex flex-col gap-2.5 overflow-hidden rounded-sg-md border p-4",
+          "bg-sg-inset border-sg-border",
           className,
         )}
         {...rest}
       >
-        {/* soft amber glow behind the big number — opacity 0.6 */}
+        {/* soft accent ring glow behind the big number — opacity 0.6 */}
         <div
           aria-hidden
           className="pointer-events-none absolute -bottom-10 -right-8 h-32 w-44 rounded-full opacity-60 blur-3xl"
           style={{
             background:
-              "radial-gradient(closest-side, var(--tp-amber-glow), transparent 70%)",
+              "radial-gradient(closest-side, var(--sg-accent-glow), transparent 70%)",
           }}
         />
 
-        <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-tp-ink-4">
+        <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-sg-ink-4">
           {label}
         </div>
 
         <div className="relative flex items-baseline gap-2">
-          <span className="font-sans text-[30px] font-medium leading-none tracking-[-0.03em] tabular-nums text-tp-ink">
+          <span className="font-sans text-[30px] font-medium leading-none tracking-[-0.03em] tabular-nums text-sg-ink">
             {pct}
-            <span className="ml-0.5 text-[15px] font-normal text-tp-ink-3">%</span>
+            <span className="ml-0.5 text-[15px] font-normal text-sg-ink-3">%</span>
           </span>
           {incidentsText ? (
-            <span className="ml-auto font-serif italic text-[14px] text-tp-ink-2">
-              <span className="not-italic font-medium text-tp-amber">{incidentsText}</span>
+            <span className="ml-auto font-serif italic text-[14px] text-sg-ink-2">
+              <span className="not-italic font-medium text-sg-accent">{incidentsText}</span>
             </span>
           ) : null}
         </div>

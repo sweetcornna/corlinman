@@ -17,8 +17,9 @@
  * dominate the timeline; running sessions stay open so the live tail is
  * visible. Click the header to toggle.
  *
- * Tidepool: amber border-left + warm body card, matching reasoning-block
- * + tool-widget so the nested tree feels like part of the same surface.
+ * Spatial Glass: accent border-left rail + faux-glass body, matching
+ * reasoning-block + tool-widget so the nested tree feels like part of the
+ * same surface.
  */
 "use client";
 
@@ -69,15 +70,12 @@ function renderSubPart(part: Part): React.ReactNode {
       return (
         <div
           key={part.block_id}
-          className={cn(
-            "whitespace-pre-wrap break-words text-sm leading-relaxed",
-            "text-amber-950 dark:text-amber-50",
-          )}
+          className="whitespace-pre-wrap break-words text-sm leading-relaxed text-sg-ink"
         >
           {part.text}
           {!part.done && (
             <span
-              className="ml-0.5 inline-block h-3.5 w-1 animate-pulse bg-amber-500/80 align-middle"
+              className="ml-0.5 inline-block h-3.5 w-1 animate-pulse bg-sg-accent/80 align-middle"
               aria-hidden
             />
           )}
@@ -113,55 +111,48 @@ export function SubagentTree({ session }: SubagentTreeProps) {
       data-testid="subagent-tree"
       data-status={session.status}
       data-depth={session.depth}
-      className={cn(
-        "mt-2 rounded-lg border-l-2 border-amber-400/70 bg-amber-50/30",
-        "dark:border-amber-300/40 dark:bg-amber-950/15",
-        "shadow-inner",
-      )}
+      className="mt-2 rounded-sg-md border border-sg-border border-l-2 border-l-sg-accent/60 bg-sg-card-grad shadow-sg-1"
     >
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
         className={cn(
-          "flex w-full items-center gap-2 px-3 py-2 text-left text-xs",
-          "text-amber-900 dark:text-amber-200",
-          "hover:bg-amber-100/30 dark:hover:bg-amber-900/20",
-          "transition-colors rounded-r-lg",
+          "flex w-full items-center gap-2 rounded-r-sg-md px-3 py-2 text-left text-xs",
+          "text-sg-ink-2 transition-colors hover:bg-sg-accent-soft/40",
         )}
         aria-expanded={open}
       >
         {open ? (
-          <ChevronDown className="size-3.5 shrink-0 opacity-70" aria-hidden />
+          <ChevronDown className="size-3.5 shrink-0 text-sg-ink-4" aria-hidden />
         ) : (
-          <ChevronRight className="size-3.5 shrink-0 opacity-70" aria-hidden />
+          <ChevronRight className="size-3.5 shrink-0 text-sg-ink-4" aria-hidden />
         )}
         <Bot
           className={cn(
-            "size-3.5 shrink-0",
-            session.status === "running" &&
-              "animate-pulse text-amber-500 dark:text-amber-300",
+            "size-3.5 shrink-0 text-sg-ink-4",
+            session.status === "running" && "animate-pulse text-sg-accent",
           )}
           aria-hidden
         />
         <span
-          className="font-mono font-semibold text-amber-900 dark:text-amber-200"
+          className="font-mono font-semibold text-sg-ink"
           data-testid="subagent-agent-id"
         >
           {session.child_agent_id}
         </span>
-        <span className="shrink-0 rounded-sm bg-amber-200/30 px-1.5 py-0.5 font-mono text-[10px] opacity-70 dark:bg-amber-700/20">
+        <span className="shrink-0 rounded-sg-sm border border-sg-border bg-sg-inset px-1.5 py-0.5 font-mono text-[10px] text-sg-ink-4">
           {t("sessions.subagent.depth")} {session.depth}
         </span>
         <span
           data-testid="subagent-status-badge"
           className={cn(
-            "ml-auto inline-flex shrink-0 items-center gap-1 rounded-sm px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide",
+            "ml-auto inline-flex shrink-0 items-center gap-1 rounded-sg-sm border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide",
             session.status === "running" &&
-              "bg-amber-200/40 text-amber-900 dark:bg-amber-700/30 dark:text-amber-200",
+              "border-sg-accent/30 bg-sg-accent-soft text-sg-accent",
             session.status === "complete" &&
-              "bg-emerald-200/40 text-emerald-900 dark:bg-emerald-700/30 dark:text-emerald-200",
+              "border-sg-ok/30 bg-sg-ok-soft text-sg-ok",
             session.status === "errored" &&
-              "bg-red-200/40 text-red-900 dark:bg-red-700/30 dark:text-red-200",
+              "border-sg-err/30 bg-sg-err-soft text-sg-err",
           )}
         >
           {session.status === "running" && (
@@ -183,24 +174,24 @@ export function SubagentTree({ session }: SubagentTreeProps) {
 
       {/* Prompt preview line — visible whether expanded or collapsed. */}
       <div
-        className="px-3 pb-1 pt-0 text-[11px] italic text-amber-800/70 dark:text-amber-200/60"
+        className="px-3 pb-1 pt-0 text-[11px] italic text-sg-ink-4"
         title={session.prompt_preview}
       >
-        <span className="not-italic opacity-60">
+        <span className="not-italic text-sg-ink-5">
           {t("sessions.subagent.prompt")}:
         </span>{" "}
         {truncate(session.prompt_preview, 80)}
       </div>
 
       {!open ? (
-        <div className="px-3 pb-2 text-[11px] text-amber-700/60 dark:text-amber-200/50">
+        <div className="px-3 pb-2 text-[11px] text-sg-ink-4">
           {eventCount > 0 ? (
             <span data-testid="subagent-collapsed-summary">
               {eventCount} {eventCount === 1 ? "event" : "events"}
               {elapsedLabel && ` · ${elapsedLabel}`}
             </span>
           ) : (
-            <span className="italic opacity-50">
+            <span className="italic text-sg-ink-5">
               {session.status === "running" ? "…" : ""}
             </span>
           )}
@@ -208,7 +199,7 @@ export function SubagentTree({ session }: SubagentTreeProps) {
       ) : (
         <div className="space-y-2 px-3 pb-3 pt-1">
           {session.parts.length === 0 ? (
-            <div className="text-xs italic opacity-50">
+            <div className="text-xs italic text-sg-ink-5">
               {session.status === "running" ? "…" : ""}
             </div>
           ) : (
@@ -219,16 +210,14 @@ export function SubagentTree({ session }: SubagentTreeProps) {
           {session.status !== "running" && (
             <div
               data-testid="subagent-footer"
-              className={cn(
-                "mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 border-t pt-2 text-[11px]",
-                "border-amber-200/40 text-amber-800/70",
-                "dark:border-amber-300/10 dark:text-amber-200/60",
-              )}
+              className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-sg-border pt-2 text-[11px] text-sg-ink-4"
             >
               {session.finish_reason && (
                 <span data-testid="subagent-finish-reason">
-                  <span className="opacity-60">·</span>{" "}
-                  <span className="font-mono">{session.finish_reason}</span>
+                  <span className="text-sg-ink-5">·</span>{" "}
+                  <span className="font-mono text-sg-ink-3">
+                    {session.finish_reason}
+                  </span>
                 </span>
               )}
               {session.tool_calls_made != null && (
@@ -237,11 +226,11 @@ export function SubagentTree({ session }: SubagentTreeProps) {
                 </span>
               )}
               {elapsedLabel && (
-                <span className="font-mono opacity-70">{elapsedLabel}</span>
+                <span className="font-mono text-sg-ink-3">{elapsedLabel}</span>
               )}
               {session.summary && (
                 <span
-                  className="basis-full truncate opacity-70"
+                  className="basis-full truncate text-sg-ink-3"
                   title={session.summary}
                 >
                   {session.summary}
@@ -265,13 +254,7 @@ export function SubagentTree({ session }: SubagentTreeProps) {
 export function DeeperSubagentPlaceholder({ depth }: { depth: number }) {
   const { t } = useTranslation();
   return (
-    <div
-      className={cn(
-        "mt-1 rounded-md border border-dashed border-amber-300/40 bg-amber-50/20",
-        "dark:border-amber-300/15 dark:bg-amber-950/10",
-        "px-2 py-1 text-[11px] italic text-amber-700/60 dark:text-amber-200/50",
-      )}
-    >
+    <div className="mt-1 rounded-sg-sm border border-dashed border-sg-border bg-sg-inset px-2 py-1 text-[11px] italic text-sg-ink-4">
       {t("sessions.subagent.tooDeep")} (depth={depth})
     </div>
   );

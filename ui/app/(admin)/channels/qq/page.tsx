@@ -4,6 +4,7 @@ import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { motion } from "framer-motion";
+import { AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 
 import { useMotionVariants } from "@/lib/motion";
@@ -173,14 +174,17 @@ export default function QqChannelPage() {
             {status.data?.account_online === false && (
               <div
                 role="alert"
-                className="flex items-start gap-3 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-200"
+                className="flex items-start gap-3 rounded-sg-md border border-sg-err/30 bg-sg-err-soft px-4 py-3 text-sm text-sg-err"
               >
-                <span aria-hidden className="text-base">⚠️</span>
+                <AlertTriangle
+                  aria-hidden
+                  className="mt-0.5 h-4 w-4 shrink-0"
+                />
                 <div className="flex-1">
                   <p className="font-medium">
                     {t("channels.qq.accountOfflineTitle", "QQ 账号已下线")}
                   </p>
-                  <p className="mt-1 text-xs opacity-80">
+                  <p className="mt-1 text-xs text-sg-err/85">
                     {t(
                       "channels.qq.accountOfflineBody",
                       "NapCat 心跳正常但 QQ 账号被 Tencent 踢下线了。需要重新扫码登录后机器人才能收发消息。",
@@ -188,7 +192,7 @@ export default function QqChannelPage() {
                     {status.data?.account_last_error && (
                       <>
                         {" "}
-                        <span className="font-mono opacity-70">
+                        <span className="font-mono text-sg-err/70">
                           ({status.data.account_last_error})
                         </span>
                       </>
@@ -196,7 +200,7 @@ export default function QqChannelPage() {
                   </p>
                   <button
                     type="button"
-                    className="mt-2 inline-flex items-center gap-1 rounded-md bg-amber-500/20 px-2.5 py-1 text-xs font-medium hover:bg-amber-500/30"
+                    className="mt-2 inline-flex items-center gap-1 rounded-sg-sm border border-sg-err/30 bg-sg-err-soft px-2.5 py-1 text-xs font-medium text-sg-err transition-colors hover:bg-[color-mix(in_oklch,var(--sg-err)_18%,transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-err/40"
                     onClick={() => setScanLoginOpen(true)}
                   >
                     {t("channels.qq.accountOfflineAction", "打开扫码登录")}

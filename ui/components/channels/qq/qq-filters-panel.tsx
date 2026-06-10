@@ -68,10 +68,10 @@ export function QqFiltersPanel({
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <h2 className="text-[14px] font-medium text-tp-ink">
+          <h2 className="text-[14px] font-medium text-sg-ink">
             {t("channels.groupKeywords")}
           </h2>
-          <p className="mt-1 text-[12px] text-tp-ink-3">
+          <p className="mt-1 text-[12px] text-sg-ink-3">
             {t("channels.groupKeywordsHint")}
           </p>
         </div>
@@ -82,9 +82,9 @@ export function QqFiltersPanel({
           data-testid="qq-save-keywords-btn"
           className={cn(
             "inline-flex shrink-0 items-center gap-2 rounded-lg border px-3 py-2 text-[13px] font-medium",
-            "border-tp-amber/35 bg-tp-amber-soft text-tp-amber",
-            "transition-colors hover:bg-[color-mix(in_oklch,var(--tp-amber)_22%,transparent)]",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/50",
+            "border-sg-accent/35 bg-sg-accent-soft text-sg-accent",
+            "transition-colors hover:bg-[color-mix(in_oklch,var(--sg-accent)_22%,transparent)]",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/50",
             "disabled:cursor-not-allowed disabled:opacity-60",
           )}
         >
@@ -106,15 +106,15 @@ export function QqFiltersPanel({
           onChange={(e) => setAddId(e.target.value)}
           placeholder={t("channels.qq.tp.addChatPlaceholder")}
           aria-label={t("channels.qq.tp.addChatPlaceholder")}
-          className="h-9 flex-1 rounded-lg border border-tp-glass-edge bg-tp-glass-inner px-3 font-mono text-[12.5px] text-tp-ink placeholder:text-tp-ink-4 transition-colors hover:bg-tp-glass-inner-hover focus:outline-none focus:ring-2 focus:ring-tp-amber/40"
+          className="h-9 flex-1 rounded-lg border border-sg-border bg-sg-inset px-3 font-mono text-[12.5px] text-sg-ink placeholder:text-sg-ink-4 transition-colors hover:bg-sg-inset-hover focus:outline-none focus:ring-2 focus:ring-sg-accent/40"
         />
         <button
           type="submit"
           disabled={!addId.trim()}
           className={cn(
-            "inline-flex items-center gap-1.5 rounded-lg border border-tp-glass-edge bg-tp-glass-inner px-3 py-2 text-[12.5px] font-medium text-tp-ink-2 transition-colors",
-            "hover:bg-tp-glass-inner-hover hover:text-tp-ink",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
+            "inline-flex items-center gap-1.5 rounded-lg border border-sg-border bg-sg-inset px-3 py-2 text-[12.5px] font-medium text-sg-ink-2 transition-colors",
+            "hover:bg-sg-inset-hover hover:text-sg-ink",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
             "disabled:cursor-not-allowed disabled:opacity-50",
           )}
         >
@@ -126,7 +126,7 @@ export function QqFiltersPanel({
       {entries.length === 0 ? (
         <div
           className={cn(
-            "rounded-xl border border-dashed border-tp-glass-edge bg-tp-glass-inner/60 p-6 text-center text-[12.5px] text-tp-ink-3",
+            "rounded-xl border border-dashed border-sg-border bg-sg-inset/60 p-6 text-center text-[12.5px] text-sg-ink-3",
           )}
         >
           {t("channels.noOverrides")}
@@ -173,8 +173,8 @@ function GroupRow({
     onChange(keywords.filter((x) => x !== kw));
 
   return (
-    <li className="flex flex-wrap items-start gap-2 rounded-xl border border-tp-glass-edge bg-tp-glass-inner px-3 py-2">
-      <code className="shrink-0 rounded-md border border-tp-glass-edge bg-tp-glass-inner-strong px-2 py-1 font-mono text-[11px] text-tp-ink-2">
+    <li className="flex flex-wrap items-start gap-2 rounded-xl border border-sg-border bg-sg-inset px-3 py-2">
+      <code className="shrink-0 rounded-md border border-sg-border bg-sg-inset-strong px-2 py-1 font-mono text-[11px] text-sg-ink-2">
         {gid}
       </code>
       <div className="flex min-h-[28px] flex-1 flex-wrap items-center gap-1.5">
@@ -186,10 +186,10 @@ function GroupRow({
             aria-label={t("channels.removeKeywordAria", { kw })}
             className={cn(
               "group/chip inline-flex items-center gap-1 rounded-md border px-2 py-[2px] font-mono text-[10.5px]",
-              "border-tp-amber/30 bg-tp-amber-soft text-tp-amber",
+              "border-sg-accent/30 bg-sg-accent-soft text-sg-accent",
               "transition-colors",
-              "hover:bg-[color-mix(in_oklch,var(--tp-amber)_22%,transparent)]",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/50",
+              "hover:bg-[color-mix(in_oklch,var(--sg-accent)_22%,transparent)]",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/50",
             )}
           >
             {kw}
@@ -214,7 +214,7 @@ function GroupRow({
           }}
           placeholder={t("channels.addKeywordPlaceholder")}
           aria-label={t("channels.addKeywordPlaceholder")}
-          className="h-7 min-w-[140px] flex-1 bg-transparent px-1 font-mono text-[11px] text-tp-ink placeholder:text-tp-ink-4 focus:outline-none"
+          className="h-7 min-w-[140px] flex-1 bg-transparent px-1 font-mono text-[11px] text-sg-ink placeholder:text-sg-ink-4 focus:outline-none"
         />
       </div>
       <button
@@ -222,9 +222,9 @@ function GroupRow({
         onClick={onRemove}
         aria-label={t("channels.qq.tp.removeChatAria", { id: gid })}
         className={cn(
-          "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-tp-ink-3",
-          "transition-colors hover:bg-tp-glass-inner-hover hover:text-tp-err",
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-err/40",
+          "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-sg-ink-3",
+          "transition-colors hover:bg-sg-inset-hover hover:text-sg-err",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-err/40",
         )}
       >
         <X className="h-3.5 w-3.5" aria-hidden />

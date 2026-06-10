@@ -30,24 +30,17 @@ export function GenericToolRenderer({ inputJson, output, isError }: ToolRenderer
   return (
     <div className="space-y-2 text-xs">
       {pretty && (
-        <pre
-          className={cn(
-            "max-h-64 overflow-auto rounded-md border border-amber-100/50 bg-amber-50/30",
-            "dark:border-white/5 dark:bg-black/30",
-            "px-2 py-1.5 font-mono whitespace-pre-wrap break-words",
-            "text-amber-950/80 dark:text-amber-100/70",
-          )}
-        >
+        <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-sg-md border border-sg-border bg-sg-inset px-2 py-1.5 font-mono text-[12.5px] text-sg-ink-3">
           {pretty}
         </pre>
       )}
       {output !== undefined && output !== "" && (
         <pre
           className={cn(
-            "max-h-80 overflow-auto rounded-md border px-2 py-1.5 font-mono whitespace-pre-wrap break-words",
+            "max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-sg-md border px-2 py-1.5 font-mono text-[12.5px]",
             isError
-              ? "border-red-200/60 bg-red-50/40 text-red-900 dark:border-red-400/20 dark:bg-red-950/30 dark:text-red-200"
-              : "border-amber-100/50 bg-amber-50/30 text-amber-950/80 dark:border-white/5 dark:bg-black/30 dark:text-amber-100/70",
+              ? "border-sg-err/30 bg-sg-err-soft text-sg-err"
+              : "border-sg-border bg-sg-inset text-sg-ink-3",
           )}
         >
           {output}

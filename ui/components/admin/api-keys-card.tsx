@@ -136,7 +136,7 @@ export function ApiKeysCard() {
     <Card data-testid="card-api-keys">
       <CardHeader>
         <div className="flex items-center gap-2">
-          <KeySquare className="h-4 w-4 text-tp-ink-3" aria-hidden />
+          <KeySquare className="h-4 w-4 text-sg-ink-3" aria-hidden />
           <CardTitle>{t("apiKeys.title")}</CardTitle>
         </div>
         <CardDescription>{t("apiKeys.subtitle")}</CardDescription>
@@ -144,7 +144,7 @@ export function ApiKeysCard() {
       <CardContent className="space-y-6">
         {state.kind === "disabled" ? (
           <p
-            className="rounded-lg border border-tp-glass-border bg-tp-glass-inner p-3 text-sm text-tp-ink-3"
+            className="rounded-sg-md border border-sg-border bg-sg-inset p-3 text-sm text-sg-ink-3"
             data-testid="api-keys-disabled"
           >
             {t("apiKeys.disabled")}
@@ -210,10 +210,10 @@ export function ApiKeysCard() {
                 {t("apiKeys.loadFailed", { msg: state.message })}
               </p>
             ) : state.kind === "loading" ? (
-              <p className="text-sm text-tp-ink-3">{t("common.loading")}</p>
+              <p className="text-sm text-sg-ink-3">{t("common.loading")}</p>
             ) : state.keys.length === 0 ? (
               <p
-                className="text-sm text-tp-ink-3"
+                className="text-sm text-sg-ink-3"
                 data-testid="api-keys-empty"
               >
                 {t("apiKeys.empty")}
@@ -241,13 +241,13 @@ export function ApiKeysCard() {
                       <TableCell className="font-mono text-xs">
                         {k.scope}
                       </TableCell>
-                      <TableCell className="text-tp-ink-2">
+                      <TableCell className="text-sg-ink-2">
                         {k.label ?? "—"}
                       </TableCell>
-                      <TableCell className="text-tp-ink-3">
+                      <TableCell className="text-sg-ink-3">
                         {fmtMs(k.created_at_ms)}
                       </TableCell>
-                      <TableCell className="text-tp-ink-3">
+                      <TableCell className="text-sg-ink-3">
                         {fmtMs(k.last_used_at_ms)}
                       </TableCell>
                       <TableCell className="text-right">
@@ -318,13 +318,13 @@ function FreshTokenCallout({
     <div
       role="status"
       data-testid="api-key-fresh-token"
-      className="space-y-3 rounded-lg border border-tp-amber/40 bg-tp-amber/10 p-4 text-sm"
+      className="space-y-3 rounded-sg-md border border-sg-accent/30 bg-sg-accent-soft p-4 text-sm"
     >
-      <p className="font-medium text-tp-ink">{t("apiKeys.tokenOnce")}</p>
+      <p className="font-medium text-sg-ink">{t("apiKeys.tokenOnce")}</p>
       <div className="flex items-center gap-2">
         <code
           data-testid="api-key-token-value"
-          className="flex-1 overflow-x-auto rounded-md bg-tp-glass-inner px-3 py-2 font-mono text-xs text-tp-ink"
+          className="flex-1 overflow-x-auto rounded-md bg-sg-inset px-3 py-2 font-mono text-xs text-sg-ink"
         >
           {token}
         </code>

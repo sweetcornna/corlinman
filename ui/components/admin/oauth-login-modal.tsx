@@ -346,7 +346,7 @@ export function OAuthLoginModal({
         <div className="flex flex-col gap-4 py-2">
           {phase === "idle" && (
             <div className="flex flex-col gap-3">
-              <p className="text-sm text-tp-ink-2">{t(copy.intro)}</p>
+              <p className="text-sm text-sg-ink-2">{t(copy.intro)}</p>
               <Button
                 onClick={beginLogin}
                 data-testid="oauth-login-start"
@@ -358,7 +358,7 @@ export function OAuthLoginModal({
           )}
 
           {phase === "opening-browser" && (
-            <div className="flex items-center gap-2 text-sm text-tp-ink-2">
+            <div className="flex items-center gap-2 text-sm text-sg-ink-2">
               <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
               {t(copy.openingBrowser)}
             </div>
@@ -366,12 +366,12 @@ export function OAuthLoginModal({
 
           {phase === "awaiting-code" && start && (
             <div className="flex flex-col gap-3">
-              <p className="text-sm text-tp-ink-2">{t(copy.awaitingCode)}</p>
+              <p className="text-sm text-sg-ink-2">{t(copy.awaitingCode)}</p>
               <a
                 href={start.auth_url}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 self-start text-xs text-tp-ink-3 underline-offset-2 hover:underline"
+                className="inline-flex items-center gap-1 self-start text-xs text-sg-ink-3 underline-offset-2 hover:underline"
                 data-testid="oauth-login-manual-link"
               >
                 <ExternalLink className="h-3 w-3" aria-hidden />
@@ -403,7 +403,7 @@ export function OAuthLoginModal({
                   spellCheck={false}
                   data-testid="oauth-login-code"
                 />
-                <p className="text-[11px] text-tp-ink-3">
+                <p className="text-[11px] text-sg-ink-3">
                   {t("oauth.codeSplitHint", {
                     example: "http://localhost:1455/auth/callback?code=...&state=...",
                   })}
@@ -433,7 +433,7 @@ export function OAuthLoginModal({
           )}
 
           {phase === "exchanging" && (
-            <div className="flex items-center gap-2 text-sm text-tp-ink-2">
+            <div className="flex items-center gap-2 text-sm text-sg-ink-2">
               <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
               {t("oauth.exchanging")}
             </div>

@@ -264,7 +264,7 @@ function TelegramHero({
         className="pointer-events-none absolute bottom-[-90px] right-[-40px] h-[240px] w-[360px] rounded-full opacity-60 blur-3xl"
         style={{
           background:
-            "radial-gradient(closest-side, var(--tp-amber-glow), transparent 70%)",
+            "radial-gradient(closest-side, var(--sg-accent-glow), transparent 70%)",
         }}
       />
       <div
@@ -272,7 +272,7 @@ function TelegramHero({
         className="pointer-events-none absolute top-[-60px] left-[-40px] h-[180px] w-[260px] rounded-full opacity-40 blur-[50px]"
         style={{
           background:
-            "radial-gradient(closest-side, color-mix(in oklch, var(--tp-ember) 35%, transparent), transparent 70%)",
+            "radial-gradient(closest-side, color-mix(in oklch, var(--sg-accent-2) 35%, transparent), transparent 70%)",
         }}
       />
 
@@ -283,23 +283,23 @@ function TelegramHero({
             rate={offline ? "offline" : host}
             data-testid="tg-stream-pill"
           />
-          <span className="font-mono text-[11px] text-tp-ink-3">
+          <span className="font-mono text-[11px] text-sg-ink-3">
             {status?.runtime
               ? `runtime=${status.runtime}`
               : "runtime=unknown"}
           </span>
         </div>
 
-        <h1 className="text-balance font-sans text-[28px] font-semibold leading-[1.15] tracking-[-0.025em] text-tp-ink sm:text-[32px]">
+        <h1 className="text-balance font-sans text-[28px] font-semibold leading-[1.15] tracking-[-0.025em] text-sg-ink sm:text-[32px]">
           Telegram Channel
         </h1>
 
-        <p className="max-w-[72ch] text-[14.5px] leading-[1.6] text-tp-ink-2">
+        <p className="max-w-[72ch] text-[14.5px] leading-[1.6] text-sg-ink-2">
           {offline ? (
             "Webhook is offline — the gateway is not answering. Panels below reflect cached data."
           ) : (
             <>
-              Webhook live at <span className="font-mono text-tp-ink">{host}</span>.
+              Webhook live at <span className="font-mono text-sg-ink">{host}</span>.
               {" "}
               {activeChats} {activeChats === 1 ? "conversation" : "conversations"} open.
               {" "}
@@ -318,10 +318,10 @@ function TelegramHero({
             onClick={onSendTest}
             data-testid="tg-send-test-open"
             className={cn(
-              "inline-flex items-center gap-2 rounded-lg border border-tp-amber/35 bg-tp-amber-soft px-3 py-2",
-              "text-[13px] font-medium text-tp-amber",
-              "transition-colors hover:bg-[color-mix(in_oklch,var(--tp-amber)_22%,transparent)]",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/50",
+              "inline-flex items-center gap-2 rounded-lg border border-sg-accent/35 bg-sg-accent-soft px-3 py-2",
+              "text-[13px] font-medium text-sg-accent",
+              "transition-colors hover:bg-[color-mix(in_oklch,var(--sg-accent)_22%,transparent)]",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/50",
             )}
           >
             <Send className="h-3.5 w-3.5" aria-hidden />
@@ -333,10 +333,10 @@ function TelegramHero({
             disabled={fetching}
             aria-label="Refresh Telegram channel state"
             className={cn(
-              "inline-flex items-center gap-2 rounded-lg border border-tp-glass-edge bg-tp-glass-inner px-3 py-2",
-              "text-[13px] font-medium text-tp-ink-2",
-              "transition-colors hover:bg-tp-glass-inner-hover hover:text-tp-ink",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
+              "inline-flex items-center gap-2 rounded-lg border border-sg-border bg-sg-inset px-3 py-2",
+              "text-[13px] font-medium text-sg-ink-2",
+              "transition-colors hover:bg-sg-inset-hover hover:text-sg-ink",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
               "disabled:cursor-not-allowed disabled:opacity-70",
             )}
           >
@@ -390,12 +390,12 @@ function StatsRow({
           live && stats ? (
             <span className="flex items-baseline gap-1">
               <span className="tabular-nums">{stats.latency_p50_ms}</span>
-              <span className="font-mono text-[10px] text-tp-ink-4">p50ms</span>
-              <span className="mx-1 text-tp-ink-4">·</span>
-              <span className="tabular-nums text-[20px] text-tp-ink-3">
+              <span className="font-mono text-[10px] text-sg-ink-4">p50ms</span>
+              <span className="mx-1 text-sg-ink-4">·</span>
+              <span className="tabular-nums text-[20px] text-sg-ink-3">
                 {stats.latency_p95_ms}
               </span>
-              <span className="font-mono text-[10px] text-tp-ink-4">p95ms</span>
+              <span className="font-mono text-[10px] text-sg-ink-4">p95ms</span>
             </span>
           ) : (
             dash
@@ -432,8 +432,8 @@ function ErrorBanner({
       role="alert"
       data-testid="tg-last-error-banner"
       className={cn(
-        "flex items-start gap-2 rounded-xl border border-tp-err/40 bg-tp-err-soft px-3 py-2",
-        "text-[12.5px] text-tp-err",
+        "flex items-start gap-2 rounded-xl border border-sg-err/40 bg-sg-err-soft px-3 py-2",
+        "text-[12.5px] text-sg-err",
         !reduced && "animate-pulse-glow",
       )}
     >
@@ -472,12 +472,12 @@ function WebhookPanel({
         aria-label="Telegram bot webhook configuration"
       >
         <header>
-          <h2 className="text-[14px] font-medium text-tp-ink">Webhook</h2>
-          <p className="text-[12px] text-tp-ink-3">loading…</p>
+          <h2 className="text-[14px] font-medium text-sg-ink">Webhook</h2>
+          <p className="text-[12px] text-sg-ink-3">loading…</p>
         </header>
         <div className="space-y-2">
-          <div className="h-8 animate-pulse rounded-md border border-tp-glass-edge bg-tp-glass-inner/70" />
-          <div className="h-8 animate-pulse rounded-md border border-tp-glass-edge bg-tp-glass-inner/70" />
+          <div className="h-8 animate-pulse rounded-md border border-sg-border bg-sg-inset/70" />
+          <div className="h-8 animate-pulse rounded-md border border-sg-border bg-sg-inset/70" />
         </div>
       </GlassPanel>
     );
@@ -494,12 +494,12 @@ function WebhookPanel({
     >
       <header className="flex items-center justify-between">
         <div>
-          <h2 className="text-[14px] font-medium text-tp-ink">Webhook</h2>
-          <p className="text-[12px] text-tp-ink-3">
+          <h2 className="text-[14px] font-medium text-sg-ink">Webhook</h2>
+          <p className="text-[12px] text-sg-ink-3">
             bot token + callback URL · read-only for now.
           </p>
         </div>
-        <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-tp-ink-4">
+        <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-sg-ink-4">
           read-only
         </span>
       </header>
@@ -511,8 +511,8 @@ function WebhookPanel({
               data-testid="tg-bot-token"
               aria-readonly="true"
               className={cn(
-                "flex-1 truncate rounded-md border border-tp-glass-edge",
-                "bg-tp-glass-inner px-2 py-1 font-mono text-[11.5px] text-tp-ink-2",
+                "flex-1 truncate rounded-md border border-sg-border",
+                "bg-sg-inset px-2 py-1 font-mono text-[11.5px] text-sg-ink-2",
               )}
             >
               {revealed ? botToken : maskToken(botToken)}
@@ -524,10 +524,10 @@ function WebhookPanel({
               aria-label={revealed ? "Hide bot token" : "Reveal bot token"}
               data-testid="tg-reveal-token"
               className={cn(
-                "inline-flex h-7 w-7 items-center justify-center rounded-md border border-tp-glass-edge",
-                "bg-tp-glass-inner text-tp-ink-3 transition-colors",
-                "hover:bg-tp-glass-inner-hover hover:text-tp-ink",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
+                "inline-flex h-7 w-7 items-center justify-center rounded-md border border-sg-border",
+                "bg-sg-inset text-sg-ink-3 transition-colors",
+                "hover:bg-sg-inset-hover hover:text-sg-ink",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
               )}
             >
               {revealed ? (
@@ -542,8 +542,8 @@ function WebhookPanel({
         <ConfigField label="Webhook URL">
           <code
             className={cn(
-              "block truncate rounded-md border border-tp-glass-edge",
-              "bg-tp-glass-inner px-2 py-1 font-mono text-[11.5px] text-tp-ink-2",
+              "block truncate rounded-md border border-sg-border",
+              "bg-sg-inset px-2 py-1 font-mono text-[11.5px] text-sg-ink-2",
             )}
             aria-readonly="true"
           >
@@ -554,8 +554,8 @@ function WebhookPanel({
         <ConfigField label="Secret token">
           <code
             className={cn(
-              "block truncate rounded-md border border-tp-glass-edge",
-              "bg-tp-glass-inner px-2 py-1 font-mono text-[11.5px] text-tp-ink-2",
+              "block truncate rounded-md border border-sg-border",
+              "bg-sg-inset px-2 py-1 font-mono text-[11.5px] text-sg-ink-2",
             )}
             aria-readonly="true"
           >
@@ -583,10 +583,10 @@ function FiltersPanel({
       aria-label="Telegram routing filters"
     >
       <header>
-        <h2 className="text-[14px] font-medium text-tp-ink">
+        <h2 className="text-[14px] font-medium text-sg-ink">
           Filters & routing
         </h2>
-        <p className="text-[12px] text-tp-ink-3">
+        <p className="text-[12px] text-sg-ink-3">
           Group replies are gated on @mention or reply-to-bot; DMs pass
           through.
         </p>
@@ -600,11 +600,11 @@ function FiltersPanel({
         />
       </div>
 
-      <div className="rounded-lg border border-dashed border-tp-glass-edge bg-tp-glass-inner p-3">
-        <div className="mb-1 font-mono text-[10.5px] uppercase tracking-[0.1em] text-tp-ink-4">
+      <div className="rounded-lg border border-dashed border-sg-border bg-sg-inset p-3">
+        <div className="mb-1 font-mono text-[10.5px] uppercase tracking-[0.1em] text-sg-ink-4">
           Routing gates
         </div>
-        <ul className="space-y-1 text-[12px] text-tp-ink-2">
+        <ul className="space-y-1 text-[12px] text-sg-ink-2">
           <li>• Group messages — only @mention or reply-to-bot are answered.</li>
           <li>• DMs — every message is processed.</li>
           <li>• Keyword filter — inherited from `corlinman-channels` config.</li>
@@ -623,7 +623,7 @@ function ConfigField({
 }) {
   return (
     <div className="space-y-1">
-      <div className="font-mono text-[10.5px] uppercase tracking-[0.1em] text-tp-ink-4">
+      <div className="font-mono text-[10.5px] uppercase tracking-[0.1em] text-sg-ink-4">
         {label}
       </div>
       <div>{children}</div>
@@ -639,11 +639,11 @@ function FilterStatCell({
   value: React.ReactNode;
 }) {
   return (
-    <div className="rounded-lg border border-tp-glass-edge bg-tp-glass-inner px-3 py-2">
-      <div className="font-mono text-[10.5px] uppercase tracking-[0.1em] text-tp-ink-4">
+    <div className="rounded-lg border border-sg-border bg-sg-inset px-3 py-2">
+      <div className="font-mono text-[10.5px] uppercase tracking-[0.1em] text-sg-ink-4">
         {label}
       </div>
-      <div className="mt-0.5 font-sans text-[16px] font-medium text-tp-ink">
+      <div className="mt-0.5 font-sans text-[16px] font-medium text-sg-ink">
         {value}
       </div>
     </div>
@@ -689,8 +689,8 @@ function UpdatesFeed({
 
   return (
     <GlassPanel variant="soft" as="section" className="flex flex-col">
-      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-tp-glass-edge px-5 py-3">
-        <h2 className="text-[14px] font-medium text-tp-ink">Recent updates</h2>
+      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-sg-border px-5 py-3">
+        <h2 className="text-[14px] font-medium text-sg-ink">Recent updates</h2>
         <FilterChipGroup
           label="update type filter"
           options={options}
@@ -703,7 +703,7 @@ function UpdatesFeed({
         {isPending ? (
           <FeedSkeleton />
         ) : isError ? (
-          <p className="px-5 py-10 text-center font-mono text-[11.5px] text-tp-err">
+          <p className="px-5 py-10 text-center font-mono text-[11.5px] text-sg-err">
             Messages load failed: {errorMessage ?? "unknown error"}
           </p>
         ) : (
@@ -720,7 +720,7 @@ function FeedSkeleton() {
       {Array.from({ length: 3 }).map((_, i) => (
         <div
           key={i}
-          className="h-[56px] animate-pulse rounded-xl border border-tp-glass-edge bg-tp-glass-inner/70"
+          className="h-[56px] animate-pulse rounded-xl border border-sg-border bg-sg-inset/70"
         />
       ))}
     </div>
@@ -744,18 +744,18 @@ function DebugPanel({
         <summary
           className={cn(
             "flex cursor-pointer items-center justify-between px-5 py-3",
-            "text-[13.5px] font-medium text-tp-ink",
-            "outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
+            "text-[13.5px] font-medium text-sg-ink",
+            "outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
           )}
         >
           <span>Debug</span>
-          <span className="font-mono text-[10.5px] uppercase tracking-[0.1em] text-tp-ink-4 group-open:hidden">
+          <span className="font-mono text-[10.5px] uppercase tracking-[0.1em] text-sg-ink-4 group-open:hidden">
             click to expand
           </span>
         </summary>
-        <div className="space-y-3 border-t border-tp-glass-edge p-5">
+        <div className="space-y-3 border-t border-sg-border p-5">
           <div>
-            <div className="mb-2 font-mono text-[10.5px] uppercase tracking-[0.1em] text-tp-ink-4">
+            <div className="mb-2 font-mono text-[10.5px] uppercase tracking-[0.1em] text-sg-ink-4">
               Last webhook payload
             </div>
             {payload ? (
@@ -767,25 +767,25 @@ function DebugPanel({
             ) : (
               <p
                 data-testid="tg-debug-payload"
-                className="rounded-lg border border-tp-glass-edge bg-tp-glass-inner p-3 font-mono text-[11px] text-tp-ink-4"
+                className="rounded-lg border border-sg-border bg-sg-inset p-3 font-mono text-[11px] text-sg-ink-4"
               >
                 (none)
               </p>
             )}
           </div>
           <div>
-            <div className="mb-2 font-mono text-[10.5px] uppercase tracking-[0.1em] text-tp-ink-4">
+            <div className="mb-2 font-mono text-[10.5px] uppercase tracking-[0.1em] text-sg-ink-4">
               Last dispatch error
             </div>
             {error ? (
               <pre
                 data-testid="tg-debug-error"
-                className="rounded-lg border border-tp-err/30 bg-tp-err-soft p-3 font-mono text-[11px] text-tp-err"
+                className="rounded-lg border border-sg-err/30 bg-sg-err-soft p-3 font-mono text-[11px] text-sg-err"
               >
                 {error}
               </pre>
             ) : (
-              <p className="text-[12px] text-tp-ink-3">No recent errors.</p>
+              <p className="text-[12px] text-sg-ink-3">No recent errors.</p>
             )}
           </div>
         </div>
