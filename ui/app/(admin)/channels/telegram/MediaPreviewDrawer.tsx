@@ -61,9 +61,9 @@ export function MediaPreviewDrawer({
     <Drawer
       open={open}
       onOpenChange={onOpenChange}
-      // Test-load-bearing literal: preview dialog title is asserted by the
-      // page test against the English string regardless of locale.
-      title="Photo preview"
+      // Dialog title is asserted by the page test; the test pins the
+      // zh-CN string (the forced test locale) — keep them in sync.
+      title={t("channels.telegram.tp.photoPreviewTitle")}
       width="lg"
       footer={
         message?.media ? (

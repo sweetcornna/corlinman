@@ -1,3 +1,5 @@
+"use client";
+
 /**
  * Global 404 page. Next.js App Router picks this up automatically whenever
  * a route doesn't match.
@@ -9,9 +11,14 @@
  *
  * `prefers-reduced-motion: reduce` freezes every dot in its initial position
  * via a single `@media` block — no JS gate required.
+ *
+ * Client component so the copy reacts to the language toggle at runtime.
  */
 
 import Link from "next/link";
+import { useTranslation } from "react-i18next";
+
+import { Mascot } from "@/components/ui/mascot";
 
 // Deterministic per-dot config. Keeping this static avoids hydration drift
 // and lets us ship zero client JS for the decoration.
@@ -35,6 +42,7 @@ const DOTS: ReadonlyArray<{ top: string; left: string; delay: string; dur: strin
   ];
 
 export default function NotFound() {
+  const { t } = useTranslation();
   return (
     <main
       className="relative grid min-h-dvh place-items-center overflow-hidden bg-background px-6"
@@ -62,21 +70,22 @@ export default function NotFound() {
         ))}
       </div>
 
-      <div className="relative z-10 text-center">
-        <p className="font-mono text-sm uppercase tracking-[0.3em] text-muted-foreground">
+      <div className="relative z-10 flex flex-col items-center text-center">
+        <Mascot size={108} />
+        <p className="mt-4 font-mono text-sm uppercase tracking-[0.3em] text-muted-foreground">
           404
         </p>
-        <h1 className="mt-2 text-7xl font-semibold tracking-tight text-foreground md:text-8xl">
+        <h1 className="sg-grad-text mt-2 text-7xl font-semibold tracking-tight md:text-8xl">
           404
         </h1>
         <p className="mt-4 max-w-sm text-sm text-muted-foreground">
-          This page slipped out of the routing table. Let&apos;s get you back.
+          {t("notFound.description")}
         </p>
         <Link
           href="/"
           className="mt-6 inline-flex items-center rounded-md border border-border bg-panel px-4 py-2 text-sm font-medium text-foreground transition-colors hover:border-primary/40 hover:bg-accent/40"
         >
-          Back to dashboard
+          {t("notFound.backToDashboard")}
         </Link>
       </div>
 

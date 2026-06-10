@@ -27,6 +27,7 @@ import {
 import { CorlinmanApiError } from "@/lib/api";
 import { useMotionVariants } from "@/lib/motion";
 import { BrandMark } from "@/components/layout/brand-mark";
+import { Mascot } from "@/components/ui/mascot";
 import { LanguageToggle } from "@/components/layout/language-toggle";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
 import { Button } from "@/components/ui/button";
@@ -86,11 +87,15 @@ function HeroColumn() {
         <BrandMark />
       </div>
       <motion.div
-        className="relative z-10 space-y-3"
+        className="relative z-10 space-y-5"
         variants={variants.liquidRise}
         initial="hidden"
         animate="visible"
       >
+        {/* The mascot is the hero object — floating above the headline with
+            its own glow, ground light, and the global cursor halo passing
+            over it. */}
+        <Mascot size={148} className="-ml-2" />
         <h2 className="sg-grad-text text-3xl font-semibold tracking-tight">
           {t("auth.heroTitle")}
         </h2>
@@ -101,7 +106,7 @@ function HeroColumn() {
       <div className="relative z-10 flex items-center gap-2 text-xs text-sg-ink-5">
         <span className="font-mono">v0.1.1</span>
         <span>·</span>
-        <span>M6 admin</span>
+        <span>{t("auth.buildLabel")}</span>
       </div>
     </aside>
   );
@@ -423,7 +428,7 @@ function ForgotPasswordPanel() {
               id="reset-token"
               value={token}
               onChange={(e) => setToken(e.target.value)}
-              placeholder="paste here"
+              placeholder={t("auth.resetPlaceholder")}
               required
               disabled={phase === "submitting" || secondsLeft <= 0}
               autoComplete="off"

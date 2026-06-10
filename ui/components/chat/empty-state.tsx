@@ -3,9 +3,10 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { motion, useReducedMotion } from "framer-motion";
-import { Bot, Sparkles } from "lucide-react";
+import { Sparkles } from "lucide-react";
 
 import { useMotionVariants } from "@/lib/motion";
+import { Mascot } from "@/components/ui/mascot";
 
 interface ChatEmptyStateProps {
   onPick?: (text: string) => void;
@@ -33,23 +34,9 @@ export function ChatEmptyState({ onPick }: ChatEmptyStateProps) {
       data-testid="chat-empty"
     >
       <motion.div variants={liquidRise}>
-        {/* Inner wrapper runs the perpetual float so the spring entrance on
-            the outer element isn't clobbered by the looping animate value. */}
-        <motion.div
-          animate={
-            reducedMotion
-              ? undefined
-              : { y: [0, -6, 0] }
-          }
-          transition={
-            reducedMotion
-              ? undefined
-              : { duration: 5, repeat: Infinity, ease: "easeInOut" }
-          }
-          className="flex h-14 w-14 items-center justify-center rounded-sg-xl border border-sg-border bg-sg-accent-soft shadow-sg-glow"
-        >
-          <Bot className="h-7 w-7 text-sg-accent" aria-hidden="true" />
-        </motion.div>
+        {/* The mascot carries its own CSS float loop (reduced-motion gated),
+            so the spring entrance on this wrapper isn't clobbered. */}
+        <Mascot size={96} still={Boolean(reducedMotion)} />
       </motion.div>
       <motion.h2
         variants={liquidRise}

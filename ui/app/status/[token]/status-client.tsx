@@ -21,6 +21,7 @@
 
 import * as React from "react";
 import { useParams } from "next/navigation";
+import { useTranslation } from "react-i18next";
 import { Loader2, LinkIcon, AlertTriangle, WifiOff } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -302,6 +303,7 @@ function CenteredCard({
 }
 
 function ExpiredState() {
+  const { t } = useTranslation();
   return (
     <CenteredCard tone="err">
       <div
@@ -312,11 +314,10 @@ function ExpiredState() {
           <LinkIcon className="size-6" aria-hidden />
         </span>
         <h1 className="text-lg font-semibold tracking-tight text-sg-ink">
-          Link expired or invalid
+          {t("status.expiredTitle")}
         </h1>
         <p className="max-w-xs text-sm text-sg-ink-3">
-          This status link is no longer valid. Ask the assistant for a fresh
-          link to follow along.
+          {t("status.expiredMessage")}
         </p>
       </div>
     </CenteredCard>
@@ -324,17 +325,19 @@ function ExpiredState() {
 }
 
 function LoadingState() {
+  const { t } = useTranslation();
   return (
     <CenteredCard>
       <div className="flex flex-col items-center gap-3">
         <Loader2 className="size-6 animate-spin text-sg-accent" aria-hidden />
-        <p className="text-sm text-sg-ink-3">Loading status…</p>
+        <p className="text-sm text-sg-ink-3">{t("status.loading")}</p>
       </div>
     </CenteredCard>
   );
 }
 
 function ErrorState({ onRetry }: { onRetry: () => void }) {
+  const { t } = useTranslation();
   return (
     <CenteredCard tone="err">
       <div className="flex flex-col items-center gap-3">
@@ -342,10 +345,10 @@ function ErrorState({ onRetry }: { onRetry: () => void }) {
           <AlertTriangle className="size-6" aria-hidden />
         </span>
         <h1 className="text-base font-semibold tracking-tight text-sg-ink">
-          Couldn&apos;t load status
+          {t("status.errorTitle")}
         </h1>
         <p className="max-w-xs text-sm text-sg-ink-3">
-          The status service didn&apos;t respond. It may be a brief hiccup.
+          {t("status.errorMessage")}
         </p>
         <button
           type="button"
@@ -355,7 +358,7 @@ function ErrorState({ onRetry }: { onRetry: () => void }) {
             "text-sm font-medium text-sg-ink transition-colors hover:bg-sg-inset-hover",
           )}
         >
-          Try again
+          {t("status.tryAgain")}
         </button>
       </div>
     </CenteredCard>
@@ -422,6 +425,7 @@ function StatusReady({
   token: string;
   snapshot: StatusSnapshot;
 }) {
+  const { t } = useTranslation();
   const { events, connected, degraded } = useStatusEvents(
     token,
     snapshot.events,
@@ -459,7 +463,7 @@ function StatusReady({
               <PersonaAvatar personaId={snapshot.persona_id} />
               <div className="min-w-0">
                 <h1 className="sg-grad-text truncate text-xl font-semibold tracking-tight sm:text-2xl">
-                  Agent status
+                  {t("status.agentStatus")}
                 </h1>
                 <span className="mt-0.5 block truncate font-mono text-[11px] text-sg-ink-4">
                   {snapshot.session_key.slice(0, 12)}
@@ -493,7 +497,7 @@ function StatusReady({
         </section>
 
         <footer className="pt-1 text-center text-[11px] text-sg-ink-4">
-          Read-only · live updates · corlinman
+          {t("status.footer")}
         </footer>
       </div>
     </div>
@@ -559,6 +563,7 @@ function ConnectionDot({
   connected: boolean;
   degraded: boolean;
 }) {
+  const { t } = useTranslation();
   if (connected) {
     return (
       <span
@@ -570,7 +575,7 @@ function ConnectionDot({
           className="sg-breathe h-[6px] w-[6px] rounded-full bg-sg-ok"
           aria-hidden
         />
-        Live
+        {t("status.connLive")}
       </span>
     );
   }
@@ -581,7 +586,7 @@ function ConnectionDot({
       className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-sg-border bg-sg-inset py-1 pl-2 pr-2.5 text-[11px] text-sg-ink-4"
     >
       <WifiOff className="size-3" aria-hidden />
-      {degraded ? "Reconnecting…" : "Connecting…"}
+      {degraded ? t("status.connReconnecting") : t("status.connConnecting")}
     </span>
   );
 }

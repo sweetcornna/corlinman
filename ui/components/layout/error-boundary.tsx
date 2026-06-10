@@ -3,6 +3,20 @@
 import * as React from "react";
 import { AlertTriangle, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { i18next } from "@/lib/i18n";
+
+// Class components can't call the `useTranslation` hook, and this boundary
+// may render while React context is unhealthy. Translate via the exported
+// i18next instance directly, with an English fallback so the panel still
+// reads sensibly if i18n hasn't initialised.
+function tr(key: string, fallback: string): string {
+  try {
+    const value = i18next.t(key);
+    return value && value !== key ? value : fallback;
+  } catch {
+    return fallback;
+  }
+}
 
 interface ErrorBoundaryProps {
   children: React.ReactNode;
@@ -38,12 +52,13 @@ export class PageErrorBoundary extends React.Component<
           <div className="max-w-xl space-y-3 rounded-md border border-destructive/40 bg-destructive/5 p-5 text-sm">
             <div className="flex items-center gap-2 font-medium text-destructive">
               <AlertTriangle className="h-4 w-4" />
-              This page hit a runtime error
+              {tr("errorBoundary.title", "This page hit a runtime error")}
             </div>
             <p className="text-muted-foreground">
-              The rest of the app still works. Try reloading or navigating
-              away and back. If the issue persists, the error message is
-              below (and in the browser console).
+              {tr(
+                "errorBoundary.body",
+                "The rest of the app still works. Try reloading or navigating away and back. If the issue persists, the error message is below (and in the browser console).",
+              )}
             </p>
             <pre className="max-h-60 overflow-auto rounded bg-background/60 p-3 font-mono text-[11px] text-foreground/80">
               {this.state.error.message}
@@ -59,7 +74,7 @@ export class PageErrorBoundary extends React.Component<
                 className="gap-1"
               >
                 <RefreshCw className="h-3.5 w-3.5" />
-                Try again
+                {tr("errorBoundary.tryAgain", "Try again")}
               </Button>
               <Button
                 variant="ghost"
@@ -68,7 +83,7 @@ export class PageErrorBoundary extends React.Component<
                   if (typeof window !== "undefined") window.location.reload();
                 }}
               >
-                Hard reload
+                {tr("errorBoundary.hardReload", "Hard reload")}
               </Button>
             </div>
           </div>

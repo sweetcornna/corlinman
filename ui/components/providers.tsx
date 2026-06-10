@@ -8,6 +8,7 @@ import { I18nextProvider } from "react-i18next";
 
 import { i18next, initI18n } from "@/lib/i18n";
 import { CommandPaletteProvider } from "./cmdk-palette";
+import { CursorLight } from "@/components/ui/cursor-light";
 
 // Init at module load. `initI18n()` is SSR-safe: on the server it skips
 // the LanguageDetector plugin and defaults to zh-CN, matching the
@@ -81,6 +82,8 @@ export function Providers({ children }: ProvidersProps) {
           <CommandPaletteProvider>
             {children}
             <GlassToaster />
+            {/* Liquid Glass touch-point radiance — global pointer halo. */}
+            <CursorLight />
           </CommandPaletteProvider>
         </I18nextProvider>
       </QueryClientProvider>

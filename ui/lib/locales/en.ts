@@ -71,6 +71,7 @@ export const en = {
       "On the gateway host (you need shell access — same operator-proves-ownership model as editing config.toml), copy the value printed by:",
     resetCountdown: "Token expires in {{m}}:{{s}}",
     resetTokenLabel: "Reset token",
+    resetPlaceholder: "paste here",
     resetSubmit: "Reset password",
     resetCancel: "Cancel",
     resetSuccessTitle: "Password reset complete",
@@ -91,6 +92,8 @@ export const en = {
       "Rust gateway, Python AI layer, static admin UI. All in one control plane.",
     logoutSuccess: "Signed out",
     logoutLabel: "Log out",
+    buildLabel: "M6 admin",
+    onboardBuildLabel: "first-run",
     onboardTitle: "Set up the admin account",
     onboardSubtitle:
       "First-run setup — pick a username and password. Both are written to config.toml as argon2id.",
@@ -155,6 +158,33 @@ export const en = {
     onboardCustomizeAdmin: "Customize admin account",
     onboardUsingDefaultAdmin:
       "Using default admin/root — change later in Account & Security.",
+  },
+
+  notFound: {
+    description: "This page slipped out of the routing table. Let's get you back.",
+    backToDashboard: "Back to dashboard",
+  },
+
+  status: {
+    expiredTitle: "Link expired or invalid",
+    expiredMessage:
+      "This status link is no longer valid. Ask the assistant for a fresh link to follow along.",
+    loading: "Loading status…",
+    errorTitle: "Couldn't load status",
+    errorMessage: "The status service didn't respond. It may be a brief hiccup.",
+    tryAgain: "Try again",
+    agentStatus: "Agent status",
+    footer: "Read-only · live updates · corlinman",
+    connLive: "Live",
+    connReconnecting: "Reconnecting…",
+    connConnecting: "Connecting…",
+  },
+
+  errorBoundary: {
+    title: "This page hit a runtime error",
+    body: "The rest of the app still works. Try reloading or navigating away and back. If the issue persists, the error message is below (and in the browser console).",
+    tryAgain: "Try again",
+    hardReload: "Hard reload",
   },
 
   account: {
@@ -1397,6 +1427,34 @@ export const en = {
   },
 
   providers: {
+    addCustom: {
+      title: "Add custom provider",
+      desc: "Register a non-built-in provider against one of the supported transport kinds. Saves are written to config.toml and hot-reloaded.",
+      slugLabel: "Slug",
+      slugInvalid: "Must match ^[a-z0-9][a-z0-9_-]{0,31}$ (start with letter/digit; lowercase only).",
+      slugHint: "Lowercase letters, digits, hyphens, underscores. Up to 32 chars.",
+      kindLabel: "Kind",
+      kindLoading: "Loading…",
+      kindLoadFailed: "Failed to load kinds",
+      kindNone: "(no kinds advertised)",
+      kindFetchError: "Could not fetch /admin/providers/kinds.",
+      baseUrlLabel: "Base URL",
+      baseUrlOptional: "(optional)",
+      baseUrlPlaceholderDefault: "(use SDK default)",
+      baseUrlRequiredHint: "Required for \"{{kind}}\" — there is no built-in default endpoint.",
+      baseUrlOptionalHint: "Leave blank to use the kind's default endpoint.",
+      apiKeyLabel: "API key",
+      apiKeyStored: "(stored as literal)",
+      apiKeyHide: "Hide API key",
+      apiKeyReveal: "Reveal API key",
+      apiKeyHint: "Leave blank if the provider needs no auth or you'll supply it via env later.",
+      paramsTitle: "Params",
+      paramsDesc: "Free-form key/value pairs written to the params table in config.toml.",
+      paramsAddRow: "Add row",
+      paramsRemoveRow: "Remove row",
+      saving: "Saving…",
+      submit: "Add provider",
+    },
     title: "Providers",
     subtitle:
       "`/admin/providers` — dynamic provider registry. Add any OpenAI-compatible endpoint or first-party vendor.",
@@ -2653,6 +2711,7 @@ export const en = {
 
   chat: {
     pageTitle: "Chat",
+    unknownToolName: "(unknown)",
     newChat: "New chat",
     searchPlaceholder: "Search…",
     expandSidebar: "Expand chat list",

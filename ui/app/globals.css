@@ -466,6 +466,20 @@
   .lg-hue-drift {
     animation: lg-hue-drift 90s ease-in-out infinite;
   }
+  /* Hero-object float: gentle vertical bob with a hint of sway. */
+  @keyframes lg-float {
+    0%,
+    100% {
+      transform: translateY(0) rotate(-1deg);
+    }
+    50% {
+      transform: translateY(-9px) rotate(1.2deg);
+    }
+  }
+  .lg-float {
+    animation: lg-float 6.5s ease-in-out infinite;
+  }
+
   @keyframes lg-twinkle {
     0%,
     100% {
@@ -506,7 +520,8 @@
       transform: none;
     }
     .lg-hue-drift,
-    .lg-stars {
+    .lg-stars,
+    .lg-float {
       animation: none;
     }
   }

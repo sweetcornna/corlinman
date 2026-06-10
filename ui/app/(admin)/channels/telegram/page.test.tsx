@@ -230,9 +230,9 @@ describe("TelegramChannelPage", () => {
     fireEvent.click(thumb);
 
     const dialog = await screen.findByRole("dialog");
-    expect(
-      within(dialog).getByText(/photo preview/i),
-    ).toBeInTheDocument();
+    // Test locale is forced to zh-CN (vitest.setup.ts); the drawer title is
+    // i18n'd, so assert the Chinese string.
+    expect(within(dialog).getByText("图片预览")).toBeInTheDocument();
     const previewImg = await screen.findByTestId("tg-media-preview-img");
     expect(previewImg.getAttribute("src")).toBe(
       "/var/cache/tg/photo-m-photo.jpg",

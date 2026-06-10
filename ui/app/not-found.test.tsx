@@ -38,8 +38,10 @@ describe("NotFound", () => {
     render(<NotFound />);
     // Headline + eyebrow both say "404"; at least one must be present.
     expect(screen.getAllByText("404").length).toBeGreaterThanOrEqual(1);
+    // Test locale is forced to zh-CN (see vitest.setup.ts), so assert the
+    // Chinese link label rather than the English one.
     expect(
-      screen.getByRole("link", { name: /back to dashboard/i }),
+      screen.getByRole("link", { name: "返回控制台" }),
     ).toHaveAttribute("href", "/");
   });
 

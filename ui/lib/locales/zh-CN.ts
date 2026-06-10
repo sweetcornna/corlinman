@@ -73,6 +73,7 @@ export const zhCN = {
       "在网关主机上执行以下命令（需要 root SSH，跟手改 config.toml 是同一道关），把输出复制下来：",
     resetCountdown: "令牌将在 {{m}}:{{s}} 后过期",
     resetTokenLabel: "粘贴令牌",
+    resetPlaceholder: "粘贴到这里",
     resetSubmit: "重置密码",
     resetCancel: "取消",
     resetSuccessTitle: "密码已重置",
@@ -88,6 +89,8 @@ export const zhCN = {
       "Rust gateway, Python AI layer, static admin UI. All in one control plane.",
     logoutSuccess: "已退出登录",
     logoutLabel: "退出登录",
+    buildLabel: "M6 管理台",
+    onboardBuildLabel: "首次配置",
     onboardTitle: "初始化管理员账号",
     onboardSubtitle:
       "首次启动设置 —— 请设置用户名与密码，将以 argon2id 写入 config.toml。",
@@ -145,6 +148,32 @@ export const zhCN = {
     onboardCustomizeAdmin: "自定义管理员账户",
     onboardUsingDefaultAdmin:
       "正在使用默认 admin/root —— 稍后可在 账户与安全 中修改。",
+  },
+
+  notFound: {
+    description: "这个页面没有出现在路由表里。让我们带你返回。",
+    backToDashboard: "返回控制台",
+  },
+
+  status: {
+    expiredTitle: "链接已失效或无效",
+    expiredMessage: "该状态链接已不可用。请向助手索取新的链接以继续跟进。",
+    loading: "正在加载状态…",
+    errorTitle: "无法加载状态",
+    errorMessage: "状态服务未响应，可能只是短暂的网络抖动。",
+    tryAgain: "重试",
+    agentStatus: "Agent 状态",
+    footer: "只读 · 实时更新 · corlinman",
+    connLive: "实时",
+    connReconnecting: "正在重连…",
+    connConnecting: "正在连接…",
+  },
+
+  errorBoundary: {
+    title: "此页面发生运行时错误",
+    body: "应用的其他部分仍可正常使用。可以尝试刷新，或离开后重新进入。如果问题持续存在，错误信息显示在下方（浏览器控制台中也有）。",
+    tryAgain: "重试",
+    hardReload: "强制刷新",
   },
 
   account: {
@@ -1364,6 +1393,34 @@ export const zhCN = {
   },
 
   providers: {
+    addCustom: {
+      title: "新增自定义 provider",
+      desc: "将一个非内置 provider 注册到受支持的传输类型上。保存写入 config.toml 并热更新。",
+      slugLabel: "Slug",
+      slugInvalid: "需匹配 ^[a-z0-9][a-z0-9_-]{0,31}$（以字母/数字开头；仅小写）。",
+      slugHint: "小写字母、数字、连字符、下划线，最长 32 字符。",
+      kindLabel: "类型",
+      kindLoading: "加载中…",
+      kindLoadFailed: "类型加载失败",
+      kindNone: "（服务端未公布任何类型）",
+      kindFetchError: "无法获取 /admin/providers/kinds。",
+      baseUrlLabel: "Base URL",
+      baseUrlOptional: "（可选）",
+      baseUrlPlaceholderDefault: "（使用 SDK 默认）",
+      baseUrlRequiredHint: "「{{kind}}」必填 — 没有内置默认端点。",
+      baseUrlOptionalHint: "留空则使用该类型的默认端点。",
+      apiKeyLabel: "API key",
+      apiKeyStored: "（以字面量存储）",
+      apiKeyHide: "隐藏 API key",
+      apiKeyReveal: "显示 API key",
+      apiKeyHint: "若无需鉴权或稍后通过环境变量提供，可留空。",
+      paramsTitle: "Params",
+      paramsDesc: "自由键值对，写入 config.toml 的 params 表。",
+      paramsAddRow: "添加行",
+      paramsRemoveRow: "删除行",
+      saving: "保存中…",
+      submit: "新增 provider",
+    },
     title: "Providers",
     subtitle:
       "`/admin/providers` — 动态 provider 注册表。新增任意 OpenAI 兼容端点或第一方供应商。",
@@ -2596,6 +2653,7 @@ export const zhCN = {
 
   chat: {
     pageTitle: "聊天",
+    unknownToolName: "（未知）",
     newChat: "新对话",
     searchPlaceholder: "搜索…",
     expandSidebar: "展开会话列表",

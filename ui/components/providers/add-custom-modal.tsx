@@ -27,6 +27,7 @@
 
 import * as React from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { Eye, EyeOff, Plus, Trash2 } from "lucide-react";
 
@@ -85,6 +86,7 @@ export function AddCustomProviderModal({
   onOpenChange,
   onCreated,
 }: AddCustomProviderModalProps) {
+  const { t } = useTranslation();
   const [slug, setSlug] = React.useState("");
   const [slugTouched, setSlugTouched] = React.useState(false);
   const [kind, setKind] = React.useState<string>("");
@@ -188,12 +190,8 @@ export function AddCustomProviderModal({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-xl">
         <DialogHeader>
-          <DialogTitle>Add custom provider</DialogTitle>
-          <DialogDescription>
-            Register a non-built-in provider against one of the supported
-            transport kinds. Saves are written to <code>config.toml</code>{" "}
-            and hot-reloaded.
-          </DialogDescription>
+          <DialogTitle>{t("providers.addCustom.title")}</DialogTitle>
+          <DialogDescription>{t("providers.addCustom.desc")}</DialogDescription>
         </DialogHeader>
 
         <div className="max-h-[60vh] space-y-4 overflow-y-auto pr-1">
@@ -201,7 +199,7 @@ export function AddCustomProviderModal({
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
             <div className="space-y-1.5">
               <Label htmlFor="custom-provider-slug" className="text-xs">
-                Slug
+                {t("providers.addCustom.slugLabel")}
               </Label>
               <Input
                 id="custom-provider-slug"
@@ -233,14 +231,14 @@ export function AddCustomProviderModal({
                 )}
               >
                 {slugTouched && !slugValid && slug.length > 0
-                  ? "Must match ^[a-z0-9][a-z0-9_-]{0,31}$ (start with letter/digit; lowercase only)."
-                  : "Lowercase letters, digits, hyphens, underscores. Up to 32 chars."}
+                  ? t("providers.addCustom.slugInvalid")
+                  : t("providers.addCustom.slugHint")}
               </p>
             </div>
 
             <div className="space-y-1.5">
               <Label htmlFor="custom-provider-kind" className="text-xs">
-                Kind
+                {t("providers.addCustom.kindLabel")}
               </Label>
               <select
                 id="custom-provider-kind"
@@ -251,11 +249,11 @@ export function AddCustomProviderModal({
                 className="flex h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {kindsQuery.isPending ? (
-                  <option value="">Loading…</option>
+                  <option value="">{t("providers.addCustom.kindLoading")}</option>
                 ) : kindsQuery.isError ? (
-                  <option value="">Failed to load kinds</option>
+                  <option value="">{t("providers.addCustom.kindLoadFailed")}</option>
                 ) : (kindsQuery.data ?? []).length === 0 ? (
-                  <option value="">(no kinds advertised)</option>
+                  <option value="">{t("providers.addCustom.kindNone")}</option>
                 ) : (
                   (kindsQuery.data ?? []).map((k) => (
                     <option key={k.kind} value={k.kind}>
@@ -265,8 +263,8 @@ export function AddCustomProviderModal({
                 )}
               </select>
               {kindsQuery.isError ? (
-                <p className="text-[11px] text-destructive">
-                  Could not fetch /admin/providers/kinds.
+                <p className="text-[11px] text-sg-err">
+                  {t("providers.addCustom.kindFetchError")}
                 </p>
               ) : selectedKindDescriptor?.description ? (
                 <p className="text-[11px] text-sg-ink-3">
@@ -279,11 +277,11 @@ export function AddCustomProviderModal({
           {/* base_url */}
           <div className="space-y-1.5">
             <Label htmlFor="custom-provider-base-url" className="text-xs">
-              Base URL{" "}
+              {t("providers.addCustom.baseUrlLabel")}{" "}
               {baseUrlRequired ? (
-                <span className="text-destructive">*</span>
+                <span className="text-sg-err">*</span>
               ) : (
-                <span className="text-sg-ink-3">(optional)</span>
+                <span className="text-sg-ink-3">{t("providers.addCustom.baseUrlOptional")}</span>
               )}
             </Label>
             <Input
@@ -294,22 +292,22 @@ export function AddCustomProviderModal({
               placeholder={
                 baseUrlRequired
                   ? "https://vllm.internal/v1"
-                  : "(use SDK default)"
+                  : t("providers.addCustom.baseUrlPlaceholderDefault")
               }
               className="font-mono text-xs"
             />
             <p className="text-[11px] text-sg-ink-3">
               {baseUrlRequired
-                ? `Required for "${kind}" — there is no built-in default endpoint.`
-                : "Leave blank to use the kind's default endpoint."}
+                ? t("providers.addCustom.baseUrlRequiredHint", { kind })
+                : t("providers.addCustom.baseUrlOptionalHint")}
             </p>
           </div>
 
           {/* api_key */}
           <div className="space-y-1.5">
             <Label htmlFor="custom-provider-api-key" className="text-xs">
-              API key{" "}
-              <span className="text-sg-ink-3">(stored as literal)</span>
+              {t("providers.addCustom.apiKeyLabel")}{" "}
+              <span className="text-sg-ink-3">{t("providers.addCustom.apiKeyStored")}</span>
             </Label>
             <div className="flex items-center gap-2">
               <Input
@@ -329,7 +327,7 @@ export function AddCustomProviderModal({
                 variant="ghost"
                 data-testid="custom-provider-api-key-reveal"
                 onClick={() => setRevealKey((r) => !r)}
-                aria-label={revealKey ? "Hide API key" : "Reveal API key"}
+                aria-label={revealKey ? t("providers.addCustom.apiKeyHide") : t("providers.addCustom.apiKeyReveal")}
                 aria-pressed={revealKey}
               >
                 {revealKey ? (
@@ -340,8 +338,7 @@ export function AddCustomProviderModal({
               </Button>
             </div>
             <p className="text-[11px] text-sg-ink-3">
-              Leave blank if the provider needs no auth or you&apos;ll supply
-              it via env later.
+              {t("providers.addCustom.apiKeyHint")}
             </p>
           </div>
 
@@ -349,10 +346,9 @@ export function AddCustomProviderModal({
           <div className="space-y-2 rounded-md border border-sg-border p-3">
             <div className="flex items-center justify-between">
               <div>
-                <h3 className="text-sm font-semibold">Params</h3>
+                <h3 className="text-sm font-semibold">{t("providers.addCustom.paramsTitle")}</h3>
                 <p className="text-[11px] text-sg-ink-3">
-                  Free-form key/value pairs written to{" "}
-                  <code>params = {"{ … }"}</code> in config.toml.
+                  {t("providers.addCustom.paramsDesc")}
                 </p>
               </div>
               <Button
@@ -364,7 +360,7 @@ export function AddCustomProviderModal({
                   setParams((rows) => [...rows, freshParamRow()])
                 }
               >
-                <Plus className="h-3 w-3" /> Add row
+                <Plus className="h-3 w-3" /> {t("providers.addCustom.paramsAddRow")}
               </Button>
             </div>
             <div className="space-y-2">
@@ -406,7 +402,7 @@ export function AddCustomProviderModal({
                     type="button"
                     size="sm"
                     variant="ghost"
-                    aria-label="Remove row"
+                    aria-label={t("providers.addCustom.paramsRemoveRow")}
                     onClick={() =>
                       setParams((rows) =>
                         rows.length <= 1
@@ -439,14 +435,14 @@ export function AddCustomProviderModal({
             onClick={() => onOpenChange(false)}
             disabled={createMutation.isPending}
           >
-            Cancel
+            {t("common.cancel")}
           </Button>
           <Button
             onClick={handleSubmit}
             disabled={!formValid || createMutation.isPending}
             data-testid="custom-provider-submit"
           >
-            {createMutation.isPending ? "Saving…" : "Add provider"}
+            {createMutation.isPending ? t("providers.addCustom.saving") : t("providers.addCustom.submit")}
           </Button>
         </DialogFooter>
       </DialogContent>

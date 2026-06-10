@@ -49,6 +49,7 @@ import {
   type OnboardPersonaChoice,
 } from "@/lib/api";
 import { BrandMark } from "@/components/layout/brand-mark";
+import { Mascot } from "@/components/ui/mascot";
 import { LanguageToggle } from "@/components/layout/language-toggle";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
 import { Button } from "@/components/ui/button";
@@ -164,11 +165,12 @@ function HeroColumn() {
         <BrandMark />
       </div>
       <motion.div
-        className="relative z-10 space-y-3"
+        className="relative z-10 space-y-5"
         variants={variants.liquidRise}
         initial="hidden"
         animate="visible"
       >
+        <Mascot size={148} className="-ml-2" />
         <h2 className="sg-grad-text text-3xl font-semibold tracking-tight">
           {t("auth.onboardHeroTitle")}
         </h2>
@@ -179,7 +181,7 @@ function HeroColumn() {
       <div className="relative z-10 flex items-center gap-2 text-xs text-sg-ink-5">
         <span className="font-mono">v0.6.0</span>
         <span>·</span>
-        <span>first-run</span>
+        <span>{t("auth.onboardBuildLabel")}</span>
       </div>
     </aside>
   );
