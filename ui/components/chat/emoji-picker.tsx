@@ -2,9 +2,11 @@
 
 import * as React from "react";
 import { useTranslation } from "react-i18next";
+import { motion } from "framer-motion";
 import { ImagePlus } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { useMotionVariants } from "@/lib/motion";
 
 const RECENT_KEY = "corlinman:chat:recent-emoji";
 const RECENT_MAX = 16;
@@ -126,6 +128,7 @@ interface Cell {
 
 export function EmojiPicker({ onPick, onPickSticker, onClose }: EmojiPickerProps) {
   const { t } = useTranslation();
+  const { liquidSurface } = useMotionVariants();
   const [recent, setRecent] = React.useState<string[]>(() => readRecent());
   const [active, setActive] = React.useState(0);
   const gridRef = React.useRef<HTMLDivElement | null>(null);
@@ -222,8 +225,8 @@ export function EmojiPicker({ onPick, onPickSticker, onClose }: EmojiPickerProps
         onClick={() => pickCell(cell)}
         onMouseEnter={() => setActive(idx)}
         className={cn(
-          "flex h-9 w-9 items-center justify-center rounded-md text-xl leading-none",
-          "transition-colors hover:bg-sg-accent-soft",
+          "lg-gel flex h-9 w-9 items-center justify-center rounded-md text-xl leading-none",
+          "hover:bg-sg-accent-soft",
           isActive && "bg-sg-accent-soft ring-1 ring-sg-accent/40",
           cell.emoji === null && "text-sg-accent",
         )}
@@ -234,17 +237,20 @@ export function EmojiPicker({ onPick, onPickSticker, onClose }: EmojiPickerProps
   };
 
   return (
-    <div
+    <motion.div
       role="dialog"
       aria-label={t("chat.emojiPickerAriaLabel")}
       data-testid="emoji-picker"
       ref={gridRef}
       tabIndex={-1}
       onKeyDown={handleKeyDown}
+      initial="hidden"
+      animate="visible"
+      variants={liquidSurface}
+      style={{ transformOrigin: "bottom left" }}
       className={cn(
         "absolute bottom-full left-0 z-30 mb-2 w-[20.5rem] max-h-80 overflow-y-auto",
         "sg-glass-overlay rounded-sg-lg p-2 shadow-sg-4 outline-none",
-        "animate-sg-palette-in",
       )}
     >
       {recent.length > 0 ? (
@@ -288,6 +294,6 @@ export function EmojiPicker({ onPick, onPickSticker, onClose }: EmojiPickerProps
           {t("chat.emojiStickerHint")}
         </p>
       </section>
-    </div>
+    </motion.div>
   );
 }

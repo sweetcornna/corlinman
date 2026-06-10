@@ -59,6 +59,7 @@ export function ConfigHero({
     <GlassPanel
       variant="strong"
       as="section"
+      lively
       className="relative overflow-hidden p-7"
     >
       {/* Ambient amber + ember glow — same radial-gradient language used

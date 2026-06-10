@@ -19,11 +19,13 @@
 import * as React from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
+import { motion } from "framer-motion";
 import { RefreshCw, Search, WifiOff } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { GlassPanel } from "@/components/ui/glass-panel";
+import { useMotionVariants } from "@/lib/motion";
 import {
   listHubFeatured,
   searchHubSkills,
@@ -39,6 +41,7 @@ const SORT_OPTIONS: HubSortKey[] = ["trending", "downloads", "stars", "updated"]
 
 export function HubTab(): React.JSX.Element {
   const { t } = useTranslation();
+  const variants = useMotionVariants();
   const [rawQuery, setRawQuery] = React.useState("");
   const [debouncedQuery, setDebouncedQuery] = React.useState("");
   const [sort, setSort] = React.useState<HubSortKey>("trending");
@@ -177,19 +180,20 @@ export function HubTab(): React.JSX.Element {
           </p>
         </GlassPanel>
       ) : rows.length > 0 ? (
-        <section
+        <motion.section
           aria-label={t("skills.hub.gridLabel")}
           className="grid gap-3 grid-cols-[repeat(auto-fill,minmax(280px,1fr))]"
           data-testid="hub-grid"
+          variants={variants.liquidStagger}
+          initial="hidden"
+          animate="visible"
         >
           {rows.map((row) => (
-            <HubSkillCard
-              key={row.slug}
-              summary={row}
-              onSelect={setSelected}
-            />
+            <motion.div key={row.slug} variants={variants.liquidRise}>
+              <HubSkillCard summary={row} onSelect={setSelected} />
+            </motion.div>
           ))}
-        </section>
+        </motion.section>
       ) : null}
 
       <HubSkillDetailDrawer

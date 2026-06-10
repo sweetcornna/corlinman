@@ -70,13 +70,13 @@ export function MarketCard({
       data-testid={`market-card-${item.slug}`}
       className={cn(
         "group block focus-visible:outline-none",
-        !reduced &&
-          "transition-transform duration-200 ease-sg-ease-out hover:-translate-y-0.5",
+        !reduced && "lg-gel hover:-translate-y-0.5",
         className,
       )}
     >
       <GlassPanel
         variant="soft"
+        lively
         role="button"
         tabIndex={0}
         aria-label={`Open ${item.name} details`}

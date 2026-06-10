@@ -40,10 +40,11 @@ export const baselinePageVariants: PageTransitionVariants = {
 /**
  * Spatial Glass default — a short "depth" transition. Pages rise from slightly
  * behind and below (scale 0.985, y 8) into place, and exit by drifting
- * marginally forward (scale 1.005). The asymmetric timing (280ms in / 140ms
- * out) keeps navigation feeling responsive: the leaving page clears fast, the
- * arriving page settles with a soft visionOS-style ease. Lands on a clean
- * identity transform (scale 1, y 0) so glass surfaces never sit mid-blur.
+ * marginally forward (scale 1.005). The arriving page now settles on a
+ * non-linear spring (Liquid Glass) — a hint of overshoot as it lands rather
+ * than a flat ease — while the leaving page keeps the fast 140ms tween so
+ * navigation still feels responsive. Lands on a clean identity transform
+ * (scale 1, y 0) so glass surfaces never sit mid-blur.
  */
 export const depthPageVariants: PageTransitionVariants = {
   initial: { opacity: 0, scale: 0.985, y: 8 },
@@ -51,7 +52,7 @@ export const depthPageVariants: PageTransitionVariants = {
     opacity: 1,
     scale: 1,
     y: 0,
-    transition: { duration: 0.28, ease: [0.32, 0.72, 0, 1] },
+    transition: { type: "spring", stiffness: 300, damping: 30, mass: 0.9 },
   },
   exit: {
     opacity: 0,

@@ -24,11 +24,13 @@
 
 import * as React from "react";
 import { useTranslation } from "react-i18next";
+import { motion } from "framer-motion";
 import { Pin, PinOff, Trash2 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { GlassPanel } from "@/components/ui/glass-panel";
 import { useMotion } from "@/components/ui/motion-safe";
+import { useMotionVariants } from "@/lib/motion";
 import type { InstalledSkillRow } from "@/lib/api";
 
 // ---------- origin badge ---------------------------------------------------
@@ -153,6 +155,7 @@ export function InstalledList({
   deleteBusy,
 }: InstalledListProps) {
   const { t } = useTranslation();
+  const variants = useMotionVariants();
   const filtered = React.useMemo(
     () => filterRows(rows, search, filter),
     [rows, search, filter],
@@ -181,26 +184,30 @@ export function InstalledList({
   }
 
   return (
-    <section
+    <motion.section
       aria-label={t("skills.installed.gridAria")}
       className={cn(
         "grid gap-3",
         "grid-cols-[repeat(auto-fill,minmax(280px,1fr))]",
       )}
       data-testid="installed-list-grid"
+      variants={variants.liquidStagger}
+      initial="hidden"
+      animate="visible"
     >
       {filtered.map((row) => (
-        <InstalledCard
-          key={row.name}
-          row={row}
-          onPin={onPin}
-          onDelete={onDelete}
-          onOpen={onOpen}
-          pinBusy={pinBusy?.has(row.name) ?? false}
-          deleteBusy={deleteBusy?.has(row.name) ?? false}
-        />
+        <motion.div key={row.name} variants={variants.liquidRise}>
+          <InstalledCard
+            row={row}
+            onPin={onPin}
+            onDelete={onDelete}
+            onOpen={onOpen}
+            pinBusy={pinBusy?.has(row.name) ?? false}
+            deleteBusy={deleteBusy?.has(row.name) ?? false}
+          />
+        </motion.div>
       ))}
-    </section>
+    </motion.section>
   );
 }
 
@@ -241,14 +248,14 @@ function InstalledCard({
     <div
       className={cn(
         "group block focus-visible:outline-none",
-        !reduced &&
-          "transition-transform duration-200 ease-sg-ease-out hover:-translate-y-0.5",
+        !reduced && "lg-gel hover:-translate-y-0.5",
       )}
       data-testid={`installed-card-${row.name}`}
       data-origin={badge.kind}
     >
       <GlassPanel
         variant="soft"
+        lively
         role={onOpen ? "button" : undefined}
         tabIndex={onOpen ? 0 : undefined}
         aria-label={

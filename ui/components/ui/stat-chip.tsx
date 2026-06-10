@@ -41,6 +41,13 @@ export interface StatChipProps extends React.HTMLAttributes<HTMLDivElement> {
   variant?: StatChipVariant;
   /** When true, shows a 'live' badge next to the label. */
   live?: boolean;
+  /**
+   * Liquid Glass optics: light-aware edge, chromatic refraction, hover sheen
+   * and pointer-tracked specular highlight on the underlying GlassPanel.
+   * Defaults to `true` for the `primary` (showcase) tile and `false` for the
+   * dense secondary tiles. Pass explicitly to override.
+   */
+  lively?: boolean;
 }
 
 const sparkGradientStops: Record<
@@ -80,6 +87,7 @@ export const StatChip = React.forwardRef<HTMLDivElement, StatChipProps>(
       sparkTone = "amber",
       variant = "default",
       live = false,
+      lively,
       className,
       ...rest
     },
@@ -88,6 +96,10 @@ export const StatChip = React.forwardRef<HTMLDivElement, StatChipProps>(
     const gradientId = React.useId();
     const grad = sparkGradientStops[sparkTone];
     const isPrimary = variant === "primary";
+    // The showcase (primary) tile carries the full Liquid Glass optics +
+    // pointer-tracked light by default; dense secondary tiles stay plain to
+    // avoid visual noise. Callers can override either way.
+    const isLively = lively ?? isPrimary;
 
     return (
       <GlassPanel
@@ -96,6 +108,7 @@ export const StatChip = React.forwardRef<HTMLDivElement, StatChipProps>(
         // glass filter with a quieter shadow so page-to-page glass does not
         // visibly switch between blurred and solid surfaces.
         variant={isPrimary ? "primary" : "subtle"}
+        lively={isLively}
         className={cn(
           "flex flex-col gap-2 overflow-hidden px-[18px] pb-[14px] pt-4",
           className,

@@ -26,6 +26,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useTranslation } from "react-i18next";
+import { motion } from "framer-motion";
 import {
   ArrowRight,
   Check,
@@ -61,6 +62,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
+import { springs, useMotionVariants } from "@/lib/motion";
 
 const MIN_PASSWORD_LEN = 8;
 
@@ -134,18 +136,24 @@ export default function OnboardPage() {
 
 function HeroColumn() {
   const { t } = useTranslation();
+  const variants = useMotionVariants();
   return (
     <aside className="relative hidden overflow-hidden border-r border-sg-border md:flex md:flex-col md:justify-between md:p-10">
       {/* Deep-space showcase — nebula glows + grain over the <html> gradient. */}
       <div
         aria-hidden
-        className="pointer-events-none absolute inset-0 sg-drift"
+        className="pointer-events-none absolute inset-0 sg-drift lg-hue-drift"
         style={{
           backgroundImage:
             "radial-gradient(760px 520px at 18% 12%, var(--sg-nebula-1), transparent 60%), " +
             "radial-gradient(620px 480px at 88% 30%, var(--sg-nebula-2), transparent 62%), " +
             "radial-gradient(560px 420px at 40% 104%, var(--sg-nebula-3), transparent 64%)",
         }}
+      />
+      {/* Twinkling starfield (dark theme only — hidden in daylight via CSS). */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0 lg-stars"
       />
       <div
         aria-hidden
@@ -155,14 +163,19 @@ function HeroColumn() {
       <div className="relative z-10 flex items-center gap-2">
         <BrandMark />
       </div>
-      <div className="relative z-10 space-y-3">
+      <motion.div
+        className="relative z-10 space-y-3"
+        variants={variants.liquidRise}
+        initial="hidden"
+        animate="visible"
+      >
         <h2 className="sg-grad-text text-3xl font-semibold tracking-tight">
           {t("auth.onboardHeroTitle")}
         </h2>
         <p className="max-w-xs text-sm leading-relaxed text-sg-ink-3">
           {t("auth.onboardHeroBody")}
         </p>
-      </div>
+      </motion.div>
       <div className="relative z-10 flex items-center gap-2 text-xs text-sg-ink-5">
         <span className="font-mono">v0.6.0</span>
         <span>·</span>
@@ -178,6 +191,7 @@ function HeroColumn() {
 
 function OnboardWizard() {
   const { t } = useTranslation();
+  const variants = useMotionVariants();
   const router = useRouter();
 
   const [step, setStep] = useState<StepId>(1);
@@ -261,31 +275,42 @@ function OnboardWizard() {
         onGoTo={goTo}
       />
 
-      {step === 1 && (
-        <ApiConfigStep
-          onSkip={() => advance(1)}
-          onContinue={() => advance(1)}
-        />
-      )}
-      {step === 2 && <UsernameStep onDone={() => advance(2)} />}
-      {step === 3 && (
-        <PasswordStep
-          onDone={() => {
-            setLockedPastPassword(true);
-            advance(3);
-          }}
-        />
-      )}
-      {step === 4 && (
-        <PersonaStep
-          onDone={(redirect) => {
-            if (redirect) setPendingRedirect(redirect);
-            advance(4);
-          }}
-        />
-      )}
-      {step === 5 && <ImageProviderStep onDone={() => advance(5)} />}
-      {step === 6 && <DoneStep onFinish={handleFinish} />}
+      {/* Step content cascades in on each swap — keyed by step so the spring
+          re-fires as the operator advances. No exit choreography (a held exit
+          would gate the next step's mount + the step-machine flow). */}
+      <motion.div
+        key={step}
+        className="space-y-6"
+        variants={variants.liquidRise}
+        initial="hidden"
+        animate="visible"
+      >
+        {step === 1 && (
+          <ApiConfigStep
+            onSkip={() => advance(1)}
+            onContinue={() => advance(1)}
+          />
+        )}
+        {step === 2 && <UsernameStep onDone={() => advance(2)} />}
+        {step === 3 && (
+          <PasswordStep
+            onDone={() => {
+              setLockedPastPassword(true);
+              advance(3);
+            }}
+          />
+        )}
+        {step === 4 && (
+          <PersonaStep
+            onDone={(redirect) => {
+              if (redirect) setPendingRedirect(redirect);
+              advance(4);
+            }}
+          />
+        )}
+        {step === 5 && <ImageProviderStep onDone={() => advance(5)} />}
+        {step === 6 && <DoneStep onFinish={handleFinish} />}
+      </motion.div>
 
       <p className="text-center text-xs text-sg-ink-5">
         {t("auth.onboardHint")}
@@ -346,9 +371,9 @@ function StepIndicator({
             >
               <span
                 className={cn(
-                  "inline-flex h-7 w-7 items-center justify-center rounded-full border text-xs font-semibold transition-all",
+                  "relative inline-flex h-7 w-7 items-center justify-center rounded-full border text-xs font-semibold transition-all",
                   isCurrent &&
-                    "border-sg-accent bg-sg-accent text-white shadow-sg-glow ring-2 ring-sg-accent ring-offset-1 ring-offset-transparent",
+                    "border-sg-accent bg-sg-accent text-white shadow-sg-glow",
                   !isCurrent &&
                     isDone &&
                     "border-transparent bg-sg-accent text-white",
@@ -357,10 +382,19 @@ function StepIndicator({
                     "border-sg-border bg-sg-inset text-sg-ink-4",
                 )}
               >
+                {/* Shared-layout active ring — springs between steps. */}
+                {isCurrent ? (
+                  <motion.span
+                    aria-hidden
+                    layoutId="onboard-step-active"
+                    transition={springs.snappy}
+                    className="pointer-events-none absolute -inset-1 rounded-full ring-2 ring-sg-accent ring-offset-1 ring-offset-transparent"
+                  />
+                ) : null}
                 {isDone && !isCurrent ? (
                   <Check className="h-3.5 w-3.5" aria-hidden />
                 ) : (
-                  <Icon className="h-3.5 w-3.5" aria-hidden />
+                  <Icon className="relative h-3.5 w-3.5" aria-hidden />
                 )}
               </span>
               <span
@@ -818,7 +852,7 @@ function PersonaStep({
               disabled={submitting !== null}
               data-testid={c.testid}
               className={cn(
-                "sg-card block w-full rounded-sg-lg p-4 text-left shadow-sg-2 transition-all duration-200",
+                "lg-edge lg-sheen lg-gel sg-card relative block w-full overflow-hidden rounded-sg-lg p-4 text-left shadow-sg-2 transition-all duration-200",
                 submitting === null &&
                   "hover:-translate-y-px hover:border-sg-accent/30 hover:shadow-sg-3",
                 submitting !== null && submitting !== c.choice && "opacity-50",
@@ -1057,7 +1091,7 @@ function ImageProviderStep({ onDone }: { onDone: () => void }) {
               disabled={submitting !== null}
               data-testid={c.testid}
               className={cn(
-                "sg-card block w-full rounded-sg-lg p-4 text-left shadow-sg-2 transition-all duration-200",
+                "lg-edge lg-sheen lg-gel sg-card relative block w-full overflow-hidden rounded-sg-lg p-4 text-left shadow-sg-2 transition-all duration-200",
                 submitting === null &&
                   "hover:-translate-y-px hover:border-sg-accent/30 hover:shadow-sg-3",
                 submitting !== null && submitting !== c.key && "opacity-50",

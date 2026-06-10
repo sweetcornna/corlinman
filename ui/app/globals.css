@@ -90,7 +90,7 @@
       0 0 28px -4px var(--sg-accent-glow),
       0 8px 24px -8px oklch(0.3 0.04 280 / 0.18);
 
-    --sg-grad-text: linear-gradient(120deg, oklch(0.45 0.16 240), oklch(0.42 0.2 295));
+    --sg-grad-text: linear-gradient(115deg, oklch(0.46 0.17 240), oklch(0.52 0.12 225) 45%, oklch(0.44 0.21 300));
     --sg-grad-border: linear-gradient(
       135deg,
       color-mix(in oklch, var(--sg-accent) 55%, transparent),
@@ -209,7 +209,7 @@
       0 0 32px -4px var(--sg-accent-glow),
       0 10px 28px -10px oklch(0 0 0 / 0.5);
 
-    --sg-grad-text: linear-gradient(120deg, oklch(0.85 0.1 225), oklch(0.74 0.16 300));
+    --sg-grad-text: linear-gradient(115deg, oklch(0.86 0.11 220), oklch(0.92 0.05 210) 45%, oklch(0.76 0.17 300));
 
     /* ── shadcn semantic vars — dark. */
     --background: 255 30% 8%;
@@ -338,6 +338,179 @@
     background-image: var(--sg-noise-url);
     background-repeat: repeat;
   }
+
+  /* ────────────────────────────────────────────────────────────────
+   * Liquid Glass optics — the layer that makes glass read as a real
+   * material instead of a tinted rectangle. Composable on top of the
+   * sg-card/glass recipes (no backdrop-filter, stays in blur budget):
+   *
+   * .lg-edge     — light-aware gradient border: bright specular at the
+   *                lit corner (top-left), faint violet refraction at
+   *                the shadowed corner. Mask-composite ring, so it
+   *                follows any border-radius.
+   * .lg-refract  — inner lensing: light pools along the bottom edge +
+   *                a chromatic micro-fringe (cyan/violet hairlines on
+   *                opposite edges), the CSS stand-in for edge
+   *                refraction.
+   * .lg-sheen    — specular sweep that glides across the surface on
+   *                hover (gated to hover-capable pointers).
+   * .lg-specular — pointer-tracked highlight; reads --lg-x/--lg-y
+   *                written by the useSpecular() hook (raw follow, no
+   *                easing — light does not lag).
+   * .lg-gel      — non-linear press physics for non-framer elements:
+   *                springy overshoot curve on transform.
+   * ──────────────────────────────────────────────────────────────── */
+  .lg-edge {
+    position: relative;
+  }
+  .lg-edge::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 1px;
+    background: linear-gradient(
+      135deg,
+      oklch(1 0 0 / 0.32),
+      oklch(1 0 0 / 0.05) 32%,
+      transparent 55%,
+      color-mix(in oklch, var(--sg-accent-2) 22%, transparent) 100%
+    );
+    -webkit-mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    mask-composite: exclude;
+    pointer-events: none;
+  }
+  .lg-refract {
+    box-shadow:
+      inset 0 1px 0 oklch(1 0 0 / 0.12),
+      inset 1px 0 0 color-mix(in oklch, var(--sg-accent) 10%, transparent),
+      inset -1px 0 0 color-mix(in oklch, var(--sg-accent-2) 9%, transparent),
+      inset 0 -12px 28px -22px oklch(1 0 0 / 0.35);
+  }
+  .lg-sheen {
+    position: relative;
+    overflow: hidden;
+  }
+  .lg-sheen::after {
+    content: "";
+    position: absolute;
+    inset: -40% auto;
+    left: -30%;
+    width: 38%;
+    height: 180%;
+    transform: translateX(-160%) rotate(18deg);
+    background: linear-gradient(
+      90deg,
+      transparent,
+      oklch(1 0 0 / 0.1) 45%,
+      oklch(1 0 0 / 0.16) 50%,
+      oklch(1 0 0 / 0.1) 55%,
+      transparent
+    );
+    opacity: 0;
+    pointer-events: none;
+  }
+  @media (hover: hover) {
+    .lg-sheen:hover::after {
+      opacity: 1;
+      transform: translateX(440%) rotate(18deg);
+      transition:
+        transform 0.9s cubic-bezier(0.22, 1, 0.36, 1),
+        opacity 0.15s ease-out;
+    }
+  }
+  .lg-specular {
+    position: relative;
+  }
+  .lg-specular::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: radial-gradient(
+      300px circle at var(--lg-x, 50%) var(--lg-y, -20%),
+      oklch(1 0 0 / 0.09),
+      transparent 65%
+    );
+    opacity: var(--lg-on, 0);
+    transition: opacity 0.35s ease-out;
+    pointer-events: none;
+  }
+  .lg-gel {
+    transition:
+      transform 0.45s cubic-bezier(0.34, 1.56, 0.64, 1),
+      box-shadow 0.45s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+  .lg-gel:active {
+    transform: scale(0.96);
+    transition-duration: 0.08s;
+  }
+
+  /* Backdrop life: slow hue drift on the nebula layer + a sparse
+     twinkling starfield (dark theme only — daylight haze has no stars). */
+  @keyframes lg-hue-drift {
+    0%,
+    100% {
+      filter: hue-rotate(0deg);
+    }
+    50% {
+      filter: hue-rotate(14deg);
+    }
+  }
+  .lg-hue-drift {
+    animation: lg-hue-drift 90s ease-in-out infinite;
+  }
+  @keyframes lg-twinkle {
+    0%,
+    100% {
+      opacity: 0.35;
+    }
+    50% {
+      opacity: 0.85;
+    }
+  }
+  .lg-stars {
+    background-image:
+      radial-gradient(1px 1px at 12% 28%, oklch(1 0 0 / 0.6), transparent 100%),
+      radial-gradient(1px 1px at 34% 12%, oklch(1 0 0 / 0.4), transparent 100%),
+      radial-gradient(1.5px 1.5px at 56% 38%, oklch(0.9 0.05 230 / 0.5), transparent 100%),
+      radial-gradient(1px 1px at 73% 19%, oklch(1 0 0 / 0.45), transparent 100%),
+      radial-gradient(1px 1px at 88% 42%, oklch(0.9 0.06 300 / 0.4), transparent 100%),
+      radial-gradient(1.5px 1.5px at 22% 64%, oklch(1 0 0 / 0.3), transparent 100%),
+      radial-gradient(1px 1px at 64% 78%, oklch(1 0 0 / 0.35), transparent 100%),
+      radial-gradient(1px 1px at 92% 86%, oklch(0.9 0.05 230 / 0.35), transparent 100%);
+    background-repeat: no-repeat;
+    animation: lg-twinkle 7s ease-in-out infinite;
+  }
+  :root:not(.dark) .lg-stars {
+    display: none;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .lg-sheen:hover::after {
+      transition: none;
+      opacity: 0;
+    }
+    .lg-specular::after {
+      opacity: 0;
+    }
+    .lg-gel,
+    .lg-gel:active {
+      transition: none;
+      transform: none;
+    }
+    .lg-hue-drift,
+    .lg-stars {
+      animation: none;
+    }
+  }
+
   /* Gradient display text (hero numerals, brand). */
   .sg-grad-text {
     background-image: var(--sg-grad-text);

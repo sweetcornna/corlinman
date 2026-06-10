@@ -15,10 +15,12 @@
 
 import * as React from "react";
 import { useTranslation } from "react-i18next";
+import { motion } from "framer-motion";
 import { RefreshCw, Search, WifiOff } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { GlassPanel } from "@/components/ui/glass-panel";
+import { useMotionVariants } from "@/lib/motion";
 import type { McpMarketItem } from "@/lib/api";
 
 export interface MarketBrowseGridProps {
@@ -49,6 +51,7 @@ export function MarketBrowseGrid({
   testId = "market-browse",
 }: MarketBrowseGridProps): React.JSX.Element {
   const { t } = useTranslation();
+  const variants = useMotionVariants();
   const [search, setSearch] = React.useState("");
 
   const filtered = React.useMemo(() => {
@@ -132,15 +135,20 @@ export function MarketBrowseGrid({
           </p>
         </GlassPanel>
       ) : filtered.length > 0 ? (
-        <section
+        <motion.section
           aria-label={t("marketplace.common.gridLabel")}
           className="grid gap-3 grid-cols-[repeat(auto-fill,minmax(280px,1fr))]"
           data-testid={`${testId}-grid`}
+          variants={variants.liquidStagger}
+          initial="hidden"
+          animate="visible"
         >
           {filtered.map((item) => (
-            <React.Fragment key={item.slug}>{renderCard(item)}</React.Fragment>
+            <motion.div key={item.slug} variants={variants.liquidRise}>
+              {renderCard(item)}
+            </motion.div>
           ))}
-        </section>
+        </motion.section>
       ) : null}
     </section>
   );

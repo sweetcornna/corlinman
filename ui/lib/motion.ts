@@ -80,6 +80,51 @@ export const paletteIn: Variants = {
   },
 };
 
+// ────────────────────────────────────────────────────────────────
+// Liquid Glass — non-linear spring choreography.
+// Springs, not curves: entrances overshoot slightly and settle, the
+// way liquid glass would. Use `springs.*` as `transition` values and
+// the variant pairs below for orchestrated sequences.
+// ────────────────────────────────────────────────────────────────
+
+/** Canonical spring transitions. */
+export const springs = {
+  /** Default UI spring — visible overshoot, settles fast. */
+  soft: { type: "spring", stiffness: 260, damping: 22, mass: 0.8 } as Transition,
+  /** Playful bounce for small elements (chips, pills, badges). */
+  bouncy: { type: "spring", stiffness: 380, damping: 17, mass: 0.6 } as Transition,
+  /** Snappy, barely-overshooting — shared-layout indicators, tabs. */
+  snappy: { type: "spring", stiffness: 480, damping: 34, mass: 0.7 } as Transition,
+  /** Large surfaces (dialogs, drawers) — weighty but alive. */
+  surface: { type: "spring", stiffness: 300, damping: 26, mass: 1 } as Transition,
+} as const;
+
+/** Card/tile entrance: rise + scale with spring overshoot. */
+export const liquidRise: Variants = {
+  hidden: { opacity: 0, y: 14, scale: 0.97 },
+  visible: { opacity: 1, y: 0, scale: 1, transition: springs.soft },
+};
+
+/** Orchestrator for liquidRise children — tighter, livelier cascade. */
+export const liquidStagger: Variants = {
+  hidden: {},
+  visible: { transition: { staggerChildren: 0.045, delayChildren: 0.02 } },
+};
+
+/** Overlay surfaces (dialog/drawer/palette) — spring scale-in. */
+export const liquidSurface: Variants = {
+  hidden: { opacity: 0, scale: 0.94, y: 10 },
+  visible: { opacity: 1, scale: 1, y: 0, transition: springs.surface },
+  exit: { opacity: 0, scale: 0.98, transition: { duration: 0.14, ease: "easeIn" } },
+};
+
+/** Interactive gel props — spread onto motion buttons/chips. */
+export const gelTap = {
+  whileHover: { y: -2 },
+  whileTap: { scale: 0.96 },
+  transition: springs.bouncy,
+} as const;
+
 // ---------- reduced-motion friendly copies ----------
 
 const instantFadeUp: Variants = {
@@ -122,6 +167,28 @@ const instantPaletteIn: Variants = {
   },
 };
 
+const instantLiquidRise: Variants = {
+  hidden: { opacity: 0, y: 0, scale: 1 },
+  visible: { opacity: 1, y: 0, scale: 1, transition: { duration: 0 } },
+};
+
+const instantLiquidStagger: Variants = {
+  hidden: {},
+  visible: { transition: { staggerChildren: 0, delayChildren: 0 } },
+};
+
+const instantLiquidSurface: Variants = {
+  hidden: { opacity: 0, scale: 1, y: 0 },
+  visible: { opacity: 1, scale: 1, y: 0, transition: { duration: 0 } },
+  exit: { opacity: 0, transition: { duration: 0 } },
+};
+
+const instantGelTap = {
+  whileHover: {},
+  whileTap: {},
+  transition: { duration: 0 } as Transition,
+} as const;
+
 export interface MotionVariants {
   fadeUp: Variants;
   stagger: Variants;
@@ -130,6 +197,10 @@ export interface MotionVariants {
   sharedCard: { layout: true; transition: Transition };
   tickUp: Variants;
   paletteIn: Variants;
+  liquidRise: Variants;
+  liquidStagger: Variants;
+  liquidSurface: Variants;
+  gelTap: typeof gelTap | typeof instantGelTap;
 }
 
 /**
@@ -147,7 +218,23 @@ export function useMotionVariants(): MotionVariants {
       sharedCard: instantSharedCard,
       tickUp: instantTickUp,
       paletteIn: instantPaletteIn,
+      liquidRise: instantLiquidRise,
+      liquidStagger: instantLiquidStagger,
+      liquidSurface: instantLiquidSurface,
+      gelTap: instantGelTap,
     };
   }
-  return { fadeUp, stagger, springPop, listItem, sharedCard, tickUp, paletteIn };
+  return {
+    fadeUp,
+    stagger,
+    springPop,
+    listItem,
+    sharedCard,
+    tickUp,
+    paletteIn,
+    liquidRise,
+    liquidStagger,
+    liquidSurface,
+    gelTap,
+  };
 }

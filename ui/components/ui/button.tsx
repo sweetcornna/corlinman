@@ -5,17 +5,18 @@ import { Slot } from "@radix-ui/react-slot";
 import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
-// Spatial Glass buttons: full-pill `rounded-full`, semibold weight, generous
+// Liquid Glass buttons: full-pill `rounded-full`, semibold weight, generous
 // horizontal padding. Solid accent fill on the default CTA with a soft accent
-// glow on hover; subtle lift + press scale read the spatial depth without
-// arbitrary embossed shadow stacks.
+// glow on hover. `.lg-gel` gives the press a springy overshoot release
+// (non-linear gel physics) and the primary CTA carries a specular sheen
+// sweep on hover.
 const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-full text-sm font-semibold transition-all hover:-translate-y-px active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0",
+  "lg-gel inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-full text-sm font-semibold transition-[color,background-color,border-color,box-shadow,opacity] hover:-translate-y-px focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0",
   {
     variants: {
       variant: {
         default:
-          "bg-primary text-primary-foreground shadow-sg-1 hover:bg-primary/90 hover:shadow-sg-glow",
+          "lg-sheen bg-primary text-primary-foreground shadow-sg-1 hover:bg-primary/90 hover:shadow-sg-glow",
         destructive:
           "bg-sg-err text-primary-foreground shadow-sg-1 hover:bg-sg-err/90 hover:shadow-sg-2 hover:ring-2 hover:ring-sg-err/40",
         outline:

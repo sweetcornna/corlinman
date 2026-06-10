@@ -301,8 +301,9 @@ export function Composer({
     <div className="mx-auto w-full max-w-3xl px-3 pb-3 pt-1">
       <div
         className={cn(
-          "sg-card relative rounded-sg-xl border border-sg-border shadow-sg-3",
-          "transition-shadow focus-within:border-sg-accent/40 focus-within:shadow-sg-primary",
+          "sg-card lg-edge lg-refract relative rounded-sg-xl border border-sg-border shadow-sg-3",
+          "transition-[box-shadow,transform,border-color] duration-300 ease-out",
+          "focus-within:border-sg-accent/40 focus-within:shadow-sg-primary focus-within:scale-[1.006]",
           isDraggingOver &&
             "border-sg-accent/60 ring-2 ring-sg-accent/40 shadow-sg-primary",
         )}

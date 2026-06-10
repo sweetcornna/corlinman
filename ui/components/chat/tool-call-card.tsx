@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { useTranslation } from "react-i18next";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import {
   AlertCircle,
   CheckCircle2,
@@ -13,6 +14,7 @@ import {
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { springs } from "@/lib/motion";
 import type { ToolCallState } from "@/lib/chat/types";
 
 interface ToolCallCardProps {
@@ -28,6 +30,7 @@ function formatDuration(ms?: number): string {
 
 export function ToolCallCard({ tool, defaultExpanded = false }: ToolCallCardProps) {
   const { t } = useTranslation();
+  const reducedMotion = useReducedMotion();
   const [expanded, setExpanded] = React.useState(defaultExpanded);
 
   const statusIcon =
@@ -52,7 +55,9 @@ export function ToolCallCard({ tool, defaultExpanded = false }: ToolCallCardProp
   }, [tool.argsJson]);
 
   return (
-    <div
+    <motion.div
+      layout={reducedMotion ? false : "position"}
+      transition={springs.soft}
       className={cn(
         "my-2 overflow-hidden rounded-sg-md sg-inset",
         tool.status === "error" && "border-sg-err/40",
@@ -84,22 +89,33 @@ export function ToolCallCard({ tool, defaultExpanded = false }: ToolCallCardProp
           ) : null}
         </span>
       </button>
-      {expanded ? (
-        <div className="border-t border-sg-border px-2.5 py-2 text-[11px] text-sg-ink">
-          <div className="mb-1 font-mono text-sg-ink-4">{t("chat.toolArgsLabel")}</div>
-          <pre className="max-h-[280px] overflow-auto rounded-sg-sm bg-sg-inset p-2 font-mono text-[12px] leading-snug text-sg-ink">
-            {argsPretty || t("chat.toolEmpty")}
-          </pre>
-          {tool.resultPreview ? (
-            <>
-              <div className="mt-2 mb-1 font-mono text-sg-ink-4">{t("chat.toolResultLabel")}</div>
+      <AnimatePresence initial={false}>
+        {expanded ? (
+          <motion.div
+            key="tool-body"
+            initial={reducedMotion ? false : { height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={reducedMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
+            transition={reducedMotion ? { duration: 0 } : springs.soft}
+            className="overflow-hidden"
+          >
+            <div className="border-t border-sg-border px-2.5 py-2 text-[11px] text-sg-ink">
+              <div className="mb-1 font-mono text-sg-ink-4">{t("chat.toolArgsLabel")}</div>
               <pre className="max-h-[280px] overflow-auto rounded-sg-sm bg-sg-inset p-2 font-mono text-[12px] leading-snug text-sg-ink">
-                {tool.resultPreview}
+                {argsPretty || t("chat.toolEmpty")}
               </pre>
-            </>
-          ) : null}
-        </div>
-      ) : null}
-    </div>
+              {tool.resultPreview ? (
+                <>
+                  <div className="mt-2 mb-1 font-mono text-sg-ink-4">{t("chat.toolResultLabel")}</div>
+                  <pre className="max-h-[280px] overflow-auto rounded-sg-sm bg-sg-inset p-2 font-mono text-[12px] leading-snug text-sg-ink">
+                    {tool.resultPreview}
+                  </pre>
+                </>
+              ) : null}
+            </div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+    </motion.div>
   );
 }

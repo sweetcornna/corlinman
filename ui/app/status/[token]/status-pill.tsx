@@ -11,7 +11,9 @@
  */
 
 import * as React from "react";
+import { motion, useReducedMotion } from "framer-motion";
 import { cn } from "@/lib/utils";
+import { springs } from "@/lib/motion";
 import type { StatusState } from "@/lib/status";
 
 type Tone = "ok" | "active" | "error" | "muted";
@@ -65,12 +67,19 @@ export function StatusPill({
   className?: string;
 }) {
   const cfg = configFor(state);
+  const reduced = useReducedMotion();
   return (
-    <div
+    <motion.div
+      // Re-key on state so a transition (Working → Complete → …) pops the
+      // pill with a springy overshoot — the eye is drawn to the change.
+      key={String(state)}
       role="status"
       aria-live="polite"
       data-testid="status-pill"
       data-state={String(state)}
+      initial={reduced ? false : { scale: 0.82, opacity: 0.6 }}
+      animate={{ scale: 1, opacity: 1 }}
+      transition={reduced ? { duration: 0 } : springs.bouncy}
       className={cn(
         "inline-flex items-center gap-2 rounded-full border",
         "py-[6px] pl-[11px] pr-3.5 font-mono text-[11.5px] tracking-tight",
@@ -89,7 +98,7 @@ export function StatusPill({
         )}
       />
       <span>{cfg.label}</span>
-    </div>
+    </motion.div>
   );
 }
 

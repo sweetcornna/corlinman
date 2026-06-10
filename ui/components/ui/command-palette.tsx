@@ -117,6 +117,10 @@ export function CommandPalette({
           "bg-sg-overlay border-sg-border-strong",
           "backdrop-blur-sg-overlay backdrop-saturate-sg-overlay",
           "shadow-sg-4 ring-1 ring-sg-accent/20",
+          // Liquid Glass optics — light-aware edge ring + chromatic inner
+          // lensing on the palette card (blur-free, composes with the blur
+          // recipe above).
+          "lg-edge lg-refract",
           "animate-sg-palette-in",
         )}
       >
@@ -207,6 +211,8 @@ function PaletteRow({
       className={cn(
         "group mx-2 grid grid-cols-[20px_1fr_auto_auto] items-center gap-3 rounded-sg-md px-3.5 py-2.5",
         "text-[13.5px] text-sg-ink-2 cursor-pointer",
+        // Springy press physics on select.
+        "lg-gel",
         "aria-selected:bg-sg-accent-soft aria-selected:text-sg-ink",
         "aria-selected:shadow-[inset_2px_0_0_0_var(--sg-accent)]",
         "data-[disabled=true]:cursor-not-allowed data-[disabled=true]:opacity-50",

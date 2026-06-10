@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { useTranslation } from "react-i18next";
+import { motion, useReducedMotion } from "framer-motion";
 import {
   Check,
   ChevronDown,
@@ -15,6 +16,7 @@ import {
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { springs, useMotionVariants } from "@/lib/motion";
 import type {
   ApprovalDecision,
   ApprovalScope,
@@ -98,6 +100,8 @@ export const MessageBubble = React.memo(function MessageBubble({
   isLatest = false,
 }: MessageBubbleProps) {
   const { t } = useTranslation();
+  const { liquidRise } = useMotionVariants();
+  const reducedMotion = useReducedMotion();
   const isUser = message.role === "user";
   const isAssistant = message.role === "assistant";
   const isSystem = message.role === "system";
@@ -196,7 +200,9 @@ export const MessageBubble = React.memo(function MessageBubble({
 
   const actionBar =
     (isAssistant || isUser) && message.content && !editing ? (
-      <div
+      <motion.div
+        whileHover={reducedMotion ? undefined : { y: -2 }}
+        transition={springs.bouncy}
         className={cn(
           "inline-flex items-center gap-0.5 rounded-full sg-inset px-1 py-0.5",
           "text-[11px] text-sg-ink-4",
@@ -287,7 +293,7 @@ export const MessageBubble = React.memo(function MessageBubble({
             </button>
           </span>
         ) : null}
-      </div>
+      </motion.div>
     ) : null;
 
   const trace = (
@@ -365,11 +371,16 @@ export const MessageBubble = React.memo(function MessageBubble({
   );
 
   return (
-    <li
+    <motion.li
+      // Only the newest bubble plays the liquid-rise spring entrance — the
+      // settled history renders statically so the memoised list stays cheap
+      // and the streaming render-perf contract (R4-D5) is preserved.
+      initial={isLatest ? "hidden" : false}
+      animate={isLatest ? "visible" : undefined}
+      variants={isLatest ? liquidRise : undefined}
       className={cn(
         "group flex w-full",
         isUser ? "justify-end" : "justify-start",
-        isLatest && "animate-fade-in",
       )}
       data-testid="chat-bubble"
       data-role={message.role}
@@ -464,9 +475,14 @@ export const MessageBubble = React.memo(function MessageBubble({
               <AttachmentGallery attachments={message.attachments} />
             ) : null}
             {reply ? (
-              <div className="border-l-2 border-sg-accent pl-2 text-[12px] text-sg-ink-4">
+              <motion.div
+                initial={reducedMotion ? false : { opacity: 0, x: -8 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={reducedMotion ? { duration: 0 } : springs.soft}
+                className="border-l-2 border-sg-accent pl-2 text-[12px] text-sg-ink-4"
+              >
                 <span className="line-clamp-2 break-words">{reply.quote}</span>
-              </div>
+              </motion.div>
             ) : null}
             <div className="whitespace-pre-wrap break-words">{displayContent}</div>
             {trace}
@@ -475,6 +491,6 @@ export const MessageBubble = React.memo(function MessageBubble({
 
         {actionBar}
       </div>
-    </li>
+    </motion.li>
   );
 });

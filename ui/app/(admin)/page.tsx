@@ -186,7 +186,7 @@ export default function DashboardPage() {
       animate="visible"
     >
       {/* ─── HERO ──────────────────────────────────────────── */}
-      <GlassPanel variant="strong" as="section" className="relative overflow-hidden p-5 md:p-8">
+      <GlassPanel variant="strong" lively as="section" className="relative overflow-hidden p-5 md:p-8">
         {/* nebula accent glows behind hero copy — cyan + violet, drifting */}
         <div
           aria-hidden
@@ -225,7 +225,7 @@ export default function DashboardPage() {
               <button
                 type="button"
                 onClick={onRunPalette}
-                className="inline-flex items-center gap-2 rounded-full border border-sg-border bg-sg-inset px-3.5 py-2 text-[13px] font-medium text-sg-ink-2 shadow-sg-1 transition-all duration-200 hover:-translate-y-px hover:border-sg-accent/30 hover:bg-sg-accent-soft hover:text-sg-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40"
+                className="lg-gel inline-flex items-center gap-2 rounded-full border border-sg-border bg-sg-inset px-3.5 py-2 text-[13px] font-medium text-sg-ink-2 shadow-sg-1 transition-all duration-200 hover:-translate-y-px hover:border-sg-accent/30 hover:bg-sg-accent-soft hover:text-sg-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40"
               >
                 <Search className="h-3.5 w-3.5" />
                 {t("dashboard.tp.ctaPalette")}
@@ -236,7 +236,7 @@ export default function DashboardPage() {
               {pendingApprovals > 0 ? (
                 <Link
                   href="/approvals"
-                  className="inline-flex items-center gap-2 rounded-full border border-sg-accent/30 bg-sg-accent-soft px-3.5 py-2 text-[13px] font-medium text-sg-accent transition-all duration-200 hover:-translate-y-px hover:border-sg-accent/50 hover:shadow-sg-glow"
+                  className="lg-gel inline-flex items-center gap-2 rounded-full border border-sg-accent/30 bg-sg-accent-soft px-3.5 py-2 text-[13px] font-medium text-sg-accent transition-all duration-200 hover:-translate-y-px hover:border-sg-accent/50 hover:shadow-sg-glow"
                 >
                   {t("dashboard.tp.ctaReview", { n: pendingApprovals })}
                   <ArrowUpRight className="h-3.5 w-3.5 opacity-70" />
@@ -244,7 +244,7 @@ export default function DashboardPage() {
               ) : (
                 <Link
                   href="/logs"
-                  className="inline-flex items-center gap-2 rounded-full border border-sg-border bg-sg-inset px-3.5 py-2 text-[13px] font-medium text-sg-ink-2 transition-all duration-200 hover:-translate-y-px hover:border-sg-accent/30 hover:bg-sg-accent-soft hover:text-sg-ink"
+                  className="lg-gel inline-flex items-center gap-2 rounded-full border border-sg-border bg-sg-inset px-3.5 py-2 text-[13px] font-medium text-sg-ink-2 transition-all duration-200 hover:-translate-y-px hover:border-sg-accent/30 hover:bg-sg-accent-soft hover:text-sg-ink"
                 >
                   {t("dashboard.tp.ctaLogs")}
                   <ArrowUpRight className="h-3.5 w-3.5 opacity-70" />
@@ -257,87 +257,95 @@ export default function DashboardPage() {
         </div>
       </GlassPanel>
 
-      {/* ─── STAT CHIPS — staggered rise (40ms steps) ──────── */}
-      <section className="grid grid-cols-1 gap-3.5 md:grid-cols-2 xl:grid-cols-4">
-        <StatChip
-          className="animate-sg-rise"
-          style={{ animationDelay: "0ms" }}
-          variant="primary"
-          live
-          label={t("dashboard.plugins")}
-          value={
-            plugins.isError || pluginsTotal === undefined ? "—" : pluginsTotal
-          }
-          delta={
-            typeof pluginsLoaded === "number" && typeof pluginsTotal === "number"
-              ? {
-                  label: `${pluginsLoaded} / ${pluginsTotal}`,
-                  tone: pluginsLoaded === pluginsTotal ? "up" : "flat",
-                }
-              : undefined
-          }
-          foot={
-            plugins.isError
-              ? t("dashboard.endpointOffline")
-              : t("dashboard.pluginsLoaded", { n: pluginsLoaded ?? 0 })
-          }
-          sparkPath={PRIMARY_SPARK}
-          sparkTone="amber"
-        />
-        <StatChip
-          className="animate-sg-rise"
-          style={{ animationDelay: "40ms" }}
-          label={t("dashboard.agents")}
-          value={agents.isError || agentsCount === undefined ? "—" : agentsCount}
-          foot={
-            agents.isError
-              ? t("dashboard.endpointOffline")
-              : t("dashboard.agentsHint")
-          }
-          sparkPath={FLAT_SPARK}
-          sparkTone="ember"
-        />
-        <StatChip
-          className="animate-sg-rise"
-          style={{ animationDelay: "80ms" }}
-          label={t("dashboard.ragChunks")}
-          value={
-            rag.isError || ragChunks === undefined
-              ? "—"
-              : formatNumber(ragChunks)
-          }
-          foot={
-            rag.data
-              ? t("dashboard.ragFilesTags", {
-                  files: rag.data.files,
-                  tags: rag.data.tags,
-                })
-              : rag.isError
+      {/* ─── STAT CHIPS — liquid cascade (spring stagger) ──── */}
+      <motion.section
+        className="grid grid-cols-1 gap-3.5 md:grid-cols-2 xl:grid-cols-4"
+        variants={variants.liquidStagger}
+        initial="hidden"
+        animate="visible"
+      >
+        <motion.div variants={variants.liquidRise}>
+          <StatChip
+            variant="primary"
+            live
+            label={t("dashboard.plugins")}
+            value={
+              plugins.isError || pluginsTotal === undefined ? "—" : pluginsTotal
+            }
+            delta={
+              typeof pluginsLoaded === "number" &&
+              typeof pluginsTotal === "number"
+                ? {
+                    label: `${pluginsLoaded} / ${pluginsTotal}`,
+                    tone: pluginsLoaded === pluginsTotal ? "up" : "flat",
+                  }
+                : undefined
+            }
+            foot={
+              plugins.isError
                 ? t("dashboard.endpointOffline")
-                : t("dashboard.loadingHint")
-          }
-          sparkPath={ASCENDING_SPARK}
-          sparkTone="peach"
-        />
-        <StatChip
-          className="animate-sg-rise"
-          style={{ animationDelay: "120ms" }}
-          label={t("dashboard.tp.approvalsLabel")}
-          value={approvals.isError ? "—" : pendingApprovals}
-          delta={
-            pendingApprovals > 0
-              ? { label: t("dashboard.tp.awaiting"), tone: "flat" }
-              : { label: t("dashboard.tp.caughtUp"), tone: "up" }
-          }
-          foot={
-            approvals.isError
-              ? t("dashboard.endpointOffline")
-              : t("dashboard.tp.approvalsHint")
-          }
-          sparkPath={DESCENDING_SPARK}
-          sparkTone="ember"
-        />
-      </section>
+                : t("dashboard.pluginsLoaded", { n: pluginsLoaded ?? 0 })
+            }
+            sparkPath={PRIMARY_SPARK}
+            sparkTone="amber"
+          />
+        </motion.div>
+        <motion.div variants={variants.liquidRise}>
+          <StatChip
+            label={t("dashboard.agents")}
+            value={
+              agents.isError || agentsCount === undefined ? "—" : agentsCount
+            }
+            foot={
+              agents.isError
+                ? t("dashboard.endpointOffline")
+                : t("dashboard.agentsHint")
+            }
+            sparkPath={FLAT_SPARK}
+            sparkTone="ember"
+          />
+        </motion.div>
+        <motion.div variants={variants.liquidRise}>
+          <StatChip
+            label={t("dashboard.ragChunks")}
+            value={
+              rag.isError || ragChunks === undefined
+                ? "—"
+                : formatNumber(ragChunks)
+            }
+            foot={
+              rag.data
+                ? t("dashboard.ragFilesTags", {
+                    files: rag.data.files,
+                    tags: rag.data.tags,
+                  })
+                : rag.isError
+                  ? t("dashboard.endpointOffline")
+                  : t("dashboard.loadingHint")
+            }
+            sparkPath={ASCENDING_SPARK}
+            sparkTone="peach"
+          />
+        </motion.div>
+        <motion.div variants={variants.liquidRise}>
+          <StatChip
+            label={t("dashboard.tp.approvalsLabel")}
+            value={approvals.isError ? "—" : pendingApprovals}
+            delta={
+              pendingApprovals > 0
+                ? { label: t("dashboard.tp.awaiting"), tone: "flat" }
+                : { label: t("dashboard.tp.caughtUp"), tone: "up" }
+            }
+            foot={
+              approvals.isError
+                ? t("dashboard.endpointOffline")
+                : t("dashboard.tp.approvalsHint")
+            }
+            sparkPath={DESCENDING_SPARK}
+            sparkTone="ember"
+          />
+        </motion.div>
+      </motion.section>
 
       {/* ─── ACTIVITY + HEALTH ─────────────────────────────── */}
       <section className="grid grid-cols-1 gap-3.5 lg:grid-cols-[1.4fr_1fr]">

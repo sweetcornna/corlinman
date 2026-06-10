@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { useTranslation } from "react-i18next";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import {
   AlertCircle,
   FileText,
@@ -12,6 +13,7 @@ import {
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { springs } from "@/lib/motion";
 import type { ChatAttachment } from "@/lib/chat/types";
 
 interface ComposerAttachmentsProps {
@@ -38,6 +40,7 @@ export function ComposerAttachments({
   onRemove,
 }: ComposerAttachmentsProps) {
   const { t } = useTranslation();
+  const reducedMotion = useReducedMotion();
   if (attachments.length === 0) return null;
   return (
     <ul
@@ -45,11 +48,20 @@ export function ComposerAttachments({
       aria-label={t("chat.pendingAttachmentsAriaLabel")}
       data-testid="composer-attachments"
     >
+      <AnimatePresence initial={false}>
       {attachments.map((att) => {
         const src = att.previewUrl ?? att.remoteUrl;
         const isImage = att.kind === "image" && !!src && !att.error;
         return (
-          <li key={att.id} className="group relative">
+          <motion.li
+            key={att.id}
+            layout={!reducedMotion}
+            initial={reducedMotion ? false : { opacity: 0, scale: 0.7 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={reducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.7 }}
+            transition={reducedMotion ? { duration: 0 } : springs.bouncy}
+            className="group relative"
+          >
             {isImage ? (
               <div
                 className={cn(
@@ -112,9 +124,10 @@ export function ComposerAttachments({
             >
               <X className="h-3 w-3" aria-hidden="true" />
             </button>
-          </li>
+          </motion.li>
         );
       })}
+      </AnimatePresence>
     </ul>
   );
 }

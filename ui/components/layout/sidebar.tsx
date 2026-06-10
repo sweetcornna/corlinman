@@ -47,6 +47,7 @@ import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
 import { logout } from "@/lib/auth";
+import { springs } from "@/lib/motion";
 import { useDevMode } from "@/lib/dev-mode";
 import { useMotion } from "@/components/ui/motion-safe";
 import { useMobileDrawer } from "./mobile-drawer-context";
@@ -334,10 +335,16 @@ export function Sidebar({ user }: SidebarProps) {
         "bg-sg-shell border border-sg-border",
         "backdrop-blur-sg-shell backdrop-saturate-sg-shell",
         "shadow-sg-3",
+        // Liquid Glass optics — light-aware edge ring + chromatic inner
+        // lensing so the rail reads as a bent-light material, not a tinted
+        // panel. Blur-free, composes on top of the shell recipe above.
+        "lg-edge lg-refract",
         // Desktop ≥md: sticky inline flex member.
         "md:relative md:sticky md:top-4 md:self-start md:max-h-[calc(100dvh-2rem)]",
         "md:shrink-0 md:translate-x-0",
-        "md:transition-[width] md:duration-200 md:ease-out",
+        // Spring the collapse/expand width change — springy overshoot curve
+        // instead of a flat ease so the rail settles with a liquid feel.
+        "md:transition-[width] md:duration-300 md:ease-[cubic-bezier(0.34,1.56,0.64,1)]",
         // Mobile <md: fixed slide-in drawer at 240px.
         "fixed inset-y-2 left-2 z-50 w-[240px] max-h-[calc(100dvh-16px)]",
         "transition-transform duration-200 ease-out",
@@ -501,6 +508,9 @@ function SidebarItem({
       onKeyDown={onKeyDown}
       className={cn(
         "group relative flex min-h-9 items-center gap-2.5 rounded-sg-md px-2.5 py-1.5 text-[13px] transition-colors",
+        // Springy press physics on tap (lg-gel composes its own transform
+        // transition; transition-colors above keeps the hue change).
+        "lg-gel",
         // Active: full accent-tinted glass pill with a hairline accent border.
         // Inactive: text lift + sunken hover well.
         active
@@ -517,12 +527,7 @@ function SidebarItem({
           layoutId="sidebar-indicator"
           aria-hidden
           className="absolute left-[-6px] top-1/2 h-3.5 w-[3px] -translate-y-1/2 rounded-[2px] bg-sg-accent shadow-sg-glow"
-          transition={{
-            type: "spring",
-            stiffness: 500,
-            damping: 40,
-            mass: 0.6,
-          }}
+          transition={springs.snappy}
         />
       ) : (
         // Dim accent tick that appears on hover only — previews the active
@@ -641,6 +646,8 @@ function SidebarGroup({
         data-testid={`sidebar-group-toggle-${group.id}`}
         className={cn(
           "relative flex min-h-9 w-full items-center gap-2.5 rounded-sg-md border border-transparent px-2.5 py-1.5 text-[13px] transition-colors",
+          // Springy press physics on tap, matching SidebarItem.
+          "lg-gel",
           // Active child lifts the label to medium weight; inactive groups get
           // a sunken hover well, matching SidebarItem.
           hasActiveChild

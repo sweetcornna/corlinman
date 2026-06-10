@@ -43,10 +43,11 @@ export const AuroraBackground = React.forwardRef<
       style={style}
       {...rest}
     >
-      {/* Nebula glow blobs — soft accent-hued radials that drift slowly.
-          Composed from the sg-nebula tokens so they flip light/dark. */}
+      {/* Nebula glow blobs — soft accent-hued radials that drift slowly and
+          cycle hue over ~90s (liquid light, never static). Composed from the
+          sg-nebula tokens so they flip light/dark. */}
       <div
-        className="absolute inset-0 sg-drift pointer-events-none"
+        className="absolute inset-0 sg-drift lg-hue-drift pointer-events-none"
         style={{
           backgroundImage:
             "radial-gradient(900px 560px at 15% 8%, var(--sg-nebula-1), transparent 60%), " +
@@ -55,13 +56,22 @@ export const AuroraBackground = React.forwardRef<
         }}
       />
 
-      {/* Depth vignette — fade to near-black toward the edges so corners
-          retain spatial depth. oklch tokens, no hardcoded hex. */}
+      {/* Sparse twinkling starfield — dark theme only (hidden in light via
+          the .lg-stars rule); two offset copies so twinkle phases differ. */}
+      <div className="absolute inset-0 lg-stars pointer-events-none" />
+      <div
+        className="absolute inset-0 lg-stars pointer-events-none"
+        style={{ transform: "scale(-1, 1)", animationDelay: "-3.5s" }}
+      />
+
+      {/* Depth vignette — translucent fade so corners keep depth without
+          burying the nebula or the html gradient. */}
       <div
         className="absolute inset-0 pointer-events-none"
         style={{
           background:
-            "radial-gradient(120% 90% at 50% 30%, transparent 0%, var(--sg-space-3) 78%, var(--sg-space-0) 100%)",
+            "radial-gradient(120% 90% at 50% 30%, transparent 0%, transparent 48%, " +
+            "color-mix(in oklch, var(--sg-space-0) 55%, transparent) 100%)",
         }}
       />
 

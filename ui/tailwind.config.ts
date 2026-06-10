@@ -230,7 +230,8 @@ const config: Config = {
         "sg-tick-up": "sg-tick-up 800ms cubic-bezier(0.16, 1, 0.3, 1) both",
         "sg-palette-in":
           "sg-palette-in 260ms cubic-bezier(0.16, 1, 0.3, 1) both",
-        "sg-rise": "sg-rise 500ms cubic-bezier(0.16, 1, 0.3, 1) both",
+        // Springy overshoot curve — entrances settle like liquid, not ease.
+        "sg-rise": "sg-rise 600ms cubic-bezier(0.34, 1.56, 0.64, 1) both",
       },
     },
   },

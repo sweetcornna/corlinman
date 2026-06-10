@@ -16,6 +16,7 @@
 import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useTranslation } from "react-i18next";
+import { motion } from "framer-motion";
 
 import {
   completePasswordReset,
@@ -24,6 +25,7 @@ import {
   requestPasswordReset,
 } from "@/lib/auth";
 import { CorlinmanApiError } from "@/lib/api";
+import { useMotionVariants } from "@/lib/motion";
 import { BrandMark } from "@/components/layout/brand-mark";
 import { LanguageToggle } from "@/components/layout/language-toggle";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
@@ -54,6 +56,7 @@ export default function LoginPage() {
 
 function HeroColumn() {
   const { t } = useTranslation();
+  const variants = useMotionVariants();
   return (
     <aside className="relative hidden overflow-hidden border-r border-sg-border md:flex md:flex-col md:justify-between md:p-10">
       {/* Deep-space showcase — layered nebula glows drift slowly behind the
@@ -61,13 +64,18 @@ function HeroColumn() {
           aside only adds the accent-hued nebulae + a faint noise grain. */}
       <div
         aria-hidden
-        className="pointer-events-none absolute inset-0 sg-drift"
+        className="pointer-events-none absolute inset-0 sg-drift lg-hue-drift"
         style={{
           backgroundImage:
             "radial-gradient(760px 520px at 18% 12%, var(--sg-nebula-1), transparent 60%), " +
             "radial-gradient(620px 480px at 88% 30%, var(--sg-nebula-2), transparent 62%), " +
             "radial-gradient(560px 420px at 40% 104%, var(--sg-nebula-3), transparent 64%)",
         }}
+      />
+      {/* Twinkling starfield (dark theme only — hidden in daylight via CSS). */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0 lg-stars"
       />
       <div
         aria-hidden
@@ -77,14 +85,19 @@ function HeroColumn() {
       <div className="relative z-10 flex items-center gap-2">
         <BrandMark />
       </div>
-      <div className="relative z-10 space-y-3">
+      <motion.div
+        className="relative z-10 space-y-3"
+        variants={variants.liquidRise}
+        initial="hidden"
+        animate="visible"
+      >
         <h2 className="sg-grad-text text-3xl font-semibold tracking-tight">
           {t("auth.heroTitle")}
         </h2>
         <p className="max-w-xs text-sm leading-relaxed text-sg-ink-3">
           {t("auth.heroBody")}
         </p>
-      </div>
+      </motion.div>
       <div className="relative z-10 flex items-center gap-2 text-xs text-sg-ink-5">
         <span className="font-mono">v0.1.1</span>
         <span>·</span>
@@ -96,6 +109,7 @@ function HeroColumn() {
 
 function LoginForm() {
   const { t } = useTranslation();
+  const variants = useMotionVariants();
   const router = useRouter();
   const params = useSearchParams();
   const redirect = params.get("redirect") ?? "/";
@@ -149,7 +163,12 @@ function LoginForm() {
   }
 
   return (
-    <div className="sg-glass-overlay w-full max-w-sm space-y-6 rounded-sg-xl p-8 shadow-sg-4 animate-sg-rise">
+    <motion.div
+      className="lg-edge lg-refract sg-glass-overlay w-full max-w-sm space-y-6 rounded-sg-xl p-8 shadow-sg-4"
+      variants={variants.liquidSurface}
+      initial="hidden"
+      animate="visible"
+    >
       <div className="space-y-1.5 md:hidden">
         <BrandMark />
       </div>
@@ -209,7 +228,7 @@ function LoginForm() {
       <p className="text-center text-[11px] text-sg-ink-5">
         {t("auth.sessionHint")}
       </p>
-    </div>
+    </motion.div>
   );
 }
 

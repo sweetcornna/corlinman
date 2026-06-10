@@ -2,7 +2,10 @@
 
 import * as React from "react";
 import { useTranslation } from "react-i18next";
+import { motion, useReducedMotion } from "framer-motion";
 import { Bot, Sparkles } from "lucide-react";
+
+import { useMotionVariants } from "@/lib/motion";
 
 interface ChatEmptyStateProps {
   onPick?: (text: string) => void;
@@ -10,6 +13,8 @@ interface ChatEmptyStateProps {
 
 export function ChatEmptyState({ onPick }: ChatEmptyStateProps) {
   const { t } = useTranslation();
+  const { liquidRise, liquidStagger } = useMotionVariants();
+  const reducedMotion = useReducedMotion();
   const suggestions = React.useMemo(
     () => [
       t("chat.emptySuggestion1"),
@@ -20,29 +25,55 @@ export function ChatEmptyState({ onPick }: ChatEmptyStateProps) {
     [t],
   );
   return (
-    <div
-      className="mx-auto flex max-w-lg flex-col items-center gap-4 text-center animate-sg-rise"
+    <motion.div
+      initial="hidden"
+      animate="visible"
+      variants={liquidStagger}
+      className="mx-auto flex max-w-lg flex-col items-center gap-4 text-center"
       data-testid="chat-empty"
     >
-      <div className="flex h-14 w-14 items-center justify-center rounded-sg-xl border border-sg-border bg-sg-accent-soft shadow-sg-glow">
-        <Bot className="h-7 w-7 text-sg-accent" aria-hidden="true" />
-      </div>
-      <h2 className="sg-grad-text text-2xl font-semibold tracking-tight">
+      <motion.div variants={liquidRise}>
+        {/* Inner wrapper runs the perpetual float so the spring entrance on
+            the outer element isn't clobbered by the looping animate value. */}
+        <motion.div
+          animate={
+            reducedMotion
+              ? undefined
+              : { y: [0, -6, 0] }
+          }
+          transition={
+            reducedMotion
+              ? undefined
+              : { duration: 5, repeat: Infinity, ease: "easeInOut" }
+          }
+          className="flex h-14 w-14 items-center justify-center rounded-sg-xl border border-sg-border bg-sg-accent-soft shadow-sg-glow"
+        >
+          <Bot className="h-7 w-7 text-sg-accent" aria-hidden="true" />
+        </motion.div>
+      </motion.div>
+      <motion.h2
+        variants={liquidRise}
+        className="sg-grad-text text-2xl font-semibold tracking-tight"
+      >
         {t("chat.emptyTitle")}
-      </h2>
-      <p className="max-w-md text-[13px] leading-relaxed text-sg-ink-3">
+      </motion.h2>
+      <motion.p
+        variants={liquidRise}
+        className="max-w-md text-[13px] leading-relaxed text-sg-ink-3"
+      >
         {t("chat.emptySubtitle")}
-      </p>
-      <ul
+      </motion.p>
+      <motion.ul
+        variants={liquidStagger}
         className="mt-1 flex w-full flex-wrap justify-center gap-2"
         aria-label={t("chat.emptySuggestionsAriaLabel")}
       >
         {suggestions.map((s) => (
-          <li key={s}>
+          <motion.li key={s} variants={liquidRise}>
             <button
               type="button"
               onClick={() => onPick?.(s)}
-              className="inline-flex items-center gap-1.5 rounded-full border border-sg-border bg-sg-inset px-3.5 py-1.5 text-left text-[12px] text-sg-ink-3 transition hover:border-sg-accent/30 hover:bg-sg-accent-soft hover:text-sg-ink"
+              className="lg-gel inline-flex items-center gap-1.5 rounded-full border border-sg-border bg-sg-inset px-3.5 py-1.5 text-left text-[12px] text-sg-ink-3 hover:border-sg-accent/30 hover:bg-sg-accent-soft hover:text-sg-ink"
             >
               <Sparkles
                 className="h-3 w-3 shrink-0 text-sg-accent"
@@ -50,9 +81,9 @@ export function ChatEmptyState({ onPick }: ChatEmptyStateProps) {
               />
               <span className="max-w-[220px] truncate">{s}</span>
             </button>
-          </li>
+          </motion.li>
         ))}
-      </ul>
-    </div>
+      </motion.ul>
+    </motion.div>
   );
 }

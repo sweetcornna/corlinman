@@ -6,6 +6,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { springs } from "@/lib/motion";
 import { useMotion } from "@/components/ui/motion-safe";
 
 /**
@@ -89,9 +90,9 @@ export function Drawer({
   const initial = reduced ? { x: 0 } : { x: slideFrom };
   const animate = { x: 0 };
   const exit = reduced ? { x: 0 } : { x: slideFrom };
-  const transition = reduced
-    ? { duration: 0 }
-    : { type: "spring" as const, stiffness: 320, damping: 34, mass: 0.9 };
+  // Liquid Glass surface spring — weighty but alive, settles with a hint of
+  // overshoot as the panel lands.
+  const transition = reduced ? { duration: 0 } : springs.surface;
 
   // When `dismissable=false`, intercept radix's close-request events.
   const blockClose = (e: Event) => {
@@ -136,6 +137,10 @@ export function Drawer({
                 className={cn(
                   "fixed inset-y-0 z-50 flex h-full w-full flex-col",
                   "bg-sg-overlay shadow-sg-4 backdrop-blur-sg-overlay backdrop-saturate-sg-overlay focus:outline-none",
+                  // Liquid Glass optics — light-aware edge ring + chromatic
+                  // inner lensing so the sliding panel reads as bent light.
+                  // Blur-free, composes with the blur recipe above.
+                  "lg-edge lg-refract",
                   side === "right"
                     ? "right-0 rounded-l-sg-xl border-l border-sg-border-strong"
                     : "left-0 rounded-r-sg-xl border-r border-sg-border-strong",

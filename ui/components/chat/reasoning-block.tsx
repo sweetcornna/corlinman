@@ -2,9 +2,11 @@
 
 import * as React from "react";
 import { useTranslation } from "react-i18next";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { Brain, ChevronDown, ChevronRight } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { springs } from "@/lib/motion";
 
 interface ReasoningBlockProps {
   text: string;
@@ -13,6 +15,7 @@ interface ReasoningBlockProps {
 
 export function ReasoningBlock({ text, streaming }: ReasoningBlockProps) {
   const { t } = useTranslation();
+  const reducedMotion = useReducedMotion();
   const [expanded, setExpanded] = React.useState(false);
   return (
     <div
@@ -41,11 +44,22 @@ export function ReasoningBlock({ text, streaming }: ReasoningBlockProps) {
           {t("chat.reasoningCharCount", { n: text.length })}
         </span>
       </button>
-      {expanded ? (
-        <div className="py-1 font-mono text-[11px] leading-relaxed whitespace-pre-wrap italic text-sg-ink-3">
-          {text}
-        </div>
-      ) : null}
+      <AnimatePresence initial={false}>
+        {expanded ? (
+          <motion.div
+            key="reasoning-body"
+            initial={reducedMotion ? false : { height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={reducedMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
+            transition={reducedMotion ? { duration: 0 } : springs.soft}
+            className="overflow-hidden"
+          >
+            <div className="py-1 font-mono text-[11px] leading-relaxed whitespace-pre-wrap italic text-sg-ink-3">
+              {text}
+            </div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
     </div>
   );
 }

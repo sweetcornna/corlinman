@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { cn } from "@/lib/utils";
+import { useSpecular } from "@/lib/use-specular";
 
 /**
  * Spatial Glass surface primitive — the core depth API of the design system.
@@ -37,6 +38,12 @@ export interface GlassPanelProps extends DivProps {
   rounded?: string;
   /** Render as a different HTML tag. Constrained to block-level semantic tags. */
   as?: GlassPanelTag;
+  /**
+   * Liquid Glass optics: light-aware gradient edge, chromatic refraction
+   * rim, hover sheen sweep, and a pointer-tracked specular highlight.
+   * Reserved for hero/interactive surfaces — keep dense lists plain.
+   */
+  lively?: boolean;
 }
 
 // Faux-glass card recipe per variant. The `bg-sg-card-grad` gradient is the
@@ -66,9 +73,28 @@ const variantClasses: Record<GlassPanelVariant, string> = {
 
 export const GlassPanel = React.forwardRef<HTMLDivElement, GlassPanelProps>(
   function GlassPanel(
-    { variant = "soft", rounded = "rounded-sg-lg", as: Tag = "div", className, children, ...rest },
+    {
+      variant = "soft",
+      rounded = "rounded-sg-lg",
+      as: Tag = "div",
+      lively = false,
+      className,
+      children,
+      ...rest
+    },
     ref,
   ) {
+    // Pointer-tracked specular light for lively panels. The hook writes CSS
+    // vars straight onto the node, so there is zero per-move React work.
+    const specularRef = useSpecular<HTMLDivElement>();
+    const setRefs = React.useCallback(
+      (node: HTMLDivElement | null) => {
+        specularRef.current = node;
+        if (typeof ref === "function") ref(node);
+        else if (ref) (ref as React.MutableRefObject<HTMLDivElement | null>).current = node;
+      },
+      [ref, specularRef],
+    );
     // Each panel carries a top inset highlight via a pseudo-like layer — we use
     // a real child element so shadow layering doesn't interfere with the outer
     // shadow from the variant. This is a 1px highlight at the top edge that
@@ -77,10 +103,11 @@ export const GlassPanel = React.forwardRef<HTMLDivElement, GlassPanelProps>(
       "relative border",
       rounded,
       variantClasses[variant],
+      lively && "lg-edge lg-refract lg-sheen lg-specular",
       className,
     );
     const commonProps = {
-      ref: ref as React.Ref<HTMLDivElement>,
+      ref: lively ? setRefs : (ref as React.Ref<HTMLDivElement>),
       className: mergedClassName,
       "data-glass-variant": variant,
       ...(rest as DivProps),

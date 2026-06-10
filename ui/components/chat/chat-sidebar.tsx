@@ -4,6 +4,7 @@ import * as React from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useTranslation } from "react-i18next";
+import { motion, useReducedMotion } from "framer-motion";
 import {
   Archive,
   ArchiveRestore,
@@ -18,6 +19,7 @@ import {
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { springs } from "@/lib/motion";
 import type { ChatConversation } from "@/lib/chat/types";
 
 interface ChatSidebarProps {
@@ -276,23 +278,34 @@ function SidebarRow({
 }: SidebarRowProps) {
   const router = useRouter();
   const { t } = useTranslation();
+  const reducedMotion = useReducedMotion();
 
   const fallbackTitle = `Session ${conv.sessionKey.slice(0, 8)}`;
   const title = conv.title ?? fallbackTitle;
   const subtitle = `${t("chat.sessionRowSubtitleMsg", { count: conv.messageCount })} · ${formatRelative(conv.lastMessageAt, t)}`;
 
   return (
-    <li
+    <motion.li
       className={cn(
-        "group relative flex items-center gap-1 rounded-sg-md border px-2 py-1.5 text-[12px]",
+        "lg-gel group relative isolate flex items-center gap-1 rounded-sg-md border px-2 py-1.5 text-[12px]",
         active
-          ? "border-sg-accent/25 bg-sg-accent-soft text-sg-ink"
+          ? "border-sg-accent/25 text-sg-ink"
           : "border-transparent text-sg-ink-3 hover:bg-sg-inset-hover hover:text-sg-ink",
       )}
       data-testid="chat-sidebar-row"
       data-active={active ? "true" : undefined}
       data-session-key={conv.sessionKey}
     >
+      {/* Shared-layout active pill — glides between rows with a snappy
+          spring rather than snapping the background on/off. */}
+      {active ? (
+        <motion.span
+          layoutId={reducedMotion ? undefined : "chat-sidebar-active"}
+          transition={springs.snappy}
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 -z-10 rounded-sg-md bg-sg-accent-soft"
+        />
+      ) : null}
       {conv.pinned ? (
         <Pin className="h-3 w-3 shrink-0 text-sg-accent" aria-hidden="true" />
       ) : null}
@@ -342,7 +355,7 @@ function SidebarRow({
           <RowAction label={t("chat.delete")} onClick={onDelete} Icon={Trash2} danger />
         </div>
       ) : null}
-    </li>
+    </motion.li>
   );
 }
 
