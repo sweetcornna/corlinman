@@ -228,6 +228,7 @@ export interface QqStatus {
   ws_url: string | null;
   self_ids: number[];
   group_keywords: Record<string, string[]>;
+  config_keys?: Record<string, string | string[]>;
   runtime: "unknown" | "connected" | "disconnected";
   recent_messages: unknown[];
   // NapCat WS heartbeat health.
@@ -247,6 +248,23 @@ export interface QqStatus {
 export function fetchQqStatus(): Promise<QqStatus> {
   return apiFetch<QqStatus>("/admin/channels/qq/status");
 }
+
+export interface NapcatDiagnostics {
+  mode: "managed" | "external" | string;
+  url: string | null;
+  url_source: string;
+  managed: boolean;
+  auth_configured: boolean;
+  credential: string;
+  qrcode_api: string;
+  onebot_config_api: string;
+  issues: string[];
+  actions: string[];
+}
+export function fetchNapcatDiagnostics(): Promise<NapcatDiagnostics> {
+  return apiFetch<NapcatDiagnostics>("/admin/channels/qq/napcat/diagnostics");
+}
+
 export function reconnectQq(): Promise<unknown> {
   return apiFetch("/admin/channels/qq/reconnect", { method: "POST" });
 }

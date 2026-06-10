@@ -10,6 +10,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  fetchNapcatDiagnostics,
+  type NapcatDiagnostics,
+} from "@/lib/api";
 
 /**
  * QQ scan-login dialog.
@@ -36,6 +40,31 @@ export function ScanLoginDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const { t } = useTranslation();
+  const [diagnostics, setDiagnostics] =
+    React.useState<NapcatDiagnostics | null>(null);
+  const [diagnosticsError, setDiagnosticsError] = React.useState<string | null>(
+    null,
+  );
+
+  React.useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setDiagnostics(null);
+    setDiagnosticsError(null);
+    void fetchNapcatDiagnostics()
+      .then((out) => {
+        if (!cancelled) setDiagnostics(out);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setDiagnosticsError(err instanceof Error ? err.message : String(err));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-3xl border-tp-glass-edge bg-tp-glass-2 backdrop-blur-glass-strong backdrop-saturate-glass-strong">
@@ -49,14 +78,88 @@ export function ScanLoginDialog({
         </DialogHeader>
 
         {open ? (
-          <iframe
-            data-testid="qq-napcat-webui"
-            src="/webui"
-            title="NapCat WebUI"
-            className="h-[620px] w-full rounded-xl border border-tp-glass-edge bg-white"
-          />
+          <>
+            <NapcatDiagnosticsStrip
+              diagnostics={diagnostics}
+              error={diagnosticsError}
+            />
+            <iframe
+              data-testid="qq-napcat-webui"
+              src="/webui"
+              title="NapCat WebUI"
+              className="h-[620px] w-full rounded-xl border border-tp-glass-edge bg-white"
+            />
+          </>
         ) : null}
       </DialogContent>
     </Dialog>
+  );
+}
+
+function NapcatDiagnosticsStrip({
+  diagnostics,
+  error,
+}: {
+  diagnostics: NapcatDiagnostics | null;
+  error: string | null;
+}) {
+  if (error) {
+    return (
+      <div className="rounded-lg border border-tp-err/25 bg-tp-err-soft px-3 py-2 text-[12px] text-tp-err">
+        {error}
+      </div>
+    );
+  }
+  if (!diagnostics) {
+    return (
+      <div className="rounded-lg border border-tp-glass-edge bg-tp-glass-inner px-3 py-2 text-[12px] text-tp-ink-3">
+        NapCat diagnostics: checking
+      </div>
+    );
+  }
+  return (
+    <div className="grid grid-cols-2 gap-2 rounded-lg border border-tp-glass-edge bg-tp-glass-inner px-3 py-2 text-[12px] text-tp-ink-2 sm:grid-cols-4">
+      <DiagnosticItem
+        label="mode"
+        value={diagnostics.mode}
+        testId="qq-napcat-diagnostics-mode"
+      />
+      <DiagnosticItem
+        label="credential"
+        value={diagnostics.credential}
+        testId="qq-napcat-diagnostics-credential"
+      />
+      <DiagnosticItem
+        label="QR"
+        value={diagnostics.qrcode_api}
+        testId="qq-napcat-diagnostics-qrcode"
+      />
+      <DiagnosticItem
+        label="OB11"
+        value={diagnostics.onebot_config_api}
+        testId="qq-napcat-diagnostics-onebot"
+      />
+    </div>
+  );
+}
+
+function DiagnosticItem({
+  label,
+  value,
+  testId,
+}: {
+  label: string;
+  value: string;
+  testId: string;
+}) {
+  return (
+    <div className="min-w-0">
+      <div className="font-mono text-[10px] uppercase tracking-[0.08em] text-tp-ink-4">
+        {label}
+      </div>
+      <div className="truncate font-mono text-[12px]" data-testid={testId}>
+        {value}
+      </div>
+    </div>
   );
 }

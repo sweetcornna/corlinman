@@ -8,6 +8,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  CHANNEL_CONFIG_SPEC,
   buildChannelConfigBody,
   isEmptyConfigBody,
   parseList,
@@ -47,6 +48,11 @@ describe("parseList", () => {
 });
 
 describe("buildChannelConfigBody", () => {
+  it("treats QQ NapCat URL as editable and WebUI token as secret", () => {
+    expect(CHANNEL_CONFIG_SPEC.qq.secrets).toContain("napcat_access_token");
+    expect(CHANNEL_CONFIG_SPEC.qq.urls).toContain("napcat_url");
+  });
+
   it("emits an empty body when nothing was edited", () => {
     const initial = seedDraft("telegram", {
       base_url: "https://api.telegram.org",

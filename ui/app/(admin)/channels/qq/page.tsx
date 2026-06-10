@@ -19,6 +19,7 @@ import { QqStatsRow } from "@/components/channels/qq/qq-stats-row";
 import { QqAccountPanel } from "@/components/channels/qq/qq-account-panel";
 import { QqFiltersPanel } from "@/components/channels/qq/qq-filters-panel";
 import { QqMessagesPanel } from "@/components/channels/qq/qq-messages-panel";
+import { ChannelConfigEditor } from "@/components/channels/ChannelConfigEditor";
 import {
   QqHeroSkeleton,
   QqOfflineBlock,
@@ -236,6 +237,16 @@ export default function QqChannelPage() {
                 onSave={() => saveMutation.mutate(draft)}
               />
             </section>
+
+            <ChannelConfigEditor
+              channel="qq"
+              configKeys={status.data?.config_keys ?? {}}
+              onSaved={() =>
+                void qc.invalidateQueries({
+                  queryKey: ["admin", "channels", "qq"],
+                })
+              }
+            />
 
             <QqMessagesPanel
               messages={recentMessages}

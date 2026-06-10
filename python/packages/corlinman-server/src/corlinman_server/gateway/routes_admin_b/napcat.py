@@ -25,12 +25,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Query
+import httpx
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse, Response
 
 from corlinman_server.gateway.routes_admin_b._napcat_lib import (
     _NAPCAT_CRED_CACHE,
+    NAPCAT_TIMEOUT,
     AccountsOut,
+    NapcatDiagnosticsOut,
     NapcatError,
     QrcodeOut,
     QuickLoginBody,
@@ -41,6 +44,7 @@ from corlinman_server.gateway.routes_admin_b._napcat_lib import (
     _load_accounts,
     _NapcatClient,
     _onebot_websocket_server_from_config,
+    _probe_napcat_diagnostics,
     _resolve_napcat_url,
     _upsert_account,
 )
@@ -51,6 +55,20 @@ from corlinman_server.gateway.routes_admin_b.state import (
     require_admin,
 )
 
+_PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]
+_HOP_BY_HOP_HEADERS = {
+    "connection",
+    "content-length",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+}
+_RESPONSE_DROP_HEADERS = _HOP_BY_HOP_HEADERS | {"content-encoding", "content-type"}
+
 # Re-exported from ``_napcat_lib`` for external callers (e.g. tests that patch
 # the credential cache / client). Listed here so the re-imports are treated as
 # public API rather than unused.
@@ -58,8 +76,62 @@ __all__ = [
     "_NAPCAT_CRED_CACHE",
     "_NapcatClient",
     "_cached_napcat_credential",
+    "_probe_napcat_diagnostics",
     "router",
 ]
+
+
+async def _proxy_napcat_request(request: Request, upstream_path: str) -> Response:
+    cfg = dict(config_snapshot())
+    url, _token = _resolve_napcat_url(cfg)
+    if url is None:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": "napcat_not_configured",
+                "message": "NapCat URL is not configured",
+            },
+        )
+
+    target = f"{url}{upstream_path}"
+    if request.url.query:
+        target = f"{target}?{request.url.query}"
+
+    headers = {
+        key: value
+        for key, value in request.headers.items()
+        if key.lower() not in _HOP_BY_HOP_HEADERS
+    }
+    credential = await _cached_napcat_credential()
+    if credential:
+        headers["authorization"] = f"Bearer {credential}"
+
+    try:
+        async with httpx.AsyncClient(timeout=NAPCAT_TIMEOUT) as client:
+            upstream = await client.request(
+                request.method,
+                target,
+                content=await request.body(),
+                headers=headers,
+                follow_redirects=False,
+            )
+    except httpx.HTTPError as exc:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "napcat_unreachable", "message": str(exc)},
+        )
+
+    out_headers = {
+        key: value
+        for key, value in upstream.headers.items()
+        if key.lower() not in _RESPONSE_DROP_HEADERS
+    }
+    return Response(
+        content=b"" if request.method == "HEAD" else upstream.content,
+        status_code=upstream.status_code,
+        headers=out_headers,
+        media_type=upstream.headers.get("content-type"),
+    )
 
 # ---------------------------------------------------------------------------
 # Router
@@ -107,6 +179,21 @@ def router() -> APIRouter:
         headers = {"X-Napcat-Credential": cred} if cred else {}
         return Response(status_code=200, headers=headers)
 
+    @r.get(
+        "/admin/channels/qq/napcat/diagnostics",
+        response_model=NapcatDiagnosticsOut,
+    )
+    async def napcat_diagnostics() -> NapcatDiagnosticsOut:
+        return await _probe_napcat_diagnostics(dict(config_snapshot()))
+
+    @r.api_route("/webui", methods=_PROXY_METHODS, include_in_schema=False)
+    async def napcat_webui_root(request: Request) -> Response:
+        return await _proxy_napcat_request(request, "/")
+
+    @r.api_route("/webui/{path:path}", methods=_PROXY_METHODS, include_in_schema=False)
+    async def napcat_webui_path(request: Request, path: str) -> Response:
+        return await _proxy_napcat_request(request, f"/{path}")
+
     @r.post("/admin/channels/qq/qrcode", response_model=QrcodeOut)
     async def qrcode():
         state = get_admin_state()
@@ -146,6 +233,30 @@ def router() -> APIRouter:
                 },
             )
         return {"code": 0, "message": "success", "data": None}
+
+    @r.api_route(
+        "/api/QQLogin/{path:path}",
+        methods=_PROXY_METHODS,
+        include_in_schema=False,
+    )
+    async def napcat_qqlogin_api_proxy(request: Request, path: str) -> Response:
+        return await _proxy_napcat_request(request, f"/api/QQLogin/{path}")
+
+    @r.api_route(
+        "/api/OB11Config/{path:path}",
+        methods=_PROXY_METHODS,
+        include_in_schema=False,
+    )
+    async def napcat_ob11_api_proxy(request: Request, path: str) -> Response:
+        return await _proxy_napcat_request(request, f"/api/OB11Config/{path}")
+
+    @r.api_route(
+        "/api/auth/{path:path}",
+        methods=_PROXY_METHODS,
+        include_in_schema=False,
+    )
+    async def napcat_auth_api_proxy(request: Request, path: str) -> Response:
+        return await _proxy_napcat_request(request, f"/api/auth/{path}")
 
     @r.get("/admin/channels/qq/qrcode/status", response_model=StatusOut)
     async def qrcode_status(token: str = Query("")):

@@ -14,13 +14,14 @@ import json as json_lib
 import os
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 import httpx
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from corlinman_server.gateway.routes_admin_b.state import (
     AdminState,
@@ -88,6 +89,19 @@ class QuickLoginBody(BaseModel):
     uin: str
 
 
+class NapcatDiagnosticsOut(BaseModel):
+    mode: str
+    url: str | None
+    url_source: str
+    managed: bool
+    auth_configured: bool
+    credential: str
+    qrcode_api: str
+    onebot_config_api: str
+    issues: list[str] = Field(default_factory=list)
+    actions: list[str] = Field(default_factory=list)
+
+
 # ---------------------------------------------------------------------------
 # NapCat client
 # ---------------------------------------------------------------------------
@@ -129,6 +143,47 @@ def _resolve_secret(value: Any) -> str | None:
     return None
 
 
+@dataclass(frozen=True)
+class _NapcatEndpoint:
+    url: str | None
+    access_token: str | None
+    url_source: str
+    managed: bool
+
+    @property
+    def mode(self) -> str:
+        return "managed" if self.managed else "external"
+
+
+def _resolve_napcat_endpoint(cfg: dict[str, Any]) -> _NapcatEndpoint:
+    qq = ((cfg.get("channels") or {}).get("qq")) or {}
+    url = qq.get("napcat_url")
+    url_source = "config"
+    managed = False
+    if not url or not str(url).strip():
+        url = os.environ.get("CORLINMAN_NAPCAT_URL")
+        url_source = "env"
+        managed = True
+    if not url or not str(url).strip():
+        url = DEFAULT_NAPCAT_URL
+        url_source = "default"
+        managed = True
+    url = str(url).rstrip("/") if url is not None else None
+    access_token = _resolve_secret(qq.get("napcat_access_token"))
+    if not access_token:
+        access_token = (
+            os.environ.get("NAPCAT_WEBUI_TOKEN")
+            or os.environ.get("NAPCAT_WEBUI_SECRET_KEY")
+            or os.environ.get("WEBUI_TOKEN")
+        )
+    return _NapcatEndpoint(
+        url=url,
+        access_token=access_token,
+        url_source=url_source,
+        managed=managed,
+    )
+
+
 def _resolve_napcat_url(cfg: dict[str, Any]) -> tuple[str | None, str | None]:
     """Return ``(url, access_token)``.
 
@@ -146,21 +201,8 @@ def _resolve_napcat_url(cfg: dict[str, Any]) -> tuple[str | None, str | None]:
     ``_NapcatClient`` raises a typed ``napcat_unreachable`` (503) on first call
     — distinct from the old "not configured" 503, and the correct signal.
     """
-    qq = ((cfg.get("channels") or {}).get("qq")) or {}
-    url = qq.get("napcat_url")
-    if not url or not str(url).strip():
-        url = os.environ.get("CORLINMAN_NAPCAT_URL")
-    if not url or not str(url).strip():
-        url = DEFAULT_NAPCAT_URL
-    url = str(url).rstrip("/")
-    access_token = _resolve_secret(qq.get("napcat_access_token"))
-    if not access_token:
-        access_token = (
-            os.environ.get("NAPCAT_WEBUI_TOKEN")
-            or os.environ.get("NAPCAT_WEBUI_SECRET_KEY")
-            or os.environ.get("WEBUI_TOKEN")
-        )
-    return url, access_token
+    endpoint = _resolve_napcat_endpoint(cfg)
+    return endpoint.url, endpoint.access_token
 
 
 def _onebot_ws_port_from_config(cfg: dict[str, Any]) -> int:
@@ -433,6 +475,108 @@ class _NapcatClient:
             status="confirmed" if is_login else "error",
             account=account,
         )
+
+
+def _append_unique(items: list[str], value: str) -> None:
+    if value not in items:
+        items.append(value)
+
+
+async def _probe_napcat_diagnostics(
+    cfg: dict[str, Any],
+    *,
+    client_factory: Any = _NapcatClient,
+) -> NapcatDiagnosticsOut:
+    endpoint = _resolve_napcat_endpoint(cfg)
+    issues: list[str] = []
+    actions: list[str] = []
+    credential = "missing_token" if not endpoint.access_token else "unknown"
+    qrcode_api = "unknown"
+    onebot_config_api = "unknown"
+
+    if endpoint.url is None:
+        return NapcatDiagnosticsOut(
+            mode=endpoint.mode,
+            url=None,
+            url_source=endpoint.url_source,
+            managed=endpoint.managed,
+            auth_configured=False,
+            credential="missing_token",
+            qrcode_api="unreachable",
+            onebot_config_api="unreachable",
+            issues=["napcat_url_missing"],
+            actions=["set_napcat_url"],
+        )
+
+    if not endpoint.access_token:
+        _append_unique(issues, "napcat_webui_token_missing")
+        _append_unique(actions, "set_napcat_webui_token")
+
+    async with client_factory(endpoint.url, endpoint.access_token) as client:
+        if endpoint.access_token:
+            try:
+                cred = await client.get_credential()
+            except NapcatError as exc:
+                credential = "failed"
+                _append_unique(issues, exc.code)
+            except Exception:
+                credential = "failed"
+                _append_unique(issues, "napcat_credential_failed")
+            else:
+                credential = "ok" if cred else "missing_token"
+                if not cred:
+                    _append_unique(issues, "napcat_credential_missing")
+
+        try:
+            await client._fetch_qrcode()
+        except NapcatError as exc:
+            qrcode_api = (
+                "unreachable" if exc.code == "napcat_unreachable" else "failed"
+            )
+            _append_unique(issues, exc.code)
+        except Exception:
+            qrcode_api = "failed"
+            _append_unique(issues, "napcat_qrcode_probe_failed")
+        else:
+            qrcode_api = "ok"
+
+        try:
+            await client.post(OB11_CONFIG_GET_PATH, {})
+        except NapcatError as exc:
+            onebot_config_api = (
+                "unreachable" if exc.code == "napcat_unreachable" else "failed"
+            )
+            _append_unique(issues, exc.code)
+        except Exception:
+            onebot_config_api = "failed"
+            _append_unique(issues, "napcat_onebot_config_probe_failed")
+        else:
+            onebot_config_api = "ok"
+
+    if "napcat_unreachable" in issues:
+        _append_unique(
+            actions,
+            "restart_managed_napcat"
+            if endpoint.managed
+            else "check_external_napcat_url",
+        )
+    if qrcode_api == "failed":
+        _append_unique(actions, "check_napcat_qrcode_api")
+    if onebot_config_api == "failed":
+        _append_unique(actions, "check_napcat_onebot_api")
+
+    return NapcatDiagnosticsOut(
+        mode=endpoint.mode,
+        url=endpoint.url,
+        url_source=endpoint.url_source,
+        managed=endpoint.managed,
+        auth_configured=bool(endpoint.access_token),
+        credential=credential,
+        qrcode_api=qrcode_api,
+        onebot_config_api=onebot_config_api,
+        issues=issues,
+        actions=actions,
+    )
 
 
 def _matches_onebot_server(current: dict[str, Any], desired: dict[str, Any]) -> bool:

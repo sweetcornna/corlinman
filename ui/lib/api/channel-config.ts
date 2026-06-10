@@ -38,7 +38,13 @@ export interface ChannelConfigSpec {
 
 /** Mirror of the backend `_CHANNEL_EDITABLE` spec. Keep in sync. */
 export const CHANNEL_CONFIG_SPEC: Record<ConfigEditableChannel, ChannelConfigSpec> = {
-  qq: { secrets: ["access_token"], urls: ["ws_url"], ids: ["self_ids"], filters: [], flags: [] },
+  qq: {
+    secrets: ["access_token", "napcat_access_token"],
+    urls: ["ws_url", "napcat_url"],
+    ids: ["self_ids"],
+    filters: [],
+    flags: [],
+  },
   telegram: {
     secrets: ["bot_token", "secret_token"],
     urls: ["base_url", "webhook_url"],

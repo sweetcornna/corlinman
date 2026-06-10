@@ -143,16 +143,22 @@ curl http://localhost:6005/metrics | grep corlinman_backoff_retries_total
 4. 登录态：扫码过期会失败，重扫。
 5. 确认没有两个 corlinman 实例在抢同一个 WS 连接。
 
-### QQ 扫码页点“刷新二维码”但二维码不变
+### QQ 扫码页打不开、二维码不刷新、或者提示 NapCat 连接异常
 
 NapCat 的 `RefreshQRcode` API 只表示“刷新请求已发给 QQ 登录内核”，不保证返回时
 `GetQQLoginQrcode` 已经换成新 URL。corlinman 的 gateway 会检测刷新前后 QR 是否相同；
 如果 NapCat 继续返回旧码，会请求 `/api/QQLogin/RestartNapCat`，等待 NapCat 被
 systemd/docker 拉起后再确认新码。
 
-如果你把 NapCat WebUI 通过 nginx 嵌入到同源 `/webui`，必须把 WebUI 自己发出的刷新请求
-先 exact-match 到 gateway，其他 NapCat API 仍然反代到 NapCat。该 exact location 要放在
-通用 `/api/` 反代之前：
+当前标准路径是 gateway 自己接管 NapCat WebUI：
+
+- `/webui` 和 `/webui/*` 由 gateway 代理到已解析的 NapCat WebUI。
+- `/api/QQLogin/*`、`/api/OB11Config/*`、`/api/auth/*` 由 gateway 窄代理到 NapCat。
+- `/api/QQLogin/RefreshQRcode` 不直通 NapCat，而是走 gateway 的强刷新路径。
+
+因此新部署不需要再手写一组 nginx NapCat location。旧部署如果仍然在 nginx 里直接反代
+NapCat，需要确保 WebUI 自己发出的刷新请求先 exact-match 到 gateway，放在通用 `/api/`
+反代之前：
 
 ```nginx
 location = /api/QQLogin/RefreshQRcode {
@@ -171,6 +177,23 @@ location = /api/QQLogin/RefreshQRcode {
   `NAPCAT_WEBUI_TOKEN`、`NAPCAT_WEBUI_SECRET_KEY`、`WEBUI_TOKEN`。
 - 如果 `/internal/napcat-credential` 没有返回 `X-Napcat-Credential`，说明 gateway
   仍然不知道 NapCat 的 WebUI token。
+
+从 QQ 管理页打开扫码弹窗时，顶部会显示 NapCat diagnostics。也可以直接查：
+
+```bash
+curl -u admin:你的密码 http://localhost:6005/admin/channels/qq/napcat/diagnostics
+```
+
+字段含义：
+
+- `mode=managed`：使用 corlinman 默认管理的 NapCat（Docker/native 默认）。
+- `mode=external`：使用 `[channels.qq].napcat_url` 指向的用户自带 NapCat。
+- `credential=missing_token`：缺 `napcat_access_token` / `NAPCAT_WEBUI_TOKEN` / `WEBUI_TOKEN`。
+- `qrcode_api=unreachable`：gateway 到 NapCat URL 不通，先检查 `napcat_url`、端口、容器网络。
+- `onebot_config_api=failed`：NapCat 可达，但 OB11 配置 API 不兼容或拒绝请求。
+
+用户自带 NapCat 时，可以在 QQ 通道配置里设置 `napcat_url` 和 `napcat_access_token`；
+这两个值会进入同一套 diagnostics 和二维码强刷新路径。
 
 ## 8. 定时任务没触发
 
