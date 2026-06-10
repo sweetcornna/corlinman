@@ -75,8 +75,8 @@ export function ComposerSlashMenu({
   return (
     <ul
       className={cn(
-        "absolute bottom-full left-0 z-20 mb-1 w-80 overflow-hidden rounded-md",
-        "border border-tp-glass-edge bg-tp-glass-inner shadow-md",
+        "absolute bottom-full left-0 z-30 mb-2 w-80 overflow-hidden",
+        "sg-glass-overlay rounded-sg-md shadow-sg-4 animate-tp-palette-in",
       )}
       role="listbox"
       aria-label={t("chat.slashMenuAriaLabel")}
@@ -88,17 +88,20 @@ export function ComposerSlashMenu({
           role="option"
           aria-selected={i === active}
           className={cn(
-            "flex cursor-pointer items-center gap-2 px-2.5 py-1.5 text-[12px]",
-            i === active && "bg-tp-amber/20",
+            "relative flex cursor-pointer items-center gap-2 px-3 py-1.5 text-[12px]",
+            "transition-colors",
+            i === active
+              ? "bg-sg-accent-soft before:absolute before:inset-y-1 before:left-0 before:w-0.5 before:rounded-full before:bg-sg-accent"
+              : "hover:bg-sg-inset-hover",
           )}
           onMouseEnter={() => setActive(i)}
           onClick={() => onPick(cmd)}
         >
-          <span className="font-mono text-tp-ink">/{cmd.id}</span>
+          <span className="font-mono text-sg-ink">/{cmd.id}</span>
           {cmd.argHint ? (
-            <span className="font-mono text-tp-ink-3">{cmd.argHint}</span>
+            <span className="font-mono text-sg-ink-3">{cmd.argHint}</span>
           ) : null}
-          <span className="ml-auto truncate text-tp-ink-2">
+          <span className="ml-auto truncate text-sg-ink-2">
             {cmd.description ?? cmd.label}
           </span>
         </li>

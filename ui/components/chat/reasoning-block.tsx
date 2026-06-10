@@ -17,31 +17,32 @@ export function ReasoningBlock({ text, streaming }: ReasoningBlockProps) {
   return (
     <div
       className={cn(
-        "my-2 overflow-hidden rounded-md border border-dashed border-tp-glass-edge bg-tp-glass-inner/30",
+        "my-2 border-l-2 border-sg-accent-2/40 pl-3",
+        streaming && "shimmer rounded-sg-sm",
       )}
       data-testid="reasoning-block"
     >
       <button
         type="button"
-        className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[11px] text-tp-ink-3 hover:bg-tp-glass-inner/60"
+        className="flex w-full items-center gap-2 py-1 text-left text-[11px] italic text-sg-ink-3 hover:text-sg-ink-2"
         onClick={() => setExpanded((v) => !v)}
         aria-expanded={expanded}
       >
         {expanded ? (
-          <ChevronDown className="h-3 w-3" aria-hidden="true" />
+          <ChevronDown className="h-3 w-3 not-italic" aria-hidden="true" />
         ) : (
-          <ChevronRight className="h-3 w-3" aria-hidden="true" />
+          <ChevronRight className="h-3 w-3 not-italic" aria-hidden="true" />
         )}
-        <Brain className="h-3 w-3" aria-hidden="true" />
-        <span className="italic">
+        <Brain className="h-3 w-3 not-italic" aria-hidden="true" />
+        <span>
           {streaming ? t("chat.reasoningStreaming") : t("chat.reasoningTitle")}
         </span>
-        <span className="ml-auto font-mono">
+        <span className="ml-auto font-mono not-italic text-sg-ink-5">
           {t("chat.reasoningCharCount", { n: text.length })}
         </span>
       </button>
       {expanded ? (
-        <div className="border-t border-tp-glass-edge px-2.5 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-tp-ink-2 italic">
+        <div className="py-1 font-mono text-[11px] leading-relaxed whitespace-pre-wrap italic text-sg-ink-3">
           {text}
         </div>
       ) : null}

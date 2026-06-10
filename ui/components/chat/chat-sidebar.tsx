@@ -133,14 +133,14 @@ export function ChatSidebar({
       <aside
         className={cn(
           "flex w-12 shrink-0 flex-col items-center gap-2 overflow-hidden",
-          "rounded-xl border border-tp-glass-edge bg-tp-glass py-3 shadow-tp-panel",
+          "rounded-sg-lg sg-card py-3",
         )}
         data-testid="chat-sidebar-collapsed"
       >
         <button
           type="button"
           onClick={onToggleCollapsed}
-          className="rounded p-1.5 text-tp-ink-3 hover:bg-tp-glass-inner hover:text-tp-ink"
+          className="rounded-sg-sm p-1.5 text-sg-ink-4 hover:bg-sg-inset hover:text-sg-ink"
           aria-label={t("chat.expandSidebar")}
         >
           <ChevronRight className="h-4 w-4" aria-hidden="true" />
@@ -148,7 +148,7 @@ export function ChatSidebar({
         <button
           type="button"
           onClick={onNew}
-          className="rounded p-1.5 text-tp-ink-3 hover:bg-tp-glass-inner hover:text-tp-ink"
+          className="rounded-sg-sm p-1.5 text-sg-ink-4 hover:bg-sg-inset hover:text-sg-ink"
           aria-label={t("chat.newChat")}
         >
           <MessageSquarePlus className="h-4 w-4" aria-hidden="true" />
@@ -161,18 +161,18 @@ export function ChatSidebar({
     <aside
       className={cn(
         "flex w-64 shrink-0 flex-col overflow-hidden",
-        "rounded-xl border border-tp-glass-edge bg-tp-glass shadow-tp-panel",
+        "rounded-sg-lg sg-card",
       )}
       data-testid="chat-sidebar"
     >
-      <div className="flex items-center gap-1 border-b border-tp-glass-edge px-2 py-2">
+      <div className="flex items-center gap-1 border-b border-sg-border px-2 py-2">
         <button
           type="button"
           onClick={onNew}
           className={cn(
-            "flex flex-1 items-center justify-center gap-1.5 rounded-md",
-            "border border-tp-amber/50 bg-tp-amber/20 px-2 py-1.5 text-[12px] text-tp-ink",
-            "hover:bg-tp-amber/30",
+            "flex flex-1 items-center justify-center gap-1.5 rounded-sg-md",
+            "border border-sg-accent/40 bg-sg-accent px-2 py-1.5 text-[12px] text-white",
+            "shadow-sg-1 hover:bg-sg-accent/90",
           )}
           data-testid="chat-sidebar-new"
         >
@@ -183,7 +183,7 @@ export function ChatSidebar({
           <button
             type="button"
             onClick={onToggleCollapsed}
-            className="rounded p-1.5 text-tp-ink-3 hover:bg-tp-glass-inner hover:text-tp-ink"
+            className="rounded-sg-sm p-1.5 text-sg-ink-4 hover:bg-sg-inset hover:text-sg-ink"
             aria-label={t("chat.collapseSidebar")}
           >
             <ChevronLeft className="h-4 w-4" aria-hidden="true" />
@@ -191,27 +191,29 @@ export function ChatSidebar({
         ) : null}
       </div>
 
-      <div className="flex items-center gap-1.5 border-b border-tp-glass-edge px-2 py-2">
-        <Search className="h-3.5 w-3.5 text-tp-ink-3" aria-hidden="true" />
-        <input
-          type="search"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder={t("chat.searchPlaceholder")}
-          className="flex-1 bg-transparent text-[12px] text-tp-ink placeholder:text-tp-ink-3 focus:outline-none"
-          data-testid="chat-sidebar-search"
-        />
+      <div className="border-b border-sg-border px-2 py-2">
+        <div className="flex items-center gap-1.5 rounded-full bg-sg-inset px-2.5 py-1.5">
+          <Search className="h-3.5 w-3.5 text-sg-ink-4" aria-hidden="true" />
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={t("chat.searchPlaceholder")}
+            className="flex-1 bg-transparent text-[12px] text-sg-ink placeholder:text-sg-ink-5 focus:outline-none"
+            data-testid="chat-sidebar-search"
+          />
+        </div>
       </div>
 
       <nav className="flex-1 overflow-y-auto px-1 py-2" aria-label="conversations">
         {grouped.length === 0 ? (
-          <div className="px-2 py-6 text-center text-[12px] text-tp-ink-3">
+          <div className="px-2 py-6 text-center text-[12px] text-sg-ink-4">
             {t("chat.noConversations")}
           </div>
         ) : null}
         {grouped.map((group) => (
           <div key={group.labelKey} className="mb-2">
-            <div className="px-2 pb-1 text-[10px] font-medium text-tp-ink-3 uppercase tracking-wider">
+            <div className="px-2 pb-1 text-[11px] font-medium uppercase tracking-wider text-sg-ink-5">
               {t(group.labelKey)}
             </div>
             <ul className="flex flex-col gap-0.5">
@@ -282,17 +284,17 @@ function SidebarRow({
   return (
     <li
       className={cn(
-        "group relative flex items-center gap-1 rounded px-2 py-1.5 text-[12px]",
+        "group relative flex items-center gap-1 rounded-sg-md border px-2 py-1.5 text-[12px]",
         active
-          ? "bg-tp-amber/20 text-tp-ink"
-          : "text-tp-ink-2 hover:bg-tp-glass-inner hover:text-tp-ink",
+          ? "border-sg-accent/25 bg-sg-accent-soft text-sg-ink"
+          : "border-transparent text-sg-ink-3 hover:bg-sg-inset-hover hover:text-sg-ink",
       )}
       data-testid="chat-sidebar-row"
       data-active={active ? "true" : undefined}
       data-session-key={conv.sessionKey}
     >
       {conv.pinned ? (
-        <Pin className="h-3 w-3 shrink-0 text-tp-amber" aria-hidden="true" />
+        <Pin className="h-3 w-3 shrink-0 text-sg-accent" aria-hidden="true" />
       ) : null}
 
       {renaming ? (
@@ -305,7 +307,7 @@ function SidebarRow({
             if (e.key === "Enter") onConfirmRename(renameValue);
             if (e.key === "Escape") onCancelRename();
           }}
-          className="flex-1 rounded border border-tp-amber bg-tp-glass-inner px-1 py-0.5 text-[12px] text-tp-ink focus:outline-none"
+          className="flex-1 rounded-sg-sm border border-sg-accent/40 bg-sg-inset px-1 py-0.5 text-[12px] text-sg-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40"
           data-testid="chat-rename-input"
         />
       ) : (
@@ -320,7 +322,7 @@ function SidebarRow({
           <span className="truncate" title={title}>
             {title}
           </span>
-          <span className="truncate text-[10px] text-tp-ink-3">{subtitle}</span>
+          <span className="truncate text-[10px] text-sg-ink-5">{subtitle}</span>
         </Link>
       )}
 
@@ -364,8 +366,8 @@ function RowAction({
         onClick();
       }}
       className={cn(
-        "rounded p-1 text-tp-ink-3 hover:bg-tp-glass-inner",
-        danger ? "hover:text-tp-err" : "hover:text-tp-ink",
+        "rounded-sg-sm p-1 text-sg-ink-4 hover:bg-sg-inset",
+        danger ? "hover:text-sg-err" : "hover:text-sg-ink",
       )}
       aria-label={label}
       title={label}

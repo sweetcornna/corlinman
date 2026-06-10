@@ -211,7 +211,7 @@ test.describe("/chat MVP", () => {
   }) => {
     test.setTimeout(TEST_TIMEOUT_MS);
     await page.goto("/chat");
-    await page.getByLabel("Collapse sidebar").click();
+    await page.getByLabel("Collapse chat list").click();
     await expect(page.getByTestId("chat-sidebar-collapsed")).toBeVisible();
     await expect(page.getByTestId("chat-sidebar-search")).toHaveCount(0);
   });

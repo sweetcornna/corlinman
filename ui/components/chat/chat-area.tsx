@@ -174,16 +174,16 @@ export function ChatArea({
       <section
         className={cn(
           "flex h-full min-w-0 flex-1 flex-col overflow-hidden",
-          "rounded-xl border border-tp-glass-edge bg-tp-glass shadow-tp-panel",
+          "rounded-sg-lg border border-sg-border bg-transparent",
         )}
         data-testid="chat-area"
       >
-        <header className="flex items-center justify-between border-b border-tp-glass-edge bg-tp-glass-inner/30 px-4 py-2">
+        <header className="flex items-center justify-between border-b border-sg-border px-4 py-2">
           <div className="flex min-w-0 flex-col">
-            <h1 className="truncate text-[13px] font-medium text-tp-ink">{title}</h1>
-            <p className="font-mono text-[10px] text-tp-ink-3">{sessionKey}</p>
+            <h1 className="truncate text-[13px] font-medium text-sg-ink">{title}</h1>
+            <p className="font-mono text-[10px] text-sg-ink-5">{sessionKey}</p>
           </div>
-          <div className="flex shrink-0 items-center gap-2 text-[11px] text-tp-ink-3">
+          <div className="flex shrink-0 items-center gap-2 text-[11px] text-sg-ink-4">
             {onAgentChange ? (
               <AgentPicker
                 value={agentId ?? null}
@@ -193,18 +193,18 @@ export function ChatArea({
             ) : null}
             {hasUsage ? (
               <span
-                className="inline-flex items-center gap-1 rounded border border-tp-glass-edge bg-tp-glass-inner px-1.5 py-0.5 font-mono"
+                className="inline-flex items-center gap-1 rounded-sg-sm border border-sg-border bg-sg-inset px-1.5 py-0.5 font-mono"
                 data-testid="chat-totals"
                 title={`${inputTokens} in · ${outputTokens} out · $${costUsd.toFixed(4)}`}
               >
                 {inputTokens + outputTokens} tok · ${costUsd.toFixed(4)}
               </span>
             ) : null}
-            <span className="inline-flex items-center gap-1 rounded border border-tp-glass-edge bg-tp-glass-inner px-1.5 py-0.5">
+            <span className="inline-flex items-center gap-1 rounded-sg-sm border border-sg-border bg-sg-inset px-1.5 py-0.5">
               <span
                 className={cn(
                   "h-1.5 w-1.5 rounded-full",
-                  chat.isStreaming ? "animate-pulse bg-tp-amber" : "bg-tp-ok",
+                  chat.isStreaming ? "animate-pulse bg-sg-accent" : "bg-sg-ok",
                 )}
                 aria-hidden="true"
               />

@@ -1,0 +1,127 @@
+"use client";
+
+import * as React from "react";
+import { useTranslation } from "react-i18next";
+import { FileAudio, FileText, FileVideo, Paperclip, X } from "lucide-react";
+
+import { cn } from "@/lib/utils";
+import type { ChatAttachment } from "@/lib/chat/types";
+
+interface AttachmentGalleryProps {
+  attachments: ChatAttachment[];
+  className?: string;
+}
+
+function attachmentSrc(att: ChatAttachment): string | undefined {
+  return att.remoteUrl ?? att.previewUrl;
+}
+
+function NonImageIcon({ kind }: { kind: ChatAttachment["kind"] }) {
+  const className = "h-3.5 w-3.5 text-sg-ink-4";
+  if (kind === "audio") return <FileAudio className={className} aria-hidden="true" />;
+  if (kind === "video") return <FileVideo className={className} aria-hidden="true" />;
+  if (kind === "document") return <FileText className={className} aria-hidden="true" />;
+  return <Paperclip className={className} aria-hidden="true" />;
+}
+
+/**
+ * Renders a user message's attachments. Image attachments become a
+ * thumbnail grid (3 per row) that open a fullscreen lightbox on click;
+ * everything else stays as a compact icon chip.
+ */
+export function AttachmentGallery({ attachments, className }: AttachmentGalleryProps) {
+  const { t } = useTranslation();
+  const [zoomSrc, setZoomSrc] = React.useState<string | null>(null);
+
+  const images = attachments.filter(
+    (a) => a.kind === "image" && attachmentSrc(a),
+  );
+  const others = attachments.filter(
+    (a) => a.kind !== "image" || !attachmentSrc(a),
+  );
+
+  if (attachments.length === 0) return null;
+
+  return (
+    <div
+      className={cn("flex flex-col gap-2", className)}
+      data-testid="attachment-gallery"
+      aria-label={t("chat.attachmentsAriaLabel")}
+    >
+      {images.length > 0 ? (
+        <div className="grid grid-cols-3 gap-1.5">
+          {images.map((att) => {
+            const src = attachmentSrc(att)!;
+            return (
+              <button
+                key={att.id}
+                type="button"
+                onClick={() => setZoomSrc(src)}
+                className="group/thumb relative block aspect-square overflow-hidden rounded-sg-md border border-sg-border shadow-sg-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/50"
+                data-testid="attachment-thumb"
+                aria-label={att.name}
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={src}
+                  alt={att.name}
+                  className="h-28 w-full cursor-zoom-in object-cover transition-transform duration-200 group-hover/thumb:scale-[1.03]"
+                />
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+
+      {others.length > 0 ? (
+        <ul className="flex flex-wrap gap-1.5">
+          {others.map((att) => (
+            <li
+              key={att.id}
+              className="flex items-center gap-1.5 rounded-sg-sm border border-sg-border bg-sg-inset px-2 py-1 text-[11px] text-sg-ink-3"
+            >
+              <NonImageIcon kind={att.kind} />
+              <span className="max-w-[160px] truncate font-mono">{att.name}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
+      {zoomSrc ? (
+        <AttachmentLightbox src={zoomSrc} onClose={() => setZoomSrc(null)} />
+      ) : null}
+    </div>
+  );
+}
+
+/** Fullscreen image zoom — closes on click, Esc, or the corner button. */
+function AttachmentLightbox({ src, onClose }: { src: string; onClose: () => void }) {
+  React.useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      data-testid="attachment-lightbox"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <button
+        type="button"
+        onClick={onClose}
+        aria-label="close"
+        className="absolute right-4 top-4 rounded-full bg-sg-inset p-2 text-sg-ink-2 hover:text-sg-ink"
+      >
+        <X className="h-4 w-4" aria-hidden="true" />
+      </button>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src={src} alt="" className="max-h-full max-w-full rounded-sg-lg object-contain shadow-sg-4" />
+    </div>
+  );
+}

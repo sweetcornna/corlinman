@@ -66,4 +66,37 @@ describe("Composer", () => {
     fireEvent.click(screen.getByTestId("composer-model"));
     expect(onOpenModelPicker).toHaveBeenCalledOnce();
   });
+
+  it("toggles the emoji picker and inserts a glyph at the caret", () => {
+    const { onSend } = renderComposer();
+    const ta = screen.getByTestId("composer-textarea") as HTMLTextAreaElement;
+    fireEvent.change(ta, { target: { value: "hi" } });
+
+    // Picker hidden until the emoji trigger is clicked.
+    expect(screen.queryByTestId("emoji-picker")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("composer-emoji"));
+    expect(screen.getByTestId("emoji-picker")).toBeInTheDocument();
+
+    // Move caret to the end, then insert the first emoji cell.
+    ta.setSelectionRange(2, 2);
+    const firstEmoji = screen.getAllByTestId("emoji-item")[0];
+    fireEvent.click(firstEmoji);
+
+    // The textarea value now contains the original text plus a glyph; Enter sends it.
+    fireEvent.keyDown(ta, { key: "Enter" });
+    expect(onSend).toHaveBeenCalledOnce();
+    const [sentText] = onSend.mock.calls[0];
+    expect(sentText.startsWith("hi")).toBe(true);
+    expect(sentText.length).toBeGreaterThan(2);
+  });
+
+  it("emoji sticker entry opens the file input wiring", () => {
+    renderComposer();
+    fireEvent.click(screen.getByTestId("composer-emoji"));
+    // The sticker cell is the last emoji-item (表情包 entry); clicking it
+    // closes the picker (delegates to the existing file-input flow).
+    const items = screen.getAllByTestId("emoji-item");
+    fireEvent.click(items[items.length - 1]);
+    expect(screen.queryByTestId("emoji-picker")).not.toBeInTheDocument();
+  });
 });

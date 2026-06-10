@@ -21,18 +21,20 @@ export function ChatEmptyState({ onPick }: ChatEmptyStateProps) {
   );
   return (
     <div
-      className="mx-auto flex max-w-md flex-col items-center gap-3 text-center"
+      className="mx-auto flex max-w-lg flex-col items-center gap-4 text-center animate-sg-rise"
       data-testid="chat-empty"
     >
-      <div className="rounded-full border border-tp-glass-edge bg-tp-glass-inner p-3">
-        <Bot className="h-6 w-6 text-tp-amber" aria-hidden="true" />
+      <div className="flex h-14 w-14 items-center justify-center rounded-sg-xl border border-sg-border bg-sg-accent-soft shadow-sg-glow">
+        <Bot className="h-7 w-7 text-sg-accent" aria-hidden="true" />
       </div>
-      <h2 className="text-base font-semibold text-tp-ink">
+      <h2 className="sg-grad-text text-2xl font-semibold tracking-tight">
         {t("chat.emptyTitle")}
       </h2>
-      <p className="text-[12px] text-tp-ink-3">{t("chat.emptySubtitle")}</p>
+      <p className="max-w-md text-[13px] leading-relaxed text-sg-ink-3">
+        {t("chat.emptySubtitle")}
+      </p>
       <ul
-        className="mt-2 flex w-full flex-col gap-1.5"
+        className="mt-1 flex w-full flex-wrap justify-center gap-2"
         aria-label={t("chat.emptySuggestionsAriaLabel")}
       >
         {suggestions.map((s) => (
@@ -40,13 +42,13 @@ export function ChatEmptyState({ onPick }: ChatEmptyStateProps) {
             <button
               type="button"
               onClick={() => onPick?.(s)}
-              className="flex w-full items-center gap-1.5 rounded-md border border-tp-glass-edge bg-tp-glass-inner/40 px-2.5 py-1.5 text-left text-[12px] text-tp-ink-2 hover:border-tp-amber/40 hover:text-tp-ink"
+              className="inline-flex items-center gap-1.5 rounded-full border border-sg-border bg-sg-inset px-3.5 py-1.5 text-left text-[12px] text-sg-ink-3 transition hover:border-sg-accent/30 hover:bg-sg-accent-soft hover:text-sg-ink"
             >
               <Sparkles
-                className="h-3 w-3 shrink-0 text-tp-ink-3"
+                className="h-3 w-3 shrink-0 text-sg-accent"
                 aria-hidden="true"
               />
-              <span className="truncate">{s}</span>
+              <span className="max-w-[220px] truncate">{s}</span>
             </button>
           </li>
         ))}

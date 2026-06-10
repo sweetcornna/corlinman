@@ -3,18 +3,15 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import {
-  Bot,
+  Check,
   ChevronDown,
   ChevronRight,
   Copy,
   CornerUpLeft,
   GitFork,
-  Image as ImageIcon,
   Menu,
-  Paperclip,
   Pencil,
   RefreshCcw,
-  User,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -24,6 +21,7 @@ import type {
   ChatMessage,
 } from "@/lib/chat/types";
 import { MarkdownMessage } from "@/components/chat/markdown-message";
+import { AttachmentGallery } from "@/components/chat/attachment-gallery";
 import { ToolCallCard } from "@/components/chat/tool-call-card";
 import { ReasoningBlock } from "@/components/chat/reasoning-block";
 import { SubagentCard } from "@/components/chat/subagent-card";
@@ -48,6 +46,8 @@ interface MessageBubbleProps {
   onPrevVersion?: () => void;
   onNextVersion?: () => void;
   showActionTrace?: boolean;
+  /** Latest message in the thread — gets the entrance animation. */
+  isLatest?: boolean;
 }
 
 function formatTime(ms: number): string {
@@ -55,6 +55,25 @@ function formatTime(ms: number): string {
   return Number.isNaN(d.getTime())
     ? ""
     : d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+}
+
+/**
+ * Detects a leading reply-quote that the composer prepends as
+ * `> <author>: <preview>\n\n<body>` and splits it out so the bubble can
+ * render the quote as a styled reference bar instead of raw markdown.
+ */
+function splitReplyQuote(
+  content: string,
+): { quote: string; body: string } | null {
+  if (!content.startsWith("> ")) return null;
+  const sep = content.indexOf("\n\n");
+  if (sep === -1) return null;
+  // Only treat as a reply quote when the quote is a single quoted line.
+  const quoteBlock = content.slice(0, sep);
+  if (quoteBlock.includes("\n")) return null;
+  const body = content.slice(sep + 2);
+  if (!body.trim()) return null;
+  return { quote: quoteBlock.slice(2).trim(), body };
 }
 
 // Memoised so a streaming `pendingMessage` delta (which re-renders the whole
@@ -76,6 +95,7 @@ export const MessageBubble = React.memo(function MessageBubble({
   onPrevVersion,
   onNextVersion,
   showActionTrace = true,
+  isLatest = false,
 }: MessageBubbleProps) {
   const { t } = useTranslation();
   const isUser = message.role === "user";
@@ -132,11 +152,224 @@ export const MessageBubble = React.memo(function MessageBubble({
       ? t("chat.roleAssistant")
       : t("chat.roleSystem");
 
+  // User bubbles may carry a quoted reply the composer prepended. Split
+  // it out so the quote renders as a reference bar above the body.
+  const reply = isUser && !editing ? splitReplyQuote(message.content) : null;
+  const displayContent = reply ? reply.body : message.content;
+
+  const roleRow = (
+    <div
+      className={cn(
+        "flex items-center gap-1.5 text-[11px] text-sg-ink-5",
+        isUser ? "flex-row-reverse" : "flex-row",
+      )}
+    >
+      <span
+        className={cn(
+          "h-3.5 w-3.5 shrink-0 rounded-full bg-gradient-to-br",
+          isUser
+            ? "from-sg-accent-3 to-sg-accent"
+            : isAssistant
+              ? "from-sg-accent to-sg-accent-2"
+              : "from-sg-ink-5 to-sg-ink-4",
+        )}
+        aria-hidden="true"
+      />
+      <span className="font-medium text-sg-ink-4">{roleLabel}</span>
+      <span aria-hidden="true">·</span>
+      <time
+        dateTime={new Date(message.createdAt).toISOString()}
+        className="font-mono text-[10px]"
+      >
+        {formatTime(message.createdAt)}
+      </time>
+      {message.usage?.estimatedCostUsd ? (
+        <>
+          <span aria-hidden="true">·</span>
+          <span className="font-mono text-[10px]">
+            ${message.usage.estimatedCostUsd.toFixed(4)}
+          </span>
+        </>
+      ) : null}
+    </div>
+  );
+
+  const actionBar =
+    (isAssistant || isUser) && message.content && !editing ? (
+      <div
+        className={cn(
+          "inline-flex items-center gap-0.5 rounded-full sg-inset px-1 py-0.5",
+          "text-[11px] text-sg-ink-4",
+          "opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100",
+          isUser ? "flex-row-reverse" : "flex-row",
+        )}
+      >
+        <button
+          type="button"
+          onClick={handleCopy}
+          className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 hover:bg-sg-inset-hover hover:text-sg-ink"
+          aria-label={copied ? t("chat.copied") : t("chat.copy")}
+        >
+          {copied ? (
+            <Check className="h-3 w-3 text-sg-ok" aria-hidden="true" />
+          ) : (
+            <Copy className="h-3 w-3" aria-hidden="true" />
+          )}
+        </button>
+        {isUser && onEdit ? (
+          <button
+            type="button"
+            onClick={handleStartEdit}
+            className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 hover:bg-sg-inset-hover hover:text-sg-ink"
+            aria-label={t("chat.editAriaLabel")}
+            data-testid="bubble-edit-trigger"
+          >
+            <Pencil className="h-3 w-3" aria-hidden="true" />
+          </button>
+        ) : null}
+        {isAssistant && onRegenerate ? (
+          <button
+            type="button"
+            onClick={onRegenerate}
+            className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 hover:bg-sg-inset-hover hover:text-sg-ink"
+            aria-label={t("chat.regenerateAriaLabel")}
+          >
+            <RefreshCcw className="h-3 w-3" aria-hidden="true" />
+          </button>
+        ) : null}
+        {onBranch ? (
+          <button
+            type="button"
+            onClick={() => onBranch(message.id)}
+            className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 hover:bg-sg-inset-hover hover:text-sg-ink"
+            aria-label={t("chat.branchAriaLabel")}
+            data-testid="bubble-branch"
+          >
+            <GitFork className="h-3 w-3" aria-hidden="true" />
+          </button>
+        ) : null}
+        {onReply ? (
+          <button
+            type="button"
+            onClick={() => onReply(message.id)}
+            className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 hover:bg-sg-inset-hover hover:text-sg-ink"
+            aria-label={t("chat.replyAriaLabel")}
+            data-testid="bubble-reply"
+          >
+            <CornerUpLeft className="h-3 w-3" aria-hidden="true" />
+          </button>
+        ) : null}
+        {versionCount && versionCount > 1 ? (
+          <span
+            className="ml-0.5 inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 font-mono"
+            data-testid="bubble-version-switcher"
+          >
+            <button
+              type="button"
+              onClick={onPrevVersion}
+              className="text-sg-ink-4 hover:text-sg-ink disabled:opacity-30"
+              disabled={versionIndex === 0}
+              aria-label={t("chat.versionPrev")}
+            >
+              ‹
+            </button>
+            <span>
+              {(versionIndex ?? 0) + 1}/{versionCount}
+            </span>
+            <button
+              type="button"
+              onClick={onNextVersion}
+              className="text-sg-ink-4 hover:text-sg-ink disabled:opacity-30"
+              disabled={(versionIndex ?? 0) === versionCount - 1}
+              aria-label={t("chat.versionNext")}
+            >
+              ›
+            </button>
+          </span>
+        ) : null}
+      </div>
+    ) : null;
+
+  const trace = (
+    <>
+      {shouldShowActionTrace && (toolCount > 0 || subagentCount > 0) && (
+        <div className="mt-2 flex items-center gap-1 text-[11px] text-sg-ink-4">
+          <button
+            type="button"
+            onClick={() => setToolsCollapsed((v) => !v)}
+            className="inline-flex items-center gap-1 rounded-sg-sm border border-sg-border px-1.5 py-0.5 hover:bg-sg-inset hover:text-sg-ink"
+            aria-label={
+              toolsCollapsed
+                ? t("chat.bubbleToggleToolsExpand")
+                : t("chat.bubbleToggleToolsCollapse")
+            }
+            aria-expanded={!toolsCollapsed}
+            data-testid="bubble-tools-toggle"
+          >
+            <Menu className="h-3 w-3" aria-hidden="true" />
+            {toolsCollapsed ? (
+              <ChevronRight className="h-3 w-3" aria-hidden="true" />
+            ) : (
+              <ChevronDown className="h-3 w-3" aria-hidden="true" />
+            )}
+            {toolsCollapsed
+              ? toolCount > 0
+                ? t("chat.bubbleToolsCollapsedSummary", {
+                    count: toolCount,
+                    n: toolCount,
+                  })
+                : t("chat.bubbleSubagentsCollapsedSummary", {
+                    count: subagentCount,
+                    n: subagentCount,
+                  })
+              : null}
+          </button>
+          {toolsCollapsed && toolCount > 0 && subagentCount > 0 ? (
+            <span className="font-mono text-sg-ink-4">
+              ·{" "}
+              {t("chat.bubbleSubagentsCollapsedSummary", {
+                count: subagentCount,
+                n: subagentCount,
+              })}
+            </span>
+          ) : null}
+        </div>
+      )}
+      {shouldShowActionTrace && !toolsCollapsed && message.toolCalls?.map((tc) => (
+        <ToolCallCard key={tc.callId} tool={tc} />
+      ))}
+      {shouldShowActionTrace && !toolsCollapsed && message.subagents?.map((sa) => (
+        <SubagentCard key={sa.childSessionKey} subagent={sa} />
+      ))}
+      {message.approvals?.map((ap) => (
+        <ApprovalPrompt
+          key={ap.callId}
+          prompt={ap}
+          onDecide={(decision, scope) => {
+            if (message.turnId && onApprove) {
+              onApprove(message.turnId, ap.callId, decision, scope);
+            }
+          }}
+        />
+      ))}
+
+      {message.error ? (
+        <div
+          className="mt-2 rounded-sg-sm border border-sg-err/40 bg-sg-err-soft px-2 py-1 text-[11px] text-sg-err"
+          role="alert"
+        >
+          {message.error}
+        </div>
+      ) : null}
+    </>
+  );
+
   return (
     <li
       className={cn(
         "group flex w-full",
         isUser ? "justify-end" : "justify-start",
+        isLatest && "animate-fade-in",
       )}
       data-testid="chat-bubble"
       data-role={message.role}
@@ -146,286 +379,101 @@ export const MessageBubble = React.memo(function MessageBubble({
     >
       <div
         className={cn(
-          "flex max-w-[88%] flex-col gap-1.5",
-          isUser ? "items-end" : "items-start",
+          "flex min-w-0 flex-col gap-1.5",
+          isUser ? "max-w-[78%] items-end" : "w-full items-start",
         )}
       >
-        <div
-          className={cn(
-            "flex items-center gap-1.5 text-[11px] text-tp-ink-3",
-            isUser ? "flex-row-reverse" : "flex-row",
-          )}
-        >
-          {isUser ? (
-            <User className="h-3 w-3" aria-hidden="true" />
-          ) : (
-            <Bot className="h-3 w-3" aria-hidden="true" />
-          )}
-          <span className="font-medium">{roleLabel}</span>
-          <span aria-hidden="true">·</span>
-          <time
-            dateTime={new Date(message.createdAt).toISOString()}
-            className="font-mono text-[10px]"
-          >
-            {formatTime(message.createdAt)}
-          </time>
-          {message.usage?.estimatedCostUsd ? (
-            <>
-              <span aria-hidden="true">·</span>
-              <span className="font-mono text-[10px]">
-                ${message.usage.estimatedCostUsd.toFixed(4)}
-              </span>
-            </>
-          ) : null}
-        </div>
+        {roleRow}
 
-        <div
-          className={cn(
-            "relative rounded-lg border px-3 py-2 text-[13px] leading-relaxed",
-            isUser && "border-tp-amber/40 bg-tp-amber/10 text-tp-ink",
-            isAssistant && "border-tp-glass-edge bg-tp-glass-inner text-tp-ink",
-            isSystem && "border-dashed border-tp-glass-edge bg-tp-glass-inner/40 text-tp-ink-2 italic",
-            message.error && "border-tp-err/50",
-          )}
-        >
-          {message.attachments && message.attachments.length > 0 ? (
-            <ul className="mb-2 flex flex-wrap gap-1.5" aria-label={t("chat.attachmentsAriaLabel")}>
-              {message.attachments.map((att) => (
-                <li
-                  key={att.id}
-                  className="flex items-center gap-1 rounded border border-tp-glass-edge bg-tp-glass-inner/60 px-1.5 py-0.5 text-[11px] text-tp-ink-2"
-                >
-                  {att.kind === "image" ? (
-                    <ImageIcon className="h-3 w-3" aria-hidden="true" />
-                  ) : (
-                    <Paperclip className="h-3 w-3" aria-hidden="true" />
-                  )}
-                  <span className="font-mono">{att.name}</span>
-                </li>
-              ))}
-            </ul>
-          ) : null}
-
-          {shouldShowActionTrace && message.reasoning ? (
-            <ReasoningBlock text={message.reasoning} streaming={Boolean(message.pending)} />
-          ) : null}
-
-          {isAssistant ? (
+        {isAssistant ? (
+          /* Assistant: clean transparent prose block, no card chrome. */
+          <div className="w-full text-[13px] leading-relaxed text-sg-ink">
+            {shouldShowActionTrace && message.reasoning ? (
+              <ReasoningBlock
+                text={message.reasoning}
+                streaming={Boolean(message.pending)}
+              />
+            ) : null}
             <MarkdownMessage
               content={message.content || (message.pending ? "" : "")}
               streaming={Boolean(message.pending && !message.toolCalls?.length)}
               onOpenArtifact={onOpenArtifact}
             />
-          ) : editing && isUser ? (
-            <div className="flex flex-col gap-1.5" data-testid="bubble-edit">
-              <textarea
-                autoFocus
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                    e.preventDefault();
-                    handleSaveEdit();
-                  }
-                  if (e.key === "Escape") {
-                    e.preventDefault();
-                    setEditing(false);
-                  }
-                }}
-                rows={Math.min(8, Math.max(2, draft.split("\n").length))}
-                className="w-full resize-none rounded border border-tp-amber bg-tp-glass-inner px-2 py-1 text-[13px] text-tp-ink focus:outline-none"
-                data-testid="bubble-edit-input"
-              />
-              <div className="flex items-center justify-end gap-1.5 text-[11px]">
-                <button
-                  type="button"
-                  onClick={() => setEditing(false)}
-                  className="rounded px-2 py-0.5 text-tp-ink-3 hover:bg-tp-glass-inner hover:text-tp-ink"
-                  data-testid="bubble-edit-cancel"
-                >
-                  {t("chat.editCancel")}
-                </button>
-                <button
-                  type="button"
-                  onClick={handleSaveEdit}
-                  className="rounded border border-tp-amber/60 bg-tp-amber/20 px-2 py-0.5 text-tp-ink hover:bg-tp-amber/30"
-                  data-testid="bubble-edit-save"
-                >
-                  {t("chat.editSaveRerun")}
-                </button>
-              </div>
-            </div>
-          ) : (
+            {trace}
+          </div>
+        ) : isSystem ? (
+          /* System/tool: muted dashed inset treatment. */
+          <div className="rounded-sg-md border border-dashed border-sg-border bg-sg-inset px-3 py-2 text-[13px] leading-relaxed text-sg-ink-3 italic">
             <div className="whitespace-pre-wrap break-words">
               {message.content}
             </div>
-          )}
-
-          {shouldShowActionTrace && (toolCount > 0 || subagentCount > 0) && (
-            <div className="mt-2 flex items-center gap-1 text-[11px] text-tp-ink-3">
-              <button
-                type="button"
-                onClick={() => setToolsCollapsed((v) => !v)}
-                className="inline-flex items-center gap-1 rounded border border-tp-glass-edge px-1.5 py-0.5 hover:bg-tp-glass-inner hover:text-tp-ink"
-                aria-label={
-                  toolsCollapsed
-                    ? t("chat.bubbleToggleToolsExpand")
-                    : t("chat.bubbleToggleToolsCollapse")
+            {trace}
+          </div>
+        ) : editing && isUser ? (
+          /* User edit-in-place. */
+          <div
+            className="flex w-full flex-col gap-1.5 rounded-sg-lg rounded-br-sg-sm border border-sg-accent/30 bg-sg-accent-soft px-4 py-2.5"
+            data-testid="bubble-edit"
+          >
+            <textarea
+              autoFocus
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                  e.preventDefault();
+                  handleSaveEdit();
                 }
-                aria-expanded={!toolsCollapsed}
-                data-testid="bubble-tools-toggle"
-              >
-                <Menu className="h-3 w-3" aria-hidden="true" />
-                {toolsCollapsed ? (
-                  <ChevronRight className="h-3 w-3" aria-hidden="true" />
-                ) : (
-                  <ChevronDown className="h-3 w-3" aria-hidden="true" />
-                )}
-                {toolsCollapsed
-                  ? toolCount > 0
-                    ? t("chat.bubbleToolsCollapsedSummary", {
-                        count: toolCount,
-                        n: toolCount,
-                      })
-                    : t("chat.bubbleSubagentsCollapsedSummary", {
-                        count: subagentCount,
-                        n: subagentCount,
-                      })
-                  : null}
-              </button>
-              {toolsCollapsed && toolCount > 0 && subagentCount > 0 ? (
-                <span className="font-mono text-tp-ink-3">
-                  ·{" "}
-                  {t("chat.bubbleSubagentsCollapsedSummary", {
-                    count: subagentCount,
-                    n: subagentCount,
-                  })}
-                </span>
-              ) : null}
-            </div>
-          )}
-          {shouldShowActionTrace && !toolsCollapsed && message.toolCalls?.map((tc) => (
-            <ToolCallCard key={tc.callId} tool={tc} />
-          ))}
-          {shouldShowActionTrace && !toolsCollapsed && message.subagents?.map((sa) => (
-            <SubagentCard key={sa.childSessionKey} subagent={sa} />
-          ))}
-          {message.approvals?.map((ap) => (
-            <ApprovalPrompt
-              key={ap.callId}
-              prompt={ap}
-              onDecide={(decision, scope) => {
-                if (message.turnId && onApprove) {
-                  onApprove(message.turnId, ap.callId, decision, scope);
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setEditing(false);
                 }
               }}
+              rows={Math.min(8, Math.max(2, draft.split("\n").length))}
+              className="w-full resize-none rounded-sg-sm border border-sg-accent/40 bg-sg-inset px-2 py-1 text-[13px] text-sg-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40"
+              data-testid="bubble-edit-input"
             />
-          ))}
-
-          {message.error ? (
-            <div
-              className="mt-2 rounded border border-tp-err/40 bg-tp-err/10 px-2 py-1 text-[11px] text-tp-err"
-              role="alert"
-            >
-              {message.error}
+            <div className="flex items-center justify-end gap-1.5 text-[11px]">
+              <button
+                type="button"
+                onClick={() => setEditing(false)}
+                className="rounded-sg-sm px-2 py-0.5 text-sg-ink-4 hover:bg-sg-inset hover:text-sg-ink"
+                data-testid="bubble-edit-cancel"
+              >
+                {t("chat.editCancel")}
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveEdit}
+                className="rounded-sg-sm border border-sg-accent/40 bg-sg-accent px-2 py-0.5 text-white hover:bg-sg-accent/90"
+                data-testid="bubble-edit-save"
+              >
+                {t("chat.editSaveRerun")}
+              </button>
             </div>
-          ) : null}
-        </div>
-
-        {(isAssistant || isUser) && message.content && !editing ? (
+          </div>
+        ) : (
+          /* User: right-aligned compact bubble. */
           <div
             className={cn(
-              "flex items-center gap-1 text-[11px] text-tp-ink-3",
-              "opacity-0 transition-opacity group-hover:opacity-100",
-              isUser ? "flex-row-reverse" : "flex-row",
+              "flex max-w-full flex-col gap-1.5 rounded-sg-lg rounded-br-sg-sm border border-sg-accent/20 bg-sg-accent-soft px-4 py-2.5 text-[13px] leading-relaxed text-sg-ink",
+              message.error && "border-sg-err/50",
             )}
           >
-            <button
-              type="button"
-              onClick={handleCopy}
-              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-tp-glass-inner"
-              aria-label={copied ? t("chat.copied") : t("chat.copy")}
-            >
-              <Copy className="h-3 w-3" aria-hidden="true" />
-              {copied ? t("chat.copied") : t("chat.copy")}
-            </button>
-            {isUser && onEdit ? (
-              <button
-                type="button"
-                onClick={handleStartEdit}
-                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-tp-glass-inner"
-                aria-label={t("chat.editAriaLabel")}
-                data-testid="bubble-edit-trigger"
-              >
-                <Pencil className="h-3 w-3" aria-hidden="true" />
-                {t("chat.edit")}
-              </button>
+            {message.attachments && message.attachments.length > 0 ? (
+              <AttachmentGallery attachments={message.attachments} />
             ) : null}
-            {isAssistant && onRegenerate ? (
-              <button
-                type="button"
-                onClick={onRegenerate}
-                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-tp-glass-inner"
-                aria-label={t("chat.regenerateAriaLabel")}
-              >
-                <RefreshCcw className="h-3 w-3" aria-hidden="true" />
-                {t("chat.regenerate")}
-              </button>
+            {reply ? (
+              <div className="border-l-2 border-sg-accent pl-2 text-[12px] text-sg-ink-4">
+                <span className="line-clamp-2 break-words">{reply.quote}</span>
+              </div>
             ) : null}
-            {onBranch ? (
-              <button
-                type="button"
-                onClick={() => onBranch(message.id)}
-                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-tp-glass-inner"
-                aria-label={t("chat.branchAriaLabel")}
-                data-testid="bubble-branch"
-              >
-                <GitFork className="h-3 w-3" aria-hidden="true" />
-                {t("chat.branch")}
-              </button>
-            ) : null}
-            {onReply ? (
-              <button
-                type="button"
-                onClick={() => onReply(message.id)}
-                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-tp-glass-inner"
-                aria-label={t("chat.replyAriaLabel")}
-                data-testid="bubble-reply"
-              >
-                <CornerUpLeft className="h-3 w-3" aria-hidden="true" />
-                {t("chat.reply")}
-              </button>
-            ) : null}
-            {versionCount && versionCount > 1 ? (
-              <span
-                className="ml-1 inline-flex items-center gap-1 rounded border border-tp-glass-edge px-1.5 py-0.5 font-mono"
-                data-testid="bubble-version-switcher"
-              >
-                <button
-                  type="button"
-                  onClick={onPrevVersion}
-                  className="text-tp-ink-3 hover:text-tp-ink disabled:opacity-30"
-                  disabled={versionIndex === 0}
-                  aria-label={t("chat.versionPrev")}
-                >
-                  ‹
-                </button>
-                <span>
-                  {(versionIndex ?? 0) + 1}/{versionCount}
-                </span>
-                <button
-                  type="button"
-                  onClick={onNextVersion}
-                  className="text-tp-ink-3 hover:text-tp-ink disabled:opacity-30"
-                  disabled={(versionIndex ?? 0) === versionCount - 1}
-                  aria-label={t("chat.versionNext")}
-                >
-                  ›
-                </button>
-              </span>
-            ) : null}
+            <div className="whitespace-pre-wrap break-words">{displayContent}</div>
+            {trace}
           </div>
-        ) : null}
+        )}
+
+        {actionBar}
       </div>
     </li>
   );

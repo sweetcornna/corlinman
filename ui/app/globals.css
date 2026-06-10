@@ -641,4 +641,51 @@
     color: var(--sg-ink-4);
     font-style: italic;
   }
+
+  /* Prism syntax tokens for chat code blocks (<CodeHighlighter> emits
+     classNames; colors stay token-driven and theme-aware). */
+  .chat-md .token.comment,
+  .chat-md .token.prolog,
+  .chat-md .token.doctype,
+  .chat-md .token.cdata {
+    color: var(--sg-ink-4);
+    font-style: italic;
+  }
+  .chat-md .token.keyword,
+  .chat-md .token.atrule,
+  .chat-md .token.important {
+    color: var(--sg-accent-2);
+  }
+  .chat-md .token.string,
+  .chat-md .token.char,
+  .chat-md .token.attr-value,
+  .chat-md .token.inserted {
+    color: var(--sg-ok);
+  }
+  .chat-md .token.function,
+  .chat-md .token.class-name,
+  .chat-md .token.selector,
+  .chat-md .token.property,
+  .chat-md .token.tag,
+  .chat-md .token.attr-name {
+    color: var(--sg-accent);
+  }
+  .chat-md .token.number,
+  .chat-md .token.boolean,
+  .chat-md .token.constant,
+  .chat-md .token.symbol {
+    color: var(--sg-accent-3);
+  }
+  .chat-md .token.operator,
+  .chat-md .token.punctuation {
+    color: var(--sg-ink-3);
+  }
+  .chat-md .token.deleted {
+    color: var(--sg-err);
+  }
+  .chat-md .token.variable,
+  .chat-md .token.regex,
+  .chat-md .token.builtin {
+    color: var(--sg-warn);
+  }
 }

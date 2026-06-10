@@ -32,25 +32,27 @@ export function ApprovalPrompt({ prompt, onDecide }: ApprovalPromptProps) {
   return (
     <div
       className={cn(
-        "my-2 overflow-hidden rounded-md border-2 bg-tp-glass-inner",
-        decided ? "border-tp-glass-edge opacity-70" : "border-tp-amber/60 shadow-sm",
+        "my-2 overflow-hidden rounded-sg-md border",
+        decided
+          ? "border-sg-border bg-sg-inset opacity-70"
+          : "border-sg-warn/30 bg-sg-warn-soft shadow-sg-1",
       )}
       role={decided ? undefined : "alertdialog"}
       aria-label={t("chat.approvalAriaLabel", { tool: prompt.tool })}
       data-testid="approval-prompt"
     >
-      <div className="flex items-center gap-2 border-b border-tp-glass-edge px-3 py-2 text-[12px]">
+      <div className="flex items-center gap-2 border-b border-sg-border px-3 py-2 text-[12px]">
         <ShieldAlert
           className={cn(
             "h-4 w-4",
-            decided ? "text-tp-ink-3" : "text-tp-amber",
+            decided ? "text-sg-ink-4" : "text-sg-warn",
           )}
           aria-hidden="true"
         />
-        <span className="font-medium text-tp-ink">
+        <span className="font-medium text-sg-ink">
           {prompt.plugin}.{prompt.tool}
         </span>
-        <span className="ml-auto text-[11px] text-tp-ink-3">
+        <span className="ml-auto text-[11px] text-sg-ink-4">
           {decided
             ? t("chat.approvalDecidedSuffix", { decision: decisionLabel, scope: scopeLabel })
             : t("chat.approvalRequired")}
@@ -58,9 +60,9 @@ export function ApprovalPrompt({ prompt, onDecide }: ApprovalPromptProps) {
       </div>
       <div className="space-y-2 px-3 py-2 text-[12px]">
         {prompt.reason ? (
-          <div className="text-tp-ink-2 italic">{prompt.reason}</div>
+          <div className="text-sg-ink-3 italic">{prompt.reason}</div>
         ) : null}
-        <pre className="max-h-[160px] overflow-auto rounded bg-tp-glass-inner/80 p-2 font-mono text-[11px] leading-snug text-tp-ink">
+        <pre className="max-h-[160px] overflow-auto rounded-sg-sm bg-sg-inset p-2 font-mono text-[11px] leading-snug text-sg-ink">
           {prompt.argsPreviewJson || t("chat.approvalNoArgs")}
         </pre>
         {!decided ? (
@@ -68,7 +70,7 @@ export function ApprovalPrompt({ prompt, onDecide }: ApprovalPromptProps) {
             <button
               type="button"
               onClick={() => onDecide("denied", "once")}
-              className="inline-flex items-center gap-1 rounded border border-tp-glass-edge px-2 py-1 text-[12px] text-tp-ink hover:border-tp-err hover:bg-tp-err/10"
+              className="inline-flex items-center gap-1 rounded-sg-sm border border-sg-border px-2 py-1 text-[12px] text-sg-ink-3 hover:border-sg-err/50 hover:bg-sg-err-soft hover:text-sg-err"
               data-testid="approval-deny"
             >
               <X className="h-3.5 w-3.5" aria-hidden="true" />
@@ -77,7 +79,7 @@ export function ApprovalPrompt({ prompt, onDecide }: ApprovalPromptProps) {
             <button
               type="button"
               onClick={() => onDecide("approved", "once")}
-              className="inline-flex items-center gap-1 rounded border border-tp-amber/60 bg-tp-amber/10 px-2 py-1 text-[12px] text-tp-ink hover:bg-tp-amber/20"
+              className="inline-flex items-center gap-1 rounded-sg-sm border border-sg-accent/40 bg-sg-accent px-2 py-1 text-[12px] text-white hover:bg-sg-accent/90"
               data-testid="approval-once"
             >
               <Check className="h-3.5 w-3.5" aria-hidden="true" />
@@ -86,7 +88,7 @@ export function ApprovalPrompt({ prompt, onDecide }: ApprovalPromptProps) {
             <button
               type="button"
               onClick={() => onDecide("approved", "session")}
-              className="inline-flex items-center gap-1 rounded border border-tp-glass-edge px-2 py-1 text-[12px] text-tp-ink hover:bg-tp-glass-inner"
+              className="inline-flex items-center gap-1 rounded-sg-sm border border-sg-border px-2 py-1 text-[12px] text-sg-ink hover:bg-sg-inset-hover"
               data-testid="approval-session"
             >
               <Shield className="h-3.5 w-3.5" aria-hidden="true" />
