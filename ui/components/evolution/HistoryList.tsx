@@ -76,8 +76,8 @@ function HistoryCard({ entry }: { entry: HistoryEntry }) {
       aria-labelledby={headingId}
       className={cn(
         "p-5 transition-all duration-200",
-        "hover:-translate-y-[1px] hover:shadow-tp-hero",
-        isRolledBack && "border-tp-err/25",
+        "hover:-translate-y-[1px] hover:shadow-sg-3",
+        isRolledBack && "border-sg-err/25",
       )}
     >
       <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
@@ -85,20 +85,20 @@ function HistoryCard({ entry }: { entry: HistoryEntry }) {
           <div className="flex flex-wrap items-center gap-2">
             <KindBadge kind={entry.kind} />
             <StatusBadge status={entry.status} t={t} />
-            <span className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-tp-ink-4">
+            <span className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-sg-ink-4">
               #{entry.proposal_id}
             </span>
           </div>
           <h2
             id={headingId}
-            className="font-mono text-[12.5px] leading-tight text-tp-ink"
+            className="font-mono text-[12.5px] leading-tight text-sg-ink"
           >
-            <span className="text-tp-ink-3">
+            <span className="text-sg-ink-3">
               {t("evolution.tp.cardTargetLabel")} ·{" "}
             </span>
             <span className="break-all">{entry.target}</span>
           </h2>
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-tp-ink-3">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-sg-ink-3">
             <span>
               {t("evolution.tp.appliedAt", {
                 when: formatRelative(entry.applied_at, t),
@@ -106,10 +106,10 @@ function HistoryCard({ entry }: { entry: HistoryEntry }) {
             </span>
             {entry.rolled_back_at ? (
               <>
-                <span aria-hidden className="text-tp-ink-4">
+                <span aria-hidden className="text-sg-ink-4">
                   ·
                 </span>
-                <span className="text-tp-err">
+                <span className="text-sg-err">
                   {t("evolution.tp.rolledBackAt", {
                     when: formatRelative(entry.rolled_back_at, t),
                   })}
@@ -121,7 +121,7 @@ function HistoryCard({ entry }: { entry: HistoryEntry }) {
             <div
               className={cn(
                 "rounded-lg border px-3 py-2 text-[11.5px]",
-                "border-tp-err/30 bg-tp-err-soft/40 text-tp-err",
+                "border-sg-err/30 bg-sg-err-soft/40 text-sg-err",
               )}
             >
               <span className="font-mono text-[10.5px] uppercase tracking-[0.08em]">
@@ -129,7 +129,7 @@ function HistoryCard({ entry }: { entry: HistoryEntry }) {
                   ? t("evolution.tp.autoRollbackReason")
                   : t("evolution.tp.manualRollbackReason")}
               </span>
-              <div className="mt-1 text-[12px] text-tp-ink-2">
+              <div className="mt-1 text-[12px] text-sg-ink-2">
                 {rollbackReason}
               </div>
             </div>
@@ -156,9 +156,9 @@ function HistoryCard({ entry }: { entry: HistoryEntry }) {
           aria-controls={`${headingId}-detail`}
           className={cn(
             "inline-flex items-center gap-1 rounded-full px-2 py-1",
-            "font-mono text-[10.5px] uppercase tracking-[0.08em] text-tp-ink-3",
-            "hover:bg-tp-glass-inner-hover hover:text-tp-ink-2",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
+            "font-mono text-[10.5px] uppercase tracking-[0.08em] text-sg-ink-3",
+            "hover:bg-sg-inset-hover hover:text-sg-ink-2",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
           )}
         >
           {expanded ? (
@@ -175,13 +175,13 @@ function HistoryCard({ entry }: { entry: HistoryEntry }) {
       {expanded ? (
         <div
           id={`${headingId}-detail`}
-          className="mt-3 flex flex-col gap-3 border-t border-tp-glass-edge pt-3"
+          className="mt-3 flex flex-col gap-3 border-t border-sg-border pt-3"
         >
           <div>
-            <div className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-tp-ink-4">
+            <div className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-sg-ink-4">
               {t("evolution.tp.cardReasoningLabel")}
             </div>
-            <p className="mt-1.5 text-[13px] leading-[1.7] text-tp-ink-2">
+            <p className="mt-1.5 text-[13px] leading-[1.7] text-sg-ink-2">
               {entry.reasoning}
             </p>
           </div>
@@ -189,10 +189,10 @@ function HistoryCard({ entry }: { entry: HistoryEntry }) {
           <ShaRow label={t("evolution.tp.afterSha")} sha={entry.after_sha} />
           {entry.eval_run_id ? (
             <div>
-              <span className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-tp-ink-4">
+              <span className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-sg-ink-4">
                 {t("evolution.tp.evalRunId")}
               </span>
-              <div className="mt-0.5 font-mono text-[11.5px] text-tp-ink-2">
+              <div className="mt-0.5 font-mono text-[11.5px] text-sg-ink-2">
                 {entry.eval_run_id}
               </div>
             </div>
@@ -217,15 +217,15 @@ function StatusBadge({
         "inline-flex items-center gap-1 rounded-full border px-2 py-[2px]",
         "font-mono text-[10.5px] uppercase tracking-[0.08em]",
         isApplied
-          ? "border-tp-ok/40 bg-tp-ok-soft text-tp-ok"
-          : "border-tp-err/40 bg-tp-err-soft text-tp-err",
+          ? "border-sg-ok/40 bg-sg-ok-soft text-sg-ok"
+          : "border-sg-err/40 bg-sg-err-soft text-sg-err",
       )}
     >
       <span
         aria-hidden
         className={cn(
           "h-[5px] w-[5px] rounded-full",
-          isApplied ? "bg-tp-ok" : "bg-tp-err",
+          isApplied ? "bg-sg-ok" : "bg-sg-err",
         )}
       />
       {isApplied
@@ -238,10 +238,10 @@ function StatusBadge({
 function ShaRow({ label, sha }: { label: string; sha: string }) {
   return (
     <div>
-      <span className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-tp-ink-4">
+      <span className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-sg-ink-4">
         {label}
       </span>
-      <div className="mt-0.5 truncate font-mono text-[11.5px] text-tp-ink-2">
+      <div className="mt-0.5 truncate font-mono text-[11.5px] text-sg-ink-2">
         {sha}
       </div>
     </div>
@@ -253,8 +253,8 @@ function KindBadge({ kind }: { kind: string }) {
     <span
       className={cn(
         "inline-flex items-center rounded-full border px-2 py-[2px]",
-        "border-tp-glass-edge bg-tp-glass-inner-strong",
-        "font-mono text-[10.5px] tracking-wide text-tp-ink-2",
+        "border-sg-border bg-sg-inset-strong",
+        "font-mono text-[10.5px] tracking-wide text-sg-ink-2",
       )}
     >
       {kind}
@@ -303,8 +303,8 @@ function ListSkeleton() {
         <div
           key={i}
           className={cn(
-            "h-[110px] animate-pulse rounded-2xl border border-tp-glass-edge",
-            "bg-tp-glass-inner/70",
+            "h-[110px] animate-pulse rounded-2xl border border-sg-border",
+            "bg-sg-inset/70",
           )}
         />
       ))}

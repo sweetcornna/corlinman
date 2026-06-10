@@ -38,7 +38,7 @@ export default function NodesPage() {
       transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
     >
       <header className="flex flex-col gap-3">
-        <h1 className="font-sans text-[30px] font-semibold leading-[1.12] tracking-[-0.025em] text-tp-ink sm:text-[34px]">
+        <h1 className="font-sans text-[30px] font-semibold leading-[1.12] tracking-[-0.025em] text-sg-ink sm:text-[34px]">
           {t("nodes.tp.heroTitle")}
         </h1>
       </header>

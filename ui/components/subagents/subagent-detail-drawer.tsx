@@ -25,6 +25,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { Alert } from "@/components/ui/alert";
 import { Drawer } from "@/components/ui/drawer";
 import { EventTimeline } from "@/components/sessions/event-timeline";
 import {
@@ -130,8 +131,9 @@ export function SubagentDetailDrawer({
                   onClick={() => setTab(id)}
                   className={cn(
                     "rounded-t-md border-b-2 px-3 py-1.5 text-xs font-medium transition-colors",
+                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
                     tab === id
-                      ? "border-amber-500 text-foreground"
+                      ? "border-sg-accent text-foreground"
                       : "border-transparent text-muted-foreground hover:text-foreground",
                   )}
                 >
@@ -149,7 +151,7 @@ export function SubagentDetailDrawer({
                   mode="live"
                 />
               ) : (
-                <div className="rounded-md border border-dashed border-border bg-muted/20 p-4 text-center text-xs italic text-muted-foreground">
+                <div className="rounded-sg-md border border-dashed border-border bg-muted/20 p-4 text-center text-xs italic text-muted-foreground">
                   <Loader2 className="mx-auto mb-2 size-4 animate-spin" />
                   {t("subagents.state.queued")}…
                 </div>
@@ -159,7 +161,7 @@ export function SubagentDetailDrawer({
               <pre
                 data-testid="subagent-summary"
                 className={cn(
-                  "whitespace-pre-wrap break-words rounded-md border border-border",
+                  "whitespace-pre-wrap break-words rounded-sg-md border border-border",
                   "bg-muted/20 p-3 font-mono text-[12px] text-foreground",
                 )}
               >
@@ -167,16 +169,15 @@ export function SubagentDetailDrawer({
               </pre>
             ) : null}
             {tab === "error" && status.error ? (
-              <div
+              <Alert
                 data-testid="subagent-error"
-                className={cn(
-                  "rounded-md border border-red-300/60 bg-red-50/40 p-3",
-                  "font-mono text-[12px] text-red-900",
-                  "dark:border-red-400/30 dark:bg-red-950/40 dark:text-red-200",
-                )}
+                variant="danger"
+                icon={null}
               >
-                {status.error}
-              </div>
+                <span className="font-mono text-[12px] text-sg-err">
+                  {status.error}
+                </span>
+              </Alert>
             ) : null}
           </div>
 

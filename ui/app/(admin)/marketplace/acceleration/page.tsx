@@ -37,22 +37,22 @@ export default function MarketplaceAccelerationPage() {
           className="pointer-events-none absolute bottom-[-90px] right-[-40px] h-[240px] w-[360px] rounded-full opacity-60 blur-3xl"
           style={{
             background:
-              "radial-gradient(closest-side, var(--tp-amber-glow), transparent 70%)",
+              "radial-gradient(closest-side, var(--sg-accent-glow), transparent 70%)",
           }}
         />
         <div className="relative flex min-w-0 flex-col gap-3">
           <Link
             href="/marketplace"
-            className="inline-flex w-fit items-center gap-1 font-mono text-[11px] text-tp-ink-3 transition-colors hover:text-tp-ink"
+            className="inline-flex w-fit items-center gap-1 font-mono text-[11px] text-sg-ink-3 transition-colors hover:text-sg-ink"
             data-testid="accel-back-link"
           >
             <ChevronLeft className="h-3.5 w-3.5" aria-hidden />
             {t("marketplace.title")}
           </Link>
-          <h1 className="text-balance font-sans text-[28px] font-semibold leading-[1.15] tracking-[-0.025em] text-tp-ink sm:text-[32px]">
+          <h1 className="text-balance font-sans text-[28px] font-semibold leading-[1.15] tracking-[-0.025em] text-sg-ink sm:text-[32px]">
             {t("marketplace.accel.title")}
           </h1>
-          <p className="max-w-[72ch] text-[14.5px] leading-[1.6] text-tp-ink-2">
+          <p className="max-w-[72ch] text-[14.5px] leading-[1.6] text-sg-ink-2">
             {t("marketplace.accel.subtitle")}
           </p>
         </div>

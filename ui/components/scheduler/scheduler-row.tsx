@@ -80,10 +80,10 @@ export function SchedulerRow({
         // invisible. Emitted as a pseudo via shadow-inset so the row itself
         // stays borderless.
         selected
-          ? "border-tp-amber/40 bg-tp-amber-soft shadow-[inset_3px_0_0_var(--tp-amber)]"
+          ? "border-tp-amber/40 bg-tp-amber-soft shadow-[inset_3px_0_0_var(--sg-accent)]"
           : errored
-            ? "border-tp-err/25 bg-tp-glass hover:bg-tp-glass-inner-hover shadow-[inset_3px_0_0_color-mix(in_oklch,var(--tp-err)_70%,transparent)]"
-            : "border-tp-glass-edge bg-tp-glass hover:bg-tp-glass-inner-hover hover:shadow-[inset_3px_0_0_var(--tp-amber)]",
+            ? "border-tp-err/25 bg-tp-glass hover:bg-tp-glass-inner-hover shadow-[inset_3px_0_0_color-mix(in_oklch,var(--sg-err)_70%,transparent)]"
+            : "border-tp-glass-edge bg-tp-glass hover:bg-tp-glass-inner-hover hover:shadow-[inset_3px_0_0_var(--sg-accent)]",
       )}
       data-testid={`scheduler-row-${job.name}`}
       data-status={status}

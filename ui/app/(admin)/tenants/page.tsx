@@ -23,6 +23,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Plus, RefreshCw } from "lucide-react";
 
+import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -97,13 +98,9 @@ export default function TenantsPage() {
       {data?.kind === "disabled" ? (
         <DisabledBanner />
       ) : data?.kind === "unauthenticated" ? (
-        <section
-          className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive"
-          role="alert"
-          data-testid="tenants-unauthenticated"
-        >
+        <Alert variant="danger" data-testid="tenants-unauthenticated">
           {t("tenants.unauthenticated")}
-        </section>
+        </Alert>
       ) : (
         <section className="overflow-hidden rounded-lg border border-tp-glass-edge bg-tp-glass">
           <Table>
@@ -139,7 +136,7 @@ export default function TenantsPage() {
                 <TableRow>
                   <TableCell
                     colSpan={3}
-                    className="py-10 text-center text-sm text-destructive"
+                    className="py-10 text-center text-sm text-sg-err"
                     data-testid="tenants-load-failed"
                   >
                     {t("tenants.loadFailedRetry", { msg: data.message })}

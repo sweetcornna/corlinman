@@ -26,6 +26,7 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { Check, ChevronDown, ChevronUp, Pencil, Plus, Trash2, X } from "lucide-react";
 
+import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -128,18 +129,14 @@ export default function ProfilesPage() {
           ))}
         </section>
       ) : query.isError ? (
-        <section
-          className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive"
-          role="alert"
-          data-testid="profiles-load-failed"
-        >
+        <Alert variant="danger" data-testid="profiles-load-failed">
           {t("profiles.toastLoadFailed", {
             message:
               query.error instanceof Error
                 ? query.error.message
                 : String(query.error),
           })}
-        </section>
+        </Alert>
       ) : profiles.length === 0 ? (
         <section
           className="rounded-lg border border-dashed border-tp-glass-edge bg-tp-glass/40 p-10 text-center text-sm text-tp-ink-3"

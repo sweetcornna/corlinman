@@ -23,6 +23,7 @@ import { toast } from "sonner";
 
 import { Drawer } from "@/components/ui/drawer";
 import { Button } from "@/components/ui/button";
+import { Alert } from "@/components/ui/alert";
 import { cn } from "@/lib/utils";
 import {
   CorlinmanApiError,
@@ -115,7 +116,6 @@ export function McpDetailDrawer({
       width="lg"
       title={headerName}
       description={item?.description}
-      className="bg-tp-glass-2 backdrop-blur-glass-strong backdrop-saturate-glass-strong"
       footer={
         <div className="flex w-full items-center justify-end gap-2">
           <Button
@@ -152,17 +152,17 @@ export function McpDetailDrawer({
             <div
               className={cn(
                 "flex h-11 w-11 shrink-0 items-center justify-center rounded-full",
-                "border border-tp-amber/25 bg-tp-amber-soft text-[20px] leading-none",
+                "border border-sg-accent/25 bg-sg-accent-soft text-[20px] leading-none",
               )}
               aria-hidden
             >
               <span className="opacity-85">{headerEmoji}</span>
             </div>
             <div className="min-w-0 flex-1">
-              <h2 className="truncate text-[18px] font-medium leading-tight tracking-[-0.01em] text-tp-ink">
+              <h2 className="truncate text-[18px] font-medium leading-tight tracking-[-0.01em] text-sg-ink">
                 {headerName}
               </h2>
-              <div className="mt-0.5 flex flex-wrap items-center gap-2 font-mono text-[10.5px] text-tp-ink-4">
+              <div className="mt-0.5 flex flex-wrap items-center gap-2 font-mono text-[10.5px] text-sg-ink-4">
                 <span>v{version}</span>
                 <span aria-hidden>·</span>
                 <span className="inline-flex items-center gap-1">
@@ -179,13 +179,13 @@ export function McpDetailDrawer({
           </div>
 
           {/* Description */}
-          <p className="text-[14px] leading-[1.6] text-tp-ink-2">
+          <p className="text-[14px] leading-[1.6] text-sg-ink-2">
             {detail?.description ?? item.description}
           </p>
 
           {/* Loading */}
           {query.isPending ? (
-            <div className="flex items-center gap-2 text-[12.5px] text-tp-ink-3">
+            <div className="flex items-center gap-2 text-[12.5px] text-sg-ink-3">
               <Loader2 className="h-3 w-3 animate-spin" aria-hidden />
               {t("marketplace.mcp.detail.loading")}
             </div>
@@ -193,14 +193,10 @@ export function McpDetailDrawer({
 
           {/* Error */}
           {query.isError ? (
-            <div
-              role="alert"
-              className="rounded-md border border-red-500/40 bg-red-500/10 p-3 text-xs text-red-700"
-              data-testid="mcp-detail-error"
-            >
+            <Alert variant="danger" data-testid="mcp-detail-error">
               {(query.error as Error | undefined)?.message ??
                 t("marketplace.mcp.detail.errorUnknown")}
-            </div>
+            </Alert>
           ) : null}
 
           {/* Transport */}
@@ -208,7 +204,7 @@ export function McpDetailDrawer({
             <Section title={t("marketplace.mcp.detail.transport")}>
               <span
                 data-testid="mcp-detail-transport"
-                className="inline-flex items-center rounded-full border border-tp-glass-edge bg-tp-glass-inner px-2.5 py-[3px] font-mono text-[10.5px] text-tp-ink-3"
+                className="inline-flex items-center rounded-full border border-sg-border bg-sg-inset px-2.5 py-[3px] font-mono text-[10.5px] text-sg-ink-3"
               >
                 {detail.transport}
               </span>
@@ -222,7 +218,7 @@ export function McpDetailDrawer({
                 {detail.tags.map((tag) => (
                   <li
                     key={tag}
-                    className="inline-flex items-center rounded-md border border-tp-glass-edge bg-tp-glass-inner px-2 py-[3px] font-mono text-[11px] text-tp-ink-3"
+                    className="inline-flex items-center rounded-md border border-sg-border bg-sg-inset px-2 py-[3px] font-mono text-[11px] text-sg-ink-3"
                   >
                     {tag}
                   </li>
@@ -234,7 +230,7 @@ export function McpDetailDrawer({
           {/* Required env — install gate */}
           {requiresEnv.length > 0 ? (
             <Section title={t("marketplace.mcp.detail.requiresEnv")}>
-              <p className="mb-2 text-[12.5px] text-tp-ink-3">
+              <p className="mb-2 text-[12.5px] text-sg-ink-3">
                 {t("marketplace.mcp.detail.requiresEnvHint")}
               </p>
               <div
@@ -243,7 +239,7 @@ export function McpDetailDrawer({
               >
                 {requiresEnv.map((key) => (
                   <label key={key} className="flex flex-col gap-1">
-                    <span className="font-mono text-[11px] text-tp-ink-2">
+                    <span className="font-mono text-[11px] text-sg-ink-2">
                       {key}
                     </span>
                     <input
@@ -261,9 +257,9 @@ export function McpDetailDrawer({
                       aria-label={key}
                       data-testid={`mcp-detail-env-${key}`}
                       className={cn(
-                        "h-9 rounded-md border border-tp-glass-edge bg-tp-glass-inner px-2.5",
-                        "font-mono text-[12.5px] text-tp-ink placeholder:text-tp-ink-4",
-                        "focus:outline-none focus:ring-2 focus:ring-tp-amber/40",
+                        "h-9 rounded-md border border-sg-border bg-sg-inset px-2.5",
+                        "font-mono text-[12.5px] text-sg-ink placeholder:text-sg-ink-4",
+                        "focus:outline-none focus:ring-2 focus:ring-sg-accent/40",
                       )}
                     />
                   </label>
@@ -286,7 +282,7 @@ function Section({
 }) {
   return (
     <section className="space-y-2">
-      <h4 className="font-mono text-[10px] uppercase tracking-[0.12em] text-tp-ink-4">
+      <h4 className="font-mono text-[10px] uppercase tracking-[0.12em] text-sg-ink-4">
         {title}
       </h4>
       {children}

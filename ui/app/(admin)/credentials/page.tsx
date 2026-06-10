@@ -587,7 +587,7 @@ export default function CredentialsPage() {
                 {t("oauth.actionImport")}
               </Button>
               {anthropic?.source === "claude-code" && (
-                <Badge className="border-transparent bg-ok/15 text-ok">
+                <Badge className="border-transparent bg-sg-ok-soft text-sg-ok">
                   {t("oauth.badgeDetected")}
                 </Badge>
               )}
@@ -669,7 +669,7 @@ export default function CredentialsPage() {
       {credentials.isPending ? (
         <Skeleton className="h-40 w-full" />
       ) : credentials.isError ? (
-        <p className="text-xs text-destructive" data-testid="credentials-error">
+        <p className="text-xs text-sg-err" data-testid="credentials-error">
           {t("credentials.loadFailed")}:{" "}
           {credentials.error instanceof Error
             ? credentials.error.message
@@ -977,9 +977,9 @@ function OAuthPkceTile({
                   <Badge
                     className={
                       desc.tone === "ok"
-                        ? "border-transparent bg-ok/15 text-ok"
+                        ? "border-transparent bg-sg-ok-soft text-sg-ok"
                         : desc.tone === "warn"
-                          ? "border-transparent bg-destructive/15 text-destructive"
+                          ? "border-transparent bg-sg-err-soft text-sg-err"
                           : "bg-secondary text-secondary-foreground"
                     }
                     data-testid={`${testId}-status`}

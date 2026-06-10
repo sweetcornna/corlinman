@@ -84,7 +84,7 @@ export default function AgentDetailPage() {
             {name}
             {dirty ? (
               <Circle
-                className="h-2 w-2 fill-warn text-warn"
+                className="h-2 w-2 fill-sg-warn text-sg-warn"
                 aria-label={t("agents.unsavedIndicator")}
               />
             ) : null}
@@ -109,7 +109,7 @@ export default function AgentDetailPage() {
       {agent.isPending ? (
         <Skeleton className="h-[600px] w-full" />
       ) : agent.isError ? (
-        <p className="text-sm text-destructive">
+        <p className="text-sm text-sg-err">
           {t("agents.loadFailed")}: {(agent.error as Error).message}
         </p>
       ) : (
@@ -132,13 +132,13 @@ export default function AgentDetailPage() {
       )}
 
       {save.isError ? (
-        <p className="text-sm text-destructive">
+        <p className="text-sm text-sg-err">
           {t("agents.saveFailed")}: {(save.error as Error).message}
         </p>
       ) : save.isSuccess ? (
         <p
           className={cn(
-            "text-sm text-ok",
+            "text-sm text-sg-ok",
             // Pulse the success text briefly
             "animate-in fade-in-0",
           )}

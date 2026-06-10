@@ -30,6 +30,7 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
+import { Alert } from "@/components/ui/alert";
 import {
   Card,
   CardContent,
@@ -182,14 +183,14 @@ export default function SubagentsPage(): React.JSX.Element {
     <main className="mx-auto flex w-full max-w-6xl flex-col gap-4 p-4 md:p-6">
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight text-tp-ink">
+          <h1 className="text-xl font-semibold tracking-tight text-sg-ink">
             {t("subagents.title")}
           </h1>
-          <p className="text-xs text-tp-ink-3">{t("subagents.subtitle")}</p>
+          <p className="text-xs text-sg-ink-3">{t("subagents.subtitle")}</p>
         </div>
         <label
           htmlFor="subagents-include-terminal"
-          className="inline-flex cursor-pointer items-center gap-2 text-xs text-tp-ink-2"
+          className="inline-flex cursor-pointer items-center gap-2 text-xs text-sg-ink-2"
         >
           <Switch
             id="subagents-include-terminal"
@@ -210,9 +211,9 @@ export default function SubagentsPage(): React.JSX.Element {
         </CardHeader>
         <CardContent className="px-0 pb-0">
           {loadError ? (
-            <div className="mx-4 mb-4 rounded-md border border-red-200/60 bg-red-50/40 px-3 py-2 text-xs text-red-900 dark:border-red-400/20 dark:bg-red-950/30 dark:text-red-200">
+            <Alert variant="danger" className="mx-4 mb-4">
               {t("subagents.loadFailed", { msg: loadError })}
-            </div>
+            </Alert>
           ) : null}
           {visibleRows.length === 0 ? (
             <EmptyState />
@@ -223,7 +224,7 @@ export default function SubagentsPage(): React.JSX.Element {
                 className="w-full border-collapse text-sm"
               >
                 <thead>
-                  <tr className="border-b border-tp-glass-edge bg-tp-glass-inner/40 text-[11px] uppercase tracking-wide text-tp-ink-3">
+                  <tr className="border-b border-sg-border bg-sg-inset/40 text-[11px] uppercase tracking-wider text-sg-ink-4">
                     <th className="px-3 py-2 text-left font-medium">
                       {t("subagents.column.subagentType")}
                     </th>
@@ -278,14 +279,14 @@ function EmptyState(): React.JSX.Element {
     <div
       data-testid="subagents-empty"
       className={cn(
-        "mx-4 mb-4 rounded-md border border-dashed border-tp-glass-edge",
-        "bg-tp-glass-inner/30 px-6 py-10 text-center",
+        "mx-4 mb-4 rounded-sg-md border border-dashed border-sg-border",
+        "bg-sg-inset/30 px-6 py-10 text-center",
       )}
     >
-      <div className="text-sm font-medium text-tp-ink-2">
+      <div className="text-sm font-medium text-sg-ink-2">
         {t("subagents.empty")}
       </div>
-      <div className="mt-2 font-mono text-[11px] text-tp-ink-3">
+      <div className="mt-2 font-mono text-[11px] text-sg-ink-4">
         subagent.spawn
       </div>
     </div>

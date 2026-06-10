@@ -370,7 +370,7 @@ export default function AgentsPage() {
               <TableRow>
                 <TableCell
                   colSpan={9}
-                  className="py-10 text-center text-sm text-destructive"
+                  className="py-10 text-center text-sm text-sg-err"
                 >
                   {t("agents.loadFailed")}: {(query.error as Error).message}
                 </TableCell>
@@ -483,7 +483,7 @@ export default function AgentsPage() {
                           type="button"
                           variant="ghost"
                           size="sm"
-                          className="h-8 px-2 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                          className="h-8 px-2 text-sg-err hover:bg-sg-err-soft hover:text-sg-err"
                           onClick={() => setPendingDelete(a.name)}
                           data-testid={`agent-delete-${a.name}`}
                           aria-label={t("agents.delete")}

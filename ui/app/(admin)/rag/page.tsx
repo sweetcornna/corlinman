@@ -197,7 +197,7 @@ export default function RagPage() {
         </form>
 
         {queryError ? (
-          <p className="text-sm text-destructive">{queryError}</p>
+          <p className="text-sm text-sg-err">{queryError}</p>
         ) : null}
 
         {results ? (

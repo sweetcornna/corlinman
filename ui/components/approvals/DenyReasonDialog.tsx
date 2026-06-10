@@ -55,23 +55,23 @@ export function DenyReasonDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         className={cn(
-          "max-w-md rounded-2xl border-tp-glass-edge bg-tp-glass-2 p-6",
+          "max-w-md rounded-2xl border-sg-border bg-sg-card-strong p-6",
           "backdrop-blur-glass-strong backdrop-saturate-glass-strong",
-          "shadow-tp-hero",
+          "shadow-sg-3",
         )}
       >
         <DialogHeader>
-          <DialogTitle className="font-sans text-[18px] font-medium tracking-[-0.01em] text-tp-ink">
+          <DialogTitle className="font-sans text-[18px] font-medium tracking-[-0.01em] text-sg-ink">
             {t("approvals.denyDialogTitle", { target: targetLabel })}
           </DialogTitle>
-          <DialogDescription className="text-[13px] text-tp-ink-3">
+          <DialogDescription className="text-[13px] text-sg-ink-3">
             {t("approvals.denyDialogBody", { min: MIN_REASON })}
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-2">
           <Label
             htmlFor="deny-reason"
-            className="font-mono text-[10.5px] uppercase tracking-[0.1em] text-tp-ink-4"
+            className="font-mono text-[10.5px] uppercase tracking-[0.1em] text-sg-ink-4"
           >
             {t("approvals.denyReasonLabel")}
           </Label>
@@ -84,8 +84,8 @@ export function DenyReasonDialog({
             disabled={submitting}
             className={cn(
               "flex h-9 w-full rounded-lg border px-3 py-1 text-sm",
-              "bg-tp-glass-inner border-tp-glass-edge text-tp-ink placeholder:text-tp-ink-4",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/45",
+              "bg-sg-inset border-sg-border text-sg-ink placeholder:text-sg-ink-4",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/45",
               "disabled:cursor-not-allowed disabled:opacity-50",
             )}
           />
@@ -97,9 +97,9 @@ export function DenyReasonDialog({
             disabled={submitting}
             className={cn(
               "inline-flex h-9 items-center justify-center rounded-lg border px-3 text-sm font-medium",
-              "border-tp-glass-edge bg-tp-glass-inner text-tp-ink-2",
-              "hover:bg-tp-glass-inner-hover hover:text-tp-ink",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
+              "border-sg-border bg-sg-inset text-sg-ink-2",
+              "hover:bg-sg-inset-hover hover:text-sg-ink",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
               "disabled:pointer-events-none disabled:opacity-50",
             )}
           >
@@ -111,9 +111,9 @@ export function DenyReasonDialog({
             disabled={tooShort || submitting}
             className={cn(
               "inline-flex h-9 items-center justify-center rounded-lg border px-3 text-sm font-medium",
-              "border-tp-err/40 bg-tp-err-soft text-tp-err",
-              "hover:bg-[color-mix(in_oklch,var(--tp-err)_14%,transparent)]",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-err/50",
+              "border-sg-err/40 bg-sg-err-soft text-sg-err",
+              "hover:bg-[color-mix(in_oklch,var(--sg-err)_14%,transparent)]",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-err/50",
               "disabled:pointer-events-none disabled:opacity-50",
             )}
           >

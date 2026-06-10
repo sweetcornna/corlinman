@@ -41,9 +41,9 @@ export function ArgsDialog({ approval }: { approval: Approval }) {
           aria-label={t("approvals.viewArgs")}
           className={cn(
             "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px]",
-            "border-tp-glass-edge bg-tp-glass-inner text-tp-ink-3",
-            "hover:bg-tp-glass-inner-hover hover:text-tp-ink-2",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
+            "border-sg-border bg-sg-inset text-sg-ink-3",
+            "hover:bg-sg-inset-hover hover:text-sg-ink-2",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
           )}
         >
           <Maximize2 className="h-3 w-3" aria-hidden />
@@ -52,38 +52,38 @@ export function ArgsDialog({ approval }: { approval: Approval }) {
       </DialogTrigger>
       <DialogContent
         className={cn(
-          "max-w-2xl rounded-2xl border-tp-glass-edge bg-tp-glass-2 p-6",
+          "max-w-2xl rounded-2xl border-sg-border bg-sg-card-strong p-6",
           "backdrop-blur-glass-strong backdrop-saturate-glass-strong",
-          "shadow-tp-hero",
+          "shadow-sg-3",
         )}
       >
         <DialogHeader>
-          <DialogTitle className="font-mono text-[15px] font-medium text-tp-ink">
-            <span className="text-tp-amber">{approval.plugin}</span>
-            <span className="text-tp-ink-3">.</span>
+          <DialogTitle className="font-mono text-[15px] font-medium text-sg-ink">
+            <span className="text-sg-accent">{approval.plugin}</span>
+            <span className="text-sg-ink-3">.</span>
             {approval.tool}
           </DialogTitle>
           <DialogDescription asChild>
-            <div className="space-y-1 text-[12px] text-tp-ink-3">
+            <div className="space-y-1 text-[12px] text-sg-ink-3">
               <div>
                 {t("approvals.argsSessionKey")}:{" "}
-                <span className="font-mono text-tp-ink-2">
+                <span className="font-mono text-sg-ink-2">
                   {approval.session_key || t("approvals.emptyValue")}
                 </span>
               </div>
               <div>
                 {t("approvals.argsRequestedAt")}:{" "}
-                <span className="font-mono text-tp-ink-2">
+                <span className="font-mono text-sg-ink-2">
                   {formatTime(approval.requested_at)}
                 </span>
               </div>
               {approval.decided_at ? (
                 <div>
                   {t("approvals.argsDecidedAt")}:{" "}
-                  <span className="font-mono text-tp-ink-2">
+                  <span className="font-mono text-sg-ink-2">
                     {formatTime(approval.decided_at)}
                   </span>{" "}
-                  <span className="text-tp-ink-3">— {approval.decision ?? "?"}</span>
+                  <span className="text-sg-ink-3">— {approval.decision ?? "?"}</span>
                 </div>
               ) : null}
             </div>

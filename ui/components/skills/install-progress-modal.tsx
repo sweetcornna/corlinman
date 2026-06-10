@@ -32,6 +32,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { Alert } from "@/components/ui/alert";
 import { cn } from "@/lib/utils";
 import {
   CorlinmanApiError,
@@ -248,17 +249,17 @@ export function InstallProgressModal({
                         : "pending"
                 }
                 className={cn(
-                  "inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm",
-                  isFailed && "border-red-500/60 bg-red-500/10 text-red-600",
+                  "inline-flex items-center gap-2 rounded-sg-md border px-3 py-2 text-sm",
+                  isFailed && "border-sg-err/60 bg-sg-err-soft text-sg-err",
                   isPast &&
                     !isFailed &&
-                    "border-emerald-500/40 bg-emerald-500/10 text-emerald-700",
+                    "border-sg-ok/40 bg-sg-ok-soft text-sg-ok",
                   isCurrent &&
-                    "border-tp-amber/60 bg-tp-amber/10 text-tp-amber",
+                    "border-sg-accent/60 bg-sg-accent-soft text-sg-accent",
                   !isFailed &&
                     !isPast &&
                     !isCurrent &&
-                    "border-tp-glass-edge text-tp-ink-3",
+                    "border-sg-border text-sg-ink-3",
                 )}
               >
                 {isCurrent ? (
@@ -279,7 +280,7 @@ export function InstallProgressModal({
         {/* Inline status / message rail */}
         {state.kind === "running" && state.status?.message ? (
           <p
-            className="text-xs text-tp-ink-3"
+            className="text-xs text-sg-ink-3"
             data-testid="install-progress-message"
           >
             {state.status.message}
@@ -287,14 +288,13 @@ export function InstallProgressModal({
         ) : null}
 
         {state.kind === "failed" ? (
-          <div
-            role="alert"
-            className="rounded-md border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-700"
+          <Alert
+            variant="danger"
+            title={t("skills.hub.install.errorTitle")}
             data-testid="install-progress-error"
           >
-            <p className="font-medium">{t("skills.hub.install.errorTitle")}</p>
-            <p className="break-words text-xs">{state.error}</p>
-          </div>
+            <span className="break-words">{state.error}</span>
+          </Alert>
         ) : null}
 
         <DialogFooter>

@@ -16,6 +16,7 @@ import { toast } from "sonner";
 
 import { Drawer } from "@/components/ui/drawer";
 import { Button } from "@/components/ui/button";
+import { Alert } from "@/components/ui/alert";
 import { cn } from "@/lib/utils";
 import {
   CorlinmanApiError,
@@ -83,7 +84,6 @@ export function PluginDetailDrawer({
       width="lg"
       title={headerName}
       description={item?.description}
-      className="bg-tp-glass-2 backdrop-blur-glass-strong backdrop-saturate-glass-strong"
       footer={
         <div className="flex w-full items-center justify-end gap-2">
           <Button
@@ -119,17 +119,17 @@ export function PluginDetailDrawer({
             <div
               className={cn(
                 "flex h-11 w-11 shrink-0 items-center justify-center rounded-full",
-                "border border-tp-amber/25 bg-tp-amber-soft text-[20px] leading-none",
+                "border border-sg-accent/25 bg-sg-accent-soft text-[20px] leading-none",
               )}
               aria-hidden
             >
               <span className="opacity-85">{headerEmoji}</span>
             </div>
             <div className="min-w-0 flex-1">
-              <h2 className="truncate text-[18px] font-medium leading-tight tracking-[-0.01em] text-tp-ink">
+              <h2 className="truncate text-[18px] font-medium leading-tight tracking-[-0.01em] text-sg-ink">
                 {headerName}
               </h2>
-              <div className="mt-0.5 flex flex-wrap items-center gap-2 font-mono text-[10.5px] text-tp-ink-4">
+              <div className="mt-0.5 flex flex-wrap items-center gap-2 font-mono text-[10.5px] text-sg-ink-4">
                 <span>v{version}</span>
                 <span aria-hidden>·</span>
                 <span className="inline-flex items-center gap-1">
@@ -145,31 +145,27 @@ export function PluginDetailDrawer({
             </div>
           </div>
 
-          <p className="text-[14px] leading-[1.6] text-tp-ink-2">
+          <p className="text-[14px] leading-[1.6] text-sg-ink-2">
             {detail?.description ?? item.description}
           </p>
 
           {query.isPending ? (
-            <div className="flex items-center gap-2 text-[12.5px] text-tp-ink-3">
+            <div className="flex items-center gap-2 text-[12.5px] text-sg-ink-3">
               <Loader2 className="h-3 w-3 animate-spin" aria-hidden />
               {t("marketplace.plugins.detail.loading")}
             </div>
           ) : null}
 
           {query.isError ? (
-            <div
-              role="alert"
-              className="rounded-md border border-red-500/40 bg-red-500/10 p-3 text-xs text-red-700"
-              data-testid="plugin-detail-error"
-            >
+            <Alert variant="danger" data-testid="plugin-detail-error">
               {(query.error as Error | undefined)?.message ??
                 t("marketplace.plugins.detail.errorUnknown")}
-            </div>
+            </Alert>
           ) : null}
 
           {detail?.tags && detail.tags.length > 0 ? (
             <section className="space-y-2">
-              <h4 className="font-mono text-[10px] uppercase tracking-[0.12em] text-tp-ink-4">
+              <h4 className="font-mono text-[10px] uppercase tracking-[0.12em] text-sg-ink-4">
                 {t("marketplace.mcp.detail.tags")}
               </h4>
               <ul
@@ -179,7 +175,7 @@ export function PluginDetailDrawer({
                 {detail.tags.map((tag) => (
                   <li
                     key={tag}
-                    className="inline-flex items-center rounded-md border border-tp-glass-edge bg-tp-glass-inner px-2 py-[3px] font-mono text-[11px] text-tp-ink-3"
+                    className="inline-flex items-center rounded-md border border-sg-border bg-sg-inset px-2 py-[3px] font-mono text-[11px] text-sg-ink-3"
                   >
                     {tag}
                   </li>

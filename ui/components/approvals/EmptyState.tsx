@@ -17,14 +17,14 @@ export function ApprovalsEmptyState({ tab }: { tab: Tab }) {
       <div
         className={cn(
           "flex flex-col items-center justify-center gap-2.5 py-12 text-center",
-          "rounded-2xl border border-dashed border-tp-glass-edge bg-tp-glass-inner/40",
+          "rounded-2xl border border-dashed border-sg-border bg-sg-inset/40",
         )}
       >
-        <Inbox className="h-8 w-8 text-tp-ink-4" aria-hidden />
-        <p className="font-sans text-[14px] font-medium text-tp-ink">
+        <Inbox className="h-8 w-8 text-sg-ink-4" aria-hidden />
+        <p className="font-sans text-[14px] font-medium text-sg-ink">
           {t("approvals.emptyPendingTitle")}
         </p>
-        <p className="max-w-[36ch] text-[12px] text-tp-ink-3">
+        <p className="max-w-[36ch] text-[12px] text-sg-ink-3">
           {t("approvals.emptyPendingHint")}
         </p>
       </div>
@@ -34,14 +34,14 @@ export function ApprovalsEmptyState({ tab }: { tab: Tab }) {
     <div
       className={cn(
         "flex flex-col items-center justify-center gap-2.5 py-12 text-center",
-        "rounded-2xl border border-dashed border-tp-glass-edge bg-tp-glass-inner/40",
+        "rounded-2xl border border-dashed border-sg-border bg-sg-inset/40",
       )}
     >
-      <History className="h-8 w-8 text-tp-ink-4" aria-hidden />
-      <p className="font-sans text-[14px] font-medium text-tp-ink">
+      <History className="h-8 w-8 text-sg-ink-4" aria-hidden />
+      <p className="font-sans text-[14px] font-medium text-sg-ink">
         {t("approvals.emptyHistoryTitle")}
       </p>
-      <p className="max-w-[36ch] text-[12px] text-tp-ink-3">
+      <p className="max-w-[36ch] text-[12px] text-sg-ink-3">
         {t("approvals.emptyHistoryHint")}
       </p>
     </div>

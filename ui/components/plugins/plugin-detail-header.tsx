@@ -22,21 +22,21 @@ import type { PluginStatus } from "@/lib/api";
 
 const statusToTone: Record<PluginStatus, { dot: string; text: string; ring: string; label: string }> = {
   loaded: {
-    dot: "bg-tp-ok",
-    text: "text-tp-ok",
-    ring: "border-tp-ok/30 bg-tp-ok-soft",
+    dot: "bg-sg-ok",
+    text: "text-sg-ok",
+    ring: "border-sg-ok/30 bg-sg-ok-soft",
     label: "loaded",
   },
   disabled: {
-    dot: "bg-tp-ink-4",
-    text: "text-tp-ink-3",
-    ring: "border-tp-glass-edge bg-tp-glass-inner",
+    dot: "bg-sg-ink-4",
+    text: "text-sg-ink-3",
+    ring: "border-sg-border bg-sg-inset",
     label: "disabled",
   },
   error: {
-    dot: "bg-tp-err",
-    text: "text-tp-err",
-    ring: "border-tp-err/30 bg-tp-err-soft",
+    dot: "bg-sg-err",
+    text: "text-sg-err",
+    ring: "border-sg-err/30 bg-sg-err-soft",
     label: "error",
   },
 };
@@ -72,20 +72,20 @@ export function PluginDetailHeader({
           aria-hidden
           className="pointer-events-none absolute bottom-[-80px] right-[-40px] h-[200px] w-[320px] rounded-full opacity-55 blur-3xl"
           style={{
-            background: "radial-gradient(closest-side, var(--tp-amber-glow), transparent 70%)",
+            background: "radial-gradient(closest-side, var(--sg-accent-glow), transparent 70%)",
           }}
         />
         <div className="relative flex flex-col gap-3">
           <Link
             href="/plugins"
-            className="inline-flex w-fit items-center gap-1.5 font-mono text-[11px] text-tp-ink-3 transition-colors hover:text-tp-ink"
+            className="inline-flex w-fit items-center gap-1.5 font-mono text-[11px] text-sg-ink-3 transition-colors hover:text-sg-ink"
           >
             <ArrowLeft className="h-3 w-3" aria-hidden />
             {t("plugins.tp.detailBack")}
           </Link>
 
           <div className="flex flex-wrap items-center gap-3">
-            <h1 className="text-balance font-sans text-[28px] font-semibold leading-[1.1] tracking-[-0.025em] text-tp-ink sm:text-[32px]">
+            <h1 className="text-balance font-sans text-[28px] font-semibold leading-[1.1] tracking-[-0.025em] text-sg-ink sm:text-[32px]">
               {name}
             </h1>
 
@@ -102,19 +102,19 @@ export function PluginDetailHeader({
             ) : null}
 
             {version ? (
-              <span className="rounded-full border border-tp-glass-edge bg-tp-glass-inner px-2.5 py-[3px] font-mono text-[11px] tracking-wide text-tp-ink-3">
-                <span className="text-tp-ink-4">{t("plugins.tp.detailVersionLabel")}</span>{" "}
+              <span className="rounded-full border border-sg-border bg-sg-inset px-2.5 py-[3px] font-mono text-[11px] tracking-wide text-sg-ink-3">
+                <span className="text-sg-ink-4">{t("plugins.tp.detailVersionLabel")}</span>{" "}
                 {version}
               </span>
             ) : null}
           </div>
 
           {description ? (
-            <p className="max-w-[72ch] text-[14px] leading-[1.6] text-tp-ink-2">{description}</p>
+            <p className="max-w-[72ch] text-[14px] leading-[1.6] text-sg-ink-2">{description}</p>
           ) : null}
 
           {errorMessage ? (
-            <p className="rounded-lg border border-tp-err/30 bg-tp-err-soft px-3 py-2 font-mono text-[12px] text-tp-err">
+            <p className="rounded-lg border border-sg-err/30 bg-sg-err-soft px-3 py-2 font-mono text-[12px] text-sg-err">
               {errorMessage}
             </p>
           ) : null}

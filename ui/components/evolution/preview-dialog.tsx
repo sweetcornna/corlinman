@@ -71,11 +71,11 @@ export function PreviewDialog({
           className="max-h-[400px] overflow-y-auto"
         >
           {loading ? (
-            <div className="py-6 text-center text-sm text-tp-ink-3">
+            <div className="py-6 text-center text-sm text-sg-ink-3">
               {t("evolution.preview.loading")}
             </div>
           ) : !report || report.transitions.length === 0 ? (
-            <div className="py-6 text-center text-sm text-tp-ink-3">
+            <div className="py-6 text-center text-sm text-sg-ink-3">
               {t("evolution.preview.empty")}
             </div>
           ) : (
@@ -123,23 +123,23 @@ function TransitionRow({ transition }: { transition: CuratorTransition }) {
     <li
       data-testid={`transition-${transition.skill_name}`}
       className={cn(
-        "flex items-center justify-between gap-3 rounded-lg border border-tp-glass-edge",
-        "bg-tp-glass-inner/50 px-3 py-2 text-[13px]",
+        "flex items-center justify-between gap-3 rounded-lg border border-sg-border",
+        "bg-sg-inset/50 px-3 py-2 text-[13px]",
       )}
     >
       <div className="flex min-w-0 items-center gap-2">
-        <span className="font-mono font-semibold text-tp-ink-1 truncate">
+        <span className="font-mono font-semibold text-sg-ink truncate">
           {transition.skill_name}
         </span>
-        <span className="font-mono text-tp-ink-3">
+        <span className="font-mono text-sg-ink-3">
           {transition.from_state}
         </span>
-        <ArrowRight aria-hidden className="h-3.5 w-3.5 text-tp-ink-3" />
-        <span className="font-mono font-semibold text-tp-ink-1">
+        <ArrowRight aria-hidden className="h-3.5 w-3.5 text-sg-ink-3" />
+        <span className="font-mono font-semibold text-sg-ink">
           {transition.to_state}
         </span>
       </div>
-      <span className="shrink-0 text-[11px] text-tp-ink-3">{reasonLabel}</span>
+      <span className="shrink-0 text-[11px] text-sg-ink-3">{reasonLabel}</span>
     </li>
   );
 }

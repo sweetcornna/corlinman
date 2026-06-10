@@ -131,23 +131,23 @@ export function MetaReviewDialog({
       >
         <DialogHeader>
           <div className="flex items-center gap-2">
-            <Sparkles className="h-4 w-4 text-tp-amber" aria-hidden />
+            <Sparkles className="h-4 w-4 text-sg-accent" aria-hidden />
             <DialogTitle>{t("evolution.tp.metaDialogTitle")}</DialogTitle>
             <span
               className={cn(
                 "rounded-full border px-2 py-[2px] font-mono text-[10.5px]",
-                "border-tp-amber/40 bg-tp-amber-soft text-tp-amber",
+                "border-sg-accent/40 bg-sg-accent-soft text-sg-accent",
                 "uppercase tracking-[0.08em]",
               )}
             >
               {t("evolution.tp.metaSelfImprovement")}
             </span>
           </div>
-          <DialogDescription className="font-mono text-[11.5px] text-tp-ink-3">
+          <DialogDescription className="font-mono text-[11.5px] text-sg-ink-3">
             <span>{proposal.kind}</span>
-            <span className="px-1.5 text-tp-ink-4">·</span>
+            <span className="px-1.5 text-sg-ink-4">·</span>
             <span className="break-all">{proposal.target}</span>
-            <span className="px-1.5 text-tp-ink-4">·</span>
+            <span className="px-1.5 text-sg-ink-4">·</span>
             <span>#{proposal.id}</span>
           </DialogDescription>
         </DialogHeader>
@@ -158,7 +158,7 @@ export function MetaReviewDialog({
 
         {confirmStep === "review" ? (
           <div className="flex flex-col gap-3 py-1">
-            <p className="text-[12.5px] leading-[1.6] text-tp-ink-2">
+            <p className="text-[12.5px] leading-[1.6] text-sg-ink-2">
               {proposal.reasoning}
             </p>
             <MetaDiff proposal={proposal} />
@@ -170,18 +170,18 @@ export function MetaReviewDialog({
             <div
               className={cn(
                 "flex items-start gap-2 rounded-lg border px-3 py-2.5",
-                "border-tp-amber/30 bg-tp-amber-soft text-tp-ink",
+                "border-sg-accent/30 bg-sg-accent-soft text-sg-ink",
               )}
             >
               <AlertTriangle
-                className="mt-0.5 h-4 w-4 shrink-0 text-tp-amber"
+                className="mt-0.5 h-4 w-4 shrink-0 text-sg-accent"
                 aria-hidden
               />
               <div className="flex flex-col gap-0.5">
                 <span className="text-[12.5px] font-medium">
                   {t("evolution.tp.metaConfirmGenericTitle")}
                 </span>
-                <span className="text-[12px] text-tp-ink-2">
+                <span className="text-[12px] text-sg-ink-2">
                   {t("evolution.tp.metaConfirmGenericBody")}
                 </span>
               </div>
@@ -194,24 +194,24 @@ export function MetaReviewDialog({
             <div
               className={cn(
                 "flex items-start gap-2 rounded-lg border px-3 py-2.5",
-                "border-tp-err/30 bg-tp-err-soft text-tp-ink",
+                "border-sg-err/30 bg-sg-err-soft text-sg-ink",
               )}
             >
               <ShieldAlert
-                className="mt-0.5 h-4 w-4 shrink-0 text-tp-err"
+                className="mt-0.5 h-4 w-4 shrink-0 text-sg-err"
                 aria-hidden
               />
               <div className="flex flex-col gap-0.5">
                 <span className="text-[12.5px] font-medium">
                   {t("evolution.tp.metaPromptStep1Title")}
                 </span>
-                <span className="text-[12px] text-tp-ink-2">
+                <span className="text-[12px] text-sg-ink-2">
                   {t("evolution.tp.metaPromptStep1Body")}
                 </span>
               </div>
             </div>
             <label className="flex flex-col gap-1.5">
-              <span className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-tp-ink-4">
+              <span className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-sg-ink-4">
                 {t("evolution.tp.metaPromptIdLabel")}
               </span>
               <input
@@ -223,11 +223,11 @@ export function MetaReviewDialog({
                 aria-label={t("evolution.tp.metaPromptIdLabel")}
                 className={cn(
                   "rounded-md border px-3 py-2 font-mono text-[12.5px]",
-                  "border-tp-glass-edge bg-tp-glass-inner text-tp-ink",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/55",
+                  "border-sg-border bg-sg-inset text-sg-ink",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/55",
                 )}
               />
-              <span className="font-mono text-[11px] text-tp-ink-3">
+              <span className="font-mono text-[11px] text-sg-ink-3">
                 #{proposal.id}
               </span>
             </label>
@@ -239,18 +239,18 @@ export function MetaReviewDialog({
             <div
               className={cn(
                 "flex items-start gap-2 rounded-lg border px-3 py-2.5",
-                "border-tp-err/40 bg-tp-err-soft text-tp-ink",
+                "border-sg-err/40 bg-sg-err-soft text-sg-ink",
               )}
             >
               <ShieldAlert
-                className="mt-0.5 h-4 w-4 shrink-0 text-tp-err"
+                className="mt-0.5 h-4 w-4 shrink-0 text-sg-err"
                 aria-hidden
               />
               <div className="flex flex-col gap-0.5">
                 <span className="text-[12.5px] font-medium">
                   {t("evolution.tp.metaPromptStep2Title")}
                 </span>
-                <span className="text-[12px] text-tp-ink-2">
+                <span className="text-[12px] text-sg-ink-2">
                   {t("evolution.tp.metaPromptStep2Body")}
                 </span>
               </div>
@@ -263,7 +263,7 @@ export function MetaReviewDialog({
             role="alert"
             className={cn(
               "rounded-md border px-3 py-2 text-[12px]",
-              "border-tp-err/40 bg-tp-err-soft text-tp-err",
+              "border-sg-err/40 bg-sg-err-soft text-sg-err",
             )}
           >
             {genericError}
@@ -278,8 +278,8 @@ export function MetaReviewDialog({
                 onClick={() => onOpenChange(false)}
                 className={cn(
                   "rounded-md px-3 py-1.5 text-[12.5px] font-medium",
-                  "bg-tp-glass-inner text-tp-ink-2 hover:bg-tp-glass-inner-hover",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
+                  "bg-sg-inset text-sg-ink-2 hover:bg-sg-inset-hover",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
                 )}
               >
                 {t("evolution.tp.metaDialogClose")}
@@ -290,9 +290,9 @@ export function MetaReviewDialog({
                 aria-label={t("evolution.tp.metaApply")}
                 className={cn(
                   "rounded-md px-3 py-1.5 text-[12.5px] font-medium",
-                  "bg-tp-amber text-[#1a120d] shadow-tp-primary",
+                  "bg-sg-accent text-primary-foreground shadow-sg-primary",
                   "hover:-translate-y-[1px] active:translate-y-0",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/55",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/55",
                 )}
               >
                 {t("evolution.tp.metaApply")}
@@ -308,7 +308,7 @@ export function MetaReviewDialog({
                 disabled={submitting}
                 className={cn(
                   "rounded-md px-3 py-1.5 text-[12.5px] font-medium",
-                  "bg-tp-glass-inner text-tp-ink-2 hover:bg-tp-glass-inner-hover",
+                  "bg-sg-inset text-sg-ink-2 hover:bg-sg-inset-hover",
                   "disabled:pointer-events-none disabled:opacity-50",
                 )}
               >
@@ -321,7 +321,7 @@ export function MetaReviewDialog({
                 aria-label={t("evolution.tp.metaConfirmContinue")}
                 className={cn(
                   "rounded-md px-3 py-1.5 text-[12.5px] font-medium",
-                  "bg-tp-amber text-[#1a120d] shadow-tp-primary",
+                  "bg-sg-accent text-primary-foreground shadow-sg-primary",
                   "disabled:pointer-events-none disabled:opacity-50",
                 )}
               >
@@ -338,7 +338,7 @@ export function MetaReviewDialog({
                 disabled={submitting}
                 className={cn(
                   "rounded-md px-3 py-1.5 text-[12.5px] font-medium",
-                  "bg-tp-glass-inner text-tp-ink-2 hover:bg-tp-glass-inner-hover",
+                  "bg-sg-inset text-sg-ink-2 hover:bg-sg-inset-hover",
                 )}
               >
                 {t("evolution.tp.metaConfirmCancel")}
@@ -350,7 +350,7 @@ export function MetaReviewDialog({
                 aria-label={t("evolution.tp.metaApply")}
                 className={cn(
                   "rounded-md px-3 py-1.5 text-[12.5px] font-medium",
-                  "bg-tp-amber text-[#1a120d] shadow-tp-primary",
+                  "bg-sg-accent text-primary-foreground shadow-sg-primary",
                   "disabled:pointer-events-none disabled:opacity-50",
                 )}
               >
@@ -367,7 +367,7 @@ export function MetaReviewDialog({
                 disabled={submitting}
                 className={cn(
                   "rounded-md px-3 py-1.5 text-[12.5px] font-medium",
-                  "bg-tp-glass-inner text-tp-ink-2 hover:bg-tp-glass-inner-hover",
+                  "bg-sg-inset text-sg-ink-2 hover:bg-sg-inset-hover",
                 )}
               >
                 {t("evolution.tp.metaConfirmCancel")}
@@ -379,7 +379,7 @@ export function MetaReviewDialog({
                 aria-label={t("evolution.tp.metaPromptStep2Confirm")}
                 className={cn(
                   "rounded-md px-3 py-1.5 text-[12.5px] font-medium",
-                  "bg-tp-err text-white",
+                  "bg-sg-err text-white",
                   "disabled:pointer-events-none disabled:opacity-50",
                 )}
               >
@@ -407,14 +407,14 @@ function ApproverRequiredHelp({ user }: { user: string }) {
       data-testid="meta-approver-required"
       className={cn(
         "flex items-start gap-2 rounded-lg border px-3 py-2.5",
-        "border-tp-err/40 bg-tp-err-soft text-tp-ink",
+        "border-sg-err/40 bg-sg-err-soft text-sg-ink",
       )}
     >
       <ShieldAlert
-        className="mt-0.5 h-4 w-4 shrink-0 text-tp-err"
+        className="mt-0.5 h-4 w-4 shrink-0 text-sg-err"
         aria-hidden
       />
-      <span className="text-[12.5px] leading-[1.5] text-tp-ink-2">
+      <span className="text-[12.5px] leading-[1.5] text-sg-ink-2">
         {t("evolution.tp.metaApproverRequired", { user })}
       </span>
     </div>
@@ -435,8 +435,8 @@ function MetaDiff({ proposal }: { proposal: EvolutionProposal }) {
       <pre
         className={cn(
           "max-h-[260px] overflow-auto rounded-md border px-3 py-2",
-          "border-tp-glass-edge bg-tp-glass-inner-strong",
-          "font-mono text-[11.5px] leading-[1.55] text-tp-ink-2",
+          "border-sg-border bg-sg-inset-strong",
+          "font-mono text-[11.5px] leading-[1.55] text-sg-ink-2",
         )}
       >
         {proposal.diff || "(empty diff)"}
@@ -543,17 +543,17 @@ function DiffPane({
 }) {
   const toneCls =
     tone === "prev"
-      ? "border-tp-err/30 bg-tp-err-soft/50"
-      : "border-tp-ok/30 bg-tp-ok-soft/50";
+      ? "border-sg-err/30 bg-sg-err-soft/50"
+      : "border-sg-ok/30 bg-sg-ok-soft/50";
   return (
     <div className={cn("rounded-md border", toneCls)}>
-      <div className="border-b border-tp-glass-edge/50 px-2.5 py-1 font-mono text-[10.5px] uppercase tracking-[0.08em] text-tp-ink-3">
+      <div className="border-b border-sg-border/50 px-2.5 py-1 font-mono text-[10.5px] uppercase tracking-[0.08em] text-sg-ink-3">
         {label}
       </div>
       <pre
         className={cn(
           "max-h-[260px] overflow-auto px-2.5 py-2",
-          "font-mono text-[11.5px] leading-[1.55] text-tp-ink",
+          "font-mono text-[11.5px] leading-[1.55] text-sg-ink",
           "whitespace-pre-wrap break-words",
         )}
       >

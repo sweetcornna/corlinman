@@ -96,13 +96,13 @@ export function MetricsDelta({
   return (
     <div
       className={cn(
-        "flex flex-col gap-1.5 rounded-xl border border-tp-glass-edge",
-        "bg-tp-glass-inner/40 p-2.5",
+        "flex flex-col gap-1.5 rounded-xl border border-sg-border",
+        "bg-sg-inset/40 p-2.5",
       )}
       role="group"
       aria-label={heading}
     >
-      <div className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-tp-ink-4">
+      <div className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-sg-ink-4">
         {heading}
       </div>
       <ul className="flex flex-col gap-1.5">
@@ -127,27 +127,27 @@ function DeltaRow({ row, max }: { row: Row; max: number }) {
 
   return (
     <li className="flex flex-col gap-1">
-      <div className="flex items-center justify-between gap-2 text-[11px] text-tp-ink-2">
-        <span className="truncate font-mono text-tp-ink-3">{row.key}</span>
+      <div className="flex items-center justify-between gap-2 text-[11px] text-sg-ink-2">
+        <span className="truncate font-mono text-sg-ink-3">{row.key}</span>
         <span
           className={cn(
             "font-mono tabular-nums",
             row.abs === 0
-              ? "text-tp-ink-4"
+              ? "text-sg-ink-4"
               : regressed
-                ? "text-tp-warn"
-                : "text-tp-ok",
+                ? "text-sg-warn"
+                : "text-sg-ok",
           )}
           aria-label={`baseline ${row.baseline}, current ${row.current}, delta ${row.abs}`}
         >
           {row.baseline} → {row.current} · {annotation}
         </span>
       </div>
-      <div className="relative h-2 w-full overflow-hidden rounded-full bg-tp-glass-inner">
+      <div className="relative h-2 w-full overflow-hidden rounded-full bg-sg-inset">
         {/* Baseline (neutral, behind). */}
         <span
           aria-hidden
-          className="absolute inset-y-0 left-0 rounded-full bg-tp-ink-3/30"
+          className="absolute inset-y-0 left-0 rounded-full bg-sg-ink-3/30"
           style={{ width: `${baselinePct}%` }}
         />
         {/* Current — drawn over baseline. Warn tone if regressed, ok if not. */}
@@ -156,10 +156,10 @@ function DeltaRow({ row, max }: { row: Row; max: number }) {
           className={cn(
             "absolute inset-y-0 left-0 rounded-full",
             regressed
-              ? "bg-tp-warn/70"
+              ? "bg-sg-warn/70"
               : sameOrBetter
-                ? "bg-tp-ok/70"
-                : "bg-tp-ink-3/40",
+                ? "bg-sg-ok/70"
+                : "bg-sg-ink-3/40",
           )}
           style={{ width: `${currentPct}%` }}
         />

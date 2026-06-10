@@ -24,7 +24,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { CheckCircle2, Eye, EyeOff, KeyRound, UserCog } from "lucide-react";
+import { Eye, EyeOff, KeyRound, UserCog } from "lucide-react";
 
 import {
   changePassword,
@@ -35,6 +35,7 @@ import {
 import { CorlinmanApiError } from "@/lib/api";
 import { useMustChangePassword } from "@/components/admin/must-change-password-context";
 import { ApiKeysCard } from "@/components/admin/api-keys-card";
+import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -112,26 +113,20 @@ export default function AccountSecurityPage() {
           We keep the user on the page so they can finish renaming if
           they haven't — but offer a one-click escape hatch. */}
       {justResolved && (
-        <div
-          role="status"
+        <Alert
+          variant="success"
           data-testid="account-security-resolved"
-          className="flex items-start gap-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-4 text-sm text-emerald-200"
+          title={t("account.security.passwordChanged")}
         >
-          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-          <div className="flex-1 space-y-1">
-            <p className="font-medium">
-              {t("account.security.passwordChanged")}
-            </p>
-            <Button
-              size="sm"
-              variant="outline"
-              className="mt-1"
-              onClick={() => router.replace("/")}
-            >
-              {t("auth.continueDashboard")}
-            </Button>
-          </div>
-        </div>
+          <Button
+            size="sm"
+            variant="outline"
+            className="mt-1"
+            onClick={() => router.replace("/")}
+          >
+            {t("auth.continueDashboard")}
+          </Button>
+        </Alert>
       )}
 
       <ChangeUsernameCard

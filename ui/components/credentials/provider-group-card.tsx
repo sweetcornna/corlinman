@@ -163,7 +163,7 @@ export function ProviderGroupCard({
             )
           ) : null}
           {provider.enabled ? (
-            <Badge className="border-transparent bg-ok/15 text-ok text-[10px]">
+            <Badge className="border-transparent bg-sg-ok-soft text-sg-ok text-[10px]">
               {t("common.enabled")}
             </Badge>
           ) : null}

@@ -237,7 +237,7 @@ export default function QzoneSchedulerPage() {
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div className="space-y-1">
           <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
-            <Sparkles className="h-5 w-5 text-amber-500" aria-hidden />
+            <Sparkles className="h-5 w-5 text-sg-accent" aria-hidden />
             {t("schedulerQzone.title", { defaultValue: "QZone daily publishing" })}
           </h1>
           <p className="max-w-2xl text-sm text-muted-foreground">
@@ -397,7 +397,7 @@ export default function QzoneSchedulerPage() {
               className={cn(
                 "text-xs",
                 nextFirePreview === null && form.cron.trim().length > 0
-                  ? "text-red-500"
+                  ? "text-sg-err"
                   : "text-muted-foreground",
               )}
             >
@@ -564,14 +564,14 @@ function QzoneJobRow({ job, onTrigger, triggering }: QzoneJobRowProps) {
                 href={job.last_qzone_url}
                 target="_blank"
                 rel="noreferrer"
-                className="inline-flex items-center gap-1 text-amber-600 hover:underline"
+                className="inline-flex items-center gap-1 text-sg-accent hover:underline"
               >
                 <ExternalLink className="h-3 w-3" aria-hidden />
                 {t("schedulerQzone.row.viewQzone", { defaultValue: "View on QZone" })}
               </a>
             ) : null}
             {!job.last_run_ok && job.last_error ? (
-              <p className="text-red-500">{job.last_error}</p>
+              <p className="text-sg-err">{job.last_error}</p>
             ) : null}
           </>
         )}

@@ -20,7 +20,7 @@ import type { Skill } from "@/lib/mocks/skills";
  *
  * A `GlassPanel variant="soft"` styled as a button. Click anywhere (or Enter /
  * Space) to open the detail drawer. Under pointer hover, the card lifts 2px
- * and escalates to `shadow-tp-primary`. Under `prefers-reduced-motion: reduce`
+ * and escalates to `shadow-sg-primary`. Under `prefers-reduced-motion: reduce`
  * the translate is suppressed.
  *
  * Layout (three rows + optional pill):
@@ -149,8 +149,8 @@ export function SkillCard({
         className={cn(
           "flex h-full cursor-pointer flex-col gap-3 p-4",
           "transition-[box-shadow,border-color] duration-200 ease-tp-ease-out",
-          "group-hover:shadow-tp-primary",
-          "focus-visible:shadow-tp-primary focus-visible:ring-2 focus-visible:ring-tp-amber/50",
+          "group-hover:shadow-sg-primary",
+          "focus-visible:shadow-sg-primary focus-visible:ring-2 focus-visible:ring-sg-accent/50",
         )}
       >
         {/* Row 1 — emoji/glyph badge + name + version-ish meta line */}
@@ -159,7 +159,7 @@ export function SkillCard({
             aria-hidden
             className={cn(
               "flex h-9 w-9 shrink-0 items-center justify-center rounded-full",
-              "border border-tp-amber/25 bg-tp-amber-soft text-[17px] leading-none",
+              "border border-sg-accent/25 bg-sg-accent-soft text-[17px] leading-none",
             )}
           >
             {skill.emoji ? (
@@ -167,14 +167,14 @@ export function SkillCard({
               // dominant visual element.
               <span className="opacity-85">{skill.emoji}</span>
             ) : (
-              <CategoryIcon className="h-4 w-4 text-tp-amber" />
+              <CategoryIcon className="h-4 w-4 text-sg-accent" />
             )}
           </div>
           <div className="min-w-0 flex-1">
-            <h3 className="truncate text-[15px] font-medium leading-tight text-tp-ink">
+            <h3 className="truncate text-[15px] font-medium leading-tight text-sg-ink">
               {skill.name}
             </h3>
-            <div className="mt-1 flex items-center gap-1.5 font-mono text-[10.5px] uppercase tracking-[0.08em] text-tp-ink-4">
+            <div className="mt-1 flex items-center gap-1.5 font-mono text-[10.5px] uppercase tracking-[0.08em] text-sg-ink-4">
               <CategoryIcon className="h-3 w-3" aria-hidden />
               <span>{meta.label}</span>
             </div>
@@ -182,7 +182,7 @@ export function SkillCard({
         </div>
 
         {/* Row 2 — description, clamped */}
-        <p className="line-clamp-2 text-[12.5px] leading-[1.5] text-tp-ink-2">
+        <p className="line-clamp-2 text-[12.5px] leading-[1.5] text-sg-ink-2">
           {skill.description}
         </p>
 
@@ -191,21 +191,21 @@ export function SkillCard({
           {visibleTools.map((tool) => (
             <span
               key={tool}
-              className="inline-flex items-center rounded-md border border-tp-glass-edge bg-tp-glass-inner px-1.5 py-0.5 font-mono text-[10.5px] text-tp-ink-3"
+              className="inline-flex items-center rounded-md border border-sg-border bg-sg-inset px-1.5 py-0.5 font-mono text-[10.5px] text-sg-ink-3"
             >
               {tool}
             </span>
           ))}
           {overflowCount > 0 ? (
             <span
-              className="inline-flex items-center rounded-md border border-tp-glass-edge bg-tp-glass-inner px-1.5 py-0.5 font-mono text-[10.5px] text-tp-ink-4"
+              className="inline-flex items-center rounded-md border border-sg-border bg-sg-inset px-1.5 py-0.5 font-mono text-[10.5px] text-sg-ink-4"
               aria-label={`${overflowCount} more tools`}
             >
               +{overflowCount} more
             </span>
           ) : null}
           {visibleTools.length === 0 && overflowCount === 0 ? (
-            <span className="font-mono text-[10.5px] text-tp-ink-4">
+            <span className="font-mono text-[10.5px] text-sg-ink-4">
               no allowed-tools
             </span>
           ) : null}
@@ -215,10 +215,10 @@ export function SkillCard({
         {requiresLabel ? (
           <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
             <span
-              className="inline-flex items-center gap-1.5 rounded-full border border-tp-amber/30 bg-tp-amber-soft px-2 py-[2px] font-mono text-[10.5px] text-tp-amber"
+              className="inline-flex items-center gap-1.5 rounded-full border border-sg-accent/30 bg-sg-accent-soft px-2 py-[2px] font-mono text-[10.5px] text-sg-accent"
               title={requiresLabel}
             >
-              <span aria-hidden className="h-[5px] w-[5px] rounded-full bg-tp-amber" />
+              <span aria-hidden className="h-[5px] w-[5px] rounded-full bg-sg-accent" />
               <span className="max-w-[220px] truncate">requires {requiresLabel}</span>
             </span>
           </div>

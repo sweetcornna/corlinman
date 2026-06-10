@@ -10,9 +10,9 @@ import type { Runner } from "@/lib/mocks/nodes";
  * Tidepool-retokened satellite node.
  *
  * Palette:
- *   - healthy  → --tp-ok (soft fill at 12%, stroke at 80%)
- *   - degraded → --tp-warn (adds `!` glyph + subtle jitter animation)
- *   - offline  → --tp-ink-4 (desaturated, `∅` glyph, no pulse)
+ *   - healthy  → --sg-ok (soft fill at 12%, stroke at 80%)
+ *   - degraded → --sg-warn (adds `!` glyph + subtle jitter animation)
+ *   - offline  → --sg-ink-4 (desaturated, `∅` glyph, no pulse)
  *
  * Motion:
  *   - healthy gets a pulsing halo (class `.nodes-halo`)
@@ -39,15 +39,15 @@ export interface RunnerNodeProps {
 }
 
 const HEALTH_STROKE: Record<Runner["health"], string> = {
-  healthy: "var(--tp-ok)",
-  degraded: "var(--tp-warn)",
-  offline: "var(--tp-ink-4)",
+  healthy: "var(--sg-ok)",
+  degraded: "var(--sg-warn)",
+  offline: "var(--sg-ink-4)",
 };
 
 const HEALTH_FILL: Record<Runner["health"], string> = {
-  healthy: "color-mix(in oklch, var(--tp-ok) 16%, transparent)",
-  degraded: "color-mix(in oklch, var(--tp-warn) 16%, transparent)",
-  offline: "color-mix(in oklch, var(--tp-ink-4) 18%, transparent)",
+  healthy: "color-mix(in oklch, var(--sg-ok) 16%, transparent)",
+  degraded: "color-mix(in oklch, var(--sg-warn) 16%, transparent)",
+  offline: "color-mix(in oklch, var(--sg-ink-4) 18%, transparent)",
 };
 
 function truncateId(id: string, max = 10): string {
@@ -135,7 +135,7 @@ export const RunnerNode = React.memo(function RunnerNode({
           cy={cy}
           r={r + 4}
           fill="none"
-          stroke="var(--tp-amber)"
+          stroke="var(--sg-accent)"
           strokeOpacity={0.9}
           strokeWidth={1.4}
         />
@@ -155,7 +155,7 @@ export const RunnerNode = React.memo(function RunnerNode({
           cx={cx + r * 0.72}
           cy={cy - r * 0.72}
           r={8}
-          fill="var(--tp-glass-inner-strong)"
+          fill="var(--sg-inset-strong)"
           stroke={HEALTH_STROKE[runner.health]}
           strokeOpacity={0.6}
           strokeWidth={1}
@@ -167,7 +167,7 @@ export const RunnerNode = React.memo(function RunnerNode({
           fontFamily="var(--font-geist-mono, ui-monospace)"
           textAnchor="middle"
           dominantBaseline="central"
-          fill="var(--tp-ink)"
+          fill="var(--sg-ink)"
         >
           {runner.toolCount}
         </text>
@@ -179,7 +179,7 @@ export const RunnerNode = React.memo(function RunnerNode({
         fontSize="10.5"
         fontFamily="var(--font-geist-mono, ui-monospace)"
         textAnchor="middle"
-        fill="var(--tp-ink-2)"
+        fill="var(--sg-ink-2)"
         aria-hidden="true"
       >
         {truncateId(runner.hostname.replace("runner-", ""))}
@@ -193,7 +193,7 @@ export const RunnerNode = React.memo(function RunnerNode({
           fontSize={11}
           fontWeight={700}
           textAnchor="middle"
-          fill="var(--tp-warn)"
+          fill="var(--sg-warn)"
           data-testid={`runner-glyph-${runner.id}`}
         >
           !
@@ -207,7 +207,7 @@ export const RunnerNode = React.memo(function RunnerNode({
           fontSize={11}
           fontWeight={700}
           textAnchor="middle"
-          fill="var(--tp-ink-4)"
+          fill="var(--sg-ink-4)"
           data-testid={`runner-glyph-${runner.id}`}
         >
           ∅

@@ -8,9 +8,9 @@ import { cn } from "@/lib/utils";
  * weekly evolution budget the operator has already spent.
  *
  * Tone ramps with remaining capacity:
- *   - >= 75% remaining → tp-ok (green)
- *   - 25–74% remaining → tp-warn (amber)
- *   -  < 25% remaining → tp-err (red)
+ *   - >= 75% remaining → sg-ok (green)
+ *   - 25–74% remaining → sg-warn (amber)
+ *   -  < 25% remaining → sg-err (red)
  *
  * Mathematically the ring fills *clockwise* with `used`, so the visible arc
  * grows as the budget is consumed. Colour is keyed off `remaining` so the
@@ -40,10 +40,10 @@ export const BudgetGauge = React.forwardRef<HTMLDivElement, BudgetGaugeProps>(
 
     const tone =
       remainingPct >= 0.75
-        ? "tp-ok"
+        ? "sg-ok"
         : remainingPct >= 0.25
-          ? "tp-warn"
-          : "tp-err";
+          ? "sg-warn"
+          : "sg-err";
 
     return (
       <div
@@ -67,7 +67,7 @@ export const BudgetGauge = React.forwardRef<HTMLDivElement, BudgetGaugeProps>(
             cy={size / 2}
             r={radius}
             fill="none"
-            stroke="var(--tp-glass-edge)"
+            stroke="var(--sg-border)"
             strokeWidth={strokeWidth}
           />
           <circle

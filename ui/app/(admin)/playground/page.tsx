@@ -693,7 +693,7 @@ function ChatPanel({
             className={cn(
               "inline-flex items-center gap-2 rounded-lg px-3.5 py-2 text-[13px] font-medium",
               "border border-tp-amber/35 bg-tp-amber-soft text-tp-amber",
-              "shadow-[inset_0_1px_0_rgba(255,255,255,0.35),0_6px_14px_-8px_color-mix(in_oklch,var(--tp-amber)_55%,transparent)]",
+              "shadow-sg-2",
               "transition-transform duration-200 hover:-translate-y-px",
               "hover:bg-[color-mix(in_oklch,var(--tp-amber)_22%,transparent)]",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",

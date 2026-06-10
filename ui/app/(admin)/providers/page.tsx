@@ -275,7 +275,7 @@ export function ProvidersAdminContent() {
         ) : backendPending ? (
           <BackendPendingBanner label={t("providers.backendPending")} />
         ) : providers.isError ? (
-          <p className="text-xs text-destructive">
+          <p className="text-xs text-sg-err">
             {t("providers.loadFailed")}:{" "}
             {(providers.error as Error).message}
           </p>
@@ -334,14 +334,14 @@ export function ProvidersAdminContent() {
                         {t("providers.keyLiteral")}
                       </span>
                     ) : (
-                      <span className="text-destructive">
+                      <span className="text-sg-err">
                         {t("providers.keyUnset")}
                       </span>
                     )}
                   </TableCell>
                   <TableCell>
                     {p.enabled ? (
-                      <Badge className="border-transparent bg-ok/15 text-ok">
+                      <Badge className="border-transparent bg-sg-ok-soft text-sg-ok">
                         {t("common.enabled")}
                       </Badge>
                     ) : (
@@ -421,7 +421,7 @@ export function ProvidersAdminContent() {
           {deleteBlock ? (
             <ul className="space-y-1 text-xs font-mono">
               {deleteBlock.map((ref) => (
-                <li key={ref} className="text-destructive">
+                <li key={ref} className="text-sg-err">
                   • {ref}
                 </li>
               ))}
@@ -727,7 +727,7 @@ function ProviderEditorDialog({ open, onOpenChange, editing }: EditorProps) {
               </div>
               {modelDiscovery.error ? (
                 <p
-                  className="text-[11px] text-destructive"
+                  className="text-[11px] text-sg-err"
                   data-testid="provider-models-error"
                 >
                   {modelDiscovery.error}
@@ -962,7 +962,7 @@ function CustomProvidersSection() {
         ) : backendPending ? (
           <BackendPendingBanner label={t("providers.backendPending")} />
         ) : customs.isError ? (
-          <p className="text-xs text-destructive">
+          <p className="text-xs text-sg-err">
             Load failed: {(customs.error as Error).message}
           </p>
         ) : (customs.data ?? []).length === 0 ? (
@@ -1001,7 +1001,7 @@ function CustomProvidersSection() {
                   </TableCell>
                   <TableCell className="text-xs">
                     {p.has_api_key ? (
-                      <Badge className="border-transparent bg-ok/15 text-ok">
+                      <Badge className="border-transparent bg-sg-ok-soft text-sg-ok">
                         set
                       </Badge>
                     ) : (

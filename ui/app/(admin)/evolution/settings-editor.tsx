@@ -201,13 +201,13 @@ export function EvolutionSettingsDialog({
         </DialogHeader>
 
         {loading || !draft ? (
-          <div className="py-8 text-center text-[12.5px] text-tp-ink-3">
+          <div className="py-8 text-center text-[12.5px] text-sg-ink-3">
             {t("evolution.settings.loading")}
           </div>
         ) : (
           <div className="flex flex-col gap-6 py-1">
             {disabled ? (
-              <div className="rounded-lg border border-tp-warn/30 bg-tp-warn-soft px-3 py-2 text-[12px] text-tp-warn">
+              <div className="rounded-lg border border-sg-warn/30 bg-sg-warn-soft px-3 py-2 text-[12px] text-sg-warn">
                 {t("evolution.settings.configUnset")}
               </div>
             ) : null}
@@ -215,16 +215,16 @@ export function EvolutionSettingsDialog({
             {/* ── Meta approvers ── */}
             <section className="flex flex-col gap-2" data-testid="meta-approvers">
               <div className="flex flex-col gap-0.5">
-                <h3 className="font-medium text-[13px] text-tp-ink-1">
+                <h3 className="font-medium text-[13px] text-sg-ink">
                   {t("evolution.settings.metaApprovers")}
                 </h3>
-                <p className="text-[11.5px] text-tp-ink-3">
+                <p className="text-[11.5px] text-sg-ink-3">
                   {t("evolution.settings.metaApproversHint")}
                 </p>
               </div>
               {approvers.length === 0 ? (
                 <p
-                  className="rounded-lg border border-tp-err/30 bg-tp-err-soft px-3 py-2 text-[11.5px] text-tp-err"
+                  className="rounded-lg border border-sg-err/30 bg-sg-err-soft px-3 py-2 text-[11.5px] text-sg-err"
                   data-testid="meta-approvers-empty"
                 >
                   {t("evolution.settings.metaApproversEmpty")}
@@ -234,14 +234,14 @@ export function EvolutionSettingsDialog({
                   {approvers.map((id) => (
                     <li
                       key={id}
-                      className="inline-flex items-center gap-1.5 rounded-full border border-tp-glass-edge bg-tp-glass-inner px-2.5 py-1 text-[12px] text-tp-ink-1"
+                      className="inline-flex items-center gap-1.5 rounded-full border border-sg-border bg-sg-inset px-2.5 py-1 text-[12px] text-sg-ink"
                     >
                       <span className="font-mono">{id}</span>
                       <button
                         type="button"
                         onClick={() => removeApprover(id)}
                         aria-label={t("evolution.settings.removeApprover", { id })}
-                        className="rounded-full px-1 text-tp-ink-3 hover:text-tp-err focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40"
+                        className="rounded-full px-1 text-sg-ink-3 hover:text-sg-err focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40"
                       >
                         ×
                       </button>
@@ -280,7 +280,7 @@ export function EvolutionSettingsDialog({
             {/* ── Budget ── */}
             <section className="flex flex-col gap-2" data-testid="budget-settings">
               <div className="flex items-center justify-between gap-3">
-                <h3 className="font-medium text-[13px] text-tp-ink-1">
+                <h3 className="font-medium text-[13px] text-sg-ink">
                   {t("evolution.settings.budget")}
                 </h3>
                 <Switch
@@ -302,7 +302,7 @@ export function EvolutionSettingsDialog({
                 />
               </Field>
               <div className="flex flex-col gap-1.5">
-                <span className="text-[11.5px] text-tp-ink-3">
+                <span className="text-[11.5px] text-sg-ink-3">
                   {t("evolution.settings.perKind")}
                 </span>
                 {perKindRows.map((row) => (
@@ -310,7 +310,7 @@ export function EvolutionSettingsDialog({
                     key={row.kind}
                     className="flex items-center justify-between gap-2"
                   >
-                    <Label className="font-mono text-[12px] text-tp-ink-2">
+                    <Label className="font-mono text-[12px] text-sg-ink-2">
                       {row.kind}
                     </Label>
                     <NumberInput
@@ -332,7 +332,7 @@ export function EvolutionSettingsDialog({
                 data-testid="auto-rollback-settings"
               >
                 <div className="flex items-center justify-between gap-3">
-                  <h3 className="font-medium text-[13px] text-tp-ink-1">
+                  <h3 className="font-medium text-[13px] text-sg-ink">
                     {t("evolution.settings.autoRollback")}
                   </h3>
                   <Switch
@@ -395,7 +395,7 @@ export function EvolutionSettingsDialog({
             {error ? (
               <p
                 role="alert"
-                className="rounded-lg border border-tp-err/40 bg-tp-err-soft px-3 py-2 text-[12px] text-tp-err"
+                className="rounded-lg border border-sg-err/40 bg-sg-err-soft px-3 py-2 text-[12px] text-sg-err"
               >
                 {t("evolution.settings.saveFailed", { msg: error })}
               </p>
@@ -438,8 +438,8 @@ function Field({
   return (
     <div className="flex items-center justify-between gap-3">
       <div className="flex flex-col">
-        <Label className="text-[12.5px] text-tp-ink-1">{label}</Label>
-        {hint ? <span className="text-[11px] text-tp-ink-3">{hint}</span> : null}
+        <Label className="text-[12.5px] text-sg-ink">{label}</Label>
+        {hint ? <span className="text-[11px] text-sg-ink-3">{hint}</span> : null}
       </div>
       {children}
     </div>

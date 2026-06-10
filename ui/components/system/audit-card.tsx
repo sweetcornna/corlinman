@@ -273,7 +273,7 @@ export function AuditCard() {
       {loadError ? (
         <p
           role="alert"
-          className="mt-3 text-xs text-red-500"
+          className="mt-3 text-xs text-sg-err"
           data-testid="system-audit-load-error"
         >
           {loadError}

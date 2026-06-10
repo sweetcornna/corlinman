@@ -43,8 +43,10 @@ const IN_FLIGHT_STATES: ReadonlySet<SubagentState> = new Set([
   "stalled",
 ]);
 
-/** State → (icon, classes for the pill chrome). Mirrors the same warm
- * amber → emerald → red palette `<ToolWidget>` uses for tool state. */
+/** State → (icon, classes for the pill chrome). Maps onto the Spatial
+ * Glass status tokens `<ToolWidget>` uses: in-flight → warn, succeeded →
+ * ok, failed/killed/timeout → err. The sg tokens are theme-aware so the
+ * pill flips between light/dark automatically — no `dark:` variants. */
 function statePresentation(state: SubagentState): {
   Icon: React.ComponentType<{ className?: string }>;
   className: string;
@@ -53,44 +55,37 @@ function statePresentation(state: SubagentState): {
     case "queued":
       return {
         Icon: Pause,
-        className:
-          "bg-amber-100/60 text-amber-900 dark:bg-amber-900/30 dark:text-amber-100",
+        className: "border border-sg-warn/30 bg-sg-warn-soft text-sg-warn",
       };
     case "running":
       return {
         Icon: Loader2,
-        className:
-          "bg-amber-200/60 text-amber-900 dark:bg-amber-800/40 dark:text-amber-100",
+        className: "border border-sg-warn/30 bg-sg-warn-soft text-sg-warn",
       };
     case "stalled":
       return {
         Icon: Clock,
-        className:
-          "bg-amber-300/60 text-amber-900 dark:bg-amber-700/40 dark:text-amber-100",
+        className: "border border-sg-warn/40 bg-sg-warn-soft text-sg-warn",
       };
     case "succeeded":
       return {
         Icon: CheckCircle2,
-        className:
-          "bg-emerald-100/70 text-emerald-900 dark:bg-emerald-900/30 dark:text-emerald-100",
+        className: "border border-sg-ok/30 bg-sg-ok-soft text-sg-ok",
       };
     case "failed":
       return {
         Icon: AlertTriangle,
-        className:
-          "bg-red-100/70 text-red-900 dark:bg-red-900/30 dark:text-red-100",
+        className: "border border-sg-err/30 bg-sg-err-soft text-sg-err",
       };
     case "killed":
       return {
         Icon: OctagonX,
-        className:
-          "bg-red-200/70 text-red-900 dark:bg-red-800/40 dark:text-red-100",
+        className: "border border-sg-err/40 bg-sg-err-soft text-sg-err",
       };
     case "timeout":
       return {
         Icon: XOctagon,
-        className:
-          "bg-red-100/70 text-red-900 dark:bg-red-900/30 dark:text-red-100",
+        className: "border border-sg-err/30 bg-sg-err-soft text-sg-err",
       };
   }
 }
@@ -185,20 +180,20 @@ export function SubagentRow({
       }}
       tabIndex={0}
       className={cn(
-        "cursor-pointer border-b border-tp-glass-edge text-sm text-tp-ink",
-        "transition-colors hover:bg-tp-glass-inner",
-        "focus:outline-none focus-visible:bg-tp-glass-inner",
+        "cursor-pointer border-b border-sg-border text-sm text-sg-ink",
+        "transition-colors hover:bg-sg-inset",
+        "focus:outline-none focus-visible:bg-sg-inset",
       )}
     >
       <td className="whitespace-nowrap px-3 py-2.5">
         <span
           data-testid="subagent-type-pill"
-          className="inline-flex items-center rounded-md border border-tp-glass-edge bg-tp-glass-inner px-2 py-0.5 font-mono text-[11px] text-tp-ink"
+          className="inline-flex items-center rounded-sg-sm border border-sg-border bg-sg-inset px-2 py-0.5 font-mono text-[11px] text-sg-ink"
         >
           {data.subagent_type}
         </span>
       </td>
-      <td className="max-w-[340px] truncate px-3 py-2.5 text-tp-ink-2">
+      <td className="max-w-[340px] truncate px-3 py-2.5 text-sg-ink-2">
         {task}
       </td>
       <td className="whitespace-nowrap px-3 py-2.5">
@@ -207,7 +202,7 @@ export function SubagentRow({
             data.parent_session_key,
           )}`}
           onClick={(e) => e.stopPropagation()}
-          className="font-mono text-[11px] text-tp-ink-3 underline-offset-2 hover:text-tp-ink hover:underline"
+          className="font-mono text-[11px] text-sg-ink-3 underline-offset-2 hover:text-sg-ink hover:underline"
         >
           {parentShort}
         </Link>
@@ -216,7 +211,7 @@ export function SubagentRow({
         <span
           data-testid="subagent-state-pill"
           className={cn(
-            "inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-medium",
+            "inline-flex items-center gap-1 rounded-sg-sm px-2 py-0.5 text-[11px] font-medium",
             stateClass,
           )}
         >
@@ -232,11 +227,11 @@ export function SubagentRow({
       </td>
       <td
         data-testid="subagent-elapsed"
-        className="whitespace-nowrap px-3 py-2.5 font-mono text-[11px] text-tp-ink-2"
+        className="whitespace-nowrap px-3 py-2.5 font-mono text-[11px] text-sg-ink-2"
       >
         {formatElapsed(elapsed)}
       </td>
-      <td className="whitespace-nowrap px-3 py-2.5 font-mono text-[11px] text-tp-ink-2">
+      <td className="whitespace-nowrap px-3 py-2.5 font-mono text-[11px] text-sg-ink-2">
         {data.tool_calls_made}
       </td>
       <td className="whitespace-nowrap px-3 py-2.5 text-right">
@@ -252,7 +247,7 @@ export function SubagentRow({
             {t("subagents.action.kill")}
           </Button>
         ) : (
-          <span className="text-[11px] text-tp-ink-3">—</span>
+          <span className="text-[11px] text-sg-ink-3">—</span>
         )}
       </td>
     </tr>

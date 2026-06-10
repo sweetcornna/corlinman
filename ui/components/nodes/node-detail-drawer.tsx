@@ -78,9 +78,9 @@ export function NodeDetailDrawer({
   const bars = React.useMemo(() => fabricateLatencyBars(runner), [runner]);
 
   const healthPillClass = {
-    healthy: "bg-tp-ok-soft text-tp-ok border-tp-ok/25",
-    degraded: "bg-tp-warn-soft text-tp-warn border-tp-warn/30",
-    offline: "bg-tp-glass-inner text-tp-ink-3 border-tp-glass-edge",
+    healthy: "bg-sg-ok-soft text-sg-ok border-sg-ok/25",
+    degraded: "bg-sg-warn-soft text-sg-warn border-sg-warn/30",
+    offline: "bg-sg-inset text-sg-ink-3 border-sg-border",
   }[runner.health];
 
   const meta = (
@@ -94,10 +94,10 @@ export function NodeDetailDrawer({
       >
         {t(`nodes.tp.health${capitaliseHealth(runner.health)}`)}
       </span>
-      <span className="font-mono text-[12.5px] tabular-nums text-tp-ink">
+      <span className="font-mono text-[12.5px] tabular-nums text-sg-ink">
         {runner.hostname}
       </span>
-      <span className="font-mono text-[11px] tabular-nums text-tp-ink-3">
+      <span className="font-mono text-[11px] tabular-nums text-sg-ink-3">
         {runner.health === "offline" ? "—" : `${runner.latencyMs}ms`}
       </span>
     </>
@@ -122,7 +122,7 @@ export function NodeDetailDrawer({
   return (
     <DetailDrawer
       title={
-        <span className="font-mono text-[14px] text-tp-ink">
+        <span className="font-mono text-[14px] text-sg-ink">
           {runner.id}
         </span>
       }
@@ -138,7 +138,7 @@ export function NodeDetailDrawer({
             value={
               <span>
                 {formatLastPing(runner.lastPingMs)}{" "}
-                <span className="text-tp-ink-4">{t("nodes.tp.ago")}</span>
+                <span className="text-sg-ink-4">{t("nodes.tp.ago")}</span>
               </span>
             }
           />
@@ -149,7 +149,7 @@ export function NodeDetailDrawer({
           <Field
             label={t("nodes.tp.fieldErrorRate")}
             value={
-              <span className={runner.errorRate > 0.01 ? "text-tp-warn" : ""}>
+              <span className={runner.errorRate > 0.01 ? "text-sg-warn" : ""}>
                 {(runner.errorRate * 100).toFixed(2)}%
               </span>
             }
@@ -161,7 +161,7 @@ export function NodeDetailDrawer({
         </div>
 
         <div className="mt-4 flex items-center gap-3">
-          <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-tp-ink-4">
+          <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-sg-ink-4">
             {t("nodes.tp.sparkLatency")}
           </span>
           <MiniSparkline
@@ -178,9 +178,9 @@ export function NodeDetailDrawer({
         {runner.tools.length === 0 ? (
           <div
             className={cn(
-              "rounded-lg border border-dashed border-tp-glass-edge",
-              "bg-tp-glass-inner p-4 text-center",
-              "font-mono text-[11.5px] text-tp-ink-4",
+              "rounded-lg border border-dashed border-sg-border",
+              "bg-sg-inset p-4 text-center",
+              "font-mono text-[11.5px] text-sg-ink-4",
             )}
           >
             {t("nodes.tp.capsEmpty")}
@@ -197,17 +197,17 @@ export function NodeDetailDrawer({
           disabled={!onReconnect}
           className={cn(
             "inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-[12px] font-medium",
-            "bg-tp-glass-inner border-tp-glass-edge text-tp-ink-2",
-            "hover:bg-tp-glass-inner-hover hover:text-tp-ink",
+            "bg-sg-inset border-sg-border text-sg-ink-2",
+            "hover:bg-sg-inset-hover hover:text-sg-ink",
             "disabled:cursor-not-allowed disabled:opacity-60",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
           )}
           data-testid="node-drawer-reconnect"
         >
           <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
           {t("nodes.tp.actionReconnect")}
         </button>
-        <p className="mt-2 text-[11.5px] text-tp-ink-4">
+        <p className="mt-2 text-[11.5px] text-sg-ink-4">
           {t("nodes.tp.actionReconnectHint")}
         </p>
       </DetailDrawer.Section>
@@ -224,10 +224,10 @@ function Field({
 }) {
   return (
     <div className="flex flex-col gap-0.5">
-      <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-tp-ink-4">
+      <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-sg-ink-4">
         {label}
       </span>
-      <span className="font-mono tabular-nums text-tp-ink">{value}</span>
+      <span className="font-mono tabular-nums text-sg-ink">{value}</span>
     </div>
   );
 }

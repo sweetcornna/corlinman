@@ -16,6 +16,7 @@ import {
 
 import { cn } from "@/lib/utils";
 import { CorlinmanApiError } from "@/lib/api";
+import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -433,13 +434,9 @@ function HumanlikeCard({ personas }: { personas: Persona[] }) {
       </CardHeader>
       <CardContent className="space-y-4">
         {loadError ? (
-          <div
-            role="alert"
-            data-testid="qq-humanlike-load-error"
-            className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200"
-          >
+          <Alert variant="warning" data-testid="qq-humanlike-load-error">
             {t("persona.loadHumanlikeFailed", { msg: loadError.message })}
-          </div>
+          </Alert>
         ) : null}
 
         <div className="space-y-2">
@@ -455,7 +452,7 @@ function HumanlikeCard({ personas }: { personas: Persona[] }) {
             onChange={(e) => setChannel(e.target.value as HumanlikeChannel)}
             data-testid="humanlike-channel-select"
             className={cn(
-              "emboss-inset flex h-10 w-full rounded-md px-3 py-1 text-sm transition-colors",
+              "sg-inset flex h-10 w-full rounded-sg-md px-3 py-1 text-sm transition-colors",
               "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
               "appearance-none bg-tp-glass-inner",
             )}
@@ -552,7 +549,7 @@ function PersonaSelect({
       disabled={disabled}
       data-testid="qq-humanlike-persona-select"
       className={cn(
-        "emboss-inset flex h-10 w-full rounded-md px-3 py-1 text-sm transition-colors",
+        "sg-inset flex h-10 w-full rounded-sg-md px-3 py-1 text-sm transition-colors",
         "placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
         "disabled:cursor-not-allowed disabled:opacity-50",
         "appearance-none bg-tp-glass-inner",
@@ -1469,12 +1466,13 @@ function AssetSection({
           <p className="text-[11px] text-tp-ink-3">{description}</p>
 
           {overCap && overCapHint ? (
-            <p
-              className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-200"
+            <Alert
+              variant="warning"
+              className="px-2 py-1 text-[11px]"
               data-testid={`${sectionTestId}-overcap`}
             >
               {overCapHint}
-            </p>
+            </Alert>
           ) : null}
 
           {loadError ? (

@@ -367,11 +367,11 @@ export default function ModelsPage() {
           </TableBody>
         </Table>
         {saveMutation.isError ? (
-          <p className="text-xs text-destructive">
+          <p className="text-xs text-sg-err">
             {(saveMutation.error as Error).message}
           </p>
         ) : saveMutation.isSuccess ? (
-          <p className="text-xs text-ok">{t("models.aliasSavedInline")}</p>
+          <p className="text-xs text-sg-ok">{t("models.aliasSavedInline")}</p>
         ) : null}
       </section>
 
@@ -450,7 +450,7 @@ function ProviderCard({ provider }: { provider: ProviderRow | ProviderView }) {
           <span
             className={cn(
               "inline-block h-2 w-2 rounded-full",
-              enabled ? "bg-ok" : "bg-tp-ink-3/40",
+              enabled ? "bg-sg-ok" : "bg-tp-ink-3/40",
             )}
           />
           <span className="text-sm font-semibold">{provider.name}</span>
@@ -461,7 +461,7 @@ function ProviderCard({ provider }: { provider: ProviderRow | ProviderView }) {
           ) : null}
         </div>
         {enabled ? (
-          <Badge className="border-transparent bg-ok/15 text-ok">
+          <Badge className="border-transparent bg-sg-ok-soft text-sg-ok">
             {t("common.enabled")}
           </Badge>
         ) : (
@@ -475,7 +475,7 @@ function ProviderCard({ provider }: { provider: ProviderRow | ProviderView }) {
             {t("models.keyKind", { kind: keyKindLabel })}
           </span>
         ) : (
-          <span className="text-destructive">
+          <span className="text-sg-err">
             {t("models.keyMissing")}
           </span>
         )}

@@ -378,7 +378,7 @@ export function EnvVarRow({
         aria-label={t("credentials.envRow.clear")}
         disabled={saving}
         onClick={() => void onDelete()}
-        className="text-destructive hover:text-destructive"
+        className="text-sg-err hover:text-sg-err"
       >
         <Trash2 className="h-3.5 w-3.5" />
       </Button>

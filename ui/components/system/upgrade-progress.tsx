@@ -17,6 +17,7 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { CheckCircle2, Circle, Loader2, XCircle } from "lucide-react";
 
+import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
   fetchUpgradeStatus,
@@ -213,10 +214,10 @@ export function UpgradeProgress({
               }
               className={cn(
                 "inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs",
-                isFailed && "border-red-500/60 bg-red-500/10 text-red-600",
-                isPast && "border-emerald-500/40 bg-emerald-500/10 text-emerald-700",
-                isCurrent && "border-tp-amber/60 bg-tp-amber/10 text-tp-amber",
-                !isFailed && !isPast && !isCurrent && "border-tp-glass-edge text-tp-ink-3",
+                isFailed && "border-sg-err/60 bg-sg-err-soft text-sg-err",
+                isPast && "border-sg-ok/40 bg-sg-ok-soft text-sg-ok",
+                isCurrent && "border-sg-accent/60 bg-sg-accent-soft text-sg-accent",
+                !isFailed && !isPast && !isCurrent && "border-sg-border text-sg-ink-4",
               )}
             >
               {isCurrent ? (
@@ -234,7 +235,7 @@ export function UpgradeProgress({
         })}
         {/* Unknown phase fallback — show as leading pill verbatim */}
         {status?.phase && !isKnownPhase(status.phase) && !terminal ? (
-          <span className="inline-flex items-center gap-1 rounded-full border border-tp-amber/60 bg-tp-amber/10 px-2.5 py-1 text-xs text-tp-amber">
+          <span className="inline-flex items-center gap-1 rounded-full border border-sg-accent/60 bg-sg-accent-soft px-2.5 py-1 text-xs text-sg-accent">
             <Loader2 className="h-3 w-3 animate-spin" aria-hidden />
             {status.phase}
           </span>
@@ -253,47 +254,43 @@ export function UpgradeProgress({
 
       {/* Terminal banners */}
       {terminal && status?.state === "succeeded" ? (
-        <div
-          role="status"
-          className="flex items-center justify-between gap-3 rounded-md border border-emerald-500/40 bg-emerald-500/10 p-3 text-sm text-emerald-700"
+        <Alert
+          variant="success"
+          title={t("system.upgrade.succeeded.title")}
+          className="items-center justify-between gap-3"
         >
-          <div>
-            <p className="font-medium">
-              {t("system.upgrade.succeeded.title")}
-            </p>
-            <p className="text-xs">
-              {t("system.upgrade.succeeded.subtitle", { tag: status.tag })}
-            </p>
-            {reloadIn !== null ? (
-              <p className="mt-1 text-xs opacity-80">
-                {t("system.upgrade.succeeded.autoReload", {
-                  seconds: reloadIn,
-                })}
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs">
+                {t("system.upgrade.succeeded.subtitle", { tag: status.tag })}
               </p>
-            ) : null}
+              {reloadIn !== null ? (
+                <p className="mt-1 text-xs opacity-80">
+                  {t("system.upgrade.succeeded.autoReload", {
+                    seconds: reloadIn,
+                  })}
+                </p>
+              ) : null}
+            </div>
+            <Button
+              type="button"
+              onClick={() => window.location.reload()}
+              size="sm"
+            >
+              {t("system.upgrade.succeeded.reload")}
+            </Button>
           </div>
-          <Button
-            type="button"
-            onClick={() => window.location.reload()}
-            size="sm"
-          >
-            {t("system.upgrade.succeeded.reload")}
-          </Button>
-        </div>
+        </Alert>
       ) : null}
 
       {terminal && status?.state === "failed" ? (
-        <div
-          role="alert"
-          className="rounded-md border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-700"
-        >
-          <p className="font-medium">{t("system.upgrade.failed.title")}</p>
+        <Alert variant="danger" title={t("system.upgrade.failed.title")}>
           <p className="break-words text-xs">
             {t("system.upgrade.failed.subtitle", {
               error: status.error ?? "unknown",
             })}
           </p>
-        </div>
+        </Alert>
       ) : null}
 
       {/* Cancel-as-stop-watching */}

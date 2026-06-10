@@ -450,16 +450,16 @@ export default function EvolutionPage() {
           <div className="flex flex-col gap-1">
             <h1
               id="curator-heading"
-              className="font-serif text-2xl text-tp-ink-1"
+              className="font-serif text-2xl text-sg-ink"
             >
               {t("evolution.title")}
             </h1>
-            <p className="text-[13px] text-tp-ink-3">
+            <p className="text-[13px] text-sg-ink-3">
               {t("evolution.subtitle")}
             </p>
             <p
               data-testid="curator-summary"
-              className="text-[12px] text-tp-ink-3"
+              className="text-[12px] text-sg-ink-3"
             >
               {t("evolution.summaryCount", {
                 profiles: summary.profiles,
@@ -480,15 +480,15 @@ export default function EvolutionPage() {
         </header>
 
         {curatorQuery.isPending ? (
-          <div className="rounded-2xl border border-tp-glass-edge bg-tp-glass-inner/40 px-6 py-10 text-center text-[12.5px] text-tp-ink-3">
+          <div className="rounded-2xl border border-sg-border bg-sg-inset/40 px-6 py-10 text-center text-[12.5px] text-sg-ink-3">
             {t("evolution.curator.loading")}
           </div>
         ) : curatorQuery.isError ? (
-          <div className="rounded-2xl border border-tp-err/30 bg-tp-err-soft px-6 py-6 text-center text-[12.5px] text-tp-err">
+          <div className="rounded-2xl border border-sg-err/30 bg-sg-err-soft px-6 py-6 text-center text-[12.5px] text-sg-err">
             {t("evolution.curator.loadFailed")}
           </div>
         ) : profiles.length === 0 ? (
-          <div className="rounded-2xl border border-tp-glass-edge bg-tp-glass-inner/40 px-6 py-6 text-center text-[12.5px] text-tp-ink-3">
+          <div className="rounded-2xl border border-sg-border bg-sg-inset/40 px-6 py-6 text-center text-[12.5px] text-sg-ink-3">
             {t("common.empty")}
           </div>
         ) : (
@@ -529,7 +529,7 @@ export default function EvolutionPage() {
             <header className="flex items-center justify-between gap-3">
               <h2
                 id="skills-heading"
-                className="font-serif text-lg text-tp-ink-1"
+                className="font-serif text-lg text-sg-ink"
               >
                 {t("evolution.skill.heading")}
               </h2>
@@ -770,18 +770,18 @@ function RolledBackChip({ count }: { count: number }) {
     <div
       className={cn(
         "inline-flex items-center gap-2 self-start rounded-full border px-3 py-1",
-        "border-tp-err/30 bg-tp-err-soft text-[12px] text-tp-err",
+        "border-sg-err/30 bg-sg-err-soft text-[12px] text-sg-err",
       )}
     >
       <span
         aria-hidden
-        className="h-[6px] w-[6px] rounded-full bg-tp-err"
+        className="h-[6px] w-[6px] rounded-full bg-sg-err"
       />
       <span className="font-medium">
         {t("evolution.tp.statRolledBackThisWeek")}
       </span>
       <span className="font-mono tabular-nums">{count}</span>
-      <span className="text-tp-ink-3">
+      <span className="text-sg-ink-3">
         · {t("evolution.tp.statRolledBackFoot")}
       </span>
     </div>
@@ -793,8 +793,8 @@ function FilteredEmpty() {
   return (
     <div
       className={cn(
-        "rounded-2xl border border-dashed border-tp-glass-edge bg-tp-glass-inner/40",
-        "px-6 py-10 text-center text-[12.5px] text-tp-ink-3",
+        "rounded-2xl border border-dashed border-sg-border bg-sg-inset/40",
+        "px-6 py-10 text-center text-[12.5px] text-sg-ink-3",
       )}
     >
       {t("evolution.tp.emptyFiltered")}
@@ -813,9 +813,9 @@ function Banner({
 }) {
   const { t } = useTranslation();
   const cls = {
-    warn: "border-tp-warn/30 bg-tp-warn-soft text-tp-warn",
-    err: "border-tp-err/40 bg-tp-err-soft text-tp-err",
-    info: "border-tp-glass-edge bg-tp-glass-inner text-tp-ink-3",
+    warn: "border-sg-warn/30 bg-sg-warn-soft text-sg-warn",
+    err: "border-sg-err/40 bg-sg-err-soft text-sg-err",
+    info: "border-sg-border bg-sg-inset text-sg-ink-3",
   }[tone];
   return (
     <div
@@ -833,8 +833,8 @@ function Banner({
           aria-label={t("common.close")}
           className={cn(
             "rounded-md px-2 py-1 text-[11px] font-medium",
-            "bg-transparent hover:bg-tp-glass-inner-hover",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
+            "bg-transparent hover:bg-sg-inset-hover",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
           )}
         >
           {t("common.close")}
@@ -851,8 +851,8 @@ function ListSkeleton() {
         <div
           key={i}
           className={cn(
-            "h-[150px] animate-pulse rounded-2xl border border-tp-glass-edge",
-            "bg-tp-glass-inner/70",
+            "h-[150px] animate-pulse rounded-2xl border border-sg-border",
+            "bg-sg-inset/70",
           )}
         />
       ))}

@@ -56,7 +56,7 @@ export function ProfileCuratorCard({
     <div
       data-testid={`profile-card-${profile.slug}`}
       className={cn(
-        "rounded-2xl border border-tp-glass-edge bg-tp-glass-inner/70 p-4",
+        "rounded-2xl border border-sg-border bg-sg-inset/70 p-4",
         "flex flex-col gap-3",
       )}
     >
@@ -64,19 +64,19 @@ export function ProfileCuratorCard({
       <div className="flex items-start justify-between gap-3">
         <div className="flex flex-col gap-0.5">
           <div className="flex items-center gap-2">
-            <span className="font-mono text-sm font-semibold text-tp-ink-1">
+            <span className="font-mono text-sm font-semibold text-sg-ink">
               {profile.slug}
             </span>
             <StatusPill paused={profile.paused} label={statusLabel} />
           </div>
-          <div className="text-[11.5px] text-tp-ink-3">{lastRunLabel}</div>
+          <div className="text-[11.5px] text-sg-ink-3">{lastRunLabel}</div>
           {profile.last_review_summary ? (
-            <div className="font-mono text-[10.5px] text-tp-ink-3">
+            <div className="font-mono text-[10.5px] text-sg-ink-3">
               {profile.last_review_summary}
             </div>
           ) : null}
         </div>
-        <div className="flex flex-col items-end gap-1 text-[10.5px] text-tp-ink-3">
+        <div className="flex flex-col items-end gap-1 text-[10.5px] text-sg-ink-3">
           <span>
             {t("evolution.curator.runCount", { n: profile.run_count })}
           </span>
@@ -167,15 +167,15 @@ function StatusPill({ paused, label }: { paused: boolean; label: string }) {
       className={cn(
         "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10.5px] font-medium",
         paused
-          ? "border-zinc-500/30 bg-zinc-500/10 text-zinc-700 dark:text-zinc-300"
-          : "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+          ? "border-sg-border bg-sg-inset text-sg-ink-3"
+          : "border-sg-ok/30 bg-sg-ok-soft text-sg-ok",
       )}
     >
       <span
         aria-hidden
         className={cn(
           "h-1.5 w-1.5 rounded-full",
-          paused ? "bg-zinc-500" : "bg-emerald-500",
+          paused ? "bg-sg-ink-4" : "bg-sg-ok",
         )}
       />
       {label}
@@ -185,9 +185,9 @@ function StatusPill({ paused, label }: { paused: boolean; label: string }) {
 
 function ThresholdPill({ label, value }: { label: string; value: string }) {
   return (
-    <span className="inline-flex items-center gap-1.5 rounded-md border border-tp-glass-edge px-2 py-1">
-      <span className="text-tp-ink-3">{label}</span>
-      <span className="font-mono font-semibold text-tp-ink-1">{value}</span>
+    <span className="inline-flex items-center gap-1.5 rounded-md border border-sg-border px-2 py-1">
+      <span className="text-sg-ink-3">{label}</span>
+      <span className="font-mono font-semibold text-sg-ink">{value}</span>
     </span>
   );
 }
@@ -224,7 +224,7 @@ function Count({ label, value }: { label: string; value: number }) {
   return (
     <span className="inline-flex items-center gap-1 font-mono">
       <span>{label}</span>
-      <span className="font-semibold text-tp-ink-1">{value}</span>
+      <span className="font-semibold text-sg-ink">{value}</span>
     </span>
   );
 }

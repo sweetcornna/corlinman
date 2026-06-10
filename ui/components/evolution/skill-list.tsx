@@ -104,7 +104,7 @@ export function SkillList({
         <div className="relative">
           <Search
             aria-hidden
-            className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-tp-ink-3"
+            className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-sg-ink-3"
           />
           <Input
             data-testid="skill-search"
@@ -140,20 +140,20 @@ export function SkillList({
 
       {/* List */}
       {loading ? (
-        <div className="py-6 text-center text-sm text-tp-ink-3">
+        <div className="py-6 text-center text-sm text-sg-ink-3">
           {t("common.loading")}
         </div>
       ) : filtered.length === 0 ? (
         <div
           data-testid="skill-list-empty"
-          className="py-6 text-center text-sm text-tp-ink-3"
+          className="py-6 text-center text-sm text-sg-ink-3"
         >
           {t("evolution.skill.empty")}
         </div>
       ) : (
         <ul
           data-testid="skill-list"
-          className="flex flex-col divide-y divide-tp-glass-edge overflow-hidden rounded-xl border border-tp-glass-edge"
+          className="flex flex-col divide-y divide-sg-border overflow-hidden rounded-xl border border-sg-border"
         >
           {filtered.map((s) => (
             <SkillRow key={s.name} skill={s} onTogglePin={onTogglePin} />
@@ -210,21 +210,21 @@ function SkillRow({
   return (
     <li
       data-testid={`skill-row-${skill.name}`}
-      className="bg-tp-glass-inner/40"
+      className="bg-sg-inset/40"
     >
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
         aria-expanded={expanded}
-        className="flex w-full items-center gap-3 px-3 py-2 text-left text-[13px] hover:bg-tp-glass-inner-hover"
+        className="flex w-full items-center gap-3 px-3 py-2 text-left text-[13px] hover:bg-sg-inset-hover"
       >
         <span className="flex min-w-0 flex-1 flex-col gap-1">
           <span className="flex items-center gap-2">
-            <span className="font-mono font-semibold text-tp-ink-1">
+            <span className="font-mono font-semibold text-sg-ink">
               {skill.name}
             </span>
             <span
-              className="font-mono text-[10.5px] text-tp-ink-3"
+              className="font-mono text-[10.5px] text-sg-ink-3"
               data-testid={`skill-version-${skill.name}`}
             >
               {t("evolution.skill.versionLabel", { v: skill.version })}
@@ -233,7 +233,7 @@ function SkillRow({
           <span className="flex flex-wrap items-center gap-1.5">
             <SkillBadge kind="state" value={skill.state} />
             <SkillBadge kind="origin" value={skill.origin} />
-            <span className="text-[10.5px] text-tp-ink-3">
+            <span className="text-[10.5px] text-sg-ink-3">
               {skill.last_used_at
                 ? `· ${t("evolution.skill.useCount", { n: skill.use_count })}`
                 : `· ${t("evolution.skill.lastUsedNever")}`}
@@ -266,8 +266,8 @@ function SkillRow({
           }
           className={cn(
             "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md",
-            "hover:bg-tp-glass-inner-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-            skill.pinned ? "text-amber-600 dark:text-amber-400" : "text-tp-ink-3",
+            "hover:bg-sg-inset-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            skill.pinned ? "text-sg-accent" : "text-sg-ink-3",
           )}
         >
           {skill.pinned ? (
@@ -278,9 +278,9 @@ function SkillRow({
         </span>
       </button>
       {expanded ? (
-        <div className="border-t border-tp-glass-edge px-3 py-2 text-[12px] text-tp-ink-2">
+        <div className="border-t border-sg-border px-3 py-2 text-[12px] text-sg-ink-2">
           {skill.description || (
-            <span className="italic text-tp-ink-3">{t("common.empty")}</span>
+            <span className="italic text-sg-ink-3">{t("common.empty")}</span>
           )}
         </div>
       ) : null}

@@ -46,17 +46,17 @@ import {
 } from "@/lib/api";
 
 const STATUS_TONE: Record<InstalledMcpServer["status"], string> = {
-  ready: "border-tp-ok/30 bg-tp-ok-soft text-tp-ok",
-  error: "border-red-500/40 bg-red-500/10 text-red-600",
-  pending: "border-tp-amber/30 bg-tp-amber-soft text-tp-amber",
-  stopped: "border-tp-ink-3/30 bg-tp-glass-inner-strong text-tp-ink-2",
+  ready: "border-sg-ok/30 bg-sg-ok-soft text-sg-ok",
+  error: "border-sg-err/40 bg-sg-err-soft text-sg-err",
+  pending: "border-sg-accent/30 bg-sg-accent-soft text-sg-accent",
+  stopped: "border-sg-ink-3/30 bg-sg-inset-strong text-sg-ink-2",
 };
 
 const STATUS_DOT: Record<InstalledMcpServer["status"], string> = {
-  ready: "bg-tp-ok",
-  error: "bg-tp-err",
-  pending: "bg-tp-amber",
-  stopped: "bg-tp-ink-3",
+  ready: "bg-sg-ok",
+  error: "bg-sg-err",
+  pending: "bg-sg-accent",
+  stopped: "bg-sg-ink-3",
 };
 
 const STATUS_LABEL_KEY: Record<InstalledMcpServer["status"], string> = {
@@ -169,10 +169,10 @@ export function McpInstalledList(): React.JSX.Element {
         className="flex flex-col items-center gap-2 p-8 text-center"
         data-testid="mcp-installed-offline"
       >
-        <div className="font-mono text-[11px] uppercase tracking-[0.12em] text-tp-err">
+        <div className="font-mono text-[11px] uppercase tracking-[0.12em] text-sg-err">
           {t("marketplace.common.offlineTitle")}
         </div>
-        <p className="max-w-prose text-[13px] text-tp-ink-2">
+        <p className="max-w-prose text-[13px] text-sg-ink-2">
           {t("marketplace.common.offlineHint")}
         </p>
       </GlassPanel>
@@ -186,10 +186,10 @@ export function McpInstalledList(): React.JSX.Element {
         className="flex flex-col items-center gap-2 p-8 text-center"
         data-testid="mcp-installed-empty"
       >
-        <div className="text-[14px] font-medium text-tp-ink">
+        <div className="text-[14px] font-medium text-sg-ink">
           {t("marketplace.mcp.installed.empty")}
         </div>
-        <p className="text-[13px] text-tp-ink-3">
+        <p className="text-[13px] text-sg-ink-3">
           {t("marketplace.mcp.installed.emptyHint")}
         </p>
       </GlassPanel>
@@ -293,10 +293,10 @@ function McpServerCard({
         {/* Row 1 — name + status badge */}
         <div className="flex items-start gap-2.5">
           <div className="min-w-0 flex-1">
-            <h3 className="truncate text-[15px] font-medium leading-tight text-tp-ink">
+            <h3 className="truncate text-[15px] font-medium leading-tight text-sg-ink">
               {row.name}
             </h3>
-            <div className="mt-1 flex items-center gap-1.5 font-mono text-[10.5px] text-tp-ink-4">
+            <div className="mt-1 flex items-center gap-1.5 font-mono text-[10.5px] text-sg-ink-4">
               <span>v{row.version}</span>
               {row.transport ? (
                 <>
@@ -328,7 +328,7 @@ function McpServerCard({
         {/* Error rail */}
         {row.status === "error" && row.error ? (
           <p
-            className="break-words text-[12px] text-red-600"
+            className="break-words text-[12px] text-sg-err"
             data-testid={`mcp-server-error-${row.name}`}
           >
             {row.error}
@@ -336,7 +336,7 @@ function McpServerCard({
         ) : null}
 
         {/* Source */}
-        <p className="truncate font-mono text-[11px] text-tp-ink-3" title={row.source}>
+        <p className="truncate font-mono text-[11px] text-sg-ink-3" title={row.source}>
           {row.source}
         </p>
 
@@ -393,11 +393,11 @@ function McpServerCard({
             data-testid={`mcp-delete-${row.name}`}
             className={cn(
               "inline-flex h-9 w-9 items-center justify-center rounded-md",
-              "border border-tp-glass-edge bg-tp-glass-inner",
-              "text-tp-ink-3 transition-colors",
-              "hover:bg-tp-err-soft hover:text-tp-err",
+              "border border-sg-border bg-sg-inset",
+              "text-sg-ink-3 transition-colors",
+              "hover:bg-sg-err-soft hover:text-sg-err",
               "disabled:opacity-50",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-err/40",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-err/40",
             )}
           >
             <Trash2 className="h-3.5 w-3.5" aria-hidden />
@@ -471,7 +471,7 @@ function McpReconfigureDialog({
           <DialogTitle>
             {t("marketplace.mcp.installed.reconfigureTitle", { name })}
           </DialogTitle>
-          <DialogDescription className="text-sm text-tp-ink-3">
+          <DialogDescription className="text-sm text-sg-ink-3">
             {t("marketplace.mcp.installed.reconfigureBody")}
           </DialogDescription>
         </DialogHeader>
@@ -526,9 +526,9 @@ function McpReconfigureDialog({
               placeholder={"KEY=value"}
               data-testid="mcp-reconfigure-env"
               className={cn(
-                "w-full rounded-md border border-tp-glass-edge bg-tp-glass-inner",
-                "px-3 py-2 font-mono text-[12px] text-tp-ink",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-accent/40",
+                "w-full rounded-md border border-sg-border bg-sg-inset",
+                "px-3 py-2 font-mono text-[12px] text-sg-ink",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
               )}
             />
           </Field>
@@ -571,9 +571,9 @@ function Field({
 }) {
   return (
     <div className="grid gap-1">
-      <Label className="text-[12px] text-tp-ink-2">{label}</Label>
+      <Label className="text-[12px] text-sg-ink-2">{label}</Label>
       {children}
-      {hint ? <p className="text-[11px] text-tp-ink-4">{hint}</p> : null}
+      {hint ? <p className="text-[11px] text-sg-ink-4">{hint}</p> : null}
     </div>
   );
 }
@@ -609,11 +609,11 @@ function ListSkeleton() {
           variant="soft"
           className="flex h-[160px] flex-col gap-3 p-4"
         >
-          <div className="h-3.5 w-2/3 rounded bg-tp-glass-inner-strong" />
-          <div className="h-2.5 w-1/3 rounded bg-tp-glass-inner" />
+          <div className="h-3.5 w-2/3 rounded bg-sg-inset-strong" />
+          <div className="h-2.5 w-1/3 rounded bg-sg-inset" />
           <div className="mt-auto flex gap-1.5">
-            <div className="h-8 w-20 rounded bg-tp-glass-inner" />
-            <div className="h-8 w-20 rounded bg-tp-glass-inner" />
+            <div className="h-8 w-20 rounded bg-sg-inset" />
+            <div className="h-8 w-20 rounded bg-sg-inset" />
           </div>
         </GlassPanel>
       ))}
