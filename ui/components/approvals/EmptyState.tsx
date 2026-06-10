@@ -17,7 +17,7 @@ export function ApprovalsEmptyState({ tab }: { tab: Tab }) {
       <div
         className={cn(
           "flex flex-col items-center justify-center gap-2.5 py-12 text-center",
-          "rounded-2xl border border-dashed border-sg-border bg-sg-inset/40",
+          "rounded-2xl border border-dashed border-sg-border bg-sg-inset",
         )}
       >
         <Inbox className="h-8 w-8 text-sg-ink-4" aria-hidden />
@@ -34,7 +34,7 @@ export function ApprovalsEmptyState({ tab }: { tab: Tab }) {
     <div
       className={cn(
         "flex flex-col items-center justify-center gap-2.5 py-12 text-center",
-        "rounded-2xl border border-dashed border-sg-border bg-sg-inset/40",
+        "rounded-2xl border border-dashed border-sg-border bg-sg-inset",
       )}
     >
       <History className="h-8 w-8 text-sg-ink-4" aria-hidden />

@@ -65,7 +65,7 @@ export function SkillsHeader({ counts, offline }: SkillsHeaderProps) {
           <span
             className={cn(
               "h-1.5 w-1.5 rounded-full",
-              offline ? "bg-sg-err" : "bg-sg-accent tp-breathe-amber",
+              offline ? "bg-sg-err" : "bg-sg-accent sg-breathe-accent",
             )}
           />
           {offline

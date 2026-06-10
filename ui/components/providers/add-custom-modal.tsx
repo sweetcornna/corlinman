@@ -229,7 +229,7 @@ export function AddCustomProviderModal({
                   "text-[11px]",
                   slugTouched && !slugValid && slug.length > 0
                     ? "text-destructive"
-                    : "text-tp-ink-3",
+                    : "text-sg-ink-3",
                 )}
               >
                 {slugTouched && !slugValid && slug.length > 0
@@ -269,7 +269,7 @@ export function AddCustomProviderModal({
                   Could not fetch /admin/providers/kinds.
                 </p>
               ) : selectedKindDescriptor?.description ? (
-                <p className="text-[11px] text-tp-ink-3">
+                <p className="text-[11px] text-sg-ink-3">
                   {selectedKindDescriptor.description}
                 </p>
               ) : null}
@@ -283,7 +283,7 @@ export function AddCustomProviderModal({
               {baseUrlRequired ? (
                 <span className="text-destructive">*</span>
               ) : (
-                <span className="text-tp-ink-3">(optional)</span>
+                <span className="text-sg-ink-3">(optional)</span>
               )}
             </Label>
             <Input
@@ -298,7 +298,7 @@ export function AddCustomProviderModal({
               }
               className="font-mono text-xs"
             />
-            <p className="text-[11px] text-tp-ink-3">
+            <p className="text-[11px] text-sg-ink-3">
               {baseUrlRequired
                 ? `Required for "${kind}" — there is no built-in default endpoint.`
                 : "Leave blank to use the kind's default endpoint."}
@@ -309,7 +309,7 @@ export function AddCustomProviderModal({
           <div className="space-y-1.5">
             <Label htmlFor="custom-provider-api-key" className="text-xs">
               API key{" "}
-              <span className="text-tp-ink-3">(stored as literal)</span>
+              <span className="text-sg-ink-3">(stored as literal)</span>
             </Label>
             <div className="flex items-center gap-2">
               <Input
@@ -339,18 +339,18 @@ export function AddCustomProviderModal({
                 )}
               </Button>
             </div>
-            <p className="text-[11px] text-tp-ink-3">
+            <p className="text-[11px] text-sg-ink-3">
               Leave blank if the provider needs no auth or you&apos;ll supply
               it via env later.
             </p>
           </div>
 
           {/* params */}
-          <div className="space-y-2 rounded-md border border-tp-glass-edge p-3">
+          <div className="space-y-2 rounded-md border border-sg-border p-3">
             <div className="flex items-center justify-between">
               <div>
                 <h3 className="text-sm font-semibold">Params</h3>
-                <p className="text-[11px] text-tp-ink-3">
+                <p className="text-[11px] text-sg-ink-3">
                   Free-form key/value pairs written to{" "}
                   <code>params = {"{ … }"}</code> in config.toml.
                 </p>

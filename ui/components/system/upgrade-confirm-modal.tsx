@@ -135,7 +135,7 @@ export function UpgradeConfirmModal({
         <Alert variant="warning">{t("system.upgrade.confirm.warning")}</Alert>
 
         {releaseNotesExcerpt ? (
-          <p className="line-clamp-2 text-xs text-tp-ink-3">
+          <p className="line-clamp-2 text-xs text-sg-ink-3">
             {releaseNotesExcerpt}
           </p>
         ) : null}
@@ -143,7 +143,7 @@ export function UpgradeConfirmModal({
         <div className="space-y-1.5">
           <label
             htmlFor="upgrade-confirm-input"
-            className="text-xs font-medium uppercase tracking-wide text-tp-ink-3"
+            className="text-xs font-medium uppercase tracking-wide text-sg-ink-3"
           >
             {t("system.upgrade.confirm.typeLabel", { tag })}
           </label>

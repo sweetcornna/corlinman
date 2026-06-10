@@ -7,11 +7,11 @@ import { cn } from "@/lib/utils";
  * Minimal JSON syntax highlighter.
  *
  * Renders a <pre> block with per-token classes:
- *   - .tp-json-k  — object keys
- *   - .tp-json-s  — string values
- *   - .tp-json-n  — numbers
- *   - .tp-json-b  — booleans / null
- *   - .tp-json-c  — comments (only `// …` single-line, inserted via `comments` prop)
+ *   - .sg-json-k  — object keys
+ *   - .sg-json-s  — string values
+ *   - .sg-json-n  — numbers
+ *   - .sg-json-b  — booleans / null
+ *   - .sg-json-c  — comments (only `// …` single-line, inserted via `comments` prop)
  *
  * Intentionally hand-rolled rather than vendoring react-syntax-highlighter
  * (which would add ~150KB). For our per-log-row payloads (< 2KB typical),
@@ -65,7 +65,7 @@ function highlight(line: string): React.ReactNode[] {
     // line comment `// …`
     const cm = /^(\/\/[^\n]*)/.exec(rest);
     if (cm) {
-      push(<span className="tp-json-c">{cm[1]}</span>);
+      push(<span className="sg-json-c">{cm[1]}</span>);
       i += cm[1].length;
       continue;
     }
@@ -73,7 +73,7 @@ function highlight(line: string): React.ReactNode[] {
     // key: "…":
     const km = /^("(?:[^"\\]|\\.)*")(\s*):/.exec(rest);
     if (km) {
-      push(<span className="tp-json-k">{km[1]}</span>);
+      push(<span className="sg-json-k">{km[1]}</span>);
       push(km[2]);
       push(":");
       i += km[0].length;
@@ -83,7 +83,7 @@ function highlight(line: string): React.ReactNode[] {
     // string value: "…"
     const sm = /^("(?:[^"\\]|\\.)*")/.exec(rest);
     if (sm) {
-      push(<span className="tp-json-s">{sm[1]}</span>);
+      push(<span className="sg-json-s">{sm[1]}</span>);
       i += sm[1].length;
       continue;
     }
@@ -91,7 +91,7 @@ function highlight(line: string): React.ReactNode[] {
     // boolean / null
     const bm = /^(true|false|null)\b/.exec(rest);
     if (bm) {
-      push(<span className="tp-json-b">{bm[1]}</span>);
+      push(<span className="sg-json-b">{bm[1]}</span>);
       i += bm[1].length;
       continue;
     }
@@ -99,7 +99,7 @@ function highlight(line: string): React.ReactNode[] {
     // number
     const nm = /^(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/.exec(rest);
     if (nm) {
-      push(<span className="tp-json-n">{nm[1]}</span>);
+      push(<span className="sg-json-n">{nm[1]}</span>);
       i += nm[1].length;
       continue;
     }

@@ -363,7 +363,7 @@ export default function LogsPage() {
         <h1 className="text-2xl font-semibold tracking-tight">
           {t("logs.title")}
         </h1>
-        <p className="text-sm text-tp-ink-3">
+        <p className="text-sm text-sg-ink-3">
           {t("logs.subtitle", { max: RING_MAX })}
         </p>
       </header>
@@ -407,10 +407,10 @@ export default function LogsPage() {
           onClick={onToggleStream}
           className={cn(
             "mx-4 inline-flex w-fit items-center gap-2 self-center rounded-full border px-3 py-1",
-            "bg-tp-amber-soft border-tp-amber/25 text-tp-amber",
+            "bg-sg-accent-soft border-sg-accent/25 text-sg-accent",
             "font-mono text-[11.5px]",
-            "hover:bg-tp-amber-soft hover:border-tp-amber/40",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
+            "hover:bg-sg-accent-soft hover:border-sg-accent/40",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
           )}
         >
           <span className="tabular-nums">
@@ -433,9 +433,9 @@ export default function LogsPage() {
           {/* Column header */}
           <div
             className={cn(
-              "grid items-center gap-3 border-b border-tp-glass-edge px-4 py-2.5",
+              "grid items-center gap-3 border-b border-sg-border px-4 py-2.5",
               "grid-cols-[70px_56px_140px_1fr_auto]",
-              "font-mono text-[10.5px] uppercase tracking-[0.08em] text-tp-ink-4",
+              "font-mono text-[10.5px] uppercase tracking-[0.08em] text-sg-ink-4",
             )}
             aria-hidden
           >
@@ -549,8 +549,8 @@ function DayDivider({ label }: { label: string }) {
   return (
     <div
       className={cn(
-        "border-y border-tp-glass-edge bg-tp-glass-inner px-4 py-1.5",
-        "font-mono text-[10px] uppercase tracking-[0.1em] text-tp-ink-4",
+        "border-y border-sg-border bg-sg-inset px-4 py-1.5",
+        "font-mono text-[10px] uppercase tracking-[0.1em] text-sg-ink-4",
       )}
     >
       {label}

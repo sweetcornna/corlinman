@@ -210,7 +210,7 @@ function SkillRow({
   return (
     <li
       data-testid={`skill-row-${skill.name}`}
-      className="bg-sg-inset/40"
+      className="bg-sg-inset"
     >
       <button
         type="button"

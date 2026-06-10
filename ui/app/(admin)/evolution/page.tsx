@@ -480,7 +480,7 @@ export default function EvolutionPage() {
         </header>
 
         {curatorQuery.isPending ? (
-          <div className="rounded-2xl border border-sg-border bg-sg-inset/40 px-6 py-10 text-center text-[12.5px] text-sg-ink-3">
+          <div className="rounded-2xl border border-sg-border bg-sg-inset px-6 py-10 text-center text-[12.5px] text-sg-ink-3">
             {t("evolution.curator.loading")}
           </div>
         ) : curatorQuery.isError ? (
@@ -488,7 +488,7 @@ export default function EvolutionPage() {
             {t("evolution.curator.loadFailed")}
           </div>
         ) : profiles.length === 0 ? (
-          <div className="rounded-2xl border border-sg-border bg-sg-inset/40 px-6 py-6 text-center text-[12.5px] text-sg-ink-3">
+          <div className="rounded-2xl border border-sg-border bg-sg-inset px-6 py-6 text-center text-[12.5px] text-sg-ink-3">
             {t("common.empty")}
           </div>
         ) : (
@@ -793,7 +793,7 @@ function FilteredEmpty() {
   return (
     <div
       className={cn(
-        "rounded-2xl border border-dashed border-sg-border bg-sg-inset/40",
+        "rounded-2xl border border-dashed border-sg-border bg-sg-inset",
         "px-6 py-10 text-center text-[12.5px] text-sg-ink-3",
       )}
     >
@@ -852,7 +852,7 @@ function ListSkeleton() {
           key={i}
           className={cn(
             "h-[150px] animate-pulse rounded-2xl border border-sg-border",
-            "bg-sg-inset/70",
+            "bg-sg-inset",
           )}
         />
       ))}

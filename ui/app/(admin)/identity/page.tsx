@@ -50,7 +50,7 @@ export default function IdentityPage() {
           <h1 className="text-2xl font-semibold tracking-tight">
             {t("identity.title", "Identity")}
           </h1>
-          <p className="mt-1 max-w-2xl text-sm text-tp-ink-2">
+          <p className="mt-1 max-w-2xl text-sm text-sg-ink-2">
             {t(
               "identity.subtitle",
               "Canonical user IDs across QQ, Telegram, and other channels. Issue verification phrases or merge identities by hand.",
@@ -119,7 +119,7 @@ function IdentityTable({
   const { t } = useTranslation();
   if (users.length === 0) {
     return (
-      <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed border-tp-glass-edge bg-tp-glass-inner py-12 text-tp-ink-3">
+      <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed border-sg-border bg-sg-inset py-12 text-sg-ink-3">
         <Users className="h-8 w-8 opacity-50" aria-hidden />
         <p className="text-sm">
           {t(
@@ -150,13 +150,13 @@ function IdentityTable({
             data-testid={`identity-row-${u.user_id}`}
             data-active={activeUserId === u.user_id ? "true" : "false"}
             className={cn(
-              "cursor-pointer transition-colors hover:bg-tp-glass-inner/40",
-              activeUserId === u.user_id && "bg-tp-glass-inner/60",
+              "cursor-pointer transition-colors hover:bg-sg-inset",
+              activeUserId === u.user_id && "bg-sg-inset",
             )}
             onClick={() => onSelect(u)}
           >
             <TableCell className="font-mono text-xs">{u.user_id}</TableCell>
-            <TableCell className="text-tp-ink-2">
+            <TableCell className="text-sg-ink-2">
               {u.display_name ?? "—"}
             </TableCell>
             <TableCell className="text-right tabular-nums">

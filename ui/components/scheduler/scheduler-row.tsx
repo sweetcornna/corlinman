@@ -80,10 +80,10 @@ export function SchedulerRow({
         // invisible. Emitted as a pseudo via shadow-inset so the row itself
         // stays borderless.
         selected
-          ? "border-tp-amber/40 bg-tp-amber-soft shadow-[inset_3px_0_0_var(--sg-accent)]"
+          ? "border-sg-accent/40 bg-sg-accent-soft shadow-[inset_3px_0_0_var(--sg-accent)]"
           : errored
-            ? "border-tp-err/25 bg-tp-glass hover:bg-tp-glass-inner-hover shadow-[inset_3px_0_0_color-mix(in_oklch,var(--sg-err)_70%,transparent)]"
-            : "border-tp-glass-edge bg-tp-glass hover:bg-tp-glass-inner-hover hover:shadow-[inset_3px_0_0_var(--sg-accent)]",
+            ? "border-sg-err/25 bg-sg-card hover:bg-sg-inset-hover shadow-[inset_3px_0_0_color-mix(in_oklch,var(--sg-err)_70%,transparent)]"
+            : "border-sg-border bg-sg-card hover:bg-sg-inset-hover hover:shadow-[inset_3px_0_0_var(--sg-accent)]",
       )}
       data-testid={`scheduler-row-${job.name}`}
       data-status={status}
@@ -98,7 +98,7 @@ export function SchedulerRow({
           aria-pressed={selected || undefined}
           className={cn(
             "flex min-w-0 flex-1 items-center gap-3 text-left",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40 focus-visible:rounded-md",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40 focus-visible:rounded-md",
           )}
         >
           {/* Status dot */}
@@ -107,26 +107,26 @@ export function SchedulerRow({
             className={cn(
               "h-2 w-2 shrink-0 rounded-full",
               errored
-                ? "bg-tp-err"
+                ? "bg-sg-err"
                 : paused
-                  ? "bg-tp-ink-4"
-                  : "bg-tp-ok tp-breathe-amber",
+                  ? "bg-sg-ink-4"
+                  : "bg-sg-ok sg-breathe-accent",
             )}
           />
 
           {/* Name + cron */}
           <div className="min-w-0 flex-1">
             <div className="flex items-baseline gap-2">
-              <span className="truncate text-[14px] font-medium text-tp-ink">
+              <span className="truncate text-[14px] font-medium text-sg-ink">
                 {job.name}
               </span>
-              <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-tp-ink-4">
+              <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-sg-ink-4">
                 {job.action_kind}
               </span>
             </div>
-            <div className="mt-0.5 flex min-w-0 items-center gap-2 font-mono text-[11.5px] text-tp-ink-3">
+            <div className="mt-0.5 flex min-w-0 items-center gap-2 font-mono text-[11.5px] text-sg-ink-3">
               <span className="truncate">{job.cron}</span>
-              <span className="shrink-0 text-tp-ink-4">
+              <span className="shrink-0 text-sg-ink-4">
                 · {job.timezone ?? "utc"}
               </span>
             </div>
@@ -225,7 +225,7 @@ function CountdownSlot({
       <span
         className={cn(
           "inline-flex items-center gap-1.5 rounded-full border px-2 py-[3px]",
-          "border-tp-err/35 bg-tp-err-soft text-tp-err",
+          "border-sg-err/35 bg-sg-err-soft text-sg-err",
           "font-mono text-[11px] tabular-nums",
         )}
       >
@@ -239,7 +239,7 @@ function CountdownSlot({
       <span
         className={cn(
           "inline-flex items-center gap-1.5 rounded-full border px-2 py-[3px]",
-          "border-tp-glass-edge bg-tp-glass-inner text-tp-ink-3",
+          "border-sg-border bg-sg-inset text-sg-ink-3",
           "font-mono text-[11px] tabular-nums",
         )}
       >
@@ -251,7 +251,7 @@ function CountdownSlot({
   const then = new Date(job.next_fire_at).getTime();
   if (!Number.isFinite(then)) {
     return (
-      <span className="font-mono text-[11px] text-tp-ink-4">
+      <span className="font-mono text-[11px] text-sg-ink-4">
         {job.next_fire_at}
       </span>
     );
@@ -262,7 +262,7 @@ function CountdownSlot({
       <span
         className={cn(
           "inline-flex items-center gap-1.5 rounded-full border px-2 py-[3px]",
-          "border-tp-warn/30 bg-tp-warn-soft text-tp-warn",
+          "border-sg-warn/30 bg-sg-warn-soft text-sg-warn",
           "font-mono text-[11px] tabular-nums",
         )}
       >
@@ -283,7 +283,7 @@ function CountdownSlot({
         // Hide the ring's own text so we can render the richer h/m/s label.
         className="[&>span]:hidden"
       />
-      <span className="font-mono text-[11.5px] tabular-nums text-tp-ink-2">
+      <span className="font-mono text-[11.5px] tabular-nums text-sg-ink-2">
         {t("scheduler.tp.inDelta", { delta: label })}
       </span>
     </span>
@@ -315,9 +315,9 @@ function IconButton({
       disabled={disabled}
       className={cn(
         "inline-flex h-7 w-7 items-center justify-center rounded-md",
-        "text-tp-ink-3 transition-colors",
-        "hover:bg-tp-glass-inner-hover hover:text-tp-ink",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
+        "text-sg-ink-3 transition-colors",
+        "hover:bg-sg-inset-hover hover:text-sg-ink",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
         "disabled:pointer-events-none disabled:opacity-40",
         className,
       )}

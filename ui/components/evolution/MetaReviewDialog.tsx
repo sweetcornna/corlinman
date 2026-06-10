@@ -543,11 +543,11 @@ function DiffPane({
 }) {
   const toneCls =
     tone === "prev"
-      ? "border-sg-err/30 bg-sg-err-soft/50"
-      : "border-sg-ok/30 bg-sg-ok-soft/50";
+      ? "border-sg-err/30 bg-sg-err-soft"
+      : "border-sg-ok/30 bg-sg-ok-soft";
   return (
     <div className={cn("rounded-md border", toneCls)}>
-      <div className="border-b border-sg-border/50 px-2.5 py-1 font-mono text-[10.5px] uppercase tracking-[0.08em] text-sg-ink-3">
+      <div className="border-b border-sg-border px-2.5 py-1 font-mono text-[10.5px] uppercase tracking-[0.08em] text-sg-ink-3">
         {label}
       </div>
       <pre

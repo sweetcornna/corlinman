@@ -12,7 +12,7 @@ import { useMotion } from "@/components/ui/motion-safe";
  * `prefers-reduced-motion`.
  *
  * Phase 5e retoken: the default colour is now the Tidepool amber token
- * (`var(--tp-amber)`), to match the primary save CTA.
+ * (`var(--sg-accent)`), to match the primary save CTA.
  *
  * Timing: opacity 0.45 → 0, scale 0 → 6 over 600ms.
  */
@@ -26,7 +26,7 @@ export interface SuccessRippleProps {
   color?: string;
 }
 
-export function SuccessRipple({ id, color = "var(--tp-amber)" }: SuccessRippleProps) {
+export function SuccessRipple({ id, color = "var(--sg-accent)" }: SuccessRippleProps) {
   const { reduced } = useMotion();
   if (reduced) return null;
   return (

@@ -121,7 +121,7 @@ function HistoryCard({ entry }: { entry: HistoryEntry }) {
             <div
               className={cn(
                 "rounded-lg border px-3 py-2 text-[11.5px]",
-                "border-sg-err/30 bg-sg-err-soft/40 text-sg-err",
+                "border-sg-err/30 bg-sg-err-soft text-sg-err",
               )}
             >
               <span className="font-mono text-[10.5px] uppercase tracking-[0.08em]">
@@ -304,7 +304,7 @@ function ListSkeleton() {
           key={i}
           className={cn(
             "h-[110px] animate-pulse rounded-2xl border border-sg-border",
-            "bg-sg-inset/70",
+            "bg-sg-inset",
           )}
         />
       ))}

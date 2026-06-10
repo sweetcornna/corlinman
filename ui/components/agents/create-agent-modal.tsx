@@ -328,7 +328,7 @@ export function CreateAgentModal({
             />
             <p
               id="agent-name-help"
-              className="text-[11px] text-tp-ink-3"
+              className="text-[11px] text-sg-ink-3"
             >
               {t("agents.create.nameHelp")}
             </p>
@@ -469,7 +469,7 @@ export function CreateAgentModal({
 
           {/* Force --------------------------------------------------- */}
           {showForceCheckbox ? (
-            <div className="space-y-1 rounded-md border border-tp-amber/30 bg-tp-amber/5 p-3">
+            <div className="space-y-1 rounded-md border border-sg-accent/30 bg-sg-accent/5 p-3">
               <label className="inline-flex items-start gap-2 text-xs">
                 <input
                   type="checkbox"
@@ -482,7 +482,7 @@ export function CreateAgentModal({
                   <span className="font-medium">
                     {t("agents.create.forceLabel")}
                   </span>
-                  <span className="block text-tp-ink-3">
+                  <span className="block text-sg-ink-3">
                     {t("agents.create.forceHint")}
                   </span>
                 </span>

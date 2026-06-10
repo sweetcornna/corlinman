@@ -35,11 +35,11 @@ export function SchedulerHistoryDrawer({
   const meta = (
     <>
       <StatusPill status={status} />
-      <span className="font-mono text-[11px] text-tp-ink-3">
+      <span className="font-mono text-[11px] text-sg-ink-3">
         {job.action_kind}
       </span>
       {job.timezone ? (
-        <span className="font-mono text-[11px] text-tp-ink-4">
+        <span className="font-mono text-[11px] text-sg-ink-4">
           · {job.timezone}
         </span>
       ) : null}
@@ -55,16 +55,16 @@ export function SchedulerHistoryDrawer({
     >
       <DetailDrawer.Section label={t("scheduler.tp.sectionSchedule")}>
         <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-[12.5px]">
-          <dt className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-tp-ink-4">
+          <dt className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-sg-ink-4">
             {t("scheduler.tp.scheduleNext")}
           </dt>
-          <dd className="font-mono tabular-nums text-tp-ink-2">
+          <dd className="font-mono tabular-nums text-sg-ink-2">
             {job.next_fire_at ?? t("scheduler.tp.scheduleNone")}
           </dd>
-          <dt className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-tp-ink-4">
+          <dt className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-sg-ink-4">
             {t("scheduler.tp.scheduleLast")}
           </dt>
-          <dd className="font-mono text-tp-ink-2">
+          <dd className="font-mono text-sg-ink-2">
             {job.last_status ?? t("scheduler.tp.scheduleNoLast")}
           </dd>
         </dl>
@@ -74,9 +74,9 @@ export function SchedulerHistoryDrawer({
         {history.length === 0 ? (
           <div
             className={cn(
-              "rounded-lg border border-dashed border-tp-glass-edge",
-              "bg-tp-glass-inner p-4 text-center",
-              "font-mono text-[11.5px] text-tp-ink-4",
+              "rounded-lg border border-dashed border-sg-border",
+              "bg-sg-inset p-4 text-center",
+              "font-mono text-[11.5px] text-sg-ink-4",
             )}
           >
             {t("scheduler.tp.historyEmpty")}
@@ -87,22 +87,22 @@ export function SchedulerHistoryDrawer({
               <li
                 key={`${h.at}-${i}`}
                 className={cn(
-                  "rounded-lg border border-tp-glass-edge bg-tp-glass-inner px-3 py-2",
+                  "rounded-lg border border-sg-border bg-sg-inset px-3 py-2",
                   "flex flex-col gap-1",
                 )}
               >
                 <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
                   <HistoryStatus status={h.status} />
-                  <span className="font-mono text-[10.5px] text-tp-ink-3">
+                  <span className="font-mono text-[10.5px] text-sg-ink-3">
                     {h.source}
                   </span>
-                  <span className="ml-auto font-mono text-[10.5px] text-tp-ink-4">
+                  <span className="ml-auto font-mono text-[10.5px] text-sg-ink-4">
                     {formatRelative(h.at, t)}
                   </span>
                 </div>
-                <div className="font-mono text-[11px] text-tp-ink-4">{h.at}</div>
+                <div className="font-mono text-[11px] text-sg-ink-4">{h.at}</div>
                 {h.message ? (
-                  <div className="text-[12px] text-tp-ink-2">{h.message}</div>
+                  <div className="text-[12px] text-sg-ink-2">{h.message}</div>
                 ) : null}
               </li>
             ))}
@@ -117,10 +117,10 @@ function StatusPill({ status }: { status: SchedulerStatus }) {
   const { t } = useTranslation();
   const cls =
     status === "errored"
-      ? "border-tp-err/35 bg-tp-err-soft text-tp-err"
+      ? "border-sg-err/35 bg-sg-err-soft text-sg-err"
       : status === "paused"
-        ? "border-tp-glass-edge bg-tp-glass-inner text-tp-ink-3"
-        : "border-tp-ok/30 bg-tp-ok-soft text-tp-ok";
+        ? "border-sg-border bg-sg-inset text-sg-ink-3"
+        : "border-sg-ok/30 bg-sg-ok-soft text-sg-ok";
   const label =
     status === "errored"
       ? t("scheduler.tp.filterErrored")
@@ -144,10 +144,10 @@ function HistoryStatus({ status }: { status: string }) {
   const s = status.toLowerCase();
   const cls =
     s.includes("ok") || s.includes("success")
-      ? "text-tp-ok"
+      ? "text-sg-ok"
       : s.includes("err") || s.includes("fail")
-        ? "text-tp-err"
-        : "text-tp-ink-3";
+        ? "text-sg-err"
+        : "text-sg-ink-3";
   return (
     <span className={cn("font-mono text-[11px] font-medium", cls)}>{status}</span>
   );

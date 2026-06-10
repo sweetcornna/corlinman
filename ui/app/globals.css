@@ -6,9 +6,8 @@
  * Spatial Glass — visionOS-inspired design system. Dark-first.
  *
  * Source of truth: the `--sg-*` token namespace defined below.
- * Legacy `--tp-*` (Tidepool) tokens are ALIASES into `--sg-*` so the
- * ~180 existing consumer files reskin without edits; the alias block
- * is burned down (tp-* → sg-* renames) in Phase 3.
+ * (The legacy Tidepool alias layer was burned down in Phase 3 —
+ * do not reintroduce legacy token names.)
  *
  * BLUR BUDGET (hard rule): `backdrop-filter` is allowed ONLY on
  *  - shell surfaces (sidebar, topnav)            → .sg-glass-shell / blur 20px
@@ -68,6 +67,8 @@
     --sg-accent-2: oklch(0.47 0.2 295);
     --sg-accent-2-soft: oklch(0.47 0.2 295 / 0.1);
     --sg-accent-3: oklch(0.55 0.1 230);
+    --sg-accent-3-soft: oklch(0.55 0.1 230 / 0.1);
+    --sg-row-alt: oklch(0.3 0.03 280 / 0.025);
 
     /* Status. */
     --sg-ok: oklch(0.52 0.13 165);
@@ -143,56 +144,6 @@
     --state-empty: 0 0% 100% / 0.4;
     --state-error: 0 70% 94%;
 
-    /* ──────────────────────────────────────────────────────────────
-     * Legacy `--tp-*` ALIASES — every Tidepool token now points into
-     * the sg-* system. Lazy var() resolution means the .dark sg
-     * overrides flow through automatically; the alias block exists
-     * once, here. Do not add new tp-* consumers; use sg-* directly.
-     * ────────────────────────────────────────────────────────────── */
-    --tp-bg-a: var(--sg-space-1);
-    --tp-bg-b: var(--sg-space-2);
-    --tp-bg-c: var(--sg-space-3);
-    --tp-aurora-1: var(--sg-nebula-1);
-    --tp-aurora-2: var(--sg-nebula-2);
-    --tp-aurora-3: var(--sg-nebula-3);
-
-    --tp-glass: var(--sg-glass-2-bg);
-    --tp-glass-2: var(--sg-glass-2-bg-strong);
-    --tp-glass-3: var(--sg-glass-2-bg-weak);
-    --tp-glass-edge: var(--sg-border);
-    --tp-glass-edge-strong: var(--sg-border-strong);
-    --tp-glass-hl: var(--sg-highlight);
-    --tp-glass-inner: var(--sg-inset-bg);
-    --tp-glass-inner-hover: var(--sg-inset-bg-hover);
-    --tp-glass-inner-strong: var(--sg-inset-bg-strong);
-    --tp-row-alt: oklch(0.3 0.03 280 / 0.025);
-
-    --tp-ink: var(--sg-ink);
-    --tp-ink-2: var(--sg-ink-2);
-    --tp-ink-3: var(--sg-ink-3);
-    --tp-ink-4: var(--sg-ink-4);
-    --tp-ink-5: var(--sg-ink-5);
-
-    --tp-amber: var(--sg-accent);
-    --tp-amber-soft: var(--sg-accent-soft);
-    --tp-amber-glow: var(--sg-accent-glow);
-    --tp-ember: var(--sg-accent-2);
-    --tp-peach: var(--sg-accent-3);
-    --tp-ok: var(--sg-ok);
-    --tp-ok-soft: var(--sg-ok-soft);
-    --tp-warn: var(--sg-warn);
-    --tp-warn-soft: var(--sg-warn-soft);
-    --tp-err: var(--sg-err);
-    --tp-err-soft: var(--sg-err-soft);
-
-    --tp-grad-text: var(--sg-grad-text);
-    --tp-grad-border: var(--sg-grad-border);
-
-    --tp-shadow-panel: var(--sg-elev-2);
-    --tp-shadow-hero: var(--sg-elev-3);
-    --tp-shadow-primary: var(--sg-shadow-primary);
-
-    --tp-pattern-tint: var(--sg-accent-soft);
   }
 
   .dark {
@@ -237,6 +188,8 @@
     --sg-accent-2: oklch(0.7 0.17 300);
     --sg-accent-2-soft: oklch(0.7 0.17 300 / 0.14);
     --sg-accent-3: oklch(0.85 0.07 220);
+    --sg-accent-3-soft: oklch(0.85 0.07 220 / 0.14);
+    --sg-row-alt: oklch(0.85 0.05 250 / 0.025);
 
     --sg-ok: oklch(0.78 0.15 165);
     --sg-ok-soft: oklch(0.78 0.15 165 / 0.15);
@@ -418,24 +371,7 @@
     }
   }
 
-  /* Dashboard hero backdrop — soft accent radial. */
-  .dashboard-hero-glow {
-    background:
-      radial-gradient(
-        1200px 400px at 10% -10%,
-        hsl(var(--primary) / 0.12),
-        transparent 60%
-      );
-  }
 
-  /* Constellation/dot-grid for login. */
-  .dot-grid {
-    background-image: radial-gradient(
-      hsl(var(--muted-foreground) / 0.15) 1px,
-      transparent 1px
-    );
-    background-size: 18px 18px;
-  }
 
   /* Login error shake. Keyed via `key` remount in login/page.tsx. */
   @keyframes login-shake {
@@ -459,7 +395,7 @@
    * prefers-reduced-motion. (tp-* names kept until the Phase 3 rename.)
    * ──────────────────────────────────────────────────────────────── */
 
-  @keyframes tp-breathe {
+  @keyframes sg-breathe {
     0%,
     100% {
       box-shadow: 0 0 0 0 color-mix(in oklch, var(--sg-ok) 50%, transparent);
@@ -468,10 +404,10 @@
       box-shadow: 0 0 0 6px color-mix(in oklch, var(--sg-ok) 0%, transparent);
     }
   }
-  .tp-breathe {
-    animation: tp-breathe 2.2s ease-in-out infinite;
+  .sg-breathe {
+    animation: sg-breathe 2.2s ease-in-out infinite;
   }
-  @keyframes tp-breathe-amber {
+  @keyframes sg-breathe-accent {
     0%,
     100% {
       box-shadow: 0 0 0 0 color-mix(in oklch, var(--sg-accent) 50%, transparent);
@@ -480,11 +416,11 @@
       box-shadow: 0 0 8px color-mix(in oklch, var(--sg-accent) 40%, transparent);
     }
   }
-  .tp-breathe-amber {
-    animation: tp-breathe-amber 2.2s ease-in-out infinite;
+  .sg-breathe-accent {
+    animation: sg-breathe-accent 2.2s ease-in-out infinite;
   }
 
-  @keyframes tp-draw-in {
+  @keyframes sg-draw-in {
     from {
       transform: scaleX(0);
     }
@@ -492,12 +428,12 @@
       transform: scaleX(1);
     }
   }
-  .tp-draw-in {
+  .sg-draw-in {
     transform-origin: left;
-    animation: tp-draw-in 1.8s cubic-bezier(0.16, 1, 0.3, 1) 0.3s both;
+    animation: sg-draw-in 1.8s cubic-bezier(0.16, 1, 0.3, 1) 0.3s both;
   }
 
-  @keyframes tp-just-now-fade {
+  @keyframes sg-just-now-fade {
     0% {
       opacity: 1;
     }
@@ -508,11 +444,11 @@
       opacity: 0;
     }
   }
-  .tp-just-now {
-    animation: tp-just-now-fade 2.8s ease-out 0.2s forwards;
+  .sg-just-now {
+    animation: sg-just-now-fade 2.8s ease-out 0.2s forwards;
   }
 
-  @keyframes tp-badge-pulse {
+  @keyframes sg-badge-pulse {
     0%,
     100% {
       box-shadow: 0 0 0 0 color-mix(in oklch, var(--sg-accent) 40%, transparent);
@@ -521,8 +457,8 @@
       box-shadow: 0 0 0 4px color-mix(in oklch, var(--sg-accent) 0%, transparent);
     }
   }
-  .tp-badge-pulse {
-    animation: tp-badge-pulse 2.2s ease-in-out infinite;
+  .sg-badge-pulse {
+    animation: sg-badge-pulse 2.2s ease-in-out infinite;
   }
 
   /* Slow nebula drift for the backdrop glow blobs. */
@@ -540,74 +476,20 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .tp-breathe,
-    .tp-breathe-amber,
-    .tp-badge-pulse,
+    .sg-breathe,
+    .sg-breathe-accent,
+    .sg-badge-pulse,
     .sg-drift {
       animation: none;
     }
-    .tp-draw-in {
+    .sg-draw-in {
       animation: none;
       transform: scaleX(1);
     }
-    .tp-just-now {
+    .sg-just-now {
       animation: none;
       opacity: 0;
     }
-  }
-
-  /* ────────────────────────────────────────────────────────────────
-   * Legacy surface utilities — redefined in place as spatial glass so
-   * existing consumers keep working until the Phase 3 rename.
-   * .emboss        → content card (glass tier 2, no blur)
-   * .emboss-inset  → sunken well
-   * .ridge-divider → 1px hairline
-   * .relief-text   → plain foreground (text shadows dropped)
-   * ──────────────────────────────────────────────────────────────── */
-  .emboss {
-    background-color: var(--sg-glass-2-bg);
-    background-image: linear-gradient(180deg, var(--sg-glass-2-grad-a), var(--sg-glass-2-grad-b));
-    border: 1px solid var(--sg-border);
-    box-shadow: var(--sg-elev-2);
-  }
-  .emboss-inset {
-    background-color: var(--sg-inset-bg);
-    background-image: none;
-    border: 1px solid var(--sg-border);
-    box-shadow: inset 0 1px 3px oklch(0 0 0 / 0.18);
-  }
-  .ridge-divider {
-    height: 0;
-    border: 0;
-    border-top: 1px solid var(--sg-border);
-  }
-  .relief-text {
-    color: hsl(var(--foreground));
-  }
-  .relief-text-engraved {
-    color: hsl(var(--muted-foreground));
-  }
-
-  /* Selection / active highlight — accent-tinted glass pill with a
-     soft glow ring. (Name kept for the sidebar until Phase 3.) */
-  .pattern-active {
-    position: relative;
-    background-color: var(--sg-accent-soft);
-    box-shadow:
-      0 0 0 1px color-mix(in oklch, var(--sg-accent) 30%, transparent),
-      0 0 12px -2px var(--sg-accent-glow);
-  }
-  .pattern-active-sm {
-    background-size: auto;
-  }
-
-  /* `bg-tp-glass-inner/NN` opacity-modifier classes can't derive alpha
-     from a raw var() color — pin them to the base inset fill. */
-  .bg-tp-glass-inner\/40,
-  .bg-tp-glass-inner\/50,
-  .bg-tp-glass-inner\/60,
-  .bg-tp-glass-inner\/70 {
-    background-color: var(--sg-inset-bg) !important;
   }
 
   /* Monaco ships its own opaque `vs-light` / `vs-dark` surfaces. Keep the
@@ -625,19 +507,19 @@
   }
 
   /* JSON syntax highlighting tokens used by <JsonView>. */
-  .tp-json-k {
+  .sg-json-k {
     color: var(--sg-accent);
   }
-  .tp-json-s {
+  .sg-json-s {
     color: var(--sg-ok);
   }
-  .tp-json-n {
+  .sg-json-n {
     color: var(--sg-accent-2);
   }
-  .tp-json-b {
+  .sg-json-b {
     color: var(--sg-warn);
   }
-  .tp-json-c {
+  .sg-json-c {
     color: var(--sg-ink-4);
     font-style: italic;
   }

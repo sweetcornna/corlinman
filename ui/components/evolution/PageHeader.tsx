@@ -56,7 +56,7 @@ export function EvolutionPageHeader({
         <div className="flex items-center gap-2.5 font-mono text-[10.5px] uppercase tracking-[0.14em] text-sg-ink-4">
           <span
             aria-hidden
-            className="h-1.5 w-1.5 rounded-full bg-sg-accent tp-breathe"
+            className="h-1.5 w-1.5 rounded-full bg-sg-accent sg-breathe"
           />
           corlinman · evolution
         </div>
@@ -187,7 +187,7 @@ function WatchPill({ watching }: { watching: boolean }) {
         aria-hidden
         className={cn(
           "h-[7px] w-[7px] rounded-full",
-          watching ? "bg-sg-ok tp-breathe" : "bg-sg-ink-4",
+          watching ? "bg-sg-ok sg-breathe" : "bg-sg-ink-4",
         )}
       />
       {watching

@@ -16,7 +16,7 @@ import { cn } from "@/lib/utils";
  *   ok (green) · info (neutral) · warn (amber) · err (red)
  *
  * The `justNow` flag lights up a 2px amber left-edge bar for ~2.8s (CSS
- * keyframe tp-just-now on globals). Use this when a row was appended to
+ * keyframe sg-just-now on globals). Use this when a row was appended to
  * the list within the last few seconds (typically the first row of an
  * SSE stream tick).
  */
@@ -87,7 +87,7 @@ export const LogRow = React.forwardRef<HTMLButtonElement, LogRowProps>(
         className={cn(
           "relative grid w-full items-center gap-3 text-left",
           "border-b border-sg-border transition-colors",
-          "hover:bg-sg-accent-soft/50 focus-visible:outline-none",
+          "hover:bg-sg-accent-soft focus-visible:outline-none",
           "focus-visible:ring-2 focus-visible:ring-sg-accent/40",
           dense
             ? "grid-cols-[70px_56px_140px_1fr_auto] px-4 py-2 text-[12.5px]"
@@ -102,7 +102,7 @@ export const LogRow = React.forwardRef<HTMLButtonElement, LogRowProps>(
         {justNow && !selected ? (
           <span
             aria-hidden
-            className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-sm bg-sg-accent shadow-[0_0_8px_var(--sg-accent-glow)] tp-just-now"
+            className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-sm bg-sg-accent shadow-[0_0_8px_var(--sg-accent-glow)] sg-just-now"
           />
         ) : null}
 

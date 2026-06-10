@@ -284,7 +284,7 @@ function McpServerCard({
       className={cn(
         "group block",
         !reduced &&
-          "transition-transform duration-200 ease-tp-ease-out hover:-translate-y-0.5",
+          "transition-transform duration-200 ease-sg-ease-out hover:-translate-y-0.5",
       )}
       data-testid={`mcp-server-card-${row.name}`}
       data-status={row.status}

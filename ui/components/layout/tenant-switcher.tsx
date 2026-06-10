@@ -89,10 +89,10 @@ export function TenantSwitcher({
   return (
     <label
       className={cn(
-        "group relative flex h-9 items-center gap-1.5 rounded-lg border border-tp-glass-edge bg-tp-glass-inner px-2 text-[12px] text-tp-ink-2 transition-colors",
+        "group relative flex h-9 items-center gap-1.5 rounded-lg border border-sg-border bg-sg-inset px-2 text-[12px] text-sg-ink-2 transition-colors",
         disabled
           ? "cursor-not-allowed opacity-60"
-          : "hover:border-tp-glass-edge-strong hover:bg-tp-glass-inner-hover hover:text-tp-ink",
+          : "hover:border-sg-border-strong hover:bg-sg-inset-hover hover:text-sg-ink",
         className,
       )}
       title={

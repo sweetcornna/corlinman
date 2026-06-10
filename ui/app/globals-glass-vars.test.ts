@@ -1,7 +1,9 @@
+import { execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
+const UI_ROOT = join(__dirname, "..");
 const css = readFileSync(join(__dirname, "globals.css"), "utf8");
 
 function blockOf(selector: RegExp): string {
@@ -27,19 +29,15 @@ describe("Spatial Glass invariants", () => {
       varIn(block, "--sg-glass-3-bg");
       varIn(block, "--sg-inset-bg");
       varIn(block, "--sg-glass-opaque");
+      varIn(block, "--sg-accent");
+      varIn(block, "--sg-row-alt");
     }
   });
 
-  it("aliases every legacy tp glass token into the sg namespace", () => {
-    expect(varIn(rootBlock, "--tp-glass")).toBe("var(--sg-glass-2-bg)");
-    expect(varIn(rootBlock, "--tp-glass-edge")).toBe("var(--sg-border)");
-    expect(varIn(rootBlock, "--tp-glass-inner")).toBe("var(--sg-inset-bg)");
-    expect(varIn(rootBlock, "--tp-amber")).toBe("var(--sg-accent)");
-    expect(varIn(rootBlock, "--tp-shadow-panel")).toBe("var(--sg-elev-2)");
-    // Aliases live only in :root — lazy var() resolution carries the
-    // .dark sg overrides through; a duplicate dark alias block would rot.
-    expect(darkBlock).not.toContain("--tp-glass:");
-    expect(darkBlock).not.toContain("--tp-amber:");
+  it("contains no legacy Tidepool tp-* tokens or classes", () => {
+    expect(css).not.toMatch(/--tp-/);
+    expect(css).not.toMatch(/\.tp-/);
+    expect(css).not.toMatch(/\b(emboss|pattern-active|relief-text|ridge-divider|dot-grid)\b/);
   });
 
   it("blurs shell and overlay tiers but never the content-card tier", () => {
@@ -53,9 +51,6 @@ describe("Spatial Glass invariants", () => {
     const card = blockOf(/\.sg-card\s*\{([\s\S]*?)\}/);
     expect(card).not.toContain("backdrop-filter");
     expect(card).toContain("background-image: linear-gradient(");
-
-    const emboss = blockOf(/\n\s*\.emboss\s*\{([\s\S]*?)\}/);
-    expect(emboss).not.toContain("backdrop-filter");
   });
 
   it("provides an opaque fallback when backdrop-filter is unsupported", () => {
@@ -73,12 +68,67 @@ describe("Spatial Glass invariants", () => {
     expect(html).toContain("background-image: linear-gradient(");
     expect(html).toContain("background-attachment: fixed");
   });
+});
 
-  it("keeps compact inner utilities pinned to the inset fill", () => {
-    const innerRule = css.match(
-      /\.bg-tp-glass-inner\\\/40,[\s\S]*?\.bg-tp-glass-inner\\\/70\s*\{([\s\S]*?)\}/,
+describe("blur budget (repo-wide static check)", () => {
+  // The real-blur tiers may only appear on shell surfaces and floating
+  // overlays. Content cards/rows must stay faux-glass so scrolling lists
+  // and SSE feeds never trigger re-blurs. If you add a file here, it must
+  // be a floating overlay (dialog/drawer/popover/lightbox/scrim) — not a
+  // content surface.
+  const SHELL_FILES = ["components/layout/sidebar.tsx", "components/layout/nav.tsx"];
+  const OVERLAY_FILES = [
+    ...SHELL_FILES,
+    "app/(admin)/layout.tsx", // mobile drawer scrim
+    "app/login/page.tsx", // public overlay card
+    "app/status/[token]/status-client.tsx", // showcase hero (spec-exempted)
+    "components/approvals/ArgsDialog.tsx",
+    "components/approvals/DenyReasonDialog.tsx",
+    "components/chat/attachment-gallery.tsx", // lightbox
+    "components/chat/composer-mention-menu.tsx",
+    "components/chat/composer-slash-menu.tsx",
+    "components/chat/conversation-search.tsx",
+    "components/chat/emoji-picker.tsx",
+    "components/chat/markdown-message.tsx", // lightbox
+    "components/cmdk-palette.tsx",
+    "components/layout/profile-switcher.tsx", // popover
+    "components/providers.tsx", // sonner toasts
+    "components/sessions/replay-dialog.tsx",
+    "components/ui/command-palette.tsx",
+    "components/ui/dialog.tsx",
+    "components/ui/drawer.tsx",
+  ];
+
+  function filesMatching(pattern: string): string[] {
+    try {
+      const out = execSync(
+        `grep -rlE '${pattern}' app components --include='*.tsx' | grep -v '\\.test\\.' | sort`,
+        { cwd: UI_ROOT, encoding: "utf8" },
+      );
+      return out.split("\n").filter(Boolean);
+    } catch {
+      return []; // grep exits 1 on zero matches
+    }
+  }
+
+  it("keeps real blur inside the shell/overlay whitelist", () => {
+    const realBlurUsers = filesMatching(
+      "backdrop-blur-(sg-shell|sg-overlay|glass-strong|sm|md|lg|xl|2xl|3xl)|sg-glass-(shell|overlay)",
     );
-    expect(innerRule).not.toBeNull();
-    expect(innerRule?.[1]).toContain("var(--sg-inset-bg)");
+    const offBudget = realBlurUsers.filter((f) => !OVERLAY_FILES.includes(f));
+    expect(offBudget, `content-tier files using real blur: ${offBudget.join(", ")}`).toEqual([]);
+  });
+
+  it("keeps the sg-shell tier exclusive to sidebar and topnav", () => {
+    const shellUsers = filesMatching("backdrop-blur-sg-shell|sg-glass-shell");
+    expect(shellUsers.sort()).toEqual([...SHELL_FILES].sort());
+  });
+
+  it("does not grow the legacy 0px backdrop-blur-glass tier", () => {
+    // The 0px legacy tier was fully removed in phase 3b — keep it at zero.
+    
+    
+    const legacy = filesMatching("backdrop-blur-glass[^-]");
+    expect(legacy).toEqual([]);
   });
 });

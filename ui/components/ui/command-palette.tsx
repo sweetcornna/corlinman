@@ -117,7 +117,7 @@ export function CommandPalette({
           "bg-sg-overlay border-sg-border-strong",
           "backdrop-blur-sg-overlay backdrop-saturate-sg-overlay",
           "shadow-sg-4 ring-1 ring-sg-accent/20",
-          "animate-tp-palette-in",
+          "animate-sg-palette-in",
         )}
       >
         {/* Input */}

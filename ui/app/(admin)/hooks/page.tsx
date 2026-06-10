@@ -41,7 +41,7 @@ import {
  * incoming events are buffered into a side ring and surfaced as a
  * resume-to-view pill — we never drop events that arrive during a pause.
  *
- * Newest row gets `justNow` for 2.8s (the tp-just-now keyframe window).
+ * Newest row gets `justNow` for 2.8s (the sg-just-now keyframe window).
  * Clicking a row selects it; clicking the same row again closes the drawer.
  * Esc also closes the drawer.
  */

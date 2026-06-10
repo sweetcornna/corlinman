@@ -556,7 +556,7 @@ function ConnectionDot({
         className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-sg-ok/30 bg-sg-ok-soft py-1 pl-2 pr-2.5 text-[11px] font-medium text-sg-ok"
       >
         <span
-          className="tp-breathe h-[6px] w-[6px] rounded-full bg-sg-ok"
+          className="sg-breathe h-[6px] w-[6px] rounded-full bg-sg-ok"
           aria-hidden
         />
         Live

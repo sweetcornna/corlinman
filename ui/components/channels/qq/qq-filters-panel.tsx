@@ -126,7 +126,7 @@ export function QqFiltersPanel({
       {entries.length === 0 ? (
         <div
           className={cn(
-            "rounded-xl border border-dashed border-sg-border bg-sg-inset/60 p-6 text-center text-[12.5px] text-sg-ink-3",
+            "rounded-xl border border-dashed border-sg-border bg-sg-inset p-6 text-center text-[12.5px] text-sg-ink-3",
           )}
         >
           {t("channels.noOverrides")}

@@ -54,7 +54,7 @@ export const sharedCard = {
 // ────────────────────────────────────────────────────────────────
 // Tidepool — Phase 0 additions.
 // Continuous animations (breathing dots, drawing underlines, just-now
-// fades, badge pulses) live in CSS keyframes under .tp-* utility
+// fades, badge pulses) live in CSS keyframes under .sg-* utility
 // classes in globals.css — they're cheaper than per-frame React work.
 // Only transient entrance animations need Framer variants:
 // ────────────────────────────────────────────────────────────────

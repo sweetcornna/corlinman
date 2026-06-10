@@ -203,7 +203,7 @@ export function CreateTenantDialog({
             />
             <p
               id="tenant-slug-hint"
-              className="text-[11px] text-tp-ink-3"
+              className="text-[11px] text-sg-ink-3"
             >
               {t("tenants.fieldSlugHint")}
             </p>
@@ -232,7 +232,7 @@ export function CreateTenantDialog({
                 setForm((s) => ({ ...s, display_name: e.target.value }))
               }
             />
-            <p className="text-[11px] text-tp-ink-3">
+            <p className="text-[11px] text-sg-ink-3">
               {t("tenants.fieldDisplayNameHint")}
             </p>
           </div>

@@ -125,7 +125,7 @@ export function CopyUpgradeCommand({
       className={cn("space-y-2", className)}
     >
       <div className="flex items-center justify-between gap-3">
-        <span className="text-xs font-medium uppercase tracking-wide text-tp-ink-3">
+        <span className="text-xs font-medium uppercase tracking-wide text-sg-ink-3">
           {label}
         </span>
         <Button
@@ -139,7 +139,7 @@ export function CopyUpgradeCommand({
         >
           {copied ? (
             <>
-              <Check className="h-3.5 w-3.5 text-tp-amber" aria-hidden />
+              <Check className="h-3.5 w-3.5 text-sg-accent" aria-hidden />
               <span>{t("system.upgrade.copied")}</span>
             </>
           ) : (
@@ -152,7 +152,7 @@ export function CopyUpgradeCommand({
       </div>
       <pre
         data-testid="copy-upgrade-command-pre"
-        className="overflow-x-auto rounded-md border border-tp-glass-edge bg-tp-glass-inner p-3 font-mono text-[12px] leading-relaxed text-tp-ink"
+        className="overflow-x-auto rounded-md border border-sg-border bg-sg-inset p-3 font-mono text-[12px] leading-relaxed text-sg-ink"
       >
         {command}
       </pre>

@@ -124,7 +124,7 @@ function TransitionRow({ transition }: { transition: CuratorTransition }) {
       data-testid={`transition-${transition.skill_name}`}
       className={cn(
         "flex items-center justify-between gap-3 rounded-lg border border-sg-border",
-        "bg-sg-inset/50 px-3 py-2 text-[13px]",
+        "bg-sg-inset px-3 py-2 text-[13px]",
       )}
     >
       <div className="flex min-w-0 items-center gap-2">

@@ -60,10 +60,10 @@ export default function RootLayout({
         <script dangerouslySetInnerHTML={{ __html: BOOT }} />
       </head>
       {/* Body does NOT paint a background. Admin routes mount their own
-          <AuroraBackground />, login provides a dot-grid layer. Route groups
-          that need a solid color set it on their own wrapper. This lets the
-          aurora actually show through — otherwise bg-background sits on top
-          of the fixed -z-10 aurora layer. */}
+          <AuroraBackground />, login/status build their own nebula layers.
+          Route groups that need a solid color set it on their own wrapper.
+          This lets the deep-space backdrop painted on <html> show through —
+          otherwise bg-background sits on top of the fixed -z-10 layer. */}
       <body className="min-h-dvh font-sans text-foreground antialiased">
         <Providers>{children}</Providers>
       </body>

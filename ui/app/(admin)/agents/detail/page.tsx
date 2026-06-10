@@ -60,7 +60,7 @@ export default function AgentDetailPage() {
 
   if (!name) {
     return (
-      <p className="text-sm text-tp-ink-3">
+      <p className="text-sm text-sg-ink-3">
         {t("agents.missingName")}{" "}
         <Link href="/agents" className="underline">
           {t("agents.agentListLink")}
@@ -75,7 +75,7 @@ export default function AgentDetailPage() {
         <div className="space-y-1">
           <Link
             href="/agents"
-            className="inline-flex items-center gap-1 text-xs text-tp-ink-3 hover:text-tp-ink"
+            className="inline-flex items-center gap-1 text-xs text-sg-ink-3 hover:text-sg-ink"
           >
             <ArrowLeft className="h-3 w-3" />
             {t("agents.backToList")}
@@ -90,7 +90,7 @@ export default function AgentDetailPage() {
             ) : null}
           </h1>
           {agent.data ? (
-            <p className="font-mono text-xs text-tp-ink-3">
+            <p className="font-mono text-xs text-sg-ink-3">
               {agent.data.file_path} · {agent.data.bytes} bytes
               {agent.data.last_modified ? ` · ${agent.data.last_modified}` : ""}
             </p>
@@ -113,7 +113,7 @@ export default function AgentDetailPage() {
           {t("agents.loadFailed")}: {(agent.error as Error).message}
         </p>
       ) : (
-        <section className="flex-1 overflow-hidden rounded-lg border border-tp-glass-edge bg-tp-glass">
+        <section className="flex-1 overflow-hidden rounded-lg border border-sg-border bg-sg-card">
           <Editor
             height="600px"
             defaultLanguage="markdown"

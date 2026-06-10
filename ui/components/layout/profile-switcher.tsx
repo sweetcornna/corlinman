@@ -145,16 +145,16 @@ export function ProfileSwitcher({
         title={t("profiles.switcherLabel")}
         data-testid="profile-switcher-trigger"
         className={cn(
-          "group flex h-8 items-center gap-1.5 rounded-lg border border-tp-glass-edge bg-tp-glass-inner px-2 text-[12px] text-tp-ink-2 transition-colors",
-          "hover:border-tp-glass-edge-strong hover:bg-tp-glass-inner-hover hover:text-tp-ink",
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
+          "group flex h-8 items-center gap-1.5 rounded-lg border border-sg-border bg-sg-inset px-2 text-[12px] text-sg-ink-2 transition-colors",
+          "hover:border-sg-border-strong hover:bg-sg-inset-hover hover:text-sg-ink",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
         )}
       >
         <Users className="h-3.5 w-3.5 shrink-0" aria-hidden />
         <span className="font-mono">{triggerLabel}</span>
         <ChevronDown
           className={cn(
-            "h-3 w-3 shrink-0 text-tp-ink-3 transition-transform",
+            "h-3 w-3 shrink-0 text-sg-ink-3 transition-transform",
             open && "rotate-180",
           )}
           aria-hidden
@@ -168,11 +168,11 @@ export function ProfileSwitcher({
           aria-label={t("profiles.switcherLabel")}
           data-testid="profile-switcher-panel"
           className={cn(
-            "absolute right-0 top-[calc(100%+4px)] z-50 min-w-[200px] overflow-hidden rounded-lg border border-tp-glass-edge bg-tp-glass p-1 shadow-tp-panel backdrop-blur-glass",
+            "absolute right-0 top-[calc(100%+4px)] z-50 min-w-[200px] overflow-hidden rounded-lg border border-sg-border bg-sg-card p-1 shadow-sg-2",
           )}
         >
           {loading && profiles.length === 0 ? (
-            <div className="px-2 py-1.5 text-[11px] text-tp-ink-3">
+            <div className="px-2 py-1.5 text-[11px] text-sg-ink-3">
               {t("profiles.switcherLabel")}…
             </div>
           ) : null}
@@ -190,22 +190,22 @@ export function ProfileSwitcher({
                 onKeyDown={(e) => onItemKey(e, idx)}
                 className={cn(
                   "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] transition-colors",
-                  "hover:bg-tp-glass-inner",
-                  "focus-visible:bg-tp-glass-inner focus-visible:outline-none",
-                  active ? "text-tp-ink" : "text-tp-ink-2",
+                  "hover:bg-sg-inset",
+                  "focus-visible:bg-sg-inset focus-visible:outline-none",
+                  active ? "text-sg-ink" : "text-sg-ink-2",
                 )}
               >
                 <Check
                   className={cn(
                     "h-3 w-3 shrink-0",
-                    active ? "opacity-100 text-tp-amber" : "opacity-0",
+                    active ? "opacity-100 text-sg-accent" : "opacity-0",
                   )}
                   aria-hidden
                 />
                 <span className="flex-1 truncate">
                   <span className="font-mono">{p.slug}</span>
                   {p.display_name && p.display_name !== p.slug ? (
-                    <span className="ml-1.5 text-tp-ink-3">
+                    <span className="ml-1.5 text-sg-ink-3">
                       {p.display_name}
                     </span>
                   ) : null}
@@ -216,7 +216,7 @@ export function ProfileSwitcher({
           <div
             role="separator"
             aria-orientation="horizontal"
-            className="my-1 h-px bg-tp-glass-edge"
+            className="my-1 h-px bg-sg-border"
           />
           <button
             type="button"
@@ -227,9 +227,9 @@ export function ProfileSwitcher({
             onClick={() => activate(manageIdx)}
             onKeyDown={(e) => onItemKey(e, manageIdx)}
             className={cn(
-              "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] text-tp-ink-2 transition-colors",
-              "hover:bg-tp-glass-inner hover:text-tp-ink",
-              "focus-visible:bg-tp-glass-inner focus-visible:outline-none",
+              "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] text-sg-ink-2 transition-colors",
+              "hover:bg-sg-inset hover:text-sg-ink",
+              "focus-visible:bg-sg-inset focus-visible:outline-none",
             )}
           >
             <Settings className="h-3 w-3 shrink-0 opacity-70" aria-hidden />

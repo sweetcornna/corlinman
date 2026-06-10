@@ -1269,7 +1269,7 @@ function DoneStep({ onFinish }: { onFinish: () => void }) {
         <CardHeader className="pb-2">
           <div className="flex items-center gap-2">
             <span
-              className="tp-breathe inline-flex h-8 w-8 items-center justify-center rounded-full bg-sg-ok-soft text-sg-ok"
+              className="sg-breathe inline-flex h-8 w-8 items-center justify-center rounded-full bg-sg-ok-soft text-sg-ok"
               aria-hidden
             >
               <Check className="h-4 w-4" />

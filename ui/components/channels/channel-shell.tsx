@@ -130,7 +130,7 @@ export function ChannelShell({
                   aria-hidden
                   className={cn(
                     "h-1.5 w-1.5 rounded-full",
-                    connected ? "bg-sg-ok tp-breathe" : "bg-sg-ink-5",
+                    connected ? "bg-sg-ok sg-breathe" : "bg-sg-ink-5",
                   )}
                 />
                 <LiveDot

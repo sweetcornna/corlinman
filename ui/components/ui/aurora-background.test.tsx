@@ -13,7 +13,7 @@ describe("AuroraBackground", () => {
     expect(el).toHaveAttribute("aria-hidden", "true");
     expect(el.className).toContain("fixed");
     expect(el.className).toContain("-z-10");
-    expect(el.className).toContain("tp-bg-root");
+    expect(el.className).toContain("sg-bg-root");
   });
 
   it("can be rendered inline when fixed=false", () => {

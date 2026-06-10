@@ -221,7 +221,7 @@ export default function ModelsPage() {
         <h1 className="text-2xl font-semibold tracking-tight">
           {t("models.title")}
         </h1>
-        <p className="text-sm text-tp-ink-3">{t("models.subtitle")}</p>
+        <p className="text-sm text-sg-ink-3">{t("models.subtitle")}</p>
       </header>
 
       <section className="space-y-2">
@@ -229,7 +229,7 @@ export default function ModelsPage() {
         {models.isPending ? (
           <Skeleton className="h-24 w-full" />
         ) : models.data && models.data.providers.length === 0 ? (
-          <p className="rounded-md border border-dashed border-tp-glass-edge p-6 text-center text-sm text-tp-ink-3">
+          <p className="rounded-md border border-dashed border-sg-border p-6 text-center text-sm text-sg-ink-3">
             {t("models.providersEmpty")}
           </p>
         ) : (
@@ -241,16 +241,16 @@ export default function ModelsPage() {
         )}
       </section>
 
-      <section className="space-y-3 rounded-lg border border-tp-glass-edge bg-tp-glass p-4">
+      <section className="space-y-3 rounded-lg border border-sg-border bg-sg-card p-4">
         <div className="flex items-center justify-between gap-2">
           <div>
             <h2 className="text-sm font-semibold">{t("models.aliases")}</h2>
-            <p className="text-xs text-tp-ink-3">
+            <p className="text-xs text-sg-ink-3">
               {t("models.aliasesHint")}
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <span className="text-[10px] uppercase tracking-wider text-tp-ink-3">
+            <span className="text-[10px] uppercase tracking-wider text-sg-ink-3">
               {t("models.defaultLabel")}
             </span>
             <Input
@@ -290,7 +290,7 @@ export default function ModelsPage() {
         </div>
         <Table>
           <TableHeader>
-            <TableRow className="border-b border-tp-glass-edge hover:bg-transparent">
+            <TableRow className="border-b border-sg-border hover:bg-transparent">
               {aliasViews ? <TableHead className="w-8 pl-3"></TableHead> : null}
               <TableHead className={cn("w-52", !aliasViews && "pl-3")}>
                 {t("models.aliasHeader")}
@@ -309,7 +309,7 @@ export default function ModelsPage() {
               <TableRow>
                 <TableCell
                   colSpan={aliasViews ? 5 : 3}
-                  className="py-6 text-center text-sm text-tp-ink-3"
+                  className="py-6 text-center text-sm text-sg-ink-3"
                 >
                   {t("models.noAliases")}
                 </TableCell>
@@ -441,8 +441,8 @@ function ProviderCard({ provider }: { provider: ProviderRow | ProviderView }) {
       className={cn(
         "flex flex-col gap-2 rounded-lg border p-4 transition-colors",
         enabled
-          ? "border-tp-glass-edge bg-tp-glass hover:border-tp-amber/35"
-          : "border-tp-glass-edge bg-tp-glass-inner",
+          ? "border-sg-border bg-sg-card hover:border-sg-accent/35"
+          : "border-sg-border bg-sg-inset",
       )}
     >
       <div className="flex items-center justify-between">
@@ -450,7 +450,7 @@ function ProviderCard({ provider }: { provider: ProviderRow | ProviderView }) {
           <span
             className={cn(
               "inline-block h-2 w-2 rounded-full",
-              enabled ? "bg-sg-ok" : "bg-tp-ink-3/40",
+              enabled ? "bg-sg-ok" : "bg-sg-ink-3/40",
             )}
           />
           <span className="text-sm font-semibold">{provider.name}</span>
@@ -469,9 +469,9 @@ function ProviderCard({ provider }: { provider: ProviderRow | ProviderView }) {
         )}
       </div>
       <div className="flex items-center gap-2 text-xs">
-        <Key className="h-3 w-3 text-tp-ink-3" />
+        <Key className="h-3 w-3 text-sg-ink-3" />
         {keyKindLabel ? (
-          <span className="font-mono text-tp-ink-3">
+          <span className="font-mono text-sg-ink-3">
             {t("models.keyKind", { kind: keyKindLabel })}
           </span>
         ) : (
@@ -480,7 +480,7 @@ function ProviderCard({ provider }: { provider: ProviderRow | ProviderView }) {
           </span>
         )}
       </div>
-      <div className="font-mono text-[11px] text-tp-ink-3">
+      <div className="font-mono text-[11px] text-sg-ink-3">
         {provider.base_url ?? t("models.providerDefault")}
       </div>
     </div>
@@ -515,14 +515,14 @@ function AliasRowV2({
 
   return (
     <>
-      <TableRow className="border-b border-tp-glass-edge">
+      <TableRow className="border-b border-sg-border">
         <TableCell className="w-8 pl-3">
           <button
             type="button"
             onClick={() => setExpanded((v) => !v)}
             aria-expanded={expanded}
             aria-label={expanded ? t("models.collapse") : t("models.expand")}
-            className="inline-flex h-6 w-6 items-center justify-center rounded-md text-tp-ink-3 hover:bg-tp-glass-inner-hover hover:text-tp-ink"
+            className="inline-flex h-6 w-6 items-center justify-center rounded-md text-sg-ink-3 hover:bg-sg-inset-hover hover:text-sg-ink"
             data-testid={`alias-expand-${alias}`}
           >
             {expanded ? (
@@ -540,7 +540,7 @@ function AliasRowV2({
             mono
           />
         </TableCell>
-        <TableCell className="font-mono text-[11px] text-tp-ink-3">
+        <TableCell className="font-mono text-[11px] text-sg-ink-3">
           {providerName || "—"}
         </TableCell>
         <TableCell>
@@ -577,7 +577,7 @@ function AliasRowV2({
       <AnimatePresence initial={false}>
         {expanded ? (
           <TableRow
-            className="border-b border-tp-glass-edge bg-tp-glass/40"
+            className="border-b border-sg-border bg-sg-card"
             data-testid={`alias-params-row-${alias}`}
           >
             <TableCell colSpan={5} className="p-0">
@@ -596,7 +596,7 @@ function AliasRowV2({
                       schema={schema}
                     />
                   ) : (
-                    <p className="text-xs text-tp-ink-3">
+                    <p className="text-xs text-sg-ink-3">
                       {t("models.paramsBackendPending")}
                     </p>
                   )}
@@ -655,7 +655,7 @@ function AliasParamsEditor({
     <div className="space-y-3">
       <div>
         <h3 className="text-sm font-semibold">{t("models.paramsTitle")}</h3>
-        <p className="text-[11px] text-tp-ink-3">
+        <p className="text-[11px] text-sg-ink-3">
           {t("models.paramsHint")}
         </p>
       </div>
@@ -668,7 +668,7 @@ function AliasParamsEditor({
           testIdPrefix={`alias-${alias.name}`}
         />
       ) : (
-        <p className="text-xs italic text-tp-ink-3">
+        <p className="text-xs italic text-sg-ink-3">
           {t("models.paramsNone")}
         </p>
       )}
@@ -705,7 +705,7 @@ function AliasRow({
 }) {
   const { t } = useTranslation();
   return (
-    <TableRow className="border-b border-tp-glass-edge">
+    <TableRow className="border-b border-sg-border">
       <TableCell className="pl-3">
         <InlineEdit
           value={alias}
@@ -770,14 +770,14 @@ function InlineEdit({
         type="button"
         onClick={() => setEditing(true)}
         className={cn(
-          "group inline-flex h-8 w-full items-center justify-between gap-1 rounded px-2 text-left transition-colors hover:bg-tp-glass-inner-hover",
+          "group inline-flex h-8 w-full items-center justify-between gap-1 rounded px-2 text-left transition-colors hover:bg-sg-inset-hover",
           mono && "font-mono text-xs",
         )}
       >
-        <span className={!value ? "text-tp-ink-3" : ""}>
+        <span className={!value ? "text-sg-ink-3" : ""}>
           {value || placeholder || t("models.emptyValue")}
         </span>
-        <Pencil className="h-3 w-3 text-tp-ink-3 opacity-0 transition-opacity group-hover:opacity-100" />
+        <Pencil className="h-3 w-3 text-sg-ink-3 opacity-0 transition-opacity group-hover:opacity-100" />
       </button>
     );
   }
@@ -805,7 +805,7 @@ function InlineEdit({
           onCommit(draft);
           setEditing(false);
         }}
-        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-tp-ink-3 transition-colors hover:bg-tp-glass-inner-hover hover:text-tp-ink"
+        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-sg-ink-3 transition-colors hover:bg-sg-inset-hover hover:text-sg-ink"
         aria-label={t("models.commit")}
       >
         <Check className="h-3.5 w-3.5" />
@@ -816,7 +816,7 @@ function InlineEdit({
           setDraft(value);
           setEditing(false);
         }}
-        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-tp-ink-3 transition-colors hover:bg-tp-glass-inner-hover hover:text-tp-ink"
+        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-sg-ink-3 transition-colors hover:bg-sg-inset-hover hover:text-sg-ink"
         aria-label={t("models.cancel")}
       >
         <X className="h-3.5 w-3.5" />

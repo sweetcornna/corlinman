@@ -122,7 +122,7 @@ function TurnPill({ sessionKey, turn, active }: PillProps) {
       data-active={active || undefined}
       className={cn(
         "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full border px-3 font-mono text-[11px] transition-colors",
-        "border-sg-border bg-sg-card-grad text-sg-ink-3 hover:bg-sg-accent-soft/40 hover:text-sg-ink",
+        "border-sg-border bg-sg-card-grad text-sg-ink-3 hover:bg-sg-accent-soft hover:text-sg-ink",
         active &&
           "border-sg-accent/40 bg-sg-accent-soft text-sg-ink shadow-[inset_0_0_0_1px_var(--sg-accent-glow)]",
       )}
@@ -242,7 +242,7 @@ export function PastTurnsPills({
           disabled={loadingMore}
           className={cn(
             "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full border px-3 text-[11px] transition-colors",
-            "border-dashed border-sg-border bg-transparent text-sg-ink-3 hover:bg-sg-accent-soft/40 hover:text-sg-ink",
+            "border-dashed border-sg-border bg-transparent text-sg-ink-3 hover:bg-sg-accent-soft hover:text-sg-ink",
             "disabled:cursor-not-allowed disabled:opacity-60",
           )}
           aria-label={t("sessions.pastTurns.loadMore")}

@@ -67,7 +67,7 @@ export function MarkdownMessage({
       ),
       blockquote: ({ className: c, ...rest }) => (
         <blockquote
-          className={cn("my-3 border-l-2 border-sg-accent/40 bg-sg-accent-soft/40 py-1 pl-3 pr-2 text-sg-ink-2 [&>p]:my-1", c)}
+          className={cn("my-3 border-l-2 border-sg-accent/40 bg-sg-accent-soft py-1 pl-3 pr-2 text-sg-ink-2 [&>p]:my-1", c)}
           {...rest}
         />
       ),
@@ -86,7 +86,7 @@ export function MarkdownMessage({
         />
       ),
       td: ({ className: c, ...rest }) => (
-        <td className={cn("border-b border-sg-border/60 px-3 py-1.5 last:border-b-0", c)} {...rest} />
+        <td className={cn("border-b border-sg-border px-3 py-1.5 last:border-b-0", c)} {...rest} />
       ),
       img: ({ className: c, src, alt, ...rest }) => (
         <button
@@ -111,7 +111,7 @@ export function MarkdownMessage({
         if (isInline) {
           return (
             <code
-              className="rounded-md border border-sg-border/60 bg-sg-inset px-1.5 py-0.5 font-mono text-[12.5px] text-sg-accent-3"
+              className="rounded-md border border-sg-border bg-sg-inset px-1.5 py-0.5 font-mono text-[12.5px] text-sg-accent-3"
               {...rest}
             >
               {children}

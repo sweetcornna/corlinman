@@ -219,7 +219,7 @@ function PluginRowCard({
       className={cn(
         "group block",
         !reduced &&
-          "transition-transform duration-200 ease-tp-ease-out hover:-translate-y-0.5",
+          "transition-transform duration-200 ease-sg-ease-out hover:-translate-y-0.5",
       )}
       data-testid={`plugin-row-card-${row.slug}`}
       data-enabled={row.enabled}

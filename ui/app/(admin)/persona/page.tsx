@@ -223,10 +223,10 @@ export default function PersonaPage() {
     <>
       <header className="space-y-1">
         <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
-          <Sparkles className="h-5 w-5 text-tp-amber" aria-hidden="true" />
+          <Sparkles className="h-5 w-5 text-sg-accent" aria-hidden="true" />
           {t("persona.title")}
         </h1>
-        <p className="text-sm text-tp-ink-3">{t("persona.subtitle")}</p>
+        <p className="text-sm text-sg-ink-3">{t("persona.subtitle")}</p>
       </header>
 
       <HumanlikeCard personas={personas} />
@@ -243,7 +243,7 @@ export default function PersonaPage() {
             >
               {t("persona.listTitle")}
             </h2>
-            <p className="text-xs text-tp-ink-3">{t("persona.listSubtitle")}</p>
+            <p className="text-xs text-sg-ink-3">{t("persona.listSubtitle")}</p>
           </div>
           <Button
             type="button"
@@ -256,10 +256,10 @@ export default function PersonaPage() {
           </Button>
         </div>
 
-        <div className="overflow-hidden rounded-lg border border-tp-glass-edge bg-tp-glass">
+        <div className="overflow-hidden rounded-lg border border-sg-border bg-sg-card">
           <Table>
             <TableHeader>
-              <TableRow className="border-b border-tp-glass-edge hover:bg-transparent">
+              <TableRow className="border-b border-sg-border hover:bg-transparent">
                 <TableHead className="pl-4">{t("persona.colName")}</TableHead>
                 <TableHead>{t("persona.colSummary")}</TableHead>
                 <TableHead className="w-24">{t("persona.colBuiltin")}</TableHead>
@@ -287,7 +287,7 @@ export default function PersonaPage() {
                 <TableRow>
                   <TableCell
                     colSpan={5}
-                    className="py-10 text-center text-sm text-tp-ink-3"
+                    className="py-10 text-center text-sm text-sg-ink-3"
                     data-testid="personas-empty"
                   >
                     {t("persona.empty")}
@@ -442,7 +442,7 @@ function HumanlikeCard({ personas }: { personas: Persona[] }) {
         <div className="space-y-2">
           <Label
             htmlFor="humanlike-channel"
-            className="text-xs uppercase tracking-wider text-tp-ink-3"
+            className="text-xs uppercase tracking-wider text-sg-ink-3"
           >
             {t("persona.channelSelectLabel")}
           </Label>
@@ -454,7 +454,7 @@ function HumanlikeCard({ personas }: { personas: Persona[] }) {
             className={cn(
               "sg-inset flex h-10 w-full rounded-sg-md px-3 py-1 text-sm transition-colors",
               "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-              "appearance-none bg-tp-glass-inner",
+              "appearance-none bg-sg-inset",
             )}
           >
             {SUPPORTED_HUMANLIKE_CHANNELS.map((c) => (
@@ -465,7 +465,7 @@ function HumanlikeCard({ personas }: { personas: Persona[] }) {
           </select>
         </div>
 
-        <div className="flex items-center justify-between gap-4 rounded-md border border-tp-glass-edge bg-tp-glass-inner px-3 py-2">
+        <div className="flex items-center justify-between gap-4 rounded-md border border-sg-border bg-sg-inset px-3 py-2">
           <Label htmlFor="qq-humanlike-toggle" className="text-sm">
             {t("persona.toggleLabel")}
           </Label>
@@ -481,7 +481,7 @@ function HumanlikeCard({ personas }: { personas: Persona[] }) {
 
         {enabled ? (
           <div className="space-y-2">
-            <Label htmlFor="qq-humanlike-persona" className="text-xs uppercase tracking-wider text-tp-ink-3">
+            <Label htmlFor="qq-humanlike-persona" className="text-xs uppercase tracking-wider text-sg-ink-3">
               {t("persona.personaSelectLabel")}
             </Label>
             <PersonaSelect
@@ -496,7 +496,7 @@ function HumanlikeCard({ personas }: { personas: Persona[] }) {
         ) : null}
 
         <div className="flex items-center justify-between gap-3">
-          <p className="text-xs text-tp-ink-3" data-testid="qq-humanlike-status">
+          <p className="text-xs text-sg-ink-3" data-testid="qq-humanlike-status">
             {statusLine}
           </p>
           <Button
@@ -552,7 +552,7 @@ function PersonaSelect({
         "sg-inset flex h-10 w-full rounded-sg-md px-3 py-1 text-sm transition-colors",
         "placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
         "disabled:cursor-not-allowed disabled:opacity-50",
-        "appearance-none bg-tp-glass-inner",
+        "appearance-none bg-sg-inset",
       )}
     >
       <option value="">{placeholder}</option>
@@ -586,20 +586,20 @@ function PersonaRow({
   return (
     <TableRow
       data-testid={`persona-row-${persona.id}`}
-      className="border-b border-tp-glass-edge"
+      className="border-b border-sg-border"
     >
       <TableCell className="pl-4 font-medium">
         <div className="flex items-center gap-2.5">
           <PersonaAvatar persona={persona} size={32} />
           <div className="flex flex-col gap-0.5">
             <span>{persona.display_name}</span>
-            <span className="font-mono text-[11px] text-tp-ink-3">
+            <span className="font-mono text-[11px] text-sg-ink-3">
               {persona.id}
             </span>
           </div>
         </div>
       </TableCell>
-      <TableCell className="text-sm text-tp-ink-2">
+      <TableCell className="text-sm text-sg-ink-2">
         <span className="line-clamp-2">{persona.short_summary}</span>
       </TableCell>
       <TableCell>
@@ -609,7 +609,7 @@ function PersonaRow({
           </Badge>
         ) : null}
       </TableCell>
-      <TableCell className="text-xs text-tp-ink-3">{updated}</TableCell>
+      <TableCell className="text-xs text-sg-ink-3">{updated}</TableCell>
       <TableCell className="pr-4 text-right">
         <div className="inline-flex gap-1">
           <Button
@@ -679,7 +679,7 @@ function PersonaAvatar({
       <img
         src={persona.avatar_url}
         alt={t("persona.avatarAlt", { name: persona.display_name })}
-        className="shrink-0 rounded-full border border-tp-glass-edge object-cover"
+        className="shrink-0 rounded-full border border-sg-border object-cover"
         style={dim}
         loading="lazy"
         onError={() => setBroken(true)}
@@ -693,7 +693,7 @@ function PersonaAvatar({
       className="flex shrink-0 items-center justify-center rounded-full text-[11px] font-semibold text-white"
       style={{
         ...dim,
-        background: "linear-gradient(135deg, var(--tp-amber), var(--tp-ember))",
+        background: "linear-gradient(135deg, var(--sg-accent), var(--sg-accent-2))",
       }}
       aria-hidden="true"
       data-testid={`persona-avatar-fallback-${persona.id}`}
@@ -709,7 +709,7 @@ function PersonasTableSkeleton() {
       {Array.from({ length: 2 }).map((_, i) => (
         <TableRow
           key={`persona-sk-${i}`}
-          className="border-b border-tp-glass-edge"
+          className="border-b border-sg-border"
         >
           <TableCell className="pl-4">
             <Skeleton className="h-4 w-32" />
@@ -872,7 +872,7 @@ function PersonaEditorDialog({
         >
           <div className="grid gap-3">
             <div className="space-y-1">
-              <Label htmlFor="persona-id" className="text-xs uppercase tracking-wider text-tp-ink-3">
+              <Label htmlFor="persona-id" className="text-xs uppercase tracking-wider text-sg-ink-3">
                 {t("persona.fieldId")}
               </Label>
               <Input
@@ -884,7 +884,7 @@ function PersonaEditorDialog({
                 placeholder="grantley"
                 className="font-mono"
               />
-              <p className="text-[11px] text-tp-ink-3">{t("persona.fieldIdHint")}</p>
+              <p className="text-[11px] text-sg-ink-3">{t("persona.fieldIdHint")}</p>
               {errors.id ? (
                 <p className="text-xs text-destructive" data-testid="persona-id-error">
                   {errors.id}
@@ -893,7 +893,7 @@ function PersonaEditorDialog({
             </div>
 
             <div className="space-y-1">
-              <Label htmlFor="persona-display-name" className="text-xs uppercase tracking-wider text-tp-ink-3">
+              <Label htmlFor="persona-display-name" className="text-xs uppercase tracking-wider text-sg-ink-3">
                 {t("persona.fieldDisplayName")}
               </Label>
               <Input
@@ -909,7 +909,7 @@ function PersonaEditorDialog({
             </div>
 
             <div className="space-y-1">
-              <Label htmlFor="persona-short-summary" className="text-xs uppercase tracking-wider text-tp-ink-3">
+              <Label htmlFor="persona-short-summary" className="text-xs uppercase tracking-wider text-sg-ink-3">
                 {t("persona.fieldShortSummary")}
               </Label>
               <Input
@@ -919,14 +919,14 @@ function PersonaEditorDialog({
                 data-testid="persona-short-summary-input"
                 placeholder="..."
               />
-              <p className="text-[11px] text-tp-ink-3">{t("persona.fieldShortSummaryHint")}</p>
+              <p className="text-[11px] text-sg-ink-3">{t("persona.fieldShortSummaryHint")}</p>
               {errors.short_summary ? (
                 <p className="text-xs text-destructive">{errors.short_summary}</p>
               ) : null}
             </div>
 
             <div className="space-y-1">
-              <Label htmlFor="persona-system-prompt" className="text-xs uppercase tracking-wider text-tp-ink-3">
+              <Label htmlFor="persona-system-prompt" className="text-xs uppercase tracking-wider text-sg-ink-3">
                 {t("persona.fieldSystemPrompt")}
               </Label>
               <textarea
@@ -941,7 +941,7 @@ function PersonaEditorDialog({
                   "placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                 )}
               />
-              <p className="text-[11px] text-tp-ink-3">{t("persona.fieldSystemPromptHint")}</p>
+              <p className="text-[11px] text-sg-ink-3">{t("persona.fieldSystemPromptHint")}</p>
               {errors.system_prompt ? (
                 <p className="text-xs text-destructive">{errors.system_prompt}</p>
               ) : null}
@@ -953,10 +953,10 @@ function PersonaEditorDialog({
                 so the operator knows the surface exists; flips on once
                 the backend lands. */}
             <fieldset
-              className="space-y-1 rounded-md border border-dashed border-tp-glass-edge px-3 py-2"
+              className="space-y-1 rounded-md border border-dashed border-sg-border px-3 py-2"
               data-testid="persona-test-box"
             >
-              <Label className="text-xs uppercase tracking-wider text-tp-ink-3">
+              <Label className="text-xs uppercase tracking-wider text-sg-ink-3">
                 {t("persona.testBoxTitle")}
               </Label>
               <div className="flex items-center gap-2">
@@ -977,7 +977,7 @@ function PersonaEditorDialog({
                   {t("persona.testBoxButton")}
                 </Button>
               </div>
-              <p className="text-[11px] text-tp-ink-3">{t("persona.testBoxTooltip")}</p>
+              <p className="text-[11px] text-sg-ink-3">{t("persona.testBoxTooltip")}</p>
             </fieldset>
 
             {/* Asset sections + life layer — only meaningful once the
@@ -992,7 +992,7 @@ function PersonaEditorDialog({
               </>
             ) : (
               <div
-                className="rounded-md border border-dashed border-tp-glass-edge px-3 py-2 text-xs text-tp-ink-3"
+                className="rounded-md border border-dashed border-sg-border px-3 py-2 text-xs text-sg-ink-3"
                 data-testid="persona-assets-pending-save"
               >
                 {t("persona.assetsSaveFirstHint")}
@@ -1317,7 +1317,7 @@ function PersonaAssetsPanel({ personaId }: { personaId: string }) {
       />
 
       <p
-        className="text-right text-[11px] text-tp-ink-3"
+        className="text-right text-[11px] text-sg-ink-3"
         data-testid="persona-assets-total"
       >
         {t("persona.assetsTotalUsed", {
@@ -1425,7 +1425,7 @@ function AssetSection({
 
   return (
     <section
-      className="space-y-2 rounded-md border border-tp-glass-edge bg-tp-glass-inner px-3 py-2"
+      className="space-y-2 rounded-md border border-sg-border bg-sg-inset px-3 py-2"
       data-testid={sectionTestId}
     >
       <header className="flex items-center justify-between gap-2">
@@ -1437,7 +1437,7 @@ function AssetSection({
           data-testid={`${sectionTestId}-toggle`}
         >
           <span className="text-sm font-medium">{title}</span>
-          <span className="rounded-full bg-tp-glass px-1.5 py-0.5 font-mono text-[10px] text-tp-ink-3">
+          <span className="rounded-full bg-sg-card px-1.5 py-0.5 font-mono text-[10px] text-sg-ink-3">
             {assets.length}
           </span>
         </button>
@@ -1463,7 +1463,7 @@ function AssetSection({
 
       {open ? (
         <>
-          <p className="text-[11px] text-tp-ink-3">{description}</p>
+          <p className="text-[11px] text-sg-ink-3">{description}</p>
 
           {overCap && overCapHint ? (
             <Alert
@@ -1494,8 +1494,8 @@ function AssetSection({
             className={cn(
               "rounded-md border border-dashed px-3 py-3 transition-colors",
               dragOver
-                ? "border-tp-amber bg-tp-amber/10"
-                : "border-tp-glass-edge",
+                ? "border-sg-accent bg-sg-accent/10"
+                : "border-sg-border",
             )}
             data-testid={`${sectionTestId}-dropzone`}
             aria-label={t("persona.assetsDropHere", { kind: title })}
@@ -1507,7 +1507,7 @@ function AssetSection({
                 ))}
               </div>
             ) : assets.length === 0 && pending.length === 0 ? (
-              <p className="py-4 text-center text-xs text-tp-ink-3">
+              <p className="py-4 text-center text-xs text-sg-ink-3">
                 {t("persona.assetsEmpty")}
               </p>
             ) : (
@@ -1608,7 +1608,7 @@ function AssetCell({
 
   return (
     <div
-      className="group relative flex flex-col gap-1 rounded-md border border-tp-glass-edge bg-tp-glass p-1.5"
+      className="group relative flex flex-col gap-1 rounded-md border border-sg-border bg-sg-card p-1.5"
       data-testid={testId}
     >
       {/* Square preview thumbnail, capped at 96px. `object-contain`
@@ -1648,7 +1648,7 @@ function AssetCell({
             disabled={saving || !draftOk}
             aria-label={t("persona.assetsRenameSave")}
             title={t("persona.assetsRenameSave")}
-            className="text-tp-ink-2 hover:text-tp-ink disabled:opacity-40"
+            className="text-sg-ink-2 hover:text-sg-ink disabled:opacity-40"
             data-testid={`${testId}-rename-save`}
           >
             <Check className="h-3.5 w-3.5" aria-hidden="true" />
@@ -1659,7 +1659,7 @@ function AssetCell({
             disabled={saving}
             aria-label={t("persona.assetsRenameCancel")}
             title={t("persona.assetsRenameCancel")}
-            className="text-tp-ink-3 hover:text-tp-ink disabled:opacity-40"
+            className="text-sg-ink-3 hover:text-sg-ink disabled:opacity-40"
             data-testid={`${testId}-rename-cancel`}
           >
             <X className="h-3.5 w-3.5" aria-hidden="true" />
@@ -1670,14 +1670,14 @@ function AssetCell({
           type="button"
           onClick={beginEdit}
           title={t("persona.assetsRename")}
-          className="flex h-7 items-center gap-1 truncate rounded-md border border-input bg-transparent px-1.5 text-left text-[11px] text-tp-ink hover:border-tp-amber/60"
+          className="flex h-7 items-center gap-1 truncate rounded-md border border-input bg-transparent px-1.5 text-left text-[11px] text-sg-ink hover:border-sg-accent/60"
           data-testid={`${testId}-label`}
         >
           <span className="truncate">{asset.label}</span>
           <Pencil className="ml-auto h-3 w-3 shrink-0 opacity-60" aria-hidden="true" />
         </button>
       )}
-      <div className="flex items-center justify-between text-[10px] text-tp-ink-3">
+      <div className="flex items-center justify-between text-[10px] text-sg-ink-3">
         <span>{formatBytes(asset.size_bytes)}</span>
         <button
           type="button"
@@ -1702,7 +1702,7 @@ function PendingAssetCell({
   const { t } = useTranslation();
   return (
     <div
-      className="relative flex flex-col gap-1 rounded-md border border-dashed border-tp-glass-edge bg-tp-glass p-1.5 opacity-70"
+      className="relative flex flex-col gap-1 rounded-md border border-dashed border-sg-border bg-sg-card p-1.5 opacity-70"
       data-testid={testId}
     >
       {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -1712,7 +1712,7 @@ function PendingAssetCell({
         className="mx-auto h-20 w-20 rounded-sm object-contain"
       />
       <p className="truncate px-1 text-[11px]">{pending.label}</p>
-      <p className="px-1 text-[10px] text-tp-ink-3">
+      <p className="px-1 text-[10px] text-sg-ink-3">
         {t("persona.assetsUploading")}
       </p>
     </div>
@@ -1738,12 +1738,12 @@ function LifeSection({
 }) {
   return (
     <section
-      className="space-y-2 rounded-md border border-tp-glass-edge bg-tp-glass-inner px-3 py-2"
+      className="space-y-2 rounded-md border border-sg-border bg-sg-inset px-3 py-2"
       data-testid={testId}
     >
       <header className="space-y-0.5">
         <h3 className="text-sm font-medium">{title}</h3>
-        <p className="text-[11px] text-tp-ink-3">{description}</p>
+        <p className="text-[11px] text-sg-ink-3">{description}</p>
       </header>
       {children}
     </section>
@@ -1857,7 +1857,7 @@ function PersonaLifePanel({ personaId }: { personaId: string }) {
             <div className="space-y-1">
               <Label
                 htmlFor="persona-life-mood"
-                className="text-xs uppercase tracking-wider text-tp-ink-3"
+                className="text-xs uppercase tracking-wider text-sg-ink-3"
               >
                 {t("persona.lifeMood")}
               </Label>
@@ -1872,7 +1872,7 @@ function PersonaLifePanel({ personaId }: { personaId: string }) {
             <div className="space-y-1">
               <Label
                 htmlFor="persona-life-fatigue"
-                className="text-xs uppercase tracking-wider text-tp-ink-3"
+                className="text-xs uppercase tracking-wider text-sg-ink-3"
               >
                 {t("persona.lifeFatigue")}
               </Label>
@@ -1895,7 +1895,7 @@ function PersonaLifePanel({ personaId }: { personaId: string }) {
           <div className="space-y-1">
             <Label
               htmlFor="persona-life-topics"
-              className="text-xs uppercase tracking-wider text-tp-ink-3"
+              className="text-xs uppercase tracking-wider text-sg-ink-3"
             >
               {t("persona.lifeRecentTopics")}
             </Label>
@@ -1905,13 +1905,13 @@ function PersonaLifePanel({ personaId }: { personaId: string }) {
               onChange={(e) => setTopicsText(e.target.value)}
               data-testid="persona-life-topics"
             />
-            <p className="text-[11px] text-tp-ink-3">
+            <p className="text-[11px] text-sg-ink-3">
               {t("persona.lifeRecentTopicsHint")}
             </p>
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="text-[11px] text-tp-ink-3" data-testid="persona-life-updated">
+            <p className="text-[11px] text-sg-ink-3" data-testid="persona-life-updated">
               {updatedLine}
             </p>
             <div className="flex items-center gap-2">
@@ -1975,7 +1975,7 @@ function PersonaDiaryViewer({ personaId }: { personaId: string }) {
         <Skeleton className="h-16 w-full rounded-md" />
       ) : entries.length === 0 ? (
         <p
-          className="py-3 text-center text-xs text-tp-ink-3"
+          className="py-3 text-center text-xs text-sg-ink-3"
           data-testid="persona-diary-empty"
         >
           {t("persona.diaryEmpty")}
@@ -1988,14 +1988,14 @@ function PersonaDiaryViewer({ personaId }: { personaId: string }) {
           {entries.map((entry, i) => (
             <li
               key={`${entry.ts}-${i}`}
-              className="rounded-md border border-tp-glass-edge bg-tp-glass px-2 py-1.5"
+              className="rounded-md border border-sg-border bg-sg-card px-2 py-1.5"
             >
-              <p className="font-mono text-[10px] text-tp-ink-3">
+              <p className="font-mono text-[10px] text-sg-ink-3">
                 {entry.ts > 0
                   ? new Date(entry.ts).toLocaleString()
                   : "—"}
               </p>
-              <p className="whitespace-pre-wrap text-xs text-tp-ink-2">
+              <p className="whitespace-pre-wrap text-xs text-sg-ink-2">
                 {entry.text}
               </p>
             </li>

@@ -231,7 +231,7 @@ export function ProposalCard({
           <div
             className={cn(
               "mt-4 flex flex-col gap-2 rounded-xl border p-3",
-              "border-sg-err/30 bg-sg-err-soft/40",
+              "border-sg-err/30 bg-sg-err-soft",
             )}
           >
             <label

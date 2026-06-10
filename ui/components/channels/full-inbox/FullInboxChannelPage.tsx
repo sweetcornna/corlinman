@@ -438,8 +438,8 @@ function ConfigPanel({
           <p className="text-[12px] text-sg-ink-3">{t("common.loading", "loading…")}</p>
         </header>
         <div className="space-y-2">
-          <div className="h-8 animate-pulse rounded-md border border-sg-border bg-sg-inset/70" />
-          <div className="h-8 animate-pulse rounded-md border border-sg-border bg-sg-inset/70" />
+          <div className="h-8 animate-pulse rounded-md border border-sg-border bg-sg-inset" />
+          <div className="h-8 animate-pulse rounded-md border border-sg-border bg-sg-inset" />
         </div>
       </GlassPanel>
     );
@@ -583,7 +583,7 @@ function FeedSkeleton() {
       {Array.from({ length: 3 }).map((_, i) => (
         <div
           key={i}
-          className="h-[56px] animate-pulse rounded-xl border border-sg-border bg-sg-inset/70"
+          className="h-[56px] animate-pulse rounded-xl border border-sg-border bg-sg-inset"
         />
       ))}
     </div>

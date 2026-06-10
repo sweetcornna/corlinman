@@ -276,7 +276,7 @@ function MetaEmpty() {
     <div
       className={cn(
         "flex flex-col items-center justify-center gap-3 py-12 text-center",
-        "rounded-2xl border border-dashed border-sg-accent/30 bg-sg-accent-soft/40",
+        "rounded-2xl border border-dashed border-sg-accent/30 bg-sg-accent-soft",
       )}
     >
       <Sparkles className="h-7 w-7 text-sg-accent/80" aria-hidden />
@@ -295,7 +295,7 @@ function ListSkeleton() {
           key={i}
           className={cn(
             "h-[88px] animate-pulse rounded-2xl border border-sg-border",
-            "bg-sg-inset/70",
+            "bg-sg-inset",
           )}
         />
       ))}

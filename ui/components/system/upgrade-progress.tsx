@@ -164,7 +164,7 @@ export function UpgradeProgress({
   return (
     <section
       data-testid="upgrade-progress"
-      className="space-y-4 rounded-lg border border-tp-glass-edge bg-tp-glass p-4 sm:p-6"
+      className="space-y-4 rounded-lg border border-sg-border bg-sg-card p-4 sm:p-6"
     >
       <header className="flex items-center justify-between">
         <h2 className="text-lg font-semibold tracking-tight">
@@ -177,7 +177,7 @@ export function UpgradeProgress({
                 : t("system.upgrade.progress.title")}
         </h2>
         {!terminal && elapsed !== null ? (
-          <span className="font-mono text-xs text-tp-ink-3">
+          <span className="font-mono text-xs text-sg-ink-3">
             {t("system.upgrade.progress.elapsed", { seconds: elapsed })}
           </span>
         ) : null}
@@ -246,7 +246,7 @@ export function UpgradeProgress({
       {status?.log_excerpt ? (
         <pre
           data-testid="upgrade-progress-log"
-          className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md border border-tp-glass-edge bg-tp-glass-inner p-3 font-mono text-[11px] text-tp-ink-2"
+          className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md border border-sg-border bg-sg-inset p-3 font-mono text-[11px] text-sg-ink-2"
         >
           {status.log_excerpt}
         </pre>

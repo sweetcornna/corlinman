@@ -61,7 +61,7 @@ export function ConversationSearch({
       className={cn(
         "pointer-events-auto absolute right-4 top-4 z-30 flex items-center gap-1",
         "sg-glass-overlay rounded-sg-lg px-2 py-1.5 text-[12px] shadow-sg-4",
-        "animate-tp-palette-in",
+        "animate-sg-palette-in",
       )}
       role="search"
       aria-label={t("chat.searchOverlayAriaLabel")}

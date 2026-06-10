@@ -464,19 +464,19 @@ export default function ConfigPage() {
       {activeSection !== "all" ? (
         <GlassPanel variant="soft" className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
           <div className="flex min-w-0 flex-col gap-1">
-            <div className="flex items-center gap-2 font-mono text-[12px] text-tp-amber">
+            <div className="flex items-center gap-2 font-mono text-[12px] text-sg-accent">
               <code>[{sectionLabels[activeSection] ?? activeSection}]</code>
               {dirty.has(activeSection) ? (
-                <span className="rounded-full border border-tp-amber/30 bg-tp-amber-soft px-1.5 py-[1px] font-mono text-[9.5px] font-medium uppercase tracking-wide text-tp-amber">
+                <span className="rounded-full border border-sg-accent/30 bg-sg-accent-soft px-1.5 py-[1px] font-mono text-[9.5px] font-medium uppercase tracking-wide text-sg-accent">
                   {t("config.tp.sectionModified")}
                 </span>
               ) : null}
             </div>
-            <p className="text-[12.5px] text-tp-ink-2">
+            <p className="text-[12.5px] text-sg-ink-2">
               {sectionDescriptions[activeSection] ?? t("config.tp.sectionEmpty")}
             </p>
           </div>
-          <p className="text-[11px] text-tp-ink-4">
+          <p className="text-[11px] text-sg-ink-4">
             {t("config.tp.sectionHint", { name: activeSection })}
           </p>
         </GlassPanel>
@@ -484,18 +484,18 @@ export default function ConfigPage() {
 
       <section className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
         <GlassPanel variant="soft" className="flex min-h-[600px] flex-col overflow-hidden p-0">
-          <div className="flex items-center justify-between border-b border-tp-glass-edge px-4 py-2.5">
-            <div className="flex items-center gap-2 font-mono text-[11px] text-tp-ink-3">
-              <FileCode2 className="h-3.5 w-3.5 text-tp-amber" aria-hidden />
+          <div className="flex items-center justify-between border-b border-sg-border px-4 py-2.5">
+            <div className="flex items-center gap-2 font-mono text-[11px] text-sg-ink-3">
+              <FileCode2 className="h-3.5 w-3.5 text-sg-accent" aria-hidden />
               {t("config.tp.editorLabel")}
               {config.data?.version ? (
-                <span className="rounded-md border border-tp-glass-edge bg-tp-glass-inner px-1.5 py-[1px] font-mono text-[10.5px] text-tp-ink-3">
+                <span className="rounded-md border border-sg-border bg-sg-inset px-1.5 py-[1px] font-mono text-[10.5px] text-sg-ink-3">
                   {t("config.version", { v: config.data.version })}
                 </span>
               ) : null}
             </div>
             {isDirty ? (
-              <span className="rounded-full border border-tp-amber/30 bg-tp-amber-soft px-2 py-[2px] font-mono text-[10px] font-medium uppercase tracking-wide text-tp-amber">
+              <span className="rounded-full border border-sg-accent/30 bg-sg-accent-soft px-2 py-[2px] font-mono text-[10px] font-medium uppercase tracking-wide text-sg-accent">
                 {pendingCount === 1
                   ? t("config.tp.pendingBarLeadSingular")
                   : t("config.tp.pendingBarLead", { n: pendingCount })}
@@ -504,7 +504,7 @@ export default function ConfigPage() {
           </div>
           <div className="flex-1">
             {config.isPending ? (
-              <div className="h-[600px] animate-pulse bg-tp-glass-inner" aria-hidden />
+              <div className="h-[600px] animate-pulse bg-sg-inset" aria-hidden />
             ) : offline ? (
               <OfflineBlock message={(config.error as Error | undefined)?.message} />
             ) : (
@@ -548,7 +548,7 @@ export default function ConfigPage() {
       {validateMutation.isError ? (
         <GlassPanel
           variant="soft"
-          className="border-tp-err/30 bg-tp-err-soft px-4 py-2 text-[12.5px] text-tp-err"
+          className="border-sg-err/30 bg-sg-err-soft px-4 py-2 text-[12.5px] text-sg-err"
           role="alert"
         >
           {t("config.validateFailed")}: {(validateMutation.error as Error).message}
@@ -557,7 +557,7 @@ export default function ConfigPage() {
       {saveMutation.isError ? (
         <GlassPanel
           variant="soft"
-          className="border-tp-err/30 bg-tp-err-soft px-4 py-2 text-[12.5px] text-tp-err"
+          className="border-sg-err/30 bg-sg-err-soft px-4 py-2 text-[12.5px] text-sg-err"
           role="alert"
         >
           {t("common.saveFailed")}: {(saveMutation.error as Error).message}
@@ -632,7 +632,7 @@ function ConfigHero({
         className="pointer-events-none absolute bottom-[-90px] right-[-40px] h-[240px] w-[360px] rounded-full opacity-60 blur-3xl"
         style={{
           background:
-            "radial-gradient(closest-side, var(--tp-amber-glow), transparent 70%)",
+            "radial-gradient(closest-side, var(--sg-accent-glow), transparent 70%)",
         }}
       />
       <div
@@ -640,30 +640,30 @@ function ConfigHero({
         className="pointer-events-none absolute top-[-60px] left-[-40px] h-[180px] w-[260px] rounded-full opacity-40 blur-[50px]"
         style={{
           background:
-            "radial-gradient(closest-side, color-mix(in oklch, var(--tp-ember) 35%, transparent), transparent 70%)",
+            "radial-gradient(closest-side, color-mix(in oklch, var(--sg-accent-2) 35%, transparent), transparent 70%)",
         }}
       />
 
       <div className="relative flex min-w-0 flex-col gap-4">
-        <div className="inline-flex w-fit items-center gap-2.5 rounded-full border border-tp-glass-edge bg-tp-glass-inner-strong py-1 pl-2 pr-3 font-mono text-[11px] text-tp-ink-2">
+        <div className="inline-flex w-fit items-center gap-2.5 rounded-full border border-sg-border bg-sg-inset-strong py-1 pl-2 pr-3 font-mono text-[11px] text-sg-ink-2">
           <span
             className={cn(
               "h-1.5 w-1.5 rounded-full",
               offline
-                ? "bg-tp-err"
+                ? "bg-sg-err"
                 : isDirty
-                  ? "bg-tp-amber tp-breathe-amber"
-                  : "bg-tp-ok",
+                  ? "bg-sg-accent sg-breathe-accent"
+                  : "bg-sg-ok",
             )}
           />
           {version ? t("config.tp.lastSavedVersion", { v: version }) : "corlinman.toml"}
         </div>
 
-        <h1 className="text-balance font-sans text-[28px] font-semibold leading-[1.15] tracking-[-0.025em] text-tp-ink sm:text-[32px]">
+        <h1 className="text-balance font-sans text-[28px] font-semibold leading-[1.15] tracking-[-0.025em] text-sg-ink sm:text-[32px]">
           {t("config.tp.heroTitle")}
         </h1>
 
-        <p className="max-w-[72ch] text-[14.5px] leading-[1.6] text-tp-ink-2">
+        <p className="max-w-[72ch] text-[14.5px] leading-[1.6] text-sg-ink-2">
           {offline
             ? t("config.tp.heroLeadOffline")
             : isDirty
@@ -682,9 +682,9 @@ function ConfigHero({
               disabled={saveDisabled}
               data-testid="config-save-btn"
               className={cn(
-                "relative inline-flex items-center gap-2 rounded-lg border border-tp-amber/40 bg-tp-amber px-3.5 py-2 text-[13px] font-medium text-background shadow-sg-primary",
+                "relative inline-flex items-center gap-2 rounded-lg border border-sg-accent/40 bg-sg-accent px-3.5 py-2 text-[13px] font-medium text-background shadow-sg-primary",
                 "transition-all hover:brightness-[1.04] hover:-translate-y-[0.5px]",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/60",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/60",
                 "disabled:cursor-not-allowed disabled:opacity-70 disabled:hover:translate-y-0",
                 saving && "animate-pulse",
               )}
@@ -700,14 +700,14 @@ function ConfigHero({
             disabled={validateDisabled}
             data-testid="config-validate-btn"
             className={cn(
-              "inline-flex items-center gap-2 rounded-lg border border-tp-glass-edge bg-tp-glass-inner px-3 py-2 text-[13px] font-medium text-tp-ink-2",
-              "transition-colors hover:bg-tp-glass-inner-hover hover:text-tp-ink",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
+              "inline-flex items-center gap-2 rounded-lg border border-sg-border bg-sg-inset px-3 py-2 text-[13px] font-medium text-sg-ink-2",
+              "transition-colors hover:bg-sg-inset-hover hover:text-sg-ink",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
               "disabled:cursor-not-allowed disabled:opacity-70",
             )}
           >
             {validating ? t("config.validating") : t("config.tp.ctaValidate")}
-            <span className="ml-1 rounded bg-black/5 px-1.5 py-0.5 font-mono text-[10px] text-tp-ink-3 dark:bg-white/5">
+            <span className="ml-1 rounded bg-black/5 px-1.5 py-0.5 font-mono text-[10px] text-sg-ink-3 dark:bg-white/5">
               {t("config.tp.shortcutValidate")}
             </span>
           </button>
@@ -715,11 +715,11 @@ function ConfigHero({
           <button
             type="button"
             onClick={onOpenPalette}
-            className="inline-flex items-center gap-2 rounded-lg border border-tp-glass-edge bg-tp-glass-inner px-3 py-2 text-[13px] font-medium text-tp-ink-2 transition-colors hover:bg-tp-glass-inner-hover hover:text-tp-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40"
+            className="inline-flex items-center gap-2 rounded-lg border border-sg-border bg-sg-inset px-3 py-2 text-[13px] font-medium text-sg-ink-2 transition-colors hover:bg-sg-inset-hover hover:text-sg-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40"
           >
             <Search className="h-3.5 w-3.5" aria-hidden />
             {t("config.tp.ctaPaletteHint")}
-            <span className="ml-1 rounded bg-black/5 px-1.5 py-0.5 font-mono text-[10px] text-tp-ink-3 dark:bg-white/5">
+            <span className="ml-1 rounded bg-black/5 px-1.5 py-0.5 font-mono text-[10px] text-sg-ink-3 dark:bg-white/5">
               ⌘K
             </span>
           </button>
@@ -751,15 +751,15 @@ function ValidationDrawer({
         className={cn(
           "inline-flex items-center gap-1 rounded-full border px-2 py-[1px] font-mono text-[10px] font-medium uppercase tracking-wide",
           clean
-            ? "border-tp-ok/30 bg-tp-ok-soft text-tp-ok"
-            : "border-tp-err/30 bg-tp-err-soft text-tp-err",
+            ? "border-sg-ok/30 bg-sg-ok-soft text-sg-ok"
+            : "border-sg-err/30 bg-sg-err-soft text-sg-err",
         )}
       >
         {clean ? <Check className="h-3 w-3" /> : <AlertTriangle className="h-3 w-3" />}
         {clean ? t("config.statusOk") : t("config.statusInvalid")}
       </span>
       {result.version ? (
-        <span className="rounded-md border border-tp-glass-edge bg-tp-glass-inner px-1.5 py-[1px] font-mono text-[10.5px] text-tp-ink-3">
+        <span className="rounded-md border border-sg-border bg-sg-inset px-1.5 py-[1px] font-mono text-[10.5px] text-sg-ink-3">
           v{result.version}
         </span>
       ) : null}
@@ -767,7 +767,7 @@ function ValidationDrawer({
         type="button"
         onClick={onClose}
         aria-label={t("config.tp.validationCloseAria")}
-        className="ml-auto inline-flex h-6 items-center justify-center rounded-md border border-tp-glass-edge bg-tp-glass-inner px-2 text-[11px] text-tp-ink-3 transition-colors hover:bg-tp-glass-inner-hover hover:text-tp-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40"
+        className="ml-auto inline-flex h-6 items-center justify-center rounded-md border border-sg-border bg-sg-inset px-2 text-[11px] text-sg-ink-3 transition-colors hover:bg-sg-inset-hover hover:text-sg-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40"
       >
         {t("common.close")}
       </button>
@@ -783,7 +783,7 @@ function ValidationDrawer({
     >
       {result.requires_restart.length > 0 ? (
         <DetailDrawer.Section label="restart">
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-tp-warn/30 bg-tp-warn-soft px-2 py-[2px] font-mono text-[10.5px] font-medium text-tp-warn">
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-sg-warn/30 bg-sg-warn-soft px-2 py-[2px] font-mono text-[10.5px] font-medium text-sg-warn">
             {t("config.tp.validationRestartTag", {
               list: result.requires_restart.join(", "),
             })}
@@ -793,7 +793,7 @@ function ValidationDrawer({
 
       {clean ? (
         <DetailDrawer.Section label={t("config.tp.validationDrawerTitle")}>
-          <p className="text-[13px] text-tp-ink-2">
+          <p className="text-[13px] text-sg-ink-2">
             {t("config.tp.validationOkHint")}
           </p>
         </DetailDrawer.Section>
@@ -806,24 +806,24 @@ function ValidationDrawer({
                 className={cn(
                   "flex items-start gap-2 rounded-md border px-2 py-1.5 text-[12px]",
                   iss.level === "error"
-                    ? "border-tp-err/25 bg-tp-err-soft"
-                    : "border-tp-warn/25 bg-tp-warn-soft",
+                    ? "border-sg-err/25 bg-sg-err-soft"
+                    : "border-sg-warn/25 bg-sg-warn-soft",
                 )}
               >
                 <span
                   className={cn(
                     "shrink-0 rounded-full border px-1.5 py-[1px] font-mono text-[9.5px] font-medium uppercase tracking-wide",
                     iss.level === "error"
-                      ? "border-tp-err/30 text-tp-err"
-                      : "border-tp-warn/30 text-tp-warn",
+                      ? "border-sg-err/30 text-sg-err"
+                      : "border-sg-warn/30 text-sg-warn",
                   )}
                 >
                   {iss.level}
                 </span>
-                <code className="shrink-0 font-mono text-[11.5px] text-tp-ink-3">
+                <code className="shrink-0 font-mono text-[11.5px] text-sg-ink-3">
                   {iss.path}
                 </code>
-                <span className="flex-1 text-tp-ink-2">{iss.message}</span>
+                <span className="flex-1 text-sg-ink-2">{iss.message}</span>
               </li>
             ))}
           </ul>
@@ -850,17 +850,17 @@ function IdleDrawer({
       variant="subtle"
       className="flex min-h-[200px] flex-col items-center justify-center gap-2 p-6 text-center"
     >
-      <div className="font-mono text-[10.5px] uppercase tracking-[0.12em] text-tp-ink-4">
+      <div className="font-mono text-[10.5px] uppercase tracking-[0.12em] text-sg-ink-4">
         {t("config.tp.validationDrawerTitle")}
       </div>
-      <p className="max-w-[34ch] text-[12.5px] text-tp-ink-3">
+      <p className="max-w-[34ch] text-[12.5px] text-sg-ink-3">
         {t("config.tp.statValidatorsFoot")}
       </p>
       {hasResult ? (
         <button
           type="button"
           onClick={onOpen}
-          className="mt-2 inline-flex items-center gap-1 rounded-md border border-tp-glass-edge bg-tp-glass-inner px-2.5 py-1 text-[11.5px] font-medium text-tp-ink-2 transition-colors hover:bg-tp-glass-inner-hover hover:text-tp-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40"
+          className="mt-2 inline-flex items-center gap-1 rounded-md border border-sg-border bg-sg-inset px-2.5 py-1 text-[11.5px] font-medium text-sg-ink-2 transition-colors hover:bg-sg-inset-hover hover:text-sg-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40"
         >
           {t("config.tp.validationDrawerTitle")}
         </button>
@@ -882,14 +882,14 @@ function OfflineBlock({ message }: { message?: string }) {
       : firstLine;
   return (
     <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
-      <div className="font-mono text-[11px] uppercase tracking-[0.12em] text-tp-err">
+      <div className="font-mono text-[11px] uppercase tracking-[0.12em] text-sg-err">
         {t("config.tp.offlineBlockTitle")}
       </div>
-      <p className="max-w-prose text-[13px] text-tp-ink-2">
+      <p className="max-w-prose text-[13px] text-sg-ink-2">
         {t("config.tp.offlineBlockHint")}
       </p>
       {short ? (
-        <p className="max-w-full truncate font-mono text-[11px] text-tp-ink-4" title={message}>
+        <p className="max-w-full truncate font-mono text-[11px] text-sg-ink-4" title={message}>
           {short}
         </p>
       ) : null}
@@ -924,8 +924,8 @@ function PendingBar({
         variant="strong"
         className="pointer-events-auto flex w-full max-w-[720px] items-center gap-3 px-4 py-3"
       >
-        <span className="inline-flex h-2 w-2 rounded-full bg-tp-amber tp-breathe-amber" aria-hidden />
-        <span className="flex-1 text-[13px] text-tp-ink">
+        <span className="inline-flex h-2 w-2 rounded-full bg-sg-accent sg-breathe-accent" aria-hidden />
+        <span className="flex-1 text-[13px] text-sg-ink">
           {pendingCount === 1
             ? t("config.tp.pendingBarLeadSingular")
             : t("config.tp.pendingBarLead", { n: pendingCount })}
@@ -935,9 +935,9 @@ function PendingBar({
           onClick={onDiscard}
           disabled={saving}
           className={cn(
-            "inline-flex items-center gap-1.5 rounded-lg border border-tp-glass-edge bg-tp-glass-inner px-3 py-1.5 text-[12px] font-medium text-tp-ink-2",
-            "transition-colors hover:bg-tp-glass-inner-hover hover:text-tp-ink",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
+            "inline-flex items-center gap-1.5 rounded-lg border border-sg-border bg-sg-inset px-3 py-1.5 text-[12px] font-medium text-sg-ink-2",
+            "transition-colors hover:bg-sg-inset-hover hover:text-sg-ink",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
             "disabled:cursor-not-allowed disabled:opacity-60",
           )}
         >
@@ -949,9 +949,9 @@ function PendingBar({
           onClick={onSave}
           disabled={saving}
           className={cn(
-            "inline-flex items-center gap-1.5 rounded-lg border border-tp-amber/40 bg-tp-amber px-3.5 py-1.5 text-[12px] font-medium text-background",
+            "inline-flex items-center gap-1.5 rounded-lg border border-sg-accent/40 bg-sg-accent px-3.5 py-1.5 text-[12px] font-medium text-background",
             "transition-all hover:brightness-[1.04]",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/60",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/60",
             "disabled:cursor-not-allowed disabled:opacity-70",
           )}
         >

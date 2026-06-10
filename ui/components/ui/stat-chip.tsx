@@ -108,7 +108,7 @@ export const StatChip = React.forwardRef<HTMLDivElement, StatChipProps>(
             <span
               className={cn(
                 "rounded-full px-1.5 py-[1px] text-[9px] font-medium lowercase tracking-[0.04em]",
-                "bg-sg-accent-soft text-sg-accent tp-breathe-amber",
+                "bg-sg-accent-soft text-sg-accent sg-breathe-accent",
               )}
             >
               live
@@ -119,7 +119,7 @@ export const StatChip = React.forwardRef<HTMLDivElement, StatChipProps>(
         <div className="flex items-end justify-between gap-2.5">
           <span
             className={cn(
-              "font-sans text-[34px] font-medium leading-none tracking-[-0.03em] tabular-nums animate-tp-tick-up",
+              "font-sans text-[34px] font-medium leading-none tracking-[-0.03em] tabular-nums animate-sg-tick-up",
               isPrimary ? "sg-grad-text" : "text-sg-ink",
             )}
           >

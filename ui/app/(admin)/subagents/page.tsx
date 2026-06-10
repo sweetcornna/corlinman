@@ -224,7 +224,7 @@ export default function SubagentsPage(): React.JSX.Element {
                 className="w-full border-collapse text-sm"
               >
                 <thead>
-                  <tr className="border-b border-sg-border bg-sg-inset/40 text-[11px] uppercase tracking-wider text-sg-ink-4">
+                  <tr className="border-b border-sg-border bg-sg-inset text-[11px] uppercase tracking-wider text-sg-ink-4">
                     <th className="px-3 py-2 text-left font-medium">
                       {t("subagents.column.subagentType")}
                     </th>
@@ -280,7 +280,7 @@ function EmptyState(): React.JSX.Element {
       data-testid="subagents-empty"
       className={cn(
         "mx-4 mb-4 rounded-sg-md border border-dashed border-sg-border",
-        "bg-sg-inset/30 px-6 py-10 text-center",
+        "bg-sg-inset px-6 py-10 text-center",
       )}
     >
       <div className="text-sm font-medium text-sg-ink-2">

@@ -133,7 +133,7 @@ function TranscriptRow({
             isUser && "border-sg-accent/30 bg-sg-accent-soft text-sg-ink",
             isAssistant && "border-sg-border bg-sg-inset text-sg-ink",
             isSystem &&
-              "border-dashed border-sg-border bg-sg-inset/60 italic text-sg-ink-3",
+              "border-dashed border-sg-border bg-sg-inset italic text-sg-ink-3",
           )}
         >
           {message.content}

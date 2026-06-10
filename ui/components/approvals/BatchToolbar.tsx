@@ -37,7 +37,7 @@ export function BatchToolbar({
         "sticky bottom-4 z-20 mx-auto flex w-full max-w-3xl items-center gap-3",
         "rounded-full border border-sg-border bg-sg-card-strong",
         "px-4 py-2.5 text-[13px] text-sg-ink-2",
-        "backdrop-blur-glass backdrop-saturate-glass shadow-sg-3",
+        " shadow-sg-3",
       )}
     >
       <span

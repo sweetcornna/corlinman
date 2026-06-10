@@ -5,16 +5,15 @@ describe("Spatial Glass backdrop tokens", () => {
   it("enforces the blur budget: legacy content tier flat, overlay/shell tiers blurred", () => {
     const extend = config.theme?.extend;
 
-    // `glass` is consumed by legacy content surfaces — must never blur.
-    // `glass-strong` consumers are all overlays (dialogs/drawers/palettes).
+    // `glass-strong` consumers are all overlays (dialogs/drawers/palettes);
+    // the legacy 0px `glass` tier is gone and must stay gone.
     expect(extend?.backdropBlur).toMatchObject({
-      glass: "0px",
       "glass-strong": "28px",
       "sg-shell": "20px",
       "sg-overlay": "28px",
     });
+    expect(extend?.backdropBlur).not.toHaveProperty("glass");
     expect(extend?.backdropSaturate).toMatchObject({
-      glass: "1",
       "glass-strong": "1.5",
       "sg-shell": "1.4",
       "sg-overlay": "1.5",

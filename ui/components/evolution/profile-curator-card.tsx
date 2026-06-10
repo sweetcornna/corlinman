@@ -56,7 +56,7 @@ export function ProfileCuratorCard({
     <div
       data-testid={`profile-card-${profile.slug}`}
       className={cn(
-        "rounded-2xl border border-sg-border bg-sg-inset/70 p-4",
+        "rounded-2xl border border-sg-border bg-sg-inset p-4",
         "flex flex-col gap-3",
       )}
     >

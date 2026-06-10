@@ -51,18 +51,18 @@ export function PendingBar({
         className="pointer-events-auto flex w-full max-w-[720px] items-center gap-3 px-4 py-3"
       >
         <span
-          className="inline-flex h-2 w-2 rounded-full bg-tp-amber tp-breathe-amber"
+          className="inline-flex h-2 w-2 rounded-full bg-sg-accent sg-breathe-accent"
           aria-hidden
         />
-        <span className="flex-1 text-[13px] text-tp-ink">{lead}</span>
+        <span className="flex-1 text-[13px] text-sg-ink">{lead}</span>
         <button
           type="button"
           onClick={onDiscard}
           disabled={saving}
           className={cn(
-            "inline-flex items-center gap-1.5 rounded-lg border border-tp-glass-edge bg-tp-glass-inner px-3 py-1.5 text-[12px] font-medium text-tp-ink-2",
-            "transition-colors hover:bg-tp-glass-inner-hover hover:text-tp-ink",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
+            "inline-flex items-center gap-1.5 rounded-lg border border-sg-border bg-sg-inset px-3 py-1.5 text-[12px] font-medium text-sg-ink-2",
+            "transition-colors hover:bg-sg-inset-hover hover:text-sg-ink",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
             "disabled:cursor-not-allowed disabled:opacity-60",
           )}
         >
@@ -74,9 +74,9 @@ export function PendingBar({
           onClick={onSave}
           disabled={saving}
           className={cn(
-            "inline-flex items-center gap-1.5 rounded-lg border border-tp-amber/40 bg-tp-amber px-3.5 py-1.5 text-[12px] font-medium text-background",
+            "inline-flex items-center gap-1.5 rounded-lg border border-sg-accent/40 bg-sg-accent px-3.5 py-1.5 text-[12px] font-medium text-background",
             "transition-all hover:brightness-[1.04]",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/60",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/60",
             "disabled:cursor-not-allowed disabled:opacity-70",
           )}
         >

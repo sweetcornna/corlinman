@@ -70,7 +70,7 @@ export function HubSkillCard({
       className={cn(
         "group block focus-visible:outline-none",
         !reduced &&
-          "transition-transform duration-200 ease-tp-ease-out hover:-translate-y-0.5",
+          "transition-transform duration-200 ease-sg-ease-out hover:-translate-y-0.5",
         className,
       )}
     >
@@ -83,7 +83,7 @@ export function HubSkillCard({
         onKeyDown={handleKeyDown}
         className={cn(
           "flex h-full cursor-pointer flex-col gap-3 p-4",
-          "transition-[box-shadow,border-color] duration-200 ease-tp-ease-out",
+          "transition-[box-shadow,border-color] duration-200 ease-sg-ease-out",
           "group-hover:shadow-sg-primary",
           "focus-visible:shadow-sg-primary focus-visible:ring-2 focus-visible:ring-sg-accent/50",
         )}

@@ -12,7 +12,7 @@ import { RunnerNode } from "./runner-node";
  *
  * Visual model:
  *   - Gateway at centre: amber→ember gradient disc with amber-glow outer halo.
- *     Pulses via `tp-breathe-amber` (ring-1 opacity lift).
+ *     Pulses via `sg-breathe-accent` (ring-1 opacity lift).
  *   - Two orbital rings (ellipses) rendered as dashed `var(--sg-ink-4)` guides.
  *   - Satellites render as coloured circles (ok / warn / muted) plus label.
  *   - Edges stroke from centre to each node; dash-offset animates the data

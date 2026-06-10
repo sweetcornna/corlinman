@@ -97,7 +97,7 @@ export function MetricsDelta({
     <div
       className={cn(
         "flex flex-col gap-1.5 rounded-xl border border-sg-border",
-        "bg-sg-inset/40 p-2.5",
+        "bg-sg-inset p-2.5",
       )}
       role="group"
       aria-label={heading}

@@ -350,7 +350,7 @@ export default function ChatPage() {
         />
       ) : (
         <section
-          className="flex flex-1 items-center justify-center overflow-hidden rounded-xl border border-tp-glass-edge bg-tp-glass p-6 shadow-tp-panel"
+          className="flex flex-1 items-center justify-center overflow-hidden rounded-xl border border-sg-border bg-sg-card p-6 shadow-sg-2"
           data-testid="chat-empty-pane"
         >
           <ChatEmptyState onPick={handlePickSuggestion} />

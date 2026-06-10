@@ -94,7 +94,7 @@ export default function RagPage() {
         <h1 className="text-2xl font-semibold tracking-tight">
           {t("rag.title")}
         </h1>
-        <p className="text-sm text-tp-ink-3">{t("rag.subtitle")}</p>
+        <p className="text-sm text-sg-ink-3">{t("rag.subtitle")}</p>
       </header>
 
       <section className="grid grid-cols-1 gap-3 md:grid-cols-3">
@@ -118,7 +118,7 @@ export default function RagPage() {
         />
       </section>
 
-      <section className="space-y-4 rounded-lg border border-tp-glass-edge bg-tp-glass p-4">
+      <section className="space-y-4 rounded-lg border border-sg-border bg-sg-card p-4">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold">{t("rag.queryTitle")}</h2>
         </div>
@@ -136,7 +136,7 @@ export default function RagPage() {
               data-testid="rag-query-input"
             />
             <div className="flex items-center gap-2">
-              <label className="text-[10px] uppercase tracking-wider text-tp-ink-3">
+              <label className="text-[10px] uppercase tracking-wider text-sg-ink-3">
                 {t("rag.topK")}
               </label>
               <input
@@ -159,7 +159,7 @@ export default function RagPage() {
             </Button>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <label className="text-[10px] uppercase tracking-wider text-tp-ink-3">
+            <label className="text-[10px] uppercase tracking-wider text-sg-ink-3">
               {t("rag.tagsLabel")}
             </label>
             {tagFilter.map((tag) => (
@@ -167,7 +167,7 @@ export default function RagPage() {
                 key={tag}
                 type="button"
                 onClick={() => removeTag(tag)}
-                className="inline-flex items-center gap-1 rounded-md border border-tp-glass-edge bg-tp-glass-inner-hover px-2 py-0.5 font-mono text-[10px] text-accent-foreground hover:bg-tp-glass-inner-hover"
+                className="inline-flex items-center gap-1 rounded-md border border-sg-border bg-sg-inset-hover px-2 py-0.5 font-mono text-[10px] text-accent-foreground hover:bg-sg-inset-hover"
                 aria-label={t("rag.removeTagAria", { name: tag })}
               >
                 #{tag}
@@ -188,9 +188,9 @@ export default function RagPage() {
                 }
               }}
               placeholder={t("rag.addTagPlaceholder")}
-              className="h-7 rounded-md border border-input bg-transparent px-2 font-mono text-[11px] outline-none focus-visible:ring-1 focus-visible:ring-tp-amber/40"
+              className="h-7 rounded-md border border-input bg-transparent px-2 font-mono text-[11px] outline-none focus-visible:ring-1 focus-visible:ring-sg-accent/40"
             />
-            <p className="text-[10px] text-tp-ink-3">
+            <p className="text-[10px] text-sg-ink-3">
               {t("rag.tagFilterHint")}
             </p>
           </div>
@@ -202,14 +202,14 @@ export default function RagPage() {
 
         {results ? (
           <div className="space-y-2">
-            <div className="font-mono text-[10px] uppercase tracking-wider text-tp-ink-3">
+            <div className="font-mono text-[10px] uppercase tracking-wider text-sg-ink-3">
               {t("rag.hits", {
                 n: results.hits.length,
                 backend: results.backend,
               })}
             </div>
             {results.hits.length === 0 ? (
-              <p className="rounded-md border border-dashed border-tp-glass-edge p-6 text-center text-sm text-tp-ink-3">
+              <p className="rounded-md border border-dashed border-sg-border p-6 text-center text-sm text-sg-ink-3">
                 {t("rag.noHits")}
               </p>
             ) : (
@@ -223,10 +223,10 @@ export default function RagPage() {
         ) : null}
       </section>
 
-      <section className="flex items-center justify-between rounded-lg border border-tp-glass-edge bg-tp-glass p-4">
+      <section className="flex items-center justify-between rounded-lg border border-sg-border bg-sg-card p-4">
         <div className="space-y-0.5">
           <div className="text-sm font-semibold">{t("rag.rebuildTitle")}</div>
-          <p className="text-xs text-tp-ink-3">
+          <p className="text-xs text-sg-ink-3">
             {t("rag.rebuildHint")}
           </p>
         </div>
@@ -255,10 +255,10 @@ function RagStat({
   icon: React.ReactNode;
 }) {
   return (
-    <div className="rounded-lg border border-tp-glass-edge bg-tp-glass p-4">
-      <div className="flex items-center justify-between text-[10px] uppercase tracking-wider text-tp-ink-3">
+    <div className="rounded-lg border border-sg-border bg-sg-card p-4">
+      <div className="flex items-center justify-between text-[10px] uppercase tracking-wider text-sg-ink-3">
         <span>{label}</span>
-        <span className="text-tp-ink-3/70">{icon}</span>
+        <span className="text-sg-ink-3/70">{icon}</span>
       </div>
       {loading ? (
         <Skeleton className="mt-2 h-7 w-16" />
@@ -274,22 +274,22 @@ function RagStat({
 function HitCard({ hit, maxScore }: { hit: RagHit; maxScore: number }) {
   const pct = Math.max(4, Math.round((hit.score / Math.max(maxScore, 0.0001)) * 100));
   return (
-    <li className="rounded-md border border-tp-glass-edge bg-tp-glass p-3">
+    <li className="rounded-md border border-sg-border bg-sg-card p-3">
       <div className="flex items-center justify-between gap-3 text-xs">
         <div className="flex items-center gap-2">
-          <code className="font-mono text-tp-ink-3">#{hit.chunk_id}</code>
-          <span className="font-mono text-tp-ink-3">
+          <code className="font-mono text-sg-ink-3">#{hit.chunk_id}</code>
+          <span className="font-mono text-sg-ink-3">
             {hit.score.toFixed(3)}
           </span>
         </div>
-        <div className="h-1 flex-1 max-w-[40%] overflow-hidden rounded-full bg-tp-glass-inner">
+        <div className="h-1 flex-1 max-w-[40%] overflow-hidden rounded-full bg-sg-inset">
           <div
             className={cn("h-full bg-primary")}
             style={{ width: `${pct}%` }}
           />
         </div>
       </div>
-      <p className="mt-2 text-xs text-tp-ink-3">{hit.content_preview}</p>
+      <p className="mt-2 text-xs text-sg-ink-3">{hit.content_preview}</p>
     </li>
   );
 }

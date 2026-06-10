@@ -113,7 +113,7 @@ function ModelSelect({
 
   return (
     <select
-      className="rounded-md border border-tp-glass-edge bg-tp-glass px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-tp-amber disabled:opacity-50"
+      className="rounded-md border border-sg-border bg-sg-card px-2 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-sg-accent disabled:opacity-50"
       value={draft}
       disabled={saving}
       data-testid={`agent-model-select-${agentName}`}
@@ -227,7 +227,7 @@ function SourceBadge({
     return (
       <Badge
         variant="outline"
-        className="border-tp-glass-edge bg-tp-glass text-tp-ink-3"
+        className="border-sg-border bg-sg-card text-sg-ink-3"
       >
         {t("agents.source.builtIn")}
       </Badge>
@@ -235,13 +235,13 @@ function SourceBadge({
   }
   if (value === "project") {
     return (
-      <Badge className="border-transparent bg-tp-ok/20 text-tp-ok hover:bg-tp-ok/25">
+      <Badge className="border-transparent bg-sg-ok/20 text-sg-ok hover:bg-sg-ok/25">
         {t("agents.source.project")}
       </Badge>
     );
   }
   return (
-    <Badge className="border-transparent bg-tp-amber/20 text-tp-amber hover:bg-tp-amber/25">
+    <Badge className="border-transparent bg-sg-accent/20 text-sg-accent hover:bg-sg-accent/25">
       {t("agents.source.user")}
     </Badge>
   );
@@ -319,7 +319,7 @@ export default function AgentsPage() {
           <h1 className="text-2xl font-semibold tracking-tight">
             {t("agents.title")}
           </h1>
-          <p className="text-sm text-tp-ink-3">{t("agents.subtitle")}</p>
+          <p className="text-sm text-sg-ink-3">{t("agents.subtitle")}</p>
         </div>
         <Button
           type="button"
@@ -332,10 +332,10 @@ export default function AgentsPage() {
         </Button>
       </header>
 
-      <section className="overflow-hidden rounded-lg border border-tp-glass-edge bg-tp-glass">
+      <section className="overflow-hidden rounded-lg border border-sg-border bg-sg-card">
         <Table>
           <TableHeader>
-            <TableRow className="border-b border-tp-glass-edge hover:bg-transparent">
+            <TableRow className="border-b border-sg-border hover:bg-transparent">
               <TableHead className="pl-4">{t("agents.colName")}</TableHead>
               <TableHead className="w-28">{t("agents.colSource")}</TableHead>
               <TableHead>{t("agents.colPath")}</TableHead>
@@ -358,7 +358,7 @@ export default function AgentsPage() {
           <TableBody>
             {query.isPending ? (
               Array.from({ length: 3 }).map((_, i) => (
-                <TableRow key={`sk-${i}`} className="border-b border-tp-glass-edge">
+                <TableRow key={`sk-${i}`} className="border-b border-sg-border">
                   {Array.from({ length: 9 }).map((_, j) => (
                     <TableCell key={j} className={j === 0 ? "pl-4" : undefined}>
                       <Skeleton className="h-4 w-24" />
@@ -379,7 +379,7 @@ export default function AgentsPage() {
               <TableRow>
                 <TableCell
                   colSpan={9}
-                  className="py-10 text-center text-sm text-tp-ink-3"
+                  className="py-10 text-center text-sm text-sg-ink-3"
                 >
                   {t("agents.empty")}
                 </TableCell>
@@ -399,7 +399,7 @@ export default function AgentsPage() {
                 return (
                   <TableRow
                     key={a.name}
-                    className="border-b border-tp-glass-edge transition-colors hover:bg-tp-glass-inner-hover"
+                    className="border-b border-sg-border transition-colors hover:bg-sg-inset-hover"
                   >
                     <TableCell className="pl-4 font-medium">
                       <Link
@@ -407,15 +407,15 @@ export default function AgentsPage() {
                           pathname: "/agents/detail",
                           query: { name: a.name },
                         }}
-                        className="inline-flex items-center gap-2 hover:text-tp-amber"
+                        className="inline-flex items-center gap-2 hover:text-sg-accent"
                         data-testid={`agent-link-${a.name}`}
                       >
-                        <FileText className="h-3.5 w-3.5 text-tp-ink-3" />
+                        <FileText className="h-3.5 w-3.5 text-sg-ink-3" />
                         {a.name}
                       </Link>
                       {descShort ? (
                         <div
-                          className="mt-0.5 text-[11px] text-tp-ink-3"
+                          className="mt-0.5 text-[11px] text-sg-ink-3"
                           title={desc}
                           data-testid={`agent-desc-${a.name}`}
                         >
@@ -426,7 +426,7 @@ export default function AgentsPage() {
                     <TableCell data-testid={`agent-source-${a.name}`}>
                       <SourceBadge source={source} />
                     </TableCell>
-                    <TableCell className="font-mono text-xs text-tp-ink-3">
+                    <TableCell className="font-mono text-xs text-sg-ink-3">
                       {a.file_path}
                     </TableCell>
                     <TableCell>
@@ -444,9 +444,9 @@ export default function AgentsPage() {
                         />
                       )}
                     </TableCell>
-                    <TableCell className="font-mono text-xs text-tp-ink-3">
+                    <TableCell className="font-mono text-xs text-sg-ink-3">
                       {provider ?? (
-                        <span className="italic text-tp-ink-3">
+                        <span className="italic text-sg-ink-3">
                           {t("agents.providerAuto", { defaultValue: "(auto)" })}
                         </span>
                       )}
@@ -466,13 +466,13 @@ export default function AgentsPage() {
                     <TableCell className="font-mono text-xs">
                       {formatBytes(a.bytes)}
                     </TableCell>
-                    <TableCell className="text-xs text-tp-ink-3">
+                    <TableCell className="text-xs text-sg-ink-3">
                       {formatTime(a.last_modified)}
                     </TableCell>
                     <TableCell>
                       {isBuiltIn ? (
                         <span
-                          className="inline-flex items-center text-[11px] text-tp-ink-3"
+                          className="inline-flex items-center text-[11px] text-sg-ink-3"
                           title={t("agents.create.builtinReadonly")}
                           data-testid={`agent-delete-disabled-${a.name}`}
                         >

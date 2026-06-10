@@ -76,7 +76,7 @@ export function StatusPill({
         "py-[6px] pl-[11px] pr-3.5 font-mono text-[11.5px] tracking-tight",
         containerTone[cfg.tone],
         // State-keyed breathing glow: amber while working.
-        cfg.breathe && "tp-breathe-amber",
+        cfg.breathe && "sg-breathe-accent",
         className,
       )}
     >
@@ -85,7 +85,7 @@ export function StatusPill({
         className={cn(
           "h-[7px] w-[7px] rounded-full",
           dotTone[cfg.tone],
-          cfg.breathe ? "tp-breathe-amber" : "",
+          cfg.breathe ? "sg-breathe-accent" : "",
         )}
       />
       <span>{cfg.label}</span>

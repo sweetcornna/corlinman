@@ -54,14 +54,14 @@ export function PluginCard({ plugin, lastTouchedLabel }: PluginCardProps) {
       className={cn(
         "group block focus-visible:outline-none",
         // Hover lift & shadow escalation. Bail under reduce-motion.
-        !reduced && "transition-transform duration-200 ease-tp-ease-out hover:-translate-y-0.5",
+        !reduced && "transition-transform duration-200 ease-sg-ease-out hover:-translate-y-0.5",
       )}
     >
       <GlassPanel
         variant="soft"
         className={cn(
           "flex h-full flex-col gap-3 p-4",
-          "transition-[box-shadow,border-color] duration-200 ease-tp-ease-out",
+          "transition-[box-shadow,border-color] duration-200 ease-sg-ease-out",
           "group-hover:shadow-sg-primary group-focus-visible:shadow-sg-primary",
           "group-focus-visible:ring-2 group-focus-visible:ring-sg-accent/50",
         )}

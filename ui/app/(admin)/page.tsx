@@ -359,7 +359,7 @@ function HeroLead({ systemsOk }: { systemsOk: string }) {
   const { t } = useTranslation();
   return (
     <div className="inline-flex w-fit items-center gap-2.5 rounded-full border border-sg-border bg-sg-inset-strong py-1 pl-2 pr-3 font-mono text-[11px] text-sg-ink-2">
-      <span className="h-1.5 w-1.5 rounded-full bg-sg-accent tp-breathe-amber" />
+      <span className="h-1.5 w-1.5 rounded-full bg-sg-accent sg-breathe-accent" />
       {t("dashboard.tp.leadPill", { systems: systemsOk })}
     </div>
   );
@@ -486,7 +486,7 @@ function ActivityPane({
     <GlassPanel variant="soft" className="flex min-h-[360px] flex-col p-5">
       <div className="flex items-center justify-between border-b border-sg-border pb-3">
         <div className="inline-flex items-center gap-2.5 text-[14px] font-semibold text-sg-ink">
-          <span className="h-1.5 w-1.5 rounded-full bg-sg-accent tp-breathe-amber" />
+          <span className="h-1.5 w-1.5 rounded-full bg-sg-accent sg-breathe-accent" />
           {t("dashboard.recentActivity")}
         </div>
         <Link

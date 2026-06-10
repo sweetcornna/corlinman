@@ -366,18 +366,18 @@ export default function PlaygroundPage() {
           className="pointer-events-none absolute bottom-[-80px] right-[-40px] h-[240px] w-[360px] rounded-full opacity-70 blur-3xl"
           style={{
             background:
-              "radial-gradient(closest-side, var(--tp-amber-glow), transparent 70%)",
+              "radial-gradient(closest-side, var(--sg-accent-glow), transparent 70%)",
           }}
         />
         <div className="relative flex min-w-0 flex-col gap-2.5">
-          <div className="inline-flex w-fit items-center gap-2.5 rounded-full border border-tp-glass-edge bg-tp-glass-inner-strong py-1 pl-2 pr-3 font-mono text-[11px] text-tp-ink-2">
-            <span className="h-1.5 w-1.5 rounded-full bg-tp-amber tp-breathe-amber" />
+          <div className="inline-flex w-fit items-center gap-2.5 rounded-full border border-sg-border bg-sg-inset-strong py-1 pl-2 pr-3 font-mono text-[11px] text-sg-ink-2">
+            <span className="h-1.5 w-1.5 rounded-full bg-sg-accent sg-breathe-accent" />
             {t("playground.overview.heroLead")}
           </div>
-          <h1 className="text-balance font-sans text-[28px] font-semibold leading-[1.12] tracking-[-0.025em] text-tp-ink sm:text-[32px]">
+          <h1 className="text-balance font-sans text-[28px] font-semibold leading-[1.12] tracking-[-0.025em] text-sg-ink sm:text-[32px]">
             {t("playground.overview.heroTitle")}
           </h1>
-          <p className="max-w-[70ch] text-[14px] leading-[1.6] text-tp-ink-2">
+          <p className="max-w-[70ch] text-[14px] leading-[1.6] text-sg-ink-2">
             {t("playground.overview.heroSub")}
           </p>
         </div>
@@ -480,21 +480,21 @@ function ActivityTail({ events }: { events: LogEvent[] }) {
       className="flex flex-col p-5"
       data-testid="activity-tail"
     >
-      <div className="flex items-center justify-between border-b border-tp-glass-edge pb-3">
-        <div className="inline-flex items-center gap-2.5 text-[14px] font-semibold text-tp-ink">
-          <span className="h-1.5 w-1.5 rounded-full bg-tp-ok tp-breathe" />
+      <div className="flex items-center justify-between border-b border-sg-border pb-3">
+        <div className="inline-flex items-center gap-2.5 text-[14px] font-semibold text-sg-ink">
+          <span className="h-1.5 w-1.5 rounded-full bg-sg-ok sg-breathe" />
           {t("playground.overview.activityTitle")}
         </div>
         <Link
           href="/logs"
-          className="inline-flex min-h-8 items-center rounded-md px-2 text-[12.5px] text-tp-ink-3 transition-colors hover:bg-tp-glass-inner hover:text-tp-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40"
+          className="inline-flex min-h-8 items-center rounded-md px-2 text-[12.5px] text-sg-ink-3 transition-colors hover:bg-sg-inset hover:text-sg-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40"
         >
           {t("playground.overview.activityViewAll")}
         </Link>
       </div>
       {events.length === 0 ? (
         <div
-          className="flex items-center justify-center p-6 text-center text-[13px] text-tp-ink-3"
+          className="flex items-center justify-center p-6 text-center text-[13px] text-sg-ink-3"
           data-testid="activity-empty"
         >
           {t("playground.overview.activityEmpty")}
@@ -571,12 +571,12 @@ function ChatPanel({
       className="flex flex-col gap-3 p-4 sm:p-5"
       data-testid="chat-panel"
     >
-      <div className="flex items-center justify-between border-b border-tp-glass-edge pb-3">
+      <div className="flex items-center justify-between border-b border-sg-border pb-3">
         <div className="flex flex-col gap-0.5">
-          <h2 className="text-[14px] font-semibold text-tp-ink">
+          <h2 className="text-[14px] font-semibold text-sg-ink">
             {t("playground.overview.chatTitle")}
           </h2>
-          <span className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-tp-ink-4">
+          <span className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-sg-ink-4">
             {t("playground.overview.chatSubtitle")}
           </span>
         </div>
@@ -587,10 +587,10 @@ function ChatPanel({
           aria-label={t("playground.overview.chatClear")}
           className={cn(
             "inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-[12px]",
-            "border-tp-glass-edge bg-tp-glass-inner text-tp-ink-2",
-            "hover:bg-tp-glass-inner-hover hover:text-tp-ink",
+            "border-sg-border bg-sg-inset text-sg-ink-2",
+            "hover:bg-sg-inset-hover hover:text-sg-ink",
             "disabled:cursor-not-allowed disabled:opacity-50",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
           )}
           data-testid="chat-clear"
         >
@@ -602,7 +602,7 @@ function ChatPanel({
       {/* model + agent pickers */}
       <div className="flex flex-wrap items-end gap-3">
         <label className="flex flex-col gap-1.5">
-          <span className="font-mono text-[10.5px] uppercase tracking-[0.1em] text-tp-ink-4">
+          <span className="font-mono text-[10.5px] uppercase tracking-[0.1em] text-sg-ink-4">
             {t("playground.overview.chatModelLabel")}
           </span>
           <input
@@ -612,9 +612,9 @@ function ChatPanel({
             placeholder={t("playground.overview.chatModelPlaceholder")}
             data-testid="chat-model-input"
             className={cn(
-              "w-[260px] rounded-lg border px-3 py-1.5 font-mono text-[12.5px] text-tp-ink",
-              "bg-tp-glass-inner border-tp-glass-edge placeholder:text-tp-ink-4",
-              "outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40 focus-visible:border-tp-amber/40",
+              "w-[260px] rounded-lg border px-3 py-1.5 font-mono text-[12.5px] text-sg-ink",
+              "bg-sg-inset border-sg-border placeholder:text-sg-ink-4",
+              "outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40 focus-visible:border-sg-accent/40",
             )}
           />
         </label>
@@ -624,7 +624,7 @@ function ChatPanel({
       {/* transcript */}
       <div
         ref={transcriptRef}
-        className="flex max-h-[420px] min-h-[200px] flex-1 flex-col gap-3 overflow-y-auto rounded-lg border border-tp-glass-edge bg-tp-glass-inner p-3"
+        className="flex max-h-[420px] min-h-[200px] flex-1 flex-col gap-3 overflow-y-auto rounded-lg border border-sg-border bg-sg-inset p-3"
         data-testid="chat-transcript"
       >
         {transcript.length === 0 ? (
@@ -632,10 +632,10 @@ function ChatPanel({
             className="flex flex-1 flex-col items-center justify-center gap-1 p-6 text-center"
             data-testid="chat-empty"
           >
-            <div className="text-[14px] font-medium text-tp-ink-2">
+            <div className="text-[14px] font-medium text-sg-ink-2">
               {t("playground.overview.chatEmptyTitle")}
             </div>
-            <div className="max-w-[44ch] text-[12.5px] text-tp-ink-3">
+            <div className="max-w-[44ch] text-[12.5px] text-sg-ink-3">
               {t("playground.overview.chatEmptyHint")}
             </div>
           </div>
@@ -646,7 +646,7 @@ function ChatPanel({
 
       {/* composer */}
       <label className="flex flex-col gap-1.5">
-        <span className="font-mono text-[10.5px] uppercase tracking-[0.1em] text-tp-ink-4">
+        <span className="font-mono text-[10.5px] uppercase tracking-[0.1em] text-sg-ink-4">
           {t("playground.overview.chatComposerLabel")}
         </span>
         <textarea
@@ -657,15 +657,15 @@ function ChatPanel({
           placeholder={t("playground.overview.chatComposerPlaceholder")}
           aria-label={t("playground.overview.chatComposerLabel")}
           className={cn(
-            "w-full resize-none rounded-lg border px-3 py-2 font-mono text-[13px] text-tp-ink",
-            "bg-tp-glass-inner border-tp-glass-edge placeholder:text-tp-ink-4",
-            "outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40 focus-visible:border-tp-amber/40",
+            "w-full resize-none rounded-lg border px-3 py-2 font-mono text-[13px] text-sg-ink",
+            "bg-sg-inset border-sg-border placeholder:text-sg-ink-4",
+            "outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40 focus-visible:border-sg-accent/40",
           )}
         />
       </label>
 
       <div className="flex items-center justify-between gap-2">
-        <span className="hidden font-mono text-[10.5px] text-tp-ink-4 sm:inline">
+        <span className="hidden font-mono text-[10.5px] text-sg-ink-4 sm:inline">
           {t("playground.overview.chatHint")}
         </span>
         <div className="flex items-center gap-2">
@@ -676,9 +676,9 @@ function ChatPanel({
               data-testid="chat-stop"
               className={cn(
                 "inline-flex items-center gap-2 rounded-lg px-3 py-2 text-[13px] font-medium",
-                "border border-tp-glass-edge bg-tp-glass-inner text-tp-ink-2",
-                "hover:bg-tp-glass-inner-hover hover:text-tp-ink",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
+                "border border-sg-border bg-sg-inset text-sg-ink-2",
+                "hover:bg-sg-inset-hover hover:text-sg-ink",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
               )}
             >
               <Square className="h-3 w-3" />
@@ -692,11 +692,11 @@ function ChatPanel({
             data-testid="chat-send"
             className={cn(
               "inline-flex items-center gap-2 rounded-lg px-3.5 py-2 text-[13px] font-medium",
-              "border border-tp-amber/35 bg-tp-amber-soft text-tp-amber",
+              "border border-sg-accent/35 bg-sg-accent-soft text-sg-accent",
               "shadow-sg-2",
               "transition-transform duration-200 hover:-translate-y-px",
-              "hover:bg-[color-mix(in_oklch,var(--tp-amber)_22%,transparent)]",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
+              "hover:bg-[color-mix(in_oklch,var(--sg-accent)_22%,transparent)]",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
               "disabled:translate-y-0 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0",
             )}
           >
@@ -704,7 +704,7 @@ function ChatPanel({
             {streaming
               ? t("playground.overview.chatSending")
               : t("playground.overview.chatSend")}
-            <kbd className="ml-1 rounded bg-tp-amber/10 px-1.5 py-0.5 font-mono text-[10px] text-tp-amber/80">
+            <kbd className="ml-1 rounded bg-sg-accent/10 px-1.5 py-0.5 font-mono text-[10px] text-sg-accent/80">
               ⌘↵
             </kbd>
           </button>
@@ -729,32 +729,32 @@ function ChatTurnView({ turn }: { turn: ChatTurn }) {
       className={cn(
         "flex flex-col gap-1.5 rounded-md border px-3 py-2",
         turn.role === "user"
-          ? "border-tp-glass-edge bg-tp-glass-inner-strong"
-          : "border-tp-amber/20 bg-tp-amber-soft/40",
+          ? "border-sg-border bg-sg-inset-strong"
+          : "border-sg-accent/20 bg-sg-accent-soft",
       )}
       data-testid={`chat-turn-${turn.role}`}
       data-pending={turn.pending ? "true" : undefined}
     >
-      <div className="flex items-center gap-2 font-mono text-[10.5px] uppercase tracking-[0.08em] text-tp-ink-4">
+      <div className="flex items-center gap-2 font-mono text-[10.5px] uppercase tracking-[0.08em] text-sg-ink-4">
         <span
           aria-hidden
           className={cn(
             "h-1.5 w-1.5 rounded-full",
             turn.role === "user"
-              ? "bg-tp-ink-4"
+              ? "bg-sg-ink-4"
               : turn.pending
-                ? "bg-tp-amber tp-breathe-amber"
-                : "bg-tp-amber",
+                ? "bg-sg-accent sg-breathe-accent"
+                : "bg-sg-accent",
           )}
         />
         {roleLabel}
       </div>
       {turn.content.length > 0 ? (
-        <div className="whitespace-pre-wrap text-[13.5px] leading-[1.55] text-tp-ink">
+        <div className="whitespace-pre-wrap text-[13.5px] leading-[1.55] text-sg-ink">
           {turn.content}
         </div>
       ) : turn.pending && (turn.toolCalls?.length ?? 0) === 0 ? (
-        <div className="font-mono text-[11px] text-tp-ink-4">…</div>
+        <div className="font-mono text-[11px] text-sg-ink-4">…</div>
       ) : null}
       {turn.toolCalls && turn.toolCalls.length > 0 ? (
         <div className="flex flex-col gap-1.5">
@@ -764,7 +764,7 @@ function ChatTurnView({ turn }: { turn: ChatTurn }) {
         </div>
       ) : null}
       {turn.error ? (
-        <div className="flex flex-col gap-0.5 rounded-md border border-tp-err/30 bg-tp-err-soft px-2 py-1.5 text-[12px] text-tp-err">
+        <div className="flex flex-col gap-0.5 rounded-md border border-sg-err/30 bg-sg-err-soft px-2 py-1.5 text-[12px] text-sg-err">
           <span className="font-mono text-[10px] uppercase tracking-[0.08em]">
             {t("playground.overview.chatErrorTitle")}
           </span>
@@ -783,7 +783,7 @@ function ToolChip({ tc }: { tc: ToolCallChip }) {
     : t("playground.overview.chatToolChipEmpty");
   return (
     <div
-      className="rounded-md border border-tp-glass-edge bg-tp-glass-inner"
+      className="rounded-md border border-sg-border bg-sg-inset"
       data-testid="chat-tool-chip"
     >
       <button
@@ -792,16 +792,16 @@ function ToolChip({ tc }: { tc: ToolCallChip }) {
         aria-expanded={open}
         className={cn(
           "flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left",
-          "font-mono text-[11.5px] text-tp-ink-2",
-          "hover:bg-tp-glass-inner-hover hover:text-tp-ink",
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
+          "font-mono text-[11.5px] text-sg-ink-2",
+          "hover:bg-sg-inset-hover hover:text-sg-ink",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
         )}
       >
         <Wrench className="h-3 w-3" />
         <span className="truncate">{label}</span>
       </button>
       {open ? (
-        <pre className="max-h-[200px] overflow-auto border-t border-tp-glass-edge bg-tp-glass-inner-strong p-2 font-mono text-[11px] text-tp-ink-2">
+        <pre className="max-h-[200px] overflow-auto border-t border-sg-border bg-sg-inset-strong p-2 font-mono text-[11px] text-sg-ink-2">
           {tc.arguments || "{}"}
         </pre>
       ) : null}

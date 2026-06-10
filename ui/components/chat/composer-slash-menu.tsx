@@ -76,7 +76,7 @@ export function ComposerSlashMenu({
     <ul
       className={cn(
         "absolute bottom-full left-0 z-30 mb-2 w-80 overflow-hidden",
-        "sg-glass-overlay rounded-sg-md shadow-sg-4 animate-tp-palette-in",
+        "sg-glass-overlay rounded-sg-md shadow-sg-4 animate-sg-palette-in",
       )}
       role="listbox"
       aria-label={t("chat.slashMenuAriaLabel")}

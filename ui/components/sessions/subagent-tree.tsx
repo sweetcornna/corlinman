@@ -118,7 +118,7 @@ export function SubagentTree({ session }: SubagentTreeProps) {
         onClick={() => setOpen((v) => !v)}
         className={cn(
           "flex w-full items-center gap-2 rounded-r-sg-md px-3 py-2 text-left text-xs",
-          "text-sg-ink-2 transition-colors hover:bg-sg-accent-soft/40",
+          "text-sg-ink-2 transition-colors hover:bg-sg-accent-soft",
         )}
         aria-expanded={open}
       >

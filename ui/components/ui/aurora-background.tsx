@@ -37,7 +37,7 @@ export const AuroraBackground = React.forwardRef<
       aria-hidden="true"
       className={cn(
         fixed && "fixed inset-0 -z-10",
-        "tp-bg-root overflow-hidden pointer-events-none",
+        "sg-bg-root overflow-hidden pointer-events-none",
         className,
       )}
       style={style}

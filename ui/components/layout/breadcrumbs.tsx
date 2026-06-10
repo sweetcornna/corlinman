@@ -59,7 +59,7 @@ export function Breadcrumbs() {
     >
       <Link
         href="/"
-        className="hidden min-h-8 items-center rounded-md px-1.5 text-muted-foreground transition-colors hover:bg-tp-glass-inner hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40 sm:inline-flex"
+        className="hidden min-h-8 items-center rounded-md px-1.5 text-muted-foreground transition-colors hover:bg-sg-inset hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40 sm:inline-flex"
       >
         {t("breadcrumbs.dashboard")}
       </Link>
@@ -81,7 +81,7 @@ export function Breadcrumbs() {
           ) : (
             <Link
               href={c.href as never}
-              className="inline-flex min-h-8 items-center rounded-md px-1.5 text-muted-foreground transition-colors hover:bg-tp-glass-inner hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40"
+              className="inline-flex min-h-8 items-center rounded-md px-1.5 text-muted-foreground transition-colors hover:bg-sg-inset hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40"
             >
               {c.label}
             </Link>

@@ -60,7 +60,7 @@ export function IdentityDetailDialog({
         <DialogHeader>
           <DialogTitle>
             {t("identity.detail.title", "Identity")}
-            <span className="ml-2 font-mono text-xs text-tp-ink-3">
+            <span className="ml-2 font-mono text-xs text-sg-ink-3">
               {user.user_id}
             </span>
           </DialogTitle>
@@ -78,7 +78,7 @@ export function IdentityDetailDialog({
           </h3>
           {detailQuery.isLoading && <Skeleton className="h-24 w-full" />}
           {detailQuery.data?.kind === "not_found" && (
-            <p className="text-sm text-tp-ink-3">
+            <p className="text-sm text-sg-ink-3">
               {t(
                 "identity.detail.not_found",
                 "User not found — the row may have been merged out by a concurrent operator action.",
@@ -130,7 +130,7 @@ function AliasList({
   const { t } = useTranslation();
   if (aliases.length === 0) {
     return (
-      <p className="text-sm text-tp-ink-3">
+      <p className="text-sm text-sg-ink-3">
         {t(
           "identity.detail.no_aliases",
           "No aliases bound — this user was created without auto-bind, possibly by an operator merge.",
@@ -139,7 +139,7 @@ function AliasList({
     );
   }
   return (
-    <ul className="divide-y divide-tp-glass-edge rounded-md border border-tp-glass-edge">
+    <ul className="divide-y divide-sg-border rounded-md border border-sg-border">
       {aliases.map((a) => (
         <li
           key={`${a.channel}:${a.channel_user_id}`}
@@ -149,10 +149,10 @@ function AliasList({
           <div className="min-w-0 flex-1">
             <p className="font-mono text-xs">
               <span className="font-semibold">{a.channel}</span>
-              <span className="mx-1 text-tp-ink-3">:</span>
+              <span className="mx-1 text-sg-ink-3">:</span>
               <span>{a.channel_user_id}</span>
             </p>
-            <p className="text-[11px] text-tp-ink-3">
+            <p className="text-[11px] text-sg-ink-3">
               {a.binding_kind} ·{" "}
               {new Date(a.created_at).toLocaleString()}
             </p>
@@ -217,7 +217,7 @@ function IssuePhraseButton({
           void navigator.clipboard.writeText(phrase);
           toast.success(t("common.copied", "Copied"));
         }}
-        className="inline-flex items-center gap-1 rounded-md border border-tp-amber/30 bg-tp-amber-soft px-2 py-1 font-mono text-[11px] text-tp-amber hover:bg-[color-mix(in_oklch,var(--tp-amber)_22%,transparent)]"
+        className="inline-flex items-center gap-1 rounded-md border border-sg-accent/30 bg-sg-accent-soft px-2 py-1 font-mono text-[11px] text-sg-accent hover:bg-[color-mix(in_oklch,var(--sg-accent)_22%,transparent)]"
         data-testid="phrase-copy"
       >
         {phrase}

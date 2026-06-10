@@ -279,7 +279,7 @@ function ListSkeleton() {
           key={i}
           className={cn(
             "h-[120px] animate-pulse rounded-2xl border border-sg-border",
-            "bg-sg-inset/70",
+            "bg-sg-inset",
           )}
         />
       ))}

@@ -16,7 +16,7 @@ import type {
  * Columns (grid): `ts · kind · subscribers · message · latency`.
  *
  * Behavioural mirrors to `<LogRow>`:
- *   - `justNow` lights up the 2px amber left-edge bar for ~2.8s (tp-just-now).
+ *   - `justNow` lights up the 2px amber left-edge bar for ~2.8s (sg-just-now).
  *   - `selected` wins over `justNow` (amber soft fill + 2px inset bar).
  *
  * Accessibility: rendered as a `<button>` so keyboard users can select the
@@ -110,7 +110,7 @@ export interface HookEventRowProps
   subscribers: number;
   /** Dispatch latency in milliseconds (p50 for a typical subscriber). */
   latencyMs: number | null;
-  /** Row arrived within the last ~2.8s — triggers the tp-just-now bar. */
+  /** Row arrived within the last ~2.8s — triggers the sg-just-now bar. */
   justNow?: boolean;
   /** Row is the detail-drawer target (amber soft fill + inset bar). */
   selected?: boolean;
@@ -160,7 +160,7 @@ export const HookEventRow = React.forwardRef<
       {justNow && !selected ? (
         <span
           aria-hidden
-          className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-sm bg-sg-accent shadow-[0_0_8px_var(--sg-accent-glow)] tp-just-now"
+          className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-sm bg-sg-accent shadow-[0_0_8px_var(--sg-accent-glow)] sg-just-now"
         />
       ) : null}
 

@@ -76,14 +76,14 @@ export default function DevSettingsPage() {
         <h1 className="text-2xl font-semibold tracking-tight">
           {t("devSettings.title")}
         </h1>
-        <p className="max-w-2xl text-sm text-tp-ink-3">
+        <p className="max-w-2xl text-sm text-sg-ink-3">
           {t("devSettings.subtitle")}
         </p>
       </header>
 
       <section
         className={cn(
-          "flex flex-col gap-3 rounded-lg border border-tp-glass-edge bg-tp-glass p-4",
+          "flex flex-col gap-3 rounded-lg border border-sg-border bg-sg-card p-4",
           "sm:flex-row sm:items-center sm:justify-between",
         )}
         data-testid="dev-settings-toggle-row"
@@ -91,11 +91,11 @@ export default function DevSettingsPage() {
         <div className="space-y-1">
           <label
             htmlFor="dev-settings-toggle"
-            className="text-sm font-medium text-tp-ink"
+            className="text-sm font-medium text-sg-ink"
           >
             {t("devSettings.toggleLabel")}
           </label>
-          <p className="max-w-xl text-xs text-tp-ink-3">
+          <p className="max-w-xl text-xs text-sg-ink-3">
             {t("devSettings.toggleHint")}
           </p>
         </div>
@@ -126,20 +126,20 @@ export default function DevSettingsPage() {
               <Card
                 className={cn(
                   "h-full transition-colors duration-150",
-                  "hover:border-tp-amber/50 hover:bg-tp-glass-inner-hover",
-                  "group-focus-visible:border-tp-amber group-focus-visible:bg-tp-glass-inner-hover",
+                  "hover:border-sg-accent/50 hover:bg-sg-inset-hover",
+                  "group-focus-visible:border-sg-accent group-focus-visible:bg-sg-inset-hover",
                 )}
               >
                 <CardHeader className="space-y-1.5 p-4 pb-2">
-                  <CardTitle className="text-sm font-medium text-tp-ink">
+                  <CardTitle className="text-sm font-medium text-sg-ink">
                     {title}
                   </CardTitle>
-                  <CardDescription className="text-xs text-tp-ink-3">
+                  <CardDescription className="text-xs text-sg-ink-3">
                     {description}
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="p-4 pt-0">
-                  <span className="text-xs font-medium text-tp-amber opacity-80 transition-opacity group-hover:opacity-100">
+                  <span className="text-xs font-medium text-sg-accent opacity-80 transition-opacity group-hover:opacity-100">
                     {t("devSettings.cardOpen")}
                   </span>
                 </CardContent>

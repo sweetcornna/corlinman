@@ -226,7 +226,7 @@ describe("CommandPalette reduced motion", () => {
     // Phase 3.5 note: the legacy palette exposed a `data-motion="reduced"`
     // attribute on the inner popover for this assertion. The new Tidepool
     // <CommandPalette> primitive drives entry via a CSS keyframe
-    // (tp-palette-in) which already respects prefers-reduced-motion via its
+    // (sg-palette-in) which already respects prefers-reduced-motion via its
     // globals.css @media rule, so this implementation-detail assertion is
     // no longer meaningful. Keeping the test body for history.
     mockMatchMedia(true);

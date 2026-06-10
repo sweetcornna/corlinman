@@ -103,7 +103,7 @@ export default function AccountSecurityPage() {
         <h1 className="text-2xl font-semibold tracking-tight">
           {t("account.security.title")}
         </h1>
-        <p className="text-sm text-tp-ink-3">
+        <p className="text-sm text-sg-ink-3">
           {t("account.security.subtitle")}
         </p>
       </header>
@@ -206,16 +206,16 @@ function ChangeUsernameCard({
     <Card data-testid="card-change-username">
       <CardHeader>
         <div className="flex items-center gap-2">
-          <UserCog className="h-4 w-4 text-tp-ink-3" aria-hidden />
+          <UserCog className="h-4 w-4 text-sg-ink-3" aria-hidden />
           <CardTitle>{t("account.security.changeUsername")}</CardTitle>
         </div>
         <CardDescription>
           {currentUsername ? (
             <>
-              <span className="text-tp-ink-3">
+              <span className="text-sg-ink-3">
                 {t("account.security.currentUsernameLabel")}{" "}
               </span>
-              <span className="font-mono text-tp-ink-2">{currentUsername}</span>
+              <span className="font-mono text-sg-ink-2">{currentUsername}</span>
             </>
           ) : (
             t("account.security.subtitle")
@@ -260,7 +260,7 @@ function ChangeUsernameCard({
               onChange={(e) => setNewUsername(e.target.value)}
               disabled={submitting}
             />
-            <p className="text-xs text-tp-ink-3">
+            <p className="text-xs text-sg-ink-3">
               {t("account.security.usernameRule")}
             </p>
           </div>
@@ -347,12 +347,12 @@ function ChangePasswordCard({
       // signpost it so they don't miss what the page is here for.
       className={cn(
         mustChange &&
-          "border-tp-amber/40 ring-1 ring-tp-amber/20 transition-colors",
+          "border-sg-accent/40 ring-1 ring-sg-accent/20 transition-colors",
       )}
     >
       <CardHeader>
         <div className="flex items-center gap-2">
-          <KeyRound className="h-4 w-4 text-tp-ink-3" aria-hidden />
+          <KeyRound className="h-4 w-4 text-sg-ink-3" aria-hidden />
           <CardTitle>{t("account.security.changePassword")}</CardTitle>
         </div>
         <CardDescription>
@@ -403,7 +403,7 @@ function ChangePasswordCard({
               disabled={submitting}
               testId="cpw-new"
             />
-            <p className="text-xs text-tp-ink-3">
+            <p className="text-xs text-sg-ink-3">
               {t("account.security.passwordRule")}
             </p>
           </div>
@@ -503,7 +503,7 @@ function PasswordField({
         aria-pressed={show}
         data-testid={`${testId ?? id}-reveal`}
         tabIndex={-1}
-        className="absolute right-2 top-1/2 inline-flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-tp-ink-3 transition-colors hover:bg-tp-glass-inner hover:text-tp-ink disabled:opacity-50"
+        className="absolute right-2 top-1/2 inline-flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-sg-ink-3 transition-colors hover:bg-sg-inset hover:text-sg-ink disabled:opacity-50"
         disabled={disabled}
       >
         {show ? (

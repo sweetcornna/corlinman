@@ -244,7 +244,7 @@ export function EmojiPicker({ onPick, onPickSticker, onClose }: EmojiPickerProps
       className={cn(
         "absolute bottom-full left-0 z-30 mb-2 w-[20.5rem] max-h-80 overflow-y-auto",
         "sg-glass-overlay rounded-sg-lg p-2 shadow-sg-4 outline-none",
-        "animate-tp-palette-in",
+        "animate-sg-palette-in",
       )}
     >
       {recent.length > 0 ? (

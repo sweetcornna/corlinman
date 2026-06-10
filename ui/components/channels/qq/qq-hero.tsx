@@ -74,7 +74,7 @@ export function QqHero({
             className={cn(
               "h-1.5 w-1.5 rounded-full",
               connection === "connected"
-                ? "bg-sg-ok tp-breathe"
+                ? "bg-sg-ok sg-breathe"
                 : connection === "disconnected"
                   ? "bg-sg-err"
                   : "bg-sg-ink-4",

@@ -515,14 +515,14 @@ export default function CredentialsPage() {
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-1">
         <div className="flex items-center gap-2">
-          <KeyRound className="h-5 w-5 text-tp-ink-3" aria-hidden />
+          <KeyRound className="h-5 w-5 text-sg-ink-3" aria-hidden />
           <h1 className="text-2xl font-semibold tracking-tight">
             {t("credentials.title")}
           </h1>
         </div>
-        <p className="text-sm text-tp-ink-3">{t("credentials.subtitle")}</p>
+        <p className="text-sm text-sg-ink-3">{t("credentials.subtitle")}</p>
         <p
-          className="text-xs text-tp-ink-3"
+          className="text-xs text-sg-ink-3"
           data-testid="credentials-count-summary"
         >
           {t("credentials.countSummary", { total, configured })}
@@ -530,9 +530,9 @@ export default function CredentialsPage() {
       </header>
 
       <Card data-testid="oauth-panel">
-        <CardHeader className="border-b border-tp-glass-edge">
+        <CardHeader className="border-b border-sg-border">
           <div className="flex items-center gap-2">
-            <ShieldCheck className="h-4 w-4 text-tp-ink-3" aria-hidden />
+            <ShieldCheck className="h-4 w-4 text-sg-ink-3" aria-hidden />
             <CardTitle className="text-base">{t("oauth.panelTitle")}</CardTitle>
           </div>
           <CardDescription>{t("oauth.panelDescription")}</CardDescription>
@@ -555,14 +555,14 @@ export default function CredentialsPage() {
 
           {/* --- Claude Code import tile --- */}
           <div
-            className="flex flex-col gap-3 rounded-md border border-tp-glass-edge bg-tp-glass p-3 shadow-tp-panel backdrop-blur-glass backdrop-saturate-glass"
+            className="flex flex-col gap-3 rounded-md border border-sg-border bg-sg-card p-3 shadow-sg-2"
             data-testid="oauth-tile-claude-code"
           >
             <div className="flex flex-col gap-1">
               <span className="font-medium">
                 {t("oauth.providerClaudeCode")}
               </span>
-              <span className="text-[11px] text-tp-ink-3">
+              <span className="text-[11px] text-sg-ink-3">
                 {t("oauth.claudeCodeHint")}
               </span>
             </div>
@@ -644,7 +644,7 @@ export default function CredentialsPage() {
       <div className="flex flex-wrap items-center gap-3">
         <div className="relative flex-1 min-w-[200px] max-w-md">
           <Search
-            className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-tp-ink-3"
+            className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-sg-ink-3"
             aria-hidden
           />
           <Input
@@ -655,7 +655,7 @@ export default function CredentialsPage() {
             data-testid="credentials-search"
           />
         </div>
-        <label className="flex items-center gap-2 text-xs text-tp-ink-2">
+        <label className="flex items-center gap-2 text-xs text-sg-ink-2">
           <Switch
             checked={showEmpty}
             onCheckedChange={setShowEmpty}
@@ -678,8 +678,8 @@ export default function CredentialsPage() {
       ) : filtered.length === 0 ? (
         <Card data-testid="credentials-empty">
           <CardContent className="flex flex-col items-center gap-2 py-10 text-center">
-            <Plug className="h-6 w-6 text-tp-ink-3" aria-hidden />
-            <p className="text-sm text-tp-ink-3">
+            <Plug className="h-6 w-6 text-sg-ink-3" aria-hidden />
+            <p className="text-sm text-sg-ink-3">
               {t("credentials.emptyState")}
             </p>
           </CardContent>
@@ -731,7 +731,7 @@ export default function CredentialsPage() {
         as a deep-link fallback (the default export there wraps this
         same component).
       */}
-      <div className="mt-6 border-t border-tp-glass-edge pt-6">
+      <div className="mt-6 border-t border-sg-border pt-6">
         <ProvidersAdminContent />
       </div>
 
@@ -765,7 +765,7 @@ export default function CredentialsPage() {
           {claudeLogin && (
             <div className="flex flex-col gap-3">
               <div className="flex flex-col gap-1">
-                <span className="text-xs text-tp-ink-3">
+                <span className="text-xs text-sg-ink-3">
                   {t("oauth.claudeLoginUrlLabel")}
                 </span>
                 <div className="flex items-center gap-2">
@@ -802,7 +802,7 @@ export default function CredentialsPage() {
                 </div>
               </div>
               <div className="flex flex-col gap-1">
-                <span className="text-xs text-tp-ink-3">
+                <span className="text-xs text-sg-ink-3">
                   {t("oauth.claudeLoginCodeLabel")}
                 </span>
                 <Input
@@ -957,7 +957,7 @@ function OAuthPkceTile({
 }: PkceTileProps) {
   return (
     <div
-      className="flex flex-col gap-3 rounded-md border border-tp-glass-edge bg-tp-glass p-3 shadow-tp-panel backdrop-blur-glass backdrop-saturate-glass"
+      className="flex flex-col gap-3 rounded-md border border-sg-border bg-sg-card p-3 shadow-sg-2"
       data-testid={testId}
     >
       <div className="flex items-start justify-between gap-2">
@@ -989,12 +989,12 @@ function OAuthPkceTile({
                 );
               })()}
               {status?.expires_in_seconds != null && (
-                <span className="text-[11px] text-tp-ink-3">
+                <span className="text-[11px] text-sg-ink-3">
                   {formatExpiresIn(t, status.expires_in_seconds)}
                 </span>
               )}
               {status?.username && (
-                <span className="text-[11px] text-tp-ink-3">
+                <span className="text-[11px] text-sg-ink-3">
                   {status.username}
                 </span>
               )}

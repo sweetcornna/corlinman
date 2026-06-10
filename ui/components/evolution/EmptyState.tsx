@@ -20,7 +20,7 @@ export function EvolutionEmptyState({ tab }: { tab: Tab }) {
       <div
         className={cn(
           "flex flex-col items-center justify-center gap-3 py-14 text-center",
-          "rounded-2xl border border-dashed border-sg-border bg-sg-inset/40",
+          "rounded-2xl border border-dashed border-sg-border bg-sg-inset",
         )}
       >
         <Sprout className="h-9 w-9 text-sg-accent/80" aria-hidden />
@@ -38,7 +38,7 @@ export function EvolutionEmptyState({ tab }: { tab: Tab }) {
     <div
       className={cn(
         "flex flex-col items-center justify-center gap-3 py-14 text-center",
-        "rounded-2xl border border-dashed border-sg-border bg-sg-inset/40",
+        "rounded-2xl border border-dashed border-sg-border bg-sg-inset",
       )}
     >
       <Hourglass className="h-8 w-8 text-sg-ink-4" aria-hidden />

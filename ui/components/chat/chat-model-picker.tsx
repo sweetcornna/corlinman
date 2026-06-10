@@ -214,30 +214,30 @@ export function ChatModelPicker({
       <div
         className={cn(
           "relative z-10 flex max-h-[80vh] w-full max-w-md flex-col overflow-hidden",
-          "rounded-lg border border-tp-glass-edge bg-tp-glass-inner shadow-xl",
+          "rounded-lg border border-sg-border bg-sg-inset shadow-xl",
         )}
       >
-        <header className="flex items-center gap-2 border-b border-tp-glass-edge px-3 py-2">
-          <span className="text-[13px] font-medium text-tp-ink">
+        <header className="flex items-center gap-2 border-b border-sg-border px-3 py-2">
+          <span className="text-[13px] font-medium text-sg-ink">
             {kind === "llm"
               ? t("chat.modelPicker.titleLLM")
               : t("chat.modelPicker.titleImage")}
           </span>
-          <span className="ml-auto rounded border border-tp-glass-edge bg-tp-glass-inner/40 px-1.5 py-0 font-mono text-[10px] text-tp-ink-3">
+          <span className="ml-auto rounded border border-sg-border bg-sg-inset px-1.5 py-0 font-mono text-[10px] text-sg-ink-3">
             {t("chat.modelPicker.currentBadge")}: {current || "—"}
           </span>
           <button
             type="button"
             onClick={onClose}
-            className="rounded p-1 text-tp-ink-3 hover:bg-tp-glass-inner hover:text-tp-ink"
+            className="rounded p-1 text-sg-ink-3 hover:bg-sg-inset hover:text-sg-ink"
             aria-label={t("common.close")}
           >
             <X className="h-3.5 w-3.5" aria-hidden="true" />
           </button>
         </header>
 
-        <div className="flex flex-col gap-2 border-b border-tp-glass-edge px-3 py-2">
-          <label className="text-[11px] text-tp-ink-3">
+        <div className="flex flex-col gap-2 border-b border-sg-border px-3 py-2">
+          <label className="text-[11px] text-sg-ink-3">
             {t("chat.modelPicker.customLabel")}
           </label>
           <div className="flex items-center gap-1.5">
@@ -252,14 +252,14 @@ export function ChatModelPicker({
                 }
               }}
               placeholder={t("chat.modelPicker.customPlaceholder")}
-              className="flex-1 rounded border border-tp-glass-edge bg-tp-glass-inner/60 px-2 py-1 text-[12px] text-tp-ink placeholder:text-tp-ink-3 focus:border-tp-amber focus:outline-none"
+              className="flex-1 rounded border border-sg-border bg-sg-inset px-2 py-1 text-[12px] text-sg-ink placeholder:text-sg-ink-3 focus:border-sg-accent focus:outline-none"
               data-testid="chat-model-picker-custom-input"
             />
             <button
               type="button"
               onClick={submitCustom}
               disabled={!custom.trim()}
-              className="rounded border border-tp-amber/60 bg-tp-amber/20 px-2 py-1 text-[12px] text-tp-ink hover:bg-tp-amber/30 disabled:cursor-not-allowed disabled:opacity-40"
+              className="rounded border border-sg-accent/60 bg-sg-accent/20 px-2 py-1 text-[12px] text-sg-ink hover:bg-sg-accent/30 disabled:cursor-not-allowed disabled:opacity-40"
               data-testid="chat-model-picker-custom-submit"
             >
               {t("chat.modelPicker.useCustom")}
@@ -267,18 +267,18 @@ export function ChatModelPicker({
           </div>
         </div>
 
-        <div className="flex items-center gap-1.5 border-b border-tp-glass-edge px-3 py-1.5">
-          <Search className="h-3.5 w-3.5 text-tp-ink-3" aria-hidden="true" />
+        <div className="flex items-center gap-1.5 border-b border-sg-border px-3 py-1.5">
+          <Search className="h-3.5 w-3.5 text-sg-ink-3" aria-hidden="true" />
           <input
             type="search"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             placeholder={t("chat.modelPicker.filterPlaceholder")}
-            className="flex-1 bg-transparent text-[12px] text-tp-ink placeholder:text-tp-ink-3 focus:outline-none"
+            className="flex-1 bg-transparent text-[12px] text-sg-ink placeholder:text-sg-ink-3 focus:outline-none"
             data-testid="chat-model-picker-filter"
           />
           {isProbing ? (
-            <Loader2 className="h-3 w-3 animate-spin text-tp-ink-3" aria-hidden="true" />
+            <Loader2 className="h-3 w-3 animate-spin text-sg-ink-3" aria-hidden="true" />
           ) : null}
         </div>
 
@@ -288,7 +288,7 @@ export function ChatModelPicker({
           data-testid="chat-model-picker-list"
         >
           {filtered.length === 0 ? (
-            <li className="px-3 py-6 text-center text-[12px] text-tp-ink-3">
+            <li className="px-3 py-6 text-center text-[12px] text-sg-ink-3">
               {modelsQ.isLoading || providersQ.isLoading
                 ? t("common.loading")
                 : t("chat.modelPicker.emptyList")}
@@ -305,15 +305,15 @@ export function ChatModelPicker({
                   className={cn(
                     "flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px]",
                     o.id === current
-                      ? "bg-tp-amber/20 text-tp-ink"
-                      : "text-tp-ink hover:bg-tp-glass-inner/80",
+                      ? "bg-sg-accent/20 text-sg-ink"
+                      : "text-sg-ink hover:bg-sg-inset",
                   )}
                   data-testid="chat-model-picker-option"
                   data-model-id={o.id}
                 >
                   <span className="font-mono">{o.id}</span>
                   {o.hint ? (
-                    <span className="ml-auto rounded border border-tp-glass-edge px-1 py-0 font-mono text-[10px] text-tp-ink-3">
+                    <span className="ml-auto rounded border border-sg-border px-1 py-0 font-mono text-[10px] text-sg-ink-3">
                       {o.hint}
                     </span>
                   ) : null}

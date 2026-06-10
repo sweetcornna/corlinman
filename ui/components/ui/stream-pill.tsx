@@ -8,10 +8,10 @@ import { cn } from "@/lib/utils";
  * Live / paused indicator pill with breathing dot and optional rate readout.
  *
  * States:
- *   - `live`     — green dot with `.tp-breathe`, optional `rate` suffix
+ *   - `live`     — green dot with `.sg-breathe`, optional `rate` suffix
  *     (e.g. "41.2/s"). Pause button icon shown when `onToggle` is passed.
  *   - `paused`   — muted dot, no breathing, Play button icon.
- *   - `throttled`— amber dot with `.tp-breathe-amber`; indicates backpressure
+ *   - `throttled`— amber dot with `.sg-breathe-accent`; indicates backpressure
  *     upstream, e.g. when the hook bus is rate-limiting a subscriber.
  *
  * Accessibility:
@@ -36,12 +36,12 @@ const config: Record<
   StreamState,
   { label: string; dotTone: "ok" | "warn" | "muted"; breatheClass: string }
 > = {
-  live: { label: "Live", dotTone: "ok", breatheClass: "tp-breathe" },
+  live: { label: "Live", dotTone: "ok", breatheClass: "sg-breathe" },
   paused: { label: "Paused", dotTone: "muted", breatheClass: "" },
   throttled: {
     label: "Throttled",
     dotTone: "warn",
-    breatheClass: "tp-breathe-amber",
+    breatheClass: "sg-breathe-accent",
   },
 };
 

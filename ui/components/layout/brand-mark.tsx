@@ -27,7 +27,7 @@ export function BrandMark({
       />
       {compact ? null : (
         <div className="min-w-0 flex-col leading-tight">
-          <div className="text-[14.5px] font-semibold tracking-[-0.015em] text-tp-ink">
+          <div className="text-[14.5px] font-semibold tracking-[-0.015em] text-sg-ink">
             corlinman
           </div>
         </div>
