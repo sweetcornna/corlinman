@@ -11,7 +11,7 @@ describe("GlassPanel", () => {
     render(<GlassPanel data-testid="panel">content</GlassPanel>);
     const el = screen.getByTestId("panel");
     expect(el).toHaveAttribute("data-glass-variant", "soft");
-    expect(el).toHaveClass("bg-tp-glass");
+    expect(el).toHaveClass("bg-sg-card-grad");
     expect(el).not.toHaveClass("backdrop-blur-glass");
   });
 
@@ -23,7 +23,7 @@ describe("GlassPanel", () => {
     );
     const el = screen.getByTestId("panel");
     expect(el).toHaveAttribute("data-glass-variant", "subtle");
-    expect(el).toHaveClass("bg-tp-glass");
+    expect(el).toHaveClass("bg-sg-card-grad");
     expect(el).not.toHaveClass("backdrop-blur-glass");
   });
 
@@ -33,7 +33,7 @@ describe("GlassPanel", () => {
         x
       </GlassPanel>,
     );
-    expect(screen.getByTestId("panel")).toHaveClass("shadow-tp-primary");
+    expect(screen.getByTestId("panel")).toHaveClass("shadow-sg-primary");
   });
 
   it("can render as a different element", () => {
@@ -47,7 +47,7 @@ describe("GlassPanel", () => {
 
   it("mounts a top inset highlight layer", () => {
     const { container } = render(<GlassPanel>x</GlassPanel>);
-    const hl = container.querySelector(".bg-tp-glass-hl");
+    const hl = container.querySelector(".bg-sg-highlight");
     expect(hl).not.toBeNull();
     expect(hl).toHaveAttribute("aria-hidden", "true");
   });

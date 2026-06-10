@@ -53,10 +53,10 @@ export type FilterChipGroupProps =
     });
 
 const toneDot: Record<FilterChipTone, string> = {
-  ok: "bg-tp-ok",
-  warn: "bg-tp-warn",
-  err: "bg-tp-err",
-  info: "bg-tp-ink-4",
+  ok: "bg-sg-ok",
+  warn: "bg-sg-warn",
+  err: "bg-sg-err",
+  info: "bg-sg-ink-4",
   neutral: "",
 };
 
@@ -123,10 +123,10 @@ export function FilterChipGroup(props: FilterChipGroupProps) {
               "inline-flex min-h-8 items-center gap-1.5 rounded-full border px-3 py-1",
               "font-mono text-[10.5px] tracking-wide",
               "transition-colors",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/50",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/50",
               active
-                ? "bg-tp-ink text-background border-tp-ink"
-                : "bg-tp-glass-inner text-tp-ink-3 border-tp-glass-edge hover:bg-tp-glass-inner-hover hover:text-tp-ink-2",
+                ? "bg-sg-accent-soft text-sg-ink border-sg-accent/40 shadow-sg-glow"
+                : "bg-sg-inset text-sg-ink-3 border-sg-border hover:bg-sg-inset-hover hover:text-sg-ink-2",
               opt.disabled && "cursor-not-allowed opacity-50",
             )}
           >

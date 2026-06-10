@@ -42,7 +42,7 @@ const TableFooter = React.forwardRef<
   <tfoot
     ref={ref}
     className={cn(
-      "border-t bg-muted/50 font-medium [&>tr]:last:border-b-0",
+      "border-t border-sg-border bg-sg-card-weak font-medium [&>tr]:last:border-b-0",
       className,
     )}
     {...props}
@@ -57,7 +57,7 @@ const TableRow = React.forwardRef<
   <tr
     ref={ref}
     className={cn(
-      "border-b transition-colors hover:bg-muted/50 data-[state=selected]:bg-muted",
+      "border-b border-sg-border transition-colors hover:bg-sg-accent-soft/40 data-[state=selected]:bg-sg-accent-soft",
       className,
     )}
     {...props}
@@ -72,7 +72,11 @@ const TableHead = React.forwardRef<
   <th
     ref={ref}
     className={cn(
-      "h-10 px-2 text-left align-middle font-medium text-muted-foreground [&:has([role=checkbox])]:pr-0",
+      "h-10 px-2 text-left align-middle text-[11px] font-medium uppercase tracking-wide text-sg-ink-4",
+      // When a caller pins the header (`sticky top-0`), fill it with the
+      // strong card surface (NO blur) so rows scroll cleanly beneath it.
+      "[&.sticky]:bg-sg-card-strong",
+      "[&:has([role=checkbox])]:pr-0",
       className,
     )}
     {...props}
@@ -101,7 +105,7 @@ const TableCaption = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <caption
     ref={ref}
-    className={cn("mt-4 text-sm text-muted-foreground", className)}
+    className={cn("mt-4 text-sm text-sg-ink-4", className)}
     {...props}
   />
 ));

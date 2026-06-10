@@ -23,6 +23,7 @@ vi.mock("next/navigation", () => ({
 import {
   PageTransition,
   baselinePageVariants,
+  depthPageVariants,
   type PageTransitionVariants,
 } from "./page-transition";
 
@@ -69,7 +70,24 @@ describe("PageTransition", () => {
     expect(baselinePageVariants.transition).toMatchObject({ duration: 0 });
   });
 
-  it("applies the baseline animation to the motion wrapper", () => {
+  it("exposes the Spatial Glass depth default variant", () => {
+    // Enter rises from slightly behind + below; exit drifts marginally
+    // forward. Both land/leave on a clean transform so glass never sits
+    // mid-blur.
+    expect(depthPageVariants.initial).toMatchObject({
+      opacity: 0,
+      scale: 0.985,
+      y: 8,
+    });
+    expect(depthPageVariants.animate).toMatchObject({
+      opacity: 1,
+      scale: 1,
+      y: 0,
+    });
+    expect(depthPageVariants.exit).toMatchObject({ opacity: 0, scale: 1.005 });
+  });
+
+  it("applies the depth default animation to the motion wrapper", () => {
     const { container } = render(
       <PageTransition>
         <p>baseline</p>
@@ -82,10 +100,10 @@ describe("PageTransition", () => {
       "[data-testid='page-transition']",
     );
     expect(motionDiv).not.toBeNull();
-    // The route wrapper must not move during page swaps; even a small y
-    // transform is visible as a twitch against the fixed relief background.
+    // The depth default settles to a clean identity transform (scale 1, y 0)
+    // so the resting page never sits scaled or offset.
     expect(motionDiv?.style.opacity).toBe("1");
-    expect(motionDiv?.style.transform ?? "").not.toMatch(/matrix|translate/i);
+    expect(motionDiv?.style.transform ?? "").not.toMatch(/100px/);
   });
 
   it("honors a custom variants override", () => {

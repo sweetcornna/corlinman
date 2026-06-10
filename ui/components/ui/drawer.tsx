@@ -135,10 +135,10 @@ export function Drawer({
                 style={widthResolved.style}
                 className={cn(
                   "fixed inset-y-0 z-50 flex h-full w-full flex-col",
-                  "bg-panel shadow-3 focus:outline-none",
+                  "bg-sg-overlay shadow-sg-4 backdrop-blur-sg-overlay backdrop-saturate-sg-overlay focus:outline-none",
                   side === "right"
-                    ? "right-0 border-l border-border"
-                    : "left-0 border-r border-border",
+                    ? "right-0 rounded-l-sg-xl border-l border-sg-border-strong"
+                    : "left-0 rounded-r-sg-xl border-r border-sg-border-strong",
                   widthResolved.className,
                   className,
                 )}
@@ -147,12 +147,12 @@ export function Drawer({
                 <DrawerHeader title={title} description={description} />
                 <div className="flex-1 overflow-y-auto">{children}</div>
                 {footer ? (
-                  <div className="sticky bottom-0 flex items-center justify-end gap-2 border-t border-border bg-panel px-5 py-3">
+                  <div className="sticky bottom-0 flex items-center justify-end gap-2 border-t border-sg-border bg-sg-overlay px-5 py-3">
                     {footer}
                   </div>
                 ) : null}
                 <DialogPrimitive.Close
-                  className="absolute right-3 top-3 inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="absolute right-3 top-3 inline-flex h-8 w-8 items-center justify-center rounded-sg-sm text-sg-ink-3 transition-colors hover:bg-sg-inset-hover hover:text-sg-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   aria-label="Close"
                 >
                   <X className="h-4 w-4" />
@@ -185,12 +185,12 @@ function DrawerHeader({
   description?: string;
 }) {
   return (
-    <header className="border-b border-border px-5 pb-4 pt-5 pr-14">
-      <DialogPrimitive.Title className="text-base font-semibold tracking-tight text-foreground">
+    <header className="border-b border-sg-border px-5 pb-4 pt-5 pr-14">
+      <DialogPrimitive.Title className="text-base font-semibold tracking-tight text-sg-ink">
         {title}
       </DialogPrimitive.Title>
       {description ? (
-        <DialogPrimitive.Description className="mt-1 text-xs text-muted-foreground">
+        <DialogPrimitive.Description className="mt-1 text-xs text-sg-ink-3">
           {description}
         </DialogPrimitive.Description>
       ) : null}

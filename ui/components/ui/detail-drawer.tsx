@@ -57,12 +57,12 @@ function DetailDrawerRoot({
       )}
       {...rest}
     >
-      <div className="flex flex-col gap-2.5 border-b border-tp-glass-edge p-4">
+      <div className="flex flex-col gap-2.5 border-b border-sg-border p-4">
         {meta ? <div className="flex flex-wrap items-center gap-2">{meta}</div> : null}
         {subsystem ? (
-          <div className="font-mono text-[12px] text-tp-amber">{subsystem}</div>
+          <div className="font-mono text-[12px] text-sg-accent">{subsystem}</div>
         ) : null}
-        <h2 className="text-[16px] font-medium leading-snug tracking-[-0.01em] text-tp-ink">
+        <h2 className="text-[16px] font-medium leading-snug tracking-[-0.01em] text-sg-ink">
           {title}
         </h2>
         {trace ? <TraceRow trace={trace} /> : null}
@@ -75,9 +75,9 @@ function DetailDrawerRoot({
 function TraceRow({ trace }: { trace: NonNullable<DetailDrawerProps["trace"]> }) {
   const [copied, setCopied] = React.useState(false);
   return (
-    <div className="flex items-center gap-2 font-mono text-[11px] text-tp-ink-3">
+    <div className="flex items-center gap-2 font-mono text-[11px] text-sg-ink-3">
       <span>{trace.label ?? "trace_id"}:</span>
-      <span className="font-medium text-tp-ink">{trace.id}</span>
+      <span className="font-medium text-sg-ink">{trace.id}</span>
       <button
         type="button"
         onClick={() => {
@@ -91,10 +91,10 @@ function TraceRow({ trace }: { trace: NonNullable<DetailDrawerProps["trace"]> })
           setTimeout(() => setCopied(false), 1200);
         }}
         className={cn(
-          "ml-auto rounded-md border px-2 py-[2px] text-[10px]",
-          "bg-tp-glass-inner border-tp-glass-edge text-tp-ink-3",
-          "hover:bg-tp-glass-inner-hover hover:text-tp-ink",
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
+          "ml-auto rounded-sg-sm border px-2 py-[2px] text-[10px]",
+          "bg-sg-inset border-sg-border text-sg-ink-3",
+          "hover:bg-sg-inset-hover hover:text-sg-ink",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
         )}
       >
         {copied ? "copied ✓" : "copy"}
@@ -117,12 +117,12 @@ function Section({
   return (
     <div
       className={cn(
-        "border-b border-tp-glass-edge p-4 last:border-b-0",
+        "border-b border-sg-border p-4 last:border-b-0",
         className,
       )}
       {...rest}
     >
-      <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.1em] text-tp-ink-4">
+      <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.1em] text-sg-ink-4">
         {label}
       </div>
       {children}

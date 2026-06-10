@@ -46,15 +46,15 @@ const config: Record<
 };
 
 const dotColor: Record<"ok" | "warn" | "muted", string> = {
-  ok: "bg-tp-ok",
-  warn: "bg-tp-warn",
-  muted: "bg-tp-ink-4",
+  ok: "bg-sg-ok",
+  warn: "bg-sg-warn",
+  muted: "bg-sg-ink-4",
 };
 
 const containerTone: Record<StreamState, string> = {
-  live: "bg-tp-ok-soft text-tp-ok border-tp-ok/25",
-  paused: "bg-tp-glass-inner text-tp-ink-3 border-tp-glass-edge",
-  throttled: "bg-tp-warn-soft text-tp-warn border-tp-warn/25",
+  live: "bg-sg-ok-soft text-sg-ok border-sg-ok/25",
+  paused: "bg-sg-inset text-sg-ink-3 border-sg-border",
+  throttled: "bg-sg-warn-soft text-sg-warn border-sg-warn/25",
 };
 
 export const StreamPill = React.forwardRef<HTMLDivElement, StreamPillProps>(

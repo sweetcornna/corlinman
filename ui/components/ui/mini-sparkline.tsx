@@ -8,7 +8,8 @@ import { cn } from "@/lib/utils";
  *
  * Used in the System Health per-service rows — each bar is a recent
  * availability sample (%). Last bar can opt into `bad` tint via the
- * per-bar descriptor; otherwise all bars use `--tp-ok` at 45% opacity.
+ * per-bar descriptor; otherwise bars use the accent tone as a vertical
+ * gradient (solid-ish top → transparent base).
  *
  * Intentionally dumb — no tooltip, no interaction. Callers build their own
  * accessible data table fallback (already present via the existing
@@ -35,11 +36,14 @@ export interface MiniSparklineProps
   label?: string;
 }
 
+// Default ("ok") bars read as the primary accent; status tones keep
+// their semantic colour. Each is rendered as a vertical gradient
+// (tone ~80% at the cap → transparent at the baseline).
 const toneToVar: Record<SparkTone, string> = {
-  ok: "var(--tp-ok)",
-  warn: "var(--tp-warn)",
-  err: "var(--tp-err)",
-  muted: "var(--tp-ink-4)",
+  ok: "var(--sg-accent)",
+  warn: "var(--sg-warn)",
+  err: "var(--sg-err)",
+  muted: "var(--sg-ink-5)",
 };
 
 export const MiniSparkline = React.forwardRef<
@@ -65,7 +69,7 @@ export const MiniSparkline = React.forwardRef<
           className="w-[3px] flex-1 rounded-[1px]"
           style={{
             height: `${clamp(b.height)}%`,
-            background: `color-mix(in oklch, ${toneToVar[b.tone ?? "ok"]} 45%, transparent)`,
+            backgroundImage: `linear-gradient(to top, color-mix(in oklch, ${toneToVar[b.tone ?? "ok"]} 25%, transparent), color-mix(in oklch, ${toneToVar[b.tone ?? "ok"]} 80%, transparent))`,
           }}
         />
       ))}

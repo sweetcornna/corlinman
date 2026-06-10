@@ -102,8 +102,8 @@ export function CommandPalette({
       }}
       className={cn(
         "fixed inset-0 z-50 flex items-start justify-center pt-[14vh]",
-        "bg-[color-mix(in_oklch,var(--tp-bg-a)_50%,transparent)]",
-        "backdrop-blur-[8px] backdrop-saturate-[1.2]",
+        "bg-black/50",
+        "backdrop-blur-sm backdrop-saturate-[1.2]",
         "animate-in fade-in duration-150",
       )}
     >
@@ -113,34 +113,34 @@ export function CommandPalette({
         aria-label="Command palette"
         shouldFilter
         className={cn(
-          "w-[640px] max-w-[calc(100vw-3rem)] overflow-hidden rounded-2xl border",
-          "bg-tp-glass-3 border-tp-glass-edge-strong",
-          "backdrop-blur-[36px] backdrop-saturate-[1.8]",
-          "shadow-[inset_0_1px_0_var(--tp-glass-hl),0_0_0_1px_color-mix(in_oklch,var(--tp-amber)_25%,transparent),0_32px_80px_-24px_rgba(0,0,0,0.5),0_0_80px_-20px_var(--tp-amber-glow)]",
+          "w-[640px] max-w-[calc(100vw-3rem)] overflow-hidden rounded-sg-xl border",
+          "bg-sg-overlay border-sg-border-strong",
+          "backdrop-blur-sg-overlay backdrop-saturate-sg-overlay",
+          "shadow-sg-4 ring-1 ring-sg-accent/20",
           "animate-tp-palette-in",
         )}
       >
         {/* Input */}
-        <div className="flex items-center gap-3 border-b border-tp-glass-edge p-4 text-[16px]">
-          <SearchIcon className="h-[18px] w-[18px] shrink-0 text-tp-amber" />
+        <div className="flex items-center gap-3 border-b border-sg-border bg-sg-inset p-4 text-[16px]">
+          <SearchIcon className="h-[18px] w-[18px] shrink-0 text-sg-accent" />
           <Command.Input
             value={query}
             onValueChange={setQuery}
             placeholder={placeholder}
             className={cn(
-              "flex-1 bg-transparent font-sans tracking-[-0.01em] text-tp-ink",
-              "placeholder:text-tp-ink-4 focus:outline-none",
+              "flex-1 bg-transparent font-sans tracking-[-0.01em] text-sg-ink",
+              "placeholder:text-sg-ink-4 focus:outline-none",
             )}
             aria-label="Search"
           />
-          <span className="rounded-md border border-tp-glass-edge bg-tp-glass-inner px-2 py-[2px] font-mono text-[11px] text-tp-ink-3">
+          <span className="rounded-sg-sm border border-sg-border bg-sg-inset-strong px-2 py-[2px] font-mono text-[11px] text-sg-ink-3">
             esc
           </span>
         </div>
 
         {/* Groups */}
         <Command.List className="max-h-[380px] overflow-y-auto px-1.5 py-1.5">
-          <Command.Empty className="px-4 py-6 text-center text-[13px] text-tp-ink-3">
+          <Command.Empty className="px-4 py-6 text-center text-[13px] text-sg-ink-3">
             No results — try another query.
           </Command.Empty>
           {groups.map((group) => (
@@ -152,7 +152,7 @@ export function CommandPalette({
                 "[&_[cmdk-group-heading]]:px-3.5 [&_[cmdk-group-heading]]:pb-1 [&_[cmdk-group-heading]]:pt-1.5",
                 "[&_[cmdk-group-heading]]:font-mono [&_[cmdk-group-heading]]:text-[10px]",
                 "[&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-[0.12em]",
-                "[&_[cmdk-group-heading]]:text-tp-ink-4",
+                "[&_[cmdk-group-heading]]:text-sg-ink-4",
               )}
             >
               {group.items.map((item) => (
@@ -171,7 +171,7 @@ export function CommandPalette({
         </Command.List>
 
         {/* Footer */}
-        <div className="flex items-center gap-[18px] border-t border-tp-glass-edge bg-tp-glass-inner px-4 py-2.5 text-[11px] text-tp-ink-4">
+        <div className="flex items-center gap-[18px] border-t border-sg-border bg-sg-inset px-4 py-2.5 text-[11px] text-sg-ink-4">
           <FooterHint kbd="↑↓" label="navigate" />
           <FooterHint kbd="↵" label="select" />
           <FooterHint kbd="⌘↵" label="execute" />
@@ -179,7 +179,7 @@ export function CommandPalette({
           <span className="ml-auto font-mono text-[10px]">
             {brandLabel ?? (
               <>
-                corlinman · <em className="not-italic font-medium text-tp-amber">⌘K</em>
+                corlinman · <em className="not-italic font-medium text-sg-accent">⌘K</em>
               </>
             )}
           </span>
@@ -205,23 +205,23 @@ function PaletteRow({
       disabled={item.disabled}
       onSelect={onSelect}
       className={cn(
-        "group mx-2 grid grid-cols-[20px_1fr_auto_auto] items-center gap-3 rounded-lg px-3.5 py-2.5",
-        "text-[13.5px] text-tp-ink-2 cursor-pointer",
-        "aria-selected:bg-tp-amber-soft aria-selected:text-tp-ink",
-        "aria-selected:shadow-[inset_0_0_0_1px_color-mix(in_oklch,var(--tp-amber)_25%,transparent)]",
+        "group mx-2 grid grid-cols-[20px_1fr_auto_auto] items-center gap-3 rounded-sg-md px-3.5 py-2.5",
+        "text-[13.5px] text-sg-ink-2 cursor-pointer",
+        "aria-selected:bg-sg-accent-soft aria-selected:text-sg-ink",
+        "aria-selected:shadow-[inset_2px_0_0_0_var(--sg-accent)]",
         "data-[disabled=true]:cursor-not-allowed data-[disabled=true]:opacity-50",
       )}
     >
-      <span className="flex h-4 w-4 items-center justify-center text-tp-ink-3 group-aria-selected:text-tp-amber">
+      <span className="flex h-4 w-4 items-center justify-center text-sg-ink-3 group-aria-selected:text-sg-accent">
         {item.icon}
       </span>
       <span>{item.label}</span>
       {item.badge ? (
-        <span className="rounded-full border border-tp-amber/30 bg-tp-amber-soft px-1.5 py-0 font-mono text-[10px] text-tp-amber">
+        <span className="rounded-full border border-sg-accent/30 bg-sg-accent-soft px-1.5 py-0 font-mono text-[10px] text-sg-accent">
           {item.badge}
         </span>
       ) : item.meta ? (
-        <span className="font-mono text-[10.5px] text-tp-ink-4">
+        <span className="font-mono text-[10.5px] text-sg-ink-4">
           {item.meta}
         </span>
       ) : (
@@ -229,10 +229,10 @@ function PaletteRow({
       )}
       <span
         className={cn(
-          "rounded-md border px-1.5 py-px font-mono text-[10.5px] tracking-[0.05em]",
-          "bg-tp-glass-inner border-tp-glass-edge text-tp-ink-3",
-          "group-aria-selected:border-tp-amber/35 group-aria-selected:text-tp-amber",
-          "group-aria-selected:[background:color-mix(in_oklch,var(--tp-amber)_20%,var(--tp-glass-inner))]",
+          "rounded-sg-sm border px-1.5 py-px font-mono text-[10.5px] tracking-[0.05em]",
+          "bg-sg-inset border-sg-border text-sg-ink-3",
+          "group-aria-selected:border-sg-accent/35 group-aria-selected:text-sg-accent",
+          "group-aria-selected:[background:color-mix(in_oklch,var(--sg-accent)_20%,var(--sg-inset-bg))]",
         )}
       >
         {item.shortcut ?? "↵"}
@@ -244,7 +244,7 @@ function PaletteRow({
 function FooterHint({ kbd, label }: { kbd: string; label: string }) {
   return (
     <span className="inline-flex items-center gap-1.5">
-      <span className="rounded border border-tp-glass-edge bg-tp-glass-inner-strong px-1.5 py-px font-mono text-[10px] text-tp-ink-3">
+      <span className="rounded-sg-sm border border-sg-border bg-sg-inset-strong px-1.5 py-px font-mono text-[10px] text-sg-ink-3">
         {kbd}
       </span>
       {label}

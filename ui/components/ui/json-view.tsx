@@ -148,8 +148,8 @@ export const JsonView = React.forwardRef<HTMLPreElement, JsonViewProps>(
       <pre
         ref={ref}
         className={cn(
-          "rounded-lg border p-3 font-mono text-[11.5px] leading-[1.65]",
-          "bg-tp-glass-inner border-tp-glass-edge text-tp-ink-2",
+          "sg-inset rounded-sg-md p-3 font-mono text-[11.5px] leading-[1.65]",
+          "text-sg-ink-2",
           "whitespace-pre overflow-x-auto",
           className,
         )}

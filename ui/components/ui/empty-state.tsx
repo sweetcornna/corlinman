@@ -21,9 +21,10 @@ const fadeUp: Variants = {
 };
 
 /**
- * Centered placeholder block with dashed border, used when a list / table /
- * panel has no content. Fades up on mount via framer-motion; the underlying
- * framer runtime is itself reduced-motion aware.
+ * Centered placeholder block on the Spatial Glass card recipe, used when a
+ * list / table / panel has no content. The icon sits in a circular sunken
+ * chip with a faint accent glow. Fades up on mount via framer-motion; the
+ * underlying framer runtime is itself reduced-motion aware.
  */
 export const EmptyState = React.forwardRef<HTMLDivElement, EmptyStateProps>(
   function EmptyState(
@@ -38,7 +39,7 @@ export const EmptyState = React.forwardRef<HTMLDivElement, EmptyStateProps>(
         variants={fadeUp}
         role="status"
         className={cn(
-          "mx-auto flex w-full max-w-md flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-tp-glass-edge bg-tp-glass px-6 py-10 text-center shadow-tp-panel",
+          "mx-auto flex w-full max-w-md flex-col items-center justify-center gap-3 rounded-sg-lg border border-sg-border bg-sg-card-grad px-6 py-10 text-center shadow-sg-2",
           className,
         )}
         {...rest}
@@ -46,14 +47,14 @@ export const EmptyState = React.forwardRef<HTMLDivElement, EmptyStateProps>(
         {icon ? (
           <div
             aria-hidden="true"
-            className="flex h-10 w-10 items-center justify-center text-muted-foreground [&_svg]:h-10 [&_svg]:w-10"
+            className="flex h-14 w-14 items-center justify-center rounded-full bg-sg-inset text-sg-ink-4 shadow-sg-glow [&_svg]:h-7 [&_svg]:w-7"
           >
             {icon}
           </div>
         ) : null}
-        <div className="text-sm font-semibold text-foreground">{title}</div>
+        <div className="text-sm font-semibold text-sg-ink">{title}</div>
         {description ? (
-          <div className="text-xs text-muted-foreground">{description}</div>
+          <div className="text-xs text-sg-ink-3">{description}</div>
         ) : null}
         {action ? <div className="mt-2">{action}</div> : null}
       </motion.div>

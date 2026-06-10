@@ -118,9 +118,9 @@ function AdminShell({
   }, [pathname, setDrawerOpen]);
 
   return (
-    <div className="relative flex min-h-dvh gap-2 p-2 md:gap-4 md:p-4">
-      {/* Tidepool aurora — fixed behind all admin content. Reads
-          --tp-aurora-* / --tp-bg-* so it retints on theme flip. */}
+    <div className="relative flex min-h-dvh gap-2 p-2 md:gap-5 md:p-5">
+      {/* Spatial Glass aurora — fixed behind all admin content. Reads the
+          nebula/space tokens so it retints on theme flip. */}
       <AuroraBackground />
       <RouteScrollRestore />
 
@@ -134,7 +134,8 @@ function AdminShell({
         tabIndex={drawerOpen ? 0 : -1}
         aria-hidden={drawerOpen ? undefined : true}
         className={cn(
-          "fixed inset-0 z-40 bg-black/50 backdrop-blur-sm md:hidden",
+          // Overlay tier — backdrop-blur is allowed here (drawer scrim).
+          "fixed inset-0 z-40 bg-black/60 backdrop-blur-md md:hidden",
           "transition-opacity duration-200",
           drawerOpen
             ? "opacity-100"
@@ -144,7 +145,7 @@ function AdminShell({
 
       <Sidebar user={user} />
 
-      <div className="flex min-w-0 flex-1 flex-col gap-2 md:gap-4">
+      <div className="flex min-w-0 flex-1 flex-col gap-2 md:gap-5">
         <TopNav />
         {/* Wave 1.3 — top-of-shell alert when the admin is still on the
             default `admin/root` seed. Renders nothing once the flag

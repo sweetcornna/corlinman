@@ -130,7 +130,7 @@ export const CountdownRing = React.forwardRef<
           cy={size / 2}
           r={radius}
           fill="none"
-          stroke="hsl(var(--border))"
+          stroke="color-mix(in oklch, var(--sg-ink-5) 30%, transparent)"
           strokeWidth={strokeWidth}
         />
         <circle
@@ -138,7 +138,7 @@ export const CountdownRing = React.forwardRef<
           cy={size / 2}
           r={radius}
           fill="none"
-          stroke={isUrgent ? "hsl(var(--err))" : "hsl(var(--primary))"}
+          stroke={isUrgent ? "var(--sg-err)" : "var(--sg-accent)"}
           strokeWidth={strokeWidth}
           strokeLinecap="round"
           strokeDasharray={circumference}
@@ -150,7 +150,7 @@ export const CountdownRing = React.forwardRef<
       <span
         className={cn(
           "tabular-nums text-xs",
-          isUrgent ? "text-err" : "text-muted-foreground",
+          isUrgent ? "text-sg-err" : "text-sg-ink-4",
         )}
       >
         {formatMs(displayMs)}

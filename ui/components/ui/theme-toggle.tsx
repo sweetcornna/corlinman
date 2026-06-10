@@ -86,7 +86,7 @@ export const ThemeToggle = React.forwardRef<HTMLDivElement, ThemeToggleProps>(
         aria-label="Theme"
         className={cn(
           "inline-flex gap-0.5 p-0.5",
-          "bg-tp-glass-inner border border-tp-glass-edge rounded-full",
+          "sg-inset rounded-full",
           className,
         )}
         {...rest}
@@ -133,10 +133,10 @@ function Option({
       onClick={onClick}
       className={cn(
         "flex h-10 w-10 items-center justify-center rounded-full md:h-8 md:w-8",
-        "text-tp-ink-3 transition-colors",
-        "hover:text-tp-ink-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/60",
+        "text-sg-ink-3 transition-colors",
+        "hover:bg-sg-accent-soft hover:text-sg-ink-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/60",
         active &&
-          "bg-tp-glass-inner-hover text-tp-amber shadow-[0_1px_2px_rgba(0,0,0,0.1),inset_0_0_0_1px_var(--tp-glass-edge)]",
+          "bg-sg-inset-hover text-sg-accent shadow-[inset_0_1px_0_var(--sg-highlight),0_0_12px_-3px_var(--sg-accent-glow)]",
       )}
     >
       {icon}

@@ -34,10 +34,10 @@ export function Switch({
       className={cn(
         "relative inline-flex h-8 w-14 shrink-0 items-center rounded-full border p-1",
         "transition-colors duration-150",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/50 focus-visible:ring-offset-1 focus-visible:ring-offset-transparent",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/50 focus-visible:ring-offset-1 focus-visible:ring-offset-transparent",
         checked
-          ? "border-tp-amber/50 bg-[color-mix(in_oklch,var(--tp-amber)_34%,transparent)]"
-          : "border-tp-glass-edge bg-tp-glass-inner",
+          ? "border-sg-accent/50 bg-primary"
+          : "border-sg-border bg-sg-inset",
         disabled && "cursor-not-allowed opacity-60",
         className,
       )}
@@ -46,7 +46,7 @@ export function Switch({
       <span
         aria-hidden
         className={cn(
-          "pointer-events-none inline-block h-5 w-5 rounded-full border border-tp-glass-edge-strong bg-[color-mix(in_oklch,var(--tp-ink)_18%,transparent)] shadow-tp-panel",
+          "pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow-sg-1",
           "transition-transform duration-150",
           checked ? "translate-x-7" : "translate-x-0",
         )}

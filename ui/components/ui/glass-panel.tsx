@@ -4,21 +4,23 @@ import * as React from "react";
 import { cn } from "@/lib/utils";
 
 /**
- * Textured surface primitive — the core container of the Tidepool theme.
+ * Spatial Glass surface primitive — the core depth API of the design system.
  *
- * Three variants trade visual weight against performance:
- *   - `soft` (default) — oil texture + subtle inset highlight.
- *     Used for lists, sidebars, plain panels.
- *   - `strong` — same texture treatment, deeper shadow. Hero-class surfaces
- *     (dashboard hero, palette modal card).
- *   - `subtle` — same texture treatment, lower visual weight via shadow.
- *   - `primary` — same as strong, plus the ring/glow outline that marks a
- *     stat chip as the "most active" metric.
+ * All variants share the faux-glass card recipe (gradient fill + hairline
+ * border, NO backdrop-filter so scrolling lists never re-blur); the elevation
+ * scale carries the depth read:
+ *   - `subtle` — card recipe at the lowest elevation (`shadow-sg-1`).
+ *   - `soft` (default) — card recipe at panel elevation (`shadow-sg-2`).
+ *     Used for lists, plain panels.
+ *   - `strong` — stronger card fill, hero elevation (`shadow-sg-3`).
+ *     Hero-class surfaces (dashboard hero, palette modal card).
+ *   - `primary` — soft fill plus the accent ring/glow that marks a stat chip
+ *     as the "most active" metric (`shadow-sg-primary`).
  *
  * All variants:
- *   - border: `var(--tp-glass-edge)`
- *   - inset highlight: `var(--tp-glass-hl)` on top edge
- *   - shadow: matches `--tp-shadow-panel` (or `-hero` / `-primary`)
+ *   - fill: `bg-sg-card` (+ `bg-sg-card-grad`) / `bg-sg-card-strong`
+ *   - border: hairline `border-sg-border`
+ *   - inset highlight: `bg-sg-highlight` on the top edge
  *
  * Day/night automatic via token substitution — no prop needed.
  */
@@ -31,34 +33,40 @@ type DivProps = React.HTMLAttributes<HTMLDivElement>;
 
 export interface GlassPanelProps extends DivProps {
   variant?: GlassPanelVariant;
-  /** Override rounded corner (default `rounded-2xl` = 16px for soft/strong). */
+  /** Override rounded corner (default `rounded-sg-lg` = 20px). */
   rounded?: string;
   /** Render as a different HTML tag. Constrained to block-level semantic tags. */
   as?: GlassPanelTag;
 }
 
+// Faux-glass card recipe per variant. The `bg-sg-card-grad` gradient is the
+// visible fill (its stops carry the translucency); `strong` swaps the base
+// color token under it for a denser read. Elevation carries the depth scale.
+// NOTE: a base `bg-sg-card` color cannot share an element with the gradient —
+// the class merger collapses two `bg-*` utilities — so the gradient stands in
+// as the single background, which is intentional.
 const variantClasses: Record<GlassPanelVariant, string> = {
+  subtle: cn(
+    "bg-sg-card-grad border-sg-border",
+    "shadow-sg-1",
+  ),
   soft: cn(
-    "bg-tp-glass border-tp-glass-edge",
-    "shadow-tp-panel",
+    "bg-sg-card-grad border-sg-border",
+    "shadow-sg-2",
   ),
   strong: cn(
-    "bg-tp-glass border-tp-glass-edge",
-    "shadow-tp-hero",
-  ),
-  subtle: cn(
-    "bg-tp-glass border-tp-glass-edge",
-    "shadow-tp-panel",
+    "bg-sg-card-strong border-sg-border",
+    "shadow-sg-3",
   ),
   primary: cn(
-    "bg-tp-glass border-tp-glass-edge",
-    "shadow-tp-primary",
+    "bg-sg-card-grad border-sg-border",
+    "shadow-sg-primary",
   ),
 };
 
 export const GlassPanel = React.forwardRef<HTMLDivElement, GlassPanelProps>(
   function GlassPanel(
-    { variant = "soft", rounded = "rounded-2xl", as: Tag = "div", className, children, ...rest },
+    { variant = "soft", rounded = "rounded-sg-lg", as: Tag = "div", className, children, ...rest },
     ref,
   ) {
     // Each panel carries a top inset highlight via a pseudo-like layer — we use
@@ -83,9 +91,8 @@ export const GlassPanel = React.forwardRef<HTMLDivElement, GlassPanelProps>(
         className={cn(
           "pointer-events-none absolute inset-x-0 top-0 h-px",
           rounded,
-          "bg-tp-glass-hl opacity-80",
+          "bg-sg-highlight opacity-80",
         )}
-        style={{ mixBlendMode: "overlay" }}
       />
     );
     // Specialised per-tag render to avoid JSX's complex polymorphic union type.

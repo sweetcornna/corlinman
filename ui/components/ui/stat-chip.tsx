@@ -47,24 +47,26 @@ const sparkGradientStops: Record<
   NonNullable<StatChipProps["sparkTone"]>,
   { top: string; bottom: string }
 > = {
+  // Re-mapped onto the Spatial Glass accent palette: amber→cyan primary,
+  // ember→violet secondary, peach→ok green.
   amber: {
-    top: "color-mix(in oklch, var(--tp-amber) 32%, transparent)",
-    bottom: "color-mix(in oklch, var(--tp-amber) 0%, transparent)",
+    top: "color-mix(in oklch, var(--sg-accent) 32%, transparent)",
+    bottom: "color-mix(in oklch, var(--sg-accent) 0%, transparent)",
   },
   ember: {
-    top: "color-mix(in oklch, var(--tp-ember) 24%, transparent)",
-    bottom: "color-mix(in oklch, var(--tp-ember) 0%, transparent)",
+    top: "color-mix(in oklch, var(--sg-accent-2) 24%, transparent)",
+    bottom: "color-mix(in oklch, var(--sg-accent-2) 0%, transparent)",
   },
   peach: {
-    top: "color-mix(in oklch, var(--tp-peach) 22%, transparent)",
-    bottom: "color-mix(in oklch, var(--tp-peach) 0%, transparent)",
+    top: "color-mix(in oklch, var(--sg-ok) 22%, transparent)",
+    bottom: "color-mix(in oklch, var(--sg-ok) 0%, transparent)",
   },
 };
 
 const deltaToneClass: Record<NonNullable<StatDelta["tone"]>, string> = {
-  up: "text-tp-ok",
-  down: "text-tp-err",
-  flat: "text-tp-ink-3",
+  up: "text-sg-ok",
+  down: "text-sg-err",
+  flat: "text-sg-ink-3",
 };
 
 export const StatChip = React.forwardRef<HTMLDivElement, StatChipProps>(
@@ -100,13 +102,13 @@ export const StatChip = React.forwardRef<HTMLDivElement, StatChipProps>(
         )}
         {...rest}
       >
-        <div className="flex items-center gap-2 font-mono text-[10.5px] uppercase tracking-[0.1em] text-tp-ink-3">
+        <div className="flex items-center gap-2 font-mono text-[10.5px] uppercase tracking-[0.1em] text-sg-ink-3">
           {label}
           {(live || isPrimary) && (
             <span
               className={cn(
-                "rounded-full border px-1.5 py-[1px] text-[9px] font-medium lowercase tracking-[0.04em]",
-                "bg-tp-amber-soft text-tp-amber border-tp-amber/25",
+                "rounded-full px-1.5 py-[1px] text-[9px] font-medium lowercase tracking-[0.04em]",
+                "bg-sg-accent-soft text-sg-accent tp-breathe-amber",
               )}
             >
               live
@@ -115,7 +117,12 @@ export const StatChip = React.forwardRef<HTMLDivElement, StatChipProps>(
         </div>
 
         <div className="flex items-end justify-between gap-2.5">
-          <span className="font-sans text-[34px] font-medium leading-none tracking-[-0.03em] tabular-nums text-tp-ink animate-tp-tick-up">
+          <span
+            className={cn(
+              "font-sans text-[34px] font-medium leading-none tracking-[-0.03em] tabular-nums animate-tp-tick-up",
+              isPrimary ? "sg-grad-text" : "text-sg-ink",
+            )}
+          >
             {value}
           </span>
           {delta ? (
@@ -126,7 +133,7 @@ export const StatChip = React.forwardRef<HTMLDivElement, StatChipProps>(
         </div>
 
         {foot ? (
-          <div className="border-t border-dashed border-tp-glass-edge pt-1.5 text-[11.5px] text-tp-ink-3">
+          <div className="border-t border-sg-border pt-1.5 text-[11.5px] text-sg-ink-3">
             {foot}
           </div>
         ) : null}

@@ -55,9 +55,9 @@ export function HealthDot({ className }: { className?: string }) {
       <span
         className={cn(
           "inline-block h-2 w-2 rounded-full",
-          tone === "ok" && "bg-ok",
-          tone === "warn" && "bg-warn",
-          tone === "err" && "bg-err",
+          tone === "ok" && "bg-sg-ok shadow-[0_0_8px_-1px_var(--sg-ok)]",
+          tone === "warn" && "bg-sg-warn shadow-[0_0_8px_-1px_var(--sg-warn)]",
+          tone === "err" && "bg-sg-err shadow-[0_0_8px_-1px_var(--sg-err)]",
         )}
       />
       <span className="text-muted-foreground">
