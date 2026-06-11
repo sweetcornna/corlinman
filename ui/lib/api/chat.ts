@@ -342,20 +342,6 @@ export function validateAttachment(file: File): string | null {
   return null;
 }
 
-/**
- * Reads a file into a data URL. Used for small image inlining when we have
- * no separate upload endpoint; the gateway's chat completions API accepts
- * data URLs in content parts.
- */
-export function fileToDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result ?? ""));
-    reader.onerror = () => reject(reader.error ?? new Error("read failed"));
-    reader.readAsDataURL(file);
-  });
-}
-
 export function attachmentKindFromMime(mime: string): ChatAttachment["kind"] {
   if (mime.startsWith("image/")) return "image";
   if (mime.startsWith("audio/")) return "audio";
