@@ -190,19 +190,27 @@ async def _sse_stream(
             resume_turn = await _resolve_latest_turn_id(journal, session_key)
 
         # Live-dedup state, scoped to the turn catch-up actually replays
-        # (``resume_turn``) and the high-water sequence it actually
-        # delivered (``catch_up_high``). Because we subscribe BEFORE
-        # replaying, an event committed mid-replay can land in BOTH a
-        # journal page AND the live queue; deduping by ``(resume_turn,
-        # seq <= catch_up_high)`` drops that single duplicate. Scoping to
-        # ``resume_turn`` — not a global sequence cap — is what keeps a
-        # brand-new turn's early events (sequences restart at 0, so below
-        # the mark) flowing: their turn id never matches ``resume_turn``.
-        # This holds for bare resumes too — ``resume_turn`` is the resolved
-        # latest turn, so its own replayed events dedup while a *new* turn
-        # is untouched.
+        # (``resume_turn``) and the EXACT sequences it delivered. Because we
+        # subscribe BEFORE replaying, an event committed mid-replay can land
+        # in BOTH a journal page AND the live queue; we drop that single
+        # duplicate by membership in ``replayed_seqs``.
+        #
+        # We track the exact set, NOT a ``seq <= high-water`` range: the
+        # emitter fans every event out the instant it is emitted but defers
+        # the durable write (batched), and a batch-write failure drops a
+        # delta from the journal while it was already live-fanned. A range
+        # check would then suppress that live-only delta (its seq sits below
+        # a later persisted event's high-water) and the client would lose
+        # it — membership only suppresses what catch-up genuinely re-sent.
+        #
+        # Scoping to ``resume_turn`` (not a global seq set) keeps a
+        # brand-new turn's early events flowing — their turn id never
+        # matches. Holds for bare resumes too: ``resume_turn`` is the
+        # resolved latest turn, so its own replayed events dedup while a
+        # *new* turn is untouched. The set is bounded by the replayed
+        # backlog (already buffered a page at a time) and freed on close.
         dedup_turn = resume_turn  # turn catch-up replays (composite or resolved)
-        catch_up_high = -1  # high-water of what catch-up actually delivered
+        replayed_seqs: set[int] = set()  # exact sequences catch-up delivered
 
         if resume_turn is not None and catch_up_sequence >= 0:
             # Replay the catch-up backlog in bounded PAGES. Design points:
@@ -246,11 +254,13 @@ async def _sse_stream(
                     break
                 for ev in page:
                     yield _format_sse_frame(ev)
+                    ev_seq = ev.get("sequence")
+                    if isinstance(ev_seq, int):
+                        replayed_seqs.add(ev_seq)
                 last_seq = page[-1].get("sequence")
                 if not isinstance(last_seq, int) or last_seq <= seq_cursor:
                     break  # defensive — no forward progress
                 seq_cursor = last_seq
-                catch_up_high = last_seq
 
         # ---------- live ----------
         while True:
@@ -265,17 +275,18 @@ async def _sse_stream(
                 continue
             # Drop an envelope the catch-up replay already delivered: an
             # event committed while we paged lands in both a journal page
-            # AND this queue. Scoped to ``(resume_turn, seq <=
-            # catch_up_high)`` so a fresh turn's early events (different
-            # turn id) always survive.
-            if dedup_turn is not None and catch_up_high >= 0:
+            # AND this queue. Membership in ``replayed_seqs`` (exact, not a
+            # range) suppresses only what catch-up genuinely re-sent, so a
+            # live-only delta missing from the journal — or a fresh turn's
+            # event (different turn id) — always survives.
+            if dedup_turn is not None and replayed_seqs:
                 ev_turn = getattr(envelope, "turn_id", None)
                 ev_seq = getattr(envelope, "sequence", None)
                 if (
                     ev_turn is not None
                     and str(ev_turn) == str(dedup_turn)
                     and isinstance(ev_seq, int)
-                    and ev_seq <= catch_up_high
+                    and ev_seq in replayed_seqs
                 ):
                     continue
             yield _format_sse_frame(envelope.to_json())

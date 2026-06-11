@@ -359,6 +359,62 @@ async def test_no_duplicate_on_bare_resume_during_catch_up(
 
 
 @pytest.mark.asyncio
+async def test_live_only_delta_in_journal_gap_survives(
+    state: AdminState,
+    journal: AgentJournal,
+    emitter: JournalBackedEmitter,
+) -> None:
+    """A delta the emitter live-fanned but whose deferred durable write was
+    dropped (a journal GAP) must still reach the client. Catch-up dedups by
+    the EXACT replayed sequences, not a ``seq <= high-water`` range, so a
+    live-only seq sitting below a later replayed seq is not mistaken for a
+    replay duplicate and discarded."""
+    tid = await journal.begin_turn("sess-1", "hello")
+    assert tid is not None
+    # Journal has a hole at seq 3 (its batched write "failed"); 4 and 5 did
+    # persist, so a range high-water (5) would pass over the missing 3.
+    for seq in (0, 1, 2, 4, 5):
+        await journal.append_event(
+            _make_envelope(turn_id=str(tid), sequence=seq, text=f"old-{seq}")
+        )
+
+    gen = _sse_stream(
+        state, "sess-1", catch_up_turn_id=str(tid), catch_up_sequence=0
+    )
+    # Drain the catch-up frames (seqs 1,2,4,5) first so the replayed set is
+    # fixed BEFORE any live event is emitted — and confirm the gap (3) was
+    # never replayed.
+    catch_up = b""
+    for _ in range(4):
+        catch_up += await asyncio.wait_for(gen.__anext__(), timeout=5.0)
+    cu_seqs = [
+        int(f["id"].split(":", 1)[1])
+        for f in _parse_sse_frames(catch_up)
+        if f.get("event") == "TextDelta"
+    ]
+    assert cu_seqs == [1, 2, 4, 5]  # the gap at 3 is absent from the replay
+
+    # seq 3 was only ever live-fanned (its journal write was dropped); seq 6
+    # is genuinely new. Neither is in the replayed set, so both must survive.
+    await emitter.emit(_make_envelope(turn_id=str(tid), sequence=3, text="live-3"))
+    await emitter.emit(_make_envelope(turn_id=str(tid), sequence=6, text="new-6"))
+    live = b""
+    try:
+        for _ in range(2):
+            live += await asyncio.wait_for(gen.__anext__(), timeout=5.0)
+    finally:
+        await gen.aclose()
+
+    texts = [
+        json.loads(f["data"])["payload"]["text"]
+        for f in _parse_sse_frames(live)
+        if f.get("event") == "TextDelta"
+    ]
+    assert "live-3" in texts, texts  # gap delta NOT suppressed by a range check
+    assert "new-6" in texts
+
+
+@pytest.mark.asyncio
 async def test_bare_resume_does_not_dedup_a_new_turn(
     state: AdminState,
     journal: AgentJournal,
