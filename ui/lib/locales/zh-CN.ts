@@ -3304,6 +3304,9 @@ export const zhCN = {
         submit: "升级",
         submitting: "启动中…",
         alreadyRunning: "已有升级正在进行：{{tag}}",
+        unavailableTitle: "此部署不支持一键升级",
+        unavailableBody:
+          "该部署需手动升级（例如 root 拥有的原生部署）。请关闭本对话框，使用下方「手动升级」中的命令复制执行。",
       },
       progress: {
         title: "升级中…",

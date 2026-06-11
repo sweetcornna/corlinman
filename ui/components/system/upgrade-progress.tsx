@@ -43,6 +43,37 @@ function isKnownPhase(p: string): p is Phase {
   return (PHASE_ORDER as readonly string[]).includes(p);
 }
 
+/** Target fill % for the determinate progress bar, keyed by phase. The
+ * bar eases toward the current phase's mark; a succeeded terminal snaps
+ * to 100, a failed terminal holds at the phase it died on (in red). */
+const PHASE_PERCENT: Record<Phase, number> = {
+  validating: 12,
+  pulling: 45,
+  recreating: 72,
+  healthcheck: 90,
+  done: 100,
+};
+
+/** Determinate fill % for the progress bar. Snaps to 100 on a succeeded
+ * terminal; otherwise returns the current phase's mark, but never below
+ * ``floor`` — the high-water % the caller has already shown. The floor
+ * matters on FAILURE: a failed/stalled terminal often carries a backend
+ * failure code as its ``phase`` (``image_pull_failed``, ``recreate_failed``,
+ * ``healthcheck_timeout``, native ``timeout``) which isn't in
+ * ``PHASE_ORDER`` — without the floor the bar would snap back to the
+ * near-empty start instead of holding (in red) near where it died.
+ * Exported for unit tests. */
+export function phaseProgressPercent(
+  status: UpgradeStatusResponse | null,
+  floor = 3,
+): number {
+  if (!status) return floor;
+  if (status.state === "succeeded") return 100;
+  const known =
+    status.phase && isKnownPhase(status.phase) ? PHASE_PERCENT[status.phase] : 0;
+  return Math.max(known, floor);
+}
+
 const TERMINAL_STATES = new Set([
   "succeeded",
   "failed",
@@ -70,6 +101,10 @@ export function UpgradeProgress({
   const [now, setNow] = React.useState(() => Date.now());
   const [reloadIn, setReloadIn] = React.useState<number | null>(null);
   const closedRef = React.useRef(false);
+  // High-water of the bar fill: only ever advances (per known phase) so a
+  // failed/stalled terminal holds where it reached instead of snapping
+  // back. Reset when a new upgrade (requestId) starts.
+  const floorRef = React.useRef(3);
   const onTerminalRef = React.useRef(onTerminal);
   onTerminalRef.current = onTerminal;
 
@@ -83,12 +118,18 @@ export function UpgradeProgress({
   // SSE + polling fallback.
   React.useEffect(() => {
     closedRef.current = false;
+    floorRef.current = 3; // new upgrade — reset the high-water fill
     let es: EventSource | null = null;
     let pollHandle: number | null = null;
     let sseOpened = false;
 
     function handleStatus(next: UpgradeStatusResponse) {
       if (closedRef.current) return;
+      // Advance the high-water as known phases land so the bar never
+      // regresses (esp. on a failure whose phase is a backend code).
+      if (next.phase && isKnownPhase(next.phase)) {
+        floorRef.current = Math.max(floorRef.current, PHASE_PERCENT[next.phase]);
+      }
       setStatus(next);
       if (TERMINAL_STATES.has(next.state)) {
         closedRef.current = true;
@@ -160,6 +201,14 @@ export function UpgradeProgress({
       ? Math.max(0, Math.floor((now - status.started_at) / 1000))
       : null;
   const terminal = status ? TERMINAL_STATES.has(status.state) : false;
+  const succeeded = terminal && status?.state === "succeeded";
+  // failed AND stalled are error terminals (stalled = the helper status
+  // file never appeared on the native path) — both render red, not the
+  // in-flight gradient. cancelled is a neutral "stopped watching" stop.
+  const errored =
+    terminal && (status?.state === "failed" || status?.state === "stalled");
+  const cancelled = terminal && status?.state === "cancelled";
+  const percent = phaseProgressPercent(status, floorRef.current);
 
   return (
     <section
@@ -182,6 +231,56 @@ export function UpgradeProgress({
           </span>
         ) : null}
       </header>
+
+      {/* Determinate progress bar — fills through the phases to 100%. */}
+      <div className="space-y-1.5" data-testid="upgrade-progress-bar">
+        <div className="h-2 w-full overflow-hidden rounded-full border border-sg-border bg-sg-inset">
+          <div
+            role="progressbar"
+            aria-valuenow={percent}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            data-testid="upgrade-progress-bar-fill"
+            data-state={
+              errored
+                ? "failed"
+                : succeeded
+                  ? "succeeded"
+                  : cancelled
+                    ? "cancelled"
+                    : "running"
+            }
+            className={cn(
+              "h-full rounded-full transition-[width] duration-700 ease-out",
+              errored
+                ? "bg-sg-err"
+                : succeeded
+                  ? "bg-sg-ok"
+                  : cancelled
+                    ? "bg-sg-ink-4"
+                    : "bg-gradient-to-r from-sg-accent to-sg-accent-2",
+            )}
+            style={{ width: `${percent}%` }}
+          />
+        </div>
+        <div className="flex items-center justify-between text-[11px] text-sg-ink-3">
+          <span>
+            {succeeded
+              ? t("system.upgrade.phases.done")
+              : status?.phase
+                ? isKnownPhase(status.phase)
+                  ? t(`system.upgrade.phases.${status.phase}`)
+                  : status.phase
+                : t("system.upgrade.phases.validating")}
+          </span>
+          <span
+            className="font-mono tabular-nums"
+            data-testid="upgrade-progress-percent"
+          >
+            {percent}%
+          </span>
+        </div>
+      </div>
 
       {/* Phase pills */}
       <div

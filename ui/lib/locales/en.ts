@@ -3372,6 +3372,9 @@ export const en = {
         submitting: "Starting…",
         alreadyRunning:
           "An upgrade to {{tag}} is already running",
+        unavailableTitle: "One-click upgrade isn't available here",
+        unavailableBody:
+          "This deployment upgrades manually (e.g. a root-owned native box). Close this dialog and run the copy-paste commands under “Manual upgrade” below.",
       },
       progress: {
         title: "Upgrading…",
