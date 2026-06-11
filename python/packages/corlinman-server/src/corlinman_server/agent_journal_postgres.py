@@ -913,11 +913,30 @@ class PostgresJournalBackend:
 
     async def get_session_turn_ids(
         self, session_key: str, limit: int = 50
-    ) -> list[int]:  # pragma: no cover
-        # Could be implemented as a thin SELECT on journal_turns; left
-        # unimplemented until a Postgres deployment actually wires the
-        # SSE replay route (W1.3 ships SQLite-only).
-        return []
+    ) -> list[int]:
+        """Most-recent turn ids for ``session_key`` (newest first).
+
+        Thin SELECT mirroring the SQLite backend's semantics — consumed
+        by the console's ``/resume`` window replay and the SSE bootstrap.
+        Best-effort: any read failure returns ``[]``.
+        """
+        if not session_key or limit <= 0:
+            return []
+        try:
+            async with self._p.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT turn_id FROM journal_turns "
+                    "WHERE session_key = $1 "
+                    "ORDER BY started_at_ms DESC LIMIT $2",
+                    session_key,
+                    int(limit),
+                )
+        except Exception as exc:
+            logger.warning(
+                "agent.journal.get_session_turn_ids_failed", error=str(exc)
+            )
+            return []
+        return [int(row["turn_id"]) for row in rows]
 
     async def list_session_turns(
         self,
