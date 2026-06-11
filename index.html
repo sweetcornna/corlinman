@@ -1,0 +1,874 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>corlinman — an agent that lives on your own hardware · 自托管智能体平台</title>
+<meta name="description" content="Self-hosted AI agent platform — durable memory, hybrid RAG, sandboxed tools, seven chat channels (QQ / Telegram / Discord / Slack / Feishu / WeChat), human-in-the-loop approvals. One binary you run, audit, and own. 自托管智能体平台。">
+<meta property="og:title" content="corlinman — an agent that lives on your own hardware">
+<meta property="og:description" content="Durable memory · sandboxed tools · seven channels · human-in-the-loop. One binary, your hardware. 自托管智能体平台。">
+<meta property="og:image" content="https://sweetcornna.github.io/corlinman/logo.png">
+<meta property="og:type" content="website">
+<link rel="icon" type="image/png" href="logo.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&family=Noto+Serif+SC:wght@600;900&display=swap" rel="stylesheet">
+<style>
+/* ---------- tokens : Spatial Glass, night ---------- */
+:root{
+  --space-0:#0a0e1c;
+  --space-1:#060912;
+  --ink:#e9edf9;
+  --ink-2:#b9c0d7;
+  --ink-3:#8d96b4;
+  --ink-4:#5f6886;
+  --current:#5e9bff;   /* accent blue  */
+  --plasma:#a47bff;    /* nebula violet */
+  --tide:#54cdff;      /* logo cyan    */
+  --ok:#54d6a4;
+  --glass:rgba(233,237,249,.045);
+  --glass-strong:rgba(233,237,249,.07);
+  --glass-border:rgba(233,237,249,.11);
+  --glass-border-hi:rgba(233,237,249,.22);
+  --serif:"Instrument Serif",ui-serif,Georgia,serif;
+  --serif-cjk:"Noto Serif SC","Songti SC",serif;
+  --sans:"Geist",-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+  --mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --ease-glide:cubic-bezier(.22,1,.36,1);
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+body{
+  background:var(--space-1);
+  color:var(--ink);
+  font-family:var(--sans);
+  font-size:16px;line-height:1.6;
+  -webkit-font-smoothing:antialiased;
+  overflow-x:hidden;
+}
+::selection{background:rgba(94,155,255,.35);color:#fff}
+a{color:inherit;text-decoration:none}
+:focus-visible{outline:2px solid var(--current);outline-offset:3px;border-radius:4px}
+img{display:block}
+
+/* ---------- fluid ground + grain ---------- */
+#fluid{position:fixed;inset:0;width:100%;height:100%;z-index:0}
+.no-webgl #fluid,.reduced #fluid{display:none}
+.bg-static{position:fixed;inset:0;z-index:0;display:none;
+  background:
+    radial-gradient(60% 50% at 24% 30%, rgba(94,155,255,.16), transparent 70%),
+    radial-gradient(50% 45% at 78% 64%, rgba(164,123,255,.13), transparent 70%),
+    radial-gradient(40% 40% at 55% 85%, rgba(84,205,255,.07), transparent 70%),
+    radial-gradient(120% 100% at 50% 40%, #0c1122 0%, #060912 75%);
+}
+.no-webgl .bg-static,.reduced .bg-static{display:block}
+.grain{position:fixed;inset:-50%;width:200%;height:200%;z-index:60;pointer-events:none;opacity:.05;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* ---------- shared layers ---------- */
+main,footer,nav{position:relative;z-index:2}
+.wrap{width:min(1180px,calc(100% - 48px));margin-inline:auto}
+.eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.22em;text-transform:uppercase;color:var(--ink-3)}
+.eyebrow b{color:var(--current);font-weight:500}
+.eyebrow .cjk{font-family:var(--serif-cjk);letter-spacing:.4em;text-transform:none;color:var(--ink-4)}
+
+/* ---------- nav ---------- */
+nav{position:fixed;top:18px;left:50%;transform:translateX(-50%);z-index:50;
+  display:flex;align-items:center;gap:26px;
+  padding:9px 11px 9px 14px;border-radius:999px;
+  background:rgba(10,14,28,.55);border:1px solid var(--glass-border);
+  backdrop-filter:blur(18px) saturate(1.3);-webkit-backdrop-filter:blur(18px) saturate(1.3);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.06),0 12px 40px -12px rgba(0,0,0,.6);
+}
+.nav-brand{display:flex;align-items:center;gap:10px;font-family:var(--mono);font-size:14px;font-weight:500}
+.nav-brand img{width:22px;height:22px;image-rendering:pixelated}
+.nav-links{display:flex;align-items:center;gap:4px;font-family:var(--mono);font-size:12.5px;color:var(--ink-3)}
+.nav-links a{padding:7px 12px;border-radius:999px;transition:color .25s,background .25s;white-space:nowrap}
+.nav-links a:hover{color:var(--ink);background:var(--glass-strong)}
+.nav-links a.gh{color:var(--ink);background:var(--glass-strong);border:1px solid var(--glass-border)}
+.nav-links a.gh:hover{border-color:var(--glass-border-hi);box-shadow:0 0 24px -6px rgba(94,155,255,.5)}
+
+/* ---------- hero ---------- */
+.hero{min-height:100svh;display:flex;align-items:center;position:relative;padding:120px 0 80px}
+.hero-inner{position:relative}
+.statusline{font-family:var(--mono);font-size:13px;color:var(--ink-3);margin-bottom:34px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.statusline .dot{width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 10px var(--ok);animation:pulse 2.6s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.reduced .statusline .dot{animation:none}
+h1{
+  font-family:var(--serif);font-weight:400;
+  font-size:clamp(2.9rem,7vw,6.6rem);
+  line-height:1.02;letter-spacing:-.015em;
+  text-shadow:0 2px 40px rgba(6,9,18,.6);
+}
+h1 .wm{display:inline-block;overflow:hidden;vertical-align:bottom;padding-bottom:.08em;margin-bottom:-.08em}
+h1 .w{display:inline-block}
+h1 em{
+  font-style:italic;
+  background:linear-gradient(105deg,var(--tide) 0%,var(--current) 45%,var(--plasma) 100%);
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+  padding-right:.06em;
+}
+.hero-sub{max-width:54ch;margin-top:28px;color:var(--ink-2);font-size:clamp(1rem,1.4vw,1.15rem);text-shadow:0 1px 18px rgba(6,9,18,.7)}
+.hero-sub .zh{display:block;margin-top:10px;color:var(--ink-3);font-size:.92em;font-family:var(--sans)}
+.hero-ctas{display:flex;gap:14px;margin-top:34px;flex-wrap:wrap}
+.btn{
+  display:inline-flex;align-items:center;gap:10px;
+  font-family:var(--mono);font-size:14px;font-weight:500;
+  padding:14px 24px;border-radius:14px;border:1px solid var(--glass-border);
+  background:var(--glass);transition:transform .45s var(--ease-glide),box-shadow .45s,border-color .45s,background .45s;
+  cursor:pointer;color:var(--ink);
+}
+.btn:hover{transform:translateY(-2px);border-color:var(--glass-border-hi);background:var(--glass-strong)}
+.btn-primary{
+  background:linear-gradient(120deg,rgba(94,155,255,.2),rgba(164,123,255,.16));
+  border-color:rgba(94,155,255,.4);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.12),0 0 0 0 rgba(94,155,255,0);
+}
+.btn-primary:hover{box-shadow:inset 0 1px 0 rgba(255,255,255,.14),0 8px 44px -8px rgba(94,155,255,.55);border-color:rgba(94,155,255,.7)}
+.hero-facts{margin-top:44px;font-family:var(--mono);font-size:12.5px;color:var(--ink-4);letter-spacing:.04em}
+.hero-facts span{color:var(--ink-3)}
+.hero-facts i{font-style:normal;color:var(--ink-4);margin:0 .6em}
+.hero-mascot{
+  position:absolute;right:max(7vw,90px);top:50%;transform:translateY(-58%);
+  width:clamp(90px,11vw,150px);pointer-events:none;
+  filter:drop-shadow(0 0 34px rgba(84,205,255,.4)) drop-shadow(0 24px 50px rgba(0,0,0,.5));
+}
+.hero-mascot img{width:100%;image-rendering:pixelated;animation:bob 7s ease-in-out infinite}
+@keyframes bob{0%,100%{transform:translateY(0) rotate(-1.2deg)}50%{transform:translateY(-14px) rotate(1.2deg)}}
+.reduced .hero-mascot img{animation:none}
+.hero-cjk{
+  position:absolute;right:0;top:50%;transform:translateY(-50%);
+  writing-mode:vertical-rl;
+  font-family:var(--serif-cjk);font-weight:600;
+  font-size:clamp(15px,1.6vw,21px);letter-spacing:.52em;color:var(--ink-3);
+  border-left:1px solid var(--glass-border);padding-left:22px;
+  height:min(60vh,520px);display:flex;align-items:center;
+}
+.hero-cjk b{color:var(--ink);font-weight:900}
+.scroll-hint{position:absolute;bottom:30px;left:0;font-family:var(--mono);font-size:11px;letter-spacing:.3em;color:var(--ink-4);text-transform:uppercase}
+.scroll-hint::after{content:"";display:block;width:1px;height:44px;margin-top:12px;margin-left:2px;background:linear-gradient(var(--ink-3),transparent)}
+
+/* ---------- the loop (pinned) ---------- */
+.loop{position:relative}
+.loop-stage{min-height:100svh;display:flex;flex-direction:column;justify-content:center;position:relative;padding:110px 0}
+.loop-head{position:absolute;top:96px;left:0}
+.loop-head h2{font-family:var(--serif);font-weight:400;font-size:clamp(1.6rem,2.6vw,2.4rem);margin-top:14px;color:var(--ink-2)}
+.beats{position:relative;min-height:46vh;display:flex;align-items:center}
+.beat{max-width:780px}
+.beat-kicker{font-family:var(--mono);font-size:13px;letter-spacing:.26em;text-transform:uppercase;color:var(--current);margin-bottom:18px}
+.beat-kicker .zh{font-family:var(--serif-cjk);letter-spacing:.3em;color:var(--ink-3);margin-left:14px}
+.beat h3{font-family:var(--serif);font-weight:400;font-size:clamp(1.9rem,4.4vw,3.9rem);line-height:1.12;letter-spacing:-.01em;text-shadow:0 2px 36px rgba(6,9,18,.65)}
+.beat h3 em{font-style:italic;color:var(--tide)}
+.beat-glyph{
+  position:absolute;right:-2vw;top:50%;transform:translateY(-50%);
+  font-family:var(--serif-cjk);font-weight:900;
+  font-size:clamp(11rem,26vw,24rem);line-height:1;
+  color:transparent;-webkit-text-stroke:1px rgba(233,237,249,.16);
+  pointer-events:none;user-select:none;z-index:-1;
+}
+.rail{position:absolute;left:0;bottom:96px;display:flex;gap:18px;font-family:var(--mono);font-size:12px;color:var(--ink-4);list-style:none}
+.rail li{display:flex;align-items:center;gap:8px;transition:color .4s}
+.rail li::before{content:"";width:22px;height:1px;background:currentColor;opacity:.5;transition:width .4s var(--ease-glide)}
+.rail li.on{color:var(--current)}
+.rail li.on::before{width:38px;opacity:1}
+
+/* mobile: beats stack */
+@media (max-width:860px){
+  .beats{display:block;min-height:0}
+  .beat{position:static!important;opacity:1!important;margin-bottom:88px}
+  .beat-glyph{display:none}
+  .rail{display:none}
+  .loop-head{position:static;margin-bottom:80px}
+  .loop-stage{display:block;padding:120px 0 40px}
+  .hero-cjk{display:none}
+  .hero-mascot{display:none}
+  .scroll-hint{display:none}
+}
+@media (min-width:861px){
+  .beat{position:absolute;left:0;top:50%;transform:translateY(-50%)}
+  .beat:not(:first-child){opacity:0}
+}
+
+/* ---------- pillars ---------- */
+.pillars{padding:160px 0 60px}
+.sec-head{margin-bottom:72px}
+.sec-head h2{font-family:var(--serif);font-weight:400;font-size:clamp(2.2rem,5vw,4.4rem);letter-spacing:-.012em;margin-top:18px;max-width:20ch}
+.sec-head h2 em{font-style:italic;background:linear-gradient(105deg,var(--current),var(--plasma));-webkit-background-clip:text;background-clip:text;color:transparent}
+.pillars-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+@media (max-width:980px){.pillars-grid{grid-template-columns:repeat(2,1fr)}}
+@media (max-width:640px){.pillars-grid{grid-template-columns:1fr}}
+.pillar{
+  position:relative;overflow:hidden;
+  border:1px solid var(--glass-border);border-radius:20px;
+  background:linear-gradient(160deg,var(--glass-strong),var(--glass)),rgba(8,11,22,.62);
+  padding:30px 28px 30px;min-height:230px;
+  display:flex;flex-direction:column;
+  transition:transform .5s var(--ease-glide),border-color .5s,box-shadow .5s;
+}
+.pillar:hover{transform:translateY(-5px);border-color:var(--glass-border-hi);box-shadow:inset 0 1px 0 rgba(255,255,255,.08),0 24px 60px -20px rgba(0,0,0,.6),0 0 50px -18px rgba(94,155,255,.35)}
+.pillar::after{
+  content:"";position:absolute;inset:0;pointer-events:none;
+  background:radial-gradient(420px 200px at var(--mx,50%) var(--my,0%),rgba(94,155,255,.1),transparent 65%);
+  opacity:0;transition:opacity .5s;
+}
+.pillar:hover::after{opacity:1}
+.pillar .zh{font-family:var(--serif-cjk);font-weight:900;font-size:30px;line-height:1;color:var(--ink);letter-spacing:.08em}
+.pillar .en{font-family:var(--mono);font-size:12px;letter-spacing:.2em;text-transform:uppercase;color:var(--current);margin-top:12px}
+.pillar p{margin-top:auto;padding-top:26px;color:var(--ink-3);font-size:14.5px;line-height:1.65}
+
+/* ---------- channels marquee ---------- */
+.channels{padding:100px 0 30px;overflow:hidden}
+.marquee{display:flex;width:max-content;animation:slide 36s linear infinite;will-change:transform}
+.reduced .marquee{animation:none}
+.marquee-track{display:flex;align-items:baseline;gap:0;white-space:nowrap}
+.marquee-track span{
+  font-family:var(--serif);font-size:clamp(2.4rem,5.4vw,4.6rem);color:var(--ink-2);padding:0 .35em;
+}
+.marquee-track span.zh{font-family:var(--serif-cjk);font-weight:600;color:var(--ink-3);font-size:.62em}
+.marquee-track i{font-style:normal;color:var(--ink-4);font-family:var(--mono);font-size:clamp(1.1rem,2vw,1.6rem);padding:0 .4em}
+@keyframes slide{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+.channels .cap{margin-top:26px;text-align:center;font-family:var(--mono);font-size:12.5px;color:var(--ink-4);letter-spacing:.12em}
+
+/* ---------- install ---------- */
+.install{padding:150px 0 170px}
+.terminal{
+  margin-top:54px;border-radius:18px;overflow:hidden;
+  border:1px solid var(--glass-border);
+  background:rgba(6,9,18,.72);
+  backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.06),0 40px 90px -30px rgba(0,0,0,.8),0 0 80px -30px rgba(94,155,255,.3);
+}
+.term-bar{display:flex;align-items:center;gap:8px;padding:13px 18px;border-bottom:1px solid var(--glass-border)}
+.term-bar i{width:11px;height:11px;border-radius:50%;background:var(--glass-border-hi)}
+.term-bar i:nth-child(1){background:rgba(255,120,110,.7)}
+.term-bar i:nth-child(2){background:rgba(255,200,90,.7)}
+.term-bar i:nth-child(3){background:rgba(110,220,160,.7)}
+.term-bar span{margin-left:auto;font-family:var(--mono);font-size:11.5px;color:var(--ink-4);letter-spacing:.1em}
+.term-body{display:flex;align-items:center;gap:18px;padding:24px 22px;flex-wrap:wrap}
+.term-body code{
+  font-family:var(--mono);font-size:clamp(11.5px,1.5vw,14.5px);color:var(--ink-2);
+  word-break:break-all;flex:1;min-width:260px;line-height:1.7;
+}
+.term-body code .p{color:var(--current)}
+.term-body code .u{color:var(--ink-4)}
+.copy-btn{
+  font-family:var(--mono);font-size:12.5px;padding:10px 18px;border-radius:10px;
+  border:1px solid rgba(94,155,255,.4);background:rgba(94,155,255,.12);color:var(--ink);
+  cursor:pointer;transition:all .35s var(--ease-glide);white-space:nowrap;
+}
+.copy-btn:hover{background:rgba(94,155,255,.22);box-shadow:0 0 30px -8px rgba(94,155,255,.6)}
+.install .notes{margin-top:24px;font-family:var(--mono);font-size:12.5px;color:var(--ink-4);letter-spacing:.04em;line-height:2}
+.install .notes a{color:var(--ink-3);border-bottom:1px solid var(--glass-border);transition:color .3s,border-color .3s}
+.install .notes a:hover{color:var(--current);border-color:var(--current)}
+
+/* ---------- footer ---------- */
+footer{border-top:1px solid var(--glass-border);padding:64px 0 46px;background:rgba(6,9,18,.5)}
+.foot-top{display:flex;justify-content:space-between;gap:40px;flex-wrap:wrap;align-items:flex-start}
+.foot-brand{display:flex;align-items:center;gap:12px;font-family:var(--mono);font-size:15px}
+.foot-brand img{width:26px;height:26px;image-rendering:pixelated}
+.foot-tag{margin-top:16px;color:var(--ink-3);font-size:14px;max-width:40ch}
+.foot-tag .zh{display:block;font-family:var(--serif-cjk);margin-top:6px;color:var(--ink-4)}
+.foot-links{display:flex;gap:10px;flex-wrap:wrap;font-family:var(--mono);font-size:12.5px}
+.foot-links a{padding:9px 16px;border:1px solid var(--glass-border);border-radius:999px;color:var(--ink-3);transition:all .35s var(--ease-glide)}
+.foot-links a:hover{color:var(--ink);border-color:var(--glass-border-hi);transform:translateY(-2px)}
+.foot-bottom{margin-top:48px;font-family:var(--mono);font-size:11.5px;color:var(--ink-4);letter-spacing:.06em}
+</style>
+</head>
+<body>
+
+<canvas id="fluid" aria-hidden="true"></canvas>
+<div class="bg-static" aria-hidden="true"></div>
+<div class="grain" aria-hidden="true"></div>
+
+<nav aria-label="main">
+  <a class="nav-brand" href="#top" aria-label="corlinman home">
+    <img src="logo.png" alt="" width="22" height="22">corlinman
+  </a>
+  <div class="nav-links">
+    <a href="https://github.com/sweetcornna/corlinman/blob/main/docs/architecture.md">docs</a>
+    <a href="https://corlinman.cornna.xyz">live</a>
+    <a class="gh" href="https://github.com/sweetcornna/corlinman">github ↗</a>
+  </div>
+</nav>
+
+<main id="top">
+
+  <!-- ================= hero ================= -->
+  <section class="hero">
+    <div class="wrap hero-inner">
+      <p class="statusline"><span class="dot"></span>$ ./corlinman&nbsp; — &nbsp;7 channels attending · memory warm · self-hosted</p>
+      <h1>
+        <span class="wm"><span class="w">An</span></span>
+        <span class="wm"><span class="w">agent</span></span>
+        <span class="wm"><span class="w">that</span></span>
+        <span class="wm"><span class="w"><em>lives</em></span></span><br>
+        <span class="wm"><span class="w">on</span></span>
+        <span class="wm"><span class="w">your</span></span>
+        <span class="wm"><span class="w">own</span></span>
+        <span class="wm"><span class="w">hardware.</span></span>
+      </h1>
+      <p class="hero-sub">corlinman hands a language model durable memory, real sandboxed tools, seven chat channels, and a human approval gate — one binary you run, audit, and own, end to end.
+        <span class="zh">给模型以记忆、工具、渠道与人的把关 —— 一体成形，跑在你自己的机器上。</span>
+      </p>
+      <div class="hero-ctas">
+        <a class="btn btn-primary" href="#install">Install in 60 seconds ↓</a>
+        <a class="btn" href="https://github.com/sweetcornna/corlinman">GitHub ↗</a>
+      </div>
+      <p class="hero-facts"><span>hybrid rag</span><i>·</i><span>sandboxed plugins</span><i>·</i><span>7 channels</span><i>·</i><span>human-in-the-loop</span><i>·</i><span>MIT</span></p>
+      <div class="hero-mascot"><img src="logo.png" alt="corlinman pixel mascot"></div>
+      <p class="hero-cjk" lang="zh"><b>住在你机器里</b>的智能体</p>
+      <p class="scroll-hint">scroll</p>
+    </div>
+  </section>
+
+  <!-- ================= the loop ================= -->
+  <section class="loop">
+    <div class="wrap loop-stage">
+      <div class="loop-head">
+        <p class="eyebrow"><b>the loop</b> &nbsp;/&nbsp; <span class="cjk">回路</span></p>
+        <h2>How a thought becomes an action.</h2>
+      </div>
+
+      <div class="beats">
+        <div class="beat" data-glyph="收">
+          <p class="beat-kicker">receive <span class="zh">收</span></p>
+          <h3>A message lands — from QQ, Telegram, Discord, Slack, Feishu, WeChat, <em>or the web.</em></h3>
+          <span class="beat-glyph" aria-hidden="true">收</span>
+        </div>
+        <div class="beat" data-glyph="忆">
+          <p class="beat-kicker">remember <span class="zh">忆</span></p>
+          <h3>Hybrid retrieval wakes its memory — vectors, keywords, and a <em>diary</em> it keeps itself.</h3>
+          <span class="beat-glyph" aria-hidden="true">忆</span>
+        </div>
+        <div class="beat" data-glyph="思">
+          <p class="beat-kicker">reason <span class="zh">思</span></p>
+          <h3>Any model you trust — Anthropic, OpenAI-compatible, or your own — bound <em>per agent.</em></h3>
+          <span class="beat-glyph" aria-hidden="true">思</span>
+        </div>
+        <div class="beat" data-glyph="行">
+          <p class="beat-kicker">act <span class="zh">行</span></p>
+          <h3>Tools fire inside a <em>sandboxed</em> plugin runtime. Skills teach it new ones.</h3>
+          <span class="beat-glyph" aria-hidden="true">行</span>
+        </div>
+        <div class="beat" data-glyph="问">
+          <p class="beat-kicker">ask <span class="zh">问</span></p>
+          <h3>Anything irreversible waits in an approval queue. <em>You</em> hold the key.</h3>
+          <span class="beat-glyph" aria-hidden="true">问</span>
+        </div>
+        <div class="beat" data-glyph="答">
+          <p class="beat-kicker">reply <span class="zh">答</span></p>
+          <h3>The answer flows back to the channel it came from. The diary <em>remembers.</em></h3>
+          <span class="beat-glyph" aria-hidden="true">答</span>
+        </div>
+      </div>
+
+      <ul class="rail" aria-hidden="true">
+        <li>receive</li><li>remember</li><li>reason</li><li>act</li><li>ask</li><li>reply</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ================= pillars ================= -->
+  <section class="pillars">
+    <div class="wrap">
+      <div class="sec-head">
+        <p class="eyebrow"><b>the platform</b> &nbsp;/&nbsp; <span class="cjk">平台</span></p>
+        <h2>Everything an agent needs to <em>stay.</em></h2>
+      </div>
+      <div class="pillars-grid">
+        <div class="pillar">
+          <span class="zh" lang="zh">记忆</span>
+          <span class="en">durable memory</span>
+          <p>Hybrid RAG — vector, keyword, and a self-written diary. Context that survives every restart.</p>
+        </div>
+        <div class="pillar">
+          <span class="zh" lang="zh">工具</span>
+          <span class="en">real tools</span>
+          <p>A sandboxed plugin runtime with skills, schedulers, browsers, and document generation.</p>
+        </div>
+        <div class="pillar">
+          <span class="zh" lang="zh">渠道</span>
+          <span class="en">seven channels</span>
+          <p>QQ, Telegram, Discord, Slack, Feishu, WeChat — and a first-class web chat, all one agent.</p>
+        </div>
+        <div class="pillar">
+          <span class="zh" lang="zh">审批</span>
+          <span class="en">human-in-the-loop</span>
+          <p>Irreversible actions queue for your approval before they run. Govern, don't hope.</p>
+        </div>
+        <div class="pillar">
+          <span class="zh" lang="zh">后台</span>
+          <span class="en">operations plane</span>
+          <p>A Spatial Glass admin console — live logs, RAG debugging, node graphs, theme studio.</p>
+        </div>
+        <div class="pillar">
+          <span class="zh" lang="zh">单体</span>
+          <span class="en">one binary</span>
+          <p>Install in sixty seconds, upgrade in place, keep your data. China mirrors built in.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= channels marquee ================= -->
+  <section class="channels" aria-label="supported channels">
+    <div class="marquee" aria-hidden="true">
+      <div class="marquee-track">
+        <span>QQ</span><i>//</i><span>Telegram</span><i>//</i><span>Discord</span><i>//</i><span>Slack</span><i>//</i><span class="zh" lang="zh">飞书</span><i>//</i><span class="zh" lang="zh">微信公众号</span><i>//</i><span>Web</span><i>//</i>
+      </div>
+      <div class="marquee-track">
+        <span>QQ</span><i>//</i><span>Telegram</span><i>//</i><span>Discord</span><i>//</i><span>Slack</span><i>//</i><span class="zh" lang="zh">飞书</span><i>//</i><span class="zh" lang="zh">微信公众号</span><i>//</i><span>Web</span><i>//</i>
+      </div>
+    </div>
+    <p class="cap">one agent · every room it's invited to · 一个智能体，所有它被邀请的房间</p>
+  </section>
+
+  <!-- ================= install ================= -->
+  <section class="install" id="install">
+    <div class="wrap">
+      <div class="sec-head">
+        <p class="eyebrow"><b>install</b> &nbsp;/&nbsp; <span class="cjk">六十秒</span></p>
+        <h2>Sixty seconds to a <em>living</em>&nbsp;agent.</h2>
+      </div>
+      <div class="terminal">
+        <div class="term-bar"><i></i><i></i><i></i><span>bash · your machine</span></div>
+        <div class="term-body">
+          <code id="install-cmd"><span class="p">$</span> curl -fsSL <span class="u">https://raw.githubusercontent.com/sweetcornna/corlinman/main/deploy/install.sh</span> | bash</code>
+          <button class="copy-btn" id="copy-btn" aria-label="copy install command">copy 复制</button>
+        </div>
+      </div>
+      <p class="notes">
+        docker or native · upgrades keep your data (<span style="font-family:var(--mono)">--upgrade</span>) · china mirrors built in · runs behind your firewall<br>
+        <a href="https://github.com/sweetcornna/corlinman#quickstart-60-seconds">read the quickstart ↗</a> &nbsp;&nbsp; <a href="https://corlinman.cornna.xyz">see a live deployment ↗</a>
+      </p>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="foot-top">
+      <div>
+        <p class="foot-brand"><img src="logo.png" alt="">corlinman</p>
+        <p class="foot-tag">Built for people who keep their own machines.
+          <span class="zh" lang="zh">把智能体留在自己手里。</span>
+        </p>
+      </div>
+      <div class="foot-links">
+        <a href="https://github.com/sweetcornna/corlinman">github</a>
+        <a href="https://github.com/sweetcornna/corlinman/blob/main/docs/architecture.md">architecture</a>
+        <a href="https://github.com/sweetcornna/corlinman/blob/main/CHANGELOG.md">changelog</a>
+        <a href="https://corlinman.cornna.xyz">live deployment</a>
+        <a href="https://github.com/sweetcornna/corlinman/blob/main/LICENSE">mit license</a>
+      </div>
+    </div>
+    <p class="foot-bottom">© 2026 cornna · corlinman — self-hosted intelligent-agent platform · made with a tide of ink</p>
+  </div>
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.13.0/dist/gsap.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.13.0/dist/ScrollTrigger.min.js"></script>
+<script>
+(function(){
+"use strict";
+var REDUCED = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+if (REDUCED) document.body.classList.add("reduced");
+
+/* ============================================================
+   fluid — pointer-stirred luminous ink on a deep-space ground
+   semi-Lagrangian advection + curl-noise ambient flow
+   ============================================================ */
+function createFluid(canvas){
+  var gl = canvas.getContext("webgl2",{alpha:false,depth:false,stencil:false,antialias:false})
+        || canvas.getContext("webgl",{alpha:false,depth:false,stencil:false,antialias:false});
+  if(!gl) return null;
+  var isGL2 = (typeof WebGL2RenderingContext!=="undefined") && (gl instanceof WebGL2RenderingContext);
+
+  var texType = gl.UNSIGNED_BYTE, internal = gl.RGBA;
+  if(isGL2){
+    if(gl.getExtension("EXT_color_buffer_float")){ internal = gl.RGBA16F; texType = gl.HALF_FLOAT; }
+  }else{
+    var hf = gl.getExtension("OES_texture_half_float");
+    gl.getExtension("OES_texture_half_float_linear");
+    if(hf){ texType = hf.HALF_FLOAT_OES; }
+  }
+
+  var VERT = [
+    "attribute vec2 aPos;","varying vec2 vUv;",
+    "void main(){ vUv = aPos*0.5+0.5; gl_Position = vec4(aPos,0.,1.); }"
+  ].join("\n");
+
+  var NOISE = [
+    "vec3 permute(vec3 x){ return mod(((x*34.0)+1.0)*x, 289.0); }",
+    "float snoise(vec2 v){",
+    "  const vec4 C = vec4(0.211324865405187,0.366025403784439,-0.577350269189626,0.024390243902439);",
+    "  vec2 i = floor(v + dot(v, C.yy));",
+    "  vec2 x0 = v - i + dot(i, C.xx);",
+    "  vec2 i1 = (x0.x > x0.y) ? vec2(1.0,0.0) : vec2(0.0,1.0);",
+    "  vec4 x12 = x0.xyxy + C.xxzz; x12.xy -= i1;",
+    "  i = mod(i, 289.0);",
+    "  vec3 p = permute(permute(i.y + vec3(0.0,i1.y,1.0)) + i.x + vec3(0.0,i1.x,1.0));",
+    "  vec3 m = max(0.5 - vec3(dot(x0,x0),dot(x12.xy,x12.xy),dot(x12.zw,x12.zw)), 0.0);",
+    "  m = m*m; m = m*m;",
+    "  vec3 x = 2.0*fract(p*C.www)-1.0;",
+    "  vec3 h = abs(x)-0.5; vec3 ox = floor(x+0.5); vec3 a0 = x-ox;",
+    "  m *= 1.79284291400159 - 0.85373472095314*(a0*a0+h*h);",
+    "  vec3 g; g.x = a0.x*x0.x + h.x*x0.y; g.yz = a0.yz*x12.xz + h.yz*x12.yw;",
+    "  return 130.0*dot(m,g);",
+    "}"
+  ].join("\n");
+
+  var VEL_FRAG = [
+    "precision highp float;","varying vec2 vUv;",
+    "uniform sampler2D uVel;","uniform float uDt;","uniform float uTime;",
+    "uniform float uCurl;","uniform float uAspect;",
+    "uniform vec2 uSplatPos;","uniform vec2 uSplatVel;","uniform float uSplatRad;",
+    NOISE,
+    "vec2 decode(vec4 t){ return (t.xy-0.5)*2.0; }",
+    "void main(){",
+    "  vec2 v0 = decode(texture2D(uVel,vUv));",
+    "  vec2 pos = vUv - v0*uDt;",
+    "  vec2 v = decode(texture2D(uVel,pos));",
+    "  v *= 1.0/(1.0 + uDt*1.4);",
+    "  vec2 p = vUv*vec2(uAspect,1.0)*2.1 + vec2(uTime*0.05,-uTime*0.035);",
+    "  float e = 0.06;",
+    "  float nx0 = snoise(p - vec2(e,0.0)); float nx1 = snoise(p + vec2(e,0.0));",
+    "  float ny0 = snoise(p - vec2(0.0,e)); float ny1 = snoise(p + vec2(0.0,e));",
+    "  vec2 curl = vec2((ny1-ny0),-(nx1-nx0))/(2.0*e);",
+    "  v += curl * uCurl * uDt;",
+    "  vec2 d = vUv - uSplatPos; d.x *= uAspect;",
+    "  v += uSplatVel * exp(-dot(d,d)/uSplatRad);",
+    "  v = clamp(v,-0.95,0.95);",
+    "  gl_FragColor = vec4(v*0.5+0.5,0.0,1.0);",
+    "}"
+  ].join("\n");
+
+  var DYE_FRAG = [
+    "precision highp float;","varying vec2 vUv;",
+    "uniform sampler2D uDye;","uniform sampler2D uVel;",
+    "uniform float uDt;","uniform float uAspect;",
+    "uniform vec2 uSplatPos;","uniform vec3 uSplatCol;","uniform float uSplatRad;",
+    "uniform vec2 uEm0;","uniform vec2 uEm1;","uniform vec2 uEm2;","uniform float uEmRate;",
+    "vec2 decode(vec4 t){ return (t.xy-0.5)*2.0; }",
+    "void main(){",
+    "  vec2 v = decode(texture2D(uVel,vUv));",
+    "  vec3 c = texture2D(uDye, vUv - v*uDt).rgb;",
+    "  c *= 1.0/(1.0 + uDt*0.78);",
+    "  vec2 d = vUv - uSplatPos; d.x *= uAspect;",
+    "  c += uSplatCol * exp(-dot(d,d)/uSplatRad);",
+    "  vec2 e0 = vUv-uEm0; e0.x*=uAspect; c.r += uEmRate*exp(-dot(e0,e0)/0.0016);",
+    "  vec2 e1 = vUv-uEm1; e1.x*=uAspect; c.g += uEmRate*exp(-dot(e1,e1)/0.0014);",
+    "  vec2 e2 = vUv-uEm2; e2.x*=uAspect; c.b += uEmRate*0.8*exp(-dot(e2,e2)/0.0013);",
+    "  gl_FragColor = vec4(min(c,vec3(1.4)),1.0);",
+    "}"
+  ].join("\n");
+
+  var SHOW_FRAG = [
+    "precision highp float;","varying vec2 vUv;",
+    "uniform sampler2D uDye;","uniform float uAspect;","uniform float uTime;","uniform float uShift;",
+    "void main(){",
+    "  vec3 dye = texture2D(uDye,vUv).rgb;",
+    "  vec3 BLUE = vec3(0.32,0.56,1.0);",
+    "  vec3 VIOLET = vec3(0.62,0.44,1.0);",
+    "  vec3 TIDE = vec3(0.30,0.78,1.0);",
+    "  vec3 ca = mix(BLUE,VIOLET,uShift);",
+    "  vec3 cb = mix(VIOLET,TIDE,uShift);",
+    "  vec3 cc = mix(TIDE,BLUE,uShift);",
+    "  vec3 col = dye.r*ca + dye.g*cb + dye.b*cc;",
+    "  col = 1.0 - exp(-col*0.95);",
+    "  vec2 p = vUv-0.5; p.x*=uAspect;",
+    "  vec3 bg = mix(vec3(0.045,0.057,0.105), vec3(0.018,0.023,0.047), smoothstep(0.0,0.85,length(p)));",
+    "  vec2 n1 = vec2(-0.32+0.05*sin(uTime*0.05), 0.18+0.04*cos(uTime*0.04));",
+    "  vec2 n2 = vec2(0.36+0.06*sin(uTime*0.04+2.0), -0.12+0.05*cos(uTime*0.05+1.0));",
+    "  bg += vec3(0.07,0.12,0.26)*exp(-dot(p-n1,p-n1)*5.0)*0.5;",
+    "  bg += vec3(0.16,0.10,0.28)*exp(-dot(p-n2,p-n2)*4.5)*0.45;",
+    "  col = bg + col;",
+    "  col *= 1.0 - 0.32*smoothstep(0.45,1.05,length(p));",
+    "  float dith = fract(sin(dot(gl_FragCoord.xy,vec2(12.9898,78.233)))*43758.5453)/255.0;",
+    "  gl_FragColor = vec4(col+dith,1.0);",
+    "}"
+  ].join("\n");
+
+  function compile(type,src){
+    var s = gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
+    if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){ console.warn(gl.getShaderInfoLog(s)); return null; }
+    return s;
+  }
+  function program(fsrc){
+    var p = gl.createProgram();
+    gl.attachShader(p,compile(gl.VERTEX_SHADER,VERT));
+    gl.attachShader(p,compile(gl.FRAGMENT_SHADER,fsrc));
+    gl.linkProgram(p);
+    if(!gl.getProgramParameter(p,gl.LINK_STATUS)){ console.warn(gl.getProgramInfoLog(p)); return null; }
+    var u = {}, n = gl.getProgramParameter(p,gl.ACTIVE_UNIFORMS);
+    for(var i=0;i<n;i++){ var info = gl.getActiveUniform(p,i); u[info.name] = gl.getUniformLocation(p,info.name); }
+    return {p:p,u:u};
+  }
+
+  var velProg = program(VEL_FRAG), dyeProg = program(DYE_FRAG), showProg = program(SHOW_FRAG);
+  if(!velProg||!dyeProg||!showProg) return null;
+
+  var quad = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER,quad);
+  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,3,-1,-1,3]),gl.STATIC_DRAW);
+  function bindQuad(prog){
+    var loc = gl.getAttribLocation(prog.p,"aPos");
+    gl.bindBuffer(gl.ARRAY_BUFFER,quad);
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
+  }
+
+  function makeTex(w,h){
+    var t = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D,t);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D,0,internal,w,h,0,gl.RGBA,texType,null);
+    var fb = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER,fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,t,0);
+    return {tex:t,fb:fb,w:w,h:h};
+  }
+  // verify render-to-texture works with chosen format; else fall back to bytes
+  var probe = makeTex(4,4);
+  if(gl.checkFramebufferStatus(gl.FRAMEBUFFER)!==gl.FRAMEBUFFER_COMPLETE){
+    texType = gl.UNSIGNED_BYTE; internal = gl.RGBA;
+    probe = makeTex(4,4);
+    if(gl.checkFramebufferStatus(gl.FRAMEBUFFER)!==gl.FRAMEBUFFER_COMPLETE) return null;
+  }
+
+  function makePair(w,h){
+    var a = makeTex(w,h), b = makeTex(w,h);
+    return {r:a,w:b,swap:function(){var t=this.r;this.r=this.w;this.w=t;}};
+  }
+
+  var vel,dye,W,H,aspect;
+  function resize(){
+    var dpr = Math.min(window.devicePixelRatio||1,1.5);
+    W = Math.max(2,Math.floor(canvas.clientWidth*dpr));
+    H = Math.max(2,Math.floor(canvas.clientHeight*dpr));
+    canvas.width = W; canvas.height = H;
+    aspect = W/H;
+    var velH = 160, dyeH = 420;
+    vel = makePair(Math.max(2,Math.round(velH*aspect)),velH);
+    dye = makePair(Math.max(2,Math.round(dyeH*aspect)),dyeH);
+  }
+  resize();
+
+  var splat = {x:0.5,y:0.5,dx:0,dy:0,has:false};
+  var lastPX = null, lastPY = null;
+  function onMove(e){
+    var x = e.clientX/canvas.clientWidth, y = 1 - e.clientY/canvas.clientHeight;
+    if(lastPX!==null){
+      splat.x = x; splat.y = y;
+      splat.dx += (x-lastPX)*6.5; splat.dy += (y-lastPY)*6.5;
+      splat.has = true;
+    }
+    lastPX = x; lastPY = y;
+  }
+  window.addEventListener("pointermove",onMove,{passive:true});
+  window.addEventListener("pointerdown",function(e){ lastPX=null; onMove(e); },{passive:true});
+
+  var time = 0, last = performance.now();
+  var energy = 1, targetEnergy = 1, shift = 0;
+  var hueT = 0;
+
+  function pass(prog,target){
+    gl.useProgram(prog.p);
+    bindQuad(prog);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, target?target.fb:null);
+    gl.viewport(0,0, target?target.w:W, target?target.h:H);
+    gl.drawArrays(gl.TRIANGLES,0,3);
+  }
+  function bindT(unit,tex,loc){
+    gl.activeTexture(gl.TEXTURE0+unit);
+    gl.bindTexture(gl.TEXTURE_2D,tex);
+    gl.uniform1i(loc,unit);
+  }
+
+  var visible = true;
+  document.addEventListener("visibilitychange",function(){ visible = !document.hidden; last = performance.now(); });
+
+  function frame(){
+    requestAnimationFrame(frame);
+    if(!visible) return;
+    var now = performance.now();
+    var dt = Math.min((now-last)/1000,1/30); last = now;
+    time += dt; hueT += dt;
+    energy += (targetEnergy-energy)*0.04;
+    targetEnergy += (1-targetEnergy)*0.02;
+
+    var sx = splat.has?splat.x:-10, sy = splat.has?splat.y:-10;
+    var sdx = Math.max(-0.9,Math.min(0.9,splat.dx)), sdy = Math.max(-0.9,Math.min(0.9,splat.dy));
+
+    // velocity
+    gl.useProgram(velProg.p);
+    bindT(0,vel.r.tex,velProg.u.uVel);
+    gl.uniform1f(velProg.u.uDt,dt);
+    gl.uniform1f(velProg.u.uTime,time);
+    gl.uniform1f(velProg.u.uCurl,0.4*energy);
+    gl.uniform1f(velProg.u.uAspect,aspect);
+    gl.uniform2f(velProg.u.uSplatPos,sx,sy);
+    gl.uniform2f(velProg.u.uSplatVel,sdx,sdy);
+    gl.uniform1f(velProg.u.uSplatRad,0.004);
+    pass(velProg,vel.w); vel.swap();
+
+    // dye
+    var speed = Math.sqrt(sdx*sdx+sdy*sdy);
+    var amp = Math.min(speed*3.2,0.7);
+    var wr = 0.5+0.5*Math.sin(hueT*0.45);
+    var wg = 0.5+0.5*Math.sin(hueT*0.45+2.094);
+    var wb = 0.5+0.5*Math.sin(hueT*0.45+4.188);
+    var em = function(t,ax,ay,bx,by,f1,f2,p1,p2){ return [ax+bx*Math.sin(t*f1+p1), ay+by*Math.cos(t*f2+p2)]; };
+    var e0 = em(time,0.30,0.40,0.17,0.15,0.10,0.13,0,0);
+    var e1 = em(time,0.72,0.34,0.14,0.17,0.08,0.11,2.0,1.0);
+    var e2 = em(time,0.50,0.72,0.24,0.11,0.06,0.09,4.0,3.0);
+    gl.useProgram(dyeProg.p);
+    bindT(0,dye.r.tex,dyeProg.u.uDye);
+    bindT(1,vel.r.tex,dyeProg.u.uVel);
+    gl.uniform1f(dyeProg.u.uDt,dt);
+    gl.uniform1f(dyeProg.u.uAspect,aspect);
+    gl.uniform2f(dyeProg.u.uSplatPos,sx,sy);
+    gl.uniform3f(dyeProg.u.uSplatCol,amp*wr,amp*wg,amp*wb);
+    gl.uniform1f(dyeProg.u.uSplatRad,0.0016);
+    gl.uniform2f(dyeProg.u.uEm0,e0[0],e0[1]);
+    gl.uniform2f(dyeProg.u.uEm1,e1[0],e1[1]);
+    gl.uniform2f(dyeProg.u.uEm2,e2[0],e2[1]);
+    gl.uniform1f(dyeProg.u.uEmRate,0.014*energy*dt*60);
+    pass(dyeProg,dye.w); dye.swap();
+
+    splat.dx *= 0.5; splat.dy *= 0.5;
+    if(Math.abs(splat.dx)<0.001 && Math.abs(splat.dy)<0.001) splat.has = false;
+
+    // present
+    gl.useProgram(showProg.p);
+    bindT(0,dye.r.tex,showProg.u.uDye);
+    gl.uniform1f(showProg.u.uAspect,aspect);
+    gl.uniform1f(showProg.u.uTime,time);
+    gl.uniform1f(showProg.u.uShift,shift);
+    pass(showProg,null);
+  }
+  requestAnimationFrame(frame);
+
+  var rt;
+  window.addEventListener("resize",function(){ clearTimeout(rt); rt = setTimeout(resize,150); });
+
+  return {
+    kick:function(v){ targetEnergy = Math.max(targetEnergy, 1+Math.min(v,2.2)); },
+    setShift:function(s){ shift = Math.max(0,Math.min(1,s)); }
+  };
+}
+
+var fluid = null;
+if(!REDUCED){
+  try{ fluid = createFluid(document.getElementById("fluid")); }catch(e){ fluid = null; }
+}
+if(!fluid) document.body.classList.add("no-webgl");
+
+/* ============================================================
+   scroll choreography
+   ============================================================ */
+var hasGsap = typeof gsap !== "undefined" && typeof ScrollTrigger !== "undefined";
+if(hasGsap && !REDUCED){
+  gsap.registerPlugin(ScrollTrigger);
+
+  // entrance
+  var intro = gsap.timeline({defaults:{ease:"power3.out"}});
+  intro.from("nav",{y:-18,opacity:0,duration:.7},.1)
+       .from(".statusline",{opacity:0,duration:.6},.3)
+       .from(".hero h1 .w",{yPercent:115,duration:1.05,stagger:.055,ease:"power4.out"},.4)
+       .from(".hero-sub",{y:26,opacity:0,duration:.85},.95)
+       .from(".hero-ctas",{y:20,opacity:0,duration:.75},1.1)
+       .from(".hero-facts",{opacity:0,duration:.9},1.3)
+       .from(".hero-cjk",{opacity:0,y:-34,duration:1.2,ease:"power2.out"},.85)
+       .from(".hero-mascot",{opacity:0,scale:.84,duration:1,ease:"back.out(1.5)"},1.0)
+       .from(".scroll-hint",{opacity:0,duration:.8},1.5);
+
+  // hero recedes
+  gsap.to(".hero-inner",{opacity:0,y:-90,ease:"none",
+    scrollTrigger:{trigger:".hero",start:"top top",end:"bottom 38%",scrub:true}});
+
+  // fluid energy follows scroll velocity
+  ScrollTrigger.create({
+    onUpdate:function(self){ if(fluid) fluid.kick(Math.abs(self.getVelocity())/1400); }
+  });
+
+  var mm = gsap.matchMedia();
+
+  // pinned loop (desktop)
+  mm.add("(min-width: 861px)",function(){
+    var beats = gsap.utils.toArray(".beat");
+    var rail = gsap.utils.toArray(".rail li");
+    var tl = gsap.timeline({
+      scrollTrigger:{
+        trigger:".loop", start:"top top", end:"+="+(beats.length*820),
+        pin:true, scrub:.65,
+        onUpdate:function(self){
+          if(fluid) fluid.setShift(self.progress);
+          var idx = Math.min(beats.length-1, Math.floor(self.progress*beats.length));
+          rail.forEach(function(li,i){ li.classList.toggle("on", i===idx); });
+        }
+      }
+    });
+    beats.forEach(function(b,i){
+      if(i>0) tl.fromTo(b,{opacity:0,y:70},{opacity:1,y:0,duration:.4,ease:"power2.out"},i);
+      if(i<beats.length-1) tl.to(b,{opacity:0,y:-70,duration:.4,ease:"power2.in"},i+0.6);
+    });
+    tl.to({},{duration:.4},beats.length-0.0); // hold last beat
+  });
+
+  // stacked loop (mobile)
+  mm.add("(max-width: 860px)",function(){
+    gsap.utils.toArray(".beat").forEach(function(b){
+      gsap.from(b,{y:44,opacity:0,duration:.9,ease:"power3.out",
+        scrollTrigger:{trigger:b,start:"top 82%",once:true}});
+    });
+  });
+
+  // section reveals
+  [".pillars .sec-head",".install .sec-head"].forEach(function(sel){
+    gsap.from(sel,{y:44,opacity:0,duration:1,ease:"power3.out",
+      scrollTrigger:{trigger:sel,start:"top 80%",once:true}});
+  });
+  gsap.from(".pillar",{y:52,opacity:0,duration:.9,stagger:.08,ease:"power3.out",
+    scrollTrigger:{trigger:".pillars-grid",start:"top 80%",once:true}});
+  gsap.from(".terminal",{y:42,opacity:0,scale:.985,duration:1,ease:"power3.out",
+    scrollTrigger:{trigger:".terminal",start:"top 84%",once:true}});
+  gsap.from(".install .notes",{opacity:0,duration:1,ease:"power2.out",
+    scrollTrigger:{trigger:".install .notes",start:"top 90%",once:true}});
+  gsap.from(".channels .cap",{opacity:0,duration:1,
+    scrollTrigger:{trigger:".channels",start:"top 75%",once:true}});
+}
+
+/* pillar pointer glow */
+document.querySelectorAll(".pillar").forEach(function(card){
+  card.addEventListener("pointermove",function(e){
+    var r = card.getBoundingClientRect();
+    card.style.setProperty("--mx",((e.clientX-r.left)/r.width*100)+"%");
+    card.style.setProperty("--my",((e.clientY-r.top)/r.height*100)+"%");
+  });
+});
+
+/* copy install command */
+var copyBtn = document.getElementById("copy-btn");
+if(copyBtn){
+  copyBtn.addEventListener("click",function(){
+    var cmd = "curl -fsSL https://raw.githubusercontent.com/sweetcornna/corlinman/main/deploy/install.sh | bash";
+    (navigator.clipboard ? navigator.clipboard.writeText(cmd) : Promise.reject()).then(function(){
+      copyBtn.textContent = "copied ✓ 已复制";
+      setTimeout(function(){ copyBtn.textContent = "copy 复制"; },1800);
+    }).catch(function(){
+      copyBtn.textContent = "select & copy";
+    });
+  });
+}
+})();
+</script>
+</body>
+</html>
