@@ -76,12 +76,19 @@ function transcriptToChatMessages(
   transcript: TranscriptMessage[],
 ): ChatMessage[] {
   return transcript.map((m, i) => {
+    // Identity must be deterministic across reloads AND stable when an
+    // older page is PREPENDED (W5 "load earlier"): index from the END
+    // of the list, so existing messages keep their ids as the list
+    // grows upward. (The old `hist_${i}_${Date.now()-fallback}` baked a
+    // load-time timestamp in, so every refetch re-keyed the whole list
+    // and React rebuilt the DOM, losing scroll position.)
+    const rid = transcript.length - i;
     const created = Number.isFinite(Date.parse(m.ts))
       ? Date.parse(m.ts)
       : Date.now() - (transcript.length - i) * 1000;
     const rawTcs = m.tool_calls ?? [];
     const toolCalls: ToolCallState[] = rawTcs.map((tc, j) => ({
-      callId: tc.id?.trim() ? tc.id : `hist_${i}_${j}`,
+      callId: tc.id?.trim() ? tc.id : `hist_r${rid}_${j}`,
       toolName: tc.function?.name ?? i18next.t("chat.unknownToolName"),
       argsJson: tc.function?.arguments ?? "{}",
       status: tc.result !== undefined ? "settled" : "ok",
@@ -92,7 +99,7 @@ function transcriptToChatMessages(
     // and prod (same origin, empty prefix) both resolve.
     const attachments: ChatAttachment[] = (m.attachments ?? []).map(
       (a, k) => ({
-        id: `hist_${i}_att_${k}`,
+        id: `hist_r${rid}_att_${k}`,
         kind:
           a.kind === "image" || a.kind === "audio" || a.kind === "video"
             ? a.kind
@@ -108,12 +115,7 @@ function transcriptToChatMessages(
       }),
     );
     return {
-      // Identity must be deterministic across reloads: the journal
-      // returns the transcript in a stable order, so position+role is
-      // stable — but the old `hist_${i}_${Date.now()-fallback}` baked a
-      // load-time timestamp into the id, so every refetch re-keyed the
-      // whole list and React rebuilt the DOM (lost scroll position).
-      id: `hist_${i}_${m.role}`,
+      id: `hist_r${rid}_${m.role}`,
       role: m.role,
       content: m.content,
       createdAt: created,
@@ -242,21 +244,79 @@ export default function ChatPage() {
   const transcriptQuery = useQuery({
     queryKey: ["chat", "transcript", sessionKey ?? ""],
     queryFn: async () => {
-      if (!sessionKey) return [] as TranscriptMessage[];
+      if (!sessionKey) return null;
       const out = await replaySession(sessionKey, { mode: "transcript" });
-      if (out.kind === "ok") return out.replay.transcript;
-      return [] as TranscriptMessage[];
+      if (out.kind === "ok") return out.replay;
+      return null;
     },
     enabled: Boolean(sessionKey) && branchedHistory === undefined,
     staleTime: 30_000,
   });
 
+  // W5 — older pages loaded via the "load earlier" affordance, oldest
+  // first. Reset whenever the session changes.
+  const [earlierMessages, setEarlierMessages] = React.useState<
+    TranscriptMessage[]
+  >([]);
+  const [earlierCursor, setEarlierCursor] = React.useState<string | null>(
+    null,
+  );
+  const [loadingEarlier, setLoadingEarlier] = React.useState(false);
+  React.useEffect(() => {
+    setEarlierMessages([]);
+    setEarlierCursor(null);
+    setLoadingEarlier(false);
+  }, [sessionKey]);
+
+  // The active cursor / has-more come from the OLDEST page we hold —
+  // the manual pages once any were loaded, else the base query's.
+  const baseReplay = transcriptQuery.data ?? null;
+  const hasEarlier = Boolean(
+    earlierCursor !== null
+      ? earlierCursor
+      : baseReplay?.has_more && baseReplay?.oldest_turn_id,
+  );
+
+  const handleLoadEarlier = React.useCallback(async () => {
+    if (!sessionKey || loadingEarlier) return;
+    const cursor = earlierCursor ?? baseReplay?.oldest_turn_id;
+    if (!cursor) return;
+    setLoadingEarlier(true);
+    try {
+      const out = await replaySession(sessionKey, {
+        mode: "transcript",
+        beforeTurnId: cursor,
+        limit: 200,
+      });
+      if (out.kind === "ok") {
+        setEarlierMessages((prev) => [...out.replay.transcript, ...prev]);
+        setEarlierCursor(
+          out.replay.has_more ? (out.replay.oldest_turn_id ?? null) : null,
+        );
+        if (!out.replay.has_more) {
+          // Sentinel: cursor consumed, nothing older — collapse the
+          // affordance by leaving earlierCursor null AND covering the
+          // base query's has_more via earlier pages being present.
+          setEarlierCursor(null);
+        }
+      }
+    } catch (err) {
+      toast.error(err instanceof CorlinmanApiError ? err.message : String(err));
+    } finally {
+      setLoadingEarlier(false);
+    }
+  }, [sessionKey, loadingEarlier, earlierCursor, baseReplay]);
+
+  // Once manual pages exist, "has earlier" is solely the manual cursor.
+  const effectiveHasEarlier =
+    earlierMessages.length > 0 ? earlierCursor !== null : hasEarlier;
+
   const initialHistory: ChatMessage[] | undefined = React.useMemo(() => {
     if (branchedHistory && branchedHistory.length > 0) return branchedHistory;
     const t = transcriptQuery.data;
     if (!t) return undefined;
-    return transcriptToChatMessages(t);
-  }, [branchedHistory, transcriptQuery.data]);
+    return transcriptToChatMessages([...earlierMessages, ...t.transcript]);
+  }, [branchedHistory, transcriptQuery.data, earlierMessages]);
 
   const refreshList = React.useCallback(() => {
     void qc.invalidateQueries({ queryKey: ["chat", "sessions"] });
@@ -376,6 +436,11 @@ export default function ChatPage() {
           onAgentChange={persistAgent}
           showActionTrace={showActionTrace}
           onOpenModelPicker={() => setPickerOpen("llm")}
+          hasEarlier={effectiveHasEarlier}
+          loadingEarlier={loadingEarlier}
+          onLoadEarlier={() => {
+            void handleLoadEarlier();
+          }}
         />
       ) : (
         <section

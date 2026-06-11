@@ -28,6 +28,10 @@ interface MessageListProps {
   onOpenArtifact?: (language: string, source: string) => void;
   emptyState?: React.ReactNode;
   showActionTrace?: boolean;
+  /** W5 — older history exists server-side; renders the load pill. */
+  hasEarlier?: boolean;
+  loadingEarlier?: boolean;
+  onLoadEarlier?: () => void;
 }
 
 const NEAR_BOTTOM_PX = 60;
@@ -43,6 +47,9 @@ export function MessageList({
   onOpenArtifact,
   emptyState,
   showActionTrace = true,
+  hasEarlier,
+  loadingEarlier,
+  onLoadEarlier,
 }: MessageListProps) {
   const { t } = useTranslation();
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
@@ -52,6 +59,28 @@ export function MessageList({
     () => (pendingMessage ? [...messages, pendingMessage] : messages),
     [messages, pendingMessage],
   );
+
+  // W5 scroll anchoring: when an older page is PREPENDED (first id
+  // changed but the old first message still exists further down), keep
+  // the viewport visually anchored by compensating for the height the
+  // new content added above it.
+  const prevFirstIdRef = React.useRef<string | null>(null);
+  const prevScrollHeightRef = React.useRef(0);
+  React.useLayoutEffect(() => {
+    const el = scrollRef.current;
+    const firstId = messages[0]?.id ?? null;
+    const prevFirst = prevFirstIdRef.current;
+    if (
+      el &&
+      prevFirst &&
+      firstId !== prevFirst &&
+      messages.some((m) => m.id === prevFirst)
+    ) {
+      el.scrollTop += el.scrollHeight - prevScrollHeightRef.current;
+    }
+    prevFirstIdRef.current = firstId;
+    if (el) prevScrollHeightRef.current = el.scrollHeight;
+  }, [messages]);
 
   React.useEffect(() => {
     if (!pinned) return;
@@ -94,6 +123,31 @@ export function MessageList({
         aria-live="polite"
       >
         <ol className="mx-auto flex w-full max-w-3xl flex-col gap-5 px-4">
+          {hasEarlier ? (
+            <li className="flex justify-center">
+              <button
+                type="button"
+                onClick={onLoadEarlier}
+                disabled={loadingEarlier}
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-full border border-sg-border bg-sg-inset px-3 py-1",
+                  "text-[11px] text-sg-ink-3 transition hover:bg-sg-inset-hover hover:text-sg-ink",
+                  "disabled:cursor-default disabled:opacity-60",
+                )}
+                data-testid="load-earlier"
+              >
+                {loadingEarlier ? (
+                  <span
+                    className="h-2.5 w-2.5 animate-spin rounded-full border border-sg-ink-4 border-t-transparent"
+                    aria-hidden="true"
+                  />
+                ) : null}
+                {loadingEarlier
+                  ? t("chat.loadingEarlier")
+                  : t("chat.loadEarlier")}
+              </button>
+            </li>
+          ) : null}
           {all.map((m, i) => (
             <MessageBubble
               key={m.id}

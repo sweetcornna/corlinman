@@ -2808,6 +2808,8 @@ export const en = {
     headerNewConversation: "New conversation",
     statusStreaming: "Streaming",
     statusIdle: "Idle",
+    loadEarlier: "Load earlier messages",
+    loadingEarlier: "Loading…",
     stopping: "Stopping…",
     stoppedByUser: "Stopped",
     sessionExpired: "Your session has expired.",

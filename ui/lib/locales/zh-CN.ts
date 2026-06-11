@@ -2750,6 +2750,8 @@ export const zhCN = {
     headerNewConversation: "新对话",
     statusStreaming: "生成中",
     statusIdle: "空闲",
+    loadEarlier: "加载更早的消息",
+    loadingEarlier: "加载中…",
     stopping: "正在停止…",
     stoppedByUser: "已停止",
     sessionExpired: "登录会话已过期。",

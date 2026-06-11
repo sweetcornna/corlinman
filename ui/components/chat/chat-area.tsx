@@ -35,6 +35,10 @@ interface ChatAreaProps {
   onOpenImageModelPicker?: () => void;
   onAgentChange?: (agentId: string | null) => void;
   showActionTrace?: boolean;
+  /** W5 — an older history page exists; show the "load earlier" pill. */
+  hasEarlier?: boolean;
+  loadingEarlier?: boolean;
+  onLoadEarlier?: () => void;
 }
 
 function genSessionKey(): string {
@@ -57,6 +61,9 @@ export function ChatArea({
   onOpenImageModelPicker,
   onAgentChange,
   showActionTrace = true,
+  hasEarlier,
+  loadingEarlier,
+  onLoadEarlier,
 }: ChatAreaProps) {
   const router = useRouter();
   const { t } = useTranslation();
@@ -252,6 +259,9 @@ export function ChatArea({
             onOpenArtifact={handleOpenArtifact}
             showActionTrace={showActionTrace}
             emptyState={<ChatEmptyState onPick={handlePickSuggestion} />}
+            hasEarlier={hasEarlier}
+            loadingEarlier={loadingEarlier}
+            onLoadEarlier={onLoadEarlier}
           />
         </div>
 
