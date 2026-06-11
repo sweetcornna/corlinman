@@ -55,12 +55,12 @@ SSE_HEARTBEAT_SECONDS: float = 10.0
 REPLAY_DEFAULT_LIMIT: int = 500
 REPLAY_MAX_LIMIT: int = 5000
 
-# OOM backstop for the live-SSE catch-up drain. A reconnect replays one
-# turn's tail (small in practice); this cap stops a pathological turn
-# from buffering without bound before the first frame. Matches the JSON
-# replay ceiling. Remainder past the cap is covered by the live queue +
-# the on-demand replay endpoint.
-CATCH_UP_MAX_EVENTS: int = 5000
+# Page size for the live-SSE catch-up replay. The backlog is delivered
+# in chunks of this many events so at most this many are held in memory
+# at once (paging delivers the whole range — no events are dropped),
+# and each page's journal cursor is drained fully before any frame is
+# yielded so it always closes cleanly.
+CATCH_UP_PAGE_SIZE: int = 1000
 
 # Past-turns listing default + cap. 50 matches the default pill-row
 # the session-detail page renders on first load; the 200 cap keeps a
@@ -190,48 +190,58 @@ async def _sse_stream(
             resume_turn = await _resolve_latest_turn_id(journal, session_key)
 
         if resume_turn is not None and catch_up_sequence >= 0:
-            # Drain the catch-up replay into a list FIRST, then yield from
-            # the list. Yielding from inside ``async for …
-            # journal.iter_events(...)`` meant a client disconnect
-            # (GeneratorExit at the yield point) tore down the aiosqlite
-            # cursor mid-iteration — cross-thread cleanup that can
-            # deadlock the DB worker (the CI 6-hour py-test hang).
+            # Replay the catch-up backlog in bounded PAGES, never yielding
+            # while a journal cursor is open. Two hazards are designed out:
             #
-            # No ``asyncio.wait_for`` here: a timeout would CANCEL the
-            # drain, and that cancellation unwinds through the very same
-            # cursor ``finally`` cleanup we're avoiding — reintroducing
-            # the wedge. Draining to completion (no interleaved yields)
-            # lets the cursor close NORMALLY every time.
+            # 1) Deadlock (the CI 6-hour py-test hang): the old code
+            #    yielded from inside ``async for … iter_events(...)``; a
+            #    client disconnect (GeneratorExit at the yield) tore down
+            #    the aiosqlite cursor mid-iteration → cross-thread cleanup
+            #    that can wedge the DB worker. Here each page is drained in
+            #    a SHIELDED child task, so a disconnect lets that drain run
+            #    to completion (cursor closes normally) instead of being
+            #    cancelled mid-iteration, and we only ``yield`` once the
+            #    cursor is already closed.
             #
-            # ``CATCH_UP_MAX_EVENTS`` is an OOM backstop: catch-up is one
-            # turn's tail (bounded in practice), but a pathological turn
-            # shouldn't buffer without limit. On overflow we stop reading
-            # and let the live queue + the on-demand JSON replay endpoint
-            # cover the remainder rather than risk memory blowup.
-            catch_up_events: list[Any] = []
-            overflowed = False
-            try:
+            # 2) Lost events: paging (rather than a single capped buffer)
+            #    delivers the WHOLE ``sequence > last_event_id`` range with
+            #    bounded memory — a reconnect far behind a long turn never
+            #    silently skips the gap past a cap.
+            seq_cursor = catch_up_sequence
+
+            async def _drain_page(start: int) -> list[Any]:
+                out: list[Any] = []
                 async for ev in journal.iter_events(
-                    resume_turn, start_sequence=catch_up_sequence
+                    resume_turn, start_sequence=start
                 ):
-                    catch_up_events.append(ev)
-                    if len(catch_up_events) >= CATCH_UP_MAX_EVENTS:
-                        overflowed = True
+                    out.append(ev)
+                    if len(out) >= CATCH_UP_PAGE_SIZE:
                         break
-            except Exception:  # noqa: BLE001 — best-effort catch-up
-                # A partial replay is preferable to tearing the
-                # connection down — the live loop below still picks up
-                # fresh envelopes.
-                pass
-            for ev in catch_up_events:
-                yield _format_sse_frame(ev)
-            if overflowed:
-                _log.warning(
-                    "sse catch-up exceeded %d events for turn %s; "
-                    "remainder deferred to live stream + replay endpoint",
-                    CATCH_UP_MAX_EVENTS,
-                    resume_turn,
-                )
+                return out
+
+            while True:
+                try:
+                    page = await asyncio.shield(
+                        asyncio.ensure_future(_drain_page(seq_cursor))
+                    )
+                except Exception:  # noqa: BLE001 — best-effort catch-up
+                    # A partial replay beats tearing the connection down;
+                    # the live loop below still picks up fresh envelopes.
+                    break
+                if not page:
+                    break
+                for ev in page:
+                    yield _format_sse_frame(ev)
+                last_seq = page[-1].get("sequence")
+                # Stop on the final (partial) page, or if the sequence did
+                # not advance (defensive — avoids an infinite re-query).
+                if (
+                    len(page) < CATCH_UP_PAGE_SIZE
+                    or not isinstance(last_seq, int)
+                    or last_seq <= seq_cursor
+                ):
+                    break
+                seq_cursor = last_seq
 
         # ---------- live ----------
         while True:

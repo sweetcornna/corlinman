@@ -282,16 +282,15 @@ async def test_aclose_mid_catch_up_is_bounded(
 
 
 @pytest.mark.asyncio
-async def test_catch_up_buffer_is_capped(
+async def test_catch_up_pages_deliver_every_event(
     state: AdminState,
     journal: AgentJournal,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The catch-up drain is an OOM backstop, not unbounded: with the cap
-    lowered, only the first N missed events replay before the stream
-    advances to the live queue (remainder deferred to the replay
-    endpoint)."""
-    monkeypatch.setattr(sessions_events, "CATCH_UP_MAX_EVENTS", 3)
+    """Catch-up replays the WHOLE backlog in bounded pages — with the
+    page size lowered well below the backlog, every missed event is still
+    delivered in order (no silent gap past a cap)."""
+    monkeypatch.setattr(sessions_events, "CATCH_UP_PAGE_SIZE", 3)
     tid = await journal.begin_turn("sess-1", "hello")
     assert tid is not None
     for seq in range(10):
@@ -299,20 +298,24 @@ async def test_catch_up_buffer_is_capped(
             _make_envelope(turn_id=str(tid), sequence=seq, text=f"old-{seq}")
         )
 
+    # start_sequence=0 → iter_events yields sequence > 0 (events 1..9).
     gen = _sse_stream(
         state, "sess-1", catch_up_turn_id=str(tid), catch_up_sequence=0
     )
     frames: list[bytes] = []
     try:
-        # Drain only the catch-up phase: 3 capped frames, then the live
-        # loop would block on the queue → stop after the cap.
-        for _ in range(3):
+        for _ in range(9):  # spans 3 pages of 3
             frames.append(await asyncio.wait_for(gen.__anext__(), timeout=5.0))
     finally:
         await asyncio.wait_for(gen.aclose(), timeout=5.0)
 
-    text_frames = [f for f in frames if b"TextDelta" in f]
-    assert len(text_frames) == 3  # capped, not all 10
+    parsed = _parse_sse_frames(b"".join(frames))
+    seqs = [
+        int(f["id"].split(":", 1)[1])
+        for f in parsed
+        if f.get("event") == "TextDelta"
+    ]
+    assert seqs == list(range(1, 10))  # all delivered, in order, across pages
 
 
 # ---------------------------------------------------------------------------
