@@ -17,7 +17,12 @@ from corlinman_server.agent_servicer import _register_tool_media
 
 @pytest.fixture(autouse=True)
 def _data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    from corlinman_server.gateway.routes import files as files_route
+
     monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+    # Clear any entrypoint-stamped configured dir left by sibling tests
+    # so the env override above is the one that resolves.
+    monkeypatch.setattr(files_route, "_CONFIGURED_DATA_DIR", None)
     return tmp_path
 
 

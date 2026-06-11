@@ -20,6 +20,10 @@ def client(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> TestClient:
     monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+    # Another test in the same process may have booted the entrypoint,
+    # which stamps the module-level configured dir — clear it so the env
+    # override above actually applies (and restore-by-monkeypatch).
+    monkeypatch.setattr(files_route, "_CONFIGURED_DATA_DIR", None)
     app = FastAPI()
     app.include_router(files_route.router())
     return TestClient(app)
