@@ -236,9 +236,30 @@ export const SIDEBAR_DEV_ITEMS = DEV_ITEMS;
 export const SIDEBAR_SYSTEM_ENTRY = SYSTEM_ENTRY;
 export const SIDEBAR_DEV_SETTINGS_ENTRY = DEV_SETTINGS_ENTRY;
 
-function isActiveHref(pathname: string, href: string): boolean {
+/** Every navigable href in the rail — used for longest-match arbitration. */
+const ALL_NAV_HREFS: string[] = [
+  ...OPERATOR_ITEMS.flatMap((i) => ("children" in i ? i.children.map((c) => c.href) : [i.href])),
+  ...DEV_ITEMS.flatMap((i) => ("children" in i ? i.children.map((c) => c.href) : [i.href])),
+  SYSTEM_ENTRY.href,
+  DEV_SETTINGS_ENTRY.href,
+];
+
+function matchesHref(pathname: string, href: string): boolean {
   if (href === "/") return pathname === "/";
   return pathname === href || pathname.startsWith(`${href}/`);
+}
+
+/**
+ * Active = this href matches AND no other nav item matches more
+ * specifically — so /scheduler/qzone lights only "QZone 发布", never
+ * its /scheduler sibling as well.
+ */
+function isActiveHref(pathname: string, href: string): boolean {
+  if (!matchesHref(pathname, href)) return false;
+  return !ALL_NAV_HREFS.some(
+    (other) =>
+      other !== href && other.length > href.length && matchesHref(pathname, other),
+  );
 }
 
 const COLLAPSE_KEY = "corlinman.sidebar.collapsed.v1";
