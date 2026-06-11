@@ -76,16 +76,31 @@ def _ensure_py_config_env(data_dir: Path, config: dict[str, Any] | None = None) 
     if os.environ.get("CORLINMAN_PY_CONFIG"):
         return
     drop = data_dir / "py-config.json"
-    if not drop.is_file() and isinstance(config, dict) and (
+    has_config = isinstance(config, dict) and bool(
         config.get("providers") or config.get("models")
-    ):
+    )
+    # Render (or refresh) the drop from config.toml when it is missing
+    # OR the TOML was edited after the drop was last written. A running
+    # gateway rewrites the drop on every admin mutation, so a TOML mtime
+    # newer than the drop means the drop is stale either way — refreshing
+    # is exactly what the next gateway boot would do.
+    stale = False
+    if drop.is_file() and has_config:
+        toml_path = data_dir / "config.toml"
+        with contextlib.suppress(OSError):
+            stale = toml_path.stat().st_mtime > drop.stat().st_mtime
+    if has_config and (not drop.is_file() or stale):
         try:
             from corlinman_server.gateway.lifecycle.py_config import (  # noqa: PLC0415
                 write_py_config_sync,
             )
 
             write_py_config_sync(config, drop)
-            log.info("console.embedded.py_config_generated path=%s", drop)
+            log.info(
+                "console.embedded.py_config_generated path=%s refreshed=%s",
+                drop,
+                stale,
+            )
         except Exception as exc:  # noqa: BLE001 — bootstrap is best-effort
             log.warning("console.embedded.py_config_generate_failed err=%s", exc)
     if drop.is_file():
