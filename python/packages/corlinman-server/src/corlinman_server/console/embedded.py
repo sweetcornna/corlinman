@@ -57,17 +57,37 @@ class EmbeddedBrainError(RuntimeError):
     agent path nor the direct-provider fallback)."""
 
 
-def _ensure_py_config_env(data_dir: Path) -> None:
+def _ensure_py_config_env(data_dir: Path, config: dict[str, Any] | None = None) -> None:
     """Point ``CORLINMAN_PY_CONFIG`` at the gateway's drop when unset.
 
     The servicer and the ``_ReloadingProviderResolver`` both read this
     env var; exporting it here is how the console inherits the exact
     provider/alias table the admin UI manages. No-op when the operator
-    already set the var or no drop exists yet.
+    already set the var.
+
+    Standalone bootstrap: on a host where the gateway has never run
+    (``corlinman init`` wrote a ``config.toml`` but no ``py-config.json``
+    drop exists yet) the servicer's ``_load_config()`` would see zero
+    providers and fall back to the legacy env-key prefix table, ignoring
+    everything in the TOML. So when ``config`` carries provider/model
+    blocks we render the drop ourselves with the gateway's own writer —
+    the exact same translation a gateway boot performs.
     """
     if os.environ.get("CORLINMAN_PY_CONFIG"):
         return
     drop = data_dir / "py-config.json"
+    if not drop.is_file() and isinstance(config, dict) and (
+        config.get("providers") or config.get("models")
+    ):
+        try:
+            from corlinman_server.gateway.lifecycle.py_config import (  # noqa: PLC0415
+                write_py_config_sync,
+            )
+
+            write_py_config_sync(config, drop)
+            log.info("console.embedded.py_config_generated path=%s", drop)
+        except Exception as exc:  # noqa: BLE001 — bootstrap is best-effort
+            log.warning("console.embedded.py_config_generate_failed err=%s", exc)
     if drop.is_file():
         os.environ["CORLINMAN_PY_CONFIG"] = str(drop)
         log.info("console.embedded.py_config path=%s", drop)
@@ -107,11 +127,17 @@ class EmbeddedBrain:
     # ── construction ─────────────────────────────────────────────────
 
     @classmethod
-    async def start(cls, data_dir: Path) -> EmbeddedBrain:
+    async def start(
+        cls, data_dir: Path, *, config: dict[str, Any] | None = None
+    ) -> EmbeddedBrain:
         """Boot the brain: full agent over a private UDS, falling back to
-        the direct provider backend when gRPC is unavailable."""
+        the direct provider backend when gRPC is unavailable.
+
+        ``config`` is the parsed ``config.toml`` — used to bootstrap the
+        provider drop on standalone hosts (see ``_ensure_py_config_env``).
+        """
         self = cls()
-        _ensure_py_config_env(data_dir)
+        _ensure_py_config_env(data_dir, config)
         try:
             await self._start_agent(data_dir)
             self._tools_enabled = True

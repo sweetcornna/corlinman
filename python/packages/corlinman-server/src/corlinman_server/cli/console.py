@@ -79,6 +79,15 @@ def _load_config(data_dir: Path) -> dict[str, Any]:
 )
 @click.option("--model", default=None, help="Model id or alias for this run.")
 @click.option(
+    "--attach-token",
+    default=None,
+    envvar=["CORLINMAN_ATTACH_TOKEN", "CORLINMAN_API_KEY"],
+    help=(
+        "Bearer/API token for --attach against an auth-gated gateway "
+        "(env: CORLINMAN_ATTACH_TOKEN / CORLINMAN_API_KEY)."
+    ),
+)
+@click.option(
     "--session",
     "session_key",
     default=None,
@@ -125,6 +134,7 @@ def console(
     prompt: tuple[str, ...],
     attach: str | None,
     model: str | None,
+    attach_token: str | None,
     session_key: str | None,
     data_dir: str | None,
     print_mode: bool,
@@ -142,6 +152,15 @@ def console(
 
     _quiet_logging()
     resolved_data_dir = resolve_data_dir(Path(data_dir) if data_dir else None)
+    # The embedded servicer resolves its journal/memory/state paths via
+    # $CORLINMAN_DATA_DIR (agent_servicer._resolve_data_dir) — export the
+    # resolved dir so an explicit --data-dir governs the WHOLE brain, not
+    # just the console-side files. An explicit flag wins over a stale env
+    # var, matching resolve_data_dir's own precedence.
+    if data_dir:
+        os.environ["CORLINMAN_DATA_DIR"] = str(resolved_data_dir)
+    else:
+        os.environ.setdefault("CORLINMAN_DATA_DIR", str(resolved_data_dir))
     config = _load_config(resolved_data_dir)
     prompt_text = " ".join(prompt).strip() or None
 
@@ -158,6 +177,7 @@ def console(
                 tool_progress=tool_progress,
                 output_format=output_format,
                 max_turns=max_turns,
+                attach_token=attach_token,
             )
         )
     except KeyboardInterrupt:
