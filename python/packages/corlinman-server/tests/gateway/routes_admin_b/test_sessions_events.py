@@ -254,6 +254,58 @@ async def test_last_event_id_catches_up_from_journal(
 
 
 @pytest.mark.asyncio
+async def test_no_duplicate_when_event_emitted_during_catch_up(
+    state: AdminState,
+    journal: AgentJournal,
+    emitter: JournalBackedEmitter,
+) -> None:
+    """An event committed to the journal AND pushed to the live queue
+    while catch-up is paging must be delivered exactly once — the live
+    loop drops what catch-up already sent (high-water dedup)."""
+    tid = await journal.begin_turn("sess-1", "hello")
+    assert tid is not None
+    for seq in range(3):
+        await journal.append_event(
+            _make_envelope(turn_id=str(tid), sequence=seq, text=f"old-{seq}")
+        )
+
+    gen = _sse_stream(
+        state, "sess-1", catch_up_turn_id=str(tid), catch_up_sequence=0
+    )
+
+    async def _producer() -> None:
+        # After catch-up has subscribed, push a seq the journal already
+        # holds (seq 2) — simulating the replay/live overlap window — then
+        # a genuinely new one (seq 3).
+        for _ in range(50):
+            if emitter.subscriber_count("sess-1") > 0:
+                break
+            await asyncio.sleep(0.02)
+        await emitter.emit(_make_envelope(turn_id=str(tid), sequence=2, text="old-2"))
+        await emitter.emit(_make_envelope(turn_id=str(tid), sequence=3, text="new-3"))
+
+    producer = asyncio.create_task(_producer())
+    try:
+        body = await asyncio.wait_for(
+            _drain_frames(gen, until_count_of="new-3", count=1), timeout=5.0
+        )
+    finally:
+        producer.cancel()
+        with contextlib_suppress():
+            await producer
+        await gen.aclose()
+
+    frames = _parse_sse_frames(body)
+    seqs = [
+        int(f["id"].split(":", 1)[1])
+        for f in frames
+        if f.get("event") == "TextDelta"
+    ]
+    assert seqs.count(2) == 1, f"seq 2 duplicated: {seqs}"  # not replayed twice
+    assert 3 in seqs
+
+
+@pytest.mark.asyncio
 async def test_aclose_mid_catch_up_is_bounded(
     state: AdminState,
     journal: AgentJournal,

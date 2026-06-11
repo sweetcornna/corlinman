@@ -189,6 +189,13 @@ async def _sse_stream(
         if resume_turn is None and catch_up_sequence >= 0:
             resume_turn = await _resolve_latest_turn_id(journal, session_key)
 
+        # High-water mark of what catch-up delivered for ``resume_turn``,
+        # so the live loop can drop envelopes the replay already sent. The
+        # subscribe-before-catch-up ordering means an event emitted while
+        # we page lands in BOTH the journal and the live queue.
+        catch_up_turn = resume_turn
+        catch_up_high = catch_up_sequence
+
         if resume_turn is not None and catch_up_sequence >= 0:
             # Replay the catch-up backlog in bounded PAGES, never yielding
             # while a journal cursor is open. Two hazards are designed out:
@@ -197,11 +204,11 @@ async def _sse_stream(
             #    yielded from inside ``async for … iter_events(...)``; a
             #    client disconnect (GeneratorExit at the yield) tore down
             #    the aiosqlite cursor mid-iteration → cross-thread cleanup
-            #    that can wedge the DB worker. Here each page is drained in
-            #    a SHIELDED child task, so a disconnect lets that drain run
-            #    to completion (cursor closes normally) instead of being
-            #    cancelled mid-iteration, and we only ``yield`` once the
-            #    cursor is already closed.
+            #    that can wedge the DB worker. Each page is drained FULLY
+            #    before any frame is yielded, so the cursor always closes
+            #    while we're between pages (never suspended at a yield mid-
+            #    iteration). No shielded background task — that would be
+            #    orphaned/unobserved if the client disconnects mid-drain.
             #
             # 2) Lost events: paging (rather than a single capped buffer)
             #    delivers the WHOLE ``sequence > last_event_id`` range with
@@ -221,9 +228,7 @@ async def _sse_stream(
 
             while True:
                 try:
-                    page = await asyncio.shield(
-                        asyncio.ensure_future(_drain_page(seq_cursor))
-                    )
+                    page = await _drain_page(seq_cursor)
                 except Exception:  # noqa: BLE001 — best-effort catch-up
                     # A partial replay beats tearing the connection down;
                     # the live loop below still picks up fresh envelopes.
@@ -233,6 +238,8 @@ async def _sse_stream(
                 for ev in page:
                     yield _format_sse_frame(ev)
                 last_seq = page[-1].get("sequence")
+                if isinstance(last_seq, int):
+                    catch_up_high = max(catch_up_high, last_seq)
                 # Stop on the final (partial) page, or if the sequence did
                 # not advance (defensive — avoids an infinite re-query).
                 if (
@@ -254,6 +261,18 @@ async def _sse_stream(
                 # are silently ignored by ``EventSource`` clients.
                 yield b": keepalive\n\n"
                 continue
+            # Drop envelopes catch-up already delivered for this turn (an
+            # event committed while we paged is in the journal AND here).
+            if catch_up_turn is not None:
+                ev_turn = getattr(envelope, "turn_id", None)
+                ev_seq = getattr(envelope, "sequence", None)
+                if (
+                    ev_turn is not None
+                    and str(ev_turn) == str(catch_up_turn)
+                    and isinstance(ev_seq, int)
+                    and ev_seq <= catch_up_high
+                ):
+                    continue
             yield _format_sse_frame(envelope.to_json())
     except asyncio.CancelledError:
         # Client disconnect — propagate after cleanup.
