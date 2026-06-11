@@ -70,6 +70,9 @@ async def _cmd_model(app: Any, args: str) -> str:
         )
     app.session.model = name
     app.router.default_model = name
+    # A hand-picked model disables auto-downgrade routing (claude-code
+    # rule: routing never overrides the human).
+    app.model_explicit = True
     return f"model set: {name}"
 
 

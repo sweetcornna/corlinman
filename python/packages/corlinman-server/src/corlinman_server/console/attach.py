@@ -131,25 +131,58 @@ class AttachBrain:
                             message=body[:300],
                         )
                         return
-                    async for line in resp.aiter_lines():
-                        if cancel.is_set():
-                            yield TurnError(reason="unknown", message="cancelled")
-                            return
-                        if not line.startswith("data:"):
-                            continue
-                        data = line[len("data:"):].strip()
-                        if not data:
-                            continue
-                        if data == "[DONE]":
-                            break
-                        for ev in parse_sse_data(data):
-                            if isinstance(ev, (TurnDone, TurnError)):
-                                terminal_seen = True
-                                yield ev
-                                # The gateway still sends [DONE] after the
-                                # finish chunk; we can stop reading now.
+                    # Race every line read against the cancel event —
+                    # a Ctrl-C during a long remote tool call (no SSE
+                    # traffic for minutes) must interrupt immediately,
+                    # not wait for the next line / read timeout.
+                    line_iter = resp.aiter_lines().__aiter__()
+                    cancel_task = asyncio.create_task(cancel.wait())
+
+                    async def _next_line() -> str:
+                        return await anext(line_iter)
+
+                    try:
+                        while True:
+                            line_task: asyncio.Task[str] = asyncio.create_task(
+                                _next_line()
+                            )
+                            done, _pending = await asyncio.wait(
+                                {line_task, cancel_task},
+                                return_when=asyncio.FIRST_COMPLETED,
+                            )
+                            if cancel_task in done and line_task not in done:
+                                line_task.cancel()
+                                with contextlib.suppress(
+                                    asyncio.CancelledError, Exception
+                                ):
+                                    await line_task
+                                yield TurnError(
+                                    reason="unknown", message="cancelled"
+                                )
                                 return
-                            yield ev
+                            try:
+                                line = line_task.result()
+                            except StopAsyncIteration:
+                                break
+                            if not line.startswith("data:"):
+                                continue
+                            data = line[len("data:"):].strip()
+                            if not data:
+                                continue
+                            if data == "[DONE]":
+                                break
+                            for ev in parse_sse_data(data):
+                                if isinstance(ev, (TurnDone, TurnError)):
+                                    terminal_seen = True
+                                    yield ev
+                                    # The gateway still sends [DONE] after
+                                    # the finish chunk; stop reading now.
+                                    return
+                                yield ev
+                    finally:
+                        cancel_task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await cancel_task
             except (httpx.HTTPError, OSError) as exc:
                 with contextlib.suppress(Exception):
                     log.info("console.attach.transport_error err=%s", exc)

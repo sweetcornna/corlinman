@@ -52,6 +52,9 @@ class ConsoleApp:
         self.data_dir = data_dir
         self.embedded = embedded
         self.running = True
+        #: True when the active model came from --model / /model — see
+        #: run_turn's routing rule.
+        self.model_explicit = False
 
     # ── lookups used by slash commands ────────────────────────────────
 
@@ -119,16 +122,26 @@ class ConsoleApp:
             from corlinman_server.agent_journal import AgentJournal  # noqa: PLC0415
 
             path = self.data_dir / "agent_journal.sqlite"
-            if not path.is_file():
+            backend = (os.environ.get("CORLINMAN_JOURNAL_BACKEND") or "").lower()
+            if backend in ("", "sqlite") and not path.is_file():
+                # SQLite backend with no journal yet — nothing to read. A
+                # configured Postgres backend has no local file to probe,
+                # so it always proceeds to open_from_env.
                 return None
-            return await AgentJournal.open(path)
+            return await AgentJournal.open_from_env(path)
         except Exception:  # noqa: BLE001 — journal access is best-effort
             return None
 
     # ── turn execution ────────────────────────────────────────────────
 
     async def run_turn(self, text: str) -> None:
-        decision = self.router.route_turn(text)
+        decision = self.router.route_turn(
+            text,
+            # An explicit --model flag or /model choice must win over
+            # auto-routing (claude-code rule): tell the router so it
+            # never downgrades a hand-picked model to small_fast_model.
+            explicit_model=self.session.model if self.model_explicit else None,
+        )
         if decision.reason == "auto:simple":
             self.renderer.console.print(
                 f"→ routed to {decision.model} (simple task)", style="dim"
@@ -252,6 +265,7 @@ async def run_console(
     prompt: str | None,
     print_mode: bool,
     tool_progress: str,
+    attach_token: str | None = None,
 ) -> int:
     """Build the app (embedded or attach brain) and run it.
 
@@ -265,12 +279,19 @@ async def run_console(
     if attach:
         from corlinman_server.console.attach import AttachBrain  # noqa: PLC0415
 
-        brain = AttachBrain(attach)
+        # Production gateways gate /v1/chat/completions behind the auth
+        # middleware; send the token both ways it accepts so the console
+        # can attach without disabling auth.
+        headers: dict[str, str] = {}
+        if attach_token:
+            headers["Authorization"] = f"Bearer {attach_token}"
+            headers["X-API-Key"] = attach_token
+        brain = AttachBrain(attach, headers=headers)
         embedded = False
     else:
         from corlinman_server.console.embedded import EmbeddedBrain  # noqa: PLC0415
 
-        brain = await EmbeddedBrain.start(data_dir)
+        brain = await EmbeddedBrain.start(data_dir, config=config)
         embedded = True
 
     models_cfg = config.get("models") if isinstance(config, dict) else None
@@ -282,8 +303,6 @@ async def run_console(
     router = ModelRouter.from_config(config, default_model=default_model)
 
     session = BrainSession(brain=brain, model=default_model)
-    if session_key:
-        session.session_key = session_key
 
     console = Console(file=sys.stderr) if print_mode else Console()
     renderer = Renderer(console, tool_progress=tool_progress)
@@ -295,6 +314,23 @@ async def run_console(
         data_dir=data_dir,
         embedded=embedded,
     )
+    app.model_explicit = model is not None
+
+    if session_key:
+        if embedded:
+            # ``--session`` continues a conversation — replay its journaled
+            # turns into the window (the chat contract is a stateless
+            # message window, so without the replay the first prompt
+            # would silently drop all prior context).
+            replayed = await app.resume_session(session_key)
+            if replayed:
+                console.print(
+                    f"resumed {session_key}: {replayed} message(s) replayed",
+                    style="dim",
+                    highlight=False,
+                )
+        else:
+            session.session_key = session_key
 
     if print_mode:
         if not prompt:
