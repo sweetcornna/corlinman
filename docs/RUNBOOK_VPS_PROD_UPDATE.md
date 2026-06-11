@@ -4,12 +4,7 @@
 - **Mode**: native systemd gateway + separate Python agent service
 - **Install prefix**: `/opt/corlinman`
 - **Data dir**: `/opt/corlinman/data`
-- **Last verified**: 2026-06-06 09:33 CST, `v1.18.2`
-- **Latest release**: `v1.19.0` (2026-06-11) — published, **not yet deployed to
-  this host**. ⚠️ Unlike 1.18.2 (which skipped the UI rebuild), 1.19.0 ships the
-  full Spatial Glass UI redesign, so this deploy **must rebuild `ui/out/`**
-  (`pnpm install --frozen-lockfile && pnpm build`) and re-sync `ui-static/`, or
-  the box keeps serving the old UI against the new gateway.
+- **Last verified**: 2026-06-11 16:13 CST, `v1.19.0`
 
 This runbook is for the hosted demo VPS. It is intentionally more specific than
 the generic installer docs because this box has a legacy root-owned native
@@ -174,6 +169,41 @@ curl -fsS http://127.0.0.1:6005/health
 ```
 
 Keep the UI backup for at least one release cycle.
+
+## 2026-06-11 16:13 CST deployment record
+
+Release deployed:
+
+- tag: `v1.19.0`
+- commit: `71720032d8d92a1ce672f1e0da71d898cf54cde7`
+- package: `corlinman-server==1.19.0`
+- UI backup: `/opt/corlinman/ui-static.backup.20260611-160837`
+- UI rebuilt: **yes** (Spatial Glass redesign) — `pnpm build` produced `ui/out`,
+  routes assertion passed, rsync'd to `ui-static/`.
+
+Verification results:
+
+- remote repo reset to `HEAD=71720032d8d92a1ce672f1e0da71d898cf54cde7`
+- `.venv` package version -> `1.19.0`
+- `systemctl is-active corlinman` -> `active`
+- `systemctl is-active corlinman-agent` -> `active`
+- `corlinman-napcat` -> `Up`
+- local `/health` -> `{"status":"ok","mode":"ok"}`
+- local `/openapi.json` -> `200`
+- local `/admin/system/info` without credentials -> `401`
+- local `POST /api/QQLogin/RefreshQRcode` without credentials -> `401`
+- public `/health`, `/login`, `/marketplace` -> `200`
+- public `/admin/system/info` -> `401`
+- live CSS served from `ui-static` contains `--sg-*` / `--lg-*` tokens and no
+  `--tp-*` (Spatial Glass UI confirmed live)
+
+Operational note: `corlinman.service` again entered `deactivating (stop-sigterm)`
+after logging the SIGTERM shutdown (a 60s `systemctl restart` timed out, rc=124);
+the old main process was killed with
+`systemctl kill --kill-who=main -s SIGKILL corlinman`, after which systemd
+completed the restart and the new gateway became healthy. This SIGTERM-hang has
+recurred on every release for this box — see the standing note about the slow
+graceful shutdown.
 
 ## 2026-06-06 09:33 CST deployment record
 
