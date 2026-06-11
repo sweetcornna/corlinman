@@ -361,7 +361,9 @@
    * .lg-gel      — non-linear press physics for non-framer elements:
    *                springy overshoot curve on transform.
    * ──────────────────────────────────────────────────────────────── */
-  .lg-edge {
+  /* :where() keeps these at zero specificity so Tailwind positioning
+     utilities (fixed/absolute/sticky) on the same element always win. */
+  :where(.lg-edge) {
     position: relative;
   }
   .lg-edge::before {
@@ -394,8 +396,10 @@
       inset -1px 0 0 color-mix(in oklch, var(--sg-accent-2) 9%, transparent),
       inset 0 -12px 28px -22px oklch(1 0 0 / 0.35);
   }
-  .lg-sheen {
+  :where(.lg-sheen) {
     position: relative;
+  }
+  .lg-sheen {
     overflow: hidden;
   }
   .lg-sheen::after {
@@ -426,7 +430,7 @@
         opacity 0.15s ease-out;
     }
   }
-  .lg-specular {
+  :where(.lg-specular) {
     position: relative;
   }
   .lg-specular::after {

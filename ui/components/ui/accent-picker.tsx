@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { createPortal } from "react-dom";
 import { Palette, RotateCcw } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -23,28 +24,52 @@ export function AccentPicker({ className }: { className?: string }) {
   const [open, setOpen] = React.useState(false);
   const [params, setParams] = React.useState<ThemeParams | null>(null);
   const rootRef = React.useRef<HTMLDivElement | null>(null);
+  const panelRef = React.useRef<HTMLDivElement | null>(null);
+  // Viewport-anchored placement (portal + fixed): immune to ancestor
+  // overflow/stacking contexts, clamped so the panel can never start
+  // above the viewport or run past its bottom.
+  const [pos, setPos] = React.useState<{ top: number; right: number; maxHeight: number } | null>(
+    null,
+  );
 
   React.useEffect(() => {
     setParams(getStoredThemeParams());
   }, []);
 
+  const place = React.useCallback(() => {
+    const trigger = rootRef.current;
+    if (!trigger) return;
+    const r = trigger.getBoundingClientRect();
+    const vh = window.innerHeight;
+    const margin = 8;
+    const top = Math.max(margin, Math.min(r.bottom + margin, vh - 160));
+    setPos({
+      top,
+      right: Math.max(margin, window.innerWidth - r.right),
+      maxHeight: vh - top - margin,
+    });
+  }, []);
+
   React.useEffect(() => {
     if (!open) return;
+    place();
     const onDown = (e: PointerEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
+      const target = e.target as Node;
+      if (rootRef.current?.contains(target) || panelRef.current?.contains(target)) return;
+      setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setOpen(false);
     };
     window.addEventListener("pointerdown", onDown);
     window.addEventListener("keydown", onKey);
+    window.addEventListener("resize", place);
     return () => {
       window.removeEventListener("pointerdown", onDown);
       window.removeEventListener("keydown", onKey);
+      window.removeEventListener("resize", place);
     };
-  }, [open]);
+  }, [open, place]);
 
   const pick = React.useCallback((next: ThemeParams | null) => {
     setParams(next);
@@ -77,12 +102,15 @@ export function AccentPicker({ className }: { className?: string }) {
         <Palette className="h-4 w-4" aria-hidden="true" />
       </button>
 
-      {open ? (
+      {open && pos
+        ? createPortal(
         <div
+          ref={panelRef}
           role="dialog"
           aria-label={t("nav.themeStudio.label")}
           data-testid="accent-picker-panel"
-          className="sg-glass-overlay lg-edge absolute right-0 top-11 z-50 w-72 rounded-sg-lg p-4 shadow-sg-4 animate-sg-palette-in"
+          className="sg-glass-overlay lg-edge fixed z-[70] w-72 overflow-y-auto rounded-sg-lg p-4 shadow-sg-4 animate-sg-palette-in"
+          style={{ top: pos.top, right: pos.right, maxHeight: pos.maxHeight }}
         >
           {/* Designer themes */}
           <p className="text-[11px] font-semibold uppercase tracking-wider text-sg-ink-4">
@@ -218,8 +246,10 @@ export function AccentPicker({ className }: { className?: string }) {
             <RotateCcw className="h-3 w-3" aria-hidden="true" />
             {t("nav.themeStudio.reset")}
           </button>
-        </div>
-      ) : null}
+        </div>,
+        document.body,
+      )
+        : null}
     </div>
   );
 }
