@@ -37,6 +37,12 @@ dependencies = [
     "packaging>=24.0",
     "prometheus_client>=0.21",
     "watchdog>=5.0",
+    # CLI agent console (corlinman_server.console) — rich renders the
+    # streaming REPL output, prompt_toolkit owns input/history. Both are
+    # imported lazily inside the console path so headless server deploys
+    # never pay the import.
+    "rich>=13.0",
+    "prompt-toolkit>=3.0",
     # docker-py SDK — used by the one-click upgrader's DockerUpgrader
     # (W1.1 of docs/PLAN_ONE_CLICK_UPGRADE.md) to pull new gateway
     # images and recreate the container against the mounted

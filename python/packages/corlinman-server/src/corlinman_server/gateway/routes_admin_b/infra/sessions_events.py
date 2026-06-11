@@ -419,16 +419,20 @@ def router() -> APIRouter:
                 },
             )
 
-        # ``iter_events`` is the streaming variant — use it so we don't
-        # buffer the entire turn into memory when ``limit`` is small.
+        # ``iter_events`` with ``limit`` pushes the cap into SQL ``LIMIT``
+        # so the iterator exhausts naturally and its cursor closes inside
+        # the request. NEVER ``break`` a live journal iterator here: an
+        # abandoned aiosqlite cursor's deferred close lands on the worker
+        # thread with a future bound to this request's (possibly
+        # throwaway TestClient-portal) event loop — if that loop is gone
+        # by then, the worker thread dies and every later journal call
+        # deadlocks (the CI 180s/6h py-test hang).
         events: list[dict[str, Any]] = []
         try:
             async for ev in journal.iter_events(
-                turn_id, start_sequence=after_sequence
+                turn_id, start_sequence=after_sequence, limit=limit
             ):
                 events.append(ev)
-                if len(events) >= limit:
-                    break
         except Exception as exc:  # noqa: BLE001 — degrade to empty
             raise HTTPException(
                 status_code=500,
@@ -443,13 +447,15 @@ def router() -> APIRouter:
             # Probe one past the cap so the UI knows whether to ask for
             # more. We don't actually return the probe — it gets
             # re-fetched as the first event of the next page.
+            # ``limit=1`` (not ``break``) so the probe cursor exhausts
+            # and closes inside the request — same no-abandonment rule
+            # as the main query above.
             last_seq = int(events[-1]["sequence"])
             try:
                 async for _ in journal.iter_events(
-                    turn_id, start_sequence=last_seq
+                    turn_id, start_sequence=last_seq, limit=1
                 ):
                     next_cursor = last_seq
-                    break
             except Exception:  # noqa: BLE001 — best-effort
                 next_cursor = None
 
