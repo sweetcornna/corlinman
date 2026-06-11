@@ -1,0 +1,680 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>corlinman wiki — the manual · 手册</title>
+<meta name="description" content="corlinman documentation — install, first run, channels, providers, memory, tools, approvals, console, admin UI, FAQ. 自托管智能体平台手册。">
+<link rel="icon" type="image/png" href="logo.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&family=Noto+Serif+SC:wght@600;900&display=swap" rel="stylesheet">
+<style>
+:root{
+  --space-0:#0a0e1c; --space-1:#060912;
+  --ink:#e9edf9; --ink-2:#b9c0d7; --ink-3:#8d96b4; --ink-4:#5f6886;
+  --current:#5e9bff; --plasma:#a47bff; --tide:#54cdff; --ok:#54d6a4;
+  --glass:rgba(233,237,249,.045); --glass-strong:rgba(233,237,249,.07);
+  --glass-border:rgba(233,237,249,.11); --glass-border-hi:rgba(233,237,249,.22);
+  --serif:"Instrument Serif",ui-serif,Georgia,serif;
+  --serif-cjk:"Noto Serif SC","Songti SC",serif;
+  --sans:"Geist",-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+  --mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --ease-glide:cubic-bezier(.22,1,.36,1);
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{background:var(--space-1);color:var(--ink);font-family:var(--sans);font-size:15.5px;line-height:1.7;-webkit-font-smoothing:antialiased}
+::selection{background:rgba(94,155,255,.35);color:#fff}
+a{color:var(--current);text-decoration:none}
+a:hover{text-decoration:underline}
+:focus-visible{outline:2px solid var(--current);outline-offset:3px;border-radius:4px}
+.bg-static{position:fixed;inset:0;z-index:0;
+  background:
+    radial-gradient(55% 45% at 18% 16%, rgba(94,155,255,.09), transparent 70%),
+    radial-gradient(45% 40% at 86% 70%, rgba(164,123,255,.07), transparent 70%),
+    radial-gradient(120% 100% at 50% 40%, #0b101f 0%, #060912 75%);
+}
+.grain{position:fixed;inset:-50%;width:200%;height:200%;z-index:50;pointer-events:none;opacity:.045;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");}
+
+/* ------- top nav ------- */
+nav{position:fixed;top:18px;left:50%;transform:translateX(-50%);z-index:40;
+  display:flex;align-items:center;gap:22px;padding:9px 11px 9px 14px;border-radius:999px;
+  background:rgba(10,14,28,.6);border:1px solid var(--glass-border);
+  backdrop-filter:blur(18px) saturate(1.3);-webkit-backdrop-filter:blur(18px) saturate(1.3);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.06),0 12px 40px -12px rgba(0,0,0,.6);}
+.nav-brand{display:flex;align-items:center;gap:10px;font-family:var(--mono);font-size:14px;font-weight:500;color:var(--ink)}
+.nav-brand:hover{text-decoration:none}
+.nav-brand img{width:22px;height:22px;image-rendering:pixelated}
+.nav-brand .tag{color:var(--ink-4);font-size:12px}
+.nav-links{display:flex;gap:4px;font-family:var(--mono);font-size:12.5px;color:var(--ink-3)}
+.nav-links a{padding:7px 12px;border-radius:999px;color:var(--ink-3);white-space:nowrap;transition:color .25s,background .25s}
+.nav-links a:hover{color:var(--ink);background:var(--glass-strong);text-decoration:none}
+
+/* ------- shell ------- */
+.shell{position:relative;z-index:2;display:grid;grid-template-columns:248px minmax(0,1fr);gap:56px;
+  width:min(1180px,calc(100% - 48px));margin:0 auto;padding:130px 0 120px}
+aside{position:sticky;top:110px;align-self:start;max-height:calc(100vh - 140px);overflow-y:auto;scrollbar-width:thin}
+.search{width:100%;font-family:var(--mono);font-size:13px;color:var(--ink);
+  background:var(--glass);border:1px solid var(--glass-border);border-radius:10px;
+  padding:10px 12px;outline:none;transition:border-color .3s}
+.search::placeholder{color:var(--ink-4)}
+.search:focus{border-color:rgba(94,155,255,.5)}
+.results{margin-top:10px}
+.results a{display:block;padding:9px 11px;border-radius:10px;border:1px solid var(--glass-border);
+  background:var(--glass);margin-bottom:6px;color:var(--ink-2);font-size:12.5px;line-height:1.45}
+.results a:hover{border-color:var(--glass-border-hi);text-decoration:none}
+.results a b{display:block;color:var(--ink);font-family:var(--mono);font-size:12px;margin-bottom:2px}
+.results a mark{background:rgba(94,155,255,.3);color:var(--ink);border-radius:3px;padding:0 2px}
+.toc{list-style:none;margin-top:22px}
+.toc .grp{font-family:var(--mono);font-size:10.5px;letter-spacing:.24em;text-transform:uppercase;color:var(--ink-4);margin:20px 0 8px 12px}
+.toc a{display:flex;justify-content:space-between;align-items:baseline;gap:8px;
+  padding:7px 12px;border-radius:9px;color:var(--ink-3);font-size:13.5px;transition:all .25s}
+.toc a .zh{font-family:var(--serif-cjk);font-size:12px;color:var(--ink-4)}
+.toc a:hover{color:var(--ink);background:var(--glass);text-decoration:none}
+.toc a.on{color:var(--ink);background:var(--glass-strong);box-shadow:inset 2px 0 0 var(--current)}
+.toc a.on .zh{color:var(--current)}
+
+/* ------- article ------- */
+main{min-width:0}
+article{display:none;max-width:760px}
+article.on{display:block;animation:rise .5s var(--ease-glide)}
+@keyframes rise{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){article.on{animation:none}}
+.crumb{font-family:var(--mono);font-size:11.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--ink-4);margin-bottom:18px}
+.crumb b{color:var(--current);font-weight:500}
+article h1{font-family:var(--serif);font-weight:400;font-size:clamp(2.2rem,4.5vw,3.2rem);line-height:1.08;letter-spacing:-.01em;margin-bottom:8px}
+article h1 .zh{display:block;font-family:var(--serif-cjk);font-weight:600;font-size:.42em;color:var(--ink-3);letter-spacing:.3em;margin-top:10px}
+article .lede{color:var(--ink-2);font-size:16.5px;margin:18px 0 8px}
+article h2{font-family:var(--serif);font-weight:400;font-size:1.55rem;letter-spacing:.005em;color:var(--ink);
+  margin:46px 0 14px;padding-bottom:10px;border-bottom:1px solid var(--glass-border)}
+article h2 .zh{font-family:var(--serif-cjk);font-size:.72em;color:var(--ink-4);margin-left:12px;letter-spacing:.2em}
+article h3{font-family:var(--mono);font-weight:500;font-size:13px;letter-spacing:.14em;text-transform:uppercase;color:var(--current);margin:30px 0 10px}
+article p{color:var(--ink-2);margin:12px 0}
+article ul,article ol{color:var(--ink-2);padding-left:22px;margin:12px 0}
+article li{margin:6px 0}
+article strong{color:var(--ink);font-weight:600}
+code{font-family:var(--mono);font-size:.86em;background:var(--glass-strong);border:1px solid var(--glass-border);
+  border-radius:6px;padding:.12em .4em;color:var(--tide)}
+pre{position:relative;background:rgba(4,6,13,.85);border:1px solid var(--glass-border);border-radius:14px;
+  padding:18px 20px;margin:16px 0;overflow-x:auto;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.04)}
+pre code{background:none;border:none;padding:0;color:var(--ink-2);font-size:13px;line-height:1.75}
+pre .cp{position:absolute;top:10px;right:10px;font-family:var(--mono);font-size:11px;color:var(--ink-3);
+  background:var(--glass);border:1px solid var(--glass-border);border-radius:8px;padding:5px 10px;cursor:pointer;transition:all .3s}
+pre .cp:hover{color:var(--ink);border-color:var(--glass-border-hi)}
+table{width:100%;border-collapse:collapse;margin:16px 0;font-size:13.5px}
+th{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3);
+  text-align:left;padding:10px 12px;border-bottom:1px solid var(--glass-border-hi)}
+td{padding:10px 12px;border-bottom:1px solid var(--glass-border);color:var(--ink-2);vertical-align:top}
+td code{white-space:nowrap}
+.note{border:1px solid var(--glass-border);border-left:3px solid var(--current);border-radius:0 12px 12px 0;
+  background:var(--glass);padding:14px 18px;margin:18px 0;font-size:14px;color:var(--ink-2)}
+.note.warn{border-left-color:#e8b35a}
+.note b{color:var(--ink)}
+.src{margin-top:50px;padding-top:18px;border-top:1px solid var(--glass-border);
+  font-family:var(--mono);font-size:12px;color:var(--ink-4);line-height:2}
+.src a{color:var(--ink-3)}
+.pager{display:flex;justify-content:space-between;gap:14px;margin-top:44px;max-width:760px}
+.pager a{flex:1;border:1px solid var(--glass-border);border-radius:14px;background:var(--glass);
+  padding:14px 18px;color:var(--ink-2);font-size:13.5px;transition:all .35s var(--ease-glide)}
+.pager a:hover{border-color:var(--glass-border-hi);transform:translateY(-2px);text-decoration:none}
+.pager a span{display:block;font-family:var(--mono);font-size:10.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--ink-4);margin-bottom:4px}
+.pager a.next{text-align:right}
+.flow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:20px 0;font-family:var(--mono);font-size:12.5px}
+.flow span{border:1px solid var(--glass-border);background:var(--glass);border-radius:10px;padding:8px 13px;color:var(--ink-2)}
+.flow span.hot{border-color:rgba(94,155,255,.45);color:var(--ink);box-shadow:0 0 22px -8px rgba(94,155,255,.5)}
+.flow i{color:var(--ink-4);font-style:normal}
+
+@media (max-width:960px){
+  .shell{grid-template-columns:1fr;gap:30px;padding-top:110px}
+  aside{position:static;max-height:none}
+  .toc{display:flex;flex-wrap:wrap;gap:4px;margin-top:14px}
+  .toc .grp{width:100%;margin:10px 0 4px 2px}
+  .toc a{border:1px solid var(--glass-border)}
+  .toc a .zh{display:none}
+  nav .tag{display:none}
+}
+</style>
+</head>
+<body>
+<div class="bg-static" aria-hidden="true"></div>
+<div class="grain" aria-hidden="true"></div>
+
+<nav aria-label="main">
+  <a class="nav-brand" href="./"><img src="logo.png" alt="">corlinman <span class="tag">/ wiki</span></a>
+  <div class="nav-links">
+    <a href="./">home</a>
+    <a href="https://corlinman.cornna.xyz">live</a>
+    <a href="https://github.com/sweetcornna/corlinman">github ↗</a>
+  </div>
+</nav>
+
+<div class="shell">
+<aside>
+  <input class="search" id="q" type="search" placeholder="search the manual… 搜索" aria-label="search">
+  <div class="results" id="results"></div>
+  <ul class="toc" id="toc">
+    <li class="grp">start · 起步</li>
+    <li><a href="#/overview">overview <span class="zh">总览</span></a></li>
+    <li><a href="#/install">install <span class="zh">安装</span></a></li>
+    <li><a href="#/first-run">first run <span class="zh">首次启动</span></a></li>
+    <li class="grp">run · 运行</li>
+    <li><a href="#/channels">channels <span class="zh">渠道</span></a></li>
+    <li><a href="#/providers">providers &amp; models <span class="zh">模型</span></a></li>
+    <li><a href="#/memory">memory &amp; rag <span class="zh">记忆</span></a></li>
+    <li><a href="#/tools">tools &amp; skills <span class="zh">工具</span></a></li>
+    <li><a href="#/approvals">approvals <span class="zh">审批</span></a></li>
+    <li class="grp">operate · 运维</li>
+    <li><a href="#/console">console &amp; cli <span class="zh">终端</span></a></li>
+    <li><a href="#/admin">admin ui <span class="zh">后台</span></a></li>
+    <li><a href="#/faq">faq <span class="zh">疑难</span></a></li>
+  </ul>
+</aside>
+
+<main id="doc">
+
+<!-- ============ overview ============ -->
+<article data-route="overview" data-title="Overview">
+<p class="crumb"><b>start</b> / overview</p>
+<h1>What corlinman is.<span class="zh">总览</span></h1>
+<p class="lede">corlinman is a self-hosted intelligent-agent platform: one binary that gives a language model durable memory, real sandboxed tools, seven chat channels, and a human approval gate — running on your own hardware, auditable end to end.</p>
+
+<h2>The loop <span class="zh">回路</span></h2>
+<p>Every request, from any channel, travels the same path:</p>
+<div class="flow">
+  <span>channel</span><i>→</i><span>gateway :6005</span><i>→</i><span class="hot">agent loop</span><i>→</i><span>memory / RAG</span><i>→</i><span>tools (sandbox)</span><i>→</i><span class="hot">approval gate</span><i>→</i><span>provider LLM</span><i>→</i><span>reply</span>
+</div>
+<p>Messages land from QQ, Telegram, Discord, Slack, Feishu, WeChat 公众号 or the built-in web chat. The agent recalls context from hybrid retrieval, reasons with whichever model you bound, fires tools inside a sandboxed plugin runtime, and anything irreversible waits in an approval queue until you say yes.</p>
+
+<h2>The pillars <span class="zh">支柱</span></h2>
+<ul>
+  <li><strong>Durable memory</strong> — per-session history in SQLite plus a knowledge store with FTS5 keyword search, vector index, decay &amp; consolidation. → <a href="#/memory">memory &amp; rag</a></li>
+  <li><strong>Real tools</strong> — sync / async / service plugins in any language, optional Docker sandbox, a skills library, a marketplace. → <a href="#/tools">tools &amp; skills</a></li>
+  <li><strong>Seven channels</strong> — one agent, every room it's invited to. → <a href="#/channels">channels</a></li>
+  <li><strong>Human-in-the-loop</strong> — per-tool approval rules: auto, prompt, or deny. → <a href="#/approvals">approvals</a></li>
+  <li><strong>Operations plane</strong> — a Spatial Glass admin console with live logs, RAG debugging and a theme studio. → <a href="#/admin">admin ui</a></li>
+  <li><strong>One binary</strong> — install in sixty seconds, upgrade in place, China mirrors built in. → <a href="#/install">install</a></li>
+</ul>
+
+<h2>At a glance <span class="zh">速览</span></h2>
+<table>
+  <tr><th>version</th><td>v1.19.1 (2026-06-11)</td></tr>
+  <tr><th>license</th><td>MIT</td></tr>
+  <tr><th>runtime</th><td>Python 3.12+ · Docker or native systemd</td></tr>
+  <tr><th>gateway</th><td>port 6005 (override <code>CORLINMAN_PORT</code>)</td></tr>
+  <tr><th>data</th><td><code>/opt/corlinman/data</code> (docker volume) or <code>~/.corlinman</code> (native, <code>CORLINMAN_DATA_DIR</code>)</td></tr>
+</table>
+<p class="src">sources: <a href="https://github.com/sweetcornna/corlinman/blob/main/README.md">README.md</a> · <a href="https://github.com/sweetcornna/corlinman/blob/main/docs/architecture.md">docs/architecture.md</a></p>
+</article>
+
+<!-- ============ install ============ -->
+<article data-route="install" data-title="Install">
+<p class="crumb"><b>start</b> / install</p>
+<h1>Install in sixty seconds.<span class="zh">安装</span></h1>
+<p class="lede">One script handles preflight checks, Docker or native mode, the QQ sidecar, China mirrors, and a health gate that won't report success until the gateway actually answers.</p>
+
+<h2>Quickstart <span class="zh">一键安装</span></h2>
+<pre><code>curl -fsSL https://raw.githubusercontent.com/sweetcornna/corlinman/main/deploy/install.sh | bash</code></pre>
+<p>Default is <strong>Docker mode</strong>. For native (systemd) mode with a version pin:</p>
+<pre><code>curl -fsSL https://raw.githubusercontent.com/sweetcornna/corlinman/main/deploy/install.sh | \
+  bash -s -- --mode native --version v1.19.1</code></pre>
+
+<h2>What preflight checks <span class="zh">预检</span></h2>
+<ul>
+  <li>Disk ≥ 5 GB, RAM ≥ 1 GB</li>
+  <li>Port <code>6005</code> free (override with <code>CORLINMAN_PORT</code>) — fails fast with the holding PID</li>
+  <li>Docker Engine 24+ with compose v2 (docker mode only)</li>
+  <li>Health gate: polls <code>GET /health</code> until HTTP 200 (timeout <code>CORLINMAN_HEALTH_TIMEOUT</code>, default 60 s)</li>
+</ul>
+
+<h2>Docker vs native <span class="zh">两种模式</span></h2>
+<table>
+  <tr><th></th><th>docker</th><th>native</th></tr>
+  <tr><td>requires</td><td>Docker Engine 24+, compose v2</td><td>Python 3.12+, Node/pnpm (skip UI build with <code>--skip-ui</code>)</td></tr>
+  <tr><td>install target</td><td>image pull or local buildx</td><td>clone to <code>/opt/corlinman/repo</code> + systemd unit</td></tr>
+  <tr><td>data</td><td>volume, default <code>/opt/corlinman/data</code></td><td><code>/opt/corlinman/data</code> or <code>~/.corlinman</code></td></tr>
+  <tr><td>upgrade</td><td>pull/rebuild + restart</td><td><code>uv sync --frozen</code> + unit restart</td></tr>
+</table>
+
+<h2>QQ sidecar <span class="zh">QQ 边车</span></h2>
+<p>NapCat (OneBot v11) is bundled <strong>by default</strong> in both modes — docker layers <code>docker-compose.qq.yml</code>, native provisions an AppImage + systemd unit. Opt out with <code>--without-qq</code>. Pin the version with <code>NAPCAT_VERSION</code> (default <code>v4.18.4</code>).</p>
+
+<h2>China mirrors <span class="zh">国内加速</span></h2>
+<p>Mirror mode auto-enables when <code>pypi.org</code> TTFB exceeds 3 seconds, or force it with <code>--china</code>. Override individual mirrors with <code>CN_PIP_INDEX</code>, <code>CN_GH_PROXY</code>, <code>CN_DOCKER_MIRROR</code>.</p>
+<table>
+  <tr><th>pypi</th><td>清华 TUNA — <code>pypi.tuna.tsinghua.edu.cn/simple</code></td></tr>
+  <tr><th>docker hub</th><td>DaoCloud — <code>docker.m.daocloud.io</code></td></tr>
+  <tr><th>github</th><td><code>gh-proxy.com</code> (clone + raw)</td></tr>
+  <tr><th>npm</th><td><code>registry.npmmirror.com</code></td></tr>
+</table>
+
+<h2>Upgrade <span class="zh">升级</span></h2>
+<pre><code>bash deploy/install.sh --upgrade
+# pin a release:
+bash deploy/install.sh --upgrade --version v1.19.1</code></pre>
+<p>Upgrades <strong>never touch</strong> <code>$CORLINMAN_DATA_DIR</code>. For production, pin the compose image tag: <code>CORLINMAN_TAG=v1.19.1</code>.</p>
+<div class="note warn"><b>Native-mode caveat:</b> re-running <code>install.sh</code> <em>without</em> <code>--upgrade</code> rewrites the systemd unit and compose override. Keep local customizations in a systemd drop-in (<code>/etc/systemd/system/corlinman-gateway.service.d/override.conf</code>) and always upgrade with <code>--upgrade</code>.</div>
+<p class="src">sources: <a href="https://github.com/sweetcornna/corlinman/blob/main/deploy/install.sh">deploy/install.sh</a> · <a href="https://github.com/sweetcornna/corlinman/blob/main/README.md">README.md</a></p>
+</article>
+
+<!-- ============ first-run ============ -->
+<article data-route="first-run" data-title="First run">
+<p class="crumb"><b>start</b> / first run</p>
+<h1>First run, first five minutes.<span class="zh">首次启动</span></h1>
+<p class="lede">Log in, rotate the seed password, connect a model — through the web wizard or entirely from the terminal.</p>
+
+<h2>Log in <span class="zh">登录</span></h2>
+<p>Open <code>http://localhost:6005/login</code> (or your server's IP). First boot seeds <code>admin</code> / <code>root</code> — the UI immediately redirects to <code>/account/security</code> and a red banner persists until you change the password. <code>corlinman doctor</code> also warns while the seed credential is alive.</p>
+
+<h2>Connect a model <span class="zh">接入模型</span></h2>
+<p><strong>Path A — the wizard.</strong> Visit <code>/onboard</code>: a 4-step flow (account → connect LLM → pick models → confirm) that writes <code>config.toml</code> atomically.</p>
+<p><strong>Path B — no key yet?</strong> At step 2, click <em>Skip — use mock provider</em>. It writes <code>[providers.mock] enabled = true</code> and echoes prompts back so you can explore every screen end-to-end.</p>
+<p><strong>Headless servers.</strong> <code>corlinman init</code> is the CLI equivalent: walks the password change, provider key paste and model alias write, then restarts the gateway.</p>
+
+<h2>Verify with doctor <span class="zh">体检</span></h2>
+<pre><code>corlinman doctor          # human output
+corlinman doctor --json   # CI-friendly</code></pre>
+<p>Nine local checks: data-dir writability, config parseability, Python 3.12+, required packages, config loader, provider registry, a P1+P2 boot simulation, <code>must_change_password</code>, and <code>port_bindable</code>. Results are <code>ok</code> or <code>warn</code> — never a hard fail.</p>
+
+<h2>Profiles <span class="zh">多实例</span></h2>
+<p>Each profile is a self-contained agent: its own persona (<code>SOUL.md</code>), distilled memory (<code>MEMORY.md</code>), learned user facts (<code>USER.md</code>), session history (<code>state.db</code>) and skill library. The protected <code>default</code> profile lives at <code>~/.corlinman/profiles/default/</code>. Use one per workspace — research bot, coding pair, weekend project.</p>
+
+<h2>Share live status cards <span class="zh">状态卡</span></h2>
+<p>Set <code>[server] public_url</code> (e.g. <code>https://bot.example.com</code>) and every channel reply can append a link to <code>GET /status/{token}</code> — a public, signed, real-time page streaming the agent's work (tokens, tool calls, timings). Toggle with <code>[channels] status_url_in_replies</code> (default on). If <code>public_url</code> is unset, the origin is learned from the first request through <code>allowed_public_origins</code> + <code>trusted_proxies</code> and persisted to <code>&lt;data_dir&gt;/public_origin</code>.</p>
+<p class="src">sources: <a href="https://github.com/sweetcornna/corlinman/blob/main/docs/quickstart.md">docs/quickstart.md</a> · <a href="https://github.com/sweetcornna/corlinman/blob/main/docs/profiles.md">docs/profiles.md</a> · <a href="https://github.com/sweetcornna/corlinman/blob/main/docs/config.example.toml">docs/config.example.toml</a></p>
+</article>
+
+<!-- ============ channels ============ -->
+<article data-route="channels" data-title="Channels">
+<p class="crumb"><b>run</b> / channels</p>
+<h1>One agent, seven rooms.<span class="zh">渠道</span></h1>
+<p class="lede">Every channel feeds the same loop with the same memory, tools and approvals. Configure each under <code>[channels.*]</code> in <code>config.toml</code>, or from <code>/admin/channels</code> — status lights, connection reset, inline keyword editors, recent transcripts.</p>
+
+<h2>QQ — NapCat / OneBot v11 <span class="zh">QQ</span></h2>
+<p>Bundled by default (see <a href="#/install">install</a>). A forward-WebSocket bridge with image/audio multimodal, per-group keyword filters, "正在输入…" indicator, heartbeat watcher, and a durable inbox that leaves a breadcrumb if the gateway crashes mid-reply.</p>
+<table>
+  <tr><th><code>CORLINMAN_NAPCAT_URL</code></th><td>NapCat WebUI + scan-login API — docker <code>http://napcat:6099</code>, native <code>http://127.0.0.1:6099</code></td></tr>
+  <tr><th><code>QQ_WS_URL</code></th><td>OneBot v11 forward-WS — docker <code>ws://napcat:3001</code>, native <code>ws://127.0.0.1:3001</code></td></tr>
+  <tr><th><code>QQ_ADMIN_IDS</code></th><td>comma-separated admin QQ IDs for in-band scan-login (empty = web admin only)</td></tr>
+  <tr><th><code>NAPCAT_WEBUI_TOKEN</code></th><td>shared NapCat WebUI secret</td></tr>
+</table>
+<pre><code>[channels.qq]
+enabled  = true
+ws_url   = "ws://napcat:3001"
+self_ids = [123456789]
+rate_limit = { group_per_min = 20, sender_per_min = 5 }</code></pre>
+
+<h2>Telegram <span class="zh">电报</span></h2>
+<p>Long-poll bot adapter (webhook optional with <code>TELEGRAM_WEBHOOK_SECRET</code>). Real-time typing indicator plus a <strong>mutable spinner</strong> that edits one placeholder message in place as the turn progresses: 🧠 思考中… → 🔧 调用工具 → 📎 已发送文件 → ✍️ 生成回复中… → final reply. File replies (HTML/PDF/images/voice) via the <code>send_attachment</code> builtin.</p>
+<pre><code>[channels.telegram]
+enabled   = true
+bot_token = { env = "TELEGRAM_BOT_TOKEN" }   # from @BotFather
+allowed_chat_ids = []          # empty = allow all
+require_mention_in_groups = false
+rate_limit = { chat_per_min = 20, sender_per_min = 5 }</code></pre>
+
+<h2>Discord · Slack · Feishu <span class="zh">三兄弟</span></h2>
+<p>Configured under <code>[channels.discord]</code> / <code>[channels.slack]</code> / <code>[channels.feishu]</code> with the same routing, rate-limit and chat-service plumbing. All three share the Telegram-style mutable-spinner status core, and since v1.19 outbound text is <strong>capability-aware</strong>: markdown renders natively on Discord/Slack/Feishu instead of being flattened.</p>
+
+<h2>WeChat 公众号 &amp; QQ official bot <span class="zh">公众号</span></h2>
+<p>Both shipped in v1.1.0 and are managed from <code>/admin/channels</code>. See the channel pages in the admin console for credential entry and webhook URLs.</p>
+
+<h2>Web chat <span class="zh">网页聊天</span></h2>
+<p><code>/admin/chat</code> is a first-class channel driven by the same loop: token streaming, collapsible reasoning blocks, tool-call cards, nested sub-agent cards, inline approval prompts, artifact side-panel with sandboxed preview, branch/edit/regenerate, token + cost meter, in-conversation search, and session resume from <code>/admin/sessions</code>.</p>
+
+<h2>Scheduler — the eighth channel <span class="zh">定时任务</span></h2>
+<p>Cron jobs dispatch agent turns on a schedule; sessions are keyed <code>scheduler:&lt;name&gt;</code> so approval rules can whitelist them.</p>
+<pre><code>[[scheduler.jobs]]
+name     = "daily-brief"
+cron     = "0 0 8 * * * *"        # sec min hour day month weekday year
+timezone = "Asia/Shanghai"
+action   = { type = "run_agent", prompt = "生成今日简报" }</code></pre>
+<p>Actions: <code>run_agent</code>, <code>run_tool</code>, or <code>subprocess</code>. The admin page shows a live next-trigger countdown, manual trigger button and execution history.</p>
+<p class="src">sources: <a href="https://github.com/sweetcornna/corlinman/blob/main/docs/config.example.toml">docs/config.example.toml</a> · <a href="https://github.com/sweetcornna/corlinman/blob/main/deploy/.env.template">deploy/.env.template</a> · <a href="https://github.com/sweetcornna/corlinman/blob/main/README.md">README.md</a></p>
+</article>
+
+<!-- ============ providers ============ -->
+<article data-route="providers" data-title="Providers & models">
+<p class="crumb"><b>run</b> / providers &amp; models</p>
+<h1>Any model you trust.<span class="zh">模型与供应商</span></h1>
+<p class="lede">Providers are free-form named entries in <code>[providers.*]</code>; a <code>kind</code> field picks the wire shape. Aliases give models friendly names; agents and even single requests can pin their own model.</p>
+
+<h2>Production providers <span class="zh">可用</span></h2>
+<table>
+  <tr><th>provider</th><th>kind</th><th>chat</th><th>tools</th><th>embeddings</th></tr>
+  <tr><td>Anthropic (Claude)</td><td><code>anthropic</code></td><td>✓ streaming</td><td>✓</td><td>—</td></tr>
+  <tr><td>OpenAI</td><td><code>openai</code></td><td>✓ streaming</td><td>✓</td><td>✓</td></tr>
+  <tr><td>Google (Gemini)</td><td><code>google</code></td><td>✓ streaming</td><td>✓</td><td>✓</td></tr>
+  <tr><td>DeepSeek</td><td><code>deepseek</code></td><td>✓ streaming</td><td>✓</td><td>—</td></tr>
+  <tr><td>Qwen (阿里)</td><td><code>qwen</code></td><td>✓ streaming</td><td>✓</td><td>—</td></tr>
+  <tr><td>GLM (智谱)</td><td><code>glm</code></td><td>✓ streaming</td><td>✓</td><td>—</td></tr>
+  <tr><td>anything OpenAI-shaped</td><td><code>openai_compatible</code></td><td>✓ via <code>base_url</code></td><td>✓</td><td>✓</td></tr>
+</table>
+<p>Mistral, Cohere, Together, Groq, Replicate, Bedrock and Azure kinds are declared but raise <code>NotImplementedError</code> today — route them through an <code>openai_compatible</code> proxy instead. Legacy <code>kind = "newapi"</code> entries are silently routed through the <code>openai_compatible</code> adapter.</p>
+
+<h2>Configuring a provider <span class="zh">配置</span></h2>
+<pre><code>[providers.anthropic]
+kind    = "anthropic"
+api_key = { env = "ANTHROPIC_API_KEY" }   # or { value = "sk-..." } (redacted by `config show`)
+enabled = true
+
+# local vLLM / Ollama / SiliconFlow / any OpenAI-shaped endpoint
+[providers.local]
+kind     = "openai_compatible"
+api_key  = { env = "LOCAL_API_KEY" }
+base_url = "http://localhost:8000/v1"
+enabled  = true</code></pre>
+
+<h2>Model aliases <span class="zh">别名</span></h2>
+<pre><code>[models]
+default = "smart"
+
+[models.aliases]
+smart = "claude-opus-4-7"          # shorthand — provider inferred
+cheap = "gpt-4o-mini"
+
+[models.aliases.gpt4o-via-router]  # full form — pin provider + params
+model    = "openai/gpt-4o"
+provider = "openrouter"
+params   = { temperature = 0.3 }</code></pre>
+
+<h2>Per-agent binding <span class="zh">按 agent 绑定</span></h2>
+<p>Agent cards (<code>agents/*.md</code>) carry a <code>model</code> frontmatter field that pins that persona to a model or alias; a single request can also override via its <code>model</code> + <code>provider_hint</code>. Manage everything visually at <code>/admin/models</code>.</p>
+
+<h2>Embeddings <span class="zh">向量</span></h2>
+<pre><code>[embedding]
+provider  = "openai"               # must match a [providers.*] key
+model     = "text-embedding-3-small"
+dimension = 1536
+enabled   = true
+
+# CN-resident alternative:
+# provider = "siliconflow"  model = "BAAI/bge-large-zh-v1.5"  dimension = 1024</code></pre>
+<p>Omit the section (or <code>enabled = false</code>) and retrieval falls back to BM25-only. Anthropic has no embedding endpoint — use an OpenAI-kind provider here.</p>
+<p class="src">sources: <a href="https://github.com/sweetcornna/corlinman/blob/main/docs/config.example.toml">docs/config.example.toml</a> · <a href="https://github.com/sweetcornna/corlinman/blob/main/docs/providers.md">docs/providers.md</a></p>
+</article>
+
+<!-- ============ memory ============ -->
+<article data-route="memory" data-title="Memory & RAG">
+<p class="crumb"><b>run</b> / memory &amp; rag</p>
+<h1>Context that survives restarts.<span class="zh">记忆与检索</span></h1>
+<p class="lede">Two memory systems work together: per-session conversation history, and a knowledge store with hybrid retrieval that decays, consolidates, and can be debugged visually.</p>
+
+<h2>Conversation memory <span class="zh">会话</span></h2>
+<p>Append-only message history in SQLite (<code>sessions.sqlite</code>), keyed by channel binding or a client-supplied <code>session_key</code>, trimmed to a configurable cap. Long sessions can be compacted with <code>/compact</code> (summary-based context compaction).</p>
+
+<h2>Knowledge memory <span class="zh">知识库</span></h2>
+<ul>
+  <li><strong>Keyword</strong> — SQLite FTS5 (BM25), available today, debuggable at <code>/admin/rag</code>.</li>
+  <li><strong>Vector</strong> — HNSW index (<code>vector/index.usearch</code>) + chunk store (<code>vector/chunks.sqlite</code>), fused with BM25 via Reciprocal Rank Fusion; cross-encoder rerank (<code>bge-reranker-v2-m3</code>) on the roadmap.</li>
+</ul>
+<pre><code>[rag]
+top_k       = 8
+bm25_weight = 1.0
+hnsw_weight = 1.0
+rrf_k       = 60
+epa_enabled = true     # Tag-Memo EPA boost</code></pre>
+
+<h2>Decay &amp; consolidation <span class="zh">衰减与固化</span></h2>
+<p>Chunk scores decay on a half-life (<code>[memory.decay]</code>: <code>half_life_hours</code>, <code>floor_score</code>, <code>recall_boost</code> — recalling a chunk resets its clock). A periodic job promotes chunks above <code>promotion_threshold</code> into an immune <code>consolidated</code> namespace (<code>[memory.consolidation]</code>). Old context fades; load-bearing facts harden.</p>
+
+<h2>Tag Memo <span class="zh">标签备忘</span></h2>
+<p>The <code>corlinman_tagmemo</code> package fits an EPA basis over tags and feeds a <code>chunk_epa</code> cache that boosts RRF fusion — tune with <code>epa_base_tag_boost</code> and <code>epa_boost_range</code> under <code>[rag]</code>.</p>
+
+<h2>Debugging retrieval <span class="zh">调试</span></h2>
+<p><code>/admin/rag</code> shows stats cards (chunks indexed, storage size, last update), a debug-query box with per-chunk score bars, tag filters, per-chunk metadata (source path, timestamp), and a confirm-gated FTS5 rebuild trigger.</p>
+<p class="src">sources: <a href="https://github.com/sweetcornna/corlinman/blob/main/docs/architecture.md">docs/architecture.md</a> · <a href="https://github.com/sweetcornna/corlinman/blob/main/docs/config.example.toml">docs/config.example.toml</a></p>
+</article>
+
+<!-- ============ tools ============ -->
+<article data-route="tools" data-title="Tools & skills">
+<p class="crumb"><b>run</b> / tools &amp; skills</p>
+<h1>Hands, not just words.<span class="zh">工具与技能</span></h1>
+<p class="lede">Plugins give the agent executable tools in any language; skills teach it procedures in Markdown; the marketplace hot-plugs both. Subagents fan work out under hard caps.</p>
+
+<h2>Plugin runtime <span class="zh">插件</span></h2>
+<table>
+  <tr><th>type</th><th>transport</th><th>lifetime</th><th>use for</th></tr>
+  <tr><td><code>sync</code></td><td>JSON-RPC stdio</td><td>spawned per call</td><td>calculator, HTTP fetch, shell one-shots</td></tr>
+  <tr><td><code>async</code></td><td>stdio + <code>/plugin-callback</code> webhook</td><td>task_id → webhook back</td><td>long jobs: image gen, LLM sub-calls</td></tr>
+  <tr><td><code>service</code></td><td>gRPC over UDS</td><td>long-lived supervised child</td><td>stateful: DB pools, Git</td></tr>
+</table>
+<p>Any language that can speak the stdio/gRPC JSON contract — Python, Node, Go, Rust, bash. Test-invoke any tool from <code>/admin/plugins</code> with a schema-driven form.</p>
+
+<h2>The sandbox <span class="zh">沙箱</span></h2>
+<p>Optional Docker sandboxing wraps plugin processes with memory/CPU limits, a read-only root filesystem, network isolation and capability drops:</p>
+<pre><code>docker compose -f docker/compose/docker-compose.yml \
+  -f docker/compose/docker-compose.sandbox.yml up -d
+# or at install time:
+install.sh --enable-docker-sandbox      # CORLINMAN_ENABLE_DOCKER_SANDBOX=1</code></pre>
+<p>Untrusted plugins can additionally demand human approval before every call — see <a href="#/approvals">approvals</a>.</p>
+
+<h2>Skills <span class="zh">技能</span></h2>
+<p>Procedural knowledge as <code>SKILL.md</code> bundles (frontmatter + Markdown), stored per-profile under <code>profiles/{name}/skills/</code> and indexed at startup (<code>[skills] autoload = true</code>). ~17 skills ship bundled. <code>/admin/skills</code> has an Installed tab (bundled rows read-only) and a Browse Hub tab that proxies ClawHub for one-click community installs with SSE progress.</p>
+
+<h2>Marketplace <span class="zh">市场</span></h2>
+<p>Three installable kinds — skills, MCP servers, plugins — from a GitHub-backed registry:</p>
+<pre><code>[marketplace]
+registry_repo  = "sweetcornna/corlinman-marketplace"
+registry_ref   = "main"
+default_source = "github"          # or "clawhub"
+
+[marketplace.github_proxy]         # China acceleration
+mode   = "auto"                    # off / auto / on
+preset = "ghproxy"                 # ghproxy / jsdelivr / mirror / custom</code></pre>
+<p>Skills auto-activate within the 30-second registry refresh; MCP servers and plugins install <em>staged</em> and stay inert until you explicitly enable them.</p>
+
+<h2>Subagents <span class="zh">子智能体</span></h2>
+<p>The agent can fan out work with <code>subagent.spawn</code> / <code>spawn_many</code> / <code>spawn_inline</code>, governed by supervisor caps:</p>
+<pre><code>[subagent]
+max_concurrent_per_parent = 10
+max_concurrent_per_tenant = 15
+max_depth                 = 1
+max_wall_seconds_ceiling  = 300</code></pre>
+<p>Watch live dispatches at <code>/admin/subagents</code>. Agent cards (<code>agents/*.md</code>) define reusable personas with their own model bindings.</p>
+
+<h2>Document generation <span class="zh">文档生成</span></h2>
+<p><code>corlinman-md2pdf</code> converts Markdown to clean, CJK-correct PDFs — used by the agent to send real files back through channels (e.g. Telegram's <code>send_attachment</code>).</p>
+<p class="src">sources: <a href="https://github.com/sweetcornna/corlinman/blob/main/docs/plugin-authoring.md">docs/plugin-authoring.md</a> · <a href="https://github.com/sweetcornna/corlinman/blob/main/docs/marketplace.md">docs/marketplace.md</a> · <a href="https://github.com/sweetcornna/corlinman/blob/main/docs/config.example.toml">docs/config.example.toml</a></p>
+</article>
+
+<!-- ============ approvals ============ -->
+<article data-route="approvals" data-title="Approvals">
+<p class="crumb"><b>run</b> / approvals</p>
+<h1>Govern, don't hope.<span class="zh">人在回路</span></h1>
+<p class="lede">Every tool call the model emits is matched against approval rules <em>before</em> the plugin runtime ever sees it. Irreversible actions wait for a human.</p>
+
+<h2>Rules <span class="zh">规则</span></h2>
+<pre><code>[[approvals.rules]]
+plugin = "file-ops"
+tool   = "file-ops.write"     # omit to cover every tool on the plugin
+mode   = "prompt"             # auto / prompt / deny
+
+[[approvals.rules]]
+plugin = "shell"
+mode   = "prompt"
+allow_session_keys = ["scheduler:daily-brief", "scheduler:git-sync"]</code></pre>
+<table>
+  <tr><th>mode</th><th>behavior</th></tr>
+  <tr><td><code>auto</code></td><td>pass through immediately (an explicit allow)</td></tr>
+  <tr><td><code>prompt</code></td><td>row lands in <code>pending_approvals</code> (SQLite); the call blocks until you Approve/Deny in <code>/admin/approvals</code>, or the 5-minute TTL elapses and the model receives <code>approval_timeout</code></td></tr>
+  <tr><td><code>deny</code></td><td>structured rejection returned to the model; no plugin process ever spawns</td></tr>
+</table>
+
+<h2>Matching <span class="zh">匹配</span></h2>
+<p>Most-specific-first: a <code>plugin + tool</code> rule beats a plugin-wide rule; with no matching rule the call passes (default-auto). <code>allow_session_keys</code> lets trusted sessions — like whitelisted scheduler jobs — bypass a <code>prompt</code> rule.</p>
+
+<h2>Where you approve <span class="zh">在哪批</span></h2>
+<p><code>/admin/approvals</code> streams pending calls live (SSE) with a history tab. In the web chat, approval prompts also appear inline in the conversation — Approve once, Always for this session, or Deny without leaving the thread.</p>
+<div class="note"><b>Design intent:</b> the gate sits between the model and the runtime, so it covers every channel and every tool — including ones installed later from the marketplace.</div>
+<p class="src">sources: <a href="https://github.com/sweetcornna/corlinman/blob/main/docs/config.example.toml">docs/config.example.toml</a> · <a href="https://github.com/sweetcornna/corlinman/blob/main/README.md">README.md</a></p>
+</article>
+
+<!-- ============ console ============ -->
+<article data-route="console" data-title="Console & CLI">
+<p class="crumb"><b>operate</b> / console &amp; cli</p>
+<h1>The terminal is a channel too.<span class="zh">命令行</span></h1>
+<p class="lede">A full interactive console with the entire brain — memory, tools, subagents, persona — or a thin client attached to a running gateway.</p>
+
+<h2>corlinman console <span class="zh">交互</span></h2>
+<pre><code>corlinman console [PROMPT] [--attach URL] [--model M] [--agent CARD]
+                  [--session KEY] [--data-dir DIR] [-p/--print]</code></pre>
+<ul>
+  <li><strong>Embedded mode</strong> (default) — boots the full agent servicer on a private per-process socket: builtin tools, subagent spawning, memory, persona all apply.</li>
+  <li><strong>Attach mode</strong> (<code>--attach http://host:6005</code>) — OpenAI-compatible SSE client to a running gateway; session state rides the <code>X-Session-Key</code> header.</li>
+</ul>
+<p>The REPL keeps a fixed bottom input, queues what you type while a turn is running, and <strong>Ctrl+C interrupts the turn</strong> instead of killing the process. Tool progress renders at <code>off | new | all | verbose</code>.</p>
+
+<h2>Slash commands <span class="zh">斜杠命令</span></h2>
+<pre><code>/help /new /reset /model /sessions /title /usage
+/status /resume /compact /verbose /clear /persona</code></pre>
+<p><code>/model</code> opens a two-stage picker; <code>/compact</code> does summary-based context compaction; <code>/resume</code> continues a past session. The same command set works in the web chat composer.</p>
+
+<h2>One-shot &amp; pipes <span class="zh">管道</span></h2>
+<pre><code>corlinman console -p "summarize deploy logs from this week"
+# prompt in → final text on stdout; pipe-friendly</code></pre>
+<p>Smart routing can send trivially simple turns to a cheaper model: <code>[console] small_fast_model</code> plus opt-in <code>[console.auto_route]</code>.</p>
+
+<h2>Setup &amp; health from the terminal <span class="zh">无界面</span></h2>
+<pre><code>corlinman init       # headless onboarding: password, keys, model alias
+corlinman doctor     # nine local checks, --json for CI</code></pre>
+<p class="src">sources: <a href="https://github.com/sweetcornna/corlinman/blob/main/docs/PLAN_CLI_CONSOLE.md">docs/PLAN_CLI_CONSOLE.md</a> · <a href="https://github.com/sweetcornna/corlinman/blob/main/README.md">README.md</a></p>
+</article>
+
+<!-- ============ admin ============ -->
+<article data-route="admin" data-title="Admin UI">
+<p class="crumb"><b>operate</b> / admin ui</p>
+<h1>The operations plane.<span class="zh">后台</span></h1>
+<p class="lede">A Spatial Glass console — Apple-style liquid-glass optics, day &amp; night themes, a ⌘K command palette, and SSE-driven pages that update as the agent thinks.</p>
+
+<h2>Core pages <span class="zh">十大核心页</span></h2>
+<table>
+  <tr><td><code>/admin</code></td><td><strong>Dashboard</strong> — stat cards, live activity feed, 7-check system health</td></tr>
+  <tr><td><code>/admin/chat</code></td><td><strong>Chat</strong> — full conversation client: streaming, reasoning blocks, tool cards, artifacts, cost meter</td></tr>
+  <tr><td><code>/admin/plugins</code></td><td><strong>Plugins</strong> — status dots, schema-driven test-invoke forms</td></tr>
+  <tr><td><code>/admin/agents</code></td><td><strong>Agents</strong> — Monaco editor for agent cards with frontmatter validation</td></tr>
+  <tr><td><code>/admin/skills</code></td><td><strong>Skills</strong> — installed + hub browse/install</td></tr>
+  <tr><td><code>/admin/rag</code></td><td><strong>RAG</strong> — stats, debug queries with score bars, rebuild</td></tr>
+  <tr><td><code>/admin/channels</code></td><td><strong>Channels</strong> — per-adapter status lights, reset, keyword editor, transcripts</td></tr>
+  <tr><td><code>/admin/scheduler</code></td><td><strong>Scheduler</strong> — job table, next-trigger countdown, history</td></tr>
+  <tr><td><code>/admin/approvals</code></td><td><strong>Approvals</strong> — live pending queue + history</td></tr>
+  <tr><td><code>/admin/models</code></td><td><strong>Models</strong> — provider cards, inline alias CRUD</td></tr>
+</table>
+<p>A Developer-Settings toggle reveals the extended set: Credentials, Config (Monaco TOML editor with schema hints), Logs (virtualized SSE stream with level/subsystem filters), System (version check + one-click upgrade with progress bar), Sessions (turn-timeline replay), Profiles, Persona, Subagents, Marketplace, Evolution, Hooks and more.</p>
+
+<h2>Theme Studio <span class="zh">主题工作室</span></h2>
+<p>Since v1.19.0 you can recolour the whole console — accent hue, glass opacity, design tokens — and changes apply instantly across every page. Day and night themes both pass WCAG AA contrast; the UI ships bilingual (zh-CN / en).</p>
+
+<h2>Config hot-reload <span class="zh">热加载</span></h2>
+<p><code>config.toml</code> is watched; edits apply atomically via <code>POST /admin/config</code> after validation. Providers, models, approvals, scheduler, RAG, marketplace, logging and memory settings apply live; <code>bind</code>, <code>port</code> and channel enablement return <code>requires_restart: true</code>.</p>
+<p class="src">sources: <a href="https://github.com/sweetcornna/corlinman/blob/main/README.md">README.md</a> · <a href="https://github.com/sweetcornna/corlinman/blob/main/docs/architecture.md">docs/architecture.md</a></p>
+</article>
+
+<!-- ============ faq ============ -->
+<article data-route="faq" data-title="FAQ">
+<p class="crumb"><b>operate</b> / faq</p>
+<h1>When something looks wrong.<span class="zh">疑难排解</span></h1>
+<p class="lede">The short list of real-world fixes, straight from the runbook.</p>
+
+<h2>I forgot the admin password <span class="zh">忘记密码</span></h2>
+<p>Stop the gateway, delete the <code>[admin]</code> block from <code>config.toml</code>, restart. The seed kicks back in — you're on <code>admin / root</code> again with forced rotation.</p>
+
+<h2>/onboard says "already onboarded" <span class="zh">向导跳过</span></h2>
+<p>The wizard short-circuits once <code>[admin]</code> plus at least one enabled <code>[providers.*]</code> block exists. To re-run: stop the gateway, back up the config, strip the <code>[providers.*]</code> blocks (or the whole file — it re-seeds), restart.</p>
+
+<h2>/login returns 503 <span class="zh">登录 503</span></h2>
+<p>A brief 503 means the admin state isn't wired yet — the gateway is still warming up; wait two seconds and retry. A <em>persistent</em> 503 with <code>session_store_missing</code> is a data-dir permissions problem: <code>chown</code> <code>&lt;data_dir&gt;/admin-sessions.sqlite</code> back to the process owner.</p>
+
+<h2>Where are the logs? <span class="zh">日志在哪</span></h2>
+<pre><code># docker
+docker logs corlinman --tail 50
+# native
+journalctl -u corlinman-gateway -f</code></pre>
+<p>With <code>[logging] file_rolling = true</code>, daily files land in <code>&lt;data_dir&gt;/logs/corlinman.log.YYYY-MM-DD</code>. Format defaults to structured JSON; level is configurable (<code>trace…error</code>). The same stream feeds <code>/admin/logs</code>.</p>
+
+<h2>Preflight failed <span class="zh">预检失败</span></h2>
+<ul>
+  <li><strong>disk &lt; 5 GB / RAM &lt; 1 GB</strong> — hard requirements; free space or resize.</li>
+  <li><strong>port 6005 held</strong> — the error names the PID; stop it or set <code>CORLINMAN_PORT</code>.</li>
+  <li><strong>docker missing / too old</strong> — needs Engine 24+; or switch to <code>--mode native</code>.</li>
+</ul>
+
+<h2>My systemd edits disappeared after reinstall <span class="zh">单元被覆盖</span></h2>
+<p>Running <code>install.sh</code> without <code>--upgrade</code> rewrites the unit and compose override. Always upgrade with <code>--upgrade</code>, and keep customizations in a drop-in: <code>/etc/systemd/system/corlinman-gateway.service.d/override.conf</code>. Since v1.10.0 the gateway runs as the non-privileged <code>corlinman</code> user.</p>
+
+<h2>Will upgrading eat my data? <span class="zh">升级丢数据吗</span></h2>
+<p>No. <code>bash deploy/install.sh --upgrade</code> never touches <code>$CORLINMAN_DATA_DIR</code> — docker pulls/rebuilds and restarts; native re-syncs the venv (<code>uv sync --frozen</code>) and restarts the unit. Pin releases with <code>--version vX.Y.Z</code> / <code>CORLINMAN_TAG</code>.</p>
+
+<h2>Which config edits need a restart? <span class="zh">哪些要重启</span></h2>
+<p>Only <code>bind</code>, <code>port</code> and channel enablement. Everything else — providers, models, approvals, scheduler, RAG, marketplace, logging, memory — hot-reloads atomically after validation.</p>
+<p class="src">sources: <a href="https://github.com/sweetcornna/corlinman/blob/main/docs/quickstart.md">docs/quickstart.md</a> · <a href="https://github.com/sweetcornna/corlinman/blob/main/README.md">README.md</a></p>
+</article>
+
+<div class="pager" id="pager"></div>
+</main>
+</div>
+
+<script>
+(function(){
+"use strict";
+var ORDER = ["overview","install","first-run","channels","providers","memory","tools","approvals","console","admin","faq"];
+var articles = {};
+document.querySelectorAll("article[data-route]").forEach(function(a){ articles[a.dataset.route] = a; });
+var tocLinks = Array.prototype.slice.call(document.querySelectorAll("#toc a"));
+var pager = document.getElementById("pager");
+
+function route(){
+  var r = (location.hash || "#/overview").replace(/^#\//,"");
+  if(!articles[r]) r = "overview";
+  Object.keys(articles).forEach(function(k){ articles[k].classList.toggle("on", k===r); });
+  tocLinks.forEach(function(l){ l.classList.toggle("on", l.getAttribute("href") === "#/"+r); });
+  var i = ORDER.indexOf(r), h = "";
+  if(i>0){ var p=articles[ORDER[i-1]]; h += '<a href="#/'+ORDER[i-1]+'"><span>← previous</span>'+p.dataset.title+'</a>'; } else h += "<span></span>";
+  if(i<ORDER.length-1){ var n=articles[ORDER[i+1]]; h += '<a class="next" href="#/'+ORDER[i+1]+'"><span>next →</span>'+n.dataset.title+'</a>'; }
+  pager.innerHTML = h;
+  document.title = articles[r].dataset.title + " — corlinman wiki";
+  window.scrollTo(0,0);
+}
+window.addEventListener("hashchange",route);
+route();
+
+/* copy buttons on code blocks */
+document.querySelectorAll("pre").forEach(function(pre){
+  var b = document.createElement("button");
+  b.className = "cp"; b.textContent = "copy"; b.setAttribute("aria-label","copy code");
+  b.addEventListener("click",function(){
+    var t = pre.querySelector("code").innerText;
+    (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject()).then(function(){
+      b.textContent = "copied ✓"; setTimeout(function(){ b.textContent = "copy"; },1600);
+    }).catch(function(){ b.textContent = "select & copy"; });
+  });
+  pre.appendChild(b);
+});
+
+/* search */
+var q = document.getElementById("q"), results = document.getElementById("results");
+var index = ORDER.map(function(r){
+  var a = articles[r];
+  return { r:r, title:a.dataset.title, text:a.textContent.replace(/\s+/g," ") };
+});
+function esc(s){ return s.replace(/[&<>]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;"}[c];}); }
+q.addEventListener("input",function(){
+  var v = q.value.trim().toLowerCase();
+  if(v.length < 2){ results.innerHTML=""; return; }
+  var out = [];
+  index.forEach(function(it){
+    var pos = it.text.toLowerCase().indexOf(v);
+    if(pos === -1) return;
+    var start = Math.max(0,pos-44), snip = it.text.substr(start, 120);
+    var rx = new RegExp("("+v.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+")","ig");
+    out.push('<a href="#/'+it.r+'"><b>'+esc(it.title)+'</b>…'+esc(snip).replace(rx,"<mark>$1</mark>")+'…</a>');
+  });
+  results.innerHTML = out.slice(0,8).join("") || '<a style="pointer-events:none">no matches · 无结果</a>';
+});
+results.addEventListener("click",function(){ q.value=""; results.innerHTML=""; });
+})();
+</script>
+</body>
+</html>
