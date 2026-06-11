@@ -34,6 +34,7 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 import pytest_asyncio
@@ -684,6 +685,99 @@ async def test_replay_empty_turn_returns_empty_list(
     body = resp.json()
     assert body["events"] == []
     assert body["next_cursor"] is None
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.asyncio
+async def test_replay_pagination_never_abandons_a_cursor(
+    app: FastAPI,
+    journal: AgentJournal,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression for the CI deadlock this file was infamous for
+    (pytest-timeout at 180s; historically a 6h-cap hang): the JSON
+    replay route must never abandon a live aiosqlite cursor by
+    ``break``-ing out of ``journal.iter_events``.
+
+    Mechanism pinned here: under the sync ``TestClient`` every request
+    runs on a throwaway anyio portal event loop. The old route broke out
+    of a live iterator at ``limit`` (plus a one-row probe), leaving
+    suspended generators holding open cursors. Their deferred
+    ``cursor.close()`` reached the aiosqlite worker queue with a future
+    bound to that portal loop; when the worker serviced the close after
+    the loop was gone, ``call_soon_threadsafe`` raised
+    ``RuntimeError: Event loop is closed`` *inside the worker's
+    exception handler* — killing the worker thread. Every later journal
+    call then awaited a future nobody resolves, and the next request
+    deadlocked in ``portal.call`` → ``waiter.acquire()`` (the exact CI
+    traceback).
+
+    We make the race deterministic instead of hoping for CI scheduling:
+    every cursor close is prefixed with a blocking sleep item on the
+    worker queue, guaranteeing any *abandoned* close is serviced only
+    after its portal loop closed. With the break-safe iterator and the
+    LIMIT-pushdown route this test stays green; with the old code the
+    worker dies after request 1 and request 2 times out.
+    """
+    import time
+
+    import aiosqlite
+
+    tid = await journal.begin_turn("sess-page", "x")
+    assert tid is not None
+    for seq in range(10):
+        await journal.append_event(
+            _make_envelope(
+                turn_id=str(tid),
+                session_key="sess-page",
+                sequence=seq,
+                text=f"t-{seq}",
+            )
+        )
+
+    # White-box: reach the aiosqlite worker thread so we can both delay
+    # it and assert it survived.
+    conn = journal.backend._conn  # noqa: SLF001 — deliberate white-box
+    worker = conn._thread  # noqa: SLF001
+    real_close = aiosqlite.Cursor.close
+
+    async def slow_close(self: aiosqlite.Cursor) -> None:
+        # A ``(future=None, fn)`` item is legal: the worker just runs it.
+        self._conn._tx.put_nowait(  # noqa: SLF001
+            (None, lambda: time.sleep(0.25))
+        )
+        await real_close(self)
+
+    monkeypatch.setattr(aiosqlite.Cursor, "close", slow_close)
+
+    client = TestClient(app)
+
+    def _page(after: int | None) -> Any:
+        url = f"/admin/sessions/sess-page/turns/{tid}/events?limit=4"
+        if after is not None:
+            url += f"&after_sequence={after}"
+        return client.get(url)
+
+    # Request 1 paginates (limit=4 < 10-event backlog) — the old code
+    # abandoned two cursors here. ``to_thread`` + ``wait_for`` so a
+    # regression FAILS in seconds instead of wedging the whole suite.
+    resp = await asyncio.wait_for(asyncio.to_thread(_page, None), timeout=20.0)
+    assert resp.status_code == 200
+    assert [e["sequence"] for e in resp.json()["events"]] == [0, 1, 2, 3]
+
+    # Let the (deliberately late) worker drain any deferred closes — with
+    # the old code this is where it died on the closed portal loop.
+    await asyncio.sleep(1.0)
+    assert worker.is_alive(), (
+        "aiosqlite worker thread died — a route abandoned a live cursor "
+        "whose deferred close landed on a closed portal event loop"
+    )
+
+    # Request 2 is the one that deadlocked in CI (dead worker = futures
+    # nobody resolves → portal.call blocks forever).
+    resp2 = await asyncio.wait_for(asyncio.to_thread(_page, 3), timeout=20.0)
+    assert resp2.status_code == 200
+    assert [e["sequence"] for e in resp2.json()["events"]] == [4, 5, 6, 7]
 
 
 # ---------------------------------------------------------------------------
