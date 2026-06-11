@@ -253,6 +253,347 @@ async def test_last_event_id_catches_up_from_journal(
     assert 2 not in seqs
 
 
+@pytest.mark.asyncio
+async def test_no_duplicate_when_event_emitted_during_catch_up(
+    state: AdminState,
+    journal: AgentJournal,
+    emitter: JournalBackedEmitter,
+) -> None:
+    """An event committed to the journal AND pushed to the live queue
+    while catch-up is paging must be delivered exactly once — the live
+    loop drops what catch-up already sent (high-water dedup)."""
+    tid = await journal.begin_turn("sess-1", "hello")
+    assert tid is not None
+    for seq in range(3):
+        await journal.append_event(
+            _make_envelope(turn_id=str(tid), sequence=seq, text=f"old-{seq}")
+        )
+
+    gen = _sse_stream(
+        state, "sess-1", catch_up_turn_id=str(tid), catch_up_sequence=0
+    )
+
+    async def _producer() -> None:
+        # After catch-up has subscribed, push a seq the journal already
+        # holds (seq 2) — simulating the replay/live overlap window — then
+        # a genuinely new one (seq 3).
+        for _ in range(50):
+            if emitter.subscriber_count("sess-1") > 0:
+                break
+            await asyncio.sleep(0.02)
+        await emitter.emit(_make_envelope(turn_id=str(tid), sequence=2, text="old-2"))
+        await emitter.emit(_make_envelope(turn_id=str(tid), sequence=3, text="new-3"))
+
+    producer = asyncio.create_task(_producer())
+    try:
+        body = await asyncio.wait_for(
+            _drain_frames(gen, until_count_of="new-3", count=1), timeout=5.0
+        )
+    finally:
+        producer.cancel()
+        with contextlib_suppress():
+            await producer
+        await gen.aclose()
+
+    frames = _parse_sse_frames(body)
+    seqs = [
+        int(f["id"].split(":", 1)[1])
+        for f in frames
+        if f.get("event") == "TextDelta"
+    ]
+    assert seqs.count(2) == 1, f"seq 2 duplicated: {seqs}"  # not replayed twice
+    assert 3 in seqs
+
+
+@pytest.mark.asyncio
+async def test_no_duplicate_on_bare_resume_during_catch_up(
+    state: AdminState,
+    journal: AgentJournal,
+    emitter: JournalBackedEmitter,
+) -> None:
+    """The replay/live overlap must dedup for a BARE resume too. Dedup is
+    scoped to the turn catch-up actually replays (the resolved latest
+    turn), so an event committed to that turn mid-replay — landing in both
+    a journal page and the live queue — is delivered exactly once, even
+    though the client sent only a bare sequence (no composite turn)."""
+    tid = await journal.begin_turn("sess-1", "hello")
+    assert tid is not None
+    for seq in range(3):
+        await journal.append_event(
+            _make_envelope(turn_id=str(tid), sequence=seq, text=f"old-{seq}")
+        )
+
+    # Bare resume: sequence only, no turn — catch-up resolves the latest
+    # turn (tid) and dedup must scope to it.
+    gen = _sse_stream(state, "sess-1", catch_up_turn_id=None, catch_up_sequence=0)
+
+    async def _producer() -> None:
+        for _ in range(50):
+            if emitter.subscriber_count("sess-1") > 0:
+                break
+            await asyncio.sleep(0.02)
+        # seq 2 already lives in the journal (replay/live overlap); seq 3
+        # is genuinely new — both on the resolved turn.
+        await emitter.emit(_make_envelope(turn_id=str(tid), sequence=2, text="old-2"))
+        await emitter.emit(_make_envelope(turn_id=str(tid), sequence=3, text="new-3"))
+
+    producer = asyncio.create_task(_producer())
+    try:
+        body = await asyncio.wait_for(
+            _drain_frames(gen, until_count_of="new-3", count=1), timeout=5.0
+        )
+    finally:
+        producer.cancel()
+        with contextlib_suppress():
+            await producer
+        await gen.aclose()
+
+    frames = _parse_sse_frames(body)
+    seqs = [
+        int(f["id"].split(":", 1)[1])
+        for f in frames
+        if f.get("event") == "TextDelta"
+    ]
+    assert seqs.count(2) == 1, f"seq 2 duplicated on bare resume: {seqs}"
+    assert 3 in seqs
+
+
+@pytest.mark.asyncio
+async def test_live_only_delta_in_journal_gap_survives(
+    state: AdminState,
+    journal: AgentJournal,
+    emitter: JournalBackedEmitter,
+) -> None:
+    """A delta the emitter live-fanned but whose deferred durable write was
+    dropped (a journal GAP) must still reach the client. Catch-up dedups by
+    the EXACT replayed sequences, not a ``seq <= high-water`` range, so a
+    live-only seq sitting below a later replayed seq is not mistaken for a
+    replay duplicate and discarded."""
+    tid = await journal.begin_turn("sess-1", "hello")
+    assert tid is not None
+    # Journal has a hole at seq 3 (its batched write "failed"); 4 and 5 did
+    # persist, so a range high-water (5) would pass over the missing 3.
+    for seq in (0, 1, 2, 4, 5):
+        await journal.append_event(
+            _make_envelope(turn_id=str(tid), sequence=seq, text=f"old-{seq}")
+        )
+
+    gen = _sse_stream(
+        state, "sess-1", catch_up_turn_id=str(tid), catch_up_sequence=0
+    )
+    # Drain the catch-up frames (seqs 1,2,4,5) first so the replayed set is
+    # fixed BEFORE any live event is emitted — and confirm the gap (3) was
+    # never replayed.
+    catch_up = b""
+    for _ in range(4):
+        catch_up += await asyncio.wait_for(gen.__anext__(), timeout=5.0)
+    cu_seqs = [
+        int(f["id"].split(":", 1)[1])
+        for f in _parse_sse_frames(catch_up)
+        if f.get("event") == "TextDelta"
+    ]
+    assert cu_seqs == [1, 2, 4, 5]  # the gap at 3 is absent from the replay
+
+    # seq 3 was only ever live-fanned (its journal write was dropped); seq 6
+    # is genuinely new. Neither is in the replayed set, so both must survive.
+    await emitter.emit(_make_envelope(turn_id=str(tid), sequence=3, text="live-3"))
+    await emitter.emit(_make_envelope(turn_id=str(tid), sequence=6, text="new-6"))
+    live = b""
+    try:
+        for _ in range(2):
+            live += await asyncio.wait_for(gen.__anext__(), timeout=5.0)
+    finally:
+        await gen.aclose()
+
+    texts = [
+        json.loads(f["data"])["payload"]["text"]
+        for f in _parse_sse_frames(live)
+        if f.get("event") == "TextDelta"
+    ]
+    assert "live-3" in texts, texts  # gap delta NOT suppressed by a range check
+    assert "new-6" in texts
+
+
+@pytest.mark.asyncio
+async def test_bounded_dedup_still_suppresses_recent_overlap(
+    state: AdminState,
+    journal: AgentJournal,
+    emitter: JournalBackedEmitter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dedup memory is bounded to the most-recent ``DEDUP_WINDOW`` replayed
+    sequences, so a long turn's whole backlog never stays resident. The
+    bound is safe because a replay/live duplicate must still be queued, so
+    its sequence is always within the window — proven here by suppressing a
+    recent overlap even when the window is far smaller than the backlog."""
+    monkeypatch.setattr(sessions_events, "DEDUP_WINDOW", 2)
+    tid = await journal.begin_turn("sess-1", "hello")
+    assert tid is not None
+    for seq in range(6):  # backlog 0..5 — far larger than the 2-wide window
+        await journal.append_event(
+            _make_envelope(turn_id=str(tid), sequence=seq, text=f"old-{seq}")
+        )
+
+    gen = _sse_stream(
+        state, "sess-1", catch_up_turn_id=str(tid), catch_up_sequence=0
+    )
+
+    async def _producer() -> None:
+        for _ in range(50):
+            if emitter.subscriber_count("sess-1") > 0:
+                break
+            await asyncio.sleep(0.02)
+        # seq 5 is the most-recent replayed row (inside the 2-wide window) —
+        # the replay/live overlap; seq 6 is genuinely new.
+        await emitter.emit(_make_envelope(turn_id=str(tid), sequence=5, text="old-5"))
+        await emitter.emit(_make_envelope(turn_id=str(tid), sequence=6, text="new-6"))
+
+    producer = asyncio.create_task(_producer())
+    try:
+        body = await asyncio.wait_for(
+            _drain_frames(gen, until_count_of="new-6", count=1), timeout=5.0
+        )
+    finally:
+        producer.cancel()
+        with contextlib_suppress():
+            await producer
+        await gen.aclose()
+
+    frames = _parse_sse_frames(body)
+    seqs = [
+        int(f["id"].split(":", 1)[1])
+        for f in frames
+        if f.get("event") == "TextDelta"
+    ]
+    assert seqs.count(5) == 1, f"recent overlap seq 5 duplicated: {seqs}"
+    assert 6 in seqs
+
+
+@pytest.mark.asyncio
+async def test_bare_resume_does_not_dedup_a_new_turn(
+    state: AdminState,
+    journal: AgentJournal,
+    emitter: JournalBackedEmitter,
+) -> None:
+    """A bare ``Last-Event-ID`` (sequence only, no turn) is not turn-scoped,
+    so it must never seed live dedup. Even after catch-up raises the
+    high-water mark, a fresh turn's early events — whose sequences restart
+    from 0 and fall *below* that mark — must still be delivered. Dropping
+    them was the bug where a bare resume wrongly suppressed a new turn.
+    """
+    tid = await journal.begin_turn("sess-1", "hello")
+    assert tid is not None
+    for seq in range(10):
+        await journal.append_event(
+            _make_envelope(turn_id=str(tid), sequence=seq, text=f"old-{seq}")
+        )
+
+    # Bare resume: no composite turn, sequence only. Catch-up resolves the
+    # latest turn and replays seq 6..9 → the high-water mark becomes 9.
+    gen = _sse_stream(state, "sess-1", catch_up_turn_id=None, catch_up_sequence=5)
+
+    async def _producer() -> None:
+        for _ in range(50):
+            if emitter.subscriber_count("sess-1") > 0:
+                break
+            await asyncio.sleep(0.02)
+        # A brand-new turn whose sequences restart at 0 — all below the
+        # high-water mark left by catch-up.
+        for seq in range(3):
+            await emitter.emit(
+                _make_envelope(turn_id="turn-new", sequence=seq, text=f"new-{seq}")
+            )
+
+    producer = asyncio.create_task(_producer())
+    try:
+        body = await asyncio.wait_for(
+            _drain_frames(gen, until_count_of="new-2", count=1), timeout=5.0
+        )
+    finally:
+        producer.cancel()
+        with contextlib_suppress():
+            await producer
+        await gen.aclose()
+
+    frames = _parse_sse_frames(body)
+    texts = [
+        json.loads(f["data"])["payload"]["text"]
+        for f in frames
+        if f.get("event") == "TextDelta"
+    ]
+    # Catch-up still delivered the old turn's tail …
+    assert "old-9" in texts
+    # … and the new turn's early events survived despite low sequences.
+    assert "new-0" in texts
+    assert "new-1" in texts
+    assert "new-2" in texts
+
+
+@pytest.mark.asyncio
+async def test_aclose_mid_catch_up_is_bounded(
+    state: AdminState,
+    journal: AgentJournal,
+) -> None:
+    """Regression for the CI 6-hour hang: abandoning the stream right
+    after the first catch-up frame must close promptly. The old code
+    yielded from inside ``journal.iter_events`` — ``aclose()`` then tore
+    down the aiosqlite cursor mid-iteration, which could deadlock the DB
+    worker thread. With the buffered replay, ``aclose`` lands on a plain
+    list iteration and finishes immediately.
+    """
+    tid = await journal.begin_turn("sess-1", "hello")
+    assert tid is not None
+    for seq in range(50):
+        await journal.append_event(
+            _make_envelope(turn_id=str(tid), sequence=seq, text=f"old-{seq}")
+        )
+
+    gen = _sse_stream(
+        state, "sess-1", catch_up_turn_id=str(tid), catch_up_sequence=0
+    )
+    # Pull exactly one frame, then abandon the stream mid-replay.
+    first = await asyncio.wait_for(gen.__anext__(), timeout=5.0)
+    assert b"TextDelta" in first
+    await asyncio.wait_for(gen.aclose(), timeout=5.0)
+
+
+@pytest.mark.asyncio
+async def test_catch_up_pages_deliver_every_event(
+    state: AdminState,
+    journal: AgentJournal,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch-up replays the WHOLE backlog in bounded pages — with the
+    page size lowered well below the backlog, every missed event is still
+    delivered in order (no silent gap past a cap)."""
+    monkeypatch.setattr(sessions_events, "CATCH_UP_PAGE_SIZE", 3)
+    tid = await journal.begin_turn("sess-1", "hello")
+    assert tid is not None
+    for seq in range(10):
+        await journal.append_event(
+            _make_envelope(turn_id=str(tid), sequence=seq, text=f"old-{seq}")
+        )
+
+    # start_sequence=0 → iter_events yields sequence > 0 (events 1..9).
+    gen = _sse_stream(
+        state, "sess-1", catch_up_turn_id=str(tid), catch_up_sequence=0
+    )
+    frames: list[bytes] = []
+    try:
+        for _ in range(9):  # spans 3 pages of 3
+            frames.append(await asyncio.wait_for(gen.__anext__(), timeout=5.0))
+    finally:
+        await asyncio.wait_for(gen.aclose(), timeout=5.0)
+
+    parsed = _parse_sse_frames(b"".join(frames))
+    seqs = [
+        int(f["id"].split(":", 1)[1])
+        for f in parsed
+        if f.get("event") == "TextDelta"
+    ]
+    assert seqs == list(range(1, 10))  # all delivered, in order, across pages
+
+
 # ---------------------------------------------------------------------------
 # Heartbeat
 # ---------------------------------------------------------------------------

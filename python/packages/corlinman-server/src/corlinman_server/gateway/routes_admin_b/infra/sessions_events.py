@@ -29,6 +29,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+from collections import deque
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Request
@@ -43,6 +45,8 @@ from corlinman_server.gateway.routes_admin_b.state import (
 # SSE heartbeat cadence — same 10s opencode uses for its ``/event``
 # stream. Keeps proxies / load balancers from idling the connection
 # while the agent is silent between turns.
+_log = logging.getLogger("corlinman.gateway.admin.sessions_events")
+
 SSE_HEARTBEAT_SECONDS: float = 10.0
 
 # JSON replay default + cap. Default is the "show me the whole turn"
@@ -51,6 +55,24 @@ SSE_HEARTBEAT_SECONDS: float = 10.0
 # response.
 REPLAY_DEFAULT_LIMIT: int = 500
 REPLAY_MAX_LIMIT: int = 5000
+
+# Page size for the live-SSE catch-up replay. The backlog is delivered
+# in chunks of this many events so at most this many are held in memory
+# at once (paging delivers the whole range — no events are dropped),
+# and each page's journal cursor is drained fully before any frame is
+# yielded so it always closes cleanly.
+CATCH_UP_PAGE_SIZE: int = 1000
+
+# Upper bound on the live-dedup sequence set (see ``_sse_stream``). A
+# replay/live duplicate must still be sitting in the subscriber queue
+# (capacity 512, ``DEFAULT_QUEUE_MAXSIZE``), undrained while we page, so
+# its sequence is within the most-recent ~512 replayed rows. This window
+# (4× that, for margin) keeps the dedup state bounded on an
+# indefinitely-open admin SSE connection instead of retaining a long
+# turn's entire backlog. If the queue overflowed during catch-up its
+# events were already dropped and the client reconnects, so dedup beyond
+# this window is moot.
+DEDUP_WINDOW: int = 2048
 
 # Past-turns listing default + cap. 50 matches the default pill-row
 # the session-detail page renders on first load; the 200 cap keeps a
@@ -179,17 +201,90 @@ async def _sse_stream(
         if resume_turn is None and catch_up_sequence >= 0:
             resume_turn = await _resolve_latest_turn_id(journal, session_key)
 
+        # Live-dedup state, scoped to the turn catch-up actually replays
+        # (``resume_turn``) and the EXACT sequences it delivered. Because we
+        # subscribe BEFORE replaying, an event committed mid-replay can land
+        # in BOTH a journal page AND the live queue; we drop that single
+        # duplicate by membership in ``replayed_seqs``.
+        #
+        # We track the exact set, NOT a ``seq <= high-water`` range: the
+        # emitter fans every event out the instant it is emitted but defers
+        # the durable write (batched), and a batch-write failure drops a
+        # delta from the journal while it was already live-fanned. A range
+        # check would then suppress that live-only delta (its seq sits below
+        # a later persisted event's high-water) and the client would lose
+        # it — membership only suppresses what catch-up genuinely re-sent.
+        #
+        # Scoping to ``resume_turn`` (not a global seq set) keeps a
+        # brand-new turn's early events flowing — their turn id never
+        # matches. Holds for bare resumes too: ``resume_turn`` is the
+        # resolved latest turn, so its own replayed events dedup while a
+        # *new* turn is untouched.
+        #
+        # The set is BOUNDED to the most-recent ``DEDUP_WINDOW`` replayed
+        # sequences (FIFO eviction via ``_seen_order``) so a long turn's
+        # full backlog never stays resident on an indefinitely-open SSE
+        # connection. Correct because a duplicate must still be queued
+        # (queue capacity 512 ≪ window), so its sequence is always within
+        # the retained window — older replayed rows can never collide.
+        dedup_turn = resume_turn  # turn catch-up replays (composite or resolved)
+        replayed_seqs: set[int] = set()  # recent sequences catch-up delivered
+        _seen_order: deque[int] = deque(maxlen=DEDUP_WINDOW)  # FIFO eviction order
+
         if resume_turn is not None and catch_up_sequence >= 0:
+            # Replay the catch-up backlog in bounded PAGES. Design points:
+            #
+            # 1) No deadlock (the CI 6-hour py-test hang): each page is a
+            #    COMPLETE ``LIMIT``-bounded query drained to exhaustion
+            #    before any frame is yielded — the cursor always closes
+            #    cleanly. We never ``break`` a live cursor (that runs the
+            #    aiosqlite finalizer mid-iteration) and never ``yield``
+            #    while a cursor is open (a disconnect there tears it down
+            #    under cancellation). No shielded background task either —
+            #    that would orphan an unobserved task on disconnect.
+            #
+            # 2) No lost events: paging delivers the WHOLE
+            #    ``sequence > last_event_id`` range, bounded memory.
+            #
+            # 3) Termination: snapshot ``upper`` once so an active,
+            #    high-volume turn's moving tail can't be chased forever —
+            #    events past the snapshot are delivered by the live queue.
+            seq_cursor = catch_up_sequence
             try:
-                async for ev in journal.iter_events(
-                    resume_turn, start_sequence=catch_up_sequence
-                ):
+                upper = await journal.latest_sequence(resume_turn)
+            except Exception:  # noqa: BLE001 — best-effort
+                upper = -1
+
+            while seq_cursor < upper:
+                try:
+                    page = [
+                        ev
+                        async for ev in journal.iter_events(
+                            resume_turn,
+                            start_sequence=seq_cursor,
+                            limit=CATCH_UP_PAGE_SIZE,
+                        )
+                    ]
+                except Exception:  # noqa: BLE001 — best-effort catch-up
+                    # A partial replay beats tearing the connection down;
+                    # the live loop below still picks up fresh envelopes.
+                    break
+                if not page:
+                    break
+                for ev in page:
                     yield _format_sse_frame(ev)
-            except Exception:  # noqa: BLE001 — best-effort catch-up
-                # A partial replay is preferable to tearing the
-                # connection down — the live loop below still picks up
-                # fresh envelopes.
-                pass
+                    ev_seq = ev.get("sequence")
+                    if isinstance(ev_seq, int) and ev_seq not in replayed_seqs:
+                        # Bounded insert: evict the oldest tracked seq once
+                        # the window is full (deque drops it on append).
+                        if len(_seen_order) == DEDUP_WINDOW:
+                            replayed_seqs.discard(_seen_order[0])
+                        _seen_order.append(ev_seq)
+                        replayed_seqs.add(ev_seq)
+                last_seq = page[-1].get("sequence")
+                if not isinstance(last_seq, int) or last_seq <= seq_cursor:
+                    break  # defensive — no forward progress
+                seq_cursor = last_seq
 
         # ---------- live ----------
         while True:
@@ -202,12 +297,33 @@ async def _sse_stream(
                 # are silently ignored by ``EventSource`` clients.
                 yield b": keepalive\n\n"
                 continue
+            # Drop an envelope the catch-up replay already delivered: an
+            # event committed while we paged lands in both a journal page
+            # AND this queue. Membership in ``replayed_seqs`` (exact, not a
+            # range) suppresses only what catch-up genuinely re-sent, so a
+            # live-only delta missing from the journal — or a fresh turn's
+            # event (different turn id) — always survives.
+            if dedup_turn is not None and replayed_seqs:
+                ev_turn = getattr(envelope, "turn_id", None)
+                ev_seq = getattr(envelope, "sequence", None)
+                if (
+                    ev_turn is not None
+                    and str(ev_turn) == str(dedup_turn)
+                    and isinstance(ev_seq, int)
+                    and ev_seq in replayed_seqs
+                ):
+                    continue
             yield _format_sse_frame(envelope.to_json())
     except asyncio.CancelledError:
         # Client disconnect — propagate after cleanup.
         raise
     finally:
-        await unsubscribe()
+        # Cleanup must never wedge the connection slot (or a test
+        # driver's ``aclose()``): bound it and swallow stragglers.
+        try:
+            await asyncio.wait_for(unsubscribe(), timeout=2.0)
+        except Exception:  # noqa: BLE001 — best-effort teardown
+            pass
 
 
 # ---------------------------------------------------------------------------

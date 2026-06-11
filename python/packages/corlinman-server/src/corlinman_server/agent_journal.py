@@ -366,16 +366,25 @@ class AgentJournal:
         return await self._backend.load_events(turn_id)
 
     def iter_events(
-        self, turn_id: str | int, start_sequence: int = 0
+        self, turn_id: str | int, start_sequence: int = 0, limit: int | None = None
     ) -> AsyncIterator[dict[str, Any]]:
         """Async-iterate events with ``sequence > start_sequence``.
 
         SSE catch-up path: a reconnecting client with
         ``Last-Event-ID: <seq>`` gets only the events it missed.
         ``start_sequence=0`` (default) yields every event, equivalent to
-        :meth:`load_events` but unbuffered.
+        :meth:`load_events` but unbuffered. ``limit`` caps the rows so the
+        catch-up can page in bounded chunks.
         """
-        return self._backend.iter_events(turn_id, start_sequence)
+        return self._backend.iter_events(turn_id, start_sequence, limit)
+
+    async def latest_sequence(self, turn_id: str | int) -> int:
+        """Highest stored ``sequence`` for ``turn_id`` (``-1`` if none).
+
+        Snapshotted by the SSE catch-up as a fixed upper bound so paging
+        terminates instead of chasing an active turn's moving tail.
+        """
+        return await self._backend.latest_sequence(turn_id)
 
     async def get_session_turn_ids(
         self, session_key: str, limit: int = 50

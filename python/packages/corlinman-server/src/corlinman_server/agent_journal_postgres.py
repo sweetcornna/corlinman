@@ -897,7 +897,7 @@ class PostgresJournalBackend:
         return []
 
     async def iter_events(  # type: ignore[misc]
-        self, turn_id: str | int, start_sequence: int = 0
+        self, turn_id: str | int, start_sequence: int = 0, limit: int | None = None
     ) -> AsyncIterator[dict[str, Any]]:  # pragma: no cover
         # Async-generator stub — yields nothing. The ``if False`` keeps
         # this as a generator function (so the caller can ``async for``
@@ -905,6 +905,11 @@ class PostgresJournalBackend:
         if False:
             yield {}
         return
+
+    async def latest_sequence(self, turn_id: str | int) -> int:  # pragma: no cover
+        # SQLite is the source of truth for the SSE catch-up (W1.3);
+        # the Postgres deployment doesn't wire it yet.
+        return -1
 
     async def get_session_turn_ids(
         self, session_key: str, limit: int = 50
