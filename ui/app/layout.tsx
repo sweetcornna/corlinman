@@ -41,6 +41,17 @@ const BOOT = `
   if (qs) { try { localStorage.setItem(tk, t); } catch(_){} }
   el.setAttribute("data-theme", t);
   if (t==="dark") el.classList.add("dark"); else el.classList.remove("dark");
+  // Custom accent (corlinman-accent = oklch hue). Mirrors lib/accent.ts
+  // buildAccentCss — keep the two generators in sync. Injected before
+  // first paint so the chosen theme color never flashes the default.
+  var ah=localStorage.getItem("corlinman-accent");
+  if(ah!==null&&ah!==""&&isFinite(Number(ah))){
+    var H=((Number(ah)%360)+360)%360, H2=(H+55)%360, H3=(H-15+360)%360, HH=Math.round((H-18+360)%360);
+    var st=document.createElement("style");
+    st.id="sg-accent-override";
+    st.textContent=":root{--sg-accent:oklch(0.5 0.16 "+H+");--sg-accent-soft:oklch(0.5 0.16 "+H+" / 0.1);--sg-accent-glow:oklch(0.55 0.16 "+H+" / 0.3);--sg-accent-2:oklch(0.47 0.2 "+H2+");--sg-accent-2-soft:oklch(0.47 0.2 "+H2+" / 0.1);--sg-accent-3:oklch(0.55 0.1 "+H3+");--sg-accent-3-soft:oklch(0.55 0.1 "+H3+" / 0.1);--sg-grad-text:linear-gradient(115deg, oklch(0.46 0.17 "+H+"), oklch(0.52 0.12 "+H3+") 45%, oklch(0.44 0.21 "+H2+"));--primary:"+HH+" 70% 45%;--ring:"+HH+" 75% 55%;}.dark{--sg-accent:oklch(0.78 0.13 "+H+");--sg-accent-soft:oklch(0.78 0.13 "+H+" / 0.14);--sg-accent-glow:oklch(0.78 0.13 "+H+" / 0.45);--sg-accent-2:oklch(0.7 0.17 "+H2+");--sg-accent-2-soft:oklch(0.7 0.17 "+H2+" / 0.14);--sg-accent-3:oklch(0.85 0.07 "+H3+");--sg-accent-3-soft:oklch(0.85 0.07 "+H3+" / 0.14);--sg-grad-text:linear-gradient(115deg, oklch(0.86 0.11 "+H+"), oklch(0.92 0.05 "+H3+") 45%, oklch(0.76 0.17 "+H2+"));--primary:"+HH+" 75% 70%;--ring:"+HH+" 80% 70%;}";
+    document.head.appendChild(st);
+  }
 }catch(e){}})();
 `;
 

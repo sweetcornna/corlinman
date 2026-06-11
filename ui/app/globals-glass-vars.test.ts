@@ -91,6 +91,8 @@ describe("blur budget (repo-wide static check)", () => {
     "components/chat/emoji-picker.tsx",
     "components/chat/markdown-message.tsx", // lightbox
     "components/cmdk-palette.tsx",
+    "components/ui/accent-picker.tsx", // theme-color popover
+
     "components/layout/profile-switcher.tsx", // popover
     "components/providers.tsx", // sonner toasts
     "components/sessions/replay-dialog.tsx",

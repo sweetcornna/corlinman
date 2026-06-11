@@ -11,6 +11,7 @@ import { TenantSwitcher } from "./tenant-switcher";
 import { useMobileDrawer } from "./mobile-drawer-context";
 import { UpdateBubble } from "@/components/system/update-bubble";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
+import { AccentPicker } from "@/components/ui/accent-picker";
 import { cn } from "@/lib/utils";
 
 /**
@@ -56,6 +57,7 @@ export function TopNav() {
         <HealthDot className="hidden md:inline-flex" />
         <UpdateBubble className="hidden md:inline-flex" />
         <LanguageToggle />
+        <AccentPicker />
         <ThemeToggle />
       </div>
     </header>
