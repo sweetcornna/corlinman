@@ -220,7 +220,7 @@ class EmbeddedBrain:
             self._tools_enabled = True
         except Exception as exc:  # noqa: BLE001 — fall back, keep the console usable
             log.warning("console.embedded.agent_unavailable err=%s", exc)
-            await self._start_direct()
+            await self._start_direct(data_dir)
         return self
 
     async def _start_agent(self, data_dir: Path) -> None:
@@ -294,7 +294,7 @@ class EmbeddedBrain:
         self.descriptor = f"embedded full-agent ({bind})"
         log.info("console.embedded.serving bind=%s", bind)
 
-    async def _start_direct(self) -> None:
+    async def _start_direct(self, data_dir: Path) -> None:
         """Fallback path: provider streaming only, no tools."""
         try:
             from corlinman_providers import ProviderRegistry  # noqa: PLC0415
@@ -313,7 +313,10 @@ class EmbeddedBrain:
             ) from exc
 
         specs, aliases, _subagent = _load_config()
-        registry = ProviderRegistry(specs)
+        # data_dir is load-bearing: OAuth-aware adapters (Anthropic today)
+        # locate their token files under <data_dir>/.oauth/ — same as the
+        # standalone server's _ReloadingProviderResolver.
+        registry = ProviderRegistry(specs, data_dir=data_dir)
         models_config = {
             "aliases": {
                 name: {
