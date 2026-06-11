@@ -84,6 +84,7 @@ export function UpgradeConfirmModal({
   const [typed, setTyped] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
   const [inFlight, setInFlight] = React.useState<InFlightInfo | null>(null);
+  const [unavailable, setUnavailable] = React.useState(false);
 
   // Reset transient state when the modal toggles open.
   React.useEffect(() => {
@@ -91,6 +92,7 @@ export function UpgradeConfirmModal({
       setTyped("");
       setSubmitting(false);
       setInFlight(null);
+      setUnavailable(false);
     }
   }, [open]);
 
@@ -101,6 +103,7 @@ export function UpgradeConfirmModal({
     if (!matches || submitting) return;
     setSubmitting(true);
     setInFlight(null);
+    setUnavailable(false);
     try {
       const res = await startSystemUpgrade(tag, typed);
       onUpgradeStarted(res);
@@ -108,6 +111,16 @@ export function UpgradeConfirmModal({
     } catch (err) {
       if (err instanceof CorlinmanApiError && err.status === 409) {
         setInFlight(parseInFlight(err));
+      } else if (
+        err instanceof CorlinmanApiError &&
+        err.status === 503 &&
+        err.message.includes("upgrader_unavailable")
+      ) {
+        // One-click upgrade isn't wired on this deployment (e.g. a
+        // root-owned native box that upgrades via the manual runbook).
+        // Surface a clear path to the copy-paste commands instead of a
+        // cryptic toast — keep the modal open so the message is read.
+        setUnavailable(true);
       } else {
         const msg = err instanceof Error ? err.message : String(err);
         toast.error(msg);
@@ -165,6 +178,18 @@ export function UpgradeConfirmModal({
             {t("system.upgrade.confirm.alreadyRunning", {
               tag: inFlight.tag ?? "?",
             })}
+          </Alert>
+        ) : null}
+
+        {unavailable ? (
+          <Alert
+            variant="warning"
+            title={t("system.upgrade.confirm.unavailableTitle")}
+            data-testid="upgrade-confirm-unavailable"
+          >
+            <p className="text-xs">
+              {t("system.upgrade.confirm.unavailableBody")}
+            </p>
           </Alert>
         ) : null}
 

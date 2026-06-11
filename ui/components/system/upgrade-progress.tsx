@@ -43,6 +43,32 @@ function isKnownPhase(p: string): p is Phase {
   return (PHASE_ORDER as readonly string[]).includes(p);
 }
 
+/** Target fill % for the determinate progress bar, keyed by phase. The
+ * bar eases toward the current phase's mark; a succeeded terminal snaps
+ * to 100, a failed terminal holds at the phase it died on (in red). */
+const PHASE_PERCENT: Record<Phase, number> = {
+  validating: 12,
+  pulling: 45,
+  recreating: 72,
+  healthcheck: 90,
+  done: 100,
+};
+
+/** Determinate fill % for the progress bar. Snaps to 100 on a succeeded
+ * terminal; holds at the current/failed phase mark otherwise; a small
+ * non-zero floor so the bar reads as "moving" before the first phase
+ * frame (and for unknown/early phases). Exported for unit tests. */
+export function phaseProgressPercent(
+  status: UpgradeStatusResponse | null,
+): number {
+  if (!status) return 3;
+  if (status.state === "succeeded") return 100;
+  if (status.phase && isKnownPhase(status.phase)) {
+    return PHASE_PERCENT[status.phase];
+  }
+  return 6;
+}
+
 const TERMINAL_STATES = new Set([
   "succeeded",
   "failed",
@@ -160,6 +186,9 @@ export function UpgradeProgress({
       ? Math.max(0, Math.floor((now - status.started_at) / 1000))
       : null;
   const terminal = status ? TERMINAL_STATES.has(status.state) : false;
+  const succeeded = terminal && status?.state === "succeeded";
+  const failed = terminal && status?.state === "failed";
+  const percent = phaseProgressPercent(status);
 
   return (
     <section
@@ -182,6 +211,46 @@ export function UpgradeProgress({
           </span>
         ) : null}
       </header>
+
+      {/* Determinate progress bar — fills through the phases to 100%. */}
+      <div className="space-y-1.5" data-testid="upgrade-progress-bar">
+        <div className="h-2 w-full overflow-hidden rounded-full border border-sg-border bg-sg-inset">
+          <div
+            role="progressbar"
+            aria-valuenow={percent}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            data-testid="upgrade-progress-bar-fill"
+            data-state={failed ? "failed" : succeeded ? "succeeded" : "running"}
+            className={cn(
+              "h-full rounded-full transition-[width] duration-700 ease-out",
+              failed
+                ? "bg-sg-err"
+                : succeeded
+                  ? "bg-sg-ok"
+                  : "bg-gradient-to-r from-sg-accent to-sg-accent-2",
+            )}
+            style={{ width: `${percent}%` }}
+          />
+        </div>
+        <div className="flex items-center justify-between text-[11px] text-sg-ink-3">
+          <span>
+            {succeeded
+              ? t("system.upgrade.phases.done")
+              : status?.phase
+                ? isKnownPhase(status.phase)
+                  ? t(`system.upgrade.phases.${status.phase}`)
+                  : status.phase
+                : t("system.upgrade.phases.validating")}
+          </span>
+          <span
+            className="font-mono tabular-nums"
+            data-testid="upgrade-progress-percent"
+          >
+            {percent}%
+          </span>
+        </div>
+      </div>
 
       {/* Phase pills */}
       <div
