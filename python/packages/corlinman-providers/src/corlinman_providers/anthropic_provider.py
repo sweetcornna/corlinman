@@ -19,6 +19,8 @@ stabilised in the 0.40+ line; we use ``event.type`` string tags rather than
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import os
 import re
@@ -979,13 +981,67 @@ def _parts_to_anthropic_blocks(parts: Sequence[Any]) -> list[dict[str, Any]]:
       ``{"type": "image", "source": {"type": "url", "url": "..."}}``
       or ``{"type": "image", "source": {"type": "base64", ...}}`` when
       the url is a ``data:`` URI.
-
-    Unsupported (audio / generic file): logged at warn and dropped.
-    Anthropic's current content-block vocabulary is text + image only
-    (file API is beta and not wired here yet — TODO). A downstream
-    ``TODO: multimodal file support`` covers the gap.
+    * ``{"type": "file", "file": {...}}`` with inline ``file_data`` →
+      PDF / plain-text payloads become Anthropic ``document`` blocks
+      (:func:`_file_block_from_part`); other mimes degrade to a text
+      block naming the file so the model can tell the user the active
+      provider can't read it (instead of being silently blind to an
+      upload the UI accepted).
     """
     blocks: list[dict[str, Any]] = []
+
+    def _file_block_from_part(f: dict[str, Any]) -> dict[str, Any] | None:
+        """Best-effort ``file`` part → Anthropic block.
+
+        PDF payloads map to the GA ``document``/``base64`` block; plain
+        text maps to ``document``/``text``. Anything else (audio, video,
+        binary formats Anthropic has no block for) degrades to a text
+        block that NAMES the attachment — the model can then tell the
+        user it can't read it, instead of silently never seeing an
+        upload the UI accepted.
+        """
+        name = str(f.get("file_name") or f.get("filename") or "attachment")
+        mime = str(f.get("mime") or "").split(";", 1)[0].strip().lower()
+        data_url = str(f.get("file_data") or "")
+        b64 = ""
+        if data_url.startswith("data:") and ";base64," in data_url:
+            b64 = data_url.split(",", 1)[1]
+        if b64 and mime == "application/pdf":
+            return {
+                "type": "document",
+                "source": {
+                    "type": "base64",
+                    "media_type": "application/pdf",
+                    "data": b64,
+                },
+            }
+        if b64 and (mime.startswith("text/") or mime == "application/json"):
+            try:
+                text = base64.b64decode(b64).decode("utf-8", errors="replace")
+            except (binascii.Error, ValueError):
+                text = ""
+            if text:
+                return {
+                    "type": "document",
+                    "source": {
+                        "type": "text",
+                        "media_type": "text/plain",
+                        "data": text,
+                    },
+                }
+        logger.warning(
+            "anthropic.unsupported_attachment",
+            kind=f.get("kind"),
+            mime=mime,
+        )
+        return {
+            "type": "text",
+            "text": (
+                f"[attachment {name!r} ({mime or 'unknown type'}) was "
+                "provided but this model cannot read that format]"
+            ),
+        }
+
     for part in parts:
         if not isinstance(part, dict):
             continue
@@ -999,13 +1055,9 @@ def _parts_to_anthropic_blocks(parts: Sequence[Any]) -> list[dict[str, Any]]:
             if block is not None:
                 blocks.append(block)
         elif ptype == "file":
-            # Audio / video / generic files — not yet representable as
-            # an Anthropic content block. Skip with a warn so the chat
-            # proceeds with text only instead of failing the request.
-            logger.warning(
-                "anthropic.unsupported_attachment",
-                kind=(part.get("file") or {}).get("kind"),
-            )
+            block = _file_block_from_part(part.get("file") or {})
+            if block is not None:
+                blocks.append(block)
         # Unknown part types quietly skipped — forward compat.
     if not blocks:
         # Anthropic rejects empty content arrays; fall back to an empty

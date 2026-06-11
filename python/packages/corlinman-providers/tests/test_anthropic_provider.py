@@ -269,8 +269,10 @@ def test_split_system_translates_data_url_to_base64_block() -> None:
     }
 
 
-def test_split_system_drops_unsupported_file_part() -> None:
-    """``file`` part (audio/video) is skipped with a warn — text survives."""
+def test_split_system_degrades_unsupported_file_part_to_placeholder() -> None:
+    """``file`` parts Anthropic can't represent (audio/video, url-only)
+    degrade to a text block NAMING the attachment — the model can tell
+    the user instead of being silently blind to an accepted upload."""
     _, chat = _split_system(
         [
             {
@@ -279,14 +281,84 @@ def test_split_system_drops_unsupported_file_part() -> None:
                     {"type": "text", "text": "transcript:"},
                     {
                         "type": "file",
-                        "file": {"kind": "audio", "url": "https://x/a.amr"},
+                        "file": {
+                            "kind": "audio",
+                            "url": "https://x/a.amr",
+                            "file_name": "a.amr",
+                        },
                     },
                 ],
             }
         ]
     )
     content = chat[0]["content"]
-    assert content == [{"type": "text", "text": "transcript:"}]
+    assert content[0] == {"type": "text", "text": "transcript:"}
+    assert content[1]["type"] == "text"
+    assert "a.amr" in content[1]["text"]
+    assert "cannot read" in content[1]["text"]
+
+
+def test_split_system_translates_pdf_file_data_to_document_block() -> None:
+    """Inline PDF payloads become the GA ``document``/``base64`` block."""
+    import base64 as _b64
+
+    b64 = _b64.b64encode(b"%PDF-1.7 fake").decode("ascii")
+    _, chat = _split_system(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "summarise"},
+                    {
+                        "type": "file",
+                        "file": {
+                            "kind": "file",
+                            "mime": "application/pdf",
+                            "file_name": "r.pdf",
+                            "file_data": f"data:application/pdf;base64,{b64}",
+                        },
+                    },
+                ],
+            }
+        ]
+    )
+    content = chat[0]["content"]
+    assert content[1] == {
+        "type": "document",
+        "source": {
+            "type": "base64",
+            "media_type": "application/pdf",
+            "data": b64,
+        },
+    }
+
+
+def test_split_system_translates_text_file_data_to_text_document() -> None:
+    import base64 as _b64
+
+    b64 = _b64.b64encode("第一行\nsecond line".encode()).decode("ascii")
+    _, chat = _split_system(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "file",
+                        "file": {
+                            "kind": "file",
+                            "mime": "text/plain",
+                            "file_name": "notes.txt",
+                            "file_data": f"data:text/plain;base64,{b64}",
+                        },
+                    },
+                ],
+            }
+        ]
+    )
+    content = chat[0]["content"]
+    assert content[0]["type"] == "document"
+    assert content[0]["source"]["type"] == "text"
+    assert "第一行" in content[0]["source"]["data"]
 
 
 def test_split_system_translates_tool_calls_to_anthropic_blocks() -> None:

@@ -69,6 +69,20 @@ def test_non_media_results_pass_through(tmp_path: Path) -> None:
     assert media == []
 
 
+def test_audio_note_avoids_image_markdown(tmp_path: Path) -> None:
+    """Non-image media must NOT instruct the model to embed ![…](…) —
+    that renders a broken <img> for an .mp3 (Codex review follow-up)."""
+    p = tmp_path / "tts.mp3"
+    p.write_bytes(b"ID3-fake-audio")
+    media: list[dict[str, str]] = []
+    out = _register_tool_media(json.dumps({"path": str(p)}), media)
+    parsed = json.loads(out)
+    assert parsed["url"].startswith("/v1/files/")
+    assert "![" not in parsed["display_note"]
+    assert "audio" in parsed["display_note"]
+    assert media[0]["kind"] == "audio"
+
+
 def test_text_file_with_media_suffix_only(tmp_path: Path) -> None:
     """Suffix gate: a .txt the tool wrote is never registered even though
     the file exists."""

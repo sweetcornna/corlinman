@@ -4660,10 +4660,20 @@ def _register_tool_media(
     main = _try_register(parsed.get("path"))
     if main is not None:
         parsed["url"] = main["url"]
-        parsed["display_note"] = (
-            "Image is viewable at the `url` — embed it in your reply as "
-            f"markdown: ![{main['name']}]({main['url']})"
-        )
+        # The embed hint must match the medium: markdown image syntax on
+        # an .mp3 renders a broken <img> in the reply. Non-images get a
+        # plain link instruction instead.
+        if main["kind"] == "image":
+            parsed["display_note"] = (
+                "Image is viewable at the `url` — embed it in your reply "
+                f"as markdown: ![{main['name']}]({main['url']})"
+            )
+        else:
+            parsed["display_note"] = (
+                f"The {main['kind']} file is downloadable at the `url` — "
+                f"share it in your reply as a markdown link: "
+                f"[{main['name']}]({main['url']})"
+            )
         changed = True
     raw_paths = parsed.get("paths")
     if isinstance(raw_paths, list):

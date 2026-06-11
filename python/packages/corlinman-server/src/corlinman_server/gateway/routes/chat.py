@@ -244,6 +244,15 @@ def _content_chars(content: str | list[dict[str, Any]] | None) -> int:
 
 _FILES_URL_PREFIX = "/v1/files/"
 
+#: Per-turn bounds on resolved attachments. Each ``/v1/files/{id}``
+#: reference inflates from a ~60-char string into the stored payload
+#: (≤50 MiB each), so without these caps one request referencing many
+#: prior uploads could pin unbounded gateway memory and then balloon
+#: further at base64 time. Overflowing parts are skipped with a warning
+#: — the turn still runs with what fits.
+_MAX_ATTACHMENTS_PER_TURN = 10
+_MAX_ATTACHMENT_TOTAL_BYTES = 64 * 1024 * 1024
+
 
 def _resolve_stored(file_id: str) -> tuple[bytes, str, str] | None:
     """Indirection over :func:`files.load_stored_file` (patchable in tests)."""
@@ -263,6 +272,25 @@ def _parts_to_attachments(parts: list[dict[str, Any]]) -> list[Attachment]:
     must not fail the whole turn.
     """
     out: list[Attachment] = []
+    total_bytes = 0
+
+    def _over_budget(extra: int) -> bool:
+        nonlocal total_bytes
+        if len(out) >= _MAX_ATTACHMENTS_PER_TURN:
+            _log.warning(
+                "chat attachment: per-turn count cap (%d) reached; skipping",
+                _MAX_ATTACHMENTS_PER_TURN,
+            )
+            return True
+        if total_bytes + extra > _MAX_ATTACHMENT_TOTAL_BYTES:
+            _log.warning(
+                "chat attachment: per-turn byte cap (%d) reached; skipping",
+                _MAX_ATTACHMENT_TOTAL_BYTES,
+            )
+            return True
+        total_bytes += extra
+        return False
+
     for p in parts:
         if not isinstance(p, dict):
             continue
@@ -278,6 +306,8 @@ def _parts_to_attachments(parts: list[dict[str, Any]]) -> list[Attachment]:
                     _log.warning("chat attachment: unknown stored image %s", url)
                     continue
                 blob, mime, name = loaded
+                if _over_budget(len(blob)):
+                    continue
                 out.append(
                     Attachment(
                         kind=AttachmentKind.IMAGE,
@@ -288,6 +318,9 @@ def _parts_to_attachments(parts: list[dict[str, Any]]) -> list[Attachment]:
                     )
                 )
             elif url.startswith(("http://", "https://", "data:image/", "data:")):
+                # data: URLs carry the payload inline — budget them too.
+                if _over_budget(len(url) if url.startswith("data:") else 0):
+                    continue
                 out.append(Attachment(kind=AttachmentKind.IMAGE, url=url))
             else:
                 _log.warning("chat attachment: unsupported image url form")
@@ -304,6 +337,8 @@ def _parts_to_attachments(parts: list[dict[str, Any]]) -> list[Attachment]:
                     _log.warning("chat attachment: unknown stored file %s", file_id)
                     continue
                 blob, mime, name = loaded
+                if _over_budget(len(blob)):
+                    continue
                 out.append(
                     Attachment(
                         kind=AttachmentKind.FILE,
@@ -319,6 +354,8 @@ def _parts_to_attachments(parts: list[dict[str, Any]]) -> list[Attachment]:
                 if decoded is None:
                     _log.warning("chat attachment: undecodable file_data")
                     continue
+                if _over_budget(len(decoded)):
+                    continue
                 out.append(
                     Attachment(
                         kind=AttachmentKind.FILE, bytes=decoded, file_name=filename
@@ -330,6 +367,8 @@ def _parts_to_attachments(parts: list[dict[str, Any]]) -> list[Attachment]:
             decoded = _decode_b64_payload(str(ia.get("data") or ""))
             if decoded is None:
                 _log.warning("chat attachment: undecodable input_audio")
+                continue
+            if _over_budget(len(decoded)):
                 continue
             fmt = str(ia.get("format") or "").strip()
             out.append(

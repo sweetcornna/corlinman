@@ -228,6 +228,45 @@ def test_file_part_resolves_via_file_id(
     assert att.file_name == "报告.pdf"
 
 
+def test_per_turn_attachment_count_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """More stored references than the per-turn cap → extras skipped, the
+    turn still runs (memory-bound, Codex review follow-up)."""
+    monkeypatch.setattr(
+        chat_route, "_resolve_stored", lambda fid: (b"x", "image/png", "p.png")
+    )
+    parts: list[dict[str, object]] = [{"type": "text", "text": "many"}]
+    parts += [
+        {"type": "image_url", "image_url": {"url": f"/v1/files/{c * 26}"}}
+        for c in "abcdefghijklm"  # 13 refs > cap of 10
+    ]
+    service = _RecordingService()
+    _post(service, [{"role": "user", "content": parts}])
+    req = service.seen
+    assert req is not None
+    assert len(req.attachments) == chat_route._MAX_ATTACHMENTS_PER_TURN
+
+
+def test_per_turn_attachment_byte_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    big = b"x" * (40 * 1024 * 1024)  # 40 MiB each; cap is 64 MiB total
+    monkeypatch.setattr(
+        chat_route, "_resolve_stored", lambda fid: (big, "image/png", "big.png")
+    )
+    parts: list[dict[str, object]] = [
+        {"type": "image_url", "image_url": {"url": f"/v1/files/{c * 26}"}}
+        for c in "abc"
+    ]
+    service = _RecordingService()
+    _post(service, [{"role": "user", "content": parts}])
+    req = service.seen
+    assert req is not None
+    # Only the first 40 MiB blob fits under the 64 MiB aggregate cap.
+    assert len(req.attachments) == 1
+
+
 def test_input_audio_part_decodes_to_bytes() -> None:
     service = _RecordingService()
     _post(

@@ -228,14 +228,59 @@ export function Composer({
     [attachments],
   );
 
+  // An attachment only counts toward "something to send" once it is
+  // actually usable server-side (uploaded, not errored). Failed-only
+  // selections used to enable the send button and then deliver an
+  // EMPTY user message — the request builder drops errored uploads.
+  const hasUsableAttachment = React.useMemo(
+    () => attachments.some((a) => !a.error && !a.uploading && (a.fileId || a.remoteUrl)),
+    [attachments],
+  );
+
+  // Release `blob:` previews once an attachment leaves the composer —
+  // browsers retain object URLs for the page lifetime otherwise, which
+  // leaks every pasted image in a long session.
+  const revokePreviews = React.useCallback((list: ChatAttachment[]) => {
+    for (const a of list) {
+      if (a.previewUrl) {
+        try {
+          URL.revokeObjectURL(a.previewUrl);
+        } catch {
+          // best-effort
+        }
+      }
+    }
+  }, []);
+
+  // Unmount sweep: whatever previews are still pending when the composer
+  // goes away (session switch, page nav) get released too.
+  const attachmentsRef = React.useRef(attachments);
+  attachmentsRef.current = attachments;
+  React.useEffect(
+    () => () => revokePreviews(attachmentsRef.current),
+    [revokePreviews],
+  );
+
   const handleSend = React.useCallback(() => {
     const v = text.trim();
-    if (!v && attachments.length === 0) return;
+    if (!v && !hasUsableAttachment) return;
     if (isStreaming || isUploading) return;
-    onSend(v, attachments);
+    // Only usable attachments travel with the message (the request
+    // builder would drop the rest anyway); previews are released here —
+    // sent attachments render from their `remoteUrl`.
+    onSend(v, attachments.filter((a) => !a.error && !a.uploading));
+    revokePreviews(attachments);
     setText("");
     setAttachments([]);
-  }, [text, attachments, isStreaming, isUploading, onSend]);
+  }, [
+    text,
+    attachments,
+    hasUsableAttachment,
+    isStreaming,
+    isUploading,
+    onSend,
+    revokePreviews,
+  ]);
 
   const handleKeyDown = React.useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -393,7 +438,7 @@ export function Composer({
   }, []);
 
   const canSend =
-    (!!text.trim() || attachments.length > 0) && !isUploading;
+    (!!text.trim() || hasUsableAttachment) && !isUploading;
 
   return (
     <div
@@ -466,7 +511,10 @@ export function Composer({
           <ComposerAttachments
             attachments={attachments}
             onRemove={(id) =>
-              setAttachments((prev) => prev.filter((a) => a.id !== id))
+              setAttachments((prev) => {
+                revokePreviews(prev.filter((a) => a.id === id));
+                return prev.filter((a) => a.id !== id);
+              })
             }
           />
 

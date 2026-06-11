@@ -90,6 +90,11 @@ DEFAULT_MAX_BYTES: int = 50 * 1024 * 1024
 #: ``CORLINMAN_PERSONA_MAX_ASSET_BYTES`` knob.
 _MAX_BYTES_ENV: str = "CORLINMAN_FILES_MAX_BYTES"
 
+#: Upload read granularity — bounds peak memory while the cap check runs
+#: (Starlette spools large parts to disk, so chunked reads never pull the
+#: whole payload in at once).
+_READ_CHUNK_BYTES: int = 1024 * 1024
+
 #: ``file_id`` is 26 lowercase hex chars (same shape as the persona
 #: asset store's :func:`asset_store._ulid`). The strict ``[0-9a-f]``
 #: class is also the path-traversal guard: a value matching this regex
@@ -401,7 +406,26 @@ def router() -> APIRouter:
                 "file storage is not configured",
             )
 
-        body = await file.read()
+        # Stream the part in bounded chunks and abort the moment the cap
+        # is crossed — a single `await file.read()` would materialise an
+        # arbitrarily large payload in process memory BEFORE any size
+        # check could run, making the cap decorative (review follow-up).
+        cap = _max_bytes()
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = await file.read(_READ_CHUNK_BYTES)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > cap:
+                return _error(
+                    status.HTTP_413_CONTENT_TOO_LARGE,
+                    "file_too_large",
+                    f"file exceeds the {cap} byte cap",
+                )
+            chunks.append(chunk)
+        body = b"".join(chunks)
         if not body:
             # Reject empty uploads — a zero-byte file carries no content
             # and would render as a broken attachment downstream.
@@ -409,13 +433,6 @@ def router() -> APIRouter:
                 status.HTTP_400_BAD_REQUEST,
                 "empty_file",
                 "uploaded file is empty",
-            )
-        cap = _max_bytes()
-        if len(body) > cap:
-            return _error(
-                status.HTTP_413_CONTENT_TOO_LARGE,
-                "file_too_large",
-                f"file is {len(body)} bytes; cap is {cap}",
             )
 
         file_id = _new_file_id()

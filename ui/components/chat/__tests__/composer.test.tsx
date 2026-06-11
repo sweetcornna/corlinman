@@ -199,9 +199,46 @@ describe("Composer", () => {
     // Localized failure text (zh-CN bundle in tests) surfaces on the chip,
     // and the attachment is no longer uploading.
     await screen.findByText("上传失败");
-    // Send is no longer blocked by a stuck "uploading" attachment.
+    // A failed-only selection is NOT sendable content — the request
+    // builder drops errored uploads, so an attachment-only send would
+    // deliver an empty user message (Codex review follow-up).
+    expect(screen.getByTestId("composer-send")).toBeDisabled();
+    // …but the failure no longer wedges the composer: typing text
+    // unblocks the send immediately.
+    fireEvent.change(screen.getByTestId("composer-textarea"), {
+      target: { value: "still want to ask" },
+    });
     await waitFor(() =>
       expect(screen.getByTestId("composer-send")).not.toBeDisabled(),
+    );
+  });
+
+  it("revokes blob previews when an attachment is removed", async () => {
+    // jsdom ships neither object-URL API — install stubs to observe.
+    const revokeSpy = vi.fn();
+    Object.defineProperty(URL, "createObjectURL", {
+      value: () => "blob:preview-1",
+      configurable: true,
+      writable: true,
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      value: revokeSpy,
+      configurable: true,
+      writable: true,
+    });
+    const def = deferred<never>();
+    uploadMock.mockReturnValue(def.promise);
+
+    renderComposer();
+    const input = screen.getByTestId("composer-file-input") as HTMLInputElement;
+    fireEvent.change(input, {
+      target: { files: [makeFile("p.png", "image/png")] },
+    });
+
+    const remove = await screen.findByTestId("composer-attachment-remove");
+    fireEvent.click(remove);
+    await waitFor(() =>
+      expect(revokeSpy).toHaveBeenCalledWith("blob:preview-1"),
     );
   });
 
