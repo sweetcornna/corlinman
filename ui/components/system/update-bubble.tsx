@@ -18,7 +18,7 @@
  * Visual:
  *   - Amber dot with a 2s gentle pulse (respects `prefers-reduced-motion`).
  *   - Monospace tag chip (`vX.Y.Z`) — keyboard-focusable, clicking opens
- *     `/admin/system`.
+ *     `/system` (the updates page; `/admin/*` is the API namespace).
  *   - Inline dismiss `×` button — does NOT trigger the chip's navigation.
  *
  * Accessibility:
@@ -91,7 +91,7 @@ export function UpdateBubble({ className }: UpdateBubbleProps) {
 
   return (
     <Link
-      href="/admin/system"
+      href="/system"
       aria-label={t("update.bubble.label", { version: latest })}
       title={t("update.bubble.tooltip")}
       data-testid="update-bubble"

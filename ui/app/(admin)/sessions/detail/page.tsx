@@ -46,7 +46,7 @@ export default function SessionDetailPage() {
             size="sm"
             className="-ml-2 h-7 px-2 text-sg-ink-3 hover:text-sg-ink"
           >
-            <Link href="/admin/sessions">
+            <Link href="/sessions">
               <ChevronLeft className="h-3.5 w-3.5" aria-hidden="true" />
               {t("sessions.title")}
             </Link>

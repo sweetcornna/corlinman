@@ -126,8 +126,9 @@ describe("<UpdateBubble>", () => {
     renderBubble();
     const chip = await screen.findByTestId("update-bubble");
     expect(chip.textContent).toContain("v1.2.0");
-    // The chip is an anchor pointing at /admin/system so a click navigates.
-    expect(chip.getAttribute("href")).toBe("/admin/system");
+    // The chip is an anchor pointing at /system (the updates page) so a
+    // click navigates. /admin/* is the API namespace, not a page route.
+    expect(chip.getAttribute("href")).toBe("/system");
     // Aria label includes the version for screen-reader users.
     expect(chip.getAttribute("aria-label")).toContain("v1.2.0");
   });

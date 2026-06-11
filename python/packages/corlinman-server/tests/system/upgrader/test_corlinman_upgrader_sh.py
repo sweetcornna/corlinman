@@ -132,6 +132,32 @@ def test_happy_path_writes_succeeded(tmp_path: Path) -> None:
     assert not (data_dir / ".upgrade-request.processed").exists()
 
 
+def test_unprefixed_tag_is_canonicalized_to_release_form(
+    tmp_path: Path,
+) -> None:
+    """Gateways < v1.20.1 wrote the update checker's stripped display
+    tag ("1.2.1") into the request file. The script must accept it and
+    pass the canonical release form ("v1.2.1") to install.sh."""
+    data_dir = tmp_path / "data"
+    install_prefix = tmp_path / "fake-install"
+    data_dir.mkdir()
+    _make_install_sh(install_prefix, exit_code=0)
+
+    request_id = _write_request(data_dir, tag="1.2.1")
+    result = _run_upgrader(data_dir, install_prefix)
+
+    assert result.returncode == 0, (
+        f"upgrader exited non-zero\nstdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+    payload = json.loads(
+        (data_dir / ".upgrade-status").read_text(encoding="utf-8")
+    )
+    assert payload["state"] == "succeeded"
+    assert payload["request_id"] == request_id
+    # The stub echoes its argv — assert install.sh saw the v-prefixed tag.
+    assert "--version v1.2.1" in (payload.get("log_excerpt") or "")
+
+
 def test_malformed_tag_aborts_before_install_sh(tmp_path: Path) -> None:
     data_dir = tmp_path / "data"
     install_prefix = tmp_path / "fake-install"

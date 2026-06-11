@@ -262,7 +262,9 @@ function OnboardWizard() {
       router.push(pendingRedirect as never);
       return;
     }
-    router.push("/admin");
+    // Dashboard lives at "/" — the (admin) route group adds no /admin
+    // URL segment; navigating to /admin 404s against the static export.
+    router.push("/");
   }
 
   return (
@@ -448,14 +450,14 @@ function ApiConfigStep({
   const { t } = useTranslation();
   const cards: HandoffCardDef[] = [
     {
-      href: "/admin/credentials",
+      href: "/credentials",
       testid: "onboard-handoff-credentials",
       icon: KeyRound,
       title: t("auth.onboardHandoffCredentialsTitle"),
       body: t("auth.onboardHandoffCredentialsBody"),
     },
     {
-      href: "/admin/providers",
+      href: "/providers",
       testid: "onboard-handoff-providers",
       icon: Plug,
       title: t("auth.onboardHandoffProvidersTitle"),

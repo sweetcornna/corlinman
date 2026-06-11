@@ -153,6 +153,41 @@ async def test_start_writes_request_json_with_expected_shape(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("raw_tag", ["1.20.0", "v1.20.0", "V1.20.0"])
+async def test_start_canonicalizes_tag_to_release_form(
+    tmp_path: Path, store: UpgradeStateStore, raw_tag: str
+) -> None:
+    """The UI POSTs the update checker's *stripped* display tag
+    ("1.20.0"); the helper validates against the literal GitHub release
+    ``tag_name`` ("v1.20.0"). start() must canonicalize so the helper
+    doesn't reject the request with ``tag_invalid``."""
+    upgrader = nu.NativeUpgrader(
+        store=store,
+        data_dir=tmp_path,
+        unit_path=tmp_path / "u.service",
+        path_unit_path=tmp_path / "u.path",
+        stall_timeout_s=999,
+        overall_timeout_s=999,
+    )
+    try:
+        req = await upgrader.start(target_tag=raw_tag, actor="ops")
+        assert req.tag == "v1.20.0"
+        payload = json.loads(
+            (tmp_path / nu.REQUEST_FILE_NAME).read_text(encoding="utf-8")
+        )
+        assert payload["tag"] == "v1.20.0"
+        snap = await store.get(req.request_id)
+        assert snap is not None
+        assert snap.tag == "v1.20.0"
+    finally:
+        for task in list(upgrader._background_tasks):
+            task.cancel()
+        await asyncio.gather(
+            *upgrader._background_tasks, return_exceptions=True
+        )
+
+
+@pytest.mark.asyncio
 async def test_start_raises_when_another_upgrade_in_flight(
     tmp_path: Path, store: UpgradeStateStore
 ) -> None:

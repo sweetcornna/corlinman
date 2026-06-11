@@ -293,7 +293,7 @@ test.describe("auto-update flow — stubs only", () => {
 
     // Land on the dashboard so the TopNav (and therefore the bubble)
     // mounts. The bubble polls /admin/system/info on mount.
-    await page.goto("/admin");
+    await page.goto("/");
 
     // Wait for the layout to settle + the first /info poll to resolve
     // so the absence assertion isn't observing a pre-fetch state.
@@ -307,8 +307,8 @@ test.describe("auto-update flow — stubs only", () => {
     // no element with `data-testid="update-bubble"` should ever render.
     await expect(page.getByTestId("update-bubble")).toHaveCount(0);
 
-    // Navigate to /admin/system to assert the page-side surface.
-    await page.goto("/admin/system");
+    // Navigate to /system to assert the page-side surface.
+    await page.goto("/system");
     await expect(page.getByTestId("system-page")).toBeVisible({
       timeout: 10_000,
     });
@@ -334,17 +334,17 @@ test.describe("auto-update flow — stubs only", () => {
     const verify = attachStrictListeners(page);
     await installSystemStubs(page, INFO_UPDATE_AVAILABLE);
 
-    await page.goto("/admin");
+    await page.goto("/");
 
     // Bubble lights up with the latest tag.
     const bubble = page.getByTestId("update-bubble");
     await expect(bubble).toBeVisible({ timeout: 10_000 });
     await expect(bubble).toContainText(INFO_UPDATE_AVAILABLE.latest);
 
-    // Clicking the chip navigates to /admin/system. The chip is a
+    // Clicking the chip navigates to /system. The chip is a
     // `next/link`, so a normal click is enough.
     await bubble.click();
-    await expect(page).toHaveURL(/\/admin\/system$/);
+    await expect(page).toHaveURL(/\/system$/);
     await expect(page.getByTestId("system-page")).toBeVisible({
       timeout: 10_000,
     });
@@ -409,7 +409,7 @@ test.describe("auto-update flow — stubs only", () => {
       }
     }, dismissedTag);
 
-    await page.goto("/admin");
+    await page.goto("/");
 
     // The bubble should not render at all (component returns null when
     // dismissedTag === data.latest). Wait for the TopNav to mount (the
