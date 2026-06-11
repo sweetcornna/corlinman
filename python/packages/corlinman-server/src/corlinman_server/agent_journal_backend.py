@@ -666,6 +666,15 @@ def _payload_json_default(obj: Any) -> Any:
     return repr(obj)
 
 
+# Internal page size for ``SqliteJournalBackend.iter_events``. Each page
+# is one complete LIMIT-bounded query, fully drained and its cursor
+# closed before any row is yielded — see the method docstring for why
+# this break-safety is load-bearing (CI deadlock). Sized to bound
+# per-page memory while keeping page-requery overhead negligible for
+# typical turn timelines (hundreds of events).
+_ITER_EVENTS_PAGE_SIZE: int = 256
+
+
 class SqliteJournalBackend:
     """Single-process SQLite backend over ``aiosqlite``.
 
@@ -1832,13 +1841,24 @@ class SqliteJournalBackend:
         carrying ``Last-Event-ID: <seq>`` it gets only the events it
         missed, not the whole timeline. ``start_sequence=0`` (the
         default) yields every event — equivalent to :meth:`load_events`
-        but without buffering the whole list in memory.
+        but with bounded memory.
 
-        ``limit`` (when set) caps the rows via SQL ``LIMIT`` so the SSE
-        catch-up can page in bounded chunks. Using ``LIMIT`` rather than
-        breaking the loop early lets the cursor exhaust naturally and
-        close cleanly — an early ``break`` tears the aiosqlite cursor
-        down mid-iteration, the cross-thread cleanup that wedged CI.
+        ``limit`` (when set) caps the total rows yielded.
+
+        BREAK-SAFE BY CONSTRUCTION (the CI 180s/6h hang): this generator
+        never holds a live aiosqlite cursor across a ``yield``. Each
+        internal page is a complete ``LIMIT``-bounded query, fully
+        fetched and its cursor closed *before* any row is yielded. A
+        consumer that ``break``s (or is torn down by a client
+        disconnect / a throwaway TestClient portal loop) therefore
+        suspends the generator on plain list iteration — there is no
+        deferred ``cursor.close()`` to finalize later on a possibly
+        already-closed event loop. The old single-cursor implementation
+        parked ``cur.close()`` in a ``finally`` behind a yield; an
+        abandoned iteration then enqueued that close on the aiosqlite
+        worker with a future bound to a dying loop, and the resulting
+        ``RuntimeError: Event loop is closed`` killed the worker thread,
+        wedging every subsequent journal call (the py-test deadlock).
 
         Yields the same dict shape as :meth:`load_events`. Silent on
         error — a partial stream is preferable to a 500 for a best-effort
@@ -1848,19 +1868,31 @@ class SqliteJournalBackend:
             "SELECT turn_id, sequence, event_type, payload_json, "
             "timestamp_ms FROM turn_events "
             "WHERE turn_id = ? AND sequence > ? "
-            "ORDER BY sequence ASC"
+            "ORDER BY sequence ASC LIMIT ?"
         )
-        params: tuple[Any, ...] = (str(turn_id), int(start_sequence))
-        if limit is not None:
-            sql += " LIMIT ?"
-            params = (*params, int(limit))
-        try:
-            cur = await self._c.execute(sql, params)
-        except aiosqlite.Error as exc:
-            logger.warning("agent.journal.iter_events_failed", error=str(exc))
-            return
-        try:
-            async for r in cur:
+        remaining = None if limit is None else int(limit)
+        seq_cursor = int(start_sequence)
+        while remaining is None or remaining > 0:
+            page_cap = (
+                _ITER_EVENTS_PAGE_SIZE
+                if remaining is None
+                else min(_ITER_EVENTS_PAGE_SIZE, remaining)
+            )
+            try:
+                cur = await self._c.execute(
+                    sql, (str(turn_id), seq_cursor, page_cap)
+                )
+                rows = list(await cur.fetchall())
+                await cur.close()
+            except aiosqlite.Error as exc:
+                logger.warning(
+                    "agent.journal.iter_events_failed", error=str(exc)
+                )
+                return
+            if not rows:
+                return
+            # Cursor is closed — yielding below cannot abandon it.
+            for r in rows:
                 try:
                     payload = json.loads(r[3]) if r[3] else {}
                 except (TypeError, ValueError, json.JSONDecodeError):
@@ -1872,8 +1904,14 @@ class SqliteJournalBackend:
                     "payload": payload,
                     "timestamp_ms": int(r[4]),
                 }
-        finally:
-            await cur.close()
+            last_seq = rows[-1][1]
+            if not isinstance(last_seq, int) or last_seq <= seq_cursor:
+                return  # defensive — no forward progress
+            seq_cursor = last_seq
+            if remaining is not None:
+                remaining -= len(rows)
+            if len(rows) < page_cap:
+                return  # short page — range exhausted
 
     async def latest_sequence(self, turn_id: str | int) -> int:
         """Return the highest ``sequence`` stored for ``turn_id`` (``-1``
