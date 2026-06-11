@@ -149,28 +149,29 @@
   .dark {
     /* ──────────────────────────────────────────────────────────────
      * Spatial Glass — dark ("deep space"). The primary, fully
-     * polished theme. Indigo→violet-black nebula backdrop; smoked
+     * polished theme. Deep navy nebula backdrop (cyan-led, violet as
+     * a recessive companion); smoked
      * glass surfaces; cyan/violet glow accents.
      * ────────────────────────────────────────────────────────────── */
-    --sg-space-0: oklch(0.115 0.038 285);
-    --sg-space-1: oklch(0.155 0.045 280);
-    --sg-space-2: oklch(0.1 0.05 295);
-    --sg-space-3: oklch(0.075 0.03 265);
-    --sg-nebula-1: oklch(0.65 0.14 300 / 0.14);
-    --sg-nebula-2: oklch(0.75 0.12 220 / 0.1);
-    --sg-nebula-3: oklch(0.55 0.1 260 / 0.08);
+    --sg-space-0: oklch(0.115 0.028 266);
+    --sg-space-1: oklch(0.15 0.034 262);
+    --sg-space-2: oklch(0.1 0.034 272);
+    --sg-space-3: oklch(0.075 0.024 256);
+    --sg-nebula-1: oklch(0.75 0.12 220 / 0.12);
+    --sg-nebula-2: oklch(0.65 0.13 300 / 0.08);
+    --sg-nebula-3: oklch(0.6 0.1 250 / 0.08);
 
-    --sg-glass-1-bg: oklch(0.21 0.04 282 / 0.55);
-    --sg-glass-2-bg: oklch(0.23 0.035 285 / 0.5);
-    --sg-glass-2-bg-strong: oklch(0.25 0.035 285 / 0.6);
-    --sg-glass-2-bg-weak: oklch(0.2 0.035 285 / 0.4);
-    --sg-glass-2-grad-a: oklch(0.25 0.035 285 / 0.55);
-    --sg-glass-2-grad-b: oklch(0.17 0.04 285 / 0.5);
-    --sg-glass-3-bg: oklch(0.19 0.045 285 / 0.7);
-    --sg-glass-opaque: oklch(0.17 0.04 285 / 0.95);
-    --sg-inset-bg: oklch(0.085 0.03 280 / 0.5);
-    --sg-inset-bg-hover: oklch(0.1 0.035 280 / 0.55);
-    --sg-inset-bg-strong: oklch(0.12 0.035 280 / 0.6);
+    --sg-glass-1-bg: oklch(0.21 0.032 270 / 0.55);
+    --sg-glass-2-bg: oklch(0.23 0.028 270 / 0.5);
+    --sg-glass-2-bg-strong: oklch(0.25 0.028 270 / 0.6);
+    --sg-glass-2-bg-weak: oklch(0.2 0.028 270 / 0.4);
+    --sg-glass-2-grad-a: oklch(0.25 0.028 270 / 0.55);
+    --sg-glass-2-grad-b: oklch(0.17 0.03 268 / 0.5);
+    --sg-glass-3-bg: oklch(0.19 0.036 270 / 0.7);
+    --sg-glass-opaque: oklch(0.17 0.03 270 / 0.95);
+    --sg-inset-bg: oklch(0.085 0.024 268 / 0.5);
+    --sg-inset-bg-hover: oklch(0.1 0.028 268 / 0.55);
+    --sg-inset-bg-strong: oklch(0.12 0.028 268 / 0.6);
 
     --sg-border: oklch(0.95 0.02 280 / 0.08);
     --sg-border-strong: oklch(0.95 0.02 280 / 0.14);
@@ -212,25 +213,25 @@
     --sg-grad-text: linear-gradient(115deg, oklch(0.86 0.11 220), oklch(0.92 0.05 210) 45%, oklch(0.76 0.17 300));
 
     /* ── shadcn semantic vars — dark. */
-    --background: 255 30% 8%;
+    --background: 232 32% 8%;
     --foreground: 250 20% 98%;
-    --card: 255 25% 16% / 0.45;
+    --card: 232 25% 16% / 0.45;
     --card-foreground: 250 20% 98%;
-    --popover: 255 28% 13% / 0.75;
+    --popover: 232 28% 13% / 0.75;
     --popover-foreground: 250 20% 98%;
     /* Primary = luminous cyan-blue; dark ink text for contrast on fills. */
     --primary: 215 75% 70%;
     --primary-foreground: 250 30% 10%;
-    --secondary: 250 25% 18% / 0.5;
+    --secondary: 234 25% 18% / 0.5;
     --secondary-foreground: 250 20% 98%;
-    --muted: 250 20% 16% / 0.45;
+    --muted: 234 20% 16% / 0.45;
     --muted-foreground: 250 12% 72%;
     --accent: 220 60% 70% / 0.1;
     --accent-foreground: 250 20% 98%;
     --destructive: 0 65% 55%;
     --destructive-foreground: 0 0% 98%;
     --border: 250 40% 85% / 0.1;
-    --input: 255 25% 8% / 0.5;
+    --input: 232 25% 8% / 0.5;
     --ring: 215 80% 70%;
 
     --panel: 255 25% 16% / 0.45;
@@ -245,7 +246,7 @@
 
     --state-hover: 220 50% 70% / 0.08;
     --state-focus: 220 60% 26%;
-    --state-press: 250 25% 22%;
+    --state-press: 234 25% 22%;
     --state-loading: 250 20% 16% / 0.4;
     --state-skeleton: 250 25% 60% / 0.14;
     --state-empty: 250 25% 14% / 0.35;
