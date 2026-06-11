@@ -56,7 +56,26 @@ describe("phaseProgressPercent", () => {
     expect(pct).toBe(phaseProgressPercent(status({ phase: "recreating" })));
   });
 
-  it("uses the floor for an unknown/early phase", () => {
-    expect(phaseProgressPercent(status({ phase: "queued-something" }))).toBe(6);
+  it("never regresses below the high-water floor", () => {
+    // A failed/stalled terminal whose phase is a backend code not in
+    // PHASE_ORDER must hold near where it died, not snap to the floor.
+    expect(
+      phaseProgressPercent(
+        status({ state: "failed", phase: "image_pull_failed" }),
+        72,
+      ),
+    ).toBe(72);
+    expect(
+      phaseProgressPercent(status({ state: "stalled", phase: "timeout" }), 90),
+    ).toBe(90);
+    // succeeded still wins over any floor.
+    expect(
+      phaseProgressPercent(status({ state: "succeeded", phase: "done" }), 45),
+    ).toBe(100);
+  });
+
+  it("falls back to the floor for an unknown/early phase", () => {
+    // default floor when no high-water has been recorded yet
+    expect(phaseProgressPercent(status({ phase: "queued-something" }))).toBe(3);
   });
 });

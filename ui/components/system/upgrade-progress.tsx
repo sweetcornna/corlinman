@@ -55,18 +55,23 @@ const PHASE_PERCENT: Record<Phase, number> = {
 };
 
 /** Determinate fill % for the progress bar. Snaps to 100 on a succeeded
- * terminal; holds at the current/failed phase mark otherwise; a small
- * non-zero floor so the bar reads as "moving" before the first phase
- * frame (and for unknown/early phases). Exported for unit tests. */
+ * terminal; otherwise returns the current phase's mark, but never below
+ * ``floor`` — the high-water % the caller has already shown. The floor
+ * matters on FAILURE: a failed/stalled terminal often carries a backend
+ * failure code as its ``phase`` (``image_pull_failed``, ``recreate_failed``,
+ * ``healthcheck_timeout``, native ``timeout``) which isn't in
+ * ``PHASE_ORDER`` — without the floor the bar would snap back to the
+ * near-empty start instead of holding (in red) near where it died.
+ * Exported for unit tests. */
 export function phaseProgressPercent(
   status: UpgradeStatusResponse | null,
+  floor = 3,
 ): number {
-  if (!status) return 3;
+  if (!status) return floor;
   if (status.state === "succeeded") return 100;
-  if (status.phase && isKnownPhase(status.phase)) {
-    return PHASE_PERCENT[status.phase];
-  }
-  return 6;
+  const known =
+    status.phase && isKnownPhase(status.phase) ? PHASE_PERCENT[status.phase] : 0;
+  return Math.max(known, floor);
 }
 
 const TERMINAL_STATES = new Set([
@@ -96,6 +101,10 @@ export function UpgradeProgress({
   const [now, setNow] = React.useState(() => Date.now());
   const [reloadIn, setReloadIn] = React.useState<number | null>(null);
   const closedRef = React.useRef(false);
+  // High-water of the bar fill: only ever advances (per known phase) so a
+  // failed/stalled terminal holds where it reached instead of snapping
+  // back. Reset when a new upgrade (requestId) starts.
+  const floorRef = React.useRef(3);
   const onTerminalRef = React.useRef(onTerminal);
   onTerminalRef.current = onTerminal;
 
@@ -109,12 +118,18 @@ export function UpgradeProgress({
   // SSE + polling fallback.
   React.useEffect(() => {
     closedRef.current = false;
+    floorRef.current = 3; // new upgrade — reset the high-water fill
     let es: EventSource | null = null;
     let pollHandle: number | null = null;
     let sseOpened = false;
 
     function handleStatus(next: UpgradeStatusResponse) {
       if (closedRef.current) return;
+      // Advance the high-water as known phases land so the bar never
+      // regresses (esp. on a failure whose phase is a backend code).
+      if (next.phase && isKnownPhase(next.phase)) {
+        floorRef.current = Math.max(floorRef.current, PHASE_PERCENT[next.phase]);
+      }
       setStatus(next);
       if (TERMINAL_STATES.has(next.state)) {
         closedRef.current = true;
@@ -187,8 +202,13 @@ export function UpgradeProgress({
       : null;
   const terminal = status ? TERMINAL_STATES.has(status.state) : false;
   const succeeded = terminal && status?.state === "succeeded";
-  const failed = terminal && status?.state === "failed";
-  const percent = phaseProgressPercent(status);
+  // failed AND stalled are error terminals (stalled = the helper status
+  // file never appeared on the native path) — both render red, not the
+  // in-flight gradient. cancelled is a neutral "stopped watching" stop.
+  const errored =
+    terminal && (status?.state === "failed" || status?.state === "stalled");
+  const cancelled = terminal && status?.state === "cancelled";
+  const percent = phaseProgressPercent(status, floorRef.current);
 
   return (
     <section
@@ -221,14 +241,24 @@ export function UpgradeProgress({
             aria-valuemin={0}
             aria-valuemax={100}
             data-testid="upgrade-progress-bar-fill"
-            data-state={failed ? "failed" : succeeded ? "succeeded" : "running"}
+            data-state={
+              errored
+                ? "failed"
+                : succeeded
+                  ? "succeeded"
+                  : cancelled
+                    ? "cancelled"
+                    : "running"
+            }
             className={cn(
               "h-full rounded-full transition-[width] duration-700 ease-out",
-              failed
+              errored
                 ? "bg-sg-err"
                 : succeeded
                   ? "bg-sg-ok"
-                  : "bg-gradient-to-r from-sg-accent to-sg-accent-2",
+                  : cancelled
+                    ? "bg-sg-ink-4"
+                    : "bg-gradient-to-r from-sg-accent to-sg-accent-2",
             )}
             style={{ width: `${percent}%` }}
           />
