@@ -76,12 +76,17 @@ DEFAULT_REQUIRED_SCOPES: tuple[tuple[str, str], ...] = (("/v1/chat", "chat"),)
 
 
 #: Path prefixes where a logged-in admin *browser session* may stand in for
-#: an API key (the in-app chat UI). Deliberately narrow: only the chat
-#: endpoints, which the gateway serves to the same-origin admin dashboard.
-#: Every other protected ``/v1/`` surface (memory, canvas, plugin callbacks)
-#: still requires a real bearer key. See :func:`_path_allows_admin_session`
-#: and the bridge branch in :meth:`ApiKeyAuthMiddleware.dispatch`.
-ADMIN_SESSION_BRIDGE_PREFIXES: tuple[str, ...] = ("/v1/chat",)
+#: an API key (the in-app chat UI). Deliberately narrow: the chat endpoints
+#: plus the chat **file store** (``/v1/files`` — upload + serve), both of
+#: which the gateway serves to the same-origin admin dashboard. The composer
+#: uploads attachments with the same cookie that authenticates ``/v1/chat``,
+#: and the chat bubble fetches them back, so the bridge must cover both or the
+#: cookie-only web UI would 401 on every attachment (PLAN_CHAT_PERFECT §4
+#: decision 1). Every other protected ``/v1/`` surface (memory, canvas, plugin
+#: callbacks) still requires a real bearer key. See
+#: :func:`_path_allows_admin_session` and the bridge branch in
+#: :meth:`ApiKeyAuthMiddleware.dispatch`.
+ADMIN_SESSION_BRIDGE_PREFIXES: tuple[str, ...] = ("/v1/chat", "/v1/files")
 
 
 def _path_allows_admin_session(path: str) -> bool:

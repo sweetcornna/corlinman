@@ -44,6 +44,7 @@ from corlinman_server.gateway.routes import (
     channels,
     chat,
     chat_approve,
+    files,
     health,
     memory,
     metrics,
@@ -103,6 +104,13 @@ def build_app_router(state: GatewayState) -> APIRouter:
 
     # /v1 ancillary
     parent.include_router(models.router(state.models_source))
+
+    # /v1 file store — upload/serve for web-chat attachments + assistant
+    # media (PLAN_CHAT_PERFECT §4 decision 1). Stateless: the route
+    # resolves its <data_dir>/files/ store lazily per request, so it
+    # needs no GatewayState slot and is always safe to mount. Auth rides
+    # on the same /v1 middleware + admin-session bridge as /v1/chat.
+    parent.include_router(files.router())
 
     # Memory + canvas only when explicitly wired (they require real
     # adapter instances; no stub form mirrors useful production behaviour).
