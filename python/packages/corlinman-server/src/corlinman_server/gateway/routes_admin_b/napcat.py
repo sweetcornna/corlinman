@@ -19,6 +19,31 @@ NapCat URL resolution order matches Rust:
 Authentication: NapCat 2.x exchanges
 ``POST /api/auth/login {"hash": sha256(token + ".napcat")}`` for a
 short-lived ``Credential`` we then send as ``Bearer``.
+
+Scope of the embedded WebUI proxy
+----------------------------------
+The same-origin ``/webui`` iframe + ``/api/*`` proxy exist to drive the
+**QQ scan-login and OneBot configuration flow** — nothing more. We proxy
+exactly the NapCat frontend API groups that flow touches
+(``QQLogin`` / ``OB11Config`` / ``auth`` / ``base`` / ``Log`` /
+``Process`` / ``WebUIConfig``) as *named prefixes*, NOT a blanket
+``/api/{path}`` catch-all: corlinman serves its own first-party routes
+under ``/api/channels/corlinman/*`` (see ``corlinman_channel.py``) and a
+catch-all here would shadow them. Full NapCat WebUI administration —
+plugin management, the file browser, the debug terminal
+(``/api/ws/terminal`` WebSocket), and live log *tailing*
+(``/api/Log/GetLogRealTime``, a long-lived ``text/event-stream`` the
+buffering proxy below cannot stream) — is intentionally **out of scope**;
+operators manage those on the NapCat instance directly.
+
+Trust model: the iframe runs NapCat's HTML/JS at corlinman's own origin,
+so it must be a **trusted, operator-managed NapCat** (the bundled
+default — local docker/native). Pointing ``[channels.qq].napcat_url`` at
+an untrusted external host is not a supported security configuration: a
+same-origin iframe that authenticates to the proxied ``/api/*`` cannot be
+sandboxed without breaking that auth. As defense-in-depth the proxy still
+never forwards the browser's ``Cookie`` / ``Authorization`` upstream (see
+``_FORWARD_REQUEST_HEADERS``).
 """
 
 from __future__ import annotations
