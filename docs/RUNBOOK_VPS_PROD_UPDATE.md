@@ -5,6 +5,11 @@
 - **Install prefix**: `/opt/corlinman`
 - **Data dir**: `/opt/corlinman/data`
 - **Last verified**: 2026-06-06 09:33 CST, `v1.18.2`
+- **Latest release**: `v1.19.0` (2026-06-11) — published, **not yet deployed to
+  this host**. ⚠️ Unlike 1.18.2 (which skipped the UI rebuild), 1.19.0 ships the
+  full Spatial Glass UI redesign, so this deploy **must rebuild `ui/out/`**
+  (`pnpm install --frozen-lockfile && pnpm build`) and re-sync `ui-static/`, or
+  the box keeps serving the old UI against the new gateway.
 
 This runbook is for the hosted demo VPS. It is intentionally more specific than
 the generic installer docs because this box has a legacy root-owned native

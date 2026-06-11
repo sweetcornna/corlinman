@@ -6,7 +6,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/sweetcornna/corlinman/ci.yml?branch=main&label=CI)](https://github.com/sweetcornna/corlinman/actions)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.18.2-brightgreen)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.19.0-brightgreen)](CHANGELOG.md)
 [![Docs](https://img.shields.io/badge/docs-architecture-informational)](docs/architecture.md)
 
 **A self-hosted intelligent-agent platform.** Give a language model durable
@@ -19,12 +19,15 @@ govern with human-in-the-loop approvals.
 > _Live deployment reference: <https://corlinman.cornna.xyz>._
 > _中文介绍章节见文末 ["中文速览"](#中文速览)。_
 >
-> **What's new in 1.18.2** — channel replies no longer append a live status
-> link on every normal message. The `🔗 实时状态` link appears only when the
-> parent turn dispatches sub-agents, and it is sent once with a final fallback
-> if the early send fails. See [`CHANGELOG.md`](CHANGELOG.md).
-> _1.18.2 修复普通回复每条都带实时状态链接的问题；只有发布多 agent 时，
-> 主 agent 才发送一次副 agent 状态链接。_
+> **What's new in 1.19.0** — a full **Spatial Glass** admin redesign with
+> Apple-style Liquid Glass optics, a custom Theme Studio (whole-theme colour +
+> adjustable glass opacity), and a ChatGPT/Claude-grade chat. Plus the 6-hour
+> CI py-test hang is fixed and channel replies now keep native markdown on
+> Discord/Slack while staying clean on plain-text channels. See
+> [`CHANGELOG.md`](CHANGELOG.md).
+> _1.19.0 全新「空间玻璃」后台重设计 + 苹果液态玻璃光效 + 主题工作室（整体配色与
+> 玻璃不透明度自定义）+ 媲美 ChatGPT/Claude 的聊天页；并修复 6 小时 CI 挂死、渠道
+> 发送标点/markdown 整洁问题。_
 
 ---
 
@@ -683,11 +686,12 @@ ops/                Grafana dashboard + observability compose
 
 ## Roadmap + status
 
-**v1.18.2** (current) — channel status-link hygiene: normal replies no longer
-append `🔗 实时状态`, while multi-agent fan-out still sends one standalone
-sub-agent status link and keeps a final fallback if the early send fails.
-Existing config remains compatible. Tagged `v1.18.2`. The complete,
-up-to-date version history (1.1 → 1.18) lives in
+**v1.19.0** (current) — **Spatial Glass** admin redesign (visionOS-style glass +
+Apple Liquid Glass optics), a Theme Studio for whole-theme colour and glass
+opacity, a ChatGPT/Claude-grade chat; plus the 6-hour CI py-test hang fixed and
+channel-capability-aware outbound text (native markdown kept on Discord/Slack,
+flattened only on plain-text channels). Existing config remains compatible.
+Tagged `v1.19.0`. The complete, up-to-date version history (1.1 → 1.19) lives in
 [`CHANGELOG.md`](CHANGELOG.md).
 
 **v1.1.0** — channel parity (QQ official bot + WeChat 公众号
@@ -771,9 +775,10 @@ MIT. See [`LICENSE`](LICENSE).
 
 ## 中文速览
 
-> **1.18.2 新特性**：普通回复不再每条都附带 `🔗 实时状态`。只有主 agent
-> 触发多 agent fan-out 时，才会发送一次副 agent 状态链接；提前发送失败时，
-> 最终回复会补发一次兜底链接。现有配置保持兼容。
+> **1.19.0 新特性**：全新「空间玻璃」后台重设计（visionOS 风格玻璃 + 苹果液态
+> 玻璃光效）、主题工作室（整体配色 + 玻璃不透明度自定义 + 六套前卫主题）、媲美
+> ChatGPT/Claude 的聊天页；并修复 6 小时 CI 挂死、渠道发送在 Discord/Slack 保留
+> 原生 markdown、纯文本渠道则清理 AI 标点/markdown。现有配置保持兼容。
 > 完整说明见 [更新日志](CHANGELOG.md)。
 
 **corlinman 是一个可自托管的智能体平台。** 不只是 LLM 的 API 代理，也不是拖拽工作流的工具箱——它是一套有主张的运行时：让语言模型拥有**持久记忆**、**真实工具**、**多通道接入**、**可审计的运维面板**，全部跑在你自己的机器上。

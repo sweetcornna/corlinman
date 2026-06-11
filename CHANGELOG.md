@@ -4,6 +4,48 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.19.0] — 2026-06-11 — Spatial Glass UI redesign + CI hang fix
+
+> Minor release. Config-compatible — no migration required. The admin UI is
+> fully restyled; theme/language preferences are preserved.
+
+### Added
+- **Spatial Glass design system.** Full visionOS-style admin redesign:
+  deep-space navy backdrop, layered frosted glass, depth/elevation, soft glow,
+  large radii. Dark-first with a light token fallback. The legacy `tp-*`
+  (Tidepool) token namespace is fully removed in favour of canonical `sg-*`.
+- **Liquid Glass optics.** Apple WWDC25-style light interaction — a real
+  pointer-tracked cursor radiance, specular glass highlights, chromatic edge
+  refraction, and non-linear spring motion (all `prefers-reduced-motion` safe).
+- **Theme Studio.** Custom theming extended to the *whole* theme — accent hue +
+  intensity, canvas hue + chroma (taste-capped), and a user-adjustable **glass
+  opacity** — plus six designer presets (深空/极光/暮霭/玫瑰/墨玉/鎏金). Generated
+  CSS is persisted and injected pre-paint (no flash).
+- **ChatGPT/Claude-grade chat.** Multi-type bubbles, streaming, markdown + code
+  rendering, quoted replies, and a mascot empty-state.
+
+### Changed
+- **Outbound text normalization is now channel-capability-aware.** Markdown-flatten
+  + AI-punctuation cleanup runs only on plain-text channels (QQ, Telegram,
+  WeChat, Feishu); **Discord and Slack keep their native markdown/mrkdwn** so
+  formatting and escaped mentions survive verbatim.
+- The "每日说说" (daily post) feature now applies to **all persona agents**, not
+  just the Grantley persona. QZone admin pages gained full zh/en switching.
+
+### Fixed
+- **The 6-hour CI py-test hang is gone.** The admin SSE catch-up replay no longer
+  tears down an aiosqlite cursor mid-iteration under client disconnect. Replay is
+  now a bounded `LIMIT`-paged read against a snapshot upper bound, with
+  turn-scoped exact-sequence live dedup (bounded memory). CI jobs gained
+  `pytest-timeout` + `timeout-minutes` hard rails.
+- **`ask_user` no longer double-sends on Telegram.** A single-chunk prompt edits
+  the placeholder *with* its keyboard instead of editing then re-sending, with a
+  send fallback when the edit is rejected.
+- **Plain-text channel replies no longer carry cluttered AI markdown/punctuation.**
+- **NapCat embedded WebUI proxy** never forwards the admin cookie upstream
+  (header allowlist); the scan-login/config scope and trusted-managed-NapCat
+  assumption are documented.
+
 ## [1.18.2] — 2026-06-06 — Multi-agent status link noise fix
 
 > Patch release for channel reply hygiene. No config migration is required.
