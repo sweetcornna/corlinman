@@ -379,6 +379,19 @@ def _render_model(ctx: CommandContext) -> CommandResult:
     """
     from corlinman_channels import binding_prefs  # noqa: PLC0415 — soft-dep shim
 
+    if ctx.binding.channel in ("playground", "console"):
+        # Synthetic surfaces don't route chats through the channel
+        # request builders, so a persisted override would silently do
+        # nothing — be honest instead (web picks its model in the UI;
+        # the console's local /model takes precedence over this handler).
+        return CommandResult(
+            reply=(
+                "/model 在此界面不生效：网页端请在界面里选择模型；"
+                "CLI 控制台请直接使用本地 /model。频道会话（QQ/Telegram/"
+                "Discord/Slack/飞书）中使用本命令可切换模型。"
+            )
+        )
+
     args = ctx.args_text.strip()
     if not args:
         prefs = binding_prefs.get_prefs(ctx.binding)

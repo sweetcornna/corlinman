@@ -158,16 +158,11 @@ class CorlinmanProvider(Protocol):
         """
         ...
 
-    def supports_tools(self, model: str) -> bool:
-        """Return whether ``model`` accepts OpenAI-style ``tools`` schemas.
+    # NOTE: adapters MAY additionally implement
+    # ``supports_tools(model: str) -> bool`` (default assumption: True).
+    # It is deliberately NOT part of this @runtime_checkable Protocol —
+    # adding a method here would silently flip isinstance() checks to
+    # False for every adapter that has not implemented it. Callers must
+    # use the getattr-degrade pattern (see agent_servicer.
+    # _provider_supports_tools).
 
-        Defaults to ``True`` in every concrete adapter — tool support is
-        the norm. Adapters fronting tool-less models (small local models
-        behind an ``openai_compatible`` gateway, declarative TOML specs
-        with ``params.tools = false``) return ``False`` so the servicer
-        can skip builtin-tool injection instead of triggering a vendor
-        400. Callers treat a *missing* implementation as ``True``
-        (``getattr``-degrade) — the method is part of the contract, not a
-        hard runtime requirement. Cheap and side-effect free.
-        """
-        ...

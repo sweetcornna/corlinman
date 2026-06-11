@@ -62,6 +62,11 @@ from corlinman_agent.coding import (
     resolve_workspace,
 )
 from corlinman_agent.coding._snapshot import snapshot as _snapshot_workspace
+
+#: Session-key suffixes marking internal utility turns (summarization,
+#: future title generation) that must skip the per-turn workspace
+#: snapshot. Contract shared with ``corlinman_server.console.compaction``.
+_INTERNAL_SESSION_SUFFIXES: tuple[str, ...] = (":compact",)
 from corlinman_agent.context_assembler import ContextAssembler, PlaceholderError
 from corlinman_agent.hooks import LoggingHookEmitter
 from corlinman_agent.image import (
@@ -1575,10 +1580,16 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # degrades silently if git is missing on the host. Labelled with
         # the user message head so ``git log`` reads as a turn-by-turn
         # history.
-        try:
-            _snapshot_workspace(resolve_workspace(), user_text or "turn")
-        except Exception as exc:  # noqa: BLE001 — never fail the chat
-            logger.warning("agent.chat.snapshot_failed", error=str(exc))
+        # Internal-utility turns (console /compact summarization runs
+        # under ``<session>:compact`` — see console/compaction.py) must
+        # not pollute the turn-by-turn checkpoint history: their "user
+        # text" is a synthetic summarization prompt, and a checkpoint
+        # labelled with it would be meaningless in /rewind.
+        if not start.session_key.endswith(_INTERNAL_SESSION_SUFFIXES):
+            try:
+                _snapshot_workspace(resolve_workspace(), user_text or "turn")
+            except Exception as exc:  # noqa: BLE001 — never fail the chat
+                logger.warning("agent.chat.snapshot_failed", error=str(exc))
 
         # T2.1: per-RPC file-read cache + staleness tracker. Threaded
         # into the file-tool dispatch below; other tools don't need it.

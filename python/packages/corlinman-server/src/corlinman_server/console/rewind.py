@@ -251,6 +251,17 @@ def rewind_to(
                     f"{(reset.stderr or reset.stdout).strip()[:200]}"
                 ),
             )
+        # ``reset --hard`` leaves files the latest turn CREATED (they are
+        # untracked at HEAD) — sweep them too, or the "restore" is partial.
+        _run_git(ws, "clean", "-fd")
+        truncated, dropped, reason = (False, 0, "no console session attached")
+        if session is not None:
+            truncated, dropped, reason = _truncate_window(session, chosen.label)
+        window_note = (
+            f"; {dropped} window message(s) dropped"
+            if truncated
+            else f"; conversation window unchanged ({reason})"
+        )
         return RewindResult(
             ok=True,
             sha=chosen.sha,
@@ -259,6 +270,7 @@ def rewind_to(
             message=(
                 f"workspace reset to checkpoint {chosen.sha} ({chosen.label}) "
                 "— uncommitted edits made after the snapshot were discarded"
+                + window_note
             ),
         )
 
@@ -277,6 +289,9 @@ def rewind_to(
                 ),
             )
         reverted_to = res.get("reverted_to", "")
+    # Same untracked-file sweep as the checkpoint-1 path: files created
+    # after the target snapshot are untracked at the reverted HEAD.
+    _run_git(ws, "clean", "-fd")
     if reverted_to != chosen.sha:
         return RewindResult(
             ok=False,
