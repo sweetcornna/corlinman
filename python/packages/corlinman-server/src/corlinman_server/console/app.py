@@ -373,7 +373,12 @@ class ConsoleApp:
         """
         if self.output_format in ("json", "stream-json"):
             return await self._run_once_structured(text)
-        decision = self.router.route_turn(text)
+        decision = self.router.route_turn(
+            text,
+            # Same rule as run_turn: an explicit --model must never be
+            # auto-downgraded — pipe mode included.
+            explicit_model=self.session.model if self.model_explicit else None,
+        )
         self.renderer.start_turn()
         failed = False
         try:
@@ -408,7 +413,10 @@ class ConsoleApp:
         consumers of these formats expect silence there too — matching
         claude-code's behaviour).
         """
-        decision = self.router.route_turn(text)
+        decision = self.router.route_turn(
+            text,
+            explicit_model=self.session.model if self.model_explicit else None,
+        )
         streaming = self.output_format == "stream-json"
         reply_parts: list[str] = []
         done: TurnDone | None = None
@@ -532,6 +540,17 @@ async def run_console(
                 )
         else:
             session.session_key = session_key
+            # Attach mode cannot replay history: the journal lives in the
+            # remote gateway process and /v1/chat/completions is a
+            # stateless window — say so instead of silently continuing
+            # with empty context under an old key.
+            console.print(
+                f"note: --session {session_key} in attach mode only tags "
+                "journaling on the gateway; prior turns are NOT replayed "
+                "into this window",
+                style="yellow",
+                highlight=False,
+            )
 
     if print_mode:
         if not prompt:
