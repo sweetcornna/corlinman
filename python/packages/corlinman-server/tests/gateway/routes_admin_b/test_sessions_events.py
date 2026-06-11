@@ -306,6 +306,59 @@ async def test_no_duplicate_when_event_emitted_during_catch_up(
 
 
 @pytest.mark.asyncio
+async def test_no_duplicate_on_bare_resume_during_catch_up(
+    state: AdminState,
+    journal: AgentJournal,
+    emitter: JournalBackedEmitter,
+) -> None:
+    """The replay/live overlap must dedup for a BARE resume too. Dedup is
+    scoped to the turn catch-up actually replays (the resolved latest
+    turn), so an event committed to that turn mid-replay — landing in both
+    a journal page and the live queue — is delivered exactly once, even
+    though the client sent only a bare sequence (no composite turn)."""
+    tid = await journal.begin_turn("sess-1", "hello")
+    assert tid is not None
+    for seq in range(3):
+        await journal.append_event(
+            _make_envelope(turn_id=str(tid), sequence=seq, text=f"old-{seq}")
+        )
+
+    # Bare resume: sequence only, no turn — catch-up resolves the latest
+    # turn (tid) and dedup must scope to it.
+    gen = _sse_stream(state, "sess-1", catch_up_turn_id=None, catch_up_sequence=0)
+
+    async def _producer() -> None:
+        for _ in range(50):
+            if emitter.subscriber_count("sess-1") > 0:
+                break
+            await asyncio.sleep(0.02)
+        # seq 2 already lives in the journal (replay/live overlap); seq 3
+        # is genuinely new — both on the resolved turn.
+        await emitter.emit(_make_envelope(turn_id=str(tid), sequence=2, text="old-2"))
+        await emitter.emit(_make_envelope(turn_id=str(tid), sequence=3, text="new-3"))
+
+    producer = asyncio.create_task(_producer())
+    try:
+        body = await asyncio.wait_for(
+            _drain_frames(gen, until_count_of="new-3", count=1), timeout=5.0
+        )
+    finally:
+        producer.cancel()
+        with contextlib_suppress():
+            await producer
+        await gen.aclose()
+
+    frames = _parse_sse_frames(body)
+    seqs = [
+        int(f["id"].split(":", 1)[1])
+        for f in frames
+        if f.get("event") == "TextDelta"
+    ]
+    assert seqs.count(2) == 1, f"seq 2 duplicated on bare resume: {seqs}"
+    assert 3 in seqs
+
+
+@pytest.mark.asyncio
 async def test_bare_resume_does_not_dedup_a_new_turn(
     state: AdminState,
     journal: AgentJournal,

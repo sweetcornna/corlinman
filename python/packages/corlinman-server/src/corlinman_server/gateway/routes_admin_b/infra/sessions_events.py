@@ -189,12 +189,19 @@ async def _sse_stream(
         if resume_turn is None and catch_up_sequence >= 0:
             resume_turn = await _resolve_latest_turn_id(journal, session_key)
 
-        # Live-dedup state. Only a COMPOSITE Last-Event-ID (``turn:seq``)
-        # ties a sequence to a turn, so only then can we safely suppress
-        # live envelopes the replay already sent. A bare resume sequence
-        # is NOT turn-scoped — seeding dedup from it would wrongly drop a
-        # brand-new turn's early events — so dedup stays off in that case.
-        dedup_turn = catch_up_turn_id  # the explicit composite turn, or None
+        # Live-dedup state, scoped to the turn catch-up actually replays
+        # (``resume_turn``) and the high-water sequence it actually
+        # delivered (``catch_up_high``). Because we subscribe BEFORE
+        # replaying, an event committed mid-replay can land in BOTH a
+        # journal page AND the live queue; deduping by ``(resume_turn,
+        # seq <= catch_up_high)`` drops that single duplicate. Scoping to
+        # ``resume_turn`` — not a global sequence cap — is what keeps a
+        # brand-new turn's early events (sequences restart at 0, so below
+        # the mark) flowing: their turn id never matches ``resume_turn``.
+        # This holds for bare resumes too — ``resume_turn`` is the resolved
+        # latest turn, so its own replayed events dedup while a *new* turn
+        # is untouched.
+        dedup_turn = resume_turn  # turn catch-up replays (composite or resolved)
         catch_up_high = -1  # high-water of what catch-up actually delivered
 
         if resume_turn is not None and catch_up_sequence >= 0:
@@ -256,10 +263,11 @@ async def _sse_stream(
                 # are silently ignored by ``EventSource`` clients.
                 yield b": keepalive\n\n"
                 continue
-            # Drop envelopes the catch-up replay already delivered for the
-            # composite-resume turn (an event committed while we paged is
-            # in the journal AND here). Bare-sequence resumes don't dedup
-            # (dedup_turn is None) so a fresh turn's early events survive.
+            # Drop an envelope the catch-up replay already delivered: an
+            # event committed while we paged lands in both a journal page
+            # AND this queue. Scoped to ``(resume_turn, seq <=
+            # catch_up_high)`` so a fresh turn's early events (different
+            # turn id) always survive.
             if dedup_turn is not None and catch_up_high >= 0:
                 ev_turn = getattr(envelope, "turn_id", None)
                 ev_seq = getattr(envelope, "sequence", None)
