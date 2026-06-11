@@ -436,18 +436,20 @@ export const en = {
   },
 
   nav: {
-    accent: {
-      label: "Theme color",
-      title: "Theme color",
-      custom: "Custom hue",
+    themeStudio: {
+      label: "Theme studio",
+      themesTitle: "Designer themes",
+      customTitle: "Custom",
+      accentHue: "Accent hue",
+      canvasHue: "Canvas hue",
       reset: "Reset to default",
-      presets: {
-        default: "Starlight (default)",
-        violet: "Amethyst",
-        emerald: "Emerald",
-        amber: "Sunglow",
-        rose: "Sakura",
-        ocean: "Ocean",
+      themes: {
+        deepSpace: "Deep Space",
+        aurora: "Aurora",
+        dusk: "Dusk",
+        rose: "Rose",
+        obsidian: "Obsidian",
+        gilded: "Gilded",
       },
     },
     dashboard: "Dashboard",

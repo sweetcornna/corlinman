@@ -41,37 +41,42 @@ function hslHue(oklchHue: number): number {
 /**
  * Generate the override CSS for a given oklch hue. Mirrors the default
  * accent recipe in globals.css with the hue swapped (companion violet at
- * H+55, ice at H−15).
+ * H+55, ice at H−15). `intensity` scales every accent chroma — 1 is the
+ * stock vividness, lower values give desaturated "mono premium" looks
+ * (used by the obsidian designer theme).
  */
-export function buildAccentCss(hue: number): string {
+export function buildAccentCss(hue: number, intensity = 1): string {
   const h = ((hue % 360) + 360) % 360;
   const h2 = (h + 55) % 360;
   const h3 = (h - 15 + 360) % 360;
   const hh = hslHue(h);
+  const k = Math.max(0.05, Math.min(intensity, 1.5));
+  const c = (base: number) => +(base * k).toFixed(3);
+  const sat = (base: number) => Math.round(base * Math.min(k, 1));
   return [
     ":root{",
-    `--sg-accent:oklch(0.5 0.16 ${h});`,
-    `--sg-accent-soft:oklch(0.5 0.16 ${h} / 0.1);`,
-    `--sg-accent-glow:oklch(0.55 0.16 ${h} / 0.3);`,
-    `--sg-accent-2:oklch(0.47 0.2 ${h2});`,
-    `--sg-accent-2-soft:oklch(0.47 0.2 ${h2} / 0.1);`,
-    `--sg-accent-3:oklch(0.55 0.1 ${h3});`,
-    `--sg-accent-3-soft:oklch(0.55 0.1 ${h3} / 0.1);`,
-    `--sg-grad-text:linear-gradient(115deg, oklch(0.46 0.17 ${h}), oklch(0.52 0.12 ${h3}) 45%, oklch(0.44 0.21 ${h2}));`,
-    `--primary:${hh} 70% 45%;`,
-    `--ring:${hh} 75% 55%;`,
+    `--sg-accent:oklch(0.5 ${c(0.16)} ${h});`,
+    `--sg-accent-soft:oklch(0.5 ${c(0.16)} ${h} / 0.1);`,
+    `--sg-accent-glow:oklch(0.55 ${c(0.16)} ${h} / 0.3);`,
+    `--sg-accent-2:oklch(0.47 ${c(0.2)} ${h2});`,
+    `--sg-accent-2-soft:oklch(0.47 ${c(0.2)} ${h2} / 0.1);`,
+    `--sg-accent-3:oklch(0.55 ${c(0.1)} ${h3});`,
+    `--sg-accent-3-soft:oklch(0.55 ${c(0.1)} ${h3} / 0.1);`,
+    `--sg-grad-text:linear-gradient(115deg, oklch(0.46 ${c(0.17)} ${h}), oklch(0.52 ${c(0.12)} ${h3}) 45%, oklch(0.44 ${c(0.21)} ${h2}));`,
+    `--primary:${hh} ${sat(70)}% 45%;`,
+    `--ring:${hh} ${sat(75)}% 55%;`,
     "}",
     ".dark{",
-    `--sg-accent:oklch(0.78 0.13 ${h});`,
-    `--sg-accent-soft:oklch(0.78 0.13 ${h} / 0.14);`,
-    `--sg-accent-glow:oklch(0.78 0.13 ${h} / 0.45);`,
-    `--sg-accent-2:oklch(0.7 0.17 ${h2});`,
-    `--sg-accent-2-soft:oklch(0.7 0.17 ${h2} / 0.14);`,
-    `--sg-accent-3:oklch(0.85 0.07 ${h3});`,
-    `--sg-accent-3-soft:oklch(0.85 0.07 ${h3} / 0.14);`,
-    `--sg-grad-text:linear-gradient(115deg, oklch(0.86 0.11 ${h}), oklch(0.92 0.05 ${h3}) 45%, oklch(0.76 0.17 ${h2}));`,
-    `--primary:${hh} 75% 70%;`,
-    `--ring:${hh} 80% 70%;`,
+    `--sg-accent:oklch(0.78 ${c(0.13)} ${h});`,
+    `--sg-accent-soft:oklch(0.78 ${c(0.13)} ${h} / 0.14);`,
+    `--sg-accent-glow:oklch(0.78 ${c(0.13)} ${h} / 0.45);`,
+    `--sg-accent-2:oklch(0.7 ${c(0.17)} ${h2});`,
+    `--sg-accent-2-soft:oklch(0.7 ${c(0.17)} ${h2} / 0.14);`,
+    `--sg-accent-3:oklch(0.85 ${c(0.07)} ${h3});`,
+    `--sg-accent-3-soft:oklch(0.85 ${c(0.07)} ${h3} / 0.14);`,
+    `--sg-grad-text:linear-gradient(115deg, oklch(0.86 ${c(0.11)} ${h}), oklch(0.92 ${c(0.05)} ${h3}) 45%, oklch(0.76 ${c(0.17)} ${h2}));`,
+    `--primary:${hh} ${sat(75)}% 70%;`,
+    `--ring:${hh} ${sat(80)}% 70%;`,
     "}",
   ].join("");
 }

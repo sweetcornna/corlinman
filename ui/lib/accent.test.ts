@@ -1,5 +1,23 @@
 import { afterEach, describe, expect, it } from "vitest";
 
+// Node 22 jsdom backs localStorage with a shared on-disk store, so parallel
+// test files race each other's keys. Replace with an in-memory store for
+// full isolation.
+const memStore = new Map<string, string>();
+Object.defineProperty(window, "localStorage", {
+  configurable: true,
+  value: {
+    getItem: (k: string) => memStore.get(k) ?? null,
+    setItem: (k: string, v: string) => void memStore.set(k, String(v)),
+    removeItem: (k: string) => void memStore.delete(k),
+    clear: () => memStore.clear(),
+    key: (i: number) => [...memStore.keys()][i] ?? null,
+    get length() {
+      return memStore.size;
+    },
+  },
+});
+
 import {
   ACCENT_PRESETS,
   ACCENT_STORAGE_KEY,

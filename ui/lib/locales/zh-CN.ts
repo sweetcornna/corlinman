@@ -419,18 +419,20 @@ export const zhCN = {
   },
 
   nav: {
-    accent: {
-      label: "主题色",
-      title: "主题色",
-      custom: "自定义色相",
+    themeStudio: {
+      label: "主题工坊",
+      themesTitle: "设计主题",
+      customTitle: "自定义",
+      accentHue: "主题色相",
+      canvasHue: "画布色相",
       reset: "恢复默认",
-      presets: {
-        default: "星澜（默认）",
-        violet: "紫晶",
-        emerald: "翠羽",
-        amber: "暖阳",
-        rose: "樱粉",
-        ocean: "海碧",
+      themes: {
+        deepSpace: "深空",
+        aurora: "极光",
+        dusk: "暮霭",
+        rose: "玫瑰",
+        obsidian: "墨玉",
+        gilded: "鎏金",
       },
     },
     dashboard: "仪表盘",

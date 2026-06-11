@@ -41,10 +41,19 @@ const BOOT = `
   if (qs) { try { localStorage.setItem(tk, t); } catch(_){} }
   el.setAttribute("data-theme", t);
   if (t==="dark") el.classList.add("dark"); else el.classList.remove("dark");
-  // Custom accent (corlinman-accent = oklch hue). Mirrors lib/accent.ts
-  // buildAccentCss — keep the two generators in sync. Injected before
-  // first paint so the chosen theme color never flashes the default.
-  var ah=localStorage.getItem("corlinman-accent");
+  // Theme Studio: the full generated CSS is persisted verbatim by
+  // lib/theme-studio.ts — inject it as-is before first paint (no logic
+  // duplication, no flash). Falls back to the legacy accent-only key.
+  var tc=localStorage.getItem("corlinman-theme-css");
+  if(tc){
+    var tst=document.createElement("style");
+    tst.id="sg-accent-override";
+    tst.textContent=tc;
+    document.head.appendChild(tst);
+  }
+  // Legacy custom accent (corlinman-accent = oklch hue). Mirrors
+  // lib/accent.ts buildAccentCss — keep the two generators in sync.
+  var ah=tc?null:localStorage.getItem("corlinman-accent");
   if(ah!==null&&ah!==""&&isFinite(Number(ah))){
     var H=((Number(ah)%360)+360)%360, H2=(H+55)%360, H3=(H-15+360)%360, HH=Math.round((H-18+360)%360);
     var st=document.createElement("style");
