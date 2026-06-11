@@ -2769,8 +2769,12 @@ def _attachment_to_content_part(att: Attachment) -> dict[str, Any] | None:
     (useless attachment — drop quietly).
     """
     if att.kind == "image":
-        if att.url:
-            return {"type": "image_url", "image_url": {"url": att.url}}
+        # bytes win over url when both are present: bytes are the
+        # already-fetched authoritative payload, while the url may be
+        # private to the gateway origin (e.g. ``/v1/files/{id}`` for a
+        # web-chat upload) and unreachable from the model provider. The
+        # gateway keeps that slim url on the attachment purely so the
+        # journal records a re-fetchable reference instead of base64.
         if att.bytes_:
             # base64 data URL; providers that prefer raw bytes unwrap.
             import base64
@@ -2780,6 +2784,8 @@ def _attachment_to_content_part(att: Attachment) -> dict[str, Any] | None:
                 "type": "image_url",
                 "image_url": {"url": f"data:{mime};base64,{b64}"},
             }
+        if att.url:
+            return {"type": "image_url", "image_url": {"url": att.url}}
         return None
     # Audio / video / file — not universally supported. Forward as a
     # generic "file" part so providers that DO handle them (future

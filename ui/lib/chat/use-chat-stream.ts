@@ -25,6 +25,7 @@ import {
   type ChatCompletionRequest,
   type ChatCompletionToolDef,
 } from "@/lib/api/chat";
+import { buildMessageContent } from "@/lib/chat/content-parts";
 import { openLiveEventStream } from "@/lib/sessions/event-stream";
 import {
   EventDedupSet,
@@ -408,10 +409,19 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
       const history = baseHistory ?? messages;
       for (const m of history) {
         if (m.role === "user" || m.role === "assistant" || m.role === "system") {
-          messagesPayload.push({ role: m.role, content: m.content });
+          messagesPayload.push({
+            role: m.role,
+            content: buildMessageContent(m.content, m.attachments),
+          });
         }
       }
-      messagesPayload.push({ role: "user", content: userMsg.content });
+      // Attachments ride as OpenAI content-parts (W3). Pre-fix they were
+      // collected by the composer and then silently dropped here — the
+      // model never saw them and history couldn't re-render them.
+      messagesPayload.push({
+        role: "user",
+        content: buildMessageContent(userMsg.content, userMsg.attachments),
+      });
 
       const reqBody: ChatCompletionRequest = {
         model: args.model,

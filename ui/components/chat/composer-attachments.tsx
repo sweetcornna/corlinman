@@ -27,6 +27,40 @@ function formatBytes(n: number): string {
   return `${(n / 1024 / 1024).toFixed(1)}MB`;
 }
 
+/** Clamp a 0..1 upload fraction to a whole-percent string for the UI. */
+function formatPercent(fraction: number): string {
+  const pct = Math.max(0, Math.min(100, Math.round(fraction * 100)));
+  return `${pct}%`;
+}
+
+/**
+ * Thin upload-progress bar. When `fraction` is a number the fill is
+ * determinate (driven by real upload progress); when it's `undefined`
+ * the fill falls back to an indeterminate shimmer. Styled with sg-*
+ * tokens only and no backdrop-filter (content-card rule).
+ */
+function UploadBar({ fraction }: { fraction?: number }) {
+  const determinate = typeof fraction === "number";
+  return (
+    <span
+      className="mt-0.5 block h-0.5 w-full overflow-hidden rounded-full bg-sg-inset-strong"
+      role="progressbar"
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={determinate ? Math.round(fraction! * 100) : undefined}
+      data-testid="composer-attachment-progress"
+    >
+      <span
+        className={cn(
+          "block h-full rounded-full bg-sg-accent",
+          determinate ? "transition-[width] duration-200" : "w-1/3 animate-pulse",
+        )}
+        style={determinate ? { width: formatPercent(fraction!) } : undefined}
+      />
+    </span>
+  );
+}
+
 function NonImageIcon({ kind }: { kind: ChatAttachment["kind"] }) {
   const cls = "h-3.5 w-3.5 text-sg-ink-3";
   if (kind === "audio") return <Music className={cls} aria-hidden="true" />;
@@ -76,10 +110,20 @@ export function ComposerAttachments({
                   className="h-16 w-16 object-cover"
                 />
                 {att.uploading ? (
-                  <div
-                    className="absolute inset-0 animate-pulse bg-sg-overlay"
-                    aria-hidden="true"
-                  />
+                  <>
+                    <div
+                      className="absolute inset-0 animate-pulse bg-sg-overlay"
+                      aria-hidden="true"
+                    />
+                    {typeof att.progress === "number" ? (
+                      <span
+                        className="absolute bottom-0.5 right-0.5 rounded-sg-sm bg-sg-card-strong px-1 text-[9px] font-mono text-sg-ink-2"
+                        data-testid="composer-attachment-percent"
+                      >
+                        {formatPercent(att.progress)}
+                      </span>
+                    ) : null}
+                  </>
                 ) : null}
               </div>
             ) : (
@@ -99,16 +143,13 @@ export function ComposerAttachments({
                   <span className="truncate font-mono">{att.name}</span>
                 </div>
                 <span className="font-mono text-[10px] text-sg-ink-4">
-                  {att.error ? att.error : formatBytes(att.sizeBytes)}
+                  {att.error
+                    ? att.error
+                    : att.uploading && typeof att.progress === "number"
+                      ? formatPercent(att.progress)
+                      : formatBytes(att.sizeBytes)}
                 </span>
-                {att.uploading ? (
-                  <span
-                    className="mt-0.5 h-0.5 w-full overflow-hidden rounded-full bg-sg-inset-strong"
-                    aria-hidden="true"
-                  >
-                    <span className="block h-full w-1/3 animate-pulse rounded-full bg-sg-accent" />
-                  </span>
-                ) : null}
+                {att.uploading ? <UploadBar fraction={att.progress} /> : null}
               </div>
             )}
             <button

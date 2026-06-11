@@ -126,7 +126,14 @@ export interface ChatAttachment {
   previewUrl?: string;
   /** Remote URL once uploaded; populated by `uploadAttachment`. */
   remoteUrl?: string;
+  /** Server-side file id from `POST /v1/files`; set alongside
+   *  `remoteUrl` once the upload completes. */
+  fileId?: string;
   uploading?: boolean;
+  /** Upload progress 0..1 while `uploading` (when the transport
+   *  reports it). Drives the determinate progress bar; absent uploads
+   *  fall back to an indeterminate shimmer. */
+  progress?: number;
   error?: string;
 }
 

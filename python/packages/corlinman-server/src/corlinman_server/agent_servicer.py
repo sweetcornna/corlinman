@@ -1518,11 +1518,16 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                         journal_turn_id = recover.turn_id
                 if journal_turn_id is not None:
                     # Record the user message that started this turn
-                    # so resume can replay it.
+                    # so resume can replay it. Attachment metadata (W3)
+                    # rides along so session replay re-renders the
+                    # user's image/file cards after a reload.
                     await journal.append_message(
                         journal_turn_id,
                         role="user",
                         content=user_text,
+                        attachments=_attachment_meta_for_journal(
+                            start.attachments
+                        ),
                     )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("agent.journal.begin_failed", error=str(exc))
@@ -4568,6 +4573,37 @@ def _prune_stale_tool_calls(
             )
         ]
     return out, dropped
+
+
+def _attachment_meta_for_journal(
+    attachments: Sequence[Any] | None,
+) -> list[dict[str, str]] | None:
+    """Slim ``{kind, url, mime, name}`` list for the journal (W3).
+
+    Raw bytes and oversized / ``data:`` urls are skipped so the replay
+    metadata never bloats the journal — the web UI re-fetches stored
+    content from ``/v1/files/{id}`` instead. ``None`` (not ``[]``) when
+    nothing survives, so text-only turns don't grow an empty column.
+    """
+    if not attachments:
+        return None
+    out: list[dict[str, str]] = []
+    for a in attachments:
+        kind = str(getattr(a, "kind", "") or "file")
+        url = str(getattr(a, "url", "") or "")
+        if len(url) > 4096 or url.startswith("data:"):
+            url = ""
+        entry: dict[str, str] = {"kind": kind}
+        if url:
+            entry["url"] = url
+        mime = getattr(a, "mime", None)
+        if mime:
+            entry["mime"] = str(mime)
+        name = getattr(a, "file_name", None)
+        if name:
+            entry["name"] = str(name)
+        out.append(entry)
+    return out or None
 
 
 def _extract_user_id(start: AgentChatStart) -> str | None:

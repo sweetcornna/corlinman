@@ -69,6 +69,18 @@ export interface TranscriptMessage {
   /** Present on assistant messages that issued tool calls. Empty / absent
    *  for plain text turns. */
   tool_calls?: TranscriptToolCall[];
+  /** W3 — journaled attachment metadata for user messages, so the chat
+   *  UI re-renders image/file cards on session resume. */
+  attachments?: TranscriptAttachment[];
+}
+
+/** Slim journaled attachment reference (no bytes — the UI re-fetches
+ *  stored content from `/v1/files/{id}`). */
+export interface TranscriptAttachment {
+  kind?: string;
+  url?: string;
+  mime?: string;
+  name?: string;
 }
 
 /** Summary block on a replay response. */

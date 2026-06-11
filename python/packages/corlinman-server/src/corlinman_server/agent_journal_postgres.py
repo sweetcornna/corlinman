@@ -114,8 +114,15 @@ CREATE TABLE IF NOT EXISTS journal_turn_messages (
     content         TEXT,
     tool_call_id    TEXT,
     tool_calls_json TEXT,
+    attachments_json TEXT,
     PRIMARY KEY (turn_id, seq)
 );
+
+-- W3 (chat attachments) — additive column for journals created before
+-- the attachments feature. Postgres supports ADD COLUMN IF NOT EXISTS,
+-- so this is the whole migration (the SQLite backend needs a gated
+-- PRAGMA check instead).
+ALTER TABLE journal_turn_messages ADD COLUMN IF NOT EXISTS attachments_json TEXT;
 
 -- In-app chat MVP — operator-supplied session metadata. Sibling table
 -- (not a column on ``journal_turns``) so updating title/pinned/archived
@@ -328,6 +335,7 @@ class PostgresJournalBackend:
         *,
         tool_call_id: str | None = None,
         tool_calls: Any | None = None,
+        attachments: Any | None = None,
     ) -> None:
         """Append one message to ``turn_id`` at the next ``seq`` slot.
 
@@ -347,6 +355,16 @@ class PostgresJournalBackend:
                     "agent.journal.append_serialize_failed", error=str(exc)
                 )
                 return
+        attachments_text: str | None = None
+        if attachments:
+            try:
+                attachments_text = json.dumps(attachments)
+            except (TypeError, ValueError) as exc:
+                # Replay sugar only — keep the message, drop the meta.
+                logger.warning(
+                    "agent.journal.append_attachments_serialize_failed",
+                    error=str(exc),
+                )
         try:
             async with self._p.acquire() as conn, conn.transaction():
                 # Lock the parent turn row to serialise concurrent
@@ -364,14 +382,16 @@ class PostgresJournalBackend:
                 next_seq = int(next_seq_row["next_seq"]) if next_seq_row else 0
                 await conn.execute(
                     "INSERT INTO journal_turn_messages "
-                    "(turn_id, seq, role, content, tool_call_id, tool_calls_json) "
-                    "VALUES ($1, $2, $3, $4, $5, $6)",
+                    "(turn_id, seq, role, content, tool_call_id, "
+                    "tool_calls_json, attachments_json) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7)",
                     int(turn_id),
                     next_seq,
                     role,
                     content,
                     tool_call_id,
                     tool_calls_text,
+                    attachments_text,
                 )
         except Exception as exc:
             logger.warning("agent.journal.append_failed", error=str(exc))
@@ -398,7 +418,7 @@ class PostgresJournalBackend:
         if not messages:
             return
         # Pre-serialise so a TypeError can't leave a half-applied batch.
-        prepared: list[tuple[str, str, str | None, str | None]] = []
+        prepared: list[tuple[str, str, str | None, str | None, str | None]] = []
         for msg in messages:
             role = str(msg.get("role") or "")
             content = msg.get("content") or ""
@@ -419,7 +439,19 @@ class PostgresJournalBackend:
                         error=str(exc),
                     )
                     continue
-            prepared.append((role, content, tool_call_id, tool_calls_text))
+            attachments_val = msg.get("attachments")
+            attachments_text: str | None = None
+            if attachments_val:
+                try:
+                    attachments_text = json.dumps(attachments_val)
+                except (TypeError, ValueError) as exc:
+                    logger.warning(
+                        "agent.journal.append_attachments_serialize_failed",
+                        error=str(exc),
+                    )
+            prepared.append(
+                (role, content, tool_call_id, tool_calls_text, attachments_text)
+            )
         if not prepared:
             return
         try:
@@ -437,18 +469,25 @@ class PostgresJournalBackend:
                 next_seq = (
                     int(next_seq_row["next_seq"]) if next_seq_row else 0
                 )
-                for role, content, tool_call_id, tool_calls_text in prepared:
+                for (
+                    role,
+                    content,
+                    tool_call_id,
+                    tool_calls_text,
+                    attachments_text,
+                ) in prepared:
                     await conn.execute(
                         "INSERT INTO journal_turn_messages "
                         "(turn_id, seq, role, content, tool_call_id, "
-                        "tool_calls_json) VALUES "
-                        "($1, $2, $3, $4, $5, $6)",
+                        "tool_calls_json, attachments_json) VALUES "
+                        "($1, $2, $3, $4, $5, $6, $7)",
                         int(turn_id),
                         next_seq,
                         role,
                         content,
                         tool_call_id,
                         tool_calls_text,
+                        attachments_text,
                     )
                     next_seq += 1
         except Exception as exc:
@@ -523,7 +562,8 @@ class PostgresJournalBackend:
         try:
             async with self._p.acquire() as conn:
                 rows = await conn.fetch(
-                    "SELECT seq, role, content, tool_call_id, tool_calls_json "
+                    "SELECT seq, role, content, tool_call_id, tool_calls_json, "
+                    "attachments_json "
                     "FROM journal_turn_messages WHERE turn_id = $1 "
                     "ORDER BY seq ASC",
                     int(turn_id),
@@ -545,6 +585,9 @@ class PostgresJournalBackend:
             if row["tool_calls_json"] is not None:
                 with contextlib.suppress(json.JSONDecodeError):
                     msg["tool_calls"] = json.loads(row["tool_calls_json"])
+            if row["attachments_json"] is not None:
+                with contextlib.suppress(json.JSONDecodeError):
+                    msg["attachments"] = json.loads(row["attachments_json"])
             out.append(msg)
         return out
 

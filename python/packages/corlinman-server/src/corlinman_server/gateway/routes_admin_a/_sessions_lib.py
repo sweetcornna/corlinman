@@ -601,6 +601,14 @@ async def _replay_from_journal(
                         "content": str(content),
                         "ts": ts_iso,
                     }
+                    # W3 — attachment metadata journaled with the user
+                    # message; the chat UI re-renders image/file cards
+                    # from it on session resume.
+                    raw_atts = m.get("attachments")
+                    if isinstance(raw_atts, list) and raw_atts:
+                        entry["attachments"] = [
+                            dict(a) for a in raw_atts if isinstance(a, dict)
+                        ]
                     raw_tcs = m.get("tool_calls")
                     if role == "assistant" and isinstance(raw_tcs, list) and raw_tcs:
                         # Pass tool_calls through in their OpenAI shape so

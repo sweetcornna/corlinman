@@ -16,9 +16,9 @@ import { cn } from "@/lib/utils";
 import type { ChatAttachment } from "@/lib/chat/types";
 import {
   attachmentKindFromMime,
-  fileToDataUrl,
   validateAttachment,
 } from "@/lib/api/chat";
+import { uploadChatFile } from "@/lib/api/files";
 import { ComposerAttachments } from "@/components/chat/composer-attachments";
 import { EmojiPicker } from "@/components/chat/emoji-picker";
 import {
@@ -148,53 +148,93 @@ export function Composer({
     [builtinSlashCommands, extraSlashCommands],
   );
 
-  const addFiles = React.useCallback(async (files: FileList | File[]) => {
-    const items = Array.from(files);
-    const next: ChatAttachment[] = [];
-    for (const file of items) {
-      const err = validateAttachment(file);
-      const id = `att_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-      const kind = attachmentKindFromMime(file.type);
-      const att: ChatAttachment = {
-        id,
-        kind,
-        name: file.name,
-        mime: file.type,
-        sizeBytes: file.size,
-        uploading: !err,
-        error: err ?? undefined,
-      };
-      if (kind === "image" && !err) {
-        try {
-          att.previewUrl = URL.createObjectURL(file);
-        } catch {
-          // ignore
+  // Patch a single attachment in place by id — used by the async upload
+  // callbacks below to flip `uploading`/`progress`/`remoteUrl`/`error`
+  // as each upload runs, without disturbing sibling attachments.
+  const patchAttachment = React.useCallback(
+    (id: string, patch: Partial<ChatAttachment>) => {
+      setAttachments((prev) =>
+        prev.map((a) => (a.id === id ? { ...a, ...patch } : a)),
+      );
+    },
+    [],
+  );
+
+  const addFiles = React.useCallback(
+    (files: FileList | File[]) => {
+      const items = Array.from(files);
+      const next: ChatAttachment[] = [];
+      // Valid files we'll actually upload, paired with their attachment id.
+      const toUpload: { id: string; file: File }[] = [];
+      for (const file of items) {
+        const err = validateAttachment(file);
+        const id = `att_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        const kind = attachmentKindFromMime(file.type);
+        const att: ChatAttachment = {
+          id,
+          kind,
+          name: file.name,
+          mime: file.type,
+          sizeBytes: file.size,
+          // Local validation failures stay non-uploading with the error
+          // shown; everything else enters the uploading state.
+          uploading: !err,
+          progress: err ? undefined : 0,
+          error: err ?? undefined,
+        };
+        if (kind === "image" && !err) {
+          // Keep the instant local preview while the real upload runs.
+          try {
+            att.previewUrl = URL.createObjectURL(file);
+          } catch {
+            // ignore — preview is best-effort
+          }
         }
+        next.push(att);
+        if (!err) toUpload.push({ id, file });
       }
-      next.push(att);
-      if (!err && kind === "image" && file.size < 1024 * 1024) {
-        try {
-          att.remoteUrl = await fileToDataUrl(file);
-          att.uploading = false;
-        } catch {
-          att.uploading = false;
-          att.error = "preview failed";
-        }
-      } else {
-        att.uploading = false;
+      // Show the pending attachments immediately, then kick off uploads.
+      setAttachments((prev) => [...prev, ...next]);
+      for (const { id, file } of toUpload) {
+        uploadChatFile(file, (fraction) =>
+          patchAttachment(id, { progress: fraction }),
+        )
+          .then((res) => {
+            patchAttachment(id, {
+              remoteUrl: res.url,
+              fileId: res.fileId,
+              uploading: false,
+              progress: 1,
+              error: undefined,
+            });
+          })
+          .catch(() => {
+            patchAttachment(id, {
+              uploading: false,
+              progress: undefined,
+              error: t("chat.attachmentUploadFailed"),
+            });
+          });
       }
-    }
-    setAttachments((prev) => [...prev, ...next]);
-  }, []);
+    },
+    [patchAttachment, t],
+  );
+
+  // Any attachment still uploading blocks the send: the assistant can't
+  // see a file whose `remoteUrl` hasn't landed yet.
+  const isUploading = React.useMemo(
+    () => attachments.some((a) => a.uploading),
+    [attachments],
+  );
 
   const handleSend = React.useCallback(() => {
     const v = text.trim();
     if (!v && attachments.length === 0) return;
-    if (isStreaming) return;
+    if (isStreaming || isUploading) return;
     onSend(v, attachments);
     setText("");
     setAttachments([]);
-  }, [text, attachments, isStreaming, onSend]);
+  }, [text, attachments, isStreaming, isUploading, onSend]);
 
   const handleKeyDown = React.useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -295,7 +335,8 @@ export function Composer({
     return () => window.removeEventListener("mousedown", onDown);
   }, [emojiOpen]);
 
-  const canSend = !!text.trim() || attachments.length > 0;
+  const canSend =
+    (!!text.trim() || attachments.length > 0) && !isUploading;
 
   return (
     <div className="mx-auto w-full max-w-3xl px-3 pb-3 pt-1">
@@ -531,7 +572,16 @@ export function Composer({
                     : "cursor-not-allowed bg-sg-inset text-sg-ink-5",
                 )}
                 data-testid="composer-send"
-                aria-label={t("chat.composerSendAriaLabel")}
+                aria-label={
+                  isUploading
+                    ? t("chat.composerSendWaitingUpload")
+                    : t("chat.composerSendAriaLabel")
+                }
+                title={
+                  isUploading
+                    ? t("chat.composerSendWaitingUpload")
+                    : undefined
+                }
               >
                 <Send className="h-4 w-4" aria-hidden="true" />
               </button>

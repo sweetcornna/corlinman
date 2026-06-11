@@ -67,7 +67,7 @@ from fastapi.responses import FileResponse, JSONResponse
 
 _log = logging.getLogger(__name__)
 
-__all__ = ["router"]
+__all__ = ["load_stored_file", "router"]
 
 
 # ─── Caps + id format ────────────────────────────────────────────────
@@ -247,6 +247,33 @@ def _rfc5987_quote(value: str) -> str:
         else:
             out.append(f"%{byte:02X}")
     return "".join(out)
+
+
+def load_stored_file(file_id: str) -> tuple[bytes, str, str] | None:
+    """Load a stored upload: ``(bytes, mime, name)``, or ``None``.
+
+    Shared with :mod:`corlinman_server.gateway.routes.chat` so chat
+    requests that reference an upload as ``/v1/files/{id}`` (or a bare
+    ``file_id``) can inline the actual bytes for the model provider —
+    providers cannot fetch gateway-private URLs. The same strict-hex id
+    validation as the serve route applies; any miss is ``None``.
+    """
+    if not _FILE_ID_RE.match(file_id):
+        return None
+    files_dir = _files_dir()
+    if files_dir is None:
+        return None
+    meta = _read_meta(_meta_path(files_dir, file_id))
+    blob_path = _blob_path(files_dir, file_id)
+    if meta is None or not blob_path.is_file():
+        return None
+    try:
+        blob = blob_path.read_bytes()
+    except OSError:
+        return None
+    mime = _normalise_mime(meta.get("mime") if isinstance(meta, dict) else None)
+    name = str(meta.get("name") or f"{file_id}.bin")
+    return blob, mime, name
 
 
 def _error(status_code: int, code: str, message: str) -> JSONResponse:

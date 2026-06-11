@@ -185,6 +185,7 @@ class AgentJournal:
         *,
         tool_call_id: str | None = None,
         tool_calls: Any | None = None,
+        attachments: Any | None = None,
     ) -> None:
         await self._backend.append_message(
             turn_id,
@@ -192,6 +193,7 @@ class AgentJournal:
             content,
             tool_call_id=tool_call_id,
             tool_calls=tool_calls,
+            attachments=attachments,
         )
 
     async def append_messages(

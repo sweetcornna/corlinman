@@ -230,8 +230,14 @@ class JournalBackend(Protocol):
         *,
         tool_call_id: str | None = None,
         tool_calls: Any | None = None,
+        attachments: Any | None = None,
     ) -> None:
-        """Append a single message to the turn's replay buffer."""
+        """Append a single message to the turn's replay buffer.
+
+        ``attachments`` (W3) is an optional JSON-serialisable list of
+        ``{kind, url, mime, name}`` metadata so session replay can
+        re-render the user's attachment cards.
+        """
         ...
 
     async def append_messages(
@@ -463,6 +469,7 @@ CREATE TABLE IF NOT EXISTS turn_messages (
     content          TEXT    NOT NULL,
     tool_call_id     TEXT,
     tool_calls_json  TEXT,
+    attachments_json TEXT,
     PRIMARY KEY (turn_id, seq),
     FOREIGN KEY (turn_id) REFERENCES turns(turn_id) ON DELETE CASCADE
 );
@@ -480,6 +487,15 @@ _USER_ID_MIGRATION = "ALTER TABLE turns ADD COLUMN user_id TEXT"
 # one round-trips to the canonical empty string instead of NULL.
 _CHANNEL_MIGRATION = (
     "ALTER TABLE turns ADD COLUMN channel TEXT NOT NULL DEFAULT ''"
+)
+
+# W3 (chat attachments) — pre-existing journals lack the per-message
+# ``attachments_json`` column that lets session replay re-render user
+# attachments (image/file cards) after a reload. Same gated-ALTER
+# pattern as the ``turns`` migrations above, applied to
+# ``turn_messages``.
+_ATTACHMENTS_MIGRATION = (
+    "ALTER TABLE turn_messages ADD COLUMN attachments_json TEXT"
 )
 
 # Pre-ask_user deployments have no ``pending_question_json`` column.
@@ -734,6 +750,18 @@ class SqliteJournalBackend:
                 await conn.execute(_CHANNEL_MIGRATION)
                 await conn.commit()
                 logger.info("agent.journal.migrated", migration="channel_column")
+            # W3 — per-message attachment metadata for session replay.
+            cur = await conn.execute("PRAGMA table_info(turn_messages)")
+            msg_rows = await cur.fetchall()
+            await cur.close()
+            msg_cols = {str(r[1]) for r in msg_rows}
+            if "attachments_json" not in msg_cols:
+                await conn.execute(_ATTACHMENTS_MIGRATION)
+                await conn.commit()
+                logger.info(
+                    "agent.journal.migrated",
+                    migration="attachments_json_column",
+                )
             if "pending_question_json" not in existing:
                 await conn.execute(_PENDING_QUESTION_MIGRATION)
                 await conn.commit()
@@ -1070,8 +1098,13 @@ class SqliteJournalBackend:
         *,
         tool_call_id: str | None = None,
         tool_calls: Any | None = None,
+        attachments: Any | None = None,
     ) -> None:
         """Append one message to the turn.
+
+        ``attachments`` is the W3 metadata list (``[{kind, url, mime,
+        name}]``) persisted so session replay can re-render the user's
+        attachment cards — JSON-serialised like ``tool_calls``.
 
         ``seq`` is computed inside a ``BEGIN IMMEDIATE`` / ``COMMIT``
         envelope so a SELECT-then-INSERT pair on the same turn_id can't
@@ -1100,6 +1133,17 @@ class SqliteJournalBackend:
                     "agent.journal.append_serialize_failed", error=str(exc)
                 )
                 return
+        attachments_text: str | None = None
+        if attachments:
+            try:
+                attachments_text = json.dumps(attachments)
+            except (TypeError, ValueError) as exc:
+                # Attachment metadata is replay sugar — losing it must
+                # never lose the message itself.
+                logger.warning(
+                    "agent.journal.append_attachments_serialize_failed",
+                    error=str(exc),
+                )
         # B3: hold the shared-connection write lock for the whole
         # BEGIN IMMEDIATE..COMMIT envelope so no other session's bare
         # commit() can flush our partial inserts mid-transaction.
@@ -1116,7 +1160,8 @@ class SqliteJournalBackend:
                 next_seq = int(row[0]) if row is not None else 0
                 await conn.execute(
                     "INSERT INTO turn_messages (turn_id, seq, role, content, "
-                    "tool_call_id, tool_calls_json) VALUES (?, ?, ?, ?, ?, ?)",
+                    "tool_call_id, tool_calls_json, attachments_json) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (
                         turn_id,
                         next_seq,
@@ -1124,6 +1169,7 @@ class SqliteJournalBackend:
                         content,
                         tool_call_id,
                         tool_calls_text,
+                        attachments_text,
                     ),
                 )
                 await conn.commit()
@@ -1167,7 +1213,7 @@ class SqliteJournalBackend:
         conn = self._c
         # Pre-serialise tool_calls so a TypeError mid-transaction can't
         # leave us with a half-applied batch.
-        prepared: list[tuple[str, str, str | None, str | None]] = []
+        prepared: list[tuple[str, str, str | None, str | None, str | None]] = []
         for msg in messages:
             role = str(msg.get("role") or "")
             content = msg.get("content") or ""
@@ -1188,7 +1234,20 @@ class SqliteJournalBackend:
                         error=str(exc),
                     )
                     continue
-            prepared.append((role, content, tool_call_id, tool_calls_text))
+            attachments_val = msg.get("attachments")
+            attachments_text: str | None = None
+            if attachments_val:
+                try:
+                    attachments_text = json.dumps(attachments_val)
+                except (TypeError, ValueError) as exc:
+                    # Replay sugar only — keep the message, drop the meta.
+                    logger.warning(
+                        "agent.journal.append_attachments_serialize_failed",
+                        error=str(exc),
+                    )
+            prepared.append(
+                (role, content, tool_call_id, tool_calls_text, attachments_text)
+            )
         if not prepared:
             return
         # B3: hold the shared-connection write lock for the whole
@@ -1207,11 +1266,17 @@ class SqliteJournalBackend:
                 row = await cur.fetchone()
                 await cur.close()
                 next_seq = int(row[0]) if row is not None else 0
-                for role, content, tool_call_id, tool_calls_text in prepared:
+                for (
+                    role,
+                    content,
+                    tool_call_id,
+                    tool_calls_text,
+                    attachments_text,
+                ) in prepared:
                     await conn.execute(
                         "INSERT INTO turn_messages (turn_id, seq, role, "
-                        "content, tool_call_id, tool_calls_json) "
-                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        "content, tool_call_id, tool_calls_json, "
+                        "attachments_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
                         (
                             turn_id,
                             next_seq,
@@ -1219,6 +1284,7 @@ class SqliteJournalBackend:
                             content,
                             tool_call_id,
                             tool_calls_text,
+                            attachments_text,
                         ),
                     )
                     next_seq += 1
@@ -1314,7 +1380,8 @@ class SqliteJournalBackend:
         """
         try:
             cur = await self._c.execute(
-                "SELECT seq, role, content, tool_call_id, tool_calls_json "
+                "SELECT seq, role, content, tool_call_id, tool_calls_json, "
+                "attachments_json "
                 "FROM turn_messages WHERE turn_id = ? ORDER BY seq ASC",
                 (turn_id,),
             )
@@ -1324,13 +1391,18 @@ class SqliteJournalBackend:
             logger.warning("agent.journal.load_messages_failed", error=str(exc))
             return []
         out: list[dict[str, Any]] = []
-        for _, role, content, tool_call_id, tool_calls_json in rows:
+        for _, role, content, tool_call_id, tool_calls_json, att_json in rows:
             msg: dict[str, Any] = {"role": role, "content": content}
             if tool_call_id is not None:
                 msg["tool_call_id"] = tool_call_id
             if tool_calls_json is not None:
                 try:
                     msg["tool_calls"] = json.loads(tool_calls_json)
+                except json.JSONDecodeError:
+                    pass
+            if att_json is not None:
+                try:
+                    msg["attachments"] = json.loads(att_json)
                 except json.JSONDecodeError:
                     pass
             out.append(msg)

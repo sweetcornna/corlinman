@@ -25,6 +25,7 @@ import {
 } from "@/lib/api/chat";
 import {
   CorlinmanApiError,
+  GATEWAY_BASE_URL,
   fetchModels,
   listAgentBindings,
   type AgentBinding,
@@ -36,6 +37,7 @@ import { ChatArea } from "@/components/chat/chat-area";
 import { ChatSidebar } from "@/components/chat/chat-sidebar";
 import { ChatEmptyState } from "@/components/chat/empty-state";
 import type {
+  ChatAttachment,
   ChatConversation,
   ChatMessage,
   ToolCallState,
@@ -85,6 +87,26 @@ function transcriptToChatMessages(
       status: tc.result !== undefined ? "settled" : "ok",
       resultPreview: tc.result,
     }));
+    // W3 — journaled attachment metadata → renderable cards. Relative
+    // /v1/files urls get the gateway prefix so dev (separate origins)
+    // and prod (same origin, empty prefix) both resolve.
+    const attachments: ChatAttachment[] = (m.attachments ?? []).map(
+      (a, k) => ({
+        id: `hist_${i}_att_${k}`,
+        kind:
+          a.kind === "image" || a.kind === "audio" || a.kind === "video"
+            ? a.kind
+            : "document",
+        name: a.name || a.url?.split("/").pop() || "attachment",
+        mime: a.mime,
+        sizeBytes: 0,
+        remoteUrl: a.url
+          ? a.url.startsWith("/")
+            ? `${GATEWAY_BASE_URL}${a.url}`
+            : a.url
+          : undefined,
+      }),
+    );
     return {
       // Identity must be deterministic across reloads: the journal
       // returns the transcript in a stable order, so position+role is
@@ -96,6 +118,7 @@ function transcriptToChatMessages(
       content: m.content,
       createdAt: created,
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+      attachments: attachments.length > 0 ? attachments : undefined,
     };
   });
 }

@@ -36,6 +36,8 @@ See :class:`ChatState` for the wiring surface and
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import contextlib
 import json
 import logging
@@ -53,6 +55,8 @@ from corlinman_server.gateway.services.chat_bootstrap import (
     rewrite_trailing_user_message,
 )
 from corlinman_server.gateway_api import (
+    Attachment,
+    AttachmentKind,
     ChatService,
     DoneEvent,
     ErrorEvent,
@@ -81,12 +85,20 @@ __all__ = [
 
 
 class ChatMessage(BaseModel):
-    """OpenAI-shaped chat message. Mirrors the Rust ``ChatMessage`` struct."""
+    """OpenAI-shaped chat message. Mirrors the Rust ``ChatMessage`` struct.
+
+    ``content`` accepts both the plain string form and the OpenAI
+    multimodal content-parts array (``[{"type": "text", ...},
+    {"type": "image_url", ...}, ...]``) — W3. Parts are flattened to
+    text + :class:`~corlinman_server.gateway_api.Attachment` entries in
+    :func:`_build_internal_request`; nothing downstream of that sees a
+    list.
+    """
 
     model_config = ConfigDict(extra="allow")
 
     role: str
-    content: str = ""
+    content: str | list[dict[str, Any]] = ""
     name: str | None = None
     tool_call_id: str | None = None
 
@@ -201,8 +213,160 @@ def _role_from_str(s: str) -> Role:
         return Role.USER
 
 
+def _flatten_content(content: str | list[dict[str, Any]] | None) -> str:
+    """Collapse OpenAI content-parts to their text. Strings pass through."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    texts = [
+        str(p.get("text") or "")
+        for p in content
+        if isinstance(p, dict) and p.get("type") == "text"
+    ]
+    return "\n".join(t for t in texts if t)
+
+
+def _content_chars(content: str | list[dict[str, Any]] | None) -> int:
+    """Size of a message's content for the request cap — counts text AND
+    embedded payloads (a data-URL image inside a part must not slip past
+    the cap just because it isn't a plain string)."""
+    if content is None:
+        return 0
+    if isinstance(content, str):
+        return len(content)
+    total = 0
+    for p in content:
+        if isinstance(p, dict):
+            total += len(json.dumps(p, ensure_ascii=False, default=str))
+    return total
+
+
+_FILES_URL_PREFIX = "/v1/files/"
+
+
+def _resolve_stored(file_id: str) -> tuple[bytes, str, str] | None:
+    """Indirection over :func:`files.load_stored_file` (patchable in tests)."""
+    from corlinman_server.gateway.routes.files import load_stored_file
+
+    return load_stored_file(file_id)
+
+
+def _parts_to_attachments(parts: list[dict[str, Any]]) -> list[Attachment]:
+    """Convert the trailing user message's non-text parts to attachments.
+
+    Uploads referenced as ``/v1/files/{id}`` (or a bare ``file_id``)
+    are inlined as bytes — model providers cannot fetch gateway-private
+    URLs — while the slim ``/v1/files`` url is KEPT on the attachment so
+    the journal records a re-fetchable reference instead of megabytes of
+    base64. Unresolvable parts are skipped with a warning; one bad part
+    must not fail the whole turn.
+    """
+    out: list[Attachment] = []
+    for p in parts:
+        if not isinstance(p, dict):
+            continue
+        ptype = p.get("type")
+        if ptype == "image_url":
+            raw = p.get("image_url")
+            url = str((raw or {}).get("url") or "").strip() if isinstance(raw, dict) else ""
+            if not url:
+                continue
+            if url.startswith(_FILES_URL_PREFIX):
+                loaded = _resolve_stored(url[len(_FILES_URL_PREFIX) :])
+                if loaded is None:
+                    _log.warning("chat attachment: unknown stored image %s", url)
+                    continue
+                blob, mime, name = loaded
+                out.append(
+                    Attachment(
+                        kind=AttachmentKind.IMAGE,
+                        url=url,
+                        bytes=blob,
+                        mime=mime,
+                        file_name=name,
+                    )
+                )
+            elif url.startswith(("http://", "https://", "data:image/", "data:")):
+                out.append(Attachment(kind=AttachmentKind.IMAGE, url=url))
+            else:
+                _log.warning("chat attachment: unsupported image url form")
+        elif ptype == "file":
+            raw_f = p.get("file")
+            f = raw_f if isinstance(raw_f, dict) else {}
+            file_id = str(f.get("file_id") or "").strip()
+            if file_id.startswith(_FILES_URL_PREFIX):
+                file_id = file_id[len(_FILES_URL_PREFIX) :]
+            filename = str(f.get("filename") or "") or None
+            if file_id:
+                loaded = _resolve_stored(file_id)
+                if loaded is None:
+                    _log.warning("chat attachment: unknown stored file %s", file_id)
+                    continue
+                blob, mime, name = loaded
+                out.append(
+                    Attachment(
+                        kind=AttachmentKind.FILE,
+                        url=f"{_FILES_URL_PREFIX}{file_id}",
+                        bytes=blob,
+                        mime=mime,
+                        file_name=filename or name,
+                    )
+                )
+            elif f.get("file_data"):
+                data = str(f.get("file_data") or "")
+                decoded = _decode_b64_payload(data)
+                if decoded is None:
+                    _log.warning("chat attachment: undecodable file_data")
+                    continue
+                out.append(
+                    Attachment(
+                        kind=AttachmentKind.FILE, bytes=decoded, file_name=filename
+                    )
+                )
+        elif ptype == "input_audio":
+            raw_a = p.get("input_audio")
+            ia = raw_a if isinstance(raw_a, dict) else {}
+            decoded = _decode_b64_payload(str(ia.get("data") or ""))
+            if decoded is None:
+                _log.warning("chat attachment: undecodable input_audio")
+                continue
+            fmt = str(ia.get("format") or "").strip()
+            out.append(
+                Attachment(
+                    kind=AttachmentKind.AUDIO,
+                    bytes=decoded,
+                    mime=f"audio/{fmt}" if fmt else None,
+                )
+            )
+    return out
+
+
+def _decode_b64_payload(data: str) -> bytes | None:
+    """Decode a base64 payload that may arrive as a bare string or a
+    ``data:`` URL. ``None`` on any decode failure."""
+    if not data:
+        return None
+    if data.startswith("data:"):
+        _, _, tail = data.partition(",")
+        data = tail
+    try:
+        return base64.b64decode(data, validate=False)
+    except (ValueError, binascii.Error):
+        return None
+
+
 def _build_internal_request(req: ChatRequest, session_key: str | None) -> InternalChatRequest:
     """Translate the OpenAI body into the internal protocol shape.
+
+    Multimodal content-parts (W3) are split here: every message's parts
+    flatten to their text, and the **trailing user message's** non-text
+    parts become :class:`Attachment` entries on the request (the
+    reasoning loop re-injects them into that same trailing turn — see
+    ``corlinman_agent.reasoning_loop._inject_attachments``). Earlier
+    messages keep text only: providers treat history as already
+    normalised, and the journal re-serves historical attachments to the
+    UI out-of-band.
 
     Before the conversion, the **trailing user message** is checked
     against the shared slash-command registry (W8 — Persona Studio). If
@@ -213,17 +377,34 @@ def _build_internal_request(req: ChatRequest, session_key: str | None) -> Intern
     untouched — see :mod:`corlinman_server.gateway.services.chat_bootstrap`
     for why retroactive rewrites would corrupt the transcript.
     """
-    rewritten = rewrite_trailing_user_message(req.messages)
+    attachments: list[Attachment] = []
+    normalised: list[ChatMessage] = []
+    trailing_user_idx: int | None = None
+    for i in range(len(req.messages) - 1, -1, -1):
+        if req.messages[i].role == "user":
+            trailing_user_idx = i
+            break
+    for i, m in enumerate(req.messages):
+        if isinstance(m.content, str):
+            normalised.append(m)
+            continue
+        if i == trailing_user_idx:
+            attachments = _parts_to_attachments(m.content)
+        normalised.append(
+            m.model_copy(update={"content": _flatten_content(m.content)})
+        )
+    rewritten = rewrite_trailing_user_message(normalised)
     return InternalChatRequest(
         model=req.model,
         messages=[
-            Message(role=_role_from_str(m.role), content=m.content)
+            Message(role=_role_from_str(m.role), content=_flatten_content(m.content))
             for m in rewritten
         ],
         session_key=session_key or "",
         stream=req.stream,
         max_tokens=req.max_tokens,
         temperature=req.temperature,
+        attachments=attachments,
     )
 
 
@@ -751,7 +932,7 @@ def router(state: ChatState | None = None) -> APIRouter:
                     "invalid_request",
                     "`messages` must be non-empty",
                 )
-            total_content = sum(len(m.content or "") for m in req.messages)
+            total_content = sum(_content_chars(m.content) for m in req.messages)
             if total_content > _MAX_TOTAL_CONTENT_CHARS:
                 _span.set_attribute("http.status_code", 400)
                 return _error_response(

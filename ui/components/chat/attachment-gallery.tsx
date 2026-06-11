@@ -2,7 +2,14 @@
 
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { FileAudio, FileText, FileVideo, Paperclip, X } from "lucide-react";
+import {
+  Download,
+  FileAudio,
+  FileText,
+  FileVideo,
+  Paperclip,
+  X,
+} from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import type { ChatAttachment } from "@/lib/chat/types";
@@ -16,8 +23,14 @@ function attachmentSrc(att: ChatAttachment): string | undefined {
   return att.remoteUrl ?? att.previewUrl;
 }
 
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n}B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KB`;
+  return `${(n / 1024 / 1024).toFixed(1)}MB`;
+}
+
 function NonImageIcon({ kind }: { kind: ChatAttachment["kind"] }) {
-  const className = "h-3.5 w-3.5 text-sg-ink-4";
+  const className = "h-4 w-4 shrink-0 text-sg-ink-3";
   if (kind === "audio") return <FileAudio className={className} aria-hidden="true" />;
   if (kind === "video") return <FileVideo className={className} aria-hidden="true" />;
   if (kind === "document") return <FileText className={className} aria-hidden="true" />;
@@ -75,15 +88,37 @@ export function AttachmentGallery({ attachments, className }: AttachmentGalleryP
 
       {others.length > 0 ? (
         <ul className="flex flex-wrap gap-1.5">
-          {others.map((att) => (
-            <li
-              key={att.id}
-              className="flex items-center gap-1.5 rounded-sg-sm border border-sg-border bg-sg-inset px-2 py-1 text-[11px] text-sg-ink-3"
-            >
-              <NonImageIcon kind={att.kind} />
-              <span className="max-w-[160px] truncate font-mono">{att.name}</span>
-            </li>
-          ))}
+          {others.map((att) => {
+            const href = att.remoteUrl;
+            return (
+              <li
+                key={att.id}
+                className="flex max-w-[15rem] items-center gap-2 rounded-sg-sm border border-sg-border bg-sg-inset px-2.5 py-1.5 text-[11px] text-sg-ink-2"
+                data-testid="attachment-file-card"
+              >
+                <NonImageIcon kind={att.kind} />
+                <div className="min-w-0 flex-1">
+                  <span className="block truncate font-mono text-sg-ink">
+                    {att.name}
+                  </span>
+                  <span className="block font-mono text-[10px] text-sg-ink-4">
+                    {formatBytes(att.sizeBytes)}
+                  </span>
+                </div>
+                {href ? (
+                  <a
+                    href={href}
+                    download={att.name}
+                    className="shrink-0 rounded-md p-1 text-sg-ink-3 transition-colors hover:bg-sg-inset-hover hover:text-sg-ink"
+                    aria-label={t("chat.downloadAttachment", { name: att.name })}
+                    data-testid="attachment-download"
+                  >
+                    <Download className="h-3.5 w-3.5" aria-hidden="true" />
+                  </a>
+                ) : null}
+              </li>
+            );
+          })}
         </ul>
       ) : null}
 
