@@ -27,9 +27,15 @@
 
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { Check, Search, X } from "lucide-react";
+import { Check, Search } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import {
@@ -65,6 +71,8 @@ export type ModelPickerDialogProps = {
   onClose: () => void;
   initialProvider?: string;
   initialModel?: string;
+  /** When true, a single model click immediately confirms the selection. */
+  confirmOnModelClick?: boolean;
   /**
    * Optional explicit provider list. If omitted, the dialog fetches from
    * `/admin/providers` (only enabled providers are displayed by default).
@@ -82,6 +90,7 @@ export function ModelPickerDialog({
   onClose,
   initialProvider,
   initialModel,
+  confirmOnModelClick = false,
   providers: providersProp,
   onConfirm,
 }: ModelPickerDialogProps) {
@@ -136,11 +145,21 @@ export function ModelPickerDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
+  // If the dialog opens before providers finish loading, seed the
+  // requested initial provider once it becomes available.
+  React.useEffect(() => {
+    if (!open || selectedProvider || !initialProvider) return;
+    if (!providers.some((p) => p.name === initialProvider)) return;
+    setSelectedProvider(initialProvider);
+    setSelectedModel(initialModel ?? "");
+  }, [open, providers, selectedProvider, initialProvider, initialModel]);
+
   // Auto-pick first provider once the list resolves and nothing's selected.
   React.useEffect(() => {
     if (!open || selectedProvider) return;
     if (providers.length === 0) return;
-    if (initialProvider) return; // honour pending init seed
+    if (initialProvider && providers.some((p) => p.name === initialProvider))
+      return; // honour pending init seed
     setSelectedProvider(providers[0]!.name);
   }, [open, providers, selectedProvider, initialProvider]);
 
@@ -233,31 +252,23 @@ export function ModelPickerDialog({
   const providersError = !providersProp && providersQuery.isError;
 
   return (
-    <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4"
-      onClick={(e) => e.target === e.currentTarget && onClose()}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="model-picker-title"
-      data-testid="model-picker-dialog"
+    <Dialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) onClose();
+      }}
     >
-      <div className="relative flex h-[480px] w-full max-w-[600px] flex-col overflow-hidden rounded-lg border border-sg-border bg-sg-card-strong shadow-sg-3">
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label={t("models.picker.cancel")}
-          className="absolute right-3 top-3 rounded-md p-1 text-sg-ink-3 hover:bg-sg-inset-hover hover:text-sg-ink"
-        >
-          <X className="h-4 w-4" />
-        </button>
-
+      <DialogContent
+        className="!z-[100] flex h-[min(480px,85dvh)] !max-w-[600px] flex-col overflow-hidden p-0"
+        data-testid="model-picker-dialog"
+      >
         <header className="border-b border-sg-border px-4 py-3">
-          <h2
-            id="model-picker-title"
-            className="text-sm font-semibold tracking-tight"
-          >
+          <DialogTitle className="text-sm font-semibold tracking-tight">
             {t("models.picker.title")}
-          </h2>
+          </DialogTitle>
+          <DialogDescription className="sr-only">
+            {t("models.picker.searchPlaceholder")}
+          </DialogDescription>
         </header>
 
         <div className="border-b border-sg-border px-4 py-2">
@@ -297,6 +308,7 @@ export function ModelPickerDialog({
             allModels={allModelsForSelected}
             selectedModel={selectedModel}
             onSelect={setSelectedModel}
+            confirmOnModelClick={confirmOnModelClick}
             onConfirm={(id) => {
               setSelectedModel(id);
               // Wait a tick so the new selectedModel is visible to confirm().
@@ -323,8 +335,8 @@ export function ModelPickerDialog({
             {t("models.picker.confirm")}
           </Button>
         </footer>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -412,6 +424,7 @@ function ModelColumn({
   allModels,
   selectedModel,
   onSelect,
+  confirmOnModelClick,
   onConfirm,
   modelsFetchErrorLabel,
   loadingLabel,
@@ -423,6 +436,7 @@ function ModelColumn({
   allModels: ModelEntry[];
   selectedModel: string;
   onSelect: (id: string) => void;
+  confirmOnModelClick: boolean;
   onConfirm: (id: string) => void;
   modelsFetchErrorLabel: string;
   loadingLabel: string;
@@ -469,7 +483,10 @@ function ModelColumn({
           <button
             key={m.id}
             type="button"
-            onClick={() => onSelect(m.id)}
+            onClick={() => {
+              onSelect(m.id);
+              if (confirmOnModelClick) onConfirm(m.id);
+            }}
             onDoubleClick={() => onConfirm(m.id)}
             className={cn(
               "flex w-full items-center gap-2 px-3 py-1.5 text-left font-mono text-xs transition-colors hover:bg-sg-inset-hover",

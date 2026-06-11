@@ -38,6 +38,7 @@ class PersonaOut(BaseModel):
     display_name: str
     short_summary: str
     system_prompt: str
+    model_bindings: dict[str, PersonaModelBinding]
     is_builtin: bool
     created_at_ms: int
     updated_at_ms: int
@@ -55,6 +56,7 @@ class PersonaOut(BaseModel):
             display_name=p.display_name,
             short_summary=p.short_summary,
             system_prompt=p.system_prompt,
+            model_bindings=_model_bindings_out(p.model_bindings),
             is_builtin=p.is_builtin,
             created_at_ms=p.created_at_ms,
             updated_at_ms=p.updated_at_ms,
@@ -66,17 +68,64 @@ class ListOut(BaseModel):
     personas: list[PersonaOut]
 
 
+class PersonaModelBinding(BaseModel):
+    provider: str | None = None
+    model: str | None = None
+
+
+def _empty_model_bindings_out() -> dict[str, PersonaModelBinding]:
+    return {
+        "text": PersonaModelBinding(),
+        "image": PersonaModelBinding(),
+        "voice": PersonaModelBinding(),
+    }
+
+
+def _model_bindings_out(
+    raw: dict[str, Any] | None,
+) -> dict[str, PersonaModelBinding]:
+    out = _empty_model_bindings_out()
+    if not isinstance(raw, dict):
+        return out
+    for kind in out:
+        item = raw.get(kind)
+        if not isinstance(item, dict):
+            continue
+        provider = item.get("provider")
+        model = item.get("model")
+        out[kind] = PersonaModelBinding(
+            provider=provider if isinstance(provider, str) and provider else None,
+            model=model if isinstance(model, str) and model else None,
+        )
+    return out
+
+
+def _model_bindings_plain(
+    raw: dict[str, PersonaModelBinding] | None,
+) -> dict[str, dict[str, str | None]] | None:
+    if raw is None:
+        return None
+    return {
+        kind: binding.model_dump()
+        for kind, binding in _model_bindings_out(
+            {k: v.model_dump() for k, v in raw.items()}
+        ).items()
+    }
+
+
 class CreateBody(BaseModel):
     id: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9_-]+$")
     display_name: str = Field(min_length=1, max_length=200)
     short_summary: str = Field(default="", max_length=500)
     system_prompt: str = Field(min_length=1, max_length=200_000)
+    model_bindings: dict[str, PersonaModelBinding] = Field(default_factory=dict)
 
 
 class PatchBody(BaseModel):
     display_name: str | None = Field(default=None, max_length=200)
     short_summary: str | None = Field(default=None, max_length=500)
     system_prompt: str | None = Field(default=None, max_length=200_000)
+    model_bindings: dict[str, PersonaModelBinding] | None = None
 
 
 class HumanlikeOut(BaseModel):

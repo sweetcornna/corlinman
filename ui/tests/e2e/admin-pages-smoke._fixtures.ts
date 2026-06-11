@@ -226,6 +226,27 @@ export const PROVIDER_MODELS_RESPONSE = {
   ],
 } as const;
 
+/** `GET /admin/personas` — one editable persona for nested picker smoke. */
+export const PERSONAS_RESPONSE = {
+  personas: [
+    {
+      id: "alyssa",
+      display_name: "Alyssa P. Hacker",
+      short_summary: "Test persona",
+      system_prompt: "# Alyssa\n\nHelpful test persona.",
+      avatar_url: null,
+      model_bindings: {
+        text: { provider: null, model: null },
+        image: { provider: null, model: null },
+        voice: { provider: null, model: null },
+      },
+      is_builtin: false,
+      created_at_ms: 1_700_000_000_000,
+      updated_at_ms: 1_700_000_000_000,
+    },
+  ],
+} as const;
+
 /**
  * `GET /admin/providers/kinds` — new descriptor shape from W1.1. We
  * include params_schema so any consumer that immediately renders the

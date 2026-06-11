@@ -71,6 +71,7 @@ class _RecordingChatService:
 @dataclass
 class _FakePersona:
     system_prompt: str
+    model_bindings: dict[str, Any] | None = None
 
 
 class _FakePersonaStore:
@@ -167,6 +168,40 @@ def test_web_persona_injected_when_enabled(install_persona_store) -> None:
     # Original user turn preserved after the injected system message.
     assert req.messages[1].role == Role.USER
     assert req.messages[1].content == "hello"
+
+
+def test_web_persona_text_model_binding_overrides_request_model(
+    install_persona_store,
+) -> None:
+    """Persona text model binding wins over the web request's default model."""
+    svc = _RecordingChatService()
+    install_persona_store(
+        _FakePersonaStore(
+            {
+                "grantley": _FakePersona(
+                    "You are 格兰.",
+                    model_bindings={
+                        "text": {
+                            "provider": "relay",
+                            "model": "gpt-5.5",
+                        }
+                    },
+                )
+            }
+        )
+    )
+    config = {"web": {"humanlike": {"enabled": True, "persona_id": "grantley"}}}
+    app = _make_app(svc, config)
+
+    with TestClient(app) as client:
+        resp = client.post("/v1/chat/completions", json=_body())
+    assert resp.status_code == 200
+
+    req = svc.seen
+    assert req is not None
+    assert req.model == "gpt-5.5"
+    assert req.provider_hint == "relay"
+    assert resp.json()["model"] == "gpt-5.5"
 
 
 def test_web_persona_skipped_when_disabled(install_persona_store) -> None:

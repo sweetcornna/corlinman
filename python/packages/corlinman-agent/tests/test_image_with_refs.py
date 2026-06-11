@@ -186,7 +186,7 @@ async def test_happy_path_writes_workspace_png(
     out_path = Path(out["path"])
     assert out_path.is_file()
     # Lands inside workspace/generated under the data dir.
-    assert "workspace/generated" in str(out_path)
+    assert out_path.parent == tmp_path / "workspace" / "generated"
     assert out_path.suffix == ".png"
     # Bytes match what the mock returned.
     assert out_path.read_bytes() == _GENERATED_PNG

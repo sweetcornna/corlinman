@@ -1,0 +1,1362 @@
+{
+  "baseline": "The darwin evolution targets SKILL.md quality, not persona body directly. Now I have a comprehensive picture. Let me compile the full audit:\n\n---\n\n## INTENDED COMPLETE PERSONA FEATURE SET\n\n**YARDSTICK: Every bullet describes what \"fully wired\" means — i.e., the path from a real entrypoint (route/scheduler/channel/agent dispatch) reaches the user or the model.**\n\n---\n\n- **Persona record / body (PersonaStore)** — `personas.sqlite` per-row `system_prompt`; \"fully wired\" = CRUD reachable via `GET/POST/PATCH/DELETE /admin/personas` (routes_admin_a/studio/personas.py:17-24) and body auto-seeded on first boot via `seed_builtin_personas` called in entrypoint.py:329. **STATUS: wired.** Grantley body seeded; CRUD exposed.\n\n- **Persona↔channel binding + system-prompt injection** — `PUT /admin/channels/{channel}/humanlike` persists `(humanlike_enabled, persona_id)` to config; channel handlers call `inject_persona_if_enabled` (persona_inject.py:137) which prepends `system_prompt` as leading `role=\"system\"` message; \"fully wired\" = changing the toggle takes effect on the very next inbound message without restart. **STATUS: wired** for QQ, Telegram, Discord, Slack, Feishu (service.py:1437-1440, 2596-2599, 3413-3416, 3712-3715, 4003).\n\n- **`{{persona.*}}` placeholder resolution** — `PersonaResolver` (corlinman-persona/placeholders.py:77) resolves `{{persona.mood}}`, `{{persona.fatigue}}`, `{{persona.recent_topics}}`, and arbitrary `state_json` keys keyed by `agent_id`; \"fully wired\" = `agent_id` stamped into `PlaceholderCtx.metadata` → Rust `PlaceholderEngine` finds `persona` namespace resolver → replaces tokens in system prompt before provider call. **STATUS: CONDITIONALLY wired** — `c2_wiring.py:227-245` opens the state store and publishes `state.persona_resolver`; `_engine_factory.py:214` registers the `persona` namespace when `persona_resolver` is found on state; `_context_metadata` (agent_servicer.py:4315-4326) stamps `agent_id` from `extra[\"persona_id\"]` which is populated from `pb_start.persona_id` (agent_servicer.py:4530). **CRITICAL GAP**: the `agent_persona_state` table must have a row keyed `(tenant_id=\"default\", agent_id=\"grantley\")` for any placeholder to resolve non-empty. On the VPS ALL rows are keyed `model::agent-type::idx`, not by persona_id; no grantley row exists → all `{{persona.*}}` in the body resolve to `\"\"` at runtime (confirmed by VERIFICATION_REPORT §2).\n\n- **Life-state engine — what drives it** — four tools `persona_life_get/set_state/diary_add/event_seed` (life.py) callable by the model; `set_state` writes `state_json[\"life\"]` + mirrors `mood` to native column + pushes `activity` to `recent_topics`; \"fully wired\" = model calls tools during conversation → state persists → next turn's placeholder render shows updated values. **STATUS: tools wired** (BUILTIN_TOOLS set, all dispatch branches in agent_servicer.py:2854-2921). **GAP**: no autonomous driver triggers life-state updates between conversations; all updates require the model to call the tools explicitly — there is no cron tick or event hook that evolves life state on its own.\n\n- **Mood / fatigue evolution + decay** — `apply_decay` (corlinman-persona/decay.py) recovers fatigue and mood over elapsed hours; `corlinman-persona decay-once` CLI (cli.py:173) sweeps all rows. \"Fully wired\" = a scheduler calls `decay-once` (or equivalent) on a regular interval so mood/fatigue drift toward baseline when the persona is idle. **STATUS: NOT wired.** The `decay-once` CLI exists and is correct, but no server-side scheduler job, cron entry, or lifespan task calls it. The scheduler builtins (`qzone_daily.py`, `evolution_darwin_curate.py`) do not reference decay. Fatigue stays at 0.0, mood stays neutral forever on any fresh install (confirmed by VPS: all 14 rows `mood=neutral`, `state_json={}`).\n\n- **Recent-topics tracking** — `recent_topics` list (capped at 20, surfaced 5 to prompt via `{{persona.recent_topics}}`); pushed by `persona_life_set_state`'s `activity` field. \"Fully wired\" = model regularly calls `set_state` after conversations, or an automatic hook pushes topics on turn end. **STATUS: writing path wired** (life.py pushes on `set_state`); **no automatic push** — requires explicit model tool call.\n\n- **Diary** — private per-entry list in `state_json[\"diary\"]` (capped 200); written by `persona_life_diary_add`, read by `persona_life_get`; \"fully wired\" = model appends diary entries; daily-publish scheduler reads diary tail for context. **STATUS: wired** — tools dispatch correctly; qzone_daily.py:682 reads diary tail for post context.\n\n- **Event-seed / inspiration library** — YAML per-persona seed pack `life_seeds/grantley.yaml`; operator-override at `<DATA_DIR>/persona_life/<id>.events.yaml`; `persona_life_event_seed` draws random themed cues; \"fully wired\" = model calls tool → gets themed inspiration draw from persona-specific lore. **STATUS: wired** (agent_servicer.py:2872, dispatch_persona_life_event_seed resolves override → bundled → generic fallback). Grantley's `life_seeds/grantley.yaml` present.\n\n- **Persona-state store (agent_persona_state)** — `agent_state.sqlite` with `(tenant_id, agent_id, mood, fatigue, recent_topics, state_json)` schema (corlinman-persona/store.py); \"fully wired\" = opened lazily by servicer via `_get_persona_state_store()` (agent_servicer.py:3802) and published on AppState via c2_wiring; life tools read/write it; placeholder resolver reads it. **STATUS: store wired**. **GAP**: no row for `agent_id=\"grantley\"` is ever seeded — `seed_from_card` in corlinman-persona is never called from the server lifecycle; the row only appears when `persona_life_set_state` is first called by the model.\n\n- **QZone read/comment tools** — `qzone_list_feed`, `qzone_get_post`, `qzone_post_comment`, `qzone_list_friends` (qzone/comment.py); async httpx; reuses auth helpers from qzone/publish.py; \"fully wired\" = all four in BUILTIN_TOOLS + QZONE_COMMENT_TOOLS (agent_servicer.py:341, dispatch branches at 2992+). **STATUS: wired**. OneBot client provides uin+cookie.\n\n- **QZone daily-publish job** — `qzone.daily_publish` scheduler builtin (scheduler/builtins/qzone_daily.py); template `bundled_personas/grantley/daily_job.json` seeded to `<DATA_DIR>/bundled_personas/` at app boot (app_factory.py:580); activated via `POST /admin/scheduler/qzone/templates/{id}/enable`; \"fully wired\" = admin enables template → cron fires daily at 09:00 Asia/Shanghai → model posts to QZone including life-state context. **STATUS: wired** (all path exists). **GAP**: `enabled: false` by default (intentionally opt-in); life-state context injected by `_resolve_life_block` (qzone_daily.py:591) which falls through to `\"\"` when the grantley state row doesn't exist (see above).\n\n- **Persona assets / 立绘 usage** — `PersonaAssetStore` (asset_store.py) stores `emoji` + `reference` blobs; admin routes `GET/POST/DELETE /admin/personas/{id}/assets` and agent tools `persona_list_assets` / `persona_attach_asset_from_url`; `compose_persona_emoji_block` (persona_inject.py:54) appends emoji list to system prompt; `image_with_refs` dispatches `reference` assets to image provider; \"fully wired\" = admin uploads asset → emoji block appears in channel system prompt; model can call `send_attachment` to send emoji / `image_with_refs` to generate art referencing立绘. **STATUS: wired**. Grantley has zero assets on prod (all belong to `vivian`).\n\n- **Persona creation wizard** — `configure-persona/SKILL.md` 8-stage flow (Stage -1 gate, Stage 0 branch, Stages 1-6 material collection, Stage 4b life-seed authoring, Stage 5 asset upload); triggered by `/persona` channel command; uses `persona_create/update/list/life_set_seeds/attach_asset_from_url/ask_user`; \"fully wired\" = user types `/persona` → skill fires → wizard creates a persona record with life seeds and assets. **STATUS: wired** — skill is bundled (starter_skills.py seeds it), all allowed-tools dispatchers present. **PARTIAL GAP**: `/persona` slash command dispatching depends on the channel's command router recognising the prefix and injecting the SKILL system prelude; confirmed for QQ channel (commands.py has use-default-persona); but no explicit `/persona` command in COMMAND_REGISTRY — relies on skill auto-trigger from the model recognising the channel message.\n\n- **Self-evolution loop (darwin/nuwa)** — Darwin rubric scorer (`corlinman-evolution-engine/darwin.py`) evaluates SKILL.md quality on 8 dimensions; curator (`gateway/evolution/curator.py`) applies lifecycle transitions (active→stale→archived) on `origin=\"agent-created\"` skills; nuwa-skill is a bundled skill (SKILL.md) for creating new skills; `POST /admin/curator/{slug}/run` and `/preview` (routes_admin_b/infra/curator.py:170, 154) expose on-demand triggers; scheduler builtin `evolution_darwin_curate` fires on interval; \"fully wired\" = curator proposes/applies lifecycle transitions; darwin scores quality; admin can preview/apply; skill mutations eventually feed back into system prompts. **STATUS: PARTIALLY wired** — curator route + logic present; darwin rubric present; evolution signals written. **KNOWN GAPS** (per GAP_ANALYSIS_HERMES_OPENCLAW.md): `EvolutionApplier` only writes history/intent-log rows, never modifies actual skill/prompt files; `metrics_baseline={}` makes `AutoRollbackMonitor` fail-safe skip; no `AutoRollbackMonitor` driver in any runtime scheduler/lifespan; persona body itself is NOT a target of evolution (darwin targets SKILL.md only, not `personas.sqlite`). The nuwa skill exists only as a SKILL.md — no in-process tool path for autonomous persona body mutation.\n\n- **Persona admin UI** — Next.js admin UI with persona CRUD (`/admin/personas`), channel humanlike toggle (`/admin/channels/{channel}/humanlike`), asset management, scheduler QZone templates enable/disable, curator evolution preview; \"fully wired\" = admin navigates UI → makes changes → persists to SQLite/config → takes effect on next channel turn. **STATUS: routes exist** (studio/personas.py, infra/curator.py, infra/scheduler.py). Front-end completeness not audited here.\n\n---\n\n## FINDINGS_SCHEMA\n\n### Component 1: Persona record / body (PersonaStore + seed_builtin_personas)\n\n- **status**: present and wired\n- **wired_end_to_end**: YES\n- **file:line evidence**:\n  - Store: `python/packages/corlinman-server/src/corlinman_server/persona/store.py:152`\n  - Seed called: `python/packages/corlinman-server/src/corlinman_server/gateway/lifecycle/entrypoint.py:329`\n  - Admin routes: `python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_a/studio/personas.py:17-24`\n  - Default body: `python/packages/corlinman-server/src/corlinman_server/persona/default_grantley.py`\n- **gaps**:\n  - title: Grantley body missing `{{persona.*}}` live-state block on VPS\n  - detail: repo body (default_grantley.md 3600 chars) has the `## 此刻的我` section with 8 `{{persona.*}}` placeholders; VPS production row (3270 chars) lacks it entirely (VERIFICATION_REPORT §3). No migration has been applied.\n  - severity: MEDIUM\n  - fix_sketch: `UPDATE personas SET system_prompt = <repo body> WHERE id = 'grantley'` on prod SQLite. Or trigger re-seed by deleting the existing row (seeder only fills gaps, never overwrites).\n\n---\n\n### Component 2: Persona↔channel binding + system-prompt injection\n\n- **status**: present and wired\n- **wired_end_to_end**: YES\n- **file:line evidence**:\n  - `PUT /admin/channels/{channel}/humanlike`: studio/personas.py:386\n  - injection in channel: `persona_inject.py:137` → called from service.py:1437\n  - `persona_id` carried to proto: `chat_service.py:430`, `agent_servicer.py:4530`\n- **gaps**:\n  - title: No validation that `persona_id` exists in PersonaStore before injection\n  - detail: If an admin PUTs a non-existent `persona_id`, `inject_persona_if_enabled` silently no-ops (persona_inject.py:195-199 returns on `get()=None`). No UI validation either.\n  - severity: LOW (graceful degradation, not crash)\n  - fix_sketch: Add a `GET /admin/personas/{id}` existence check in the PUT humanlike handler; return 422 if persona not found.\n\n---\n\n### Component 3: `{{persona.*}}` placeholder resolution\n\n- **status**: code present; runtime path has a critical keying gap\n- **wired_end_to_end**: CONDITIONALLY — resolves only when `agent_persona_state` has a row for `agent_id=\"grantley\"` (or whichever persona_id the channel sends)\n- **file:line evidence**:\n  - Resolver class: `python/packages/corlinman-persona/src/corlinman_persona/placeholders.py:77`\n  - Published on AppState: `gateway/lifecycle/c2_wiring.py:227-245`\n  - Registered in PlaceholderEngine: `gateway/grpc/_engine_factory.py:214`\n  - agent_id stamped: `agent_servicer.py:4315-4326` (falls back from `extra[\"agent_id\"]` to `extra[\"persona_id\"]`)\n  - `extra[\"persona_id\"]` source: `agent_servicer.py:4530`, `chat_service.py:430`\n- **gaps**:\n  - title: **CRITICAL — grantley state row never seeded; all placeholders resolve `\"\"`**\n  - detail: `agent_persona_state` is only written when `persona_life_set_state` is first called by the model. No boot-time seeder creates a row for `agent_id=\"grantley\"`. Until the model explicitly calls a life tool, every `{{persona.mood}}`, `{{persona.life_location}}`, etc., in the system prompt resolves to `\"\"`. VPS confirms: all 14 rows keyed by `model::agent-type::idx`, none by `grantley` (VERIFICATION_REPORT §2).\n  - severity: HIGH\n  - fix_sketch: In `seed_builtin_personas` (or in a new `seed_builtin_persona_states`) call `seed_from_card` / `store.upsert(PersonaState(agent_id=\"grantley\", mood=\"neutral\", fatigue=0.0, ...))` using `corlinman-persona PersonaStore.open_or_create(data_dir / \"agent_state.sqlite\")`. This should run at boot alongside the existing persona store seed, keyed by `DEFAULT_GRANTLEY_ID`.\n  - title: (secondary) placeholder resolution keys by `agent_id == persona_id` only when no separate `agent_id` exists in extra\n  - detail: Multi-persona deployments where an agent has its own `agent_id` different from `persona_id` won't resolve persona-life state for the bound persona. Documented as a known caveat in PLAN_PERSONA_LIFE_QZONE_MIGRATION.md and VERIFICATION_REPORT §5.\n  - severity: MEDIUM in multi-persona setups, LOW for single-persona (grantley) deployments\n  - fix_sketch: Ensure c2_wiring's `PersonaResolver` resolver is passed the `persona_id` from channel metadata, not the generic `agent_id`. Alternatively, in `_CtxIdResolverAdapter`, try `ctx.metadata.get(\"persona_id\")` as a fallback before `agent_id`.\n\n---\n\n### Component 4: Life-state engine (persona_life_* tools) + what DRIVES it\n\n- **status**: tools present and wired end-to-end; autonomous driver absent\n- **wired_end_to_end**: YES for model-initiated tool calls; NO for autonomous background driving\n- **file:line evidence**:\n  - Tool implementations: `python/packages/corlinman-agent/src/corlinman_agent/persona/life.py`\n  - All 6 tools in BUILTIN_TOOLS: `agent_servicer.py:341`\n  - Dispatch branches: `agent_servicer.py:2854-2921`\n  - `state_store` lazy-opened: `agent_servicer.py:3802-3834`\n- **gaps**:\n  - title: No autonomous life-state driver (no cron/hook pushes life updates between conversations)\n  - detail: Life only advances when the model explicitly calls `persona_life_set_state`. No background cron tick, post-turn hook, or scheduled job evolves the life state. The PLAN described an event-driven architecture but no implementation exists.\n  - severity: MEDIUM — persona feels static between conversations\n  - fix_sketch: Add a `post_turn` hook or a daily cron builtin that prompts the persona to call `persona_life_set_state` after each conversation or on a schedule. Alternatively, add a `persona_life_auto_advance` cron builtin that updates state based on elapsed time.\n\n---\n\n### Component 5: Mood / fatigue evolution + decay\n\n- **status**: decay logic present; scheduler driver absent\n- **wired_end_to_end**: NO\n- **file:line evidence**:\n  - Decay logic: `python/packages/corlinman-persona/src/corlinman_persona/decay.py`\n  - CLI: `python/packages/corlinman-persona/src/corlinman_persona/cli.py:173`\n  - Scheduler builtins: `scheduler/builtins/qzone_daily.py`, `scheduler/builtins/evolution_darwin_curate.py` — neither references decay\n- **gaps**:\n  - title: **HIGH — mood/fatigue decay never fires in production**\n  - detail: `corlinman-persona decay-once` CLI exists and is correct, but no server lifecycle, scheduler builtin, or cron job calls it. Fatigue stays permanently at 0.0 and mood at `\"neutral\"` on any deploy. VPS confirms: all 14 rows `mood=neutral`, `state_json={}`.\n  - severity: HIGH\n  - fix_sketch: Add a `persona_decay` scheduler builtin (mirrors `evolution_darwin_curate` pattern) that calls `apply_decay` for all rows hourly, or register a lifespan background task in entrypoint.py. A simple `asyncio.create_task` that loops `sleep(3600)` + `_run_decay(...)` would suffice without a full cron job.\n\n---\n\n### Component 6: Diary\n\n- **status**: present and wired\n- **wired_end_to_end**: YES (write by model tool call; read by qzone_daily scheduler)\n- **file:line evidence**:\n  - `persona_life_diary_add`: life.py, dispatched at agent_servicer.py:2916\n  - Read by qzone daily: `scheduler/builtins/qzone_daily.py:682`\n- **gaps**: none critical\n\n---\n\n### Component 7: Event-seed / inspiration library\n\n- **status**: present and wired\n- **wired_end_to_end**: YES\n- **file:line evidence**:\n  - Seeds: `python/packages/corlinman-agent/src/corlinman_agent/persona/life_seeds/grantley.yaml`\n  - Tool dispatch: `agent_servicer.py:2872`\n  - Authoring tools `persona_life_set_seeds`/`get_seeds`: agent_servicer.py:2882-2889\n- **gaps**: none critical\n\n---\n\n### Component 8: QZone read/comment tools\n\n- **status**: present and wired\n- **wired_end_to_end**: YES\n- **file:line evidence**:\n  - Tools: `python/packages/corlinman-agent/src/corlinman_agent/qzone/comment.py`\n  - In BUILTIN_TOOLS via QZONE_COMMENT_TOOLS: `agent_servicer.py:341`\n  - Dispatch branches: `agent_servicer.py:2992+`\n- **gaps**:\n  - title: QZone tools require OneBot (NapCat/go-cq) + QQ login; no fallback or clear error when env is absent\n  - detail: If `ONEBOT_HTTP_URL` / `ONEBOT_ACCESS_TOKEN` not set, tools fail at runtime with an httpx error rather than a clean `{\"ok\":false,\"error\":\"onebot_not_configured\"}`.\n  - severity: LOW\n\n---\n\n### Component 9: QZone daily-publish job\n\n- **status**: present and wired; opt-in\n- **wired_end_to_end**: YES after admin enables template\n- **file:line evidence**:\n  - Builtin: `scheduler/builtins/qzone_daily.py:127`\n  - Template seeding: `app_factory.py:580`\n  - Enable route: `routes_admin_b/infra/scheduler.py:247`\n  - Template: `bundled_personas/grantley/daily_job.json:8` (`enabled: false`)\n- **gaps**:\n  - title: Life-state context in daily post is always empty until state row seeded (see Component 3/5 gaps)\n  - detail: `_resolve_life_block` (qzone_daily.py:591) returns `None` when the grantley row doesn't exist in `agent_persona_state`, so daily posts use only the bare persona body with no mood/life context.\n  - severity: MEDIUM\n  - fix_sketch: Depends on fix for Component 3/5 (seed state row + run decay).\n\n---\n\n### Component 10: Persona assets / 立绘 usage\n\n- **status**: present and wired\n- **wired_end_to_end**: YES\n- **file:line evidence**:\n  - Asset store: `python/packages/corlinman-server/src/corlinman_server/persona/asset_store.py:219`\n  - Opened at boot: `entrypoint.py:346`, `app_factory.py:…`\n  - Channel emoji block: `persona_inject.py:54`\n  - Agent tools: `agent_servicer.py:2843-2852`\n  - `image_with_refs` dispatch: `agent_servicer.py:2933-2949`\n- **gaps**:\n  - title: Grantley has zero assets (all prod assets belong to `vivian`)\n  - detail: The emoji/立绘 block in system prompt and `image_with_refs` tool will both no-op for grantley. This is a content gap, not a code gap.\n  - severity: LOW (by design — grantley assets must be uploaded manually)\n\n---\n\n### Component 11: Persona creation wizard (configure-persona skill)\n\n- **status**: skill present and seeded; tool dispatchers wired\n- **wired_end_to_end**: PARTIAL\n- **file:line evidence**:\n  - Skill: `python/packages/corlinman-server/src/corlinman_server/bundled_skills/configure-persona/SKILL.md`\n  - `/use-default-persona` command: `corlinman-channels/src/corlinman_channels/commands.py:635-649`\n  - All allowed-tools in BUILTIN_TOOLS: `agent_servicer.py:146-177`\n- **gaps**:\n  - title: No `/persona` slash command in COMMAND_REGISTRY\n  - detail: `configure-persona/SKILL.md` says it triggers on `/persona` / `/角色` / `/人格` but these are not in `commands.py` COMMAND_REGISTRY. The skill relies on the model auto-recognising the channel message — there is no deterministic channel-side command routing to the skill prelude injection. This breaks the \"system-inserted prelude\" contract that the SKILL.md documents.\n  - severity: MEDIUM\n  - fix_sketch: Add a `CommandSpec` for `/persona` in `commands.py` analogous to `use-default-persona`, with handler that injects the `[SYSTEM-INSERTED] The user invoked the /persona command...` prelude.\n\n---\n\n### Component 12: Self-evolution loop (darwin / curator / nuwa)\n\n- **status**: darwin rubric + curator logic present; end-to-end apply chain broken\n- **wired_end_to_end**: PARTIAL (curator fires via admin route; darwin scores skills; but applier never mutates files)\n- **file:line evidence**:\n  - Darwin: `python/packages/corlinman-evolution-engine/src/corlinman_evolution_engine/darwin.py`\n  - Curator: `gateway/evolution/curator.py`; routes at `routes_admin_b/infra/curator.py:154,170`\n  - Applier: `gateway/evolution/applier.py` (only writes history rows, per GAP_ANALYSIS §P6)\n  - No AutoRollbackMonitor driver: confirmed by GAP_ANALYSIS_HERMES_OPENCLAW.md:88-92\n  - Evolution only targets skill plan.md rubric signals, not persona body: confirmed by VERIFICATION_REPORT §2\n- **gaps**:\n  - title: **HIGH — EvolutionApplier writes history only; never mutates skill/prompt files**\n  - detail: `POST /admin/evolution/{id}/apply` calls `EvolutionApplier` which writes an intent-log + history row but does NOT change any SKILL.md or `personas.sqlite` system_prompt. `metrics_baseline={}` makes `AutoRollbackMonitor` fail-safe skip. No `AutoRollbackMonitor` driver exists in scheduler or lifespan. The entire apply→monitor→rollback chain is dead (GAP_ANALYSIS_HERMES_OPENCLAW.md:83-92).\n  - severity: HIGH\n  - fix_sketch: `EvolutionApplier` needs to resolve the kb/fs handle and perform the actual file mutation. Separate product decision required (allowing agent to self-modify skill bodies is high-risk). For persona body, a separate `persona_evolution_apply` path in `PersonaStore.update()` would be needed.\n  - title: Darwin/nuwa evolution does not target persona body\n  - detail: Darwin scans SKILL.md quality; nuwa-skill creates new SKILL.md files. Neither system can propose or apply changes to `personas.sqlite` `system_prompt`. The \"self-evolving persona character\" described in hermes is not implemented.\n  - severity: MEDIUM\n  - fix_sketch: Add a `persona.quality_review` evolution signal kind and a separate curator variant that compares persona body against a rubric and proposes `PersonaStore.update()` patches.\n\n---\n\n### Component 13: Mood/fatigue/recent-topics `{{persona.*}}` in QZone daily context\n\n*(covered by Components 3, 5, 9 above — root cause is missing state row + no decay driver)*\n\n---\n\n### SUMMARY TABLE\n\n| Component | Wired end-to-end? | Severity of top gap |\n|---|---|---|\n| Persona record + admin CRUD | YES | MEDIUM (VPS body stale) |\n| Channel binding + system-prompt injection | YES | LOW |\n| `{{persona.*}}` placeholder resolution | CONDITIONAL | HIGH (no grantley state row) |\n| Life-state tools (model-driven) | YES | MEDIUM (no autonomous driver) |\n| Mood/fatigue decay | NO | HIGH (no scheduler) |\n| Diary | YES | none |\n| Event-seed library | YES | none |\n| QZone read/comment | YES | LOW |\n| QZone daily-publish | YES (opt-in) | MEDIUM (empty life context) |\n| Persona assets / 立绘 | YES | LOW (no grantley assets) |\n| Creation wizard | PARTIAL | MEDIUM (no /persona command) |\n| Self-evolution (darwin/curator) | PARTIAL | HIGH (applier never mutates files) |",
+  "findings": [
+    {
+      "dimension": "persona record CRUD + creation wizard end-to-end",
+      "summary": "PersonaStore CRUD is fully wired via admin_a routes (GET/POST/PATCH/DELETE /admin/personas) and auto-seeded at boot via seed_builtin_personas in entrypoint.py:329. The configure-persona SKILL.md wizard's full tool chain — persona_create, persona_update, persona_life_set_seeds, persona_attach_asset_from_url, persona_list_assets — all exist as concrete dispatchers in agent_servicer.py with correct dispatch branches, and /persona is a registered command in COMMAND_REGISTRY with a wizard_prelude. Three high-severity gaps remain: (1) the grantley agent_persona_state row is never boot-seeded so all {{persona.*}} placeholders resolve to \"\" until the model explicitly calls persona_life_set_state; (2) mood/fatigue decay CLI exists but no server scheduler or lifespan task calls it so mood is permanently neutral; (3) EvolutionApplier.apply in both the gateway and auto-rollback packages only writes audit/history rows and never mutates any SKILL.md file or personas.sqlite body — the self-evolution apply chain is bookkeeping-only. Lycaon and vivian personas are pure VPS-side runtime data; neither is bundled in the repo — this is a content gap only, not a code gap. The grantley body in the repo (175 lines, 8494 chars) is ahead of the VPS prod row (3270 chars) by exactly the {{persona.*}} live-state block, which itself is inert until the state row is seeded.",
+      "components": [
+        {
+          "name": "PersonaStore CRUD (create/update/delete/get/list) + seed_builtin_personas",
+          "status": "complete",
+          "wired_end_to_end": true,
+          "evidence": [
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/persona/store.py:152 (PersonaStore class)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/persona/store.py:394 (seed_builtin_personas — never overwrites existing row)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/lifecycle/entrypoint.py:322-330 (PersonaStore.open + seed_builtin_personas at boot)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_a/studio/personas.py:97-228 (GET/POST/PATCH/DELETE /admin/personas routes)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_a/__init__.py:64 (personas sub-router included in build_router)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/lifecycle/app_factory.py:628 (admin_a router mounted on app)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/persona/default_grantley.py:24-34 (DEFAULT_GRANTLEY_ID, display_name, summary)"
+          ],
+          "gaps": [
+            {
+              "title": "seed_builtin_personas never overwrites — VPS prod row lacks {{persona.*}} live-state block",
+              "detail": "seed_builtin_personas is idempotent: if the grantley row already exists it returns immediately without updating it (store.py:418-423). The repo body (default_grantley.md, 175 lines) adds a '## 此刻的我' section with 8 {{persona.*}} placeholders that the VPS prod row (3270 chars, no such section) lacks. Since the seeder never overwrites, deploying a new version does not propagate the updated body to prod. Operators must manually PATCH the row via /admin/personas/grantley or delete the row to let the seeder re-insert.",
+              "severity": "medium",
+              "fix_sketch": "Either add an explicit migration that checks body length / a version hash and patches the grantley row when the bundled body is newer, or provide a CLI command `corlinman-server migrate-persona-body --id grantley` that applies the update. Alternatively, document the manual PATCH step in the upgrade guide."
+            }
+          ]
+        },
+        {
+          "name": "Admin routes routes_admin_b/personas.py",
+          "status": "partial",
+          "wired_end_to_end": true,
+          "evidence": [
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_b/personas.py:157-169 (POST /admin/personas/use-default, the only B-side persona route)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_b/personas.py:54-141 (ensure_default_persona_active worker — resolves store via admin_a state)"
+          ],
+          "gaps": [
+            {
+              "title": "routes_admin_b/personas.py is only the use-default endpoint, not full CRUD",
+              "detail": "The file named routes_admin_b/personas.py only provides POST /admin/personas/use-default (the first-run wizard hook). Full CRUD lives in routes_admin_a/studio/personas.py. This is correct by design (module docstring says so) but the file path can mislead reviewers expecting the full CRUD surface here.",
+              "severity": "low",
+              "fix_sketch": "Documentation / comment clarification only. No code change needed."
+            }
+          ]
+        },
+        {
+          "name": "configure-persona SKILL.md wizard — tool chain (persona_create, persona_update, persona_life_set_seeds, persona_attach_asset_from_url, persona_list_assets)",
+          "status": "complete",
+          "wired_end_to_end": true,
+          "evidence": [
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/bundled_skills/configure-persona/SKILL.md:16-28 (allowed-tools list: all 7 persona_* + persona_life_set/get_seeds + web_search + web_fetch + ask_user)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-agent/src/corlinman_agent/persona/tools.py:32-42 (PERSONA_TOOLS frozenset containing all 7 tools)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-agent/src/corlinman_agent/persona/dispatch.py:38-46 (dispatch functions for all 7 CRUD+asset tools)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-agent/src/corlinman_agent/persona/life.py:108-122 (PERSONA_LIFE_TOOLS with persona_life_set_seeds, persona_life_get_seeds)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/agent_servicer.py:315-341 (BUILTIN_TOOLS = frozenset | PERSONA_TOOLS | PERSONA_LIFE_TOOLS)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/agent_servicer.py:2809-2852 (dispatch gate for PERSONA_TOOLS — all 7 branches)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/agent_servicer.py:2854-2921 (dispatch gate for PERSONA_LIFE_TOOLS including set_seeds at 2882)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-channels/src/corlinman_channels/commands.py:559-577 (COMMAND_REGISTRY entry with /persona, /角色, /人格 aliases and wizard_prelude)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-channels/src/corlinman_channels/commands.py:189 (_PERSONA_WIZARD_PRELUDE text)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/lifecycle/app_factory.py:548-562 (seed_starter_skills copies configure-persona/ dir to data_dir/skills on boot)"
+          ],
+          "gaps": [
+            {
+              "title": "persona_life_set_seeds reads persona_id from tool args, not from channel binding",
+              "detail": "dispatch_persona_life_set_seeds takes persona_id from args_json (the wizard explicitly passes it after persona_create succeeds at Stage 6 — see SKILL.md line 61: 'persona_life_set_seeds({persona_id, seeds})'). This is intentional and correct for the wizard flow (the new persona may differ from the channel's bound persona). No functional gap.",
+              "severity": "low",
+              "fix_sketch": "No change needed; design is correct."
+            },
+            {
+              "title": "persona_attach_asset_from_url: wizard defers asset attachment until after persona_create — timing gap in SKILL.md Stage 5",
+              "detail": "SKILL.md Stage 5 collects URL buffer but explicitly does NOT call persona_attach_asset_from_url until after Stage 6 persona_create succeeds. This is correct. However, if persona_create fails after Stage 5 confirmation, the user has to re-enter asset URLs. Minor UX friction, not a functional gap.",
+              "severity": "low",
+              "fix_sketch": "No code change needed; the wizard recovers via slug-collision -> ask_user branch at Stage 6."
+            }
+          ]
+        },
+        {
+          "name": "{{persona.*}} placeholder resolution via PersonaResolver",
+          "status": "partial",
+          "wired_end_to_end": false,
+          "evidence": [
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/lifecycle/c2_wiring.py:221-245 (PersonaResolver opened over agent_state.sqlite, published to app.state.persona_resolver)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/agent_servicer.py:4315-4326 (_context_metadata stamps agent_id = extra.get('agent_id') falling back to extra.get('persona_id'))",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/agent_servicer.py:4529-4531 (_to_agent_start stamps extra['persona_id'] = pb_start.persona_id when non-empty)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/persona/default_grantley.md:21-33 ({{persona.mood}}, {{persona.fatigue}}, {{persona.recent_topics}}, {{persona.life_*}} placeholders present)"
+          ],
+          "gaps": [
+            {
+              "title": "CRITICAL — grantley agent_persona_state row is never boot-seeded; all {{persona.*}} resolve to empty string",
+              "detail": "The PersonaResolver resolves placeholder values by looking up the row keyed (tenant_id='default', agent_id='grantley') in agent_persona_state table of agent_state.sqlite. No server lifecycle, seeder, or entrypoint call ever creates this row. It only appears when the model explicitly calls persona_life_set_state. VPS confirms: all 14 rows are keyed 'model::agent-type::index', none keyed 'grantley'. Until that first tool call, every {{persona.mood}}, {{persona.fatigue}}, {{persona.life_location}}, etc. in the injected system prompt resolves to ''.",
+              "severity": "high",
+              "fix_sketch": "In entrypoint.py (or a new seed_builtin_persona_states helper called from there), after seed_builtin_personas succeeds, open the corlinman_persona.store.PersonaStore against data_dir/'agent_state.sqlite' and call store.upsert(PersonaState(tenant_id='default', agent_id=DEFAULT_GRANTLEY_ID, mood='neutral', fatigue=0.0, recent_topics=[], state_json={})) — but only if no row exists (idempotent). This gives the resolver a valid row from first boot."
+            },
+            {
+              "title": "agent_id vs persona_id key mismatch in multi-agent deployments",
+              "detail": "_context_metadata in agent_servicer.py:4315-4326 stamps md['agent_id'] = extra.get('agent_id') and only falls back to extra.get('persona_id') when agent_id is absent/auto. In a deployment where the gRPC caller sets agent_id to something other than 'grantley', the resolver looks up by that agent_id, not by persona_id, and finds no persona-life row. This is a secondary gap that only matters in multi-agent configs.",
+              "severity": "medium",
+              "fix_sketch": "Add a second lookup attempt in _context_metadata: if the persona_id differs from agent_id, stamp both as separate metadata keys so the resolver can prefer the persona_id key for life-state resolution."
+            }
+          ]
+        },
+        {
+          "name": "Grantley body: distilled repo version vs richer original openclaw source",
+          "status": "complete",
+          "wired_end_to_end": true,
+          "evidence": [
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/persona/default_grantley.md:5 (provenance comment: '蒸馏自 openclaw grantley-perspective SKILL.md；去除原 openclaw 专属绑定。')",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/persona/default_grantley.py:1 (module docstring credits openclaw)",
+            "/Users/cornna/project/corlinman/audit/grantley-migration-2026-06-04/FINDINGS.md:37-58 (original openclaw grantley-perspective SKILL.md is NOT present on prod VPS or in repo; only the distilled version exists)"
+          ],
+          "gaps": [
+            {
+              "title": "Original undistilled openclaw grantley-perspective SKILL.md is not in the repo",
+              "detail": "The repo body is a distilled+sanitized version of the original openclaw grantley-perspective SKILL.md (openclaw-specific bindings like 'admin UID 2104743984 = Elargo' replaced with neutral 'channel_owner'). The original undistilled source is not present anywhere on the VPS (confirmed by FINDINGS.md:40-43) or in the repo. This means further enrichment of the persona body requires obtaining the original from openclaw's GitHub or another source. This is a content provenance gap, not a functional code gap.",
+              "severity": "low",
+              "fix_sketch": "Optional: obtain the original openclaw/openclaw/.claude/skills/grantley-perspective/SKILL.md and store it as a reference at docs/references/openclaw-grantley-perspective.md. No code change needed for runtime behavior."
+            }
+          ]
+        },
+        {
+          "name": "Lycaon and vivian personas (present on prod, not bundled in repo)",
+          "status": "missing",
+          "wired_end_to_end": false,
+          "evidence": [
+            "/Users/cornna/project/corlinman/audit/grantley-migration-2026-06-04/VERIFICATION_REPORT.md:32 (4 assets belong to vivian, none to grantley)",
+            "/Users/cornna/project/corlinman/audit/grantley-migration-2026-06-04/FINDINGS.md:14 (persona assets table: 4 assets all belong to vivian)"
+          ],
+          "gaps": [
+            {
+              "title": "Lycaon and vivian are pure runtime-created personas — no bundle, no seed, no migration gap in code",
+              "detail": "Lycaon and vivian were created on the VPS by an operator (or wizard) at runtime via the persona_create tool or admin UI. They are stored only in prod personas.sqlite. The repo has no bundle for them and no seed code — this is expected since they are operator-created custom personas, not builtins. The PersonaStore.delete protection (is_builtin=False) means they are freely editable/deletable. The code path for creating them (configure-persona wizard + /admin/personas POST) is fully wired. The gap is purely operational: there is no export/import tooling to snapshot operator-created personas into the repo.",
+              "severity": "low",
+              "fix_sketch": "Add a corlinman-server persona-export CLI command that dumps non-builtin personas to a YAML/JSON bundle at a specified path, enabling operators to version-control their custom personas. No runtime behavior change needed."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "dimension": "life-state engine (persona_life_* tools + agent_persona_state store + life_seeds/grantley.yaml + decay + placeholder/diary surfacing)",
+      "summary": "The life-state engine is fully built and correctly wired for MODEL-INITIATED operation, but nothing DRIVES it autonomously and the persona-state row is never seeded at boot. All six persona_life_* tools (get/set_state/diary_add/event_seed/get_seeds/set_seeds) are implemented in life.py, registered in PERSONA_LIFE_TOOLS, advertised via persona_life_tool_schemas() (agent_servicer.py:558), and dispatched (agent_servicer.py:2854-2921) against a lazily-opened agent_state.sqlite store (agent_servicer.py:3802-3834). set_state correctly mirrors mood to the native column, pushes activity to recent_topics, and mirrors life_* flat keys into state_json for the {{persona.*}} resolver. State is keyed (tenant_id=\"default\", agent_id=persona_id) and the keying is CONSISTENT end-to-end: the channel stamps request.persona_id (persona_inject.py:218) -> proto ChatStart.persona_id field 13 -> extra[\"persona_id\"] (agent_servicer.py:4530) -> _context_metadata stamps md[\"agent_id\"] from persona_id (agent_servicer.py:4321-4324) -> _CtxIdResolverAdapter reads ctx.metadata[\"agent_id\"] (_engine_factory.py:60-63) -> PersonaResolver.resolve(key, agent_id=persona_id) reads store.get(persona_id) with the same default tenant. IMPORTANT CORRECTION TO THE PRIOR CAVEAT: _context_metadata DOES now stamp agent_id from persona_id (line 4322-4323) — the placeholder path is not dead in code. THE TWO REAL DEFECTS: (1) there is NO autonomous driver of any kind — exhaustive search finds zero call sites for apply_decay/decay-once/_run_decay anywhere in server/channels/agent; the only four scheduler builtins (qzone_daily, evolution_darwin_curate, system_update_check, registry) never reference decay or persona_life; there is no post-turn hook and no lifespan create_task loop. Life advances ONLY if the model happens to call the tools, and mood/fatigue/recent_topics never decay toward baseline. (2) No boot-time seeder creates the persona-state row — seed_from_card (corlinman-persona/seeder.py:116) is referenced only in a doc comment (subagent/runner.py:1038) and is never invoked from the server lifecycle, so on a fresh deploy no 'grantley' row exists until the model first calls set_state; until then every {{persona.*}} life placeholder AND the qzone daily life block resolve to \"\". Diary is surfaced ONLY by the opt-in qzone daily job (qzone_daily.py:670-685) and via an explicit persona_life_get tool call — it is NOT read back into normal channel conversation context and is not exposed by the resolver or any UI. Verdict: engine exists and is wired for model-driven use, but nothing drives it forward over time and the surfacing path is empty until the model bootstraps the row itself.",
+      "components": [
+        {
+          "name": "persona_life_* tools (get / set_state / diary_add / event_seed / get_seeds / set_seeds)",
+          "status": "complete",
+          "wired_end_to_end": true,
+          "evidence": [
+            "python/packages/corlinman-agent/src/corlinman_agent/persona/life.py:101-121 (tool name constants + PERSONA_LIFE_TOOLS frozenset)",
+            "python/packages/corlinman-agent/src/corlinman_agent/persona/life.py:458-878 (all six dispatchers)",
+            "python/packages/corlinman-server/src/corlinman_server/agent_servicer.py:166-175 (dispatchers imported)",
+            "python/packages/corlinman-server/src/corlinman_server/agent_servicer.py:558 (*persona_life_tool_schemas() advertised in builtin schemas)",
+            "python/packages/corlinman-server/src/corlinman_server/agent_servicer.py:2854-2921 (dispatch branch for every tool; persona_id read from start.extra)",
+            "python/packages/corlinman-server/src/corlinman_server/agent_servicer.py:3802-3834 (_get_persona_state_store lazy-opens <data_dir>/agent_state.sqlite)"
+          ],
+          "gaps": [
+            {
+              "title": "Tools fire only when the model chooses to call them",
+              "detail": "Every life mutation requires an explicit model tool call; there is no server-side enforcement or prompting that the model must call set_state/diary_add. Combined with the missing autonomous driver (see below), a persona can go an entire conversation — or its whole lifetime — without its life-state ever changing.",
+              "severity": "medium",
+              "fix_sketch": "Add a post-turn hook in agent_servicer (after the reasoning loop completes) or a daily cron builtin that nudges/forces a persona_life_set_state call, OR a persona_life_auto_advance builtin that mutates state_json['life'] based on elapsed time without model involvement."
+            }
+          ]
+        },
+        {
+          "name": "Autonomous life driver (scheduled tick / daily advance / on-message update)",
+          "status": "missing",
+          "wired_end_to_end": false,
+          "evidence": [
+            "grep across corlinman-server/src, corlinman-channels/src, corlinman-agent/src for apply_decay|decay-once|_run_decay|DecayConfig returns ZERO hits (decay logic exists only in corlinman-persona and is only invoked by the standalone CLI)",
+            "python/packages/corlinman-persona/src/corlinman_persona/cli.py:109-143 (_run_decay) + cli.py:174-177 (decay-once subcommand) — the ONLY caller of apply_decay, a manual CLI, not wired to any scheduler",
+            "python/packages/corlinman-server/src/corlinman_server/scheduler/builtins/ contains only __init__.py, evolution_darwin_curate.py, qzone_daily.py, registry.py, system_update_check.py — none reference decay or persona_life",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/lifecycle/entrypoint.py background-task block (around lines 921-1284) registers identity sweep, subagent dispatch, placeholder serve, user-correction, broadcast — NO decay/life task",
+            "python/packages/corlinman-persona/src/corlinman_persona/decay.py:41-89 (apply_decay is a correct pure function but has no runtime caller)"
+          ],
+          "gaps": [
+            {
+              "title": "Nothing advances life-state or decays mood/fatigue over time",
+              "detail": "There is no scheduled life-tick, no daily life advance, no on-message life update, and no decay sweep wired into any runtime entrypoint. apply_decay (decay.py) and the decay-once CLI (cli.py) exist and are correct but are never invoked by the server, scheduler, or any lifespan task. Consequence on any fresh install: fatigue stays at 0.0, mood stays whatever was last set (or 'neutral'), recent_topics never age out, and life['current'] only ever changes if the model explicitly calls persona_life_set_state. The persona is static between (and often within) conversations.",
+              "severity": "high",
+              "fix_sketch": "Add a 'persona_decay' scheduler builtin mirroring scheduler/builtins/evolution_darwin_curate.py that calls corlinman_persona.decay.apply_decay across all rows on an hourly cron; register it in scheduler/builtins/registry.py. Alternatively register an asyncio.create_task hourly loop in gateway/lifecycle/entrypoint.py (alongside the existing identity sweep at ~line 930) calling _run_decay over <data_dir>/agent_state.sqlite. For life-narrative advance (not just decay) add a daily builtin or post-turn hook that drives persona_life_set_state."
+            }
+          ]
+        },
+        {
+          "name": "Diary surfacing (read back into context / shown to user)",
+          "status": "partial",
+          "wired_end_to_end": false,
+          "evidence": [
+            "python/packages/corlinman-server/src/corlinman_server/scheduler/builtins/qzone_daily.py:670-685 (reads state_json['diary'] tail into the daily-post system prompt) — opt-in scheduler only",
+            "python/packages/corlinman-agent/src/corlinman_agent/persona/life.py:458-490 (persona_life_get returns diary_tail) — only if the model calls it",
+            "python/packages/corlinman-persona/src/corlinman_persona/placeholders.py:103-121 (_resolve_against_state exposes mood/fatigue/recent_topics/state_json keys but NOT 'diary')",
+            "grep for 'diary' across corlinman-server/src + corlinman-channels/src shows the only readers are qzone_daily.py and the persona_life tool dispatch — no channel per-turn read, no admin UI route"
+          ],
+          "gaps": [
+            {
+              "title": "Diary is not surfaced into normal conversation context or any UI",
+              "detail": "The diary is written by persona_life_diary_add and read back in exactly two places: the opt-in qzone daily-publish job (enabled=false by default) and an explicit persona_life_get tool call. It is NOT injected into the per-turn channel system prompt, the {{persona.*}} resolver does not expose a 'diary' key, and there is no admin UI route to view it. So in a normal humanlike channel turn the persona has no automatic awareness of its own diary.",
+              "severity": "medium",
+              "fix_sketch": "Either add a 'diary' (or 'diary_tail') key to corlinman_persona.placeholders._resolve_against_state so a persona body can interpolate {{persona.diary_tail}}, or have persona_inject prepend a short diary-tail block (reading state_json['diary']) the same way qzone_daily.py:670-685 does. For UI, add a GET /admin/personas/{id}/life route reading the agent_persona_state row."
+            }
+          ]
+        },
+        {
+          "name": "Persona-state storage + persona_id keying (agent_persona_state in agent_state.sqlite)",
+          "status": "complete",
+          "wired_end_to_end": true,
+          "evidence": [
+            "python/packages/corlinman-persona/src/corlinman_persona/store.py:26-40 (schema: PRIMARY KEY (tenant_id, agent_id), state_json column)",
+            "python/packages/corlinman-agent/src/corlinman_agent/persona/life.py:279-300, 330-361 (_load_state / _save_state use store.get/upsert with agent_id=persona_id, tenant_id=DEFAULT_TENANT_ID)",
+            "python/packages/corlinman-channels/src/corlinman_channels/persona_inject.py:218 (request.persona_id = resolved_persona_id — stamps the outbound agent request)",
+            "proto/corlinman/v1/agent.proto:60-62 (ChatStart.persona_id field 13; comment: mirrors into ChatStart.extra['persona_id'])",
+            "python/packages/corlinman-server/src/corlinman_server/agent_servicer.py:4530-4531 (pb_start.persona_id -> extra['persona_id'])",
+            "python/packages/corlinman-server/src/corlinman_server/agent_servicer.py:4315-4326 (_context_metadata stamps md['agent_id'] from extra['persona_id'] when no explicit agent_id) — CONTRADICTS the prior caveat that it does NOT stamp",
+            "python/packages/corlinman-server/src/corlinman_server/agent_servicer.py:3946-3953 (_assemble_context passes metadata=_context_metadata(start) into the placeholder engine)",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/grpc/_engine_factory.py:60-63 + 213-232 (persona namespace registered via _CtxIdResolverAdapter keyed on ctx.metadata['agent_id'])",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/lifecycle/c2_wiring.py:226-245 (PersonaResolver over the same agent_state.sqlite published on AppState)",
+            "python/packages/corlinman-persona/src/corlinman_persona/placeholders.py:89-100 (resolver calls store.get(agent_id) with default tenant — matches the life tools' write tenant)"
+          ],
+          "gaps": [
+            {
+              "title": "No boot-time seeder creates the persona-state row; life placeholders + qzone life block resolve to empty until the model first writes",
+              "detail": "The agent_persona_state row for a bound persona (e.g. grantley) is only created when persona_life_set_state / diary_add is first called by the model. seed_from_card (corlinman-persona/seeder.py:116) is the intended boot seeder but is NEVER invoked from the server lifecycle — it appears only in a doc comment (corlinman-agent/subagent/runner.py:1038, which seeds CHILD-agent rows keyed by child_agent_id, not the bound persona_id). Until the model bootstraps the row, PersonaResolver.resolve returns '' for every {{persona.mood}}/{{persona.life_*}} (placeholders.py:97-99) and qzone_daily._resolve_life_block returns None (qzone_daily.py:661-662), so the live-state block is empty. This is why the VPS shows 14 rows all keyed model::agent-type::idx (child-agent seeding via runner.py) with mood=neutral/state_json={}, and zero rows keyed 'grantley'. The keying CODE is correct; the row simply never gets created for the bound persona.",
+              "severity": "high",
+              "fix_sketch": "In gateway/lifecycle/entrypoint.py near the existing seed_builtin_personas call (~line 329), add a seed_builtin_persona_states step that opens corlinman_persona PersonaStore at <data_dir>/agent_state.sqlite and upserts a default PersonaState(agent_id=DEFAULT_GRANTLEY_ID, mood='neutral', fatigue=0.0, state_json=_empty_life()-shaped) for each builtin persona — gap-fill only (never overwrite). This makes both the {{persona.*}} placeholders and the qzone life block resolve non-empty from first boot, and gives the (to-be-added) decay sweep a row to act on."
+            }
+          ]
+        },
+        {
+          "name": "Event-seed library + life_seeds/grantley.yaml",
+          "status": "complete",
+          "wired_end_to_end": true,
+          "evidence": [
+            "python/packages/corlinman-agent/src/corlinman_agent/persona/life_seeds/grantley.yaml (9 themed categories: mission_scenario, travel_destination, academy_scene, companion, tension, weather, mood, duration_hint, season_hint)",
+            "python/packages/corlinman-agent/src/corlinman_agent/persona/life.py:383-450 (_resolve_seed_library: override -> bundled pack -> generic; slug guard _valid_persona_slug at 369-380)",
+            "python/packages/corlinman-agent/src/corlinman_agent/persona/life.py:634-705 (dispatch_persona_life_event_seed draws from the resolved library; pure, no state IO)",
+            "python/packages/corlinman-server/src/corlinman_server/agent_servicer.py:2872-2876 (event_seed dispatch with data_dir=_resolve_data_dir())",
+            "python/packages/corlinman-server/src/corlinman_server/agent_servicer.py:2877-2890 (set_seeds/get_seeds authoring dispatch, explicit persona_id arg, data_dir wired)"
+          ],
+          "gaps": [
+            {
+              "title": "Event-seed is inspiration-only and is not auto-triggered",
+              "detail": "persona_life_event_seed returns random keyword cues only when the model explicitly calls it; like the rest of the engine it has no autonomous trigger. This is by design (it is a model-facing creativity tool, not a driver), so not a defect of the seed library itself — but it reinforces that the whole life loop is model-pull rather than system-push.",
+              "severity": "low",
+              "fix_sketch": "No change required for correctness; if autonomous life-advance is added, the auto-advance driver can call _resolve_seed_library directly to seed each generated life beat."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "dimension": "{{persona.*}} placeholder resolution + agent_id/persona_id keying",
+      "summary": "The {{persona.*}} resolution CHAIN is fully wired and correctly keyed in the current code — contradicting the audit's \"KNOWN CAVEAT\". _context_metadata (agent_servicer.py:4315-4326) DOES stamp md[\"agent_id\"], falling back to extra[\"persona_id\"]; that metadata flows ctx.metadata[\"agent_id\"] → _CtxIdResolverAdapter (_engine_factory.py:62,214) → PersonaResolver.resolve(key, agent_id) → store.get(agent_id) against agent_state.sqlite. The persona namespace is registered (build_default_engine reads state.persona_resolver published by _wire_c2_handles at entrypoint.py:369, which runs BEFORE serve_placeholder_in_background at entrypoint.py:1132). So the keying is NOT the break. The REAL #1 break is at the terminal lookup: agent_state.sqlite has no row keyed (tenant_id=\"default\", agent_id=\"grantley\"). PersonaResolver.resolve returns \"\" when store.get returns None (placeholders.py:97-99). No boot seeder ever creates that row — seed_from_card exists (corlinman-persona/seeder.py:116) and is exported but is NEVER called by the server lifecycle; the only writers are the model-invoked persona_life_* tools. VPS confirms 14 rows keyed model::agent-type::idx, zero keyed grantley. DEFINITIVE VERDICT: {{persona.mood}}, {{persona.fatigue}}, {{persona.recent_topics}}, {{persona.life_*}} all SILENTLY RENDER EMPTY for grantley at runtime — not because of mis-keying, but because no grantley state row is ever seeded (and the model rarely/never calls the life tools first). A secondary precondition is that the channel must actually pass a non-empty persona_id (chat_service.py:430), which only happens when humanlike injection is enabled for that channel.",
+      "components": [
+        {
+          "name": "{{persona.*}} placeholder resolver (PersonaResolver)",
+          "status": "complete",
+          "wired_end_to_end": true,
+          "evidence": [
+            "python/packages/corlinman-persona/src/corlinman_persona/placeholders.py:77 (class PersonaResolver)",
+            "python/packages/corlinman-persona/src/corlinman_persona/placeholders.py:89-100 (resolve(key, agent_id) -> store.get(agent_id); returns '' when state is None)",
+            "python/packages/corlinman-persona/src/corlinman_persona/placeholders.py:103-121 (mood/fatigue/recent_topics + state_json fallthrough; missing keys -> '')"
+          ],
+          "gaps": [
+            {
+              "title": "Resolver returns empty string for any unknown agent_id (by design) — masks the seeding gap",
+              "detail": "placeholders.py:97-99: when store.get(agent_id) is None, resolve() returns '' rather than raising. This is intentional (hot-path safety) but means a missing grantley row produces silent empties for every {{persona.*}} token with zero log/error. There is no observability that the persona namespace resolved to nothing.",
+              "severity": "low",
+              "fix_sketch": "Optional: add a structlog.debug in PersonaResolver.resolve when state is None so operators can see persona-state misses. The substantive fix is seeding the row (see state store component)."
+            }
+          ]
+        },
+        {
+          "name": "agent_id metadata stamping (_context_metadata)",
+          "status": "complete",
+          "wired_end_to_end": true,
+          "evidence": [
+            "python/packages/corlinman-server/src/corlinman_server/agent_servicer.py:4315-4326 (_context_metadata: agent_id = extra['agent_id'] or fallback extra['persona_id']; sets md['agent_id'])",
+            "python/packages/corlinman-server/src/corlinman_server/agent_servicer.py:4329-4335 (_metadata_id strips, rejects '' and 'auto')",
+            "python/packages/corlinman-server/src/corlinman_server/agent_servicer.py:4522-4541 (_to_agent_start: if pb_start.persona_id -> extra['persona_id'])",
+            "python/packages/corlinman-server/src/corlinman_server/agent_servicer.py:3941-3974 (_assemble_context passes metadata=_context_metadata(start) into assembler.assemble)"
+          ],
+          "gaps": [
+            {
+              "title": "Audit's 'KNOWN CAVEAT' is WRONG for current code: _context_metadata DOES stamp agent_id from persona_id",
+              "detail": "The provided baseline asserts '_context_metadata does NOT stamp agent_id'. In the current source it explicitly does (4321-4325): it tries extra['agent_id'], then falls back to extra['persona_id'], and writes md['agent_id']. So a humanlike turn carrying persona_id='grantley' DOES produce ctx.metadata['agent_id']='grantley'. The keying is correct; the break is downstream (no DB row).",
+              "severity": "low",
+              "fix_sketch": "No code fix needed for keying. Update the audit caveat. (Multi-persona note: if a distinct extra['agent_id'] is ever sent that differs from persona_id, it wins over persona_id at 4321-4322 — could mis-route in multi-persona setups, but not for single-grantley.)"
+            }
+          ]
+        },
+        {
+          "name": "persona namespace registration in PlaceholderEngine (build_default_engine)",
+          "status": "complete",
+          "wired_end_to_end": true,
+          "evidence": [
+            "python/packages/corlinman-server/src/corlinman_server/gateway/grpc/_engine_factory.py:213-238 (registers 'persona' namespace via _CtxIdResolverAdapter when state.persona_resolver is present; id_key=AGENT_ID_METADATA_KEY)",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/grpc/_engine_factory.py:30 (AGENT_ID_METADATA_KEY='agent_id')",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/grpc/_engine_factory.py:60-63 (_CtxIdResolverAdapter.resolve reads ctx.metadata['agent_id'], forwards to inner.resolve(key, id_))",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/lifecycle/c2_wiring.py:226-245 (state.persona_resolver = PersonaResolver(PersonaStore.open_or_create(data_dir/'agent_state.sqlite')))",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/grpc/__init__.py:124-148 (serve_placeholder_in_background: engine = build_default_engine(state); served on UDS)",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/lifecycle/entrypoint.py:369 (_wire_c2_handles runs first) vs entrypoint.py:1126-1145 (serve_placeholder_in_background runs later) — resolver published before engine built",
+            "python/packages/corlinman-agent/src/corlinman_agent/placeholder_client.py:121-143 (PlaceholderClient.render sends ctx.metadata over gRPC to the engine)"
+          ],
+          "gaps": [
+            {
+              "title": "Persona namespace silently skipped if c2_wiring fails to open agent_state.sqlite",
+              "detail": "If _wire_c2_handles hits an exception opening agent_state.sqlite, state.persona_resolver is set None (c2_wiring.py:246-249) and build_default_engine logs 'persona_resolver_unavailable' and skips the namespace (_engine_factory.py:219-227). Then every {{persona.*}} token round-trips as an UNRESOLVED literal {{persona.mood}} (it stays in the prompt verbatim), which is a DIFFERENT failure mode than rendering empty. Both are bad but the failure surfaces differently. On a healthy boot this path is fine.",
+              "severity": "low",
+              "fix_sketch": "No change needed for the primary issue; just note the two distinct failure modes (literal token vs empty string) when diagnosing."
+            }
+          ]
+        },
+        {
+          "name": "agent_persona_state row seeding for grantley (THE BREAK)",
+          "status": "broken",
+          "wired_end_to_end": false,
+          "evidence": [
+            "python/packages/corlinman-persona/src/corlinman_persona/store.py:27-39 (CREATE TABLE agent_persona_state, PRIMARY KEY (tenant_id, agent_id))",
+            "python/packages/corlinman-persona/src/corlinman_persona/store.py:251-266 (get(agent_id, tenant_id='default') -> SELECT ... WHERE tenant_id=? AND agent_id=?)",
+            "python/packages/corlinman-persona/src/corlinman_persona/seeder.py:116 (seed_from_card exists) and __init__.py:14,24 (exported)",
+            "grep across corlinman-server + corlinman-agent (non-test): seed_from_card is NEVER imported/called by any lifecycle/entrypoint/seed path — only referenced in a comment at corlinman-agent/.../subagent/runner.py:1038",
+            "python/packages/corlinman-server/src/corlinman_server/agent_servicer.py:2588-2945 (the ONLY writers of agent_state.sqlite rows are the model-invoked persona_life_* tool dispatch branches)",
+            "VPS fact (given): agent_persona_state has 14 rows all keyed model::agent-type::idx, none keyed 'grantley'; all mood=neutral, state_json={}"
+          ],
+          "gaps": [
+            {
+              "title": "CRITICAL/#1 break: no (tenant_id='default', agent_id='grantley') row is ever seeded -> all {{persona.*}} render empty",
+              "detail": "The full resolution chain is correct and live, but it terminates at store.get('grantley') which returns None because no boot-time seeder writes a grantley state row into agent_state.sqlite. seed_from_card (the intended seeder) is exported by corlinman-persona but never called from the server. The row only ever appears after the MODEL explicitly calls persona_life_set_state mid-conversation; until then {{persona.mood}}/{{persona.fatigue}}/{{persona.recent_topics}}/{{persona.life_*}} all resolve to '' on every prompt render (and the daily-publish life block at qzone_daily.py:600 is likewise empty). This is the suspected #1 integration break, confirmed.",
+              "severity": "high",
+              "fix_sketch": "Add a boot-time state seeder alongside seed_builtin_personas in the lifecycle. Concretely: in c2_wiring._wire_c2_handles (right after state_store = PersonaStore.open_or_create(data_dir/'agent_state.sqlite') at c2_wiring.py:230-232), call corlinman_persona.seed_from_card(state_store, <grantley card path>) OR state_store.upsert(PersonaState(agent_id='grantley', tenant_id='default', mood='neutral', fatigue=0.0, recent_topics=[], state_json={...life defaults...})). Key it by DEFAULT_GRANTLEY_ID so it matches the persona_id the channel sends."
+            },
+            {
+              "title": "Secondary precondition: channel must send a non-empty persona_id",
+              "detail": "chat_service.py:430 sets ChatStart.persona_id = getattr(req,'persona_id',None) or ''. If humanlike injection is NOT enabled for the channel, persona_id is '' -> _metadata_id rejects it (agent_servicer.py:4333) -> no agent_id stamped -> resolver keyed by '' -> still empty. So even after seeding the grantley row, placeholders only populate on turns where the channel actually bound persona_id='grantley' via the humanlike toggle.",
+              "severity": "medium",
+              "fix_sketch": "Ensure the humanlike binding (PUT /admin/channels/{channel}/humanlike) is enabled so chat_service forwards persona_id. Verify persona_inject sets req.persona_id on the inbound path; confirm the binding persists the grantley id used as the seeded agent_id."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "dimension": "mood / fatigue / recent_topics evolution",
+      "components": [
+        {
+          "name": "agent_persona_state store (PersonaStore)",
+          "status": "complete",
+          "wired_end_to_end": false,
+          "evidence": [
+            "python/packages/corlinman-persona/src/corlinman_persona/store.py:190 — PersonaStore class, open_or_create, upsert, get, list_all, update_mood, update_fatigue, push_recent_topic",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/lifecycle/c2_wiring.py:230-231 — opens agent_state.sqlite via _StateStore.open_or_create and publishes resolver on AppState",
+            "python/packages/corlinman-server/src/corlinman_server/agent_servicer.py:3821-3827 — lazy-opens same DB when persona_life_* tool first dispatched"
+          ],
+          "gaps": [
+            {
+              "title": "No grantley row ever seeded in agent_persona_state",
+              "detail": "seed_from_card (corlinman-persona/seeder.py:116) is the only non-EvolutionLoop writer that inserts default rows, but it is NEVER called from the server boot path. grep of all corlinman-server Python files finds zero calls to seed_from_card. The row for agent_id='grantley' is created only when the model explicitly calls persona_life_set_state for the first time. VPS confirms: all 14 rows are keyed by model::agent-type::index strings, none by 'grantley'. Until the first tool call, store.get('grantley') returns None, causing all {{persona.*}} placeholders to resolve to empty string.",
+              "severity": "high",
+              "fix_sketch": "In entrypoint.py's _lifespan, after c2_wiring runs and opens agent_state.sqlite, call seed_from_card(state_store, grantley_card_path) or directly upsert a PersonaState(agent_id='grantley', mood='neutral', fatigue=0.0, ...) using the already-open corlinman_persona_state_store handle. The seeder is idempotent (returns False without mutating if the row already exists)."
+            }
+          ]
+        },
+        {
+          "name": "mood/fatigue decay (apply_decay + decay-once CLI)",
+          "status": "partial",
+          "wired_end_to_end": false,
+          "evidence": [
+            "python/packages/corlinman-persona/src/corlinman_persona/decay.py:41 — apply_decay() pure function: recovers fatigue by hours_elapsed * 0.1/hr, flips 'tired'→'neutral' below threshold, drops oldest recent_topics by floor(hours/24)",
+            "python/packages/corlinman-persona/src/corlinman_persona/cli.py:109-143 — _run_decay() sweeps all rows via list_all(), applies apply_decay per row using updated_at_ms as reference clock, upserts back with refreshed timestamp",
+            "python/packages/corlinman-persona/src/corlinman_persona/cli.py:173-177 — decay-once CLI subcommand calls _run_decay() via asyncio.run()",
+            "docs/config.example.toml:386-389 — [[scheduler.jobs]] name='persona_decay', cron='0 0 * * * * *' (hourly), action type='subprocess', command='corlinman-persona', args=['decay-once', '--db', '/data/agent_state.sqlite']",
+            "python/packages/corlinman-server/src/corlinman_server/scheduler/builtins/__init__.py:46-78 — BUILTIN_ACTIONS registry has only: system_update_check, qzone_daily, evolution_darwin_curate — NO persona_decay builtin",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/lifecycle/entrypoint.py:1318 — _effective_scheduler_config() reads [[scheduler.jobs]] from operator's config.toml; if operator never copies the example block, job never runs"
+          ],
+          "gaps": [
+            {
+              "title": "decay-once is only in config.example.toml, never auto-registered — zero firings on any default install",
+              "detail": "The persona_decay scheduler job is documented in docs/config.example.toml:386-389 as a subprocess-type job calling 'corlinman-persona decay-once'. It is NOT a registered builtin (not in BUILTIN_ACTIONS), not a lifespan background task, and not a default scheduler job. It only fires if the operator explicitly copies the [[scheduler.jobs]] block into their /data/config.toml. No VPS operator would know to do this without reading the example config. The result: fatigue stays permanently at 0.0, mood stays 'neutral', recent_topics never age out — on any default install. VPS confirms: all 14 rows mood=neutral, state_json={}.",
+              "severity": "high",
+              "fix_sketch": "Option A (preferred): add a 'persona_decay' scheduler builtin to scheduler/builtins/ that calls _run_decay() directly (in-process, no subprocess), mirror the evolution_darwin_curate pattern. Register it as a default scheduler job via register_default_scheduler_job() so it fires hourly without any operator config. Option B (lighter): add a lifespan background asyncio.Task in entrypoint.py that loops sleep(3600) + _run_decay(data_dir/'agent_state.sqlite', DecayConfig(), 'default'). Either approach must also solve the missing grantley row gap (above) or decay will sweep an empty table and do nothing."
+            }
+          ]
+        },
+        {
+          "name": "mood UPDATE path — who calls set on mood",
+          "status": "partial",
+          "wired_end_to_end": false,
+          "evidence": [
+            "python/packages/corlinman-agent/src/corlinman_agent/persona/life.py:354-356 — _save_state() sets state.mood = mood when mood arg is not None; mood comes from the 'mood' field the model passes to persona_life_set_state",
+            "python/packages/corlinman-agent/src/corlinman_agent/persona/life.py:528-529 — dispatch_persona_life_set_state(): mood_arg is non-None only when the model explicitly includes 'mood' in args; a no-mood call leaves native column untouched",
+            "python/packages/corlinman-persona/src/corlinman_persona/store.py:313-332 — update_mood() exists but is never called from any dispatch path; only upsert() (called via _save_state) actually mutates mood",
+            "python/packages/corlinman-persona/src/corlinman_persona/decay.py:69 — apply_decay() flips mood 'tired'→'neutral' when fatigue drops below threshold; this is the only non-model-driven path, but it only fires when decay-once runs (see gap above)",
+            "python/packages/corlinman-server/src/corlinman_server/agent_servicer.py:2910-2914 — dispatch_persona_life_set_state called; persona_id from start.extra['persona_id'] (set if pb_start.persona_id is truthy at line 4530)"
+          ],
+          "gaps": [
+            {
+              "title": "Mood is ONLY updated when model explicitly passes 'mood' to persona_life_set_state — no autonomous update path exists",
+              "detail": "The native mood column is only written by two paths: (1) the model calls persona_life_set_state with an explicit mood string, and (2) apply_decay() flips 'tired'→'neutral' during a decay sweep. Path (2) never fires (no scheduler). Path (1) requires the model to voluntarily include mood in the tool call. There is no post-turn hook, no event trigger, no periodic scan that infers mood from conversation content. On prod (VPS), all rows show mood='neutral' and state_json={}, confirming neither path has ever fired for any persona row keyed by persona_id.",
+              "severity": "high",
+              "fix_sketch": "No code change strictly needed for the model-driven path; the gap is that (a) the grantley row must exist for upsert to work on the right key, and (b) the model must be prompted to call persona_life_set_state. For autonomous mood tracking, a post-turn hook calling a lightweight 'mood inference' step would be needed — this is a new feature, not just a bug fix."
+            }
+          ]
+        },
+        {
+          "name": "fatigue UPDATE path",
+          "status": "partial",
+          "wired_end_to_end": false,
+          "evidence": [
+            "python/packages/corlinman-persona/src/corlinman_persona/store.py:334-353 — update_fatigue(agent_id, delta) SQL clamp-add; never called from any dispatch path in agent_servicer.py",
+            "python/packages/corlinman-agent/src/corlinman_agent/persona/life.py:330-361 — _save_state() does NOT write fatigue; it does a read-merge-upsert that preserves the existing fatigue column value untouched (the PersonaState loaded by _load_state carries current fatigue through)",
+            "python/packages/corlinman-persona/src/corlinman_persona/decay.py:66 — apply_decay() reduces fatigue by hours_elapsed * 0.1; only fires via decay-once CLI (unscheduled)",
+            "python/packages/corlinman-server/src/corlinman_server/agent_servicer.py:2891-2921 — dispatch_persona_life_* branches: none increment fatigue"
+          ],
+          "gaps": [
+            {
+              "title": "Fatigue is never incremented — the 'add fatigue per conversation' write path is missing entirely",
+              "detail": "update_fatigue() exists in PersonaStore (store.py:334) but is called by zero production code paths. The life tools' _save_state() explicitly preserves existing fatigue unchanged during a set_state call (it reads the row, merges life + diary into state_json, keeps fatigue as-is, and upserts). There is no code that increases fatigue as the agent works. The only path that modifies fatigue is apply_decay() (which REDUCES it), but that path is also dead (no scheduler). Fatigue will always stay at 0.0 on any fresh install.",
+              "severity": "high",
+              "fix_sketch": "Add fatigue increment logic — e.g., in _save_state(), optionally apply a small delta (configurable, e.g. 0.02 per set_state call). Alternatively add a post-turn hook that calls update_fatigue(persona_id, +0.01) after each conversation turn. Without fatigue accumulation, the tired→neutral decay flip in apply_decay will never trigger even if decay-once runs."
+            }
+          ]
+        },
+        {
+          "name": "recent_topics UPDATE path",
+          "status": "partial",
+          "wired_end_to_end": false,
+          "evidence": [
+            "python/packages/corlinman-agent/src/corlinman_agent/persona/life.py:357-358 — _save_state() appends push_topic to state.recent_topics when push_topic is non-empty",
+            "python/packages/corlinman-agent/src/corlinman_agent/persona/life.py:520 — dispatch_persona_life_set_state() sets push_topic=activity_val from args.get('activity'); empty activity → no push",
+            "python/packages/corlinman-persona/src/corlinman_persona/store.py:355-379 — push_recent_topic() method exists but is never called from any dispatch path",
+            "python/packages/corlinman-persona/src/corlinman_persona/decay.py:72-82 — apply_decay() drops oldest topics by floor(hours/24) * 1 per day; requires decay-once to run",
+            "python/packages/corlinman-persona/src/corlinman_persona/placeholders.py:63-74 — _format_topics() joins the 5 most-recent topics newest-first for {{persona.recent_topics}} placeholder"
+          ],
+          "gaps": [
+            {
+              "title": "recent_topics only populated when model calls persona_life_set_state with a non-empty 'activity' field",
+              "detail": "The writing path is: model calls persona_life_set_state({state:..., activity:'...'}) → dispatch_persona_life_set_state extracts activity_val → _save_state() appends to recent_topics (store.py dedup/cap on upsert). This is fully wired but entirely model-driven. No automatic push happens on turn end, no hook captures conversation topics, and no seed populates initial topics. On VPS all rows have recent_topics=[] (confirmed by all 14 rows state_json={}). The decay path (aging out old topics) is also unscheduled.",
+              "severity": "medium",
+              "fix_sketch": "No structural code fix needed — the write path works when the model calls the tool. The gap is operator-visible: the model must be prompted (via system_prompt instructions or tool description) to call set_state + provide an activity after sessions. For automatic topic tracking, a post-turn hook extracting the conversation summary would be needed."
+            }
+          ]
+        },
+        {
+          "name": "{{persona.*}} placeholder resolution (PlaceholderEngine + PersonaResolver)",
+          "status": "partial",
+          "wired_end_to_end": false,
+          "evidence": [
+            "python/packages/corlinman-persona/src/corlinman_persona/placeholders.py:77-100 — PersonaResolver.resolve(key, agent_id): calls store.get(agent_id); returns '' when row is None",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/lifecycle/c2_wiring.py:227-245 — PersonaResolver wired from agent_state.sqlite; published on state.persona_resolver",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/grpc/_engine_factory.py:213-230 — ('persona', ('persona_resolver',), AGENT_ID_METADATA_KEY) registered via _CtxIdResolverAdapter when persona_resolver found on state",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/grpc/_engine_factory.py:60-63 — _CtxIdResolverAdapter.resolve(): reads id from ctx.metadata.get('agent_id', '')",
+            "python/packages/corlinman-server/src/corlinman_server/agent_servicer.py:4321-4325 — _context_metadata(): stamps md['agent_id'] from extra.get('agent_id') then fallback to extra.get('persona_id')",
+            "python/packages/corlinman-server/src/corlinman_server/agent_servicer.py:4530-4531 — _to_agent_start(): copies pb_start.persona_id → extra['persona_id'] when truthy"
+          ],
+          "gaps": [
+            {
+              "title": "Resolver keys by ctx.metadata['agent_id'] which gets persona_id only when no agent_id is set — standard channel flows may stamp wrong key",
+              "detail": "_context_metadata() at agent_servicer.py:4321-4325 tries extra['agent_id'] first, falling back to extra['persona_id']. The channel flow stamps only persona_id (from pb_start.persona_id, line 4530) and does NOT stamp agent_id. So for a normal QQ/Telegram channel with humanlike enabled, md['agent_id'] = 'grantley' (via the fallback). This path is correct when there is only one persona. However if extra['agent_id'] happens to be set (e.g. multi-agent dispatch at line 3916-3926 or subagent branch), it will shadow persona_id and the resolver will look up the wrong agent_id, returning '' for all {{persona.*}} tokens.",
+              "severity": "medium",
+              "fix_sketch": "In _context_metadata(), prefer persona_id as the agent_id for the persona namespace when both are present. Alternatively, stamp a separate metadata key 'persona_id' (distinct from 'agent_id') and change _engine_factory.py:214 to use 'persona_id' as the id_key for the persona namespace."
+            },
+            {
+              "title": "Placeholder resolution is dead until grantley state row is seeded (cascades from store gap above)",
+              "detail": "PersonaResolver.resolve() calls store.get(agent_id) at placeholders.py:97; returns '' immediately when the row is None (line 98-99). Since no boot-time seeder creates the grantley row, every {{persona.mood}}, {{persona.fatigue}}, {{persona.life_location}}, etc. in the system prompt resolves to empty string. This renders the '## 此刻的我' block in the grantley system_prompt entirely blank on every turn.",
+              "severity": "high",
+              "fix_sketch": "Fix the missing state row seeding (see agent_persona_state store gap). Once the row exists, placeholder resolution works end-to-end."
+            }
+          ]
+        },
+        {
+          "name": "decay-once scheduling (cron / scheduler integration)",
+          "status": "missing",
+          "wired_end_to_end": false,
+          "evidence": [
+            "docs/config.example.toml:381-389 — [[scheduler.jobs]] name='persona_decay', cron='0 0 * * * * *' documented but requires manual operator opt-in to /data/config.toml",
+            "python/packages/corlinman-server/src/corlinman_server/scheduler/builtins/__init__.py:46-78 — BUILTIN_ACTIONS contains system_update_check, qzone_daily, evolution_darwin_curate — NO persona_decay entry",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/lifecycle/scheduler_integration.py:295-330 — _effective_scheduler_config() reads operator [[scheduler.jobs]] from config first, then auto-registered defaults; persona_decay is in neither list by default",
+            "grep result: zero matches for 'apply_decay', '_run_decay', 'decay-once', 'persona_decay' in all corlinman-server Python source files outside of comments"
+          ],
+          "gaps": [
+            {
+              "title": "persona_decay is documented-only — no auto-registration, no default job, never fires on any production install",
+              "detail": "The hourly 'corlinman-persona decay-once' sweep is documented in docs/config.example.toml as a [[scheduler.jobs]] subprocess entry. The scheduler runtime (scheduler_integration.py) will pick it up if the operator copies it to /data/config.toml. But: (1) there is no register_default_scheduler_job() call that adds it automatically, (2) there is no BUILTIN_ACTIONS entry for it, (3) there is no lifespan background asyncio.Task. A fresh VPS install with no custom config.toml never runs decay. The cli.py docstring says 'The scheduler runs this hourly via the example config' — this is aspirational documentation, not implemented behavior.",
+              "severity": "high",
+              "fix_sketch": "Add a persona_decay builtin to scheduler/builtins/persona_decay.py that imports _run_decay from corlinman_persona.cli (or duplicates its logic inline), registers via register_builtin('persona_decay', _action), and calls register_default_scheduler_job() with cron='0 0 * * * * *' (hourly). Import the new module in scheduler/builtins/__init__.py. This mirrors the evolution_darwin_curate pattern exactly. Alternatively, since decay-once is a subprocess, add it to the list of guaranteed default subprocess jobs in the scheduler_integration default list — but the in-process builtin is cleaner."
+            }
+          ]
+        }
+      ],
+      "summary": "Mood/fatigue/recent_topics evolution is structurally designed but effectively dead code in production. The decay logic (apply_decay in decay.py) and the CLI sweep (_run_decay / decay-once in cli.py) are correct and unit-tested, but no server-side scheduler, lifespan task, or registered default job ever calls them. The persona_decay cron entry exists only in docs/config.example.toml as an opt-in subprocess job; a VPS with the default config never fires it. Mood is only updated when the model explicitly passes a 'mood' field to persona_life_set_state; fatigue is never incremented by any code path at all (update_fatigue exists in PersonaStore but has zero call sites); recent_topics only grows when the model calls set_state with a non-empty activity. All three fields are therefore permanently at their defaults (mood='neutral', fatigue=0.0, recent_topics=[]) on every production install — exactly what the VPS audit found across all 14 rows. The placeholder resolver (PersonaResolver / PlaceholderEngine) is correctly wired via c2_wiring.py and _engine_factory.py, but resolves to empty strings for all {{persona.*}} tokens because no boot-time seeder creates the grantley row in agent_persona_state (seed_from_card is never called from the server boot path, and the state row only appears on the first model tool call). The root causes are two independent gaps: (1) missing boot-time state row seeding for grantley, and (2) missing scheduled/background trigger for the decay sweep. Both must be fixed together before the evolution system produces any observable effect."
+    },
+    {
+      "dimension": "QZone integration end-to-end",
+      "summary": "The QZone publish and comment tools are structurally complete and wired into BUILTIN_TOOLS (agent_servicer.py:332,341). The daily-publish scheduler path — daily_job.json template seeding (app_factory.py:580), admin enable route (scheduler.py:246), builtin registry registration (qzone_daily.py:896), cron tick loop dispatch (runner.py:469-546) — is fully reachable from a real entrypoint. However, three end-to-end gaps break the intended daily-post experience: (1) qzone_daily._build_internal_chat_request never sets persona_id on InternalChatRequest, so the agent turn carries no persona binding and image generation runs without 立绘 asset references; (2) life-state context injected by _resolve_life_block always returns None on any fresh deploy because no grantley row exists in agent_persona_state (same root cause as the broader persona-state gap — see dimension Persona System audit); (3) the CORLINMAN_NAPCAT_HTTP_URL env var must be set or NapCat's ws_url must be derivable, and there is no error surface when it is absent at server startup — the failure only appears at tool-call time.",
+      "components": [
+        {
+          "name": "qzone_publish tool (publish.py)",
+          "status": "complete",
+          "wired_end_to_end": true,
+          "evidence": [
+            "/Users/cornna/project/corlinman/python/packages/corlinman-agent/src/corlinman_agent/qzone/publish.py:61 (QZONE_PUBLISH_TOOL = 'qzone_publish')",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-agent/src/corlinman_agent/qzone/publish.py:571 (dispatch_qzone_publish async dispatcher)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/agent_servicer.py:332 (QZONE_PUBLISH_TOOL in BUILTIN_TOOLS)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/agent_servicer.py:2982-3006 (dispatch branch; image_with_refs wired via dispatcher kwarg)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/agent_servicer.py:553 (qzone_publish_tool_schema() in _builtin_tool_schemas)"
+          ],
+          "gaps": [
+            {
+              "title": "No error at startup when CORLINMAN_NAPCAT_HTTP_URL is unset",
+              "detail": "OneBotClient() raises OneBotError at construction time (client.py:197-202), but this only fires when the model calls qzone_publish. There is no boot-time check, so an operator without NapCat configured gets a silent degradation — the tool is advertised in schema but fails on first call with 'OneBot HTTP URL not configured'. The error envelope is clean (ok=false, error=onebot_unavailable) but the operator has no forewarning.",
+              "severity": "low",
+              "fix_sketch": "Add a startup health-check log warning in entrypoint.py or app_factory.py that probes os.environ.get('CORLINMAN_NAPCAT_HTTP_URL') and warns if absent (similar to how CORLINMAN_PUBLIC_URL is checked). No code-path change needed."
+            },
+            {
+              "title": "scheduler-triggered qzone_publish has no persona_id binding — image generation runs without 立绘 assets",
+              "detail": "When qzone_daily._build_internal_chat_request builds the InternalChatRequest (qzone_daily.py:765-777), it does NOT set persona_id. chat_service._build_chat_start reads getattr(req,'persona_id',None) or '' (chat_service.py:430) → passes persona_id='' to proto → _to_agent_start does not populate extra['persona_id'] → in agent_servicer.py:2991-2996 qz_bound_persona_id is None → dispatch_qzone_publish is called with image_with_refs_kwargs={'bound_persona_id': None}. This means any 'generate' image call in the daily post uses no persona reference assets (立绘), even when grantley has assets uploaded.",
+              "severity": "medium",
+              "fix_sketch": "In qzone_daily.py _build_internal_chat_request (or at the callsite in _qzone_daily_publish_action line 184), pass persona_id=persona_id to InternalChatRequest. The field already exists on the model (gateway_api/types.py:238)."
+            }
+          ]
+        },
+        {
+          "name": "qzone comment/read tools (comment.py — qzone_list_feed / qzone_get_post / qzone_post_comment / qzone_list_friends)",
+          "status": "complete",
+          "wired_end_to_end": true,
+          "evidence": [
+            "/Users/cornna/project/corlinman/python/packages/corlinman-agent/src/corlinman_agent/qzone/comment.py:92-99 (QZONE_COMMENT_TOOLS frozenset)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/agent_servicer.py:341 (QZONE_COMMENT_TOOLS added to BUILTIN_TOOLS)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/agent_servicer.py:3007-3020 (dispatch branches for all four tools)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/agent_servicer.py:556 (*qzone_comment_tool_schemas() in _builtin_tool_schemas)"
+          ],
+          "gaps": [
+            {
+              "title": "All four comment tools construct OneBotClient from env with no fallback error surface",
+              "detail": "Each dispatcher calls _onebot_from(None, None) which calls OneBotClient() — if CORLINMAN_NAPCAT_HTTP_URL is absent the constructor raises OneBotError which is caught and returned as ok=false (comment.py:453-462). Error handling is correct, but there is no distinction between 'unconfigured' vs 'unreachable' in the error code — both surface as 'onebot_failed'. The model cannot easily distinguish to advise the user.",
+              "severity": "low",
+              "fix_sketch": "In _onebot_from, catch OneBotError from constructor and return a distinct error code (e.g. 'onebot_not_configured') vs connection failures. Minor UX improvement only."
+            }
+          ]
+        },
+        {
+          "name": "OneBot/NapCat auth",
+          "status": "complete",
+          "wired_end_to_end": true,
+          "evidence": [
+            "/Users/cornna/project/corlinman/python/packages/corlinman-agent/src/corlinman_agent/onebot/client.py:11-25 (env vars CORLINMAN_NAPCAT_HTTP_URL + CORLINMAN_NAPCAT_ACCESS_TOKEN + derived from ws_url)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-agent/src/corlinman_agent/onebot/client.py:119-135 (_resolve_base_url precedence chain)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-agent/src/corlinman_agent/onebot/client.py:148-217 (OneBotClient constructor with bearer token support)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-agent/src/corlinman_agent/qzone/publish.py:746-775 (uin + p_skey + gtk extraction from OneBot)"
+          ],
+          "gaps": [
+            {
+              "title": "Auth derived from ws_url fallback path is runtime-only — no ws_url passed from qzone_daily scheduler context",
+              "detail": "The ws_url derivation fallback (client.py:133-134) only works when a caller explicitly passes ws_url=... to OneBotClient(). The scheduler builtin (_qzone_daily_publish_action) does not call dispatch_qzone_publish with a onebot_client_factory; instead it fires the agent turn which internally creates OneBotClient() with no ws_url. If CORLINMAN_NAPCAT_HTTP_URL is unset but the QQ channel ws_url is configured in channels.qq.ws_url, the scheduler path cannot derive the HTTP URL. The ws_url derivation only helps callers that explicitly pass it (e.g. a future channel-scoped factory).",
+              "severity": "low",
+              "fix_sketch": "To fully exploit the ws_url derivation in the scheduler path, the qzone_daily builtin would need to pass a onebot_client_factory that reads ws_url from the app_state channel config. Low priority — CORLINMAN_NAPCAT_HTTP_URL is the standard deploy config."
+            }
+          ]
+        },
+        {
+          "name": "qzone.daily_publish scheduler builtin",
+          "status": "complete",
+          "wired_end_to_end": true,
+          "evidence": [
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/scheduler/builtins/qzone_daily.py:98 (QZONE_DAILY_BUILTIN_NAME = 'qzone.daily_publish')",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/scheduler/builtins/qzone_daily.py:896 (register_builtin at module import)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/scheduler/builtins/__init__.py:50-53 (qzone_daily imported, triggering registration)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/scheduler/runner.py:469-546 (dispatch() run_tool branch resolves BUILTIN_ACTIONS[builtin_name])",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/scheduler/runner.py:1236-1269 (runtime_job_spec maps 'qzone.daily_publish' to ActionSpec(kind='run_tool', plugin='qzone', tool='daily_publish'))",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/scheduler/builtins/qzone_daily.py:127-207 (_qzone_daily_publish_action entrypoint)"
+          ],
+          "gaps": [
+            {
+              "title": "CRITICAL: _build_internal_chat_request does not pass persona_id to InternalChatRequest",
+              "detail": "qzone_daily.py:765-777 constructs InternalChatRequest without setting persona_id (the field defaults to None). chat_service._build_chat_start (chat_service.py:430) reads getattr(req,'persona_id',None) or '' = '' → proto persona_id=''. _to_agent_start (agent_servicer.py:4529-4531) only populates extra['persona_id'] when pb_start.persona_id is truthy. Result: the agent turn fired by the scheduler has no persona_id in start.extra, so (a) qz_bound_persona_id=None in qzone_publish dispatch → generate uses no 立绘; (b) persona-life tool calls in the turn store state under agent_id=None or default, not 'grantley'.",
+              "severity": "medium",
+              "fix_sketch": "In qzone_daily._build_internal_chat_request, add persona_id=persona_id as a kwarg. The persona_id local variable is in scope at the callsite (line 184) via _coerce_str(metadata.get('persona_id')). InternalChatRequest.persona_id already accepts str|None (gateway_api/types.py:238)."
+            },
+            {
+              "title": "Life-state context block always None when grantley row absent in agent_persona_state",
+              "detail": "_resolve_life_block (qzone_daily.py:591-700) tries Strategy 1 (persona_resolver) and Strategy 2 (state store). Strategy 1 calls resolver.resolve('mood', 'grantley') but the resolver reads from agent_persona_state where no row keyed 'grantley' exists (all rows are model::agent-type::idx per VPS). Strategy 2 reads the state store directly; same issue — no row for persona_id='grantley'. Both strategies return None/empty → life_block=None → QZONE_DAILY_SYSTEM_TAIL is appended but no ## 我最近的生活 section is present. Daily posts have zero mood/life context.",
+              "severity": "medium",
+              "fix_sketch": "This shares the root cause with the persona-state keying gap. Fix: seed an agent_persona_state row keyed agent_id='grantley' at boot (in seed_builtin_personas or a new seed_builtin_persona_states). Until that fix lands, the daily-publish path degrades gracefully (posts without life context) rather than erroring."
+            },
+            {
+              "title": "Daily post timeout default is 300s with no admin-visible progress",
+              "detail": "_drive_chat_turn wraps the full chat stream in asyncio.wait_for(300s) (qzone_daily.py:299). If the model emits many intermediate tool calls (image_with_refs being slow) the job silently blocks for up to 5 minutes. The admin scheduler history only records ok/error after the full job completes — there is no in-progress event.",
+              "severity": "low",
+              "fix_sketch": "Expose intermediate tool_called list and elapsed_ms in the history entry on timeout so the admin can diagnose which step hung. Low priority for correctness."
+            }
+          ]
+        },
+        {
+          "name": "daily_job.json template registration and admin enable route",
+          "status": "complete",
+          "wired_end_to_end": true,
+          "evidence": [
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/bundled_personas/grantley/daily_job.json (template, enabled=false)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/lifecycle/app_factory.py:575-587 (seed_bundled_personas called at boot to copy to <DATA_DIR>/bundled_personas/)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/lifecycle/starter_skills.py:290-360 (seed_bundled_personas copies grantley/ subdir idempotently)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_b/infra/scheduler.py:246-312 (POST /admin/scheduler/qzone/templates/{template_id}/enable route)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_b/infra/_scheduler_lib.py:654-707 (_bundled_template_path resolves DATA_DIR path or in-wheel fallback)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/lifecycle/entrypoint.py:1391-1401 (rehydrate_runtime_jobs_on_boot at boot, registers enabled jobs on live scheduler handle)"
+          ],
+          "gaps": [
+            {
+              "title": "scheduler_job_metadata mirroring to app_state depends on admin route access order",
+              "detail": "_job_metadata (scheduler_lib.py:377-399) mirrors the metadata dict to app_state.scheduler_job_metadata only when first accessed via an admin route (lazy init). At bot startup, if no admin request fires before the first cron tick, app_state.scheduler_job_metadata may not yet be set — the qzone_daily builtin's _resolve_metadata then falls back to the scheduler_jobs list on app_state (qzone_daily.py:428-434) but the BuiltinContext.name lookup only works if the runtime job was also persisted to scheduler_runtime_jobs.json. The rehydrate path (_rehydrate_runtime_jobs in _scheduler_lib.py:224) does call _sync_metadata at line 272 which writes the metadata table before any admin request — so on a fresh boot with a persisted job, metadata IS mirrored. For a brand-new enable call (first boot, no sidecar), the metadata is synced by _store_job (line 557 calls _sync_metadata) at enable time. Marginal race only if the cron fires in the sub-second window between rehydrate and the first admin_b_state/app_state bridge write (entrypoint.py:1386).",
+              "severity": "low",
+              "fix_sketch": "In entrypoint.py, call _job_metadata(admin_b_state) explicitly after admin_b_state.extras['app_state'] is set (before rehydrate_runtime_jobs_on_boot) to ensure the mirror happens before any cron fires. One-liner change."
+            }
+          ]
+        },
+        {
+          "name": "image generation wiring for qzone_publish (generate field / image_with_refs)",
+          "status": "complete",
+          "wired_end_to_end": true,
+          "evidence": [
+            "/Users/cornna/project/corlinman/python/packages/corlinman-agent/src/corlinman_agent/qzone/publish.py:649-699 (generate branch calls image_with_refs_dispatcher with injected kwargs)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/agent_servicer.py:2997-3006 (dispatch_qzone_publish wired with image_with_refs_dispatcher=dispatch_image_with_refs and image_with_refs_kwargs including persona_store + asset_store)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/agent_servicer.py:3001-3004 (bound_persona_id extracted from start.extra['persona_id'])"
+          ],
+          "gaps": [
+            {
+              "title": "bound_persona_id is always None in scheduler-fired turns (image has no 立绘 reference)",
+              "detail": "In the direct-channel path (human messages via QQ), start.extra['persona_id'] is populated by _to_agent_start (agent_servicer.py:4529-4531) from pb_start.persona_id which is set from the channel's humanlike persona injection. In the scheduler path, persona_id is missing from InternalChatRequest (see qzone_daily gap above) → bound_persona_id=None → dispatch_image_with_refs receives bound_persona_id=None → no 立绘 reference is passed to the image provider. The scheduler's intended 配图 functionality silently ignores grantley's visual identity.",
+              "severity": "medium",
+              "fix_sketch": "Fix by passing persona_id=persona_id in _build_internal_chat_request. Same fix as the qzone_daily gap above — one change resolves both."
+            }
+          ]
+        },
+        {
+          "name": "scheduler cron tick loop wiring (runner.py dispatch → builtin)",
+          "status": "complete",
+          "wired_end_to_end": true,
+          "evidence": [
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/scheduler/runner.py:469-546 (run_tool action_kind branch: builtin_name = f'{plugin}.{tool}'; dispatched via run_builtin)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/scheduler/runner.py:1236-1269 (runtime_job_spec: 'qzone.daily_publish' → ActionSpec(kind='run_tool', plugin='qzone', tool='daily_publish') → builtin_name='qzone.daily_publish')",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/scheduler/runner.py:862-893 (SchedulerHandle.register spawns _run_job_loop for hot-registered runtime jobs)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/lifecycle/entrypoint.py:1372-1378 (scheduler spawned with app_state=app.state; handle published to admin_b_state.scheduler)"
+          ],
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "dimension": "persona assets / 立绘 pipeline",
+      "components": [
+        {
+          "name": "PersonaAssetStore (put/get/list/delete)",
+          "status": "complete",
+          "wired_end_to_end": true,
+          "evidence": [
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/persona/asset_store.py:219 — PersonaAssetStore class",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/persona/asset_store.py:341 — put() with MIME + quota validation",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/persona/asset_store.py:465 — get() by (persona_id, kind, label)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/persona/asset_store.py:493 — list() with optional kind filter",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/lifecycle/entrypoint.py:344-350 — opened at boot: PersonaAssetStore.open(data_dir/'persona_assets.sqlite', data_dir/'personas')",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_a/state.py:178 — AdminState.persona_asset_store slot"
+          ],
+          "gaps": []
+        },
+        {
+          "name": "HTTP routes: GET/POST/DELETE /admin/personas/{id}/assets + blob serve",
+          "status": "complete",
+          "wired_end_to_end": true,
+          "evidence": [
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_a/studio/personas.py:229-244 — GET /admin/personas/{id}/assets (list)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_a/studio/personas.py:247-305 — POST /admin/personas/{id}/assets (upload, multipart)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_a/studio/personas.py:307-340 — GET /admin/personas/{id}/assets/{asset_id} (serve blob via FileResponse, ETag=sha256, Cache-Control: immutable)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_a/studio/personas.py:342-365 — DELETE /admin/personas/{id}/assets/{asset_id}",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_a/studio/_personas_lib.py:145-156 — _asset_store() raises HTTP 503 when store not wired"
+          ],
+          "gaps": [
+            {
+              "title": "No public (unauthenticated) blob-serve route; only admin-authenticated route exists",
+              "detail": "GET /admin/personas/{id}/assets/{asset_id} is behind require_admin_dependency. There is no public CDN-style route (e.g. /public/personas/{id}/assets/{asset_id}) for serving persona emoji to channel recipients or external consumers. The `send_attachment` path reads blobs off disk directly via `asset_store.path_for(record)` (absolute Path), so channel delivery works without HTTP. However if a future web UI or external app needs to embed a persona asset image URL, there is no unauthenticated serving endpoint.",
+              "severity": "low",
+              "fix_sketch": "Add a public GET route at /public/personas/{id}/assets/{asset_id} (no auth) alongside the admin route, re-using the same FileResponse + ETag logic. Scope blob-reads to emoji kind only if reference 立绘 should stay private."
+            }
+          ]
+        },
+        {
+          "name": "persona_attach_asset_from_url agent tool",
+          "status": "complete",
+          "wired_end_to_end": true,
+          "evidence": [
+            "/Users/cornna/project/corlinman/python/packages/corlinman-agent/src/corlinman_agent/persona/tools.py:29 — PERSONA_ATTACH_ASSET_FROM_URL_TOOL = 'persona_attach_asset_from_url'",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-agent/src/corlinman_agent/persona/tools.py:32-41 — in PERSONA_TOOLS frozenset",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/agent_servicer.py:341 — BUILTIN_TOOLS includes PERSONA_TOOLS",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/agent_servicer.py:2848-2852 — dispatch branch calls dispatch_persona_attach_asset_from_url(args_json, persona_store, persona_asset_store)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-agent/src/corlinman_agent/persona/dispatch.py:444-589 — full implementation: 404-fast persona lookup, 30s httpx stream, 10 MiB cap, MIME check, asset_store.put()"
+          ],
+          "gaps": [
+            {
+              "title": "Tool receives persona_store = corlinman-persona PersonaStateStore (not PersonaStore) at image_with_refs dispatch site",
+              "detail": "At agent_servicer.py:2946, image_with_refs passes `persona_store=await self._get_persona_state_store()` — the LIFE-STATE store — not the persona CRUD store. The dispatch_image_with_refs function calls `persona_store.get(persona_id)` expecting a Persona row with system_prompt. The life-state store's get() returns a PersonaState row (mood/fatigue), not a Persona body. This means `persona.display_name` / `persona.system_prompt` attrs are absent; the `persona is None` guard passes only if the state row happens to exist, otherwise returns persona_not_found. For persona_attach_asset_from_url (line 2849) the correct persona_store is passed (self._get_persona_store() at line 2811). The image_with_refs bug is a separate dispatching error at line 2946 — persona_store arg is the wrong store.",
+              "severity": "high",
+              "fix_sketch": "In agent_servicer.py:2946, change `persona_store=await self._get_persona_state_store()` to `persona_store=await self._get_persona_store()`. The state store is for life-state, not for persona-body lookups."
+            }
+          ]
+        },
+        {
+          "name": "persona_list_assets agent tool",
+          "status": "complete",
+          "wired_end_to_end": true,
+          "evidence": [
+            "/Users/cornna/project/corlinman/python/packages/corlinman-agent/src/corlinman_agent/persona/tools.py:28 — PERSONA_LIST_ASSETS_TOOL = 'persona_list_assets'",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/agent_servicer.py:2842-2847 — dispatch_persona_list_assets(args_json, persona_store, asset_store=persona_asset_store)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-agent/src/corlinman_agent/persona/dispatch.py:229-267 — 404-fast persona check, list by kind filter, returns asset summary list"
+          ],
+          "gaps": []
+        },
+        {
+          "name": "compose_persona_emoji_block — emoji assets appended to channel system prompt",
+          "status": "complete",
+          "wired_end_to_end": true,
+          "evidence": [
+            "/Users/cornna/project/corlinman/python/packages/corlinman-channels/src/corlinman_channels/persona_inject.py:54-134 — compose_persona_emoji_block(): queries asset_store.list(persona_id, kind='emoji'), renders '## Available emoji' block with absolute paths",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-channels/src/corlinman_channels/persona_inject.py:205-212 — inject_persona_if_enabled() appends emoji_block to system_prompt body",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/channels_runtime/__init__.py:824-834 — asset_store resolved from admin_a_state.persona_asset_store",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/channels_runtime/__init__.py:882-893 — asset_store passed to build_channel_tasks() → all 5 channels (QQ, Telegram, Discord, Slack, Feishu)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-channels/src/corlinman_channels/service.py:339-348 — QQChannelParams.asset_store (same pattern repeated for all 5 channel param classes)"
+          ],
+          "gaps": [
+            {
+              "title": "Emoji block silently absent for grantley — no emoji assets uploaded",
+              "detail": "compose_persona_emoji_block returns None when the persona owns zero emoji assets (persona_inject.py:102-103). Grantley has zero assets on prod (VPS confirmed); all 4 assets belong to vivian. The emoji-listing block therefore never appears in grantley's channel system prompt. This is a content gap (no emoji uploaded), not a code gap — the code path is correct.",
+              "severity": "low",
+              "fix_sketch": "Upload at least one emoji asset for grantley via POST /admin/personas/grantley/assets (kind=emoji, label=happy/sad/etc.) or via the model's persona_attach_asset_from_url tool call. Once a row exists, the emoji block is auto-included on the next channel turn."
+            }
+          ]
+        },
+        {
+          "name": "image_with_refs — reference 立绘 assets fed to image generation provider",
+          "status": "partial",
+          "wired_end_to_end": false,
+          "evidence": [
+            "/Users/cornna/project/corlinman/python/packages/corlinman-agent/src/corlinman_agent/image/dispatch.py:176-300 — dispatch_image_with_refs: resolves persona, lists reference assets, matches character labels, reads blob bytes, calls generate_with_refs()",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/agent_servicer.py:2922-2949 — IMAGE_WITH_REFS_TOOL dispatch, passes provider + persona_store + asset_store + bound_persona_id",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/scheduler/builtins/qzone_daily.py:40 — qzone_daily system prompt instructs agent to call image_with_refs for illustration"
+          ],
+          "gaps": [
+            {
+              "title": "CRITICAL — wrong persona_store passed to dispatch_image_with_refs (life-state store, not persona-body store)",
+              "detail": "agent_servicer.py:2946 passes `persona_store=await self._get_persona_state_store()` to dispatch_image_with_refs. The life-state store (agent_state.sqlite, PersonaState rows) has a `.get()` method that returns a PersonaState object with mood/fatigue fields, not a Persona body. dispatch_image_with_refs calls `persona_store.get(persona_id)` at dispatch.py:263 and checks `if persona is None`. For grantley, the life-state store has NO row keyed 'grantley' (VPS confirmed: all 14 rows are keyed model::agent-type::idx), so the check returns None → 'persona_not_found' error even though grantley exists in personas.sqlite. Even if a state row existed, attrs like display_name and system_prompt would be absent. The tool is effectively broken for any persona where the life-state store has no matching row.",
+              "severity": "high",
+              "fix_sketch": "In agent_servicer.py at the IMAGE_WITH_REFS_TOOL dispatch block (around line 2946), change `persona_store=await self._get_persona_state_store()` to `persona_store=await self._get_persona_store()`. The personas.sqlite store (PersonaStore) is correct here. The life-state store is only needed for placeholder resolution, not for persona-body lookups."
+            },
+            {
+              "title": "Grantley has zero reference assets; image_with_refs returns empty chars_used even after store fix",
+              "detail": "Even after fixing the persona_store argument, dispatch_image_with_refs.py:276 calls `asset_store.list(persona_id, kind='reference')` for grantley and gets an empty list. All 4 existing assets belong to vivian. chars_missing list grows for every requested label; if all labels are missing the provider call still fires with ref_paths=[] (dispatch.py:297 logs a warning but does not abort). The image is generated without any 立绘 reference conditioning — functionally equivalent to a plain image_generate call.",
+              "severity": "low",
+              "fix_sketch": "Upload grantley reference images via POST /admin/personas/grantley/assets (kind=reference) with labels like 'front', 'casual', 'side'. Or use persona_attach_asset_from_url from the wizard flow."
+            }
+          ]
+        },
+        {
+          "name": "Assets consumed in QZone posts (qzone_daily scheduler)",
+          "status": "partial",
+          "wired_end_to_end": false,
+          "evidence": [
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/scheduler/builtins/qzone_daily.py:111-119 — QZONE_DAILY_SYSTEM_TAIL instructs agent to call image_with_refs for illustrations",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/scheduler/builtins/qzone_daily.py:461-519 — _resolve_or_open_persona_stores() resolves both persona_store and asset_store; probes admin_a state, extras, then opens fresh handles",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/scheduler/builtins/qzone_daily.py:540-553 — _probe_asset_store() reads admin_a.persona_asset_store or extras['persona_asset_store']"
+          ],
+          "gaps": [
+            {
+              "title": "qzone_daily does NOT pass asset_store into the InternalChatRequest; image_with_refs in the sub-turn uses a separately lazy-opened store",
+              "detail": "The qzone_daily builtin resolves asset_store at line 479 but only uses it for the _probe_asset_store probe. The InternalChatRequest built at line 184 carries no per-request asset_store injection — when the agent servicer processes the spawned chat turn for image_with_refs, it lazy-opens its own PersonaAssetStore (agent_servicer.py:3854) against the same data_dir. This works but doubles the sqlite connection count and means any in-flight admin upload during the scheduler run might not be visible until the next lazy-open cycle. Not a blocking gap, but wasteful.",
+              "severity": "low",
+              "fix_sketch": "Pass the resolved asset_store into chat request extras so the servicer's set_persona_stores() setter can receive it, avoiding the double-open. Or document the current behavior as acceptable given WAL mode concurrency."
+            }
+          ]
+        },
+        {
+          "name": "Assets consumed in channel replies (send_attachment with emoji path)",
+          "status": "complete",
+          "wired_end_to_end": true,
+          "evidence": [
+            "/Users/cornna/project/corlinman/python/packages/corlinman-channels/src/corlinman_channels/persona_inject.py:105-133 — emoji block lists absolute paths in format '- {label}: {abs_path}'",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-channels/src/corlinman_channels/persona_inject.py:87-89 — path via asset_store.path_for(record) → <data_dir>/personas/<persona_id>/emoji/<sha256>.{ext}",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/agent_servicer.py:326 — SEND_ATTACHMENT_TOOL in BUILTIN_TOOLS"
+          ],
+          "gaps": [
+            {
+              "title": "send_attachment with emoji path requires the model to use the exact absolute path from the emoji block; no label-to-path alias",
+              "detail": "The emoji block gives the model the raw absolute filesystem path (e.g. /data/personas/grantley/emoji/abc123.png). If the data dir changes between deployments, all previously learned paths become stale. There is no label-lookup tool that lets the model call send_attachment with just the label name 'happy' and have the server resolve the path.",
+              "severity": "low",
+              "fix_sketch": "Consider injecting the emoji block on every turn (already done) and trust the model to re-read the current block. The stale-path scenario only occurs after a data dir migration. Alternatively, add a send_emoji tool that takes a label string and resolves the path server-side."
+            }
+          ]
+        },
+        {
+          "name": "Assets consumed in public status card",
+          "status": "missing",
+          "wired_end_to_end": false,
+          "evidence": [
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/agent_servicer.py:289 — AGENT_STATUS_CARD_TOOL = 'agent_status_card'",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-channels/src/corlinman_channels/_status.py — status footer module (no asset reference found)",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/status_token.py — status token mint (no asset reference found)"
+          ],
+          "gaps": [
+            {
+              "title": "Status card does not include persona avatar / 立绘",
+              "detail": "The agent_status_card tool mints a shareable URL but the status card page does not render a persona avatar or 立绘 image. Searched status_token.py, _status.py, and the agent_status_card dispatch path — no reference to persona_asset_store or asset blobs found. The status card is text-only (session_key, model, turn info). No consumption path exists for assets in the status card surface.",
+              "severity": "low",
+              "fix_sketch": "To add persona avatar to the status card: (1) include the persona_id in the status token payload; (2) resolve the persona's first emoji/reference asset; (3) render it as an <img> in the public status card HTML. Requires a public blob-serve route (see gap in HTTP routes component above)."
+            }
+          ]
+        },
+        {
+          "name": "Assets consumed in web UI persona picker",
+          "status": "missing",
+          "wired_end_to_end": false,
+          "evidence": [
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_a/studio/personas.py:97-107 — GET /admin/personas returns ListOut with PersonaOut records",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_a/studio/_personas_lib.py — PersonaOut shape does not include asset URLs"
+          ],
+          "gaps": [
+            {
+              "title": "PersonaOut (list/get API response) carries no avatar/asset URL for web UI persona picker",
+              "detail": "GET /admin/personas returns ListOut{personas: [PersonaOut]}. PersonaOut contains id, display_name, short_summary, is_builtin, created_at_ms, updated_at_ms — no asset_count, no avatar_url, no thumbnail. A web UI persona picker has no way to show a preview image without making a separate GET /admin/personas/{id}/assets call per persona. The asset serve route exists at GET /admin/personas/{id}/assets/{asset_id} but there is no API sugar to surface 'this persona's avatar' in the list endpoint.",
+              "severity": "low",
+              "fix_sketch": "Add an optional `avatar_url` field to PersonaOut populated by resolving the first emoji or reference asset URL from the asset store (or None when no assets exist). This gives the web UI a single-round-trip path to render persona avatars in the picker."
+            }
+          ]
+        },
+        {
+          "name": "Grantley has no assets — code gap vs data gap analysis",
+          "status": "partial",
+          "wired_end_to_end": false,
+          "evidence": [
+            "VPS runtime fact (2026-06-04): grantley has 0 rows in persona_assets; vivian has 4 rows.",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/gateway/lifecycle/entrypoint.py:344-350 — PersonaAssetStore is opened at boot but no seeding of grantley assets occurs",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/persona/default_grantley.py — default_grantley.md does not reference any bundled asset file; no asset_seed function exists",
+            "/Users/cornna/project/corlinman/python/packages/corlinman-server/src/corlinman_server/persona/store.py — seed_builtin_personas only seeds the persona row, not assets"
+          ],
+          "gaps": [
+            {
+              "title": "No bundled asset seeder for grantley; consumption path (emoji block, image_with_refs) silently no-ops",
+              "detail": "Grantley having zero assets is purely a data gap, but the consequence is that BOTH consumption paths (compose_persona_emoji_block returns None → no emoji block in system prompt; dispatch_image_with_refs returns asset list [] → no reference conditioning) silently degrade to a no-op. There is no warning in logs when a persona-bound channel turn renders no emoji block because the persona has no assets. The operator has no feedback loop that grantley is 'empty'. Additionally there is no first-run wizard step that prompts the operator to upload at least one asset for the default persona.",
+              "severity": "medium",
+              "fix_sketch": "Two-part fix: (1) data: upload grantley emoji and reference assets via POST /admin/personas/grantley/assets or persona_attach_asset_from_url. (2) code: add a log.info('persona_inject.no_emoji_assets', persona_id=...) in compose_persona_emoji_block when asset_store is wired but no emoji exist, so operators can see the gap in structured logs. Optionally add an onboarding hint in the first-run wizard's B3 or B5 branch."
+            },
+            {
+              "title": "CRITICAL — image_with_refs passes wrong store (life-state store not persona body store) making 立绘 feature broken for grantley regardless of asset upload",
+              "detail": "Even if grantley reference assets were uploaded today, the image_with_refs tool call from a grantley-bound channel would still fail with 'persona_not_found' because agent_servicer.py:2946 passes the life-state PersonaStateStore (agent_state.sqlite) as persona_store to dispatch_image_with_refs. dispatch_image_with_refs calls persona_store.get('grantley') on the life-state store — grantley has no life-state row (VPS confirmed) — returns None → 'persona_not_found'. The 立绘 consumption path through image_with_refs is broken at the store-dispatch level independently of whether assets exist.",
+              "severity": "high",
+              "fix_sketch": "agent_servicer.py IMAGE_WITH_REFS_TOOL branch (line 2946): replace `persona_store=await self._get_persona_state_store()` with `persona_store=await self._get_persona_store()`. The _get_persona_store() method (line ~3802 by analogy) opens personas.sqlite and returns PersonaStore whose .get() returns a Persona row with display_name + system_prompt. This single-line change unblocks the entire 立绘 pipeline for all personas."
+            }
+          ]
+        }
+      ],
+      "summary": "The PersonaAssetStore (put/get/list/serve) is fully implemented and opened at boot (entrypoint.py:344-350). All four admin HTTP routes (GET/POST/DELETE /admin/personas/{id}/assets plus the blob-serve GET /admin/personas/{id}/assets/{asset_id}) are correctly wired to the store (studio/personas.py:229-365). The agent tools persona_list_assets and persona_attach_asset_from_url are in BUILTIN_TOOLS and have working dispatch paths (agent_servicer.py:2842-2852). Assets are consumed in channel system prompts via compose_persona_emoji_block (persona_inject.py:54-134), which appends a '## Available emoji' block with absolute paths when the persona owns at least one emoji asset; this block is correctly plumbed through all five channels (QQ/Telegram/Discord/Slack/Feishu) via channels_runtime/__init__.py:824-893. The qzone_daily scheduler builtin resolves the asset store and instructs the agent to call image_with_refs for QZone illustrations. There are two wiring gaps of note: (1) CRITICAL — dispatch_image_with_refs (the 立绘-to-image-generation pipeline) receives the wrong persona_store argument at agent_servicer.py:2946 — it receives the life-state PersonaStateStore (agent_state.sqlite) instead of the PersonaStore (personas.sqlite); since grantley has no life-state row the tool returns 'persona_not_found' for every image_with_refs call, making the entire 立绘 conditioning feature broken for grantley regardless of whether reference assets are uploaded. Fix: change line 2946 from _get_persona_state_store() to _get_persona_store(). (2) Grantley having zero assets is a data gap, not a code gap — the emoji block and image_with_refs both silently no-op when no assets exist, with no operator-visible warning. The public status card and web UI persona picker do NOT consume persona assets (no avatar or thumbnail surface exists in either), and there is no unauthenticated blob-serve route for external embedding — these are LOW severity missing features."
+    },
+    {
+      "dimension": "self-evolution loop (the \"hermes self-evolution\" port): darwin/nuwa/curator → signal → proposal → shadow/eval → apply → rollback, and whether it ever touches the PERSONA body",
+      "summary": "The self-evolution loop is a SKILL-quality loop, not a persona-evolution loop, and even the skill loop is only half-wired. The observe→propose half partially runs: the darwin curator scans SKILL.md quality on an auto-registered daily scheduler job (evolution.darwin_curate at 03:30 UTC, run_tool builtin) and writes skill.quality.issue signals to evolution.sqlite; admin can also fire it via the curator routes. But the propose half (EvolutionEngine.run_once that clusters signals into proposals) has NO server-side trigger — it only runs as a subprocess scheduler job that is a commented EXAMPLE in config.example.toml, never auto-registered, so on a default deploy no proposals are ever minted from darwin signals. The apply→shadow→rollback half is effectively dead: (1) the route's applier (corlinman_auto_rollback.EvolutionApplier) only flips proposal status rows + writes an audit/history row + intent-log; it explicitly does NOT mutate any SKILL.md, prompt, kb.sqlite, or personas.sqlite (its own docstring says \"the kb/filesystem mutators stay a follow-up\"); (2) the diff a darwin proposal carries is a __DARWIN_REPORT__ placeholder that parses as a unified diff but encodes no real change; (3) shadow gating cannot run — corlinman-shadow-tester has no console-script so the example cron would spawn_failed; (4) AutoRollbackMonitor has no runtime driver anywhere (the server's own `rollback run-once` CLI is a todo_stub; the only real entry is the corlinman-auto-rollback CLI which is again only an opt-in example cron, disabled by default); and (5) even if the monitor ran, watched_event_kinds() returns a non-empty whitelist ONLY for memory_op — darwin/skill_update/prompt_template/tool_policy/agent_card all get an empty tuple and are silently skipped, so no skill-quality proposal could ever auto-rollback. The ONE path that actually mutates files from a live channel is the user-correction → background_review LLM fork, which writes SKILL.md/MEMORY.md/USER.md (never persona body), and the curator /run route, which writes only lifecycle STATE (active/stale/archived) + pin flags into SKILL.md frontmatter (not content). Signal emitters: EvolutionObserver (hook-bus adapter) + darwin_curator + curator + user-correction listener. Proposal minter: EvolutionEngine (untriggered). Applier driver: only the manual admin /apply route. PERSONA-EVOLUTION VISION STATUS: entirely unmigrated/dead — nothing in darwin, the engine handlers, the appliers, or nuwa targets personas.sqlite system_prompt or life/seeds; nuwa exists only as a bundled SKILL.md with no in-process tool path. Note: the baseline's claim that the route applier uses metrics_baseline={} is STALE — that empty-baseline applier is gateway/evolution/applier.py, which the route does NOT use; the route uses corlinman_auto_rollback.EvolutionApplier which captures a real (but for non-memory_op kinds, empty-counts) baseline. The net effect (dead rollback chain) is the same.",
+      "components": [
+        {
+          "name": "EvolutionObserver (signal emitter from hook bus)",
+          "status": "partial",
+          "wired_end_to_end": false,
+          "evidence": [
+            "python/packages/corlinman-server/src/corlinman_server/gateway/evolution/observer.py:91",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/evolution/observer.py:243",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/lifecycle/entrypoint.py:1050-1082",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/evolution/__init__.py:1-104"
+          ],
+          "gaps": [
+            {
+              "title": "EvolutionObserver is never instantiated or .start()-ed in the running gateway",
+              "detail": "The lifespan iterates a sibling-bootstrap seam (entrypoint.py:1050-1082) calling each module's bootstrap(state). It lists corlinman_server.gateway.evolution as a sibling 'evolution observer', but that package's __init__.py (gateway/evolution/__init__.py) defines NO bootstrap function — it only re-exports symbols. A grep for `def bootstrap` under gateway/evolution returns nothing, and `EvolutionObserver(` is never constructed anywhere outside tests. So no tool.call.failed/timeout/approval.rejected/subagent.* hook events are ever adapted into evolution_signals at runtime. The only signals that actually get written come from the darwin curator and the curator route (skill.quality.issue / curator EVENT_* rows) and the user-correction listener.",
+              "severity": "high",
+              "fix_sketch": "Add `def bootstrap(state)` to gateway/evolution/__init__.py that constructs EvolutionObserver(bus=app.state.hook_bus, repo=SignalsRepo(evolution_store.conn)), calls .start(), and returns the background tasks; ensure a shared HookBus is published before the evolution sibling boots (today the bus is built later at entrypoint.py:1158-1166 only for the user-correction listener)."
+            }
+          ]
+        },
+        {
+          "name": "Darwin curator (signal producer: SKILL.md rubric scan)",
+          "status": "complete",
+          "wired_end_to_end": true,
+          "evidence": [
+            "python/packages/corlinman-evolution-engine/src/corlinman_evolution_engine/darwin_curator.py:130",
+            "python/packages/corlinman-server/src/corlinman_server/scheduler/builtins/evolution_darwin_curate.py:88",
+            "python/packages/corlinman-server/src/corlinman_server/scheduler/builtins/evolution_darwin_curate.py:162",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/lifecycle/scheduler_integration.py:159",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/lifecycle/entrypoint.py:527"
+          ],
+          "gaps": [
+            {
+              "title": "Curator only PRODUCES signals; the consumer (engine) is not auto-run, so signals dead-end",
+              "detail": "evolution.darwin_curate IS auto-registered as a default scheduler job (scheduler_integration.py:159, cron '0 30 3 * * * *') and the builtin opens evolution.sqlite and writes skill.quality.issue signals (darwin_curator.py:220 / _emit_signals_for_skill). The builtin's own docstring (evolution_darwin_curate.py:5-8) asserts 'the engine itself already auto-discovers ... on its next run-once and ... mints proposals' — but the engine's run-once is NOT auto-scheduled (see EvolutionEngine component). So the daily darwin scan accumulates signals that nothing clusters into proposals.",
+              "severity": "high",
+              "fix_sketch": "Either auto-register a default evolution.run_once scheduler job (mirroring _register_default_darwin_curate_job) or add an in-process engine run_once tick; otherwise darwin signals never become operator-queue proposals."
+            }
+          ]
+        },
+        {
+          "name": "EvolutionEngine.run_once (signal→proposal minter)",
+          "status": "broken",
+          "wired_end_to_end": false,
+          "evidence": [
+            "python/packages/corlinman-evolution-engine/src/corlinman_evolution_engine/engine.py:227",
+            "python/packages/corlinman-evolution-engine/src/corlinman_evolution_engine/engine.py:80-95",
+            "python/packages/corlinman-evolution-engine/src/corlinman_evolution_engine/cli.py:44",
+            "docs/config.example.toml:355-358"
+          ],
+          "gaps": [
+            {
+              "title": "Engine run-once has no server-side trigger; only an opt-in EXAMPLE subprocess cron",
+              "detail": "A grep of corlinman-server for EvolutionEngine / corlinman-evolution-engine subprocess registration returns nothing (only docstrings). The engine is invoked solely via the `corlinman-evolution-engine run-once` console-script (cli.py:44/290), which is documented in docs/config.example.toml:355-358 as an EXAMPLE [[scheduler.jobs]] the operator must copy into their real corlinman.toml. Unlike system.update_check and evolution.darwin_curate, it is NOT in scheduler_integration.py's auto-registered defaults. On a default deploy the engine never runs, so no proposals are minted from any signal (memory_op, darwin, etc.).",
+              "severity": "high",
+              "fix_sketch": "Add an auto-registered default subprocess (or in-process) job for `corlinman-evolution-engine run-once` in scheduler_integration.py, gated by an [evolution.engine].enabled flag, so the observe→propose half actually closes on a stock install."
+            },
+            {
+              "title": "Darwin proposal diff is a non-actionable placeholder",
+              "detail": "DarwinHandler.propose emits proposals with diff=_build_diff_placeholder(skill_name) (engine reference darwin.py:717 / _build_diff_placeholder at darwin.py:564-575) which is a '@@ __DARWIN_REPORT__,0 +__DARWIN_REPORT__,0 @@' marker that 'parses as a unified diff so the existing applier doesnt choke' but encodes no real edit. The actionable content lives only in reasoning. Even if such a proposal were approved+applied, the apply path would change no file content.",
+              "severity": "medium",
+              "fix_sketch": "Generate a real unified diff at apply time (LLM-driven, noted as a TODO in darwin.py header) AND give EvolutionApplier a darwin KindHandler that writes the SKILL.md; both are currently absent."
+            }
+          ]
+        },
+        {
+          "name": "EvolutionApplier (apply route) — does it mutate skills/prompts/persona?",
+          "status": "partial",
+          "wired_end_to_end": true,
+          "evidence": [
+            "python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_b/infra/evolution.py:502-559",
+            "python/packages/corlinman-auto-rollback/src/corlinman_auto_rollback/applier.py:176",
+            "python/packages/corlinman-auto-rollback/src/corlinman_auto_rollback/applier.py:284-324",
+            "python/packages/corlinman-auto-rollback/src/corlinman_auto_rollback/applier.py:6-11",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/evolution/applier.py:340-349"
+          ],
+          "gaps": [
+            {
+              "title": "Apply is bookkeeping-only: NO skill/prompt/kb/persona file is ever mutated",
+              "detail": "POST /admin/evolution/{id}/apply (evolution.py:502) constructs corlinman_auto_rollback.EvolutionApplier (applier.py:176) and calls .apply(). That path opens an intent_log row, captures a metrics baseline, writes an evolution_history audit row (before_sha/after_sha over the inverse_diff and the proposal.diff), and flips status to applied. It performs NO content mutation — the package docstring states 'this port is store-backed: every apply/rollback is a transition against evolution.sqlite ... the kb/filesystem mutators stay a follow-up'. So 'applied' means only a status flip; the targeted SKILL.md / prompt / personas.sqlite is untouched. (The OTHER applier at gateway/evolution/applier.py uses a KindHandler map but is never given handlers and is not the one the route imports.)",
+              "severity": "high",
+              "fix_sketch": "Wire per-kind KindHandlers that resolve the profile skills dir / kb handle and perform real file mutations (skill_update→write_skill_md, etc.), threaded onto AdminState. For persona, a separate persona_evolution path through PersonaStore.update() would be needed; high-risk, needs a product decision."
+            },
+            {
+              "title": "Baseline doc claim is stale (metrics_baseline={} is the wrong applier)",
+              "detail": "GAP_ANALYSIS_HERMES_OPENCLAW.md:86-88 and the audit baseline assert the route applier writes metrics_baseline={} (applier.py:279/340). That empty baseline belongs to gateway/evolution/applier.py:344, which the route does NOT use. The route's corlinman_auto_rollback.EvolutionApplier captures a real snapshot via _capture_baseline (applier.py:326-369). For non-memory_op kinds that snapshot has empty COUNTS but is still a valid monitor-decodable envelope (not bare {}). The downstream conclusion (rollback never fires for these kinds) is correct, but the stated cause is wrong.",
+              "severity": "low",
+              "fix_sketch": "Update the docs to reflect the two distinct applier classes; the dead-rollback root cause is the empty watched_event_kinds whitelist + missing monitor driver, not metrics_baseline={}."
+            }
+          ]
+        },
+        {
+          "name": "Shadow / eval stage",
+          "status": "missing",
+          "wired_end_to_end": false,
+          "evidence": [
+            "docs/evolution-loop.md:83-104",
+            "docs/config.example.toml:365-368",
+            "python/packages/corlinman-shadow-tester/pyproject.toml:2"
+          ],
+          "gaps": [
+            {
+              "title": "ShadowTester has no console-script and is never scheduled; no proposal ever reaches shadow_done",
+              "detail": "corlinman-shadow-tester/pyproject.toml has NO [project.scripts] section (confirmed by grep), so the docs/config.example.toml:365-368 `command = corlinman-shadow-tester` cron would fail with spawn_failed even if an operator copied it in. docs/evolution-loop.md:83-94 carries a 'Reality check: Shadow gating is NOT wired' banner. The engine never imports/calls ShadowRunner; no proposal is ever flipped to shadow_running/shadow_done at runtime. [evolution.shadow].enabled defaults false.",
+              "severity": "medium",
+              "fix_sketch": "Add a [project.scripts] console entrypoint to corlinman-shadow-tester (e.g. corlinman-shadow-tester = corlinman_shadow_tester.cli:main) and an in-process or auto-registered scheduler job, then route risk>=medium proposals through it; today the design is documented but unimplemented at the wiring level."
+            }
+          ]
+        },
+        {
+          "name": "AutoRollbackMonitor (apply→monitor→rollback)",
+          "status": "broken",
+          "wired_end_to_end": false,
+          "evidence": [
+            "python/packages/corlinman-auto-rollback/src/corlinman_auto_rollback/monitor.py:91",
+            "python/packages/corlinman-auto-rollback/src/corlinman_auto_rollback/metrics.py:146-157",
+            "python/packages/corlinman-server/src/corlinman_server/cli/main.py:197-199",
+            "python/packages/corlinman-auto-rollback/src/corlinman_auto_rollback/cli.py:248-262",
+            "docs/config.example.toml:376-379"
+          ],
+          "gaps": [
+            {
+              "title": "No runtime driver: monitor never runs in the gateway",
+              "detail": "AutoRollbackMonitor.run_once is only invoked by the corlinman-auto-rollback CLI (cli.py:287), which (a) hard-refuses unless [evolution.auto_rollback].enabled=true (cli.py:248) and (b) requires an --applier import-path (cli.py:256). That CLI is only an opt-in EXAMPLE cron (config.example.toml:376-379), not an auto-registered job. The server's own `corlinman rollback run-once` is a literal stub: cli/main.py:199 `todo_stub('rollback run-once')`. No lifespan task / scheduler builtin references the monitor. So the apply→monitor→rollback chain has no live trigger.",
+              "severity": "high",
+              "fix_sketch": "Implement the `rollback run-once` server CLI (cli/main.py:197) or add an auto-registered in-process AutoRollbackMonitor tick (build monitor from app.state._evolution_store + the route's EvolutionApplier as the Applier) gated by [evolution.auto_rollback].enabled."
+            },
+            {
+              "title": "Even if driven, only memory_op can auto-rollback",
+              "detail": "watched_event_kinds (metrics.py:146-157) returns a non-empty whitelist ONLY for EvolutionKind.MEMORY_OP ('tool.call.failed','search.recall.dropped'); every other kind (darwin, skill_update, prompt_template, tool_policy, agent_card) returns () and monitor.run_once skips it (monitor.py:144-151). So no SKILL-quality or prompt proposal could be metric-monitored or reverted regardless of driver.",
+              "severity": "medium",
+              "fix_sketch": "Extend watched_event_kinds with regression signal contracts for the other kinds (e.g. skill_update→skill.quality.issue trend) before relying on auto-rollback for anything beyond memory_op."
+            }
+          ]
+        },
+        {
+          "name": "Lifecycle curator (active/stale/archived transitions + admin /run)",
+          "status": "complete",
+          "wired_end_to_end": true,
+          "evidence": [
+            "python/packages/corlinman-server/src/corlinman_server/gateway/evolution/curator.py:117",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/evolution/_curator_logic.py:211-259",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_b/infra/curator.py:169-182",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_b/infra/_curator_lib.py:352-398",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_b/__init__.py:142"
+          ],
+          "gaps": [
+            {
+              "title": "Curator mutates only SKILL.md lifecycle STATE + pin, never content or persona",
+              "detail": "POST /admin/curator/{slug}/run (curator.py route:169) → _run_curator_now (dry_run=False) → maybe_run_curator → apply_lifecycle_transitions (_curator_logic.py:211) which sets skill.state and calls write_skill_md (_curator_logic.py:244-259). This is a real on-disk mutation but only flips active↔stale↔archived frontmatter (and the pin route flips pinned). It edits no skill body, no prompt, and nothing in personas.sqlite. Also gated to origin=='agent-created' skills (curator.py:238, _curator_logic.py:138), so bundled grantley-related skills are skipped. curator_state lives in evolution.sqlite via CuratorStateRepo (entrypoint.py:831).",
+              "severity": "low",
+              "fix_sketch": "By design — note that this is lifecycle management, not the content-evolution the hermes vision implies; no fix needed unless content mutation is desired."
+            }
+          ]
+        },
+        {
+          "name": "User-correction → background_review (the only live content-mutating path)",
+          "status": "complete",
+          "wired_end_to_end": true,
+          "evidence": [
+            "python/packages/corlinman-server/src/corlinman_server/gateway/lifecycle/entrypoint.py:1156-1230",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/evolution/applier_user_correction.py:135",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/evolution/background_review.py:170",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/evolution/background_review.py:24-34",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/evolution/signals/user_correction.py"
+          ],
+          "gaps": [
+            {
+              "title": "Writes SKILL.md / MEMORY.md / USER.md only — never the persona body; and provider resolver is stubbed",
+              "detail": "register_user_correction_listener is wired in the lifespan (entrypoint.py:1219) and on a corrective chat phrase UserCorrectionApplier.apply (applier_user_correction.py:135) calls spawn_background_review (background_review.py:170), an LLM fork whose whitelisted tools write only MEMORY.md/USER.md (kind='memory') or create/patch SKILL.md (kind='skill') via corlinman_skills_registry safe-write (background_review.py:24-34). It cannot touch personas.sqlite system_prompt. Moreover the provider resolver is stubbed to (None, '') in the lifespan (_resolve_provider, entrypoint.py:1173-1182), so the applier short-circuits on resolver-failure — meaning even this path produces no LLM call / no write on a stock deploy until a real provider lookup is wired.",
+              "severity": "medium",
+              "fix_sketch": "Wire _resolve_provider (entrypoint.py:1173) to the real provider registry so background_review can actually fire; even then it targets skills/memory, not persona body, so it does not satisfy persona self-evolution."
+            }
+          ]
+        },
+        {
+          "name": "nuwa-skill (autonomous skill creation) + persona-body evolution target",
+          "status": "missing",
+          "wired_end_to_end": false,
+          "evidence": [
+            "python/packages/corlinman-evolution-engine/src/corlinman_evolution_engine/engine.py:80-95",
+            "python/packages/corlinman-evolution-engine/src/corlinman_evolution_engine/darwin.py:1-19",
+            "docs/design/auto-evolution.md:353-361"
+          ],
+          "gaps": [
+            {
+              "title": "Persona body (personas.sqlite system_prompt / life / seeds) is NOT a target of any evolution path",
+              "detail": "DEFAULT_HANDLERS (engine.py:80) covers memory_op, tag_rebalance, skill_update, darwin, prompt_template, tool_policy, agent_card — none target personas.sqlite. Darwin scans SKILL.md only (darwin.py header). prompt_template targets engine/config TOML prompts, not persona bodies. The auto-evolution design explicitly lists 'No personality/emotion-state mutation. That is a separate subsystem' as an anti-goal (docs/design/auto-evolution.md:358-359). So the 'self-evolving persona character' from the hermes vision is unmigrated/dead at every layer.",
+              "severity": "medium",
+              "fix_sketch": "Add a persona.quality_review signal kind + a curator/handler that scores persona body against a rubric and proposes PersonaStore.update() patches, plus an apply KindHandler that mutates personas.sqlite; treat as high-risk behind an explicit opt-in flag."
+            },
+            {
+              "title": "nuwa exists only as a bundled SKILL.md — no in-process tool path for autonomous skill/persona creation",
+              "detail": "There is no nuwa handler in the evolution engine and no in-process tool that lets the agent autonomously create new skills or mutate the persona body; nuwa is just a SKILL.md prompt the model can follow with the ordinary skill-authoring tools. (Confirmed: no nuwa module under corlinman-evolution-engine; engine handler registry has no nuwa kind.) The closest live autonomous writer is background_review (skill/memory), reached only via user-correction, with a stubbed provider.",
+              "severity": "medium",
+              "fix_sketch": "If autonomous skill creation is desired, add a new_skill KindHandler (the design's risk='high' kind) with shadow+approval gating, or surface nuwa's create path as a gated agent tool; today it is documentation-only."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "dimension": "persona <-> channel binding + system-prompt injection",
+      "summary": "The persona->channel binding and system_prompt injection path is genuinely wired end-to-end for 5 of the project's channels (QQ/OneBot, Telegram, Discord, Slack, Feishu): an admin PUT to /admin/channels/{channel}/humanlike validates the persona exists, persists (humanlike_enabled, persona_id) into the channels config TOML, and mutates the same in-memory dict that each channel's live humanlike_resolver re-reads, so a toggle takes effect on the next inbound message without restart. On each inbound turn the channel handler calls inject_persona_if_enabled, which prepends the persona's system_prompt (plus an optional emoji block) as a leading role=\"system\" message and stamps request.persona_id; that flows through ChatService -> _build_chat_start (chat_service.py:430) -> ChatStart.persona_id -> agent _to_agent_start extra[\"persona_id\"] -> _context_metadata md[\"agent_id\"]. Two material gaps: (1) the two \"official\" channels -- QQ Official and WeChat Official -- are deliberately excluded from persona binding entirely (no humanlike fields in their param classes, no persona_store passed at build time), so 2 of the 7 channels are NOT persona-aware; (2) the web /v1/chat/completions path performs NO persona injection at all -- _build_internal_request (chat.py:192-215) never sets persona_id and there is no humanlike layer, so 格兰 is never \"alive\" on web /chat. Notably, the baseline's \"KNOWN CAVEAT\" that _context_metadata does not stamp agent_id is OUTDATED: the current code (agent_servicer.py:4321-4323) explicitly falls back from extra[\"agent_id\"] to extra[\"persona_id\"], so the {{persona.*}} resolver IS keyed by persona_id for channel turns -- the real placeholder failure is the missing seeded agent_persona_state row (a separate dimension), not the metadata keying.",
+      "components": [
+        {
+          "name": "Admin humanlike binding route (PUT/GET /admin/channels/{channel}/humanlike) -- persist + validate",
+          "status": "complete",
+          "wired_end_to_end": true,
+          "evidence": [
+            "python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_a/studio/personas.py:385",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_a/studio/personas.py:405",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_a/studio/personas.py:427",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_a/studio/_personas_lib.py:223",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/lifecycle/app_factory.py:625"
+          ],
+          "gaps": [
+            {
+              "title": "Baseline claim of 'no persona_id existence validation' is wrong -- validation IS present",
+              "detail": "The baseline Component 2 gap asserts the PUT handler silently accepts non-existent persona_id (LOW). The current code at personas.py:405-414 looks up store.get(body.persona_id) and returns 404 persona_not_found if absent, AND at :396-403 enforces persona_id_required when enabled=true. So this gap is already closed in the code; the audited reality is stronger than the baseline states.",
+              "severity": "low",
+              "fix_sketch": "No fix needed for validation. One residual: admin_a_state is constructed with persona_store=None at app_factory.py:614 and the store is wired later; if the PUT route's _persona_store(state) resolves None at request time, validation would degrade -- confirm the lifespan sets persona_store before serving traffic."
+            }
+          ]
+        },
+        {
+          "name": "Channel-side injection (inject_persona_if_enabled) + live resolver",
+          "status": "complete",
+          "wired_end_to_end": true,
+          "evidence": [
+            "python/packages/corlinman-channels/src/corlinman_channels/persona_inject.py:137",
+            "python/packages/corlinman-channels/src/corlinman_channels/persona_inject.py:190",
+            "python/packages/corlinman-channels/src/corlinman_channels/persona_inject.py:216",
+            "python/packages/corlinman-channels/src/corlinman_channels/persona_inject.py:218",
+            "python/packages/corlinman-channels/src/corlinman_channels/service.py:1184",
+            "python/packages/corlinman-channels/src/corlinman_channels/service.py:1435",
+            "python/packages/corlinman-channels/src/corlinman_channels/service.py:2594",
+            "python/packages/corlinman-channels/src/corlinman_channels/service.py:3411",
+            "python/packages/corlinman-channels/src/corlinman_channels/service.py:3710",
+            "python/packages/corlinman-channels/src/corlinman_channels/service.py:4001",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/channels_runtime/__init__.py:117",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/channels_runtime/__init__.py:187"
+          ],
+          "gaps": [
+            {
+              "title": "Injection no-ops silently when persona body is empty or store missing (graceful, not a defect)",
+              "detail": "inject_persona_if_enabled returns without touching the request when enabled is false, persona_id is empty, persona_store is None, the persona row is missing, or system_prompt is blank (persona_inject.py:190-203). This is intentional graceful degradation, but it also means a stale/empty grantley body would silently disable in-character behavior with no operator signal.",
+              "severity": "low",
+              "fix_sketch": "Add a one-time WARN log in inject_persona_if_enabled when humanlike is enabled with a persona_id but the resolved body is empty, so operators see why the bot is not in-character."
+            }
+          ]
+        },
+        {
+          "name": "persona_id transport: channel request -> ChatService -> ChatStart -> agent extra -> placeholder agent_id",
+          "status": "complete",
+          "wired_end_to_end": true,
+          "evidence": [
+            "python/packages/corlinman-channels/src/corlinman_channels/service.py:1211",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/services/chat_service.py:401",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/services/chat_service.py:430",
+            "python/packages/corlinman-server/src/corlinman_server/agent_servicer.py:4530",
+            "python/packages/corlinman-server/src/corlinman_server/agent_servicer.py:4315",
+            "python/packages/corlinman-server/src/corlinman_server/agent_servicer.py:4321"
+          ],
+          "gaps": [
+            {
+              "title": "Baseline 'KNOWN CAVEAT' (that _context_metadata does NOT stamp agent_id) is OUTDATED",
+              "detail": "The audit input states life/mood placeholders likely do not resolve because _context_metadata does not stamp agent_id. Current code disproves this: _context_metadata (agent_servicer.py:4321-4325) reads extra['agent_id'], and when absent FALLS BACK to extra['persona_id'] (set at 4530 from pb_start.persona_id) and stamps md['agent_id']. So for channel turns where injection set request.persona_id, the {{persona.*}} resolver IS keyed by the bound persona_id. The placeholders resolving to empty is therefore caused by the missing agent_persona_state row for that persona_id (a separate state-seeding dimension), NOT by metadata keying.",
+              "severity": "medium",
+              "fix_sketch": "No code change for keying. The downstream emptiness is fixed by seeding an agent_persona_state row keyed (tenant_id, agent_id=persona_id) at boot (separate component). For multi-persona deployments where agent_id != persona_id, consider preferring persona_id over agent_id when a humanlike-bound channel turn is detected."
+            }
+          ]
+        },
+        {
+          "name": "QQ Official + WeChat Official channels -- persona binding NOT supported",
+          "status": "missing",
+          "wired_end_to_end": false,
+          "evidence": [
+            "python/packages/corlinman-channels/src/corlinman_channels/service.py:4114",
+            "python/packages/corlinman-channels/src/corlinman_channels/service.py:4559",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/channels_runtime/__init__.py:666",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/channels_runtime/__init__.py:731",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_a/studio/_personas_lib.py:224"
+          ],
+          "gaps": [
+            {
+              "title": "2 of 7 channels (qq_official, wechat_official) cannot bind a persona at all",
+              "detail": "QqOfficialChannelParams (service.py:4114) and WeChatOfficialChannelParams (service.py:4559) carry only config/model/chat_service[/register_route] -- no humanlike_enabled/persona_id/persona_store/asset_store fields. Their handlers (handle_one_qq_official ~4382, handle_one_wechat_official ~4723) contain zero persona/inject references. Their param builders (_build_qq_official_params at channels_runtime:666, _build_wechat_official_params at :731) are called WITHOUT persona_store/asset_store. SUPPORTED_HUMANLIKE_CHANNELS = {qq, telegram, discord, slack, feishu} (_personas_lib.py:224) excludes them, and _validate_channel_name 404s any attempt to bind. The exclusion is documented as intentional in _personas_lib.py (WeChat is webhook-only; QQ Official does its own per-platform formatting). So 格兰 is silently NOT in-character on these two channels even though they relay to the same agent.",
+              "severity": "medium",
+              "fix_sketch": "Add humanlike_enabled/persona_id/persona_store/asset_store fields to QqOfficialChannelParams and WeChatOfficialChannelParams, call _inject_persona_if_enabled in both handlers before chat_service.run, pass persona_store/asset_store + _humanlike_resolver in _build_qq_official_params/_build_wechat_official_params, and add the two slugs to SUPPORTED_HUMANLIKE_CHANNELS."
+            }
+          ]
+        },
+        {
+          "name": "Web /v1/chat/completions -- persona injection ABSENT",
+          "status": "missing",
+          "wired_end_to_end": false,
+          "evidence": [
+            "python/packages/corlinman-server/src/corlinman_server/gateway/routes/chat.py:192",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/routes/chat.py:205",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/routes/chat.py:420",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/services/chat_service.py:430"
+          ],
+          "gaps": [
+            {
+              "title": "Web /chat never selects or injects a persona; persona_id is always empty on the web path",
+              "detail": "_build_internal_request (chat.py:192-215) constructs InternalChatRequest with model/messages/session_key/stream/max_tokens/temperature only -- it never sets persona_id and there is no humanlike toggle / persona_store lookup on the HTTP route. The only persona-adjacent preprocessing is rewrite_trailing_user_message (slash-command prelude swap), not system_prompt injection. Consequently _build_chat_start reads persona_id as '' (chat_service.py:430), no role=system persona message is prepended, and {{persona.*}} cannot resolve. There is no per-conversation persona binding configurable for web /chat. 格兰 is therefore NOT alive on the web chat surface unless the caller manually includes the persona body in messages.",
+              "severity": "high",
+              "fix_sketch": "Introduce a web persona-binding source (e.g. a [web.humanlike] config block or a body/header persona_id) and, in _build_internal_request or handle_chat (chat.py:420), call inject_persona_if_enabled-equivalent against AppState.persona_store + asset_store to prepend the persona system message and set internal_req.persona_id before service.run. Pydantic InternalChatRequest already has a persona_id field, so the proto/agent path will carry it once populated."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "dimension": "persona admin/web UI surface",
+      "summary": "The persona system has a real, functional web UI for the core persona CRUD and channel humanlike toggle at /admin/persona, plus a dedicated QZone daily job manager at /admin/scheduler/qzone. Both pages call real backend APIs. However, the persona life-state layer (mood, fatigue, diary, life seeds, recent topics) is entirely API-less and UI-less — there is no admin route, no React page, and no i18n key for viewing or editing the agent_persona_state rows. The /admin/scheduler/qzone page exists as a Next.js route under (admin)/scheduler/qzone/page.tsx but is NOT linked in the sidebar navigation (sidebar.tsx only lists /scheduler, not /scheduler/qzone), making it effectively unreachable to a non-developer unless they know the URL. The system is therefore partially operable by a non-developer: persona CRUD and channel binding are fully UI-accessible; life-state, mood/fatigue, diary, life seeds, and event-seed authoring are API-only or model-tool-only with no web surface whatsoever.",
+      "components": [
+        {
+          "name": "Persona list / create / edit (PersonaPage)",
+          "status": "complete",
+          "wired_end_to_end": true,
+          "evidence": [
+            "ui/app/(admin)/persona/page.tsx:101 — PersonaPage default export, full CRUD in one page",
+            "ui/app/(admin)/persona/page.tsx:105-108 — useQuery fetchPersonas() → GET /admin/personas",
+            "ui/app/(admin)/persona/page.tsx:162-193 — saveMutation calls createPersona(POST) or updatePersona(PATCH)",
+            "ui/app/(admin)/persona/page.tsx:130-158 — deleteMutation calls deletePersona(DELETE) with builtin guard",
+            "ui/lib/api/personas.ts:141-201 — fetchPersonas, createPersona, updatePersona, deletePersona",
+            "ui/components/layout/sidebar.tsx:108 — { href: '/persona', labelKey: 'nav.persona', icon: Sparkles } in OPERATOR_ITEMS",
+            "ui/lib/locales/en.ts:431 — nav.persona: 'Persona' (sidebar label)",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_a/studio/personas.py:102-221 — GET /admin/personas, GET /admin/personas/{id}, POST, PATCH, DELETE endpoints"
+          ],
+          "gaps": [
+            {
+              "title": "Reset-to-default button is permanently disabled",
+              "detail": "PersonaEditorDialog renders a 'Reset to default' button for built-in personas (page.tsx:882-894) but it is always disabled=true. The button comment says 'the backend has no preview/reset endpoint yet'. An operator who accidentally overwrites the grantley body has no UI recovery path — they must use the API or delete+re-seed manually.",
+              "severity": "medium",
+              "fix_sketch": "Add POST /admin/personas/{id}/reset-to-default to personas.py that re-seeds the builtin body from default_grantley.md; wire the button to call it."
+            },
+            {
+              "title": "Preview/test-box is permanently disabled",
+              "detail": "PersonaEditorDialog renders a disabled 'Test' input/button (page.tsx:838-863) with tooltip 'Use the real QQ bot to test'. No preview endpoint exists. Non-developers cannot validate a persona body change without deploying to a live channel.",
+              "severity": "low",
+              "fix_sketch": "Add GET /admin/personas/{id}/preview?message=... that runs one agent turn with the persona body and returns the model response. Wire the test-box to that endpoint."
+            }
+          ]
+        },
+        {
+          "name": "Channel humanlike toggle + persona binding (HumanlikeCard)",
+          "status": "complete",
+          "wired_end_to_end": true,
+          "evidence": [
+            "ui/app/(admin)/persona/page.tsx:329-497 — HumanlikeCard component with channel selector (qq/telegram/discord/slack/feishu), Switch, PersonaSelect, Save",
+            "ui/app/(admin)/persona/page.tsx:337-341 — channel state + useQuery(fetchHumanlike(channel))",
+            "ui/app/(admin)/persona/page.tsx:358-374 — mutation calls setHumanlike(channel, {enabled, persona_id})",
+            "ui/lib/api/personas.ts:105-113 — SUPPORTED_HUMANLIKE_CHANNELS = ['qq','telegram','discord','slack','feishu']",
+            "ui/lib/api/personas.ts:233-253 — fetchHumanlike / setHumanlike → GET/PUT /admin/channels/{channel}/humanlike",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_a/studio/personas.py:369-445 — GET + PUT /admin/channels/{channel}/humanlike"
+          ],
+          "gaps": [
+            {
+              "title": "No per-channel status indicator showing whether the channel is actually running",
+              "detail": "The UI shows saved humanlike state but has no way to verify the channel is actually running and will pick up the binding. An operator can set enabled=true and persona_id=grantley but if the QQ channel is not started the setting is silently inert.",
+              "severity": "low",
+              "fix_sketch": "Show a channel health indicator (from /admin/channels/{channel}/status or similar) alongside the humanlike card so the operator knows whether the toggle will take effect."
+            }
+          ]
+        },
+        {
+          "name": "Asset upload (emoji + reference 立绘) — PersonaAssetsPanel",
+          "status": "complete",
+          "wired_end_to_end": true,
+          "evidence": [
+            "ui/app/(admin)/persona/page.tsx:869-878 — PersonaAssetsPanel rendered inside PersonaEditorDialog when editing an existing persona",
+            "ui/app/(admin)/persona/page.tsx:995-1155 — PersonaAssetsPanel: listAssets query + beginUpload + handleDelete pipeline",
+            "ui/app/(admin)/persona/page.tsx:1112-1155 — AssetSection with drag-and-drop drop zone, file picker, optimistic pending cells",
+            "ui/lib/api/personas.ts:399-488 — listAssets, uploadAsset (multipart FormData), deleteAsset",
+            "ui/lib/api/personas.ts:288-308 — ASSET_ALLOWED_MIMES, ASSET_MAX_BYTES, ASSET_LABEL_RE, PERSONA_TOTAL_BYTES_CAP constants",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_a/studio/personas.py:228-365 — GET/POST/GET(blob)/DELETE /admin/personas/{id}/assets"
+          ],
+          "gaps": [
+            {
+              "title": "Asset label rename is read-only (delete-then-reupload workaround required)",
+              "detail": "AssetCell.tsx renders the label Input as readOnly (page.tsx:1406) with tooltip 'No rename endpoint yet'. An operator who uploads an asset with the wrong label must delete it and re-upload.",
+              "severity": "low",
+              "fix_sketch": "Add PATCH /admin/personas/{id}/assets/{aid} accepting {label} to asset_store.py; update AssetCell to be editable."
+            },
+            {
+              "title": "Asset panel only appears in the editor dialog, not on a dedicated page",
+              "detail": "Assets are only reachable via the Edit button on a persona row — they're embedded inside PersonaEditorDialog. There is no standalone /admin/persona/{id}/assets page or tab. For personas with many assets (e.g. vivian's 4 images) this means always opening the full system-prompt editor just to manage assets.",
+              "severity": "low",
+              "fix_sketch": "No code change required if asset count stays small. Alternatively add a separate Assets tab within the persona detail page."
+            }
+          ]
+        },
+        {
+          "name": "QZone daily job enable/manage (/admin/scheduler/qzone)",
+          "status": "complete",
+          "wired_end_to_end": false,
+          "evidence": [
+            "ui/app/(admin)/scheduler/qzone/page.tsx:98 — QzoneSchedulerPage: create form + jobs table + Enable Grantley button",
+            "ui/app/(admin)/scheduler/qzone/page.tsx:154-173 — enableGrantleyMutation calls enableQzoneTemplate('grantley')",
+            "ui/app/(admin)/scheduler/qzone/page.tsx:176-215 — triggerMutation calls triggerSchedulerJobTyped(name)",
+            "ui/lib/api/scheduler.ts:121-139 — enableQzoneTemplate POST /admin/scheduler/qzone/templates/{id}/enable",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_b/infra/scheduler.py:247-314 — enable_qzone_template + trigger_job endpoints",
+            "ui/components/layout/sidebar.tsx:93-187 — sidebar OPERATOR_ITEMS and DEV_ITEMS: /scheduler listed at line 156 but /scheduler/qzone NOT present in either list"
+          ],
+          "gaps": [
+            {
+              "title": "HIGH — /admin/scheduler/qzone page is not linked in sidebar navigation",
+              "detail": "sidebar.tsx OPERATOR_ITEMS (line 93-158) and DEV_ITEMS (line 164-187) both list /scheduler but never /scheduler/qzone. The page exists as a Next.js route at ui/app/(admin)/scheduler/qzone/page.tsx but is unreachable from any sidebar item, any nav link, or the main scheduler page (/admin/scheduler/page.tsx has zero references to qzone). A non-developer cannot find this page without knowing the URL.",
+              "severity": "high",
+              "fix_sketch": "Add { href: '/scheduler/qzone', labelKey: 'nav.schedulerQzone', icon: Sparkles } to OPERATOR_ITEMS in sidebar.tsx (after /scheduler entry), add the i18n key to en.ts and zh-CN.ts. Alternatively link from the main /scheduler page header."
+            },
+            {
+              "title": "schedulerQzone i18n keys use inline defaultValue only — missing from locale files",
+              "detail": "All t() calls in qzone/page.tsx use the defaultValue fallback pattern (e.g. t('schedulerQzone.created', {defaultValue: '...'})) but the key 'schedulerQzone' does not appear in ui/lib/locales/en.ts or zh-CN.ts. This means zh-CN users always see the English fallback string.",
+              "severity": "low",
+              "fix_sketch": "Add the schedulerQzone key block to ui/lib/locales/en.ts and zh-CN.ts."
+            }
+          ]
+        },
+        {
+          "name": "Mood / fatigue / recent-topics / life-state viewer",
+          "status": "missing",
+          "wired_end_to_end": false,
+          "evidence": [
+            "grep over ui/**/*.tsx for 'mood', 'fatigue', 'diary', 'life_state', 'agent_persona', 'recent_topic' — zero matches",
+            "No admin route exists at any path under /admin for reading agent_persona_state rows",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_a/studio/personas.py — routes cover CRUD and assets only; no life-state endpoint",
+            "python/packages/corlinman-server/src/corlinman_server/gateway/routes_admin_b/ — no life-state routes in any file",
+            "python/packages/corlinman-persona/src/corlinman_persona/store.py — PersonaStateStore exists but no admin HTTP route reads it"
+          ],
+          "gaps": [
+            {
+              "title": "HIGH — No UI or API to view/edit persona life state (mood, fatigue, recent_topics, state_json)",
+              "detail": "The agent_persona_state SQLite table (in agent_state.sqlite) holds the live mood, fatigue, recent_topics, and state_json for each persona. No admin route exposes this data. A non-developer (and even a developer) cannot inspect the current life state of grantley without shelling into the VPS and running sqlite3. This also means there is no way to manually seed the grantley state row from the UI (the row is never auto-created at boot; see Component 3 gap in the prior analysis).",
+              "severity": "high",
+              "fix_sketch": "Add GET /admin/personas/{id}/life-state → read agent_persona_state row for agent_id=id; PATCH /admin/personas/{id}/life-state to manually seed or override; expose in PersonaEditorDialog as a collapsible 'Life state' section showing mood, fatigue, recent_topics JSON."
+            }
+          ]
+        },
+        {
+          "name": "Diary viewer",
+          "status": "missing",
+          "wired_end_to_end": false,
+          "evidence": [
+            "python/packages/corlinman-agent/src/corlinman_agent/persona/life.py — persona_life_diary_add writes to state_json['diary'] capped at 200 entries",
+            "grep over ui/**/*.tsx for 'diary' — zero matches (only rag_store.py:53 references diary_name for a RAG field, unrelated)",
+            "No admin route at /admin/personas/{id}/diary or similar"
+          ],
+          "gaps": [
+            {
+              "title": "No UI or API to view persona diary entries",
+              "detail": "Diary entries (state_json['diary'], up to 200) are written by the model via the persona_life_diary_add tool and read by the QZone daily scheduler for post context. An operator cannot inspect, curate, or delete diary entries from the web UI. The only way to read them is to query agent_state.sqlite directly.",
+              "severity": "medium",
+              "fix_sketch": "Add GET /admin/personas/{id}/diary → return state_json['diary'] tail; optionally DELETE /admin/personas/{id}/diary/{idx}. Surface as a read-only scrollable list in a separate drawer or tab on the persona page."
+            }
+          ]
+        },
+        {
+          "name": "Life seeds (event-seed / inspiration library) viewer/editor",
+          "status": "missing",
+          "wired_end_to_end": false,
+          "evidence": [
+            "python/packages/corlinman-agent/src/corlinman_agent/persona/life_seeds/grantley.yaml — bundled seeds exist",
+            "python/packages/corlinman-agent/src/corlinman_agent/agent_servicer.py:2882-2889 — persona_life_set_seeds / persona_life_get_seeds tools for the model to read/write seeds",
+            "grep over ui/**/*.tsx for 'life_seed', 'life-seed', 'seed.*persona' — zero matches",
+            "No admin route at /admin/personas/{id}/seeds or similar"
+          ],
+          "gaps": [
+            {
+              "title": "No UI or API to view or edit persona life seeds",
+              "detail": "Life seeds (YAML event-seed packs in life_seeds/grantley.yaml and operator override at <DATA_DIR>/persona_life/<id>.events.yaml) can only be read/written by the model via tool calls or by direct file editing on the server. An operator cannot add custom event seeds, inspect the current seed pack, or override grantley's seeds from the web UI.",
+              "severity": "medium",
+              "fix_sketch": "Add GET /admin/personas/{id}/life-seeds and PUT /admin/personas/{id}/life-seeds (body: YAML text). Surface as a YAML textarea in the persona editor dialog (similar in style to the system-prompt textarea)."
+            }
+          ]
+        },
+        {
+          "name": "Mood / fatigue decay trigger (admin-initiated)",
+          "status": "missing",
+          "wired_end_to_end": false,
+          "evidence": [
+            "python/packages/corlinman-persona/src/corlinman_persona/cli.py:173 — corlinman-persona decay-once CLI exists",
+            "python/packages/corlinman-persona/src/corlinman_persona/decay.py — apply_decay logic correct",
+            "No HTTP route at /admin/personas/decay or /admin/scheduler triggering decay",
+            "grep over ui/**/*.tsx for 'decay' — zero matches"
+          ],
+          "gaps": [
+            {
+              "title": "No UI trigger for mood/fatigue decay; decay never fires automatically",
+              "detail": "Decay is only runnable via the CLI command. No admin route exposes it, and no scheduler job calls it. The UI has no surface for this. Combined with the missing state-row seed (Component 3 gap), mood and fatigue are perpetually neutral/0.0 on any fresh install.",
+              "severity": "high",
+              "fix_sketch": "Add POST /admin/personas/decay to run decay-once for all rows; or add a 'Run decay now' button on the /admin/persona page alongside the persona list. Also register a persona_decay scheduler builtin that fires hourly (mirrors evolution_darwin_curate pattern)."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

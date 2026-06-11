@@ -232,7 +232,11 @@ def _ref_to_data_url(path: Path) -> str:
     return f"data:{mime};base64,{encoded}"
 
 
-def _resolve_runtime_config(provider: Any = None) -> tuple[str, str, float]:
+def _resolve_runtime_config(
+    provider: Any = None,
+    *,
+    model_override: str | None = None,
+) -> tuple[str, str, float]:
     """Return ``(model, quality, timeout_secs)`` from env or defaults.
 
     Shared by every entry point in this module so the two image tools
@@ -242,15 +246,19 @@ def _resolve_runtime_config(provider: Any = None) -> tuple[str, str, float]:
 
     1. ``CORLINMAN_IMAGE_MODEL`` env var — operator override, beats
        config so on-the-fly debugging stays cheap.
-    2. ``provider.image_model`` — the operator-asserted preferred model
+    2. ``model_override`` — persona/caller-selected model for this
+       request.
+    3. ``provider.image_model`` — the operator-asserted preferred model
        on the picked image provider (Wave 2 first-run wizard). Read
        defensively (``getattr``) so older callers that pass a non-spec
        adapter still hit the default.
-    3. The historical default ``"gpt-image-1"``.
+    4. The historical default ``"gpt-image-1"``.
     """
     env_model = os.environ.get("CORLINMAN_IMAGE_MODEL")
     if env_model:
         model = env_model
+    elif model_override:
+        model = model_override
     else:
         spec_model = getattr(provider, "image_model", None) if provider is not None else None
         model = str(spec_model) if isinstance(spec_model, str) and spec_model else _DEFAULT_MODEL
@@ -375,6 +383,7 @@ async def generate_with_refs(
     ref_paths: list[Path],
     aspect_ratio: Literal["square", "portrait", "landscape"] = "square",
     *,
+    model_override: str | None = None,
     transport: httpx.BaseTransport | None = None,
 ) -> bytes:
     """Generate a PNG image from ``prompt`` + character ``ref_paths``.
@@ -419,7 +428,10 @@ async def generate_with_refs(
             f"got {aspect_ratio!r}"
         )
     api_key, base_url = _provider_credentials(provider)
-    model, quality, timeout = _resolve_runtime_config(provider)
+    model, quality, timeout = _resolve_runtime_config(
+        provider,
+        model_override=model_override,
+    )
 
     # The input is a single user message whose content list mixes the
     # prompt text + one ``input_image`` per reference path. Matches the
@@ -458,6 +470,7 @@ async def generate_plain(
     prompt: str,
     aspect_ratio: Literal["square", "portrait", "landscape"] = "square",
     *,
+    model_override: str | None = None,
     transport: httpx.BaseTransport | None = None,
 ) -> bytes:
     """Generate a PNG image from ``prompt`` alone — no reference images.
@@ -498,7 +511,10 @@ async def generate_plain(
             f"got {aspect_ratio!r}"
         )
     api_key, base_url = _provider_credentials(provider)
-    model, quality, timeout = _resolve_runtime_config(provider)
+    model, quality, timeout = _resolve_runtime_config(
+        provider,
+        model_override=model_override,
+    )
 
     payload: dict[str, Any] = {
         "model": model,

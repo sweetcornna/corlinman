@@ -68,7 +68,7 @@ def test_dockerfile_normalizes_shell_scripts_for_windows_checkouts() -> None:
     assert "sed -i 's/\\r$//' /app/start.sh" in dockerfile
 
 
-def test_docker_proto_regeneration_does_not_resync_workspace() -> None:
+def test_docker_proto_generation_uses_tool_venv_without_workspace_sync() -> None:
     dockerfile = (REPO_ROOT / "docker" / "Dockerfile").read_text(
         encoding="utf-8"
     )
@@ -76,17 +76,15 @@ def test_docker_proto_regeneration_does_not_resync_workspace() -> None:
         encoding="utf-8"
     )
 
-    assert (
-        'GEN_PROTO_UV_RUN_ARGS="--no-sync --no-dev --package corlinman-grpc '
-        '--with grpcio-tools==1.80.0"'
-        in dockerfile
-    )
-    assert "GEN_PROTO_SKIP_FORMAT=1" in dockerfile
+    assert "uv venv /opt/proto-tools" in dockerfile
+    assert "UV_PROJECT_ENVIRONMENT=/opt/proto-tools" in dockerfile
+    assert "GEN_PROTO_UV_RUN_ARGS=--no-sync" in dockerfile
     assert "RUN bash scripts/gen-proto.sh" not in dockerfile
     assert "GEN_PROTO_UV_RUN_ARGS" in gen_proto
     assert "uv_run_quiet() {" in gen_proto
     assert "uv_run_quiet python -m grpc_tools.protoc" in gen_proto
     assert "uv_run_quiet python -" in gen_proto
+    assert "uv_run_quiet ruff format --isolated" in gen_proto
 
 
 def test_gen_proto_default_path_handles_empty_optional_uv_args(tmp_path: Path) -> None:

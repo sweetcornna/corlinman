@@ -46,6 +46,48 @@ async def test_create_round_trip(store) -> None:
     assert got.system_prompt == "You are a friendly catgirl, nya~"
 
 
+async def test_create_round_trip_model_bindings(store) -> None:
+    now = int(time.time() * 1000)
+    p = Persona(
+        id="bound",
+        display_name="Bound Persona",
+        short_summary="Uses selected models",
+        system_prompt="You are bound.",
+        is_builtin=False,
+        created_at_ms=now,
+        updated_at_ms=now,
+        model_bindings={
+            "text": {"provider": "relay", "model": "gpt-5.5"},
+            "image": {"provider": "draw", "model": "flux-pro"},
+            "voice": {"provider": "voice", "model": "tts-large"},
+        },
+    )
+    saved = await store.create(p)
+    assert saved.model_bindings["text"] == {
+        "provider": "relay",
+        "model": "gpt-5.5",
+    }
+
+    got = await store.get("bound")
+    assert got is not None
+    assert got.model_bindings == {
+        "text": {"provider": "relay", "model": "gpt-5.5"},
+        "image": {"provider": "draw", "model": "flux-pro"},
+        "voice": {"provider": "voice", "model": "tts-large"},
+    }
+
+    updated = await store.update(
+        "bound",
+        model_bindings={
+            "text": {"provider": "relay", "model": "gpt-5.5-mini"},
+            "image": {"provider": None, "model": None},
+            "voice": {"provider": "voice", "model": "tts-large"},
+        },
+    )
+    assert updated.model_bindings["text"]["model"] == "gpt-5.5-mini"
+    assert updated.model_bindings["image"] == {"provider": None, "model": None}
+
+
 async def test_create_refuses_duplicate(store) -> None:
     now = int(time.time() * 1000)
     p = Persona(

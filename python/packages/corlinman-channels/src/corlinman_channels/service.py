@@ -54,6 +54,19 @@ import httpx
 
 _log = logging.getLogger(__name__)
 
+_QQ_AUDIO_ATTACHMENT_SUFFIXES = {
+    ".aac",
+    ".amr",
+    ".flac",
+    ".m4a",
+    ".mp3",
+    ".oga",
+    ".ogg",
+    ".opus",
+    ".silk",
+    ".wav",
+}
+
 #: Tool names that dispatch sub-agent(s). The moment one of these surfaces as
 #: a ``tool_call`` event mid-turn, the channel handler surfaces the shareable
 #: agent-status link EARLY (as a standalone message) so the user can watch the
@@ -162,9 +175,11 @@ from corlinman_channels.feishu import (
 from corlinman_channels.onebot import (
     Action,
     MessageEvent,
+    MessageSegment,
     MessageType,
     OneBotAdapter,
     OneBotConfig,
+    RecordSegment,
     SendGroupMsg,
     SendPrivateMsg,
     SetInputStatus,
@@ -1027,6 +1042,10 @@ async def _qq_send_attachment(
       *in the chat* (a sticker / emoji rendered inline) instead of being
       buried in the group's file area. Mirrors the Telegram handler's
       ``send_photo`` branch.
+    * **audio / voice** (``audio/*``) → an inline :class:`RecordSegment`
+      sent via :class:`SendGroupMsg` / :class:`SendPrivateMsg`. The bytes
+      are embedded with OneBot's ``base64://`` form so NapCat does not need
+      to read corlinman's container-local ``/data`` paths.
     * **everything else** → :class:`UploadGroupFile` /
       :class:`UploadPrivateFile` (the OneBot file-share extension) so a
       true document lands in the QQ file panel.
@@ -1041,10 +1060,13 @@ async def _qq_send_attachment(
     if p is None:
         return f"⚠️ 发送文件失败: {Path(path_str).name} 不存在"
     display = filename or p.name
-    # MIME-sniff the resolved file. ``image/*`` → inline image segment;
-    # anything else → file-share upload.
+    # MIME-sniff the resolved file. ``image/*`` and ``audio/*`` are sent
+    # inline; anything else remains a file-share upload.
     mime, _ = mimetypes.guess_type(p.name)
     is_image = bool(mime and mime.startswith("image/"))
+    is_audio = bool(mime and mime.startswith("audio/")) or (
+        p.suffix.lower() in _QQ_AUDIO_ATTACHMENT_SUFFIXES
+    )
     try:
         if is_image:
             # Use OneBot's base64 image form instead of a local file URL.
@@ -1064,6 +1086,19 @@ async def _qq_send_attachment(
             await adapter.send_action(action)
             _log.info("qq send_attachment inline-image path=%s mime=%s", p, mime)
             return f"📎 已发送图片: {display}"
+        if is_audio:
+            record_file = _qq_local_record_segment_file(p)
+            record_msg: list[MessageSegment] = [RecordSegment(file=record_file)]
+            if event.message_type == MessageType.GROUP and event.group_id is not None:
+                await adapter.send_action(
+                    SendGroupMsg(group_id=event.group_id, message=record_msg)
+                )
+            else:
+                await adapter.send_action(
+                    SendPrivateMsg(user_id=event.user_id, message=record_msg)
+                )
+            _log.info("qq send_attachment inline-record path=%s mime=%s", p, mime)
+            return f"🎙️ 已发送语音: {display}"
         if event.message_type == MessageType.GROUP and event.group_id is not None:
             await adapter.send_action(
                 UploadGroupFile(
@@ -1095,6 +1130,12 @@ def _qq_local_image_segment_file(path: Path) -> str:
     ``/data`` mount. Embedding the bytes avoids relying on shared
     filesystem paths for persona emoji / generated images.
     """
+    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"base64://{encoded}"
+
+
+def _qq_local_record_segment_file(path: Path) -> str:
+    """Return a OneBot/NapCat ``base64://`` voice payload for ``path``."""
     encoded = base64.b64encode(path.read_bytes()).decode("ascii")
     return f"base64://{encoded}"
 

@@ -5,10 +5,14 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import {
+  Brain,
   Check,
+  ImageIcon,
+  Mic,
   Pencil,
   Plus,
   RotateCcw,
+  Route,
   Sparkles,
   Trash2,
   X,
@@ -27,6 +31,10 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import {
+  ModelPickerDialog,
+  type ModelPickerSelection,
+} from "@/components/models/model-picker-dialog";
 import {
   Dialog,
   DialogContent,
@@ -83,6 +91,8 @@ import {
   type NewPersona,
   type PartialPersona,
   type Persona,
+  type PersonaModelBindings,
+  type PersonaModelKind,
 } from "@/lib/api/personas";
 
 /**
@@ -124,6 +134,51 @@ const humanlikeQueryKey = (channel: HumanlikeChannel) =>
  * shape as the backend slug validator for custom providers — keep it
  * narrow so a stray space or capital letter is caught client-side. */
 const SLUG_RE = /^[a-z0-9][a-z0-9-]*$/;
+
+const MODEL_BINDING_KINDS = [
+  { kind: "text", icon: Brain, labelKey: "persona.modelKindText" },
+  { kind: "image", icon: ImageIcon, labelKey: "persona.modelKindImage" },
+  { kind: "voice", icon: Mic, labelKey: "persona.modelKindVoice" },
+] as const;
+
+function emptyModelBindings(): PersonaModelBindings {
+  return {
+    text: { provider: null, model: null },
+    image: { provider: null, model: null },
+    voice: { provider: null, model: null },
+  };
+}
+
+function normalizeModelBindings(
+  raw?: Partial<
+    Record<
+      PersonaModelKind,
+      Partial<PersonaModelBindings[PersonaModelKind]> | null
+    >
+  > | null,
+): PersonaModelBindings {
+  const next = emptyModelBindings();
+  for (const kind of Object.keys(next) as PersonaModelKind[]) {
+    const binding = raw?.[kind];
+    if (!binding) continue;
+    next[kind] = {
+      provider: binding.provider?.trim() || null,
+      model: binding.model?.trim() || null,
+    };
+  }
+  return next;
+}
+
+function modelBindingsEqual(
+  a: PersonaModelBindings,
+  b: PersonaModelBindings,
+): boolean {
+  return (Object.keys(a) as PersonaModelKind[]).every(
+    (kind) =>
+      a[kind].provider === b[kind].provider &&
+      a[kind].model === b[kind].model,
+  );
+}
 
 export default function PersonaPage() {
   const { t } = useTranslation();
@@ -762,6 +817,10 @@ function PersonaEditorDialog({
   const [displayName, setDisplayName] = React.useState("");
   const [shortSummary, setShortSummary] = React.useState("");
   const [systemPrompt, setSystemPrompt] = React.useState("");
+  const [modelBindings, setModelBindings] =
+    React.useState<PersonaModelBindings>(() => emptyModelBindings());
+  const [modelPickerKind, setModelPickerKind] =
+    React.useState<PersonaModelKind | null>(null);
   const [errors, setErrors] = React.useState<Record<string, string>>({});
   const [resetConfirmOpen, setResetConfirmOpen] = React.useState(false);
 
@@ -795,14 +854,29 @@ function PersonaEditorDialog({
       setDisplayName(existing.display_name);
       setShortSummary(existing.short_summary);
       setSystemPrompt(existing.system_prompt);
+      setModelBindings(normalizeModelBindings(existing.model_bindings));
     } else {
       setId("");
       setDisplayName("");
       setShortSummary("");
       setSystemPrompt("");
+      setModelBindings(emptyModelBindings());
     }
+    setModelPickerKind(null);
     setErrors({});
   }, [open, existing]);
+
+  function setModelBinding(
+    kind: PersonaModelKind,
+    selection: ModelPickerSelection | null,
+  ) {
+    setModelBindings((prev) => ({
+      ...prev,
+      [kind]: selection
+        ? { provider: selection.provider, model: selection.model }
+        : { provider: null, model: null },
+    }));
+  }
 
   function validate(): boolean {
     const next: Record<string, string> = {};
@@ -833,13 +907,24 @@ function PersonaEditorDialog({
         patch.short_summary = shortSummary;
       if (systemPrompt !== existing.system_prompt)
         patch.system_prompt = systemPrompt;
+      const cleanModelBindings = normalizeModelBindings(modelBindings);
+      if (
+        !modelBindingsEqual(
+          cleanModelBindings,
+          normalizeModelBindings(existing.model_bindings),
+        )
+      ) {
+        patch.model_bindings = cleanModelBindings;
+      }
       onSubmit({ id: existing.id, patch });
     } else {
+      const cleanModelBindings = normalizeModelBindings(modelBindings);
       onSubmit({
         id: id.trim(),
         display_name: displayName.trim(),
         short_summary: shortSummary.trim(),
         system_prompt: systemPrompt,
+        model_bindings: cleanModelBindings,
       });
     }
   }
@@ -924,6 +1009,87 @@ function PersonaEditorDialog({
                 <p className="text-xs text-destructive">{errors.short_summary}</p>
               ) : null}
             </div>
+
+            <fieldset
+              className="space-y-2 rounded-md border border-dashed border-tp-glass-edge px-3 py-2"
+              data-testid="persona-model-bindings"
+            >
+              <div className="flex items-start gap-2">
+                <Route
+                  className="mt-0.5 h-3.5 w-3.5 shrink-0 text-tp-amber"
+                  aria-hidden="true"
+                />
+                <div className="min-w-0">
+                  <Label className="text-xs uppercase tracking-wider text-tp-ink-3">
+                    {t("persona.modelsTitle")}
+                  </Label>
+                  <p className="text-[11px] leading-5 text-tp-ink-3">
+                    {t("persona.modelsDescription")}
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid gap-2">
+                {MODEL_BINDING_KINDS.map(({ kind, icon: Icon, labelKey }) => {
+                  const binding = modelBindings[kind];
+                  const hasBinding = !!binding.provider && !!binding.model;
+                  return (
+                    <div
+                      key={kind}
+                      className="flex flex-col gap-2 rounded-md border border-tp-glass-edge bg-tp-glass-inner px-2.5 py-2 sm:flex-row sm:items-center sm:justify-between"
+                    >
+                      <div className="flex min-w-0 items-center gap-2">
+                        <Icon
+                          className="h-3.5 w-3.5 shrink-0 text-tp-ink-3"
+                          aria-hidden="true"
+                        />
+                        <div className="min-w-0">
+                          <div className="text-xs font-medium">
+                            {t(labelKey)}
+                          </div>
+                          <div
+                            className="truncate font-mono text-[11px] text-tp-ink-3"
+                            data-testid={`persona-model-binding-${kind}`}
+                            title={
+                              hasBinding
+                                ? `${binding.provider} / ${binding.model}`
+                                : t("persona.modelInherit")
+                            }
+                          >
+                            {hasBinding
+                              ? `${binding.provider} / ${binding.model}`
+                              : t("persona.modelInherit")}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-8 px-3"
+                          onClick={() => setModelPickerKind(kind)}
+                          data-testid={`persona-model-pick-${kind}`}
+                        >
+                          {t("persona.modelPick")}
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          className="h-8 px-3"
+                          onClick={() => setModelBinding(kind, null)}
+                          disabled={!hasBinding}
+                          data-testid={`persona-model-clear-${kind}`}
+                        >
+                          {t("persona.modelClear")}
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </fieldset>
 
             <div className="space-y-1">
               <Label htmlFor="persona-system-prompt" className="text-xs uppercase tracking-wider text-sg-ink-3">
@@ -1045,6 +1211,26 @@ function PersonaEditorDialog({
           </Button>
         </DialogFooter>
       </DialogContent>
+
+      <ModelPickerDialog
+        open={modelPickerKind !== null}
+        onClose={() => setModelPickerKind(null)}
+        initialProvider={
+          modelPickerKind
+            ? modelBindings[modelPickerKind].provider ?? undefined
+            : undefined
+        }
+        initialModel={
+          modelPickerKind
+            ? modelBindings[modelPickerKind].model ?? undefined
+            : undefined
+        }
+        confirmOnModelClick
+        onConfirm={(selection) => {
+          if (!modelPickerKind) return;
+          setModelBinding(modelPickerKind, selection);
+        }}
+      />
 
       {existing?.is_builtin ? (
         <ConfirmDialog

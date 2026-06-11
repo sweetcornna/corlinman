@@ -36,10 +36,14 @@ from fastapi import Path as FPath
 from fastapi.responses import JSONResponse, Response
 
 from corlinman_server.gateway.core.config_mutation import (
+    publish_config_mutation as _publish_config_mutation_core,
+)
+from corlinman_server.gateway.core.config_mutation import (
     write_config_atomic as _write_config_atomic,
 )
 from corlinman_server.gateway.routes_admin_b.config_admin._providers_lib import (
     _BUILTIN_SLOTS,
+    _FISH_TTS_MODELS,
     _HARDCODED_MODELS,
     _KIND_LABELS,
     _MODELS_CACHE,
@@ -61,11 +65,13 @@ from corlinman_server.gateway.routes_admin_b.config_admin._providers_lib import 
     _clear_models_cache,
     _custom_view_from_entry,
     _find_alias_refs,
+    _fish_tts_reference_id,
     _is_known_kind,
     _kind_capabilities,
     _normalize_kind,
     _params_schema_for,
     _persist,
+    _provider_tts_backend,
     _query_provider_models,
     _query_provider_models_with_retry,
     _redact,
@@ -78,6 +84,20 @@ from corlinman_server.gateway.routes_admin_b.state import (
     get_admin_state,
     require_admin,
 )
+
+
+def _py_config_writer():
+    from corlinman_server.gateway.lifecycle import write_py_config  # noqa: PLC0415
+
+    return write_py_config
+
+
+async def _publish_config_mutation(state: Any, cfg: dict[str, Any]) -> None:
+    await _publish_config_mutation_core(
+        state,
+        cfg,
+        py_config_writer=_py_config_writer(),
+    )
 
 # Re-export the moved wire models / helpers so external importers (and tests)
 # that do ``from ...config_admin.providers import <name>`` keep working after
@@ -176,7 +196,11 @@ def router() -> APIRouter:
             cfg["providers"] = providers
             if bool(existing.get("enabled", True)):
                 cfg = await _autobind_default_alias(cfg, body.name, existing)
-            err = await _persist(state, cfg)
+            err = await _persist(
+                state,
+                cfg,
+                py_config_writer=_py_config_writer(),
+            )
             if err is not None:
                 return err
         return {"status": "ok", "provider": _view_from_entry(body.name, existing).model_dump()}
@@ -277,7 +301,11 @@ def router() -> APIRouter:
             cfg["providers"] = providers
             if bool(entry.get("enabled", True)):
                 cfg = await _autobind_default_alias(cfg, name, entry)
-            err = await _persist(state, cfg)
+            err = await _persist(
+                state,
+                cfg,
+                py_config_writer=_py_config_writer(),
+            )
             if err is not None:
                 return err
         return {"status": "ok", "provider": _view_from_entry(name, entry).model_dump()}
@@ -307,7 +335,11 @@ def router() -> APIRouter:
                 )
             providers.pop(name)
             cfg["providers"] = providers
-            err = await _persist(state, cfg)
+            err = await _persist(
+                state,
+                cfg,
+                py_config_writer=_py_config_writer(),
+            )
             if err is not None:
                 return err
         return {"status": "ok", "removed": name}
@@ -415,6 +447,7 @@ def router() -> APIRouter:
             err = _write_config_atomic(state.config_path, cfg)
             if err is not None:
                 return err
+            await _publish_config_mutation(state, cfg)
 
         view = _custom_view_from_entry(body.slug, entry)
         return JSONResponse(status_code=201, content=view.model_dump())
@@ -474,6 +507,7 @@ def router() -> APIRouter:
             err = _write_config_atomic(state.config_path, cfg)
             if err is not None:
                 return err
+            await _publish_config_mutation(state, cfg)
 
         view = _custom_view_from_entry(slug, entry)
         return JSONResponse(status_code=200, content=view.model_dump())
@@ -508,6 +542,7 @@ def router() -> APIRouter:
             err = _write_config_atomic(state.config_path, cfg)
             if err is not None:
                 return err
+            await _publish_config_mutation(state, cfg)
 
         return Response(status_code=204)
 
@@ -553,6 +588,26 @@ def router() -> APIRouter:
 
         probe_strategy = _zero_cost_probe_kind(kind)
         api_key = _resolve_api_key(entry or {})
+
+        if _provider_tts_backend(entry if isinstance(entry, dict) else {}) == "fish":
+            if not api_key:
+                return {
+                    "ok": False,
+                    "latency_ms": 0,
+                    "error": "fish_audio_api_key_missing",
+                }
+            if not _fish_tts_reference_id(entry if isinstance(entry, dict) else {}):
+                return {
+                    "ok": False,
+                    "latency_ms": 0,
+                    "error": "fish_audio_reference_id_missing",
+                }
+            return {
+                "ok": True,
+                "latency_ms": 0,
+                "models_count": len(_FISH_TTS_MODELS),
+                "note": "Fish Audio TTS provider; /v1/models probe skipped",
+            }
 
         if probe_strategy == "mock":
             return {"ok": True, "latency_ms": 0, "models_count": 1}
@@ -619,6 +674,9 @@ def router() -> APIRouter:
             kind = "codex"
         else:
             kind = _normalize_kind(str((entry or {}).get("kind") or "openai_compatible"))
+
+        if _provider_tts_backend(entry if isinstance(entry, dict) else {}) == "fish":
+            return {"models": list(_FISH_TTS_MODELS)}
 
         probe_strategy = _zero_cost_probe_kind(kind)
 

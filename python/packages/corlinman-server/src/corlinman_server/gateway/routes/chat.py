@@ -342,6 +342,20 @@ async def _inject_web_persona(
         return
     if persona is None:
         return
+    try:
+        from corlinman_channels.persona_inject import (
+            apply_persona_text_model_binding,
+            persona_text_model_override,
+        )
+
+        text_model = persona_text_model_override(persona)
+        apply_persona_text_model_binding(internal_req, persona)
+    except Exception as exc:  # noqa: BLE001 — model override is best-effort
+        _log.warning("web chat persona model binding failed: %s", exc)
+        text_model = None
+    if text_model:
+        req.model = text_model
+
     body = getattr(persona, "system_prompt", "") or ""
     if not body.strip():
         return
@@ -660,6 +674,7 @@ def router(state: ChatState | None = None) -> APIRouter:
             # admin-session auth bridge, which runs in middleware upstream).
             config = getattr(app_state, "config", None) if app_state else None
             await _inject_web_persona(internal_req, config, req, x_persona_id)
+            _span.set_attribute("chat.resolved_model", req.model)
             if internal_req.persona_id:
                 _span.set_attribute("chat.persona_id", internal_req.persona_id)
 

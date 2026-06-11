@@ -69,6 +69,9 @@ echo "gen-proto: generating ${#PROTOS[@]} proto(s) -> $OUT_DIR"
 
 # grpcio-tools is in dev deps (pinned in top-level pyproject.toml so stubs are
 # byte-identical across machines); requires `uv sync --dev` first.
+# Docker builds can point UV_PROJECT_ENVIRONMENT at a tool-only venv and set
+# GEN_PROTO_UV_RUN_ARGS=--no-sync so these invocations do not resync the root
+# workspace.
 # Compile all .proto files in a single protoc invocation so the generated
 # descriptor-pool wiring is consistent.
 uv_run_quiet python -m grpc_tools.protoc \

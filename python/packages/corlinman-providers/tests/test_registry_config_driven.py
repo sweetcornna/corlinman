@@ -294,18 +294,46 @@ def test_resolve_provider_hint_prefers_named_provider() -> None:
     assert merged["timeout_ms"] == 60_000
 
 
-def test_resolve_provider_hint_unknown_falls_through() -> None:
-    """An unknown / disabled hint must NEVER block resolution — it just
-    biases ordering. The legacy prefix fallback still fires."""
-    reg = ProviderRegistry([])  # no specs at all
-    provider, model, merged = reg.resolve(
-        alias_or_model="claude-sonnet-4-5",
-        aliases={},
-        provider_hint="provider-that-does-not-exist",
+def test_resolve_provider_hint_numeric_provider_id_routes_raw_gpt_model() -> None:
+    """Persona bindings may store custom provider ids such as ``"2"``.
+
+    A raw ``gpt-*`` model plus an explicit provider must use that
+    provider's base URL/key, not the legacy OpenAI prefix fallback.
+    """
+    relay_spec = _spec(
+        "2",
+        ProviderKind.OPENAI_COMPATIBLE,
+        base_url="https://relay.example/v1",
+        params={"timeout_ms": 45_000},
     )
-    assert isinstance(provider, AnthropicProvider)
-    assert model == "claude-sonnet-4-5"
-    assert merged == {}
+    reg = ProviderRegistry([relay_spec])
+
+    provider, model, merged = reg.resolve(
+        alias_or_model="gpt-5.5",
+        aliases={},
+        provider_hint="2",
+    )
+
+    assert provider is reg.get("2")
+    assert model == "gpt-5.5"
+    assert merged["timeout_ms"] == 45_000
+
+
+def test_resolve_provider_hint_unknown_fails_instead_of_openai_fallback() -> None:
+    """An explicit provider hint is a routing contract, not a preference.
+
+    Persona Studio stores the user's selected provider separately from
+    the model id. If that provider is missing or disabled at runtime we
+    must fail clearly instead of falling through to the legacy OpenAI
+    prefix resolver and surfacing "API key missing for provider openai".
+    """
+    reg = ProviderRegistry([])  # no specs at all
+    with pytest.raises(KeyError, match="provider-that-does-not-exist"):
+        reg.resolve(
+            alias_or_model="gpt-5.5",
+            aliases={},
+            provider_hint="provider-that-does-not-exist",
+        )
 
 
 def test_resolve_provider_hint_default_is_back_compat() -> None:

@@ -243,6 +243,15 @@ class InternalChatRequest(BaseModel):
     same persona-scoped state.
     """
 
+    provider_hint: str | None = None
+    """Preferred provider slot for ``model`` resolution.
+
+    Persona Studio stores both provider and model per capability. The
+    protobuf ``ChatStart`` has no dedicated provider-hint field, so the
+    chat service serialises this into ``provider_config_json`` for the
+    direct backend and gRPC agent path.
+    """
+
 
 # ─── Usage / events / errors ──────────────────────────────────────────
 

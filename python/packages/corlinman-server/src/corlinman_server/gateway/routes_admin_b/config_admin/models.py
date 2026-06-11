@@ -19,8 +19,16 @@ from typing import Any
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from corlinman_server.gateway.core.config_mutation import (
+    publish_config_mutation as _publish_config_mutation_core,
+)
+from corlinman_server.gateway.routes_admin_b.config_admin._providers_lib import (
+    ProviderView,
+    _params_schema_for,
+    _view_from_entry,
+)
 from corlinman_server.gateway.routes_admin_b.state import (
     AdminState,
     config_snapshot,
@@ -28,31 +36,38 @@ from corlinman_server.gateway.routes_admin_b.state import (
     require_admin,
 )
 
+
+def _py_config_writer():
+    from corlinman_server.gateway.lifecycle import write_py_config  # noqa: PLC0415
+
+    return write_py_config
+
+
+async def publish_config_mutation(state: Any, cfg: dict[str, Any]) -> None:
+    await _publish_config_mutation_core(
+        state,
+        cfg,
+        py_config_writer=_py_config_writer(),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Wire models
 # ---------------------------------------------------------------------------
 
 
-class ProviderRow(BaseModel):
-    name: str
-    enabled: bool
-    has_api_key: bool
-    api_key_kind: str | None = None
-    base_url: str | None = None
-    kind: str | None = None
-
-
 class AliasRow(BaseModel):
     name: str
     model: str
-    provider: str | None = None
-    params: dict[str, Any] = {}
+    provider: str = ""
+    params: dict[str, Any] = Field(default_factory=dict)
+    effective_params_schema: dict[str, Any] = Field(default_factory=dict)
 
 
 class ModelsResponse(BaseModel):
     default: str
     aliases: list[AliasRow]
-    providers: list[ProviderRow]
+    providers: list[ProviderView]
 
 
 class AliasUpsert(BaseModel):
@@ -90,31 +105,27 @@ def _alias_entry_to_dict(alias: Any) -> tuple[str, str | None, dict[str, Any]]:
     return str(alias), None, {}
 
 
-def _provider_row(name: str, entry: dict[str, Any]) -> ProviderRow:
-    api_key = entry.get("api_key")
-    if api_key is None:
-        has = False
-        kind = None
-    elif isinstance(api_key, dict) and "env" in api_key:
-        has = True
-        kind = "env"
-    elif isinstance(api_key, dict) and "value" in api_key:
-        has = True
-        kind = "literal"
-    elif isinstance(api_key, str):
-        has = True
-        kind = "literal"
-    else:
-        has = False
-        kind = None
-    resolved_kind = entry.get("kind") if isinstance(entry.get("kind"), str) else None
-    return ProviderRow(
+def _default_params_schema() -> dict[str, Any]:
+    return _params_schema_for("openai_compatible")
+
+
+def _alias_row(
+    name: str,
+    entry: Any,
+    providers_cfg: dict[str, Any],
+) -> AliasRow:
+    model, provider, params = _alias_entry_to_dict(entry)
+    schema = _default_params_schema()
+    provider_name = provider if isinstance(provider, str) else ""
+    provider_entry = providers_cfg.get(provider_name) if provider_name else None
+    if isinstance(provider_entry, dict):
+        schema = _view_from_entry(provider_name, provider_entry).params_schema
+    return AliasRow(
         name=name,
-        enabled=bool(entry.get("enabled", True)),
-        has_api_key=has,
-        api_key_kind=kind,
-        base_url=entry.get("base_url"),
-        kind=resolved_kind,
+        model=model,
+        provider=provider_name,
+        params=params,
+        effective_params_schema=schema,
     )
 
 
@@ -157,6 +168,7 @@ async def _persist_alias_swap(state: AdminState, new_models: dict[str, Any]) -> 
             status_code=500,
             content={"error": "write_failed", "message": str(exc)},
         )
+    await publish_config_mutation(state, cfg)
     return None
 
 
@@ -172,21 +184,19 @@ def router() -> APIRouter:
     async def list_models():
         cfg = dict(config_snapshot())
         providers_cfg = cfg.get("providers") or {}
-        providers: list[ProviderRow] = []
+        providers: list[ProviderView] = []
         if isinstance(providers_cfg, dict):
             for name, entry in providers_cfg.items():
                 if isinstance(entry, dict):
-                    providers.append(_provider_row(str(name), entry))
+                    providers.append(_view_from_entry(str(name), entry))
         models_cfg = cfg.get("models") or {}
         aliases_map = models_cfg.get("aliases") or {}
         aliases: list[AliasRow] = []
         if isinstance(aliases_map, dict):
             for name, entry in aliases_map.items():
-                model, provider, params = _alias_entry_to_dict(entry)
-                aliases.append(
-                    AliasRow(name=str(name), model=model, provider=provider, params=params)
-                )
+                aliases.append(_alias_row(str(name), entry, providers_cfg))
         aliases.sort(key=lambda a: a.name)
+        providers.sort(key=lambda p: p.name)
         return ModelsResponse(
             default=str(models_cfg.get("default", "")),
             aliases=aliases,
@@ -248,13 +258,11 @@ def router() -> APIRouter:
         err = await _persist_alias_swap(state, models_cfg)
         if err is not None:
             return err
-        model, provider, p = _alias_entry_to_dict(entry)
-        return {
-            "status": "ok",
-            "alias": AliasRow(
-                name=up.name, model=model, provider=provider, params=p
-            ).model_dump(),
-        }
+        cfg = dict(config_snapshot())
+        providers_cfg = cfg.get("providers") or {}
+        if not isinstance(providers_cfg, dict):
+            providers_cfg = {}
+        return _alias_row(up.name, entry, providers_cfg).model_dump()
 
     async def _apply_bulk(bulk: BulkAliases) -> Any:
         for k, v in bulk.aliases.items():

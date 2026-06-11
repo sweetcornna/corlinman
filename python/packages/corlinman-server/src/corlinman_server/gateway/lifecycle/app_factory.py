@@ -47,6 +47,7 @@ from corlinman_server.gateway.lifecycle.config_resolve import (
     _trust_forwarded_proto_from_config,
     _trusted_forwarded_proto_proxies_from_config,
 )
+from corlinman_server.gateway.lifecycle.py_config import default_py_config_path
 
 logger = structlog.get_logger(__name__)
 
@@ -698,6 +699,10 @@ def _mount_routes(
                         getattr(admin_a_state, "admin_write_lock", None)
                         if admin_a_state is not None
                         else None
+                    ),
+                    "py_config_path": Path(
+                        os.environ.get("CORLINMAN_PY_CONFIG")
+                        or str(default_py_config_path())
                     ),
                 }
                 # Per-profile registry factory: reads

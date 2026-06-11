@@ -123,6 +123,18 @@ enabled = false
 # api_key = { env = "GROQ_API_KEY" }
 # enabled = false
 
+# Fish Audio — native TTS backend for the `text_to_speech` builtin tool.
+# Use this only for persona voice bindings, not as the default chat model.
+# In the persona editor, bind Voice to provider `fish_audio` and model
+# `s2-pro` (or another Fish engine). The `reference_id` below selects the
+# actual voice / cloned speaker.
+# [providers.fish_audio]
+# kind = "openai_compatible"
+# api_key = { env = "FISH_AUDIO_API_KEY" }
+# base_url = "https://api.fish.audio"
+# enabled = false
+# params = { tts_backend = "fish", reference_id = "your-fish-reference-id", format = "mp3" }
+
 # ---------------------------------------------------------------------------
 # [embedding] — optional dense-retrieval binding. `provider` references one
 # of the keys under `[providers.*]` above; the referenced provider must be

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from types import SimpleNamespace
 from typing import Any, ClassVar
 
@@ -438,6 +438,201 @@ def test_proto_chat_start_persona_id_maps_to_extra() -> None:
     assert start.extra == {"persona_id": "grantley"}
 
 
+def test_proto_chat_start_provider_config_maps_provider_hint_to_extra() -> None:
+    from corlinman_grpc import agent_pb2
+    from corlinman_server.agent_servicer import _to_agent_start
+
+    start = _to_agent_start(
+        agent_pb2.ChatStart(
+            model="gpt-4o-mini",
+            provider_config_json=json.dumps(
+                {"provider_hint": "persona-provider"}
+            ).encode("utf-8"),
+        )
+    )
+
+    assert start.extra == {"provider_hint": "persona-provider"}
+
+
+class _PersonaBindingStore:
+    def __init__(self, model_bindings: dict[str, dict[str, str | None]]) -> None:
+        self._model_bindings = model_bindings
+
+    async def get(self, persona_id: str) -> Any:
+        assert persona_id == "azusa"
+        return SimpleNamespace(
+            id=persona_id,
+            model_bindings=self._model_bindings,
+        )
+
+
+@pytest.mark.asyncio
+async def test_persona_image_binding_routes_image_generate_tool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import corlinman_server.agent_servicer as agent_servicer_module
+    from corlinman_agent.image import IMAGE_GENERATE_TOOL
+    from corlinman_agent.reasoning_loop import ChatStart, ToolCallEvent
+
+    parent_provider = SimpleNamespace(name="parent-provider")
+    image_provider = SimpleNamespace(name="image-provider")
+    resolve_calls: list[tuple[str, str | None]] = []
+
+    def resolver(
+        alias_or_model: str,
+        *,
+        aliases: Any = None,
+        provider_hint: str | None = None,
+    ) -> tuple[Any, str, dict[str, Any]]:
+        resolve_calls.append((alias_or_model, provider_hint))
+        if alias_or_model == "image-model":
+            return image_provider, "upstream-image-model", {}
+        return parent_provider, alias_or_model, {}
+
+    async def fake_dispatch_image_generate(
+        *,
+        args_json: bytes | str,
+        provider: Any,
+        model_override: str | None = None,
+        **_: Any,
+    ) -> str:
+        return json.dumps(
+            {
+                "provider": getattr(provider, "name", None),
+                "model_override": model_override,
+            }
+        )
+
+    monkeypatch.setattr(
+        agent_servicer_module,
+        "dispatch_image_generate",
+        fake_dispatch_image_generate,
+    )
+
+    servicer = CorlinmanAgentServicer(provider_resolver=resolver)
+    servicer.set_persona_stores(
+        persona_store=_PersonaBindingStore(
+            {
+                "image": {
+                    "provider": "image-provider",
+                    "model": "image-model",
+                }
+            }
+        )
+    )
+
+    payload = json.loads(
+        await servicer._dispatch_builtin(
+            ToolCallEvent(
+                call_id="img",
+                plugin="",
+                tool=IMAGE_GENERATE_TOOL,
+                args_json=b'{"prompt":"draw"}',
+            ),
+            ChatStart(
+                model="text-model",
+                messages=[],
+                extra={"persona_id": "azusa"},
+            ),
+            parent_provider,
+        )
+    )
+
+    assert resolve_calls == [("image-model", "image-provider")]
+    assert payload == {
+        "provider": "image-provider",
+        "model_override": "upstream-image-model",
+    }
+
+
+@pytest.mark.asyncio
+async def test_persona_voice_binding_routes_text_to_speech_tool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import corlinman_server.agent_servicer as agent_servicer_module
+    from corlinman_agent.reasoning_loop import ChatStart, ToolCallEvent
+
+    parent_provider = SimpleNamespace(name="parent-provider")
+    voice_provider = SimpleNamespace(name="voice-provider")
+    resolve_calls: list[tuple[str, str | None]] = []
+
+    def resolver(
+        alias_or_model: str,
+        *,
+        aliases: Any = None,
+        provider_hint: str | None = None,
+    ) -> tuple[Any, str, dict[str, Any]]:
+        resolve_calls.append((alias_or_model, provider_hint))
+        if alias_or_model == "voice-model":
+            return voice_provider, "upstream-voice-model", {
+                "tts_backend": "fish",
+                "reference_id": "voice-123",
+            }
+        return parent_provider, alias_or_model, {}
+
+    async def fake_dispatch_text_to_speech(
+        *,
+        args_json: bytes | str,
+        provider: Any,
+        model_override: str | None = None,
+        provider_params: Mapping[str, Any] | None = None,
+        **_: Any,
+    ) -> str:
+        return json.dumps(
+            {
+                "provider": getattr(provider, "name", None),
+                "model_override": model_override,
+                "provider_params": dict(provider_params or {}),
+            }
+        )
+
+    monkeypatch.setattr(agent_servicer_module, "_TTS_AVAILABLE", True)
+    monkeypatch.setattr(
+        agent_servicer_module,
+        "dispatch_text_to_speech",
+        fake_dispatch_text_to_speech,
+    )
+
+    servicer = CorlinmanAgentServicer(provider_resolver=resolver)
+    servicer.set_persona_stores(
+        persona_store=_PersonaBindingStore(
+            {
+                "voice": {
+                    "provider": "voice-provider",
+                    "model": "voice-model",
+                }
+            }
+        )
+    )
+
+    payload = json.loads(
+        await servicer._dispatch_builtin(
+            ToolCallEvent(
+                call_id="tts",
+                plugin="",
+                tool=agent_servicer_module.TEXT_TO_SPEECH_TOOL,
+                args_json=b'{"text":"hello"}',
+            ),
+            ChatStart(
+                model="text-model",
+                messages=[],
+                extra={"persona_id": "azusa"},
+            ),
+            parent_provider,
+        )
+    )
+
+    assert resolve_calls == [("voice-model", "voice-provider")]
+    assert payload == {
+        "provider": "voice-provider",
+        "model_override": "upstream-voice-model",
+        "provider_params": {
+            "tts_backend": "fish",
+            "reference_id": "voice-123",
+        },
+    }
+
+
 @pytest.mark.asyncio
 async def test_servicer_skips_blank_auto_agent_id_metadata() -> None:
     from corlinman_agent.reasoning_loop import ChatStart
@@ -852,6 +1047,37 @@ async def test_servicer_spawn_seeds_child_persona_state(
     child_agent_id = payload["tasks"][0]["child_agent_id"]
     row = await state_store.get(child_agent_id, tenant_id="tenant-a")
     assert row is not None, "subagent spawn must seed the child persona-state row"
+    await servicer.aclose()
+
+
+@pytest.mark.asyncio
+async def test_persona_state_store_retries_after_transient_open_failure(
+    tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A transient sqlite open failure must not disable persona_life forever."""
+    from corlinman_persona.store import PersonaStore
+    from corlinman_server.agent_servicer import CorlinmanAgentServicer
+
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+    real_open = PersonaStore.open_or_create
+    calls = 0
+
+    async def _flaky_open(path: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("transient sqlite open failure")
+        return await real_open(path)
+
+    monkeypatch.setattr(PersonaStore, "open_or_create", _flaky_open)
+
+    servicer = CorlinmanAgentServicer(provider_resolver=lambda _m: _FakeProvider([]))
+    assert await servicer._get_persona_state_store() is None
+
+    state_store = await servicer._get_persona_state_store()
+    assert state_store is not None
+    assert calls == 2
+    await servicer.aclose()
 
 
 @pytest.mark.asyncio

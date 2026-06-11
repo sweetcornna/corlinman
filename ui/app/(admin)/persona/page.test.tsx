@@ -34,6 +34,7 @@ import type {
   Persona,
   QqHumanlikeState,
 } from "@/lib/api/personas";
+import type { ProviderView } from "@/lib/api";
 
 // ---------------------------------------------------------------------------
 // Sonner toaster — stub so we can assert success/error paths fired without
@@ -76,6 +77,28 @@ const setQqHumanlikeMock = vi.fn(
     throw new Error("setQqHumanlikeMock not configured");
   },
 );
+const fetchProvidersMock = vi.fn(async (): Promise<ProviderView[]> => {
+  throw new Error("fetchProvidersMock not configured");
+});
+const getProviderModelsMock = vi.fn(
+  async (_provider: string): Promise<{
+    models: { id: string; display_name?: string }[];
+    error?: string;
+  }> => {
+    throw new Error("getProviderModelsMock not configured");
+  },
+);
+
+vi.mock("@/lib/api", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/api")>(
+    "@/lib/api",
+  );
+  return {
+    ...actual,
+    fetchProviders: () => fetchProvidersMock(),
+    getProviderModels: (provider: string) => getProviderModelsMock(provider),
+  };
+});
 
 vi.mock("@/lib/api/personas", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api/personas")>(
@@ -119,6 +142,11 @@ const SAMPLE_BUILTIN: Persona = {
   created_at_ms: 1_777_000_000_000,
   updated_at_ms: 1_777_593_600_000,
   avatar_url: null,
+  model_bindings: {
+    text: { provider: null, model: null },
+    image: { provider: null, model: null },
+    voice: { provider: null, model: null },
+  },
 };
 const SAMPLE_CUSTOM: Persona = {
   id: "alyssa",
@@ -129,6 +157,11 @@ const SAMPLE_CUSTOM: Persona = {
   created_at_ms: 1_777_400_000_000,
   updated_at_ms: 1_777_500_000_000,
   avatar_url: null,
+  model_bindings: {
+    text: { provider: "relay", model: "gpt-4o-mini" },
+    image: { provider: null, model: null },
+    voice: { provider: null, model: null },
+  },
 };
 
 beforeEach(() => {
@@ -140,6 +173,41 @@ beforeEach(() => {
   updatePersonaMock.mockReset();
   deletePersonaMock.mockReset();
   setQqHumanlikeMock.mockReset();
+  fetchProvidersMock.mockReset();
+  getProviderModelsMock.mockReset();
+  fetchProvidersMock.mockResolvedValue([
+    {
+      name: "relay",
+      kind: "openai_compatible",
+      enabled: true,
+      base_url: null,
+      api_key_source: "env",
+      api_key_env_name: "OPENAI_API_KEY",
+      params: {},
+      params_schema: { type: "object", additionalProperties: true },
+      capabilities: { chat: true, embedding: true },
+    },
+    {
+      name: "voice",
+      kind: "openai_compatible",
+      enabled: true,
+      base_url: null,
+      api_key_source: "env",
+      api_key_env_name: "VOICE_API_KEY",
+      params: {},
+      params_schema: { type: "object", additionalProperties: true },
+      capabilities: { chat: true, embedding: false },
+    },
+  ] as ProviderView[]);
+  getProviderModelsMock.mockImplementation(async (provider: string) => ({
+    models:
+      provider === "voice"
+        ? [{ id: "tts-large", display_name: "tts-large" }]
+        : [
+            { id: "gpt-4o-mini", display_name: "gpt-4o-mini" },
+            { id: "gpt-5.5", display_name: "gpt-5.5" },
+          ],
+  }));
 });
 
 afterEach(() => {
@@ -372,6 +440,58 @@ describe("PersonaPage — editor modal", () => {
     });
   });
 
+  it("edits persona text/image/voice model bindings and PATCHes them", async () => {
+    fetchPersonasMock.mockResolvedValue([SAMPLE_CUSTOM]);
+    updatePersonaMock.mockResolvedValue({
+      ...SAMPLE_CUSTOM,
+      model_bindings: {
+        ...SAMPLE_CUSTOM.model_bindings,
+        text: { provider: "relay", model: "gpt-5.5" },
+      },
+    });
+    stubHumanlikeOff();
+
+    render(
+      <Harness>
+        <PersonaPage />
+      </Harness>,
+    );
+
+    fireEvent.click(await screen.findByTestId("persona-edit-alyssa"));
+    expect(await screen.findByTestId("persona-model-binding-text")).toHaveTextContent(
+      "gpt-4o-mini",
+    );
+    expect(screen.getByTestId("persona-model-binding-image")).toHaveTextContent(
+      "Inherit",
+    );
+    expect(screen.getByTestId("persona-model-binding-voice")).toHaveTextContent(
+      "Inherit",
+    );
+
+    fireEvent.click(screen.getByTestId("persona-model-pick-text"));
+    expect(await screen.findByTestId("model-picker-dialog")).toBeInTheDocument();
+    fireEvent.click(await screen.findByTestId("model-picker-model-gpt-5.5"));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("model-picker-dialog")).not.toBeInTheDocument();
+    });
+    expect(screen.getByTestId("persona-model-binding-text")).toHaveTextContent(
+      "gpt-5.5",
+    );
+
+    fireEvent.click(screen.getByTestId("persona-editor-save"));
+
+    await waitFor(() => {
+      expect(updatePersonaMock).toHaveBeenCalledWith("alyssa", {
+        model_bindings: {
+          text: { provider: "relay", model: "gpt-5.5" },
+          image: { provider: null, model: null },
+          voice: { provider: null, model: null },
+        },
+      });
+    });
+  });
+
   it("create flow validates required fields before POSTing", async () => {
     fetchPersonasMock.mockResolvedValue([]);
     stubHumanlikeOff();
@@ -426,6 +546,11 @@ describe("PersonaPage — editor modal", () => {
         display_name: "Alyssa P. Hacker",
         short_summary: "MIT Scheme hacker.",
         system_prompt: "# Alyssa\nYou are Alyssa.",
+        model_bindings: {
+          text: { provider: null, model: null },
+          image: { provider: null, model: null },
+          voice: { provider: null, model: null },
+        },
       });
     });
   });

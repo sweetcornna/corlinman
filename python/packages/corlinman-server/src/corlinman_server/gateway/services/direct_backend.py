@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 from collections.abc import AsyncIterator
 from typing import Any
@@ -154,7 +155,10 @@ class DirectProviderBackend:
         cancel_task = asyncio.create_task(_watch_cancel(tx))
         try:
             try:
-                provider, upstream_model, params = self._resolve(start.model)
+                provider, upstream_model, params = self._resolve(
+                    start.model,
+                    provider_hint=_provider_hint_from_start(start),
+                )
             except Exception as exc:  # noqa: BLE001 — surface as error frame
                 log.info(
                     "direct_backend.resolve_failed model=%s err=%s",
@@ -344,7 +348,12 @@ class DirectProviderBackend:
 
     # -- internal: model resolution -------------------------------------
 
-    def _resolve(self, model: str) -> tuple[Any, str, dict[str, Any]]:
+    def _resolve(
+        self,
+        model: str,
+        *,
+        provider_hint: str | None = None,
+    ) -> tuple[Any, str, dict[str, Any]]:
         """Resolve ``model`` to ``(provider, upstream_model, params)``.
 
         Delegates to :meth:`ProviderRegistry.resolve`, passing the
@@ -360,12 +369,30 @@ class DirectProviderBackend:
         # ``_registry`` is typed ``Any`` (loose coupling at boot); the
         # underlying ``ProviderRegistry.resolve`` returns this triple.
         resolved: tuple[Any, str, dict[str, Any]] = self._registry.resolve(
-            model, aliases=aliases
+            model,
+            aliases=aliases,
+            provider_hint=provider_hint,
         )
         return resolved
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────
+
+
+def _provider_hint_from_start(start: agent_pb2.ChatStart) -> str | None:
+    raw = getattr(start, "provider_config_json", b"") or b""
+    if not raw:
+        return None
+    try:
+        obj = json.loads(bytes(raw).decode("utf-8"))
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(obj, dict):
+        return None
+    hint = obj.get("provider_hint")
+    if isinstance(hint, str) and hint.strip():
+        return hint.strip()
+    return None
 
 
 def _alias_entries(models_config: dict[str, Any]) -> dict[str, Any]:

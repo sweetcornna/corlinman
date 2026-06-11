@@ -74,8 +74,10 @@ class _StubRegistry:
     def __init__(self, provider: object, model: str = "x") -> None:
         self._provider = provider
         self._model = model
+        self.calls: list[tuple[str, str | None]] = []
 
     def resolve(self, alias_or_model: str, *, aliases=None, provider_hint=None):
+        self.calls.append((alias_or_model, provider_hint))
         if alias_or_model in (self._model, "scripted", "raising"):
             return self._provider, alias_or_model, {}
         raise KeyError(f"no provider for {alias_or_model!r}")
@@ -89,12 +91,13 @@ def _start(model: str) -> agent_pb2.ChatStart:
     )
 
 
-def _req(model: str) -> InternalChatRequest:
+def _req(model: str, *, provider_hint: str | None = None) -> InternalChatRequest:
     return InternalChatRequest(
         model=model,
         messages=[Message(role=Role.USER, content="hi")],
         session_key="",
         stream=False,
+        provider_hint=provider_hint,
     )
 
 
@@ -270,6 +273,29 @@ async def test_chat_service_nonstream_completion() -> None:
     assert "".join(texts) == "four"
     assert isinstance(events[-1], DoneEvent)
     assert events[-1].finish_reason == "stop"
+
+
+@pytest.mark.asyncio
+async def test_chat_service_forwards_provider_hint_to_direct_backend() -> None:
+    provider = _ScriptedProvider(
+        [
+            _Chunk(kind="token", text="ok"),
+            _Chunk(kind="done", finish_reason="stop"),
+        ]
+    )
+    registry = _StubRegistry(provider, "x")
+    service = ChatService(DirectProviderBackend(registry))
+
+    events = [
+        ev
+        async for ev in service.run(
+            _req("x", provider_hint="persona-provider"),
+            asyncio.Event(),
+        )
+    ]
+
+    assert isinstance(events[-1], DoneEvent)
+    assert registry.calls[0] == ("x", "persona-provider")
 
 
 @pytest.mark.asyncio

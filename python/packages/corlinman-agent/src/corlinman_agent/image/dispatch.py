@@ -180,6 +180,7 @@ async def dispatch_image_with_refs(
     persona_store: Any,
     asset_store: Any,
     bound_persona_id: str | None = None,
+    model_override: str | None = None,
     transport: httpx.BaseTransport | None = None,
 ) -> str:
     """Dispatch one ``image_with_refs`` tool call into a JSON envelope.
@@ -316,6 +317,7 @@ async def dispatch_image_with_refs(
             prompt,
             ref_paths,
             aspect_ratio=aspect,  # type: ignore[arg-type]
+            model_override=model_override,
             transport=transport,
         )
     except ImageProviderUnavailable as exc:

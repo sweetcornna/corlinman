@@ -222,20 +222,26 @@ class PersonaStore:
         # ``aiosqlite.connect`` will create the file on demand. The
         # schema helper also rewrites legacy ``PRIMARY KEY(agent_id)``
         # tables into the current composite-key shape.
-        self._conn = await aiosqlite.connect(self._path)
-        # WAL + a busy_timeout so multiple connections to the same
-        # ``agent_state.sqlite`` (the EvolutionLoop / hourly decay job, the
-        # placeholder resolver, and the agent-side ``persona_life_*`` tools
-        # each open their own handle) don't trip "database is locked" on a
-        # concurrent write. Mirrors every other corlinman sqlite store
-        # (inbox / journal / tenancy pool). WAL is a DB-level setting so
-        # the first opener persists it for all connections; busy_timeout is
-        # per-connection, hence set on every open.
-        await self._conn.execute("PRAGMA journal_mode = WAL")
-        await self._conn.execute("PRAGMA synchronous = NORMAL")
-        await self._conn.execute("PRAGMA busy_timeout = 5000")
-        await _migrate_agent_persona_schema(self._conn)
-        await self._conn.commit()
+        conn = await aiosqlite.connect(self._path)
+        self._conn = conn
+        try:
+            # WAL + a busy_timeout so multiple connections to the same
+            # ``agent_state.sqlite`` (the EvolutionLoop / hourly decay job, the
+            # placeholder resolver, and the agent-side ``persona_life_*`` tools
+            # each open their own handle) don't trip "database is locked" on a
+            # concurrent write. Mirrors every other corlinman sqlite store
+            # (inbox / journal / tenancy pool). WAL is a DB-level setting so
+            # the first opener persists it for all connections; busy_timeout is
+            # per-connection, hence set on every open.
+            await conn.execute("PRAGMA journal_mode = WAL")
+            await conn.execute("PRAGMA synchronous = NORMAL")
+            await conn.execute("PRAGMA busy_timeout = 5000")
+            await _migrate_agent_persona_schema(conn)
+            await conn.commit()
+        except Exception:
+            self._conn = None
+            await conn.close()
+            raise
 
     async def close(self) -> None:
         if self._conn is not None:

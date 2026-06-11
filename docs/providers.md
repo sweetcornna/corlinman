@@ -247,6 +247,34 @@ Default traffic still routes through OpenAI; the `fast` alias drops
 through to Groq's low-latency endpoint when an agent or operator picks
 it.
 
+### "I want Fish Audio for persona voice replies"
+
+Fish Audio's TTS API is not OpenAI's `/audio/speech` shape. Declare it as
+a named provider so Corlinman can reuse its credential/base URL, then mark
+the provider params with `tts_backend = "fish"`. The persona voice binding
+uses the provider key plus the Fish generation engine; `reference_id`
+selects the actual voice or cloned speaker.
+
+```toml
+[providers.fish_audio]
+kind = "openai_compatible"
+api_key = { env = "FISH_AUDIO_API_KEY" }
+base_url = "https://api.fish.audio"
+enabled = true
+
+[providers.fish_audio.params]
+tts_backend = "fish"
+reference_id = "your-fish-reference-id"
+format = "mp3"
+```
+
+Then in the persona editor set the **Voice** binding to provider
+`fish_audio` and model `s2-pro` (or another Fish engine). Do not use this
+provider as the default text/chat model; it is only consumed by the
+`text_to_speech` tool path. To change the speaker, replace
+`reference_id`; to change the Fish synthesis engine, change the persona
+voice model.
+
 ## 5. Inspection and admin
 
 - `corlinman config validate` runs every check (schema + cross-field) and

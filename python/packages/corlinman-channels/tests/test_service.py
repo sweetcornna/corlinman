@@ -662,6 +662,107 @@ class TestHandleOneQq:
         assert seg.file.startswith("base64://")
 
     @pytest.mark.asyncio
+    async def test_send_attachment_audio_sends_private_record_segment(
+        self, tmp_path: Any
+    ) -> None:
+        """QQ audio must be sent as an inline record segment, not a file upload.
+
+        NapCat runs outside the corlinman container in Docker, so it cannot
+        read generated paths like /data/workspace/generated/*.mp3 from
+        UploadPrivateFile. A base64 record payload keeps the voice message
+        self-contained.
+        """
+        import asyncio
+        import base64
+        import json
+
+        from corlinman_channels.onebot import (
+            RecordSegment,
+            UploadPrivateFile,
+        )
+
+        f = tmp_path / "voice.mp3"
+        f.write_bytes(b"fake-mp3")
+        args = json.dumps({"path": str(f), "filename": "voice.mp3"})
+        svc = _ScriptedChatService([
+            _Ev(
+                kind="tool_call",
+                plugin="send_attachment",
+                tool="send_attachment",
+                args_json=args.encode("utf-8"),
+            ),
+            _Ev(kind="done"),
+        ])
+        ev = _qq_private_event(user_id=20003)
+        binding = ChannelBinding.qq_private(999, 20003)
+        req = RoutedRequest(binding=binding, content="send voice")
+        adapter = _FakeOneBotAdapter()
+
+        await handle_one_qq(svc, req, ev, "m", adapter, asyncio.Event())  # type: ignore[arg-type]
+
+        assert not [a for a in adapter.sent if isinstance(a, UploadPrivateFile)]
+        record_msgs = [
+            a
+            for a in adapter.sent
+            if isinstance(a, SendPrivateMsg)
+            and any(isinstance(s, RecordSegment) for s in a.message)
+        ]
+        assert record_msgs, (
+            "expected a SendPrivateMsg carrying a RecordSegment; got "
+            f"{[type(a).__name__ for a in adapter.sent]}"
+        )
+        seg = next(s for s in record_msgs[0].message if isinstance(s, RecordSegment))
+        assert seg.url == ""
+        assert seg.file == (
+            "base64://" + base64.b64encode(b"fake-mp3").decode("ascii")
+        )
+
+    @pytest.mark.asyncio
+    async def test_send_attachment_audio_sends_group_record_segment(
+        self, tmp_path: Any
+    ) -> None:
+        """Group audio mirrors private: record segment, no UploadGroupFile."""
+        import asyncio
+        import json
+
+        from corlinman_channels.onebot import RecordSegment, UploadGroupFile
+
+        f = tmp_path / "voice.ogg"
+        f.write_bytes(b"fake-ogg")
+        args = json.dumps({"path": str(f)})
+        svc = _ScriptedChatService([
+            _Ev(
+                kind="tool_call",
+                plugin="send_attachment",
+                tool="send_attachment",
+                args_json=args.encode("utf-8"),
+            ),
+            _Ev(kind="done"),
+        ])
+        ev = _sample_group_event()
+        binding = ChannelBinding.qq_group(ev.self_id, ev.group_id or 0, ev.user_id)
+        req = RoutedRequest(binding=binding, content="send voice")
+        adapter = _FakeOneBotAdapter()
+
+        await handle_one_qq(svc, req, ev, "m", adapter, asyncio.Event())  # type: ignore[arg-type]
+
+        assert not [a for a in adapter.sent if isinstance(a, UploadGroupFile)]
+        record_msgs = [
+            a
+            for a in adapter.sent
+            if isinstance(a, SendGroupMsg)
+            and any(isinstance(s, RecordSegment) for s in a.message)
+        ]
+        assert record_msgs, (
+            "expected a SendGroupMsg carrying a RecordSegment; got "
+            f"{[type(a).__name__ for a in adapter.sent]}"
+        )
+        seg = next(s for s in record_msgs[0].message if isinstance(s, RecordSegment))
+        assert seg.url == ""
+        assert seg.file is not None
+        assert seg.file.startswith("base64://")
+
+    @pytest.mark.asyncio
     async def test_input_status_pulse_fires_until_cancelled(self) -> None:
         """NapCat-only ``set_input_status`` pulse must re-fire on its
         interval and stop on cancel.set(). Private chats only."""
