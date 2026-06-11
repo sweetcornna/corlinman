@@ -4,7 +4,7 @@
 - **Mode**: native systemd gateway + separate Python agent service
 - **Install prefix**: `/opt/corlinman`
 - **Data dir**: `/opt/corlinman/data`
-- **Last verified**: 2026-06-11 16:13 CST, `v1.19.0`
+- **Last verified**: 2026-06-11 16:44 CST, `v1.19.1`
 
 This runbook is for the hosted demo VPS. It is intentionally more specific than
 the generic installer docs because this box has a legacy root-owned native
@@ -169,6 +169,34 @@ curl -fsS http://127.0.0.1:6005/health
 ```
 
 Keep the UI backup for at least one release cycle.
+
+## 2026-06-11 16:44 CST deployment record
+
+Release deployed:
+
+- tag: `v1.19.1`
+- commit: `82551a97f71f06b81d2b765636f63c7711085f93`
+- package: `corlinman-server==1.19.1`
+- UI backup: `/opt/corlinman/ui-static.backup.20260611-164355`
+- UI rebuilt: yes — `pnpm build` produced `ui/out`, routes assertion passed,
+  rsync'd to `ui-static/`.
+
+Verification results:
+
+- remote repo reset to `HEAD=82551a97f71f06b81d2b765636f63c7711085f93`
+- `.venv` package version -> `1.19.1`
+- `systemctl is-active corlinman` / `corlinman-agent` -> `active`
+- `corlinman-napcat` -> `Up`
+- local `/health` -> `{"status":"ok","mode":"ok"}`
+- local `/openapi.json` -> `200`
+- local `/admin/system/info` / `POST /api/QQLogin/RefreshQRcode` (no creds) -> `401`
+- public `/health`, `/login`, `/marketplace` -> `200`; `/admin/system/info` -> `401`
+
+Operational note: same SIGTERM-hang as prior releases — a 60s
+`systemctl restart` timed out (rc=124, `deactivating (stop-sigterm)`); the old
+main process was killed with `systemctl kill --kill-who=main -s SIGKILL
+corlinman`, after which systemd completed the restart and the gateway became
+healthy.
 
 ## 2026-06-11 16:13 CST deployment record
 
