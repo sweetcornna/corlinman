@@ -6,7 +6,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/sweetcornna/corlinman/ci.yml?branch=main&label=CI)](https://github.com/sweetcornna/corlinman/actions)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.19.0-brightgreen)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.19.1-brightgreen)](CHANGELOG.md)
 [![Docs](https://img.shields.io/badge/docs-architecture-informational)](docs/architecture.md)
 
 **A self-hosted intelligent-agent platform.** Give a language model durable
@@ -19,15 +19,16 @@ govern with human-in-the-loop approvals.
 > _Live deployment reference: <https://corlinman.cornna.xyz>._
 > _中文介绍章节见文末 ["中文速览"](#中文速览)。_
 >
-> **What's new in 1.19.0** — a full **Spatial Glass** admin redesign with
-> Apple-style Liquid Glass optics, a custom Theme Studio (whole-theme colour +
-> adjustable glass opacity), and a ChatGPT/Claude-grade chat. Plus the 6-hour
-> CI py-test hang is fixed and channel replies now keep native markdown on
-> Discord/Slack while staying clean on plain-text channels. See
-> [`CHANGELOG.md`](CHANGELOG.md).
-> _1.19.0 全新「空间玻璃」后台重设计 + 苹果液态玻璃光效 + 主题工作室（整体配色与
-> 玻璃不透明度自定义）+ 媲美 ChatGPT/Claude 的聊天页；并修复 6 小时 CI 挂死、渠道
-> 发送标点/markdown 整洁问题。_
+> **What's new in 1.19.1** — one-click upgrade now shows a determinate
+> **progress bar** through to completion, with a clear "use the manual commands"
+> fallback on deployments that can't self-upgrade. Builds on **1.19.0**'s full
+> **Spatial Glass** admin redesign (Apple-style Liquid Glass optics, a Theme
+> Studio for whole-theme colour + glass opacity, a ChatGPT/Claude-grade chat),
+> the 6-hour CI py-test hang fix, and channel-capability-aware outbound text.
+> See [`CHANGELOG.md`](CHANGELOG.md).
+> _1.19.1 一键升级新增升级进度条（直到完成）+ 不支持一键升级时清晰引导手动命令；
+> 延续 1.19.0 的「空间玻璃」后台重设计、苹果液态玻璃光效、主题工作室、6 小时 CI
+> 挂死修复与渠道发送整洁。_
 
 ---
 
@@ -686,7 +687,11 @@ ops/                Grafana dashboard + observability compose
 
 ## Roadmap + status
 
-**v1.19.0** (current) — **Spatial Glass** admin redesign (visionOS-style glass +
+**v1.19.1** (current) — one-click upgrade now shows a determinate **progress
+bar** to completion, with a clear manual-commands fallback on deployments that
+can't self-upgrade. Tagged `v1.19.1`.
+
+**v1.19.0** — **Spatial Glass** admin redesign (visionOS-style glass +
 Apple Liquid Glass optics), a Theme Studio for whole-theme colour and glass
 opacity, a ChatGPT/Claude-grade chat; plus the 6-hour CI py-test hang fixed and
 channel-capability-aware outbound text (native markdown kept on Discord/Slack,
@@ -775,10 +780,10 @@ MIT. See [`LICENSE`](LICENSE).
 
 ## 中文速览
 
-> **1.19.0 新特性**：全新「空间玻璃」后台重设计（visionOS 风格玻璃 + 苹果液态
-> 玻璃光效）、主题工作室（整体配色 + 玻璃不透明度自定义 + 六套前卫主题）、媲美
-> ChatGPT/Claude 的聊天页；并修复 6 小时 CI 挂死、渠道发送在 Discord/Slack 保留
-> 原生 markdown、纯文本渠道则清理 AI 标点/markdown。现有配置保持兼容。
+> **1.19.1 新特性**：一键升级新增升级进度条（直到完成）+ 不支持一键升级的部署
+> 会清晰引导改用手动命令。延续 1.19.0 的「空间玻璃」后台重设计（visionOS 风格玻璃
+> + 苹果液态玻璃光效）、主题工作室、媲美 ChatGPT/Claude 的聊天页，以及 6 小时 CI
+> 挂死修复与渠道发送整洁。现有配置保持兼容。
 > 完整说明见 [更新日志](CHANGELOG.md)。
 
 **corlinman 是一个可自托管的智能体平台。** 不只是 LLM 的 API 代理，也不是拖拽工作流的工具箱——它是一套有主张的运行时：让语言模型拥有**持久记忆**、**真实工具**、**多通道接入**、**可审计的运维面板**，全部跑在你自己的机器上。

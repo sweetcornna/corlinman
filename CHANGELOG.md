@@ -4,6 +4,26 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.19.1] — 2026-06-11 — Upgrade progress bar + clearer manual fallback
+
+> Patch release. Config-compatible — no migration required.
+
+### Added
+- **One-click upgrade now shows a determinate progress bar** that fills through
+  the phases (validating → pulling → recreating → healthcheck → done) to 100%,
+  snapping green on success and holding red at the phase a failure reached
+  (backend failure codes like `image_pull_failed` / `timeout` no longer reset
+  the bar to empty).
+
+### Fixed
+- **Clearer dead-end when one-click upgrade isn't available.** On a manual-only
+  deployment (e.g. a root-owned native box that upgrades via the runbook), the
+  upgrade dialog now explains *"one-click isn't available here — use the manual
+  commands below"* instead of surfacing a cryptic toast.
+- A `stalled` upgrade now renders as an error state in the progress bar (red),
+  and `cancelled` as a neutral stop — neither still looks like an in-flight
+  upgrade.
+
 ## [1.19.0] — 2026-06-11 — Spatial Glass UI redesign + CI hang fix
 
 > Minor release. Config-compatible — no migration required. The admin UI is
