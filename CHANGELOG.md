@@ -4,7 +4,10 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.20.0] — 2026-06-11 — CLI agent console + claude-code parity wave 1 + multi-model + enterprise chat
+
+> Minor release. Config-compatible — no migration required. New optional
+> config: `[console]` block (small_fast_model / auto_route / compaction).
 
 ### Added
 - **`corlinman console` — interactive CLI agent console** (`docs/PLAN_CLI_CONSOLE.md`).
@@ -57,9 +60,31 @@ All notable changes to corlinman are documented here. Format follows
   - Tool-less models: `supports_tools()` on providers + per-provider/alias
     `tools = false` param → the servicer skips builtin-tool injection and the
     turn degrades to text-only reasoning instead of a 400.
-  - Vendor error mapping for DeepSeek/Qwen(GLM (billing vs rate-limit vs
+  - Vendor error mapping for DeepSeek/Qwen/GLM (billing vs rate-limit vs
     auth vs context-length), Moonshot/Kimi + Mistral/Codestral + bare
     `llama-*` (Groq) prefixes added to the auto-routing table.
+
+- **Enterprise-grade web chat (#90)** — all 5 reported chat problems fixed:
+  - chat SSE now sends 10s comment heartbeats (+ a 45s front-end stall
+    watchdog), so long tool calls (image generation) no longer die to proxy
+    idle timeouts as "network error";
+  - streaming errors are sent as legal chunks (`finish_reason=error`) and
+    rendered as a turn error with a retry button — no more stuck loading
+    bubbles; cancelling shows immediate "stopping…" feedback and a neutral
+    "stopped" state;
+  - **file pipeline end-to-end**: new `/v1/files` upload/download (25MB cap,
+    SVG forced-download against XSS), OpenAI content-parts through the whole
+    chain, `attachments_json` journal persistence, history re-render;
+  - the assistant can now send images: media paths in tool results are
+    registered with the file service and rewritten to fetchable URLs.
+
+### Fixed
+- **The months-old CI 6-hour py-test hang is root-caused and fixed**: an
+  abandoned (`break`-ed) `journal.iter_events` async generator finalized its
+  aiosqlite cursor on a dead event loop and killed the worker thread, wedging
+  every later journal call. `iter_events` is now break-safe by construction
+  (internal paging, cursors closed before yielding) — py-test passes
+  deterministically.
 
 ## [1.19.1] — 2026-06-11 — Upgrade progress bar + clearer manual fallback
 
