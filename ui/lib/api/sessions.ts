@@ -69,6 +69,18 @@ export interface TranscriptMessage {
   /** Present on assistant messages that issued tool calls. Empty / absent
    *  for plain text turns. */
   tool_calls?: TranscriptToolCall[];
+  /** W3 — journaled attachment metadata for user messages, so the chat
+   *  UI re-renders image/file cards on session resume. */
+  attachments?: TranscriptAttachment[];
+}
+
+/** Slim journaled attachment reference (no bytes — the UI re-fetches
+ *  stored content from `/v1/files/{id}`). */
+export interface TranscriptAttachment {
+  kind?: string;
+  url?: string;
+  mime?: string;
+  name?: string;
 }
 
 /** Summary block on a replay response. */
@@ -98,6 +110,11 @@ export interface ReplayResponse {
   transcript: TranscriptMessage[];
   summary: ReplaySummary;
   rerun?: ReplayRerun;
+  /** W5 — cursor for the next-older page (pass as `beforeTurnId`).
+   *  Absent on legacy-store replays, which never paginate. */
+  oldest_turn_id?: string | null;
+  /** W5 — true when an older page exists beyond this one. */
+  has_more?: boolean;
 }
 
 /** Tagged result so callers can branch on `503 sessions_disabled` without
@@ -201,7 +218,14 @@ export async function fetchSessions(): Promise<SessionsListResult> {
  */
 export async function replaySession(
   sessionKey: string,
-  opts?: { mode?: ReplayMode },
+  opts?: {
+    mode?: ReplayMode;
+    /** W5 pagination cursor — pass a previous page's `oldest_turn_id`
+     *  to fetch the next-older page. */
+    beforeTurnId?: string;
+    /** Page size in TURNS (server clamps to 1..1000). */
+    limit?: number;
+  },
 ): Promise<ReplayResult> {
   const mode: ReplayMode = opts?.mode ?? "transcript";
   try {
@@ -209,7 +233,11 @@ export async function replaySession(
       sessionsReplayPath(sessionKey),
       {
         method: "POST",
-        body: { mode },
+        body: {
+          mode,
+          ...(opts?.beforeTurnId ? { before_turn_id: opts.beforeTurnId } : {}),
+          ...(opts?.limit ? { limit: opts.limit } : {}),
+        },
       },
     );
     return { kind: "ok", replay };

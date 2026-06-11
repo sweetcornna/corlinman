@@ -16,9 +16,9 @@ import { cn } from "@/lib/utils";
 import type { ChatAttachment } from "@/lib/chat/types";
 import {
   attachmentKindFromMime,
-  fileToDataUrl,
   validateAttachment,
 } from "@/lib/api/chat";
+import { uploadChatFile } from "@/lib/api/files";
 import { ComposerAttachments } from "@/components/chat/composer-attachments";
 import { EmojiPicker } from "@/components/chat/emoji-picker";
 import {
@@ -80,6 +80,7 @@ export function Composer({
   const taRef = React.useRef<HTMLTextAreaElement | null>(null);
   const fileRef = React.useRef<HTMLInputElement | null>(null);
   const emojiWrapRef = React.useRef<HTMLDivElement | null>(null);
+  const emojiBtnRef = React.useRef<HTMLButtonElement | null>(null);
 
   React.useEffect(() => {
     const el = taRef.current;
@@ -148,53 +149,138 @@ export function Composer({
     [builtinSlashCommands, extraSlashCommands],
   );
 
-  const addFiles = React.useCallback(async (files: FileList | File[]) => {
-    const items = Array.from(files);
-    const next: ChatAttachment[] = [];
-    for (const file of items) {
-      const err = validateAttachment(file);
-      const id = `att_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-      const kind = attachmentKindFromMime(file.type);
-      const att: ChatAttachment = {
-        id,
-        kind,
-        name: file.name,
-        mime: file.type,
-        sizeBytes: file.size,
-        uploading: !err,
-        error: err ?? undefined,
-      };
-      if (kind === "image" && !err) {
-        try {
-          att.previewUrl = URL.createObjectURL(file);
-        } catch {
-          // ignore
+  // Patch a single attachment in place by id — used by the async upload
+  // callbacks below to flip `uploading`/`progress`/`remoteUrl`/`error`
+  // as each upload runs, without disturbing sibling attachments.
+  const patchAttachment = React.useCallback(
+    (id: string, patch: Partial<ChatAttachment>) => {
+      setAttachments((prev) =>
+        prev.map((a) => (a.id === id ? { ...a, ...patch } : a)),
+      );
+    },
+    [],
+  );
+
+  const addFiles = React.useCallback(
+    (files: FileList | File[]) => {
+      const items = Array.from(files);
+      const next: ChatAttachment[] = [];
+      // Valid files we'll actually upload, paired with their attachment id.
+      const toUpload: { id: string; file: File }[] = [];
+      for (const file of items) {
+        const err = validateAttachment(file);
+        const id = `att_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        const kind = attachmentKindFromMime(file.type);
+        const att: ChatAttachment = {
+          id,
+          kind,
+          name: file.name,
+          mime: file.type,
+          sizeBytes: file.size,
+          // Local validation failures stay non-uploading with the error
+          // shown; everything else enters the uploading state.
+          uploading: !err,
+          progress: err ? undefined : 0,
+          error: err ?? undefined,
+        };
+        if (kind === "image" && !err) {
+          // Keep the instant local preview while the real upload runs.
+          try {
+            att.previewUrl = URL.createObjectURL(file);
+          } catch {
+            // ignore — preview is best-effort
+          }
         }
+        next.push(att);
+        if (!err) toUpload.push({ id, file });
       }
-      next.push(att);
-      if (!err && kind === "image" && file.size < 1024 * 1024) {
+      // Show the pending attachments immediately, then kick off uploads.
+      setAttachments((prev) => [...prev, ...next]);
+      for (const { id, file } of toUpload) {
+        uploadChatFile(file, (fraction) =>
+          patchAttachment(id, { progress: fraction }),
+        )
+          .then((res) => {
+            patchAttachment(id, {
+              remoteUrl: res.url,
+              fileId: res.fileId,
+              uploading: false,
+              progress: 1,
+              error: undefined,
+            });
+          })
+          .catch(() => {
+            patchAttachment(id, {
+              uploading: false,
+              progress: undefined,
+              error: t("chat.attachmentUploadFailed"),
+            });
+          });
+      }
+    },
+    [patchAttachment, t],
+  );
+
+  // Any attachment still uploading blocks the send: the assistant can't
+  // see a file whose `remoteUrl` hasn't landed yet.
+  const isUploading = React.useMemo(
+    () => attachments.some((a) => a.uploading),
+    [attachments],
+  );
+
+  // An attachment only counts toward "something to send" once it is
+  // actually usable server-side (uploaded, not errored). Failed-only
+  // selections used to enable the send button and then deliver an
+  // EMPTY user message — the request builder drops errored uploads.
+  const hasUsableAttachment = React.useMemo(
+    () => attachments.some((a) => !a.error && !a.uploading && (a.fileId || a.remoteUrl)),
+    [attachments],
+  );
+
+  // Release `blob:` previews once an attachment leaves the composer —
+  // browsers retain object URLs for the page lifetime otherwise, which
+  // leaks every pasted image in a long session.
+  const revokePreviews = React.useCallback((list: ChatAttachment[]) => {
+    for (const a of list) {
+      if (a.previewUrl) {
         try {
-          att.remoteUrl = await fileToDataUrl(file);
-          att.uploading = false;
+          URL.revokeObjectURL(a.previewUrl);
         } catch {
-          att.uploading = false;
-          att.error = "preview failed";
+          // best-effort
         }
-      } else {
-        att.uploading = false;
       }
     }
-    setAttachments((prev) => [...prev, ...next]);
   }, []);
+
+  // Unmount sweep: whatever previews are still pending when the composer
+  // goes away (session switch, page nav) get released too.
+  const attachmentsRef = React.useRef(attachments);
+  attachmentsRef.current = attachments;
+  React.useEffect(
+    () => () => revokePreviews(attachmentsRef.current),
+    [revokePreviews],
+  );
 
   const handleSend = React.useCallback(() => {
     const v = text.trim();
-    if (!v && attachments.length === 0) return;
-    if (isStreaming) return;
-    onSend(v, attachments);
+    if (!v && !hasUsableAttachment) return;
+    if (isStreaming || isUploading) return;
+    // Only usable attachments travel with the message (the request
+    // builder would drop the rest anyway); previews are released here —
+    // sent attachments render from their `remoteUrl`.
+    onSend(v, attachments.filter((a) => !a.error && !a.uploading));
+    revokePreviews(attachments);
     setText("");
     setAttachments([]);
-  }, [text, attachments, isStreaming, onSend]);
+  }, [
+    text,
+    attachments,
+    hasUsableAttachment,
+    isStreaming,
+    isUploading,
+    onSend,
+    revokePreviews,
+  ]);
 
   const handleKeyDown = React.useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -278,9 +364,14 @@ export function Composer({
     });
   }, [text]);
 
+  // Dismiss the emoji popover and return focus to the trigger button so
+  // keyboard users land back where they opened it. Focus is moved
+  // synchronously after the React commit (flushed in a microtask via the
+  // state setter callback) rather than racing a rAF — the button is always
+  // mounted, so a plain `.focus()` is reliable.
   const closeEmoji = React.useCallback(() => {
     setEmojiOpen(false);
-    window.requestAnimationFrame(() => taRef.current?.focus());
+    emojiBtnRef.current?.focus();
   }, []);
 
   // Dismiss the emoji popover on outside click.
@@ -295,10 +386,69 @@ export function Composer({
     return () => window.removeEventListener("mousedown", onDown);
   }, [emojiOpen]);
 
-  const canSend = !!text.trim() || attachments.length > 0;
+  // Cmd+/ (mac) / Ctrl+/ (win/linux) focuses the composer from anywhere.
+  // Cmd/Ctrl+K and `?` belong to the command palette; `/` is unclaimed,
+  // so there's no conflict with the existing global hotkeys.
+  React.useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === "/" && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
+        e.preventDefault();
+        taRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // iOS soft-keyboard avoidance. When the on-screen keyboard opens, the
+  // visualViewport shrinks; scroll the textarea back into view so it
+  // isn't hidden behind the keyboard. Debounced + SSR-guarded; relies on
+  // the visualViewport API (no-op where unsupported, e.g. older browsers
+  // and jsdom).
+  React.useEffect(() => {
+    if (typeof window === "undefined") return;
+    const vv = window.visualViewport;
+    if (!vv) return;
+    let prevHeight = vv.height;
+    let raf = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const onResize = (): void => {
+      const next = vv.height;
+      // Only react when the viewport *shrank* (keyboard came up) and the
+      // textarea is the focused element — avoids stealing scroll on every
+      // orientation / URL-bar change.
+      const shrank = next < prevHeight - 80;
+      prevHeight = next;
+      if (!shrank) return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (document.activeElement !== taRef.current) return;
+        raf = window.requestAnimationFrame(() => {
+          taRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        });
+      }, 120);
+    };
+    vv.addEventListener("resize", onResize);
+    return () => {
+      vv.removeEventListener("resize", onResize);
+      if (timer) clearTimeout(timer);
+      if (raf) window.cancelAnimationFrame(raf);
+    };
+  }, []);
+
+  const canSend =
+    (!!text.trim() || hasUsableAttachment) && !isUploading;
 
   return (
-    <div className="mx-auto w-full max-w-3xl px-3 pb-3 pt-1">
+    <div
+      className="mx-auto w-full max-w-3xl px-3 pb-3 pt-1"
+      // Keep the composer clear of the iOS home indicator / gesture bar.
+      // env() resolves to 0 where unsupported, so this is a safe no-op
+      // on desktop and in jsdom.
+      style={{ paddingBottom: "calc(0.75rem + env(safe-area-inset-bottom, 0px))" }}
+      data-testid="composer-root"
+    >
       <div
         className={cn(
           "sg-card lg-edge lg-refract relative rounded-sg-xl border border-sg-border shadow-sg-3",
@@ -361,7 +511,10 @@ export function Composer({
           <ComposerAttachments
             attachments={attachments}
             onRemove={(id) =>
-              setAttachments((prev) => prev.filter((a) => a.id !== id))
+              setAttachments((prev) => {
+                revokePreviews(prev.filter((a) => a.id === id));
+                return prev.filter((a) => a.id !== id);
+              })
             }
           />
 
@@ -418,6 +571,8 @@ export function Composer({
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
               rows={1}
+              aria-keyshortcuts="Meta+/ Control+/"
+              aria-label={t("chat.composerFocusShortcut")}
               placeholder={placeholder ?? t("chat.composerPlaceholder")}
               className={cn(
                 "w-full resize-none bg-transparent text-[14px] leading-relaxed",
@@ -443,6 +598,7 @@ export function Composer({
 
             <div className="relative" ref={emojiWrapRef}>
               <button
+                ref={emojiBtnRef}
                 type="button"
                 onClick={() => setEmojiOpen((v) => !v)}
                 className={cn(
@@ -451,7 +607,7 @@ export function Composer({
                 )}
                 aria-label={t("chat.composerEmoji")}
                 aria-expanded={emojiOpen}
-                aria-haspopup="dialog"
+                aria-haspopup="listbox"
                 data-testid="composer-emoji"
               >
                 <Smile className="h-4 w-4" aria-hidden="true" />
@@ -531,7 +687,16 @@ export function Composer({
                     : "cursor-not-allowed bg-sg-inset text-sg-ink-5",
                 )}
                 data-testid="composer-send"
-                aria-label={t("chat.composerSendAriaLabel")}
+                aria-label={
+                  isUploading
+                    ? t("chat.composerSendWaitingUpload")
+                    : t("chat.composerSendAriaLabel")
+                }
+                title={
+                  isUploading
+                    ? t("chat.composerSendWaitingUpload")
+                    : undefined
+                }
               >
                 <Send className="h-4 w-4" aria-hidden="true" />
               </button>

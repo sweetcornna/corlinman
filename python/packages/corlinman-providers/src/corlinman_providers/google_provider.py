@@ -18,6 +18,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import mimetypes
 import os
 from collections.abc import AsyncIterator, Sequence
 from typing import Any, ClassVar
@@ -294,10 +295,40 @@ def _content_to_parts(content: Any, types: Any) -> list[Any]:
             part = _image_part_from_url(url, types)
             if part is not None:
                 parts.append(part)
-        # Unknown / unsupported part types (e.g. generic "file") are skipped:
-        # Gemini's text+image vocabulary doesn't represent them here, and
-        # dropping beats failing the whole request.
+        elif ptype == "file":
+            part = _file_part_from_file(raw.get("file") or {}, types)
+            if part is not None:
+                parts.append(part)
+        # Other unknown part types are skipped — dropping beats failing
+        # the whole request.
     return parts
+
+
+def _file_part_from_file(f: dict[str, Any], types: Any) -> Any | None:
+    """Build a Gemini ``Part`` from an OpenAI ``file`` part.
+
+    Gemini accepts PDFs / audio / video as inline bytes, so a part that
+    carries an inline ``file_data`` data URL maps straight to
+    ``Part.from_bytes``. Parts without inline data (url-only) degrade to
+    a text part naming the attachment, so the model can tell the user it
+    can't fetch it (gateway-private urls are unreachable from Google).
+    """
+    name = str(f.get("file_name") or f.get("filename") or "attachment")
+    data_url = str(f.get("file_data") or "")
+    if data_url.startswith("data:") and ";base64," in data_url:
+        header, b64 = data_url.split(",", 1)
+        mime = header[5:].split(";", 1)[0] or "application/octet-stream"
+        try:
+            data = base64.b64decode(b64)
+        except (binascii.Error, ValueError):
+            return None
+        return types.Part.from_bytes(data=data, mime_type=mime)
+    return types.Part.from_text(
+        text=(
+            f"[attachment {name!r} was provided but could not be passed "
+            "to this model]"
+        )
+    )
 
 
 def _image_part_from_url(url: str, types: Any) -> Any | None:
@@ -318,7 +349,13 @@ def _image_part_from_url(url: str, types: Any) -> Any | None:
         except (binascii.Error, ValueError):
             return None
         return types.Part.from_bytes(data=data, mime_type=mime)
-    return types.Part.from_uri(file_uri=url)
+    # ``from_uri`` requires a mime_type (google-genai raises without
+    # one) — infer from the url's extension and fall back to JPEG, the
+    # most common remote-image case.
+    guessed = mimetypes.guess_type(url)[0]
+    return types.Part.from_uri(
+        file_uri=url, mime_type=guessed or "image/jpeg"
+    )
 
 
 def _iter_function_calls(chunk: Any) -> list[Any]:

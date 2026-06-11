@@ -115,6 +115,12 @@ class ReplayBody(BaseModel):
     """``POST /admin/sessions/{session_key}/replay`` body."""
 
     mode: str | None = None  # "transcript" | "rerun" | None → "transcript"
+    # W5 — pagination over long sessions. ``before_turn_id`` is the
+    # exclusive upper cursor (a ``turns.turn_id``); ``limit`` caps the
+    # number of TURNS (not messages) per page. ``None`` keeps the
+    # legacy newest-500 window.
+    before_turn_id: str | None = None
+    limit: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -521,8 +527,19 @@ async def _wipe_memory_for_session(state: AdminState, session_key: str) -> None:
 
 
 
+#: Default page size (in turns) for journal-backed replay. Pre-W5 this
+#: was a silent hard truncation; it is now a cursor-pageable window.
+_REPLAY_DEFAULT_TURN_LIMIT = 500
+
+
 async def _replay_from_journal(
-    data_dir: Path, tenant: TenantId, session_key: str, mode: ReplayMode
+    data_dir: Path,
+    tenant: TenantId,
+    session_key: str,
+    mode: ReplayMode,
+    *,
+    limit: int | None = None,
+    before_turn_id: str | None = None,
 ) -> dict[str, Any] | None:
     """Reconstruct a replay-shaped JSON payload from the per-turn journal.
 
@@ -558,15 +575,27 @@ async def _replay_from_journal(
     # originating assistant message's tool_calls[…].result. Without
     # this the UI shows tool calls without their results on resume.
     tc_lookup: dict[str, tuple[int, int]] = {}
+    page_limit = max(1, min(limit or _REPLAY_DEFAULT_TURN_LIMIT, 1000))
+    has_more = False
+    oldest_turn_id: str | None = None
     try:
         journal = await AgentJournal.open(path)
-        # Pull all turns for this session at once so we have per-turn
-        # ``started_at_ms`` for synthesising the per-message ts. The
-        # facade returns most-recent-first; we replay in chronological
-        # order so the UI bubble order is correct.
-        turn_rows = await journal.list_session_turns(session_key, limit=500)
+        # Pull one page of turns (most-recent-first from the facade; we
+        # replay in chronological order so bubble order is correct).
+        # ``page_limit + 1`` over-fetch: the extra row only tells us
+        # whether an older page exists — it is trimmed before replay.
+        turn_rows = await journal.list_session_turns(
+            session_key,
+            limit=page_limit + 1,
+            before_turn_id=before_turn_id,
+        )
         if not turn_rows:
             return None
+        if len(turn_rows) > page_limit:
+            has_more = True
+            turn_rows = turn_rows[:page_limit]
+        raw_oldest = turn_rows[-1].get("turn_id")
+        oldest_turn_id = str(raw_oldest) if raw_oldest is not None else None
         for turn_row in reversed(turn_rows):
             raw_turn_id = turn_row.get("turn_id")
             if raw_turn_id is None:
@@ -601,6 +630,14 @@ async def _replay_from_journal(
                         "content": str(content),
                         "ts": ts_iso,
                     }
+                    # W3 — attachment metadata journaled with the user
+                    # message; the chat UI re-renders image/file cards
+                    # from it on session resume.
+                    raw_atts = m.get("attachments")
+                    if isinstance(raw_atts, list) and raw_atts:
+                        entry["attachments"] = [
+                            dict(a) for a in raw_atts if isinstance(a, dict)
+                        ]
                     raw_tcs = m.get("tool_calls")
                     if role == "assistant" and isinstance(raw_tcs, list) and raw_tcs:
                         # Pass tool_calls through in their OpenAI shape so
@@ -655,6 +692,11 @@ async def _replay_from_journal(
         "session_key": session_key,
         "mode": ("rerun" if mode == ReplayMode.RERUN else "transcript"),
         "transcript": transcript,
+        # W5 pagination envelope: pass ``oldest_turn_id`` back as
+        # ``before_turn_id`` to fetch the next-older page; ``has_more``
+        # is false on the final (oldest) page.
+        "oldest_turn_id": oldest_turn_id,
+        "has_more": has_more,
         "summary": {
             "message_count": len(transcript),
             "tenant_id": tenant.as_str(),
@@ -673,13 +715,24 @@ async def _replay_for_request(
     tenant: TenantId,
     session_key: str,
     mode: ReplayMode,
+    *,
+    limit: int | None = None,
+    before_turn_id: str | None = None,
 ) -> Any:
     # Primary path: read from the per-turn journal where the live
     # /v1/chat/completions path actually writes. Falls back to the
     # legacy sessions.sqlite store if the journal has no messages
     # for this key (covers operators with pre-port history still
-    # only in the legacy file).
-    primary = await _replay_from_journal(data_dir, tenant, session_key, mode)
+    # only in the legacy file). Pagination (W5) is journal-only —
+    # the legacy stores never grew sessions long enough to need it.
+    primary = await _replay_from_journal(
+        data_dir,
+        tenant,
+        session_key,
+        mode,
+        limit=limit,
+        before_turn_id=before_turn_id,
+    )
     if primary is not None:
         return primary
 

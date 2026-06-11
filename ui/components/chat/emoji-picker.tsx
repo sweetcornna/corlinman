@@ -197,17 +197,28 @@ export function EmojiPicker({ onPick, onPickSticker, onClose }: EmojiPickerProps
     [cells, active, pickCell, onClose],
   );
 
-  // Keep the active cell scrolled into view.
+  // Roving tabindex: keep the active cell scrolled into view AND move DOM
+  // focus to it, so the browser's focus ring follows the selection and
+  // screen readers announce the active option. We deliberately don't focus
+  // on the very first mount frame here — the mount effect below handles the
+  // initial focus once so opening the picker doesn't yank the page scroll.
+  const mounted = React.useRef(false);
   React.useEffect(() => {
     const grid = gridRef.current;
     if (!grid) return;
     const el = grid.querySelector<HTMLElement>(`[data-emoji-index="${active}"]`);
     el?.scrollIntoView?.({ block: "nearest" });
+    if (mounted.current) el?.focus?.();
   }, [active]);
 
-  // Focus the grid on mount so arrow keys work immediately.
+  // Focus the first cell on mount so arrow keys work immediately, then mark
+  // mounted so subsequent `active` changes move focus too.
   React.useEffect(() => {
-    gridRef.current?.focus();
+    const grid = gridRef.current;
+    const el = grid?.querySelector<HTMLElement>(`[data-emoji-index="${active}"]`);
+    el?.focus?.();
+    mounted.current = true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   let cellIndex = 0;
@@ -218,15 +229,19 @@ export function EmojiPicker({ onPick, onPickSticker, onClose }: EmojiPickerProps
       <button
         key={key}
         type="button"
+        role="option"
+        aria-selected={isActive}
         data-testid="emoji-item"
         data-emoji-index={idx}
-        tabIndex={-1}
+        // Roving tabindex — only the active cell is in the tab order; Tab
+        // moves focus out of the grid, arrow keys move within it.
+        tabIndex={isActive ? 0 : -1}
         aria-label={label}
         onClick={() => pickCell(cell)}
         onMouseEnter={() => setActive(idx)}
         className={cn(
           "lg-gel flex h-9 w-9 items-center justify-center rounded-md text-xl leading-none",
-          "hover:bg-sg-accent-soft",
+          "hover:bg-sg-accent-soft focus:outline-none",
           isActive && "bg-sg-accent-soft ring-1 ring-sg-accent/40",
           cell.emoji === null && "text-sg-accent",
         )}
@@ -238,11 +253,10 @@ export function EmojiPicker({ onPick, onPickSticker, onClose }: EmojiPickerProps
 
   return (
     <motion.div
-      role="dialog"
+      role="listbox"
       aria-label={t("chat.emojiPickerAriaLabel")}
       data-testid="emoji-picker"
       ref={gridRef}
-      tabIndex={-1}
       onKeyDown={handleKeyDown}
       initial="hidden"
       animate="visible"

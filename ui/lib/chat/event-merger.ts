@@ -30,8 +30,30 @@ export function chunkToChatEvents(
 ): ChatEvent[] {
   const events: ChatEvent[] = [];
   const turnId = chunk.corlinman?.turn_id ?? fallbackTurnId;
+  // Mid-stream failure. The W1a gateway sends a valid chunk carrying
+  // both `finish_reason: "error"` and this payload; pre-W1a gateways
+  // sent a bare `{error}` frame with NO choices — which this function
+  // used to fold into zero events, leaving the bubble loading forever.
+  // Either shape terminates the turn here.
+  if (chunk.error) {
+    events.push({
+      kind: "tools-settle",
+      turnId,
+      sequence: -1,
+      finishReason: "error",
+    });
+    events.push({
+      kind: "turn-errored",
+      turnId,
+      sequence: -1,
+      error:
+        chunk.error.message ?? chunk.error.reason ?? chunk.error.code ??
+        "upstream error",
+    });
+    return events;
+  }
   for (const choice of chunk.choices ?? []) {
-    const delta = choice.delta;
+    const delta = choice.delta ?? {};
     if (delta.content) {
       events.push({
         kind: "text-delta",
@@ -78,7 +100,10 @@ export function chunkToChatEvents(
         }
       }
     }
-    if (choice.finish_reason) {
+    // `!= null` (not truthiness): an out-of-spec `finish_reason: ""` is
+    // still a terminal marker — treating it as falsy used to leave the
+    // turn permanently un-finished and surface a bogus "stream failed".
+    if (choice.finish_reason != null) {
       // OpenAI-compat /v1/chat/completions doesn't emit per-tool
       // ToolStateCompleted via the journal SSE (only the hermes gRPC
       // path does). On stream end we surface a synthetic settle event
@@ -90,12 +115,23 @@ export function chunkToChatEvents(
         sequence: -1,
         finishReason: choice.finish_reason,
       });
-      events.push({
-        kind: "turn-complete",
-        turnId,
-        sequence: -1,
-        usage: { finishReason: choice.finish_reason },
-      });
+      if (choice.finish_reason === "error") {
+        // W1a error contract without a top-level payload (defensive):
+        // the choice alone still must end the turn as an error.
+        events.push({
+          kind: "turn-errored",
+          turnId,
+          sequence: -1,
+          error: "upstream error",
+        });
+      } else {
+        events.push({
+          kind: "turn-complete",
+          turnId,
+          sequence: -1,
+          usage: { finishReason: choice.finish_reason },
+        });
+      }
     }
   }
   return events;
@@ -301,10 +337,20 @@ export function liveEventToChatEvent(ev: LiveEvent): ChatEvent | null {
         error: p.message ?? "errored",
       };
     }
+    case "Cancelling": {
+      // Backend acknowledged the cancel; surface it so the Stop click
+      // has visible feedback (previously dropped → the button vanished
+      // and the bubble hung "pending" until TurnErrored landed).
+      return {
+        kind: "cancelling",
+        turnId: baseTurnId,
+        sequence: baseSeq,
+      };
+    }
     // AwaitingApproval is not yet in the LiveEventType union (backend
     // stub), but the merger handles it if/when added. Fall through.
     default:
-      // BlockStart / BlockStop / Heartbeat / Cancelling — UI doesn't render.
+      // BlockStart / BlockStop / Heartbeat — UI doesn't render.
       if (
         (ev.event_type as string) === "AwaitingApproval"
       ) {

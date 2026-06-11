@@ -57,6 +57,12 @@ export function ChatModelPicker({
   const { t } = useTranslation();
   const [custom, setCustom] = React.useState("");
   const [filter, setFilter] = React.useState("");
+  // Focus management: the dialog container (for the Tab trap), the search
+  // input (initial focus target), and the element that was focused before
+  // the dialog opened (restored on close).
+  const dialogRef = React.useRef<HTMLDivElement>(null);
+  const searchRef = React.useRef<HTMLInputElement>(null);
+  const restoreFocusRef = React.useRef<Element | null>(null);
   // PERF-012: number of provider probes allowed to run so far. We probe
   // providers sequentially (one in-flight at a time) instead of fanning out
   // one concurrent HTTP probe per enabled provider the instant the popover
@@ -73,6 +79,64 @@ export function ChatModelPicker({
       setProbeCursor(0);
     }
   }, [open]);
+
+  // Focus management: on open, remember the element that triggered the dialog
+  // and move focus to the search input. On close, restore focus to the
+  // trigger so keyboard users land back where they started.
+  React.useEffect(() => {
+    if (!open) return;
+    restoreFocusRef.current =
+      typeof document !== "undefined" ? document.activeElement : null;
+    // Defer to after paint so the input is mounted and focusable.
+    const id = window.requestAnimationFrame(() => {
+      searchRef.current?.focus();
+    });
+    return () => {
+      window.cancelAnimationFrame(id);
+      const prev = restoreFocusRef.current;
+      if (prev && prev instanceof HTMLElement) {
+        prev.focus();
+      }
+      restoreFocusRef.current = null;
+    };
+  }, [open]);
+
+  // Minimal hand-rolled focus trap + Escape-to-close. Keeps Tab / Shift+Tab
+  // cycling among the focusable controls inside the dialog and never lets
+  // focus escape to the page behind the modal.
+  const onDialogKeyDown = React.useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onClose();
+        return;
+      }
+      if (e.key !== "Tab") return;
+      const root = dialogRef.current;
+      if (!root) return;
+      const focusable = Array.from(
+        root.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((el) => el.offsetParent !== null || el === document.activeElement);
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement as HTMLElement | null;
+      if (e.shiftKey) {
+        if (active === first || !root.contains(active)) {
+          e.preventDefault();
+          last.focus();
+        }
+      } else {
+        if (active === last || !root.contains(active)) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    },
+    [onClose],
+  );
 
   // ── data ────────────────────────────────────────────────────────────
   const modelsQ = useQuery({
@@ -205,6 +269,7 @@ export function ChatModelPicker({
       }
       data-testid="chat-model-picker"
       data-kind={kind}
+      onKeyDown={onDialogKeyDown}
     >
       <div
         className="absolute inset-0 bg-black/40"
@@ -212,6 +277,7 @@ export function ChatModelPicker({
         aria-hidden="true"
       />
       <div
+        ref={dialogRef}
         className={cn(
           "relative z-10 flex max-h-[80vh] w-full max-w-md flex-col overflow-hidden",
           "rounded-lg border border-sg-border bg-sg-inset shadow-xl",
@@ -270,6 +336,7 @@ export function ChatModelPicker({
         <div className="flex items-center gap-1.5 border-b border-sg-border px-3 py-1.5">
           <Search className="h-3.5 w-3.5 text-sg-ink-3" aria-hidden="true" />
           <input
+            ref={searchRef}
             type="search"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}

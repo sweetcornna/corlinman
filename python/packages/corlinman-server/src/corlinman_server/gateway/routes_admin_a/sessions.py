@@ -337,7 +337,15 @@ def router() -> APIRouter:
         # ``routes_admin_b`` which the admin-A slice doesn't own.
         try:
             out = await _replay_for_request(
-                state, data_dir, tenant_id, session_key, ReplayMode.TRANSCRIPT
+                state,
+                data_dir,
+                tenant_id,
+                session_key,
+                ReplayMode.TRANSCRIPT,
+                limit=body.limit if body is not None else None,
+                before_turn_id=(
+                    body.before_turn_id if body is not None else None
+                ),
             )
         except (SessionNotFoundError, StoreOpenError) as exc:
             raise _session_not_found(session_key) from exc

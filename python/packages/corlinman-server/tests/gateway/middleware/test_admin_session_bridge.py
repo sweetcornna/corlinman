@@ -179,8 +179,12 @@ def test_no_resolver_wired_keeps_bearer_only() -> None:
     assert resp.status_code == 401
 
 
-def test_bridge_prefixes_are_chat_only() -> None:
-    assert ADMIN_SESSION_BRIDGE_PREFIXES == ("/v1/chat",)
+def test_bridge_prefixes_cover_chat_and_files() -> None:
+    # The bridge covers the chat endpoints plus the chat file store
+    # (/v1/files — upload + serve), both of which the same-origin in-app
+    # chat UI reaches with the admin-session cookie (no API key). It must
+    # NOT leak onto any other protected /v1 surface.
+    assert ADMIN_SESSION_BRIDGE_PREFIXES == ("/v1/chat", "/v1/files")
 
 
 # ---------------------------------------------------------------------------

@@ -36,6 +36,9 @@ See :class:`ChatState` for the wiring surface and
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
+import contextlib
 import json
 import logging
 import uuid
@@ -52,6 +55,8 @@ from corlinman_server.gateway.services.chat_bootstrap import (
     rewrite_trailing_user_message,
 )
 from corlinman_server.gateway_api import (
+    Attachment,
+    AttachmentKind,
     ChatService,
     DoneEvent,
     ErrorEvent,
@@ -80,12 +85,20 @@ __all__ = [
 
 
 class ChatMessage(BaseModel):
-    """OpenAI-shaped chat message. Mirrors the Rust ``ChatMessage`` struct."""
+    """OpenAI-shaped chat message. Mirrors the Rust ``ChatMessage`` struct.
+
+    ``content`` accepts both the plain string form and the OpenAI
+    multimodal content-parts array (``[{"type": "text", ...},
+    {"type": "image_url", ...}, ...]``) — W3. Parts are flattened to
+    text + :class:`~corlinman_server.gateway_api.Attachment` entries in
+    :func:`_build_internal_request`; nothing downstream of that sees a
+    list.
+    """
 
     model_config = ConfigDict(extra="allow")
 
     role: str
-    content: str = ""
+    content: str | list[dict[str, Any]] = ""
     name: str | None = None
     tool_call_id: str | None = None
 
@@ -200,8 +213,215 @@ def _role_from_str(s: str) -> Role:
         return Role.USER
 
 
+def _flatten_content(content: str | list[dict[str, Any]] | None) -> str:
+    """Collapse OpenAI content-parts to their text. Strings pass through."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    texts = [
+        str(p.get("text") or "")
+        for p in content
+        if isinstance(p, dict) and p.get("type") == "text"
+    ]
+    return "\n".join(t for t in texts if t)
+
+
+def _content_chars(content: str | list[dict[str, Any]] | None) -> int:
+    """Size of a message's content for the request cap — counts text AND
+    embedded payloads (a data-URL image inside a part must not slip past
+    the cap just because it isn't a plain string)."""
+    if content is None:
+        return 0
+    if isinstance(content, str):
+        return len(content)
+    total = 0
+    for p in content:
+        if isinstance(p, dict):
+            total += len(json.dumps(p, ensure_ascii=False, default=str))
+    return total
+
+
+_FILES_URL_PREFIX = "/v1/files/"
+
+#: Per-turn bounds on resolved attachments. Each ``/v1/files/{id}``
+#: reference inflates from a ~60-char string into the stored payload
+#: (≤50 MiB each), so without these caps one request referencing many
+#: prior uploads could pin unbounded gateway memory and then balloon
+#: further at base64 time. Overflowing parts are skipped with a warning
+#: — the turn still runs with what fits.
+_MAX_ATTACHMENTS_PER_TURN = 10
+_MAX_ATTACHMENT_TOTAL_BYTES = 64 * 1024 * 1024
+
+
+def _resolve_stored(file_id: str) -> tuple[bytes, str, str] | None:
+    """Indirection over :func:`files.load_stored_file` (patchable in tests)."""
+    from corlinman_server.gateway.routes.files import load_stored_file
+
+    return load_stored_file(file_id)
+
+
+def _parts_to_attachments(parts: list[dict[str, Any]]) -> list[Attachment]:
+    """Convert the trailing user message's non-text parts to attachments.
+
+    Uploads referenced as ``/v1/files/{id}`` (or a bare ``file_id``)
+    are inlined as bytes — model providers cannot fetch gateway-private
+    URLs — while the slim ``/v1/files`` url is KEPT on the attachment so
+    the journal records a re-fetchable reference instead of megabytes of
+    base64. Unresolvable parts are skipped with a warning; one bad part
+    must not fail the whole turn.
+    """
+    out: list[Attachment] = []
+    total_bytes = 0
+
+    def _over_budget(extra: int) -> bool:
+        nonlocal total_bytes
+        if len(out) >= _MAX_ATTACHMENTS_PER_TURN:
+            _log.warning(
+                "chat attachment: per-turn count cap (%d) reached; skipping",
+                _MAX_ATTACHMENTS_PER_TURN,
+            )
+            return True
+        if total_bytes + extra > _MAX_ATTACHMENT_TOTAL_BYTES:
+            _log.warning(
+                "chat attachment: per-turn byte cap (%d) reached; skipping",
+                _MAX_ATTACHMENT_TOTAL_BYTES,
+            )
+            return True
+        total_bytes += extra
+        return False
+
+    for p in parts:
+        if not isinstance(p, dict):
+            continue
+        ptype = p.get("type")
+        if ptype == "image_url":
+            raw = p.get("image_url")
+            url = str((raw or {}).get("url") or "").strip() if isinstance(raw, dict) else ""
+            if not url:
+                continue
+            if url.startswith(_FILES_URL_PREFIX):
+                loaded = _resolve_stored(url[len(_FILES_URL_PREFIX) :])
+                if loaded is None:
+                    _log.warning("chat attachment: unknown stored image %s", url)
+                    continue
+                blob, mime, name = loaded
+                if _over_budget(len(blob)):
+                    continue
+                out.append(
+                    Attachment(
+                        kind=AttachmentKind.IMAGE,
+                        url=url,
+                        bytes=blob,
+                        mime=mime,
+                        file_name=name,
+                    )
+                )
+            elif url.startswith(("http://", "https://", "data:image/", "data:")):
+                # data: URLs carry the payload inline — budget them too.
+                if _over_budget(len(url) if url.startswith("data:") else 0):
+                    continue
+                out.append(Attachment(kind=AttachmentKind.IMAGE, url=url))
+            else:
+                _log.warning("chat attachment: unsupported image url form")
+        elif ptype == "file":
+            raw_f = p.get("file")
+            f = raw_f if isinstance(raw_f, dict) else {}
+            file_id = str(f.get("file_id") or "").strip()
+            if file_id.startswith(_FILES_URL_PREFIX):
+                file_id = file_id[len(_FILES_URL_PREFIX) :]
+            filename = str(f.get("filename") or "") or None
+            if file_id:
+                loaded = _resolve_stored(file_id)
+                if loaded is None:
+                    _log.warning("chat attachment: unknown stored file %s", file_id)
+                    continue
+                blob, mime, name = loaded
+                if _over_budget(len(blob)):
+                    continue
+                out.append(
+                    Attachment(
+                        kind=AttachmentKind.FILE,
+                        url=f"{_FILES_URL_PREFIX}{file_id}",
+                        bytes=blob,
+                        mime=mime,
+                        file_name=filename or name,
+                    )
+                )
+            elif f.get("file_data"):
+                data = str(f.get("file_data") or "")
+                decoded = _decode_b64_payload(data)
+                if decoded is None:
+                    _log.warning("chat attachment: undecodable file_data")
+                    continue
+                if _over_budget(len(decoded)):
+                    continue
+                out.append(
+                    Attachment(
+                        kind=AttachmentKind.FILE,
+                        bytes=decoded,
+                        # Keep the data-URL's declared mime — dropping it
+                        # made the loop rebuild the payload as
+                        # octet-stream, so providers couldn't recognise
+                        # an inline PDF as a document.
+                        mime=_data_url_mime(data),
+                        file_name=filename,
+                    )
+                )
+        elif ptype == "input_audio":
+            raw_a = p.get("input_audio")
+            ia = raw_a if isinstance(raw_a, dict) else {}
+            decoded = _decode_b64_payload(str(ia.get("data") or ""))
+            if decoded is None:
+                _log.warning("chat attachment: undecodable input_audio")
+                continue
+            if _over_budget(len(decoded)):
+                continue
+            fmt = str(ia.get("format") or "").strip()
+            out.append(
+                Attachment(
+                    kind=AttachmentKind.AUDIO,
+                    bytes=decoded,
+                    mime=f"audio/{fmt}" if fmt else None,
+                )
+            )
+    return out
+
+
+def _data_url_mime(data: str) -> str | None:
+    """Extract the declared mime from a ``data:`` URL, else ``None``."""
+    if not data.startswith("data:"):
+        return None
+    header = data.split(",", 1)[0]
+    mime = header[5:].split(";", 1)[0].strip().lower()
+    return mime or None
+
+
+def _decode_b64_payload(data: str) -> bytes | None:
+    """Decode a base64 payload that may arrive as a bare string or a
+    ``data:`` URL. ``None`` on any decode failure."""
+    if not data:
+        return None
+    if data.startswith("data:"):
+        _, _, tail = data.partition(",")
+        data = tail
+    try:
+        return base64.b64decode(data, validate=False)
+    except (ValueError, binascii.Error):
+        return None
+
+
 def _build_internal_request(req: ChatRequest, session_key: str | None) -> InternalChatRequest:
     """Translate the OpenAI body into the internal protocol shape.
+
+    Multimodal content-parts (W3) are split here: every message's parts
+    flatten to their text, and the **trailing user message's** non-text
+    parts become :class:`Attachment` entries on the request (the
+    reasoning loop re-injects them into that same trailing turn — see
+    ``corlinman_agent.reasoning_loop._inject_attachments``). Earlier
+    messages keep text only: providers treat history as already
+    normalised, and the journal re-serves historical attachments to the
+    UI out-of-band.
 
     Before the conversion, the **trailing user message** is checked
     against the shared slash-command registry (W8 — Persona Studio). If
@@ -212,17 +432,34 @@ def _build_internal_request(req: ChatRequest, session_key: str | None) -> Intern
     untouched — see :mod:`corlinman_server.gateway.services.chat_bootstrap`
     for why retroactive rewrites would corrupt the transcript.
     """
-    rewritten = rewrite_trailing_user_message(req.messages)
+    attachments: list[Attachment] = []
+    normalised: list[ChatMessage] = []
+    trailing_user_idx: int | None = None
+    for i in range(len(req.messages) - 1, -1, -1):
+        if req.messages[i].role == "user":
+            trailing_user_idx = i
+            break
+    for i, m in enumerate(req.messages):
+        if isinstance(m.content, str):
+            normalised.append(m)
+            continue
+        if i == trailing_user_idx:
+            attachments = _parts_to_attachments(m.content)
+        normalised.append(
+            m.model_copy(update={"content": _flatten_content(m.content)})
+        )
+    rewritten = rewrite_trailing_user_message(normalised)
     return InternalChatRequest(
         model=req.model,
         messages=[
-            Message(role=_role_from_str(m.role), content=m.content)
+            Message(role=_role_from_str(m.role), content=_flatten_content(m.content))
             for m in rewritten
         ],
         session_key=session_key or "",
         stream=req.stream,
         max_tokens=req.max_tokens,
         temperature=req.temperature,
+        attachments=attachments,
     )
 
 
@@ -403,7 +640,13 @@ def _normalise_finish_reason(raw: str, had_tool_calls: bool) -> str:
 
 def _tool_call_envelope(event: ToolCallEvent, call_id: str) -> dict[str, object]:
     """OpenAI non-streaming tool_call envelope."""
-    args = event.args_json.decode("utf-8") if event.args_json else "{}"
+    # ``errors="replace"``: a provider emitting invalid UTF-8 in tool args
+    # must degrade to mojibake, not kill the whole response generator.
+    args = (
+        event.args_json.decode("utf-8", errors="replace")
+        if event.args_json
+        else "{}"
+    )
     return {
         "id": call_id,
         "type": "function",
@@ -417,7 +660,11 @@ def _tool_call_envelope(event: ToolCallEvent, call_id: str) -> dict[str, object]
 def _tool_call_delta_chunk(
     chat_id: str, model: str, index: int, event: ToolCallEvent, call_id: str
 ) -> dict[str, object]:
-    args = event.args_json.decode("utf-8") if event.args_json else "{}"
+    args = (
+        event.args_json.decode("utf-8", errors="replace")
+        if event.args_json
+        else "{}"
+    )
     return {
         "id": chat_id,
         "object": "chat.completion.chunk",
@@ -465,6 +712,28 @@ def _finish_chunk(chat_id: str, model: str, finish_reason: str) -> dict[str, obj
         "object": "chat.completion.chunk",
         "model": model,
         "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
+    }
+
+
+def _error_chunk(
+    chat_id: str, model: str, code: str, reason: str, message: str
+) -> dict[str, object]:
+    """Streaming error rendered as a *valid* OpenAI chunk.
+
+    The previous shape was a bare ``{"error": {...}}`` frame with no
+    ``choices`` — stream reducers that fold ``chunk.choices`` (our web
+    chat included) saw zero events and left the turn stuck in a loading
+    state forever, with the HTTP status already locked at 200. Keep the
+    ``error`` payload for API consumers, and add a terminal
+    ``finish_reason="error"`` choice so every consumer observes a
+    turn-ending event.
+    """
+    return {
+        "id": chat_id,
+        "object": "chat.completion.chunk",
+        "model": model,
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "error"}],
+        "error": {"code": code, "reason": reason, "message": message},
     }
 
 
@@ -534,6 +803,32 @@ async def _run_nonstream(
     return JSONResponse(body)
 
 
+# Upper bound on the *total* characters across all request messages.
+# Generous (a full long conversation is well under this), but stops a
+# malformed client from pushing arbitrarily large payloads into the
+# reasoning loop. Mirrors OpenAI's own per-request content limits.
+_MAX_TOTAL_CONTENT_CHARS = 2 * 1024 * 1024
+
+# Seconds of event-stream silence before emitting an SSE comment
+# heartbeat. Long-running tools produce no events while they execute
+# (image generation can block for 120s+); without any bytes on the wire
+# an idle-timeout proxy (30-60s is typical) kills the TCP connection
+# mid-turn and the browser surfaces a bare "network error". Same 10s
+# cadence as the admin sessions live stream (``sessions_events.py``).
+_SSE_HEARTBEAT_SECS = 10.0
+
+# Bounded hand-off between the service stream and the SSE writer. Keeps
+# *some* backpressure on the producer while letting the writer wake up
+# on a timer to heartbeat. ``asyncio.wait_for`` cannot safely wrap
+# ``__anext__`` on an async generator (the timeout cancellation lands
+# inside the generator frame and tears it down), so events are pumped
+# through a queue whose ``get()`` is cancellation-safe instead.
+_SSE_QUEUE_MAXSIZE = 256
+
+# Queue sentinel: the pump task finished (stream exhausted or errored).
+_STREAM_END = object()
+
+
 async def _sse_iter(
     service: ChatService,
     internal_req: InternalChatRequest,
@@ -541,37 +836,88 @@ async def _sse_iter(
     cancel: asyncio.Event,
 ) -> AsyncIterator[bytes]:
     """Render the event stream as OpenAI-shaped SSE.
-    Mirrors the Rust ``build_sse_stream`` implementation.
+    Mirrors the Rust ``build_sse_stream`` implementation, plus a comment
+    heartbeat every :data:`_SSE_HEARTBEAT_SECS` of silence so idle
+    proxies don't drop the connection while a slow tool runs.
     """
     chat_id = _new_chat_id()
     next_index = 0
     tool_calls_seen = False
-    stream: AsyncIterator[InternalChatEvent] = service.run(internal_req, cancel)
-    async for event in stream:
-        if isinstance(event, TokenDeltaEvent):
-            chunk = _token_delta_chunk(chat_id, model, event.text)
-            yield f"data: {json.dumps(chunk)}\n\n".encode()
-        elif isinstance(event, ToolCallEvent):
-            call_id = f"call_{uuid.uuid4().hex[:16]}"
-            chunk = _tool_call_delta_chunk(chat_id, model, next_index, event, call_id)
-            next_index += 1
-            tool_calls_seen = True
-            yield f"data: {json.dumps(chunk)}\n\n".encode()
-        elif isinstance(event, DoneEvent):
-            finish = _normalise_finish_reason(event.finish_reason, tool_calls_seen)
-            chunk = _finish_chunk(chat_id, model, finish)
-            yield f"data: {json.dumps(chunk)}\n\n".encode()
-            break
-        elif isinstance(event, ErrorEvent):
-            err = {
-                "error": {
-                    "code": "upstream_error",
-                    "reason": event.error.reason,
-                    "message": event.error.message,
-                }
-            }
-            yield f"data: {json.dumps(err)}\n\n".encode()
-            break
+
+    queue: asyncio.Queue[object] = asyncio.Queue(maxsize=_SSE_QUEUE_MAXSIZE)
+
+    async def _pump() -> None:
+        try:
+            stream: AsyncIterator[InternalChatEvent] = service.run(
+                internal_req, cancel
+            )
+            async for event in stream:
+                await queue.put(event)
+        except Exception as exc:  # noqa: BLE001 — surfaced as an SSE error chunk
+            await queue.put(exc)
+        finally:
+            await queue.put(_STREAM_END)
+
+    pump_task = asyncio.create_task(_pump())
+    try:
+        while True:
+            try:
+                event = await asyncio.wait_for(
+                    queue.get(), timeout=_SSE_HEARTBEAT_SECS
+                )
+            except TimeoutError:
+                # SSE comment frame: ignored by every spec-compliant
+                # parser, but keeps bytes flowing through idle proxies.
+                yield b": ping\n\n"
+                continue
+            if event is _STREAM_END:
+                break
+            if isinstance(event, TokenDeltaEvent):
+                chunk = _token_delta_chunk(chat_id, model, event.text)
+                yield f"data: {json.dumps(chunk)}\n\n".encode()
+            elif isinstance(event, ToolCallEvent):
+                call_id = f"call_{uuid.uuid4().hex[:16]}"
+                chunk = _tool_call_delta_chunk(
+                    chat_id, model, next_index, event, call_id
+                )
+                next_index += 1
+                tool_calls_seen = True
+                yield f"data: {json.dumps(chunk)}\n\n".encode()
+            elif isinstance(event, DoneEvent):
+                finish = _normalise_finish_reason(
+                    event.finish_reason, tool_calls_seen
+                )
+                chunk = _finish_chunk(chat_id, model, finish)
+                yield f"data: {json.dumps(chunk)}\n\n".encode()
+                break
+            elif isinstance(event, ErrorEvent):
+                chunk = _error_chunk(
+                    chat_id,
+                    model,
+                    "upstream_error",
+                    event.error.reason,
+                    event.error.message,
+                )
+                yield f"data: {json.dumps(chunk)}\n\n".encode()
+                break
+            elif isinstance(event, Exception):
+                # The service stream itself raised. Pre-heartbeat this
+                # propagated and killed the generator with no terminal
+                # frame — the client hung on a half-open stream.
+                _log.error("chat stream raised mid-turn", exc_info=event)
+                chunk = _error_chunk(
+                    chat_id,
+                    model,
+                    "internal_error",
+                    "stream_exception",
+                    str(event) or event.__class__.__name__,
+                )
+                yield f"data: {json.dumps(chunk)}\n\n".encode()
+                break
+    finally:
+        pump_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await pump_task
     yield b"data: [DONE]\n\n"
 
 
@@ -640,6 +986,15 @@ def router(state: ChatState | None = None) -> APIRouter:
                     status.HTTP_400_BAD_REQUEST,
                     "invalid_request",
                     "`messages` must be non-empty",
+                )
+            total_content = sum(_content_chars(m.content) for m in req.messages)
+            if total_content > _MAX_TOTAL_CONTENT_CHARS:
+                _span.set_attribute("http.status_code", 400)
+                return _error_response(
+                    status.HTTP_400_BAD_REQUEST,
+                    "invalid_request",
+                    "total `messages` content exceeds "
+                    f"{_MAX_TOTAL_CONTENT_CHARS} characters",
                 )
 
             # Model alias / unknown-model fallback. Pure function so the

@@ -33,7 +33,13 @@ export interface ChatMessage {
   createdAt: number;
   /** Live while the assistant is still streaming. */
   pending?: boolean;
-  /** Populated when the stream produces an error envelope. */
+  /** True between the user pressing Stop and the backend confirming the
+   *  cancellation (journal `Cancelling` event / final `TurnErrored`).
+   *  Renders as a "stopping…" indicator so the Stop click visibly took. */
+  cancelling?: boolean;
+  /** Populated when the stream produces an error envelope. The sentinel
+   *  values `"cancelled"` (user-initiated stop) and `"session_expired"`
+   *  (401 mid-conversation) get dedicated renderings in the bubble. */
   error?: string;
   /** Reasoning blocks (Claude extended thinking). Rendered above content
    *  in a collapsible block. */
@@ -120,7 +126,14 @@ export interface ChatAttachment {
   previewUrl?: string;
   /** Remote URL once uploaded; populated by `uploadAttachment`. */
   remoteUrl?: string;
+  /** Server-side file id from `POST /v1/files`; set alongside
+   *  `remoteUrl` once the upload completes. */
+  fileId?: string;
   uploading?: boolean;
+  /** Upload progress 0..1 while `uploading` (when the transport
+   *  reports it). Drives the determinate progress bar; absent uploads
+   *  fall back to an indeterminate shimmer. */
+  progress?: number;
   error?: string;
 }
 
@@ -224,6 +237,14 @@ export type ChatEvent =
       turnId: string;
       sequence: number;
       error: string;
+    }
+  | {
+      // Backend acknowledged a cancel request and is unwinding the turn.
+      // Rendered as a "stopping…" state on the pending bubble so the
+      // user's Stop click has visible effect before TurnErrored lands.
+      kind: "cancelling";
+      turnId: string;
+      sequence: number;
     }
   | {
       // Emitted on stream end. Any "running" tools should adopt a

@@ -3,6 +3,7 @@
 import * as React from "react";
 import { useRouter } from "next/navigation";
 import { useTranslation } from "react-i18next";
+import { Download } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { ArtifactPanel } from "@/components/chat/artifact-panel";
@@ -35,11 +36,73 @@ interface ChatAreaProps {
   onOpenImageModelPicker?: () => void;
   onAgentChange?: (agentId: string | null) => void;
   showActionTrace?: boolean;
+  /** W5 — an older history page exists; show the "load earlier" pill. */
+  hasEarlier?: boolean;
+  loadingEarlier?: boolean;
+  onLoadEarlier?: () => void;
 }
 
 function genSessionKey(): string {
   const r = Math.random().toString(36).slice(2, 10);
   return `corlinman:${Date.now().toString(36)}:${r}`;
+}
+
+/** Role → human-readable Markdown heading label. */
+function exportRoleLabel(
+  role: ChatMessage["role"],
+  t: (key: string) => string,
+): string {
+  switch (role) {
+    case "user":
+      return t("chat.roleYou");
+    case "assistant":
+      return t("chat.roleAssistant");
+    default:
+      return t("chat.roleSystem");
+  }
+}
+
+/**
+ * Serialize a settled transcript to a Markdown document. Pure + client-side:
+ * a role heading, an ISO-ish timestamp, the message body, and — when present —
+ * a compact summary line of the tool calls fired in that turn. The streaming
+ * `pendingMessage` is intentionally excluded by the caller (it's not settled).
+ */
+export function exportTranscriptMarkdown(
+  title: string,
+  messages: ChatMessage[],
+  t: (key: string) => string,
+): string {
+  const lines: string[] = [`# ${title || "Conversation"}`, ""];
+  for (const m of messages) {
+    const when = Number.isFinite(m.createdAt)
+      ? new Date(m.createdAt).toISOString()
+      : "";
+    lines.push(`## ${exportRoleLabel(m.role, t)}${when ? ` — ${when}` : ""}`);
+    lines.push("");
+    if (m.content.trim()) {
+      lines.push(m.content.trim());
+      lines.push("");
+    }
+    if (m.toolCalls && m.toolCalls.length > 0) {
+      const names = m.toolCalls.map((tc) => tc.toolName).join(", ");
+      lines.push(`> ${t("chat.exportToolCalls")}: ${names}`);
+      lines.push("");
+    }
+  }
+  return lines.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd() + "\n";
+}
+
+/** Turn a conversation title into a filesystem-friendly `.md` filename. */
+function exportFilename(title: string): string {
+  const base =
+    title
+      .trim()
+      .replace(/[\\/:*?"<>|]+/g, "-")
+      .replace(/\s+/g, " ")
+      .slice(0, 80)
+      .trim() || "conversation";
+  return `${base}.md`;
 }
 
 export function ChatArea({
@@ -57,6 +120,9 @@ export function ChatArea({
   onOpenImageModelPicker,
   onAgentChange,
   showActionTrace = true,
+  hasEarlier,
+  loadingEarlier,
+  onLoadEarlier,
 }: ChatAreaProps) {
   const router = useRouter();
   const { t } = useTranslation();
@@ -72,9 +138,27 @@ export function ChatArea({
     preview: string;
   } | null>(null);
 
+  // `len: -1` marks a provisional hydration: the session changed but the
+  // transcript query hasn't resolved yet, so we cleared the previous
+  // session's thread and are still waiting for real history. Any
+  // resolved history (even an equal-length / empty one) replaces it.
   const hydratedRef = React.useRef<{ key: string; len: number } | null>(null);
   React.useEffect(() => {
-    const desiredLen = initialHistory?.length ?? 0;
+    if (initialHistory === undefined) {
+      // Transcript still loading. Pre-fix this path hydrated `[]` as if
+      // it were real history and the ref guard then suppressed the real
+      // transcript when it landed — returning to an old conversation
+      // showed a blank thread until a manual refresh.
+      if (hydratedRef.current?.key !== sessionKey) {
+        chat.hydrate([]);
+        hydratedRef.current = { key: sessionKey, len: -1 };
+      }
+      return;
+    }
+    // Never clobber an in-flight turn — the stream owns the thread
+    // state; the post-turn render re-evaluates this effect anyway.
+    if (chat.isStreaming) return;
+    const desiredLen = initialHistory.length;
     if (
       hydratedRef.current &&
       hydratedRef.current.key === sessionKey &&
@@ -82,20 +166,28 @@ export function ChatArea({
     ) {
       return;
     }
-    chat.hydrate(initialHistory ?? []);
+    chat.hydrate(initialHistory);
     hydratedRef.current = { key: sessionKey, len: desiredLen };
   }, [sessionKey, initialHistory, chat]);
 
   const handlePickSuggestion = React.useCallback(
     (text: string) => {
-      void chat.sendMessage(text);
+      chat.sendMessage(text).catch((err) => {
+        console.warn("chat send failed", err);
+      });
     },
     [chat],
   );
 
   const handleEdit = React.useCallback(
     (messageId: string, newContent: string) => {
-      void chat.editAndRerun(messageId, newContent);
+      // Return the promise so the bubble can await it and only leave edit
+      // mode on success. We still log, but re-throw so the bubble's failure
+      // path keeps the draft in edit mode (no silent swallow).
+      return chat.editAndRerun(messageId, newContent).catch((err) => {
+        console.warn("chat edit-rerun failed", err);
+        throw err;
+      });
     },
     [chat],
   );
@@ -169,6 +261,28 @@ export function ChatArea({
   const { inputTokens, outputTokens, costUsd } = chat.totals;
   const hasUsage = inputTokens + outputTokens > 0 || costUsd > 0;
 
+  // W6 ⑤ — fully client-side conversation export. Serializes the settled
+  // transcript (NOT the in-flight `pendingMessage`) to Markdown and triggers
+  // a Blob download. No backend round-trip.
+  const handleExport = React.useCallback(() => {
+    const md = exportTranscriptMarkdown(title, chat.messages, t);
+    try {
+      const blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = exportFilename(title);
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.warn("chat export failed", err);
+    }
+  }, [title, chat.messages, t]);
+
+  const canExport = chat.messages.length > 0;
+
   return (
     <div className="flex h-full min-w-0 flex-1 gap-3 sm:gap-4">
       <section
@@ -184,6 +298,23 @@ export function ChatArea({
             <p className="font-mono text-[10px] text-sg-ink-5">{sessionKey}</p>
           </div>
           <div className="flex shrink-0 items-center gap-2 text-[11px] text-sg-ink-4">
+            <button
+              type="button"
+              onClick={handleExport}
+              disabled={!canExport}
+              className={cn(
+                "inline-flex min-h-6 items-center gap-1 rounded-sg-sm border border-sg-border bg-sg-inset px-1.5 py-0.5",
+                "hover:bg-sg-inset-hover hover:text-sg-ink",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/50",
+                "disabled:cursor-not-allowed disabled:opacity-40",
+              )}
+              aria-label={t("chat.exportAriaLabel")}
+              title={t("chat.exportAriaLabel")}
+              data-testid="chat-export"
+            >
+              <Download className="h-3 w-3" aria-hidden="true" />
+              <span className="hidden sm:inline">{t("chat.export")}</span>
+            </button>
             {onAgentChange ? (
               <AgentPicker
                 value={agentId ?? null}
@@ -230,6 +361,9 @@ export function ChatArea({
             onOpenArtifact={handleOpenArtifact}
             showActionTrace={showActionTrace}
             emptyState={<ChatEmptyState onPick={handlePickSuggestion} />}
+            hasEarlier={hasEarlier}
+            loadingEarlier={loadingEarlier}
+            onLoadEarlier={onLoadEarlier}
           />
         </div>
 
@@ -246,11 +380,15 @@ export function ChatArea({
             const finalText = reply
               ? `> ${reply.authorLabel}: ${reply.preview}\n\n${text}`
               : text;
-            void chat.sendMessage(finalText, attachments);
+            chat.sendMessage(finalText, attachments).catch((err) => {
+              console.warn("chat send failed", err);
+            });
             setReply(null);
           }}
           onStop={() => {
-            void chat.stop();
+            chat.stop().catch((err) => {
+              console.warn("chat stop failed", err);
+            });
           }}
           onOpenModelPicker={onOpenModelPicker}
           onOpenPersonaPicker={onOpenPersonaPicker}

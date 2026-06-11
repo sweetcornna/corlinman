@@ -25,6 +25,7 @@ import {
 } from "@/lib/api/chat";
 import {
   CorlinmanApiError,
+  GATEWAY_BASE_URL,
   fetchModels,
   listAgentBindings,
   type AgentBinding,
@@ -36,6 +37,7 @@ import { ChatArea } from "@/components/chat/chat-area";
 import { ChatSidebar } from "@/components/chat/chat-sidebar";
 import { ChatEmptyState } from "@/components/chat/empty-state";
 import type {
+  ChatAttachment,
   ChatConversation,
   ChatMessage,
   ToolCallState,
@@ -72,25 +74,58 @@ function pickBranchedHistory(sessionKey: string): ChatMessage[] | null {
  *  render as empty bubbles. */
 function transcriptToChatMessages(
   transcript: TranscriptMessage[],
+  sessionKey: string,
 ): ChatMessage[] {
+  // Ids carry the session so two sessions with look-alike transcripts
+  // can't collide on React keys while <ChatArea> stays mounted across
+  // `sessionKey` changes (stale-DOM reuse on switch).
+  const sid = sessionKey.replace(/[^a-zA-Z0-9]/g, "").slice(-12) || "s";
   return transcript.map((m, i) => {
+    // Identity must be deterministic across reloads AND stable when an
+    // older page is PREPENDED (W5 "load earlier"): index from the END
+    // of the list, so existing messages keep their ids as the list
+    // grows upward. (The old `hist_${i}_${Date.now()-fallback}` baked a
+    // load-time timestamp in, so every refetch re-keyed the whole list
+    // and React rebuilt the DOM, losing scroll position.)
+    const rid = transcript.length - i;
     const created = Number.isFinite(Date.parse(m.ts))
       ? Date.parse(m.ts)
       : Date.now() - (transcript.length - i) * 1000;
     const rawTcs = m.tool_calls ?? [];
     const toolCalls: ToolCallState[] = rawTcs.map((tc, j) => ({
-      callId: tc.id?.trim() ? tc.id : `hist_${i}_${j}`,
+      callId: tc.id?.trim() ? tc.id : `hist_${sid}_r${rid}_${j}`,
       toolName: tc.function?.name ?? i18next.t("chat.unknownToolName"),
       argsJson: tc.function?.arguments ?? "{}",
       status: tc.result !== undefined ? "settled" : "ok",
       resultPreview: tc.result,
     }));
+    // W3 — journaled attachment metadata → renderable cards. Relative
+    // /v1/files urls get the gateway prefix so dev (separate origins)
+    // and prod (same origin, empty prefix) both resolve.
+    const attachments: ChatAttachment[] = (m.attachments ?? []).map(
+      (a, k) => ({
+        id: `hist_${sid}_r${rid}_att_${k}`,
+        kind:
+          a.kind === "image" || a.kind === "audio" || a.kind === "video"
+            ? a.kind
+            : "document",
+        name: a.name || a.url?.split("/").pop() || "attachment",
+        mime: a.mime,
+        sizeBytes: 0,
+        remoteUrl: a.url
+          ? a.url.startsWith("/")
+            ? `${GATEWAY_BASE_URL}${a.url}`
+            : a.url
+          : undefined,
+      }),
+    );
     return {
-      id: `hist_${i}_${created}`,
+      id: `hist_${sid}_r${rid}_${m.role}`,
       role: m.role,
       content: m.content,
       createdAt: created,
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+      attachments: attachments.length > 0 ? attachments : undefined,
     };
   });
 }
@@ -214,21 +249,82 @@ export default function ChatPage() {
   const transcriptQuery = useQuery({
     queryKey: ["chat", "transcript", sessionKey ?? ""],
     queryFn: async () => {
-      if (!sessionKey) return [] as TranscriptMessage[];
+      if (!sessionKey) return null;
       const out = await replaySession(sessionKey, { mode: "transcript" });
-      if (out.kind === "ok") return out.replay.transcript;
-      return [] as TranscriptMessage[];
+      if (out.kind === "ok") return out.replay;
+      return null;
     },
     enabled: Boolean(sessionKey) && branchedHistory === undefined,
     staleTime: 30_000,
   });
 
+  // W5 — older pages loaded via the "load earlier" affordance, oldest
+  // first. Reset whenever the session changes.
+  const [earlierMessages, setEarlierMessages] = React.useState<
+    TranscriptMessage[]
+  >([]);
+  const [earlierCursor, setEarlierCursor] = React.useState<string | null>(
+    null,
+  );
+  const [loadingEarlier, setLoadingEarlier] = React.useState(false);
+  React.useEffect(() => {
+    setEarlierMessages([]);
+    setEarlierCursor(null);
+    setLoadingEarlier(false);
+  }, [sessionKey]);
+
+  // The active cursor / has-more come from the OLDEST page we hold —
+  // the manual pages once any were loaded, else the base query's.
+  const baseReplay = transcriptQuery.data ?? null;
+  const hasEarlier = Boolean(
+    earlierCursor !== null
+      ? earlierCursor
+      : baseReplay?.has_more && baseReplay?.oldest_turn_id,
+  );
+
+  const handleLoadEarlier = React.useCallback(async () => {
+    if (!sessionKey || loadingEarlier) return;
+    const cursor = earlierCursor ?? baseReplay?.oldest_turn_id;
+    if (!cursor) return;
+    setLoadingEarlier(true);
+    try {
+      const out = await replaySession(sessionKey, {
+        mode: "transcript",
+        beforeTurnId: cursor,
+        limit: 200,
+      });
+      if (out.kind === "ok") {
+        setEarlierMessages((prev) => [...out.replay.transcript, ...prev]);
+        setEarlierCursor(
+          out.replay.has_more ? (out.replay.oldest_turn_id ?? null) : null,
+        );
+        if (!out.replay.has_more) {
+          // Sentinel: cursor consumed, nothing older — collapse the
+          // affordance by leaving earlierCursor null AND covering the
+          // base query's has_more via earlier pages being present.
+          setEarlierCursor(null);
+        }
+      }
+    } catch (err) {
+      toast.error(err instanceof CorlinmanApiError ? err.message : String(err));
+    } finally {
+      setLoadingEarlier(false);
+    }
+  }, [sessionKey, loadingEarlier, earlierCursor, baseReplay]);
+
+  // Once manual pages exist, "has earlier" is solely the manual cursor.
+  const effectiveHasEarlier =
+    earlierMessages.length > 0 ? earlierCursor !== null : hasEarlier;
+
   const initialHistory: ChatMessage[] | undefined = React.useMemo(() => {
     if (branchedHistory && branchedHistory.length > 0) return branchedHistory;
     const t = transcriptQuery.data;
     if (!t) return undefined;
-    return transcriptToChatMessages(t);
-  }, [branchedHistory, transcriptQuery.data]);
+    return transcriptToChatMessages(
+      [...earlierMessages, ...t.transcript],
+      sessionKey ?? "",
+    );
+  }, [branchedHistory, transcriptQuery.data, earlierMessages]);
 
   const refreshList = React.useCallback(() => {
     void qc.invalidateQueries({ queryKey: ["chat", "sessions"] });
@@ -260,7 +356,7 @@ export default function ChatPage() {
         );
       }
     },
-    [refreshList],
+    [refreshList, t],
   );
 
   const handleTogglePin = React.useCallback(
@@ -276,7 +372,7 @@ export default function ChatPage() {
         );
       }
     },
-    [conversations, refreshList],
+    [conversations, refreshList, t],
   );
 
   const handleToggleArchive = React.useCallback(
@@ -292,16 +388,41 @@ export default function ChatPage() {
         );
       }
     },
-    [conversations, refreshList],
+    [conversations, refreshList, t],
   );
 
   const handleDelete = React.useCallback(
     (key: string) => {
-      let cancelled = false;
-      const timer = window.setTimeout(async () => {
-        if (cancelled) return;
+      // Per-key pending registry so rapid deletes don't race each other and
+      // an undo only ever cancels *its own* timer. Without this, undoing one
+      // conversation could refresh the list while another delete is still
+      // in flight (or, with repeated keys, leak a timer) — surfacing as a
+      // resurrected/half-deleted row. Stored on `window` so it survives
+      // re-renders without widening this callback's responsibilities.
+      type PendingDelete = { timer: number; cancelled: boolean };
+      const w = window as typeof window & {
+        __chatPendingDeletes?: Map<string, PendingDelete>;
+      };
+      const pending = (w.__chatPendingDeletes ??= new Map());
+
+      // Collapse a duplicate delete of an already-pending key: cancel the
+      // prior timer and start fresh so the 4.5s window restarts cleanly.
+      const prior = pending.get(key);
+      if (prior) {
+        prior.cancelled = true;
+        window.clearTimeout(prior.timer);
+        pending.delete(key);
+      }
+
+      const entry: PendingDelete = { timer: 0, cancelled: false };
+      entry.timer = window.setTimeout(async () => {
+        // Claim ownership: only proceed if this entry is still the live one
+        // for `key` and hasn't been undone.
+        if (entry.cancelled || pending.get(key) !== entry) return;
+        pending.delete(key);
         try {
           await deleteChatSession(key);
+          if (entry.cancelled) return; // undone while the request was in flight
           refreshList();
           if (key === sessionKey) router.push("/chat");
         } catch (err) {
@@ -310,19 +431,23 @@ export default function ChatPage() {
           );
         }
       }, 4500);
+      pending.set(key, entry);
+
       toast(t("chat.deletedToast"), {
         action: {
           label: t("chat.undo"),
           onClick: () => {
-            cancelled = true;
-            window.clearTimeout(timer);
+            entry.cancelled = true;
+            window.clearTimeout(entry.timer);
+            // Only clear the registry slot if we still own it.
+            if (pending.get(key) === entry) pending.delete(key);
             refreshList();
           },
         },
         duration: 4500,
       });
     },
-    [refreshList, router, sessionKey],
+    [refreshList, router, sessionKey, t],
   );
 
   return (
@@ -348,6 +473,11 @@ export default function ChatPage() {
           onAgentChange={persistAgent}
           showActionTrace={showActionTrace}
           onOpenModelPicker={() => setPickerOpen("llm")}
+          hasEarlier={effectiveHasEarlier}
+          loadingEarlier={loadingEarlier}
+          onLoadEarlier={() => {
+            void handleLoadEarlier();
+          }}
         />
       ) : (
         <section
