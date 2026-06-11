@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { Sun, Moon } from "lucide-react";
+import { useTheme as useNextTheme } from "next-themes";
 import { cn } from "@/lib/utils";
 
 /**
@@ -58,6 +59,11 @@ export interface ThemeToggleProps
 export const ThemeToggle = React.forwardRef<HTMLDivElement, ThemeToggleProps>(
   function ThemeToggle({ initial, onThemeChange, className, ...rest }, ref) {
     const [theme, setTheme] = React.useState<Theme>(() => initial ?? currentTheme());
+    // next-themes owns the React-visible theme state that useTheme()
+    // consumers (Monaco editors, command palette) read. The DOM-only
+    // write below keeps first paint flash-free; setNextTheme keeps those
+    // consumers from going stale after a toggle.
+    const { setTheme: setNextTheme } = useNextTheme();
 
     // Keep in sync if another component / extension changes the attribute.
     React.useEffect(() => {
@@ -74,9 +80,11 @@ export const ThemeToggle = React.forwardRef<HTMLDivElement, ThemeToggleProps>(
       (next: Theme) => {
         applyTheme(next);
         setTheme(next);
+        // Sync next-themes so useTheme()/resolvedTheme consumers update.
+        setNextTheme(next);
         onThemeChange?.(next);
       },
-      [onThemeChange],
+      [onThemeChange, setNextTheme],
     );
 
     return (
