@@ -282,7 +282,10 @@ async def _dispatch_shared(app: Any, line: str) -> str | TurnRequest | None:
         is_admin=is_command_admin(binding),
     )
     result = await run_command_handler(spec, ctx)
-    return result.reply
+    # corlinman_channels ships no py.typed marker, so ``reply`` is seen
+    # as Any — narrow it explicitly.
+    reply = result.reply
+    return reply if isinstance(reply, str) else None
 
 
 async def dispatch(app: Any, line: str) -> str | TurnRequest | None:
