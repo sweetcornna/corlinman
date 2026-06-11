@@ -391,9 +391,16 @@ class JournalBackend(Protocol):
         ...
 
     def iter_events(
-        self, turn_id: str | int, start_sequence: int = 0
+        self, turn_id: str | int, start_sequence: int = 0, limit: int | None = None
     ) -> AsyncIterator[dict[str, Any]]:
-        """Stream events with ``sequence > start_sequence`` (SSE catch-up)."""
+        """Stream events with ``sequence > start_sequence`` (SSE catch-up).
+
+        ``limit`` caps the rows (bounded paging) when set.
+        """
+        ...
+
+    async def latest_sequence(self, turn_id: str | int) -> int:
+        """Highest stored ``sequence`` for ``turn_id`` (``-1`` if none)."""
         ...
 
     async def get_session_turn_ids(
@@ -1817,7 +1824,7 @@ class SqliteJournalBackend:
         return out
 
     async def iter_events(
-        self, turn_id: str | int, start_sequence: int = 0
+        self, turn_id: str | int, start_sequence: int = 0, limit: int | None = None
     ) -> AsyncIterator[dict[str, Any]]:
         """Stream events for ``turn_id`` with ``sequence > start_sequence``.
 
@@ -1827,18 +1834,28 @@ class SqliteJournalBackend:
         default) yields every event — equivalent to :meth:`load_events`
         but without buffering the whole list in memory.
 
+        ``limit`` (when set) caps the rows via SQL ``LIMIT`` so the SSE
+        catch-up can page in bounded chunks. Using ``LIMIT`` rather than
+        breaking the loop early lets the cursor exhaust naturally and
+        close cleanly — an early ``break`` tears the aiosqlite cursor
+        down mid-iteration, the cross-thread cleanup that wedged CI.
+
         Yields the same dict shape as :meth:`load_events`. Silent on
         error — a partial stream is preferable to a 500 for a best-effort
         UI surface.
         """
+        sql = (
+            "SELECT turn_id, sequence, event_type, payload_json, "
+            "timestamp_ms FROM turn_events "
+            "WHERE turn_id = ? AND sequence > ? "
+            "ORDER BY sequence ASC"
+        )
+        params: tuple[Any, ...] = (str(turn_id), int(start_sequence))
+        if limit is not None:
+            sql += " LIMIT ?"
+            params = (*params, int(limit))
         try:
-            cur = await self._c.execute(
-                "SELECT turn_id, sequence, event_type, payload_json, "
-                "timestamp_ms FROM turn_events "
-                "WHERE turn_id = ? AND sequence > ? "
-                "ORDER BY sequence ASC",
-                (str(turn_id), int(start_sequence)),
-            )
+            cur = await self._c.execute(sql, params)
         except aiosqlite.Error as exc:
             logger.warning("agent.journal.iter_events_failed", error=str(exc))
             return
@@ -1857,6 +1874,26 @@ class SqliteJournalBackend:
                 }
         finally:
             await cur.close()
+
+    async def latest_sequence(self, turn_id: str | int) -> int:
+        """Return the highest ``sequence`` stored for ``turn_id`` (``-1``
+        when the turn has no events). The SSE catch-up snapshots this as a
+        fixed upper bound so paging terminates deterministically instead
+        of chasing a moving tail on an active turn.
+        """
+        try:
+            cur = await self._c.execute(
+                "SELECT MAX(sequence) FROM turn_events WHERE turn_id = ?",
+                (str(turn_id),),
+            )
+            row = await cur.fetchone()
+            await cur.close()
+        except aiosqlite.Error as exc:
+            logger.warning("agent.journal.latest_sequence_failed", error=str(exc))
+            return -1
+        if not row or row[0] is None:
+            return -1
+        return int(row[0])
 
     async def get_session_turn_ids(
         self, session_key: str, limit: int = 50

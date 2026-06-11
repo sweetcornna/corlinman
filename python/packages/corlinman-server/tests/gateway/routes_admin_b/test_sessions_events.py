@@ -306,6 +306,66 @@ async def test_no_duplicate_when_event_emitted_during_catch_up(
 
 
 @pytest.mark.asyncio
+async def test_bare_resume_does_not_dedup_a_new_turn(
+    state: AdminState,
+    journal: AgentJournal,
+    emitter: JournalBackedEmitter,
+) -> None:
+    """A bare ``Last-Event-ID`` (sequence only, no turn) is not turn-scoped,
+    so it must never seed live dedup. Even after catch-up raises the
+    high-water mark, a fresh turn's early events — whose sequences restart
+    from 0 and fall *below* that mark — must still be delivered. Dropping
+    them was the bug where a bare resume wrongly suppressed a new turn.
+    """
+    tid = await journal.begin_turn("sess-1", "hello")
+    assert tid is not None
+    for seq in range(10):
+        await journal.append_event(
+            _make_envelope(turn_id=str(tid), sequence=seq, text=f"old-{seq}")
+        )
+
+    # Bare resume: no composite turn, sequence only. Catch-up resolves the
+    # latest turn and replays seq 6..9 → the high-water mark becomes 9.
+    gen = _sse_stream(state, "sess-1", catch_up_turn_id=None, catch_up_sequence=5)
+
+    async def _producer() -> None:
+        for _ in range(50):
+            if emitter.subscriber_count("sess-1") > 0:
+                break
+            await asyncio.sleep(0.02)
+        # A brand-new turn whose sequences restart at 0 — all below the
+        # high-water mark left by catch-up.
+        for seq in range(3):
+            await emitter.emit(
+                _make_envelope(turn_id="turn-new", sequence=seq, text=f"new-{seq}")
+            )
+
+    producer = asyncio.create_task(_producer())
+    try:
+        body = await asyncio.wait_for(
+            _drain_frames(gen, until_count_of="new-2", count=1), timeout=5.0
+        )
+    finally:
+        producer.cancel()
+        with contextlib_suppress():
+            await producer
+        await gen.aclose()
+
+    frames = _parse_sse_frames(body)
+    texts = [
+        json.loads(f["data"])["payload"]["text"]
+        for f in frames
+        if f.get("event") == "TextDelta"
+    ]
+    # Catch-up still delivered the old turn's tail …
+    assert "old-9" in texts
+    # … and the new turn's early events survived despite low sequences.
+    assert "new-0" in texts
+    assert "new-1" in texts
+    assert "new-2" in texts
+
+
+@pytest.mark.asyncio
 async def test_aclose_mid_catch_up_is_bounded(
     state: AdminState,
     journal: AgentJournal,
