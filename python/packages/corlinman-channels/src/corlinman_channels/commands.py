@@ -322,6 +322,115 @@ def _render_whoami(ctx: CommandContext) -> CommandResult:
     return CommandResult(reply="\n".join(lines))
 
 
+def _render_new(ctx: CommandContext) -> CommandResult:
+    """``/new`` — start a fresh conversation context on this binding.
+
+    Bumps the binding's session epoch via
+    :mod:`corlinman_channels.binding_prefs` (backed by the server-side
+    SQLite store); the request builders fold the epoch into the derived
+    session key, so the agent sees a brand-new conversation while every
+    earlier epoch stays journaled and addressable.
+    """
+    from corlinman_channels import binding_prefs  # noqa: PLC0415 — soft-dep shim
+
+    prefs = binding_prefs.bump_session_epoch(ctx.binding)
+    if prefs is None:
+        return CommandResult(
+            reply="❌ 新会话功能不可用：corlinman-server 偏好存储未安装。"
+        )
+    return CommandResult(
+        reply=(
+            "🆕 已开启新会话（第 "
+            f"{prefs.session_epoch} 轮）。之前的对话已归档，"
+            "随时可在会话列表中找回。"
+        )
+    )
+
+
+def _render_model(ctx: CommandContext) -> CommandResult:
+    """``/model [name|default]`` — show / set / clear the per-conversation
+    model override.
+
+    The override is applied by the channel request builders on every
+    later turn of this binding. The name is not validated here — model
+    resolution happens (and surfaces a clean upstream error) on the next
+    turn, exactly like an admin-set alias typo would.
+    """
+    from corlinman_channels import binding_prefs  # noqa: PLC0415 — soft-dep shim
+
+    args = ctx.args_text.strip()
+    if not args:
+        prefs = binding_prefs.get_prefs(ctx.binding)
+        current = getattr(prefs, "model_override", None) if prefs else None
+        shown = current or "（默认模型）"
+        return CommandResult(
+            reply=(
+                f"当前会话模型：{shown}\n"
+                "用法：/model <模型名或别名> 切换；/model default 恢复默认。"
+            )
+        )
+    clear = args.lower() in ("default", "reset", "clear", "默认")
+    prefs = binding_prefs.set_model_override(ctx.binding, None if clear else args)
+    if prefs is None:
+        return CommandResult(
+            reply="❌ 模型切换不可用：corlinman-server 偏好存储未安装。"
+        )
+    if clear:
+        return CommandResult(reply="✅ 已恢复默认模型。")
+    return CommandResult(
+        reply=(
+            f"✅ 本会话模型已切换为：{args}\n"
+            "（名称在下一条消息时解析；写错会得到一条明确的错误提示。）"
+        )
+    )
+
+
+async def _render_usage(ctx: CommandContext) -> CommandResult:
+    """``/usage`` — turn count + estimated cost for this conversation.
+
+    Async handler — reads the agent journal (aiosqlite) for the
+    binding's *effective* session key (current epoch). Degrades to an
+    advisory message when the journal/server package is unavailable.
+    """
+    try:
+        from corlinman_server.agent_journal import AgentJournal  # noqa: PLC0415
+
+        from corlinman_channels import binding_prefs  # noqa: PLC0415
+    except ImportError:
+        return CommandResult(reply="❌ 用量统计不可用：corlinman-server 未安装。")
+
+    base_key = ctx.binding.session_key()
+    session_key = binding_prefs.effective_session_key(ctx.binding, base_key)
+    journal_path = Path(_channels_data_dir()) / "agent_journal.sqlite"
+    if not journal_path.is_file():
+        return CommandResult(reply="本会话还没有任何记录。")
+    try:
+        journal = await AgentJournal.open(journal_path)
+        try:
+            turns = await journal.list_session_turns(session_key, limit=200)
+        finally:
+            await journal.close()
+    except Exception as exc:  # noqa: BLE001 — stats are best-effort
+        return CommandResult(reply=f"❌ 读取用量失败：{exc}")
+    if not turns:
+        return CommandResult(reply="本会话还没有任何记录。")
+    total_cost = 0.0
+    tool_calls = 0
+    for row in turns:
+        try:
+            total_cost += float(row.get("estimated_cost_usd") or 0.0)
+        except (TypeError, ValueError):
+            pass
+        try:
+            tool_calls += int(row.get("tool_call_count") or 0)
+        except (TypeError, ValueError):
+            pass
+    cost_part = f" · 估算成本 ~${total_cost:.4f}" if total_cost > 0 else ""
+    return CommandResult(
+        reply=f"本会话用量：{len(turns)} 轮 · {tool_calls} 次工具调用{cost_part}"
+    )
+
+
 def _channels_data_dir() -> str:
     """Resolve the gateway data dir from the environment (handler-local).
 
@@ -631,6 +740,32 @@ COMMAND_REGISTRY: tuple[CommandSpec, ...] = (
         summary="将当前聊天窗口设为主聊天窗口（重启等系统提醒的接收点）",
         category="Configuration",
         handler=_render_sethome,
+    ),
+    # Session commands — shared across every surface (channels, web
+    # playground, CLI console). Backed by the per-binding prefs store
+    # (corlinman_server.binding_prefs_store) via the soft-dep shim in
+    # binding_prefs.py; see docs/PLAN_CLAUDECODE_PARITY.md.
+    CommandSpec(
+        name="new",
+        aliases=("/new", "/新会话", "/重新开始"),
+        summary="开启新会话（旧对话归档可找回）",
+        category="Session",
+        handler=_render_new,
+    ),
+    CommandSpec(
+        name="model",
+        aliases=("/model", "/模型"),
+        summary="查看或切换本会话使用的模型",
+        category="Session",
+        args_hint="[名称|default]",
+        handler=_render_model,
+    ),
+    CommandSpec(
+        name="usage",
+        aliases=("/usage", "/用量"),
+        summary="查看本会话的轮数与估算成本",
+        category="Session",
+        handler=_render_usage,
     ),
     # ``/use-default-persona`` is the wizard's "use the built-in
     # helper" branch — seeds + activates the bundled ``grantley``

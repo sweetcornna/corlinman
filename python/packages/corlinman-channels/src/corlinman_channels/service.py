@@ -1549,10 +1549,18 @@ def _build_internal_request(
     )
     content = f"{prefix}\n{req.content}" if prefix else req.content
     message = SimpleNamespace(role="user", content=content)
+    # Per-binding session prefs (/model override + /new epoch) — fail-open
+    # shims that return the inputs unchanged when the server-side store is
+    # unavailable. Applied here (the single choke point) so every QQ call
+    # site honours the user's /model and /new choices.
+    from corlinman_channels import binding_prefs as _binding_prefs
+
     return SimpleNamespace(
-        model=model,
+        model=_binding_prefs.effective_model(req.binding, model),
         messages=[message],
-        session_key=req.session_key,
+        session_key=_binding_prefs.effective_session_key(
+            req.binding, req.session_key
+        ),
         stream=True,
         max_tokens=None,
         temperature=None,
@@ -5154,10 +5162,17 @@ def _build_text_channel_request(
     content = f"{prefix}\n{inbound.text}" if prefix else inbound.text
 
     message = SimpleNamespace(role="user", content=content)
+    # Same per-binding prefs choke point as _build_internal_request — the
+    # four text channels (Telegram / Discord / Slack / Feishu) all build
+    # their request here, so /model and /new work uniformly.
+    from corlinman_channels import binding_prefs as _binding_prefs
+
     return SimpleNamespace(
-        model=model,
+        model=_binding_prefs.effective_model(inbound.binding, model),
         messages=[message],
-        session_key=inbound.binding.session_key(),
+        session_key=_binding_prefs.effective_session_key(
+            inbound.binding, inbound.binding.session_key()
+        ),
         stream=True,
         max_tokens=None,
         temperature=None,

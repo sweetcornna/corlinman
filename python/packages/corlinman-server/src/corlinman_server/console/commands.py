@@ -15,6 +15,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+from corlinman_server.console.compaction import Compactor
 from corlinman_server.console.render import TOOL_PROGRESS_MODES
 
 __all__ = ["SlashCommand", "dispatch", "registry"]
@@ -119,6 +120,38 @@ async def _cmd_usage(app: Any, args: str) -> str:
     )
 
 
+async def _cmd_memory(app: Any, args: str) -> str:
+    _ = args
+    files = getattr(app, "project_memory_files", None) or []
+    if not files:
+        return (
+            "no project memory loaded — create a CORLINMAN.md in your "
+            "project root (or CORLINMAN.local.md for untracked notes)"
+        )
+    lines = [f"project memory ({len(files)} file(s), folded into the system prompt):"]
+    for path in files:
+        try:
+            size = f"{path.stat().st_size} bytes"
+        except OSError:
+            size = "unreadable"
+        lines.append(f"  {path}  ({size})")
+    return "\n".join(lines)
+
+
+async def _cmd_compact(app: Any, args: str) -> str:
+    """Manual /compact — runs unconditionally (no threshold check), so
+    it works even when auto-compact is off or its breaker has tripped."""
+    _ = args
+    compactor = app.session.compactor or Compactor()
+    result = await compactor.compact(app.session, model=app.router.utility_model())
+    if not result.ok:
+        return (
+            f"compact failed: {result.error} "
+            f"(window unchanged, ~{result.before_tokens} est. tokens)"
+        )
+    return result.notice + f"  (window: {len(app.session.window)} msgs)"
+
+
 async def _cmd_status(app: Any, args: str) -> str:
     _ = args
     r = app.router
@@ -166,6 +199,10 @@ _REGISTRY: tuple[SlashCommand, ...] = (
         "resume", "switch to a session and replay its turns", _cmd_resume, usage="<key>"
     ),
     SlashCommand("usage", "token usage for this console run", _cmd_usage),
+    SlashCommand(
+        "compact", "summarize older turns to shrink the context window", _cmd_compact
+    ),
+    SlashCommand("memory", "list loaded CORLINMAN.md project-memory files", _cmd_memory),
     SlashCommand("status", "brain / model / session overview", _cmd_status),
     SlashCommand(
         "progress", "set tool progress display mode", _cmd_progress, usage="<mode>"
@@ -186,18 +223,84 @@ def _lookup(name: str) -> SlashCommand | None:
     return None
 
 
-async def dispatch(app: Any, line: str) -> str | None:
+@dataclass(frozen=True, slots=True)
+class TurnRequest:
+    """Sentinel return from :func:`dispatch` — the command resolved to a
+    *prelude* (wizard-style shared command like ``/persona``) that must
+    be sent through the brain as a chat turn rather than printed."""
+
+    content: str
+
+
+async def _dispatch_shared(app: Any, line: str) -> str | TurnRequest | None:
+    """Fall back to the cross-surface command registry
+    (:mod:`corlinman_channels.commands` — the same registry the chat
+    channels and the web playground dispatch through), so every shared
+    command works in the console too. Returns ``None`` when the registry
+    is unavailable or has no match.
+
+    The console presents itself as a synthetic binding
+    (``channel="console"``) exactly like the playground's
+    ``channel="playground"`` — handlers use it to detect a non-channel
+    surface.
+    """
+    try:
+        from corlinman_channels.commands import (  # noqa: PLC0415 — soft dep
+            CommandContext,
+            apply_command_prelude,
+            is_command_admin,
+            match_command_with_args,
+            run_command_handler,
+        )
+        from corlinman_channels.common import ChannelBinding  # noqa: PLC0415
+    except ImportError:
+        return None
+
+    match = match_command_with_args(line)
+    if match is None:
+        return None
+    spec, args_text = match
+    if spec.wizard_prelude is not None:
+        prelude = apply_command_prelude(line, spec, args_text=args_text)
+        return TurnRequest(content=prelude or line)
+    if spec.handler is None:
+        return None
+    binding = ChannelBinding(
+        channel="console",
+        account="local",
+        thread=app.session.session_key,
+        sender="local",
+    )
+    ctx = CommandContext(
+        spec=spec,
+        raw_text=line,
+        args_text=args_text,
+        binding=binding,
+        is_admin=is_command_admin(binding),
+    )
+    result = await run_command_handler(spec, ctx)
+    return result.reply
+
+
+async def dispatch(app: Any, line: str) -> str | TurnRequest | None:
     """Run the slash command in ``line`` (which starts with ``/``).
 
-    Returns the text to print, or ``None`` for silent success. An
-    unknown command returns a hint instead of raising — typos must not
-    stack-trace the REPL.
+    Resolution order: console-local registry first (richer, window-aware
+    implementations of /model, /new, /usage), then the cross-surface
+    channel registry (so /persona, /whoami, /status and every future
+    shared command work here too). Returns the text to print, ``None``
+    for silent success, or a :class:`TurnRequest` the REPL must send as
+    a chat turn. An unknown command returns a hint instead of raising —
+    typos must not stack-trace the REPL.
     """
     body = line[1:].strip()
     if not body:
         return await _cmd_help(app, "")
     name, _, args = body.partition(" ")
     cmd = _lookup(name.lower())
-    if cmd is None:
-        return f"unknown command: /{name} — try /help"
-    return await cmd.handler(app, args.strip())
+    if cmd is not None:
+        return await cmd.handler(app, args.strip())
+    shared = await _dispatch_shared(app, line)
+    if shared is not None:
+        return shared
+    return f"unknown command: /{name} — try /help"

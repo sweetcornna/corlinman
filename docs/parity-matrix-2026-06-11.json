@@ -1,0 +1,318 @@
+{
+  "summary": "Exhaustive claude-code feature inventory vs corlinman, synthesized into a wave-planned parity matrix",
+  "agentCount": 5,
+  "logs": [],
+  "result": {
+    "clusters": [
+      {
+        "cluster": "Permission modes + interactive console approval",
+        "status": "partial",
+        "gaps": [
+          "No mode state machine: claude-code's default/acceptEdits/plan/bypassPermissions/dontAsk (+auto) modes persisting in session state and consulted on every tool call; corlinman only has per-rule AUTO/PROMPT/DENY in gateway middleware",
+          "AwaitingApproval frames are emitted by plugin runtime but ChatService skips them — console never shows an interactive allow/deny/always-allow prompt; claude-code blocks tool execution on an ask decision and resumes on user answer",
+          "No --permission-mode CLI flag or /permissions slash command in console; mode not switchable mid-session",
+          "No denial tracking with DENIAL_LIMITS threshold and fallback-to-prompting when auto-deny fires repeatedly (claude-code denialTracking.ts: counter per session, reset on mode change/success)",
+          "acceptEdits semantics (auto-allow file edits, still ask for bash) not modeled anywhere"
+        ],
+        "effort": "M",
+        "value": "high",
+        "wave": 1,
+        "seam": "corlinman-agent/src/corlinman_agent/permission.py + approval_gate.py (mode state), corlinman-server/src/corlinman_server/gateway/middleware/approval.py (rule eval), agent_servicer.py _dispatch_builtin (gate point, ~line 2527), console/app.py + console/commands.py + console/render.py on feat/cli-console (interactive prompt + /permissions); ChatService must stop swallowing AwaitingApproval frames",
+        "notes": "Highest-leverage wave-1 item: the plumbing (ApprovalStore/ApprovalQueue, C3 PreToolDispatch gate) exists; the missing piece is the mode concept and the console-side blocking dialog. Without it the console silently auto-runs or silently queues."
+      },
+      {
+        "cluster": "Permission rules engine (pattern syntax, multi-source precedence, settings persistence)",
+        "status": "partial",
+        "gaps": [
+          "Bash(cmd:*) / Write(*.ts) rule-content pattern syntax (preparePermissionMatcher): tool-name match + optional content glob; corlinman ApprovalRule has no content-pattern matching",
+          "Decision order parity: deny rules first (immediate reject), then allow rules (immediate grant), then hooks, then mode defaults — must be deterministic and documented",
+          "Multi-level rule sources with precedence: user-global / project / project-local(gitignored) / CLI-flag / session ('always allow' answers persist to chosen destination)",
+          "Bash security checks: compound-command decomposition with per-subcommand permission checks, destructive-command (rm/dd/truncate) warning class, line-continuation misparse detection",
+          "Workspace scoping: additionalWorkingDirectories with per-dir source attribution, --add-dir flag, pathInWorkingPath() validation on every file read/write",
+          "--allowed-tools / --disallowed-tools CLI flags accepting permission-rule syntax"
+        ],
+        "effort": "L",
+        "value": "high",
+        "wave": 2,
+        "seam": "corlinman-server/src/corlinman_server/gateway/middleware/approval.py (extend ApprovalRule with tool+content matcher), corlinman-agent/src/corlinman_agent/permission.py (decision-order pipeline), coding/shell.py (command decomposition + destructive detection), console/app.py (CLI flags, settings file loading)",
+        "notes": "Build on wave-1 mode work. The rule grammar is the contract everything else (hooks 'if' matchers, allowed-tools flags) reuses, so design it once."
+      },
+      {
+        "cluster": "Plan mode (enter/exit tools, read-only gating, approval handoff)",
+        "status": "missing",
+        "gaps": [
+          "EnterPlanMode tool: flips permission mode to 'plan', restricting toolset to read-only exploration (read_file/search_files/list_files/web ok; write_file/edit_file/apply_patch/run_shell-destructive gated)",
+          "ExitPlanMode tool: presents the plan text for explicit user approval in console; on approve, mode reverts to previous mode and execution proceeds; on reject, stays in plan mode",
+          "/plan slash command toggle in console",
+          "Plan content persisted to disk (journal) so it survives resume",
+          "opusplan-style model override: a heavier/longer-context model bound only while mode==plan, reverting on exit (hook into ModelRouter)"
+        ],
+        "effort": "M",
+        "value": "high",
+        "wave": 2,
+        "seam": "agent_servicer.py BUILTIN_TOOLS (+2 tools) + _dispatch_builtin mode check, corlinman-agent/permission.py (mode-aware tool filter), console/commands.py (/plan) + render.py (plan approval dialog), console/router.py (plan-mode model override), agent_journal.py (plan persistence)",
+        "notes": "Depends on the wave-1 mode state machine existing. High value for the 7 chat channels too — plan approval maps cleanly onto ask_user in non-console channels."
+      },
+      {
+        "cluster": "Context compaction parity (auto-compact, /compact, microcompact)",
+        "status": "partial",
+        "gaps": [
+          "/compact slash command in console for manual compaction (corlinman only auto-compacts inside reasoning_loop)",
+          "Claude-code threshold semantics: effective_window minus fixed AUTOCOMPACT_BUFFER (13k) with pct/absolute env-or-config overrides and a per-user autoCompactEnabled disable switch; corlinman thresholds are hardcoded per-model",
+          "Circuit breaker: max 3 consecutive auto-compact failures before giving up; reactive-compact retry with stricter constraints on prompt-too-long",
+          "Reserve ~20k tokens for the summary output during compaction",
+          "Microcompact / history-snip: selectively elide old tool results without reordering the tool list (prompt-cache stability), tracking saved tokens and feeding them back into the threshold to avoid false re-triggers",
+          "Post-compact cleanup of orphaned state; surface a 'compacted' event to console/web so the user sees it happened"
+        ],
+        "effort": "M",
+        "value": "high",
+        "wave": 1,
+        "seam": "corlinman-agent/src/corlinman_agent/reasoning_loop.py _compact_history (threshold config, circuit breaker, snip pass), console/brain.py BrainSession.window + console/commands.py (/compact) + events.py (compaction event), config surface in corlinman-server config.toml [console]/[agent]",
+        "notes": "Corlinman already has the two-tier compaction (summarize >120k, elide below); this is mostly hardening + config + console command, not greenfield. Benefits all surfaces (channels hit long sessions hardest)."
+      },
+      {
+        "cluster": "Project memory: CORLINMAN.md analog of CLAUDE.md",
+        "status": "missing",
+        "gaps": [
+          "Priority-ordered memory file loading: managed(global) -> user(~/.corlinman/CORLINMAN.md) -> project (CORLINMAN.md / .corlinman/*.md discovered from cwd up to repo root) -> local (CORLINMAN.local.md, gitignored), later/closer files overriding",
+          "@include directives (@path, @./relative, @~/home, @/absolute) with circular-include tracking",
+          "/memory slash command: list memory files, append facts, open in editor",
+          "Skip auto-discovery in bare/one-shot mode unless extra dirs given",
+          "/init command analog that bootstraps a CORLINMAN.md from codebase analysis"
+        ],
+        "effort": "M",
+        "value": "high",
+        "wave": 1,
+        "seam": "corlinman-agent/src/corlinman_agent/context_assembler.py (new pipeline stage between agent-card expansion and skill injection), console/embedded.py (cwd-based discovery for EmbeddedBrain), console/commands.py (/memory, /init); persona/bundled system prompts stay orthogonal",
+        "notes": "Biggest single quality lever for the CLI console use case — corlinman currently has no per-project instruction file at all. Keep it a context_assembler stage so web/channel sessions can also opt in via workspace binding."
+      },
+      {
+        "cluster": "Core file/shell tool semantic parity (Read/Edit/Write/Bash/Glob/Grep)",
+        "status": "partial",
+        "gaps": [
+          "Read: offset/limit params, PDF pages extraction with per-request max, image auto-resize to token budget, .ipynb cell-structured reads, binary/UTF-16 detection, blocked device paths (/dev/zero etc.)",
+          "Bash: run_in_background=true returning a task id with output spilled to disk + offset-based polling; default-on sandboxing with unsafe-category escape hatch; per-call timeout param with env-var default override",
+          "Grep: ripgrep-backed output_mode trio (content/files_with_matches/count), -A/-B/-C context flags, head_limit default 250 with 0=unlimited, multiline mode",
+          "Glob: 100-result truncation flag + path relativization to save tokens, durationMs/numFiles metadata",
+          "Write: atomic write (mkdir parent -> write+fsync -> cache update), returned git diff + create/update type, 1GiB cap",
+          "NotebookEdit tool entirely absent from BUILTIN_TOOLS (replace/insert/delete cell modes, cell_type)",
+          "Verify edit_file enforces replace_all flag + old_string!=new_string + must-read-first via FileState on every path (FileState.record_read/is_stale exists — confirm it is enforced in edit/write dispatch, not just available)"
+        ],
+        "effort": "L",
+        "value": "high",
+        "wave": 2,
+        "seam": "corlinman-agent/src/corlinman_agent/coding/files.py + _filestate.py (FileState already has record_read/cached_read/is_stale/mark_seen), coding/shell.py (background + sandbox), coding/search.py (grep modes), coding/patch.py; schemas in agent_servicer.py _CACHED_BUILTIN_TOOL_SCHEMAS",
+        "notes": "Tools exist and FileState gives a head start; this is precision work matching exact claude-code parameter contracts so model behavior transfers 1:1. run_in_background is the highest-value sub-item (long builds in console)."
+      },
+      {
+        "cluster": "Todo surfacing + task list v2",
+        "status": "partial",
+        "gaps": [
+          "Console rendering of todo state as a live checklist (claude-code renders TodoWrite output in UI, not transcript — renderToolUseMessage returns null; the list is a persistent UI element)",
+          "activeForm present-continuous spinner text while a todo is in_progress ('Running tests…')",
+          "Auto-clear when all todos complete; oldTodos/newTodos diff for audit",
+          "Task v2 lifecycle (TaskCreate/TaskGet/TaskUpdate/TaskList with status/owner/blocks/blockedBy/metadata) for background work items, persisted in AppState-equivalent and surfaced via /status",
+          "Todo state pushed to web UI + status-card SSE page so channels see progress too"
+        ],
+        "effort": "S",
+        "value": "high",
+        "wave": 1,
+        "seam": "corlinman-agent/src/corlinman_agent/coding/todo.py (tool exists), console/render.py + events.py (checklist widget + spinner), agent_servicer.py (emit todo-changed event frames), status-card SSE page in corlinman-server for cross-channel surfacing",
+        "notes": "Cheapest wave-1 win: tool already exists, just needs an event frame and a renderer. Plays directly into the pending agent status-card work noted in project memory."
+      },
+      {
+        "cluster": "File-snapshot rewind / checkpoints",
+        "status": "partial",
+        "gaps": [
+          "/rewind (/checkpoint) console command: list checkpoints per user message, restore files and/or conversation to that point (claude-code restores both; opencode SessionRevert computes diffs and stores revert metadata messageID/snapshot hash)",
+          "Snapshot at every user message boundary, not just turn start — keyed to journal message ids so rewind targets are addressable",
+          "Conversation rewind: truncate BrainSession.window + journal to the chosen message and resume from there (fork-safe)",
+          "--rewind-files [msg-id] CLI flag for non-interactive restore",
+          "File-history tracking per edit (original content, new content, timestamp, git diff) for attribution — wire FileEditTool-equivalent into a persisted history like claude-code fileHistoryTrackEdit"
+        ],
+        "effort": "M",
+        "value": "high",
+        "wave": 1,
+        "seam": "corlinman-agent/src/corlinman_agent/coding/_snapshot.py (GitPython snapshots exist, labeled by turn) + coding/revert.py (revert_changes tool), agent_journal.py (message-id keyed checkpoint index), console/commands.py (/rewind picker) + brain.py (window truncation)",
+        "notes": "_snapshot.py + revert.py give 60% of the mechanism; the gap is message-granular addressing and the console UX. Borrow opencode's revert-metadata-on-session model for clean diffs."
+      },
+      {
+        "cluster": "Print mode + structured output formats",
+        "status": "partial",
+        "gaps": [
+          "--output-format with three modes: text (current), json (single final result object with cost/usage/session_id), stream-json (realtime JSONL events: partial messages, tool calls, hook events) — corlinman one-shot --print only writes text to stdout/progress to stderr",
+          "--max-turns N limit in print mode to prevent runaway agentic loops",
+          "Proper JSON escaping + stable event schema so the console can be scripted/piped (claude-code's headless contract)",
+          "Skip trust/onboarding dialogs in print mode; exit codes reflecting success/failure",
+          "--system-prompt / --append-system-prompt (+ -file variants) flags for headless runs"
+        ],
+        "effort": "S",
+        "value": "high",
+        "wave": 1,
+        "seam": "console/app.py one-shot path + console/events.py (event types already exist — serialize them as JSONL), console/brain.py (turn counting for --max-turns); reuse cli/replay.py's existing _print_json wire-shape conventions",
+        "notes": "Small effort, big leverage: stream-json makes the console scriptable and is the substrate for CI usage and for other processes driving corlinman (the same way claude-code SDK consumers work)."
+      },
+      {
+        "cluster": "Session persistence + resume UX",
+        "status": "partial",
+        "gaps": [
+          "Interactive session picker with fuzzy search (title/id), timestamps, content preview (claude-code --resume picker); corlinman /sessions + /resume exist but are list-and-pick by key only",
+          "--continue flag: resume most recent session in cwd; --resume [id|term] from CLI argv; --fork-session (resume content under a new session id)",
+          "Prompt history file (history.jsonl-analog) with project scoping, Up-arrow current-session priority, Ctrl+R search, large-paste hash referencing",
+          "cleanupPeriodDays retention policy (default 30d, 0 = no persistence + purge)",
+          "Cost state persisted per session and restored on resume (lastCost/lastModelUsage)"
+        ],
+        "effort": "M",
+        "value": "medium",
+        "wave": 2,
+        "seam": "agent_journal.py (list_session_summaries, ResumeData — extend with cwd/project scoping + retention sweep), console/app.py (CLI flags), console/commands.py (/resume picker), console input layer (prompt history)",
+        "notes": "Journal already does the hard part (per-turn resume, T4.1). This is mostly console ergonomics; fork-session matters for the rewind cluster too."
+      },
+      {
+        "cluster": "User-configurable hooks (settings-driven, command/prompt/agent/http types)",
+        "status": "partial",
+        "gaps": [
+          "Settings-file hook configuration: 'hooks' key mapping event names -> matcher arrays -> hook defs; corlinman hooks are code-wired only (gateway lifespan / constructor injection), users cannot add hooks without code",
+          "Hook types: command (shell exec with $ARGUMENTS JSON), prompt (LLM eval), agent (verifier subagent), http (POST to URL) — corlinman only supports in-process Python subscribers",
+          "Blocking vs async semantics: sync hooks block tool execution, async run background, asyncRewake on exit code 2, per-hook timeout + statusMessage spinner text",
+          "'if' matcher using permission-rule syntax (Bash(git *)) so hooks only spawn when tool_name+input match",
+          "Event coverage parity: UserPromptSubmit, SessionStart, Setup, Notification, PermissionRequest/PermissionDenied, FileChanged — corlinman's HookEvent union covers tool/turn/subagent lifecycle but not these user-facing ones",
+          "/hooks console command to view/edit/test configured hooks"
+        ],
+        "effort": "L",
+        "value": "medium",
+        "wave": 3,
+        "seam": "corlinman-hooks/src/corlinman_hooks/{event.py,bus.py,runner.py} (new event variants + external-executor hook kinds), agent_servicer.py hook_runner wiring (already C2-first), settings loading in corlinman-server config layer, console/commands.py (/hooks)",
+        "notes": "The bus + blocking PreToolDispatch decision path already exists with HookDecision(allow/reason/mutated_args); the gap is declarative config + out-of-process executors. Depends on the rule grammar from the permission-rules cluster for 'if' matchers."
+      },
+      {
+        "cluster": "Skills parity (frontmatter contract, forked execution, slash exposure)",
+        "status": "partial",
+        "gaps": [
+          "Frontmatter schema parity: allowed-tools, when-to-use, argument-hint, model (alias inherit/haiku), context inline|fork, agent, user-invocable, hooks, paths globs with brace expansion, version, shell (bash|powershell)",
+          "context:fork — execute skill in a forked subagent inheriting model override from skill def (claude-code SkillTool); corlinman Skill tool only returns body_markdown inline",
+          "!-block shell execution inside skill bodies and $ARGUMENTS placeholder expansion",
+          "User-invocable skills exposed as console slash commands (/<skill-name> args) with hide-from-slash-command-tool suppression",
+          "Multi-source discovery dedup parity: user dir + project dir + bundled + MCP-provided, deduped by canonical path",
+          "/skills command listing loaded count + status"
+        ],
+        "effort": "M",
+        "value": "medium",
+        "wave": 3,
+        "seam": "corlinman-skills-registry/src/corlinman_skills_registry/{skill.py,registry.py} (frontmatter fields), agent_servicer.py Skill dispatch (~line 310: add fork path via subagent_spawn_inline), console/commands.py (dynamic slash registration), context_assembler.py stage 3 (catalog already does progressive disclosure)",
+        "notes": "Progressive disclosure + always-skills already exceed claude-code in places; fork execution can reuse the existing subagent_spawn_inline machinery, making this cheaper than it looks."
+      },
+      {
+        "cluster": "MCP client integration into the agent loop",
+        "status": "partial",
+        "gaps": [
+          ".mcp.json-style declarative client config with scopes (enterprise/user/project/local) and precedence-based dedup; corlinman McpClientManager handles stdio lifecycle but there is no end-user config file feeding external MCP servers' tools into the reasoning loop",
+          "Tool namespace mapping {server_name}_{tool_name} merged into the advertised toolset; resources as addressable reads",
+          "allowedMcpServers/deniedMcpServers permission policies (denylist precedence), per-server trust prompts",
+          "--mcp-config / --strict-mcp-config CLI flags",
+          "/mcp console command: add/remove/list/test servers, stdio + SSE/HTTP transports, OAuth flows (opencode handles OAuth + publishes ToolsChanged)",
+          "MCP-provided skills/prompts surfaced into the skill registry"
+        ],
+        "effort": "L",
+        "value": "high",
+        "wave": 2,
+        "seam": "corlinman-mcp-server/src/{client_manager.py,dispatch.py,adapters.py} (client side exists), agent_servicer.py toolbox gate + _CACHED_BUILTIN_TOOL_SCHEMAS (dynamic merge), console/commands.py (/mcp), gateway config loader for .mcp.json scopes",
+        "notes": "Marked wave 2 over 3 because MCP client support multiplies the platform's tool surface across all 7 channels, and the transport/lifecycle code already exists — the missing piece is config + loop integration, which aligns with the marketplace initiative in project memory."
+      },
+      {
+        "cluster": "Model routing chain + small-fast-model + ToolSearch deferral",
+        "status": "partial",
+        "gaps": [
+          "Full priority chain: /model override > --model flag > env var > settings model field > default, with model allowlist check and alias resolution; corlinman router does explicit > auto:simple > default but no env/settings/allowlist rungs",
+          "Server-side per-session model binding (ChatStart.model is stateless per request; /model in web/channels has no durable session override)",
+          "Small-fast-model usage sites beyond routing: permission auto-mode classifier, token estimation, web-search ranking",
+          "ToolSearch/deferred tool loading: advertise core tools fully, mark long-tail tools defer_loading:true, expose ToolSearch(query) to pull schemas on demand (corlinman advertises all 47 builtin schemas every turn; with MCP this will blow up context)",
+          "opusplan alias behavior tied to plan mode (covered jointly with plan-mode cluster)"
+        ],
+        "effort": "M",
+        "value": "medium",
+        "wave": 3,
+        "seam": "console/router.py (priority chain), console/brain.py + agent_journal.py (durable session model binding), agent_servicer.py toolbox gate + cached schemas (deferral flagging + ToolSearch builtin), provider config in corlinman-providers",
+        "notes": "Auto-routing already exceeds claude-code's static default. ToolSearch deferral becomes important the moment the MCP-client cluster lands; sequence it right after."
+      },
+      {
+        "cluster": "Settings system + /config + /doctor",
+        "status": "partial",
+        "gaps": [
+          "Multi-level settings files for the console: user-global + project + project-local(gitignored) JSON/TOML with merge precedence; corlinman has server config.toml + admin UI but no per-project console settings",
+          "--settings flag accepting file path or inline JSON, merged last",
+          "settings schema parity: permissions block (allow/deny/ask arrays + defaultMode + additionalDirectories + disableBypassPermissionsMode), env var block applied at session start, attribution strings (commit/pr), cleanupPeriodDays, statusLine, model",
+          "/config command: view/edit settings interactively with descriptions",
+          "/doctor diagnostics: auth, git setup, MCP server health, permissions validity, settings parse errors, file access"
+        ],
+        "effort": "M",
+        "value": "medium",
+        "wave": 3,
+        "seam": "console/app.py (settings loader + merge), console/commands.py (/config, /doctor), gateway/core/config_watcher.py (hot-reload hook-in — note config frontend-coverage initiative's crippled hot-reload root cause), permission.py (consume permissions block)",
+        "notes": "This is the persistence backbone for the permission-rules cluster; ship the file format with wave-2 rules, the /config + /doctor UX can trail in wave 3."
+      },
+      {
+        "cluster": "Subagent/task background execution + monitoring",
+        "status": "partial",
+        "gaps": [
+          "Async task lifecycle parity: pending -> running -> completed/failed/killed with persisted state (id, status, description, startTime/endTime, outputFile on disk, outputOffset for incremental reads); corlinman spawn tools are synchronous-drain via supervisor",
+          "Background-run mode: spawn returns immediately, parent polls/monitors, completion re-invokes the model (claude-code background tasks + Monitor)",
+          "TaskStop/kill semantics for runaway children",
+          "Agent status surfacing in console timeline (in-process teammate visibility) — ties to the pending agent status-card work",
+          "Task output spill-to-disk so long child transcripts don't blow the parent window"
+        ],
+        "effort": "M",
+        "value": "medium",
+        "wave": 2,
+        "seam": "corlinman-agent/src/corlinman_agent/subagent/{api.py,runner.py,tool_wrapper.py} + Rust supervisor caps (_get_subagent_caps in agent_servicer.py), agent_journal.py (task state persistence), console/render.py (child progress frames)",
+        "notes": "Spawn trio + supervisor caps + blackboard already strong; the gap is asynchrony and observability. Background bash (core-tools cluster) and this share the task-record substrate — build it once."
+      },
+      {
+        "cluster": "Console UX niceties (cost display, status line, themes, vim, keybindings, title, picker)",
+        "status": "partial",
+        "gaps": [
+          "/cost detailed breakdown: USD, input/output/cached tokens, API duration, tool execution time, lines changed (corlinman /usage + cost_snapshot exists — verify per-category breakdown + real-time status display)",
+          "statusLine setting: shell-command-driven bottom status bar with padding option",
+          "Color themes (auto/light/dark/monochrome) persisted; /theme command",
+          "/vim mode toggle + custom keybindings file with chord support",
+          "Terminal title updates per session; spinner with per-operation statusMessage; /copy last message to clipboard; /clear screen+transcript wipe (corlinman /clear exists — verify it wipes both)",
+          "Session picker fuzzy-search UI polish (shared with resume cluster)"
+        ],
+        "effort": "M",
+        "value": "low",
+        "wave": 4,
+        "seam": "console/render.py + console/app.py (status line, themes, title), console/commands.py (new commands), console config in config.toml [console]; cost data from existing meter via brain.cost_snapshot",
+        "notes": "Pure long-tail polish; none of it blocks other clusters. Opencode's attention/notification system (sound packs, focus-aware notify) is an optional bonus item here."
+      },
+      {
+        "cluster": "Opencode secondaries: ACP server, session sharing, per-agent markdown config",
+        "status": "partial",
+        "gaps": [
+          "ACP v1 server (initialize, session/new, session/load, session/prompt) mapping ACP sessions to corlinman sessions — would make corlinman usable from Zed and other ACP clients",
+          "Session sharing parity: corlinman's status-card public SSE page covers live progress, but lacks shareable full-transcript URLs with batched update sync + create/remove lifecycle and secret auth",
+          "Markdown agent definitions with per-agent model/temperature/permission-ruleset frontmatter (corlinman has agent cards + per-agent model binding from the provider-auth initiative — verify permission rulesets can be agent-scoped and merged defaults<user<agent)",
+          "Question tool option richness: multiple-choice with label+description, multi-select, custom text input (corlinman ask_user exists — verify structured options shape)"
+        ],
+        "effort": "L",
+        "value": "medium",
+        "wave": 3,
+        "seam": "New corlinman-server/src/corlinman_server/acp/ module bridging to ChatService (reuse AttachBrain's SSE client pattern from console/attach.py), status-card SSE infra for sharing, agents/ in corlinman-agent + corlinman-persona for markdown agent config, interactive/ask_user for question options",
+        "notes": "ACP is the standout: one adapter unlocks an entire editor ecosystem and reuses the exact seam the console AttachBrain already exercises. Per-agent permission rulesets should ride the wave-2 rules grammar."
+      },
+      {
+        "cluster": "Opencode secondaries: LSP integration + git worktree lifecycle",
+        "status": "missing",
+        "gaps": [
+          "LSP client pool (pyright/ts/eslint per project): diagnostics-after-edit, hover, definition, references, workspace symbols fed to the model as tool results or post-edit annotations",
+          "Git worktree create/list/remove tools with slug names, branch creation, lifecycle events — enables parallel branch exploration per session (note existing EnterWorktree/ExitWorktree deferred tools in the harness as prior art, and the known agent-worktree isolation caveat)",
+          "Diagnostics surfaced inline in console render after edit_file/apply_patch"
+        ],
+        "effort": "XL",
+        "value": "low",
+        "wave": 4,
+        "seam": "New corlinman package (corlinman-lsp) bridged through coding/files.py post-edit hooks; worktree tools alongside coding/shell.py; supervisor isolation policy from project memory caveats applies",
+        "notes": "High implementation cost, modest payoff for a multi-channel agent platform where most sessions are not deep IDE-style coding. Defer until the coding console has real usage pull."
+      }
+    ]
+  }
+}
