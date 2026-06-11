@@ -171,7 +171,9 @@ async def _sse_stream(broadcaster: Any, query: LogStreamQuery):
             try:
                 res = close()
                 if asyncio.iscoroutine(res):
-                    await res
+                    # Bounded — stream teardown must never wedge the
+                    # connection slot (see the sessions SSE CI hang).
+                    await asyncio.wait_for(res, timeout=2.0)
             except Exception:  # noqa: BLE001
                 pass
 

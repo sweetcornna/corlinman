@@ -253,6 +253,34 @@ async def test_last_event_id_catches_up_from_journal(
     assert 2 not in seqs
 
 
+@pytest.mark.asyncio
+async def test_aclose_mid_catch_up_is_bounded(
+    state: AdminState,
+    journal: AgentJournal,
+) -> None:
+    """Regression for the CI 6-hour hang: abandoning the stream right
+    after the first catch-up frame must close promptly. The old code
+    yielded from inside ``journal.iter_events`` — ``aclose()`` then tore
+    down the aiosqlite cursor mid-iteration, which could deadlock the DB
+    worker thread. With the buffered replay, ``aclose`` lands on a plain
+    list iteration and finishes immediately.
+    """
+    tid = await journal.begin_turn("sess-1", "hello")
+    assert tid is not None
+    for seq in range(50):
+        await journal.append_event(
+            _make_envelope(turn_id=str(tid), sequence=seq, text=f"old-{seq}")
+        )
+
+    gen = _sse_stream(
+        state, "sess-1", catch_up_turn_id=str(tid), catch_up_sequence=0
+    )
+    # Pull exactly one frame, then abandon the stream mid-replay.
+    first = await asyncio.wait_for(gen.__anext__(), timeout=5.0)
+    assert b"TextDelta" in first
+    await asyncio.wait_for(gen.aclose(), timeout=5.0)
+
+
 # ---------------------------------------------------------------------------
 # Heartbeat
 # ---------------------------------------------------------------------------

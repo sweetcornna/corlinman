@@ -180,16 +180,31 @@ async def _sse_stream(
             resume_turn = await _resolve_latest_turn_id(journal, session_key)
 
         if resume_turn is not None and catch_up_sequence >= 0:
+            # Buffer the replay BEFORE yielding any of it. Yielding from
+            # inside ``async for … journal.iter_events(...)`` meant a
+            # client disconnect (GeneratorExit at the yield point) tore
+            # down the aiosqlite cursor mid-iteration — cross-thread
+            # cleanup that can deadlock the DB worker (the CI 6-hour
+            # py-test hang). A catch-up is one turn's tail, so the
+            # buffer stays small; wait_for caps a wedged read and
+            # degrades to live-only streaming.
+            catch_up_events: list[Any] = []
             try:
-                async for ev in journal.iter_events(
-                    resume_turn, start_sequence=catch_up_sequence
-                ):
-                    yield _format_sse_frame(ev)
+
+                async def _collect() -> None:
+                    async for ev in journal.iter_events(
+                        resume_turn, start_sequence=catch_up_sequence
+                    ):
+                        catch_up_events.append(ev)
+
+                await asyncio.wait_for(_collect(), timeout=10.0)
             except Exception:  # noqa: BLE001 — best-effort catch-up
                 # A partial replay is preferable to tearing the
                 # connection down — the live loop below still picks up
                 # fresh envelopes.
                 pass
+            for ev in catch_up_events:
+                yield _format_sse_frame(ev)
 
         # ---------- live ----------
         while True:
@@ -207,7 +222,12 @@ async def _sse_stream(
         # Client disconnect — propagate after cleanup.
         raise
     finally:
-        await unsubscribe()
+        # Cleanup must never wedge the connection slot (or a test
+        # driver's ``aclose()``): bound it and swallow stragglers.
+        try:
+            await asyncio.wait_for(unsubscribe(), timeout=2.0)
+        except Exception:  # noqa: BLE001 — best-effort teardown
+            pass
 
 
 # ---------------------------------------------------------------------------
