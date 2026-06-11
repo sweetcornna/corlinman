@@ -36,6 +36,7 @@ See :class:`ChatState` for the wiring surface and
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import uuid
@@ -403,7 +404,13 @@ def _normalise_finish_reason(raw: str, had_tool_calls: bool) -> str:
 
 def _tool_call_envelope(event: ToolCallEvent, call_id: str) -> dict[str, object]:
     """OpenAI non-streaming tool_call envelope."""
-    args = event.args_json.decode("utf-8") if event.args_json else "{}"
+    # ``errors="replace"``: a provider emitting invalid UTF-8 in tool args
+    # must degrade to mojibake, not kill the whole response generator.
+    args = (
+        event.args_json.decode("utf-8", errors="replace")
+        if event.args_json
+        else "{}"
+    )
     return {
         "id": call_id,
         "type": "function",
@@ -417,7 +424,11 @@ def _tool_call_envelope(event: ToolCallEvent, call_id: str) -> dict[str, object]
 def _tool_call_delta_chunk(
     chat_id: str, model: str, index: int, event: ToolCallEvent, call_id: str
 ) -> dict[str, object]:
-    args = event.args_json.decode("utf-8") if event.args_json else "{}"
+    args = (
+        event.args_json.decode("utf-8", errors="replace")
+        if event.args_json
+        else "{}"
+    )
     return {
         "id": chat_id,
         "object": "chat.completion.chunk",
@@ -465,6 +476,28 @@ def _finish_chunk(chat_id: str, model: str, finish_reason: str) -> dict[str, obj
         "object": "chat.completion.chunk",
         "model": model,
         "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
+    }
+
+
+def _error_chunk(
+    chat_id: str, model: str, code: str, reason: str, message: str
+) -> dict[str, object]:
+    """Streaming error rendered as a *valid* OpenAI chunk.
+
+    The previous shape was a bare ``{"error": {...}}`` frame with no
+    ``choices`` — stream reducers that fold ``chunk.choices`` (our web
+    chat included) saw zero events and left the turn stuck in a loading
+    state forever, with the HTTP status already locked at 200. Keep the
+    ``error`` payload for API consumers, and add a terminal
+    ``finish_reason="error"`` choice so every consumer observes a
+    turn-ending event.
+    """
+    return {
+        "id": chat_id,
+        "object": "chat.completion.chunk",
+        "model": model,
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "error"}],
+        "error": {"code": code, "reason": reason, "message": message},
     }
 
 
@@ -534,6 +567,32 @@ async def _run_nonstream(
     return JSONResponse(body)
 
 
+# Upper bound on the *total* characters across all request messages.
+# Generous (a full long conversation is well under this), but stops a
+# malformed client from pushing arbitrarily large payloads into the
+# reasoning loop. Mirrors OpenAI's own per-request content limits.
+_MAX_TOTAL_CONTENT_CHARS = 2 * 1024 * 1024
+
+# Seconds of event-stream silence before emitting an SSE comment
+# heartbeat. Long-running tools produce no events while they execute
+# (image generation can block for 120s+); without any bytes on the wire
+# an idle-timeout proxy (30-60s is typical) kills the TCP connection
+# mid-turn and the browser surfaces a bare "network error". Same 10s
+# cadence as the admin sessions live stream (``sessions_events.py``).
+_SSE_HEARTBEAT_SECS = 10.0
+
+# Bounded hand-off between the service stream and the SSE writer. Keeps
+# *some* backpressure on the producer while letting the writer wake up
+# on a timer to heartbeat. ``asyncio.wait_for`` cannot safely wrap
+# ``__anext__`` on an async generator (the timeout cancellation lands
+# inside the generator frame and tears it down), so events are pumped
+# through a queue whose ``get()`` is cancellation-safe instead.
+_SSE_QUEUE_MAXSIZE = 256
+
+# Queue sentinel: the pump task finished (stream exhausted or errored).
+_STREAM_END = object()
+
+
 async def _sse_iter(
     service: ChatService,
     internal_req: InternalChatRequest,
@@ -541,37 +600,88 @@ async def _sse_iter(
     cancel: asyncio.Event,
 ) -> AsyncIterator[bytes]:
     """Render the event stream as OpenAI-shaped SSE.
-    Mirrors the Rust ``build_sse_stream`` implementation.
+    Mirrors the Rust ``build_sse_stream`` implementation, plus a comment
+    heartbeat every :data:`_SSE_HEARTBEAT_SECS` of silence so idle
+    proxies don't drop the connection while a slow tool runs.
     """
     chat_id = _new_chat_id()
     next_index = 0
     tool_calls_seen = False
-    stream: AsyncIterator[InternalChatEvent] = service.run(internal_req, cancel)
-    async for event in stream:
-        if isinstance(event, TokenDeltaEvent):
-            chunk = _token_delta_chunk(chat_id, model, event.text)
-            yield f"data: {json.dumps(chunk)}\n\n".encode()
-        elif isinstance(event, ToolCallEvent):
-            call_id = f"call_{uuid.uuid4().hex[:16]}"
-            chunk = _tool_call_delta_chunk(chat_id, model, next_index, event, call_id)
-            next_index += 1
-            tool_calls_seen = True
-            yield f"data: {json.dumps(chunk)}\n\n".encode()
-        elif isinstance(event, DoneEvent):
-            finish = _normalise_finish_reason(event.finish_reason, tool_calls_seen)
-            chunk = _finish_chunk(chat_id, model, finish)
-            yield f"data: {json.dumps(chunk)}\n\n".encode()
-            break
-        elif isinstance(event, ErrorEvent):
-            err = {
-                "error": {
-                    "code": "upstream_error",
-                    "reason": event.error.reason,
-                    "message": event.error.message,
-                }
-            }
-            yield f"data: {json.dumps(err)}\n\n".encode()
-            break
+
+    queue: asyncio.Queue[object] = asyncio.Queue(maxsize=_SSE_QUEUE_MAXSIZE)
+
+    async def _pump() -> None:
+        try:
+            stream: AsyncIterator[InternalChatEvent] = service.run(
+                internal_req, cancel
+            )
+            async for event in stream:
+                await queue.put(event)
+        except Exception as exc:  # noqa: BLE001 — surfaced as an SSE error chunk
+            await queue.put(exc)
+        finally:
+            await queue.put(_STREAM_END)
+
+    pump_task = asyncio.create_task(_pump())
+    try:
+        while True:
+            try:
+                event = await asyncio.wait_for(
+                    queue.get(), timeout=_SSE_HEARTBEAT_SECS
+                )
+            except TimeoutError:
+                # SSE comment frame: ignored by every spec-compliant
+                # parser, but keeps bytes flowing through idle proxies.
+                yield b": ping\n\n"
+                continue
+            if event is _STREAM_END:
+                break
+            if isinstance(event, TokenDeltaEvent):
+                chunk = _token_delta_chunk(chat_id, model, event.text)
+                yield f"data: {json.dumps(chunk)}\n\n".encode()
+            elif isinstance(event, ToolCallEvent):
+                call_id = f"call_{uuid.uuid4().hex[:16]}"
+                chunk = _tool_call_delta_chunk(
+                    chat_id, model, next_index, event, call_id
+                )
+                next_index += 1
+                tool_calls_seen = True
+                yield f"data: {json.dumps(chunk)}\n\n".encode()
+            elif isinstance(event, DoneEvent):
+                finish = _normalise_finish_reason(
+                    event.finish_reason, tool_calls_seen
+                )
+                chunk = _finish_chunk(chat_id, model, finish)
+                yield f"data: {json.dumps(chunk)}\n\n".encode()
+                break
+            elif isinstance(event, ErrorEvent):
+                chunk = _error_chunk(
+                    chat_id,
+                    model,
+                    "upstream_error",
+                    event.error.reason,
+                    event.error.message,
+                )
+                yield f"data: {json.dumps(chunk)}\n\n".encode()
+                break
+            elif isinstance(event, Exception):
+                # The service stream itself raised. Pre-heartbeat this
+                # propagated and killed the generator with no terminal
+                # frame — the client hung on a half-open stream.
+                _log.error("chat stream raised mid-turn", exc_info=event)
+                chunk = _error_chunk(
+                    chat_id,
+                    model,
+                    "internal_error",
+                    "stream_exception",
+                    str(event) or event.__class__.__name__,
+                )
+                yield f"data: {json.dumps(chunk)}\n\n".encode()
+                break
+    finally:
+        pump_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await pump_task
     yield b"data: [DONE]\n\n"
 
 
@@ -640,6 +750,15 @@ def router(state: ChatState | None = None) -> APIRouter:
                     status.HTTP_400_BAD_REQUEST,
                     "invalid_request",
                     "`messages` must be non-empty",
+                )
+            total_content = sum(len(m.content or "") for m in req.messages)
+            if total_content > _MAX_TOTAL_CONTENT_CHARS:
+                _span.set_attribute("http.status_code", 400)
+                return _error_response(
+                    status.HTTP_400_BAD_REQUEST,
+                    "invalid_request",
+                    "total `messages` content exceeds "
+                    f"{_MAX_TOTAL_CONTENT_CHARS} characters",
                 )
 
             # Model alias / unknown-model fallback. Pure function so the
