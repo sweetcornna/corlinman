@@ -1,7 +1,9 @@
 "use client";
 
 /**
- * `/admin/system` — version + update + upgrade-commands surface (W2.1).
+ * `/system` — version + update + upgrade-commands surface (W2.1).
+ * (Page URL is `/system`: the `(admin)` route group adds no URL segment.
+ * `/admin/system/*` is the backend API namespace, not a page route.)
  *
  * Page composition (top → bottom):
  *
@@ -329,7 +331,7 @@ export default function SystemPage() {
             // Stop driving the URL once the upgrade lands; let the user
             // come back to a clean page if they refresh post-reload.
             if (deepLinkUpgradeId) {
-              router.replace("/admin/system");
+              router.replace("/system");
             }
           }}
         />
@@ -399,8 +401,11 @@ export default function SystemPage() {
           }
           onUpgradeStarted={(res) => {
             setActiveUpgradeId(res.request_id);
+            // NOTE: the page route is /system — the (admin) route group does
+            // NOT contribute a URL segment; /admin/* is the backend API
+            // namespace only. Navigating there 404s.
             router.replace(
-              `/admin/system?upgrade=${encodeURIComponent(res.request_id)}`,
+              `/system?upgrade=${encodeURIComponent(res.request_id)}`,
             );
           }}
         />

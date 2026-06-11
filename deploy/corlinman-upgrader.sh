@@ -67,8 +67,11 @@ PROCESSED_FILE="${DATA_DIR}/.upgrade-request.processed"
 LOG_FILE="${UPGRADER_LOG_FILE:-/tmp/corlinman-upgrader.log}"
 INSTALL_SH="${INSTALL_PREFIX}/repo/deploy/install.sh"
 
-# Strict regexes — bash's =~ uses ERE.
-TAG_REGEX='^v[0-9]+\.[0-9]+\.[0-9]+(-[a-z0-9.-]+)?$'
+# Strict regexes — bash's =~ uses ERE. The leading "v" is optional on
+# input: gateways < v1.20.1 wrote the update checker's *stripped*
+# display form ("1.20.0") into the request file; we canonicalize back
+# to the release tag form right after validation (see below).
+TAG_REGEX='^v?[0-9]+\.[0-9]+\.[0-9]+(-[a-z0-9.-]+)?$'
 UUID_REGEX='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
 
 now_ms() {
@@ -185,6 +188,11 @@ if [[ -z "$TAG" || ! "$TAG" =~ $TAG_REGEX ]]; then
     # tag_invalid is the canonical error keyword the tests look for.
     fail "$REQUEST_ID" "tag_invalid"
 fi
+
+# Canonicalize to the GitHub release tag form: tag_name on the releases
+# API carries a leading "v" (v1.20.0), and install.sh fetches that ref
+# verbatim. Idempotent for already-prefixed tags.
+TAG="v${TAG#v}"
 
 # Capture the start time so write_status can stamp the same value across
 # every transition.

@@ -143,6 +143,15 @@ done
 log()  { printf "\033[1;34m==>\033[0m %s\n" "$*"; }
 warn() { printf "\033[1;33m!\033[0m %s\n" "$*" >&2; }
 die()  { printf "\033[1;31m✗\033[0m %s\n" "$*" >&2; exit 1; }
+
+# Pin uv's managed-Python store under $PREFIX. Without this, running
+# install.sh as root lets uv download CPython into /root/.local/share/uv
+# and symlink the venv interpreter there — /root is 0700, so the
+# de-privileged User=corlinman unit dies at exec with status=203/EXEC
+# (Permission denied) and every native one-click upgrade health-fails
+# into rollback. A Python runtime holds no secrets; world read+exec is
+# the point.
+export UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-$PREFIX/uv-python}"
 require() { command -v "$1" >/dev/null 2>&1 || die "required tool '$1' not on PATH"; }
 
 # Dedicated unprivileged service account the gateway runs as. Mirrors the
@@ -233,6 +242,13 @@ chown_runtime_paths() {
             || warn "could not chown $PREFIX/repo/.venv to root:$SERVICE_USER"
         sudo chmod -R g-w,o-w "$PREFIX/repo/.venv" \
             || warn "could not strip group/other write from $PREFIX/repo/.venv"
+    fi
+    # The uv-managed interpreter the venv symlinks to must be traversable
+    # + executable by SERVICE_USER (and stay unwritable to it — it's a
+    # root-executed artifact, same posture as the venv above).
+    if [[ -d "$UV_PYTHON_INSTALL_DIR" ]]; then
+        sudo chmod -R a+rX,go-w "$UV_PYTHON_INSTALL_DIR" \
+            || warn "could not open read+exec on $UV_PYTHON_INSTALL_DIR"
     fi
 }
 
@@ -1072,6 +1088,18 @@ write_systemd_units() {
 # upgrade-apply and the rollback-apply, so a failed release is reverted by the
 # exact same convergence logic. Returns non-zero if any step errors.
 _apply_native_ref() {
+    # One-shot migration for installs whose venv interpreter resolves
+    # under /root (pre-UV_PYTHON_INSTALL_DIR boxes): uv sync would keep
+    # that venv, leaving the unit broken — force a rebuild against the
+    # $PREFIX-pinned python store instead.
+    if [[ "$(uname -s)" == "Linux" && -e "$PREFIX/repo/.venv/bin/python" ]]; then
+        local venv_py
+        venv_py="$(readlink -f "$PREFIX/repo/.venv/bin/python" 2>/dev/null || true)"
+        if [[ "$venv_py" == /root/* ]]; then
+            log "venv interpreter at $venv_py is unreadable by $SERVICE_USER — rebuilding venv against $UV_PYTHON_INSTALL_DIR"
+            sudo rm -rf "$PREFIX/repo/.venv"
+        fi
+    fi
     log "uv sync --all-packages --frozen (refreshing venv)"
     (cd "$PREFIX/repo" && uv sync --all-packages --frozen --no-dev) || return 1
     build_and_place_ui || return 1

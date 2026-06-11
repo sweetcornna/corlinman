@@ -165,7 +165,7 @@ function Breadcrumb({
   turnId: string;
 }) {
   const { t } = useTranslation();
-  const detailHref = `/admin/sessions/detail?key=${encodeURIComponent(sessionKey)}`;
+  const detailHref = `/sessions/detail?key=${encodeURIComponent(sessionKey)}`;
   return (
     <header className="flex flex-col gap-3">
       <Button
@@ -184,7 +184,7 @@ function Breadcrumb({
         className="flex flex-wrap items-center gap-1 text-xs text-sg-ink-3"
       >
         <Link
-          href="/admin/sessions"
+          href="/sessions"
           className="hover:text-sg-ink hover:underline"
         >
           {t("sessions.title")}

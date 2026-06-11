@@ -205,11 +205,24 @@ class NativeUpgrader:
         if in_flight is not None:
             raise UpgradeAlreadyRunning(in_flight)
 
+        # Canonicalize to the GitHub release tag form (leading ``v``).
+        # The update checker strips the ``v`` for display and the UI
+        # POSTs that stripped form back, but the privileged helper
+        # validates the tag against the literal release ``tag_name``
+        # (``v1.20.0``) and a ``^v…`` regex — an unprefixed tag fails
+        # ``tag_invalid`` there. Docker mode must NOT get this prefix:
+        # GHCR image tags carry no ``v`` (release-image.yml semver
+        # pattern ``{{version}}``).
+        stripped = (
+            target_tag[1:] if target_tag[:1] in ("v", "V") else target_tag
+        )
+        canonical_tag = f"v{stripped}"
+
         request_id = uuid.uuid4().hex
         requested_at = _now_ms()
         req = UpgradeRequest(
             request_id=request_id,
-            tag=target_tag,
+            tag=canonical_tag,
             requested_at=requested_at,
             requested_by=actor,
             mode="native",
@@ -223,7 +236,7 @@ class NativeUpgrader:
 
         payload: dict[str, Any] = {
             "request_id": helper_request_id,
-            "tag": target_tag,
+            "tag": canonical_tag,
             "requested_at": requested_at,
             "requested_by": actor,
             "mode": "native",
@@ -246,7 +259,7 @@ class NativeUpgrader:
         logger.info(
             "native_upgrader.request_written",
             request_id=req.request_id,
-            tag=target_tag,
+            tag=canonical_tag,
             requested_by=actor,
             path=str(request_path),
         )

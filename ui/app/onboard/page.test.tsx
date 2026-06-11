@@ -10,7 +10,7 @@
  *   3. Change password   (POST /admin/onboard/finalize-password, gated)
  *   4. Persona           (POST /admin/onboard/finalize-persona — default/custom/skip)
  *   5. Image provider    (POST /admin/onboard/finalize-image-provider)
- *   6. Done              (router.push("/admin") — or a deferred /persona redirect)
+ *   6. Done              (router.push("/") — or a deferred /persona redirect)
  *
  * Covered here:
  *   1. After the /admin/me probe settles the wizard renders Step 1 (API
@@ -288,7 +288,7 @@ describe("OnboardPage", () => {
     fireEvent.click(screen.getByTestId("onboard-finish"));
 
     await waitFor(() => {
-      expect(pushMock).toHaveBeenCalledWith("/admin");
+      expect(pushMock).toHaveBeenCalledWith("/");
     });
     expect(seen).toEqual(["account", "password", "persona", "image"]);
 
@@ -360,6 +360,6 @@ describe("OnboardPage", () => {
     await waitFor(() => {
       expect(pushMock).toHaveBeenCalledWith("/persona");
     });
-    expect(pushMock).not.toHaveBeenCalledWith("/admin");
+    expect(pushMock).not.toHaveBeenCalledWith("/");
   });
 });
