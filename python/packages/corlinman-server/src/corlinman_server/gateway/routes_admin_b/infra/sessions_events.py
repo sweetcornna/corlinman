@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections import deque
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Request
@@ -61,6 +62,17 @@ REPLAY_MAX_LIMIT: int = 5000
 # and each page's journal cursor is drained fully before any frame is
 # yielded so it always closes cleanly.
 CATCH_UP_PAGE_SIZE: int = 1000
+
+# Upper bound on the live-dedup sequence set (see ``_sse_stream``). A
+# replay/live duplicate must still be sitting in the subscriber queue
+# (capacity 512, ``DEFAULT_QUEUE_MAXSIZE``), undrained while we page, so
+# its sequence is within the most-recent ~512 replayed rows. This window
+# (4× that, for margin) keeps the dedup state bounded on an
+# indefinitely-open admin SSE connection instead of retaining a long
+# turn's entire backlog. If the queue overflowed during catch-up its
+# events were already dropped and the client reconnects, so dedup beyond
+# this window is moot.
+DEDUP_WINDOW: int = 2048
 
 # Past-turns listing default + cap. 50 matches the default pill-row
 # the session-detail page renders on first load; the 200 cap keeps a
@@ -207,10 +219,17 @@ async def _sse_stream(
         # brand-new turn's early events flowing — their turn id never
         # matches. Holds for bare resumes too: ``resume_turn`` is the
         # resolved latest turn, so its own replayed events dedup while a
-        # *new* turn is untouched. The set is bounded by the replayed
-        # backlog (already buffered a page at a time) and freed on close.
+        # *new* turn is untouched.
+        #
+        # The set is BOUNDED to the most-recent ``DEDUP_WINDOW`` replayed
+        # sequences (FIFO eviction via ``_seen_order``) so a long turn's
+        # full backlog never stays resident on an indefinitely-open SSE
+        # connection. Correct because a duplicate must still be queued
+        # (queue capacity 512 ≪ window), so its sequence is always within
+        # the retained window — older replayed rows can never collide.
         dedup_turn = resume_turn  # turn catch-up replays (composite or resolved)
-        replayed_seqs: set[int] = set()  # exact sequences catch-up delivered
+        replayed_seqs: set[int] = set()  # recent sequences catch-up delivered
+        _seen_order: deque[int] = deque(maxlen=DEDUP_WINDOW)  # FIFO eviction order
 
         if resume_turn is not None and catch_up_sequence >= 0:
             # Replay the catch-up backlog in bounded PAGES. Design points:
@@ -255,7 +274,12 @@ async def _sse_stream(
                 for ev in page:
                     yield _format_sse_frame(ev)
                     ev_seq = ev.get("sequence")
-                    if isinstance(ev_seq, int):
+                    if isinstance(ev_seq, int) and ev_seq not in replayed_seqs:
+                        # Bounded insert: evict the oldest tracked seq once
+                        # the window is full (deque drops it on append).
+                        if len(_seen_order) == DEDUP_WINDOW:
+                            replayed_seqs.discard(_seen_order[0])
+                        _seen_order.append(ev_seq)
                         replayed_seqs.add(ev_seq)
                 last_seq = page[-1].get("sequence")
                 if not isinstance(last_seq, int) or last_seq <= seq_cursor:

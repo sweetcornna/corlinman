@@ -415,6 +415,61 @@ async def test_live_only_delta_in_journal_gap_survives(
 
 
 @pytest.mark.asyncio
+async def test_bounded_dedup_still_suppresses_recent_overlap(
+    state: AdminState,
+    journal: AgentJournal,
+    emitter: JournalBackedEmitter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dedup memory is bounded to the most-recent ``DEDUP_WINDOW`` replayed
+    sequences, so a long turn's whole backlog never stays resident. The
+    bound is safe because a replay/live duplicate must still be queued, so
+    its sequence is always within the window — proven here by suppressing a
+    recent overlap even when the window is far smaller than the backlog."""
+    monkeypatch.setattr(sessions_events, "DEDUP_WINDOW", 2)
+    tid = await journal.begin_turn("sess-1", "hello")
+    assert tid is not None
+    for seq in range(6):  # backlog 0..5 — far larger than the 2-wide window
+        await journal.append_event(
+            _make_envelope(turn_id=str(tid), sequence=seq, text=f"old-{seq}")
+        )
+
+    gen = _sse_stream(
+        state, "sess-1", catch_up_turn_id=str(tid), catch_up_sequence=0
+    )
+
+    async def _producer() -> None:
+        for _ in range(50):
+            if emitter.subscriber_count("sess-1") > 0:
+                break
+            await asyncio.sleep(0.02)
+        # seq 5 is the most-recent replayed row (inside the 2-wide window) —
+        # the replay/live overlap; seq 6 is genuinely new.
+        await emitter.emit(_make_envelope(turn_id=str(tid), sequence=5, text="old-5"))
+        await emitter.emit(_make_envelope(turn_id=str(tid), sequence=6, text="new-6"))
+
+    producer = asyncio.create_task(_producer())
+    try:
+        body = await asyncio.wait_for(
+            _drain_frames(gen, until_count_of="new-6", count=1), timeout=5.0
+        )
+    finally:
+        producer.cancel()
+        with contextlib_suppress():
+            await producer
+        await gen.aclose()
+
+    frames = _parse_sse_frames(body)
+    seqs = [
+        int(f["id"].split(":", 1)[1])
+        for f in frames
+        if f.get("event") == "TextDelta"
+    ]
+    assert seqs.count(5) == 1, f"recent overlap seq 5 duplicated: {seqs}"
+    assert 6 in seqs
+
+
+@pytest.mark.asyncio
 async def test_bare_resume_does_not_dedup_a_new_turn(
     state: AdminState,
     journal: AgentJournal,
