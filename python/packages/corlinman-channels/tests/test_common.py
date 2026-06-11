@@ -79,11 +79,40 @@ class TestNormalizeOutboundText:
 
     def test_keeps_backticks_around_mentions(self) -> None:
         # Stripping backticks off a mention could turn it into a live ping
-        # on render-and-parse channels (Slack/Discord) — keep them.
+        # on render-and-parse channels (Slack/Discord) — keep them, even
+        # when the mention is not at the start of the span.
         assert normalize_outbound_text("`@everyone`") == "`@everyone`"
         assert normalize_outbound_text("`<@U123>`") == "`<@U123>`"
+        assert normalize_outbound_text("`please @everyone`") == "`please @everyone`"
+        assert normalize_outbound_text("`cc <@U123>`") == "`cc <@U123>`"
         # Non-mention inline code still unwraps.
         assert normalize_outbound_text("the `value` here") == "the value here"
+
+    def test_code_span_contents_are_not_emphasis_stripped(self) -> None:
+        # A dunder in a code span must NOT be eaten by the emphasis pass.
+        assert normalize_outbound_text("`__init__`") == "__init__"
+        assert normalize_outbound_text("call `__init__` now") == "call __init__ now"
+
+    def test_preserves_dunder_and_pycache_paths(self) -> None:
+        # Path/identifier underscores next to '.' or '/' are not emphasis.
+        assert normalize_outbound_text("__init__.py") == "__init__.py"
+        assert (
+            normalize_outbound_text("/tmp/__pycache__/mod.py")
+            == "/tmp/__pycache__/mod.py"
+        )
+        # Whitespace-flanked underscore emphasis still flattens.
+        assert normalize_outbound_text("a __bold__ b") == "a bold b"
+
+    def test_does_not_strip_repl_prompts_and_is_idempotent(self) -> None:
+        # '>>>' / '>>' REPL prompts are not blockquotes.
+        assert normalize_outbound_text(">>> print(1)") == ">>> print(1)"
+        assert normalize_outbound_text(">> nested") == ">> nested"
+        # A real blockquote still flattens, and re-running is a no-op.
+        once = normalize_outbound_text("> quoted")
+        assert once == "quoted"
+        assert normalize_outbound_text(once) == once
+        repl = ">>> code"
+        assert normalize_outbound_text(normalize_outbound_text(repl)) == repl
 
     def test_idempotent(self) -> None:
         once = normalize_outbound_text("- **a** `b` — c")

@@ -291,36 +291,42 @@ def split_on_msg_break(text: str) -> list[str]:
 # Outbound text normalization
 # ---------------------------------------------------------------------------
 
-# Emphasis (``*x*`` / ``**x**`` / ``***x***`` and the ``_`` forms) → inner
-# text, matched ONLY at real Markdown emphasis boundaries: a non-word char
-# (or string edge) just outside each delimiter AND non-space just inside.
-# Those guards keep content that merely *contains* the delimiters intact —
-# math/operators (``2 * 3``, ``a*b*c``), globs (``*.py``), and snake_case
-# identifiers / paths (``my_file.py``, ``/foo_bar/baz_qux``) all survive,
-# while genuine ``**bold**`` / ``_italic_`` runs still flatten.
-_EMPHASIS_RE = re.compile(
-    r"(?<!\w)(\*\*\*|___|\*\*|__|\*|_)(?=\S)(?P<inner>.+?)(?<=\S)\1(?!\w)",
+# Asterisk emphasis (``*x*`` / ``**x**`` / ``***x***``) → inner text,
+# matched only at real boundaries (non-word char outside, non-space
+# inside) so operators/wildcards/intra-word stars (``2 * 3``, ``a*b*c``,
+# ``*.py``) survive while genuine ``**bold**`` flattens.
+_EMPHASIS_STAR_RE = re.compile(
+    r"(?<!\w)(\*\*\*|\*\*|\*)(?=\S)(?P<inner>.+?)(?<=\S)\1(?!\w)",
     re.DOTALL,
 )
-# A mention-like token: leaving these wrapped in backticks preserves the
-# author's escaping so a render-and-parse transport (Slack/Discord) can't
-# turn ``\`@everyone\``` / ``\`<@U123>\``` into a live notification.
-_MENTION_RE = re.compile(r"^\s*(?:@|<[@!#&])")
-# ``inline code`` → inner text (drop the backticks; chat clients show them
-# raw) UNLESS the inner content is mention-like.
-_INLINE_CODE_RE = re.compile(r"`([^`\n]+?)`")
-
-
-def _unwrap_inline_code(m: re.Match[str]) -> str:
-    inner = m.group(1)
-    # Keep the escaping for mentions; strip backticks otherwise.
-    return m.group(0) if _MENTION_RE.match(inner) else inner
+# Underscore emphasis (``_x_`` / ``__x__`` / ``___x___``) → inner text,
+# but ONLY when whitespace/edge-flanked on both outer sides. Underscores
+# pervade identifiers and paths (``__init__.py``, ``/tmp/__pycache__/x``,
+# ``my_file.py``); a ``\w`` boundary alone still treats ``/``- or
+# ``.``-adjacent runs as emphasis, so we require actual whitespace (or a
+# string edge) outside — which those path tokens never have.
+_EMPHASIS_USCORE_RE = re.compile(
+    r"(?<!\S)(___|__|_)(?=\S)(?P<inner>.+?)(?<=\S)\1(?!\S)",
+    re.DOTALL,
+)
+# A mention token ANYWHERE in an inline-code span: keeping such a span
+# wrapped in backticks preserves the author's escaping so a
+# render-and-parse transport (Slack/Discord) can't turn ``\`@everyone\```
+# / ``\`cc <@U123>\``` into a live notification.
+_MENTION_RE = re.compile(r"(?:^|\s)(?:@|<[@!#&])")
 # A fenced code block — preserved verbatim so real code keeps its shape.
 _FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
+# An inline code span — stashed before the markdown passes so its
+# contents (e.g. ``__init__``) are never seen as emphasis, then either
+# unwrapped (backticks dropped for clean text) or kept verbatim (mention
+# spans) at restore time.
+_CODE_SPAN_RE = re.compile(r"`[^`\n]+?`")
 # Leading ATX heading hashes: ``## Title`` → ``Title``.
 _HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+", re.MULTILINE)
-# Leading blockquote markers: ``> quote`` → ``quote``.
-_BLOCKQUOTE_RE = re.compile(r"^\s{0,3}>\s?", re.MULTILINE)
+# Leading blockquote marker ``> quote`` → ``quote`` — but NOT a REPL
+# prompt / nested quote (``>>> print(1)``, ``>> x``): the ``>`` must not be
+# followed by another ``>``. Single-strip keeps the transform idempotent.
+_BLOCKQUOTE_RE = re.compile(r"^\s{0,3}>(?!>)\s?", re.MULTILINE)
 # Leading list bullet (-, *, +) → a clean middle-dot bullet.
 _BULLET_RE = re.compile(r"^(\s*)[-*+]\s+", re.MULTILINE)
 # AI-tell Latin punctuation → plain ASCII. Chinese full-width punctuation
@@ -346,26 +352,42 @@ def normalize_outbound_text(text: str) -> str:
     if not text:
         return text
 
-    # Carve out fenced code blocks so their contents are never rewritten.
+    # Stash fenced blocks AND inline-code spans before any markdown pass
+    # so their contents (``__init__``, ``@everyone``, ``2 * 3``) are never
+    # rewritten as emphasis/etc. Fences restore verbatim; code spans get
+    # an unwrap decision at restore time.
     fences: list[str] = []
+    spans: list[str] = []
 
-    def _stash(m: re.Match[str]) -> str:
+    def _stash_fence(m: re.Match[str]) -> str:
         fences.append(m.group(0))
         return f"\x00FENCE{len(fences) - 1}\x00"
 
-    work = _FENCE_RE.sub(_stash, text)
+    def _stash_span(m: re.Match[str]) -> str:
+        spans.append(m.group(0))
+        return f"\x00SPAN{len(spans) - 1}\x00"
+
+    work = _FENCE_RE.sub(_stash_fence, text)
+    work = _CODE_SPAN_RE.sub(_stash_span, work)
 
     work = _HEADING_RE.sub("", work)
     work = _BLOCKQUOTE_RE.sub("", work)
     work = _BULLET_RE.sub(r"\1· ", work)
-    work = _INLINE_CODE_RE.sub(_unwrap_inline_code, work)
     # Emphasis can nest (``**_x_**``); run twice to unwrap both layers.
     for _ in range(2):
-        work = _EMPHASIS_RE.sub(lambda m: m.group("inner"), work)
+        work = _EMPHASIS_STAR_RE.sub(lambda m: m.group("inner"), work)
+        work = _EMPHASIS_USCORE_RE.sub(lambda m: m.group("inner"), work)
     work = _AI_PUNCT_RE.sub(lambda m: _AI_PUNCT[m.group(0)], work)
     # Collapse 3+ blank lines left behind by stripped scaffolding.
     work = re.sub(r"\n{3,}", "\n\n", work)
 
+    # Restore inline code: drop the backticks for clean display, but keep
+    # them when the span contains a mention (preserves the escaping so it
+    # can't fire a live notification downstream).
+    for i, span in enumerate(spans):
+        inner = span[1:-1]
+        restored = span if _MENTION_RE.search(inner) else inner
+        work = work.replace(f"\x00SPAN{i}\x00", restored)
     for i, fence in enumerate(fences):
         work = work.replace(f"\x00FENCE{i}\x00", fence)
     return work.strip()
