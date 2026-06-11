@@ -442,6 +442,7 @@ export const en = {
       customTitle: "Custom",
       accentHue: "Accent hue",
       canvasHue: "Canvas hue",
+      glassOpacity: "Glass opacity",
       reset: "Reset to default",
       themes: {
         deepSpace: "Deep Space",

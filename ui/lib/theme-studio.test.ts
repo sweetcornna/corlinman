@@ -88,6 +88,25 @@ describe("theme studio", () => {
     expect(window.localStorage.getItem(THEME_PARAMS_KEY)).toBeNull();
   });
 
+  it("scales glass alphas with glassOpacity but never the opaque fallback", () => {
+    const dense = buildCanvasCss({ accent: 230, glassOpacity: 1.4 });
+    // dark glass-1 base 0.55 * 1.4 = 0.77
+    expect(dense).toContain("--sg-glass-1-bg:oklch(0.21 0.028 270 / 0.77)");
+    // light glass-2 base 0.6 * 1.4 = 0.84
+    expect(dense).toContain("--sg-glass-2-bg:oklch(1 0 0 / 0.84)");
+    expect(dense).toContain("--sg-glass-opaque:oklch(0.17 0.026 270 / 0.95)");
+
+    const clear = buildThemeCss({ accent: 230, glassOpacity: 0.55 });
+    expect(clear).toContain("--sg-glass-2-bg:oklch(1 0 0 / 0.33)");
+    // glassOpacity alone is enough to trigger the canvas block
+    expect(clear).toContain("--sg-space-2:");
+    // alpha never exceeds the legibility ceiling
+    const over = buildCanvasCss({ accent: 230, glassOpacity: 1.4, canvasChroma: 0.03 });
+    for (const m of over.matchAll(/--sg-glass[^:]*:oklch\([^)]+\/ ([0-9.]+)\)/g)) {
+      expect(Number(m[1])).toBeLessThanOrEqual(0.96);
+    }
+  });
+
   it("ships six designer themes with deep-space as the stock reset", () => {
     expect(DESIGNER_THEMES).toHaveLength(6);
     expect(DESIGNER_THEMES[0].id).toBe("deep-space");

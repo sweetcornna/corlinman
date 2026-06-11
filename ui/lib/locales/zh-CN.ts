@@ -425,6 +425,7 @@ export const zhCN = {
       customTitle: "自定义",
       accentHue: "主题色相",
       canvasHue: "画布色相",
+      glassOpacity: "玻璃不透明度",
       reset: "恢复默认",
       themes: {
         deepSpace: "深空",

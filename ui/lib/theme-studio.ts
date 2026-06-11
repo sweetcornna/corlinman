@@ -29,6 +29,12 @@ export interface ThemeParams {
   accentIntensity?: number;
   canvas?: number;
   canvasChroma?: number;
+  /**
+   * Glass fill opacity multiplier (0.55–1.4, default 1). Lower = clearer
+   * Apple "clear" material; higher = denser frosted glass. Applies to
+   * both themes; the opaque no-backdrop-filter fallback never scales.
+   */
+  glassOpacity?: number;
   /** Designer preset id, for picker UI state only. */
   preset?: string;
 }
@@ -102,11 +108,21 @@ export function buildCanvasCss(params: ThemeParams): string {
   const A = norm(params.accent);
   const A2 = norm(params.accent + 55);
   const k = Math.max(0.05, Math.min(params.accentIntensity ?? 1, 1.5));
+  const g = Math.max(0.55, Math.min(params.glassOpacity ?? 1, 1.4));
+  const ga = (alpha: number) => +Math.min(alpha * g, 0.96).toFixed(3);
   const hh = hslHue(H);
   const sat = Math.round(Math.min(C / 0.034, 1) * 32);
   const f = (n: number) => +n.toFixed(3);
   return [
     ":root{",
+    // Light glass keeps its neutral white base — only the density scales.
+    `--sg-glass-1-bg:oklch(1 0 0 / ${ga(0.55)});`,
+    `--sg-glass-2-bg:oklch(1 0 0 / ${ga(0.6)});`,
+    `--sg-glass-2-bg-strong:oklch(1 0 0 / ${ga(0.72)});`,
+    `--sg-glass-2-bg-weak:oklch(1 0 0 / ${ga(0.45)});`,
+    `--sg-glass-2-grad-a:oklch(1 0 0 / ${ga(0.72)});`,
+    `--sg-glass-2-grad-b:oklch(0.98 0.005 270 / ${ga(0.5)});`,
+    `--sg-glass-3-bg:oklch(0.99 0.004 270 / ${ga(0.78)});`,
     // Daylight haze keeps a whisper of the canvas hue.
     `--sg-space-0:oklch(0.965 ${f(Math.min(C * 0.3, 0.012))} ${H});`,
     `--sg-space-1:oklch(0.975 ${f(Math.min(C * 0.22, 0.009))} ${norm(H - 16)});`,
@@ -122,17 +138,17 @@ export function buildCanvasCss(params: ThemeParams): string {
     `--sg-nebula-1:oklch(0.75 ${f(0.12 * k)} ${A} / 0.12);`,
     `--sg-nebula-2:oklch(0.65 ${f(0.13 * k)} ${A2} / 0.08);`,
     `--sg-nebula-3:oklch(0.6 ${f(Math.max(C * 2.5, 0.04))} ${H} / 0.08);`,
-    `--sg-glass-1-bg:oklch(0.21 ${f(C * 0.94)} ${norm(H + 4)} / 0.55);`,
-    `--sg-glass-2-bg:oklch(0.23 ${f(C * 0.82)} ${norm(H + 4)} / 0.5);`,
-    `--sg-glass-2-bg-strong:oklch(0.25 ${f(C * 0.82)} ${norm(H + 4)} / 0.6);`,
-    `--sg-glass-2-bg-weak:oklch(0.2 ${f(C * 0.82)} ${norm(H + 4)} / 0.4);`,
-    `--sg-glass-2-grad-a:oklch(0.25 ${f(C * 0.82)} ${norm(H + 4)} / 0.55);`,
-    `--sg-glass-2-grad-b:oklch(0.17 ${f(C * 0.88)} ${norm(H + 2)} / 0.5);`,
-    `--sg-glass-3-bg:oklch(0.19 ${f(C * 1.06)} ${norm(H + 4)} / 0.7);`,
+    `--sg-glass-1-bg:oklch(0.21 ${f(C * 0.94)} ${norm(H + 4)} / ${ga(0.55)});`,
+    `--sg-glass-2-bg:oklch(0.23 ${f(C * 0.82)} ${norm(H + 4)} / ${ga(0.5)});`,
+    `--sg-glass-2-bg-strong:oklch(0.25 ${f(C * 0.82)} ${norm(H + 4)} / ${ga(0.6)});`,
+    `--sg-glass-2-bg-weak:oklch(0.2 ${f(C * 0.82)} ${norm(H + 4)} / ${ga(0.4)});`,
+    `--sg-glass-2-grad-a:oklch(0.25 ${f(C * 0.82)} ${norm(H + 4)} / ${ga(0.55)});`,
+    `--sg-glass-2-grad-b:oklch(0.17 ${f(C * 0.88)} ${norm(H + 2)} / ${ga(0.5)});`,
+    `--sg-glass-3-bg:oklch(0.19 ${f(C * 1.06)} ${norm(H + 4)} / ${ga(0.7)});`,
     `--sg-glass-opaque:oklch(0.17 ${f(C * 0.88)} ${norm(H + 4)} / 0.95);`,
-    `--sg-inset-bg:oklch(0.085 ${f(C * 0.7)} ${norm(H + 2)} / 0.5);`,
-    `--sg-inset-bg-hover:oklch(0.1 ${f(C * 0.82)} ${norm(H + 2)} / 0.55);`,
-    `--sg-inset-bg-strong:oklch(0.12 ${f(C * 0.82)} ${norm(H + 2)} / 0.6);`,
+    `--sg-inset-bg:oklch(0.085 ${f(C * 0.7)} ${norm(H + 2)} / ${ga(0.5)});`,
+    `--sg-inset-bg-hover:oklch(0.1 ${f(C * 0.82)} ${norm(H + 2)} / ${ga(0.55)});`,
+    `--sg-inset-bg-strong:oklch(0.12 ${f(C * 0.82)} ${norm(H + 2)} / ${ga(0.6)});`,
     `--background:${hh} ${sat}% 8%;`,
     `--card:${hh} ${Math.max(sat - 7, 4)}% 16% / 0.45;`,
     `--popover:${hh} ${Math.max(sat - 4, 4)}% 13% / 0.75;`,
@@ -146,7 +162,10 @@ export function buildCanvasCss(params: ThemeParams): string {
 /** Full theme CSS = accent family + canvas family. */
 export function buildThemeCss(params: ThemeParams): string {
   const accent = buildAccentCss(params.accent, params.accentIntensity ?? 1);
-  const canvas = params.canvas != null ? buildCanvasCss(params) : "";
+  const wantsCanvas =
+    params.canvas != null ||
+    (params.glassOpacity != null && params.glassOpacity !== 1);
+  const canvas = wantsCanvas ? buildCanvasCss(params) : "";
   return accent + canvas;
 }
 

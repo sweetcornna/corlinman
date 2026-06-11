@@ -713,6 +713,21 @@
     font-style: italic;
   }
 
+  /* Overflow guards for rendered markdown — wide images/pre can never
+     escape the message column. */
+  .chat-md {
+    overflow-wrap: break-word;
+    min-width: 0;
+  }
+  .chat-md img {
+    max-width: 100%;
+    height: auto;
+  }
+  .chat-md pre,
+  .chat-md table {
+    max-width: 100%;
+  }
+
   /* Prism syntax tokens for chat code blocks (<CodeHighlighter> emits
      classNames; colors stay token-driven and theme-aware). */
   .chat-md .token.comment,

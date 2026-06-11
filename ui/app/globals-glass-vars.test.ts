@@ -94,6 +94,7 @@ describe("blur budget (repo-wide static check)", () => {
     "components/ui/accent-picker.tsx", // theme-color popover
 
     "components/layout/profile-switcher.tsx", // popover
+    "components/playground/agent-picker.tsx", // popover
     "components/providers.tsx", // sonner toasts
     "components/sessions/replay-dialog.tsx",
     "components/ui/command-palette.tsx",

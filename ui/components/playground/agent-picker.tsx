@@ -181,7 +181,7 @@ export function AgentPicker({
           data-testid="agent-picker-popover"
           className={cn(
             "absolute left-0 top-full z-30 mt-1 flex w-[320px] flex-col gap-1.5 rounded-lg",
-            "border border-sg-border bg-sg-overlay p-2 shadow-lg",
+            "sg-glass-overlay lg-edge p-2 shadow-sg-4",
           )}
         >
           <input

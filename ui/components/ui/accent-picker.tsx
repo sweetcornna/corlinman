@@ -181,6 +181,32 @@ export function AccentPicker({ className }: { className?: string }) {
             />
           </div>
 
+          <div className="mt-3">
+            <div className="flex items-center justify-between">
+              <label htmlFor="glass-opacity-slider" className="text-[11px] text-sg-ink-4">
+                {t("nav.themeStudio.glassOpacity")}
+              </label>
+              <span className="font-mono text-[11px] text-sg-ink-5">
+                {Math.round((params?.glassOpacity ?? 1) * 100)}%
+              </span>
+            </div>
+            <input
+              id="glass-opacity-slider"
+              type="range"
+              min={55}
+              max={140}
+              step={5}
+              value={Math.round((params?.glassOpacity ?? 1) * 100)}
+              onChange={(e) => setCustom({ glassOpacity: Number(e.target.value) / 100 })}
+              data-testid="glass-opacity-slider"
+              className="mt-1.5 h-2 w-full cursor-pointer appearance-none rounded-full"
+              style={{
+                background:
+                  "linear-gradient(90deg, oklch(0.6 0.02 270 / 0.25), oklch(0.6 0.02 270 / 0.95))",
+              }}
+            />
+          </div>
+
           {/* Reset */}
           <button
             type="button"

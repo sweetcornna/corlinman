@@ -101,7 +101,7 @@ export function MarkdownMessage({
             alt={alt ?? ""}
             loading="lazy"
             data-testid="md-image"
-            className={cn("max-h-80 rounded-sg-md border border-sg-border object-contain shadow-sg-1", c)}
+            className={cn("h-auto max-h-80 max-w-full rounded-sg-md border border-sg-border object-contain shadow-sg-1", c)}
             {...rest}
           />
         </button>
