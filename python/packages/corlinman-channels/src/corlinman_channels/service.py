@@ -2769,12 +2769,22 @@ async def handle_one_telegram(
                         # (Previously this edited the placeholder, then
                         # ALSO sent the same chunk fresh to carry the
                         # keyboard — the duplicate "asked twice" message.)
-                        await sender.edit_message_text(
+                        # If the edit is rejected (rate-limit / network),
+                        # fall back to a fresh send so the question + its
+                        # buttons are never silently dropped.
+                        edited = await sender.edit_message_text(
                             chat_id,
                             placeholder_id,
                             b_chunks[0],
                             inline_keyboard=keyboard,
                         )
+                        if not edited:
+                            await sender.send_message(
+                                chat_id,
+                                b_chunks[0],
+                                reply_to_message_id=reply_to,
+                                inline_keyboard=keyboard,
+                            )
                     elif is_last_bubble:
                         # Single bubble, multiple chunks: edit placeholder
                         # with chunk-0, send the middle chunks, then send

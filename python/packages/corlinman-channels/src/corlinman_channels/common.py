@@ -291,14 +291,31 @@ def split_on_msg_break(text: str) -> list[str]:
 # Outbound text normalization
 # ---------------------------------------------------------------------------
 
-# Inline emphasis markers stripped to their inner text. Ordered longest-first
-# so ``***x***`` / ``___x___`` collapse before the 2- and 1-char forms.
-_EMPHASIS_RE = re.compile(
-    r"(\*\*\*|___|\*\*|__|\*|_)(?P<inner>.+?)\1",
+# Asterisk emphasis (``*x*`` / ``**x**`` / ``***x***``) → inner text.
+# Asterisks effectively never appear intra-word, so this stays greedy.
+_EMPHASIS_STAR_RE = re.compile(r"(\*\*\*|\*\*|\*)(?P<inner>.+?)\1", re.DOTALL)
+# Underscore emphasis (``_x_`` / ``__x__`` / ``___x___``) → inner text, but
+# ONLY at word boundaries. Markdown's intra-word rule: a real emphasis run
+# has a non-word char (or string edge) just outside each delimiter, so
+# identifiers/paths/URLs like ``my_file.py`` or ``/foo_bar/baz_qux`` keep
+# their underscores instead of being mangled to ``myfile.py``.
+_EMPHASIS_USCORE_RE = re.compile(
+    r"(?<!\w)(_{1,3})(?=\S)(?P<inner>.+?)(?<=\S)\1(?!\w)",
     re.DOTALL,
 )
-# ``inline code`` → inner text (drop the backticks; chat clients show them raw).
+# A mention-like token: leaving these wrapped in backticks preserves the
+# author's escaping so a render-and-parse transport (Slack/Discord) can't
+# turn ``\`@everyone\``` / ``\`<@U123>\``` into a live notification.
+_MENTION_RE = re.compile(r"^\s*(?:@|<[@!#&])")
+# ``inline code`` → inner text (drop the backticks; chat clients show them
+# raw) UNLESS the inner content is mention-like.
 _INLINE_CODE_RE = re.compile(r"`([^`\n]+?)`")
+
+
+def _unwrap_inline_code(m: re.Match[str]) -> str:
+    inner = m.group(1)
+    # Keep the escaping for mentions; strip backticks otherwise.
+    return m.group(0) if _MENTION_RE.match(inner) else inner
 # A fenced code block — preserved verbatim so real code keeps its shape.
 _FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
 # Leading ATX heading hashes: ``## Title`` → ``Title``.
@@ -342,10 +359,11 @@ def normalize_outbound_text(text: str) -> str:
     work = _HEADING_RE.sub("", work)
     work = _BLOCKQUOTE_RE.sub("", work)
     work = _BULLET_RE.sub(r"\1· ", work)
-    work = _INLINE_CODE_RE.sub(r"\1", work)
+    work = _INLINE_CODE_RE.sub(_unwrap_inline_code, work)
     # Emphasis can nest (``**_x_**``); run twice to unwrap both layers.
-    work = _EMPHASIS_RE.sub(lambda m: m.group("inner"), work)
-    work = _EMPHASIS_RE.sub(lambda m: m.group("inner"), work)
+    for _ in range(2):
+        work = _EMPHASIS_STAR_RE.sub(lambda m: m.group("inner"), work)
+        work = _EMPHASIS_USCORE_RE.sub(lambda m: m.group("inner"), work)
     work = _AI_PUNCT_RE.sub(lambda m: _AI_PUNCT[m.group(0)], work)
     # Collapse 3+ blank lines left behind by stripped scaffolding.
     work = re.sub(r"\n{3,}", "\n\n", work)

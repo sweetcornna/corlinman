@@ -407,7 +407,7 @@ class TelegramSender:
         message_id: int,
         text: str,
         inline_keyboard: list[list[dict[str, str]]] | None = None,
-    ) -> None:
+    ) -> bool:
         """POST ``/editMessageText``. Mutates an earlier message in place
         — used as the "mutable spinner line" while tool calls land.
 
@@ -416,14 +416,20 @@ class TelegramSender:
         whose whole reply fits one chunk can put its buttons directly on
         the edited placeholder instead of sending a duplicate message.
 
-        Best-effort: Telegram rejects edits that produce identical text
-        (``message is not modified``); we treat any non-2xx as a no-op
-        so a status renderer that re-fires the same content never breaks
-        the turn. HTTP 429 updates a shared back-off so subsequent edits
-        / chat-actions silently skip until the window expires.
+        Returns ``True`` when Telegram accepted the edit, ``False``
+        otherwise (rate-limit window, network error, or non-2xx). Callers
+        that put load-bearing content (the final reply + ask_user
+        keyboard) on an edit use the return value to fall back to a fresh
+        ``send_message`` so the message is never silently dropped.
+
+        Best-effort otherwise: Telegram rejects edits that produce
+        identical text (``message is not modified``); decorative spinner
+        re-fires treat that as a no-op. HTTP 429 updates a shared back-off
+        so subsequent edits / chat-actions silently skip until the window
+        expires.
         """
         if time.time() < self._edit_rate_limit_until:
-            return
+            return False
         body: dict[str, Any] = {
             "chat_id": chat_id,
             "message_id": message_id,
@@ -436,9 +442,10 @@ class TelegramSender:
                 self._endpoint("editMessageText"), json=body
             )
         except httpx.HTTPError:
-            return
+            return False
         if resp.status_code == 429:
             self._note_retry_after(resp)
+        return 200 <= resp.status_code < 300
 
     def _note_retry_after(self, resp: httpx.Response) -> None:
         """Extend the shared 429 back-off using ``parameters.retry_after``.

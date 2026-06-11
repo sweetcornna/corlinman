@@ -53,6 +53,26 @@ class TestNormalizeOutboundText:
         assert "x = **1**  # not bold" in out
         assert "```py" in out
 
+    def test_preserves_underscores_in_identifiers_and_paths(self) -> None:
+        # Intra-word underscores are NOT markdown emphasis — must survive.
+        assert normalize_outbound_text("id: zhang_xuefeng") == "id: zhang_xuefeng"
+        assert normalize_outbound_text("my_file.py") == "my_file.py"
+        assert (
+            normalize_outbound_text("/tmp/foo_bar/baz_qux.txt")
+            == "/tmp/foo_bar/baz_qux.txt"
+        )
+        # Real underscore emphasis at word boundaries still flattens.
+        assert normalize_outbound_text("a __b__ c") == "a b c"
+        assert normalize_outbound_text("_lead_ word") == "lead word"
+
+    def test_keeps_backticks_around_mentions(self) -> None:
+        # Stripping backticks off a mention could turn it into a live ping
+        # on render-and-parse channels (Slack/Discord) — keep them.
+        assert normalize_outbound_text("`@everyone`") == "`@everyone`"
+        assert normalize_outbound_text("`<@U123>`") == "`<@U123>`"
+        # Non-mention inline code still unwraps.
+        assert normalize_outbound_text("the `value` here") == "the value here"
+
     def test_idempotent(self) -> None:
         once = normalize_outbound_text("- **a** `b` — c")
         assert normalize_outbound_text(once) == once

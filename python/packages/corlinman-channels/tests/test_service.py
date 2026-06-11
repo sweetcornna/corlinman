@@ -126,6 +126,9 @@ class _FakeTelegramSender:
         # Test knobs: flip to make the corresponding sender call raise.
         self.send_message_should_raise = False
         self.edit_message_text_should_raise = False
+        # Flip to simulate Telegram rejecting the edit (rate-limit / 4xx)
+        # so the ask_user single-chunk path takes its send fallback.
+        self.edit_message_text_returns_false = False
 
     async def send_message(
         self,
@@ -147,11 +150,14 @@ class _FakeTelegramSender:
         message_id: int,
         text: str,
         inline_keyboard: list[list[dict[str, str]]] | None = None,
-    ) -> None:
+    ) -> bool:
         if self.edit_message_text_should_raise:
             raise RuntimeError("simulated edit_message_text failure")
         self.edits.append((chat_id, message_id, text))
         self.edit_keyboards.append(inline_keyboard)
+        # Mirror the real sender's success signal so the ask_user
+        # single-chunk path can decide whether to fall back to a send.
+        return not self.edit_message_text_returns_false
 
     async def send_chat_action(
         self, chat_id: int, action: str = "typing"
@@ -1506,6 +1512,43 @@ class TestHandleOneTelegram:
             f"final reply delivered {final_deliveries}x (duplicate send); "
             f"edits={sender.edits!r} sent={sender.sent!r}"
         )
+
+    @pytest.mark.asyncio
+    async def test_handle_one_telegram_ask_user_falls_back_when_edit_rejected(
+        self,
+    ) -> None:
+        """When the single-chunk ask_user edit is rejected by Telegram
+        (rate-limit / 4xx), the reply + keyboard must still arrive via a
+        fresh send — never silently dropped."""
+        import asyncio
+        import json
+
+        args = json.dumps(
+            {"question": "Pick one?", "options": ["a", "b"]}
+        ).encode()
+        svc = _ScriptedChatService([
+            _Ev(kind="tool_call", plugin="builtin", tool="ask_user", args_json=args),
+            _Ev(kind="tool_result", plugin="builtin", tool="ask_user", duration_ms=1),
+            _Ev(kind="token_delta", text="Pick one?"),
+            _Ev(kind="done"),
+        ])
+        binding = ChannelBinding.telegram(bot_id=999, chat_id=42, user_id=42)
+        inbound: InboundEvent[Any] = InboundEvent(
+            channel="telegram", binding=binding, text="hi",
+            message_id="1", timestamp=0, mentioned=True,
+        )
+        sender = _FakeTelegramSender()
+        sender.edit_message_text_returns_false = True  # Telegram rejects the edit
+        await handle_one_telegram(
+            svc, inbound, "m", sender, asyncio.Event()  # type: ignore[arg-type]
+        )
+
+        # The keyboard must arrive on a fresh send (edit was rejected).
+        send_kbs = [kb for kb in sender.sent_keyboards if kb is not None]
+        assert len(send_kbs) == 1
+        assert [row[0]["text"] for row in send_kbs[0]] == ["a", "b"]
+        # And the reply text rode that send exactly once.
+        assert sum(1 for _, txt, _ in sender.sent if txt.strip() == "Pick one?") == 1
 
     @pytest.mark.asyncio
     async def test_handle_one_telegram_no_buttons_when_ask_user_omits_options(
