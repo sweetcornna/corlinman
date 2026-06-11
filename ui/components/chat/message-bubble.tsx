@@ -359,12 +359,58 @@ export const MessageBubble = React.memo(function MessageBubble({
         />
       ))}
 
-      {message.error ? (
+      {message.cancelling && !message.error ? (
+        /* Stop clicked, backend unwinding — visible confirmation that the
+         * click took (previously: no feedback until TurnErrored landed). */
         <div
-          className="mt-2 rounded-sg-sm border border-sg-err/40 bg-sg-err-soft px-2 py-1 text-[11px] text-sg-err"
+          className="mt-2 inline-flex items-center gap-1.5 rounded-sg-sm border border-sg-border bg-sg-inset px-2 py-1 text-[11px] text-sg-ink-3"
+          role="status"
+        >
+          <span
+            className="h-2.5 w-2.5 animate-spin rounded-full border border-sg-ink-4 border-t-transparent"
+            aria-hidden="true"
+          />
+          {t("chat.stopping")}
+        </div>
+      ) : null}
+      {message.error === "cancelled" ? (
+        /* User-initiated stop is not an error — neutral chip, no red. */
+        <div
+          className="mt-2 inline-flex items-center rounded-sg-sm border border-sg-border bg-sg-inset px-2 py-1 text-[11px] text-sg-ink-3"
+          role="status"
+        >
+          {t("chat.stoppedByUser")}
+        </div>
+      ) : message.error === "session_expired" ? (
+        <div
+          className="mt-2 flex flex-wrap items-center gap-2 rounded-sg-sm border border-sg-warn/40 bg-sg-warn-soft px-2 py-1 text-[11px] text-sg-ink-2"
           role="alert"
         >
-          {message.error}
+          <span>{t("chat.sessionExpired")}</span>
+          <a
+            href={`/login?redirect=${encodeURIComponent("/chat")}`}
+            className="font-medium text-sg-accent underline underline-offset-2"
+          >
+            {t("chat.reLogin")}
+          </a>
+        </div>
+      ) : message.error ? (
+        <div
+          className="mt-2 flex flex-wrap items-center gap-2 rounded-sg-sm border border-sg-err/40 bg-sg-err-soft px-2 py-1 text-[11px] text-sg-err"
+          role="alert"
+        >
+          <span className="min-w-0 break-words">{message.error}</span>
+          {isAssistant && onRegenerate ? (
+            <button
+              type="button"
+              onClick={onRegenerate}
+              className="inline-flex shrink-0 items-center gap-1 rounded-sg-sm border border-sg-err/40 px-1.5 py-0.5 font-medium text-sg-err hover:bg-sg-err/10"
+              data-testid="bubble-retry"
+            >
+              <RefreshCcw className="h-3 w-3" aria-hidden="true" />
+              {t("chat.retryTurn")}
+            </button>
+          ) : null}
         </div>
       ) : null}
     </>

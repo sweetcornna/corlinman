@@ -104,6 +104,58 @@ describe("chunkToChatEvents", () => {
     const events = chunkToChatEvents(chunk, "fallback");
     expect(events[0].turnId).toBe("real_turn");
   });
+
+  // W1 stream-contract regressions (PLAN_CHAT_PERFECT §3.1):
+
+  it("folds a chunk.error payload into tools-settle + turn-errored", () => {
+    // W1a gateway shape: valid chunk + finish_reason=error + error payload.
+    const chunk: ChatCompletionChunk = {
+      choices: [{ index: 0, delta: {}, finish_reason: "error" }],
+      error: { code: "upstream_error", reason: "billing", message: "no credit" },
+    };
+    const events = chunkToChatEvents(chunk, TURN);
+    expect(events).toEqual([
+      { kind: "tools-settle", turnId: TURN, sequence: -1, finishReason: "error" },
+      { kind: "turn-errored", turnId: TURN, sequence: -1, error: "no credit" },
+    ]);
+  });
+
+  it("folds a legacy bare {error} frame (no choices) into turn-errored", () => {
+    // Pre-W1a gateways emitted this shape; it used to produce ZERO events
+    // and the pending bubble hung "loading" forever.
+    const chunk: ChatCompletionChunk = {
+      error: { code: "upstream_error", reason: "timeout", message: "timed out" },
+    };
+    const events = chunkToChatEvents(chunk, TURN);
+    expect(events.map((e) => e.kind)).toEqual(["tools-settle", "turn-errored"]);
+  });
+
+  it("treats finish_reason=error without payload as turn-errored", () => {
+    const chunk: ChatCompletionChunk = {
+      choices: [{ index: 0, delta: {}, finish_reason: "error" }],
+    };
+    const events = chunkToChatEvents(chunk, TURN);
+    expect(events.map((e) => e.kind)).toEqual(["tools-settle", "turn-errored"]);
+  });
+
+  it("treats an out-of-spec empty-string finish_reason as terminal", () => {
+    const chunk: ChatCompletionChunk = {
+      choices: [{ index: 0, delta: {}, finish_reason: "" }],
+    };
+    const events = chunkToChatEvents(chunk, TURN);
+    expect(events.map((e) => e.kind)).toEqual(["tools-settle", "turn-complete"]);
+  });
+
+  it("survives a malformed chunk with no delta", () => {
+    const chunk = {
+      choices: [{ index: 0, finish_reason: "stop" }],
+    } as unknown as ChatCompletionChunk;
+    expect(() => chunkToChatEvents(chunk, TURN)).not.toThrow();
+    expect(chunkToChatEvents(chunk, TURN).map((e) => e.kind)).toEqual([
+      "tools-settle",
+      "turn-complete",
+    ]);
+  });
 });
 
 describe("liveEventToChatEvent", () => {
@@ -199,6 +251,16 @@ describe("liveEventToChatEvent", () => {
     expect(liveEventToChatEvent(ev("BlockStart", {}))).toBeNull();
     expect(liveEventToChatEvent(ev("BlockStop", {}))).toBeNull();
     expect(liveEventToChatEvent(ev("ToolStateHeartbeat", { call_id: "c", elapsed_ms: 100 }))).toBeNull();
+  });
+
+  it("maps Cancelling → cancelling (stop-button feedback)", () => {
+    // Previously dropped as noise: the Stop click produced no visible
+    // state change until TurnErrored landed.
+    expect(liveEventToChatEvent(ev("Cancelling", {}))).toEqual({
+      kind: "cancelling",
+      turnId: TURN,
+      sequence: 1,
+    });
   });
 });
 

@@ -16,6 +16,7 @@
 import * as React from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
+import { CorlinmanApiError } from "@/lib/api";
 import {
   cancelChatSession,
   streamChatCompletions,
@@ -192,10 +193,15 @@ function applyEvent(draft: ChatMessage, ev: ChatEvent): void {
     case "turn-complete":
       draft.usage = { ...(draft.usage ?? {}), ...ev.usage };
       draft.pending = false;
+      draft.cancelling = false;
       break;
     case "turn-errored":
       draft.error = ev.error;
       draft.pending = false;
+      draft.cancelling = false;
+      break;
+    case "cancelling":
+      draft.cancelling = true;
       break;
     case "tools-settle":
       // OpenAI-compat stream-end: any tool still "running" gets
@@ -219,21 +225,59 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
 
   const abortRef = React.useRef<AbortController | null>(null);
   const closeLiveRef = React.useRef<(() => void) | null>(null);
+  const closeTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
   const dedupRef = React.useRef<EventDedupSet>(new EventDedupSet());
   const lastUserMessageRef = React.useRef<{
     text: string;
     attachments?: ChatAttachment[];
   } | null>(null);
+  // Identity of the turn that currently owns `pendingMessage`. A new
+  // `runTurn` (rapid resend / edit-rerun) or a `hydrate` (session switch)
+  // supersedes the previous turn: its draft object is replaced here and
+  // its ids land in `retiredTurnIdsRef`, so late events from the dying
+  // streams can never reduce into the new draft (cross-turn pollution).
+  const activeDraftRef = React.useRef<ChatMessage | null>(null);
+  // Live mirror of `pendingMessage` for synchronous reads (state itself
+  // is only available asynchronously inside updater callbacks).
+  const pendingRef = React.useRef<ChatMessage | null>(null);
+  const retiredTurnIdsRef = React.useRef<Set<string>>(new Set());
   const qc = useQueryClient();
 
-  const hydrate = React.useCallback((history: ChatMessage[]) => {
-    setMessages(history);
-    setPendingMessage(null);
-    setIsStreaming(false);
-    dedupRef.current.reset();
+  /** Retire every id the current pending draft is known under. */
+  const retirePending = React.useCallback(() => {
+    const prev = pendingRef.current;
+    if (!prev) return;
+    retiredTurnIdsRef.current.add(prev.id);
+    if (prev.turnId) retiredTurnIdsRef.current.add(prev.turnId);
   }, []);
 
+  const hydrate = React.useCallback(
+    (history: ChatMessage[]) => {
+      // Hydration replaces the whole thread (session switch / clear).
+      // Kill any in-flight turn first so its late events and its
+      // `finally` commit can't leak into the freshly-hydrated view.
+      retirePending();
+      abortRef.current?.abort();
+      abortRef.current = null;
+      closeLiveRef.current?.();
+      closeLiveRef.current = null;
+      activeDraftRef.current = null;
+      pendingRef.current = null;
+      setMessages(history);
+      setPendingMessage(null);
+      setIsStreaming(false);
+      dedupRef.current.reset();
+    },
+    [retirePending],
+  );
+
   const reduceEvent = React.useCallback((ev: ChatEvent) => {
+    // Events from a superseded turn (stopped, re-sent over, or left
+    // behind on session switch) are dropped wholesale — applying them
+    // to the *current* draft was the cross-turn pollution bug.
+    if (retiredTurnIdsRef.current.has(ev.turnId)) return;
     if (!dedupRef.current.shouldEmit(ev.turnId, ev.sequence)) return;
     setPendingMessage((prev) => {
       if (!prev) return prev;
@@ -280,6 +324,7 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
         // touch scalar fields already covered by the `...prev` spread.
       }
       applyEvent(next, ev);
+      pendingRef.current = next;
       return next;
     });
   }, []);
@@ -296,6 +341,15 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
    */
   const runTurn = React.useCallback(
     async (userMsg: ChatMessage, baseHistory?: ChatMessage[]) => {
+      // Supersede any turn still in flight (rapid resend / edit-rerun):
+      // retire its ids and abort its token stream BEFORE the new draft
+      // exists, so its late chunks, its AbortError handler and its
+      // `finally` commit all become no-ops instead of corrupting the
+      // new turn's state.
+      retirePending();
+      abortRef.current?.abort();
+      abortRef.current = null;
+
       // Open the assistant draft.
       const draft: ChatMessage = {
         id: genId(),
@@ -304,6 +358,8 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
         createdAt: Date.now(),
         pending: true,
       };
+      activeDraftRef.current = draft;
+      pendingRef.current = draft;
       setPendingMessage(draft);
       setIsStreaming(true);
       dedupRef.current = new EventDedupSet();
@@ -406,6 +462,16 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
             sequence: -1,
             error: "cancelled",
           });
+        } else if (err instanceof CorlinmanApiError && err.status === 401) {
+          // Session expired mid-conversation. The sentinel gets a
+          // dedicated bubble rendering with a re-login affordance —
+          // the raw 401 body was meaningless to users.
+          reduceEvent({
+            kind: "turn-errored",
+            turnId: draft.turnId ?? draft.id,
+            sequence: -1,
+            error: "session_expired",
+          });
         } else {
           reduceEvent({
             kind: "turn-errored",
@@ -416,27 +482,36 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
           });
         }
       } finally {
-        setIsStreaming(false);
-        abortRef.current = null;
-        // Commit the pending message into history.
-        setPendingMessage((current) => {
-          if (current) {
-            setMessages((prev) => [...prev, { ...current, pending: false }]);
-          }
-          return null;
-        });
-        // Refresh the sidebar conversation list so the just-finished
-        // turn is reflected immediately (refetchInterval would catch
-        // it eventually; this makes the UX feel live).
-        void qc.invalidateQueries({ queryKey: ["chat", "sessions"] });
-        // Live stream stays open briefly so trailing events can land, then
-        // close on the next tick.
-        const close = closeLiveRef.current;
-        closeLiveRef.current = null;
-        setTimeout(() => close?.(), 500);
+        // A superseding turn (or hydrate) owns the shared state now —
+        // this dying turn must not flip isStreaming, commit its draft
+        // over the new pending message, or null the new AbortController.
+        const superseded = activeDraftRef.current !== draft;
+        if (!superseded) {
+          setIsStreaming(false);
+          abortRef.current = null;
+          activeDraftRef.current = null;
+          // Commit the pending message into history.
+          setPendingMessage((current) => {
+            if (current) {
+              setMessages((prev) => [...prev, { ...current, pending: false }]);
+            }
+            return null;
+          });
+          pendingRef.current = null;
+          // Refresh the sidebar conversation list so the just-finished
+          // turn is reflected immediately (refetchInterval would catch
+          // it eventually; this makes the UX feel live).
+          void qc.invalidateQueries({ queryKey: ["chat", "sessions"] });
+          // Live stream stays open briefly so trailing events can land,
+          // then close on the next tick (timer tracked for unmount).
+          const close = closeLiveRef.current;
+          closeLiveRef.current = null;
+          if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+          closeTimerRef.current = setTimeout(() => close?.(), 500);
+        }
       }
     },
-    [args, messages, reduceEvent],
+    [args, messages, qc, reduceEvent, retirePending],
   );
 
   const sendMessage = React.useCallback(
@@ -476,6 +551,15 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
   }, [runTurn]);
 
   const stop = React.useCallback(async () => {
+    // Optimistic: flag "stopping" the instant the user clicks so the
+    // click visibly took; the journal `Cancelling` event (and finally
+    // `TurnErrored`) confirm it server-side.
+    setPendingMessage((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev, cancelling: true };
+      pendingRef.current = next;
+      return next;
+    });
     abortRef.current?.abort();
     try {
       await cancelChatSession(args.sessionKey);
@@ -547,10 +631,17 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
       decision: ApprovalDecision,
       scope: ApprovalScope = "once",
     ) => {
-      await submitApproval(turnId, {
-        approved: decision === "approved",
-        scope,
-      });
+      try {
+        await submitApproval(turnId, {
+          approved: decision === "approved",
+          scope,
+        });
+      } catch (err) {
+        // Leave the prompt open so the user can retry the decision —
+        // collapsing it on a failed POST silently dropped the approval.
+        console.warn("chat approval submit failed", err);
+        return;
+      }
       // Reflect locally so the prompt collapses.
       setPendingMessage((prev) => {
         if (!prev) return prev;
@@ -568,10 +659,26 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
     [],
   );
 
+  // Session switch: the hook instance survives a `sessionKey` change, but
+  // any in-flight turn belongs to the *old* session — abort it and close
+  // its live stream so it can't reduce into the new session's thread.
+  // (`hydrate` does this too; this is the belt-and-braces for callers
+  // that change the key without hydrating.)
+  React.useEffect(
+    () => () => {
+      retirePending();
+      abortRef.current?.abort();
+      closeLiveRef.current?.();
+      closeLiveRef.current = null;
+    },
+    [args.sessionKey, retirePending],
+  );
+
   React.useEffect(
     () => () => {
       abortRef.current?.abort();
       closeLiveRef.current?.();
+      if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
     },
     [],
   );

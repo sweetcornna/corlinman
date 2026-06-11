@@ -86,7 +86,12 @@ function transcriptToChatMessages(
       resultPreview: tc.result,
     }));
     return {
-      id: `hist_${i}_${created}`,
+      // Identity must be deterministic across reloads: the journal
+      // returns the transcript in a stable order, so position+role is
+      // stable — but the old `hist_${i}_${Date.now()-fallback}` baked a
+      // load-time timestamp into the id, so every refetch re-keyed the
+      // whole list and React rebuilt the DOM (lost scroll position).
+      id: `hist_${i}_${m.role}`,
       role: m.role,
       content: m.content,
       createdAt: created,
@@ -260,7 +265,7 @@ export default function ChatPage() {
         );
       }
     },
-    [refreshList],
+    [refreshList, t],
   );
 
   const handleTogglePin = React.useCallback(
@@ -276,7 +281,7 @@ export default function ChatPage() {
         );
       }
     },
-    [conversations, refreshList],
+    [conversations, refreshList, t],
   );
 
   const handleToggleArchive = React.useCallback(
@@ -292,7 +297,7 @@ export default function ChatPage() {
         );
       }
     },
-    [conversations, refreshList],
+    [conversations, refreshList, t],
   );
 
   const handleDelete = React.useCallback(
@@ -322,7 +327,7 @@ export default function ChatPage() {
         duration: 4500,
       });
     },
-    [refreshList, router, sessionKey],
+    [refreshList, router, sessionKey, t],
   );
 
   return (

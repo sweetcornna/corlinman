@@ -72,9 +72,27 @@ export function ChatArea({
     preview: string;
   } | null>(null);
 
+  // `len: -1` marks a provisional hydration: the session changed but the
+  // transcript query hasn't resolved yet, so we cleared the previous
+  // session's thread and are still waiting for real history. Any
+  // resolved history (even an equal-length / empty one) replaces it.
   const hydratedRef = React.useRef<{ key: string; len: number } | null>(null);
   React.useEffect(() => {
-    const desiredLen = initialHistory?.length ?? 0;
+    if (initialHistory === undefined) {
+      // Transcript still loading. Pre-fix this path hydrated `[]` as if
+      // it were real history and the ref guard then suppressed the real
+      // transcript when it landed — returning to an old conversation
+      // showed a blank thread until a manual refresh.
+      if (hydratedRef.current?.key !== sessionKey) {
+        chat.hydrate([]);
+        hydratedRef.current = { key: sessionKey, len: -1 };
+      }
+      return;
+    }
+    // Never clobber an in-flight turn — the stream owns the thread
+    // state; the post-turn render re-evaluates this effect anyway.
+    if (chat.isStreaming) return;
+    const desiredLen = initialHistory.length;
     if (
       hydratedRef.current &&
       hydratedRef.current.key === sessionKey &&
@@ -82,20 +100,24 @@ export function ChatArea({
     ) {
       return;
     }
-    chat.hydrate(initialHistory ?? []);
+    chat.hydrate(initialHistory);
     hydratedRef.current = { key: sessionKey, len: desiredLen };
   }, [sessionKey, initialHistory, chat]);
 
   const handlePickSuggestion = React.useCallback(
     (text: string) => {
-      void chat.sendMessage(text);
+      chat.sendMessage(text).catch((err) => {
+        console.warn("chat send failed", err);
+      });
     },
     [chat],
   );
 
   const handleEdit = React.useCallback(
     (messageId: string, newContent: string) => {
-      void chat.editAndRerun(messageId, newContent);
+      chat.editAndRerun(messageId, newContent).catch((err) => {
+        console.warn("chat edit-rerun failed", err);
+      });
     },
     [chat],
   );
@@ -246,11 +268,15 @@ export function ChatArea({
             const finalText = reply
               ? `> ${reply.authorLabel}: ${reply.preview}\n\n${text}`
               : text;
-            void chat.sendMessage(finalText, attachments);
+            chat.sendMessage(finalText, attachments).catch((err) => {
+              console.warn("chat send failed", err);
+            });
             setReply(null);
           }}
           onStop={() => {
-            void chat.stop();
+            chat.stop().catch((err) => {
+              console.warn("chat stop failed", err);
+            });
           }}
           onOpenModelPicker={onOpenModelPicker}
           onOpenPersonaPicker={onOpenPersonaPicker}

@@ -108,7 +108,19 @@ export interface ChatCompletionChunk {
   /** Hermes extension: surface the journal turn id so the UI can hook the
    *  live event stream. */
   corlinman?: { turn_id?: string; session_key?: string };
+  /** Mid-stream failure payload. The gateway emits it alongside a
+   *  `finish_reason: "error"` choice (W1a contract); older gateways sent
+   *  it as a bare frame with no `choices` at all. Either way the merger
+   *  must fold it into a `turn-errored` event — ignoring it left the
+   *  pending bubble stuck "loading" forever. */
+  error?: { code?: string; reason?: string; message?: string };
 }
+
+/** Milliseconds of total wire silence before we declare the stream dead.
+ *  The gateway heartbeats every 10s even while a slow tool runs (W1a), so
+ *  45s of *nothing* — not even a comment frame — means the backend or the
+ *  path to it is gone and the turn would otherwise hang forever. */
+const STREAM_STALL_TIMEOUT_MS = 45_000;
 
 /** Stream chat completions; yields parsed chunks until the stream closes
  *  or the AbortSignal fires. */
@@ -136,28 +148,81 @@ export async function* streamChatCompletions(
   const decoder = new TextDecoder("utf-8");
   let buffer = "";
 
+  const parseFrame = (frame: string): ChatCompletionChunk[] => {
+    const chunks: ChatCompletionChunk[] = [];
+    for (const line of frame.split("\n")) {
+      if (!line.startsWith("data:")) continue;
+      const data = line.slice(5).trim();
+      if (!data || data === "[DONE]") continue;
+      try {
+        chunks.push(JSON.parse(data) as ChatCompletionChunk);
+      } catch {
+        // Don't fail the turn over one mangled frame, but don't hide it
+        // either — silent drops made truncated replies undebuggable.
+        console.warn(
+          "chat stream: dropped malformed SSE chunk",
+          data.slice(0, 200),
+        );
+      }
+    }
+    return chunks;
+  };
+
   try {
     while (true) {
-      const { value, done } = await reader.read();
+      // Watchdog on the raw read: heartbeat comments reset it too (they
+      // arrive as bytes), so it only fires when the wire is truly dead —
+      // a crashed backend used to leave the turn loading forever.
+      let stallTimer: ReturnType<typeof setTimeout> | undefined;
+      let readResult: ReadableStreamReadResult<Uint8Array>;
+      try {
+        readResult = await Promise.race([
+          reader.read(),
+          new Promise<never>((_, reject) => {
+            stallTimer = setTimeout(
+              () =>
+                reject(
+                  new CorlinmanApiError(
+                    `chat stream stalled: no data for ${
+                      STREAM_STALL_TIMEOUT_MS / 1000
+                    }s`,
+                    0,
+                  ),
+                ),
+              STREAM_STALL_TIMEOUT_MS,
+            );
+          }),
+        ]);
+      } finally {
+        clearTimeout(stallTimer);
+      }
+      const { value, done } = readResult;
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
       // SSE frames are separated by a blank line. Split on \n\n.
       const frames = buffer.split("\n\n");
       buffer = frames.pop() ?? "";
       for (const frame of frames) {
-        for (const line of frame.split("\n")) {
-          if (!line.startsWith("data:")) continue;
-          const data = line.slice(5).trim();
-          if (!data || data === "[DONE]") continue;
-          try {
-            yield JSON.parse(data) as ChatCompletionChunk;
-          } catch {
-            // ignore malformed chunk
-          }
-        }
+        yield* parseFrame(frame);
+      }
+    }
+    // Flush the tail: a final frame without the trailing blank line is
+    // still data (and the decoder may hold a partial UTF-8 sequence) —
+    // dropping it silently lost the last chunk of some streams.
+    buffer += decoder.decode();
+    if (buffer.trim()) {
+      for (const frame of buffer.split("\n\n")) {
+        yield* parseFrame(frame);
       }
     }
   } finally {
+    // Cancel (not just release) so a stall/abort exit actually tears the
+    // HTTP body down instead of leaving the connection half-open.
+    try {
+      await reader.cancel();
+    } catch {
+      // already closed
+    }
     try {
       reader.releaseLock();
     } catch {
