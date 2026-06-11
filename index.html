@@ -75,7 +75,7 @@ html[data-lang="zh"] .beat h3{font-size:clamp(1.7rem,4vw,3.4rem)}
     radial-gradient(120% 100% at 50% 40%, #0c1122 0%, #060912 75%);
 }
 .no-webgl .bg-static,.reduced .bg-static{display:block}
-.grain{position:fixed;inset:-50%;width:200%;height:200%;z-index:60;pointer-events:none;opacity:.05;
+.grain{position:fixed;inset:-50%;width:200%;height:200%;z-index:60;pointer-events:none;opacity:.035;
   background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
@@ -768,7 +768,7 @@ function createSilk(canvas){
   var FRAG = [
   "precision highp float;",
   "varying vec2 vUv;",
-  "uniform float uTime;uniform float uAspect;uniform float uShift;uniform float uEnergy;uniform float uPtr;",
+  "uniform float uTime;uniform float uAspect;uniform float uShift;uniform float uEnergy;uniform float uPtr;uniform float uScroll;uniform float uGlow;",
   "uniform vec2 uMouse;",
   "float h21(vec2 p){ p=fract(p*vec2(123.34,456.21)); p+=dot(p,p+45.32); return fract(p.x*p.y); }",
   "float vnoise(vec2 p){",
@@ -782,6 +782,38 @@ function createSilk(canvas){
   "  mat2 m=mat2(1.6,1.2,-1.2,1.6);",
   "  for(int i=0;i<4;i++){ v+=a*vnoise(p); p=m*p; a*=0.5; }",
   "  return v;",
+  "}",
+  "float star(vec2 g, float t, float sparse){",
+  "  vec2 id=floor(g), f=fract(g);",
+  "  float h=h21(id);",
+  "  float gate=smoothstep(sparse,sparse+0.025,h);",
+  "  if(gate<=0.0) return 0.0;",
+  "  vec2 sp=vec2(0.22)+0.56*vec2(h21(id+11.1),h21(id+27.7));",
+  "  vec2 dv=f-sp;",
+  "  float sz=mix(0.030,0.105,pow(h21(id+5.3),4.0));",
+  "  float core=exp(-dot(dv,dv)/(sz*sz));",
+  "  float big=smoothstep(0.055,0.10,sz);",
+  "  float cr=(exp(-abs(dv.x)*30.0-abs(dv.y)*9.0)+exp(-abs(dv.y)*30.0-abs(dv.x)*9.0))*big*0.5;",
+  "  float ph=h21(id+91.0)*6.2831;",
+  "  float tw=0.55+0.45*sin(t*(0.22+h21(id+3.3)*0.55)+ph);",
+  "  tw+=0.15*sin(t*2.1+ph*3.0)*big;",
+  "  return (core+cr)*tw*gate;",
+  "}",
+  "float meteor(vec2 p, float t){",
+  "  float T=9.0;",
+  "  float k=floor(t/T);",
+  "  float pr=fract(t/T);",
+  "  float life=smoothstep(0.0,0.06,pr)*(1.0-smoothstep(0.26,0.38,pr));",
+  "  if(life<=0.0) return 0.0;",
+  "  vec2 a=vec2(mix(-0.85,0.55,h21(vec2(k,7.3))), 0.62+0.28*h21(vec2(k,3.1)));",
+  "  vec2 dir=normalize(vec2(0.66,-0.42));",
+  "  vec2 hp=a+dir*pr*2.4;",
+  "  vec2 w=p-hp;",
+  "  float along=dot(w,dir);",
+  "  float perp=dot(w,vec2(-dir.y,dir.x));",
+  "  float trail=exp(-perp*perp*1100.0)*exp(along*10.0)*step(along,0.0)*smoothstep(-0.5,-0.01,along);",
+  "  float head=exp(-dot(w,w)*800.0);",
+  "  return (trail*0.65+head)*life;",
   "}",
   "void main(){",
   "  vec2 p=(vUv-0.5)*vec2(uAspect,1.0);",
@@ -798,10 +830,12 @@ function createSilk(canvas){
   "  vec3 c1=mix(BLUE,VIOLET,uShift);vec3 c2=mix(VIOLET,TIDE,uShift);vec3 c3=mix(TIDE,BLUE,uShift);",
   "  float rad=length(p);",
   "  vec3 col=mix(vec3(0.050,0.063,0.115), vec3(0.016,0.021,0.045), smoothstep(0.1,1.0,rad));",
-  "  vec2 sg=vUv*vec2(uAspect,1.0)*220.0;",
-  "  float st=h21(floor(sg));",
-  "  float tw=0.5+0.5*sin(uTime*(0.5+st*2.0)+st*40.0);",
-  "  col+=vec3(0.7,0.8,1.0)*smoothstep(0.9975,1.0,st)*tw*0.45;",
+  "  vec2 mo=uMouse-0.5;",
+  "  float bloom=exp(-dot(p-m,p-m)*5.5)*uGlow;",
+  "  float s1=star((p+mo*0.015+vec2(0.0,uScroll*0.030))*26.0, uTime, 0.952);",
+  "  float s2=star((p+mo*0.045+vec2(0.0,uScroll*0.065))*12.0, uTime, 0.962);",
+  "  col+=vec3(0.72,0.85,1.0)*(s1*0.30+s2*0.60)*(1.0+1.8*bloom);",
+  "  col+=vec3(0.78,0.90,1.0)*meteor(p+vec2(0.0,uScroll*0.05),uTime)*0.75;",
   "  float d=dot(p,normalize(vec2(0.55,0.85)));",
   "  float band=exp(-pow((d+0.10-0.15*sin(t*0.45))*1.5,2.0));",
   "  float band2=exp(-pow((dot(p,normalize(vec2(-0.80,0.60)))-0.28+0.18*cos(t*0.32))*2.1,2.0));",
@@ -817,7 +851,7 @@ function createSilk(canvas){
   "  col+=c3*pr*0.16;",
   "  col*=1.0-0.30*smoothstep(0.5,1.15,rad);",
   "  col=col/(1.0+col*0.35);",
-  "  float dith=(h21(gl_FragCoord.xy+fract(uTime)*7.0)-0.5)/200.0;",
+  "  float dith=(h21(gl_FragCoord.xy)-0.5)/255.0;",
   "  gl_FragColor=vec4(col+dith,1.0);",
   "}"
   ].join("\n");
@@ -842,7 +876,7 @@ function createSilk(canvas){
   gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
 
   var U = {};
-  ["uTime","uAspect","uShift","uEnergy","uPtr","uMouse"].forEach(function(n){ U[n]=gl.getUniformLocation(prog,n); });
+  ["uTime","uAspect","uShift","uEnergy","uPtr","uMouse","uScroll","uGlow"].forEach(function(n){ U[n]=gl.getUniformLocation(prog,n); });
 
   var W,H,aspect;
   function resize(){
@@ -857,13 +891,14 @@ function createSilk(canvas){
   var rt; window.addEventListener("resize",function(){ clearTimeout(rt); rt=setTimeout(resize,150); });
 
   // pointer: lerped position + strength that swells on movement and decays
-  var mx=0.5,my=0.5,tmx=0.5,tmy=0.5,ptr=0,tptr=0,lastX=null,lastY=null;
+  var mx=0.5,my=0.5,tmx=0.5,tmy=0.5,ptr=0,tptr=0,tglow=0,glow=0,lastX=null,lastY=null;
   window.addEventListener("pointermove",function(e){
     var x=e.clientX/canvas.clientWidth, y=1-e.clientY/canvas.clientHeight;
     if(lastX!==null){
       var sp=Math.hypot(x-lastX,y-lastY);
       tptr=Math.min(1.4, tptr + sp*26.0);
     }
+    tglow=1.0;
     lastX=x; lastY=y; tmx=x; tmy=y;
   },{passive:true});
 
@@ -882,12 +917,15 @@ function createSilk(canvas){
     time += dt*(0.55+0.45*energy);
     mx+=(tmx-mx)*0.06; my+=(tmy-my)*0.06;
     ptr+=(tptr-ptr)*0.08; tptr*=0.94;
+    glow+=(tglow-glow)*0.05; tglow*=0.988;
     gl.uniform1f(U.uTime,time);
     gl.uniform1f(U.uAspect,aspect);
     gl.uniform1f(U.uShift,shift);
     gl.uniform1f(U.uEnergy,energy);
     gl.uniform1f(U.uPtr,ptr);
     gl.uniform2f(U.uMouse,mx,my);
+    gl.uniform1f(U.uScroll,(window.scrollY||0)/Math.max(1,window.innerHeight));
+    gl.uniform1f(U.uGlow,glow);
     gl.drawArrays(gl.TRIANGLES,0,3);
   }
   requestAnimationFrame(frame);
