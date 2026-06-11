@@ -4,6 +4,32 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.20.1] — 2026-06-11 — one-click updater fixes
+
+> Patch release. Config-compatible — no migration required.
+
+### Fixed
+- **One-click upgrade flashed to 404 and never ran** (PR #91, three stacked
+  bugs found on a live box):
+  - The post-confirm redirect targeted `/admin/system?upgrade=<id>` — the
+    backend API namespace, not a page route; the updates page lives at
+    `/system` (the `(admin)` route group adds no URL segment). The operator
+    saw an instant 404 and lost the progress view. Same-class dead links
+    fixed in the TopNav update bubble, sessions back-link/breadcrumb/turn
+    pills, and onboarding finish + handoff cards.
+  - Native mode wrote the update checker's *stripped* display tag
+    (`1.20.0`) into `.upgrade-request`; the privileged helper requires the
+    literal GitHub release form (`v1.20.0`) and refused with `tag_invalid`.
+    `NativeUpgrader.start()` now canonicalizes the tag; the helper script
+    also accepts and re-canonicalizes requests written by older gateways.
+    Docker mode is untouched (GHCR image tags carry no `v`).
+  - `install.sh` run as root let uv place its managed CPython under
+    `/root/.local/share/uv`; the hardened `User=corlinman` unit could never
+    exec the venv interpreter (`status=203/EXEC`), so every native one-click
+    upgrade health-failed into rollback — and the rollback failed the same
+    way. The python store is now pinned to `$PREFIX/uv-python` with a
+    one-shot venv-rebuild migration for existing installs.
+
 ## [1.20.0] — 2026-06-11 — CLI agent console + claude-code parity wave 1 + multi-model + enterprise chat
 
 > Minor release. Config-compatible — no migration required. New optional
