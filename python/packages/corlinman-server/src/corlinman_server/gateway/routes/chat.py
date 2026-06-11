@@ -358,7 +358,14 @@ def _parts_to_attachments(parts: list[dict[str, Any]]) -> list[Attachment]:
                     continue
                 out.append(
                     Attachment(
-                        kind=AttachmentKind.FILE, bytes=decoded, file_name=filename
+                        kind=AttachmentKind.FILE,
+                        bytes=decoded,
+                        # Keep the data-URL's declared mime — dropping it
+                        # made the loop rebuild the payload as
+                        # octet-stream, so providers couldn't recognise
+                        # an inline PDF as a document.
+                        mime=_data_url_mime(data),
+                        file_name=filename,
                     )
                 )
         elif ptype == "input_audio":
@@ -379,6 +386,15 @@ def _parts_to_attachments(parts: list[dict[str, Any]]) -> list[Attachment]:
                 )
             )
     return out
+
+
+def _data_url_mime(data: str) -> str | None:
+    """Extract the declared mime from a ``data:`` URL, else ``None``."""
+    if not data.startswith("data:"):
+        return None
+    header = data.split(",", 1)[0]
+    mime = header[5:].split(";", 1)[0].strip().lower()
+    return mime or None
 
 
 def _decode_b64_payload(data: str) -> bytes | None:

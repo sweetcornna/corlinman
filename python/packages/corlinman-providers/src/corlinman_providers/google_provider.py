@@ -18,6 +18,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import mimetypes
 import os
 from collections.abc import AsyncIterator, Sequence
 from typing import Any, ClassVar
@@ -348,7 +349,13 @@ def _image_part_from_url(url: str, types: Any) -> Any | None:
         except (binascii.Error, ValueError):
             return None
         return types.Part.from_bytes(data=data, mime_type=mime)
-    return types.Part.from_uri(file_uri=url)
+    # ``from_uri`` requires a mime_type (google-genai raises without
+    # one) — infer from the url's extension and fall back to JPEG, the
+    # most common remote-image case.
+    guessed = mimetypes.guess_type(url)[0]
+    return types.Part.from_uri(
+        file_uri=url, mime_type=guessed or "image/jpeg"
+    )
 
 
 def _iter_function_calls(chunk: Any) -> list[Any]:

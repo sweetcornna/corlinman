@@ -74,7 +74,12 @@ function pickBranchedHistory(sessionKey: string): ChatMessage[] | null {
  *  render as empty bubbles. */
 function transcriptToChatMessages(
   transcript: TranscriptMessage[],
+  sessionKey: string,
 ): ChatMessage[] {
+  // Ids carry the session so two sessions with look-alike transcripts
+  // can't collide on React keys while <ChatArea> stays mounted across
+  // `sessionKey` changes (stale-DOM reuse on switch).
+  const sid = sessionKey.replace(/[^a-zA-Z0-9]/g, "").slice(-12) || "s";
   return transcript.map((m, i) => {
     // Identity must be deterministic across reloads AND stable when an
     // older page is PREPENDED (W5 "load earlier"): index from the END
@@ -88,7 +93,7 @@ function transcriptToChatMessages(
       : Date.now() - (transcript.length - i) * 1000;
     const rawTcs = m.tool_calls ?? [];
     const toolCalls: ToolCallState[] = rawTcs.map((tc, j) => ({
-      callId: tc.id?.trim() ? tc.id : `hist_r${rid}_${j}`,
+      callId: tc.id?.trim() ? tc.id : `hist_${sid}_r${rid}_${j}`,
       toolName: tc.function?.name ?? i18next.t("chat.unknownToolName"),
       argsJson: tc.function?.arguments ?? "{}",
       status: tc.result !== undefined ? "settled" : "ok",
@@ -99,7 +104,7 @@ function transcriptToChatMessages(
     // and prod (same origin, empty prefix) both resolve.
     const attachments: ChatAttachment[] = (m.attachments ?? []).map(
       (a, k) => ({
-        id: `hist_r${rid}_att_${k}`,
+        id: `hist_${sid}_r${rid}_att_${k}`,
         kind:
           a.kind === "image" || a.kind === "audio" || a.kind === "video"
             ? a.kind
@@ -115,7 +120,7 @@ function transcriptToChatMessages(
       }),
     );
     return {
-      id: `hist_r${rid}_${m.role}`,
+      id: `hist_${sid}_r${rid}_${m.role}`,
       role: m.role,
       content: m.content,
       createdAt: created,
@@ -315,7 +320,10 @@ export default function ChatPage() {
     if (branchedHistory && branchedHistory.length > 0) return branchedHistory;
     const t = transcriptQuery.data;
     if (!t) return undefined;
-    return transcriptToChatMessages([...earlierMessages, ...t.transcript]);
+    return transcriptToChatMessages(
+      [...earlierMessages, ...t.transcript],
+      sessionKey ?? "",
+    );
   }, [branchedHistory, transcriptQuery.data, earlierMessages]);
 
   const refreshList = React.useCallback(() => {

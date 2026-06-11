@@ -4677,14 +4677,22 @@ def _register_tool_media(
         changed = True
     raw_paths = parsed.get("paths")
     if isinstance(raw_paths, list):
-        urls = [m["url"] for p in raw_paths if (m := _try_register(p))]
-        if urls:
-            parsed["urls"] = urls
-            parsed.setdefault(
-                "display_note",
-                "Files are viewable at `urls` — embed images in your "
-                "reply as markdown: ![image](url)",
-            )
+        batch = [m for p in raw_paths if (m := _try_register(p))]
+        if batch:
+            parsed["urls"] = [m["url"] for m in batch]
+            # Same kind-awareness as the single-path note: image
+            # markdown on an audio/video url renders a broken <img>.
+            if all(m["kind"] == "image" for m in batch):
+                hint = (
+                    "Files are viewable at `urls` — embed images in "
+                    "your reply as markdown: ![image](url)"
+                )
+            else:
+                hint = (
+                    "Files are downloadable at `urls` — share them in "
+                    "your reply as markdown links: [name](url)"
+                )
+            parsed.setdefault("display_note", hint)
             changed = True
     if not changed:
         return result_json
