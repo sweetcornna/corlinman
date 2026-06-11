@@ -291,16 +291,15 @@ def split_on_msg_break(text: str) -> list[str]:
 # Outbound text normalization
 # ---------------------------------------------------------------------------
 
-# Asterisk emphasis (``*x*`` / ``**x**`` / ``***x***``) → inner text.
-# Asterisks effectively never appear intra-word, so this stays greedy.
-_EMPHASIS_STAR_RE = re.compile(r"(\*\*\*|\*\*|\*)(?P<inner>.+?)\1", re.DOTALL)
-# Underscore emphasis (``_x_`` / ``__x__`` / ``___x___``) → inner text, but
-# ONLY at word boundaries. Markdown's intra-word rule: a real emphasis run
-# has a non-word char (or string edge) just outside each delimiter, so
-# identifiers/paths/URLs like ``my_file.py`` or ``/foo_bar/baz_qux`` keep
-# their underscores instead of being mangled to ``myfile.py``.
-_EMPHASIS_USCORE_RE = re.compile(
-    r"(?<!\w)(_{1,3})(?=\S)(?P<inner>.+?)(?<=\S)\1(?!\w)",
+# Emphasis (``*x*`` / ``**x**`` / ``***x***`` and the ``_`` forms) → inner
+# text, matched ONLY at real Markdown emphasis boundaries: a non-word char
+# (or string edge) just outside each delimiter AND non-space just inside.
+# Those guards keep content that merely *contains* the delimiters intact —
+# math/operators (``2 * 3``, ``a*b*c``), globs (``*.py``), and snake_case
+# identifiers / paths (``my_file.py``, ``/foo_bar/baz_qux``) all survive,
+# while genuine ``**bold**`` / ``_italic_`` runs still flatten.
+_EMPHASIS_RE = re.compile(
+    r"(?<!\w)(\*\*\*|___|\*\*|__|\*|_)(?=\S)(?P<inner>.+?)(?<=\S)\1(?!\w)",
     re.DOTALL,
 )
 # A mention-like token: leaving these wrapped in backticks preserves the
@@ -362,8 +361,7 @@ def normalize_outbound_text(text: str) -> str:
     work = _INLINE_CODE_RE.sub(_unwrap_inline_code, work)
     # Emphasis can nest (``**_x_**``); run twice to unwrap both layers.
     for _ in range(2):
-        work = _EMPHASIS_STAR_RE.sub(lambda m: m.group("inner"), work)
-        work = _EMPHASIS_USCORE_RE.sub(lambda m: m.group("inner"), work)
+        work = _EMPHASIS_RE.sub(lambda m: m.group("inner"), work)
     work = _AI_PUNCT_RE.sub(lambda m: _AI_PUNCT[m.group(0)], work)
     # Collapse 3+ blank lines left behind by stripped scaffolding.
     work = re.sub(r"\n{3,}", "\n\n", work)

@@ -65,6 +65,18 @@ class TestNormalizeOutboundText:
         assert normalize_outbound_text("a __b__ c") == "a b c"
         assert normalize_outbound_text("_lead_ word") == "lead word"
 
+    def test_preserves_asterisks_in_math_and_globs(self) -> None:
+        # Asterisks that aren't real emphasis (operators, wildcards,
+        # intra-word) must survive — same boundary rule as underscores.
+        assert normalize_outbound_text("2 * 3 * 4") == "2 * 3 * 4"
+        assert normalize_outbound_text("a*b*c") == "a*b*c"
+        assert normalize_outbound_text("globs: *.py and *.txt") == (
+            "globs: *.py and *.txt"
+        )
+        # Genuine emphasis at word boundaries still flattens.
+        assert normalize_outbound_text("a **bold** b") == "a bold b"
+        assert normalize_outbound_text("*lead* word") == "lead word"
+
     def test_keeps_backticks_around_mentions(self) -> None:
         # Stripping backticks off a mention could turn it into a live ping
         # on render-and-parse channels (Slack/Discord) — keep them.
