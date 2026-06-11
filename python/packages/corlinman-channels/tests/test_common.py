@@ -18,6 +18,7 @@ from corlinman_channels.common import (
     InboundEvent,
     TransportError,
     UnsupportedError,
+    normalize_outbound_for_channel,
     normalize_outbound_text,
 )
 
@@ -97,6 +98,10 @@ class TestNormalizeOutboundText:
         assert normalize_outbound_text(diff) == diff
         # A lone diff-add line is never turned into a bullet.
         assert normalize_outbound_text("+ new line") == "+ new line"
+        # An abbreviated, header-less patch (paired -/+ change lines) keeps
+        # its deletion marker — the '+' line marks it as a diff so '- old'
+        # isn't rewritten to '· old'.
+        assert normalize_outbound_text("- old\n+ new") == "- old\n+ new"
         # Ordinary prose bullets still normalize when there's no diff.
         assert normalize_outbound_text("- one\n- two") == "· one\n· two"
 
@@ -133,6 +138,42 @@ class TestNormalizeOutboundText:
     def test_empty_and_plain_passthrough(self) -> None:
         assert normalize_outbound_text("") == ""
         assert normalize_outbound_text("just text") == "just text"
+
+
+class TestNormalizeOutboundForChannel:
+    """Markdown-rendering transports (Discord/Slack) must keep their
+    native formatting; plain-text channels get the full normalization."""
+
+    @pytest.mark.parametrize("channel", ["discord", "slack"])
+    def test_markdown_channels_pass_through_verbatim(self, channel: str) -> None:
+        # Bold/italic/code/lists/headings are INTENDED formatting these
+        # clients render — flattening them would strip what the user sees.
+        src = "## Title\n- **bold** and `code`\n> quote"
+        assert normalize_outbound_for_channel(src, channel) == src
+
+    @pytest.mark.parametrize("channel", ["discord", "slack"])
+    def test_markdown_channels_keep_escaped_mentions(self, channel: str) -> None:
+        # A deliberately code-wrapped mention must NOT be unescaped into a
+        # live ping on channels that render markdown.
+        src = "do not ping `@everyone` please"
+        assert normalize_outbound_for_channel(src, channel) == src
+
+    @pytest.mark.parametrize("channel", ["discord", "slack"])
+    def test_markdown_channels_trim_outer_whitespace(self, channel: str) -> None:
+        # Outer whitespace is trimmed so a whitespace-only reply still reads
+        # as empty, but inner markdown is untouched.
+        assert normalize_outbound_for_channel("   ", channel) == ""
+        assert normalize_outbound_for_channel("  **x**  ", channel) == "**x**"
+
+    @pytest.mark.parametrize(
+        "channel", ["qq", "telegram", "qq_official", "wechat_official", "feishu"]
+    )
+    def test_plain_text_channels_are_normalized(self, channel: str) -> None:
+        assert normalize_outbound_for_channel("- **x**", channel) == "· x"
+
+    def test_unknown_channel_defaults_to_normalization(self) -> None:
+        # Anything not explicitly markdown-rendering is treated as plain.
+        assert normalize_outbound_for_channel("**x**", "some_new_channel") == "x"
 
 
 class TestChannelBinding:

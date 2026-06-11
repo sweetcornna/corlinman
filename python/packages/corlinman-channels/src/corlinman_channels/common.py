@@ -338,6 +338,12 @@ _BULLET_RE = re.compile(r"^(\s*)[-*]\s+", re.MULTILINE)
 # skip bullet normalization entirely so ``- old`` / ``+ new`` diff lines
 # survive even when the model didn't fence the patch.
 _DIFF_RE = re.compile(r"(?m)^(?:@@ .* @@|--- |\+\+\+ )")
+# An un-headered patch add line ``+ new``. The bullet pass never rewrites
+# ``+``, so a leading ``+ `` line beside ``-`` deletions marks an
+# abbreviated diff (``- old\n+ new``) the model didn't fence or header.
+# Treating it as a diff keeps the paired change lines intact instead of
+# turning the deletion ``- old`` into a bullet ``· old``.
+_DIFF_ADD_RE = re.compile(r"(?m)^\s{0,3}\+ ")
 # AI-tell Latin punctuation → plain ASCII. Chinese full-width punctuation
 # (，。、：；？！“”‘’（）) is correct typography and deliberately left intact.
 _AI_PUNCT = {
@@ -382,8 +388,9 @@ def normalize_outbound_text(text: str) -> str:
     work = _HEADING_RE.sub("", work)
     work = _BLOCKQUOTE_RE.sub("", work)
     # Skip bullet normalization for diff/patch bodies so ``- old`` lines
-    # aren't turned into ``· old`` (diff markers must round-trip).
-    if not _DIFF_RE.search(work):
+    # aren't turned into ``· old`` (diff markers must round-trip) — covers
+    # both headered hunks and un-headered ``- old``/``+ new`` change pairs.
+    if not (_DIFF_RE.search(work) or _DIFF_ADD_RE.search(work)):
         work = _BULLET_RE.sub(r"\1· ", work)
     # Emphasis can nest (``**_x_**``); run twice to unwrap both layers.
     for _ in range(2):
@@ -403,6 +410,30 @@ def normalize_outbound_text(text: str) -> str:
     for i, fence in enumerate(fences):
         work = work.replace(f"\x00FENCE{i}\x00", fence)
     return work.strip()
+
+
+# Channels whose transport renders Markdown / mrkdwn natively. There the
+# assistant's markdown is INTENDED formatting: flattening it would strip
+# the bold/italic/code/lists the client would otherwise render, and could
+# even unescape a deliberately code-wrapped ``\`@everyone\``` into a live
+# ping. Outbound text for these channels is sent verbatim. Every other
+# channel (QQ, Telegram, WeChat, Feishu text, ...) sends literal text and
+# is normalized.
+MARKDOWN_RENDERING_CHANNELS: frozenset[str] = frozenset({"discord", "slack"})
+
+
+def normalize_outbound_for_channel(text: str, channel: str) -> str:
+    """Normalize outbound text, but only for plain-text channels.
+
+    Markdown-rendering transports (:data:`MARKDOWN_RENDERING_CHANNELS`)
+    keep their native formatting and any intentionally escaped mentions —
+    only outer whitespace is trimmed (so a whitespace-only reply is still
+    detected as empty, matching :func:`normalize_outbound_text`). All
+    other channels send literal text and get the full normalization.
+    """
+    if channel in MARKDOWN_RENDERING_CHANNELS:
+        return text.strip()
+    return normalize_outbound_text(text)
 
 
 # ---------------------------------------------------------------------------

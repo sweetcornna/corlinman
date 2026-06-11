@@ -2181,6 +2181,20 @@ class TestHandleOneDiscord:
         assert req.messages[0].content == "ping"
 
     @pytest.mark.asyncio
+    async def test_markdown_is_preserved_verbatim(self) -> None:
+        """Discord renders markdown natively, so the handler must NOT
+        flatten it — bold/code/escaped mentions reach the client intact."""
+        import asyncio
+
+        svc = _ScriptedChatService([
+            _Ev(kind="token_delta", text="see **bold** and `code`, not `@everyone`"),
+            _Ev(kind="done"),
+        ])
+        sender = _FakeDiscordSender()
+        await handle_one_discord(svc, _inbound("discord"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
+        assert sender.edits[-1][2] == "see **bold** and `code`, not `@everyone`"
+
+    @pytest.mark.asyncio
     async def test_error_renders_short_reply(self) -> None:
         """error event renders as a final [corlinman error] edit."""
         import asyncio
@@ -2411,6 +2425,20 @@ class TestHandleOneSlack:
         req = svc.calls[0]
         assert not isinstance(req, dict)
         assert req.model == "m"
+
+    @pytest.mark.asyncio
+    async def test_markdown_is_preserved_verbatim(self) -> None:
+        """Slack renders mrkdwn natively, so the handler must NOT flatten
+        it — formatting and escaped mentions reach the client intact."""
+        import asyncio
+
+        svc = _ScriptedChatService([
+            _Ev(kind="token_delta", text="see **bold** and `code`, not `@here`"),
+            _Ev(kind="done"),
+        ])
+        sender = _FakeSlackSender()
+        await handle_one_slack(svc, _inbound("slack"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
+        assert sender.updates[-1][2] == "see **bold** and `code`, not `@here`"
 
     @pytest.mark.asyncio
     async def test_error_renders_short_reply(self) -> None:

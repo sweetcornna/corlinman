@@ -156,7 +156,9 @@ from corlinman_channels.commands import (
 )
 from corlinman_channels.common import AlbumDebouncer, InboundEvent, TransportError
 from corlinman_channels.common import format_attribution_prefix as _attribution
-from corlinman_channels.common import normalize_outbound_text as _normalize_outbound
+from corlinman_channels.common import (
+    normalize_outbound_for_channel as _normalize_for_channel,
+)
 from corlinman_channels.common import split_on_msg_break as _split_on_msg_break
 from corlinman_channels.discord import (
     DEFAULT_GATEWAY_URL,
@@ -1405,7 +1407,7 @@ async def handle_one_qq(
             body = summary + "\n" + body
         _log.error("qq handle_one error user=%s error=%r", event.user_id, error_message)
     else:
-        body = _normalize_outbound("".join(text_parts))
+        body = _normalize_for_channel("".join(text_parts), "qq")
         if not body.strip():
             # Empty assistant reply. If we ran tools this turn, the user
             # still deserves to see what happened — send just the
@@ -2716,7 +2718,7 @@ async def handle_one_telegram(
     if error_message is not None:
         body = f"[corlinman error] {error_message}"
     else:
-        body = _normalize_outbound("".join(spinner.text_parts))
+        body = _normalize_for_channel("".join(spinner.text_parts), "telegram")
         if not body:
             # Empty reply — tidy the placeholder so the user knows the
             # turn ended rather than leaving "✍️ 生成回复中..." stuck.
@@ -3552,7 +3554,7 @@ async def handle_one_discord(
     if error_message is not None:
         body = f"[corlinman error] {error_message}"
     else:
-        body = _normalize_outbound("".join(spinner.text_parts))
+        body = _normalize_for_channel("".join(spinner.text_parts), "discord")
         if not body:
             if placeholder_id is not None:
                 try:
@@ -3846,7 +3848,7 @@ async def handle_one_slack(
     if error_message is not None:
         body = f"[corlinman error] {error_message}"
     else:
-        body = _normalize_outbound("".join(spinner.text_parts))
+        body = _normalize_for_channel("".join(spinner.text_parts), "slack")
         if not body:
             if placeholder_ts is not None:
                 try:
@@ -4139,7 +4141,7 @@ async def handle_one_feishu(
     if error_message is not None:
         body = f"[corlinman error] {error_message}"
     else:
-        body = _normalize_outbound("".join(spinner.text_parts))
+        body = _normalize_for_channel("".join(spinner.text_parts), "feishu")
         if not body:
             if placeholder_id is not None:
                 try:
@@ -4619,7 +4621,7 @@ async def handle_one_qq_official(
     if error_message is not None:
         body = f"[corlinman error] {error_message}"
     else:
-        body = _normalize_outbound("".join(text_parts))
+        body = _normalize_for_channel("".join(text_parts), "qq_official")
         if not body:
             # If the model said nothing but we DID do work (uploaded
             # an image, called a tool), still ship the status so the
@@ -4970,7 +4972,7 @@ async def handle_one_wechat_official(
     if error_message is not None:
         body = f"[corlinman error] {error_message}"
     else:
-        body = _normalize_outbound("".join(text_parts))
+        body = _normalize_for_channel("".join(text_parts), "wechat_official")
         if not body:
             # Empty reply — release the webhook so it doesn't sit on
             # the passive deadline forever. (Previously we'd ship the
@@ -5206,7 +5208,7 @@ async def _collect_reply(
 
     if error_message is not None:
         return f"[corlinman error] {error_message}"
-    body = _normalize_outbound("".join(text_parts))
+    body = _normalize_for_channel("".join(text_parts), inbound.channel)
     if not body.strip():
         return None
     return body
