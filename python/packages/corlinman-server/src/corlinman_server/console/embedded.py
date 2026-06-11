@@ -106,6 +106,68 @@ def _load_subagent_config() -> dict[str, Any] | None:
     return dict(block) if isinstance(block, dict) else None
 
 
+async def _build_plugin_tool_executor(data_dir: Path) -> Any | None:
+    """Build the same plugin-tool executor the gateway wires.
+
+    Production (``grpc_backend.build_tool_executor``) binds a
+    :class:`RegistryToolExecutor` to ``AppState.plugin_registry`` — built
+    by the lifecycle's ``_wire_plugin_hotload`` from the
+    ``CORLINMAN_PLUGIN_DIRS`` roots plus the *enabled* marketplace plugins
+    under ``<data_dir>/plugins``. Without it, a plugin/MCP tool call from
+    a console turn would be acknowledged with the
+    ``awaiting_plugin_runtime`` placeholder instead of executing.
+
+    Best-effort: any failure returns ``None`` and the ChatService keeps
+    its PlaceholderExecutor default (builtin tools are unaffected — they
+    execute inside the servicer).
+    """
+    try:
+        from corlinman_grpc.agent_client import RegistryToolExecutor  # noqa: PLC0415
+        from corlinman_providers.plugins import (  # noqa: PLC0415
+            PluginRegistry,
+            roots_from_env_var,
+        )
+        from corlinman_providers.plugins.discovery import Origin  # noqa: PLC0415
+
+        from corlinman_server.gateway.grpc.plugin_invoker import (  # noqa: PLC0415
+            build_registry_invoker,
+        )
+        from corlinman_server.system.marketplace.plugin_runtime import (  # noqa: PLC0415
+            sync_registry,
+        )
+    except Exception as exc:  # noqa: BLE001 — degraded console still works
+        log.info("console.embedded.plugin_runtime_unavailable err=%s", exc)
+        return None
+
+    try:
+        registry = PluginRegistry.from_roots(
+            list(roots_from_env_var("CORLINMAN_PLUGIN_DIRS", Origin.CONFIG))
+        )
+        enabled: set[str] = set()
+        store_path = data_dir / "plugins.sqlite"
+        if store_path.is_file():
+            with contextlib.suppress(Exception):
+                from corlinman_server.system.marketplace.plugin_store import (  # noqa: PLC0415
+                    PluginStore,
+                )
+
+                store = PluginStore(store_path)
+                enabled = {row.slug for row in store.list() if row.enabled}
+        await sync_registry(registry, data_dir / "plugins", enabled)
+        # Same invoker production uses (grpc_backend.build_tool_executor);
+        # the console has no plugin supervisor / MCP manager, so those
+        # plugin kinds degrade exactly like a degraded gateway boot.
+        invoker = build_registry_invoker(registry, supervisor=None, mcp_manager=None)
+        executor = RegistryToolExecutor(invoker)
+        log.info(
+            "console.embedded.plugin_executor_wired plugins=%d", len(registry)
+        )
+        return executor
+    except Exception as exc:  # noqa: BLE001
+        log.warning("console.embedded.plugin_executor_failed err=%s", exc)
+        return None
+
+
 class EmbeddedBrain:
     """Console-hosted full agent. Build via :meth:`start`."""
 
@@ -209,7 +271,11 @@ class EmbeddedBrain:
         self._servicer = servicer
         self._channel = channel
         self._sock_path = sock
-        self._service = ChatService(GrpcAgentChatBackend(AgentClient(channel)))
+        service = ChatService(GrpcAgentChatBackend(AgentClient(channel)))
+        tool_executor = await _build_plugin_tool_executor(data_dir)
+        if tool_executor is not None:
+            service.with_tool_executor(tool_executor)
+        self._service = service
         self.descriptor = f"embedded full-agent ({bind})"
         log.info("console.embedded.serving bind=%s", bind)
 
