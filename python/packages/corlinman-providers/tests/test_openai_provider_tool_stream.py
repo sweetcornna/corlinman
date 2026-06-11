@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 from corlinman_providers import OpenAIProvider, ProviderChunk
+from corlinman_providers.failover import AuthError
 
 
 def _delta_text_chunk(text: str) -> Any:
@@ -96,10 +97,11 @@ def _patch_openai(monkeypatch: pytest.MonkeyPatch, chunks: list[Any]) -> None:
 
 
 @pytest.mark.asyncio
-async def test_no_api_key_raises_runtime_error(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_no_api_key_raises_auth_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Missing key fails as an AuthError naming the env var this adapter reads."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     prov = OpenAIProvider()
-    with pytest.raises(RuntimeError, match="API key missing"):
+    with pytest.raises(AuthError, match=r"API key missing.*OPENAI_API_KEY"):
         async for _ in prov.chat_stream(model="gpt-4o-mini", messages=[]):
             pass
 

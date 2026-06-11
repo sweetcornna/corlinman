@@ -236,13 +236,29 @@ def rewind_to(
         return RewindResult(ok=False, message=err)
     chosen = checkpoints[idx]
     if idx == 0:
+        # Snapshots are taken at the START of a turn, so the common idle
+        # state is HEAD == newest checkpoint plus uncommitted edits made
+        # DURING that turn. Rewinding to checkpoint 1 therefore means
+        # discarding those edits with a hard reset to HEAD — not a no-op.
+        reset = _run_git(ws, "reset", "--hard", "HEAD")
+        if reset.returncode != 0:
+            return RewindResult(
+                ok=False,
+                sha=chosen.sha,
+                label=chosen.label,
+                message=(
+                    f"reset to checkpoint {chosen.sha} failed: "
+                    f"{(reset.stderr or reset.stdout).strip()[:200]}"
+                ),
+            )
         return RewindResult(
-            ok=False,
+            ok=True,
             sha=chosen.sha,
             label=chosen.label,
+            files_restored=True,
             message=(
-                f"already at checkpoint {chosen.sha} — nothing to rewind "
-                "(edits made after this snapshot, if any, are not touched)"
+                f"workspace reset to checkpoint {chosen.sha} ({chosen.label}) "
+                "— uncommitted edits made after the snapshot were discarded"
             ),
         )
 

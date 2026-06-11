@@ -20,7 +20,6 @@ AzureProvider`` / ``BedrockProvider`` import path keeps working.
 
 from __future__ import annotations
 
-import os
 from typing import ClassVar
 
 from corlinman_providers.azure_provider import AzureProvider
@@ -37,14 +36,23 @@ def _build_compat(
     *,
     default_base_url: str,
     kind: ProviderKind,
+    env_key: str,
 ) -> OpenAICompatibleProvider:
     """Shared helper: build an OpenAI-compat adapter with a sensible default
     ``base_url`` so configs that omit it still resolve to the vendor's
-    documented endpoint."""
+    documented endpoint.
+
+    ``env_key`` is the VENDOR's env var (``MISTRAL_API_KEY`` /
+    ``GROQ_API_KEY`` / …), consulted when the spec omits ``api_key``. It is
+    deliberately never ``OPENAI_API_KEY``: a missing vendor key must fail
+    with a clear AuthError at first call, not silently bearer the user's
+    OpenAI credential to a third-party host.
+    """
     base_url = spec.base_url or default_base_url
     provider = OpenAICompatibleProvider(
         base_url=base_url,
         api_key=spec.api_key,
+        env_key=env_key,
         instance_name=spec.name,
         image_model=spec.image_model,
         image_capable=spec.image_capable,
@@ -62,6 +70,7 @@ class MistralProvider(OpenAICompatibleProvider):
     name: ClassVar[str] = "mistral"
     kind: ClassVar[ProviderKind] = ProviderKind.MISTRAL
     DEFAULT_BASE_URL: ClassVar[str] = "https://api.mistral.ai/v1"
+    ENV_KEY: ClassVar[str] = "MISTRAL_API_KEY"
 
     def __init__(self, api_key: str | None = None, base_url: str | None = None) -> None:
         """No-config constructor for the legacy ``MODEL_PREFIX_DEFAULTS`` path.
@@ -69,11 +78,15 @@ class MistralProvider(OpenAICompatibleProvider):
         Mirrors the china-bucket adapters: a raw ``mistral-*`` /
         ``codestral-*`` / ``ministral-*`` model id with no configured spec
         builds a default adapter off the documented endpoint + the
-        ``MISTRAL_API_KEY`` env var.
+        ``MISTRAL_API_KEY`` env var. When that env var is absent the adapter
+        fails with an AuthError at first call — it must NEVER fall back to
+        ``OPENAI_API_KEY`` (that would send the user's OpenAI bearer to
+        ``api.mistral.ai``).
         """
         super().__init__(
             base_url=base_url or self.DEFAULT_BASE_URL,
-            api_key=api_key or os.environ.get("MISTRAL_API_KEY"),
+            api_key=api_key,
+            env_key=self.ENV_KEY,
         )
 
     @classmethod
@@ -84,7 +97,12 @@ class MistralProvider(OpenAICompatibleProvider):
 
     @classmethod
     def build(cls, spec: ProviderSpec) -> OpenAICompatibleProvider:
-        return _build_compat(spec, default_base_url=cls.DEFAULT_BASE_URL, kind=cls.kind)
+        return _build_compat(
+            spec,
+            default_base_url=cls.DEFAULT_BASE_URL,
+            kind=cls.kind,
+            env_key=cls.ENV_KEY,
+        )
 
 
 class CohereProvider(OpenAICompatibleProvider):
@@ -93,10 +111,16 @@ class CohereProvider(OpenAICompatibleProvider):
     name: ClassVar[str] = "cohere"
     kind: ClassVar[ProviderKind] = ProviderKind.COHERE
     DEFAULT_BASE_URL: ClassVar[str] = "https://api.cohere.ai/compatibility/v1"
+    ENV_KEY: ClassVar[str] = "COHERE_API_KEY"
 
     @classmethod
     def build(cls, spec: ProviderSpec) -> OpenAICompatibleProvider:
-        return _build_compat(spec, default_base_url=cls.DEFAULT_BASE_URL, kind=cls.kind)
+        return _build_compat(
+            spec,
+            default_base_url=cls.DEFAULT_BASE_URL,
+            kind=cls.kind,
+            env_key=cls.ENV_KEY,
+        )
 
 
 class TogetherProvider(OpenAICompatibleProvider):
@@ -105,10 +129,16 @@ class TogetherProvider(OpenAICompatibleProvider):
     name: ClassVar[str] = "together"
     kind: ClassVar[ProviderKind] = ProviderKind.TOGETHER
     DEFAULT_BASE_URL: ClassVar[str] = "https://api.together.xyz/v1"
+    ENV_KEY: ClassVar[str] = "TOGETHER_API_KEY"
 
     @classmethod
     def build(cls, spec: ProviderSpec) -> OpenAICompatibleProvider:
-        return _build_compat(spec, default_base_url=cls.DEFAULT_BASE_URL, kind=cls.kind)
+        return _build_compat(
+            spec,
+            default_base_url=cls.DEFAULT_BASE_URL,
+            kind=cls.kind,
+            env_key=cls.ENV_KEY,
+        )
 
 
 class GroqProvider(OpenAICompatibleProvider):
@@ -117,6 +147,7 @@ class GroqProvider(OpenAICompatibleProvider):
     name: ClassVar[str] = "groq"
     kind: ClassVar[ProviderKind] = ProviderKind.GROQ
     DEFAULT_BASE_URL: ClassVar[str] = "https://api.groq.com/openai/v1"
+    ENV_KEY: ClassVar[str] = "GROQ_API_KEY"
 
     def __init__(self, api_key: str | None = None, base_url: str | None = None) -> None:
         """No-config constructor for the legacy ``MODEL_PREFIX_DEFAULTS`` path.
@@ -124,15 +155,36 @@ class GroqProvider(OpenAICompatibleProvider):
         A raw ``llama-*`` model id (Groq's hosted Llama catalogue uses the
         bare ``llama-`` prefix) with no configured spec builds a default
         adapter off the documented endpoint + the ``GROQ_API_KEY`` env var.
+        When that env var is absent the adapter fails with an AuthError at
+        first call — it must NEVER fall back to ``OPENAI_API_KEY`` (that
+        would send the user's OpenAI bearer to ``api.groq.com``).
         """
         super().__init__(
             base_url=base_url or self.DEFAULT_BASE_URL,
-            api_key=api_key or os.environ.get("GROQ_API_KEY"),
+            api_key=api_key,
+            env_key=self.ENV_KEY,
         )
 
     @classmethod
+    def supports(cls, model: str) -> bool:
+        """Claim the bare ``llama-*`` family — the prefix Groq's hosted
+        catalogue uses (Together/Bedrock use vendor-scoped ids like
+        ``meta-llama/...``), mirroring :data:`registry.MODEL_PREFIX_DEFAULTS`
+        so a configured ``kind = "groq"`` spec wins the configured-provider
+        scan for raw ``llama-*`` ids. Deliberately conservative: Groq's
+        other hosted families ship under vendor-scoped or ambiguous ids we
+        don't claim here.
+        """
+        return model.startswith("llama-")
+
+    @classmethod
     def build(cls, spec: ProviderSpec) -> OpenAICompatibleProvider:
-        return _build_compat(spec, default_base_url=cls.DEFAULT_BASE_URL, kind=cls.kind)
+        return _build_compat(
+            spec,
+            default_base_url=cls.DEFAULT_BASE_URL,
+            kind=cls.kind,
+            env_key=cls.ENV_KEY,
+        )
 
 
 class ReplicateProvider(OpenAICompatibleProvider):
@@ -141,10 +193,16 @@ class ReplicateProvider(OpenAICompatibleProvider):
     name: ClassVar[str] = "replicate"
     kind: ClassVar[ProviderKind] = ProviderKind.REPLICATE
     DEFAULT_BASE_URL: ClassVar[str] = "https://api.replicate.com/openai/v1"
+    ENV_KEY: ClassVar[str] = "REPLICATE_API_TOKEN"
 
     @classmethod
     def build(cls, spec: ProviderSpec) -> OpenAICompatibleProvider:
-        return _build_compat(spec, default_base_url=cls.DEFAULT_BASE_URL, kind=cls.kind)
+        return _build_compat(
+            spec,
+            default_base_url=cls.DEFAULT_BASE_URL,
+            kind=cls.kind,
+            env_key=cls.ENV_KEY,
+        )
 
 
 __all__ = [

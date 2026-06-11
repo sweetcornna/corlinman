@@ -107,53 +107,6 @@ def get_prefs(
     )
 
 
-def _upsert(
-    channel: str,
-    account: str,
-    thread: str,
-    sender: str,
-    *,
-    db_path: Path | None,
-    model_override: str | None | object = ...,
-    epoch_delta: int = 0,
-) -> BindingPrefs:
-    """Insert-or-update one row, returning the new state.
-
-    ``model_override=...`` (the Ellipsis default) means "leave as is";
-    ``None`` clears it. The whole read-modify-write runs inside one
-    connection/transaction — the per-binding write volume is far too
-    low for contention to matter.
-    """
-    key = _binding_key(channel, account, thread, sender)
-    now_ms = int(time.time() * 1000)
-    with _connect(db_path) as conn:
-        row = conn.execute(
-            "SELECT model_override, session_epoch FROM binding_prefs "
-            "WHERE binding_key = ?",
-            (key,),
-        ).fetchone()
-        current_model = row[0] if row and isinstance(row[0], str) and row[0] else None
-        current_epoch = int(row[1] or 0) if row else 0
-
-        if model_override is ...:
-            new_model = current_model
-        else:
-            new_model = model_override if isinstance(model_override, str) else None
-        new_epoch = current_epoch + epoch_delta
-        conn.execute(
-            "INSERT INTO binding_prefs "
-            "(binding_key, channel, account, thread, sender, "
-            " model_override, session_epoch, updated_at_ms) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT(binding_key) DO UPDATE SET "
-            " model_override = excluded.model_override, "
-            " session_epoch = excluded.session_epoch, "
-            " updated_at_ms = excluded.updated_at_ms",
-            (key, channel, account, thread, sender, new_model, new_epoch, now_ms),
-        )
-    return BindingPrefs(model_override=new_model, session_epoch=new_epoch)
-
-
 def set_model_override(
     channel: str,
     account: str,
@@ -163,9 +116,35 @@ def set_model_override(
     *,
     db_path: Path | None = None,
 ) -> BindingPrefs:
-    """Set (or clear, with ``None``) the per-binding model override."""
-    return _upsert(
-        channel, account, thread, sender, db_path=db_path, model_override=model
+    """Set (or clear, with ``None``) the per-binding model override.
+
+    The write is a single atomic upsert that touches ONLY the model
+    column — a concurrent ``/new`` epoch bump can interleave at any
+    point without either update being lost (the old read-modify-write
+    shape could drop one of two racing writes).
+    """
+    key = _binding_key(channel, account, thread, sender)
+    now_ms = int(time.time() * 1000)
+    clean = model if isinstance(model, str) and model else None
+    with _connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO binding_prefs "
+            "(binding_key, channel, account, thread, sender, "
+            " model_override, session_epoch, updated_at_ms) "
+            "VALUES (?, ?, ?, ?, ?, ?, 0, ?) "
+            "ON CONFLICT(binding_key) DO UPDATE SET "
+            " model_override = excluded.model_override, "
+            " updated_at_ms = excluded.updated_at_ms",
+            (key, channel, account, thread, sender, clean, now_ms),
+        )
+        row = conn.execute(
+            "SELECT model_override, session_epoch FROM binding_prefs "
+            "WHERE binding_key = ?",
+            (key,),
+        ).fetchone()
+    return BindingPrefs(
+        model_override=row[0] if row and isinstance(row[0], str) and row[0] else None,
+        session_epoch=int(row[1] or 0) if row else 0,
     )
 
 
@@ -177,5 +156,34 @@ def bump_session_epoch(
     *,
     db_path: Path | None = None,
 ) -> BindingPrefs:
-    """``/new`` — advance the conversation epoch by one."""
-    return _upsert(channel, account, thread, sender, db_path=db_path, epoch_delta=1)
+    """``/new`` — advance the conversation epoch by one, atomically.
+
+    ``session_epoch = binding_prefs.session_epoch + 1`` runs inside the
+    upsert itself, so two near-simultaneous ``/new`` commands yield
+    epochs N+1 and N+2 (never both landing on N+1), and the model
+    column is never touched.
+    """
+    key = _binding_key(channel, account, thread, sender)
+    now_ms = int(time.time() * 1000)
+    with _connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO binding_prefs "
+            "(binding_key, channel, account, thread, sender, "
+            " model_override, session_epoch, updated_at_ms) "
+            "VALUES (?, ?, ?, ?, ?, NULL, 1, ?) "
+            "ON CONFLICT(binding_key) DO UPDATE SET "
+            " session_epoch = binding_prefs.session_epoch + 1, "
+            " updated_at_ms = excluded.updated_at_ms",
+            (key, channel, account, thread, sender, now_ms),
+        )
+        row = conn.execute(
+            "SELECT model_override, session_epoch FROM binding_prefs "
+            "WHERE binding_key = ?",
+            (key,),
+        ).fetchone()
+    return BindingPrefs(
+        model_override=row[0] if row and isinstance(row[0], str) and row[0] else None,
+        session_epoch=int(row[1] or 0) if row else 0,
+    )
+
+

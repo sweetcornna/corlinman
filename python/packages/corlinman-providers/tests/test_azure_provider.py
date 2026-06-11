@@ -23,6 +23,7 @@ from typing import Any
 import pytest
 from corlinman_providers import AzureProvider, ProviderChunk, ProviderKind, ProviderSpec
 from corlinman_providers.azure_provider import DEFAULT_API_VERSION
+from corlinman_providers.failover import AuthError
 
 # --------------------------------------------------------------------------
 # OpenAI-shaped fake stream (mirrors test_openai_provider_tool_stream.py)
@@ -203,12 +204,13 @@ async def test_real_azure_client_builds_deployment_url_and_api_key_auth() -> Non
 
 
 @pytest.mark.asyncio
-async def test_no_api_key_raises_runtime_error(
+async def test_no_api_key_raises_auth_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Missing key fails as an AuthError naming the Azure env var."""
     monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
     prov = AzureProvider(base_url="https://r.openai.azure.com")
-    with pytest.raises(RuntimeError, match="API key missing"):
+    with pytest.raises(AuthError, match=r"API key missing.*AZURE_OPENAI_API_KEY"):
         await _collect(prov, model="gpt-4o", messages=[])
 
 

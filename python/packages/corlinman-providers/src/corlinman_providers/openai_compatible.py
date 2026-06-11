@@ -38,6 +38,7 @@ class OpenAICompatibleProvider(OpenAIProvider):
         *,
         base_url: str,
         api_key: str | None = None,
+        env_key: str = "OPENAI_API_KEY",
         instance_name: str | None = None,
         image_model: str | None = None,
         image_capable: bool = False,
@@ -45,9 +46,16 @@ class OpenAICompatibleProvider(OpenAIProvider):
     ) -> None:
         if not base_url:
             raise ValueError("openai_compatible provider requires a base_url")
+        # ``env_key`` is the env var consulted when no explicit ``api_key``
+        # is given (and re-read on the reactive 401 path). The generic
+        # openai_compatible kind keeps the historic ``OPENAI_API_KEY``
+        # default; vendor wrappers (Mistral / Groq / …) MUST pass their own
+        # vendor env var so a missing vendor key fails loudly instead of
+        # silently sending the user's OpenAI bearer to a third-party host.
         super().__init__(
             api_key=api_key,
             base_url=base_url,
+            env_key=env_key,
             image_model=image_model,
             image_capable=image_capable,
         )

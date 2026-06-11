@@ -64,6 +64,25 @@ _HEADER_AUTH_SENTINEL = "header-auth-no-bearer"
 # ``gpt-5-turbo``) are covered. Standard models are untouched.
 _REASONING_MODEL_PREFIXES: tuple[str, ...] = ("o1", "o3", "o4", "gpt-5")
 
+# Sampling knobs the o1/o3/o4/gpt-5 reasoning family rejects with a 400.
+# The positional ``temperature`` argument is already dropped in
+# :meth:`OpenAIProvider.chat_stream`, but alias/provider params merged via
+# ``extra`` can carry any of these too — they are stripped from the merged
+# ``extra`` for reasoning models (logged at debug) so an alias tuned for a
+# standard model doesn't 400 when pointed at a reasoning one.
+# ``temperature`` is included so an ``extra``-borne copy can't reintroduce
+# what the positional-arg path already drops; ``top_logprobs`` rides along
+# with ``logprobs`` (the API rejects both on reasoning models).
+_REASONING_UNSUPPORTED_PARAMS: tuple[str, ...] = (
+    "temperature",
+    "top_p",
+    "presence_penalty",
+    "frequency_penalty",
+    "logprobs",
+    "top_logprobs",
+    "logit_bias",
+)
+
 # Vendors whose chat APIs enforce strict user/assistant alternation and
 # reject two consecutive same-role messages (DeepSeek, Qwen / QwQ via
 # DashScope, GLM). For these we merge consecutive same-role ``user`` /
@@ -225,9 +244,18 @@ class OpenAIProvider:
     ) -> AsyncIterator[ProviderChunk]:
         # Custom-header auth carries the credential in ``_default_headers``
         # rather than ``_api_key``, so a missing ``_api_key`` is only an error
-        # when no header credential is configured either.
+        # when no header credential is configured either. Raised as an
+        # :class:`AuthError` (not a bare RuntimeError) so the failover layer
+        # classifies it like any other auth failure, and the message names
+        # the env var this adapter actually reads — for vendor wrappers
+        # (Mistral / Groq / Moonshot / …) that's their vendor key, never
+        # ``OPENAI_API_KEY``.
         if not self._api_key and not self._default_headers:
-            raise RuntimeError(f"API key missing for provider {self.name}")
+            raise AuthError(
+                f"API key missing for provider {self.name}: set {self._env_key}",
+                provider=self.name,
+                model=model,
+            )
 
         normalised = [_normalise_message(m) for m in messages]
         if _requires_strict_alternation(model):
@@ -249,7 +277,21 @@ class OpenAIProvider:
         if tools:
             kwargs["tools"] = list(tools)
         if extra:
-            kwargs.update(extra)
+            extra_params = dict(extra)
+            if reasoning_model:
+                # Alias/provider params merged via ``extra`` may carry the
+                # classic sampling knobs; reasoning models 400 on every one
+                # of them, so strip the whole family — not just temperature.
+                dropped = [k for k in _REASONING_UNSUPPORTED_PARAMS if k in extra_params]
+                for key in dropped:
+                    extra_params.pop(key)
+                if dropped:
+                    logger.debug(
+                        "openai.reasoning_params_dropped",
+                        model=model,
+                        params=dropped,
+                    )
+            kwargs.update(extra_params)
 
         # index → per-call streaming state. We emit `tool_call_start` at most
         # once per index (with the *real* id) and always close with

@@ -506,9 +506,24 @@ async def run_console(
 
     # Project memory (CORLINMAN.md) — loaded in every mode, including
     # --print (claude-code loads CLAUDE.md for one-shot runs too).
+    # The servicer's _ensure_system_prompt PRESERVES a caller-supplied
+    # system message verbatim (appending only the env block), so sending
+    # memory alone would silently drop the default coding prompt — prefix
+    # it explicitly to keep tool/coding behavior intact.
     memory_text, memory_files = load_project_memory(Path.cwd(), data_dir)
     if memory_text:
-        session.system_prompt = memory_text
+        base_prompt = ""
+        try:
+            from corlinman_server.agent_servicer import (  # noqa: PLC0415
+                _CODING_SYSTEM_PROMPT,
+            )
+
+            base_prompt = _CODING_SYSTEM_PROMPT
+        except Exception:  # noqa: BLE001 — attach-only/stripped installs
+            pass
+        session.system_prompt = (
+            f"{base_prompt}\n\n{memory_text}" if base_prompt else memory_text
+        )
 
     console = Console(file=sys.stderr) if print_mode else Console()
     renderer = Renderer(console, tool_progress=tool_progress)

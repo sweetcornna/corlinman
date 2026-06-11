@@ -330,8 +330,29 @@ def _render_new(ctx: CommandContext) -> CommandResult:
     SQLite store); the request builders fold the epoch into the derived
     session key, so the agent sees a brand-new conversation while every
     earlier epoch stays journaled and addressable.
+
+    On the web playground / CLI console the binding is synthetic: the
+    HTTP chat route derives its session key from the request body /
+    ``X-Session-Key`` header (not from this binding), and the console
+    intercepts ``/new`` locally before it ever reaches this handler.
+    Bumping the synthetic binding's epoch would change nothing for the
+    caller's actual conversation — so reply honestly instead of
+    pretending a new session started.
     """
     from corlinman_channels import binding_prefs  # noqa: PLC0415 — soft-dep shim
+
+    if ctx.binding.channel in ("playground", "console"):
+        surface_hint = (
+            "网页端请使用界面上的「新对话」按钮开启新会话。"
+            if ctx.binding.channel == "playground"
+            else "控制台请直接使用本地 /new（它会优先生效）。"
+        )
+        return CommandResult(
+            reply=(
+                "ℹ️ /new 作用于聊天频道（QQ/Telegram/Discord 等）的会话；"
+                f"当前界面自行管理会话。{surface_hint}"
+            )
+        )
 
     prefs = binding_prefs.bump_session_epoch(ctx.binding)
     if prefs is None:
@@ -385,12 +406,57 @@ def _render_model(ctx: CommandContext) -> CommandResult:
     )
 
 
+#: ``/usage`` pagination — page size for ``list_session_turns`` plus a
+#: hard page cap so a pathological session (or a backend bug that keeps
+#: returning full pages) bounds the handler's worst case at
+#: ``_USAGE_PAGE_SIZE * _USAGE_MAX_PAGES`` rows.
+_USAGE_PAGE_SIZE: int = 200
+_USAGE_MAX_PAGES: int = 25
+
+
+async def _collect_session_turns(
+    journal: Any,
+    session_key: str,
+    *,
+    page_size: int = _USAGE_PAGE_SIZE,
+    max_pages: int = _USAGE_MAX_PAGES,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Drain ``list_session_turns`` for ``session_key`` via the cursor.
+
+    ``list_session_turns`` returns at most ``limit`` rows ordered
+    ``started_at_ms DESC``; conversations longer than one page need the
+    ``before_turn_id`` cursor (the last — oldest — row of the previous
+    page) to reach the earlier turns. Returns ``(rows, capped)`` where
+    ``capped`` is True when ``max_pages`` full pages were read and older
+    turns may be missing — the caller mentions the cap in the reply only
+    in that case.
+    """
+    rows: list[dict[str, Any]] = []
+    cursor: str | None = None
+    for _ in range(max_pages):
+        page = await journal.list_session_turns(
+            session_key, limit=page_size, before_turn_id=cursor
+        )
+        rows.extend(page)
+        if len(page) < page_size:
+            return rows, False
+        last_id = page[-1].get("turn_id")
+        if last_id is None:
+            # No cursor to continue from — stop rather than loop on the
+            # same page forever.
+            return rows, False
+        cursor = str(last_id)
+    return rows, True
+
+
 async def _render_usage(ctx: CommandContext) -> CommandResult:
     """``/usage`` — turn count + estimated cost for this conversation.
 
-    Async handler — reads the agent journal (aiosqlite) for the
-    binding's *effective* session key (current epoch). Degrades to an
-    advisory message when the journal/server package is unavailable.
+    Async handler — reads the agent journal for the binding's
+    *effective* session key (current epoch), paging through every turn
+    via the ``before_turn_id`` cursor (capped — see
+    :data:`_USAGE_MAX_PAGES`). Degrades to an advisory message when the
+    journal/server package is unavailable.
     """
     try:
         from corlinman_server.agent_journal import AgentJournal  # noqa: PLC0415
@@ -402,12 +468,18 @@ async def _render_usage(ctx: CommandContext) -> CommandResult:
     base_key = ctx.binding.session_key()
     session_key = binding_prefs.effective_session_key(ctx.binding, base_key)
     journal_path = Path(_channels_data_dir()) / "agent_journal.sqlite"
-    if not journal_path.is_file():
+    # Only gate on the sqlite file's existence when the configured
+    # backend actually IS sqlite (unset env = sqlite default). Postgres /
+    # Redis deployments journal elsewhere and have no local file to
+    # probe, so they proceed straight to ``open_from_env`` — mirrors
+    # ``corlinman_server.console.app._open_journal``.
+    backend = (os.environ.get("CORLINMAN_JOURNAL_BACKEND") or "").lower()
+    if backend in ("", "sqlite") and not journal_path.is_file():
         return CommandResult(reply="本会话还没有任何记录。")
     try:
-        journal = await AgentJournal.open(journal_path)
+        journal = await AgentJournal.open_from_env(journal_path)
         try:
-            turns = await journal.list_session_turns(session_key, limit=200)
+            turns, capped = await _collect_session_turns(journal, session_key)
         finally:
             await journal.close()
     except Exception as exc:  # noqa: BLE001 — stats are best-effort
@@ -426,8 +498,16 @@ async def _render_usage(ctx: CommandContext) -> CommandResult:
         except (TypeError, ValueError):
             pass
     cost_part = f" · 估算成本 ~${total_cost:.4f}" if total_cost > 0 else ""
+    cap_part = (
+        f"（仅统计最近 {_USAGE_PAGE_SIZE * _USAGE_MAX_PAGES} 轮，更早的轮次未计入）"
+        if capped
+        else ""
+    )
     return CommandResult(
-        reply=f"本会话用量：{len(turns)} 轮 · {tool_calls} 次工具调用{cost_part}"
+        reply=(
+            f"本会话用量：{len(turns)} 轮 · {tool_calls} 次工具调用"
+            f"{cost_part}{cap_part}"
+        )
     )
 
 
@@ -490,8 +570,15 @@ def _render_status(ctx: CommandContext) -> CommandResult:
                 revoke_session,
             )
 
+            from corlinman_channels import binding_prefs  # noqa: PLC0415
+
+            # Epoch-adjusted (matches the mint below): revoke the links
+            # for the CURRENT conversation, not the pre-/new session.
             new_epoch = revoke_session(
-                _Path(_channels_data_dir()), ctx.binding.session_key()
+                _Path(_channels_data_dir()),
+                binding_prefs.effective_session_key(
+                    ctx.binding, ctx.binding.session_key()
+                ),
             )
         except Exception:  # noqa: BLE001 — never crash the handler
             return CommandResult(
@@ -517,11 +604,19 @@ def _render_status(ctx: CommandContext) -> CommandResult:
 
     link_line = ""
     try:
+        from corlinman_channels import binding_prefs  # noqa: PLC0415
         from corlinman_channels.service import (  # noqa: PLC0415
             _status_link_line,
         )
 
-        link_line = _status_link_line(ctx.binding.session_key())
+        # Epoch-adjusted: after /new the live turns run under
+        # ``<base>:eN`` — mint the link for that session, not the dead
+        # epoch-0 one.
+        link_line = _status_link_line(
+            binding_prefs.effective_session_key(
+                ctx.binding, ctx.binding.session_key()
+            )
+        )
     except Exception:  # noqa: BLE001 — a status link must never break the reply
         link_line = ""
 
@@ -1037,9 +1132,18 @@ def _run_command_handler_sync(
     """Sync convenience wrapper around :func:`run_command_handler`.
 
     Used by surfaces that have no async context (the web playground's
-    chat_bootstrap rewrite path). Refuses to run async handlers in this
-    mode — they would deadlock the event loop — and falls back to a
-    short "(not supported on this surface)" reply.
+    chat_bootstrap rewrite path). Async handlers are handled by context:
+
+    * **No event loop running on this thread** (FastAPI sync routes /
+      threadpool workers, plain scripts, sync tests): it is safe to
+      drive the coroutine to completion with :func:`asyncio.run` — this
+      is what lets ``/usage`` (async — journal reads) work from a sync
+      surface instead of refusing.
+    * **A loop IS running on this thread**: blocking on the coroutine
+      here would deadlock that loop (it cannot make progress while we
+      wait on work it must itself execute), so we keep the polite
+      "(requires an async surface)" refusal. Callers that hold a live
+      loop should use :func:`run_command_handler` instead.
 
     Honours the same ``policy`` / ``is_dm`` CMP-06 gate as
     :func:`run_command_handler`.
@@ -1061,7 +1165,28 @@ def _run_command_handler_sync(
         )
         if refusal is not None:
             return refusal
+
     if asyncio.iscoroutinefunction(spec.handler):
+        handler_fn: CommandHandler = spec.handler
+        loop_running = True
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            loop_running = False  # no running loop — safe to block here
+        if not loop_running:
+
+            async def _drive() -> CommandResult:
+                res_async: Any = handler_fn(ctx)
+                if inspect.isawaitable(res_async):
+                    res_async = await res_async
+                if not isinstance(res_async, CommandResult):
+                    raise TypeError(
+                        f"command {spec.name!r} handler returned "
+                        f"{type(res_async).__name__}, expected CommandResult"
+                    )
+                return res_async
+
+            return asyncio.run(_drive())
         return CommandResult(
             reply=(
                 f"({spec.aliases[0] if spec.aliases else spec.name} requires "
@@ -1070,8 +1195,11 @@ def _run_command_handler_sync(
         )
     res = spec.handler(ctx)
     if inspect.isawaitable(res):
-        # Caller declared sync handler but returned a coroutine — same
-        # fallback as iscoroutinefunction; we never block-await here.
+        # Caller declared a sync handler but returned a coroutine — the
+        # sync body already ran once, so re-invoking it via asyncio.run
+        # (like the coroutine-function branch above) could double its
+        # side effects. Keep the historical refusal; we never block-
+        # await here.
         return CommandResult(
             reply=(
                 f"({spec.aliases[0] if spec.aliases else spec.name} requires "

@@ -1297,7 +1297,15 @@ async def handle_one_qq(
                     and not _qq_status_link_sent
                     and tool_name in _SUBAGENT_SPAWN_TOOLS
                 ):
-                    _qq_link = _status_link_line(req.binding.session_key())
+                    # Epoch-adjusted: the running turn's session is
+                    # ``<base>:eN`` after /new, so the status link must
+                    # be minted for that key (see
+                    # _effective_session_key_for) — a base-key link
+                    # points at the dead pre-/new session. Same applies
+                    # to every converted call site below.
+                    _qq_link = _status_link_line(
+                        _effective_session_key_for(req.binding)
+                    )
                     if _qq_link:
                         _qq_status_link_requested = True
                         try:
@@ -1453,7 +1461,7 @@ async def handle_one_qq(
     # standalone early send failed. Ordinary replies must not carry status
     # links.
     _qq_status_line = (
-        _status_link_line(req.binding.session_key())
+        _status_link_line(_effective_session_key_for(req.binding))
         if _qq_status_link_requested and not _qq_status_link_sent
         else ""
     )
@@ -2345,6 +2353,191 @@ def _telegram_apply_command_prelude(
     return _dc_replace(ev, text=rewritten)
 
 
+# ---------------------------------------------------------------------------
+# Shared text-channel command dispatch (Discord / Slack / Feishu / WeChat)
+# ---------------------------------------------------------------------------
+# Channel-agnostic mirrors of the Telegram seams above, so every text
+# channel gets the same handler short-circuit + prelude rewrite Telegram
+# and QQ already have. Per-channel send mechanics (chunking, reply
+# threading, the WeChat passive XML) stay with the caller via the
+# ``send_reply`` callable.
+
+
+def _command_refusal_text(spec: Any, slash_policy: Any) -> str:
+    """CMP-06 refusal wording for a prelude-only command.
+
+    Mirrors :func:`_telegram_send_command_refusal` (and the handler-path
+    wording in :func:`corlinman_channels.commands.run_command_handler`).
+    """
+    from corlinman_channels.commands import SlashAccessTier  # noqa: PLC0415
+
+    alias = spec.aliases[0] if spec.aliases else spec.name
+    tier = slash_policy.tier_for(spec)
+    if tier == SlashAccessTier.DM_ONLY:
+        return f"❌ {alias} 仅支持私聊使用。"
+    return f"❌ {alias} is restricted to administrators."
+
+
+async def _try_dispatch_text_command(
+    ev: InboundEvent[Any],
+    send_reply: Callable[[str], Awaitable[None]],
+    *,
+    slash_policy: Any = None,
+    channel_label: str = "channel",
+) -> bool:
+    """Run a handler command for ``ev`` if one matches; else return False.
+
+    Channel-agnostic mirror of :func:`_telegram_try_dispatch_command`
+    (minus the Telegram-only ``@botname`` suffix stripping). When the
+    inbound text matches a registered slash command whose spec carries a
+    handler, the handler runs here, the reply ships via ``send_reply``,
+    and the caller skips the agent turn. Prelude-only specs fall through
+    (``False``) so the agent path keeps owning them — except a CMP-06
+    policy denial, which replies with the refusal and returns ``True``
+    so the literal command never reaches the agent.
+
+    Best-effort: a handler crash or send failure is logged, never
+    raised — the inbound loop must survive every command.
+    """
+    text = (ev.text or "").strip()
+    if not text:
+        return False
+    match = match_command_with_args(text)
+    if match is None:
+        return False
+    spec, args_text = match
+    if spec.handler is None:
+        if slash_policy is not None and not slash_policy.allows(
+            spec,
+            ev.binding,
+            is_dm=_inbound_is_dm(ev),
+            is_admin=is_command_admin(ev.binding),
+        ):
+            try:
+                await send_reply(_command_refusal_text(spec, slash_policy))
+            except Exception as exc:  # noqa: BLE001
+                _log.warning(
+                    "%s command-refusal send failed: %s", channel_label, exc
+                )
+            return True
+        return False
+    try:
+        ctx = CommandContext(
+            spec=spec,
+            raw_text=text,
+            args_text=args_text,
+            binding=ev.binding,
+            is_admin=is_command_admin(ev.binding),
+        )
+        result = await run_command_handler(
+            spec, ctx, policy=slash_policy, is_dm=_inbound_is_dm(ev)
+        )
+    except Exception as exc:  # noqa: BLE001 — never crash the inbound loop
+        _log.exception("%s command handler crashed: %s", channel_label, exc)
+        return True
+    reply = (result.reply or "").strip()
+    if not reply:
+        return True
+    try:
+        await send_reply(reply)
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("%s command reply send failed: %s", channel_label, exc)
+    return True
+
+
+def _apply_text_command_prelude(ev: InboundEvent[Any]) -> InboundEvent[Any]:
+    """Prelude-rewrite seam for the shared text channels.
+
+    Channel-agnostic mirror of :func:`_telegram_apply_command_prelude`
+    (minus the ``@botname`` stripping — that suffix is a Telegram
+    BotFather artefact). Swaps a prelude-only slash command (e.g.
+    ``/persona``) for its wizard prelude so the agent sees the structured
+    invocation instead of the literal text.
+    """
+    text = (ev.text or "").strip()
+    if not text:
+        return ev
+    match = match_command_with_args(text)
+    if match is None:
+        return ev
+    spec, args_text = match
+    if spec.handler is not None or spec.wizard_prelude is None:
+        return ev
+    from dataclasses import replace as _dc_replace  # noqa: PLC0415 — local seam
+
+    rewritten = apply_command_prelude(text, spec, args_text=args_text)
+    _log.info(
+        "%s command_prelude_substituted cmd=%s prelude_len=%d",
+        ev.channel,
+        spec.name,
+        len(rewritten),
+    )
+    return _dc_replace(ev, text=rewritten)
+
+
+async def _discord_send_command_reply(
+    sender: DiscordSender, ev: InboundEvent[Any], reply: str
+) -> None:
+    """Ship a command reply via Discord — chunked, first chunk threaded."""
+    first = True
+    for chunk in chunk_reply(reply, _DISCORD_TEXT_LIMIT):
+        await sender.send_message(
+            ev.binding.thread,
+            chunk,
+            reply_to_message_id=ev.message_id if first else None,
+        )
+        first = False
+
+
+async def _slack_send_command_reply(
+    sender: SlackSender, ev: InboundEvent[Any], reply: str
+) -> None:
+    """Ship a command reply via Slack — chunked, threaded under the
+    inbound ``ts`` (same grouping as the agent reply path)."""
+    for chunk in chunk_reply(reply, _SLACK_TEXT_LIMIT):
+        await sender.send_message(
+            ev.binding.thread, chunk, thread_ts=ev.message_id
+        )
+
+
+async def _feishu_send_command_reply(
+    sender: FeishuSender, ev: InboundEvent[Any], reply: str
+) -> None:
+    """Ship a command reply via Feishu — chunked, first chunk as a reply."""
+    first = True
+    for chunk in chunk_reply(reply, _FEISHU_TEXT_LIMIT):
+        await sender.send_message(
+            ev.binding.thread,
+            chunk,
+            reply_to_message_id=ev.message_id if first else None,
+        )
+        first = False
+
+
+async def _wechat_send_command_reply(
+    sender: WeChatOfficialSender,
+    inbound: InboundEvent[Any],
+    passive_future: asyncio.Future[str] | None,
+    reply: str,
+) -> None:
+    """Ship a command reply on WeChat: passive XML head + CS push rest.
+
+    Mirrors the final-emit mechanics of
+    :func:`handle_one_wechat_official` — the passive slot is
+    length-capped, so a long ``/help`` spills into the customer-service
+    push path. When the passive future is already gone (timeout / no
+    future supplied) the whole reply goes through the push path.
+    """
+    passive, remainder = _split_passive_and_rest(reply)
+    if passive_future is not None and not passive_future.done():
+        passive_future.set_result(passive)
+        push_body = remainder
+    else:
+        push_body = reply
+    if push_body and push_body.strip():
+        await sender.send_text_customer(inbound.binding.sender, push_body)
+
+
 async def run_telegram_channel(
     params: TelegramChannelParams,
     cancel: asyncio.Event,
@@ -2659,7 +2852,7 @@ async def handle_one_telegram(
         observability_task = asyncio.create_task(
             _consume_observability_events(
                 event_emitter,
-                inbound.binding.session_key(),
+                _effective_session_key_for(inbound.binding),
                 spinner,
                 footer_state,
             ),
@@ -2751,7 +2944,7 @@ async def handle_one_telegram(
     # only; subsequent bubbles are always fresh sendMessage calls.
     bubbles = _split_on_msg_break(body)
     footer = _build_footer_for_outcome(
-        outcome, footer_state, session_key=inbound.binding.session_key()
+        outcome, footer_state, session_key=_effective_session_key_for(inbound.binding)
     )
     keyboard = _build_ask_user_keyboard(spinner.last_ask_user_args)
 
@@ -3086,7 +3279,9 @@ async def _drive_spinner(
                 and not outcome.status_link_emitted
                 and tool_name in _SUBAGENT_SPAWN_TOOLS
             ):
-                line = _status_link_line(inbound.binding.session_key())
+                line = _status_link_line(
+                    _effective_session_key_for(inbound.binding)
+                )
                 if line:
                     outcome.status_link_requested = True
                     try:
@@ -3216,6 +3411,21 @@ def configure_status_links(
     _STATUS_LINK_PUBLIC_URL = public_url or ""
     _STATUS_LINK_ENABLED = bool(enabled)
     _STATUS_LINK_MINTER = minter
+
+
+def _effective_session_key_for(binding: Any) -> str:
+    """Epoch-adjusted session key for the binding's CURRENT conversation.
+
+    After ``/new`` the request builders derive ``<base>:eN``
+    (see ``_build_internal_request`` / ``_build_text_channel_request``),
+    so every status link, status-page subscription, and emitter
+    subscribe for the live turn must use the same derived key —
+    otherwise they point at the dead epoch-0 session. Fail-open: epoch 0
+    or a missing prefs store returns the plain ``binding.session_key()``.
+    """
+    from corlinman_channels import binding_prefs as _binding_prefs  # noqa: PLC0415
+
+    return _binding_prefs.effective_session_key(binding, binding.session_key())
 
 
 def _status_link_line(session_key: str) -> str:
@@ -3368,6 +3578,9 @@ async def run_discord_channel(
         except Exception as exc:  # noqa: BLE001 — never block the channel
             _log.warning("discord on_sender_ready callback failed: %s", exc)
     semaphore = asyncio.Semaphore(_channel_max_concurrency("DISCORD"))
+    # CMP-06 — resolve the slash-access policy once. ``None`` keeps the
+    # historical allow-by-default behaviour.
+    slash_policy = slash_access_policy_from_env()
     pending: set[asyncio.Task[None]] = set()
     try:
         async with adapter:
@@ -3379,9 +3592,19 @@ async def run_discord_channel(
                 # Admin health: record every accepted inbound so
                 # /admin/channels/discord/{status,messages} see real data.
                 _channel_record_inbound(DISCORD_HEALTH, DISCORD_RECENT_MESSAGES, ev)
+                # Command-handler short-circuit + prelude rewrite —
+                # same flow as the Telegram loop (see run_telegram_channel).
+                if await _try_dispatch_text_command(
+                    ev,
+                    functools.partial(_discord_send_command_reply, sender, ev),
+                    slash_policy=slash_policy,
+                    channel_label="discord",
+                ):
+                    continue
                 chat_service = params.chat_service
                 if chat_service is None:
                     continue
+                ev = _apply_text_command_prelude(ev)
                 # R3: bounded fan-out — backpressure flows upstream.
                 await _bounded_spawn(
                     semaphore,
@@ -3503,7 +3726,7 @@ async def handle_one_discord(
         observability_task = asyncio.create_task(
             _consume_observability_events(
                 event_emitter,
-                inbound.binding.session_key(),
+                _effective_session_key_for(inbound.binding),
                 spinner,
                 footer_state,
             ),
@@ -3577,7 +3800,7 @@ async def handle_one_discord(
     # then apply Discord's char-limit chunking within each bubble.
     bubbles = _split_on_msg_break(body)
     footer = _build_footer_for_outcome(
-        outcome, footer_state, session_key=inbound.binding.session_key()
+        outcome, footer_state, session_key=_effective_session_key_for(inbound.binding)
     )
     try:
         all_bubble_chunks = [chunk_reply(b, _DISCORD_TEXT_LIMIT) for b in bubbles]
@@ -3689,6 +3912,9 @@ async def run_slack_channel(
         except Exception as exc:  # noqa: BLE001 — never block the channel
             _log.warning("slack on_sender_ready callback failed: %s", exc)
     semaphore = asyncio.Semaphore(_channel_max_concurrency("SLACK"))
+    # CMP-06 — resolve the slash-access policy once. ``None`` keeps the
+    # historical allow-by-default behaviour.
+    slash_policy = slash_access_policy_from_env()
     pending: set[asyncio.Task[None]] = set()
     try:
         async with adapter:
@@ -3700,9 +3926,19 @@ async def run_slack_channel(
                 # Admin health: record every accepted inbound so
                 # /admin/channels/slack/{status,messages} see real data.
                 _channel_record_inbound(SLACK_HEALTH, SLACK_RECENT_MESSAGES, ev)
+                # Command-handler short-circuit + prelude rewrite —
+                # same flow as the Telegram loop (see run_telegram_channel).
+                if await _try_dispatch_text_command(
+                    ev,
+                    functools.partial(_slack_send_command_reply, sender, ev),
+                    slash_policy=slash_policy,
+                    channel_label="slack",
+                ):
+                    continue
                 chat_service = params.chat_service
                 if chat_service is None:
                     continue
+                ev = _apply_text_command_prelude(ev)
                 # R3: bounded fan-out — backpressure flows upstream.
                 await _bounded_spawn(
                     semaphore,
@@ -3802,7 +4038,7 @@ async def handle_one_slack(
         observability_task = asyncio.create_task(
             _consume_observability_events(
                 event_emitter,
-                inbound.binding.session_key(),
+                _effective_session_key_for(inbound.binding),
                 spinner,
                 footer_state,
             ),
@@ -3869,7 +4105,7 @@ async def handle_one_slack(
     # then apply Slack's char-limit chunking within each bubble.
     bubbles = _split_on_msg_break(body)
     footer = _build_footer_for_outcome(
-        outcome, footer_state, session_key=inbound.binding.session_key()
+        outcome, footer_state, session_key=_effective_session_key_for(inbound.binding)
     )
     try:
         all_bubble_chunks = [chunk_reply(b, _SLACK_TEXT_LIMIT) for b in bubbles]
@@ -3980,6 +4216,9 @@ async def run_feishu_channel(
         except Exception as exc:  # noqa: BLE001 — never block the channel
             _log.warning("feishu on_sender_ready callback failed: %s", exc)
     semaphore = asyncio.Semaphore(_channel_max_concurrency("FEISHU"))
+    # CMP-06 — resolve the slash-access policy once. ``None`` keeps the
+    # historical allow-by-default behaviour.
+    slash_policy = slash_access_policy_from_env()
     pending: set[asyncio.Task[None]] = set()
     try:
         async with adapter:
@@ -3991,9 +4230,19 @@ async def run_feishu_channel(
                 # Admin health: record every accepted inbound so
                 # /admin/channels/feishu/{status,messages} see real data.
                 _channel_record_inbound(FEISHU_HEALTH, FEISHU_RECENT_MESSAGES, ev)
+                # Command-handler short-circuit + prelude rewrite —
+                # same flow as the Telegram loop (see run_telegram_channel).
+                if await _try_dispatch_text_command(
+                    ev,
+                    functools.partial(_feishu_send_command_reply, sender, ev),
+                    slash_policy=slash_policy,
+                    channel_label="feishu",
+                ):
+                    continue
                 chat_service = params.chat_service
                 if chat_service is None:
                     continue
+                ev = _apply_text_command_prelude(ev)
                 # R3: bounded fan-out — backpressure flows upstream.
                 await _bounded_spawn(
                     semaphore,
@@ -4093,7 +4342,7 @@ async def handle_one_feishu(
         observability_task = asyncio.create_task(
             _consume_observability_events(
                 event_emitter,
-                inbound.binding.session_key(),
+                _effective_session_key_for(inbound.binding),
                 spinner,
                 footer_state,
             ),
@@ -4162,7 +4411,7 @@ async def handle_one_feishu(
     # then apply Feishu's char-limit chunking within each bubble.
     bubbles = _split_on_msg_break(body)
     footer = _build_footer_for_outcome(
-        outcome, footer_state, session_key=inbound.binding.session_key()
+        outcome, footer_state, session_key=_effective_session_key_for(inbound.binding)
     )
     try:
         all_bubble_chunks = [chunk_reply(b, _FEISHU_TEXT_LIMIT) for b in bubbles]
@@ -4566,7 +4815,7 @@ async def handle_one_qq_official(
                     and tool_name in _SUBAGENT_SPAWN_TOOLS
                 ):
                     _qqo_link = _status_link_line(
-                        inbound.binding.session_key()
+                        _effective_session_key_for(inbound.binding)
                     )
                     if _qqo_link:
                         _qqo_status_link_requested = True
@@ -4649,7 +4898,7 @@ async def handle_one_qq_official(
     # Append a fallback status link only for actual sub-agent fan-out turns
     # whose standalone early send failed.
     _qqo_status_line = (
-        _status_link_line(inbound.binding.session_key())
+        _status_link_line(_effective_session_key_for(inbound.binding))
         if _qqo_status_link_requested and not _qqo_status_link_sent
         else ""
     )
@@ -4778,6 +5027,9 @@ async def run_wechat_official_channel(
         client=send_client,
     )
     semaphore = asyncio.Semaphore(_channel_max_concurrency("WECHAT_OFFICIAL"))
+    # CMP-06 — resolve the slash-access policy once. ``None`` keeps the
+    # historical allow-by-default behaviour.
+    slash_policy = slash_access_policy_from_env()
     pending: set[asyncio.Task[None]] = set()
 
     async def _sink(
@@ -4791,6 +5043,24 @@ async def run_wechat_official_channel(
         inbound and that it respects the channel concurrency cap so a
         burst of subscribers doesn't fan out unbounded tasks.
         """
+        # Command-handler short-circuit + prelude rewrite — same flow as
+        # the Telegram loop. The reply rides the passive XML (overflow
+        # goes through the customer-service push) and the agent turn is
+        # skipped entirely.
+        if await _try_dispatch_text_command(
+            inbound,
+            functools.partial(
+                _wechat_send_command_reply, sender, inbound, passive_future
+            ),
+            slash_policy=slash_policy,
+            channel_label="wechat_official",
+        ):
+            # If the reply send failed (or the handler replied nothing)
+            # release the webhook so it doesn't sit on the passive
+            # deadline forever.
+            if not passive_future.done():
+                passive_future.set_result("")
+            return
         chat_service = params.chat_service
         if chat_service is None:
             # No backend wired (degraded). Resolve the future with the
@@ -4799,6 +5069,7 @@ async def run_wechat_official_channel(
             if not passive_future.done():
                 passive_future.set_result("")
             return
+        inbound = _apply_text_command_prelude(inbound)
         await _bounded_spawn(
             semaphore,
             pending,
@@ -4936,7 +5207,7 @@ async def handle_one_wechat_official(
                 tool_name = getattr(ev, "tool", "") or ""
                 if tool_name in _SUBAGENT_SPAWN_TOOLS:
                     _wx_link = _status_link_line(
-                        inbound.binding.session_key()
+                        _effective_session_key_for(inbound.binding)
                     )
                     if _wx_link:
                         _wx_status_link_requested = True
@@ -5008,7 +5279,7 @@ async def handle_one_wechat_official(
     # length-capped passive XML), but only for an actual sub-agent fan-out
     # whose standalone early send failed.
     _wx_status_line = (
-        _status_link_line(inbound.binding.session_key())
+        _status_link_line(_effective_session_key_for(inbound.binding))
         if _wx_status_link_requested and not _wx_status_link_sent
         else ""
     )

@@ -61,7 +61,14 @@ class ModelSpec:
     context_length: int
     """Maximum context window in tokens — advisory only, not validated here."""
 
-    supports_tools: bool = False
+    supports_tools: bool | None = None
+    """Tri-state: ``None`` means the TOML row never declared the key (the
+    model inherits the provider-level capability); an explicit ``false``
+    marks this one model tool-less; an explicit ``true`` is recorded but
+    does NOT override a provider-level ``[params] tools = false`` gate —
+    only an explicit false ever *disables* tools (see
+    :meth:`DeclarativeProvider.supports_tools`)."""
+
     supports_vision: bool = False
 
 
@@ -188,17 +195,27 @@ class DeclarativeProvider:
         return False
 
     def supports_tools(self, model: str) -> bool:
-        """Honour a provider-level ``[params] tools = false`` declaration.
+        """Tool capability for the wire id ``model``.
 
-        Only the explicit ``false`` disables tool support — absent or
-        truthy keeps the historic always-on behaviour. The per-model
-        :attr:`ModelSpec.supports_tools` flag is deliberately *not*
-        consulted here: it defaults to ``False``, so honouring it would
-        silently strip tools from every existing TOML spec that never set
-        it (an explicit-vs-default distinction a frozen dataclass cannot
-        recover). Per-model gating therefore rides the alias-level
-        ``tools = false`` param instead.
+        Two gates, both only triggered by an EXPLICIT ``false``:
+
+        * per-model — a ``[models.*]`` row whose TOML explicitly declared
+          ``supports_tools = false`` marks that one model tool-less
+          (:attr:`ModelSpec.supports_tools` is tri-state: ``None`` means
+          the key was absent and the model inherits the provider level);
+        * provider-level — ``[params] tools = false`` marks every model
+          behind this spec tool-less.
+
+        Absent / truthy values keep the historic always-on behaviour, so
+        existing TOML specs that never set the key are unaffected, and an
+        explicit per-model ``true`` cannot punch through a provider-level
+        ``tools = false`` gateway declaration.
         """
+        for model_spec in self._spec.models.values():
+            if model_spec.id == model:
+                if model_spec.supports_tools is False:
+                    return False
+                break
         return self._spec.params.get("tools") is not False
 
     # -- Declarative-only helpers ------------------------------------------
@@ -422,10 +439,15 @@ def load_spec_from_toml(path: Path) -> DeclarativeProviderSpec:
             raise ValueError(f"{path.name}: models.{logical_name} missing 'id'")
         if "context_length" not in row:
             raise ValueError(f"{path.name}: models.{logical_name} missing 'context_length'")
+        # ``supports_tools`` is tri-state: only thread a bool through when
+        # the TOML row explicitly contains the key, so an explicit ``false``
+        # is distinguishable from "never declared" (which inherits the
+        # provider-level capability — see DeclarativeProvider.supports_tools).
+        tools_raw = row.get("supports_tools")
         models[logical_name] = ModelSpec(
             id=str(row["id"]),
             context_length=int(row["context_length"]),
-            supports_tools=bool(row.get("supports_tools", False)),
+            supports_tools=None if tools_raw is None else bool(tools_raw),
             supports_vision=bool(row.get("supports_vision", False)),
         )
 

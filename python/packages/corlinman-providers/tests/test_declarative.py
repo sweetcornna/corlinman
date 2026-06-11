@@ -52,6 +52,49 @@ def test_load_moonshot_toml_yields_valid_spec() -> None:
     assert long_model.supports_tools is True
 
 
+def test_load_toml_supports_tools_is_tristate(tmp_path: Path) -> None:
+    """The loader keeps the explicit-vs-unset distinction: a row that never
+    declared ``supports_tools`` parses to ``None`` (inherits provider level),
+    while explicit ``false`` / ``true`` parse to real bools."""
+    toml_body = """
+id = "tri"
+name = "Tri-state Gateway"
+base_url = "https://gateway.invalid/v1"
+auth_kind = "bearer_api_key"
+request_format = "openai_compatible"
+
+[auth_config]
+env_var = "TRI_API_KEY"
+
+[models.unset]
+id = "tri-unset"
+context_length = 8192
+
+[models.explicit_false]
+id = "tri-false"
+context_length = 8192
+supports_tools = false
+
+[models.explicit_true]
+id = "tri-true"
+context_length = 8192
+supports_tools = true
+"""
+    path = tmp_path / "tri.toml"
+    path.write_text(toml_body, encoding="utf-8")
+    spec = load_spec_from_toml(path)
+
+    assert spec.models["unset"].supports_tools is None
+    assert spec.models["explicit_false"].supports_tools is False
+    assert spec.models["explicit_true"].supports_tools is True
+
+    # And the runtime adapter honours exactly the explicit false.
+    provider = DeclarativeProvider(spec, api_key="sk-test")
+    assert provider.supports_tools("tri-false") is False
+    assert provider.supports_tools("tri-unset") is True
+    assert provider.supports_tools("tri-true") is True
+
+
 def test_declarative_provider_constructs_and_lists_models() -> None:
     """Given a mock api_key, DeclarativeProvider builds and lists all models."""
     spec = load_spec_from_toml(SPEC_DIR / "moonshot.toml")

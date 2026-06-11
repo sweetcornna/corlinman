@@ -181,7 +181,11 @@ class Compactor:
             async for ev in session.brain.run_turn(
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
-                session_key=session.session_key,
+                # A derived key keeps the summarization RPC out of the
+                # user's journaled conversation (the servicer begins a
+                # journal turn for every non-empty user_text under the
+                # session key it is given).
+                session_key=f"{session.session_key}:compact",
                 cancel=asyncio.Event(),
             ):
                 if isinstance(ev, TextDelta):

@@ -17,6 +17,7 @@ from corlinman_providers import (
     ProviderKind,
     ProviderSpec,
 )
+from corlinman_providers.declarative import ModelSpec
 from corlinman_providers.market_providers import MistralProvider
 from corlinman_providers.openai_compatible import tools_param_enabled
 
@@ -30,7 +31,10 @@ def _compat_spec(params: dict[str, object] | None = None) -> ProviderSpec:
     )
 
 
-def _declarative_spec(params: dict[str, object] | None = None) -> DeclarativeProviderSpec:
+def _declarative_spec(
+    params: dict[str, object] | None = None,
+    models: dict[str, ModelSpec] | None = None,
+) -> DeclarativeProviderSpec:
     return DeclarativeProviderSpec(
         id="toolless",
         name="Tool-less gateway",
@@ -38,6 +42,7 @@ def _declarative_spec(params: dict[str, object] | None = None) -> DeclarativePro
         auth_kind="none",
         auth_config={},
         request_format="openai_compatible",
+        models=dict(models or {}),
         params=dict(params or {}),
     )
 
@@ -82,3 +87,67 @@ def test_declarative_provider_honours_params_tools_false() -> None:
 def test_declarative_provider_defaults_to_tools_supported() -> None:
     prov = DeclarativeProvider(_declarative_spec())
     assert prov.supports_tools("whatever") is True
+
+
+# ---------------------------------------------------------------------------
+# Per-model explicit ``supports_tools = false`` (tri-state ModelSpec).
+# ---------------------------------------------------------------------------
+
+
+def test_declarative_per_model_explicit_false_disables_tools() -> None:
+    """An explicit per-model ``supports_tools = false`` disables tools for
+    that one model only — siblings keep the provider-level default."""
+    prov = DeclarativeProvider(
+        _declarative_spec(
+            models={
+                "small": ModelSpec(
+                    id="gw-small", context_length=8192, supports_tools=False
+                ),
+                "big": ModelSpec(id="gw-big", context_length=128_000),
+            }
+        )
+    )
+    assert prov.supports_tools("gw-small") is False
+    assert prov.supports_tools("gw-big") is True
+
+
+def test_declarative_per_model_unset_inherits_provider_level() -> None:
+    """A model row that never declared the key inherits the provider-level
+    capability — including a provider-level ``tools = false``."""
+    models = {"m": ModelSpec(id="gw-m", context_length=8192)}
+    assert (
+        DeclarativeProvider(_declarative_spec(models=models)).supports_tools("gw-m")
+        is True
+    )
+    assert (
+        DeclarativeProvider(
+            _declarative_spec({"tools": False}, models=models)
+        ).supports_tools("gw-m")
+        is False
+    )
+
+
+def test_declarative_per_model_true_does_not_override_provider_false() -> None:
+    """Only an explicit FALSE disables; an explicit per-model ``true`` cannot
+    punch through a provider-level ``tools = false`` gateway declaration."""
+    prov = DeclarativeProvider(
+        _declarative_spec(
+            {"tools": False},
+            models={
+                "m": ModelSpec(id="gw-m", context_length=8192, supports_tools=True)
+            },
+        )
+    )
+    assert prov.supports_tools("gw-m") is False
+
+
+def test_declarative_unknown_model_uses_provider_level() -> None:
+    """A wire id not in the catalogue falls back to the provider level."""
+    prov = DeclarativeProvider(
+        _declarative_spec(
+            models={
+                "m": ModelSpec(id="gw-m", context_length=8192, supports_tools=False)
+            }
+        )
+    )
+    assert prov.supports_tools("not-declared") is True

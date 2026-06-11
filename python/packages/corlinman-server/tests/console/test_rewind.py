@@ -179,13 +179,19 @@ def test_rewind_window_unchanged_when_no_matching_turn(tmp_path: Path) -> None:
     assert "conversation window unchanged" in result.message
 
 
-def test_rewind_to_current_checkpoint_is_a_polite_noop(tmp_path: Path) -> None:
+def test_rewind_to_current_checkpoint_discards_uncommitted_edits(
+    tmp_path: Path,
+) -> None:
+    """Snapshots land at turn START, so /rewind 1 must hard-reset the
+    edits made during the latest turn — not no-op (Codex review)."""
     ws = tmp_path / "ws"
     _seed_workspace(ws)
+    # _seed_workspace leaves a.txt == v3 UNCOMMITTED (turn three's edit);
+    # the newest checkpoint ("three") committed v2 — turn-start state.
     result = rewind_to("1", workspace=ws)
-    assert not result.ok and not result.files_restored
-    assert "already at checkpoint" in result.message
-    assert (ws / "a.txt").read_text() == "v3"  # working tree untouched
+    assert result.ok and result.files_restored
+    assert "discarded" in result.message
+    assert (ws / "a.txt").read_text() == "v2"  # checkpoint state restored
 
 
 def test_rewind_bad_target_errors_politely(tmp_path: Path) -> None:

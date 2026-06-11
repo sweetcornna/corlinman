@@ -164,6 +164,64 @@ async def test_standard_models_keep_classic_params(
     assert "max_completion_tokens" not in captured
 
 
+@pytest.mark.parametrize("model", ["o3-mini", "o4-mini", "gpt-5"])
+async def test_reasoning_models_strip_sampling_knobs_from_extra(
+    monkeypatch: pytest.MonkeyPatch, model: str
+) -> None:
+    """Alias/provider params merged via ``extra`` must not smuggle the
+    classic sampling knobs onto a reasoning model — every one of them 400s.
+    Non-sampling extras (``reasoning_effort``) still pass through."""
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    captured = _patch_openai(monkeypatch, [_finish_chunk("stop")])
+    prov = OpenAIProvider()
+    extra = {
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "presence_penalty": 0.5,
+        "frequency_penalty": 0.2,
+        "logprobs": True,
+        "top_logprobs": 5,
+        "logit_bias": {"50256": -100},
+        "reasoning_effort": "high",
+    }
+    await _drain(
+        prov,
+        model=model,
+        messages=[{"role": "user", "content": "hi"}],
+        extra=extra,
+    )
+    for knob in (
+        "temperature",
+        "top_p",
+        "presence_penalty",
+        "frequency_penalty",
+        "logprobs",
+        "top_logprobs",
+        "logit_bias",
+    ):
+        assert knob not in captured, f"{knob} must be stripped for {model}"
+    assert captured["reasoning_effort"] == "high"
+    # The caller's dict is never mutated — strip happens on a copy.
+    assert extra["top_p"] == 0.9
+
+
+async def test_standard_models_keep_sampling_knobs_from_extra(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Standard models keep alias-supplied sampling knobs untouched."""
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    captured = _patch_openai(monkeypatch, [_finish_chunk("stop")])
+    prov = OpenAIProvider()
+    await _drain(
+        prov,
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": "hi"}],
+        extra={"top_p": 0.9, "presence_penalty": 0.5},
+    )
+    assert captured["top_p"] == 0.9
+    assert captured["presence_penalty"] == 0.5
+
+
 # ---------------------------------------------------------------------------
 # P2 — reasoning_content: stream surfacing + strip-on-replay.
 # ---------------------------------------------------------------------------
