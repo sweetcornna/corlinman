@@ -85,8 +85,20 @@ class TestNormalizeOutboundText:
         assert normalize_outbound_text("`<@U123>`") == "`<@U123>`"
         assert normalize_outbound_text("`please @everyone`") == "`please @everyone`"
         assert normalize_outbound_text("`cc <@U123>`") == "`cc <@U123>`"
+        # Mentions adjacent to punctuation / text (no whitespace before) too.
+        assert normalize_outbound_text("`(<@U123>)`") == "`(<@U123>)`"
+        assert normalize_outbound_text("`cc<@U123>`") == "`cc<@U123>`"
         # Non-mention inline code still unwraps.
         assert normalize_outbound_text("the `value` here") == "the value here"
+
+    def test_preserves_unfenced_diff_markers(self) -> None:
+        # A diff/patch (even unfenced) must keep its - / + line markers.
+        diff = "--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n- old\n+ new"
+        assert normalize_outbound_text(diff) == diff
+        # A lone diff-add line is never turned into a bullet.
+        assert normalize_outbound_text("+ new line") == "+ new line"
+        # Ordinary prose bullets still normalize when there's no diff.
+        assert normalize_outbound_text("- one\n- two") == "· one\n· two"
 
     def test_code_span_contents_are_not_emphasis_stripped(self) -> None:
         # A dunder in a code span must NOT be eaten by the emphasis pass.

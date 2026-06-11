@@ -309,11 +309,14 @@ _EMPHASIS_USCORE_RE = re.compile(
     r"(?<!\S)(___|__|_)(?=\S)(?P<inner>.+?)(?<=\S)\1(?!\S)",
     re.DOTALL,
 )
-# A mention token ANYWHERE in an inline-code span: keeping such a span
-# wrapped in backticks preserves the author's escaping so a
-# render-and-parse transport (Slack/Discord) can't turn ``\`@everyone\```
-# / ``\`cc <@U123>\``` into a live notification.
-_MENTION_RE = re.compile(r"(?:^|\s)(?:@|<[@!#&])")
+# A live-notification token ANYWHERE in an inline-code span — matched
+# regardless of the preceding character (``\`(<@U123>)\```, ``\`cc<@U123>\```
+# count too). Keeping such a span wrapped in backticks preserves the
+# author's escaping so a render-and-parse transport (Slack/Discord)
+# can't turn it into a real ping. Covers the platform tokens that
+# actually notify: ``@everyone`` / ``@here`` / ``@channel`` and the
+# ``<@id>`` / ``<!cmd>`` / ``<#chan>`` / ``<&role>`` forms.
+_MENTION_RE = re.compile(r"@everyone|@here|@channel|<[@!#&]")
 # A fenced code block — preserved verbatim so real code keeps its shape.
 _FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
 # An inline code span — stashed before the markdown passes so its
@@ -327,8 +330,14 @@ _HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+", re.MULTILINE)
 # prompt / nested quote (``>>> print(1)``, ``>> x``): the ``>`` must not be
 # followed by another ``>``. Single-strip keeps the transform idempotent.
 _BLOCKQUOTE_RE = re.compile(r"^\s{0,3}>(?!>)\s?", re.MULTILINE)
-# Leading list bullet (-, *, +) → a clean middle-dot bullet.
-_BULLET_RE = re.compile(r"^(\s*)[-*+]\s+", re.MULTILINE)
+# Leading list bullet (- or *) → a clean middle-dot bullet. ``+`` is
+# deliberately excluded: it is a rare Markdown bullet but a common
+# unified-diff add marker, and rewriting ``+ new`` would corrupt patches.
+_BULLET_RE = re.compile(r"^(\s*)[-*]\s+", re.MULTILINE)
+# Unified-diff signature (hunk header or file headers). When present we
+# skip bullet normalization entirely so ``- old`` / ``+ new`` diff lines
+# survive even when the model didn't fence the patch.
+_DIFF_RE = re.compile(r"(?m)^(?:@@ .* @@|--- |\+\+\+ )")
 # AI-tell Latin punctuation → plain ASCII. Chinese full-width punctuation
 # (，。、：；？！“”‘’（）) is correct typography and deliberately left intact.
 _AI_PUNCT = {
@@ -372,7 +381,10 @@ def normalize_outbound_text(text: str) -> str:
 
     work = _HEADING_RE.sub("", work)
     work = _BLOCKQUOTE_RE.sub("", work)
-    work = _BULLET_RE.sub(r"\1· ", work)
+    # Skip bullet normalization for diff/patch bodies so ``- old`` lines
+    # aren't turned into ``· old`` (diff markers must round-trip).
+    if not _DIFF_RE.search(work):
+        work = _BULLET_RE.sub(r"\1· ", work)
     # Emphasis can nest (``**_x_**``); run twice to unwrap both layers.
     for _ in range(2):
         work = _EMPHASIS_STAR_RE.sub(lambda m: m.group("inner"), work)
