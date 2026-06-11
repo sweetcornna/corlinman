@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Request
@@ -43,6 +44,8 @@ from corlinman_server.gateway.routes_admin_b.state import (
 # SSE heartbeat cadence — same 10s opencode uses for its ``/event``
 # stream. Keeps proxies / load balancers from idling the connection
 # while the agent is silent between turns.
+_log = logging.getLogger("corlinman.gateway.admin.sessions_events")
+
 SSE_HEARTBEAT_SECONDS: float = 10.0
 
 # JSON replay default + cap. Default is the "show me the whole turn"
@@ -51,6 +54,13 @@ SSE_HEARTBEAT_SECONDS: float = 10.0
 # response.
 REPLAY_DEFAULT_LIMIT: int = 500
 REPLAY_MAX_LIMIT: int = 5000
+
+# OOM backstop for the live-SSE catch-up drain. A reconnect replays one
+# turn's tail (small in practice); this cap stops a pathological turn
+# from buffering without bound before the first frame. Matches the JSON
+# replay ceiling. Remainder past the cap is covered by the live queue +
+# the on-demand replay endpoint.
+CATCH_UP_MAX_EVENTS: int = 5000
 
 # Past-turns listing default + cap. 50 matches the default pill-row
 # the session-detail page renders on first load; the 200 cap keeps a
@@ -180,24 +190,34 @@ async def _sse_stream(
             resume_turn = await _resolve_latest_turn_id(journal, session_key)
 
         if resume_turn is not None and catch_up_sequence >= 0:
-            # Buffer the replay BEFORE yielding any of it. Yielding from
-            # inside ``async for … journal.iter_events(...)`` meant a
-            # client disconnect (GeneratorExit at the yield point) tore
-            # down the aiosqlite cursor mid-iteration — cross-thread
-            # cleanup that can deadlock the DB worker (the CI 6-hour
-            # py-test hang). A catch-up is one turn's tail, so the
-            # buffer stays small; wait_for caps a wedged read and
-            # degrades to live-only streaming.
+            # Drain the catch-up replay into a list FIRST, then yield from
+            # the list. Yielding from inside ``async for …
+            # journal.iter_events(...)`` meant a client disconnect
+            # (GeneratorExit at the yield point) tore down the aiosqlite
+            # cursor mid-iteration — cross-thread cleanup that can
+            # deadlock the DB worker (the CI 6-hour py-test hang).
+            #
+            # No ``asyncio.wait_for`` here: a timeout would CANCEL the
+            # drain, and that cancellation unwinds through the very same
+            # cursor ``finally`` cleanup we're avoiding — reintroducing
+            # the wedge. Draining to completion (no interleaved yields)
+            # lets the cursor close NORMALLY every time.
+            #
+            # ``CATCH_UP_MAX_EVENTS`` is an OOM backstop: catch-up is one
+            # turn's tail (bounded in practice), but a pathological turn
+            # shouldn't buffer without limit. On overflow we stop reading
+            # and let the live queue + the on-demand JSON replay endpoint
+            # cover the remainder rather than risk memory blowup.
             catch_up_events: list[Any] = []
+            overflowed = False
             try:
-
-                async def _collect() -> None:
-                    async for ev in journal.iter_events(
-                        resume_turn, start_sequence=catch_up_sequence
-                    ):
-                        catch_up_events.append(ev)
-
-                await asyncio.wait_for(_collect(), timeout=10.0)
+                async for ev in journal.iter_events(
+                    resume_turn, start_sequence=catch_up_sequence
+                ):
+                    catch_up_events.append(ev)
+                    if len(catch_up_events) >= CATCH_UP_MAX_EVENTS:
+                        overflowed = True
+                        break
             except Exception:  # noqa: BLE001 — best-effort catch-up
                 # A partial replay is preferable to tearing the
                 # connection down — the live loop below still picks up
@@ -205,6 +225,13 @@ async def _sse_stream(
                 pass
             for ev in catch_up_events:
                 yield _format_sse_frame(ev)
+            if overflowed:
+                _log.warning(
+                    "sse catch-up exceeded %d events for turn %s; "
+                    "remainder deferred to live stream + replay endpoint",
+                    CATCH_UP_MAX_EVENTS,
+                    resume_turn,
+                )
 
         # ---------- live ----------
         while True:

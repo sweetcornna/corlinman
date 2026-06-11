@@ -281,6 +281,40 @@ async def test_aclose_mid_catch_up_is_bounded(
     await asyncio.wait_for(gen.aclose(), timeout=5.0)
 
 
+@pytest.mark.asyncio
+async def test_catch_up_buffer_is_capped(
+    state: AdminState,
+    journal: AgentJournal,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The catch-up drain is an OOM backstop, not unbounded: with the cap
+    lowered, only the first N missed events replay before the stream
+    advances to the live queue (remainder deferred to the replay
+    endpoint)."""
+    monkeypatch.setattr(sessions_events, "CATCH_UP_MAX_EVENTS", 3)
+    tid = await journal.begin_turn("sess-1", "hello")
+    assert tid is not None
+    for seq in range(10):
+        await journal.append_event(
+            _make_envelope(turn_id=str(tid), sequence=seq, text=f"old-{seq}")
+        )
+
+    gen = _sse_stream(
+        state, "sess-1", catch_up_turn_id=str(tid), catch_up_sequence=0
+    )
+    frames: list[bytes] = []
+    try:
+        # Drain only the catch-up phase: 3 capped frames, then the live
+        # loop would block on the queue → stop after the cap.
+        for _ in range(3):
+            frames.append(await asyncio.wait_for(gen.__anext__(), timeout=5.0))
+    finally:
+        await asyncio.wait_for(gen.aclose(), timeout=5.0)
+
+    text_frames = [f for f in frames if b"TextDelta" in f]
+    assert len(text_frames) == 3  # capped, not all 10
+
+
 # ---------------------------------------------------------------------------
 # Heartbeat
 # ---------------------------------------------------------------------------
