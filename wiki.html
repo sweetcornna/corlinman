@@ -2,9 +2,10 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<script>(function(){try{var l=localStorage.getItem("corlinman-lang")||(((navigator.language||"").toLowerCase().indexOf("zh")===0)?"zh":"en");document.documentElement.setAttribute("data-lang",l);document.documentElement.lang=(l==="zh"?"zh-CN":"en");}catch(e){document.documentElement.setAttribute("data-lang","en");}})();</script>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>corlinman wiki — the manual · 手册</title>
-<meta name="description" content="corlinman documentation — install, first run, channels, providers, memory, tools, approvals, console, admin UI, FAQ. 自托管智能体平台手册。">
+<meta name="description" content="corlinman documentation — install, first run, channels, providers, memory, tools, approvals, console, admin UI, FAQ. 自托管智能体平台手册：安装、渠道、模型、记忆、审批、运维。">
 <link rel="icon" type="image/png" href="logo.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -29,6 +30,8 @@ body{background:var(--space-1);color:var(--ink);font-family:var(--sans);font-siz
 a{color:var(--current);text-decoration:none}
 a:hover{text-decoration:underline}
 :focus-visible{outline:2px solid var(--current);outline-offset:3px;border-radius:4px}
+html[data-lang="en"] .i-zh{display:none!important}
+html[data-lang="zh"] .i-en{display:none!important}
 .bg-static{position:fixed;inset:0;z-index:0;
   background:
     radial-gradient(55% 45% at 18% 16%, rgba(94,155,255,.09), transparent 70%),
@@ -38,7 +41,6 @@ a:hover{text-decoration:underline}
 .grain{position:fixed;inset:-50%;width:200%;height:200%;z-index:50;pointer-events:none;opacity:.045;
   background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");}
 
-/* ------- top nav ------- */
 nav{position:fixed;top:18px;left:50%;transform:translateX(-50%);z-index:40;
   display:flex;align-items:center;gap:22px;padding:9px 11px 9px 14px;border-radius:999px;
   background:rgba(10,14,28,.6);border:1px solid var(--glass-border);
@@ -48,11 +50,13 @@ nav{position:fixed;top:18px;left:50%;transform:translateX(-50%);z-index:40;
 .nav-brand:hover{text-decoration:none}
 .nav-brand img{width:22px;height:22px;image-rendering:pixelated}
 .nav-brand .tag{color:var(--ink-4);font-size:12px}
-.nav-links{display:flex;gap:4px;font-family:var(--mono);font-size:12.5px;color:var(--ink-3)}
+.nav-links{display:flex;gap:4px;font-family:var(--mono);font-size:12.5px;color:var(--ink-3);align-items:center}
 .nav-links a{padding:7px 12px;border-radius:999px;color:var(--ink-3);white-space:nowrap;transition:color .25s,background .25s}
 .nav-links a:hover{color:var(--ink);background:var(--glass-strong);text-decoration:none}
+#lang-btn{font-family:var(--mono);font-size:12px;color:var(--ink-2);background:var(--glass);
+  border:1px solid var(--glass-border);border-radius:999px;padding:7px 13px;cursor:pointer;white-space:nowrap;transition:all .3s}
+#lang-btn:hover{color:var(--ink);border-color:var(--glass-border-hi)}
 
-/* ------- shell ------- */
 .shell{position:relative;z-index:2;display:grid;grid-template-columns:248px minmax(0,1fr);gap:56px;
   width:min(1180px,calc(100% - 48px));margin:0 auto;padding:130px 0 120px}
 aside{position:sticky;top:110px;align-self:start;max-height:calc(100vh - 140px);overflow-y:auto;scrollbar-width:thin}
@@ -76,7 +80,6 @@ aside{position:sticky;top:110px;align-self:start;max-height:calc(100vh - 140px);
 .toc a.on{color:var(--ink);background:var(--glass-strong);box-shadow:inset 2px 0 0 var(--current)}
 .toc a.on .zh{color:var(--current)}
 
-/* ------- article ------- */
 main{min-width:0}
 article{display:none;max-width:760px}
 article.on{display:block;animation:rise .5s var(--ease-glide)}
@@ -86,10 +89,13 @@ article.on{display:block;animation:rise .5s var(--ease-glide)}
 .crumb b{color:var(--current);font-weight:500}
 article h1{font-family:var(--serif);font-weight:400;font-size:clamp(2.2rem,4.5vw,3.2rem);line-height:1.08;letter-spacing:-.01em;margin-bottom:8px}
 article h1 .zh{display:block;font-family:var(--serif-cjk);font-weight:600;font-size:.42em;color:var(--ink-3);letter-spacing:.3em;margin-top:10px}
+html[data-lang="zh"] article h1 .t{font-family:var(--serif-cjk);font-weight:600;letter-spacing:.02em;font-size:.92em}
 article .lede{color:var(--ink-2);font-size:16.5px;margin:18px 0 8px}
 article h2{font-family:var(--serif);font-weight:400;font-size:1.55rem;letter-spacing:.005em;color:var(--ink);
   margin:46px 0 14px;padding-bottom:10px;border-bottom:1px solid var(--glass-border)}
 article h2 .zh{font-family:var(--serif-cjk);font-size:.72em;color:var(--ink-4);margin-left:12px;letter-spacing:.2em}
+html[data-lang="zh"] article h2{font-family:var(--serif-cjk);font-weight:600;font-size:1.35rem}
+html[data-lang="zh"] article h2 .zh{font-family:var(--serif);font-size:.82em;letter-spacing:.04em;font-style:italic}
 article h3{font-family:var(--mono);font-weight:500;font-size:13px;letter-spacing:.14em;text-transform:uppercase;color:var(--current);margin:30px 0 10px}
 article p{color:var(--ink-2);margin:12px 0}
 article ul,article ol{color:var(--ink-2);padding-left:22px;margin:12px 0}
@@ -145,9 +151,9 @@ td code{white-space:nowrap}
 <nav aria-label="main">
   <a class="nav-brand" href="./"><img src="logo.png" alt="">corlinman <span class="tag">/ wiki</span></a>
   <div class="nav-links">
-    <a href="./">home</a>
-    <a href="https://corlinman.cornna.xyz">live</a>
+    <a href="./"><span class="i-en">home</span><span class="i-zh">首页</span></a>
     <a href="https://github.com/sweetcornna/corlinman">github ↗</a>
+    <button id="lang-btn" aria-label="switch language">中文</button>
   </div>
 </nav>
 
@@ -176,129 +182,129 @@ td code{white-space:nowrap}
 <main id="doc">
 
 <!-- ============ overview ============ -->
-<article data-route="overview" data-title="Overview">
+<article data-route="overview" data-title="Overview" data-title-zh="总览">
 <p class="crumb"><b>start</b> / overview</p>
-<h1>What corlinman is.<span class="zh">总览</span></h1>
-<p class="lede">corlinman is a self-hosted intelligent-agent platform: one binary that gives a language model durable memory, real sandboxed tools, seven chat channels, and a human approval gate — running on your own hardware, auditable end to end.</p>
+<h1><span class="t i-en">What corlinman is.</span><span class="t i-zh">corlinman 是什么。</span><span class="zh">总览</span></h1>
+<p class="lede"><span class="i-en">corlinman is a self-hosted intelligent-agent platform: one binary that gives a language model durable memory, real sandboxed tools, seven chat channels, and a human approval gate — running on your own hardware, auditable end to end.</span><span class="i-zh">corlinman 是一个自托管智能体平台：一体成形的程序，给语言模型装上持久记忆、真实的沙箱工具、七个聊天渠道和人工审批门 —— 跑在你自己的硬件上，端到端可审计。</span></p>
 
-<h2>The loop <span class="zh">回路</span></h2>
-<p>Every request, from any channel, travels the same path:</p>
+<h2><span class="i-en">The loop</span><span class="i-zh">回路</span> <span class="zh i-en">回路</span><span class="zh i-zh">The loop</span></h2>
+<p><span class="i-en">Every request, from any channel, travels the same path:</span><span class="i-zh">来自任何渠道的每一个请求，都走同一条路径：</span></p>
 <div class="flow">
-  <span>channel</span><i>→</i><span>gateway :6005</span><i>→</i><span class="hot">agent loop</span><i>→</i><span>memory / RAG</span><i>→</i><span>tools (sandbox)</span><i>→</i><span class="hot">approval gate</span><i>→</i><span>provider LLM</span><i>→</i><span>reply</span>
+  <span><span class="i-en">channel</span><span class="i-zh">渠道</span></span><i>→</i><span><span class="i-en">gateway :6005</span><span class="i-zh">网关 :6005</span></span><i>→</i><span class="hot"><span class="i-en">agent loop</span><span class="i-zh">智能体回路</span></span><i>→</i><span><span class="i-en">memory / RAG</span><span class="i-zh">记忆 / RAG</span></span><i>→</i><span><span class="i-en">tools (sandbox)</span><span class="i-zh">工具（沙箱）</span></span><i>→</i><span class="hot"><span class="i-en">approval gate</span><span class="i-zh">审批门</span></span><i>→</i><span><span class="i-en">provider LLM</span><span class="i-zh">模型供应商</span></span><i>→</i><span><span class="i-en">reply</span><span class="i-zh">答复</span></span>
 </div>
-<p>Messages land from QQ, Telegram, Discord, Slack, Feishu, WeChat 公众号 or the built-in web chat. The agent recalls context from hybrid retrieval, reasons with whichever model you bound, fires tools inside a sandboxed plugin runtime, and anything irreversible waits in an approval queue until you say yes.</p>
+<p><span class="i-en">Messages land from QQ, Telegram, Discord, Slack, Feishu, WeChat 公众号 or the built-in web chat. The agent recalls context from hybrid retrieval, reasons with whichever model you bound, fires tools inside a sandboxed plugin runtime, and anything irreversible waits in an approval queue until you say yes.</span><span class="i-zh">消息从 QQ、Telegram、Discord、Slack、飞书、微信公众号或内置网页聊天进来。智能体先用混合检索召回上下文，再用你绑定的模型推理，工具在沙箱化的插件运行时中执行 —— 任何不可逆的操作都会进入审批队列，等你点头才放行。</span></p>
 
-<h2>The pillars <span class="zh">支柱</span></h2>
+<h2><span class="i-en">The pillars</span><span class="i-zh">支柱</span> <span class="zh i-en">支柱</span><span class="zh i-zh">The pillars</span></h2>
 <ul>
-  <li><strong>Durable memory</strong> — per-session history in SQLite plus a knowledge store with FTS5 keyword search, vector index, decay &amp; consolidation. → <a href="#/memory">memory &amp; rag</a></li>
-  <li><strong>Real tools</strong> — sync / async / service plugins in any language, optional Docker sandbox, a skills library, a marketplace. → <a href="#/tools">tools &amp; skills</a></li>
-  <li><strong>Seven channels</strong> — one agent, every room it's invited to. → <a href="#/channels">channels</a></li>
-  <li><strong>Human-in-the-loop</strong> — per-tool approval rules: auto, prompt, or deny. → <a href="#/approvals">approvals</a></li>
-  <li><strong>Operations plane</strong> — a Spatial Glass admin console with live logs, RAG debugging and a theme studio. → <a href="#/admin">admin ui</a></li>
-  <li><strong>One binary</strong> — install in sixty seconds, upgrade in place, China mirrors built in. → <a href="#/install">install</a></li>
+  <li><span class="i-en"><strong>Durable memory</strong> — per-session history in SQLite plus a knowledge store with FTS5 keyword search, vector index, decay &amp; consolidation.</span><span class="i-zh"><strong>持久记忆</strong> —— SQLite 里的会话历史，加上带 FTS5 关键词检索、向量索引、衰减与固化机制的知识库。</span> → <a href="#/memory"><span class="i-en">memory &amp; rag</span><span class="i-zh">记忆与检索</span></a></li>
+  <li><span class="i-en"><strong>Real tools</strong> — sync / async / service plugins in any language, optional Docker sandbox, a skills library, a marketplace.</span><span class="i-zh"><strong>真实工具</strong> —— 任意语言编写的 sync / async / service 三类插件、可选 Docker 沙箱、技能库、扩展市场。</span> → <a href="#/tools"><span class="i-en">tools &amp; skills</span><span class="i-zh">工具与技能</span></a></li>
+  <li><span class="i-en"><strong>Seven channels</strong> — one agent, every room it's invited to.</span><span class="i-zh"><strong>七个渠道</strong> —— 同一个智能体，出现在所有邀请它的房间里。</span> → <a href="#/channels"><span class="i-en">channels</span><span class="i-zh">渠道</span></a></li>
+  <li><span class="i-en"><strong>Human-in-the-loop</strong> — per-tool approval rules: auto, prompt, or deny.</span><span class="i-zh"><strong>人在回路</strong> —— 按工具粒度的审批规则：auto、prompt、deny。</span> → <a href="#/approvals"><span class="i-en">approvals</span><span class="i-zh">审批</span></a></li>
+  <li><span class="i-en"><strong>Operations plane</strong> — a Spatial Glass admin console with live logs, RAG debugging and a theme studio.</span><span class="i-zh"><strong>运维后台</strong> —— Spatial Glass 管理台：实时日志、RAG 调试、主题工作室。</span> → <a href="#/admin"><span class="i-en">admin ui</span><span class="i-zh">后台</span></a></li>
+  <li><span class="i-en"><strong>One binary</strong> — install in sixty seconds, upgrade in place, China mirrors built in.</span><span class="i-zh"><strong>一体成形</strong> —— 六十秒装好，原地升级，内置国内镜像加速。</span> → <a href="#/install"><span class="i-en">install</span><span class="i-zh">安装</span></a></li>
 </ul>
 
-<h2>At a glance <span class="zh">速览</span></h2>
+<h2><span class="i-en">At a glance</span><span class="i-zh">速览</span> <span class="zh i-en">速览</span><span class="zh i-zh">At a glance</span></h2>
 <table>
-  <tr><th>version</th><td>v1.19.1 (2026-06-11)</td></tr>
-  <tr><th>license</th><td>MIT</td></tr>
-  <tr><th>runtime</th><td>Python 3.12+ · Docker or native systemd</td></tr>
-  <tr><th>gateway</th><td>port 6005 (override <code>CORLINMAN_PORT</code>)</td></tr>
-  <tr><th>data</th><td><code>/opt/corlinman/data</code> (docker volume) or <code>~/.corlinman</code> (native, <code>CORLINMAN_DATA_DIR</code>)</td></tr>
+  <tr><th><span class="i-en">version</span><span class="i-zh">版本</span></th><td>v1.19.1 (2026-06-11)</td></tr>
+  <tr><th><span class="i-en">license</span><span class="i-zh">许可证</span></th><td>MIT</td></tr>
+  <tr><th><span class="i-en">runtime</span><span class="i-zh">运行时</span></th><td><span class="i-en">Python 3.12+ · Docker or native systemd</span><span class="i-zh">Python 3.12+ · Docker 或原生 systemd</span></td></tr>
+  <tr><th><span class="i-en">gateway</span><span class="i-zh">网关</span></th><td><span class="i-en">port 6005 (override <code>CORLINMAN_PORT</code>)</span><span class="i-zh">端口 6005（用 <code>CORLINMAN_PORT</code> 覆盖）</span></td></tr>
+  <tr><th><span class="i-en">data</span><span class="i-zh">数据</span></th><td><span class="i-en"><code>/opt/corlinman/data</code> (docker volume) or <code>~/.corlinman</code> (native, <code>CORLINMAN_DATA_DIR</code>)</span><span class="i-zh"><code>/opt/corlinman/data</code>（docker 卷）或 <code>~/.corlinman</code>（原生，<code>CORLINMAN_DATA_DIR</code>）</span></td></tr>
 </table>
 <p class="src">sources: <a href="https://github.com/sweetcornna/corlinman/blob/main/README.md">README.md</a> · <a href="https://github.com/sweetcornna/corlinman/blob/main/docs/architecture.md">docs/architecture.md</a></p>
 </article>
 
 <!-- ============ install ============ -->
-<article data-route="install" data-title="Install">
+<article data-route="install" data-title="Install" data-title-zh="安装">
 <p class="crumb"><b>start</b> / install</p>
-<h1>Install in sixty seconds.<span class="zh">安装</span></h1>
-<p class="lede">One script handles preflight checks, Docker or native mode, the QQ sidecar, China mirrors, and a health gate that won't report success until the gateway actually answers.</p>
+<h1><span class="t i-en">Install in sixty seconds.</span><span class="t i-zh">六十秒装好。</span><span class="zh">安装</span></h1>
+<p class="lede"><span class="i-en">One script handles preflight checks, Docker or native mode, the QQ sidecar, China mirrors, and a health gate that won't report success until the gateway actually answers.</span><span class="i-zh">一个脚本搞定一切：预检、Docker 或原生模式、QQ 边车、国内镜像，外加一个健康门 —— 网关真正应答之前绝不报成功。</span></p>
 
-<h2>Quickstart <span class="zh">一键安装</span></h2>
+<h2><span class="i-en">Quickstart</span><span class="i-zh">一键安装</span> <span class="zh i-en">一键安装</span><span class="zh i-zh">Quickstart</span></h2>
 <pre><code>curl -fsSL https://raw.githubusercontent.com/sweetcornna/corlinman/main/deploy/install.sh | bash</code></pre>
-<p>Default is <strong>Docker mode</strong>. For native (systemd) mode with a version pin:</p>
+<p><span class="i-en">Default is <strong>Docker mode</strong>. For native (systemd) mode with a version pin:</span><span class="i-zh">默认是 <strong>Docker 模式</strong>。原生（systemd）模式并锁定版本：</span></p>
 <pre><code>curl -fsSL https://raw.githubusercontent.com/sweetcornna/corlinman/main/deploy/install.sh | \
   bash -s -- --mode native --version v1.19.1</code></pre>
 
-<h2>What preflight checks <span class="zh">预检</span></h2>
+<h2><span class="i-en">What preflight checks</span><span class="i-zh">预检查什么</span> <span class="zh i-en">预检</span><span class="zh i-zh">Preflight</span></h2>
 <ul>
-  <li>Disk ≥ 5 GB, RAM ≥ 1 GB</li>
-  <li>Port <code>6005</code> free (override with <code>CORLINMAN_PORT</code>) — fails fast with the holding PID</li>
-  <li>Docker Engine 24+ with compose v2 (docker mode only)</li>
-  <li>Health gate: polls <code>GET /health</code> until HTTP 200 (timeout <code>CORLINMAN_HEALTH_TIMEOUT</code>, default 60 s)</li>
+  <li><span class="i-en">Disk ≥ 5 GB, RAM ≥ 1 GB</span><span class="i-zh">磁盘 ≥ 5 GB，内存 ≥ 1 GB</span></li>
+  <li><span class="i-en">Port <code>6005</code> free (override with <code>CORLINMAN_PORT</code>) — fails fast with the holding PID</span><span class="i-zh">端口 <code>6005</code> 空闲（用 <code>CORLINMAN_PORT</code> 覆盖）—— 被占用时直接报出占用进程的 PID</span></li>
+  <li><span class="i-en">Docker Engine 24+ with compose v2 (docker mode only)</span><span class="i-zh">Docker Engine 24+ 且带 compose v2（仅 docker 模式）</span></li>
+  <li><span class="i-en">Health gate: polls <code>GET /health</code> until HTTP 200 (timeout <code>CORLINMAN_HEALTH_TIMEOUT</code>, default 60 s)</span><span class="i-zh">健康门：轮询 <code>GET /health</code> 直到 HTTP 200（超时 <code>CORLINMAN_HEALTH_TIMEOUT</code>，默认 60 秒）</span></li>
 </ul>
 
-<h2>Docker vs native <span class="zh">两种模式</span></h2>
+<h2><span class="i-en">Docker vs native</span><span class="i-zh">两种模式</span> <span class="zh i-en">两种模式</span><span class="zh i-zh">Docker vs native</span></h2>
 <table>
   <tr><th></th><th>docker</th><th>native</th></tr>
-  <tr><td>requires</td><td>Docker Engine 24+, compose v2</td><td>Python 3.12+, Node/pnpm (skip UI build with <code>--skip-ui</code>)</td></tr>
-  <tr><td>install target</td><td>image pull or local buildx</td><td>clone to <code>/opt/corlinman/repo</code> + systemd unit</td></tr>
-  <tr><td>data</td><td>volume, default <code>/opt/corlinman/data</code></td><td><code>/opt/corlinman/data</code> or <code>~/.corlinman</code></td></tr>
-  <tr><td>upgrade</td><td>pull/rebuild + restart</td><td><code>uv sync --frozen</code> + unit restart</td></tr>
+  <tr><td><span class="i-en">requires</span><span class="i-zh">依赖</span></td><td><span class="i-en">Docker Engine 24+, compose v2</span><span class="i-zh">Docker Engine 24+，compose v2</span></td><td><span class="i-en">Python 3.12+, Node/pnpm (skip UI build with <code>--skip-ui</code>)</span><span class="i-zh">Python 3.12+，Node/pnpm（<code>--skip-ui</code> 可跳过 UI 构建）</span></td></tr>
+  <tr><td><span class="i-en">install target</span><span class="i-zh">安装目标</span></td><td><span class="i-en">image pull or local buildx</span><span class="i-zh">拉镜像或本地 buildx</span></td><td><span class="i-en">clone to <code>/opt/corlinman/repo</code> + systemd unit</span><span class="i-zh">克隆到 <code>/opt/corlinman/repo</code> + systemd 单元</span></td></tr>
+  <tr><td><span class="i-en">data</span><span class="i-zh">数据</span></td><td><span class="i-en">volume, default <code>/opt/corlinman/data</code></span><span class="i-zh">卷，默认 <code>/opt/corlinman/data</code></span></td><td><code>/opt/corlinman/data</code> / <code>~/.corlinman</code></td></tr>
+  <tr><td><span class="i-en">upgrade</span><span class="i-zh">升级</span></td><td><span class="i-en">pull/rebuild + restart</span><span class="i-zh">拉新镜像/重建 + 重启</span></td><td><span class="i-en"><code>uv sync --frozen</code> + unit restart</span><span class="i-zh"><code>uv sync --frozen</code> + 重启单元</span></td></tr>
 </table>
 
-<h2>QQ sidecar <span class="zh">QQ 边车</span></h2>
-<p>NapCat (OneBot v11) is bundled <strong>by default</strong> in both modes — docker layers <code>docker-compose.qq.yml</code>, native provisions an AppImage + systemd unit. Opt out with <code>--without-qq</code>. Pin the version with <code>NAPCAT_VERSION</code> (default <code>v4.18.4</code>).</p>
+<h2><span class="i-en">QQ sidecar</span><span class="i-zh">QQ 边车</span> <span class="zh i-en">QQ 边车</span><span class="zh i-zh">QQ sidecar</span></h2>
+<p><span class="i-en">NapCat (OneBot v11) is bundled <strong>by default</strong> in both modes — docker layers <code>docker-compose.qq.yml</code>, native provisions an AppImage + systemd unit. Opt out with <code>--without-qq</code>. Pin the version with <code>NAPCAT_VERSION</code> (default <code>v4.18.4</code>).</span><span class="i-zh">两种模式都<strong>默认捆绑</strong> NapCat（OneBot v11）—— docker 叠加 <code>docker-compose.qq.yml</code>，原生模式安装 AppImage + systemd 单元。不需要就加 <code>--without-qq</code>。用 <code>NAPCAT_VERSION</code> 锁版本（默认 <code>v4.18.4</code>）。</span></p>
 
-<h2>China mirrors <span class="zh">国内加速</span></h2>
-<p>Mirror mode auto-enables when <code>pypi.org</code> TTFB exceeds 3 seconds, or force it with <code>--china</code>. Override individual mirrors with <code>CN_PIP_INDEX</code>, <code>CN_GH_PROXY</code>, <code>CN_DOCKER_MIRROR</code>.</p>
+<h2><span class="i-en">China mirrors</span><span class="i-zh">国内加速</span> <span class="zh i-en">国内加速</span><span class="zh i-zh">China mirrors</span></h2>
+<p><span class="i-en">Mirror mode auto-enables when <code>pypi.org</code> TTFB exceeds 3 seconds, or force it with <code>--china</code>. Override individual mirrors with <code>CN_PIP_INDEX</code>, <code>CN_GH_PROXY</code>, <code>CN_DOCKER_MIRROR</code>.</span><span class="i-zh">当 <code>pypi.org</code> 首字节超过 3 秒时镜像模式自动开启，也可以用 <code>--china</code> 强制。单项镜像可用 <code>CN_PIP_INDEX</code>、<code>CN_GH_PROXY</code>、<code>CN_DOCKER_MIRROR</code> 覆盖。</span></p>
 <table>
-  <tr><th>pypi</th><td>清华 TUNA — <code>pypi.tuna.tsinghua.edu.cn/simple</code></td></tr>
+  <tr><th>pypi</th><td><span class="i-en">清华 TUNA — <code>pypi.tuna.tsinghua.edu.cn/simple</code></span><span class="i-zh">清华 TUNA —— <code>pypi.tuna.tsinghua.edu.cn/simple</code></span></td></tr>
   <tr><th>docker hub</th><td>DaoCloud — <code>docker.m.daocloud.io</code></td></tr>
-  <tr><th>github</th><td><code>gh-proxy.com</code> (clone + raw)</td></tr>
+  <tr><th>github</th><td><span class="i-en"><code>gh-proxy.com</code> (clone + raw)</span><span class="i-zh"><code>gh-proxy.com</code>（克隆 + raw）</span></td></tr>
   <tr><th>npm</th><td><code>registry.npmmirror.com</code></td></tr>
 </table>
 
-<h2>Upgrade <span class="zh">升级</span></h2>
+<h2><span class="i-en">Upgrade</span><span class="i-zh">升级</span> <span class="zh i-en">升级</span><span class="zh i-zh">Upgrade</span></h2>
 <pre><code>bash deploy/install.sh --upgrade
-# pin a release:
+# pin a release · 锁定版本:
 bash deploy/install.sh --upgrade --version v1.19.1</code></pre>
-<p>Upgrades <strong>never touch</strong> <code>$CORLINMAN_DATA_DIR</code>. For production, pin the compose image tag: <code>CORLINMAN_TAG=v1.19.1</code>.</p>
-<div class="note warn"><b>Native-mode caveat:</b> re-running <code>install.sh</code> <em>without</em> <code>--upgrade</code> rewrites the systemd unit and compose override. Keep local customizations in a systemd drop-in (<code>/etc/systemd/system/corlinman-gateway.service.d/override.conf</code>) and always upgrade with <code>--upgrade</code>.</div>
+<p><span class="i-en">Upgrades <strong>never touch</strong> <code>$CORLINMAN_DATA_DIR</code>. For production, pin the compose image tag: <code>CORLINMAN_TAG=v1.19.1</code>.</span><span class="i-zh">升级<strong>永远不会动</strong> <code>$CORLINMAN_DATA_DIR</code>。生产环境建议锁定镜像 tag：<code>CORLINMAN_TAG=v1.19.1</code>。</span></p>
+<div class="note warn"><span class="i-en"><b>Native-mode caveat:</b> re-running <code>install.sh</code> <em>without</em> <code>--upgrade</code> rewrites the systemd unit and compose override. Keep local customizations in a systemd drop-in (<code>/etc/systemd/system/corlinman-gateway.service.d/override.conf</code>) and always upgrade with <code>--upgrade</code>.</span><span class="i-zh"><b>原生模式注意：</b><em>不带</em> <code>--upgrade</code> 重跑 <code>install.sh</code> 会重写 systemd 单元和 compose 覆盖文件。本地定制请放进 systemd drop-in（<code>/etc/systemd/system/corlinman-gateway.service.d/override.conf</code>），升级永远走 <code>--upgrade</code>。</span></div>
 <p class="src">sources: <a href="https://github.com/sweetcornna/corlinman/blob/main/deploy/install.sh">deploy/install.sh</a> · <a href="https://github.com/sweetcornna/corlinman/blob/main/README.md">README.md</a></p>
 </article>
 
 <!-- ============ first-run ============ -->
-<article data-route="first-run" data-title="First run">
+<article data-route="first-run" data-title="First run" data-title-zh="首次启动">
 <p class="crumb"><b>start</b> / first run</p>
-<h1>First run, first five minutes.<span class="zh">首次启动</span></h1>
-<p class="lede">Log in, rotate the seed password, connect a model — through the web wizard or entirely from the terminal.</p>
+<h1><span class="t i-en">First run, first five minutes.</span><span class="t i-zh">首次启动的五分钟。</span><span class="zh">首次启动</span></h1>
+<p class="lede"><span class="i-en">Log in, rotate the seed password, connect a model — through the web wizard or entirely from the terminal.</span><span class="i-zh">登录、换掉种子密码、接上模型 —— 走网页向导，或者全程在终端里完成。</span></p>
 
-<h2>Log in <span class="zh">登录</span></h2>
-<p>Open <code>http://localhost:6005/login</code> (or your server's IP). First boot seeds <code>admin</code> / <code>root</code> — the UI immediately redirects to <code>/account/security</code> and a red banner persists until you change the password. <code>corlinman doctor</code> also warns while the seed credential is alive.</p>
+<h2><span class="i-en">Log in</span><span class="i-zh">登录</span> <span class="zh i-en">登录</span><span class="zh i-zh">Log in</span></h2>
+<p><span class="i-en">Open <code>http://localhost:6005/login</code> (or your server's IP). First boot seeds <code>admin</code> / <code>root</code> — the UI immediately redirects to <code>/account/security</code> and a red banner persists until you change the password. <code>corlinman doctor</code> also warns while the seed credential is alive.</span><span class="i-zh">打开 <code>http://localhost:6005/login</code>（或你服务器的 IP）。首次启动会种入 <code>admin</code> / <code>root</code> —— UI 会立刻重定向到 <code>/account/security</code>，红色横幅会一直挂着，直到你改掉密码。种子凭据还在时 <code>corlinman doctor</code> 也会一直告警。</span></p>
 
-<h2>Connect a model <span class="zh">接入模型</span></h2>
-<p><strong>Path A — the wizard.</strong> Visit <code>/onboard</code>: a 4-step flow (account → connect LLM → pick models → confirm) that writes <code>config.toml</code> atomically.</p>
-<p><strong>Path B — no key yet?</strong> At step 2, click <em>Skip — use mock provider</em>. It writes <code>[providers.mock] enabled = true</code> and echoes prompts back so you can explore every screen end-to-end.</p>
-<p><strong>Headless servers.</strong> <code>corlinman init</code> is the CLI equivalent: walks the password change, provider key paste and model alias write, then restarts the gateway.</p>
+<h2><span class="i-en">Connect a model</span><span class="i-zh">接入模型</span> <span class="zh i-en">接入模型</span><span class="zh i-zh">Connect a model</span></h2>
+<p><span class="i-en"><strong>Path A — the wizard.</strong> Visit <code>/onboard</code>: a 4-step flow (account → connect LLM → pick models → confirm) that writes <code>config.toml</code> atomically.</span><span class="i-zh"><strong>路径 A —— 向导。</strong>访问 <code>/onboard</code>：四步流程（账户 → 接入 LLM → 选模型 → 确认），原子化写入 <code>config.toml</code>。</span></p>
+<p><span class="i-en"><strong>Path B — no key yet?</strong> At step 2, click <em>Skip — use mock provider</em>. It writes <code>[providers.mock] enabled = true</code> and echoes prompts back so you can explore every screen end-to-end.</span><span class="i-zh"><strong>路径 B —— 还没有 API key？</strong>在第 2 步点 <em>Skip — use mock provider</em>。它会写入 <code>[providers.mock] enabled = true</code>，把你的输入原样回显，让你先把每个界面端到端逛一遍。</span></p>
+<p><span class="i-en"><strong>Headless servers.</strong> <code>corlinman init</code> is the CLI equivalent: walks the password change, provider key paste and model alias write, then restarts the gateway.</span><span class="i-zh"><strong>无浏览器的服务器。</strong><code>corlinman init</code> 是 CLI 版向导：依次完成改密码、粘贴供应商 key、写模型别名，最后重启网关。</span></p>
 
-<h2>Verify with doctor <span class="zh">体检</span></h2>
-<pre><code>corlinman doctor          # human output
-corlinman doctor --json   # CI-friendly</code></pre>
-<p>Nine local checks: data-dir writability, config parseability, Python 3.12+, required packages, config loader, provider registry, a P1+P2 boot simulation, <code>must_change_password</code>, and <code>port_bindable</code>. Results are <code>ok</code> or <code>warn</code> — never a hard fail.</p>
+<h2><span class="i-en">Verify with doctor</span><span class="i-zh">用 doctor 体检</span> <span class="zh i-en">体检</span><span class="zh i-zh">Doctor</span></h2>
+<pre><code>corlinman doctor          # human output · 人类可读
+corlinman doctor --json   # CI-friendly · 给 CI 用</code></pre>
+<p><span class="i-en">Nine local checks: data-dir writability, config parseability, Python 3.12+, required packages, config loader, provider registry, a P1+P2 boot simulation, <code>must_change_password</code>, and <code>port_bindable</code>. Results are <code>ok</code> or <code>warn</code> — never a hard fail.</span><span class="i-zh">九项本地检查：数据目录可写、配置可解析、Python 3.12+、依赖包、配置加载器、供应商注册表、P1+P2 启动模拟、<code>must_change_password</code>、<code>port_bindable</code>。结果只有 <code>ok</code> 或 <code>warn</code> —— 永远不会硬性失败。</span></p>
 
-<h2>Profiles <span class="zh">多实例</span></h2>
-<p>Each profile is a self-contained agent: its own persona (<code>SOUL.md</code>), distilled memory (<code>MEMORY.md</code>), learned user facts (<code>USER.md</code>), session history (<code>state.db</code>) and skill library. The protected <code>default</code> profile lives at <code>~/.corlinman/profiles/default/</code>. Use one per workspace — research bot, coding pair, weekend project.</p>
+<h2><span class="i-en">Profiles</span><span class="i-zh">多实例</span> <span class="zh i-en">多实例</span><span class="zh i-zh">Profiles</span></h2>
+<p><span class="i-en">Each profile is a self-contained agent: its own persona (<code>SOUL.md</code>), distilled memory (<code>MEMORY.md</code>), learned user facts (<code>USER.md</code>), session history (<code>state.db</code>) and skill library. The protected <code>default</code> profile lives at <code>~/.corlinman/profiles/default/</code>. Use one per workspace — research bot, coding pair, weekend project.</span><span class="i-zh">每个 profile 都是一个自洽的智能体：自己的人格（<code>SOUL.md</code>）、蒸馏记忆（<code>MEMORY.md</code>）、学到的用户事实（<code>USER.md</code>）、会话历史（<code>state.db</code>）和技能库。受保护的 <code>default</code> profile 在 <code>~/.corlinman/profiles/default/</code>。一个工作空间一个 profile —— 研究助手、结对编程、周末项目，各管各的。</span></p>
 
-<h2>Share live status cards <span class="zh">状态卡</span></h2>
-<p>Set <code>[server] public_url</code> (e.g. <code>https://bot.example.com</code>) and every channel reply can append a link to <code>GET /status/{token}</code> — a public, signed, real-time page streaming the agent's work (tokens, tool calls, timings). Toggle with <code>[channels] status_url_in_replies</code> (default on). If <code>public_url</code> is unset, the origin is learned from the first request through <code>allowed_public_origins</code> + <code>trusted_proxies</code> and persisted to <code>&lt;data_dir&gt;/public_origin</code>.</p>
+<h2><span class="i-en">Share live status cards</span><span class="i-zh">分享实时状态卡</span> <span class="zh i-en">状态卡</span><span class="zh i-zh">Status cards</span></h2>
+<p><span class="i-en">Set <code>[server] public_url</code> (e.g. <code>https://bot.example.com</code>) and every channel reply can append a link to <code>GET /status/{token}</code> — a public, signed, real-time page streaming the agent's work (tokens, tool calls, timings). Toggle with <code>[channels] status_url_in_replies</code> (default on). If <code>public_url</code> is unset, the origin is learned from the first request through <code>allowed_public_origins</code> + <code>trusted_proxies</code> and persisted to <code>&lt;data_dir&gt;/public_origin</code>.</span><span class="i-zh">配置 <code>[server] public_url</code>（如 <code>https://bot.example.com</code>）后，每条渠道回复都能附上一个 <code>GET /status/{token}</code> 链接 —— 一个公开的、带签名的实时页面，直播智能体的工作（token 流、工具调用、耗时）。开关是 <code>[channels] status_url_in_replies</code>（默认开）。如果没设 <code>public_url</code>，会通过 <code>allowed_public_origins</code> + <code>trusted_proxies</code> 从首个请求学习来源，并持久化到 <code>&lt;data_dir&gt;/public_origin</code>。</span></p>
 <p class="src">sources: <a href="https://github.com/sweetcornna/corlinman/blob/main/docs/quickstart.md">docs/quickstart.md</a> · <a href="https://github.com/sweetcornna/corlinman/blob/main/docs/profiles.md">docs/profiles.md</a> · <a href="https://github.com/sweetcornna/corlinman/blob/main/docs/config.example.toml">docs/config.example.toml</a></p>
 </article>
 
 <!-- ============ channels ============ -->
-<article data-route="channels" data-title="Channels">
+<article data-route="channels" data-title="Channels" data-title-zh="渠道">
 <p class="crumb"><b>run</b> / channels</p>
-<h1>One agent, seven rooms.<span class="zh">渠道</span></h1>
-<p class="lede">Every channel feeds the same loop with the same memory, tools and approvals. Configure each under <code>[channels.*]</code> in <code>config.toml</code>, or from <code>/admin/channels</code> — status lights, connection reset, inline keyword editors, recent transcripts.</p>
+<h1><span class="t i-en">One agent, seven rooms.</span><span class="t i-zh">一个智能体，七个房间。</span><span class="zh">渠道</span></h1>
+<p class="lede"><span class="i-en">Every channel feeds the same loop with the same memory, tools and approvals. Configure each under <code>[channels.*]</code> in <code>config.toml</code>, or from <code>/admin/channels</code> — status lights, connection reset, inline keyword editors, recent transcripts.</span><span class="i-zh">每个渠道都接入同一条回路，共享同一份记忆、工具和审批。在 <code>config.toml</code> 的 <code>[channels.*]</code> 下配置，或直接用 <code>/admin/channels</code> —— 状态灯、重连按钮、内联关键词编辑器、近期消息记录。</span></p>
 
 <h2>QQ — NapCat / OneBot v11 <span class="zh">QQ</span></h2>
-<p>Bundled by default (see <a href="#/install">install</a>). A forward-WebSocket bridge with image/audio multimodal, per-group keyword filters, "正在输入…" indicator, heartbeat watcher, and a durable inbox that leaves a breadcrumb if the gateway crashes mid-reply.</p>
+<p><span class="i-en">Bundled by default (see <a href="#/install">install</a>). A forward-WebSocket bridge with image/audio multimodal, per-group keyword filters, "正在输入…" indicator, heartbeat watcher, and a durable inbox that leaves a breadcrumb if the gateway crashes mid-reply.</span><span class="i-zh">默认捆绑（见<a href="#/install">安装</a>）。正向 WebSocket 桥接，支持图片/语音多模态、按群关键词过滤、「正在输入…」指示、心跳监视，以及一个持久化收件箱 —— 网关在回复中途崩溃也会留下断点痕迹。</span></p>
 <table>
-  <tr><th><code>CORLINMAN_NAPCAT_URL</code></th><td>NapCat WebUI + scan-login API — docker <code>http://napcat:6099</code>, native <code>http://127.0.0.1:6099</code></td></tr>
-  <tr><th><code>QQ_WS_URL</code></th><td>OneBot v11 forward-WS — docker <code>ws://napcat:3001</code>, native <code>ws://127.0.0.1:3001</code></td></tr>
-  <tr><th><code>QQ_ADMIN_IDS</code></th><td>comma-separated admin QQ IDs for in-band scan-login (empty = web admin only)</td></tr>
-  <tr><th><code>NAPCAT_WEBUI_TOKEN</code></th><td>shared NapCat WebUI secret</td></tr>
+  <tr><th><code>CORLINMAN_NAPCAT_URL</code></th><td><span class="i-en">NapCat WebUI + scan-login API — docker <code>http://napcat:6099</code>, native <code>http://127.0.0.1:6099</code></span><span class="i-zh">NapCat WebUI 与扫码登录 API —— docker <code>http://napcat:6099</code>，原生 <code>http://127.0.0.1:6099</code></span></td></tr>
+  <tr><th><code>QQ_WS_URL</code></th><td><span class="i-en">OneBot v11 forward-WS — docker <code>ws://napcat:3001</code>, native <code>ws://127.0.0.1:3001</code></span><span class="i-zh">OneBot v11 正向 WS —— docker <code>ws://napcat:3001</code>，原生 <code>ws://127.0.0.1:3001</code></span></td></tr>
+  <tr><th><code>QQ_ADMIN_IDS</code></th><td><span class="i-en">comma-separated admin QQ IDs for in-band scan-login (empty = web admin only)</span><span class="i-zh">逗号分隔的管理员 QQ 号，用于聊天内扫码登录（留空 = 仅网页后台）</span></td></tr>
+  <tr><th><code>NAPCAT_WEBUI_TOKEN</code></th><td><span class="i-en">shared NapCat WebUI secret</span><span class="i-zh">NapCat WebUI 共享密钥</span></td></tr>
 </table>
 <pre><code>[channels.qq]
 enabled  = true
@@ -307,189 +313,190 @@ self_ids = [123456789]
 rate_limit = { group_per_min = 20, sender_per_min = 5 }</code></pre>
 
 <h2>Telegram <span class="zh">电报</span></h2>
-<p>Long-poll bot adapter (webhook optional with <code>TELEGRAM_WEBHOOK_SECRET</code>). Real-time typing indicator plus a <strong>mutable spinner</strong> that edits one placeholder message in place as the turn progresses: 🧠 思考中… → 🔧 调用工具 → 📎 已发送文件 → ✍️ 生成回复中… → final reply. File replies (HTML/PDF/images/voice) via the <code>send_attachment</code> builtin.</p>
+<p><span class="i-en">Long-poll bot adapter (webhook optional with <code>TELEGRAM_WEBHOOK_SECRET</code>). Real-time typing indicator plus a <strong>mutable spinner</strong> that edits one placeholder message in place as the turn progresses: 🧠 思考中… → 🔧 调用工具 → 📎 已发送文件 → ✍️ 生成回复中… → final reply. File replies (HTML/PDF/images/voice) via the <code>send_attachment</code> builtin.</span><span class="i-zh">长轮询 bot 适配器（webhook 可选，配 <code>TELEGRAM_WEBHOOK_SECRET</code>）。实时「正在输入」指示，外加一个<strong>原地编辑的状态条</strong>：同一条占位消息随回合推进被改写 —— 🧠 思考中… → 🔧 调用工具 → 📎 已发送文件 → ✍️ 生成回复中… → 最终回复。文件回复（HTML/PDF/图片/语音）走内置的 <code>send_attachment</code> 工具。</span></p>
 <pre><code>[channels.telegram]
 enabled   = true
 bot_token = { env = "TELEGRAM_BOT_TOKEN" }   # from @BotFather
-allowed_chat_ids = []          # empty = allow all
+allowed_chat_ids = []          # empty = allow all · 留空 = 全部放行
 require_mention_in_groups = false
 rate_limit = { chat_per_min = 20, sender_per_min = 5 }</code></pre>
 
 <h2>Discord · Slack · Feishu <span class="zh">三兄弟</span></h2>
-<p>Configured under <code>[channels.discord]</code> / <code>[channels.slack]</code> / <code>[channels.feishu]</code> with the same routing, rate-limit and chat-service plumbing. All three share the Telegram-style mutable-spinner status core, and since v1.19 outbound text is <strong>capability-aware</strong>: markdown renders natively on Discord/Slack/Feishu instead of being flattened.</p>
+<p><span class="i-en">Configured under <code>[channels.discord]</code> / <code>[channels.slack]</code> / <code>[channels.feishu]</code> with the same routing, rate-limit and chat-service plumbing. All three share the Telegram-style mutable-spinner status core, and since v1.19 outbound text is <strong>capability-aware</strong>: markdown renders natively on Discord/Slack/Feishu instead of being flattened.</span><span class="i-zh">分别在 <code>[channels.discord]</code> / <code>[channels.slack]</code> / <code>[channels.feishu]</code> 下配置，复用同一套路由、限流和聊天服务管线。三者都共享 Telegram 式的原地编辑状态条；并且从 v1.19 起出站文本<strong>按渠道能力感知</strong>：Discord/Slack/飞书原生渲染 markdown，不再被拍平。</span></p>
 
 <h2>WeChat 公众号 &amp; QQ official bot <span class="zh">公众号</span></h2>
-<p>Both shipped in v1.1.0 and are managed from <code>/admin/channels</code>. See the channel pages in the admin console for credential entry and webhook URLs.</p>
+<p><span class="i-en">Both shipped in v1.1.0 and are managed from <code>/admin/channels</code>. See the channel pages in the admin console for credential entry and webhook URLs.</span><span class="i-zh">两者都在 v1.1.0 上线，统一从 <code>/admin/channels</code> 管理。凭据填写和 webhook 地址见后台对应渠道页。</span></p>
 
-<h2>Web chat <span class="zh">网页聊天</span></h2>
-<p><code>/admin/chat</code> is a first-class channel driven by the same loop: token streaming, collapsible reasoning blocks, tool-call cards, nested sub-agent cards, inline approval prompts, artifact side-panel with sandboxed preview, branch/edit/regenerate, token + cost meter, in-conversation search, and session resume from <code>/admin/sessions</code>.</p>
+<h2><span class="i-en">Web chat</span><span class="i-zh">网页聊天</span> <span class="zh i-en">网页聊天</span><span class="zh i-zh">Web chat</span></h2>
+<p><span class="i-en"><code>/admin/chat</code> is a first-class channel driven by the same loop: token streaming, collapsible reasoning blocks, tool-call cards, nested sub-agent cards, inline approval prompts, artifact side-panel with sandboxed preview, branch/edit/regenerate, token + cost meter, in-conversation search, and session resume from <code>/admin/sessions</code>.</span><span class="i-zh"><code>/admin/chat</code> 是由同一条回路驱动的一等渠道：token 流式输出、可折叠的推理块、工具调用卡片、嵌套子智能体卡片、内联审批提示、带沙箱预览的 artifact 侧栏、分支/编辑/重新生成、token 与费用计量、会话内搜索，还能从 <code>/admin/sessions</code> 续接任意会话。</span></p>
 
-<h2>Scheduler — the eighth channel <span class="zh">定时任务</span></h2>
-<p>Cron jobs dispatch agent turns on a schedule; sessions are keyed <code>scheduler:&lt;name&gt;</code> so approval rules can whitelist them.</p>
+<h2><span class="i-en">Scheduler — the eighth channel</span><span class="i-zh">定时任务 —— 第八个渠道</span> <span class="zh i-en">定时任务</span><span class="zh i-zh">Scheduler</span></h2>
+<p><span class="i-en">Cron jobs dispatch agent turns on a schedule; sessions are keyed <code>scheduler:&lt;name&gt;</code> so approval rules can whitelist them.</span><span class="i-zh">Cron 任务按计划触发智能体回合；会话以 <code>scheduler:&lt;名字&gt;</code> 为键，审批规则可以据此放行白名单。</span></p>
 <pre><code>[[scheduler.jobs]]
 name     = "daily-brief"
 cron     = "0 0 8 * * * *"        # sec min hour day month weekday year
 timezone = "Asia/Shanghai"
 action   = { type = "run_agent", prompt = "生成今日简报" }</code></pre>
-<p>Actions: <code>run_agent</code>, <code>run_tool</code>, or <code>subprocess</code>. The admin page shows a live next-trigger countdown, manual trigger button and execution history.</p>
+<p><span class="i-en">Actions: <code>run_agent</code>, <code>run_tool</code>, or <code>subprocess</code>. The admin page shows a live next-trigger countdown, manual trigger button and execution history.</span><span class="i-zh">动作类型：<code>run_agent</code>、<code>run_tool</code>、<code>subprocess</code>。后台页面有下次触发的实时倒计时、手动触发按钮和执行历史。</span></p>
 <p class="src">sources: <a href="https://github.com/sweetcornna/corlinman/blob/main/docs/config.example.toml">docs/config.example.toml</a> · <a href="https://github.com/sweetcornna/corlinman/blob/main/deploy/.env.template">deploy/.env.template</a> · <a href="https://github.com/sweetcornna/corlinman/blob/main/README.md">README.md</a></p>
 </article>
 
 <!-- ============ providers ============ -->
-<article data-route="providers" data-title="Providers & models">
+<article data-route="providers" data-title="Providers & models" data-title-zh="模型与供应商">
 <p class="crumb"><b>run</b> / providers &amp; models</p>
-<h1>Any model you trust.<span class="zh">模型与供应商</span></h1>
-<p class="lede">Providers are free-form named entries in <code>[providers.*]</code>; a <code>kind</code> field picks the wire shape. Aliases give models friendly names; agents and even single requests can pin their own model.</p>
+<h1><span class="t i-en">Any model you trust.</span><span class="t i-zh">用你信任的任何模型。</span><span class="zh">模型与供应商</span></h1>
+<p class="lede"><span class="i-en">Providers are free-form named entries in <code>[providers.*]</code>; a <code>kind</code> field picks the wire shape. Aliases give models friendly names; agents and even single requests can pin their own model.</span><span class="i-zh">供应商是 <code>[providers.*]</code> 下自由命名的条目，<code>kind</code> 字段决定协议形态。别名给模型起好记的名字；每个 agent、甚至单个请求都能钉住自己的模型。</span></p>
 
-<h2>Production providers <span class="zh">可用</span></h2>
+<h2><span class="i-en">Production providers</span><span class="i-zh">可用供应商</span> <span class="zh i-en">可用</span><span class="zh i-zh">Production</span></h2>
 <table>
-  <tr><th>provider</th><th>kind</th><th>chat</th><th>tools</th><th>embeddings</th></tr>
+  <tr><th><span class="i-en">provider</span><span class="i-zh">供应商</span></th><th>kind</th><th>chat</th><th><span class="i-en">tools</span><span class="i-zh">工具</span></th><th><span class="i-en">embeddings</span><span class="i-zh">向量</span></th></tr>
   <tr><td>Anthropic (Claude)</td><td><code>anthropic</code></td><td>✓ streaming</td><td>✓</td><td>—</td></tr>
   <tr><td>OpenAI</td><td><code>openai</code></td><td>✓ streaming</td><td>✓</td><td>✓</td></tr>
   <tr><td>Google (Gemini)</td><td><code>google</code></td><td>✓ streaming</td><td>✓</td><td>✓</td></tr>
   <tr><td>DeepSeek</td><td><code>deepseek</code></td><td>✓ streaming</td><td>✓</td><td>—</td></tr>
   <tr><td>Qwen (阿里)</td><td><code>qwen</code></td><td>✓ streaming</td><td>✓</td><td>—</td></tr>
   <tr><td>GLM (智谱)</td><td><code>glm</code></td><td>✓ streaming</td><td>✓</td><td>—</td></tr>
-  <tr><td>anything OpenAI-shaped</td><td><code>openai_compatible</code></td><td>✓ via <code>base_url</code></td><td>✓</td><td>✓</td></tr>
+  <tr><td><span class="i-en">anything OpenAI-shaped</span><span class="i-zh">任何 OpenAI 形状的端点</span></td><td><code>openai_compatible</code></td><td><span class="i-en">✓ via <code>base_url</code></span><span class="i-zh">✓ 配 <code>base_url</code></span></td><td>✓</td><td>✓</td></tr>
 </table>
-<p>Mistral, Cohere, Together, Groq, Replicate, Bedrock and Azure kinds are declared but raise <code>NotImplementedError</code> today — route them through an <code>openai_compatible</code> proxy instead. Legacy <code>kind = "newapi"</code> entries are silently routed through the <code>openai_compatible</code> adapter.</p>
+<p><span class="i-en">Mistral, Cohere, Together, Groq, Replicate, Bedrock and Azure kinds are declared but raise <code>NotImplementedError</code> today — route them through an <code>openai_compatible</code> proxy instead. Legacy <code>kind = "newapi"</code> entries are silently routed through the <code>openai_compatible</code> adapter.</span><span class="i-zh">Mistral、Cohere、Together、Groq、Replicate、Bedrock、Azure 这些 kind 已声明但目前会抛 <code>NotImplementedError</code> —— 请改走 <code>openai_compatible</code> 代理。旧的 <code>kind = "newapi"</code> 条目会被静默路由到 <code>openai_compatible</code> 适配器。</span></p>
 
-<h2>Configuring a provider <span class="zh">配置</span></h2>
+<h2><span class="i-en">Configuring a provider</span><span class="i-zh">配置一个供应商</span> <span class="zh i-en">配置</span><span class="zh i-zh">Config</span></h2>
 <pre><code>[providers.anthropic]
 kind    = "anthropic"
 api_key = { env = "ANTHROPIC_API_KEY" }   # or { value = "sk-..." } (redacted by `config show`)
 enabled = true
 
 # local vLLM / Ollama / SiliconFlow / any OpenAI-shaped endpoint
+# 本地 vLLM / Ollama / 硅基流动 / 任何 OpenAI 形状的端点
 [providers.local]
 kind     = "openai_compatible"
 api_key  = { env = "LOCAL_API_KEY" }
 base_url = "http://localhost:8000/v1"
 enabled  = true</code></pre>
 
-<h2>Model aliases <span class="zh">别名</span></h2>
+<h2><span class="i-en">Model aliases</span><span class="i-zh">模型别名</span> <span class="zh i-en">别名</span><span class="zh i-zh">Aliases</span></h2>
 <pre><code>[models]
 default = "smart"
 
 [models.aliases]
-smart = "claude-opus-4-7"          # shorthand — provider inferred
+smart = "claude-opus-4-7"          # shorthand — provider inferred · 简写，自动推断供应商
 cheap = "gpt-4o-mini"
 
-[models.aliases.gpt4o-via-router]  # full form — pin provider + params
+[models.aliases.gpt4o-via-router]  # full form — pin provider + params · 完整形式
 model    = "openai/gpt-4o"
 provider = "openrouter"
 params   = { temperature = 0.3 }</code></pre>
 
-<h2>Per-agent binding <span class="zh">按 agent 绑定</span></h2>
-<p>Agent cards (<code>agents/*.md</code>) carry a <code>model</code> frontmatter field that pins that persona to a model or alias; a single request can also override via its <code>model</code> + <code>provider_hint</code>. Manage everything visually at <code>/admin/models</code>.</p>
+<h2><span class="i-en">Per-agent binding</span><span class="i-zh">按 agent 绑定</span> <span class="zh i-en">按 agent 绑定</span><span class="zh i-zh">Per-agent</span></h2>
+<p><span class="i-en">Agent cards (<code>agents/*.md</code>) carry a <code>model</code> frontmatter field that pins that persona to a model or alias; a single request can also override via its <code>model</code> + <code>provider_hint</code>. Manage everything visually at <code>/admin/models</code>.</span><span class="i-zh">Agent 卡片（<code>agents/*.md</code>）的 frontmatter 里有 <code>model</code> 字段，把该人格钉到某个模型或别名上；单个请求也能用 <code>model</code> + <code>provider_hint</code> 覆盖。所有这些都可以在 <code>/admin/models</code> 可视化管理。</span></p>
 
-<h2>Embeddings <span class="zh">向量</span></h2>
+<h2><span class="i-en">Embeddings</span><span class="i-zh">向量嵌入</span> <span class="zh i-en">向量</span><span class="zh i-zh">Embeddings</span></h2>
 <pre><code>[embedding]
-provider  = "openai"               # must match a [providers.*] key
+provider  = "openai"               # must match a [providers.*] key · 必须对应一个供应商条目
 model     = "text-embedding-3-small"
 dimension = 1536
 enabled   = true
 
-# CN-resident alternative:
+# CN-resident alternative · 国内可用替代:
 # provider = "siliconflow"  model = "BAAI/bge-large-zh-v1.5"  dimension = 1024</code></pre>
-<p>Omit the section (or <code>enabled = false</code>) and retrieval falls back to BM25-only. Anthropic has no embedding endpoint — use an OpenAI-kind provider here.</p>
+<p><span class="i-en">Omit the section (or <code>enabled = false</code>) and retrieval falls back to BM25-only. Anthropic has no embedding endpoint — use an OpenAI-kind provider here.</span><span class="i-zh">不写这一节（或 <code>enabled = false</code>）时检索退化为纯 BM25。Anthropic 没有 embedding 端点 —— 这里要用 OpenAI 形状的供应商。</span></p>
 <p class="src">sources: <a href="https://github.com/sweetcornna/corlinman/blob/main/docs/config.example.toml">docs/config.example.toml</a> · <a href="https://github.com/sweetcornna/corlinman/blob/main/docs/providers.md">docs/providers.md</a></p>
 </article>
 
 <!-- ============ memory ============ -->
-<article data-route="memory" data-title="Memory & RAG">
+<article data-route="memory" data-title="Memory & RAG" data-title-zh="记忆与检索">
 <p class="crumb"><b>run</b> / memory &amp; rag</p>
-<h1>Context that survives restarts.<span class="zh">记忆与检索</span></h1>
-<p class="lede">Two memory systems work together: per-session conversation history, and a knowledge store with hybrid retrieval that decays, consolidates, and can be debugged visually.</p>
+<h1><span class="t i-en">Context that survives restarts.</span><span class="t i-zh">重启也不丢的上下文。</span><span class="zh">记忆与检索</span></h1>
+<p class="lede"><span class="i-en">Two memory systems work together: per-session conversation history, and a knowledge store with hybrid retrieval that decays, consolidates, and can be debugged visually.</span><span class="i-zh">两套记忆系统协同工作：按会话的对话历史，和一个带混合检索的知识库 —— 会衰减、会固化，还能可视化调试。</span></p>
 
-<h2>Conversation memory <span class="zh">会话</span></h2>
-<p>Append-only message history in SQLite (<code>sessions.sqlite</code>), keyed by channel binding or a client-supplied <code>session_key</code>, trimmed to a configurable cap. Long sessions can be compacted with <code>/compact</code> (summary-based context compaction).</p>
+<h2><span class="i-en">Conversation memory</span><span class="i-zh">会话记忆</span> <span class="zh i-en">会话</span><span class="zh i-zh">Sessions</span></h2>
+<p><span class="i-en">Append-only message history in SQLite (<code>sessions.sqlite</code>), keyed by channel binding or a client-supplied <code>session_key</code>, trimmed to a configurable cap. Long sessions can be compacted with <code>/compact</code> (summary-based context compaction).</span><span class="i-zh">SQLite（<code>sessions.sqlite</code>）里只追加的消息历史，按渠道绑定或客户端传入的 <code>session_key</code> 索引，按可配置上限裁剪。长会话可以用 <code>/compact</code> 做基于摘要的上下文压缩。</span></p>
 
-<h2>Knowledge memory <span class="zh">知识库</span></h2>
+<h2><span class="i-en">Knowledge memory</span><span class="i-zh">知识记忆</span> <span class="zh i-en">知识库</span><span class="zh i-zh">Knowledge</span></h2>
 <ul>
-  <li><strong>Keyword</strong> — SQLite FTS5 (BM25), available today, debuggable at <code>/admin/rag</code>.</li>
-  <li><strong>Vector</strong> — HNSW index (<code>vector/index.usearch</code>) + chunk store (<code>vector/chunks.sqlite</code>), fused with BM25 via Reciprocal Rank Fusion; cross-encoder rerank (<code>bge-reranker-v2-m3</code>) on the roadmap.</li>
+  <li><span class="i-en"><strong>Keyword</strong> — SQLite FTS5 (BM25), available today, debuggable at <code>/admin/rag</code>.</span><span class="i-zh"><strong>关键词</strong> —— SQLite FTS5（BM25），现在就可用，可在 <code>/admin/rag</code> 调试。</span></li>
+  <li><span class="i-en"><strong>Vector</strong> — HNSW index (<code>vector/index.usearch</code>) + chunk store (<code>vector/chunks.sqlite</code>), fused with BM25 via Reciprocal Rank Fusion; cross-encoder rerank (<code>bge-reranker-v2-m3</code>) on the roadmap.</span><span class="i-zh"><strong>向量</strong> —— HNSW 索引（<code>vector/index.usearch</code>）+ 分块库（<code>vector/chunks.sqlite</code>），与 BM25 做 RRF 融合；cross-encoder 重排（<code>bge-reranker-v2-m3</code>）在路线图上。</span></li>
 </ul>
 <pre><code>[rag]
 top_k       = 8
 bm25_weight = 1.0
 hnsw_weight = 1.0
 rrf_k       = 60
-epa_enabled = true     # Tag-Memo EPA boost</code></pre>
+epa_enabled = true     # Tag-Memo EPA boost · 标签备忘加权</code></pre>
 
-<h2>Decay &amp; consolidation <span class="zh">衰减与固化</span></h2>
-<p>Chunk scores decay on a half-life (<code>[memory.decay]</code>: <code>half_life_hours</code>, <code>floor_score</code>, <code>recall_boost</code> — recalling a chunk resets its clock). A periodic job promotes chunks above <code>promotion_threshold</code> into an immune <code>consolidated</code> namespace (<code>[memory.consolidation]</code>). Old context fades; load-bearing facts harden.</p>
+<h2><span class="i-en">Decay &amp; consolidation</span><span class="i-zh">衰减与固化</span> <span class="zh i-en">衰减与固化</span><span class="zh i-zh">Decay</span></h2>
+<p><span class="i-en">Chunk scores decay on a half-life (<code>[memory.decay]</code>: <code>half_life_hours</code>, <code>floor_score</code>, <code>recall_boost</code> — recalling a chunk resets its clock). A periodic job promotes chunks above <code>promotion_threshold</code> into an immune <code>consolidated</code> namespace (<code>[memory.consolidation]</code>). Old context fades; load-bearing facts harden.</span><span class="i-zh">分块得分按半衰期衰减（<code>[memory.decay]</code>：<code>half_life_hours</code>、<code>floor_score</code>、<code>recall_boost</code> —— 一旦被召回就重置时钟）。周期任务把得分超过 <code>promotion_threshold</code> 的分块晋升到免疫衰减的 <code>consolidated</code> 命名空间（<code>[memory.consolidation]</code>）。旧的上下文淡去，承重的事实硬化。</span></p>
 
 <h2>Tag Memo <span class="zh">标签备忘</span></h2>
-<p>The <code>corlinman_tagmemo</code> package fits an EPA basis over tags and feeds a <code>chunk_epa</code> cache that boosts RRF fusion — tune with <code>epa_base_tag_boost</code> and <code>epa_boost_range</code> under <code>[rag]</code>.</p>
+<p><span class="i-en">The <code>corlinman_tagmemo</code> package fits an EPA basis over tags and feeds a <code>chunk_epa</code> cache that boosts RRF fusion — tune with <code>epa_base_tag_boost</code> and <code>epa_boost_range</code> under <code>[rag]</code>.</span><span class="i-zh"><code>corlinman_tagmemo</code> 包在标签上拟合 EPA 基底，生成 <code>chunk_epa</code> 缓存来增强 RRF 融合 —— 用 <code>[rag]</code> 下的 <code>epa_base_tag_boost</code> 和 <code>epa_boost_range</code> 调节。</span></p>
 
-<h2>Debugging retrieval <span class="zh">调试</span></h2>
-<p><code>/admin/rag</code> shows stats cards (chunks indexed, storage size, last update), a debug-query box with per-chunk score bars, tag filters, per-chunk metadata (source path, timestamp), and a confirm-gated FTS5 rebuild trigger.</p>
+<h2><span class="i-en">Debugging retrieval</span><span class="i-zh">调试检索</span> <span class="zh i-en">调试</span><span class="zh i-zh">Debug</span></h2>
+<p><span class="i-en"><code>/admin/rag</code> shows stats cards (chunks indexed, storage size, last update), a debug-query box with per-chunk score bars, tag filters, per-chunk metadata (source path, timestamp), and a confirm-gated FTS5 rebuild trigger.</span><span class="i-zh"><code>/admin/rag</code> 提供统计卡（已索引分块数、存储大小、最近更新）、带逐块评分条的调试查询框、标签过滤、逐块元数据（来源路径、时间戳），以及需二次确认的 FTS5 重建按钮。</span></p>
 <p class="src">sources: <a href="https://github.com/sweetcornna/corlinman/blob/main/docs/architecture.md">docs/architecture.md</a> · <a href="https://github.com/sweetcornna/corlinman/blob/main/docs/config.example.toml">docs/config.example.toml</a></p>
 </article>
 
 <!-- ============ tools ============ -->
-<article data-route="tools" data-title="Tools & skills">
+<article data-route="tools" data-title="Tools & skills" data-title-zh="工具与技能">
 <p class="crumb"><b>run</b> / tools &amp; skills</p>
-<h1>Hands, not just words.<span class="zh">工具与技能</span></h1>
-<p class="lede">Plugins give the agent executable tools in any language; skills teach it procedures in Markdown; the marketplace hot-plugs both. Subagents fan work out under hard caps.</p>
+<h1><span class="t i-en">Hands, not just words.</span><span class="t i-zh">不只会说，还会动手。</span><span class="zh">工具与技能</span></h1>
+<p class="lede"><span class="i-en">Plugins give the agent executable tools in any language; skills teach it procedures in Markdown; the marketplace hot-plugs both. Subagents fan work out under hard caps.</span><span class="i-zh">插件给智能体提供任意语言写的可执行工具；技能用 Markdown 教它流程方法；市场让两者都能热插拔。子智能体在硬性上限内并行分摊工作。</span></p>
 
-<h2>Plugin runtime <span class="zh">插件</span></h2>
+<h2><span class="i-en">Plugin runtime</span><span class="i-zh">插件运行时</span> <span class="zh i-en">插件</span><span class="zh i-zh">Plugins</span></h2>
 <table>
-  <tr><th>type</th><th>transport</th><th>lifetime</th><th>use for</th></tr>
-  <tr><td><code>sync</code></td><td>JSON-RPC stdio</td><td>spawned per call</td><td>calculator, HTTP fetch, shell one-shots</td></tr>
-  <tr><td><code>async</code></td><td>stdio + <code>/plugin-callback</code> webhook</td><td>task_id → webhook back</td><td>long jobs: image gen, LLM sub-calls</td></tr>
-  <tr><td><code>service</code></td><td>gRPC over UDS</td><td>long-lived supervised child</td><td>stateful: DB pools, Git</td></tr>
+  <tr><th><span class="i-en">type</span><span class="i-zh">类型</span></th><th><span class="i-en">transport</span><span class="i-zh">传输</span></th><th><span class="i-en">lifetime</span><span class="i-zh">生命周期</span></th><th><span class="i-en">use for</span><span class="i-zh">适用</span></th></tr>
+  <tr><td><code>sync</code></td><td>JSON-RPC stdio</td><td><span class="i-en">spawned per call</span><span class="i-zh">每次调用拉起</span></td><td><span class="i-en">calculator, HTTP fetch, shell one-shots</span><span class="i-zh">计算器、HTTP 请求、一次性 shell</span></td></tr>
+  <tr><td><code>async</code></td><td><span class="i-en">stdio + <code>/plugin-callback</code> webhook</span><span class="i-zh">stdio + <code>/plugin-callback</code> 回调</span></td><td><span class="i-en">task_id → webhook back</span><span class="i-zh">返回 task_id → webhook 回报</span></td><td><span class="i-en">long jobs: image gen, LLM sub-calls</span><span class="i-zh">长任务：生图、LLM 子调用</span></td></tr>
+  <tr><td><code>service</code></td><td>gRPC over UDS</td><td><span class="i-en">long-lived supervised child</span><span class="i-zh">长驻受监管子进程</span></td><td><span class="i-en">stateful: DB pools, Git</span><span class="i-zh">有状态：数据库连接池、Git</span></td></tr>
 </table>
-<p>Any language that can speak the stdio/gRPC JSON contract — Python, Node, Go, Rust, bash. Test-invoke any tool from <code>/admin/plugins</code> with a schema-driven form.</p>
+<p><span class="i-en">Any language that can speak the stdio/gRPC JSON contract — Python, Node, Go, Rust, bash. Test-invoke any tool from <code>/admin/plugins</code> with a schema-driven form.</span><span class="i-zh">任何能说 stdio/gRPC JSON 契约的语言都行 —— Python、Node、Go、Rust、bash。在 <code>/admin/plugins</code> 用按 schema 生成的表单试调任何工具。</span></p>
 
-<h2>The sandbox <span class="zh">沙箱</span></h2>
-<p>Optional Docker sandboxing wraps plugin processes with memory/CPU limits, a read-only root filesystem, network isolation and capability drops:</p>
+<h2><span class="i-en">The sandbox</span><span class="i-zh">沙箱</span> <span class="zh i-en">沙箱</span><span class="zh i-zh">Sandbox</span></h2>
+<p><span class="i-en">Optional Docker sandboxing wraps plugin processes with memory/CPU limits, a read-only root filesystem, network isolation and capability drops:</span><span class="i-zh">可选的 Docker 沙箱把插件进程包起来：内存/CPU 限额、只读根文件系统、网络隔离、能力裁剪：</span></p>
 <pre><code>docker compose -f docker/compose/docker-compose.yml \
   -f docker/compose/docker-compose.sandbox.yml up -d
-# or at install time:
+# or at install time · 或在安装时:
 install.sh --enable-docker-sandbox      # CORLINMAN_ENABLE_DOCKER_SANDBOX=1</code></pre>
-<p>Untrusted plugins can additionally demand human approval before every call — see <a href="#/approvals">approvals</a>.</p>
+<p><span class="i-en">Untrusted plugins can additionally demand human approval before every call — see <a href="#/approvals">approvals</a>.</span><span class="i-zh">不受信任的插件还可以要求每次调用前都人工审批 —— 见<a href="#/approvals">审批</a>。</span></p>
 
-<h2>Skills <span class="zh">技能</span></h2>
-<p>Procedural knowledge as <code>SKILL.md</code> bundles (frontmatter + Markdown), stored per-profile under <code>profiles/{name}/skills/</code> and indexed at startup (<code>[skills] autoload = true</code>). ~17 skills ship bundled. <code>/admin/skills</code> has an Installed tab (bundled rows read-only) and a Browse Hub tab that proxies ClawHub for one-click community installs with SSE progress.</p>
+<h2><span class="i-en">Skills</span><span class="i-zh">技能</span> <span class="zh i-en">技能</span><span class="zh i-zh">Skills</span></h2>
+<p><span class="i-en">Procedural knowledge as <code>SKILL.md</code> bundles (frontmatter + Markdown), stored per-profile under <code>profiles/{name}/skills/</code> and indexed at startup (<code>[skills] autoload = true</code>). ~17 skills ship bundled. <code>/admin/skills</code> has an Installed tab (bundled rows read-only) and a Browse Hub tab that proxies ClawHub for one-click community installs with SSE progress.</span><span class="i-zh">以 <code>SKILL.md</code> 包（frontmatter + Markdown）承载的流程性知识，按 profile 存放在 <code>profiles/{名字}/skills/</code>，启动时建立索引（<code>[skills] autoload = true</code>）。出厂自带约 17 个技能。<code>/admin/skills</code> 有「已安装」标签页（自带技能只读）和「逛 Hub」标签页 —— 代理 ClawHub，一键安装社区技能，SSE 实时进度。</span></p>
 
-<h2>Marketplace <span class="zh">市场</span></h2>
-<p>Three installable kinds — skills, MCP servers, plugins — from a GitHub-backed registry:</p>
+<h2><span class="i-en">Marketplace</span><span class="i-zh">扩展市场</span> <span class="zh i-en">市场</span><span class="zh i-zh">Marketplace</span></h2>
+<p><span class="i-en">Three installable kinds — skills, MCP servers, plugins — from a GitHub-backed registry:</span><span class="i-zh">三种可安装的扩展 —— 技能、MCP 服务器、插件 —— 来自一个 GitHub 托管的注册表：</span></p>
 <pre><code>[marketplace]
 registry_repo  = "sweetcornna/corlinman-marketplace"
 registry_ref   = "main"
 default_source = "github"          # or "clawhub"
 
-[marketplace.github_proxy]         # China acceleration
+[marketplace.github_proxy]         # China acceleration · 国内加速
 mode   = "auto"                    # off / auto / on
 preset = "ghproxy"                 # ghproxy / jsdelivr / mirror / custom</code></pre>
-<p>Skills auto-activate within the 30-second registry refresh; MCP servers and plugins install <em>staged</em> and stay inert until you explicitly enable them.</p>
+<p><span class="i-en">Skills auto-activate within the 30-second registry refresh; MCP servers and plugins install <em>staged</em> and stay inert until you explicitly enable them.</span><span class="i-zh">技能在 30 秒一轮的注册表刷新内自动激活；MCP 服务器和插件则是<em>暂存式</em>安装 —— 装好后保持惰性，直到你显式启用。</span></p>
 
-<h2>Subagents <span class="zh">子智能体</span></h2>
-<p>The agent can fan out work with <code>subagent.spawn</code> / <code>spawn_many</code> / <code>spawn_inline</code>, governed by supervisor caps:</p>
+<h2><span class="i-en">Subagents</span><span class="i-zh">子智能体</span> <span class="zh i-en">子智能体</span><span class="zh i-zh">Subagents</span></h2>
+<p><span class="i-en">The agent can fan out work with <code>subagent.spawn</code> / <code>spawn_many</code> / <code>spawn_inline</code>, governed by supervisor caps:</span><span class="i-zh">智能体可以用 <code>subagent.spawn</code> / <code>spawn_many</code> / <code>spawn_inline</code> 把工作扇出，由监管上限约束：</span></p>
 <pre><code>[subagent]
 max_concurrent_per_parent = 10
 max_concurrent_per_tenant = 15
 max_depth                 = 1
 max_wall_seconds_ceiling  = 300</code></pre>
-<p>Watch live dispatches at <code>/admin/subagents</code>. Agent cards (<code>agents/*.md</code>) define reusable personas with their own model bindings.</p>
+<p><span class="i-en">Watch live dispatches at <code>/admin/subagents</code>. Agent cards (<code>agents/*.md</code>) define reusable personas with their own model bindings.</span><span class="i-zh">在 <code>/admin/subagents</code> 看实时调度。Agent 卡片（<code>agents/*.md</code>）定义可复用的人格，各自绑定模型。</span></p>
 
-<h2>Document generation <span class="zh">文档生成</span></h2>
-<p><code>corlinman-md2pdf</code> converts Markdown to clean, CJK-correct PDFs — used by the agent to send real files back through channels (e.g. Telegram's <code>send_attachment</code>).</p>
+<h2><span class="i-en">Document generation</span><span class="i-zh">文档生成</span> <span class="zh i-en">文档生成</span><span class="zh i-zh">Doc-gen</span></h2>
+<p><span class="i-en"><code>corlinman-md2pdf</code> converts Markdown to clean, CJK-correct PDFs — used by the agent to send real files back through channels (e.g. Telegram's <code>send_attachment</code>).</span><span class="i-zh"><code>corlinman-md2pdf</code> 把 Markdown 转成干净、中文排版正确的 PDF —— 智能体用它通过渠道发回真正的文件（比如 Telegram 的 <code>send_attachment</code>）。</span></p>
 <p class="src">sources: <a href="https://github.com/sweetcornna/corlinman/blob/main/docs/plugin-authoring.md">docs/plugin-authoring.md</a> · <a href="https://github.com/sweetcornna/corlinman/blob/main/docs/marketplace.md">docs/marketplace.md</a> · <a href="https://github.com/sweetcornna/corlinman/blob/main/docs/config.example.toml">docs/config.example.toml</a></p>
 </article>
 
 <!-- ============ approvals ============ -->
-<article data-route="approvals" data-title="Approvals">
+<article data-route="approvals" data-title="Approvals" data-title-zh="审批">
 <p class="crumb"><b>run</b> / approvals</p>
-<h1>Govern, don't hope.<span class="zh">人在回路</span></h1>
-<p class="lede">Every tool call the model emits is matched against approval rules <em>before</em> the plugin runtime ever sees it. Irreversible actions wait for a human.</p>
+<h1><span class="t i-en">Govern, don't hope.</span><span class="t i-zh">治理，而不是祈祷。</span><span class="zh">人在回路</span></h1>
+<p class="lede"><span class="i-en">Every tool call the model emits is matched against approval rules <em>before</em> the plugin runtime ever sees it. Irreversible actions wait for a human.</span><span class="i-zh">模型发出的每一个工具调用，都会<em>先</em>过一遍审批规则，再交给插件运行时。不可逆的操作要等人点头。</span></p>
 
-<h2>Rules <span class="zh">规则</span></h2>
+<h2><span class="i-en">Rules</span><span class="i-zh">规则</span> <span class="zh i-en">规则</span><span class="zh i-zh">Rules</span></h2>
 <pre><code>[[approvals.rules]]
 plugin = "file-ops"
-tool   = "file-ops.write"     # omit to cover every tool on the plugin
+tool   = "file-ops.write"     # omit to cover every tool · 省略则覆盖该插件全部工具
 mode   = "prompt"             # auto / prompt / deny
 
 [[approvals.rules]]
@@ -497,118 +504,118 @@ plugin = "shell"
 mode   = "prompt"
 allow_session_keys = ["scheduler:daily-brief", "scheduler:git-sync"]</code></pre>
 <table>
-  <tr><th>mode</th><th>behavior</th></tr>
-  <tr><td><code>auto</code></td><td>pass through immediately (an explicit allow)</td></tr>
-  <tr><td><code>prompt</code></td><td>row lands in <code>pending_approvals</code> (SQLite); the call blocks until you Approve/Deny in <code>/admin/approvals</code>, or the 5-minute TTL elapses and the model receives <code>approval_timeout</code></td></tr>
-  <tr><td><code>deny</code></td><td>structured rejection returned to the model; no plugin process ever spawns</td></tr>
+  <tr><th>mode</th><th><span class="i-en">behavior</span><span class="i-zh">行为</span></th></tr>
+  <tr><td><code>auto</code></td><td><span class="i-en">pass through immediately (an explicit allow)</span><span class="i-zh">立即放行（显式允许）</span></td></tr>
+  <tr><td><code>prompt</code></td><td><span class="i-en">row lands in <code>pending_approvals</code> (SQLite); the call blocks until you Approve/Deny in <code>/admin/approvals</code>, or the 5-minute TTL elapses and the model receives <code>approval_timeout</code></span><span class="i-zh">写入 <code>pending_approvals</code>（SQLite）；调用阻塞，直到你在 <code>/admin/approvals</code> 批准/拒绝，或 5 分钟 TTL 到期、模型收到 <code>approval_timeout</code></span></td></tr>
+  <tr><td><code>deny</code></td><td><span class="i-en">structured rejection returned to the model; no plugin process ever spawns</span><span class="i-zh">结构化拒绝直接返回给模型；插件进程根本不会被拉起</span></td></tr>
 </table>
 
-<h2>Matching <span class="zh">匹配</span></h2>
-<p>Most-specific-first: a <code>plugin + tool</code> rule beats a plugin-wide rule; with no matching rule the call passes (default-auto). <code>allow_session_keys</code> lets trusted sessions — like whitelisted scheduler jobs — bypass a <code>prompt</code> rule.</p>
+<h2><span class="i-en">Matching</span><span class="i-zh">匹配</span> <span class="zh i-en">匹配</span><span class="zh i-zh">Matching</span></h2>
+<p><span class="i-en">Most-specific-first: a <code>plugin + tool</code> rule beats a plugin-wide rule; with no matching rule the call passes (default-auto). <code>allow_session_keys</code> lets trusted sessions — like whitelisted scheduler jobs — bypass a <code>prompt</code> rule.</span><span class="i-zh">最具体者优先：<code>plugin + tool</code> 规则压过整个插件的规则；没有命中任何规则时放行（默认 auto）。<code>allow_session_keys</code> 让受信会话 —— 比如白名单里的定时任务 —— 绕过 <code>prompt</code> 规则。</span></p>
 
-<h2>Where you approve <span class="zh">在哪批</span></h2>
-<p><code>/admin/approvals</code> streams pending calls live (SSE) with a history tab. In the web chat, approval prompts also appear inline in the conversation — Approve once, Always for this session, or Deny without leaving the thread.</p>
-<div class="note"><b>Design intent:</b> the gate sits between the model and the runtime, so it covers every channel and every tool — including ones installed later from the marketplace.</div>
+<h2><span class="i-en">Where you approve</span><span class="i-zh">在哪里批</span> <span class="zh i-en">在哪批</span><span class="zh i-zh">Where</span></h2>
+<p><span class="i-en"><code>/admin/approvals</code> streams pending calls live (SSE) with a history tab. In the web chat, approval prompts also appear inline in the conversation — Approve once, Always for this session, or Deny without leaving the thread.</span><span class="i-zh"><code>/admin/approvals</code> 实时（SSE）展示待审调用，附历史标签页。在网页聊天里，审批提示还会内联出现在对话中 —— 批一次、本会话始终允许、或拒绝，都不用离开当前对话。</span></p>
+<div class="note"><span class="i-en"><b>Design intent:</b> the gate sits between the model and the runtime, so it covers every channel and every tool — including ones installed later from the marketplace.</span><span class="i-zh"><b>设计意图：</b>审批门位于模型与运行时之间，所以它覆盖每个渠道、每个工具 —— 包括以后从市场装的。</span></div>
 <p class="src">sources: <a href="https://github.com/sweetcornna/corlinman/blob/main/docs/config.example.toml">docs/config.example.toml</a> · <a href="https://github.com/sweetcornna/corlinman/blob/main/README.md">README.md</a></p>
 </article>
 
 <!-- ============ console ============ -->
-<article data-route="console" data-title="Console & CLI">
+<article data-route="console" data-title="Console & CLI" data-title-zh="命令行">
 <p class="crumb"><b>operate</b> / console &amp; cli</p>
-<h1>The terminal is a channel too.<span class="zh">命令行</span></h1>
-<p class="lede">A full interactive console with the entire brain — memory, tools, subagents, persona — or a thin client attached to a running gateway.</p>
+<h1><span class="t i-en">The terminal is a channel too.</span><span class="t i-zh">终端也是一个渠道。</span><span class="zh">命令行</span></h1>
+<p class="lede"><span class="i-en">A full interactive console with the entire brain — memory, tools, subagents, persona — or a thin client attached to a running gateway.</span><span class="i-zh">一个带完整大脑的交互式控制台 —— 记忆、工具、子智能体、人格全都在 —— 也可以作为瘦客户端挂到正在运行的网关上。</span></p>
 
-<h2>corlinman console <span class="zh">交互</span></h2>
+<h2>corlinman console <span class="zh i-en">交互</span><span class="zh i-zh">REPL</span></h2>
 <pre><code>corlinman console [PROMPT] [--attach URL] [--model M] [--agent CARD]
                   [--session KEY] [--data-dir DIR] [-p/--print]</code></pre>
 <ul>
-  <li><strong>Embedded mode</strong> (default) — boots the full agent servicer on a private per-process socket: builtin tools, subagent spawning, memory, persona all apply.</li>
-  <li><strong>Attach mode</strong> (<code>--attach http://host:6005</code>) — OpenAI-compatible SSE client to a running gateway; session state rides the <code>X-Session-Key</code> header.</li>
+  <li><span class="i-en"><strong>Embedded mode</strong> (default) — boots the full agent servicer on a private per-process socket: builtin tools, subagent spawning, memory, persona all apply.</span><span class="i-zh"><strong>内嵌模式</strong>（默认）—— 在进程私有 socket 上启动完整的 agent 服务：内置工具、子智能体、记忆、人格全部生效。</span></li>
+  <li><span class="i-en"><strong>Attach mode</strong> (<code>--attach http://host:6005</code>) — OpenAI-compatible SSE client to a running gateway; session state rides the <code>X-Session-Key</code> header.</span><span class="i-zh"><strong>挂载模式</strong>（<code>--attach http://host:6005</code>）—— 以 OpenAI 兼容 SSE 客户端连到运行中的网关；会话状态走 <code>X-Session-Key</code> 头。</span></li>
 </ul>
-<p>The REPL keeps a fixed bottom input, queues what you type while a turn is running, and <strong>Ctrl+C interrupts the turn</strong> instead of killing the process. Tool progress renders at <code>off | new | all | verbose</code>.</p>
+<p><span class="i-en">The REPL keeps a fixed bottom input, queues what you type while a turn is running, and <strong>Ctrl+C interrupts the turn</strong> instead of killing the process. Tool progress renders at <code>off | new | all | verbose</code>.</span><span class="i-zh">REPL 底部输入框固定，回合进行中输入的内容会排队，<strong>Ctrl+C 中断当前回合</strong>而不是杀掉进程。工具进度有 <code>off | new | all | verbose</code> 四档。</span></p>
 
-<h2>Slash commands <span class="zh">斜杠命令</span></h2>
+<h2><span class="i-en">Slash commands</span><span class="i-zh">斜杠命令</span> <span class="zh i-en">斜杠命令</span><span class="zh i-zh">Slash</span></h2>
 <pre><code>/help /new /reset /model /sessions /title /usage
 /status /resume /compact /verbose /clear /persona</code></pre>
-<p><code>/model</code> opens a two-stage picker; <code>/compact</code> does summary-based context compaction; <code>/resume</code> continues a past session. The same command set works in the web chat composer.</p>
+<p><span class="i-en"><code>/model</code> opens a two-stage picker; <code>/compact</code> does summary-based context compaction; <code>/resume</code> continues a past session. The same command set works in the web chat composer.</span><span class="i-zh"><code>/model</code> 打开两段式选择器；<code>/compact</code> 做基于摘要的上下文压缩；<code>/resume</code> 续接历史会话。同一套命令在网页聊天的输入框里同样可用。</span></p>
 
-<h2>One-shot &amp; pipes <span class="zh">管道</span></h2>
+<h2><span class="i-en">One-shot &amp; pipes</span><span class="i-zh">一次性与管道</span> <span class="zh i-en">管道</span><span class="zh i-zh">Pipes</span></h2>
 <pre><code>corlinman console -p "summarize deploy logs from this week"
-# prompt in → final text on stdout; pipe-friendly</code></pre>
-<p>Smart routing can send trivially simple turns to a cheaper model: <code>[console] small_fast_model</code> plus opt-in <code>[console.auto_route]</code>.</p>
+# prompt in → final text on stdout; pipe-friendly · 输入进，结果出，可接管道</code></pre>
+<p><span class="i-en">Smart routing can send trivially simple turns to a cheaper model: <code>[console] small_fast_model</code> plus opt-in <code>[console.auto_route]</code>.</span><span class="i-zh">智能路由可以把特别简单的回合送给更便宜的模型：<code>[console] small_fast_model</code> 加上自愿开启的 <code>[console.auto_route]</code>。</span></p>
 
-<h2>Setup &amp; health from the terminal <span class="zh">无界面</span></h2>
-<pre><code>corlinman init       # headless onboarding: password, keys, model alias
-corlinman doctor     # nine local checks, --json for CI</code></pre>
+<h2><span class="i-en">Setup &amp; health from the terminal</span><span class="i-zh">终端里完成配置与体检</span> <span class="zh i-en">无界面</span><span class="zh i-zh">Headless</span></h2>
+<pre><code>corlinman init       # headless onboarding · 无界面初始化：密码、key、模型别名
+corlinman doctor     # nine local checks · 九项本地检查，--json 给 CI</code></pre>
 <p class="src">sources: <a href="https://github.com/sweetcornna/corlinman/blob/main/docs/PLAN_CLI_CONSOLE.md">docs/PLAN_CLI_CONSOLE.md</a> · <a href="https://github.com/sweetcornna/corlinman/blob/main/README.md">README.md</a></p>
 </article>
 
 <!-- ============ admin ============ -->
-<article data-route="admin" data-title="Admin UI">
+<article data-route="admin" data-title="Admin UI" data-title-zh="后台">
 <p class="crumb"><b>operate</b> / admin ui</p>
-<h1>The operations plane.<span class="zh">后台</span></h1>
-<p class="lede">A Spatial Glass console — Apple-style liquid-glass optics, day &amp; night themes, a ⌘K command palette, and SSE-driven pages that update as the agent thinks.</p>
+<h1><span class="t i-en">The operations plane.</span><span class="t i-zh">运维平面。</span><span class="zh">后台</span></h1>
+<p class="lede"><span class="i-en">A Spatial Glass console — Apple-style liquid-glass optics, day &amp; night themes, a ⌘K command palette, and SSE-driven pages that update as the agent thinks.</span><span class="i-zh">一个 Spatial Glass 管理台 —— 苹果式液态玻璃光学、日夜双主题、⌘K 命令面板，所有页面由 SSE 驱动，智能体一边思考页面一边更新。</span></p>
 
-<h2>Core pages <span class="zh">十大核心页</span></h2>
+<h2><span class="i-en">Core pages</span><span class="i-zh">十大核心页</span> <span class="zh i-en">十大核心页</span><span class="zh i-zh">Core pages</span></h2>
 <table>
-  <tr><td><code>/admin</code></td><td><strong>Dashboard</strong> — stat cards, live activity feed, 7-check system health</td></tr>
-  <tr><td><code>/admin/chat</code></td><td><strong>Chat</strong> — full conversation client: streaming, reasoning blocks, tool cards, artifacts, cost meter</td></tr>
-  <tr><td><code>/admin/plugins</code></td><td><strong>Plugins</strong> — status dots, schema-driven test-invoke forms</td></tr>
-  <tr><td><code>/admin/agents</code></td><td><strong>Agents</strong> — Monaco editor for agent cards with frontmatter validation</td></tr>
-  <tr><td><code>/admin/skills</code></td><td><strong>Skills</strong> — installed + hub browse/install</td></tr>
-  <tr><td><code>/admin/rag</code></td><td><strong>RAG</strong> — stats, debug queries with score bars, rebuild</td></tr>
-  <tr><td><code>/admin/channels</code></td><td><strong>Channels</strong> — per-adapter status lights, reset, keyword editor, transcripts</td></tr>
-  <tr><td><code>/admin/scheduler</code></td><td><strong>Scheduler</strong> — job table, next-trigger countdown, history</td></tr>
-  <tr><td><code>/admin/approvals</code></td><td><strong>Approvals</strong> — live pending queue + history</td></tr>
-  <tr><td><code>/admin/models</code></td><td><strong>Models</strong> — provider cards, inline alias CRUD</td></tr>
+  <tr><td><code>/admin</code></td><td><span class="i-en"><strong>Dashboard</strong> — stat cards, live activity feed, 7-check system health</span><span class="i-zh"><strong>仪表盘</strong> —— 统计卡、实时活动流、七项系统健康检查</span></td></tr>
+  <tr><td><code>/admin/chat</code></td><td><span class="i-en"><strong>Chat</strong> — full conversation client: streaming, reasoning blocks, tool cards, artifacts, cost meter</span><span class="i-zh"><strong>聊天</strong> —— 完整对话客户端：流式输出、推理块、工具卡片、artifact、费用计量</span></td></tr>
+  <tr><td><code>/admin/plugins</code></td><td><span class="i-en"><strong>Plugins</strong> — status dots, schema-driven test-invoke forms</span><span class="i-zh"><strong>插件</strong> —— 状态指示、按 schema 生成的试调表单</span></td></tr>
+  <tr><td><code>/admin/agents</code></td><td><span class="i-en"><strong>Agents</strong> — Monaco editor for agent cards with frontmatter validation</span><span class="i-zh"><strong>智能体</strong> —— Monaco 编辑器编辑 agent 卡片，校验 frontmatter</span></td></tr>
+  <tr><td><code>/admin/skills</code></td><td><span class="i-en"><strong>Skills</strong> — installed + hub browse/install</span><span class="i-zh"><strong>技能</strong> —— 已安装 + Hub 浏览/安装</span></td></tr>
+  <tr><td><code>/admin/rag</code></td><td><span class="i-en"><strong>RAG</strong> — stats, debug queries with score bars, rebuild</span><span class="i-zh"><strong>RAG</strong> —— 统计、带评分条的调试查询、重建索引</span></td></tr>
+  <tr><td><code>/admin/channels</code></td><td><span class="i-en"><strong>Channels</strong> — per-adapter status lights, reset, keyword editor, transcripts</span><span class="i-zh"><strong>渠道</strong> —— 各适配器状态灯、重连、关键词编辑、消息记录</span></td></tr>
+  <tr><td><code>/admin/scheduler</code></td><td><span class="i-en"><strong>Scheduler</strong> — job table, next-trigger countdown, history</span><span class="i-zh"><strong>定时任务</strong> —— 任务表、下次触发倒计时、执行历史</span></td></tr>
+  <tr><td><code>/admin/approvals</code></td><td><span class="i-en"><strong>Approvals</strong> — live pending queue + history</span><span class="i-zh"><strong>审批</strong> —— 实时待审队列 + 历史</span></td></tr>
+  <tr><td><code>/admin/models</code></td><td><span class="i-en"><strong>Models</strong> — provider cards, inline alias CRUD</span><span class="i-zh"><strong>模型</strong> —— 供应商卡片、内联别名增删改</span></td></tr>
 </table>
-<p>A Developer-Settings toggle reveals the extended set: Credentials, Config (Monaco TOML editor with schema hints), Logs (virtualized SSE stream with level/subsystem filters), System (version check + one-click upgrade with progress bar), Sessions (turn-timeline replay), Profiles, Persona, Subagents, Marketplace, Evolution, Hooks and more.</p>
+<p><span class="i-en">A Developer-Settings toggle reveals the extended set: Credentials, Config (Monaco TOML editor with schema hints), Logs (virtualized SSE stream with level/subsystem filters), System (version check + one-click upgrade with progress bar), Sessions (turn-timeline replay), Profiles, Persona, Subagents, Marketplace, Evolution, Hooks and more.</span><span class="i-zh">打开开发者设置后还有扩展页面：凭据、配置（Monaco TOML 编辑器，带 schema 提示）、日志（虚拟化 SSE 流，按级别/子系统过滤）、系统（版本检查 + 带进度条的一键升级）、会话（回合时间线回放）、Profiles、人格、子智能体、市场、演化、Hooks 等等。</span></p>
 
 <h2>Theme Studio <span class="zh">主题工作室</span></h2>
-<p>Since v1.19.0 you can recolour the whole console — accent hue, glass opacity, design tokens — and changes apply instantly across every page. Day and night themes both pass WCAG AA contrast; the UI ships bilingual (zh-CN / en).</p>
+<p><span class="i-en">Since v1.19.0 you can recolour the whole console — accent hue, glass opacity, design tokens — and changes apply instantly across every page. Day and night themes both pass WCAG AA contrast; the UI ships bilingual (zh-CN / en).</span><span class="i-zh">从 v1.19.0 起可以整体重新调色 —— 强调色相、玻璃不透明度、设计 token —— 改动即时应用到每个页面。日夜主题都通过 WCAG AA 对比度；UI 本身就是双语的（zh-CN / en）。</span></p>
 
-<h2>Config hot-reload <span class="zh">热加载</span></h2>
-<p><code>config.toml</code> is watched; edits apply atomically via <code>POST /admin/config</code> after validation. Providers, models, approvals, scheduler, RAG, marketplace, logging and memory settings apply live; <code>bind</code>, <code>port</code> and channel enablement return <code>requires_restart: true</code>.</p>
+<h2><span class="i-en">Config hot-reload</span><span class="i-zh">配置热加载</span> <span class="zh i-en">热加载</span><span class="zh i-zh">Hot-reload</span></h2>
+<p><span class="i-en"><code>config.toml</code> is watched; edits apply atomically via <code>POST /admin/config</code> after validation. Providers, models, approvals, scheduler, RAG, marketplace, logging and memory settings apply live; <code>bind</code>, <code>port</code> and channel enablement return <code>requires_restart: true</code>.</span><span class="i-zh"><code>config.toml</code> 处于监视之下；编辑经校验后通过 <code>POST /admin/config</code> 原子化生效。供应商、模型、审批、定时任务、RAG、市场、日志、记忆这些都即时生效；<code>bind</code>、<code>port</code> 和渠道启停会返回 <code>requires_restart: true</code>。</span></p>
 <p class="src">sources: <a href="https://github.com/sweetcornna/corlinman/blob/main/README.md">README.md</a> · <a href="https://github.com/sweetcornna/corlinman/blob/main/docs/architecture.md">docs/architecture.md</a></p>
 </article>
 
 <!-- ============ faq ============ -->
-<article data-route="faq" data-title="FAQ">
+<article data-route="faq" data-title="FAQ" data-title-zh="疑难排解">
 <p class="crumb"><b>operate</b> / faq</p>
-<h1>When something looks wrong.<span class="zh">疑难排解</span></h1>
-<p class="lede">The short list of real-world fixes, straight from the runbook.</p>
+<h1><span class="t i-en">When something looks wrong.</span><span class="t i-zh">不对劲的时候看这里。</span><span class="zh">疑难排解</span></h1>
+<p class="lede"><span class="i-en">The short list of real-world fixes, straight from the runbook.</span><span class="i-zh">来自运维手册的真实修复清单，短而管用。</span></p>
 
-<h2>I forgot the admin password <span class="zh">忘记密码</span></h2>
-<p>Stop the gateway, delete the <code>[admin]</code> block from <code>config.toml</code>, restart. The seed kicks back in — you're on <code>admin / root</code> again with forced rotation.</p>
+<h2><span class="i-en">I forgot the admin password</span><span class="i-zh">忘了管理员密码</span> <span class="zh i-en">忘记密码</span><span class="zh i-zh">Password</span></h2>
+<p><span class="i-en">Stop the gateway, delete the <code>[admin]</code> block from <code>config.toml</code>, restart. The seed kicks back in — you're on <code>admin / root</code> again with forced rotation.</span><span class="i-zh">停掉网关，删掉 <code>config.toml</code> 里的 <code>[admin]</code> 块，重启。种子凭据重新生效 —— 又回到 <code>admin / root</code>，并强制改密。</span></p>
 
-<h2>/onboard says "already onboarded" <span class="zh">向导跳过</span></h2>
-<p>The wizard short-circuits once <code>[admin]</code> plus at least one enabled <code>[providers.*]</code> block exists. To re-run: stop the gateway, back up the config, strip the <code>[providers.*]</code> blocks (or the whole file — it re-seeds), restart.</p>
+<h2><span class="i-en">/onboard says "already onboarded"</span><span class="i-zh">/onboard 说「已经初始化过了」</span> <span class="zh i-en">向导跳过</span><span class="zh i-zh">Onboard</span></h2>
+<p><span class="i-en">The wizard short-circuits once <code>[admin]</code> plus at least one enabled <code>[providers.*]</code> block exists. To re-run: stop the gateway, back up the config, strip the <code>[providers.*]</code> blocks (or the whole file — it re-seeds), restart.</span><span class="i-zh">一旦存在 <code>[admin]</code> 加至少一个启用的 <code>[providers.*]</code> 块，向导就会短路。想重跑：停网关、备份配置、删掉 <code>[providers.*]</code> 块（或整个文件 —— 会重新播种），再重启。</span></p>
 
-<h2>/login returns 503 <span class="zh">登录 503</span></h2>
-<p>A brief 503 means the admin state isn't wired yet — the gateway is still warming up; wait two seconds and retry. A <em>persistent</em> 503 with <code>session_store_missing</code> is a data-dir permissions problem: <code>chown</code> <code>&lt;data_dir&gt;/admin-sessions.sqlite</code> back to the process owner.</p>
+<h2><span class="i-en">/login returns 503</span><span class="i-zh">/login 返回 503</span> <span class="zh i-en">登录 503</span><span class="zh i-zh">503</span></h2>
+<p><span class="i-en">A brief 503 means the admin state isn't wired yet — the gateway is still warming up; wait two seconds and retry. A <em>persistent</em> 503 with <code>session_store_missing</code> is a data-dir permissions problem: <code>chown</code> <code>&lt;data_dir&gt;/admin-sessions.sqlite</code> back to the process owner.</span><span class="i-zh">短暂的 503 表示管理状态还没接好 —— 网关还在预热，等两秒重试。<em>持续</em> 503 且带 <code>session_store_missing</code> 是数据目录权限问题：把 <code>&lt;data_dir&gt;/admin-sessions.sqlite</code> <code>chown</code> 回进程属主。</span></p>
 
-<h2>Where are the logs? <span class="zh">日志在哪</span></h2>
+<h2><span class="i-en">Where are the logs?</span><span class="i-zh">日志在哪？</span> <span class="zh i-en">日志在哪</span><span class="zh i-zh">Logs</span></h2>
 <pre><code># docker
 docker logs corlinman --tail 50
-# native
+# native · 原生
 journalctl -u corlinman-gateway -f</code></pre>
-<p>With <code>[logging] file_rolling = true</code>, daily files land in <code>&lt;data_dir&gt;/logs/corlinman.log.YYYY-MM-DD</code>. Format defaults to structured JSON; level is configurable (<code>trace…error</code>). The same stream feeds <code>/admin/logs</code>.</p>
+<p><span class="i-en">With <code>[logging] file_rolling = true</code>, daily files land in <code>&lt;data_dir&gt;/logs/corlinman.log.YYYY-MM-DD</code>. Format defaults to structured JSON; level is configurable (<code>trace…error</code>). The same stream feeds <code>/admin/logs</code>.</span><span class="i-zh">开了 <code>[logging] file_rolling = true</code> 时，按天滚动的文件在 <code>&lt;data_dir&gt;/logs/corlinman.log.YYYY-MM-DD</code>。默认结构化 JSON 格式；级别可配（<code>trace…error</code>）。同一条流也喂给 <code>/admin/logs</code>。</span></p>
 
-<h2>Preflight failed <span class="zh">预检失败</span></h2>
+<h2><span class="i-en">Preflight failed</span><span class="i-zh">预检失败</span> <span class="zh i-en">预检失败</span><span class="zh i-zh">Preflight</span></h2>
 <ul>
-  <li><strong>disk &lt; 5 GB / RAM &lt; 1 GB</strong> — hard requirements; free space or resize.</li>
-  <li><strong>port 6005 held</strong> — the error names the PID; stop it or set <code>CORLINMAN_PORT</code>.</li>
-  <li><strong>docker missing / too old</strong> — needs Engine 24+; or switch to <code>--mode native</code>.</li>
+  <li><span class="i-en"><strong>disk &lt; 5 GB / RAM &lt; 1 GB</strong> — hard requirements; free space or resize.</span><span class="i-zh"><strong>磁盘 &lt; 5 GB / 内存 &lt; 1 GB</strong> —— 硬性要求；清空间或扩容。</span></li>
+  <li><span class="i-en"><strong>port 6005 held</strong> — the error names the PID; stop it or set <code>CORLINMAN_PORT</code>.</span><span class="i-zh"><strong>端口 6005 被占</strong> —— 报错会给出 PID；停掉它，或改 <code>CORLINMAN_PORT</code>。</span></li>
+  <li><span class="i-en"><strong>docker missing / too old</strong> — needs Engine 24+; or switch to <code>--mode native</code>.</span><span class="i-zh"><strong>docker 缺失 / 太旧</strong> —— 需要 Engine 24+；或者改用 <code>--mode native</code>。</span></li>
 </ul>
 
-<h2>My systemd edits disappeared after reinstall <span class="zh">单元被覆盖</span></h2>
-<p>Running <code>install.sh</code> without <code>--upgrade</code> rewrites the unit and compose override. Always upgrade with <code>--upgrade</code>, and keep customizations in a drop-in: <code>/etc/systemd/system/corlinman-gateway.service.d/override.conf</code>. Since v1.10.0 the gateway runs as the non-privileged <code>corlinman</code> user.</p>
+<h2><span class="i-en">My systemd edits disappeared after reinstall</span><span class="i-zh">重装后 systemd 改动没了</span> <span class="zh i-en">单元被覆盖</span><span class="zh i-zh">Systemd</span></h2>
+<p><span class="i-en">Running <code>install.sh</code> without <code>--upgrade</code> rewrites the unit and compose override. Always upgrade with <code>--upgrade</code>, and keep customizations in a drop-in: <code>/etc/systemd/system/corlinman-gateway.service.d/override.conf</code>. Since v1.10.0 the gateway runs as the non-privileged <code>corlinman</code> user.</span><span class="i-zh">不带 <code>--upgrade</code> 跑 <code>install.sh</code> 会重写单元和 compose 覆盖文件。升级永远走 <code>--upgrade</code>，定制放进 drop-in：<code>/etc/systemd/system/corlinman-gateway.service.d/override.conf</code>。从 v1.10.0 起网关以非特权 <code>corlinman</code> 用户运行。</span></p>
 
-<h2>Will upgrading eat my data? <span class="zh">升级丢数据吗</span></h2>
-<p>No. <code>bash deploy/install.sh --upgrade</code> never touches <code>$CORLINMAN_DATA_DIR</code> — docker pulls/rebuilds and restarts; native re-syncs the venv (<code>uv sync --frozen</code>) and restarts the unit. Pin releases with <code>--version vX.Y.Z</code> / <code>CORLINMAN_TAG</code>.</p>
+<h2><span class="i-en">Will upgrading eat my data?</span><span class="i-zh">升级会吃掉数据吗？</span> <span class="zh i-en">升级丢数据吗</span><span class="zh i-zh">Data safety</span></h2>
+<p><span class="i-en">No. <code>bash deploy/install.sh --upgrade</code> never touches <code>$CORLINMAN_DATA_DIR</code> — docker pulls/rebuilds and restarts; native re-syncs the venv (<code>uv sync --frozen</code>) and restarts the unit. Pin releases with <code>--version vX.Y.Z</code> / <code>CORLINMAN_TAG</code>.</span><span class="i-zh">不会。<code>bash deploy/install.sh --upgrade</code> 永远不碰 <code>$CORLINMAN_DATA_DIR</code> —— docker 拉新镜像/重建后重启；原生模式重新同步 venv（<code>uv sync --frozen</code>）后重启单元。用 <code>--version vX.Y.Z</code> / <code>CORLINMAN_TAG</code> 锁定版本。</span></p>
 
-<h2>Which config edits need a restart? <span class="zh">哪些要重启</span></h2>
-<p>Only <code>bind</code>, <code>port</code> and channel enablement. Everything else — providers, models, approvals, scheduler, RAG, marketplace, logging, memory — hot-reloads atomically after validation.</p>
+<h2><span class="i-en">Which config edits need a restart?</span><span class="i-zh">哪些配置要重启？</span> <span class="zh i-en">哪些要重启</span><span class="zh i-zh">Restart</span></h2>
+<p><span class="i-en">Only <code>bind</code>, <code>port</code> and channel enablement. Everything else — providers, models, approvals, scheduler, RAG, marketplace, logging, memory — hot-reloads atomically after validation.</span><span class="i-zh">只有 <code>bind</code>、<code>port</code> 和渠道启停。其余一切 —— 供应商、模型、审批、定时任务、RAG、市场、日志、记忆 —— 校验通过后原子化热加载。</span></p>
 <p class="src">sources: <a href="https://github.com/sweetcornna/corlinman/blob/main/docs/quickstart.md">docs/quickstart.md</a> · <a href="https://github.com/sweetcornna/corlinman/blob/main/README.md">README.md</a></p>
 </article>
 
@@ -625,20 +632,36 @@ document.querySelectorAll("article[data-route]").forEach(function(a){ articles[a
 var tocLinks = Array.prototype.slice.call(document.querySelectorAll("#toc a"));
 var pager = document.getElementById("pager");
 
+function curLang(){ return document.documentElement.getAttribute("data-lang") || "en"; }
+function titleOf(a){ return curLang()==="zh" ? (a.dataset.titleZh || a.dataset.title) : a.dataset.title; }
+
 function route(){
   var r = (location.hash || "#/overview").replace(/^#\//,"");
   if(!articles[r]) r = "overview";
   Object.keys(articles).forEach(function(k){ articles[k].classList.toggle("on", k===r); });
   tocLinks.forEach(function(l){ l.classList.toggle("on", l.getAttribute("href") === "#/"+r); });
+  var zh = curLang()==="zh";
   var i = ORDER.indexOf(r), h = "";
-  if(i>0){ var p=articles[ORDER[i-1]]; h += '<a href="#/'+ORDER[i-1]+'"><span>← previous</span>'+p.dataset.title+'</a>'; } else h += "<span></span>";
-  if(i<ORDER.length-1){ var n=articles[ORDER[i+1]]; h += '<a class="next" href="#/'+ORDER[i+1]+'"><span>next →</span>'+n.dataset.title+'</a>'; }
+  if(i>0){ var p=articles[ORDER[i-1]]; h += '<a href="#/'+ORDER[i-1]+'"><span>'+(zh?"← 上一篇":"← previous")+'</span>'+titleOf(p)+'</a>'; } else h += "<span></span>";
+  if(i<ORDER.length-1){ var n=articles[ORDER[i+1]]; h += '<a class="next" href="#/'+ORDER[i+1]+'"><span>'+(zh?"下一篇 →":"next →")+'</span>'+titleOf(n)+'</a>'; }
   pager.innerHTML = h;
-  document.title = articles[r].dataset.title + " — corlinman wiki";
+  document.title = titleOf(articles[r]) + " — corlinman wiki";
   window.scrollTo(0,0);
 }
 window.addEventListener("hashchange",route);
-route();
+
+/* language toggle */
+var LANG_KEY = "corlinman-lang";
+var lb = document.getElementById("lang-btn");
+function lbl(){ lb.textContent = curLang()==="zh" ? "EN" : "中文"; }
+lb.addEventListener("click",function(){
+  var n = curLang()==="zh" ? "en" : "zh";
+  document.documentElement.setAttribute("data-lang",n);
+  document.documentElement.lang = (n==="zh"?"zh-CN":"en");
+  try{ localStorage.setItem(LANG_KEY,n); }catch(e){}
+  lbl(); buildIndex(); route();
+});
+lbl(); route();
 
 /* copy buttons on code blocks */
 document.querySelectorAll("pre").forEach(function(pre){
@@ -653,12 +676,18 @@ document.querySelectorAll("pre").forEach(function(pre){
   pre.appendChild(b);
 });
 
-/* search */
+/* search — index only the visible language */
 var q = document.getElementById("q"), results = document.getElementById("results");
-var index = ORDER.map(function(r){
-  var a = articles[r];
-  return { r:r, title:a.dataset.title, text:a.textContent.replace(/\s+/g," ") };
-});
+var index = [];
+function buildIndex(){
+  var drop = curLang()==="zh" ? ".i-en" : ".i-zh";
+  index = ORDER.map(function(r){
+    var a = articles[r].cloneNode(true);
+    Array.prototype.slice.call(a.querySelectorAll(drop)).forEach(function(n){ n.parentNode.removeChild(n); });
+    return { r:r, title:titleOf(articles[r]), text:a.textContent.replace(/\s+/g," ") };
+  });
+}
+buildIndex();
 function esc(s){ return s.replace(/[&<>]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;"}[c];}); }
 q.addEventListener("input",function(){
   var v = q.value.trim().toLowerCase();

@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<script>(function(){try{var l=localStorage.getItem("corlinman-lang")||(((navigator.language||"").toLowerCase().indexOf("zh")===0)?"zh":"en");document.documentElement.setAttribute("data-lang",l);document.documentElement.lang=(l==="zh"?"zh-CN":"en");}catch(e){document.documentElement.setAttribute("data-lang","en");}})();</script>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>corlinman — an agent that lives on your own hardware · 自托管智能体平台</title>
 <meta name="description" content="Self-hosted AI agent platform — durable memory, hybrid RAG, sandboxed tools, seven chat channels (QQ / Telegram / Discord / Slack / Feishu / WeChat), human-in-the-loop approvals. One binary you run, audit, and own. 自托管智能体平台。">
@@ -51,6 +52,17 @@ body{
 a{color:inherit;text-decoration:none}
 :focus-visible{outline:2px solid var(--current);outline-offset:3px;border-radius:4px}
 img{display:block}
+html[data-lang="en"] .i-zh{display:none!important}
+html[data-lang="zh"] .i-en{display:none!important}
+#lang-btn{font-family:var(--mono);font-size:12px;color:var(--ink-2);background:var(--glass);
+  border:1px solid var(--glass-border);border-radius:999px;padding:7px 13px;cursor:pointer;white-space:nowrap;transition:all .3s}
+#lang-btn:hover{color:var(--ink);border-color:var(--glass-border-hi)}
+html[data-lang="zh"] h1 .i-zh,html[data-lang="zh"] .sec-head h2 .i-zh,html[data-lang="zh"] .beat h3 .i-zh,html[data-lang="zh"] .loop-head h2 .i-zh{
+  font-family:var(--serif-cjk);font-weight:600;letter-spacing:.02em}
+html[data-lang="zh"] h1 em,html[data-lang="zh"] .sec-head h2 em,html[data-lang="zh"] .beat h3 em{font-style:normal}
+html[data-lang="zh"] h1{font-size:clamp(2.6rem,6.2vw,5.9rem)}
+html[data-lang="zh"] .beat h3{font-size:clamp(1.7rem,4vw,3.4rem)}
+.hero-cjk .i-zh{font-family:var(--mono);font-size:clamp(11px,1.1vw,13px);letter-spacing:.4em;text-transform:uppercase;font-weight:400}
 
 /* ---------- fluid ground + grain ---------- */
 #fluid{position:fixed;inset:0;width:100%;height:100%;z-index:0}
@@ -391,9 +403,10 @@ footer{border-top:1px solid var(--glass-border);padding:64px 0 46px;background:r
     <img src="logo.png" alt="" width="22" height="22">corlinman
   </a>
   <div class="nav-links">
-    <a href="wiki.html">wiki</a>
-    <a href="https://corlinman.cornna.xyz">live</a>
+    <a href="wiki.html"><span class="i-en">wiki</span><span class="i-zh">手册</span></a>
+    <a href="https://corlinman.cornna.xyz"><span class="i-en">live</span><span class="i-zh">演示</span></a>
     <a class="gh" href="https://github.com/sweetcornna/corlinman">github ↗</a>
+    <button id="lang-btn" aria-label="switch language">中文</button>
   </div>
 </nav>
 
@@ -402,8 +415,9 @@ footer{border-top:1px solid var(--glass-border);padding:64px 0 46px;background:r
   <!-- ================= hero ================= -->
   <section class="hero">
     <div class="wrap hero-inner">
-      <p class="statusline"><span class="dot"></span>$ ./corlinman&nbsp; — &nbsp;7 channels attending · memory warm · self-hosted</p>
+      <p class="statusline"><span class="dot"></span><span class="i-en">$ ./corlinman&nbsp; — &nbsp;7 channels attending · memory warm · self-hosted</span><span class="i-zh">$ ./corlinman&nbsp; — &nbsp;7 个渠道在场 · 记忆已热 · 自托管</span></p>
       <h1>
+        <span class="i-en">
         <span class="wm"><span class="w">An</span></span>
         <span class="wm"><span class="w">agent</span></span>
         <span class="wm"><span class="w">that</span></span>
@@ -412,17 +426,25 @@ footer{border-top:1px solid var(--glass-border);padding:64px 0 46px;background:r
         <span class="wm"><span class="w">your</span></span>
         <span class="wm"><span class="w">own</span></span>
         <span class="wm"><span class="w">hardware.</span></span>
+        </span>
+        <span class="i-zh">
+        <span class="wm"><span class="w">住在你</span></span><span class="wm"><span class="w"><em>机器里</em></span></span><span class="wm"><span class="w">的</span></span><br>
+        <span class="wm"><span class="w">智能体。</span></span>
+        </span>
       </h1>
-      <p class="hero-sub">corlinman hands a language model durable memory, real sandboxed tools, seven chat channels, and a human approval gate — one binary you run, audit, and own, end to end.
-        <span class="zh">给模型以记忆、工具、渠道与人的把关 —— 一体成形，跑在你自己的机器上。</span>
+      <p class="hero-sub">
+        <span class="i-en">corlinman hands a language model durable memory, real sandboxed tools, seven chat channels, and a human approval gate — one binary you run, audit, and own, end to end.
+          <span class="zh">给模型以记忆、工具、渠道与人的把关 —— 一体成形，跑在你自己的机器上。</span></span>
+        <span class="i-zh">corlinman 给语言模型装上持久记忆、真实的沙箱工具、七个聊天渠道和人工审批门 —— 一体成形，由你运行、审计、拥有，端到端。
+          <span class="zh">memory · tools · channels · approvals — one binary you own.</span></span>
       </p>
       <div class="hero-ctas">
-        <a class="btn btn-primary" href="#install">Install in 60 seconds ↓</a>
+        <a class="btn btn-primary" href="#install"><span class="i-en">Install in 60 seconds ↓</span><span class="i-zh">60 秒装好 ↓</span></a>
         <a class="btn" href="https://github.com/sweetcornna/corlinman">GitHub ↗</a>
       </div>
-      <p class="hero-facts"><span>hybrid rag</span><i>·</i><span>sandboxed plugins</span><i>·</i><span>7 channels</span><i>·</i><span>human-in-the-loop</span><i>·</i><span>MIT</span></p>
+      <p class="hero-facts"><span class="i-en"><span>hybrid rag</span><i>·</i><span>sandboxed plugins</span><i>·</i><span>7 channels</span><i>·</i><span>human-in-the-loop</span><i>·</i><span>MIT</span></span><span class="i-zh"><span>混合检索</span><i>·</i><span>沙箱插件</span><i>·</i><span>7 个渠道</span><i>·</i><span>人在回路</span><i>·</i><span>MIT</span></span></p>
       <div class="hero-mascot"><img src="logo.png" alt="corlinman pixel mascot"></div>
-      <p class="hero-cjk" lang="zh"><b>住在你机器里</b>的智能体</p>
+      <p class="hero-cjk"><span class="i-en" lang="zh"><b>住在你机器里</b>的智能体</span><span class="i-zh">an agent that <b>lives</b> on your own hardware</span></p>
       <p class="scroll-hint">scroll</p>
     </div>
   </section>
@@ -432,38 +454,38 @@ footer{border-top:1px solid var(--glass-border);padding:64px 0 46px;background:r
     <div class="wrap loop-stage">
       <div class="loop-head">
         <p class="eyebrow"><b>the loop</b> &nbsp;/&nbsp; <span class="cjk">回路</span></p>
-        <h2>How a thought becomes an action.</h2>
+        <h2><span class="i-en">How a thought becomes an action.</span><span class="i-zh">一个念头如何变成一次行动。</span></h2>
       </div>
 
       <div class="beats">
         <div class="beat" data-glyph="收">
           <p class="beat-kicker">receive <span class="zh">收</span></p>
-          <h3>A message lands — from QQ, Telegram, Discord, Slack, Feishu, WeChat, <em>or the web.</em></h3>
+          <h3><span class="i-en">A message lands — from QQ, Telegram, Discord, Slack, Feishu, WeChat, <em>or the web.</em></span><span class="i-zh">一条消息进来 —— 来自 QQ、Telegram、Discord、Slack、飞书、公众号，<em>或网页。</em></span></h3>
           <span class="beat-glyph" aria-hidden="true">收</span>
         </div>
         <div class="beat" data-glyph="忆">
           <p class="beat-kicker">remember <span class="zh">忆</span></p>
-          <h3>Hybrid retrieval wakes its memory — vectors, keywords, and a <em>diary</em> it keeps itself.</h3>
+          <h3><span class="i-en">Hybrid retrieval wakes its memory — vectors, keywords, and a <em>diary</em> it keeps itself.</span><span class="i-zh">混合检索唤醒记忆 —— 向量、关键词，和一本它<em>自己写的日记。</em></span></h3>
           <span class="beat-glyph" aria-hidden="true">忆</span>
         </div>
         <div class="beat" data-glyph="思">
           <p class="beat-kicker">reason <span class="zh">思</span></p>
-          <h3>Any model you trust — Anthropic, OpenAI-compatible, or your own — bound <em>per agent.</em></h3>
+          <h3><span class="i-en">Any model you trust — Anthropic, OpenAI-compatible, or your own — bound <em>per agent.</em></span><span class="i-zh">用你信任的模型 —— Anthropic、OpenAI 兼容、或你自建的 —— <em>按 agent 绑定。</em></span></h3>
           <span class="beat-glyph" aria-hidden="true">思</span>
         </div>
         <div class="beat" data-glyph="行">
           <p class="beat-kicker">act <span class="zh">行</span></p>
-          <h3>Tools fire inside a <em>sandboxed</em> plugin runtime. Skills teach it new ones.</h3>
+          <h3><span class="i-en">Tools fire inside a <em>sandboxed</em> plugin runtime. Skills teach it new ones.</span><span class="i-zh">工具在<em>沙箱化</em>的插件运行时里执行，技能教会它新的本事。</span></h3>
           <span class="beat-glyph" aria-hidden="true">行</span>
         </div>
         <div class="beat" data-glyph="问">
           <p class="beat-kicker">ask <span class="zh">问</span></p>
-          <h3>Anything irreversible waits in an approval queue. <em>You</em> hold the key.</h3>
+          <h3><span class="i-en">Anything irreversible waits in an approval queue. <em>You</em> hold the key.</span><span class="i-zh">不可逆的操作进入审批队列等待。钥匙在<em>你</em>手里。</span></h3>
           <span class="beat-glyph" aria-hidden="true">问</span>
         </div>
         <div class="beat" data-glyph="答">
           <p class="beat-kicker">reply <span class="zh">答</span></p>
-          <h3>The answer flows back to the channel it came from. The diary <em>remembers.</em></h3>
+          <h3><span class="i-en">The answer flows back to the channel it came from. The diary <em>remembers.</em></span><span class="i-zh">答复流回它来的那个渠道。日记<em>会记得。</em></span></h3>
           <span class="beat-glyph" aria-hidden="true">答</span>
         </div>
       </div>
@@ -479,11 +501,11 @@ footer{border-top:1px solid var(--glass-border);padding:64px 0 46px;background:r
     <div class="wrap">
       <div class="sec-head">
         <p class="eyebrow"><b>in practice</b> &nbsp;/&nbsp; <span class="cjk">实战</span></p>
-        <h2>Watch one request <em>travel.</em></h2>
+        <h2><span class="i-en">Watch one request <em>travel.</em></span><span class="i-zh">看一次请求<em>走完全程。</em></span></h2>
       </div>
       <div class="demo-grid">
         <div class="chat-frame" aria-label="demo conversation">
-          <div class="chat-bar"><span class="led"></span>telegram · private chat<span>session tg:88412</span></div>
+          <div class="chat-bar"><span class="led"></span><span class="i-en">telegram · private chat</span><span class="i-zh">telegram · 私聊</span><span>session tg:88412</span></div>
           <div class="chat-body">
             <div class="msg user" data-d="u">把这周的部署日志整理成一份 PDF 报告发我</div>
             <div class="msg agent spin" data-d="s"><span id="spin-text">🧠 思考中…</span><span class="cur"></span></div>
@@ -498,11 +520,11 @@ footer{border-top:1px solid var(--glass-border);padding:64px 0 46px;background:r
           </div>
         </div>
         <ol class="demo-steps" id="demo-steps">
-          <li><b>01 · mutable spinner</b>One placeholder message, edited in place as the loop progresses — thinking, tool calls, files, reply.</li>
-          <li><b>02 · memory first</b>Hybrid retrieval recalls the week's deploy logs — vectors, keywords, diary — before a single token is reasoned.</li>
-          <li><b>03 · the gate</b><code>file-ops.write</code> matched a <code>prompt</code> rule. Nothing executes until a human approves — here, in the admin queue, or inline.</li>
-          <li><b>04 · a real file back</b><code>corlinman-md2pdf</code> renders a CJK-clean PDF; a signed status link streams the whole turn live.</li>
-          <li class="wk"><a href="wiki.html#/approvals">how approval rules work →</a></li>
+          <li><b><span class="i-en">01 · mutable spinner</span><span class="i-zh">01 · 原地编辑的状态条</span></b><span class="i-en">One placeholder message, edited in place as the loop progresses — thinking, tool calls, files, reply.</span><span class="i-zh">同一条占位消息随回合推进被原地改写 —— 思考、调用工具、发文件、回复。</span></li>
+          <li><b><span class="i-en">02 · memory first</span><span class="i-zh">02 · 先查记忆</span></b><span class="i-en">Hybrid retrieval recalls the week's deploy logs — vectors, keywords, diary — before a single token is reasoned.</span><span class="i-zh">在推理出第一个 token 之前，混合检索先召回本周的部署日志 —— 向量、关键词、日记。</span></li>
+          <li><b><span class="i-en">03 · the gate</span><span class="i-zh">03 · 审批门</span></b><span class="i-en"><code>file-ops.write</code> matched a <code>prompt</code> rule. Nothing executes until a human approves — here, in the admin queue, or inline.</span><span class="i-zh"><code>file-ops.write</code> 命中了 <code>prompt</code> 规则。人不点头，什么都不会执行 —— 在这里批、在后台队列批、或就地批。</span></li>
+          <li><b><span class="i-en">04 · a real file back</span><span class="i-zh">04 · 真的发回一个文件</span></b><span class="i-en"><code>corlinman-md2pdf</code> renders a CJK-clean PDF; a signed status link streams the whole turn live.</span><span class="i-zh"><code>corlinman-md2pdf</code> 渲染出中文排版正确的 PDF；带签名的状态链接实时直播整个回合。</span></li>
+          <li class="wk"><a href="wiki.html#/approvals"><span class="i-en">how approval rules work →</span><span class="i-zh">审批规则如何工作 →</span></a></li>
         </ol>
       </div>
     </div>
@@ -513,38 +535,38 @@ footer{border-top:1px solid var(--glass-border);padding:64px 0 46px;background:r
     <div class="wrap">
       <div class="sec-head">
         <p class="eyebrow"><b>the platform</b> &nbsp;/&nbsp; <span class="cjk">平台</span></p>
-        <h2>Everything an agent needs to <em>stay.</em></h2>
+        <h2><span class="i-en">Everything an agent needs to <em>stay.</em></span><span class="i-zh">一个智能体<em>住下来</em>需要的一切。</span></h2>
       </div>
       <div class="pillars-grid">
         <div class="pillar">
           <span class="zh" lang="zh">记忆</span>
           <span class="en">durable memory</span>
-          <p>Hybrid RAG — vector, keyword, and a self-written diary. Context that survives every restart.</p>
+          <p><span class="i-en">Hybrid RAG — vector, keyword, and a self-written diary. Context that survives every restart.</span><span class="i-zh">混合 RAG —— 向量、关键词，加一本自己写的日记。重启也不丢的上下文。</span></p>
         </div>
         <div class="pillar">
           <span class="zh" lang="zh">工具</span>
           <span class="en">real tools</span>
-          <p>A sandboxed plugin runtime with skills, schedulers, browsers, and document generation.</p>
+          <p><span class="i-en">A sandboxed plugin runtime with skills, schedulers, browsers, and document generation.</span><span class="i-zh">沙箱化的插件运行时，带技能、定时器、浏览器和文档生成。</span></p>
         </div>
         <div class="pillar">
           <span class="zh" lang="zh">渠道</span>
           <span class="en">seven channels</span>
-          <p>QQ, Telegram, Discord, Slack, Feishu, WeChat — and a first-class web chat, all one agent.</p>
+          <p><span class="i-en">QQ, Telegram, Discord, Slack, Feishu, WeChat — and a first-class web chat, all one agent.</span><span class="i-zh">QQ、Telegram、Discord、Slack、飞书、公众号 —— 加上一流的网页聊天，都是同一个智能体。</span></p>
         </div>
         <div class="pillar">
           <span class="zh" lang="zh">审批</span>
           <span class="en">human-in-the-loop</span>
-          <p>Irreversible actions queue for your approval before they run. Govern, don't hope.</p>
+          <p><span class="i-en">Irreversible actions queue for your approval before they run. Govern, don't hope.</span><span class="i-zh">不可逆操作先排队等你批准再执行。治理，而不是祈祷。</span></p>
         </div>
         <div class="pillar">
           <span class="zh" lang="zh">后台</span>
           <span class="en">operations plane</span>
-          <p>A Spatial Glass admin console — live logs, RAG debugging, node graphs, theme studio.</p>
+          <p><span class="i-en">A Spatial Glass admin console — live logs, RAG debugging, node graphs, theme studio.</span><span class="i-zh">Spatial Glass 管理台 —— 实时日志、RAG 调试、节点图、主题工作室。</span></p>
         </div>
         <div class="pillar">
           <span class="zh" lang="zh">单体</span>
           <span class="en">one binary</span>
-          <p>Install in sixty seconds, upgrade in place, keep your data. China mirrors built in.</p>
+          <p><span class="i-en">Install in sixty seconds, upgrade in place, keep your data. China mirrors built in.</span><span class="i-zh">六十秒装好，原地升级，数据不丢。内置国内镜像加速。</span></p>
         </div>
       </div>
     </div>
@@ -555,7 +577,7 @@ footer{border-top:1px solid var(--glass-border);padding:64px 0 46px;background:r
     <div class="wrap">
       <div class="sec-head">
         <p class="eyebrow"><b>operations</b> &nbsp;/&nbsp; <span class="cjk">运维</span></p>
-        <h2>Every thought, <em>auditable.</em></h2>
+        <h2><span class="i-en">Every thought, <em>auditable.</em></span><span class="i-zh">每一个念头，都<em>可审计。</em></span></h2>
       </div>
       <div class="console-frame" aria-label="admin console preview">
         <div class="console-side">
@@ -578,7 +600,7 @@ footer{border-top:1px solid var(--glass-border);padding:64px 0 46px;background:r
           <div class="logwin" id="logwin" aria-hidden="true"></div>
         </div>
       </div>
-      <p class="cap">live logs · RAG score bars · node graphs · theme studio — <a href="wiki.html#/admin">tour the operations plane →</a></p>
+      <p class="cap"><span class="i-en">live logs · RAG score bars · node graphs · theme studio — <a href="wiki.html#/admin">tour the operations plane →</a></span><span class="i-zh">实时日志 · RAG 评分条 · 节点图 · 主题工作室 —— <a href="wiki.html#/admin">逛一圈运维后台 →</a></span></p>
     </div>
   </section>
 
@@ -600,7 +622,7 @@ footer{border-top:1px solid var(--glass-border);padding:64px 0 46px;background:r
     <div class="wrap">
       <div class="sec-head">
         <p class="eyebrow"><b>install</b> &nbsp;/&nbsp; <span class="cjk">六十秒</span></p>
-        <h2>Sixty seconds to a <em>living</em>&nbsp;agent.</h2>
+        <h2><span class="i-en">Sixty seconds to a <em>living</em>&nbsp;agent.</span><span class="i-zh">六十秒，跑起来一个<em>活的</em>智能体。</span></h2>
       </div>
       <div class="terminal">
         <div class="term-bar"><i></i><i></i><i></i><span>bash · your machine</span></div>
@@ -610,8 +632,10 @@ footer{border-top:1px solid var(--glass-border);padding:64px 0 46px;background:r
         </div>
       </div>
       <p class="notes">
-        docker or native · upgrades keep your data (<span style="font-family:var(--mono)">--upgrade</span>) · china mirrors built in · runs behind your firewall<br>
-        <a href="https://github.com/sweetcornna/corlinman#quickstart-60-seconds">read the quickstart ↗</a> &nbsp;&nbsp; <a href="https://corlinman.cornna.xyz">see a live deployment ↗</a>
+        <span class="i-en">docker or native · upgrades keep your data (<span style="font-family:var(--mono)">--upgrade</span>) · china mirrors built in · runs behind your firewall<br>
+        <a href="wiki.html#/install">read the install guide →</a> &nbsp;&nbsp; <a href="https://corlinman.cornna.xyz">see a live deployment ↗</a></span>
+        <span class="i-zh">docker 或原生 · 升级不丢数据（<span style="font-family:var(--mono)">--upgrade</span>）· 内置国内镜像 · 跑在你的防火墙后面<br>
+        <a href="wiki.html#/install">阅读安装指南 →</a> &nbsp;&nbsp; <a href="https://corlinman.cornna.xyz">看线上部署 ↗</a></span>
       </p>
     </div>
   </section>
@@ -621,38 +645,38 @@ footer{border-top:1px solid var(--glass-border);padding:64px 0 46px;background:r
     <div class="wrap">
       <div class="sec-head">
         <p class="eyebrow"><b>the manual</b> &nbsp;/&nbsp; <span class="cjk">手册</span></p>
-        <h2>Everything is <em>written down.</em></h2>
+        <h2><span class="i-en">Everything is <em>written down.</em></span><span class="i-zh">一切都<em>写在手册里。</em></span></h2>
       </div>
       <div class="wiki-grid">
         <a class="wiki-card" href="wiki.html#/install">
           <span class="en">install</span><span class="zh">安装</span>
-          <p>One script: preflight, Docker or native, QQ sidecar, China mirrors, health gate.</p>
-          <span class="go">read →</span>
+          <p><span class="i-en">One script: preflight, Docker or native, QQ sidecar, China mirrors, health gate.</span><span class="i-zh">一个脚本：预检、Docker 或原生、QQ 边车、国内镜像、健康门。</span></p>
+          <span class="go"><span class="i-en">read →</span><span class="i-zh">阅读 →</span></span>
         </a>
         <a class="wiki-card" href="wiki.html#/first-run">
           <span class="en">first run</span><span class="zh">首次启动</span>
-          <p>Seed login, the /onboard wizard, mock provider, doctor checks, profiles, status cards.</p>
-          <span class="go">read →</span>
+          <p><span class="i-en">Seed login, the /onboard wizard, mock provider, doctor checks, profiles, status cards.</span><span class="i-zh">种子登录、/onboard 向导、mock 供应商、doctor 体检、多实例、状态卡。</span></p>
+          <span class="go"><span class="i-en">read →</span><span class="i-zh">阅读 →</span></span>
         </a>
         <a class="wiki-card" href="wiki.html#/channels">
           <span class="en">channels</span><span class="zh">渠道</span>
-          <p>QQ via NapCat, Telegram spinners, Discord/Slack/Feishu, WeChat, web chat, cron.</p>
-          <span class="go">read →</span>
+          <p><span class="i-en">QQ via NapCat, Telegram spinners, Discord/Slack/Feishu, WeChat, web chat, cron.</span><span class="i-zh">NapCat 接 QQ、Telegram 状态条、Discord/Slack/飞书、公众号、网页聊天、定时任务。</span></p>
+          <span class="go"><span class="i-en">read →</span><span class="i-zh">阅读 →</span></span>
         </a>
         <a class="wiki-card" href="wiki.html#/providers">
           <span class="en">providers &amp; models</span><span class="zh">模型</span>
-          <p>Anthropic to local vLLM, aliases, per-agent bindings, embeddings.</p>
-          <span class="go">read →</span>
+          <p><span class="i-en">Anthropic to local vLLM, aliases, per-agent bindings, embeddings.</span><span class="i-zh">从 Anthropic 到本地 vLLM，别名、按 agent 绑定、向量嵌入。</span></p>
+          <span class="go"><span class="i-en">read →</span><span class="i-zh">阅读 →</span></span>
         </a>
         <a class="wiki-card" href="wiki.html#/approvals">
           <span class="en">approvals</span><span class="zh">审批</span>
-          <p>auto / prompt / deny rules, session whitelists, the 5-minute TTL.</p>
-          <span class="go">read →</span>
+          <p><span class="i-en">auto / prompt / deny rules, session whitelists, the 5-minute TTL.</span><span class="i-zh">auto / prompt / deny 三种规则、会话白名单、5 分钟 TTL。</span></p>
+          <span class="go"><span class="i-en">read →</span><span class="i-zh">阅读 →</span></span>
         </a>
         <a class="wiki-card" href="wiki.html#/faq">
           <span class="en">faq</span><span class="zh">疑难</span>
-          <p>Forgot passwords, 503s, logs, preflight failures, upgrades that keep your data.</p>
-          <span class="go">read →</span>
+          <p><span class="i-en">Forgot passwords, 503s, logs, preflight failures, upgrades that keep your data.</span><span class="i-zh">忘记密码、503、日志在哪、预检失败、不丢数据的升级。</span></p>
+          <span class="go"><span class="i-en">read →</span><span class="i-zh">阅读 →</span></span>
         </a>
       </div>
     </div>
@@ -665,8 +689,10 @@ footer{border-top:1px solid var(--glass-border);padding:64px 0 46px;background:r
     <div class="foot-top">
       <div>
         <p class="foot-brand"><img src="logo.png" alt="">corlinman</p>
-        <p class="foot-tag">Built for people who keep their own machines.
-          <span class="zh" lang="zh">把智能体留在自己手里。</span>
+        <p class="foot-tag"><span class="i-en">Built for people who keep their own machines.
+          <span class="zh" lang="zh">把智能体留在自己手里。</span></span>
+          <span class="i-zh">为自己掌管机器的人而造。
+          <span class="zh">built for people who keep their own machines.</span></span>
         </p>
       </div>
       <div class="foot-links">
@@ -689,6 +715,23 @@ footer{border-top:1px solid var(--glass-border);padding:64px 0 46px;background:r
 "use strict";
 var REDUCED = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 if (REDUCED) document.body.classList.add("reduced");
+
+/* language toggle */
+(function(){
+  var lb = document.getElementById("lang-btn");
+  if(!lb) return;
+  function cur(){ return document.documentElement.getAttribute("data-lang") || "en"; }
+  function lbl(){ lb.textContent = cur()==="zh" ? "EN" : "中文"; }
+  lb.addEventListener("click",function(){
+    var n = cur()==="zh" ? "en" : "zh";
+    document.documentElement.setAttribute("data-lang",n);
+    document.documentElement.lang = (n==="zh"?"zh-CN":"en");
+    try{ localStorage.setItem("corlinman-lang",n); }catch(e){}
+    lbl();
+    if(typeof ScrollTrigger !== "undefined") ScrollTrigger.refresh();
+  });
+  lbl();
+})();
 
 /* ============================================================
    fluid — pointer-stirred luminous ink on a deep-space ground
