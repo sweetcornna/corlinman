@@ -10,6 +10,7 @@
  */
 
 import * as React from "react";
+import { AlertTriangle } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -67,11 +68,21 @@ export function ConfirmDialog({
         aria-modal="true"
         data-testid={testId ? `${testId}-content` : undefined}
       >
-        <DialogHeader>
-          <DialogTitle>{title}</DialogTitle>
-          <DialogDescription className="whitespace-pre-line text-sm text-tp-ink-3">
-            {description}
-          </DialogDescription>
+        <DialogHeader className="flex flex-row items-start gap-3.5 space-y-0 text-left">
+          {destructive ? (
+            <span
+              aria-hidden="true"
+              className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-sg-err-soft text-sg-err"
+            >
+              <AlertTriangle className="h-5 w-5" />
+            </span>
+          ) : null}
+          <div className="flex flex-col gap-1.5">
+            <DialogTitle>{title}</DialogTitle>
+            <DialogDescription className="whitespace-pre-line text-sm text-sg-ink-3">
+              {description}
+            </DialogDescription>
+          </div>
         </DialogHeader>
         <DialogFooter className="gap-2">
           <Button

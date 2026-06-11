@@ -112,7 +112,7 @@ export function ChannelEnableSwitch({
   return (
     <div
       className={cn(
-        "inline-flex items-center gap-2 rounded-lg border border-tp-glass-edge bg-tp-glass-inner px-3 py-1.5",
+        "inline-flex items-center gap-2 rounded-lg border border-sg-border bg-sg-inset px-3 py-1.5",
         className,
       )}
       data-testid={`${channel}-enable-toggle`}
@@ -128,7 +128,7 @@ export function ChannelEnableSwitch({
       <label
         htmlFor={switchId}
         id={labelId}
-        className="select-none text-[13px] font-medium text-tp-ink-2"
+        className="select-none text-[13px] font-medium text-sg-ink-2"
       >
         {mutation.isPending ? (
           <span className="inline-flex items-center gap-1.5">

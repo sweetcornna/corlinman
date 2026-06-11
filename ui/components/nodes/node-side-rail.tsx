@@ -34,9 +34,9 @@ const HEALTH_LABEL_KEY: Record<Runner["health"], string> = {
 };
 
 const HEALTH_DOT: Record<Runner["health"], string> = {
-  healthy: "bg-tp-ok shadow-[0_0_6px_color-mix(in_oklch,var(--tp-ok)_40%,transparent)]",
-  degraded: "bg-tp-warn shadow-[0_0_6px_color-mix(in_oklch,var(--tp-warn)_40%,transparent)]",
-  offline: "bg-tp-ink-4",
+  healthy: "bg-sg-ok shadow-[0_0_6px_color-mix(in_oklch,var(--sg-ok)_40%,transparent)]",
+  degraded: "bg-sg-warn shadow-[0_0_6px_color-mix(in_oklch,var(--sg-warn)_40%,transparent)]",
+  offline: "bg-sg-ink-4",
 };
 
 function formatLatency(r: Runner): string {
@@ -84,10 +84,10 @@ export function NodeSideRail({
           className={cn(
             "group flex w-full flex-col gap-1 rounded-xl border px-3 py-2.5 text-left",
             "transition-colors",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
             selected
-              ? "border-tp-amber/45 bg-tp-amber-soft"
-              : "border-tp-glass-edge bg-tp-glass-inner hover:bg-tp-glass-inner-hover",
+              ? "border-sg-accent/45 bg-sg-accent-soft"
+              : "border-sg-border bg-sg-inset hover:bg-sg-inset-hover",
             dim && "opacity-55",
           )}
         >
@@ -96,25 +96,25 @@ export function NodeSideRail({
               aria-hidden
               className={cn("h-1.5 w-1.5 shrink-0 rounded-full", HEALTH_DOT[r.health])}
             />
-            <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-tp-ink">
+            <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-sg-ink">
               {r.hostname}
             </span>
-            <span className="shrink-0 font-mono text-[10.5px] tabular-nums text-tp-ink-3">
+            <span className="shrink-0 font-mono text-[10.5px] tabular-nums text-sg-ink-3">
               {formatLatency(r)}
             </span>
           </div>
-          <div className="flex items-center gap-1.5 pl-3.5 font-mono text-[10px] text-tp-ink-4">
+          <div className="flex items-center gap-1.5 pl-3.5 font-mono text-[10px] text-sg-ink-4">
             <span
               className={cn(
                 "rounded-sm px-1 py-px",
-                r.health === "healthy" && "text-tp-ok",
-                r.health === "degraded" && "text-tp-warn",
-                r.health === "offline" && "text-tp-ink-4",
+                r.health === "healthy" && "text-sg-ok",
+                r.health === "degraded" && "text-sg-warn",
+                r.health === "offline" && "text-sg-ink-4",
               )}
             >
               {t(HEALTH_LABEL_KEY[r.health])}
             </span>
-            <span className="text-tp-ink-4">·</span>
+            <span className="text-sg-ink-4">·</span>
             <span className="truncate">
               {caps.length === 0
                 ? t("nodes.tp.capsNone")
@@ -134,18 +134,18 @@ export function NodeSideRail({
       className={cn("flex flex-col overflow-hidden", className)}
       data-testid="node-side-rail"
     >
-      <header className="flex items-center justify-between border-b border-tp-glass-edge px-4 py-3">
-        <div className="text-[13px] font-semibold text-tp-ink">
+      <header className="flex items-center justify-between border-b border-sg-border px-4 py-3">
+        <div className="text-[13px] font-semibold text-sg-ink">
           {t("nodes.tp.sideRailTitle")}
         </div>
-        <div className="font-mono text-[10.5px] text-tp-ink-3">
+        <div className="font-mono text-[10.5px] text-sg-ink-3">
           {runners.length}
         </div>
       </header>
       <div className="flex flex-col gap-3 overflow-y-auto px-3 py-3">
         {innerRing.length > 0 ? (
           <section>
-            <div className="mb-1.5 px-1 font-mono text-[10px] uppercase tracking-[0.12em] text-tp-ink-4">
+            <div className="mb-1.5 px-1 font-mono text-[10px] uppercase tracking-[0.12em] text-sg-ink-4">
               {t("nodes.tp.ringInner")} · {innerRing.length}
             </div>
             <ul className="flex flex-col gap-1.5">{innerRing.map(renderEntry)}</ul>
@@ -153,7 +153,7 @@ export function NodeSideRail({
         ) : null}
         {outerRing.length > 0 ? (
           <section>
-            <div className="mb-1.5 px-1 font-mono text-[10px] uppercase tracking-[0.12em] text-tp-ink-4">
+            <div className="mb-1.5 px-1 font-mono text-[10px] uppercase tracking-[0.12em] text-sg-ink-4">
               {t("nodes.tp.ringOuter")} · {outerRing.length}
             </div>
             <ul className="flex flex-col gap-1.5">{outerRing.map(renderEntry)}</ul>

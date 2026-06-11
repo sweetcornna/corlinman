@@ -16,7 +16,7 @@ import { cn } from "@/lib/utils";
  *   ok (green) · info (neutral) · warn (amber) · err (red)
  *
  * The `justNow` flag lights up a 2px amber left-edge bar for ~2.8s (CSS
- * keyframe tp-just-now on globals). Use this when a row was appended to
+ * keyframe sg-just-now on globals). Use this when a row was appended to
  * the list within the last few seconds (typically the first row of an
  * SSE stream tick).
  */
@@ -47,17 +47,18 @@ const severityLabel: Record<LogSeverity, string> = {
 };
 
 const severityPill: Record<LogSeverity, string> = {
-  ok: "bg-tp-ok-soft text-tp-ok border-tp-ok/25",
-  info: "bg-tp-glass-inner-strong text-tp-ink-3 border-tp-glass-edge",
-  warn: "bg-tp-warn-soft text-tp-warn border-tp-warn/25",
-  err: "bg-tp-err-soft text-tp-err border-tp-err/25",
+  ok: "bg-sg-ok-soft text-sg-ok border-sg-ok/25",
+  info: "bg-sg-inset-strong text-sg-ink-3 border-sg-border",
+  warn: "bg-sg-warn-soft text-sg-warn border-sg-warn/25",
+  err: "bg-sg-err-soft text-sg-err border-sg-err/25",
 };
 
+// Status dot fill + a faint matching glow (shadow only — no blur).
 const statusDot: Record<LogSeverity, string> = {
-  ok: "bg-tp-ok",
-  info: "bg-tp-ink-4",
-  warn: "bg-tp-warn",
-  err: "bg-tp-err",
+  ok: "bg-sg-ok shadow-[0_0_6px_color-mix(in_oklch,var(--sg-ok)_55%,transparent)]",
+  info: "bg-sg-ink-4",
+  warn: "bg-sg-warn shadow-[0_0_6px_color-mix(in_oklch,var(--sg-warn)_55%,transparent)]",
+  err: "bg-sg-err shadow-[0_0_6px_color-mix(in_oklch,var(--sg-err)_55%,transparent)]",
 };
 
 export const LogRow = React.forwardRef<HTMLButtonElement, LogRowProps>(
@@ -85,14 +86,14 @@ export const LogRow = React.forwardRef<HTMLButtonElement, LogRowProps>(
         data-just-now={justNow || undefined}
         className={cn(
           "relative grid w-full items-center gap-3 text-left",
-          "border-b border-tp-glass-edge transition-colors",
-          "hover:bg-tp-glass-inner-hover focus-visible:outline-none",
-          "focus-visible:ring-2 focus-visible:ring-tp-amber/40",
+          "border-b border-sg-border transition-colors",
+          "hover:bg-sg-accent-soft focus-visible:outline-none",
+          "focus-visible:ring-2 focus-visible:ring-sg-accent/40",
           dense
             ? "grid-cols-[70px_56px_140px_1fr_auto] px-4 py-2 text-[12.5px]"
             : "grid-cols-[60px_120px_1fr_auto] px-4 py-3.5 text-[13.5px]",
-          selected && "bg-tp-amber-soft",
-          selected && "shadow-[inset_2px_0_0_var(--tp-amber),inset_0_0_0_1px_color-mix(in_oklch,var(--tp-amber)_20%,transparent)]",
+          selected && "bg-sg-accent-soft",
+          selected && "shadow-[inset_2px_0_0_var(--sg-accent),inset_0_0_0_1px_color-mix(in_oklch,var(--sg-accent)_20%,transparent)]",
           className,
         )}
         {...rest}
@@ -101,13 +102,11 @@ export const LogRow = React.forwardRef<HTMLButtonElement, LogRowProps>(
         {justNow && !selected ? (
           <span
             aria-hidden
-            className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-sm bg-tp-amber shadow-[0_0_8px_var(--tp-amber-glow)] tp-just-now"
+            className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-sm bg-sg-accent shadow-[0_0_8px_var(--sg-accent-glow)] sg-just-now"
           />
         ) : null}
 
-        <span className="min-w-0 font-mono text-[11px] text-tp-ink-4">
-          {ts}
-        </span>
+        <span className="min-w-0 font-mono text-[11px] text-sg-ink-4">{ts}</span>
 
         {dense ? (
           <span
@@ -121,16 +120,16 @@ export const LogRow = React.forwardRef<HTMLButtonElement, LogRowProps>(
           </span>
         ) : null}
 
-        <span className="min-w-0 truncate font-mono text-[11.5px] text-tp-ink-3">
+        <span className="min-w-0 truncate font-mono text-[11.5px] text-sg-ink-3">
           {subsystem}
         </span>
 
-        <span className="min-w-0 truncate text-tp-ink-2">{message}</span>
+        <span className="min-w-0 truncate text-sg-ink-2">{message}</span>
 
         <span
           className={cn(
             "flex min-w-0 items-center justify-end gap-2 whitespace-nowrap",
-            dense ? "font-mono text-[10.5px] tabular-nums text-tp-ink-4" : "",
+            dense ? "font-mono text-[10.5px] tabular-nums text-sg-ink-4" : "",
           )}
         >
           {duration}

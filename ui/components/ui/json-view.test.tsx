@@ -20,10 +20,10 @@ describe("JsonView", () => {
     const { container } = render(
       <JsonView value={{ k: "v", n: 42, b: true, z: null }} />,
     );
-    expect(container.querySelector(".tp-json-k")).not.toBeNull();
-    expect(container.querySelector(".tp-json-s")).not.toBeNull();
-    expect(container.querySelector(".tp-json-n")).not.toBeNull();
-    expect(container.querySelector(".tp-json-b")).not.toBeNull();
+    expect(container.querySelector(".sg-json-k")).not.toBeNull();
+    expect(container.querySelector(".sg-json-s")).not.toBeNull();
+    expect(container.querySelector(".sg-json-n")).not.toBeNull();
+    expect(container.querySelector(".sg-json-b")).not.toBeNull();
   });
 
   it("accepts raw pre-serialised JSON", () => {
@@ -43,6 +43,6 @@ describe("JsonView", () => {
     const text = container.textContent ?? "";
     expect(text).toContain("// request");
     expect(text).toContain("// response");
-    expect(container.querySelectorAll(".tp-json-c").length).toBeGreaterThanOrEqual(2);
+    expect(container.querySelectorAll(".sg-json-c").length).toBeGreaterThanOrEqual(2);
   });
 });

@@ -33,16 +33,16 @@ export interface HookDetailDrawerProps {
 }
 
 const tonePillClass: Record<ReturnType<typeof kindTone>, string> = {
-  message: "bg-tp-glass-inner-strong text-tp-ink-2 border-tp-glass-edge",
-  session: "bg-tp-glass-inner-strong text-tp-ink-2 border-tp-glass-edge",
-  agent: "bg-tp-glass-inner-strong text-tp-ink-2 border-tp-glass-edge",
-  lifecycle: "bg-tp-ok-soft text-tp-ok border-tp-ok/25",
-  config: "bg-tp-amber-soft text-tp-amber border-tp-amber/25",
-  approval: "bg-tp-amber-soft text-tp-amber border-tp-amber/25",
-  rate_limit: "bg-tp-warn-soft text-tp-warn border-tp-warn/25",
-  tool: "bg-tp-glass-inner-strong text-tp-ink-2 border-tp-glass-edge",
-  error: "bg-tp-err-soft text-tp-err border-tp-err/25",
-  neutral: "bg-tp-glass-inner-strong text-tp-ink-3 border-tp-glass-edge",
+  message: "bg-sg-inset-strong text-sg-ink-2 border-sg-border",
+  session: "bg-sg-inset-strong text-sg-ink-2 border-sg-border",
+  agent: "bg-sg-inset-strong text-sg-ink-2 border-sg-border",
+  lifecycle: "bg-sg-ok-soft text-sg-ok border-sg-ok/25",
+  config: "bg-sg-accent-soft text-sg-accent border-sg-accent/25",
+  approval: "bg-sg-accent-soft text-sg-accent border-sg-accent/25",
+  rate_limit: "bg-sg-warn-soft text-sg-warn border-sg-warn/25",
+  tool: "bg-sg-inset-strong text-sg-ink-2 border-sg-border",
+  error: "bg-sg-err-soft text-sg-err border-sg-err/25",
+  neutral: "bg-sg-inset-strong text-sg-ink-3 border-sg-border",
 };
 
 export function HookDetailDrawer({
@@ -68,11 +68,11 @@ export function HookDetailDrawer({
       >
         {event.kind}
       </span>
-      <span className="font-mono text-[13px] tabular-nums text-tp-ink">
+      <span className="font-mono text-[13px] tabular-nums text-sg-ink">
         {fullTs}
       </span>
       {relative ? (
-        <span className="font-mono text-[11px] text-tp-ink-4">{relative}</span>
+        <span className="font-mono text-[11px] text-sg-ink-4">{relative}</span>
       ) : null}
     </>
   );
@@ -94,18 +94,18 @@ export function HookDetailDrawer({
       <DetailDrawer.Section label={t("hooks.tp.sectionDispatch")}>
         <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-[13px]">
           <div className="flex items-baseline gap-1.5">
-            <span className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-tp-ink-4">
+            <span className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-sg-ink-4">
               {t("hooks.tp.drawerSubscribersLabel")}
             </span>
-            <span className="font-medium tabular-nums text-tp-ink">
+            <span className="font-medium tabular-nums text-sg-ink">
               {subscribers}
             </span>
           </div>
           <div className="flex items-baseline gap-1.5">
-            <span className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-tp-ink-4">
+            <span className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-sg-ink-4">
               {t("hooks.tp.drawerLatencyLabel")}
             </span>
-            <span className="font-medium tabular-nums text-tp-ink">
+            <span className="font-medium tabular-nums text-sg-ink">
               {formatLatency(latencyMs)}
             </span>
           </div>
@@ -118,8 +118,8 @@ export function HookDetailDrawer({
                 key={name}
                 className={cn(
                   "inline-flex items-center rounded-full border px-2 py-[2px]",
-                  "bg-tp-glass-inner border-tp-glass-edge",
-                  "font-mono text-[10.5px] text-tp-ink-3",
+                  "bg-sg-inset border-sg-border",
+                  "font-mono text-[10.5px] text-sg-ink-3",
                 )}
               >
                 {name}
@@ -127,7 +127,7 @@ export function HookDetailDrawer({
             ))}
           </div>
         ) : (
-          <div className="mt-3 font-mono text-[11.5px] text-tp-ink-4">
+          <div className="mt-3 font-mono text-[11.5px] text-sg-ink-4">
             {t("hooks.tp.drawerSubscribersEmpty")}
           </div>
         )}
@@ -139,9 +139,9 @@ export function HookDetailDrawer({
         ) : (
           <div
             className={cn(
-              "rounded-lg border border-dashed border-tp-glass-edge",
-              "bg-tp-glass-inner p-4 text-center",
-              "font-mono text-[11.5px] text-tp-ink-4",
+              "rounded-lg border border-dashed border-sg-border",
+              "bg-sg-inset p-4 text-center",
+              "font-mono text-[11.5px] text-sg-ink-4",
             )}
           >
             {t("hooks.tp.drawerPayloadEmpty")}

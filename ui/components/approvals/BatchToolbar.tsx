@@ -35,18 +35,18 @@ export function BatchToolbar({
       aria-label={t("approvals.batchActionsAria")}
       className={cn(
         "sticky bottom-4 z-20 mx-auto flex w-full max-w-3xl items-center gap-3",
-        "rounded-full border border-tp-glass-edge bg-tp-glass-2",
-        "px-4 py-2.5 text-[13px] text-tp-ink-2",
-        "backdrop-blur-glass backdrop-saturate-glass shadow-tp-hero",
+        "rounded-full border border-sg-border bg-sg-card-strong",
+        "px-4 py-2.5 text-[13px] text-sg-ink-2",
+        " shadow-sg-3",
       )}
     >
       <span
         className={cn(
           "inline-flex items-center gap-2 font-mono text-[11px] tracking-wide",
-          "rounded-full border border-tp-amber/25 bg-tp-amber-soft px-2.5 py-[3px] text-tp-amber",
+          "rounded-full border border-sg-accent/25 bg-sg-accent-soft px-2.5 py-[3px] text-sg-accent",
         )}
       >
-        <span className="h-1.5 w-1.5 rounded-full bg-tp-amber" aria-hidden />
+        <span className="h-1.5 w-1.5 rounded-full bg-sg-accent" aria-hidden />
         {t("approvals.tp.batchBarLabel", { n: selectedCount })}
       </span>
       <div className="flex-1" />
@@ -57,9 +57,9 @@ export function BatchToolbar({
         aria-label={t("approvals.batchApprove")}
         className={cn(
           "inline-flex items-center gap-2 rounded-full px-3.5 py-1.5 text-[12.5px] font-medium",
-          "bg-tp-amber text-[#1a120d] shadow-tp-primary",
+          "bg-sg-accent text-primary-foreground shadow-sg-primary",
           "transition-transform duration-150 hover:-translate-y-[1px]",
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/50",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/50",
           "disabled:pointer-events-none disabled:opacity-50",
         )}
       >
@@ -72,9 +72,9 @@ export function BatchToolbar({
         aria-label={t("approvals.batchDeny")}
         className={cn(
           "inline-flex items-center gap-2 rounded-full border px-3.5 py-1.5 text-[12.5px] font-medium",
-          "border-tp-err/40 bg-tp-err-soft text-tp-err",
-          "hover:bg-[color-mix(in_oklch,var(--tp-err)_14%,transparent)]",
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-err/40",
+          "border-sg-err/40 bg-sg-err-soft text-sg-err",
+          "hover:bg-[color-mix(in_oklch,var(--sg-err)_14%,transparent)]",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-err/40",
           "disabled:pointer-events-none disabled:opacity-50",
         )}
       >
@@ -87,12 +87,12 @@ export function BatchToolbar({
         aria-label={t("approvals.clear")}
         className={cn(
           "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[12px]",
-          "bg-tp-glass-inner text-tp-ink-3 hover:bg-tp-glass-inner-hover hover:text-tp-ink",
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
+          "bg-sg-inset text-sg-ink-3 hover:bg-sg-inset-hover hover:text-sg-ink",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
           "disabled:pointer-events-none disabled:opacity-50",
         )}
       >
-        <kbd className="font-mono text-[10px] text-tp-ink-4">
+        <kbd className="font-mono text-[10px] text-sg-ink-4">
           {t("approvals.tp.batchHintKey")}
         </kbd>
         {t("approvals.clear")}

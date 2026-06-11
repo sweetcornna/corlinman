@@ -21,9 +21,11 @@
 
 import * as React from "react";
 import { useParams } from "next/navigation";
+import { useTranslation } from "react-i18next";
 import { Loader2, LinkIcon, AlertTriangle, WifiOff } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { useSpecular } from "@/lib/use-specular";
 import type { LiveEvent } from "@/lib/sessions/event-stream";
 import { TimelineProvider } from "@/lib/sessions/store";
 import { EventTimelineBody } from "@/components/sessions/event-timeline";
@@ -131,7 +133,7 @@ function ElapsedReadout({
   return (
     <span
       data-testid="status-elapsed"
-      className="font-mono text-xs tabular-nums text-tp-ink-3"
+      className="font-mono text-sm tabular-nums text-sg-ink-2"
     >
       {formatElapsed((active ? now : Math.max(now, startMs)) - startMs)}
     </span>
@@ -232,13 +234,67 @@ function useStatusEvents(token: string | null, seed: LiveEvent[]) {
 /*                       Empty / error states                     */
 /* -------------------------------------------------------------- */
 
-function CenteredCard({ children }: { children: React.ReactNode }) {
+/**
+ * Full-bleed deep-space backdrop for the standalone status card. This page
+ * lives OUTSIDE the admin shell, so it can't borrow the admin layout's
+ * <AuroraBackground />; it paints its own layered nebula glow + noise here.
+ * All layers are decorative (aria-hidden, pointer-events-none) and sit behind
+ * the content; the base deep-space gradient itself is painted on <html> in
+ * globals.css (theme-flipping, pre-hydration), so we only add depth on top.
+ */
+function StatusBackdrop() {
   return (
-    <div className="flex min-h-dvh items-center justify-center bg-background px-6 py-12">
+    <div
+      aria-hidden="true"
+      className="fixed inset-0 -z-10 overflow-hidden pointer-events-none"
+    >
+      {/* Nebula glow blobs — soft accent-hued radials, slow drift + hue drift. */}
+      <div
+        className="absolute inset-0 sg-drift lg-hue-drift pointer-events-none"
+        style={{
+          backgroundImage:
+            "radial-gradient(900px 560px at 15% 8%, var(--sg-nebula-1), transparent 60%), " +
+            "radial-gradient(760px 540px at 86% 18%, var(--sg-nebula-2), transparent 60%), " +
+            "radial-gradient(680px 460px at 52% 96%, var(--sg-nebula-3), transparent 62%)",
+        }}
+      />
+      {/* Twinkling starfield (dark theme only — hidden in daylight via CSS). */}
+      <div className="absolute inset-0 lg-stars pointer-events-none" />
+      {/* Depth vignette — fade toward the edges so corners keep spatial depth. */}
+      <div
+        className="absolute inset-0 pointer-events-none"
+        style={{
+          background:
+            "radial-gradient(120% 90% at 50% 30%, transparent 0%, var(--sg-space-3) 78%, var(--sg-space-0) 100%)",
+        }}
+      />
+      {/* Fractal noise — breaks gradient banding at ~3%. */}
+      <div className="absolute inset-0 sg-noise opacity-[0.03] pointer-events-none" />
+    </div>
+  );
+}
+
+function CenteredCard({
+  children,
+  tone = "glass",
+}: {
+  children: React.ReactNode;
+  /** "err" paints the overlay as an error-soft glass band. */
+  tone?: "glass" | "err";
+}) {
+  return (
+    <div className="relative flex min-h-dvh items-center justify-center px-6 py-12">
+      <StatusBackdrop />
       <div
         className={cn(
-          "w-full max-w-md rounded-2xl border border-tp-glass-edge bg-tp-glass p-8 text-center",
+          "sg-glass-overlay w-full max-w-md rounded-sg-xl p-8 text-center shadow-sg-4 animate-sg-rise",
+          tone === "err" && "border-sg-err/30",
         )}
+        style={
+          tone === "err"
+            ? { backgroundColor: "var(--sg-err-soft)" }
+            : undefined
+        }
       >
         {children}
       </div>
@@ -247,19 +303,21 @@ function CenteredCard({ children }: { children: React.ReactNode }) {
 }
 
 function ExpiredState() {
+  const { t } = useTranslation();
   return (
-    <CenteredCard>
+    <CenteredCard tone="err">
       <div
         data-testid="status-expired"
         className="flex flex-col items-center gap-3"
       >
-        <LinkIcon className="size-8 text-tp-ink-4" aria-hidden />
-        <h1 className="text-lg font-semibold tracking-tight text-tp-ink">
-          Link expired or invalid
+        <span className="inline-flex size-12 items-center justify-center rounded-full border border-sg-err/30 bg-sg-err-soft text-sg-err">
+          <LinkIcon className="size-6" aria-hidden />
+        </span>
+        <h1 className="text-lg font-semibold tracking-tight text-sg-ink">
+          {t("status.expiredTitle")}
         </h1>
-        <p className="max-w-xs text-sm text-tp-ink-3">
-          This status link is no longer valid. Ask the assistant for a fresh
-          link to follow along.
+        <p className="max-w-xs text-sm text-sg-ink-3">
+          {t("status.expiredMessage")}
         </p>
       </div>
     </CenteredCard>
@@ -267,36 +325,40 @@ function ExpiredState() {
 }
 
 function LoadingState() {
+  const { t } = useTranslation();
   return (
     <CenteredCard>
       <div className="flex flex-col items-center gap-3">
-        <Loader2 className="size-6 animate-spin text-tp-ink-3" aria-hidden />
-        <p className="text-sm text-tp-ink-3">Loading status…</p>
+        <Loader2 className="size-6 animate-spin text-sg-accent" aria-hidden />
+        <p className="text-sm text-sg-ink-3">{t("status.loading")}</p>
       </div>
     </CenteredCard>
   );
 }
 
 function ErrorState({ onRetry }: { onRetry: () => void }) {
+  const { t } = useTranslation();
   return (
-    <CenteredCard>
+    <CenteredCard tone="err">
       <div className="flex flex-col items-center gap-3">
-        <AlertTriangle className="size-7 text-tp-warn" aria-hidden />
-        <h1 className="text-base font-semibold tracking-tight text-tp-ink">
-          Couldn&apos;t load status
+        <span className="inline-flex size-12 items-center justify-center rounded-full border border-sg-err/30 bg-sg-err-soft text-sg-err">
+          <AlertTriangle className="size-6" aria-hidden />
+        </span>
+        <h1 className="text-base font-semibold tracking-tight text-sg-ink">
+          {t("status.errorTitle")}
         </h1>
-        <p className="max-w-xs text-sm text-tp-ink-3">
-          The status service didn&apos;t respond. It may be a brief hiccup.
+        <p className="max-w-xs text-sm text-sg-ink-3">
+          {t("status.errorMessage")}
         </p>
         <button
           type="button"
           onClick={onRetry}
           className={cn(
-            "mt-1 rounded-md border border-tp-glass-edge bg-tp-glass-inner px-4 py-2",
-            "text-sm font-medium text-tp-ink hover:bg-tp-glass-inner-hover",
+            "mt-1 rounded-sg-md border border-sg-border-strong bg-sg-inset px-4 py-2",
+            "text-sm font-medium text-sg-ink transition-colors hover:bg-sg-inset-hover",
           )}
         >
-          Try again
+          {t("status.tryAgain")}
         </button>
       </div>
     </CenteredCard>
@@ -363,6 +425,7 @@ function StatusReady({
   token: string;
   snapshot: StatusSnapshot;
 }) {
+  const { t } = useTranslation();
   const { events, connected, degraded } = useStatusEvents(
     token,
     snapshot.events,
@@ -377,38 +440,53 @@ function StatusReady({
   );
   const active = isActiveState(snapshot.status);
 
+  // Pointer-tracked specular light for the hero — the showcase moment.
+  const heroRef = useSpecular<HTMLElement>();
+
   return (
-    <div className="min-h-dvh bg-background">
-      <div className="mx-auto flex w-full max-w-2xl flex-col gap-4 px-4 py-6 sm:px-6 sm:py-10">
-        {/* Header — status pill + elapsed + live/offline indicator. No
-            admin nav, no shell: this is a standalone mobile-friendly page.
-            When the conversation is bound to a persona (F2) its avatar
-            renders beside the title via the public /public/personas route. */}
-        <header className="flex flex-col gap-3">
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
+    <div className="relative min-h-dvh">
+      <StatusBackdrop />
+      <div className="mx-auto flex w-full max-w-xl flex-col gap-5 px-4 py-8 sm:px-6 sm:py-12">
+        {/* Hero card — the showcase surface. This is the one budgeted real
+            blur on a content page: a floating overlay-tier glass panel with
+            the full Liquid Glass optic stack (light-aware edge, chromatic
+            refraction rim, hover sheen sweep, pointer-tracked specular).
+            Persona avatar with accent ring glow, agent name in gradient
+            display text, live-ticking elapsed timer in font-mono. No admin
+            nav, no shell: a standalone, mobile-friendly public card. */}
+        <header
+          ref={heroRef}
+          className="lg-edge lg-refract lg-sheen lg-specular sg-glass-overlay relative overflow-hidden rounded-sg-xl p-6 shadow-sg-4 animate-sg-rise sm:p-7"
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex min-w-0 items-center gap-3.5">
               <PersonaAvatar personaId={snapshot.persona_id} />
-              <h1 className="text-sm font-semibold tracking-tight text-tp-ink">
-                Agent status
-              </h1>
+              <div className="min-w-0">
+                <h1 className="sg-grad-text truncate text-xl font-semibold tracking-tight sm:text-2xl">
+                  {t("status.agentStatus")}
+                </h1>
+                <span className="mt-0.5 block truncate font-mono text-[11px] text-sg-ink-4">
+                  {snapshot.session_key.slice(0, 12)}
+                </span>
+              </div>
             </div>
             <ConnectionDot connected={connected} degraded={degraded} />
           </div>
-          <div className="flex flex-wrap items-center gap-3">
+
+          <div className="mt-5 flex flex-wrap items-center gap-3">
             <StatusPill state={snapshot.status} />
             <ElapsedReadout startMs={startMs} active={active} />
-            <span className="font-mono text-[11px] text-tp-ink-4">
-              {snapshot.session_key.slice(0, 12)}
-            </span>
           </div>
+
+          {/* Activity bar — accent gradient fill on a sunken inset track.
+              While active it animates as an indeterminate sweep; when the
+              run is settled it rests as a full accent rail. */}
+          <ActivityBar active={active} />
         </header>
 
-        {/* Read-only trajectory — reuses the admin replay timeline. */}
-        <section
-          className={cn(
-            "rounded-2xl border border-tp-glass-edge bg-tp-glass p-3 sm:p-5",
-          )}
-        >
+        {/* Read-only trajectory — reuses the admin replay timeline. Faux-glass
+            content card (NO blur — the SSE feed scrolls behind it). */}
+        <section className="sg-card rounded-sg-lg p-3 shadow-sg-2 sm:p-5">
           <TimelineProvider>
             <EventTimelineBody
               sessionKey={snapshot.session_key}
@@ -418,10 +496,32 @@ function StatusReady({
           </TimelineProvider>
         </section>
 
-        <footer className="pt-2 text-center text-[11px] text-tp-ink-4">
-          Read-only · live updates · corlinman
+        <footer className="pt-1 text-center text-[11px] text-sg-ink-4">
+          {t("status.footer")}
         </footer>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Slim activity rail under the hero status row. Accent gradient fill
+ * (sg-accent → sg-accent-2) on a sunken inset track. While the conversation
+ * is active it sweeps as an indeterminate progress shimmer; once settled it
+ * rests as a calm full-width accent rail.
+ */
+function ActivityBar({ active }: { active: boolean }) {
+  return (
+    <div
+      aria-hidden="true"
+      className="mt-5 h-1.5 w-full overflow-hidden rounded-full bg-sg-inset shadow-[inset_0_1px_2px_oklch(0_0_0_/_0.2)]"
+    >
+      <div
+        className={cn(
+          "h-full rounded-full bg-gradient-to-r from-sg-accent to-sg-accent-2",
+          active ? "w-1/3 shimmer animate-pulse-glow" : "w-full",
+        )}
+      />
     </div>
   );
 }
@@ -440,16 +540,19 @@ function PersonaAvatar({ personaId }: { personaId: string | undefined }) {
   if (!src || failed) return null;
   // A plain <img> (not next/image): this is a static-export page served by the
   // gateway, where next/image's loader/optimizer doesn't apply, and the src is
-  // a public capability URL on the gateway origin.
+  // a public capability URL on the gateway origin. Wrapped in an accent ring
+  // glow so the bound persona reads as the card's focal point.
   return (
-    // eslint-disable-next-line @next/next/no-img-element
-    <img
-      src={src}
-      alt={`${personaId} avatar`}
-      data-testid="status-persona-avatar"
-      onError={() => setFailed(true)}
-      className="size-6 shrink-0 rounded-full border border-tp-glass-edge object-cover"
-    />
+    <span className="relative inline-flex size-12 shrink-0 items-center justify-center rounded-full bg-sg-accent-soft p-[2px] shadow-sg-glow ring-1 ring-sg-accent/40">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={src}
+        alt={`${personaId} avatar`}
+        data-testid="status-persona-avatar"
+        onError={() => setFailed(true)}
+        className="size-full rounded-full border border-sg-border object-cover"
+      />
+    </span>
   );
 }
 
@@ -460,15 +563,19 @@ function ConnectionDot({
   connected: boolean;
   degraded: boolean;
 }) {
+  const { t } = useTranslation();
   if (connected) {
     return (
       <span
         data-testid="status-connection"
         data-connected="true"
-        className="inline-flex items-center gap-1.5 text-[11px] text-tp-ok"
+        className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-sg-ok/30 bg-sg-ok-soft py-1 pl-2 pr-2.5 text-[11px] font-medium text-sg-ok"
       >
-        <span className="tp-breathe h-[6px] w-[6px] rounded-full bg-tp-ok" aria-hidden />
-        Live
+        <span
+          className="sg-breathe h-[6px] w-[6px] rounded-full bg-sg-ok"
+          aria-hidden
+        />
+        {t("status.connLive")}
       </span>
     );
   }
@@ -476,10 +583,10 @@ function ConnectionDot({
     <span
       data-testid="status-connection"
       data-connected="false"
-      className="inline-flex items-center gap-1.5 text-[11px] text-tp-ink-4"
+      className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-sg-border bg-sg-inset py-1 pl-2 pr-2.5 text-[11px] text-sg-ink-4"
     >
       <WifiOff className="size-3" aria-hidden />
-      {degraded ? "Reconnecting…" : "Connecting…"}
+      {degraded ? t("status.connReconnecting") : t("status.connConnecting")}
     </span>
   );
 }

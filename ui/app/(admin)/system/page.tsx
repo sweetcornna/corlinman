@@ -185,10 +185,10 @@ export default function SystemPage() {
           (see `sidebar.tsx`), so the page title should match. */}
       <header className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="space-y-1">
-          <h1 className="text-2xl font-semibold tracking-tight text-tp-ink">
+          <h1 className="text-2xl font-semibold tracking-tight text-sg-ink">
             {t("system.pageTitle")}
           </h1>
-          <p className="max-w-2xl text-sm text-tp-ink-3">
+          <p className="max-w-2xl text-sm text-sg-ink-3">
             {t("system.pageSubtitle")}
           </p>
         </div>
@@ -220,10 +220,10 @@ export default function SystemPage() {
       {/* Version card */}
       <Card data-testid="system-version-card">
         <CardHeader className="space-y-1.5 p-5 pb-3">
-          <CardTitle className="text-sm font-medium text-tp-ink">
+          <CardTitle className="text-sm font-medium text-sg-ink">
             {t("system.version.current")}
           </CardTitle>
-          <CardDescription className="text-xs text-tp-ink-3">
+          <CardDescription className="text-xs text-sg-ink-3">
             {lastChecked
               ? `${t("system.version.lastChecked")} · ${lastChecked}`
               : t("system.version.lastChecked")}
@@ -249,17 +249,17 @@ export default function SystemPage() {
         info.available && info.latest ? (
           <Card
             data-testid="system-update-banner"
-            className="border-tp-amber/40 bg-tp-amber-soft"
+            className="border-sg-accent/40 bg-sg-accent-soft"
           >
             <CardHeader className="space-y-1.5 p-5 pb-3">
-              <CardTitle className="flex flex-wrap items-baseline gap-x-2 text-base font-semibold text-tp-ink">
+              <CardTitle className="flex flex-wrap items-baseline gap-x-2 text-base font-semibold text-sg-ink">
                 <span>{t("system.update.available")}</span>
-                <span className="font-mono text-sm text-tp-amber">
+                <span className="font-mono text-sm text-sg-accent">
                   {info.latest}
                 </span>
               </CardTitle>
               {published ? (
-                <CardDescription className="text-xs text-tp-ink-3">
+                <CardDescription className="text-xs text-sg-ink-3">
                   {t("system.update.published", { relative: published })}
                 </CardDescription>
               ) : null}
@@ -297,10 +297,10 @@ export default function SystemPage() {
               </div>
               {info.release_notes_md ? (
                 <div className="space-y-2">
-                  <h2 className="text-xs font-semibold uppercase tracking-wide text-tp-ink-3">
+                  <h2 className="text-xs font-semibold uppercase tracking-wide text-sg-ink-3">
                     {t("system.update.releaseNotes")}
                   </h2>
-                  <div className="rounded-md border border-tp-glass-edge bg-tp-glass-inner p-4">
+                  <div className="rounded-md border border-sg-border bg-sg-inset p-4">
                     <ReleaseNotes markdown={info.release_notes_md} />
                   </div>
                 </div>
@@ -310,10 +310,10 @@ export default function SystemPage() {
         ) : (
           <Card
             data-testid="system-up-to-date"
-            className="border-tp-glass-edge"
+            className="border-sg-border"
           >
-            <CardContent className="flex items-center gap-2 p-5 text-sm text-tp-ink-2">
-              <Server className="h-4 w-4 text-tp-amber" aria-hidden />
+            <CardContent className="flex items-center gap-2 p-5 text-sm text-sg-ink-2">
+              <Server className="h-4 w-4 text-sg-accent" aria-hidden />
               <span>{t("system.version.upToDate")}</span>
             </CardContent>
           </Card>
@@ -338,12 +338,12 @@ export default function SystemPage() {
       {/* Primary upgrade CTA — only when an update is available AND no
           upgrade is currently in flight on this page. */}
       {info?.available && info.latest && !activeUpgradeId ? (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-tp-amber/40 bg-tp-amber/5 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-sg-accent/40 bg-sg-accent/5 p-4">
           <div className="space-y-1">
             <h2 className="text-base font-semibold tracking-tight">
               {t("system.upgrade.button", { tag: info.latest })}
             </h2>
-            <p className="text-xs text-tp-ink-3">
+            <p className="text-xs text-sg-ink-3">
               {t("system.upgrade.note")}
             </p>
           </div>
@@ -360,7 +360,7 @@ export default function SystemPage() {
       {/* Manual upgrade — copy these commands. Collapsed accordion when
           a one-click path is available; expanded fallback when not. */}
       <details
-        className="rounded-lg border border-tp-glass-edge bg-tp-glass p-4 sm:p-6 [&[open]>summary>svg]:rotate-90"
+        className="rounded-lg border border-sg-border bg-sg-card p-4 sm:p-6 [&[open]>summary>svg]:rotate-90"
         open={!info?.available}
       >
         <summary className="flex cursor-pointer items-center gap-2 list-none">
@@ -372,7 +372,7 @@ export default function SystemPage() {
             <h2 className="text-base font-semibold tracking-tight">
               {t("system.upgrade.manual.title")}
             </h2>
-            <p className="text-xs text-tp-ink-3">
+            <p className="text-xs text-sg-ink-3">
               {t("system.upgrade.manual.subtitle")}
             </p>
           </div>
@@ -419,7 +419,7 @@ interface VersionPillProps {
 function VersionPill({ label, value, testId, highlighted }: VersionPillProps) {
   return (
     <div className="space-y-1">
-      <div className="text-xs font-medium uppercase tracking-wide text-tp-ink-3">
+      <div className="text-xs font-medium uppercase tracking-wide text-sg-ink-3">
         {label}
       </div>
       <div
@@ -427,8 +427,8 @@ function VersionPill({ label, value, testId, highlighted }: VersionPillProps) {
         className={cn(
           "inline-flex items-center rounded-full border px-3 py-1 font-mono text-sm",
           highlighted
-            ? "border-tp-amber/50 bg-tp-amber-soft text-tp-amber"
-            : "border-tp-glass-edge bg-tp-glass-inner text-tp-ink",
+            ? "border-sg-accent/50 bg-sg-accent-soft text-sg-accent"
+            : "border-sg-border bg-sg-inset text-sg-ink",
         )}
       >
         {value}
@@ -448,10 +448,10 @@ function UpgradeCommandsCard({ commands }: UpgradeCommandsCardProps) {
   return (
     <Card data-testid="system-upgrade-card">
       <CardHeader className="space-y-1.5 p-5 pb-3">
-        <CardTitle className="text-sm font-medium text-tp-ink">
+        <CardTitle className="text-sm font-medium text-sg-ink">
           {t("system.upgrade.title")}
         </CardTitle>
-        <CardDescription className="text-xs text-tp-ink-3">
+        <CardDescription className="text-xs text-sg-ink-3">
           {t("system.upgrade.subtitle")}
         </CardDescription>
       </CardHeader>
@@ -460,7 +460,7 @@ function UpgradeCommandsCard({ commands }: UpgradeCommandsCardProps) {
           role="tablist"
           aria-label={t("system.upgrade.title")}
           data-testid="system-upgrade-tabs"
-          className="inline-flex gap-1 rounded-full border border-tp-glass-edge bg-tp-glass-inner p-1"
+          className="inline-flex gap-1 rounded-full border border-sg-border bg-sg-inset p-1"
         >
           {UPGRADE_TABS.map((tab) => {
             const selected = active === tab.key;
@@ -475,10 +475,10 @@ function UpgradeCommandsCard({ commands }: UpgradeCommandsCardProps) {
                 data-testid={`system-upgrade-tab-${tab.key}`}
                 onClick={() => setActive(tab.key)}
                 className={cn(
-                  "rounded-full px-3 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
+                  "rounded-full px-3 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
                   selected
-                    ? "bg-tp-amber-soft text-tp-amber"
-                    : "text-tp-ink-3 hover:text-tp-ink",
+                    ? "bg-sg-accent-soft text-sg-accent"
+                    : "text-sg-ink-3 hover:text-sg-ink",
                 )}
               >
                 {t(tab.labelKey)}
@@ -502,15 +502,15 @@ function UpgradeCommandsCard({ commands }: UpgradeCommandsCardProps) {
               command={commands[active]}
             />
           ) : (
-            <div className="h-24 animate-pulse rounded-md border border-tp-glass-edge bg-tp-glass-inner" />
+            <div className="h-24 animate-pulse rounded-md border border-sg-border bg-sg-inset" />
           )}
         </div>
 
-        <div className="flex flex-col gap-2 border-t border-tp-glass-edge pt-3 text-xs text-tp-ink-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-2 border-t border-sg-border pt-3 text-xs text-sg-ink-3 sm:flex-row sm:items-center sm:justify-between">
           <span>{t("system.upgrade.note")}</span>
           <Link
             href="/dev-settings"
-            className="font-medium text-tp-amber underline-offset-2 hover:underline"
+            className="font-medium text-sg-accent underline-offset-2 hover:underline"
             data-testid="system-runbook-link"
           >
             {t("system.upgrade.runbookLink")}

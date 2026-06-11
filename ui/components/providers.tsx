@@ -2,12 +2,13 @@
 
 import * as React from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { ThemeProvider } from "next-themes";
+import { ThemeProvider, useTheme } from "next-themes";
 import { Toaster } from "sonner";
 import { I18nextProvider } from "react-i18next";
 
 import { i18next, initI18n } from "@/lib/i18n";
 import { CommandPaletteProvider } from "./cmdk-palette";
+import { CursorLight } from "@/components/ui/cursor-light";
 
 // Init at module load. `initI18n()` is SSR-safe: on the server it skips
 // the LanguageDetector plugin and defaults to zh-CN, matching the
@@ -16,6 +17,33 @@ import { CommandPaletteProvider } from "./cmdk-palette";
 initI18n();
 
 // --- providers --------------------------------------------------------------
+
+/**
+ * Sonner toaster styled as a Spatial Glass overlay. Split into its own
+ * component so it can read the next-themes resolved theme via `useTheme()`
+ * (only valid inside <ThemeProvider>) and keep the toast surface in the
+ * overlay blur tier — the only content-adjacent place backdrop-blur is
+ * allowed by the blur budget.
+ */
+function GlassToaster() {
+  const { resolvedTheme } = useTheme();
+  return (
+    <Toaster
+      theme={resolvedTheme === "light" ? "light" : "dark"}
+      position="top-right"
+      toastOptions={{
+        classNames: {
+          toast:
+            "!bg-sg-overlay !border !border-sg-border-strong !shadow-sg-3 !backdrop-blur-sg-overlay !backdrop-saturate-sg-overlay !text-popover-foreground !font-sans rounded-sg-md",
+          title: "!text-sm !font-medium",
+          description: "!text-xs !text-muted-foreground",
+        },
+      }}
+      closeButton
+      duration={3000}
+    />
+  );
+}
 
 interface ProvidersProps {
   children: React.ReactNode;
@@ -53,20 +81,9 @@ export function Providers({ children }: ProvidersProps) {
         <I18nextProvider i18n={i18next}>
           <CommandPaletteProvider>
             {children}
-            <Toaster
-              theme="dark"
-              position="top-right"
-              toastOptions={{
-                classNames: {
-                  toast:
-                    "!border !border-tp-glass-edge !bg-tp-glass-2 !text-popover-foreground !font-sans !shadow-tp-panel",
-                  title: "!text-sm !font-medium",
-                  description: "!text-xs !text-muted-foreground",
-                },
-              }}
-              closeButton
-              duration={3000}
-            />
+            <GlassToaster />
+            {/* Liquid Glass touch-point radiance — global pointer halo. */}
+            <CursorLight />
           </CommandPaletteProvider>
         </I18nextProvider>
       </QueryClientProvider>

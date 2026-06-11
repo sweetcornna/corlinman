@@ -262,7 +262,7 @@ export function ModelPickerDialog({
         className="!z-[100] flex h-[min(480px,85dvh)] !max-w-[600px] flex-col overflow-hidden p-0"
         data-testid="model-picker-dialog"
       >
-        <header className="border-b border-tp-glass-edge px-4 py-3">
+        <header className="border-b border-sg-border px-4 py-3">
           <DialogTitle className="text-sm font-semibold tracking-tight">
             {t("models.picker.title")}
           </DialogTitle>
@@ -271,9 +271,9 @@ export function ModelPickerDialog({
           </DialogDescription>
         </header>
 
-        <div className="border-b border-tp-glass-edge px-4 py-2">
+        <div className="border-b border-sg-border px-4 py-2">
           <div className="relative">
-            <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-tp-ink-3" />
+            <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-sg-ink-3" />
             <Input
               autoFocus
               value={query}
@@ -322,7 +322,7 @@ export function ModelPickerDialog({
           />
         </div>
 
-        <footer className="flex items-center justify-end gap-2 border-t border-tp-glass-edge px-4 py-3">
+        <footer className="flex items-center justify-end gap-2 border-t border-sg-border px-4 py-3">
           <Button variant="outline" size="sm" onClick={onClose}>
             {t("models.picker.cancel")}
           </Button>
@@ -364,13 +364,13 @@ function ProviderColumn({
   modelsCache: Record<string, ModelEntry[]>;
 }) {
   return (
-    <div className="overflow-y-auto border-r border-tp-glass-edge">
+    <div className="overflow-y-auto border-r border-sg-border">
       {loading ? (
-        <div className="p-3 text-xs text-tp-ink-3">…</div>
+        <div className="p-3 text-xs text-sg-ink-3">…</div>
       ) : error ? (
         <div className="p-3 text-xs text-destructive">{error}</div>
       ) : providers.length === 0 ? (
-        <div className="p-3 text-xs italic text-tp-ink-3">
+        <div className="p-3 text-xs italic text-sg-ink-3">
           {total === 0 ? (
             <>
               {emptyLabel}{" "}
@@ -392,15 +392,15 @@ function ProviderColumn({
               type="button"
               onClick={() => onSelect(p.name)}
               className={cn(
-                "block w-full border-l-2 px-3 py-2 text-left text-xs transition-colors hover:bg-tp-glass-inner-hover",
+                "block w-full border-l-2 px-3 py-2 text-left text-xs transition-colors hover:bg-sg-inset-hover",
                 active
-                  ? "border-l-tp-amber bg-tp-glass-inner-hover"
+                  ? "border-l-sg-accent bg-sg-inset-hover"
                   : "border-l-transparent",
               )}
               data-testid={`model-picker-provider-${p.name}`}
             >
               <div className="truncate font-medium">{p.name}</div>
-              <div className="truncate font-mono text-[10px] text-tp-ink-3">
+              <div className="truncate font-mono text-[10px] text-sg-ink-3">
                 {p.kind}
                 {count > 0 ? ` · ${count}` : ""}
               </div>
@@ -443,7 +443,7 @@ function ModelColumn({
 }) {
   if (!providerName) {
     return (
-      <div className="overflow-y-auto p-3 text-xs italic text-tp-ink-3">
+      <div className="overflow-y-auto p-3 text-xs italic text-sg-ink-3">
         ←
       </div>
     );
@@ -451,7 +451,7 @@ function ModelColumn({
 
   if (loading) {
     return (
-      <div className="overflow-y-auto p-3 text-xs text-tp-ink-3">
+      <div className="overflow-y-auto p-3 text-xs text-sg-ink-3">
         {loadingLabel}
       </div>
     );
@@ -469,7 +469,7 @@ function ModelColumn({
 
   if (models.length === 0) {
     return (
-      <div className="overflow-y-auto p-3 text-xs italic text-tp-ink-3">
+      <div className="overflow-y-auto p-3 text-xs italic text-sg-ink-3">
         {allModels.length === 0 ? "—" : "no matches"}
       </div>
     );
@@ -489,21 +489,21 @@ function ModelColumn({
             }}
             onDoubleClick={() => onConfirm(m.id)}
             className={cn(
-              "flex w-full items-center gap-2 px-3 py-1.5 text-left font-mono text-xs transition-colors hover:bg-tp-glass-inner-hover",
-              active && "bg-tp-glass-inner-hover",
+              "flex w-full items-center gap-2 px-3 py-1.5 text-left font-mono text-xs transition-colors hover:bg-sg-inset-hover",
+              active && "bg-sg-inset-hover",
             )}
             data-testid={`model-picker-model-${m.id}`}
           >
             <Check
               className={cn(
                 "h-3 w-3 shrink-0",
-                active ? "text-tp-amber" : "text-transparent",
+                active ? "text-sg-accent" : "text-transparent",
               )}
             />
             <span className="flex-1 truncate">
               {m.display_name ?? m.id}
               {m.display_name && m.display_name !== m.id ? (
-                <span className="ml-2 text-tp-ink-3">({m.id})</span>
+                <span className="ml-2 text-sg-ink-3">({m.id})</span>
               ) : null}
             </span>
           </button>

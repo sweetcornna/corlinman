@@ -51,10 +51,14 @@ function useCoarsePointer(): boolean {
 }
 
 /**
- * Wraps children in a subtle cursor-driven tilt. Falls back to a plain div
- * under `prefers-reduced-motion` or touch (`pointer: coarse`) environments.
- * Uses motion values scoped to the element — no window-level listeners.
+ * Wraps children in a subtle cursor-driven tilt on the Spatial Glass card
+ * recipe (gradient faux glass, no backdrop-filter). Falls back to a plain
+ * (untilted) card under `prefers-reduced-motion` or touch (`pointer: coarse`)
+ * environments. Uses motion values scoped to the element — no window-level
+ * listeners.
  */
+const surface = "rounded-sg-lg border border-sg-border bg-sg-card-grad shadow-sg-2";
+
 export const TiltCard = React.forwardRef<HTMLDivElement, TiltCardProps>(
   function TiltCard(
     { maxTiltDeg = 3, children, className, ...rest },
@@ -91,7 +95,7 @@ export const TiltCard = React.forwardRef<HTMLDivElement, TiltCardProps>(
 
     if (disabled) {
       return (
-        <motion.div ref={ref} className={cn(className)} {...rest}>
+        <motion.div ref={ref} className={cn(surface, className)} {...rest}>
           {children}
         </motion.div>
       );
@@ -103,7 +107,7 @@ export const TiltCard = React.forwardRef<HTMLDivElement, TiltCardProps>(
         onMouseMove={onMouseMove}
         onMouseLeave={onMouseLeave}
         style={{ rotateX, rotateY, transformStyle: "preserve-3d" }}
-        className={cn("will-change-transform", className)}
+        className={cn(surface, "will-change-transform", className)}
         {...rest}
       >
         {children}

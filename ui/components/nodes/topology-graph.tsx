@@ -12,8 +12,8 @@ import { RunnerNode } from "./runner-node";
  *
  * Visual model:
  *   - Gateway at centre: amber→ember gradient disc with amber-glow outer halo.
- *     Pulses via `tp-breathe-amber` (ring-1 opacity lift).
- *   - Two orbital rings (ellipses) rendered as dashed `var(--tp-ink-4)` guides.
+ *     Pulses via `sg-breathe-accent` (ring-1 opacity lift).
+ *   - Two orbital rings (ellipses) rendered as dashed `var(--sg-ink-4)` guides.
  *   - Satellites render as coloured circles (ok / warn / muted) plus label.
  *   - Edges stroke from centre to each node; dash-offset animates the data
  *     flow hint. A capability filter desaturates non-matching nodes+edges.
@@ -64,9 +64,9 @@ function position(runner: Runner): PositionedRunner {
 }
 
 function edgeStrokeVar(health: Runner["health"]): string {
-  if (health === "healthy") return "var(--tp-amber)";
-  if (health === "degraded") return "var(--tp-warn)";
-  return "var(--tp-ink-4)";
+  if (health === "healthy") return "var(--sg-accent)";
+  if (health === "degraded") return "var(--sg-warn)";
+  return "var(--sg-ink-4)";
 }
 
 export interface TopologyGraphProps {
@@ -152,12 +152,12 @@ export function TopologyGraph({
       >
         <defs>
           <radialGradient id={gradientId} cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="var(--tp-amber)" stopOpacity="1" />
-            <stop offset="100%" stopColor="var(--tp-ember)" stopOpacity="0.95" />
+            <stop offset="0%" stopColor="var(--sg-accent)" stopOpacity="1" />
+            <stop offset="100%" stopColor="var(--sg-accent-2)" stopOpacity="0.95" />
           </radialGradient>
           <radialGradient id={glowId} cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="var(--tp-amber-glow)" />
-            <stop offset="100%" stopColor="var(--tp-amber-glow)" stopOpacity="0" />
+            <stop offset="0%" stopColor="var(--sg-accent-glow)" />
+            <stop offset="100%" stopColor="var(--sg-accent-glow)" stopOpacity="0" />
           </radialGradient>
         </defs>
 
@@ -168,7 +168,7 @@ export function TopologyGraph({
           rx={RINGS[0].rx}
           ry={RINGS[0].ry}
           fill="none"
-          stroke="var(--tp-ink-4)"
+          stroke="var(--sg-ink-4)"
           strokeOpacity={0.32}
           strokeDasharray="2 8"
           strokeWidth={1}
@@ -180,7 +180,7 @@ export function TopologyGraph({
           rx={RINGS[1].rx}
           ry={RINGS[1].ry}
           fill="none"
-          stroke="var(--tp-ink-4)"
+          stroke="var(--sg-ink-4)"
           strokeOpacity={0.26}
           strokeDasharray="2 8"
           strokeWidth={1}
@@ -230,7 +230,7 @@ export function TopologyGraph({
               cy={CENTER}
               r={GATEWAY_RADIUS + 10}
               fill="none"
-              stroke="var(--tp-amber)"
+              stroke="var(--sg-accent)"
               strokeOpacity={0.35}
               strokeWidth={1.4}
               className="nodes-halo"
@@ -242,7 +242,7 @@ export function TopologyGraph({
             cy={CENTER}
             r={GATEWAY_RADIUS}
             fill={`url(#${gradientId})`}
-            stroke="var(--tp-amber)"
+            stroke="var(--sg-accent)"
             strokeOpacity={0.55}
             strokeWidth={1}
           />
@@ -251,7 +251,7 @@ export function TopologyGraph({
           <g
             aria-hidden="true"
             transform={`translate(${CENTER - 13} ${CENTER - 16})`}
-            stroke="var(--tp-glass-hl)"
+            stroke="var(--sg-highlight)"
             strokeOpacity={0.9}
             strokeWidth={1.6}
             strokeLinecap="round"
@@ -269,7 +269,7 @@ export function TopologyGraph({
             fontSize="13"
             fontWeight={600}
             textAnchor="middle"
-            fill="var(--tp-ink)"
+            fill="var(--sg-ink)"
             style={{ letterSpacing: "-0.01em" }}
           >
             gateway

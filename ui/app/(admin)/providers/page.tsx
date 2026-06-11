@@ -252,7 +252,7 @@ export function ProvidersAdminContent() {
           <h1 className="text-2xl font-semibold tracking-tight">
             {t("providers.title")}
           </h1>
-          <p className="text-sm text-tp-ink-3">
+          <p className="text-sm text-sg-ink-3">
             {t("providers.subtitle")}
           </p>
         </div>
@@ -269,13 +269,13 @@ export function ProvidersAdminContent() {
         </Button>
       </header>
 
-      <section className="space-y-3 rounded-lg border border-tp-glass-edge bg-tp-glass p-4">
+      <section className="space-y-3 rounded-lg border border-sg-border bg-sg-card p-4">
         {providers.isPending ? (
           <Skeleton className="h-24 w-full" />
         ) : backendPending ? (
           <BackendPendingBanner label={t("providers.backendPending")} />
         ) : providers.isError ? (
-          <p className="text-xs text-destructive">
+          <p className="text-xs text-sg-err">
             {t("providers.loadFailed")}:{" "}
             {(providers.error as Error).message}
           </p>
@@ -287,7 +287,7 @@ export function ProvidersAdminContent() {
         ) : (
           <Table>
             <TableHeader>
-              <TableRow className="border-b border-tp-glass-edge hover:bg-transparent">
+              <TableRow className="border-b border-sg-border hover:bg-transparent">
                 <TableHead className="w-44 pl-3">
                   {t("providers.colName")}
                 </TableHead>
@@ -308,7 +308,7 @@ export function ProvidersAdminContent() {
               {providers.data!.map((p) => (
                 <TableRow
                   key={p.name}
-                  className="border-b border-tp-glass-edge"
+                  className="border-b border-sg-border"
                   data-testid={`provider-row-${p.name}`}
                 >
                   <TableCell className="pl-3 font-mono text-xs">
@@ -319,29 +319,29 @@ export function ProvidersAdminContent() {
                       {p.kind}
                     </Badge>
                   </TableCell>
-                  <TableCell className="font-mono text-[11px] text-tp-ink-3">
+                  <TableCell className="font-mono text-[11px] text-sg-ink-3">
                     {p.base_url ?? t("providers.baseUrlDefault")}
                   </TableCell>
                   <TableCell className="text-xs">
                     {p.api_key_source === "env" ? (
-                      <span className="font-mono text-tp-ink-3">
+                      <span className="font-mono text-sg-ink-3">
                         {t("providers.keyFromEnv", {
                           name: p.api_key_env_name ?? "?",
                         })}
                       </span>
                     ) : p.api_key_source === "value" ? (
-                      <span className="text-tp-ink-3">
+                      <span className="text-sg-ink-3">
                         {t("providers.keyLiteral")}
                       </span>
                     ) : (
-                      <span className="text-destructive">
+                      <span className="text-sg-err">
                         {t("providers.keyUnset")}
                       </span>
                     )}
                   </TableCell>
                   <TableCell>
                     {p.enabled ? (
-                      <Badge className="border-transparent bg-ok/15 text-ok">
+                      <Badge className="border-transparent bg-sg-ok-soft text-sg-ok">
                         {t("common.enabled")}
                       </Badge>
                     ) : (
@@ -421,7 +421,7 @@ export function ProvidersAdminContent() {
           {deleteBlock ? (
             <ul className="space-y-1 text-xs font-mono">
               {deleteBlock.map((ref) => (
-                <li key={ref} className="text-destructive">
+                <li key={ref} className="text-sg-err">
                   • {ref}
                 </li>
               ))}
@@ -594,7 +594,7 @@ function ProviderEditorDialog({ open, onOpenChange, editing }: EditorProps) {
                   className="font-mono text-xs"
                   placeholder="my-local-llm"
                 />
-                <p className="text-[11px] text-tp-ink-3">
+                <p className="text-[11px] text-sg-ink-3">
                   {t("providers.fieldNameHint")}
                 </p>
               </div>
@@ -634,7 +634,7 @@ function ProviderEditorDialog({ open, onOpenChange, editing }: EditorProps) {
                 className="font-mono text-xs"
                 placeholder="https://api.openai.com/v1"
               />
-              <p className="text-[11px] text-tp-ink-3">
+              <p className="text-[11px] text-sg-ink-3">
                 {t("providers.fieldBaseUrlHint")}
               </p>
             </div>
@@ -654,8 +654,8 @@ function ProviderEditorDialog({ open, onOpenChange, editing }: EditorProps) {
                     className={cn(
                       "flex-1 rounded-md border px-3 py-1.5 text-xs transition-colors",
                       draft.api_key_source === src
-                        ? "border-primary bg-tp-amber-soft text-tp-ink"
-                        : "border-tp-glass-edge bg-transparent text-tp-ink-3 hover:bg-tp-glass-inner-hover",
+                        ? "border-primary bg-sg-accent-soft text-sg-ink"
+                        : "border-sg-border bg-transparent text-sg-ink-3 hover:bg-sg-inset-hover",
                     )}
                   >
                     {src === "env"
@@ -689,13 +689,13 @@ function ProviderEditorDialog({ open, onOpenChange, editing }: EditorProps) {
               ) : null}
             </div>
 
-            <div className="space-y-2 rounded-md border border-tp-glass-edge p-3">
+            <div className="space-y-2 rounded-md border border-sg-border p-3">
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0 space-y-0.5">
                   <h3 className="text-sm font-semibold">
                     {t("providers.modelsTitle")}
                   </h3>
-                  <p className="text-[11px] text-tp-ink-3">
+                  <p className="text-[11px] text-sg-ink-3">
                     {t("providers.modelsHint")}
                   </p>
                 </div>
@@ -727,7 +727,7 @@ function ProviderEditorDialog({ open, onOpenChange, editing }: EditorProps) {
               </div>
               {modelDiscovery.error ? (
                 <p
-                  className="text-[11px] text-destructive"
+                  className="text-[11px] text-sg-err"
                   data-testid="provider-models-error"
                 >
                   {modelDiscovery.error}
@@ -741,7 +741,7 @@ function ProviderEditorDialog({ open, onOpenChange, editing }: EditorProps) {
                   {modelDiscovery.models.map((m) => (
                     <div
                       key={m.id}
-                      className="flex min-h-9 items-center justify-between gap-2 rounded-md border border-tp-glass-edge bg-tp-glass-inner px-2"
+                      className="flex min-h-9 items-center justify-between gap-2 rounded-md border border-sg-border bg-sg-inset px-2"
                     >
                       <span
                         className="min-w-0 truncate font-mono text-[11px]"
@@ -765,7 +765,7 @@ function ProviderEditorDialog({ open, onOpenChange, editing }: EditorProps) {
                   ))}
                 </div>
               ) : (
-                <p className="text-[11px] text-tp-ink-3">
+                <p className="text-[11px] text-sg-ink-3">
                   {t("providers.modelsEmpty")}
                 </p>
               )}
@@ -784,15 +784,15 @@ function ProviderEditorDialog({ open, onOpenChange, editing }: EditorProps) {
                   updateDraft({ enabled: !draft.enabled })
                 }
                 className={cn(
-                  "inline-flex h-6 w-11 items-center rounded-full border border-input backdrop-blur-glass backdrop-saturate-glass transition-colors",
+                  "inline-flex h-6 w-11 items-center rounded-full border border-input transition-colors",
                   draft.enabled
-                    ? "bg-[color-mix(in_oklch,var(--tp-amber)_34%,transparent)]"
-                    : "bg-tp-glass-inner",
+                    ? "bg-[color-mix(in_oklch,var(--sg-accent)_34%,transparent)]"
+                    : "bg-sg-inset",
                 )}
               >
                 <span
                   className={cn(
-                    "inline-block h-4 w-4 transform rounded-full border border-tp-glass-edge-strong bg-[color-mix(in_oklch,var(--tp-ink)_18%,transparent)] shadow-tp-panel transition-transform",
+                    "inline-block h-4 w-4 transform rounded-full border border-sg-border-strong bg-[color-mix(in_oklch,var(--sg-ink)_18%,transparent)] shadow-sg-2 transition-transform",
                     draft.enabled
                       ? "translate-x-[22px]"
                       : "translate-x-[3px]",
@@ -801,12 +801,12 @@ function ProviderEditorDialog({ open, onOpenChange, editing }: EditorProps) {
               </button>
             </div>
 
-            <div className="space-y-2 rounded-md border border-tp-glass-edge p-3">
+            <div className="space-y-2 rounded-md border border-sg-border p-3">
               <div>
                 <h3 className="text-sm font-semibold">
                   {t("providers.fieldParams")}
                 </h3>
-                <p className="text-[11px] text-tp-ink-3">
+                <p className="text-[11px] text-sg-ink-3">
                   {t("providers.fieldParamsHint")}
                 </p>
               </div>
@@ -853,10 +853,10 @@ function ProviderEditorDialog({ open, onOpenChange, editing }: EditorProps) {
 
 function EmptyProviders({ title, hint }: { title: string; hint: string }) {
   return (
-    <div className="flex flex-col items-center gap-2 rounded-md border border-dashed border-tp-glass-edge py-10 text-center">
-      <Plug className="h-6 w-6 text-tp-ink-3/60" />
+    <div className="flex flex-col items-center gap-2 rounded-md border border-dashed border-sg-border py-10 text-center">
+      <Plug className="h-6 w-6 text-sg-ink-3/60" />
       <p className="text-sm font-medium">{title}</p>
-      <p className="max-w-sm text-xs text-tp-ink-3">{hint}</p>
+      <p className="max-w-sm text-xs text-sg-ink-3">{hint}</p>
     </div>
   );
 }
@@ -864,7 +864,7 @@ function EmptyProviders({ title, hint }: { title: string; hint: string }) {
 function BackendPendingBanner({ label }: { label: string }) {
   return (
     <div
-      className="rounded-md border border-dashed border-tp-glass-edge bg-tp-glass/40 px-4 py-6 text-center text-xs text-tp-ink-3"
+      className="rounded-md border border-dashed border-sg-border bg-sg-card px-4 py-6 text-center text-xs text-sg-ink-3"
       data-testid="backend-pending"
     >
       {label}
@@ -939,7 +939,7 @@ function CustomProvidersSection() {
           <h2 className="text-lg font-semibold tracking-tight">
             Custom providers
           </h2>
-          <p className="text-xs text-tp-ink-3">
+          <p className="text-xs text-sg-ink-3">
             Operator-defined providers registered via{" "}
             <code>/admin/providers/custom</code>. The transport kind picks
             which built-in protocol (OpenAI-compatible, Anthropic, etc.)
@@ -956,13 +956,13 @@ function CustomProvidersSection() {
         </Button>
       </header>
 
-      <section className="space-y-3 rounded-lg border border-tp-glass-edge bg-tp-glass p-4">
+      <section className="space-y-3 rounded-lg border border-sg-border bg-sg-card p-4">
         {customs.isPending ? (
           <Skeleton className="h-24 w-full" />
         ) : backendPending ? (
           <BackendPendingBanner label={t("providers.backendPending")} />
         ) : customs.isError ? (
-          <p className="text-xs text-destructive">
+          <p className="text-xs text-sg-err">
             Load failed: {(customs.error as Error).message}
           </p>
         ) : (customs.data ?? []).length === 0 ? (
@@ -973,7 +973,7 @@ function CustomProvidersSection() {
         ) : (
           <Table>
             <TableHeader>
-              <TableRow className="border-b border-tp-glass-edge hover:bg-transparent">
+              <TableRow className="border-b border-sg-border hover:bg-transparent">
                 <TableHead className="w-44 pl-3">Slug</TableHead>
                 <TableHead className="w-40">Kind</TableHead>
                 <TableHead>Base URL</TableHead>
@@ -985,7 +985,7 @@ function CustomProvidersSection() {
               {customs.data!.map((p) => (
                 <TableRow
                   key={p.slug}
-                  className="border-b border-tp-glass-edge"
+                  className="border-b border-sg-border"
                   data-testid={`custom-provider-row-${p.slug}`}
                 >
                   <TableCell className="pl-3 font-mono text-xs">
@@ -996,12 +996,12 @@ function CustomProvidersSection() {
                       {p.kind}
                     </Badge>
                   </TableCell>
-                  <TableCell className="font-mono text-[11px] text-tp-ink-3">
+                  <TableCell className="font-mono text-[11px] text-sg-ink-3">
                     {p.base_url ?? t("providers.baseUrlDefault")}
                   </TableCell>
                   <TableCell className="text-xs">
                     {p.has_api_key ? (
-                      <Badge className="border-transparent bg-ok/15 text-ok">
+                      <Badge className="border-transparent bg-sg-ok-soft text-sg-ok">
                         set
                       </Badge>
                     ) : (

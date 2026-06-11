@@ -57,7 +57,7 @@ python scripts/validate-index.py`;
 
 function Code({ children }: { children: string }) {
   return (
-    <pre className="overflow-x-auto rounded-lg border border-tp-glass-edge bg-tp-glass-inner px-3.5 py-3 font-mono text-[12px] leading-[1.6] text-tp-ink-2">
+    <pre className="overflow-x-auto rounded-lg border border-sg-border bg-sg-inset px-3.5 py-3 font-mono text-[12px] leading-[1.6] text-sg-ink-2">
       <code>{children}</code>
     </pre>
   );
@@ -100,25 +100,25 @@ export default function MarketplaceContributePage() {
           className="pointer-events-none absolute bottom-[-90px] right-[-40px] h-[240px] w-[360px] rounded-full opacity-60 blur-3xl"
           style={{
             background:
-              "radial-gradient(closest-side, var(--tp-amber-glow), transparent 70%)",
+              "radial-gradient(closest-side, var(--sg-accent-glow), transparent 70%)",
           }}
         />
         <div className="relative flex min-w-0 flex-col gap-3">
           <Link
             href="/marketplace"
-            className="inline-flex w-fit items-center gap-1 font-mono text-[11px] text-tp-ink-3 transition-colors hover:text-tp-ink"
+            className="inline-flex w-fit items-center gap-1 font-mono text-[11px] text-sg-ink-3 transition-colors hover:text-sg-ink"
             data-testid="contribute-back-link"
           >
             <ChevronLeft className="h-3.5 w-3.5" aria-hidden />
             {t("marketplace.title")}
           </Link>
-          <div className="inline-flex w-fit items-center gap-2.5 rounded-full border border-tp-glass-edge bg-tp-glass-inner-strong py-1 pl-3 pr-3 font-mono text-[11px] text-tp-ink-2">
+          <div className="inline-flex w-fit items-center gap-2.5 rounded-full border border-sg-border bg-sg-inset-strong py-1 pl-3 pr-3 font-mono text-[11px] text-sg-ink-2">
             {t("marketplace.contribute.leadPill")}
           </div>
-          <h1 className="text-balance font-sans text-[28px] font-semibold leading-[1.15] tracking-[-0.025em] text-tp-ink sm:text-[32px]">
+          <h1 className="text-balance font-sans text-[28px] font-semibold leading-[1.15] tracking-[-0.025em] text-sg-ink sm:text-[32px]">
             {t("marketplace.contribute.title")}
           </h1>
-          <p className="max-w-[72ch] text-[14.5px] leading-[1.6] text-tp-ink-2">
+          <p className="max-w-[72ch] text-[14.5px] leading-[1.6] text-sg-ink-2">
             {t("marketplace.contribute.subtitle")}
           </p>
           <div className="mt-1 flex flex-wrap items-center gap-2.5">
@@ -126,7 +126,7 @@ export default function MarketplaceContributePage() {
               href={REPO_URL}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex items-center gap-2 rounded-lg border border-tp-glass-edge bg-tp-glass-inner px-3 py-2 text-[13px] font-medium text-tp-ink-2 transition-colors hover:bg-tp-glass-inner-hover hover:text-tp-ink"
+              className="inline-flex items-center gap-2 rounded-lg border border-sg-border bg-sg-inset px-3 py-2 text-[13px] font-medium text-sg-ink-2 transition-colors hover:bg-sg-inset-hover hover:text-sg-ink"
             >
               <ExternalLink className="h-3.5 w-3.5" aria-hidden />
               {t("marketplace.contribute.openRepo")}
@@ -135,7 +135,7 @@ export default function MarketplaceContributePage() {
               href={GUIDE_URL}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex items-center gap-2 rounded-lg border border-tp-glass-edge bg-tp-glass-inner px-3 py-2 text-[13px] font-medium text-tp-ink-2 transition-colors hover:bg-tp-glass-inner-hover hover:text-tp-ink"
+              className="inline-flex items-center gap-2 rounded-lg border border-sg-border bg-sg-inset px-3 py-2 text-[13px] font-medium text-sg-ink-2 transition-colors hover:bg-sg-inset-hover hover:text-sg-ink"
             >
               <BookOpen className="h-3.5 w-3.5" aria-hidden />
               {t("marketplace.contribute.viewGuide")}
@@ -147,10 +147,10 @@ export default function MarketplaceContributePage() {
       {/* How it works + steps */}
       <GlassPanel as="section" className="flex flex-col gap-4 p-6">
         <div className="flex flex-col gap-1.5">
-          <h2 className="font-sans text-[18px] font-semibold tracking-[-0.02em] text-tp-ink">
+          <h2 className="font-sans text-[18px] font-semibold tracking-[-0.02em] text-sg-ink">
             {t("marketplace.contribute.howTitle")}
           </h2>
-          <p className="max-w-[78ch] text-[14px] leading-[1.6] text-tp-ink-2">
+          <p className="max-w-[78ch] text-[14px] leading-[1.6] text-sg-ink-2">
             {t("marketplace.contribute.howBody")}
           </p>
         </div>
@@ -160,18 +160,18 @@ export default function MarketplaceContributePage() {
             return (
               <li
                 key={step.titleKey}
-                className="flex flex-col gap-2 rounded-xl border border-tp-glass-edge bg-tp-glass-inner p-4"
+                className="flex flex-col gap-2 rounded-xl border border-sg-border bg-sg-inset p-4"
               >
                 <div className="flex items-center gap-2">
-                  <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-tp-glass-edge font-mono text-[11px] text-tp-ink-2">
+                  <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-sg-border font-mono text-[11px] text-sg-ink-2">
                     {i + 1}
                   </span>
-                  <Icon className="h-4 w-4 text-tp-amber" aria-hidden />
+                  <Icon className="h-4 w-4 text-sg-accent" aria-hidden />
                 </div>
-                <p className="font-sans text-[13.5px] font-semibold text-tp-ink">
+                <p className="font-sans text-[13.5px] font-semibold text-sg-ink">
                   {t(`marketplace.contribute.${step.titleKey}`)}
                 </p>
-                <p className="text-[12.5px] leading-[1.55] text-tp-ink-2">
+                <p className="text-[12.5px] leading-[1.55] text-sg-ink-2">
                   {t(`marketplace.contribute.${step.bodyKey}`)}
                 </p>
               </li>
@@ -182,23 +182,23 @@ export default function MarketplaceContributePage() {
 
       {/* What you can submit */}
       <GlassPanel as="section" className="flex flex-col gap-4 p-6">
-        <h2 className="font-sans text-[18px] font-semibold tracking-[-0.02em] text-tp-ink">
+        <h2 className="font-sans text-[18px] font-semibold tracking-[-0.02em] text-sg-ink">
           {t("marketplace.contribute.kindsTitle")}
         </h2>
         <div className="grid gap-3 lg:grid-cols-3">
           {kinds.map((k) => (
             <div
               key={k.titleKey}
-              className="flex flex-col gap-2.5 rounded-xl border border-tp-glass-edge bg-tp-glass-inner p-4"
+              className="flex flex-col gap-2.5 rounded-xl border border-sg-border bg-sg-inset p-4"
             >
-              <p className="font-sans text-[14px] font-semibold text-tp-ink">
+              <p className="font-sans text-[14px] font-semibold text-sg-ink">
                 {t(`marketplace.contribute.${k.titleKey}`)}
               </p>
-              <p className="text-[12.5px] leading-[1.55] text-tp-ink-2">
+              <p className="text-[12.5px] leading-[1.55] text-sg-ink-2">
                 {t(`marketplace.contribute.${k.bodyKey}`)}
               </p>
               <div className="mt-auto">
-                <p className="mb-1.5 font-mono text-[10.5px] uppercase tracking-wide text-tp-ink-3">
+                <p className="mb-1.5 font-mono text-[10.5px] uppercase tracking-wide text-sg-ink-3">
                   {t("marketplace.contribute.filesLabel")}
                 </p>
                 <Code>{k.snippet}</Code>
@@ -211,25 +211,25 @@ export default function MarketplaceContributePage() {
       {/* Open the PR + checklist */}
       <GlassPanel as="section" className="flex flex-col gap-4 p-6">
         <div className="flex flex-col gap-1.5">
-          <h2 className="font-sans text-[18px] font-semibold tracking-[-0.02em] text-tp-ink">
+          <h2 className="font-sans text-[18px] font-semibold tracking-[-0.02em] text-sg-ink">
             {t("marketplace.contribute.prTitle")}
           </h2>
-          <p className="max-w-[78ch] text-[14px] leading-[1.6] text-tp-ink-2">
+          <p className="max-w-[78ch] text-[14px] leading-[1.6] text-sg-ink-2">
             {t("marketplace.contribute.prBody")}
           </p>
         </div>
         <Code>{PR_SNIPPET}</Code>
         <div className="flex flex-col gap-2">
-          <p className="font-sans text-[13.5px] font-semibold text-tp-ink">
+          <p className="font-sans text-[13.5px] font-semibold text-sg-ink">
             {t("marketplace.contribute.checklistTitle")}
           </p>
           <ul className="flex flex-col gap-1.5">
             {checks.map((c) => (
               <li
                 key={c}
-                className="flex items-start gap-2 text-[13px] leading-[1.55] text-tp-ink-2"
+                className="flex items-start gap-2 text-[13px] leading-[1.55] text-sg-ink-2"
               >
-                <span className="mt-[3px] inline-flex h-3.5 w-3.5 flex-none items-center justify-center rounded-[4px] border border-tp-glass-edge font-mono text-[9px] text-tp-amber">
+                <span className="mt-[3px] inline-flex h-3.5 w-3.5 flex-none items-center justify-center rounded-[4px] border border-sg-border font-mono text-[9px] text-sg-accent">
                   ✓
                 </span>
                 {t(`marketplace.contribute.${c}`)}
@@ -241,12 +241,12 @@ export default function MarketplaceContributePage() {
 
       {/* Security */}
       <GlassPanel as="section" className="flex items-start gap-3 p-6">
-        <ShieldCheck className="mt-0.5 h-5 w-5 flex-none text-tp-amber" aria-hidden />
+        <ShieldCheck className="mt-0.5 h-5 w-5 flex-none text-sg-accent" aria-hidden />
         <div className="flex flex-col gap-1">
-          <h2 className="font-sans text-[15px] font-semibold tracking-[-0.01em] text-tp-ink">
+          <h2 className="font-sans text-[15px] font-semibold tracking-[-0.01em] text-sg-ink">
             {t("marketplace.contribute.securityTitle")}
           </h2>
-          <p className="max-w-[80ch] text-[13px] leading-[1.6] text-tp-ink-2">
+          <p className="max-w-[80ch] text-[13px] leading-[1.6] text-sg-ink-2">
             {t("marketplace.contribute.securityBody")}
           </p>
         </div>

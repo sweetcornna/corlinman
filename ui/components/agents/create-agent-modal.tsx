@@ -31,6 +31,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
+import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -304,13 +305,9 @@ export function CreateAgentModal({
           noValidate
         >
           {errors.form ? (
-            <p
-              role="alert"
-              className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive"
-              data-testid="create-agent-form-error"
-            >
+            <Alert variant="danger" data-testid="create-agent-form-error">
               {errors.form}
-            </p>
+            </Alert>
           ) : null}
 
           {/* Name ---------------------------------------------------- */}
@@ -331,14 +328,14 @@ export function CreateAgentModal({
             />
             <p
               id="agent-name-help"
-              className="text-[11px] text-tp-ink-3"
+              className="text-[11px] text-sg-ink-3"
             >
               {t("agents.create.nameHelp")}
             </p>
             {!nameValid && form.name.length > 0 ? (
               <p
                 role="alert"
-                className="text-[11px] text-destructive"
+                className="text-[11px] text-sg-err"
                 data-testid="agent-name-error"
               >
                 {t("agents.create.nameInvalid")}
@@ -347,7 +344,7 @@ export function CreateAgentModal({
             {errors.name ? (
               <p
                 role="alert"
-                className="text-[11px] text-destructive"
+                className="text-[11px] text-sg-err"
                 data-testid="agent-name-server-error"
               >
                 {errors.name}
@@ -439,7 +436,7 @@ export function CreateAgentModal({
             <select
               id="agent-clone-from"
               data-testid="agent-clone-from"
-              className="emboss-inset flex h-10 w-full rounded-md px-3 py-1 text-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="sg-inset flex h-10 w-full rounded-sg-md px-3 py-1 text-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               value={form.cloneFrom}
               onChange={(e) => void setCloneFrom(e.target.value)}
             >
@@ -459,7 +456,7 @@ export function CreateAgentModal({
             <textarea
               id="agent-body"
               data-testid="agent-body"
-              className="emboss-inset min-h-[200px] w-full rounded-md px-3 py-2 font-mono text-xs leading-relaxed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="sg-inset min-h-[200px] w-full rounded-sg-md px-3 py-2 font-mono text-xs leading-relaxed focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               placeholder={t("agents.create.bodyPlaceholder")}
               spellCheck={false}
               value={form.body}
@@ -472,7 +469,7 @@ export function CreateAgentModal({
 
           {/* Force --------------------------------------------------- */}
           {showForceCheckbox ? (
-            <div className="space-y-1 rounded-md border border-tp-amber/30 bg-tp-amber/5 p-3">
+            <div className="space-y-1 rounded-md border border-sg-accent/30 bg-sg-accent/5 p-3">
               <label className="inline-flex items-start gap-2 text-xs">
                 <input
                   type="checkbox"
@@ -485,7 +482,7 @@ export function CreateAgentModal({
                   <span className="font-medium">
                     {t("agents.create.forceLabel")}
                   </span>
-                  <span className="block text-tp-ink-3">
+                  <span className="block text-sg-ink-3">
                     {t("agents.create.forceHint")}
                   </span>
                 </span>

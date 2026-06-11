@@ -12,8 +12,8 @@
  *
  * Styling: the project doesn't ship `@tailwindcss/typography` (the `prose`
  * plugin), so we apply per-element classes locally via the `components`
- * prop. The classes are tuned to the Tidepool token palette — `text-tp-ink`
- * for body, `text-tp-amber` for links, glass-edge dividers — matching the
+ * prop. The classes are tuned to the Tidepool token palette — `text-sg-ink`
+ * for body, `text-sg-accent` for links, glass-edge dividers — matching the
  * rest of the admin surface.
  */
 
@@ -27,7 +27,7 @@ const MARKDOWN_COMPONENTS: Components = {
   h1: ({ className, ...rest }) => (
     <h1
       className={cn(
-        "mt-4 text-base font-semibold tracking-tight text-tp-ink first:mt-0",
+        "mt-4 text-base font-semibold tracking-tight text-sg-ink first:mt-0",
         className,
       )}
       {...rest}
@@ -36,7 +36,7 @@ const MARKDOWN_COMPONENTS: Components = {
   h2: ({ className, ...rest }) => (
     <h2
       className={cn(
-        "mt-4 text-sm font-semibold tracking-tight text-tp-ink first:mt-0",
+        "mt-4 text-sm font-semibold tracking-tight text-sg-ink first:mt-0",
         className,
       )}
       {...rest}
@@ -45,7 +45,7 @@ const MARKDOWN_COMPONENTS: Components = {
   h3: ({ className, ...rest }) => (
     <h3
       className={cn(
-        "mt-3 text-sm font-medium text-tp-ink first:mt-0",
+        "mt-3 text-sm font-medium text-sg-ink first:mt-0",
         className,
       )}
       {...rest}
@@ -53,14 +53,14 @@ const MARKDOWN_COMPONENTS: Components = {
   ),
   p: ({ className, ...rest }) => (
     <p
-      className={cn("my-2 text-sm leading-relaxed text-tp-ink-2", className)}
+      className={cn("my-2 text-sm leading-relaxed text-sg-ink-2", className)}
       {...rest}
     />
   ),
   ul: ({ className, ...rest }) => (
     <ul
       className={cn(
-        "my-2 ml-5 list-disc space-y-1 text-sm text-tp-ink-2",
+        "my-2 ml-5 list-disc space-y-1 text-sm text-sg-ink-2",
         className,
       )}
       {...rest}
@@ -69,7 +69,7 @@ const MARKDOWN_COMPONENTS: Components = {
   ol: ({ className, ...rest }) => (
     <ol
       className={cn(
-        "my-2 ml-5 list-decimal space-y-1 text-sm text-tp-ink-2",
+        "my-2 ml-5 list-decimal space-y-1 text-sm text-sg-ink-2",
         className,
       )}
       {...rest}
@@ -86,7 +86,7 @@ const MARKDOWN_COMPONENTS: Components = {
       target="_blank"
       rel="noreferrer noopener"
       className={cn(
-        "font-medium text-tp-amber underline decoration-tp-amber/40 underline-offset-2 transition-colors hover:text-tp-ember hover:decoration-tp-amber",
+        "font-medium text-sg-accent underline decoration-sg-accent/40 underline-offset-2 transition-colors hover:text-sg-accent-2 hover:decoration-sg-accent",
         className,
       )}
       {...rest}
@@ -95,7 +95,7 @@ const MARKDOWN_COMPONENTS: Components = {
   code: ({ className, ...rest }) => (
     <code
       className={cn(
-        "rounded bg-tp-glass-inner px-1.5 py-0.5 font-mono text-[12px] text-tp-ink",
+        "rounded bg-sg-inset px-1.5 py-0.5 font-mono text-[12px] text-sg-ink",
         className,
       )}
       {...rest}
@@ -104,7 +104,7 @@ const MARKDOWN_COMPONENTS: Components = {
   pre: ({ className, ...rest }) => (
     <pre
       className={cn(
-        "my-2 overflow-x-auto rounded-md border border-tp-glass-edge bg-tp-glass-inner p-3 font-mono text-[12px] text-tp-ink",
+        "my-2 overflow-x-auto rounded-md border border-sg-border bg-sg-inset p-3 font-mono text-[12px] text-sg-ink",
         className,
       )}
       {...rest}
@@ -113,7 +113,7 @@ const MARKDOWN_COMPONENTS: Components = {
   blockquote: ({ className, ...rest }) => (
     <blockquote
       className={cn(
-        "my-2 border-l-2 border-tp-amber/50 pl-3 text-sm italic text-tp-ink-3",
+        "my-2 border-l-2 border-sg-accent/50 pl-3 text-sm italic text-sg-ink-3",
         className,
       )}
       {...rest}
@@ -121,13 +121,13 @@ const MARKDOWN_COMPONENTS: Components = {
   ),
   hr: ({ className, ...rest }) => (
     <hr
-      className={cn("my-3 border-t border-tp-glass-edge", className)}
+      className={cn("my-3 border-t border-sg-border", className)}
       {...rest}
     />
   ),
   strong: ({ className, ...rest }) => (
     <strong
-      className={cn("font-semibold text-tp-ink", className)}
+      className={cn("font-semibold text-sg-ink", className)}
       {...rest}
     />
   ),
@@ -143,7 +143,7 @@ export function ReleaseNotes({ markdown, className }: ReleaseNotesProps) {
   return (
     <div
       data-testid="release-notes"
-      className={cn("max-w-none text-sm text-tp-ink-2", className)}
+      className={cn("max-w-none text-sm text-sg-ink-2", className)}
     >
       <ReactMarkdown
         // `rehype-sanitize` with no options uses its default schema, which

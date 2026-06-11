@@ -20,14 +20,14 @@ export function EvolutionEmptyState({ tab }: { tab: Tab }) {
       <div
         className={cn(
           "flex flex-col items-center justify-center gap-3 py-14 text-center",
-          "rounded-2xl border border-dashed border-tp-glass-edge bg-tp-glass-inner/40",
+          "rounded-2xl border border-dashed border-sg-border bg-sg-inset",
         )}
       >
-        <Sprout className="h-9 w-9 text-tp-amber/80" aria-hidden />
-        <p className="font-serif text-[20px] font-normal leading-tight tracking-[-0.01em] text-tp-ink">
+        <Sprout className="h-9 w-9 text-sg-accent/80" aria-hidden />
+        <p className="font-serif text-[20px] font-normal leading-tight tracking-[-0.01em] text-sg-ink">
           {t("evolution.tp.emptyPending")}
         </p>
-        <p className="max-w-[42ch] text-[12.5px] leading-[1.6] text-tp-ink-3">
+        <p className="max-w-[42ch] text-[12.5px] leading-[1.6] text-sg-ink-3">
           {t("evolution.tp.emptyPendingHint")}
         </p>
       </div>
@@ -38,14 +38,14 @@ export function EvolutionEmptyState({ tab }: { tab: Tab }) {
     <div
       className={cn(
         "flex flex-col items-center justify-center gap-3 py-14 text-center",
-        "rounded-2xl border border-dashed border-tp-glass-edge bg-tp-glass-inner/40",
+        "rounded-2xl border border-dashed border-sg-border bg-sg-inset",
       )}
     >
-      <Hourglass className="h-8 w-8 text-tp-ink-4" aria-hidden />
-      <p className="font-serif text-[18px] font-normal leading-tight tracking-[-0.01em] text-tp-ink">
+      <Hourglass className="h-8 w-8 text-sg-ink-4" aria-hidden />
+      <p className="font-serif text-[18px] font-normal leading-tight tracking-[-0.01em] text-sg-ink">
         {t("evolution.tp.tabPlaceholderTitle")}
       </p>
-      <p className="max-w-[42ch] text-[12.5px] leading-[1.6] text-tp-ink-3">
+      <p className="max-w-[42ch] text-[12.5px] leading-[1.6] text-sg-ink-3">
         {t("evolution.tp.tabPlaceholderHint")}
       </p>
     </div>

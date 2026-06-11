@@ -66,9 +66,9 @@ export default function PluginDetailPage() {
 
   if (!name) {
     return (
-      <GlassPanel variant="soft" className="p-6 text-[13px] text-tp-ink-2">
+      <GlassPanel variant="soft" className="p-6 text-[13px] text-sg-ink-2">
         {t("plugins.missingName")}{" "}
-        <Link href="/plugins" className="text-tp-amber underline-offset-2 hover:underline">
+        <Link href="/plugins" className="text-sg-accent underline-offset-2 hover:underline">
           {t("plugins.pluginListLink")}
         </Link>
       </GlassPanel>
@@ -137,7 +137,7 @@ export default function PluginDetailPage() {
                 {summary.capabilities.map((c) => (
                   <span
                     key={c}
-                    className="rounded-full border border-tp-glass-edge bg-tp-glass-inner px-2 py-[3px] font-mono text-[10.5px] tracking-wide text-tp-ink-3"
+                    className="rounded-full border border-sg-border bg-sg-inset px-2 py-[3px] font-mono text-[10.5px] tracking-wide text-sg-ink-3"
                   >
                     {c}
                   </span>
@@ -151,23 +151,23 @@ export default function PluginDetailPage() {
             <GlassPanel variant="soft" className="flex flex-col gap-3 p-5">
               <SectionHeading>{t("plugins.tp.detailToolsLabel")}</SectionHeading>
               {tools.length === 0 ? (
-                <p className="text-[13px] text-tp-ink-3">
+                <p className="text-[13px] text-sg-ink-3">
                   {t("plugins.tp.detailToolsEmpty")}
                 </p>
               ) : (
-                <ul className="flex flex-col divide-y divide-tp-glass-edge">
+                <ul className="flex flex-col divide-y divide-sg-border">
                   {tools.map((tool) => (
                     <li key={tool.name} className="flex flex-col gap-1 py-2 first:pt-0 last:pb-0">
                       <div className="flex flex-wrap items-center gap-2">
-                        <code className="font-mono text-[12.5px] text-tp-ink">{tool.name}</code>
+                        <code className="font-mono text-[12.5px] text-sg-ink">{tool.name}</code>
                         {tool.input_schema?.required?.length ? (
-                          <span className="rounded-full border border-tp-glass-edge bg-tp-glass-inner px-1.5 py-0 font-mono text-[9.5px] text-tp-ink-4">
+                          <span className="rounded-full border border-sg-border bg-sg-inset px-1.5 py-0 font-mono text-[9.5px] text-sg-ink-4">
                             {tool.input_schema.required.length} required
                           </span>
                         ) : null}
                       </div>
                       {tool.description ? (
-                        <p className="text-[12.5px] leading-[1.5] text-tp-ink-2">
+                        <p className="text-[12.5px] leading-[1.5] text-sg-ink-2">
                           {tool.description}
                         </p>
                       ) : null}
@@ -184,7 +184,7 @@ export default function PluginDetailPage() {
                   <select
                     value={selectedTool}
                     onChange={(e) => setSelectedTool(e.target.value)}
-                    className="h-8 rounded-md border border-tp-glass-edge bg-tp-glass-inner px-2 font-mono text-[11px] text-tp-ink-2 outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40"
+                    className="h-8 rounded-md border border-sg-border bg-sg-inset px-2 font-mono text-[11px] text-sg-ink-2 outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40"
                   >
                     {tools.map((tool) => (
                       <option key={tool.name} value={tool.name}>
@@ -193,11 +193,11 @@ export default function PluginDetailPage() {
                     ))}
                   </select>
                 ) : tools.length === 1 ? (
-                  <code className="font-mono text-[11px] text-tp-ink-3">{tools[0]!.name}</code>
+                  <code className="font-mono text-[11px] text-sg-ink-3">{tools[0]!.name}</code>
                 ) : null}
               </div>
               {tools.length === 0 ? (
-                <p className="text-[13px] text-tp-ink-3">{t("plugins.noTools")}</p>
+                <p className="text-[13px] text-sg-ink-3">{t("plugins.noTools")}</p>
               ) : (
                 <InvokeForm
                   pluginName={name}
@@ -209,7 +209,7 @@ export default function PluginDetailPage() {
             <GlassPanel variant="soft" className="flex flex-col gap-3 p-5">
               <SectionHeading>{t("plugins.tp.detailDoctorLabel")}</SectionHeading>
               {!diagnostics || (Array.isArray(diagnostics) && diagnostics.length === 0) ? (
-                <p className="text-[13px] text-tp-ink-3">
+                <p className="text-[13px] text-sg-ink-3">
                   {t("plugins.tp.detailDoctorEmpty")}
                 </p>
               ) : (
@@ -222,7 +222,7 @@ export default function PluginDetailPage() {
               {sandboxConfig ? (
                 <JsonView value={sandboxConfig} />
               ) : (
-                <p className="text-[13px] text-tp-ink-3">
+                <p className="text-[13px] text-sg-ink-3">
                   {t("plugins.tp.detailSandboxEmpty")}
                 </p>
               )}
@@ -238,7 +238,7 @@ export default function PluginDetailPage() {
 
 function SectionHeading({ children }: { children: React.ReactNode }) {
   return (
-    <h2 className="font-mono text-[10.5px] uppercase tracking-[0.12em] text-tp-ink-4">
+    <h2 className="font-mono text-[10.5px] uppercase tracking-[0.12em] text-sg-ink-4">
       {children}
     </h2>
   );
@@ -256,13 +256,13 @@ function Field({
   if (!value) return null;
   return (
     <div className="flex items-start justify-between gap-3">
-      <dt className="font-mono text-[10.5px] uppercase tracking-[0.1em] text-tp-ink-4">
+      <dt className="font-mono text-[10.5px] uppercase tracking-[0.1em] text-sg-ink-4">
         {label}
       </dt>
       <dd
         className={cn(
           "min-w-0 flex-1 break-all text-right",
-          mono ? "font-mono text-[11.5px] text-tp-ink-2" : "text-[12.5px] text-tp-ink",
+          mono ? "font-mono text-[11.5px] text-sg-ink-2" : "text-[12.5px] text-sg-ink",
         )}
       >
         {value}
@@ -332,14 +332,14 @@ function InvokeForm({
       data-testid="plugin-invoke-form"
     >
       {tool.description ? (
-        <p className="text-[12.5px] text-tp-ink-2">{tool.description}</p>
+        <p className="text-[12.5px] text-sg-ink-2">{tool.description}</p>
       ) : null}
 
       {!useRaw && simpleFields.length > 0 ? (
         <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
           {simpleFields.map(([key, fieldSchema]) => (
             <label key={key} className="flex flex-col gap-1 text-sm">
-              <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-tp-ink-4">
+              <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-sg-ink-4">
                 {key}
                 {(schema.required ?? []).includes(key) ? " *" : ""}
                 {fieldSchema.description ? (
@@ -358,20 +358,20 @@ function InvokeForm({
         </div>
       ) : (
         <label className="flex flex-col gap-1 text-sm">
-          <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-tp-ink-4">
+          <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-sg-ink-4">
             {t("plugins.argumentsJson")}
           </span>
           <textarea
             value={rawJson}
             onChange={(e) => setRawJson(e.target.value)}
             rows={6}
-            className="rounded-lg border border-tp-glass-edge bg-tp-glass-inner p-2 font-mono text-[11.5px] text-tp-ink-2 outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40"
+            className="rounded-lg border border-sg-border bg-sg-inset p-2 font-mono text-[11.5px] text-sg-ink-2 outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40"
           />
         </label>
       )}
 
       {simpleFields.length > 0 && !hasRichFields ? (
-        <label className="inline-flex items-center gap-2 text-[11.5px] text-tp-ink-3">
+        <label className="inline-flex items-center gap-2 text-[11.5px] text-sg-ink-3">
           <input
             type="checkbox"
             checked={useRaw}
@@ -387,15 +387,15 @@ function InvokeForm({
           type="submit"
           disabled={invoke.isPending}
           data-testid="plugin-invoke-submit"
-          className="inline-flex items-center gap-2 rounded-lg border border-tp-amber/35 bg-tp-amber-soft px-3 py-2 text-[13px] font-medium text-tp-amber transition-colors hover:bg-[color-mix(in_oklch,var(--tp-amber)_22%,transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/50 disabled:cursor-not-allowed disabled:opacity-70"
+          className="inline-flex items-center gap-2 rounded-lg border border-sg-accent/35 bg-sg-accent-soft px-3 py-2 text-[13px] font-medium text-sg-accent transition-colors hover:bg-[color-mix(in_oklch,var(--sg-accent)_22%,transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/50 disabled:cursor-not-allowed disabled:opacity-70"
         >
           {invoke.isPending ? t("plugins.invoking") : t("plugins.invoke")}
         </button>
-        <span className="text-[11.5px] text-tp-ink-4">{t("plugins.tp.detailInvokeHint")}</span>
+        <span className="text-[11.5px] text-sg-ink-4">{t("plugins.tp.detailInvokeHint")}</span>
       </div>
 
       {invoke.isError ? (
-        <p className="rounded-lg border border-tp-err/30 bg-tp-err-soft px-3 py-2 font-mono text-[11.5px] text-tp-err">
+        <p className="rounded-lg border border-sg-err/30 bg-sg-err-soft px-3 py-2 font-mono text-[11.5px] text-sg-err">
           {(invoke.error as Error).message}
         </p>
       ) : null}
@@ -420,7 +420,7 @@ function SimpleFieldInput({
       <select
         value={String(value ?? "")}
         onChange={(e) => onChange(e.target.value)}
-        className="h-9 rounded-lg border border-tp-glass-edge bg-tp-glass-inner px-2 text-[13px] text-tp-ink outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40"
+        className="h-9 rounded-lg border border-sg-border bg-sg-inset px-2 text-[13px] text-sg-ink outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40"
       >
         <option value="">(select)</option>
         {schema.enum.map((e) => (
@@ -448,7 +448,7 @@ function SimpleFieldInput({
         onChange={(e) =>
           onChange(e.target.value === "" ? undefined : Number(e.target.value))
         }
-        className="h-9 rounded-lg border border-tp-glass-edge bg-tp-glass-inner px-2 text-[13px] text-tp-ink outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40"
+        className="h-9 rounded-lg border border-sg-border bg-sg-inset px-2 text-[13px] text-sg-ink outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40"
       />
     );
   }
@@ -457,7 +457,7 @@ function SimpleFieldInput({
       type="text"
       value={typeof value === "string" ? value : ""}
       onChange={(e) => onChange(e.target.value)}
-      className="h-9 rounded-lg border border-tp-glass-edge bg-tp-glass-inner px-2 text-[13px] text-tp-ink outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40"
+      className="h-9 rounded-lg border border-sg-border bg-sg-inset px-2 text-[13px] text-sg-ink outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40"
     />
   );
 }
@@ -465,12 +465,12 @@ function SimpleFieldInput({
 function ResponseBlock({ response }: { response: PluginInvokeResponse }) {
   const tone =
     response.status === "success"
-      ? { ring: "border-tp-ok/30 bg-tp-ok-soft", text: "text-tp-ok" }
+      ? { ring: "border-sg-ok/30 bg-sg-ok-soft", text: "text-sg-ok" }
       : response.status === "accepted"
-        ? { ring: "border-tp-glass-edge bg-tp-glass-inner", text: "text-tp-ink-2" }
-        : { ring: "border-tp-err/30 bg-tp-err-soft", text: "text-tp-err" };
+        ? { ring: "border-sg-border bg-sg-inset", text: "text-sg-ink-2" }
+        : { ring: "border-sg-err/30 bg-sg-err-soft", text: "text-sg-err" };
   return (
-    <div className="flex flex-col gap-2 rounded-lg border border-tp-glass-edge bg-tp-glass-inner p-3">
+    <div className="flex flex-col gap-2 rounded-lg border border-sg-border bg-sg-inset p-3">
       <div className="flex flex-wrap items-center gap-2">
         <span
           className={cn(
@@ -481,17 +481,17 @@ function ResponseBlock({ response }: { response: PluginInvokeResponse }) {
         >
           {response.status}
         </span>
-        <span className="font-mono text-[11px] text-tp-ink-3">
+        <span className="font-mono text-[11px] text-sg-ink-3">
           {response.duration_ms} ms
         </span>
         {response.task_id ? (
-          <code className="font-mono text-[11px] text-tp-ink-4">
+          <code className="font-mono text-[11px] text-sg-ink-4">
             task_id: {response.task_id}
           </code>
         ) : null}
       </div>
       {response.message ? (
-        <p className="font-mono text-[11.5px] text-tp-err">{response.message}</p>
+        <p className="font-mono text-[11.5px] text-sg-err">{response.message}</p>
       ) : null}
       {response.result !== undefined && response.result !== null ? (
         <JsonView value={response.result} className="max-h-64 overflow-auto" />

@@ -147,7 +147,7 @@ export function AgentPicker({
       ref={rootRef}
       className={cn("relative flex flex-col gap-1.5", className)}
     >
-      <span className="font-mono text-[10.5px] uppercase tracking-[0.1em] text-tp-ink-4">
+      <span className="font-mono text-[10.5px] uppercase tracking-[0.1em] text-sg-ink-4">
         {t("playground.agentPicker.label")}
       </span>
       <button
@@ -158,10 +158,10 @@ export function AgentPicker({
         data-testid="agent-picker-trigger"
         className={cn(
           "inline-flex min-w-[180px] items-center justify-between gap-2 rounded-lg px-3 py-1.5",
-          "border border-tp-glass-edge bg-tp-glass-inner",
-          "font-mono text-[12.5px] text-tp-ink",
-          "outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40 focus-visible:border-tp-amber/40",
-          "hover:bg-tp-glass-inner-hover",
+          "border border-sg-border bg-sg-inset",
+          "font-mono text-[12.5px] text-sg-ink",
+          "outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40 focus-visible:border-sg-accent/40",
+          "hover:bg-sg-inset-hover",
         )}
       >
         <span className="truncate">{triggerLabel}</span>
@@ -169,7 +169,7 @@ export function AgentPicker({
           aria-hidden
           className={cn(
             "h-1.5 w-1.5 shrink-0 rounded-full",
-            value === null ? "bg-tp-ink-4" : "bg-tp-amber",
+            value === null ? "bg-sg-ink-4" : "bg-sg-accent",
           )}
         />
       </button>
@@ -181,7 +181,7 @@ export function AgentPicker({
           data-testid="agent-picker-popover"
           className={cn(
             "absolute left-0 top-full z-30 mt-1 flex w-[320px] flex-col gap-1.5 rounded-lg",
-            "border border-tp-glass-edge bg-tp-surface p-2 shadow-lg",
+            "sg-glass-overlay lg-edge p-2 shadow-sg-4",
           )}
         >
           <input
@@ -193,9 +193,9 @@ export function AgentPicker({
             aria-label={t("playground.agentPicker.searchPlaceholder")}
             data-testid="agent-picker-search"
             className={cn(
-              "w-full rounded-md border px-2.5 py-1.5 font-mono text-[12px] text-tp-ink",
-              "bg-tp-glass-inner border-tp-glass-edge placeholder:text-tp-ink-4",
-              "outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40 focus-visible:border-tp-amber/40",
+              "w-full rounded-md border px-2.5 py-1.5 font-mono text-[12px] text-sg-ink",
+              "bg-sg-inset border-sg-border placeholder:text-sg-ink-4",
+              "outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40 focus-visible:border-sg-accent/40",
             )}
           />
 
@@ -211,36 +211,36 @@ export function AgentPicker({
             }}
             className={cn(
               "flex flex-col items-start gap-0.5 rounded-md px-2.5 py-1.5 text-left",
-              "hover:bg-tp-glass-inner-hover focus-visible:bg-tp-glass-inner-hover",
-              "outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
-              value === null && "bg-tp-amber-soft",
+              "hover:bg-sg-inset-hover focus-visible:bg-sg-inset-hover",
+              "outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
+              value === null && "bg-sg-accent-soft",
             )}
           >
-            <span className="font-mono text-[12.5px] text-tp-ink">
+            <span className="font-mono text-[12.5px] text-sg-ink">
               {t("playground.agentPicker.autoLabel")}
             </span>
-            <span className="text-[11px] text-tp-ink-4">
+            <span className="text-[11px] text-sg-ink-4">
               {t("playground.agentPicker.autoHint")}
             </span>
           </button>
 
           {agentsQuery.isLoading ? (
             <div
-              className="px-2.5 py-3 text-center text-[12px] text-tp-ink-4"
+              className="px-2.5 py-3 text-center text-[12px] text-sg-ink-4"
               data-testid="agent-picker-loading"
             >
               {t("playground.agentPicker.loading")}
             </div>
           ) : agents.length === 0 ? (
             <div
-              className="px-2.5 py-3 text-center text-[12px] text-tp-ink-4"
+              className="px-2.5 py-3 text-center text-[12px] text-sg-ink-4"
               data-testid="agent-picker-empty"
             >
               {t("playground.agentPicker.empty")}
             </div>
           ) : filtered.length === 0 ? (
             <div
-              className="px-2.5 py-3 text-center text-[12px] text-tp-ink-4"
+              className="px-2.5 py-3 text-center text-[12px] text-sg-ink-4"
               data-testid="agent-picker-no-match"
             >
               {t("playground.agentPicker.noMatch")}
@@ -255,7 +255,7 @@ export function AgentPicker({
                 if (items.length === 0) return null;
                 return (
                   <section key={src} className="flex flex-col gap-0.5">
-                    <header className="px-2.5 pt-1 font-mono text-[9.5px] uppercase tracking-[0.1em] text-tp-ink-4">
+                    <header className="px-2.5 pt-1 font-mono text-[9.5px] uppercase tracking-[0.1em] text-sg-ink-4">
                       {t(`playground.agentPicker.source.${src}`)}
                     </header>
                     {items.map((agent) => (
@@ -303,19 +303,19 @@ function AgentRow({ agent, selected, onPick }: AgentRowProps): React.JSX.Element
       onClick={() => onPick(agent.name)}
       className={cn(
         "flex flex-col items-start gap-0.5 rounded-md px-2.5 py-1.5 text-left",
-        "hover:bg-tp-glass-inner-hover focus-visible:bg-tp-glass-inner-hover",
-        "outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
-        selected && "bg-tp-amber-soft",
+        "hover:bg-sg-inset-hover focus-visible:bg-sg-inset-hover",
+        "outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
+        selected && "bg-sg-accent-soft",
       )}
     >
       <div className="flex w-full items-center justify-between gap-2">
-        <span className="truncate font-mono text-[12.5px] text-tp-ink">
+        <span className="truncate font-mono text-[12.5px] text-sg-ink">
           {agent.name}
         </span>
         <SourceBadge source={src} />
       </div>
       {description.length > 0 ? (
-        <span className="line-clamp-1 text-[11px] text-tp-ink-3">
+        <span className="line-clamp-1 text-[11px] text-sg-ink-3">
           {description}
         </span>
       ) : null}
@@ -334,10 +334,10 @@ function SourceBadge({ source }: SourceBadgeProps): React.JSX.Element {
       className={cn(
         "shrink-0 rounded border px-1 py-px font-mono text-[9.5px] uppercase tracking-[0.05em]",
         source === "built-in"
-          ? "border-tp-amber/35 text-tp-amber"
+          ? "border-sg-accent/35 text-sg-accent"
           : source === "project"
-            ? "border-tp-ember/35 text-tp-ember"
-            : "border-tp-glass-edge text-tp-ink-3",
+            ? "border-sg-accent-2/35 text-sg-accent-2"
+            : "border-sg-border text-sg-ink-3",
       )}
     >
       {t(`playground.agentPicker.source.${source}`)}

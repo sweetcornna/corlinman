@@ -41,7 +41,7 @@ import {
  * incoming events are buffered into a side ring and surfaced as a
  * resume-to-view pill — we never drop events that arrive during a pause.
  *
- * Newest row gets `justNow` for 2.8s (the tp-just-now keyframe window).
+ * Newest row gets `justNow` for 2.8s (the sg-just-now keyframe window).
  * Clicking a row selects it; clicking the same row again closes the drawer.
  * Esc also closes the drawer.
  */
@@ -280,17 +280,17 @@ export default function HooksPage() {
         variant="strong"
         className="flex flex-col gap-3 p-5 sm:p-6"
       >
-        <h1 className="font-sans text-[28px] font-semibold leading-[1.15] tracking-[-0.025em] text-tp-ink sm:text-[32px]">
+        <h1 className="font-sans text-[28px] font-semibold leading-[1.15] tracking-[-0.025em] text-sg-ink sm:text-[32px]">
           {t("hooks.tp.heroTitle")}
         </h1>
-        <p className="max-w-[62ch] text-[14px] leading-[1.6] text-tp-ink-2">
+        <p className="max-w-[62ch] text-[14px] leading-[1.6] text-sg-ink-2">
           <InlineMetric tone="amber">
             {t("hooks.tp.heroLeadN", { n: heroEventsPerMin })}
           </InlineMetric>
           <span className="ml-1">
             {t("hooks.tp.heroLeadAttend", { n: heroSubCount })}
           </span>
-          <span className="ml-1 text-tp-ink-3">
+          <span className="ml-1 text-sg-ink-3">
             {t("hooks.tp.heroTier")}
           </span>
         </p>
@@ -319,10 +319,10 @@ export default function HooksPage() {
           onClick={() => onToggleStream()}
           className={cn(
             "inline-flex w-fit items-center gap-2 self-center rounded-full border px-3 py-1",
-            "bg-tp-amber-soft border-tp-amber/25 text-tp-amber",
+            "bg-sg-accent-soft border-sg-accent/25 text-sg-accent",
             "font-mono text-[11.5px]",
-            "hover:border-tp-amber/40",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
+            "hover:border-sg-accent/40",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
           )}
           data-testid="resume-pending-pill"
         >
@@ -349,9 +349,9 @@ export default function HooksPage() {
           <div
             aria-hidden
             className={cn(
-              "grid items-center gap-3 border-b border-tp-glass-edge px-4 py-2.5",
+              "grid items-center gap-3 border-b border-sg-border px-4 py-2.5",
               "grid-cols-[82px_170px_64px_minmax(0,1fr)_auto]",
-              "font-mono text-[10.5px] uppercase tracking-[0.08em] text-tp-ink-4",
+              "font-mono text-[10.5px] uppercase tracking-[0.08em] text-sg-ink-4",
             )}
           >
             <span>{t("hooks.tp.colTime")}</span>
@@ -435,8 +435,8 @@ function InlineMetric({
       className={cn(
         "whitespace-nowrap rounded-md border px-1.5 py-px font-mono text-[12.5px] font-medium tabular-nums",
         tone === "amber"
-          ? "border-tp-amber/30 bg-tp-amber-soft text-tp-amber"
-          : "border-tp-glass-edge bg-tp-glass-inner-strong text-tp-ink",
+          ? "border-sg-accent/30 bg-sg-accent-soft text-sg-accent"
+          : "border-sg-border bg-sg-inset-strong text-sg-ink",
       )}
     >
       {children}

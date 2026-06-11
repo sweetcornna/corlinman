@@ -54,14 +54,14 @@ export function HealthRing({
           fill="none"
           stroke="currentColor"
           strokeWidth={stroke}
-          className="text-border"
+          className="text-sg-border"
         />
         <motion.circle
           cx={cx}
           cy={cy}
           r={radius}
           fill="none"
-          stroke="var(--ok)"
+          stroke="var(--sg-ok)"
           strokeWidth={stroke}
           strokeLinecap="round"
           pathLength={1}
@@ -76,14 +76,15 @@ export function HealthRing({
           style={{
             transform: `rotate(-90deg)`,
             transformOrigin: `${cx}px ${cy}px`,
+            filter: "drop-shadow(0 0 6px var(--sg-accent-glow))",
           }}
         />
       </svg>
       <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <div className="font-mono text-2xl font-semibold tracking-tight">
+        <div className="font-mono text-2xl font-semibold tracking-tight text-sg-ink">
           <AnimatedNumber value={value} format="number" />
         </div>
-        <div className="font-mono text-xs text-muted-foreground">
+        <div className="font-mono text-xs text-sg-ink-3">
           / {total}
         </div>
       </div>

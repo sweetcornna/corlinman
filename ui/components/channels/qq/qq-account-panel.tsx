@@ -39,17 +39,17 @@ export function QqAccountPanel({
       data-testid="qq-account-panel"
     >
       <div className="flex items-center justify-between gap-2">
-        <h2 className="text-[14px] font-medium text-tp-ink">
+        <h2 className="text-[14px] font-medium text-sg-ink">
           {t("channels.qq.tp.accountTitle")}
         </h2>
         <span
           className={cn(
             "inline-flex items-center gap-1.5 rounded-full border px-2 py-[2px] font-mono text-[10px] uppercase tracking-[0.08em]",
             connection === "connected"
-              ? "border-tp-ok/25 bg-tp-ok-soft text-tp-ok"
+              ? "border-sg-ok/25 bg-sg-ok-soft text-sg-ok"
               : connection === "disconnected"
-                ? "border-tp-err/25 bg-tp-err-soft text-tp-err"
-                : "border-tp-glass-edge bg-tp-glass-inner text-tp-ink-3",
+                ? "border-sg-err/25 bg-sg-err-soft text-sg-err"
+                : "border-sg-border bg-sg-inset text-sg-ink-3",
           )}
         >
           <span
@@ -57,10 +57,10 @@ export function QqAccountPanel({
             className={cn(
               "h-1.5 w-1.5 rounded-full",
               connection === "connected"
-                ? "bg-tp-ok tp-breathe"
+                ? "bg-sg-ok sg-breathe"
                 : connection === "disconnected"
-                  ? "bg-tp-err"
-                  : "bg-tp-ink-4",
+                  ? "bg-sg-err"
+                  : "bg-sg-ink-4",
             )}
           />
           {t(`channels.qq.tp.state.${connection}`)}
@@ -91,9 +91,9 @@ export function QqAccountPanel({
         aria-label={t("channels.qq.tp.accountReconnectAria")}
         className={cn(
           "inline-flex w-fit items-center gap-2 rounded-lg border px-3 py-2 text-[13px] font-medium",
-          "border-tp-amber/35 bg-tp-amber-soft text-tp-amber",
-          "transition-colors hover:bg-[color-mix(in_oklch,var(--tp-amber)_22%,transparent)]",
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/50",
+          "border-sg-accent/35 bg-sg-accent-soft text-sg-accent",
+          "transition-colors hover:bg-[color-mix(in_oklch,var(--sg-accent)_22%,transparent)]",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/50",
           "disabled:cursor-not-allowed disabled:opacity-60",
         )}
       >
@@ -119,12 +119,12 @@ function Row({
 }) {
   return (
     <div className="flex min-w-0 items-center gap-3">
-      <dt className="font-mono text-[10.5px] uppercase tracking-[0.1em] text-tp-ink-4">
+      <dt className="font-mono text-[10.5px] uppercase tracking-[0.1em] text-sg-ink-4">
         {label}
       </dt>
       <dd
         className={cn(
-          "min-w-0 flex-1 truncate rounded-md border border-tp-glass-edge bg-tp-glass-inner px-2 py-1 text-tp-ink-2",
+          "min-w-0 flex-1 truncate rounded-md border border-sg-border bg-sg-inset px-2 py-1 text-sg-ink-2",
           mono ? "font-mono text-[11.5px]" : "text-[12.5px]",
         )}
         title={value}

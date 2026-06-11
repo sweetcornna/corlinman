@@ -26,6 +26,7 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { Check, ChevronDown, ChevronUp, Pencil, Plus, Trash2, X } from "lucide-react";
 
+import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -95,11 +96,11 @@ export default function ProfilesPage() {
           <h1 className="text-2xl font-semibold tracking-tight">
             {t("profiles.title")}
           </h1>
-          <p className="text-sm text-tp-ink-3">{t("profiles.subtitle")}</p>
+          <p className="text-sm text-sg-ink-3">{t("profiles.subtitle")}</p>
         </div>
         <div className="flex items-center gap-2">
           <span
-            className="text-[11px] text-tp-ink-3"
+            className="text-[11px] text-sg-ink-3"
             data-testid="profiles-count"
           >
             {t("profiles.count", { count: profiles.length })}
@@ -120,7 +121,7 @@ export default function ProfilesPage() {
           {Array.from({ length: 2 }).map((_, i) => (
             <div
               key={`sk-${i}`}
-              className="rounded-lg border border-tp-glass-edge bg-tp-glass p-4"
+              className="rounded-lg border border-sg-border bg-sg-card p-4"
             >
               <Skeleton className="h-4 w-32" />
               <Skeleton className="mt-2 h-3 w-48" />
@@ -128,21 +129,17 @@ export default function ProfilesPage() {
           ))}
         </section>
       ) : query.isError ? (
-        <section
-          className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive"
-          role="alert"
-          data-testid="profiles-load-failed"
-        >
+        <Alert variant="danger" data-testid="profiles-load-failed">
           {t("profiles.toastLoadFailed", {
             message:
               query.error instanceof Error
                 ? query.error.message
                 : String(query.error),
           })}
-        </section>
+        </Alert>
       ) : profiles.length === 0 ? (
         <section
-          className="rounded-lg border border-dashed border-tp-glass-edge bg-tp-glass/40 p-10 text-center text-sm text-tp-ink-3"
+          className="rounded-lg border border-dashed border-sg-border bg-sg-card p-10 text-center text-sm text-sg-ink-3"
           data-testid="profiles-empty"
         >
           {t("profiles.empty")}
@@ -267,10 +264,10 @@ function ProfileRow({
     <li
       data-testid={`profile-row-${profile.slug}`}
       className={cn(
-        "rounded-lg border bg-tp-glass transition-colors",
+        "rounded-lg border bg-sg-card transition-colors",
         isActive
-          ? "border-tp-amber/40 shadow-[0_0_0_1px_var(--tp-amber-glow)]"
-          : "border-tp-glass-edge",
+          ? "border-sg-accent/40 shadow-[0_0_0_1px_var(--sg-accent-glow)]"
+          : "border-sg-border",
       )}
     >
       <div className="flex flex-wrap items-center gap-3 p-4">
@@ -299,7 +296,7 @@ function ProfileRow({
               />
             ) : (
               <span
-                className="truncate text-sm text-tp-ink"
+                className="truncate text-sm text-sg-ink"
                 data-testid={`profile-display-name-${profile.slug}`}
               >
                 {profile.display_name}
@@ -316,7 +313,7 @@ function ProfileRow({
               </Badge>
             ) : null}
           </div>
-          <div className="mt-1 flex items-center gap-3 text-[11px] text-tp-ink-3">
+          <div className="mt-1 flex items-center gap-3 text-[11px] text-sg-ink-3">
             <span>{formatTime(profile.created_at)}</span>
             {profile.description ? (
               <span className="truncate">{profile.description}</span>
@@ -448,10 +445,10 @@ function SoulEditor({ slug }: SoulEditorProps): React.ReactElement {
   });
 
   return (
-    <div className="border-t border-tp-glass-edge px-4 pb-4 pt-3">
+    <div className="border-t border-sg-border px-4 pb-4 pt-3">
       <Label
         htmlFor={`soul-${slug}`}
-        className="mb-2 flex items-center gap-2 text-[11px] uppercase tracking-wider text-tp-ink-3"
+        className="mb-2 flex items-center gap-2 text-[11px] uppercase tracking-wider text-sg-ink-3"
       >
         {t("profiles.soulSection")}
       </Label>
@@ -483,7 +480,7 @@ function SoulEditor({ slug }: SoulEditorProps): React.ReactElement {
           {saveMut.isPending ? t("profiles.savingSoul") : t("profiles.saveSoul")}
         </Button>
         {dirty ? (
-          <span className="text-[11px] text-tp-ink-3">●</span>
+          <span className="text-[11px] text-sg-ink-3">●</span>
         ) : null}
       </div>
     </div>

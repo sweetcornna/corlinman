@@ -60,13 +60,14 @@ export function ConversationSearch({
     <div
       className={cn(
         "pointer-events-auto absolute right-4 top-4 z-30 flex items-center gap-1",
-        "rounded-md border border-tp-glass-edge bg-tp-glass-inner px-1.5 py-1 text-[12px] shadow-md",
+        "sg-glass-overlay rounded-sg-lg px-2 py-1.5 text-[12px] shadow-sg-4",
+        "animate-sg-palette-in",
       )}
       role="search"
       aria-label={t("chat.searchOverlayAriaLabel")}
       data-testid="conversation-search"
     >
-      <Search className="h-3.5 w-3.5 text-tp-ink-3" aria-hidden="true" />
+      <Search className="h-3.5 w-3.5 text-sg-ink-4" aria-hidden="true" />
       <input
         ref={inputRef}
         value={query}
@@ -86,10 +87,10 @@ export function ConversationSearch({
           }
         }}
         placeholder={t("chat.searchPlaceholderConversation")}
-        className="w-48 bg-transparent text-tp-ink placeholder:text-tp-ink-3 focus:outline-none"
+        className="w-48 bg-transparent text-sg-ink placeholder:text-sg-ink-5 focus:outline-none"
         data-testid="conversation-search-input"
       />
-      <span className="min-w-[40px] text-right font-mono text-[11px] text-tp-ink-3">
+      <span className="min-w-[40px] text-right font-mono text-[11px] text-sg-ink-4">
         {matches.length === 0
           ? query
             ? "0/0"
@@ -106,7 +107,7 @@ export function ConversationSearch({
           )
         }
         disabled={matches.length === 0}
-        className="rounded p-0.5 text-tp-ink-3 hover:bg-tp-glass-inner hover:text-tp-ink disabled:opacity-30"
+        className="rounded-sg-sm p-0.5 text-sg-ink-4 hover:bg-sg-inset hover:text-sg-ink disabled:opacity-30"
         aria-label={t("chat.searchPrevAriaLabel")}
       >
         <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" />
@@ -119,7 +120,7 @@ export function ConversationSearch({
           )
         }
         disabled={matches.length === 0}
-        className="rounded p-0.5 text-tp-ink-3 hover:bg-tp-glass-inner hover:text-tp-ink disabled:opacity-30"
+        className="rounded-sg-sm p-0.5 text-sg-ink-4 hover:bg-sg-inset hover:text-sg-ink disabled:opacity-30"
         aria-label={t("chat.searchNextAriaLabel")}
       >
         <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
@@ -127,7 +128,7 @@ export function ConversationSearch({
       <button
         type="button"
         onClick={() => setOpen(false)}
-        className="rounded p-0.5 text-tp-ink-3 hover:bg-tp-glass-inner hover:text-tp-ink"
+        className="rounded-sg-sm p-0.5 text-sg-ink-4 hover:bg-sg-inset hover:text-sg-ink"
         aria-label={t("chat.searchCloseAriaLabel")}
         data-testid="conversation-search-close"
       >

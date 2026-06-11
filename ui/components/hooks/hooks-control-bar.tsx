@@ -126,7 +126,7 @@ export function HooksControlBar({
           onToggle={onToggleStream}
         />
         <span
-          className="ml-1 font-mono text-[11.5px] text-tp-ink-3"
+          className="ml-1 font-mono text-[11.5px] text-sg-ink-3"
           data-testid="hooks-stream-hint"
         >
           {t("hooks.tp.streamHint")}

@@ -22,8 +22,8 @@ export function SchedulerListSkeleton() {
         <div
           key={i}
           className={cn(
-            "h-[72px] animate-pulse rounded-2xl border border-tp-glass-edge",
-            "bg-tp-glass-inner/70",
+            "h-[72px] animate-pulse rounded-2xl border border-sg-border",
+            "bg-sg-inset",
           )}
         />
       ))}
@@ -53,15 +53,15 @@ export function SchedulerOfflineBlock({ message }: { message?: string }) {
       variant="soft"
       className="flex flex-col items-center gap-2 p-8 text-center"
     >
-      <div className="font-mono text-[11px] uppercase tracking-[0.12em] text-tp-err">
+      <div className="font-mono text-[11px] uppercase tracking-[0.12em] text-sg-err">
         {t("scheduler.tp.offlineTitle")}
       </div>
-      <p className="max-w-prose text-[13px] text-tp-ink-2">
+      <p className="max-w-prose text-[13px] text-sg-ink-2">
         {t("scheduler.tp.offlineHint")}
       </p>
       {short ? (
         <p
-          className="max-w-full truncate font-mono text-[11px] text-tp-ink-4"
+          className="max-w-full truncate font-mono text-[11px] text-sg-ink-4"
           title={message}
         >
           {short}
@@ -78,12 +78,12 @@ export function SchedulerEmptyBlock({ hasAnyJobs }: { hasAnyJobs: boolean }) {
       variant="soft"
       className="flex flex-col items-center gap-2 p-8 text-center"
     >
-      <div className="text-[14px] font-medium text-tp-ink">
+      <div className="text-[14px] font-medium text-sg-ink">
         {hasAnyJobs
           ? t("scheduler.tp.filterEmptyTitle")
           : t("scheduler.tp.emptyTitle")}
       </div>
-      <p className="max-w-prose text-[13px] text-tp-ink-3">
+      <p className="max-w-prose text-[13px] text-sg-ink-3">
         {hasAnyJobs
           ? t("scheduler.tp.filterEmptyHint")
           : t("scheduler.tp.emptyHint")}

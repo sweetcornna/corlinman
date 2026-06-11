@@ -25,15 +25,40 @@ export interface PageTransitionVariants {
 }
 
 /**
- * Baseline route wrapper: completely static. Glass-heavy pages sit over a
- * fixed relief background, so even a tiny y-translate reads as a twitch during
- * navigation.
+ * Static route wrapper: no movement at all. Kept as an explicit opt-out for
+ * pages that must not animate on navigation (e.g. ones owning their own
+ * shared-layout morphs). Pass it via the `variants` prop. The shell default is
+ * now {@link depthPageVariants}.
  */
 export const baselinePageVariants: PageTransitionVariants = {
   initial: { opacity: 1, y: 0 },
   animate: { opacity: 1, y: 0 },
   exit: { opacity: 1, y: 0 },
   transition: { duration: 0 },
+};
+
+/**
+ * Spatial Glass default — a short "depth" transition. Pages rise from slightly
+ * behind and below (scale 0.985, y 8) into place, and exit by drifting
+ * marginally forward (scale 1.005). The arriving page now settles on a
+ * non-linear spring (Liquid Glass) — a hint of overshoot as it lands rather
+ * than a flat ease — while the leaving page keeps the fast 140ms tween so
+ * navigation still feels responsive. Lands on a clean identity transform
+ * (scale 1, y 0) so glass surfaces never sit mid-blur.
+ */
+export const depthPageVariants: PageTransitionVariants = {
+  initial: { opacity: 0, scale: 0.985, y: 8 },
+  animate: {
+    opacity: 1,
+    scale: 1,
+    y: 0,
+    transition: { type: "spring", stiffness: 300, damping: 30, mass: 0.9 },
+  },
+  exit: {
+    opacity: 0,
+    scale: 1.005,
+    transition: { duration: 0.14, ease: [0.32, 0.72, 0, 1] },
+  },
 };
 
 /**
@@ -55,7 +80,7 @@ const reducedMotionVariants: PageTransitionVariants = {
  * so the exiting page finishes before the next enters.
  *
  * - `variants` (optional): per-route override. Falls back to
- *   {@link baselinePageVariants} when absent.
+ *   {@link depthPageVariants} (the Spatial Glass default) when absent.
  * - Reduced motion (`prefers-reduced-motion: reduce`) snaps to the final
  *   state with no translate/duration.
  * - Children are keyed on pathname so they re-mount on navigation.
@@ -72,7 +97,7 @@ export function PageTransition({
 
   const active: PageTransitionVariants = prefersReducedMotion
     ? reducedMotionVariants
-    : (variants ?? baselinePageVariants);
+    : (variants ?? depthPageVariants);
 
   return (
     <LayoutGroup>

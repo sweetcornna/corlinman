@@ -39,21 +39,21 @@ const RISK_TONE: Record<
   }
 > = {
   low: {
-    border: "border-tp-amber/25",
-    bg: "bg-tp-amber-soft",
-    text: "text-tp-amber",
+    border: "border-sg-accent/25",
+    bg: "bg-sg-accent-soft",
+    text: "text-sg-accent",
     label: "riskLow",
   },
   medium: {
-    border: "border-tp-ember/35",
-    bg: "bg-[color-mix(in_oklch,var(--tp-ember)_14%,transparent)]",
-    text: "text-tp-ember",
+    border: "border-sg-accent-2/35",
+    bg: "bg-sg-accent-2-soft",
+    text: "text-sg-accent-2",
     label: "riskMedium",
   },
   high: {
-    border: "border-tp-err/40",
-    bg: "bg-tp-err-soft",
-    text: "text-tp-err",
+    border: "border-sg-err/40",
+    bg: "bg-sg-err-soft",
+    text: "text-sg-err",
     label: "riskHigh",
   },
 };
@@ -135,8 +135,8 @@ export function ProposalCard({
         className={cn(
           "group p-5 transition-all duration-200",
           // Hermès-level hover lift: panel rises 1px, border tightens.
-          "hover:-translate-y-[1px] hover:shadow-tp-hero",
-          "hover:border-tp-amber/30",
+          "hover:-translate-y-[1px] hover:shadow-sg-3",
+          "hover:border-sg-accent/30",
           isDeparting && "pointer-events-none",
         )}
       >
@@ -149,22 +149,22 @@ export function ProposalCard({
                 risk={proposal.risk}
                 label={t(`evolution.tp.${risk.label}`)}
               />
-              <span className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-tp-ink-4">
+              <span className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-sg-ink-4">
                 #{proposal.id}
               </span>
             </div>
             <h2
               id={headingId}
-              className="font-mono text-[12.5px] leading-tight text-tp-ink"
+              className="font-mono text-[12.5px] leading-tight text-sg-ink"
             >
-              <span className="text-tp-ink-3">
+              <span className="text-sg-ink-3">
                 {t("evolution.tp.cardTargetLabel")} ·{" "}
               </span>
               <span className="break-all">{proposal.target}</span>
             </h2>
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-tp-ink-3">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-sg-ink-3">
               <span>{ageLabel}</span>
-              <span aria-hidden className="text-tp-ink-4">
+              <span aria-hidden className="text-sg-ink-4">
                 ·
               </span>
               <span>
@@ -174,10 +174,10 @@ export function ProposalCard({
               </span>
               {proposal.trace_ids.length > 0 ? (
                 <>
-                  <span aria-hidden className="text-tp-ink-4">
+                  <span aria-hidden className="text-sg-ink-4">
                     ·
                   </span>
-                  <span className="font-mono text-tp-ink-4">
+                  <span className="font-mono text-sg-ink-4">
                     {t("evolution.tp.cardTraceLabel")} ·{" "}
                     {proposal.trace_ids.slice(0, 2).join(" ")}
                     {proposal.trace_ids.length > 2 ? " …" : null}
@@ -197,9 +197,9 @@ export function ProposalCard({
                 aria-label={t("evolution.tp.approve")}
                 className={cn(
                   "inline-flex items-center gap-1.5 rounded-full px-3.5 py-1 text-[12px] font-medium",
-                  "bg-tp-amber text-[#1a120d] shadow-tp-primary",
+                  "bg-sg-accent text-primary-foreground shadow-sg-primary",
                   "transition-transform duration-150 hover:-translate-y-[1px] active:translate-y-0",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/55",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/55",
                   "disabled:pointer-events-none disabled:opacity-50",
                 )}
               >
@@ -213,9 +213,9 @@ export function ProposalCard({
                 aria-label={t("evolution.tp.deny")}
                 className={cn(
                   "inline-flex items-center gap-1.5 rounded-full border px-3.5 py-1 text-[12px] font-medium",
-                  "border-tp-err/40 bg-transparent text-tp-err",
-                  "transition-colors hover:bg-tp-err-soft",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-err/50",
+                  "border-sg-err/40 bg-transparent text-sg-err",
+                  "transition-colors hover:bg-sg-err-soft",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-err/50",
                   "disabled:pointer-events-none disabled:opacity-50",
                 )}
               >
@@ -231,12 +231,12 @@ export function ProposalCard({
           <div
             className={cn(
               "mt-4 flex flex-col gap-2 rounded-xl border p-3",
-              "border-tp-err/30 bg-tp-err-soft/40",
+              "border-sg-err/30 bg-sg-err-soft",
             )}
           >
             <label
               htmlFor={`${headingId}-reason`}
-              className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-tp-err/85"
+              className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-sg-err/85"
             >
               {t("evolution.tp.denyInlineLabel")}
             </label>
@@ -253,10 +253,10 @@ export function ProposalCard({
               placeholder={t("evolution.tp.denyInlinePlaceholder")}
               disabled={disabled}
               className={cn(
-                "rounded-lg border px-3 py-2 text-[12.5px] text-tp-ink",
-                "border-tp-err/35 bg-tp-glass-inner",
-                "placeholder:text-tp-ink-4",
-                "focus:outline-none focus:ring-2 focus:ring-tp-err/40",
+                "rounded-lg border px-3 py-2 text-[12.5px] text-sg-ink",
+                "border-sg-err/35 bg-sg-inset",
+                "placeholder:text-sg-ink-4",
+                "focus:outline-none focus:ring-2 focus:ring-sg-err/40",
               )}
             />
             <div className="flex items-center justify-end gap-2">
@@ -265,9 +265,9 @@ export function ProposalCard({
                 onClick={handleDenyCancel}
                 disabled={disabled}
                 className={cn(
-                  "rounded-full px-3 py-1 text-[11.5px] text-tp-ink-3",
-                  "hover:bg-tp-glass-inner-hover hover:text-tp-ink-2",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
+                  "rounded-full px-3 py-1 text-[11.5px] text-sg-ink-3",
+                  "hover:bg-sg-inset-hover hover:text-sg-ink-2",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
                 )}
               >
                 {t("evolution.tp.denyCancel")}
@@ -278,9 +278,9 @@ export function ProposalCard({
                 disabled={disabled}
                 className={cn(
                   "inline-flex items-center gap-1.5 rounded-full px-3.5 py-1 text-[12px] font-medium",
-                  "bg-tp-err text-white",
+                  "bg-sg-err text-white",
                   "transition-transform duration-150 hover:-translate-y-[1px]",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-err/55",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-err/55",
                   "disabled:pointer-events-none disabled:opacity-50",
                 )}
               >
@@ -291,13 +291,13 @@ export function ProposalCard({
         ) : null}
 
         {/* ── Reasoning prose ─────────────────────────────────── */}
-        <div className="mt-4 border-t border-tp-glass-edge pt-3">
-          <div className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-tp-ink-4">
+        <div className="mt-4 border-t border-sg-border pt-3">
+          <div className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-sg-ink-4">
             {t("evolution.tp.cardReasoningLabel")}
           </div>
           <p
             className={cn(
-              "mt-1.5 text-[13px] leading-[1.7] text-tp-ink-2",
+              "mt-1.5 text-[13px] leading-[1.7] text-sg-ink-2",
               !expanded && "line-clamp-2",
             )}
           >
@@ -314,9 +314,9 @@ export function ProposalCard({
             aria-controls={`${headingId}-diff`}
             className={cn(
               "inline-flex items-center gap-1 rounded-full px-2 py-1",
-              "font-mono text-[10.5px] uppercase tracking-[0.08em] text-tp-ink-3",
-              "hover:bg-tp-glass-inner-hover hover:text-tp-ink-2",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
+              "font-mono text-[10.5px] uppercase tracking-[0.08em] text-sg-ink-3",
+              "hover:bg-sg-inset-hover hover:text-sg-ink-2",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
             )}
           >
             {expanded ? (
@@ -335,7 +335,7 @@ export function ProposalCard({
             {proposal.diff.trim().length > 0 ? (
               <DiffBlock diff={proposal.diff} />
             ) : (
-              <p className="text-[12px] italic text-tp-ink-4">
+              <p className="text-[12px] italic text-sg-ink-4">
                 {t("evolution.tp.cardDiffEmpty")}
               </p>
             )}
@@ -353,8 +353,8 @@ function KindBadge({ kind }: { kind: string }) {
     <span
       className={cn(
         "inline-flex items-center rounded-full border px-2 py-[2px]",
-        "border-tp-glass-edge bg-tp-glass-inner-strong",
-        "font-mono text-[10.5px] tracking-wide text-tp-ink-2",
+        "border-sg-border bg-sg-inset-strong",
+        "font-mono text-[10.5px] tracking-wide text-sg-ink-2",
       )}
     >
       {kind}
@@ -385,10 +385,10 @@ function RiskBadge({
         className={cn(
           "h-[5px] w-[5px] rounded-full",
           risk === "low"
-            ? "bg-tp-amber"
+            ? "bg-sg-accent"
             : risk === "medium"
-              ? "bg-tp-ember"
-              : "bg-tp-err",
+              ? "bg-sg-accent-2"
+              : "bg-sg-err",
         )}
       />
       {label}
@@ -403,21 +403,21 @@ function DiffBlock({ diff }: { diff: string }) {
     <pre
       className={cn(
         "rounded-lg border p-3 font-mono text-[11.5px] leading-[1.65]",
-        "bg-tp-glass-inner border-tp-glass-edge text-tp-ink-2",
+        "bg-sg-inset border-sg-border text-sg-ink-2",
         "whitespace-pre overflow-x-auto",
       )}
     >
       {lines.map((line, i) => {
         const tone =
           line.startsWith("+++") || line.startsWith("---")
-            ? "text-tp-ink-3"
+            ? "text-sg-ink-3"
             : line.startsWith("@@")
-              ? "text-tp-amber"
+              ? "text-sg-accent"
               : line.startsWith("+")
-                ? "text-tp-ok"
+                ? "text-sg-ok"
                 : line.startsWith("-")
-                  ? "text-tp-err"
-                  : "text-tp-ink-2";
+                  ? "text-sg-err"
+                  : "text-sg-ink-2";
         return (
           <span key={i} className={cn("block", tone)}>
             {line || " "}

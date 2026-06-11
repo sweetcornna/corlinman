@@ -14,6 +14,7 @@
 import * as React from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useTranslation } from "react-i18next";
+import { i18next } from "@/lib/i18n";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
@@ -79,7 +80,7 @@ function transcriptToChatMessages(
     const rawTcs = m.tool_calls ?? [];
     const toolCalls: ToolCallState[] = rawTcs.map((tc, j) => ({
       callId: tc.id?.trim() ? tc.id : `hist_${i}_${j}`,
-      toolName: tc.function?.name ?? "(unknown)",
+      toolName: tc.function?.name ?? i18next.t("chat.unknownToolName"),
       argsJson: tc.function?.arguments ?? "{}",
       status: tc.result !== undefined ? "settled" : "ok",
       resultPreview: tc.result,
@@ -350,7 +351,7 @@ export default function ChatPage() {
         />
       ) : (
         <section
-          className="flex flex-1 items-center justify-center overflow-hidden rounded-xl border border-tp-glass-edge bg-tp-glass p-6 shadow-tp-panel"
+          className="flex flex-1 items-center justify-center overflow-hidden rounded-xl border border-sg-border bg-sg-card p-6 shadow-sg-2"
           data-testid="chat-empty-pane"
         >
           <ChatEmptyState onPick={handlePickSuggestion} />

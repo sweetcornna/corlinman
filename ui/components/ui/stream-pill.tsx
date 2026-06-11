@@ -8,10 +8,10 @@ import { cn } from "@/lib/utils";
  * Live / paused indicator pill with breathing dot and optional rate readout.
  *
  * States:
- *   - `live`     — green dot with `.tp-breathe`, optional `rate` suffix
+ *   - `live`     — green dot with `.sg-breathe`, optional `rate` suffix
  *     (e.g. "41.2/s"). Pause button icon shown when `onToggle` is passed.
  *   - `paused`   — muted dot, no breathing, Play button icon.
- *   - `throttled`— amber dot with `.tp-breathe-amber`; indicates backpressure
+ *   - `throttled`— amber dot with `.sg-breathe-accent`; indicates backpressure
  *     upstream, e.g. when the hook bus is rate-limiting a subscriber.
  *
  * Accessibility:
@@ -36,25 +36,25 @@ const config: Record<
   StreamState,
   { label: string; dotTone: "ok" | "warn" | "muted"; breatheClass: string }
 > = {
-  live: { label: "Live", dotTone: "ok", breatheClass: "tp-breathe" },
+  live: { label: "Live", dotTone: "ok", breatheClass: "sg-breathe" },
   paused: { label: "Paused", dotTone: "muted", breatheClass: "" },
   throttled: {
     label: "Throttled",
     dotTone: "warn",
-    breatheClass: "tp-breathe-amber",
+    breatheClass: "sg-breathe-accent",
   },
 };
 
 const dotColor: Record<"ok" | "warn" | "muted", string> = {
-  ok: "bg-tp-ok",
-  warn: "bg-tp-warn",
-  muted: "bg-tp-ink-4",
+  ok: "bg-sg-ok",
+  warn: "bg-sg-warn",
+  muted: "bg-sg-ink-4",
 };
 
 const containerTone: Record<StreamState, string> = {
-  live: "bg-tp-ok-soft text-tp-ok border-tp-ok/25",
-  paused: "bg-tp-glass-inner text-tp-ink-3 border-tp-glass-edge",
-  throttled: "bg-tp-warn-soft text-tp-warn border-tp-warn/25",
+  live: "bg-sg-ok-soft text-sg-ok border-sg-ok/25",
+  paused: "bg-sg-inset text-sg-ink-3 border-sg-border",
+  throttled: "bg-sg-warn-soft text-sg-warn border-sg-warn/25",
 };
 
 export const StreamPill = React.forwardRef<HTMLDivElement, StreamPillProps>(

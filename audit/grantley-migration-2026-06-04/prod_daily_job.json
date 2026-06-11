@@ -1,0 +1,11 @@
+{
+  "name": "grantley.daily_qzone",
+  "action_type": "qzone.daily_publish",
+  "persona_id": "grantley",
+  "cron": "0 9 * * *",
+  "timezone": "Asia/Shanghai",
+  "enabled": false,
+  "qq_account": null,
+  "prompt_template": "用今日的视角写一条 200 字以内的 QQ 空间说说，配一张你最近状态的立绘图。语气可以轻松随意，可以聊聊今天的心情、关注到的小事或正在做的事。结尾必须调用 qzone_publish 工具发布（可以使用 generate 字段生成配图）。",
+  "description": "格兰特利（Grantley）每日 QQ 空间说说定时任务 — 默认 09:00（Asia/Shanghai）。属于 opt-in 模板：必须通过 /admin/scheduler/qzone 启用按钮激活后才会真正发帖。"
+}

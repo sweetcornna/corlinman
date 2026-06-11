@@ -41,15 +41,15 @@ export function ValidationDrawer({
         className={cn(
           "inline-flex items-center gap-1 rounded-full border px-2 py-[1px] font-mono text-[10px] font-medium uppercase tracking-wide",
           clean
-            ? "border-tp-ok/30 bg-tp-ok-soft text-tp-ok"
-            : "border-tp-err/30 bg-tp-err-soft text-tp-err",
+            ? "border-sg-ok/30 bg-sg-ok-soft text-sg-ok"
+            : "border-sg-err/30 bg-sg-err-soft text-sg-err",
         )}
       >
         {clean ? <Check className="h-3 w-3" /> : <AlertTriangle className="h-3 w-3" />}
         {clean ? t("config.statusOk") : t("config.statusInvalid")}
       </span>
       {result.version ? (
-        <span className="rounded-md border border-tp-glass-edge bg-tp-glass-inner px-1.5 py-[1px] font-mono text-[10.5px] text-tp-ink-3">
+        <span className="rounded-md border border-sg-border bg-sg-inset px-1.5 py-[1px] font-mono text-[10.5px] text-sg-ink-3">
           v{result.version}
         </span>
       ) : null}
@@ -57,7 +57,7 @@ export function ValidationDrawer({
         type="button"
         onClick={onClose}
         aria-label={t("config.tp.validationCloseAria")}
-        className="ml-auto inline-flex h-6 items-center justify-center rounded-md border border-tp-glass-edge bg-tp-glass-inner px-2 text-[11px] text-tp-ink-3 transition-colors hover:bg-tp-glass-inner-hover hover:text-tp-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40"
+        className="ml-auto inline-flex h-6 items-center justify-center rounded-md border border-sg-border bg-sg-inset px-2 text-[11px] text-sg-ink-3 transition-colors hover:bg-sg-inset-hover hover:text-sg-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40"
       >
         {t("common.close")}
       </button>
@@ -73,7 +73,7 @@ export function ValidationDrawer({
     >
       {result.requires_restart.length > 0 ? (
         <DetailDrawer.Section label="restart">
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-tp-warn/30 bg-tp-warn-soft px-2 py-[2px] font-mono text-[10.5px] font-medium text-tp-warn">
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-sg-warn/30 bg-sg-warn-soft px-2 py-[2px] font-mono text-[10.5px] font-medium text-sg-warn">
             {t("config.tp.validationRestartTag", {
               list: result.requires_restart.join(", "),
             })}
@@ -83,7 +83,7 @@ export function ValidationDrawer({
 
       {clean ? (
         <DetailDrawer.Section label={t("config.tp.validationDrawerTitle")}>
-          <p className="text-[13px] text-tp-ink-2">{t("config.tp.validationOkHint")}</p>
+          <p className="text-[13px] text-sg-ink-2">{t("config.tp.validationOkHint")}</p>
         </DetailDrawer.Section>
       ) : (
         <DetailDrawer.Section label={t("config.tp.validationIssuesSection")}>
@@ -94,24 +94,24 @@ export function ValidationDrawer({
                 className={cn(
                   "flex items-start gap-2 rounded-md border px-2 py-1.5 text-[12px]",
                   iss.level === "error"
-                    ? "border-tp-err/25 bg-tp-err-soft"
-                    : "border-tp-warn/25 bg-tp-warn-soft",
+                    ? "border-sg-err/25 bg-sg-err-soft"
+                    : "border-sg-warn/25 bg-sg-warn-soft",
                 )}
               >
                 <span
                   className={cn(
                     "shrink-0 rounded-full border px-1.5 py-[1px] font-mono text-[9.5px] font-medium uppercase tracking-wide",
                     iss.level === "error"
-                      ? "border-tp-err/30 text-tp-err"
-                      : "border-tp-warn/30 text-tp-warn",
+                      ? "border-sg-err/30 text-sg-err"
+                      : "border-sg-warn/30 text-sg-warn",
                   )}
                 >
                   {iss.level}
                 </span>
-                <code className="shrink-0 font-mono text-[11.5px] text-tp-ink-3">
+                <code className="shrink-0 font-mono text-[11.5px] text-sg-ink-3">
                   {iss.path}
                 </code>
-                <span className="flex-1 text-tp-ink-2">{iss.message}</span>
+                <span className="flex-1 text-sg-ink-2">{iss.message}</span>
               </li>
             ))}
           </ul>
@@ -139,17 +139,17 @@ export function IdleDrawer({
       variant="subtle"
       className="flex min-h-[200px] flex-col items-center justify-center gap-2 p-6 text-center"
     >
-      <div className="font-mono text-[10.5px] uppercase tracking-[0.12em] text-tp-ink-4">
+      <div className="font-mono text-[10.5px] uppercase tracking-[0.12em] text-sg-ink-4">
         {t("config.tp.validationDrawerTitle")}
       </div>
-      <p className="max-w-[34ch] text-[12.5px] text-tp-ink-3">
+      <p className="max-w-[34ch] text-[12.5px] text-sg-ink-3">
         {t("config.tp.statValidatorsFoot")}
       </p>
       {hasResult ? (
         <button
           type="button"
           onClick={onOpen}
-          className="mt-2 inline-flex items-center gap-1 rounded-md border border-tp-glass-edge bg-tp-glass-inner px-2.5 py-1 text-[11.5px] font-medium text-tp-ink-2 transition-colors hover:bg-tp-glass-inner-hover hover:text-tp-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40"
+          className="mt-2 inline-flex items-center gap-1 rounded-md border border-sg-border bg-sg-inset px-2.5 py-1 text-[11.5px] font-medium text-sg-ink-2 transition-colors hover:bg-sg-inset-hover hover:text-sg-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40"
         >
           {t("config.tp.validationDrawerTitle")}
         </button>

@@ -98,10 +98,10 @@ export function ApprovalCard({
       }}
       className={cn(
         "group cursor-pointer p-4 transition-colors",
-        "hover:bg-tp-glass-inner-hover",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
-        isActive && "ring-2 ring-tp-amber/55",
-        isHighlighted && "ring-2 ring-tp-ok/55",
+        "hover:bg-sg-inset-hover",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
+        isActive && "ring-2 ring-sg-accent/55",
+        isHighlighted && "ring-2 ring-sg-ok/55",
         isFading && "opacity-40",
       )}
     >
@@ -125,12 +125,12 @@ export function ApprovalCard({
         <AgentAvatar />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-            <span className="font-mono text-[13px] font-medium text-tp-ink">
-              <span className="text-tp-amber">{approval.plugin}</span>
-              <span className="text-tp-ink-4">.</span>
+            <span className="font-mono text-[13px] font-medium text-sg-ink">
+              <span className="text-sg-accent">{approval.plugin}</span>
+              <span className="text-sg-ink-4">.</span>
               {approval.tool}
             </span>
-            <span className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-tp-ink-4">
+            <span className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-sg-ink-4">
               {approval.session_key || t("approvals.tp.cardNoSession")}
             </span>
             {isPending ? (
@@ -139,9 +139,9 @@ export function ApprovalCard({
               <DecisionTag decision={approval.decision} />
             )}
           </div>
-          <div className="mt-1.5 flex items-center gap-2 font-mono text-[11.5px] text-tp-ink-3">
-            <span className="text-tp-ink-4">{t("approvals.tp.cardArgsLabel")}</span>
-            <span className="truncate text-tp-ink-2">{argsPreview}</span>
+          <div className="mt-1.5 flex items-center gap-2 font-mono text-[11.5px] text-sg-ink-3">
+            <span className="text-sg-ink-4">{t("approvals.tp.cardArgsLabel")}</span>
+            <span className="truncate text-sg-ink-2">{argsPreview}</span>
           </div>
         </div>
         {isPending ? (
@@ -183,8 +183,8 @@ function AgentAvatar() {
       aria-hidden
       className={cn(
         "mt-1 h-5 w-5 shrink-0 rounded-full",
-        "bg-[linear-gradient(135deg,var(--tp-amber),var(--tp-ember))]",
-        "shadow-[0_0_12px_-2px_color-mix(in_oklch,var(--tp-amber)_55%,transparent)]",
+        "bg-[linear-gradient(135deg,var(--sg-accent),var(--sg-accent-2))]",
+        "shadow-[0_0_12px_-2px_color-mix(in_oklch,var(--sg-accent)_55%,transparent)]",
       )}
     />
   );
@@ -210,9 +210,9 @@ function ApproveButton({
       aria-label={t("approvals.approve")}
       className={cn(
         "inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[12px] font-medium",
-        "bg-tp-amber text-[#1a120d] shadow-tp-primary",
+        "bg-sg-accent text-primary-foreground shadow-sg-primary",
         "transition-transform duration-150 hover:-translate-y-[1px] active:translate-y-0",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/55",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/55",
         "disabled:pointer-events-none disabled:opacity-50",
       )}
     >
@@ -242,9 +242,9 @@ function DenyButton({
       aria-label={t("approvals.deny")}
       className={cn(
         "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[12px] font-medium",
-        "border-tp-err/40 bg-transparent text-tp-err",
-        "hover:bg-tp-err-soft",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-err/50",
+        "border-sg-err/40 bg-transparent text-sg-err",
+        "hover:bg-sg-err-soft",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-err/50",
         "disabled:pointer-events-none disabled:opacity-50",
       )}
     >
@@ -269,7 +269,7 @@ function KbdBadge({
         "font-mono text-[9.5px] font-medium",
         tone === "light"
           ? "bg-black/10 text-black/65"
-          : "bg-tp-err/10 text-tp-err",
+          : "bg-sg-err/10 text-sg-err",
       )}
     >
       {children}
@@ -286,9 +286,9 @@ function HeldForPill({
 }) {
   const { t } = useTranslation();
   const toneClass: Record<typeof tone, string> = {
-    info: "border-tp-glass-edge bg-tp-glass-inner text-tp-ink-3",
-    warn: "border-tp-warn/30 bg-tp-warn-soft text-tp-warn",
-    err: "border-tp-err/40 bg-tp-err-soft text-tp-err",
+    info: "border-sg-border bg-sg-inset text-sg-ink-3",
+    warn: "border-sg-warn/30 bg-sg-warn-soft text-sg-warn",
+    err: "border-sg-err/40 bg-sg-err-soft text-sg-err",
   };
   const secs = Math.floor(heldMs / 1000);
   const label =
@@ -316,8 +316,8 @@ function DecisionTag({ decision }: { decision: string | null }) {
     return (
       <span
         className={cn(
-          "rounded-full border border-tp-glass-edge bg-tp-glass-inner px-2 py-[2px]",
-          "font-mono text-[10px] text-tp-ink-3",
+          "rounded-full border border-sg-border bg-sg-inset px-2 py-[2px]",
+          "font-mono text-[10px] text-sg-ink-3",
         )}
       >
         {t("approvals.statusPending")}
@@ -328,8 +328,8 @@ function DecisionTag({ decision }: { decision: string | null }) {
     return (
       <span
         className={cn(
-          "rounded-full border border-tp-ok/35 bg-tp-ok-soft px-2 py-[2px]",
-          "font-mono text-[10px] text-tp-ok",
+          "rounded-full border border-sg-ok/35 bg-sg-ok-soft px-2 py-[2px]",
+          "font-mono text-[10px] text-sg-ok",
         )}
       >
         {t("approvals.statusApproved")}
@@ -340,8 +340,8 @@ function DecisionTag({ decision }: { decision: string | null }) {
     return (
       <span
         className={cn(
-          "rounded-full border border-tp-err/40 bg-tp-err-soft px-2 py-[2px]",
-          "font-mono text-[10px] text-tp-err",
+          "rounded-full border border-sg-err/40 bg-sg-err-soft px-2 py-[2px]",
+          "font-mono text-[10px] text-sg-err",
         )}
       >
         {t("approvals.statusDenied")}
@@ -351,8 +351,8 @@ function DecisionTag({ decision }: { decision: string | null }) {
   return (
     <span
       className={cn(
-        "rounded-full border border-tp-glass-edge bg-tp-glass-inner px-2 py-[2px]",
-        "font-mono text-[10px] text-tp-ink-3",
+        "rounded-full border border-sg-border bg-sg-inset px-2 py-[2px]",
+        "font-mono text-[10px] text-sg-ink-3",
       )}
     >
       {decision}

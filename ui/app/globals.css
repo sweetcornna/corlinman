@@ -2,290 +2,255 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Linear-style redesign. Neutral base + indigo accent. Dark-first. */
+/* ════════════════════════════════════════════════════════════════════
+ * Spatial Glass — visionOS-inspired design system. Dark-first.
+ *
+ * Source of truth: the `--sg-*` token namespace defined below.
+ * (The legacy Tidepool alias layer was burned down in Phase 3 —
+ * do not reintroduce legacy token names.)
+ *
+ * BLUR BUDGET (hard rule): `backdrop-filter` is allowed ONLY on
+ *  - shell surfaces (sidebar, topnav)            → .sg-glass-shell / blur 20px
+ *  - overlays (dialog, drawer, palette, toast)   → .sg-glass-overlay / blur 28px
+ * Content cards/panels use gradient "faux glass" fills with NO
+ * backdrop-filter so scrolling lists and SSE feeds never re-blur.
+ * Never nest blurred surfaces.
+ * ════════════════════════════════════════════════════════════════════ */
 @layer base {
   :root {
     /* ──────────────────────────────────────────────────────────────
-     * Bas-relief Ivory — light/"day" mode (Wise-style).
-     * Surface: warm cream relief (see /bg/relief-ivory.jpg). Type +
-     * controls: deep navy on cream, sapphire primary. Tied to dark
-     * mode (.dark) below — same hue family, inverted luminance.
+     * Spatial Glass — light ("daylight haze"). Token-level adaptation
+     * of the dark-first design: bright cool haze instead of deep
+     * space, white frost instead of smoked glass. Same hue family.
      * ────────────────────────────────────────────────────────────── */
-    --background: 36 32% 92%;
-    --foreground: 0 0% 0%;
-    --card: 0 0% 100% / 0.035;
-    --card-foreground: 0 0% 0%;
-    --popover: 0 0% 100% / 0.045;
-    --popover-foreground: 0 0% 0%;
-    --primary: 218 78% 38%;
-    --primary-foreground: 36 40% 98%;
-    --secondary: 0 0% 100% / 0.05;
-    --secondary-foreground: 0 0% 0%;
-    --muted: 0 0% 100% / 0.035;
-    --muted-foreground: 0 0% 28%;
-    --accent: 0 0% 100% / 0.06;
-    --accent-foreground: 0 0% 0%;
+
+    /* Backdrop: layered sky gradient + nebula glow blobs. */
+    --sg-space-0: oklch(0.965 0.008 270);
+    --sg-space-1: oklch(0.975 0.006 250);
+    --sg-space-2: oklch(0.94 0.015 285);
+    --sg-space-3: oklch(0.91 0.02 265);
+    --sg-nebula-1: oklch(0.65 0.14 300 / 0.07);
+    --sg-nebula-2: oklch(0.75 0.12 220 / 0.05);
+    --sg-nebula-3: oklch(0.55 0.1 260 / 0.04);
+    /* Tiny inline-SVG fractal noise — breaks gradient banding at ~3%. */
+    --sg-noise-url: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='1'/%3E%3C/svg%3E");
+
+    /* Glass tiers. -1 shell (real blur), -2 card (faux glass, NO blur),
+       -3 overlay (real blur), inset (sunken wells). */
+    --sg-glass-1-bg: oklch(1 0 0 / 0.55);
+    --sg-glass-2-bg: oklch(1 0 0 / 0.6);
+    --sg-glass-2-bg-strong: oklch(1 0 0 / 0.72);
+    --sg-glass-2-bg-weak: oklch(1 0 0 / 0.45);
+    --sg-glass-2-grad-a: oklch(1 0 0 / 0.72);
+    --sg-glass-2-grad-b: oklch(0.98 0.005 270 / 0.5);
+    --sg-glass-3-bg: oklch(0.99 0.004 270 / 0.78);
+    --sg-glass-opaque: oklch(0.97 0.005 270 / 0.96);
+    --sg-inset-bg: oklch(0.93 0.012 275 / 0.6);
+    --sg-inset-bg-hover: oklch(0.91 0.015 275 / 0.7);
+    --sg-inset-bg-strong: oklch(0.9 0.015 275 / 0.75);
+
+    --sg-border: oklch(0.3 0.03 280 / 0.12);
+    --sg-border-strong: oklch(0.3 0.03 280 / 0.2);
+    --sg-highlight: oklch(1 0 0 / 0.75);
+
+    /* Ink scale — text hierarchy. */
+    --sg-ink: oklch(0.18 0.015 280);
+    --sg-ink-2: oklch(0.27 0.015 280);
+    --sg-ink-3: oklch(0.42 0.02 280);
+    --sg-ink-4: oklch(0.55 0.02 280);
+    --sg-ink-5: oklch(0.66 0.015 280);
+
+    /* Accents — cyan-blue primary, violet secondary, ice tertiary. */
+    --sg-accent: oklch(0.5 0.16 245);
+    --sg-accent-soft: oklch(0.5 0.16 245 / 0.1);
+    --sg-accent-glow: oklch(0.55 0.16 245 / 0.3);
+    --sg-accent-2: oklch(0.47 0.2 295);
+    --sg-accent-2-soft: oklch(0.47 0.2 295 / 0.1);
+    --sg-accent-3: oklch(0.55 0.1 230);
+    --sg-accent-3-soft: oklch(0.55 0.1 230 / 0.1);
+    --sg-row-alt: oklch(0.3 0.03 280 / 0.025);
+
+    /* Status. */
+    --sg-ok: oklch(0.52 0.13 165);
+    --sg-ok-soft: oklch(0.52 0.13 165 / 0.12);
+    --sg-warn: oklch(0.58 0.13 75);
+    --sg-warn-soft: oklch(0.58 0.13 75 / 0.14);
+    --sg-err: oklch(0.55 0.21 25);
+    --sg-err-soft: oklch(0.55 0.21 25 / 0.12);
+
+    /* Elevation — ambient depth; light mode shadows stay soft/cool. */
+    --sg-elev-1: 0 1px 2px oklch(0.3 0.03 280 / 0.08), 0 2px 10px -2px oklch(0.3 0.03 280 / 0.08);
+    --sg-elev-2: inset 0 1px 0 var(--sg-highlight), 0 6px 24px -6px oklch(0.3 0.04 280 / 0.16);
+    --sg-elev-3: inset 0 1px 0 var(--sg-highlight), 0 16px 48px -12px oklch(0.3 0.04 280 / 0.22);
+    --sg-elev-4: inset 0 1px 0 var(--sg-highlight), 0 32px 96px -16px oklch(0.25 0.04 280 / 0.3);
+    --sg-glow-primary: 0 0 28px -6px var(--sg-accent-glow);
+    --sg-shadow-primary:
+      inset 0 1px 0 var(--sg-highlight),
+      0 0 0 1px color-mix(in oklch, var(--sg-accent) 30%, transparent),
+      0 0 28px -4px var(--sg-accent-glow),
+      0 8px 24px -8px oklch(0.3 0.04 280 / 0.18);
+
+    --sg-grad-text: linear-gradient(115deg, oklch(0.46 0.17 240), oklch(0.52 0.12 225) 45%, oklch(0.44 0.21 300));
+    --sg-grad-border: linear-gradient(
+      135deg,
+      color-mix(in oklch, var(--sg-accent) 55%, transparent),
+      color-mix(in oklch, var(--sg-accent-2) 45%, transparent)
+    );
+
+    /* ── shadcn semantic vars (HSL triplets — Tailwind wraps in hsl()). */
+    --background: 250 20% 96%;
+    --foreground: 250 15% 10%;
+    --card: 0 0% 100% / 0.6;
+    --card-foreground: 250 15% 10%;
+    --popover: 0 0% 100% / 0.78;
+    --popover-foreground: 250 15% 10%;
+    --primary: 225 70% 45%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 0 0% 100% / 0.55;
+    --secondary-foreground: 250 15% 10%;
+    --muted: 0 0% 100% / 0.45;
+    --muted-foreground: 250 8% 38%;
+    --accent: 230 30% 50% / 0.08;
+    --accent-foreground: 250 15% 10%;
     --destructive: 0 72% 48%;
     --destructive-foreground: 0 0% 98%;
-    --border: 32 22% 78%;
-    --input: 0 0% 100% / 0.06;
-    --ring: 218 78% 50%;
-    --radius: 0.5rem;
+    --border: 250 15% 30% / 0.12;
+    --input: 0 0% 100% / 0.6;
+    --ring: 225 75% 55%;
+    --radius: 0.875rem;
     --font-instrument-serif: Georgia, "Times New Roman", serif;
 
-    --panel: 0 0% 100% / 0.035;
-    --surface: 0 0% 100% / 0.03;
+    --panel: 0 0% 100% / 0.55;
+    --surface: 0 0% 100% / 0.45;
 
-    --ok: 160 60% 35%;
-    --warn: 32 88% 45%;
+    --ok: 163 55% 36%;
+    --warn: 35 85% 45%;
     --err: 0 72% 48%;
 
-    --accent-2: 195 70% 38%;
-    --accent-3: 218 60% 50%;
+    --accent-2: 285 60% 45%;
+    --accent-3: 215 60% 48%;
 
-    /* Embossed shadow scale — light variant. Top inner highlight ≈
-       paper edge, bottom inner shadow ≈ carved-into-paper dip, soft
-       drop shadow lifts the card off the ivory relief. */
-    --shadow-1:
-      inset 0 1px 0 hsl(36 80% 99% / 0.7),
-      0 1px 2px hsl(30 30% 30% / 0.06);
-    --shadow-2:
-      inset 0 1px 0 hsl(36 80% 99% / 0.85),
-      inset 0 -1px 0 hsl(30 30% 35% / 0.06),
-      0 6px 18px -6px hsl(30 30% 25% / 0.12);
-    --shadow-3:
-      inset 0 1px 0 hsl(36 80% 99% / 0.95),
-      inset 0 -1px 0 hsl(30 30% 30% / 0.08),
-      0 18px 40px -14px hsl(30 30% 20% / 0.18);
-    --glow-primary: 0 0 22px hsl(218 78% 60% / 0.25);
+    /* Legacy shadow scale → spatial elevation. */
+    --shadow-1: var(--sg-elev-1);
+    --shadow-2: var(--sg-elev-2);
+    --shadow-3: var(--sg-elev-3);
+    --glow-primary: var(--sg-glow-primary);
 
-    --state-hover: 0 0% 100% / 0.08;
-    --state-focus: 218 60% 88%;
-    --state-press: 36 25% 82%;
-    --state-loading: 0 0% 100% / 0.04;
-    --state-skeleton: 0 0% 100% / 0.06;
-    --state-empty: 0 0% 100% / 0.035;
-    --state-error: 0 60% 92%;
+    --state-hover: 230 30% 50% / 0.07;
+    --state-focus: 225 80% 88%;
+    --state-press: 240 15% 88%;
+    --state-loading: 0 0% 100% / 0.4;
+    --state-skeleton: 250 20% 50% / 0.12;
+    --state-empty: 0 0% 100% / 0.4;
+    --state-error: 0 70% 94%;
 
-    /* Tidepool ivory tokens. */
-    --tp-bg-a: #f5edda;
-    --tp-bg-b: #efe5cf;
-    --tp-bg-c: #f7eedb;
-    --tp-aurora-1: oklch(0.85 0.06 80 / 0.20);
-    --tp-aurora-2: oklch(0.82 0.05 60 / 0.16);
-    --tp-aurora-3: oklch(0.88 0.04 40 / 0.12);
-
-    /* Glass surfaces stay visibly translucent rather than opaque slabs. */
-    --tp-glass: oklch(1 0 0 / 0.1);
-    --tp-glass-2: oklch(1 0 0 / 0.12);
-    --tp-glass-3: oklch(1 0 0 / 0.08);
-    --tp-glass-edge: oklch(0.40 0.04 80 / 0.18);
-    --tp-glass-edge-strong: oklch(0.30 0.05 80 / 0.30);
-    --tp-glass-hl: oklch(1 0 0 / 0.18);
-    --tp-glass-inner: oklch(1 0 0 / 0.08);
-    --tp-glass-inner-hover: oklch(1 0 0 / 0.14);
-    --tp-glass-inner-strong: oklch(1 0 0 / 0.1);
-    --tp-glass-blur: 0px;
-    --tp-glass-saturate: 1;
-    --tp-glass-filter: none;
-    --tp-card-texture-url: url("/bg/oil-sky.jpg?v=1");
-    --tp-card-texture-overlay: linear-gradient(
-      135deg,
-      oklch(1 0 0 / 0.56),
-      oklch(0.98 0.01 230 / 0.38)
-    );
-    --tp-row-alt: rgba(255, 255, 255, 0.04);
-
-    --tp-ink: #000000;
-    --tp-ink-2: #111111;
-    --tp-ink-3: #333333;
-    --tp-ink-4: #5f5f5f;
-    --tp-ink-5: #8a8a8a;
-
-    /* tp-amber retained name; retinted to sapphire so consumers stay valid. */
-    --tp-amber: oklch(0.50 0.20 250);
-    --tp-amber-soft: oklch(0.50 0.20 250 / 0.10);
-    --tp-amber-glow: oklch(0.55 0.20 250 / 0.28);
-    --tp-ember: oklch(0.42 0.18 235);
-    --tp-peach: oklch(0.62 0.16 240);
-    --tp-ok: oklch(0.55 0.14 175);
-    --tp-ok-soft: oklch(0.55 0.14 175 / 0.14);
-    --tp-warn: oklch(0.62 0.16 70);
-    --tp-warn-soft: oklch(0.62 0.16 70 / 0.14);
-    --tp-err: oklch(0.55 0.22 20);
-    --tp-err-soft: oklch(0.55 0.22 20 / 0.12);
-
-    --tp-grad-text: linear-gradient(135deg, oklch(0.45 0.20 250), oklch(0.40 0.20 230));
-    --tp-grad-border: linear-gradient(
-      135deg,
-      color-mix(in oklch, var(--tp-amber) 55%, transparent),
-      color-mix(in oklch, var(--tp-ember) 45%, transparent)
-    );
-
-    --tp-shadow-panel:
-      inset 0 1px 0 hsl(36 80% 99% / 0.75),
-      inset 0 -1px 0 hsl(30 30% 30% / 0.06),
-      0 8px 22px -8px hsl(30 30% 25% / 0.14);
-    --tp-shadow-hero:
-      inset 0 1px 0 hsl(36 80% 99% / 0.85),
-      inset 0 -1px 0 hsl(30 30% 30% / 0.08),
-      0 22px 50px -20px hsl(30 30% 20% / 0.22);
-    --tp-shadow-primary:
-      inset 0 1px 0 hsl(36 80% 99% / 0.8),
-      0 0 0 1px color-mix(in oklch, var(--tp-amber) 35%, transparent),
-      0 0 28px -4px var(--tp-amber-glow),
-      0 10px 24px -8px hsl(30 30% 25% / 0.18);
-
-    /* Small accent artwork token retained for patterned buttons. Active
-       navigation uses tint-only glass so it does not turn into a pale slab. */
-    --tp-pattern-url: url("/bg/pattern-ivory.jpg?v=2");
-    --tp-pattern-tint: hsl(218 78% 38% / 0.035);
   }
 
   .dark {
     /* ──────────────────────────────────────────────────────────────
-     * Bas-relief Navy — dark mode retint.
-     * Reference: dark sapphire embossed stone (see /bg/relief-blue.jpg).
-     * Hue family: 222–230 (deep navy → sapphire). The relief artwork
-     * lives behind everything as a fixed background; panels are
-     * translucent so the carving texture reads through.
+     * Spatial Glass — dark ("deep space"). The primary, fully
+     * polished theme. Deep navy nebula backdrop (cyan-led, violet as
+     * a recessive companion); smoked
+     * glass surfaces; cyan/violet glow accents.
      * ────────────────────────────────────────────────────────────── */
-    --background: 226 60% 5%;
-    --foreground: 0 0% 100%;
-    --card: 226 50% 8% / 0.34;
-    --card-foreground: 0 0% 100%;
-    --popover: 226 55% 7% / 0.38;
-    --popover-foreground: 0 0% 100%;
-    /* Primary = sapphire highlight — like moonlight catching stone. */
-    --primary: 218 70% 70%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 226 35% 14% / 0.42;
-    --secondary-foreground: 0 0% 100%;
-    --muted: 226 30% 11% / 0.36;
-    --muted-foreground: 0 0% 72%;
-    --accent: 222 50% 22% / 0.42;
-    --accent-foreground: 0 0% 100%;
-    --destructive: 0 62% 45%;
+    --sg-space-0: oklch(0.115 0.028 266);
+    --sg-space-1: oklch(0.15 0.034 262);
+    --sg-space-2: oklch(0.1 0.034 272);
+    --sg-space-3: oklch(0.075 0.024 256);
+    --sg-nebula-1: oklch(0.75 0.12 220 / 0.12);
+    --sg-nebula-2: oklch(0.65 0.13 300 / 0.08);
+    --sg-nebula-3: oklch(0.6 0.1 250 / 0.08);
+
+    --sg-glass-1-bg: oklch(0.21 0.032 270 / 0.55);
+    --sg-glass-2-bg: oklch(0.23 0.028 270 / 0.5);
+    --sg-glass-2-bg-strong: oklch(0.25 0.028 270 / 0.6);
+    --sg-glass-2-bg-weak: oklch(0.2 0.028 270 / 0.4);
+    --sg-glass-2-grad-a: oklch(0.25 0.028 270 / 0.55);
+    --sg-glass-2-grad-b: oklch(0.17 0.03 268 / 0.5);
+    --sg-glass-3-bg: oklch(0.19 0.036 270 / 0.7);
+    --sg-glass-opaque: oklch(0.17 0.03 270 / 0.95);
+    --sg-inset-bg: oklch(0.085 0.024 268 / 0.5);
+    --sg-inset-bg-hover: oklch(0.1 0.028 268 / 0.55);
+    --sg-inset-bg-strong: oklch(0.12 0.028 268 / 0.6);
+
+    --sg-border: oklch(0.95 0.02 280 / 0.08);
+    --sg-border-strong: oklch(0.95 0.02 280 / 0.14);
+    --sg-highlight: oklch(1 0 0 / 0.09);
+
+    --sg-ink: oklch(0.97 0.005 280);
+    --sg-ink-2: oklch(0.88 0.01 280);
+    --sg-ink-3: oklch(0.74 0.015 280);
+    --sg-ink-4: oklch(0.58 0.02 280);
+    --sg-ink-5: oklch(0.45 0.02 280);
+
+    --sg-accent: oklch(0.78 0.13 230);
+    --sg-accent-soft: oklch(0.78 0.13 230 / 0.14);
+    --sg-accent-glow: oklch(0.78 0.13 230 / 0.45);
+    --sg-accent-2: oklch(0.7 0.17 300);
+    --sg-accent-2-soft: oklch(0.7 0.17 300 / 0.14);
+    --sg-accent-3: oklch(0.85 0.07 220);
+    --sg-accent-3-soft: oklch(0.85 0.07 220 / 0.14);
+    --sg-row-alt: oklch(0.85 0.05 250 / 0.025);
+
+    --sg-ok: oklch(0.78 0.15 165);
+    --sg-ok-soft: oklch(0.78 0.15 165 / 0.15);
+    --sg-warn: oklch(0.83 0.14 85);
+    --sg-warn-soft: oklch(0.83 0.14 85 / 0.15);
+    --sg-err: oklch(0.7 0.2 22);
+    --sg-err-soft: oklch(0.7 0.2 22 / 0.15);
+
+    --sg-elev-1: 0 1px 2px oklch(0 0 0 / 0.3), 0 2px 10px -2px oklch(0 0 0 / 0.28);
+    --sg-elev-2: inset 0 1px 0 var(--sg-highlight), 0 6px 24px -6px oklch(0 0 0 / 0.45);
+    --sg-elev-3: inset 0 1px 0 oklch(1 0 0 / 0.11), 0 16px 48px -12px oklch(0 0 0 / 0.55);
+    --sg-elev-4: inset 0 1px 0 oklch(1 0 0 / 0.12), 0 32px 96px -16px oklch(0 0 0 / 0.65);
+    --sg-glow-primary: 0 0 28px -6px var(--sg-accent-glow);
+    --sg-shadow-primary:
+      inset 0 1px 0 oklch(1 0 0 / 0.11),
+      0 0 0 1px color-mix(in oklch, var(--sg-accent) 30%, transparent),
+      0 0 32px -4px var(--sg-accent-glow),
+      0 10px 28px -10px oklch(0 0 0 / 0.5);
+
+    --sg-grad-text: linear-gradient(115deg, oklch(0.86 0.11 220), oklch(0.92 0.05 210) 45%, oklch(0.76 0.17 300));
+
+    /* ── shadcn semantic vars — dark. */
+    --background: 232 32% 8%;
+    --foreground: 250 20% 98%;
+    --card: 232 25% 16% / 0.45;
+    --card-foreground: 250 20% 98%;
+    --popover: 232 28% 13% / 0.75;
+    --popover-foreground: 250 20% 98%;
+    /* Primary = luminous cyan-blue; dark ink text for contrast on fills. */
+    --primary: 215 75% 70%;
+    --primary-foreground: 250 30% 10%;
+    --secondary: 234 25% 18% / 0.5;
+    --secondary-foreground: 250 20% 98%;
+    --muted: 234 20% 16% / 0.45;
+    --muted-foreground: 250 12% 72%;
+    --accent: 220 60% 70% / 0.1;
+    --accent-foreground: 250 20% 98%;
+    --destructive: 0 65% 55%;
     --destructive-foreground: 0 0% 98%;
-    --border: 222 30% 18%;
-    --input: 222 35% 14% / 0.44;
-    --ring: 218 80% 65%;
+    --border: 250 40% 85% / 0.1;
+    --input: 232 25% 8% / 0.5;
+    --ring: 215 80% 70%;
 
-    --panel: 226 50% 8% / 0.34;
-    --surface: 226 40% 10% / 0.28;
+    --panel: 255 25% 16% / 0.45;
+    --surface: 255 22% 14% / 0.38;
 
-    --ok: 168 65% 50%;
-    --warn: 38 88% 60%;
-    --err: 0 72% 58%;
+    --ok: 163 60% 60%;
+    --warn: 45 90% 65%;
+    --err: 5 85% 68%;
 
-    --accent-2: 195 70% 55%;
-    --accent-3: 220 60% 70%;
+    --accent-2: 285 70% 72%;
+    --accent-3: 210 60% 78%;
 
-    /* Shadow scale — relief stack: top highlight + ambient depth.
-       Outset shadows are deep navy (almost black) so panels "pop up"
-       off the carved background. */
-    --shadow-1:
-      0 1px 0 hsl(220 60% 14% / 0.6),
-      0 1px 2px rgb(0 0 0 / 0.55);
-    --shadow-2:
-      inset 0 1px 0 hsl(220 60% 30% / 0.18),
-      0 4px 18px rgb(0 0 0 / 0.55),
-      0 1px 0 rgb(0 0 0 / 0.6);
-    --shadow-3:
-      inset 0 1px 0 hsl(220 60% 30% / 0.22),
-      0 14px 40px rgb(0 0 0 / 0.7),
-      0 1px 0 rgb(0 0 0 / 0.65);
-    --glow-primary: 0 0 24px hsl(218 80% 65% / 0.35);
-
-    /* State tokens — sapphire-shifted. */
-    --state-hover: 222 40% 14% / 0.44;
-    --state-focus: 218 60% 22%;
-    --state-press: 222 40% 17%;
-    --state-loading: 226 30% 11% / 0.36;
-    --state-skeleton: 226 28% 13% / 0.44;
-    --state-empty: 226 35% 9% / 0.28;
-    --state-error: 0 45% 18%;
-
-    /* Tidepool — Bas-relief Navy retint. Panel glass is cool slate
-       with a faint blue tint so it reads as polished stone over the
-       relief background, not warm dusk. */
-    --tp-bg-a: #070b1a;
-    --tp-bg-b: #0a1024;
-    --tp-bg-c: #060912;
-    /* Aurora is now a very faint cool wash — the real visual energy
-       lives in the relief image; aurora just keeps darker corners
-       from going completely flat. */
-    --tp-aurora-1: oklch(0.45 0.10 240 / 0.10);
-    --tp-aurora-2: oklch(0.40 0.12 230 / 0.08);
-    --tp-aurora-3: oklch(0.35 0.08 220 / 0.06);
-
-    /* Dark glass keeps a faint navy tint so panels are readable but not solid. */
-    --tp-glass: oklch(0.14 0.04 240 / 0.38);
-    --tp-glass-2: oklch(0.12 0.04 240 / 0.30);
-    --tp-glass-3: oklch(0.10 0.04 240 / 0.24);
-    --tp-glass-edge: oklch(0.85 0.05 230 / 0.10);
-    --tp-glass-edge-strong: oklch(0.85 0.05 230 / 0.18);
-    --tp-glass-hl: oklch(0.95 0.04 230 / 0.18);
-    --tp-glass-inner: oklch(0.85 0.05 230 / 0.08);
-    --tp-glass-inner-hover: oklch(0.85 0.05 230 / 0.16);
-    --tp-glass-inner-strong: oklch(0.85 0.05 230 / 0.12);
-    --tp-card-texture-url: url("/bg/oil-navy.jpg?v=1");
-    --tp-card-texture-overlay: linear-gradient(
-      135deg,
-      oklch(0.12 0.04 240 / 0.56),
-      oklch(0.06 0.03 240 / 0.36)
-    );
-    --tp-row-alt: rgba(150, 180, 230, 0.018);
-
-    --tp-ink: #ffffff;
-    --tp-ink-2: #e8e8e8;
-    --tp-ink-3: #bdbdbd;
-    --tp-ink-4: #8a8a8a;
-    --tp-ink-5: #626262;
-
-    /* Re-mapped tp-amber → sapphire so existing consumers stay valid
-       but read as cool blue accents instead of warm amber. */
-    --tp-amber: oklch(0.78 0.14 235);
-    --tp-amber-soft: oklch(0.78 0.14 235 / 0.14);
-    --tp-amber-glow: oklch(0.78 0.14 235 / 0.40);
-    --tp-ember: oklch(0.65 0.18 250);
-    --tp-peach: oklch(0.82 0.10 220);
-    --tp-ok: oklch(0.80 0.14 175);
-    --tp-ok-soft: oklch(0.80 0.14 175 / 0.16);
-    --tp-warn: oklch(0.82 0.16 80);
-    --tp-warn-soft: oklch(0.82 0.16 80 / 0.16);
-    --tp-err: oklch(0.70 0.22 20);
-    --tp-err-soft: oklch(0.70 0.22 20 / 0.16);
-
-    --tp-grad-text: linear-gradient(135deg, oklch(0.85 0.12 235), oklch(0.72 0.18 255));
-    --tp-grad-border: linear-gradient(
-      135deg,
-      color-mix(in oklch, var(--tp-amber) 55%, transparent),
-      color-mix(in oklch, var(--tp-ember) 45%, transparent)
-    );
-
-    /* Embossed shadow stack — the signature of this theme.
-       Three layers: (a) inner highlight at top = catching light from
-       above, (b) inner shadow at bottom = the dip into stone, (c)
-       outer drop-shadow = the panel lifting off the relief surface. */
-    --tp-shadow-panel:
-      inset 0 1px 0 hsl(220 60% 80% / 0.10),
-      inset 0 -1px 0 hsl(220 60% 4% / 0.6),
-      0 10px 30px -12px rgb(0 0 0 / 0.6);
-    --tp-shadow-hero:
-      inset 0 1px 0 hsl(220 60% 80% / 0.16),
-      inset 0 -1px 0 hsl(220 60% 4% / 0.7),
-      0 30px 60px -24px rgb(0 0 0 / 0.75);
-    --tp-shadow-primary:
-      inset 0 1px 0 hsl(220 60% 80% / 0.20),
-      0 0 0 1px color-mix(in oklch, var(--tp-amber) 35%, transparent),
-      0 0 32px -4px var(--tp-amber-glow),
-      0 12px 30px -10px rgb(0 0 0 / 0.6);
-
-    /* Small accent artwork token retained for patterned buttons. Active
-       navigation uses tint-only glass in dark mode too. */
-    --tp-pattern-url: url("/bg/pattern-navy.jpg?v=2");
-    --tp-pattern-tint: hsl(218 80% 65% / 0.10);
+    --state-hover: 220 50% 70% / 0.08;
+    --state-focus: 220 60% 26%;
+    --state-press: 234 25% 22%;
+    --state-loading: 250 20% 16% / 0.4;
+    --state-skeleton: 250 25% 60% / 0.14;
+    --state-empty: 250 25% 14% / 0.35;
+    --state-error: 0 50% 20%;
   }
 
   * {
@@ -298,45 +263,283 @@
     font-feature-settings: "rlig" 1, "calt" 1, "ss01" 1, "cv11" 1;
   }
 
-  /* Bas-relief Navy: paint the carved artwork onto html (deepest layer)
-     so it's visible everywhere — admin shell, login, error pages — without
-     each page having to mount its own background component. The body is
-     made transparent so html's bg shows through; per-page overlays from
-     <AuroraBackground /> add navy wash / vignette / aurora on top.
-     Applied to both light and dark modes — light uses a lighter overlay
-     (relief reads brighter), dark deepens it. See `html.dark` below. */
-  /* Relief landscape — painted on `html` as the page background. Light
-     uses the ivory carving (Buddha / temples / pagoda / mask); dark
-     uses the navy variant. Mobile swaps to portrait crops. Mandala
-     pattern is reserved for framed elements (see .pattern-active and
-     the .emboss / .emboss-inset variants below) so the bg stays
-     scenic and the chrome stays patterned. */
+  /* Deep-space backdrop painted on `html` (deepest layer) so it shows
+     everywhere — admin shell, login, error pages — with zero JS. Pure
+     CSS gradient: paints pre-hydration (no FOUC) and replaces the old
+     ~3MB JPG textures. Nebula glow blobs + noise live in
+     <AuroraBackground /> on top; body stays transparent. The vars flip
+     with `.dark`, so a single rule covers both themes. */
   html {
-    background-color: hsl(214 55% 70%);
-    background-image: url("/bg/oil-sky.jpg?v=1");
-    background-size: cover;
-    background-position: center;
+    background-color: hsl(var(--background));
+    background-image: linear-gradient(
+      175deg,
+      var(--sg-space-1) 0%,
+      var(--sg-space-2) 55%,
+      var(--sg-space-3) 100%
+    );
     background-attachment: fixed;
     background-repeat: no-repeat;
-  }
-  html.dark {
-    background-color: hsl(225 70% 8%);
-    background-image: url("/bg/oil-navy.jpg?v=1");
+    min-height: 100%;
   }
   body {
     background-color: transparent;
   }
 
-  /* A11y: keep focus rings visible. */
+  /* A11y: focus rings stay visible on glass; soft outer glow added. */
   :focus-visible {
     outline: none;
-    box-shadow: 0 0 0 2px hsl(var(--background)), 0 0 0 4px hsl(var(--ring));
+    box-shadow:
+      0 0 0 2px hsl(var(--background)),
+      0 0 0 4px hsl(var(--ring)),
+      0 0 14px -2px var(--sg-accent-glow);
     border-radius: calc(var(--radius) - 2px);
   }
 }
 
 @layer utilities {
-  /* Subtle shimmer used by skeletons. 1.5s loop, respects reduced-motion. */
+  /* ────────────────────────────────────────────────────────────────
+   * Spatial Glass surface utilities.
+   * .sg-glass-shell   — sidebar/topnav. Real blur (20px). Budget tier 1.
+   * .sg-glass-overlay — dialogs/drawers/palettes/toasts. Blur 28px. Tier 3.
+   * .sg-card          — content cards. Gradient faux glass, NO blur. Tier 2.
+   * .sg-inset         — sunken wells (inputs, code, JSON).
+   * ──────────────────────────────────────────────────────────────── */
+  .sg-glass-shell {
+    background-color: var(--sg-glass-1-bg);
+    backdrop-filter: blur(20px) saturate(1.4);
+    -webkit-backdrop-filter: blur(20px) saturate(1.4);
+    border: 1px solid var(--sg-border);
+    box-shadow: var(--sg-elev-2);
+  }
+  .sg-glass-overlay {
+    background-color: var(--sg-glass-3-bg);
+    backdrop-filter: blur(28px) saturate(1.5);
+    -webkit-backdrop-filter: blur(28px) saturate(1.5);
+    border: 1px solid var(--sg-border-strong);
+    box-shadow: var(--sg-elev-4);
+  }
+  @supports not (backdrop-filter: blur(1px)) {
+    .sg-glass-shell,
+    .sg-glass-overlay {
+      background-color: var(--sg-glass-opaque);
+    }
+  }
+  .sg-card {
+    background-color: var(--sg-glass-2-bg);
+    background-image: linear-gradient(180deg, var(--sg-glass-2-grad-a), var(--sg-glass-2-grad-b));
+    border: 1px solid var(--sg-border);
+    box-shadow: var(--sg-elev-2);
+  }
+  .sg-inset {
+    background-color: var(--sg-inset-bg);
+    border: 1px solid var(--sg-border);
+    box-shadow: inset 0 1px 3px oklch(0 0 0 / 0.18);
+  }
+  .sg-noise {
+    background-image: var(--sg-noise-url);
+    background-repeat: repeat;
+  }
+
+  /* ────────────────────────────────────────────────────────────────
+   * Liquid Glass optics — the layer that makes glass read as a real
+   * material instead of a tinted rectangle. Composable on top of the
+   * sg-card/glass recipes (no backdrop-filter, stays in blur budget):
+   *
+   * .lg-edge     — light-aware gradient border: bright specular at the
+   *                lit corner (top-left), faint violet refraction at
+   *                the shadowed corner. Mask-composite ring, so it
+   *                follows any border-radius.
+   * .lg-refract  — inner lensing: light pools along the bottom edge +
+   *                a chromatic micro-fringe (cyan/violet hairlines on
+   *                opposite edges), the CSS stand-in for edge
+   *                refraction.
+   * .lg-sheen    — specular sweep that glides across the surface on
+   *                hover (gated to hover-capable pointers).
+   * .lg-specular — pointer-tracked highlight; reads --lg-x/--lg-y
+   *                written by the useSpecular() hook (raw follow, no
+   *                easing — light does not lag).
+   * .lg-gel      — non-linear press physics for non-framer elements:
+   *                springy overshoot curve on transform.
+   * ──────────────────────────────────────────────────────────────── */
+  /* :where() keeps these at zero specificity so Tailwind positioning
+     utilities (fixed/absolute/sticky) on the same element always win. */
+  :where(.lg-edge) {
+    position: relative;
+  }
+  .lg-edge::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 1px;
+    background: linear-gradient(
+      135deg,
+      oklch(1 0 0 / 0.32),
+      oklch(1 0 0 / 0.05) 32%,
+      transparent 55%,
+      color-mix(in oklch, var(--sg-accent-2) 22%, transparent) 100%
+    );
+    -webkit-mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    mask-composite: exclude;
+    pointer-events: none;
+  }
+  .lg-refract {
+    box-shadow:
+      inset 0 1px 0 oklch(1 0 0 / 0.12),
+      inset 1px 0 0 color-mix(in oklch, var(--sg-accent) 10%, transparent),
+      inset -1px 0 0 color-mix(in oklch, var(--sg-accent-2) 9%, transparent),
+      inset 0 -12px 28px -22px oklch(1 0 0 / 0.35);
+  }
+  :where(.lg-sheen) {
+    position: relative;
+  }
+  .lg-sheen {
+    overflow: hidden;
+  }
+  .lg-sheen::after {
+    content: "";
+    position: absolute;
+    inset: -40% auto;
+    left: -30%;
+    width: 38%;
+    height: 180%;
+    transform: translateX(-160%) rotate(18deg);
+    background: linear-gradient(
+      90deg,
+      transparent,
+      oklch(1 0 0 / 0.1) 45%,
+      oklch(1 0 0 / 0.16) 50%,
+      oklch(1 0 0 / 0.1) 55%,
+      transparent
+    );
+    opacity: 0;
+    pointer-events: none;
+  }
+  @media (hover: hover) {
+    .lg-sheen:hover::after {
+      opacity: 1;
+      transform: translateX(440%) rotate(18deg);
+      transition:
+        transform 0.9s cubic-bezier(0.22, 1, 0.36, 1),
+        opacity 0.15s ease-out;
+    }
+  }
+  :where(.lg-specular) {
+    position: relative;
+  }
+  .lg-specular::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: radial-gradient(
+      300px circle at var(--lg-x, 50%) var(--lg-y, -20%),
+      oklch(1 0 0 / 0.09),
+      transparent 65%
+    );
+    opacity: var(--lg-on, 0);
+    transition: opacity 0.35s ease-out;
+    pointer-events: none;
+  }
+  .lg-gel {
+    transition:
+      transform 0.45s cubic-bezier(0.34, 1.56, 0.64, 1),
+      box-shadow 0.45s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+  .lg-gel:active {
+    transform: scale(0.96);
+    transition-duration: 0.08s;
+  }
+
+  /* Backdrop life: slow hue drift on the nebula layer + a sparse
+     twinkling starfield (dark theme only — daylight haze has no stars). */
+  @keyframes lg-hue-drift {
+    0%,
+    100% {
+      filter: hue-rotate(0deg);
+    }
+    50% {
+      filter: hue-rotate(14deg);
+    }
+  }
+  .lg-hue-drift {
+    animation: lg-hue-drift 90s ease-in-out infinite;
+  }
+  /* Hero-object float: gentle vertical bob with a hint of sway. */
+  @keyframes lg-float {
+    0%,
+    100% {
+      transform: translateY(0) rotate(-1deg);
+    }
+    50% {
+      transform: translateY(-9px) rotate(1.2deg);
+    }
+  }
+  .lg-float {
+    animation: lg-float 6.5s ease-in-out infinite;
+  }
+
+  @keyframes lg-twinkle {
+    0%,
+    100% {
+      opacity: 0.35;
+    }
+    50% {
+      opacity: 0.85;
+    }
+  }
+  .lg-stars {
+    background-image:
+      radial-gradient(1px 1px at 12% 28%, oklch(1 0 0 / 0.6), transparent 100%),
+      radial-gradient(1px 1px at 34% 12%, oklch(1 0 0 / 0.4), transparent 100%),
+      radial-gradient(1.5px 1.5px at 56% 38%, oklch(0.9 0.05 230 / 0.5), transparent 100%),
+      radial-gradient(1px 1px at 73% 19%, oklch(1 0 0 / 0.45), transparent 100%),
+      radial-gradient(1px 1px at 88% 42%, oklch(0.9 0.06 300 / 0.4), transparent 100%),
+      radial-gradient(1.5px 1.5px at 22% 64%, oklch(1 0 0 / 0.3), transparent 100%),
+      radial-gradient(1px 1px at 64% 78%, oklch(1 0 0 / 0.35), transparent 100%),
+      radial-gradient(1px 1px at 92% 86%, oklch(0.9 0.05 230 / 0.35), transparent 100%);
+    background-repeat: no-repeat;
+    animation: lg-twinkle 7s ease-in-out infinite;
+  }
+  :root:not(.dark) .lg-stars {
+    display: none;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .lg-sheen:hover::after {
+      transition: none;
+      opacity: 0;
+    }
+    .lg-specular::after {
+      opacity: 0;
+    }
+    .lg-gel,
+    .lg-gel:active {
+      transition: none;
+      transform: none;
+    }
+    .lg-hue-drift,
+    .lg-stars,
+    .lg-float {
+      animation: none;
+    }
+  }
+
+  /* Gradient display text (hero numerals, brand). */
+  .sg-grad-text {
+    background-image: var(--sg-grad-text);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  /* Subtle shimmer used by skeletons. Respects reduced-motion. */
   @keyframes shimmer {
     0% {
       background-position: -200% 0;
@@ -348,9 +551,9 @@
   .shimmer {
     background-image: linear-gradient(
       90deg,
-      hsl(var(--muted)) 0%,
-      hsl(var(--secondary)) 50%,
-      hsl(var(--muted)) 100%
+      var(--sg-inset-bg) 0%,
+      var(--sg-glass-2-bg-strong) 50%,
+      var(--sg-inset-bg) 100%
     );
     background-size: 200% 100%;
     animation: shimmer 1.6s linear infinite;
@@ -361,24 +564,7 @@
     }
   }
 
-  /* Dashboard hero backdrop — a single subtle radial. */
-  .dashboard-hero-glow {
-    background:
-      radial-gradient(
-        1200px 400px at 10% -10%,
-        hsl(var(--primary) / 0.12),
-        transparent 60%
-      );
-  }
 
-  /* Constellation/dot-grid for login. */
-  .dot-grid {
-    background-image: radial-gradient(
-      hsl(var(--muted-foreground) / 0.15) 1px,
-      transparent 1px
-    );
-    background-size: 18px 18px;
-  }
 
   /* Login error shake. Keyed via `key` remount in login/page.tsx. */
   @keyframes login-shake {
@@ -397,40 +583,37 @@
   }
 
   /* ────────────────────────────────────────────────────────────────
-   * Tidepool — CSS animation primitives (Phase 0).
-   * Continuous animations are implemented as CSS keyframes rather than
-   * Framer Motion variants for performance (no per-frame React work).
-   * All three respect prefers-reduced-motion. Consumers apply class
-   * names: `.tp-breathe` on live dots, `.tp-draw-in` on accent
-   * underlines, `.tp-just-now` on transient row highlights.
+   * CSS animation primitives. Continuous animations are CSS keyframes
+   * rather than Framer Motion variants for performance. All respect
+   * prefers-reduced-motion. (tp-* names kept until the Phase 3 rename.)
    * ──────────────────────────────────────────────────────────────── */
 
-  @keyframes tp-breathe {
+  @keyframes sg-breathe {
     0%,
     100% {
-      box-shadow: 0 0 0 0 color-mix(in oklch, var(--tp-ok) 50%, transparent);
+      box-shadow: 0 0 0 0 color-mix(in oklch, var(--sg-ok) 50%, transparent);
     }
     50% {
-      box-shadow: 0 0 0 6px color-mix(in oklch, var(--tp-ok) 0%, transparent);
+      box-shadow: 0 0 0 6px color-mix(in oklch, var(--sg-ok) 0%, transparent);
     }
   }
-  .tp-breathe {
-    animation: tp-breathe 2.2s ease-in-out infinite;
+  .sg-breathe {
+    animation: sg-breathe 2.2s ease-in-out infinite;
   }
-  @keyframes tp-breathe-amber {
+  @keyframes sg-breathe-accent {
     0%,
     100% {
-      box-shadow: 0 0 0 0 color-mix(in oklch, var(--tp-amber) 50%, transparent);
+      box-shadow: 0 0 0 0 color-mix(in oklch, var(--sg-accent) 50%, transparent);
     }
     50% {
-      box-shadow: 0 0 8px color-mix(in oklch, var(--tp-amber) 40%, transparent);
+      box-shadow: 0 0 8px color-mix(in oklch, var(--sg-accent) 40%, transparent);
     }
   }
-  .tp-breathe-amber {
-    animation: tp-breathe-amber 2.2s ease-in-out infinite;
+  .sg-breathe-accent {
+    animation: sg-breathe-accent 2.2s ease-in-out infinite;
   }
 
-  @keyframes tp-draw-in {
+  @keyframes sg-draw-in {
     from {
       transform: scaleX(0);
     }
@@ -438,12 +621,12 @@
       transform: scaleX(1);
     }
   }
-  .tp-draw-in {
+  .sg-draw-in {
     transform-origin: left;
-    animation: tp-draw-in 1.8s cubic-bezier(0.16, 1, 0.3, 1) 0.3s both;
+    animation: sg-draw-in 1.8s cubic-bezier(0.16, 1, 0.3, 1) 0.3s both;
   }
 
-  @keyframes tp-just-now-fade {
+  @keyframes sg-just-now-fade {
     0% {
       opacity: 1;
     }
@@ -454,202 +637,52 @@
       opacity: 0;
     }
   }
-  .tp-just-now {
-    animation: tp-just-now-fade 2.8s ease-out 0.2s forwards;
+  .sg-just-now {
+    animation: sg-just-now-fade 2.8s ease-out 0.2s forwards;
   }
 
-  @keyframes tp-badge-pulse {
+  @keyframes sg-badge-pulse {
     0%,
     100% {
-      box-shadow: 0 0 0 0 color-mix(in oklch, var(--tp-amber) 40%, transparent);
+      box-shadow: 0 0 0 0 color-mix(in oklch, var(--sg-accent) 40%, transparent);
     }
     50% {
-      box-shadow: 0 0 0 4px color-mix(in oklch, var(--tp-amber) 0%, transparent);
+      box-shadow: 0 0 0 4px color-mix(in oklch, var(--sg-accent) 0%, transparent);
     }
   }
-  .tp-badge-pulse {
-    animation: tp-badge-pulse 2.2s ease-in-out infinite;
+  .sg-badge-pulse {
+    animation: sg-badge-pulse 2.2s ease-in-out infinite;
+  }
+
+  /* Slow nebula drift for the backdrop glow blobs. */
+  @keyframes sg-drift {
+    0%,
+    100% {
+      transform: translate3d(0, 0, 0) scale(1);
+    }
+    50% {
+      transform: translate3d(2%, -1.5%, 0) scale(1.04);
+    }
+  }
+  .sg-drift {
+    animation: sg-drift 60s ease-in-out infinite;
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .tp-breathe,
-    .tp-breathe-amber,
-    .tp-badge-pulse {
+    .sg-breathe,
+    .sg-breathe-accent,
+    .sg-badge-pulse,
+    .sg-drift {
       animation: none;
     }
-    .tp-draw-in {
+    .sg-draw-in {
       animation: none;
       transform: scaleX(1);
     }
-    .tp-just-now {
+    .sg-just-now {
       animation: none;
       opacity: 0;
     }
-  }
-
-  /* ────────────────────────────────────────────────────────────────
-   * Bas-relief Navy — embossed surface utilities (dark-mode aware).
-   * .emboss        — surface raised off the relief background (panels,
-   *                  hero cards, buttons resting state).
-   * .emboss-inset  — surface carved into the relief (inputs, inset
-   *                  groups, code blocks).
-   * .ridge-divider — a 1px horizontal groove (dark line + 1px light
-   *                  highlight below) that reads as carved.
-   * .relief-text   — debossed type for hero labels / section titles.
-   * Light mode falls back to a much subtler version so nothing breaks
-   * for users on the warm tidepool theme.
-   * ──────────────────────────────────────────────────────────────── */
-
-  /* `.emboss` surfaces paint their own day/night oil texture instead of
-     blurring the page behind them. */
-  .emboss {
-    background-color: var(--tp-glass);
-    background-image: var(--tp-card-texture-overlay), var(--tp-card-texture-url);
-    background-size: cover;
-    background-position: center center;
-    background-repeat: no-repeat;
-    border: 1px solid var(--tp-glass-edge);
-    box-shadow:
-      inset 0 1px 0 rgb(255 255 255 / 0.16),
-      0 10px 28px -18px rgb(0 0 0 / 0.22);
-    backdrop-filter: none;
-    -webkit-backdrop-filter: none;
-  }
-  .dark .emboss {
-    background-color: var(--tp-glass);
-    border-color: var(--tp-glass-edge);
-    box-shadow:
-      inset 0 1px 0 hsl(220 70% 80% / 0.10),
-      inset 0 -1px 0 hsl(226 80% 3% / 0.34),
-      0 14px 36px -18px rgb(0 0 0 / 0.65);
-  }
-
-  .emboss-inset {
-    background-color: var(--tp-glass-inner);
-    background-image: none;
-    border: 1px solid var(--tp-glass-edge);
-    box-shadow:
-      inset 0 1px 3px rgb(0 0 0 / 0.05),
-      inset 0 -1px 0 rgb(255 255 255 / 0.14);
-  }
-  .dark .emboss-inset {
-    background-color: var(--tp-glass-inner);
-    background-blend-mode: overlay;
-    border-color: var(--tp-glass-edge);
-    box-shadow:
-      inset 0 1px 4px hsl(226 80% 2% / 0.45),
-      inset 0 -1px 0 hsl(220 60% 30% / 0.08);
-  }
-
-  .ridge-divider {
-    height: 0;
-    border: 0;
-    border-top: 1px solid hsl(var(--border) / 0.5);
-    box-shadow: 0 1px 0 rgb(255 255 255 / 0.03);
-  }
-  .dark .ridge-divider {
-    border-top-color: hsl(226 80% 3% / 0.8);
-    box-shadow: 0 1px 0 hsl(220 60% 30% / 0.16);
-  }
-
-  .relief-text {
-    color: hsl(var(--foreground));
-    text-shadow: 0 1px 0 rgb(0 0 0 / 0.04);
-  }
-  .dark .relief-text {
-    color: hsl(var(--foreground));
-    text-shadow:
-      0 1px 0 hsl(226 80% 2% / 0.9),
-      0 -1px 0 hsl(220 60% 30% / 0.10);
-  }
-
-  /* Engraved variant — text appears carved into the stone. Use for
-     muted/secondary type on hero surfaces. */
-  .relief-text-engraved {
-    color: hsl(var(--muted-foreground));
-  }
-  .dark .relief-text-engraved {
-    color: hsl(220 25% 55%);
-    text-shadow:
-      0 -1px 0 hsl(226 80% 2% / 0.9),
-      0 1px 0 hsl(220 60% 30% / 0.12);
-  }
-
-  /* ────────────────────────────────────────────────────────────────
-   * .pattern-active — selection / active highlight box for sidebar nav,
-   * selected tabs, and on-state chips. It is deliberately tint-only glass:
-   * large patterned rectangles were too visually heavy in light mode and
-   * looked like opaque white slabs over the scenic background.
-   * ──────────────────────────────────────────────────────────────── */
-  .pattern-active {
-    position: relative;
-    background-color: var(--tp-pattern-tint);
-    background-image: none;
-    backdrop-filter: none;
-    -webkit-backdrop-filter: none;
-    box-shadow:
-      inset 0 1px 1px hsl(var(--background) / 0.18),
-      inset 0 -1px 0 hsl(var(--background) / 0.12),
-      0 0 0 1px hsl(var(--primary) / 0.28),
-      0 0 0 3px hsl(var(--primary) / 0.035);
-  }
-  .dark .pattern-active {
-    background-image: none;
-    box-shadow:
-      inset 0 1px 2px hsl(226 80% 2% / 0.65),
-      inset 0 -1px 0 hsl(220 60% 25% / 0.18),
-      0 0 0 1px hsl(var(--primary) / 0.55),
-      0 0 12px -2px hsl(var(--primary) / 0.35);
-  }
-
-  /* Smaller pattern variant for chips / tabs — tighter tile so the
-     mandala motif registers even at 120px wide. */
-  .pattern-active-sm {
-    background-size: 200px 200px;
-  }
-
-  /* ────────────────────────────────────────────────────────────────
-   * Textured surfaces — cards and panels use the oil-paint artwork
-   * requested for each theme. They deliberately do not use backdrop
-   * blur, so route changes cannot show a transparent-then-blurred flash.
-   * ──────────────────────────────────────────────────────────────── */
-  .bg-tp-glass,
-  .bg-tp-glass-2,
-  .bg-tp-glass-3,
-  .bg-card,
-  .bg-popover,
-  .bg-panel {
-    background-image: var(--tp-card-texture-overlay), var(--tp-card-texture-url) !important;
-    background-size: cover !important;
-    background-position: center center !important;
-    background-repeat: no-repeat !important;
-    backdrop-filter: none !important;
-    -webkit-backdrop-filter: none !important;
-  }
-
-  .bg-tp-glass-inner,
-  .bg-tp-glass-inner-hover,
-  .bg-tp-glass-inner-strong,
-  .bg-tp-glass-inner\/40,
-  .bg-tp-glass-inner\/50,
-  .bg-tp-glass-inner\/60,
-  .bg-tp-glass-inner\/70 {
-    background-image: none !important;
-    backdrop-filter: none !important;
-    -webkit-backdrop-filter: none !important;
-  }
-
-  .bg-tp-glass-inner\/40,
-  .bg-tp-glass-inner\/50,
-  .bg-tp-glass-inner\/60,
-  .bg-tp-glass-inner\/70 {
-    background-color: var(--tp-glass-inner) !important;
-  }
-
-  .bg-card,
-  .bg-popover,
-  .bg-panel {
-    background-color: var(--tp-glass-3) !important;
   }
 
   /* Monaco ships its own opaque `vs-light` / `vs-dark` surfaces. Keep the
@@ -666,40 +699,83 @@
     min-height: 32px !important;
   }
 
-  /* Primary buttons get the pattern too — at smaller tile so the
-     mandala registers on a 40-48px tall pill. The button's solid
-     primary fill stays the dominant colour, the pattern reads as a
-     carved texture inside the pill. */
-  .btn-pattern {
-    background-image: var(--tp-pattern-url);
-    background-size: 280px 280px;
-    background-position: center center;
-    background-blend-mode: soft-light;
+  /* JSON syntax highlighting tokens used by <JsonView>. */
+  .sg-json-k {
+    color: var(--sg-accent);
   }
-  .dark .btn-pattern {
-    background-blend-mode: overlay;
+  .sg-json-s {
+    color: var(--sg-ok);
+  }
+  .sg-json-n {
+    color: var(--sg-accent-2);
+  }
+  .sg-json-b {
+    color: var(--sg-warn);
+  }
+  .sg-json-c {
+    color: var(--sg-ink-4);
+    font-style: italic;
   }
 
-  /* JSON syntax highlighting tokens used by <JsonView>. Number color is a
-     cool violet that reads against both the warm cream (day) and warm dark
-     (night) backgrounds without needing a theme-specific override. */
-  .tp-json-k {
-    color: var(--tp-amber);
+  /* Overflow guards for rendered markdown — wide images/pre can never
+     escape the message column. */
+  .chat-md {
+    overflow-wrap: break-word;
+    min-width: 0;
   }
-  .tp-json-s {
-    color: var(--tp-ok);
+  .chat-md img {
+    max-width: 100%;
+    height: auto;
   }
-  .tp-json-n {
-    color: oklch(0.78 0.14 280);
+  .chat-md pre,
+  .chat-md table {
+    max-width: 100%;
   }
-  :root[data-theme="light"] .tp-json-n {
-    color: oklch(0.45 0.2 280);
-  }
-  .tp-json-b {
-    color: var(--tp-ember);
-  }
-  .tp-json-c {
-    color: var(--tp-ink-4);
+
+  /* Prism syntax tokens for chat code blocks (<CodeHighlighter> emits
+     classNames; colors stay token-driven and theme-aware). */
+  .chat-md .token.comment,
+  .chat-md .token.prolog,
+  .chat-md .token.doctype,
+  .chat-md .token.cdata {
+    color: var(--sg-ink-4);
     font-style: italic;
+  }
+  .chat-md .token.keyword,
+  .chat-md .token.atrule,
+  .chat-md .token.important {
+    color: var(--sg-accent-2);
+  }
+  .chat-md .token.string,
+  .chat-md .token.char,
+  .chat-md .token.attr-value,
+  .chat-md .token.inserted {
+    color: var(--sg-ok);
+  }
+  .chat-md .token.function,
+  .chat-md .token.class-name,
+  .chat-md .token.selector,
+  .chat-md .token.property,
+  .chat-md .token.tag,
+  .chat-md .token.attr-name {
+    color: var(--sg-accent);
+  }
+  .chat-md .token.number,
+  .chat-md .token.boolean,
+  .chat-md .token.constant,
+  .chat-md .token.symbol {
+    color: var(--sg-accent-3);
+  }
+  .chat-md .token.operator,
+  .chat-md .token.punctuation {
+    color: var(--sg-ink-3);
+  }
+  .chat-md .token.deleted {
+    color: var(--sg-err);
+  }
+  .chat-md .token.variable,
+  .chat-md .token.regex,
+  .chat-md .token.builtin {
+    color: var(--sg-warn);
   }
 }

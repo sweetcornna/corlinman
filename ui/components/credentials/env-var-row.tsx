@@ -143,12 +143,12 @@ export function EnvVarRow({
   if (editing) {
     return (
       <div
-        className="flex min-w-0 flex-wrap items-center gap-2 rounded-md border border-tp-amber/40 bg-tp-glass-inner/40 px-3 py-2 shadow-tp-amber-soft"
+        className="flex min-w-0 flex-wrap items-center gap-2 rounded-md border border-sg-accent/40 bg-sg-inset px-3 py-2 shadow-sg-glow"
         data-testid={`${prefix}-row`}
       >
         <Label
           htmlFor={`${prefix}-input`}
-          className="w-full shrink-0 font-mono text-[11px] text-tp-ink-2 sm:w-32"
+          className="w-full shrink-0 font-mono text-[11px] text-sg-ink-2 sm:w-32"
         >
           {displayLabel}
         </Label>
@@ -244,11 +244,11 @@ export function EnvVarRow({
         data-testid={`${prefix}-row`}
       >
         <div className="flex min-w-0 items-center gap-2">
-          <span className="font-mono text-[11px] text-tp-ink-3">
+          <span className="font-mono text-[11px] text-sg-ink-3">
             {displayLabel}
           </span>
           {(description ?? field.env_ref) && (
-            <span className="hidden truncate text-[10px] text-tp-ink-3/70 sm:inline">
+            <span className="hidden truncate text-[10px] text-sg-ink-3/70 sm:inline">
               {description ??
                 t("credentials.envHint", { env: field.env_ref })}
             </span>
@@ -274,13 +274,13 @@ export function EnvVarRow({
   if (!field.set) {
     return (
       <div
-        className="flex min-w-0 flex-wrap items-center gap-2 rounded-md border border-dashed border-tp-glass-edge px-3 py-2 opacity-75 transition-opacity hover:opacity-100"
+        className="flex min-w-0 flex-wrap items-center gap-2 rounded-md border border-dashed border-sg-border px-3 py-2 opacity-75 transition-opacity hover:opacity-100"
         data-testid={`${prefix}-row`}
       >
-        <Label className="w-full shrink-0 font-mono text-[11px] text-tp-ink-3 sm:w-32">
+        <Label className="w-full shrink-0 font-mono text-[11px] text-sg-ink-3 sm:w-32">
           {displayLabel}
         </Label>
-        <div className="min-w-0 flex-1 truncate text-[11px] text-tp-ink-3">
+        <div className="min-w-0 flex-1 truncate text-[11px] text-sg-ink-3">
           {field.env_ref ? (
             <span className="font-mono">
               {t("credentials.envHint", { env: field.env_ref })}
@@ -310,13 +310,13 @@ export function EnvVarRow({
         "flex min-w-0 flex-wrap items-center gap-2 rounded-md border px-3 py-2",
         compact
           ? "border-transparent px-1 py-1.5"
-          : "border-tp-glass-edge",
+          : "border-sg-border",
       )}
       data-testid={`${prefix}-row`}
     >
       <Label
         className={cn(
-          "w-full shrink-0 font-mono text-tp-ink-2 sm:w-32",
+          "w-full shrink-0 font-mono text-sg-ink-2 sm:w-32",
           compact ? "text-[11px]" : "text-[11px]",
         )}
       >
@@ -326,8 +326,8 @@ export function EnvVarRow({
         <div
           data-testid={`${prefix}-preview`}
           className={cn(
-            "min-w-0 flex-1 truncate rounded border border-tp-glass-edge bg-tp-glass-inner/40 px-2 py-1 font-mono text-[11px]",
-            showCleartext ? "text-tp-ink select-all" : "text-tp-ink-3",
+            "min-w-0 flex-1 truncate rounded border border-sg-border bg-sg-inset px-2 py-1 font-mono text-[11px]",
+            showCleartext ? "text-sg-ink select-all" : "text-sg-ink-3",
           )}
         >
           {showCleartext ? (
@@ -335,9 +335,9 @@ export function EnvVarRow({
           ) : field.preview ? (
             <span aria-hidden>{"•".repeat(8)}</span>
           ) : field.env_ref ? (
-            <span className="text-tp-ink-3">env: {field.env_ref}</span>
+            <span className="text-sg-ink-3">env: {field.env_ref}</span>
           ) : (
-            <span className="text-tp-ink-3">{t("credentials.fieldSet")}</span>
+            <span className="text-sg-ink-3">{t("credentials.fieldSet")}</span>
           )}
         </div>
         {field.preview ? (
@@ -378,7 +378,7 @@ export function EnvVarRow({
         aria-label={t("credentials.envRow.clear")}
         disabled={saving}
         onClick={() => void onDelete()}
-        className="text-destructive hover:text-destructive"
+        className="text-sg-err hover:text-sg-err"
       >
         <Trash2 className="h-3.5 w-3.5" />
       </Button>

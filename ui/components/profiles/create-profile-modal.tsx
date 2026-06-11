@@ -226,7 +226,7 @@ export function CreateProfileModal({
             />
             <p
               id="profile-slug-hint"
-              className="text-[11px] text-tp-ink-3"
+              className="text-[11px] text-sg-ink-3"
             >
               {t("profiles.slugHint")}
             </p>
@@ -264,7 +264,7 @@ export function CreateProfileModal({
                 </option>
               ))}
             </select>
-            <p className="text-[11px] text-tp-ink-3">
+            <p className="text-[11px] text-sg-ink-3">
               {t("profiles.cloneFromHint")}
             </p>
           </div>
@@ -274,7 +274,7 @@ export function CreateProfileModal({
               type="button"
               onClick={() => setShowAdvanced((v) => !v)}
               data-testid="profile-toggle-advanced"
-              className="text-[11px] text-tp-ink-3 underline-offset-2 hover:text-tp-ink hover:underline focus-visible:outline-none focus-visible:underline"
+              className="text-[11px] text-sg-ink-3 underline-offset-2 hover:text-sg-ink hover:underline focus-visible:outline-none focus-visible:underline"
             >
               {showAdvanced ? "—" : "+"} {t("profiles.displayNameLabel")} /{" "}
               {t("profiles.descriptionLabel")}
@@ -296,7 +296,7 @@ export function CreateProfileModal({
                     setForm((s) => ({ ...s, display_name: e.target.value }))
                   }
                 />
-                <p className="text-[11px] text-tp-ink-3">
+                <p className="text-[11px] text-sg-ink-3">
                   {t("profiles.displayNameHint")}
                 </p>
               </div>
@@ -314,7 +314,7 @@ export function CreateProfileModal({
                     setForm((s) => ({ ...s, description: e.target.value }))
                   }
                 />
-                <p className="text-[11px] text-tp-ink-3">
+                <p className="text-[11px] text-sg-ink-3">
                   {t("profiles.descriptionHint")}
                 </p>
               </div>

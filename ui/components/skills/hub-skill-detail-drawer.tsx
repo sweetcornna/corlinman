@@ -19,6 +19,7 @@ import { Download, ExternalLink, Loader2, Star } from "lucide-react";
 
 import { Drawer } from "@/components/ui/drawer";
 import { Button } from "@/components/ui/button";
+import { Alert } from "@/components/ui/alert";
 import { cn } from "@/lib/utils";
 import { getHubSkill, type HubSkillSummary } from "@/lib/api";
 import { InstallProgressModal } from "./install-progress-modal";
@@ -67,7 +68,6 @@ export function HubSkillDetailDrawer({
         width="lg"
         title={headerName}
         description={summary?.description}
-        className="bg-tp-glass-2 backdrop-blur-glass-strong backdrop-saturate-glass-strong"
         footer={
           <div className="flex w-full items-center justify-end gap-2">
             <Button
@@ -99,17 +99,17 @@ export function HubSkillDetailDrawer({
               <div
                 className={cn(
                   "flex h-11 w-11 shrink-0 items-center justify-center rounded-full",
-                  "border border-tp-amber/25 bg-tp-amber-soft text-[20px] leading-none",
+                  "border border-sg-accent/25 bg-sg-accent-soft text-[20px] leading-none",
                 )}
                 aria-hidden
               >
                 <span className="opacity-85">{headerEmoji}</span>
               </div>
               <div className="min-w-0 flex-1">
-                <h2 className="truncate text-[18px] font-medium leading-tight tracking-[-0.01em] text-tp-ink">
+                <h2 className="truncate text-[18px] font-medium leading-tight tracking-[-0.01em] text-sg-ink">
                   {headerName}
                 </h2>
-                <div className="mt-0.5 flex flex-wrap items-center gap-2 font-mono text-[10.5px] text-tp-ink-4">
+                <div className="mt-0.5 flex flex-wrap items-center gap-2 font-mono text-[10.5px] text-sg-ink-4">
                   <span>v{version}</span>
                   <span aria-hidden>·</span>
                   <span className="inline-flex items-center gap-1">
@@ -128,7 +128,7 @@ export function HubSkillDetailDrawer({
                   href={detail.homepage}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 rounded-full border border-tp-glass-edge px-2.5 py-[3px] font-mono text-[10.5px] text-tp-ink-3 hover:bg-tp-glass-inner-hover"
+                  className="inline-flex items-center gap-1 rounded-full border border-sg-border px-2.5 py-[3px] font-mono text-[10.5px] text-sg-ink-3 hover:bg-sg-inset-hover"
                   data-testid="hub-detail-homepage"
                 >
                   <ExternalLink className="h-3 w-3" aria-hidden />
@@ -138,13 +138,13 @@ export function HubSkillDetailDrawer({
             </div>
 
             {/* Description */}
-            <p className="text-[14px] leading-[1.6] text-tp-ink-2">
+            <p className="text-[14px] leading-[1.6] text-sg-ink-2">
               {detail?.description ?? summary.description}
             </p>
 
             {/* Loading state */}
             {query.isPending ? (
-              <div className="flex items-center gap-2 text-[12.5px] text-tp-ink-3">
+              <div className="flex items-center gap-2 text-[12.5px] text-sg-ink-3">
                 <Loader2 className="h-3 w-3 animate-spin" aria-hidden />
                 {t("skills.hub.detail.loading")}
               </div>
@@ -152,14 +152,10 @@ export function HubSkillDetailDrawer({
 
             {/* Error state */}
             {query.isError ? (
-              <div
-                role="alert"
-                className="rounded-md border border-red-500/40 bg-red-500/10 p-3 text-xs text-red-700"
-                data-testid="hub-detail-error"
-              >
+              <Alert variant="danger" data-testid="hub-detail-error">
                 {(query.error as Error | undefined)?.message ??
                   t("skills.hub.detail.errorUnknown")}
-              </div>
+              </Alert>
             ) : null}
 
             {/* Scan summary chip */}
@@ -170,11 +166,11 @@ export function HubSkillDetailDrawer({
                   className={cn(
                     "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-[3px] font-mono text-[10.5px]",
                     detail.scan_summary === "pass" &&
-                      "border-tp-ok/30 bg-tp-ok-soft text-tp-ok",
+                      "border-sg-ok/30 bg-sg-ok-soft text-sg-ok",
                     detail.scan_summary === "warn" &&
-                      "border-tp-amber/30 bg-tp-amber-soft text-tp-amber",
+                      "border-sg-warn/30 bg-sg-warn-soft text-sg-warn",
                     detail.scan_summary === "fail" &&
-                      "border-red-500/40 bg-red-500/10 text-red-600",
+                      "border-sg-err/40 bg-sg-err-soft text-sg-err",
                   )}
                 >
                   {t(`skills.hub.detail.scan.${detail.scan_summary}`)}
@@ -195,10 +191,10 @@ export function HubSkillDetailDrawer({
                     <li
                       key={v}
                       className={cn(
-                        "inline-flex items-center rounded-md border border-tp-glass-edge bg-tp-glass-inner px-2 py-[3px] font-mono text-[11px]",
+                        "inline-flex items-center rounded-md border border-sg-border bg-sg-inset px-2 py-[3px] font-mono text-[11px]",
                         v === detail.latest_version
-                          ? "text-tp-amber"
-                          : "text-tp-ink-3",
+                          ? "text-sg-accent"
+                          : "text-sg-ink-3",
                       )}
                     >
                       v{v}
@@ -212,7 +208,7 @@ export function HubSkillDetailDrawer({
             {detail?.readme_excerpt ? (
               <Section title={t("skills.hub.detail.readmeTitle")}>
                 <p
-                  className="whitespace-pre-wrap text-[13px] leading-[1.6] text-tp-ink-2"
+                  className="whitespace-pre-wrap text-[13px] leading-[1.6] text-sg-ink-2"
                   data-testid="hub-detail-readme"
                 >
                   {detail.readme_excerpt}
@@ -247,7 +243,7 @@ function Section({
 }) {
   return (
     <section className="space-y-2">
-      <h4 className="font-mono text-[10px] uppercase tracking-[0.12em] text-tp-ink-4">
+      <h4 className="font-mono text-[10px] uppercase tracking-[0.12em] text-sg-ink-4">
         {title}
       </h4>
       {children}

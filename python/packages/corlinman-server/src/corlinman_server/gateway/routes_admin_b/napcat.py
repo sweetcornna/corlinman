@@ -19,18 +19,46 @@ NapCat URL resolution order matches Rust:
 Authentication: NapCat 2.x exchanges
 ``POST /api/auth/login {"hash": sha256(token + ".napcat")}`` for a
 short-lived ``Credential`` we then send as ``Bearer``.
+
+Scope of the embedded WebUI proxy
+----------------------------------
+The same-origin ``/webui`` iframe + ``/api/*`` proxy exist to drive the
+**QQ scan-login and OneBot configuration flow** — nothing more. We proxy
+exactly the NapCat frontend API groups that flow touches
+(``QQLogin`` / ``OB11Config`` / ``auth`` / ``base`` / ``Log`` /
+``Process`` / ``WebUIConfig``) as *named prefixes*, NOT a blanket
+``/api/{path}`` catch-all: corlinman serves its own first-party routes
+under ``/api/channels/corlinman/*`` (see ``corlinman_channel.py``) and a
+catch-all here would shadow them. Full NapCat WebUI administration —
+plugin management, the file browser, the debug terminal
+(``/api/ws/terminal`` WebSocket), and live log *tailing*
+(``/api/Log/GetLogRealTime``, a long-lived ``text/event-stream`` the
+buffering proxy below cannot stream) — is intentionally **out of scope**;
+operators manage those on the NapCat instance directly.
+
+Trust model: the iframe runs NapCat's HTML/JS at corlinman's own origin,
+so it must be a **trusted, operator-managed NapCat** (the bundled
+default — local docker/native). Pointing ``[channels.qq].napcat_url`` at
+an untrusted external host is not a supported security configuration: a
+same-origin iframe that authenticates to the proxied ``/api/*`` cannot be
+sandboxed without breaking that auth. As defense-in-depth the proxy still
+never forwards the browser's ``Cookie`` / ``Authorization`` upstream (see
+``_FORWARD_REQUEST_HEADERS``).
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Query
+import httpx
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse, Response
 
 from corlinman_server.gateway.routes_admin_b._napcat_lib import (
     _NAPCAT_CRED_CACHE,
+    NAPCAT_TIMEOUT,
     AccountsOut,
+    NapcatDiagnosticsOut,
     NapcatError,
     QrcodeOut,
     QuickLoginBody,
@@ -41,6 +69,7 @@ from corlinman_server.gateway.routes_admin_b._napcat_lib import (
     _load_accounts,
     _NapcatClient,
     _onebot_websocket_server_from_config,
+    _probe_napcat_diagnostics,
     _resolve_napcat_url,
     _upsert_account,
 )
@@ -51,6 +80,39 @@ from corlinman_server.gateway.routes_admin_b.state import (
     require_admin,
 )
 
+_PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]
+_HOP_BY_HOP_HEADERS = {
+    "connection",
+    "content-length",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+}
+_RESPONSE_DROP_HEADERS = _HOP_BY_HOP_HEADERS | {"content-encoding", "content-type"}
+
+# Allowlist of request headers forwarded upstream to NapCat. We
+# deliberately do NOT mirror the browser's full header set: when
+# ``[channels.qq].napcat_url`` points at an external/user-configured host,
+# blindly copying ``Cookie`` would leak the admin session
+# (``corlinman_session=...``) and copying ``Authorization`` would leak the
+# browser's own creds. The proxy supplies its own NapCat Bearer below, so
+# only transport/content negotiation + range/caching headers pass through.
+_FORWARD_REQUEST_HEADERS = {
+    "accept",
+    "accept-encoding",
+    "accept-language",
+    "content-type",
+    "user-agent",
+    "range",
+    "if-none-match",
+    "if-modified-since",
+    "cache-control",
+}
+
 # Re-exported from ``_napcat_lib`` for external callers (e.g. tests that patch
 # the credential cache / client). Listed here so the re-imports are treated as
 # public API rather than unused.
@@ -58,8 +120,64 @@ __all__ = [
     "_NAPCAT_CRED_CACHE",
     "_NapcatClient",
     "_cached_napcat_credential",
+    "_probe_napcat_diagnostics",
     "router",
 ]
+
+
+async def _proxy_napcat_request(request: Request, upstream_path: str) -> Response:
+    cfg = dict(config_snapshot())
+    url, _token = _resolve_napcat_url(cfg)
+    if url is None:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": "napcat_not_configured",
+                "message": "NapCat URL is not configured",
+            },
+        )
+
+    target = f"{url}{upstream_path}"
+    if request.url.query:
+        target = f"{target}?{request.url.query}"
+
+    # Allowlist, not "copy-all-minus-hop-by-hop": never forward Cookie /
+    # Authorization / Host etc. to a (possibly external) NapCat upstream.
+    headers = {
+        key: value
+        for key, value in request.headers.items()
+        if key.lower() in _FORWARD_REQUEST_HEADERS
+    }
+    credential = await _cached_napcat_credential()
+    if credential:
+        headers["authorization"] = f"Bearer {credential}"
+
+    try:
+        async with httpx.AsyncClient(timeout=NAPCAT_TIMEOUT) as client:
+            upstream = await client.request(
+                request.method,
+                target,
+                content=await request.body(),
+                headers=headers,
+                follow_redirects=False,
+            )
+    except httpx.HTTPError as exc:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "napcat_unreachable", "message": str(exc)},
+        )
+
+    out_headers = {
+        key: value
+        for key, value in upstream.headers.items()
+        if key.lower() not in _RESPONSE_DROP_HEADERS
+    }
+    return Response(
+        content=b"" if request.method == "HEAD" else upstream.content,
+        status_code=upstream.status_code,
+        headers=out_headers,
+        media_type=upstream.headers.get("content-type"),
+    )
 
 # ---------------------------------------------------------------------------
 # Router
@@ -107,6 +225,25 @@ def router() -> APIRouter:
         headers = {"X-Napcat-Credential": cred} if cred else {}
         return Response(status_code=200, headers=headers)
 
+    @r.get(
+        "/admin/channels/qq/napcat/diagnostics",
+        response_model=NapcatDiagnosticsOut,
+    )
+    async def napcat_diagnostics() -> NapcatDiagnosticsOut:
+        return await _probe_napcat_diagnostics(dict(config_snapshot()))
+
+    # NapCat serves its WebUI at ``<napcat_url>/webui`` (per its startup
+    # URL / docs), so the same-origin ``/webui`` iframe must keep the
+    # ``/webui`` prefix upstream — stripping it to ``/`` hits NapCat's
+    # root and renders a blank/404 frame.
+    @r.api_route("/webui", methods=_PROXY_METHODS, include_in_schema=False)
+    async def napcat_webui_root(request: Request) -> Response:
+        return await _proxy_napcat_request(request, "/webui")
+
+    @r.api_route("/webui/{path:path}", methods=_PROXY_METHODS, include_in_schema=False)
+    async def napcat_webui_path(request: Request, path: str) -> Response:
+        return await _proxy_napcat_request(request, f"/webui/{path}")
+
     @r.post("/admin/channels/qq/qrcode", response_model=QrcodeOut)
     async def qrcode():
         state = get_admin_state()
@@ -146,6 +283,50 @@ def router() -> APIRouter:
                 },
             )
         return {"code": 0, "message": "success", "data": None}
+
+    @r.api_route(
+        "/api/QQLogin/{path:path}",
+        methods=_PROXY_METHODS,
+        include_in_schema=False,
+    )
+    async def napcat_qqlogin_api_proxy(request: Request, path: str) -> Response:
+        return await _proxy_napcat_request(request, f"/api/QQLogin/{path}")
+
+    @r.api_route(
+        "/api/OB11Config/{path:path}",
+        methods=_PROXY_METHODS,
+        include_in_schema=False,
+    )
+    async def napcat_ob11_api_proxy(request: Request, path: str) -> Response:
+        return await _proxy_napcat_request(request, f"/api/OB11Config/{path}")
+
+    @r.api_route(
+        "/api/auth/{path:path}",
+        methods=_PROXY_METHODS,
+        include_in_schema=False,
+    )
+    async def napcat_auth_api_proxy(request: Request, path: str) -> Response:
+        return await _proxy_napcat_request(request, f"/api/auth/{path}")
+
+    # The embedded WebUI also calls these NapCat frontend API groups
+    # (base info / log tail / process control / WebUI config). Without
+    # them the iframe's status + config pages fall through to corlinman
+    # and fail. Named prefixes (not a blanket /api catch-all) so the
+    # first-party /api/channels/corlinman/* routes are never shadowed.
+    for _grp in ("base", "Log", "Process", "WebUIConfig"):
+
+        def _make_proxy(group: str):
+            async def _proxy(request: Request, path: str) -> Response:
+                return await _proxy_napcat_request(request, f"/api/{group}/{path}")
+
+            return _proxy
+
+        r.add_api_route(
+            f"/api/{_grp}/{{path:path}}",
+            _make_proxy(_grp),
+            methods=_PROXY_METHODS,
+            include_in_schema=False,
+        )
 
     @r.get("/admin/channels/qq/qrcode/status", response_model=StatusOut)
     async def qrcode_status(token: str = Query("")):

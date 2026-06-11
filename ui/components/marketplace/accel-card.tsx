@@ -53,9 +53,9 @@ export function AccelCard(): React.JSX.Element {
   if (query.isPending) {
     return (
       <GlassPanel variant="soft" className="flex flex-col gap-4 p-6">
-        <div className="h-4 w-40 rounded bg-tp-glass-inner-strong" />
-        <div className="h-3 w-2/3 rounded bg-tp-glass-inner" />
-        <div className="h-3 w-1/2 rounded bg-tp-glass-inner" />
+        <div className="h-4 w-40 rounded bg-sg-inset-strong" />
+        <div className="h-3 w-2/3 rounded bg-sg-inset" />
+        <div className="h-3 w-1/2 rounded bg-sg-inset" />
       </GlassPanel>
     );
   }
@@ -67,10 +67,10 @@ export function AccelCard(): React.JSX.Element {
         className="flex flex-col items-center gap-2 p-8 text-center"
         data-testid="accel-card-offline"
       >
-        <div className="font-mono text-[11px] uppercase tracking-[0.12em] text-tp-err">
+        <div className="font-mono text-[11px] uppercase tracking-[0.12em] text-sg-err">
           {t("marketplace.accel.offlineTitle")}
         </div>
-        <p className="max-w-prose text-[13px] text-tp-ink-2">
+        <p className="max-w-prose text-[13px] text-sg-ink-2">
           {t("marketplace.accel.offlineHint")}
         </p>
       </GlassPanel>
@@ -88,14 +88,14 @@ export function AccelCard(): React.JSX.Element {
     >
       {/* Title */}
       <div className="flex items-center gap-2.5">
-        <span className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-tp-amber/25 bg-tp-amber-soft text-tp-amber">
+        <span className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-sg-accent/25 bg-sg-accent-soft text-sg-accent">
           <Zap className="h-4 w-4" aria-hidden />
         </span>
         <div className="min-w-0">
-          <h2 className="text-[16px] font-medium leading-tight text-tp-ink">
+          <h2 className="text-[16px] font-medium leading-tight text-sg-ink">
             {t("marketplace.accel.heroTitle")}
           </h2>
-          <p className="text-[12.5px] text-tp-ink-3">
+          <p className="text-[12.5px] text-sg-ink-3">
             {t("marketplace.accel.subtitle")}
           </p>
         </div>
@@ -106,7 +106,7 @@ export function AccelCard(): React.JSX.Element {
         <Field label={t("marketplace.accel.mode")}>
           <span
             data-testid="accel-mode"
-            className="inline-flex items-center rounded-full border border-tp-glass-edge bg-tp-glass-inner px-2 py-[2px] font-mono text-[11px] text-tp-ink-2"
+            className="inline-flex items-center rounded-full border border-sg-border bg-sg-inset px-2 py-[2px] font-mono text-[11px] text-sg-ink-2"
           >
             {accel.mode}
           </span>
@@ -114,7 +114,7 @@ export function AccelCard(): React.JSX.Element {
         <Field label={t("marketplace.accel.preset")}>
           <span
             data-testid="accel-preset"
-            className="inline-flex items-center rounded-full border border-tp-glass-edge bg-tp-glass-inner px-2 py-[2px] font-mono text-[11px] text-tp-ink-2"
+            className="inline-flex items-center rounded-full border border-sg-border bg-sg-inset px-2 py-[2px] font-mono text-[11px] text-sg-ink-2"
           >
             {accel.preset}
           </span>
@@ -125,15 +125,15 @@ export function AccelCard(): React.JSX.Element {
             className={cn(
               "inline-flex items-center gap-1.5 rounded-full border px-2 py-[2px] font-mono text-[11px]",
               accel.enabled
-                ? "border-tp-ok/30 bg-tp-ok-soft text-tp-ok"
-                : "border-tp-ink-3/30 bg-tp-glass-inner-strong text-tp-ink-2",
+                ? "border-sg-ok/30 bg-sg-ok-soft text-sg-ok"
+                : "border-sg-ink-3/30 bg-sg-inset-strong text-sg-ink-2",
             )}
           >
             <span
               aria-hidden
               className={cn(
                 "h-[5px] w-[5px] rounded-full",
-                accel.enabled ? "bg-tp-ok" : "bg-tp-ink-3",
+                accel.enabled ? "bg-sg-ok" : "bg-sg-ink-3",
               )}
             />
             {accel.enabled
@@ -142,31 +142,31 @@ export function AccelCard(): React.JSX.Element {
           </span>
         </Field>
         <Field label={t("marketplace.accel.githubToken")}>
-          <span className="font-mono text-[12px] text-tp-ink-2">
+          <span className="font-mono text-[12px] text-sg-ink-2">
             {s.github_token_set
               ? t("marketplace.accel.githubTokenSet")
               : t("marketplace.accel.githubTokenUnset")}
           </span>
         </Field>
         <Field label={t("marketplace.accel.registryRepo")}>
-          <code className="break-all font-mono text-[12px] text-tp-ink-2">
+          <code className="break-all font-mono text-[12px] text-sg-ink-2">
             {s.registry_repo}
           </code>
         </Field>
         <Field label={t("marketplace.accel.registryRef")}>
-          <code className="break-all font-mono text-[12px] text-tp-ink-2">
+          <code className="break-all font-mono text-[12px] text-sg-ink-2">
             {s.registry_ref}
           </code>
         </Field>
         <Field label={t("marketplace.accel.indexUrl")} full>
-          <code className="break-all font-mono text-[12px] text-tp-ink-3">
+          <code className="break-all font-mono text-[12px] text-sg-ink-3">
             {s.index_url}
           </code>
         </Field>
         <Field label={t("marketplace.accel.acceleratedIndexUrl")} full>
           <code
             data-testid="accel-index-url"
-            className="break-all font-mono text-[12px] text-tp-ink-2"
+            className="break-all font-mono text-[12px] text-sg-ink-2"
           >
             {s.accelerated_index_url}
           </code>
@@ -174,7 +174,7 @@ export function AccelCard(): React.JSX.Element {
       </dl>
 
       {/* Read-only hint */}
-      <p className="rounded-md border border-tp-glass-edge bg-tp-glass-inner px-3 py-2 text-[12px] text-tp-ink-3">
+      <p className="rounded-md border border-sg-border bg-sg-inset px-3 py-2 text-[12px] text-sg-ink-3">
         {t("marketplace.accel.readOnlyHint")}
       </p>
 
@@ -231,7 +231,7 @@ function Field({
 }) {
   return (
     <div className={cn("flex flex-col gap-1", full && "sm:col-span-2")}>
-      <dt className="font-mono text-[10px] uppercase tracking-[0.12em] text-tp-ink-4">
+      <dt className="font-mono text-[10px] uppercase tracking-[0.12em] text-sg-ink-4">
         {label}
       </dt>
       <dd>{children}</dd>
@@ -254,32 +254,32 @@ function ProbeCard({
       data-testid={testId}
       data-ok={leg.ok}
       className={cn(
-        "flex flex-col gap-1.5 rounded-lg border p-3",
+        "flex flex-col gap-1.5 rounded-sg-md border p-3",
         leg.ok
-          ? "border-emerald-500/40 bg-emerald-500/5"
-          : "border-red-500/40 bg-red-500/5",
+          ? "border-sg-ok/40 bg-sg-ok-soft"
+          : "border-sg-err/40 bg-sg-err-soft",
       )}
     >
       <div className="flex items-center gap-2">
         {leg.ok ? (
-          <CheckCircle2 className="h-4 w-4 text-emerald-600" aria-hidden />
+          <CheckCircle2 className="h-4 w-4 text-sg-ok" aria-hidden />
         ) : (
-          <XCircle className="h-4 w-4 text-red-600" aria-hidden />
+          <XCircle className="h-4 w-4 text-sg-err" aria-hidden />
         )}
-        <span className="text-[13px] font-medium text-tp-ink">{title}</span>
+        <span className="text-[13px] font-medium text-sg-ink">{title}</span>
         <span
           className={cn(
             "ml-auto font-mono text-[11px]",
-            leg.ok ? "text-emerald-700" : "text-red-600",
+            leg.ok ? "text-sg-ok" : "text-sg-err",
           )}
         >
           {leg.ok ? t("marketplace.accel.probeOk") : t("marketplace.accel.probeFail")}
         </span>
       </div>
-      <code className="break-all font-mono text-[11px] text-tp-ink-3">
+      <code className="break-all font-mono text-[11px] text-sg-ink-3">
         {leg.url}
       </code>
-      <div className="flex flex-wrap items-center gap-2 font-mono text-[10.5px] text-tp-ink-4">
+      <div className="flex flex-wrap items-center gap-2 font-mono text-[10.5px] text-sg-ink-4">
         <span>
           {leg.status !== null
             ? t("marketplace.accel.probeStatus", { status: leg.status })
@@ -293,7 +293,7 @@ function ProbeCard({
         ) : null}
       </div>
       {leg.error ? (
-        <p className="break-words text-[11px] text-red-600">{leg.error}</p>
+        <p className="break-words text-[11px] text-sg-err">{leg.error}</p>
       ) : null}
     </div>
   );

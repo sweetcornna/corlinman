@@ -96,14 +96,14 @@ export function UpdateBubble({ className }: UpdateBubbleProps) {
       title={t("update.bubble.tooltip")}
       data-testid="update-bubble"
       className={cn(
-        "group inline-flex items-center gap-1.5 rounded-full border border-tp-amber/40 bg-tp-amber/10 px-2 py-0.5 text-xs text-tp-ink-2 transition-colors hover:bg-tp-amber/20 hover:text-tp-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
+        "group inline-flex items-center gap-1.5 rounded-full border border-sg-accent/40 bg-sg-accent/10 px-2 py-0.5 text-xs text-sg-ink-2 transition-colors hover:bg-sg-accent/20 hover:text-sg-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
         className,
       )}
     >
       <span
         aria-hidden
         className={cn(
-          "inline-block h-2 w-2 rounded-full bg-tp-amber",
+          "inline-block h-2 w-2 rounded-full bg-sg-accent",
           // Gentle pulse, disabled when the user prefers reduced motion.
           // Tailwind's `animate-pulse` is a 2s opacity loop — exactly the
           // "gentle 2s" the plan specifies; `motion-safe:` ensures we
@@ -117,7 +117,7 @@ export function UpdateBubble({ className }: UpdateBubbleProps) {
         onClick={handleDismiss}
         aria-label={t("update.bubble.dismiss")}
         data-testid="update-bubble-dismiss"
-        className="-mr-0.5 ml-0.5 inline-flex h-4 w-4 items-center justify-center rounded-full text-tp-ink-3 transition-colors hover:bg-tp-amber/30 hover:text-tp-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40"
+        className="-mr-0.5 ml-0.5 inline-flex h-4 w-4 items-center justify-center rounded-full text-sg-ink-3 transition-colors hover:bg-sg-accent/30 hover:text-sg-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40"
       >
         <X className="h-3 w-3" aria-hidden />
       </button>

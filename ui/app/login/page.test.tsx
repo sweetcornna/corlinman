@@ -50,19 +50,21 @@ describe("LoginPage", () => {
     expect(screen.getByRole("button", { name: "登录" })).toBeInTheDocument();
   });
 
-  it("renders decorative shimmer backdrop layers", () => {
+  it("renders decorative Spatial Glass backdrop layers", () => {
     render(<LoginPage />);
-    // Both decoration layers live on the hero column. They are aria-hidden
-    // and CSS-driven; the reduced-motion branch lives in a @media block so
-    // the DOM is stable — assertion is just that the classes are present.
-    const dotDrift = document.querySelector(".login-dot-drift");
-    const shimmer = document.querySelector(".login-shimmer-glow");
-    expect(dotDrift).not.toBeNull();
-    expect(shimmer).not.toBeNull();
-    // Not using Tailwind `animate-*` utilities — the animation is scoped via
-    // a component-local <style> block and disabled via @media CSS.
-    expect(dotDrift?.className).not.toMatch(/\banimate-/);
-    expect(shimmer?.className).not.toMatch(/\banimate-/);
+    // The hero column's deep-space showcase composes two aria-hidden,
+    // CSS-driven decoration layers: a drifting nebula glow (.sg-drift) and a
+    // faint fractal-noise grain (.sg-noise). Reduced-motion is honoured via a
+    // @media block in globals.css, so the DOM stays stable — the assertion is
+    // just that the design-system classes are present.
+    const nebula = document.querySelector(".sg-drift");
+    const noise = document.querySelector(".sg-noise");
+    expect(nebula).not.toBeNull();
+    expect(noise).not.toBeNull();
+    // The motion comes from globals.css keyframes (.sg-drift), not Tailwind
+    // `animate-*` utilities on these decoration layers.
+    expect(nebula?.className).not.toMatch(/\banimate-/);
+    expect(noise?.className).not.toMatch(/\banimate-/);
   });
 
   it("calls /admin/login and redirects on success", async () => {

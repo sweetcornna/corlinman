@@ -12,17 +12,18 @@ export interface LiveDotProps extends React.HTMLAttributes<HTMLSpanElement> {
 }
 
 const colorFor: Record<DotVariant, string> = {
-  ok: "bg-ok",
-  warn: "bg-warn",
-  err: "bg-err",
-  muted: "bg-muted-foreground/40",
+  ok: "bg-sg-ok",
+  warn: "bg-sg-warn",
+  err: "bg-sg-err",
+  // Idle / off — faint ink, no live read.
+  muted: "bg-sg-ink-5",
 };
 
 const ringFor: Record<DotVariant, string> = {
-  ok: "bg-ok/50",
-  warn: "bg-warn/50",
-  err: "bg-err/50",
-  muted: "bg-muted-foreground/30",
+  ok: "bg-sg-ok/50",
+  warn: "bg-sg-warn/50",
+  err: "bg-sg-err/50",
+  muted: "bg-sg-ink-5/30",
 };
 
 function usePrefersReducedMotion(): boolean {

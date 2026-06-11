@@ -69,13 +69,13 @@ export function HubSkillCard({
       data-testid={`hub-skill-card-${summary.slug}`}
       className={cn(
         "group block focus-visible:outline-none",
-        !reduced &&
-          "transition-transform duration-200 ease-tp-ease-out hover:-translate-y-0.5",
+        !reduced && "lg-gel hover:-translate-y-0.5",
         className,
       )}
     >
       <GlassPanel
         variant="soft"
+        lively
         role="button"
         tabIndex={0}
         aria-label={`Open ${summary.name} hub skill details`}
@@ -83,9 +83,9 @@ export function HubSkillCard({
         onKeyDown={handleKeyDown}
         className={cn(
           "flex h-full cursor-pointer flex-col gap-3 p-4",
-          "transition-[box-shadow,border-color] duration-200 ease-tp-ease-out",
-          "group-hover:shadow-tp-primary",
-          "focus-visible:shadow-tp-primary focus-visible:ring-2 focus-visible:ring-tp-amber/50",
+          "transition-[box-shadow,border-color] duration-200 ease-sg-ease-out",
+          "group-hover:shadow-sg-primary",
+          "focus-visible:shadow-sg-primary focus-visible:ring-2 focus-visible:ring-sg-accent/50",
         )}
       >
         {/* Row 1 — emoji + name + latest_version chip */}
@@ -94,23 +94,23 @@ export function HubSkillCard({
             aria-hidden
             className={cn(
               "flex h-9 w-9 shrink-0 items-center justify-center rounded-full",
-              "border border-tp-amber/25 bg-tp-amber-soft text-[17px] leading-none",
+              "border border-sg-accent/25 bg-sg-accent-soft text-[17px] leading-none",
             )}
           >
             <span className="opacity-85">{summary.emoji ?? "✦"}</span>
           </div>
           <div className="min-w-0 flex-1">
-            <h3 className="truncate text-[15px] font-medium leading-tight text-tp-ink">
+            <h3 className="truncate text-[15px] font-medium leading-tight text-sg-ink">
               {summary.name}
             </h3>
-            <div className="mt-1 flex items-center gap-1.5 font-mono text-[10.5px] text-tp-ink-4">
+            <div className="mt-1 flex items-center gap-1.5 font-mono text-[10.5px] text-sg-ink-4">
               <span className="truncate normal-case tracking-normal">
                 {summary.slug}
               </span>
             </div>
           </div>
           <span
-            className="inline-flex shrink-0 items-center rounded-full border border-tp-glass-edge bg-tp-glass-inner px-2 py-[2px] font-mono text-[10.5px] text-tp-ink-3"
+            className="inline-flex shrink-0 items-center rounded-full border border-sg-border bg-sg-inset px-2 py-[2px] font-mono text-[10.5px] text-sg-ink-3"
             title={summary.latest_version}
           >
             v{summary.latest_version}
@@ -118,12 +118,12 @@ export function HubSkillCard({
         </div>
 
         {/* Row 2 — description (clamped) */}
-        <p className="line-clamp-2 text-[12.5px] leading-[1.5] text-tp-ink-2">
+        <p className="line-clamp-2 text-[12.5px] leading-[1.5] text-sg-ink-2">
           {summary.description}
         </p>
 
         {/* Footer — stars · downloads · updated */}
-        <div className="mt-auto flex flex-wrap items-center gap-x-2 gap-y-1 pt-1 font-mono text-[10.5px] text-tp-ink-4">
+        <div className="mt-auto flex flex-wrap items-center gap-x-2 gap-y-1 pt-1 font-mono text-[10.5px] text-sg-ink-4">
           <span
             className="inline-flex items-center gap-1"
             data-testid="hub-skill-stars"

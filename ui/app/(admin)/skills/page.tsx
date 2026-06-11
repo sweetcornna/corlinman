@@ -320,7 +320,7 @@ export default function SkillsPage() {
       <nav
         role="tablist"
         aria-label={t("skills.title")}
-        className="flex items-center gap-1 border-b border-tp-glass-edge"
+        className="flex items-center gap-1 border-b border-sg-border"
       >
         {(["installed", "hub"] as const).map((id) => {
           const active = tab === id;
@@ -335,8 +335,8 @@ export default function SkillsPage() {
               className={
                 "px-3 py-1.5 text-[12.5px] font-medium transition-colors " +
                 (active
-                  ? "border-b-2 border-tp-amber text-tp-ink"
-                  : "border-b-2 border-transparent text-tp-ink-3 hover:text-tp-ink-2")
+                  ? "border-b-2 border-sg-accent text-sg-ink"
+                  : "border-b-2 border-transparent text-sg-ink-3 hover:text-sg-ink-2")
               }
             >
               {t(id === "installed" ? "skills.installed.tab" : "skills.hub.tab")}
@@ -408,7 +408,7 @@ export default function SkillsPage() {
       <section className="flex flex-wrap items-center justify-between gap-3">
         <label className="relative flex min-w-[220px] flex-1 items-center sm:max-w-[360px]">
           <Search
-            className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-tp-ink-4"
+            className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-sg-ink-4"
             aria-hidden
           />
           <input
@@ -417,7 +417,7 @@ export default function SkillsPage() {
             onChange={(e) => setSearch(e.target.value)}
             placeholder={t("skills.installed.searchPlaceholder")}
             aria-label={t("skills.installed.searchPlaceholder")}
-            className="h-9 w-full rounded-lg border border-tp-glass-edge bg-tp-glass-inner pl-8 pr-3 text-[13px] text-tp-ink placeholder:text-tp-ink-4 transition-colors hover:bg-tp-glass-inner-hover focus:outline-none focus:ring-2 focus:ring-tp-amber/40"
+            className="h-9 w-full rounded-lg border border-sg-border bg-sg-inset pl-8 pr-3 text-[13px] text-sg-ink placeholder:text-sg-ink-4 transition-colors hover:bg-sg-inset-hover focus:outline-none focus:ring-2 focus:ring-sg-accent/40"
           />
         </label>
         <FilterChipGroup
@@ -477,9 +477,9 @@ export default function SkillsPage() {
               })}
               data-testid="installed-delete-confirm-input"
               className={cn(
-                "h-9 rounded-md border border-tp-glass-edge bg-tp-glass-inner",
-                "px-2 font-mono text-[13px] text-tp-ink placeholder:text-tp-ink-4",
-                "focus:outline-none focus:ring-2 focus:ring-tp-err/40",
+                "h-9 rounded-md border border-sg-border bg-sg-inset",
+                "px-2 font-mono text-[13px] text-sg-ink placeholder:text-sg-ink-4",
+                "focus:outline-none focus:ring-2 focus:ring-sg-err/40",
               )}
             />
           </span>
@@ -528,17 +528,17 @@ function CardGridSkeleton() {
           className="flex h-[148px] flex-col gap-3 p-4"
         >
           <div className="flex items-center gap-2.5">
-            <div className="h-9 w-9 rounded-full bg-tp-glass-inner-strong" />
+            <div className="h-9 w-9 rounded-full bg-sg-inset-strong" />
             <div className="flex-1 space-y-1.5">
-              <div className="h-3.5 w-2/3 rounded bg-tp-glass-inner-strong" />
-              <div className="h-2.5 w-1/3 rounded bg-tp-glass-inner" />
+              <div className="h-3.5 w-2/3 rounded bg-sg-inset-strong" />
+              <div className="h-2.5 w-1/3 rounded bg-sg-inset" />
             </div>
           </div>
-          <div className="h-3 w-5/6 rounded bg-tp-glass-inner" />
+          <div className="h-3 w-5/6 rounded bg-sg-inset" />
           <div className="mt-auto flex gap-1.5">
-            <div className="h-4 w-16 rounded bg-tp-glass-inner" />
-            <div className="h-4 w-20 rounded bg-tp-glass-inner" />
-            <div className="h-4 w-12 rounded bg-tp-glass-inner" />
+            <div className="h-4 w-16 rounded bg-sg-inset" />
+            <div className="h-4 w-20 rounded bg-sg-inset" />
+            <div className="h-4 w-12 rounded bg-sg-inset" />
           </div>
         </GlassPanel>
       ))}
@@ -557,15 +557,15 @@ function OfflineBlock({ message }: { message?: string }) {
       : firstLine;
   return (
     <GlassPanel variant="soft" className="flex flex-col items-center gap-2 p-8 text-center">
-      <div className="font-mono text-[11px] uppercase tracking-[0.12em] text-tp-err">
+      <div className="font-mono text-[11px] uppercase tracking-[0.12em] text-sg-err">
         {t("skills.installed.offlineTitle")}
       </div>
-      <p className="max-w-prose text-[13px] text-tp-ink-2">
+      <p className="max-w-prose text-[13px] text-sg-ink-2">
         {t("skills.installed.offlineHint")}
       </p>
       {short ? (
         <p
-          className="max-w-full truncate font-mono text-[11px] text-tp-ink-4"
+          className="max-w-full truncate font-mono text-[11px] text-sg-ink-4"
           title={message}
         >
           {short}

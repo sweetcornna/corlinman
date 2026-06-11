@@ -136,7 +136,7 @@ function ApprovedCard({ proposal, disabled, onApply, t }: ApprovedCardProps) {
       aria-labelledby={headingId}
       className={cn(
         "p-5 transition-all duration-200",
-        "hover:-translate-y-[1px] hover:shadow-tp-hero hover:border-tp-amber/30",
+        "hover:-translate-y-[1px] hover:shadow-sg-3 hover:border-sg-accent/30",
       )}
     >
       <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
@@ -146,27 +146,27 @@ function ApprovedCard({ proposal, disabled, onApply, t }: ApprovedCardProps) {
             <span
               className={cn(
                 "inline-flex items-center gap-1 rounded-full border px-2 py-[2px]",
-                "border-tp-ok/40 bg-tp-ok-soft text-tp-ok",
+                "border-sg-ok/40 bg-sg-ok-soft text-sg-ok",
                 "font-mono text-[10.5px] uppercase tracking-[0.08em]",
               )}
             >
               {t("evolution.tp.statusApproved")}
             </span>
-            <span className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-tp-ink-4">
+            <span className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-sg-ink-4">
               #{proposal.id}
             </span>
           </div>
           <h2
             id={headingId}
-            className="font-mono text-[12.5px] leading-tight text-tp-ink"
+            className="font-mono text-[12.5px] leading-tight text-sg-ink"
           >
-            <span className="text-tp-ink-3">
+            <span className="text-sg-ink-3">
               {t("evolution.tp.cardTargetLabel")} ·{" "}
             </span>
             <span className="break-all">{proposal.target}</span>
           </h2>
           {proposal.decided_by ? (
-            <div className="text-[11px] text-tp-ink-3">
+            <div className="text-[11px] text-sg-ink-3">
               {t("evolution.tp.approvedBy", {
                 who: proposal.decided_by,
                 when: formatRelative(proposal.decided_at, t),
@@ -183,9 +183,9 @@ function ApprovedCard({ proposal, disabled, onApply, t }: ApprovedCardProps) {
             aria-label={t("evolution.tp.apply")}
             className={cn(
               "inline-flex items-center gap-1.5 rounded-full px-3.5 py-1 text-[12px] font-medium",
-              "bg-tp-amber text-[#1a120d] shadow-tp-primary",
+              "bg-sg-accent text-primary-foreground shadow-sg-primary",
               "transition-transform duration-150 hover:-translate-y-[1px] active:translate-y-0",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/55",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/55",
               "disabled:pointer-events-none disabled:opacity-50",
             )}
           >
@@ -195,11 +195,11 @@ function ApprovedCard({ proposal, disabled, onApply, t }: ApprovedCardProps) {
         </div>
       </div>
 
-      <div className="mt-4 border-t border-tp-glass-edge pt-3">
-        <div className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-tp-ink-4">
+      <div className="mt-4 border-t border-sg-border pt-3">
+        <div className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-sg-ink-4">
           {t("evolution.tp.cardReasoningLabel")}
         </div>
-        <p className="mt-1.5 text-[13px] leading-[1.7] text-tp-ink-2">
+        <p className="mt-1.5 text-[13px] leading-[1.7] text-sg-ink-2">
           {proposal.reasoning}
         </p>
       </div>
@@ -262,8 +262,8 @@ function KindBadge({ kind }: { kind: string }) {
     <span
       className={cn(
         "inline-flex items-center rounded-full border px-2 py-[2px]",
-        "border-tp-glass-edge bg-tp-glass-inner-strong",
-        "font-mono text-[10.5px] tracking-wide text-tp-ink-2",
+        "border-sg-border bg-sg-inset-strong",
+        "font-mono text-[10.5px] tracking-wide text-sg-ink-2",
       )}
     >
       {kind}
@@ -278,8 +278,8 @@ function ListSkeleton() {
         <div
           key={i}
           className={cn(
-            "h-[120px] animate-pulse rounded-2xl border border-tp-glass-edge",
-            "bg-tp-glass-inner/70",
+            "h-[120px] animate-pulse rounded-2xl border border-sg-border",
+            "bg-sg-inset",
           )}
         />
       ))}

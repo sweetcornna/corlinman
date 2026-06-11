@@ -53,25 +53,25 @@ export function EvolutionPageHeader({
       className="flex flex-col gap-5 p-5 md:flex-row md:items-end md:justify-between md:gap-8 md:p-7"
     >
       <div className="flex max-w-[58ch] flex-col gap-3">
-        <div className="flex items-center gap-2.5 font-mono text-[10.5px] uppercase tracking-[0.14em] text-tp-ink-4">
+        <div className="flex items-center gap-2.5 font-mono text-[10.5px] uppercase tracking-[0.14em] text-sg-ink-4">
           <span
             aria-hidden
-            className="h-1.5 w-1.5 rounded-full bg-tp-amber tp-breathe"
+            className="h-1.5 w-1.5 rounded-full bg-sg-accent sg-breathe"
           />
           corlinman · evolution
         </div>
         <h1
           className={cn(
-            "font-serif text-[40px] font-normal leading-[1.04] tracking-[-0.02em] text-tp-ink",
+            "font-serif text-[40px] font-normal leading-[1.04] tracking-[-0.02em] text-sg-ink",
             "sm:text-[46px]",
           )}
         >
           {t("evolution.tp.title")}
         </h1>
-        <p className="text-[13.5px] leading-[1.65] text-tp-ink-2">
+        <p className="text-[13.5px] leading-[1.65] text-sg-ink-2">
           {t("evolution.tp.subtitle")}
         </p>
-        <p className="mt-1 text-[13px] leading-[1.6] text-tp-ink-3">
+        <p className="mt-1 text-[13px] leading-[1.6] text-sg-ink-3">
           {hasPending ? (
             <>
               <InlineMetric tone="warn">
@@ -87,7 +87,7 @@ export function EvolutionPageHeader({
             </>
           ) : (
             <>
-              <span className="text-tp-ink">{t("evolution.tp.heroQuiet")}</span>
+              <span className="text-sg-ink">{t("evolution.tp.heroQuiet")}</span>
               <span className="ml-1.5">{t("evolution.tp.heroQuietSub")}</span>
             </>
           )}
@@ -105,9 +105,9 @@ export function EvolutionPageHeader({
             aria-label={t("evolution.tp.refresh")}
             className={cn(
               "inline-flex h-8 items-center gap-1.5 rounded-full border px-3.5 text-[12px] font-medium",
-              "border-tp-glass-edge bg-tp-glass-inner text-tp-ink-2",
-              "transition-colors hover:bg-tp-glass-inner-hover hover:text-tp-ink",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
+              "border-sg-border bg-sg-inset text-sg-ink-2",
+              "transition-colors hover:bg-sg-inset-hover hover:text-sg-ink",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
               "disabled:pointer-events-none disabled:opacity-60",
             )}
           >
@@ -135,8 +135,8 @@ function InlineMetric({
       className={cn(
         "whitespace-nowrap rounded-md border px-1.5 py-px font-mono text-[12px] font-medium tabular-nums",
         tone === "warn"
-          ? "border-tp-warn/30 bg-tp-warn-soft text-tp-warn"
-          : "border-tp-glass-edge bg-tp-glass-inner-strong text-tp-ink",
+          ? "border-sg-warn/30 bg-sg-warn-soft text-sg-warn"
+          : "border-sg-border bg-sg-inset-strong text-sg-ink",
       )}
     >
       {children}
@@ -151,7 +151,7 @@ function BudgetPill({ used, total }: { used: number; total: number }) {
     <span
       className={cn(
         "inline-flex h-8 items-center gap-2 rounded-full border px-3 font-mono text-[11px]",
-        "border-tp-glass-edge bg-tp-glass-inner text-tp-ink-2",
+        "border-sg-border bg-sg-inset text-sg-ink-2",
       )}
     >
       <BudgetGauge
@@ -159,13 +159,13 @@ function BudgetPill({ used, total }: { used: number; total: number }) {
         total={total}
         label={t("evolution.tp.budgetGaugeLabel")}
       />
-      <span className="text-tp-ink-3">
+      <span className="text-sg-ink-3">
         {t("evolution.tp.statBudget").toLowerCase()} ·
       </span>
-      <span className="tabular-nums text-tp-ink">
+      <span className="tabular-nums text-sg-ink">
         {used}/{total}
       </span>
-      <span className="text-tp-ink-4">({pct}%)</span>
+      <span className="text-sg-ink-4">({pct}%)</span>
     </span>
   );
 }
@@ -179,15 +179,15 @@ function WatchPill({ watching }: { watching: boolean }) {
       className={cn(
         "inline-flex h-8 items-center gap-2 rounded-full border px-3 font-mono text-[11px]",
         watching
-          ? "border-tp-ok/25 bg-tp-ok-soft text-tp-ok"
-          : "border-tp-glass-edge bg-tp-glass-inner text-tp-ink-3",
+          ? "border-sg-ok/25 bg-sg-ok-soft text-sg-ok"
+          : "border-sg-border bg-sg-inset text-sg-ink-3",
       )}
     >
       <span
         aria-hidden
         className={cn(
           "h-[7px] w-[7px] rounded-full",
-          watching ? "bg-tp-ok tp-breathe" : "bg-tp-ink-4",
+          watching ? "bg-sg-ok sg-breathe" : "bg-sg-ink-4",
         )}
       />
       {watching

@@ -1,0 +1,35 @@
+TOTAL EXTENSIONS: 34
+bluebubbles                | 
+copilot-proxy              | 
+device-pair                | Generate setup codes and approve device pairing requests.
+diagnostics-otel           | 
+discord                    | 
+feishu                     | 
+google-antigravity-auth    | 
+google-gemini-cli-auth     | 
+googlechat                 | 
+imessage                   | 
+line                       | 
+llm-task                   | Generic JSON-only LLM tool for structured tasks callable from workflows.
+lobster                    | Typed workflow tool with resumable approvals.
+matrix                     | 
+mattermost                 | 
+memory-core                | 
+memory-lancedb             | 
+minimax-portal-auth        | 
+msteams                    | 
+nextcloud-talk             | 
+nostr                      | 
+open-prose                 | OpenProse VM skill pack with a /prose slash command.
+phone-control              | Arm/disarm high-risk phone node commands (camera/screen/writes) with an optional auto-expi
+qwen-portal-auth           | 
+signal                     | 
+slack                      | 
+talk-voice                 | Manage Talk voice selection (list/set).
+telegram                   | 
+tlon                       | 
+twitch                     | 
+voice-call                 | 
+whatsapp                   | 
+zalo                       | 
+zalouser                   | 

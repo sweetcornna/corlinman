@@ -23,6 +23,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Plus, RefreshCw } from "lucide-react";
 
+import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -66,7 +67,7 @@ export default function TenantsPage() {
           <h1 className="text-2xl font-semibold tracking-tight">
             {t("tenants.title")}
           </h1>
-          <p className="text-sm text-tp-ink-3">{t("tenants.subtitle")}</p>
+          <p className="text-sm text-sg-ink-3">{t("tenants.subtitle")}</p>
         </div>
         <div className="flex items-center gap-2">
           <Button
@@ -97,18 +98,14 @@ export default function TenantsPage() {
       {data?.kind === "disabled" ? (
         <DisabledBanner />
       ) : data?.kind === "unauthenticated" ? (
-        <section
-          className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive"
-          role="alert"
-          data-testid="tenants-unauthenticated"
-        >
+        <Alert variant="danger" data-testid="tenants-unauthenticated">
           {t("tenants.unauthenticated")}
-        </section>
+        </Alert>
       ) : (
-        <section className="overflow-hidden rounded-lg border border-tp-glass-edge bg-tp-glass">
+        <section className="overflow-hidden rounded-lg border border-sg-border bg-sg-card">
           <Table>
             <TableHeader>
-              <TableRow className="border-b border-tp-glass-edge hover:bg-transparent">
+              <TableRow className="border-b border-sg-border hover:bg-transparent">
                 <TableHead className="pl-4">
                   {t("tenants.colSlug")}
                 </TableHead>
@@ -123,7 +120,7 @@ export default function TenantsPage() {
                 Array.from({ length: 3 }).map((_, i) => (
                   <TableRow
                     key={`sk-${i}`}
-                    className="border-b border-tp-glass-edge"
+                    className="border-b border-sg-border"
                   >
                     {Array.from({ length: 3 }).map((_, j) => (
                       <TableCell
@@ -139,7 +136,7 @@ export default function TenantsPage() {
                 <TableRow>
                   <TableCell
                     colSpan={3}
-                    className="py-10 text-center text-sm text-destructive"
+                    className="py-10 text-center text-sm text-sg-err"
                     data-testid="tenants-load-failed"
                   >
                     {t("tenants.loadFailedRetry", { msg: data.message })}
@@ -149,7 +146,7 @@ export default function TenantsPage() {
                 <TableRow>
                   <TableCell
                     colSpan={3}
-                    className="py-10 text-center text-sm text-tp-ink-3"
+                    className="py-10 text-center text-sm text-sg-ink-3"
                   >
                     {t("tenants.empty")}
                   </TableCell>
@@ -158,7 +155,7 @@ export default function TenantsPage() {
                 tenants.map((tn) => (
                   <TableRow
                     key={tn.tenant_id}
-                    className="border-b border-tp-glass-edge transition-colors hover:bg-tp-glass-inner-hover"
+                    className="border-b border-sg-border transition-colors hover:bg-sg-inset-hover"
                     data-testid={`tenant-row-${tn.tenant_id}`}
                   >
                     <TableCell className="pl-4">
@@ -167,7 +164,7 @@ export default function TenantsPage() {
                       </Badge>
                     </TableCell>
                     <TableCell>{tn.display_name}</TableCell>
-                    <TableCell className="text-xs text-tp-ink-3">
+                    <TableCell className="text-xs text-sg-ink-3">
                       {formatTime(tn.created_at)}
                     </TableCell>
                   </TableRow>
@@ -187,13 +184,13 @@ function DisabledBanner(): React.ReactElement {
   const { t } = useTranslation();
   return (
     <section
-      className="rounded-lg border border-tp-glass-edge bg-tp-glass p-6"
+      className="rounded-lg border border-sg-border bg-sg-card p-6"
       data-testid="tenants-disabled-banner"
     >
-      <h2 className="text-base font-medium text-tp-ink">
+      <h2 className="text-base font-medium text-sg-ink">
         {t("tenants.disabledTitle")}
       </h2>
-      <p className="mt-1 text-sm text-tp-ink-3">{t("tenants.disabledHint")}</p>
+      <p className="mt-1 text-sm text-sg-ink-3">{t("tenants.disabledHint")}</p>
     </section>
   );
 }

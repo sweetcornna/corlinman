@@ -48,17 +48,17 @@ export function PageHero({
     <header className="flex flex-col gap-3">
       <h1
         className={cn(
-          "font-sans text-[30px] font-semibold leading-[1.12] tracking-[-0.025em] text-tp-ink",
+          "font-sans text-[30px] font-semibold leading-[1.12] tracking-[-0.025em] text-sg-ink",
           "sm:text-[34px]",
         )}
       >
         {t("nodes.tp.heroTitle")}
       </h1>
-      <p className="max-w-[64ch] text-[14px] leading-[1.6] text-tp-ink-2">
+      <p className="max-w-[64ch] text-[14px] leading-[1.6] text-sg-ink-2">
         {empty ? (
           <>
-            <span className="text-tp-ink">{t("nodes.tp.heroEmpty")}</span>
-            <span className="ml-1 text-tp-ink-3">{t("nodes.tp.heroEmptyHint")}</span>
+            <span className="text-sg-ink">{t("nodes.tp.heroEmpty")}</span>
+            <span className="ml-1 text-sg-ink-3">{t("nodes.tp.heroEmptyHint")}</span>
           </>
         ) : (
           <>
@@ -69,7 +69,7 @@ export function PageHero({
               })}
             </InlineMetric>
             {hasDegraded && recentDegradedHost !== null ? (
-              <span className="ml-1 text-tp-ink-2">
+              <span className="ml-1 text-sg-ink-2">
                 <InlineMetric tone="warn">
                   {t("nodes.tp.heroDegraded", {
                     host: recentDegradedHost,
@@ -77,7 +77,7 @@ export function PageHero({
                   })}
                 </InlineMetric>
                 {recentDegradedCapability ? (
-                  <span className="ml-1 text-tp-ink-3">
+                  <span className="ml-1 text-sg-ink-3">
                     {t("nodes.tp.heroDegradedCap", {
                       cap: recentDegradedCapability,
                     })}
@@ -86,7 +86,7 @@ export function PageHero({
               </span>
             ) : null}
             {hasOffline && !hasDegraded ? (
-              <span className="ml-1 text-tp-ink-3">
+              <span className="ml-1 text-sg-ink-3">
                 {t("nodes.tp.heroOffline", { n: offlineCount })}
               </span>
             ) : null}
@@ -109,8 +109,8 @@ function InlineMetric({
       className={cn(
         "whitespace-nowrap rounded-md border px-1.5 py-px font-mono text-[12.5px] font-medium tabular-nums",
         tone === "warn"
-          ? "border-tp-warn/30 bg-tp-warn-soft text-tp-warn"
-          : "border-tp-glass-edge bg-tp-glass-inner-strong text-tp-ink",
+          ? "border-sg-warn/30 bg-sg-warn-soft text-sg-warn"
+          : "border-sg-border bg-sg-inset-strong text-sg-ink",
       )}
     >
       {children}

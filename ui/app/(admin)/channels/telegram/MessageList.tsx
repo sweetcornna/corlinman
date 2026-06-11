@@ -53,7 +53,7 @@ export function MessageList({
 
   if (messages.length === 0) {
     return (
-      <p className="px-5 py-10 text-center text-[12.5px] text-tp-ink-3">
+      <p className="px-5 py-10 text-center text-[12.5px] text-sg-ink-3">
         {t("channels.telegram.tp.noUpdates")}
       </p>
     );
@@ -64,7 +64,7 @@ export function MessageList({
       initial="hidden"
       animate="visible"
       variants={variants.stagger}
-      className="flex flex-col divide-y divide-tp-glass-edge"
+      className="flex flex-col divide-y divide-sg-border"
     >
       {messages.map((msg) => {
         const ignored =
@@ -78,8 +78,8 @@ export function MessageList({
             data-testid={`tg-message-${msg.id}`}
             className={cn(
               "group flex items-start gap-3 px-4 py-3 transition-colors",
-              "hover:bg-tp-glass-inner-hover",
-              selected && "bg-tp-amber-soft",
+              "hover:bg-sg-inset-hover",
+              selected && "bg-sg-accent-soft",
               ignored && "opacity-60",
             )}
             onClick={() => onMessageClick?.(msg)}
@@ -93,17 +93,17 @@ export function MessageList({
               }
             }}
           >
-            <span className="shrink-0 pt-0.5 font-mono text-[11px] tabular-nums text-tp-ink-4">
+            <span className="shrink-0 pt-0.5 font-mono text-[11px] tabular-nums text-sg-ink-4">
               {formatTs(msg.timestamp_ms)}
             </span>
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px]">
                 {msg.from_username ? (
-                  <span className="font-mono font-semibold text-tp-ink">
+                  <span className="font-mono font-semibold text-sg-ink">
                     {msg.from_username}
                   </span>
                 ) : null}
-                <span className="text-tp-ink-3">
+                <span className="text-sg-ink-3">
                   {msg.chat_title
                     ? t("channels.telegram.tp.groupContext", {
                         name: msg.chat_title,
@@ -113,7 +113,7 @@ export function MessageList({
                 <RoutingBadge msg={msg} />
               </div>
               {msg.content ? (
-                <p className="mt-1 line-clamp-2 whitespace-pre-wrap break-words text-[12.5px] text-tp-ink-2">
+                <p className="mt-1 line-clamp-2 whitespace-pre-wrap break-words text-[12.5px] text-sg-ink-2">
                   {msg.content}
                 </p>
               ) : null}
@@ -190,10 +190,10 @@ function routingSpec(msg: TelegramMessage): BadgeSpec {
 }
 
 const badgeTone: Record<BadgeSpec["tone"], string> = {
-  ok: "bg-tp-ok-soft text-tp-ok border-tp-ok/25",
-  warn: "bg-tp-warn-soft text-tp-warn border-tp-warn/25",
-  info: "bg-tp-glass-inner-strong text-tp-ink-3 border-tp-glass-edge",
-  amber: "bg-tp-amber-soft text-tp-amber border-tp-amber/25",
+  ok: "bg-sg-ok-soft text-sg-ok border-sg-ok/25",
+  warn: "bg-sg-warn-soft text-sg-warn border-sg-warn/25",
+  info: "bg-sg-inset-strong text-sg-ink-3 border-sg-border",
+  amber: "bg-sg-accent-soft text-sg-accent border-sg-accent/25",
 };
 
 function RoutingBadge({ msg }: { msg: TelegramMessage }): React.ReactElement {
@@ -243,9 +243,9 @@ function MediaPreview({
           onPhotoClick?.(message);
         }}
         className={cn(
-          "mt-2 inline-flex overflow-hidden rounded-lg border border-tp-glass-edge bg-tp-glass-inner",
-          "transition-colors hover:bg-tp-glass-inner-hover",
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
+          "mt-2 inline-flex overflow-hidden rounded-lg border border-sg-border bg-sg-inset",
+          "transition-colors hover:bg-sg-inset-hover",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
         )}
         aria-label={t("channels.telegram.tp.photoPreviewTitle")}
         data-testid={`tg-photo-thumb-${message.id}`}
@@ -268,13 +268,13 @@ function MediaPreview({
     return (
       <div
         className={cn(
-          "mt-2 inline-flex flex-wrap items-center gap-2 rounded-lg border border-tp-glass-edge",
-          "bg-tp-glass-inner px-2 py-1 text-[11.5px] text-tp-ink-2",
+          "mt-2 inline-flex flex-wrap items-center gap-2 rounded-lg border border-sg-border",
+          "bg-sg-inset px-2 py-1 text-[11.5px] text-sg-ink-2",
         )}
         data-testid={`tg-voice-${message.id}`}
       >
-        <Mic className="h-3.5 w-3.5 text-tp-amber" aria-hidden="true" />
-        <span className="font-mono text-[11px] text-tp-ink-3">
+        <Mic className="h-3.5 w-3.5 text-sg-accent" aria-hidden="true" />
+        <span className="font-mono text-[11px] text-sg-ink-3">
           {t("channels.telegram.tp.voiceLabel")}
           {duration ? ` · ${duration}` : ""}
         </span>
@@ -309,17 +309,17 @@ function DocChip({
       rel="noreferrer"
       onClick={(e) => e.stopPropagation()}
       className={cn(
-        "mt-2 inline-flex items-center gap-2 rounded-lg border border-tp-glass-edge",
-        "bg-tp-glass-inner px-2 py-1 text-[11.5px] text-tp-ink-2",
-        "transition-colors hover:bg-tp-glass-inner-hover hover:text-tp-ink",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
+        "mt-2 inline-flex items-center gap-2 rounded-lg border border-sg-border",
+        "bg-sg-inset px-2 py-1 text-[11.5px] text-sg-ink-2",
+        "transition-colors hover:bg-sg-inset-hover hover:text-sg-ink",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
       )}
       data-testid={`tg-doc-${messageId}`}
     >
-      <FileText className="h-3.5 w-3.5 text-tp-ink-3" aria-hidden="true" />
+      <FileText className="h-3.5 w-3.5 text-sg-ink-3" aria-hidden="true" />
       <span className="truncate font-mono text-[11px]">{label}</span>
       {typeof media.size_bytes === "number" ? (
-        <span className="text-[10px] text-tp-ink-4">
+        <span className="text-[10px] text-sg-ink-4">
           {formatBytes(media.size_bytes)}
         </span>
       ) : null}

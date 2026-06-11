@@ -47,6 +47,7 @@ import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
 import { logout } from "@/lib/auth";
+import { springs } from "@/lib/motion";
 import { useDevMode } from "@/lib/dev-mode";
 import { useMotion } from "@/components/ui/motion-safe";
 import { useMobileDrawer } from "./mobile-drawer-context";
@@ -235,9 +236,30 @@ export const SIDEBAR_DEV_ITEMS = DEV_ITEMS;
 export const SIDEBAR_SYSTEM_ENTRY = SYSTEM_ENTRY;
 export const SIDEBAR_DEV_SETTINGS_ENTRY = DEV_SETTINGS_ENTRY;
 
-function isActiveHref(pathname: string, href: string): boolean {
+/** Every navigable href in the rail — used for longest-match arbitration. */
+const ALL_NAV_HREFS: string[] = [
+  ...OPERATOR_ITEMS.flatMap((i) => ("children" in i ? i.children.map((c) => c.href) : [i.href])),
+  ...DEV_ITEMS.flatMap((i) => ("children" in i ? i.children.map((c) => c.href) : [i.href])),
+  SYSTEM_ENTRY.href,
+  DEV_SETTINGS_ENTRY.href,
+];
+
+function matchesHref(pathname: string, href: string): boolean {
   if (href === "/") return pathname === "/";
   return pathname === href || pathname.startsWith(`${href}/`);
+}
+
+/**
+ * Active = this href matches AND no other nav item matches more
+ * specifically — so /scheduler/qzone lights only "QZone 发布", never
+ * its /scheduler sibling as well.
+ */
+function isActiveHref(pathname: string, href: string): boolean {
+  if (!matchesHref(pathname, href)) return false;
+  return !ALL_NAV_HREFS.some(
+    (other) =>
+      other !== href && other.length > href.length && matchesHref(pathname, other),
+  );
 }
 
 const COLLAPSE_KEY = "corlinman.sidebar.collapsed.v1";
@@ -326,17 +348,24 @@ export function Sidebar({ user }: SidebarProps) {
   return (
     <aside
       className={cn(
-        // Tidepool: floating glass panel. On desktop it's a sticky flex
-        // column in the admin layout row; on mobile (<md) it slides in
-        // from the left over a backdrop driven by <MobileDrawerProvider>.
-        "flex flex-col overflow-hidden rounded-2xl border",
-        "bg-tp-glass border-tp-glass-edge",
-        "backdrop-blur-glass backdrop-saturate-glass",
-        "shadow-[inset_0_1px_0_var(--tp-glass-hl)] shadow-tp-panel",
+        // Spatial Glass: floating glass rail (shell tier — real blur allowed).
+        // On desktop it's a sticky flex column in the admin layout row; on
+        // mobile (<md) it slides in from the left over a backdrop driven by
+        // <MobileDrawerProvider>.
+        "flex flex-col overflow-hidden rounded-[24px]",
+        "bg-sg-shell border border-sg-border",
+        "backdrop-blur-sg-shell backdrop-saturate-sg-shell",
+        "shadow-sg-3",
+        // Liquid Glass optics — light-aware edge ring + chromatic inner
+        // lensing so the rail reads as a bent-light material, not a tinted
+        // panel. Blur-free, composes on top of the shell recipe above.
+        "lg-edge lg-refract",
         // Desktop ≥md: sticky inline flex member.
         "md:relative md:sticky md:top-4 md:self-start md:max-h-[calc(100dvh-2rem)]",
         "md:shrink-0 md:translate-x-0",
-        "md:transition-[width] md:duration-200 md:ease-out",
+        // Spring the collapse/expand width change — springy overshoot curve
+        // instead of a flat ease so the rail settles with a liquid feel.
+        "md:transition-[width] md:duration-300 md:ease-[cubic-bezier(0.34,1.56,0.64,1)]",
         // Mobile <md: fixed slide-in drawer at 240px.
         "fixed inset-y-2 left-2 z-50 w-[240px] max-h-[calc(100dvh-16px)]",
         "transition-transform duration-200 ease-out",
@@ -350,7 +379,7 @@ export function Sidebar({ user }: SidebarProps) {
       inert={mobileDrawerHidden ? true : undefined}
     >
       {/* brand + collapse */}
-      <div className="flex items-center justify-between gap-2 border-b border-tp-glass-edge px-3.5 py-3.5">
+      <div className="flex items-center justify-between gap-2 border-b border-sg-border px-3.5 py-3.5">
         <Link href="/" className="flex min-h-10 items-center gap-2 overflow-hidden">
           <BrandMarkNudge>
             <BrandMark compact={collapsed && hydrated} />
@@ -362,7 +391,7 @@ export function Sidebar({ user }: SidebarProps) {
           aria-label={
             collapsed ? t("nav.expandSidebar") : t("nav.collapseSidebar")
           }
-          className="inline-flex h-9 w-9 items-center justify-center rounded-md text-tp-ink-3 transition-colors hover:bg-tp-glass-inner hover:text-tp-ink"
+          className="inline-flex h-9 w-9 items-center justify-center rounded-sg-sm text-sg-ink-3 transition-colors hover:bg-sg-inset-hover hover:text-sg-ink"
         >
           {collapsed ? (
             <ChevronsRight className="h-4 w-4" />
@@ -396,14 +425,14 @@ export function Sidebar({ user }: SidebarProps) {
       </nav>
 
       {/* user chip + footer */}
-      <div className="border-t border-tp-glass-edge p-3">
+      <div className="border-t border-sg-border p-3">
         {collapsed && hydrated ? (
           <div className="flex flex-col items-center gap-1">
             <button
               type="button"
               onClick={() => setChangePasswordOpen(true)}
               aria-label={t("auth.openChangePasswordDialog")}
-              className="flex h-9 w-full items-center justify-center rounded-md text-tp-ink-3 transition-colors hover:bg-tp-glass-inner hover:text-tp-ink"
+              className="flex h-9 w-full items-center justify-center rounded-sg-sm text-sg-ink-3 transition-colors hover:bg-sg-inset-hover hover:text-sg-ink"
               data-testid="change-password-button"
             >
               <KeyRound className="h-4 w-4" />
@@ -413,7 +442,7 @@ export function Sidebar({ user }: SidebarProps) {
               onClick={onLogout}
               aria-label={t("auth.logoutLabel")}
               disabled={loggingOut}
-              className="flex h-9 w-full items-center justify-center rounded-md text-tp-ink-3 transition-colors hover:bg-tp-glass-inner hover:text-tp-ink disabled:opacity-50"
+              className="flex h-9 w-full items-center justify-center rounded-sg-sm text-sg-ink-3 transition-colors hover:bg-sg-inset-hover hover:text-sg-ink disabled:opacity-50"
               data-testid="logout-button"
             >
               <LogOut className="h-4 w-4" />
@@ -422,17 +451,18 @@ export function Sidebar({ user }: SidebarProps) {
         ) : (
           <div className="flex items-center gap-2">
             <div
-              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold text-white"
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold text-primary-foreground"
               style={{
-                background: "linear-gradient(135deg, var(--tp-amber), var(--tp-ember))",
-                boxShadow: "0 0 10px -3px var(--tp-amber-glow)",
+                background:
+                  "linear-gradient(135deg, var(--sg-accent), var(--sg-accent-2))",
+                boxShadow: "0 0 10px -3px var(--sg-accent-glow)",
               }}
             >
               {(user ?? "a").slice(0, 1).toUpperCase()}
             </div>
             <div className="min-w-0 flex-1 leading-tight">
               <div
-                className="truncate text-xs font-medium text-tp-ink"
+                className="truncate text-xs font-medium text-sg-ink"
                 data-testid="nav-user"
               >
                 {user ?? "admin"}
@@ -443,7 +473,7 @@ export function Sidebar({ user }: SidebarProps) {
               onClick={() => setChangePasswordOpen(true)}
               aria-label={t("auth.openChangePasswordDialog")}
               title={t("auth.openChangePasswordDialog")}
-              className="inline-flex h-9 w-9 items-center justify-center rounded-md text-tp-ink-3 transition-colors hover:bg-tp-glass-inner hover:text-tp-ink"
+              className="inline-flex h-9 w-9 items-center justify-center rounded-sg-sm text-sg-ink-3 transition-colors hover:bg-sg-inset-hover hover:text-sg-ink"
               data-testid="change-password-button"
             >
               <KeyRound className="h-3.5 w-3.5" />
@@ -453,7 +483,7 @@ export function Sidebar({ user }: SidebarProps) {
               onClick={onLogout}
               disabled={loggingOut}
               aria-label={t("auth.logoutLabel")}
-              className="inline-flex h-9 w-9 items-center justify-center rounded-md text-tp-ink-3 transition-colors hover:bg-tp-glass-inner hover:text-tp-ink disabled:opacity-50"
+              className="inline-flex h-9 w-9 items-center justify-center rounded-sg-sm text-sg-ink-3 transition-colors hover:bg-sg-inset-hover hover:text-sg-ink disabled:opacity-50"
               data-testid="logout-button"
             >
               <LogOut className="h-3.5 w-3.5" />
@@ -498,12 +528,15 @@ function SidebarItem({
       href={item.href as never}
       onKeyDown={onKeyDown}
       className={cn(
-        "group relative flex min-h-9 items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-[13px] transition-colors",
-        // Active: subtle tint-only glass highlight (see .pattern-active in
-        // globals.css). Inactive: text lift on hover only.
+        "group relative flex min-h-9 items-center gap-2.5 rounded-sg-md px-2.5 py-1.5 text-[13px] transition-colors",
+        // Springy press physics on tap (lg-gel composes its own transform
+        // transition; transition-colors above keeps the hue change).
+        "lg-gel",
+        // Active: full accent-tinted glass pill with a hairline accent border.
+        // Inactive: text lift + sunken hover well.
         active
-          ? "pattern-active text-tp-ink"
-          : "text-tp-ink-2 hover:text-tp-ink",
+          ? "border border-sg-accent/30 bg-sg-accent-soft text-sg-ink"
+          : "border border-transparent text-sg-ink-2 hover:bg-sg-inset-hover hover:text-sg-ink",
         collapsed && "justify-center px-0",
         nested && !collapsed && "pl-8",
       )}
@@ -514,31 +547,19 @@ function SidebarItem({
         <motion.span
           layoutId="sidebar-indicator"
           aria-hidden
-          className="absolute left-[-6px] top-1/2 h-3.5 w-[3px] -translate-y-1/2 rounded-[2px]"
-          style={{
-            background: "linear-gradient(to bottom, var(--tp-amber), var(--tp-ember))",
-            boxShadow: "0 0 8px var(--tp-amber-glow)",
-          }}
-          transition={{
-            type: "spring",
-            stiffness: 500,
-            damping: 40,
-            mass: 0.6,
-          }}
+          className="absolute left-[-6px] top-1/2 h-3.5 w-[3px] -translate-y-1/2 rounded-[2px] bg-sg-accent shadow-sg-glow"
+          transition={springs.snappy}
         />
       ) : (
-        // Dim amber tick that appears on hover only — previews the active
+        // Dim accent tick that appears on hover only — previews the active
         // indicator without the layoutId dance (kept separate so it doesn't
         // fight the animated bar when the user hovers a sibling).
         <span
           aria-hidden
           className={cn(
-            "pointer-events-none absolute left-[-6px] top-1/2 h-3 w-[2px] -translate-y-1/2 rounded-[2px]",
+            "pointer-events-none absolute left-[-6px] top-1/2 h-3 w-[2px] -translate-y-1/2 rounded-[2px] bg-sg-accent",
             "opacity-0 transition-opacity duration-150 group-hover:opacity-60",
           )}
-          style={{
-            background: "var(--tp-amber)",
-          }}
         />
       )}
       <Icon className="h-[14px] w-[14px] shrink-0 opacity-80" />
@@ -645,12 +666,14 @@ function SidebarGroup({
         aria-label={label}
         data-testid={`sidebar-group-toggle-${group.id}`}
         className={cn(
-          "relative flex min-h-9 w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-[13px] transition-colors",
-          // Same "no filled-bg hover" rule as SidebarItem — full-width
-          // rectangles on glass read as a stray layer.
+          "relative flex min-h-9 w-full items-center gap-2.5 rounded-sg-md border border-transparent px-2.5 py-1.5 text-[13px] transition-colors",
+          // Springy press physics on tap, matching SidebarItem.
+          "lg-gel",
+          // Active child lifts the label to medium weight; inactive groups get
+          // a sunken hover well, matching SidebarItem.
           hasActiveChild
-            ? "font-medium text-tp-ink"
-            : "text-tp-ink-2 hover:text-tp-ink",
+            ? "font-medium text-sg-ink"
+            : "text-sg-ink-2 hover:bg-sg-inset-hover hover:text-sg-ink",
         )}
       >
         <Icon className="h-[14px] w-[14px] shrink-0 opacity-80" />
@@ -661,7 +684,7 @@ function SidebarGroup({
           animate={{ rotate: expanded ? 90 : 0 }}
           transition={{ duration: 0.15, ease: "easeOut" }}
         >
-          <ChevronRight className="h-3 w-3 text-tp-ink-3" />
+          <ChevronRight className="h-3 w-3 text-sg-ink-3" />
         </motion.span>
       </button>
       {expanded ? (

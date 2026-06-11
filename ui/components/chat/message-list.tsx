@@ -89,15 +89,16 @@ export function MessageList({
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        className="h-full overflow-y-auto px-4 py-4"
+        className="h-full overflow-y-auto py-5"
         data-testid="message-list"
         aria-live="polite"
       >
-        <ol className="mx-auto flex max-w-3xl flex-col gap-4">
-          {all.map((m) => (
+        <ol className="mx-auto flex w-full max-w-3xl flex-col gap-5 px-4">
+          {all.map((m, i) => (
             <MessageBubble
               key={m.id}
               message={m}
+              isLatest={i === all.length - 1}
               onRegenerate={
                 m.role === "assistant" && !m.pending ? onRegenerate : undefined
               }
@@ -117,15 +118,14 @@ export function MessageList({
           type="button"
           onClick={jumpToBottom}
           className={cn(
-            "absolute right-4 bottom-4 inline-flex items-center gap-1.5 rounded-full",
-            "border border-tp-glass-edge bg-tp-glass-inner px-3 py-1.5",
-            "text-[11px] text-tp-ink shadow-sm transition hover:bg-tp-glass-inner/80",
+            "absolute bottom-4 left-1/2 inline-flex h-9 w-9 -translate-x-1/2 items-center justify-center rounded-full",
+            "border border-sg-accent/30 bg-sg-card text-sg-accent shadow-sg-glow",
+            "transition hover:bg-sg-accent-soft hover:text-sg-ink",
           )}
           aria-label={t("chat.jumpToLatestAriaLabel")}
           data-testid="jump-to-bottom"
         >
-          <ArrowDown className="h-3.5 w-3.5" aria-hidden="true" />
-          {t("chat.jumpToLatest")}
+          <ArrowDown className="h-4 w-4" aria-hidden="true" />
         </button>
       ) : null}
     </div>

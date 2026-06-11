@@ -186,35 +186,31 @@ export default function DashboardPage() {
       animate="visible"
     >
       {/* ─── HERO ──────────────────────────────────────────── */}
-      <GlassPanel variant="strong" as="section" className="relative overflow-hidden p-5 md:p-8">
-        {/* aurora glow blobs behind hero copy */}
+      <GlassPanel variant="strong" lively as="section" className="relative overflow-hidden p-5 md:p-8">
+        {/* nebula accent glows behind hero copy — cyan + violet, drifting */}
         <div
           aria-hidden
-          className="pointer-events-none absolute bottom-[-80px] right-[-40px] h-[280px] w-[420px] rounded-full opacity-70 blur-3xl"
+          className="sg-drift pointer-events-none absolute bottom-[-80px] right-[-40px] h-[280px] w-[420px] rounded-full opacity-80 blur-3xl"
           style={{
-            background: "radial-gradient(closest-side, var(--tp-amber-glow), transparent 70%)",
+            background: "radial-gradient(closest-side, var(--sg-accent-glow), transparent 70%)",
           }}
         />
         <div
           aria-hidden
-          className="pointer-events-none absolute top-[-60px] left-[-60px] h-[220px] w-[320px] rounded-full opacity-50 blur-[50px]"
+          className="sg-drift pointer-events-none absolute top-[-60px] left-[-60px] h-[220px] w-[320px] rounded-full opacity-60 blur-[50px]"
           style={{
             background:
-              "radial-gradient(closest-side, color-mix(in oklch, var(--tp-ember) 40%, transparent), transparent 70%)",
+              "radial-gradient(closest-side, color-mix(in oklch, var(--sg-accent-2) 38%, transparent), transparent 70%)",
           }}
         />
 
         <div className="relative grid items-end gap-9 md:grid-cols-[1fr_auto]">
           <div className="flex min-w-0 flex-col gap-4">
             <HeroLead systemsOk={`${okChecks}/${totalChecks || 7}`} />
-            <h1 className="text-balance font-sans text-[34px] font-semibold leading-[1.12] tracking-[-0.028em] text-tp-ink sm:text-[38px]">
+            <h1 className="sg-grad-text text-balance font-sans text-[34px] font-semibold leading-[1.12] tracking-[-0.028em] sm:text-[38px]">
               {t("dashboard.tp.greeting")}
               <br />
-              {t("dashboard.tp.agentsAre")}{" "}
-              <span className="bg-tp-grad-text bg-clip-text font-semibold text-transparent">
-                {statusWord}
-              </span>
-              .
+              {t("dashboard.tp.agentsAre")} {statusWord}.
             </h1>
             <HeroSummary
               pluginsLoaded={pluginsLoaded}
@@ -229,18 +225,18 @@ export default function DashboardPage() {
               <button
                 type="button"
                 onClick={onRunPalette}
-                className="inline-flex items-center gap-2 rounded-lg border border-tp-glass-edge bg-tp-glass-inner px-3 py-2 text-[13px] font-medium text-tp-ink-2 shadow-tp-panel transition-transform duration-200 hover:-translate-y-px hover:bg-tp-glass-inner-hover hover:text-tp-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40"
+                className="lg-gel inline-flex items-center gap-2 rounded-full border border-sg-border bg-sg-inset px-3.5 py-2 text-[13px] font-medium text-sg-ink-2 shadow-sg-1 transition-all duration-200 hover:-translate-y-px hover:border-sg-accent/30 hover:bg-sg-accent-soft hover:text-sg-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40"
               >
                 <Search className="h-3.5 w-3.5" />
                 {t("dashboard.tp.ctaPalette")}
-                <span className="ml-1 rounded border border-tp-glass-edge bg-tp-glass-inner px-1.5 py-0.5 font-mono text-[10px] text-tp-ink-3">
+                <span className="ml-1 rounded-md border border-sg-border bg-sg-inset-strong px-1.5 py-0.5 font-mono text-[10px] text-sg-ink-3">
                   ⌘K
                 </span>
               </button>
               {pendingApprovals > 0 ? (
                 <Link
                   href="/approvals"
-                  className="inline-flex items-center gap-2 rounded-lg border border-tp-amber/35 bg-tp-amber-soft px-3 py-2 text-[13px] font-medium text-tp-amber hover:bg-[color-mix(in_oklch,var(--tp-amber)_22%,transparent)]"
+                  className="lg-gel inline-flex items-center gap-2 rounded-full border border-sg-accent/30 bg-sg-accent-soft px-3.5 py-2 text-[13px] font-medium text-sg-accent transition-all duration-200 hover:-translate-y-px hover:border-sg-accent/50 hover:shadow-sg-glow"
                 >
                   {t("dashboard.tp.ctaReview", { n: pendingApprovals })}
                   <ArrowUpRight className="h-3.5 w-3.5 opacity-70" />
@@ -248,7 +244,7 @@ export default function DashboardPage() {
               ) : (
                 <Link
                   href="/logs"
-                  className="inline-flex items-center gap-2 rounded-lg border border-tp-glass-edge bg-tp-glass-inner px-3 py-2 text-[13px] font-medium text-tp-ink-2 hover:bg-tp-glass-inner-hover hover:text-tp-ink"
+                  className="lg-gel inline-flex items-center gap-2 rounded-full border border-sg-border bg-sg-inset px-3.5 py-2 text-[13px] font-medium text-sg-ink-2 transition-all duration-200 hover:-translate-y-px hover:border-sg-accent/30 hover:bg-sg-accent-soft hover:text-sg-ink"
                 >
                   {t("dashboard.tp.ctaLogs")}
                   <ArrowUpRight className="h-3.5 w-3.5 opacity-70" />
@@ -261,83 +257,94 @@ export default function DashboardPage() {
         </div>
       </GlassPanel>
 
-      {/* ─── STAT CHIPS ─────────────────────────────────────── */}
+      {/* ─── STAT CHIPS — liquid cascade (spring stagger) ──── */}
       <motion.section
         className="grid grid-cols-1 gap-3.5 md:grid-cols-2 xl:grid-cols-4"
-        variants={variants.stagger}
+        variants={variants.liquidStagger}
         initial="hidden"
         animate="visible"
       >
-        <StatChip
-          variant="primary"
-          live
-          label={t("dashboard.plugins")}
-          value={
-            plugins.isError || pluginsTotal === undefined ? "—" : pluginsTotal
-          }
-          delta={
-            typeof pluginsLoaded === "number" && typeof pluginsTotal === "number"
-              ? {
-                  label: `${pluginsLoaded} / ${pluginsTotal}`,
-                  tone: pluginsLoaded === pluginsTotal ? "up" : "flat",
-                }
-              : undefined
-          }
-          foot={
-            plugins.isError
-              ? t("dashboard.endpointOffline")
-              : t("dashboard.pluginsLoaded", { n: pluginsLoaded ?? 0 })
-          }
-          sparkPath={PRIMARY_SPARK}
-          sparkTone="amber"
-        />
-        <StatChip
-          label={t("dashboard.agents")}
-          value={agents.isError || agentsCount === undefined ? "—" : agentsCount}
-          foot={
-            agents.isError
-              ? t("dashboard.endpointOffline")
-              : t("dashboard.agentsHint")
-          }
-          sparkPath={FLAT_SPARK}
-          sparkTone="ember"
-        />
-        <StatChip
-          label={t("dashboard.ragChunks")}
-          value={
-            rag.isError || ragChunks === undefined
-              ? "—"
-              : formatNumber(ragChunks)
-          }
-          foot={
-            rag.data
-              ? t("dashboard.ragFilesTags", {
-                  files: rag.data.files,
-                  tags: rag.data.tags,
-                })
-              : rag.isError
+        <motion.div variants={variants.liquidRise}>
+          <StatChip
+            variant="primary"
+            live
+            label={t("dashboard.plugins")}
+            value={
+              plugins.isError || pluginsTotal === undefined ? "—" : pluginsTotal
+            }
+            delta={
+              typeof pluginsLoaded === "number" &&
+              typeof pluginsTotal === "number"
+                ? {
+                    label: `${pluginsLoaded} / ${pluginsTotal}`,
+                    tone: pluginsLoaded === pluginsTotal ? "up" : "flat",
+                  }
+                : undefined
+            }
+            foot={
+              plugins.isError
                 ? t("dashboard.endpointOffline")
-                : t("dashboard.loadingHint")
-          }
-          sparkPath={ASCENDING_SPARK}
-          sparkTone="peach"
-        />
-        <StatChip
-          label={t("dashboard.tp.approvalsLabel")}
-          value={approvals.isError ? "—" : pendingApprovals}
-          delta={
-            pendingApprovals > 0
-              ? { label: t("dashboard.tp.awaiting"), tone: "flat" }
-              : { label: t("dashboard.tp.caughtUp"), tone: "up" }
-          }
-          foot={
-            approvals.isError
-              ? t("dashboard.endpointOffline")
-              : t("dashboard.tp.approvalsHint")
-          }
-          sparkPath={DESCENDING_SPARK}
-          sparkTone="ember"
-        />
+                : t("dashboard.pluginsLoaded", { n: pluginsLoaded ?? 0 })
+            }
+            sparkPath={PRIMARY_SPARK}
+            sparkTone="amber"
+          />
+        </motion.div>
+        <motion.div variants={variants.liquidRise}>
+          <StatChip
+            label={t("dashboard.agents")}
+            value={
+              agents.isError || agentsCount === undefined ? "—" : agentsCount
+            }
+            foot={
+              agents.isError
+                ? t("dashboard.endpointOffline")
+                : t("dashboard.agentsHint")
+            }
+            sparkPath={FLAT_SPARK}
+            sparkTone="ember"
+          />
+        </motion.div>
+        <motion.div variants={variants.liquidRise}>
+          <StatChip
+            label={t("dashboard.ragChunks")}
+            value={
+              rag.isError || ragChunks === undefined
+                ? "—"
+                : formatNumber(ragChunks)
+            }
+            foot={
+              rag.data
+                ? t("dashboard.ragFilesTags", {
+                    files: rag.data.files,
+                    tags: rag.data.tags,
+                  })
+                : rag.isError
+                  ? t("dashboard.endpointOffline")
+                  : t("dashboard.loadingHint")
+            }
+            sparkPath={ASCENDING_SPARK}
+            sparkTone="peach"
+          />
+        </motion.div>
+        <motion.div variants={variants.liquidRise}>
+          <StatChip
+            label={t("dashboard.tp.approvalsLabel")}
+            value={approvals.isError ? "—" : pendingApprovals}
+            delta={
+              pendingApprovals > 0
+                ? { label: t("dashboard.tp.awaiting"), tone: "flat" }
+                : { label: t("dashboard.tp.caughtUp"), tone: "up" }
+            }
+            foot={
+              approvals.isError
+                ? t("dashboard.endpointOffline")
+                : t("dashboard.tp.approvalsHint")
+            }
+            sparkPath={DESCENDING_SPARK}
+            sparkTone="ember"
+          />
+        </motion.div>
       </motion.section>
 
       {/* ─── ACTIVITY + HEALTH ─────────────────────────────── */}
@@ -359,8 +366,8 @@ export default function DashboardPage() {
 function HeroLead({ systemsOk }: { systemsOk: string }) {
   const { t } = useTranslation();
   return (
-    <div className="inline-flex w-fit items-center gap-2.5 rounded-full border border-tp-glass-edge bg-tp-glass-inner-strong py-1 pl-2 pr-3 font-mono text-[11px] text-tp-ink-2">
-      <span className="h-1.5 w-1.5 rounded-full bg-tp-amber tp-breathe-amber" />
+    <div className="inline-flex w-fit items-center gap-2.5 rounded-full border border-sg-border bg-sg-inset-strong py-1 pl-2 pr-3 font-mono text-[11px] text-sg-ink-2">
+      <span className="h-1.5 w-1.5 rounded-full bg-sg-accent sg-breathe-accent" />
       {t("dashboard.tp.leadPill", { systems: systemsOk })}
     </div>
   );
@@ -387,7 +394,7 @@ function HeroSummary({
       ? `${pluginsLoaded}/${pluginsTotal}`
       : "—";
   return (
-    <p className="max-w-[64ch] text-[15px] leading-[1.6] text-tp-ink-2">
+    <p className="max-w-[64ch] text-[15px] leading-[1.6] text-sg-ink-2">
       {t("dashboard.tp.summaryLead", { agents: agentsCount ?? "—" })}{" "}
       <InlineMetric>{pluginsPhrase}</InlineMetric>{" "}
       {t("dashboard.tp.summaryPluginsSuffix")}{" "}
@@ -420,8 +427,8 @@ function InlineMetric({
       className={cn(
         "whitespace-nowrap rounded-md border px-1.5 py-px font-mono text-[13px] font-medium tabular-nums",
         tone === "warn"
-          ? "border-tp-warn/30 bg-tp-warn-soft text-tp-warn"
-          : "border-tp-glass-edge bg-tp-glass-inner-strong text-tp-ink",
+          ? "border-sg-warn/30 bg-sg-warn-soft text-sg-warn"
+          : "border-sg-border bg-sg-inset-strong text-sg-ink",
       )}
     >
       {children}
@@ -435,26 +442,26 @@ function HeroUptime({ health }: { health: HealthStatus | undefined }) {
   const total = health?.checks?.length ?? 7;
   const pct = total === 0 ? "—" : ((ok / total) * 100).toFixed(0);
   return (
-    <div className="min-w-[220px] rounded-2xl border border-tp-glass-edge bg-tp-glass-inner p-4">
-      <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-tp-ink-4">
+    <div className="min-w-[220px] rounded-sg-lg border border-sg-border bg-sg-inset p-4">
+      <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-sg-ink-4">
         {t("dashboard.tp.uptimeLabel")}
       </div>
-      <div className="mt-2 font-serif text-[38px] font-normal leading-[1.05] tracking-[-0.02em] text-tp-ink">
+      <div className="mt-2 font-serif text-[38px] font-normal leading-[1.05] tracking-[-0.02em] text-sg-ink">
         {pct}
-        <span className="ml-0.5 font-sans text-[18px] font-normal text-tp-ink-3">
+        <span className="ml-0.5 font-sans text-[18px] font-normal text-sg-ink-3">
           %
         </span>
       </div>
-      <div className="mt-2 flex items-center gap-2.5 text-[12px] text-tp-ink-3">
+      <div className="mt-2 flex items-center gap-2.5 text-[12px] text-sg-ink-3">
         <span>
           {ok}/{total} {t("dashboard.tp.uptimeNominal")}
         </span>
-        <span className="relative h-1 flex-1 overflow-hidden rounded-full bg-tp-glass-inner-strong">
+        <span className="relative h-1 flex-1 overflow-hidden rounded-full bg-sg-inset-strong">
           <span
             className="absolute inset-y-0 left-0 rounded-full"
             style={{
               width: `${total === 0 ? 0 : (ok / total) * 100}%`,
-              background: "linear-gradient(90deg, var(--tp-amber), var(--tp-ember))",
+              background: "linear-gradient(90deg, var(--sg-accent), var(--sg-accent-2))",
             }}
           />
         </span>
@@ -485,14 +492,14 @@ function ActivityPane({
   ];
   return (
     <GlassPanel variant="soft" className="flex min-h-[360px] flex-col p-5">
-      <div className="flex items-center justify-between border-b border-tp-glass-edge pb-3">
-        <div className="inline-flex items-center gap-2.5 text-[14px] font-semibold text-tp-ink">
-          <span className="h-1.5 w-1.5 rounded-full bg-tp-ok tp-breathe" />
+      <div className="flex items-center justify-between border-b border-sg-border pb-3">
+        <div className="inline-flex items-center gap-2.5 text-[14px] font-semibold text-sg-ink">
+          <span className="h-1.5 w-1.5 rounded-full bg-sg-accent sg-breathe-accent" />
           {t("dashboard.recentActivity")}
         </div>
         <Link
           href="/logs"
-          className="inline-flex min-h-8 items-center rounded-md px-2 text-[12.5px] text-tp-ink-3 transition-colors hover:bg-tp-glass-inner hover:text-tp-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40"
+          className="inline-flex min-h-8 items-center rounded-md px-2 text-[12.5px] text-sg-ink-3 transition-colors hover:bg-sg-inset hover:text-sg-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40"
         >
           {t("dashboard.viewAll")}
         </Link>
@@ -508,7 +515,7 @@ function ActivityPane({
       </div>
 
       {events.length === 0 ? (
-        <div className="flex flex-1 items-center justify-center p-8 text-center text-[13px] text-tp-ink-3">
+        <div className="flex flex-1 items-center justify-center p-8 text-center text-[13px] text-sg-ink-3">
           {t("dashboard.waitingForEvents")}
         </div>
       ) : (
@@ -582,11 +589,11 @@ function HealthPane({
 
   return (
     <GlassPanel variant="soft" className="flex min-h-[360px] flex-col p-5">
-      <div className="flex items-center justify-between border-b border-tp-glass-edge pb-3">
-        <div className="text-[14px] font-semibold text-tp-ink">
+      <div className="flex items-center justify-between border-b border-sg-border pb-3">
+        <div className="text-[14px] font-semibold text-sg-ink">
           {t("dashboard.systemHealth")}
         </div>
-        <div className="font-mono text-[11.5px] text-tp-ink-3">
+        <div className="font-mono text-[11.5px] text-sg-ink-3">
           {ok} / {checks.length}
         </div>
       </div>
@@ -611,26 +618,26 @@ function HealthPane({
             <div
               key={c.name}
               className={cn(
-                "grid grid-cols-[1fr_56px_auto] items-center gap-3 border-b border-tp-glass-edge py-2",
+                "grid grid-cols-[1fr_56px_auto] items-center gap-3 border-b border-sg-border py-2",
                 "last:border-b-0 text-[12.5px]",
               )}
             >
-              <span className="flex items-center gap-2 text-tp-ink-2">
+              <span className="flex items-center gap-2 text-sg-ink-2">
                 <span
                   aria-hidden
                   className={cn(
                     "h-1.5 w-1.5 rounded-full",
                     c.ok
-                      ? "bg-tp-ok shadow-[0_0_4px_color-mix(in_oklch,var(--tp-ok)_30%,transparent)]"
-                      : "bg-tp-err shadow-[0_0_4px_color-mix(in_oklch,var(--tp-err)_30%,transparent)]",
+                      ? "bg-sg-ok shadow-[0_0_4px_color-mix(in_oklch,var(--sg-ok)_30%,transparent)]"
+                      : "bg-sg-err shadow-[0_0_4px_color-mix(in_oklch,var(--sg-err)_30%,transparent)]",
                   )}
                 />
-                <span className="truncate font-medium text-tp-ink">
+                <span className="truncate font-medium text-sg-ink">
                   {c.name}
                 </span>
               </span>
               <MiniSparkline bars={bars} />
-              <span className="text-right font-mono text-[10.5px] text-tp-ink-3">
+              <span className="text-right font-mono text-[10.5px] text-sg-ink-3">
                 {c.detail ?? (c.ok ? "ok" : "—")}
               </span>
             </div>

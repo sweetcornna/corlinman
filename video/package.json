@@ -1,0 +1,26 @@
+{
+  "name": "corlinman-promo-video",
+  "private": true,
+  "version": "0.1.0",
+  "description": "corlinman 60s promo video · Sapphire Impasto · built with Remotion",
+  "scripts": {
+    "dev": "remotion preview src/index.ts",
+    "preview": "remotion preview src/index.ts",
+    "render:h": "remotion render src/index.ts CorlinmanPromoH out/corlinman-h.mp4",
+    "render:v": "remotion render src/index.ts CorlinmanPromoV out/corlinman-v.mp4",
+    "still:h": "remotion still src/index.ts CorlinmanPromoH out/still.png",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.298",
+    "@remotion/google-fonts": "4.0.298",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "remotion": "4.0.298"
+  },
+  "devDependencies": {
+    "@types/react": "18.3.12",
+    "@types/react-dom": "18.3.1",
+    "typescript": "5.6.3"
+  }
+}

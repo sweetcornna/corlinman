@@ -89,18 +89,18 @@ export function ReplayDialog({ session, onClose }: ReplayDialogProps) {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         className={cn(
-          "max-w-3xl gap-0 rounded-2xl border-tp-glass-edge bg-tp-glass-2 p-0",
+          "max-w-3xl gap-0 rounded-sg-xl border-sg-border-strong bg-sg-overlay p-0",
           "backdrop-blur-glass-strong backdrop-saturate-glass-strong",
-          "shadow-tp-hero",
+          "shadow-sg-4",
         )}
         data-testid="replay-dialog"
       >
-        <DialogHeader className="space-y-2 border-b border-tp-glass-edge px-6 py-4 text-left">
+        <DialogHeader className="space-y-2 border-b border-sg-border px-6 py-4 text-left">
           <ReplayBreadcrumbs sessionKey={sessionKey ?? ""} />
-          <DialogTitle className="font-mono text-[15px] font-medium text-tp-ink">
+          <DialogTitle className="font-mono text-[15px] font-medium text-sg-ink">
             {t("sessions.dialogTitle", { key: sessionKey ?? "" })}
           </DialogTitle>
-          <DialogDescription className="text-xs text-tp-ink-3">
+          <DialogDescription className="text-xs text-sg-ink-3">
             {t("sessions.dialogDescription")}
           </DialogDescription>
         </DialogHeader>
@@ -112,7 +112,7 @@ export function ReplayDialog({ session, onClose }: ReplayDialogProps) {
           </div>
         </div>
 
-        <div className="flex items-center justify-end gap-2 border-t border-tp-glass-edge px-6 py-3">
+        <div className="flex items-center justify-end gap-2 border-t border-sg-border px-6 py-3">
           <Button
             type="button"
             variant="outline"
@@ -134,14 +134,14 @@ function ReplayBreadcrumbs({ sessionKey }: { sessionKey: string }) {
   return (
     <nav
       aria-label="replay breadcrumb"
-      className="flex items-center gap-1 text-[11px] text-tp-ink-3"
+      className="flex items-center gap-1 text-[11px] text-sg-ink-4"
       data-testid="replay-breadcrumbs"
     >
       <span>{t("breadcrumbs.dashboard")}</span>
       <ChevronRight aria-hidden="true" className="h-3 w-3" />
       <span>{t("breadcrumbs.sessions")}</span>
       <ChevronRight aria-hidden="true" className="h-3 w-3" />
-      <span className="font-mono text-tp-ink-2" data-testid="replay-breadcrumb-key">
+      <span className="font-mono text-sg-ink-2" data-testid="replay-breadcrumb-key">
         {sessionKey}
       </span>
     </nav>
@@ -162,13 +162,13 @@ function ModeSelector({
   const { t } = useTranslation();
   return (
     <fieldset
-      className="flex flex-col gap-2 rounded-md border border-tp-glass-edge bg-tp-glass-inner px-3 py-2"
+      className="flex flex-col gap-2 rounded-sg-md border border-sg-border bg-sg-inset px-3 py-2"
       data-testid="replay-mode-selector"
     >
-      <legend className="px-1 text-[11px] uppercase tracking-wide text-tp-ink-3">
+      <legend className="px-1 text-[11px] uppercase tracking-wide text-sg-ink-4">
         {t("sessions.modeLabel")}
       </legend>
-      <label className="flex items-center gap-2 text-xs text-tp-ink-2">
+      <label className="flex items-center gap-2 text-xs text-sg-ink-2">
         <input
           type="radio"
           name="replay-mode"
@@ -176,12 +176,12 @@ function ModeSelector({
           checked={mode === "transcript"}
           onChange={() => onModeChange("transcript")}
           data-testid="replay-mode-transcript"
-          className="accent-tp-amber"
+          className="accent-sg-accent"
         />
         <span>{t("sessions.modeTranscript")}</span>
       </label>
       <label
-        className="flex items-center gap-2 text-xs text-tp-ink-2"
+        className="flex items-center gap-2 text-xs text-sg-ink-2"
         data-testid="replay-mode-rerun-label"
       >
         <input
@@ -191,7 +191,7 @@ function ModeSelector({
           checked={mode === "rerun"}
           onChange={() => onModeChange("rerun")}
           data-testid="replay-mode-rerun"
-          className="accent-tp-amber"
+          className="accent-sg-accent"
         />
         <span>{t("sessions.modeRerun")}</span>
       </label>
@@ -220,7 +220,7 @@ function ReplayBody({ result, mutation }: ReplayBodyProps) {
     return (
       <div
         role="alert"
-        className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+        className="rounded-sg-sm border border-sg-err/30 bg-sg-err-soft px-3 py-2 text-xs text-sg-err"
         data-testid="replay-error"
       >
         {t("sessions.replayFailed", { msg })}
@@ -232,13 +232,13 @@ function ReplayBody({ result, mutation }: ReplayBodyProps) {
     return (
       <div
         role="alert"
-        className="rounded-md border border-tp-glass-edge bg-tp-glass-inner px-4 py-3 text-xs text-tp-ink-2"
+        className="rounded-sg-md border border-sg-border bg-sg-inset px-4 py-3 text-xs text-sg-ink-2"
         data-testid="replay-not-found"
       >
-        <div className="font-medium text-tp-ink">
+        <div className="font-semibold text-sg-ink">
           {t("sessions.notFoundTitle")}
         </div>
-        <div className="mt-1 text-tp-ink-3">
+        <div className="mt-1 text-sg-ink-3">
           {t("sessions.notFoundHint", { key: result.session_key })}
         </div>
       </div>
@@ -249,13 +249,13 @@ function ReplayBody({ result, mutation }: ReplayBodyProps) {
     return (
       <div
         role="alert"
-        className="rounded-md border border-tp-glass-edge bg-tp-glass-inner px-4 py-3 text-xs text-tp-ink-2"
+        className="rounded-sg-md border border-sg-border bg-sg-inset px-4 py-3 text-xs text-sg-ink-2"
         data-testid="replay-disabled"
       >
-        <div className="font-medium text-tp-ink">
+        <div className="font-semibold text-sg-ink">
           {t("sessions.sessionsDisabledTitle")}
         </div>
-        <div className="mt-1 text-tp-ink-3">
+        <div className="mt-1 text-sg-ink-3">
           {t("sessions.sessionsDisabledHint")}
         </div>
       </div>
@@ -266,13 +266,13 @@ function ReplayBody({ result, mutation }: ReplayBodyProps) {
     return (
       <div
         role="alert"
-        className="rounded-md border border-tp-glass-edge bg-tp-glass-inner px-4 py-3 text-xs text-tp-ink-2"
+        className="rounded-sg-md border border-sg-border bg-sg-inset px-4 py-3 text-xs text-sg-ink-2"
         data-testid="replay-rerun-disabled"
       >
-        <div className="font-medium text-tp-ink">
+        <div className="font-semibold text-sg-ink">
           {t("sessions.rerunDisabledTitle")}
         </div>
-        <div className="mt-1 text-tp-ink-3">
+        <div className="mt-1 text-sg-ink-3">
           {t("sessions.rerunDisabledHint")}
         </div>
       </div>
@@ -294,13 +294,13 @@ function ReplayPayload({ replay }: { replay: ReplayResponse }) {
       {isRerunStub ? (
         <div
           role="note"
-          className="rounded-md border border-dashed border-tp-glass-edge bg-tp-glass-inner px-4 py-3 text-xs text-tp-ink-2"
+          className="rounded-sg-md border border-dashed border-sg-border bg-sg-inset px-4 py-3 text-xs text-sg-ink-2"
           data-testid="replay-rerun-stub"
         >
-          <div className="font-medium text-tp-ink">
+          <div className="font-semibold text-sg-ink">
             {t("sessions.rerunNotImplementedTitle")}
           </div>
-          <div className="mt-1 text-tp-ink-3">
+          <div className="mt-1 text-sg-ink-3">
             {t("sessions.rerunNotImplementedHint")}
           </div>
         </div>
@@ -308,15 +308,15 @@ function ReplayPayload({ replay }: { replay: ReplayResponse }) {
 
       {generated.length > 0 ? (
         <div
-          className="rounded-md border border-tp-glass-edge bg-tp-glass-inner px-4 py-3 text-xs text-tp-ink-2"
+          className="rounded-sg-md border border-sg-border bg-sg-inset px-4 py-3 text-xs text-sg-ink-2"
           data-testid="replay-rerun-generated"
         >
           <div className="flex flex-wrap items-center gap-2">
-            <span className="font-medium text-tp-ink">
+            <span className="font-semibold text-sg-ink">
               {t("sessions.rerunGeneratedTitle")}
             </span>
             {replay.rerun?.finish_reason ? (
-              <span className="font-mono text-[10px] text-tp-ink-3">
+              <span className="font-mono text-[10px] text-sg-ink-4">
                 {t("sessions.rerunFinishReason", {
                   reason: replay.rerun.finish_reason,
                 })}
@@ -327,7 +327,7 @@ function ReplayPayload({ replay }: { replay: ReplayResponse }) {
             {generated.map((message, index) => (
               <div
                 key={`${message.role}-${index}`}
-                className="whitespace-pre-wrap rounded-sm border border-tp-glass-edge/70 bg-tp-glass-2 px-3 py-2 text-tp-ink"
+                className="whitespace-pre-wrap rounded-sg-sm border border-sg-border bg-sg-card-grad px-3 py-2 text-sg-ink"
               >
                 {message.content}
               </div>
@@ -355,21 +355,21 @@ function ReplaySummaryRow({
   const { t } = useTranslation();
   return (
     <div
-      className="flex flex-wrap items-center gap-3 rounded-md border border-tp-glass-edge bg-tp-glass-inner px-3 py-2 text-[11px] text-tp-ink-3"
+      className="flex flex-wrap items-center gap-3 rounded-sg-md border border-sg-border bg-sg-inset px-3 py-2 text-[11px] text-sg-ink-4"
       data-testid="replay-summary"
     >
       <span>
-        <span className="font-medium text-tp-ink-2">
+        <span className="font-medium text-sg-ink-2">
           {t("sessions.summaryMessageCount")}:
         </span>{" "}
-        <span className="font-mono text-tp-ink">{messageCount}</span>
+        <span className="font-mono text-sg-ink">{messageCount}</span>
       </span>
       <span aria-hidden="true">·</span>
       <span>
-        <span className="font-medium text-tp-ink-2">
+        <span className="font-medium text-sg-ink-2">
           {t("sessions.summaryTenantId")}:
         </span>{" "}
-        <span className="font-mono text-tp-ink">{tenantId}</span>
+        <span className="font-mono text-sg-ink">{tenantId}</span>
       </span>
     </div>
   );
@@ -385,7 +385,7 @@ function ReplaySkeleton() {
       aria-label={t("sessions.replayLoading")}
       data-testid="replay-loading"
     >
-      <div className="flex items-center gap-2 text-xs text-tp-ink-3">
+      <div className="flex items-center gap-2 text-xs text-sg-ink-3">
         <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
         <span>{t("sessions.replayLoading")}</span>
       </div>

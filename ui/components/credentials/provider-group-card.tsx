@@ -112,11 +112,11 @@ export function ProviderGroupCard({
 
   return (
     <div
-      className="rounded-md border border-tp-glass-edge bg-tp-glass shadow-tp-panel backdrop-blur-glass backdrop-saturate-glass"
+      className="rounded-md border border-sg-border bg-sg-card shadow-sg-2"
       data-testid={`credentials-provider-${provider.name}`}
     >
       <div
-        className="flex w-full items-center justify-between gap-3 border-b border-tp-glass-edge px-3 py-2.5 hover:bg-tp-amber/5"
+        className="flex w-full items-center justify-between gap-3 border-b border-sg-border px-3 py-2.5 hover:bg-sg-accent/5"
         data-testid={`credentials-provider-${provider.name}-header`}
       >
         <button
@@ -127,9 +127,9 @@ export function ProviderGroupCard({
           data-testid={`credentials-provider-${provider.name}-toggle-expand`}
         >
           {expanded ? (
-            <ChevronDown className="h-4 w-4 shrink-0 text-tp-ink-3" aria-hidden />
+            <ChevronDown className="h-4 w-4 shrink-0 text-sg-ink-3" aria-hidden />
           ) : (
-            <ChevronRight className="h-4 w-4 shrink-0 text-tp-ink-3" aria-hidden />
+            <ChevronRight className="h-4 w-4 shrink-0 text-sg-ink-3" aria-hidden />
           )}
           <span className="truncate text-sm font-semibold capitalize tracking-tight">
             {label}
@@ -146,7 +146,7 @@ export function ProviderGroupCard({
               <Badge
                 className={cn(
                   "border-transparent text-[10px]",
-                  "bg-tp-amber/15 text-tp-amber",
+                  "bg-sg-accent/15 text-sg-accent",
                 )}
                 data-testid={`credentials-provider-${provider.name}-count`}
               >
@@ -163,7 +163,7 @@ export function ProviderGroupCard({
             )
           ) : null}
           {provider.enabled ? (
-            <Badge className="border-transparent bg-ok/15 text-ok text-[10px]">
+            <Badge className="border-transparent bg-sg-ok-soft text-sg-ok text-[10px]">
               {t("common.enabled")}
             </Badge>
           ) : null}
@@ -191,7 +191,7 @@ export function ProviderGroupCard({
           data-testid={`credentials-provider-${provider.name}-body`}
         >
           {provider.fields.length === 0 ? (
-            <p className="text-[11px] text-tp-ink-3">
+            <p className="text-[11px] text-sg-ink-3">
               {t("credentials.fieldUnset")}
             </p>
           ) : (

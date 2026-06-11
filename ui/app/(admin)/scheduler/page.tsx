@@ -299,7 +299,7 @@ export default function SchedulerPage() {
           role="alert"
           className={cn(
             "flex items-center gap-3 rounded-xl border px-3 py-2 text-[12.5px]",
-            "border-tp-glass-edge bg-tp-glass-inner text-tp-ink-3",
+            "border-sg-border bg-sg-inset text-sg-ink-3",
           )}
         >
           <span>{t("scheduler.tp.endpointOfflineBanner")}</span>
@@ -310,7 +310,7 @@ export default function SchedulerPage() {
       <section className="flex flex-wrap items-center justify-between gap-3">
         <label className="relative flex min-w-[220px] flex-1 items-center sm:max-w-[360px]">
           <Search
-            className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-tp-ink-4"
+            className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-sg-ink-4"
             aria-hidden
           />
           <input
@@ -319,7 +319,7 @@ export default function SchedulerPage() {
             onChange={(e) => setSearch(e.target.value)}
             placeholder={t("scheduler.tp.searchPlaceholder")}
             aria-label={t("scheduler.tp.searchPlaceholder")}
-            className="h-9 w-full rounded-lg border border-tp-glass-edge bg-tp-glass-inner pl-8 pr-3 text-[13px] text-tp-ink placeholder:text-tp-ink-4 transition-colors hover:bg-tp-glass-inner-hover focus:outline-none focus:ring-2 focus:ring-tp-amber/40"
+            className="h-9 w-full rounded-lg border border-sg-border bg-sg-inset pl-8 pr-3 text-[13px] text-sg-ink placeholder:text-sg-ink-4 transition-colors hover:bg-sg-inset-hover focus:outline-none focus:ring-2 focus:ring-sg-accent/40"
           />
         </label>
         <FilterChipGroup

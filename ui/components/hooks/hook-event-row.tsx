@@ -16,7 +16,7 @@ import type {
  * Columns (grid): `ts · kind · subscribers · message · latency`.
  *
  * Behavioural mirrors to `<LogRow>`:
- *   - `justNow` lights up the 2px amber left-edge bar for ~2.8s (tp-just-now).
+ *   - `justNow` lights up the 2px amber left-edge bar for ~2.8s (sg-just-now).
  *   - `selected` wins over `justNow` (amber soft fill + 2px inset bar).
  *
  * Accessibility: rendered as a `<button>` so keyboard users can select the
@@ -71,17 +71,17 @@ export function kindTone(
 
 const kindPillClass: Record<HookKindTone, string> = {
   // warm-orange on lifecycle + config — they're "loud" events
-  lifecycle: "bg-tp-ok-soft text-tp-ok border-tp-ok/30",
-  config: "bg-tp-amber-soft text-tp-amber border-tp-amber/30",
-  approval: "bg-tp-amber-soft text-tp-amber border-tp-amber/30",
-  rate_limit: "bg-tp-warn-soft text-tp-warn border-tp-warn/30",
-  error: "bg-tp-err-soft text-tp-err border-tp-err/30",
+  lifecycle: "bg-sg-ok-soft text-sg-ok border-sg-ok/30",
+  config: "bg-sg-accent-soft text-sg-accent border-sg-accent/30",
+  approval: "bg-sg-accent-soft text-sg-accent border-sg-accent/30",
+  rate_limit: "bg-sg-warn-soft text-sg-warn border-sg-warn/30",
+  error: "bg-sg-err-soft text-sg-err border-sg-err/30",
   // ink-range on routine hot-path events
-  message: "bg-tp-glass-inner-strong text-tp-ink-2 border-tp-glass-edge",
-  session: "bg-tp-glass-inner-strong text-tp-ink-2 border-tp-glass-edge",
-  agent: "bg-tp-glass-inner-strong text-tp-ink-2 border-tp-glass-edge",
-  tool: "bg-tp-glass-inner-strong text-tp-ink-2 border-tp-glass-edge",
-  neutral: "bg-tp-glass-inner text-tp-ink-3 border-tp-glass-edge",
+  message: "bg-sg-inset-strong text-sg-ink-2 border-sg-border",
+  session: "bg-sg-inset-strong text-sg-ink-2 border-sg-border",
+  agent: "bg-sg-inset-strong text-sg-ink-2 border-sg-border",
+  tool: "bg-sg-inset-strong text-sg-ink-2 border-sg-border",
+  neutral: "bg-sg-inset text-sg-ink-3 border-sg-border",
 };
 
 /** `HH:mm:ss.SSS` — mirrors the log-row time column shape. */
@@ -110,7 +110,7 @@ export interface HookEventRowProps
   subscribers: number;
   /** Dispatch latency in milliseconds (p50 for a typical subscriber). */
   latencyMs: number | null;
-  /** Row arrived within the last ~2.8s — triggers the tp-just-now bar. */
+  /** Row arrived within the last ~2.8s — triggers the sg-just-now bar. */
   justNow?: boolean;
   /** Row is the detail-drawer target (amber soft fill + inset bar). */
   selected?: boolean;
@@ -145,13 +145,13 @@ export const HookEventRow = React.forwardRef<
       data-testid="hook-event-row"
       className={cn(
         "relative grid w-full items-center gap-3 text-left",
-        "border-b border-tp-glass-edge transition-colors",
+        "border-b border-sg-border transition-colors",
         "grid-cols-[82px_170px_64px_minmax(0,1fr)_auto] px-4 py-2 text-[12.5px]",
-        "hover:bg-tp-glass-inner-hover",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
-        selected && "bg-tp-amber-soft",
+        "hover:bg-sg-inset-hover",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
+        selected && "bg-sg-accent-soft",
         selected &&
-          "shadow-[inset_2px_0_0_var(--tp-amber),inset_0_0_0_1px_color-mix(in_oklch,var(--tp-amber)_20%,transparent)]",
+          "shadow-[inset_2px_0_0_var(--sg-accent),inset_0_0_0_1px_color-mix(in_oklch,var(--sg-accent)_20%,transparent)]",
         className,
       )}
       {...rest}
@@ -160,14 +160,14 @@ export const HookEventRow = React.forwardRef<
       {justNow && !selected ? (
         <span
           aria-hidden
-          className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-sm bg-tp-amber shadow-[0_0_8px_var(--tp-amber-glow)] tp-just-now"
+          className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-sm bg-sg-accent shadow-[0_0_8px_var(--sg-accent-glow)] sg-just-now"
         />
       ) : null}
 
       {/* time */}
       <time
         dateTime={iso}
-        className="font-mono text-[11px] tabular-nums text-tp-ink-4"
+        className="font-mono text-[11px] tabular-nums text-sg-ink-4"
       >
         {formatRowTs(event.ts)}
       </time>
@@ -186,7 +186,7 @@ export const HookEventRow = React.forwardRef<
 
       {/* subscribers count */}
       <span
-        className="font-mono text-[10.5px] tabular-nums text-tp-ink-3"
+        className="font-mono text-[10.5px] tabular-nums text-sg-ink-3"
         aria-label={`${subscribers} subscribers`}
       >
         <span aria-hidden>◎ </span>
@@ -195,13 +195,13 @@ export const HookEventRow = React.forwardRef<
 
       {/* summary + optional session chip */}
       <span className="flex min-w-0 items-center gap-2">
-        <span className="truncate text-tp-ink-2">{event.summary}</span>
+        <span className="truncate text-sg-ink-2">{event.summary}</span>
         {event.session_key ? (
           <span
             className={cn(
               "shrink-0 rounded border px-1.5 py-[1px]",
-              "bg-tp-glass-inner border-tp-glass-edge",
-              "font-mono text-[10px] text-tp-ink-3",
+              "bg-sg-inset border-sg-border",
+              "font-mono text-[10px] text-sg-ink-3",
             )}
           >
             {event.session_key}
@@ -212,8 +212,8 @@ export const HookEventRow = React.forwardRef<
       {/* latency */}
       <span
         className={cn(
-          "font-mono text-[10.5px] tabular-nums text-tp-ink-4",
-          tone === "error" && "text-tp-err",
+          "font-mono text-[10.5px] tabular-nums text-sg-ink-4",
+          tone === "error" && "text-sg-err",
         )}
       >
         {formatLatency(latencyMs)}

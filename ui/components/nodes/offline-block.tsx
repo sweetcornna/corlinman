@@ -27,15 +27,15 @@ export function OfflineBlock({ message }: { message?: string }) {
       className="flex flex-col items-center gap-2 p-8 text-center"
       data-testid="nodes-offline-block"
     >
-      <div className="font-mono text-[11px] uppercase tracking-[0.12em] text-tp-err">
+      <div className="font-mono text-[11px] uppercase tracking-[0.12em] text-sg-err">
         {t("nodes.tp.offlineTitle")}
       </div>
-      <p className="max-w-prose text-[13px] text-tp-ink-2">
+      <p className="max-w-prose text-[13px] text-sg-ink-2">
         {t("nodes.tp.offlineHint")}
       </p>
       {short ? (
         <p
-          className="max-w-full truncate font-mono text-[11px] text-tp-ink-4"
+          className="max-w-full truncate font-mono text-[11px] text-sg-ink-4"
           title={message}
         >
           {short}
@@ -53,10 +53,10 @@ export function EmptyBlock() {
       className="flex flex-col items-center gap-2 p-8 text-center"
       data-testid="nodes-empty-block"
     >
-      <div className="text-[14px] font-medium text-tp-ink">
+      <div className="text-[14px] font-medium text-sg-ink">
         {t("nodes.tp.emptyTitle")}
       </div>
-      <p className="max-w-prose text-[13px] text-tp-ink-3">
+      <p className="max-w-prose text-[13px] text-sg-ink-3">
         {t("nodes.tp.emptyHint")}
       </p>
     </GlassPanel>
@@ -84,16 +84,16 @@ export function NotImplementedBlock() {
       className="flex flex-col items-center gap-2 p-8 text-center"
       data-testid="nodes-not-implemented-block"
     >
-      <div className="font-mono text-[11px] uppercase tracking-[0.12em] text-tp-ink-4">
+      <div className="font-mono text-[11px] uppercase tracking-[0.12em] text-sg-ink-4">
         Not available
       </div>
-      <div className="text-[14px] font-medium text-tp-ink">
+      <div className="text-[14px] font-medium text-sg-ink">
         Node / runner registry is not yet available
       </div>
-      <p className="max-w-prose text-[13px] text-tp-ink-3">
+      <p className="max-w-prose text-[13px] text-sg-ink-3">
         This view has no backend endpoint yet — the gateway does not expose the
         WebSocket tool runner registry. It will light up once a{" "}
-        <code className="font-mono text-tp-ink-2">GET /v1/wstool/runners</code>{" "}
+        <code className="font-mono text-sg-ink-2">GET /v1/wstool/runners</code>{" "}
         route ships and is wired here.
       </p>
     </GlassPanel>

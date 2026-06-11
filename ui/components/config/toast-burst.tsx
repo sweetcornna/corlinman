@@ -31,7 +31,7 @@ export function ToastBurst() {
     return (
       <span
         aria-hidden="true"
-        className="inline-flex h-4 w-4 items-center justify-center text-tp-amber"
+        className="inline-flex h-4 w-4 items-center justify-center text-sg-accent"
         data-testid="config-toast-check"
       >
         <CheckCircle className="h-4 w-4" />
@@ -48,7 +48,7 @@ export function ToastBurst() {
       {BURST_VECTORS.map(([x, y], i) => (
         <motion.span
           key={i}
-          className="absolute left-1/2 top-1/2 h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-tp-amber"
+          className="absolute left-1/2 top-1/2 h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-sg-accent"
           initial={{ opacity: 1, x: 0, y: 0, scale: 0.6 }}
           animate={{ opacity: 0, x, y, scale: 1 }}
           transition={{ duration: 0.5, ease: "easeOut", delay: i * 0.04 }}

@@ -583,9 +583,9 @@ function Banner({
 }) {
   const { t } = useTranslation();
   const cls = {
-    warn: "border-tp-warn/30 bg-tp-warn-soft text-tp-warn",
-    err: "border-tp-err/40 bg-tp-err-soft text-tp-err",
-    info: "border-tp-glass-edge bg-tp-glass-inner text-tp-ink-3",
+    warn: "border-sg-warn/30 bg-sg-warn-soft text-sg-warn",
+    err: "border-sg-err/40 bg-sg-err-soft text-sg-err",
+    info: "border-sg-border bg-sg-inset text-sg-ink-3",
   }[tone];
   return (
     <div
@@ -603,8 +603,8 @@ function Banner({
           aria-label={dismissAria}
           className={cn(
             "rounded-md px-2 py-1 text-[11px] font-medium",
-            "bg-transparent hover:bg-tp-glass-inner-hover",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
+            "bg-transparent hover:bg-sg-inset-hover",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
           )}
         >
           {t("common.close")}
@@ -621,8 +621,8 @@ function ListSkeleton() {
         <div
           key={i}
           className={cn(
-            "h-[84px] animate-pulse rounded-2xl border border-tp-glass-edge",
-            "bg-tp-glass-inner/70",
+            "h-[84px] animate-pulse rounded-2xl border border-sg-border",
+            "bg-sg-inset",
           )}
         />
       ))}

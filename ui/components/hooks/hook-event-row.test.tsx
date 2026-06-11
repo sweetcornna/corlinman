@@ -129,9 +129,9 @@ describe("HookEventRow", () => {
       />,
     );
     const row = screen.getByTestId("hook-event-row");
-    // The tp-just-now bar is rendered as a direct-child <span> with the
-    // tp-just-now class — selection suppresses it.
-    expect(row.querySelector(".tp-just-now")).toBeNull();
+    // The sg-just-now bar is rendered as a direct-child <span> with the
+    // sg-just-now class — selection suppresses it.
+    expect(row.querySelector(".sg-just-now")).toBeNull();
   });
 
   it("keeps the just-now bar when the row is unselected", () => {
@@ -144,7 +144,7 @@ describe("HookEventRow", () => {
       />,
     );
     const row = screen.getByTestId("hook-event-row");
-    expect(row.querySelector(".tp-just-now")).not.toBeNull();
+    expect(row.querySelector(".sg-just-now")).not.toBeNull();
   });
 
   it("fires onClick once per click", () => {

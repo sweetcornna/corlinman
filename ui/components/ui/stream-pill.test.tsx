@@ -9,20 +9,20 @@ describe("StreamPill", () => {
     const { container } = render(<StreamPill state="live" rate="41.2/s" />);
     expect(screen.getByText("Live")).toBeInTheDocument();
     expect(screen.getByText("· 41.2/s")).toBeInTheDocument();
-    expect(container.querySelector(".tp-breathe")).not.toBeNull();
+    expect(container.querySelector(".sg-breathe")).not.toBeNull();
   });
 
   it("renders throttled with amber breathing", () => {
     const { container } = render(<StreamPill state="throttled" />);
     expect(screen.getByText("Throttled")).toBeInTheDocument();
-    expect(container.querySelector(".tp-breathe-amber")).not.toBeNull();
+    expect(container.querySelector(".sg-breathe-accent")).not.toBeNull();
   });
 
   it("renders paused without breathing", () => {
     const { container } = render(<StreamPill state="paused" />);
     expect(screen.getByText("Paused")).toBeInTheDocument();
-    expect(container.querySelector(".tp-breathe")).toBeNull();
-    expect(container.querySelector(".tp-breathe-amber")).toBeNull();
+    expect(container.querySelector(".sg-breathe")).toBeNull();
+    expect(container.querySelector(".sg-breathe-accent")).toBeNull();
   });
 
   it("shows pause button when live + onToggle is given", () => {

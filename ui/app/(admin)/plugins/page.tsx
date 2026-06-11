@@ -200,7 +200,7 @@ export default function PluginsPage() {
       <section className="flex flex-wrap items-center justify-between gap-3">
         <label className="relative flex min-w-[220px] flex-1 items-center sm:max-w-[360px]">
           <Search
-            className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-tp-ink-4"
+            className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-sg-ink-4"
             aria-hidden
           />
           <input
@@ -209,7 +209,7 @@ export default function PluginsPage() {
             onChange={(e) => setSearch(e.target.value)}
             placeholder={t("plugins.tp.searchPlaceholder")}
             aria-label={t("plugins.filterPlaceholder")}
-            className="h-9 w-full rounded-lg border border-tp-glass-edge bg-tp-glass-inner pl-8 pr-3 text-[13px] text-tp-ink placeholder:text-tp-ink-4 transition-colors hover:bg-tp-glass-inner-hover focus:outline-none focus:ring-2 focus:ring-tp-amber/40"
+            className="h-9 w-full rounded-lg border border-sg-border bg-sg-inset pl-8 pr-3 text-[13px] text-sg-ink placeholder:text-sg-ink-4 transition-colors hover:bg-sg-inset-hover focus:outline-none focus:ring-2 focus:ring-sg-accent/40"
           />
         </label>
         <FilterChipGroup
@@ -263,11 +263,11 @@ function CardGridSkeleton() {
           variant="soft"
           className="flex h-[132px] flex-col gap-3 p-4"
         >
-          <div className="h-4 w-2/3 rounded bg-tp-glass-inner-strong" />
-          <div className="h-3 w-1/3 rounded bg-tp-glass-inner" />
+          <div className="h-4 w-2/3 rounded bg-sg-inset-strong" />
+          <div className="h-3 w-1/3 rounded bg-sg-inset" />
           <div className="mt-auto flex gap-2">
-            <div className="h-5 w-14 rounded-full bg-tp-glass-inner" />
-            <div className="h-5 w-16 rounded-full bg-tp-glass-inner" />
+            <div className="h-5 w-14 rounded-full bg-sg-inset" />
+            <div className="h-5 w-16 rounded-full bg-sg-inset" />
           </div>
         </GlassPanel>
       ))}
@@ -288,15 +288,15 @@ function OfflineBlock({ message }: { message?: string }) {
       : firstLine;
   return (
     <GlassPanel variant="soft" className="flex flex-col items-center gap-2 p-8 text-center">
-      <div className="font-mono text-[11px] uppercase tracking-[0.12em] text-tp-err">
+      <div className="font-mono text-[11px] uppercase tracking-[0.12em] text-sg-err">
         {t("plugins.tp.offlineTitle")}
       </div>
-      <p className="max-w-prose text-[13px] text-tp-ink-2">
+      <p className="max-w-prose text-[13px] text-sg-ink-2">
         {t("plugins.tp.offlineHint")}
       </p>
       {short ? (
         <p
-          className="max-w-full truncate font-mono text-[11px] text-tp-ink-4"
+          className="max-w-full truncate font-mono text-[11px] text-sg-ink-4"
           title={message}
         >
           {short}
@@ -310,11 +310,11 @@ function EmptyBlock({ hasAnyPlugins }: { hasAnyPlugins: boolean }) {
   const { t } = useTranslation();
   return (
     <GlassPanel variant="soft" className="flex flex-col items-center gap-2 p-8 text-center">
-      <div className="text-[14px] font-medium text-tp-ink">
+      <div className="text-[14px] font-medium text-sg-ink">
         {hasAnyPlugins ? t("plugins.tp.emptyTitle") : t("plugins.noneRegistered")}
       </div>
       {hasAnyPlugins ? (
-        <p className="text-[13px] text-tp-ink-3">{t("plugins.tp.emptyHint")}</p>
+        <p className="text-[13px] text-sg-ink-3">{t("plugins.tp.emptyHint")}</p>
       ) : null}
     </GlassPanel>
   );

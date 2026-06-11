@@ -460,43 +460,46 @@ function TestChatDrawer({ onClose }: { onClose: () => void }) {
       />
       <div
         className={cn(
-          "relative z-10 flex w-full max-w-2xl flex-col gap-3 rounded-lg border border-tp-glass-edge bg-tp-glass-2 p-4 shadow-tp-hero backdrop-blur-glass-strong backdrop-saturate-glass-strong",
-          "animate-in fade-in-0 zoom-in-95 duration-150",
+          "relative z-10 flex w-full max-w-2xl flex-col gap-3 rounded-sg-xl border border-sg-border-strong bg-sg-overlay p-4 shadow-sg-4 backdrop-blur-sg-overlay backdrop-saturate-sg-overlay",
+          // Liquid Glass optics + springy overshoot entrance, matching the
+          // dialog/palette overlay surfaces.
+          "lg-edge lg-refract",
+          "animate-in fade-in-0 zoom-in-95 duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]",
         )}
       >
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold">{t("cmdk.testChatTitle")}</h2>
-          <kbd className="rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+          <h2 className="text-sm font-semibold text-sg-ink">{t("cmdk.testChatTitle")}</h2>
+          <kbd className="rounded-sg-sm border border-sg-border bg-sg-inset-strong px-1.5 py-0.5 font-mono text-[10px] text-sg-ink-3">
             ESC
           </kbd>
         </div>
         <form onSubmit={submit} className="space-y-2">
           <textarea
-            className="w-full rounded-md border border-tp-glass-edge bg-tp-glass-inner p-2 font-mono text-xs outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="w-full rounded-sg-md border border-sg-border bg-sg-inset p-2 font-mono text-xs text-sg-ink outline-none focus-visible:ring-1 focus-visible:ring-ring"
             rows={3}
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
           />
           <div className="flex items-center justify-between">
-            <span className="text-xs text-muted-foreground">
+            <span className="text-xs text-sg-ink-3">
               {t("cmdk.testChatHintInline")}
             </span>
             <button
               type="submit"
               disabled={submitting || !prompt.trim()}
-              className="inline-flex h-8 items-center rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+              className="lg-gel inline-flex h-8 items-center rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
             >
               {submitting ? t("cmdk.sending") : t("cmdk.send")}
             </button>
           </div>
         </form>
         {error ? (
-          <p className="rounded-md border border-destructive/40 bg-destructive/10 p-2 text-xs text-destructive-foreground">
+          <p className="rounded-sg-md border border-sg-err/40 bg-sg-err-soft p-2 text-xs text-sg-err">
             {error}
           </p>
         ) : null}
         {answer ? (
-          <pre className="max-h-[40vh] overflow-auto rounded-md border border-border bg-surface p-3 font-mono text-xs">
+          <pre className="max-h-[40vh] overflow-auto rounded-sg-md border border-sg-border bg-sg-inset p-3 font-mono text-xs text-sg-ink">
             {answer}
           </pre>
         ) : null}

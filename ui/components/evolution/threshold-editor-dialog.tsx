@@ -121,7 +121,7 @@ export function ThresholdEditorDialog({
             <p
               role="alert"
               data-testid="threshold-error"
-              className="text-[12px] text-tp-err"
+              className="text-[12px] text-sg-err"
             >
               {t("evolution.thresholds.invalid")}
             </p>

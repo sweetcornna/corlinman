@@ -34,26 +34,20 @@ export function ReadFileToolRenderer({ inputJson, output, isError }: ToolRendere
 
   return (
     <div className="space-y-2 text-xs">
-      <div
-        className={cn(
-          "flex items-center gap-2 rounded-md border border-amber-100/50 bg-amber-50/30 px-2.5 py-1.5",
-          "dark:border-white/5 dark:bg-black/30",
-          "font-mono text-amber-950/80 dark:text-amber-100/70",
-        )}
-      >
-        <FileText className="size-3.5 shrink-0 opacity-70" aria-hidden />
-        <span className="truncate">{path || "(no path)"}</span>
+      <div className="flex items-center gap-2 rounded-sg-md border border-sg-border bg-sg-inset px-2.5 py-1.5 font-mono text-[12.5px] text-sg-ink-3">
+        <FileText className="size-3.5 shrink-0 text-sg-ink-4" aria-hidden />
+        <span className="truncate text-sg-ink-2">{path || "(no path)"}</span>
         {range && (
-          <span className="ml-auto shrink-0 text-[10px] opacity-60">{range}</span>
+          <span className="ml-auto shrink-0 text-[10px] text-sg-ink-4">{range}</span>
         )}
       </div>
       {output !== undefined && output !== "" && (
         <pre
           className={cn(
-            "max-h-80 overflow-auto rounded-md border px-2 py-1.5 font-mono whitespace-pre-wrap break-words text-[11px]",
+            "max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-sg-md border px-2 py-1.5 font-mono text-[11px]",
             isError
-              ? "border-red-200/60 bg-red-50/40 text-red-900 dark:border-red-400/20 dark:bg-red-950/30 dark:text-red-200"
-              : "border-amber-100/50 bg-amber-50/30 text-amber-950/80 dark:border-white/5 dark:bg-black/30 dark:text-amber-100/70",
+              ? "border-sg-err/30 bg-sg-err-soft text-sg-err"
+              : "border-sg-border bg-sg-inset text-sg-ink-3",
           )}
         >
           {output}

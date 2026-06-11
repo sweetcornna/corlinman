@@ -76,7 +76,7 @@ describe("LogRow", () => {
       />,
     );
     // The pill only renders in `dense`. A status dot appears in comfortable.
-    expect(container.querySelector(".bg-tp-warn")).not.toBeNull();
+    expect(container.querySelector(".bg-sg-warn")).not.toBeNull();
     expect(container.textContent).not.toContain("warn"); // label not rendered
   });
 

@@ -70,10 +70,10 @@ export function LogDetailDrawer({
 
   const sev = severityFromLevel(event.level);
   const headerPill: Record<LogSeverity, string> = {
-    ok: "bg-tp-ok-soft text-tp-ok border-tp-ok/25",
-    info: "bg-tp-glass-inner-strong text-tp-ink-3 border-tp-glass-edge",
-    warn: "bg-tp-warn-soft text-tp-warn border-tp-warn/25",
-    err: "bg-tp-err-soft text-tp-err border-tp-err/25",
+    ok: "bg-sg-ok-soft text-sg-ok border-sg-ok/25",
+    info: "bg-sg-inset-strong text-sg-ink-3 border-sg-border",
+    warn: "bg-sg-warn-soft text-sg-warn border-sg-warn/25",
+    err: "bg-sg-err-soft text-sg-err border-sg-err/25",
   };
   const relativeAgo = useRelativeAgo(event.ts);
 
@@ -87,11 +87,11 @@ export function LogDetailDrawer({
       >
         {event.level}
       </span>
-      <span className="font-mono text-[13px] tabular-nums text-tp-ink">
+      <span className="font-mono text-[13px] tabular-nums text-sg-ink">
         {formatTsFull(event.ts)}
       </span>
       {relativeAgo ? (
-        <span className="font-mono text-[11px] text-tp-ink-4">
+        <span className="font-mono text-[11px] text-sg-ink-4">
           {relativeAgo}
         </span>
       ) : null}
@@ -112,9 +112,9 @@ export function LogDetailDrawer({
         ) : (
           <div
             className={cn(
-              "rounded-lg border border-dashed border-tp-glass-edge",
-              "bg-tp-glass-inner p-4 text-center",
-              "font-mono text-[11.5px] text-tp-ink-4",
+              "rounded-lg border border-dashed border-sg-border",
+              "bg-sg-inset p-4 text-center",
+              "font-mono text-[11.5px] text-sg-ink-4",
             )}
           >
             {t("logs.tp.payloadEmpty")}
@@ -124,7 +124,7 @@ export function LogDetailDrawer({
 
       <DetailDrawer.Section label={t("logs.tp.sectionRelated")}>
         {related.length === 0 ? (
-          <div className="font-mono text-[11.5px] text-tp-ink-4">
+          <div className="font-mono text-[11.5px] text-sg-ink-4">
             {t("logs.tp.relatedEmpty")}
           </div>
         ) : (
@@ -145,7 +145,7 @@ export function LogDetailDrawer({
 
       {likelyCause ? (
         <DetailDrawer.Section label={t("logs.tp.sectionLikely")}>
-          <div className="text-[13px] leading-[1.55] text-tp-ink-2">
+          <div className="text-[13px] leading-[1.55] text-sg-ink-2">
             {likelyCause}
           </div>
         </DetailDrawer.Section>
@@ -219,7 +219,7 @@ export function renderMessageWithCode(msg: string): React.ReactNode {
           key={`c${key}`}
           className={cn(
             "rounded-sm border px-1 py-[1px] font-mono text-[11px]",
-            "bg-tp-glass-inner-strong border-tp-glass-edge text-tp-ink",
+            "bg-sg-inset-strong border-sg-border text-sg-ink",
           )}
         >
           {m[1].slice(1, -1)}
@@ -227,7 +227,7 @@ export function renderMessageWithCode(msg: string): React.ReactNode {
       );
     } else if (m[2]) {
       out.push(
-        <em key={`e${key}`} className="not-italic font-medium text-tp-ink">
+        <em key={`e${key}`} className="not-italic font-medium text-sg-ink">
           {m[2].slice(1, -1)}
         </em>,
       );

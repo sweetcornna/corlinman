@@ -51,7 +51,7 @@ export default function MarketplacePage() {
       <nav
         role="tablist"
         aria-label={t("marketplace.title")}
-        className="flex items-center gap-1 border-b border-tp-glass-edge"
+        className="flex items-center gap-1 border-b border-sg-border"
       >
         {(["skills", "mcp", "plugins"] as const).map((id) => {
           const active = kind === id;
@@ -66,8 +66,8 @@ export default function MarketplacePage() {
               className={
                 "px-3 py-1.5 text-[12.5px] font-medium transition-colors " +
                 (active
-                  ? "border-b-2 border-tp-amber text-tp-ink"
-                  : "border-b-2 border-transparent text-tp-ink-3 hover:text-tp-ink-2")
+                  ? "border-b-2 border-sg-accent text-sg-ink"
+                  : "border-b-2 border-transparent text-sg-ink-3 hover:text-sg-ink-2")
               }
             >
               {t(`marketplace.tab.${id}`)}
@@ -132,8 +132,8 @@ function KindWithInstalled({
               className={
                 "rounded-full px-3 py-1.5 text-[12px] font-medium transition-colors " +
                 (active
-                  ? "bg-tp-amber-soft text-tp-amber"
-                  : "text-tp-ink-3 hover:bg-tp-glass-inner hover:text-tp-ink-2")
+                  ? "bg-sg-accent-soft text-sg-accent"
+                  : "text-sg-ink-3 hover:bg-sg-inset hover:text-sg-ink-2")
               }
             >
               {id === "browse"

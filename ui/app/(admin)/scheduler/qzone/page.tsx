@@ -7,7 +7,8 @@
  * scheduler jobs that drive a persona's daily QQ-空间 说说 pipeline.
  *
  * Layout (mirrors the persona + scheduler admin pages):
- *   [ page header with title + "Enable Grantley template" button ]
+ *   [ page header with title + one-click "Enable daily 说说" button
+ *     (works for ANY persona — uses the form selection) ]
  *   [ Create-job card — persona dropdown, prompt template, cron,
  *     toggle + helper showing "next fire at …" ]
  *   [ Jobs table — name · cron · persona · enabled · last-run
@@ -17,7 +18,8 @@
  *   - `fetchSchedulerJobsTyped()` (15s poll) — every scheduler row;
  *     filtered client-side to `action_type === qzone.daily_publish`.
  *   - `fetchPersonas()` (no poll) — populates the persona dropdown.
- *   - `createSchedulerJob` / `enableQzoneTemplate` — write paths.
+ *   - `createSchedulerJob` — write path (also powers the one-click
+ *     daily enable for any persona).
  *   - `triggerSchedulerJobTyped` — "run now" button.
  *
  * Style: minimal shadcn + Tailwind — does NOT pull the Tidepool
@@ -57,7 +59,6 @@ import {
 
 import {
   createSchedulerJob,
-  enableQzoneTemplate,
   fetchSchedulerJobsTyped,
   formatNextFire,
   isQzoneDailyJob,
@@ -74,6 +75,13 @@ const PERSONAS_QUERY_KEY = ["admin", "personas"] as const;
 /** Default cron string for new jobs — daily at 09:00 local. Matches the
  * bundled Grantley template so the form starts with a sensible value. */
 const DEFAULT_CRON = "0 9 * * *";
+
+/** Persona-neutral default prompt for one-click daily jobs — mirrors the
+ * bundled template; the persona system prompt supplies the voice. */
+const DEFAULT_DAILY_PROMPT =
+  "用今日的视角写一条 200 字以内的 QQ 空间说说，配一张你最近状态的立绘图。" +
+  "语气可以轻松随意，可以聊聊今天的心情、关注到的小事或正在做的事。" +
+  "结尾必须调用 qzone_publish 工具发布（可以使用 generate 字段生成配图）。";
 
 /** Slug regex mirroring the backend `_JOB_NAME_RE`. Client-side gate
  * so a typo doesn't survive the round-trip. */
@@ -151,12 +159,25 @@ export default function QzoneSchedulerPage() {
     },
   });
 
-  const enableGrantleyMutation = useMutation({
-    mutationFn: () => enableQzoneTemplate("grantley"),
-    onSuccess: (row) => {
+  // One-click daily-说说 enable for ANY persona (not just the bundled
+  // Grantley template): builds a sensible default job for the persona
+  // picked in the form (or the only persona, when there is exactly one)
+  // through the generic upsert endpoint.
+  const enableDailyMutation = useMutation({
+    mutationFn: (persona: Persona) =>
+      createSchedulerJob({
+        name: `${persona.id}.daily_qzone`,
+        cron: DEFAULT_CRON,
+        action_type: QZONE_DAILY_ACTION_TYPE,
+        persona_id: persona.id,
+        prompt_template: DEFAULT_DAILY_PROMPT,
+        enabled: true,
+      }),
+    onSuccess: (row, persona) => {
       toast.success(
-        t("schedulerQzone.grantleyEnabled", {
-          defaultValue: "Grantley daily QZone job enabled ({{name}})",
+        t("schedulerQzone.dailyEnabled", {
+          defaultValue: "Daily QZone job enabled for {{persona}} ({{name}})",
+          persona: persona.display_name || persona.id,
           name: row.name,
         }),
       );
@@ -165,13 +186,30 @@ export default function QzoneSchedulerPage() {
     onError: (err) => {
       const msg = err instanceof Error ? err.message : String(err);
       toast.warning(
-        t("schedulerQzone.grantleyFail", {
-          defaultValue: "Failed to enable Grantley template: {{msg}}",
+        t("schedulerQzone.dailyEnableFail", {
+          defaultValue: "Failed to enable daily job: {{msg}}",
           msg,
         }),
       );
     },
   });
+
+  const enableDailyForSelection = React.useCallback(() => {
+    const personas = personasQuery.data ?? [];
+    const target =
+      personas.find((p) => p.id === form.personaId) ??
+      (personas.length === 1 ? personas[0] : undefined);
+    if (!target) {
+      toast.info(
+        t("schedulerQzone.needPersona", {
+          defaultValue: "Pick a persona in the form below first.",
+        }),
+      );
+      document.getElementById("qzone-job-persona")?.focus();
+      return;
+    }
+    enableDailyMutation.mutate(target);
+  }, [enableDailyMutation, form.personaId, personasQuery.data, t]);
 
   const triggerMutation = useMutation({
     mutationFn: (name: string) => triggerSchedulerJobTyped(name),
@@ -237,7 +275,7 @@ export default function QzoneSchedulerPage() {
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div className="space-y-1">
           <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
-            <Sparkles className="h-5 w-5 text-amber-500" aria-hidden />
+            <Sparkles className="h-5 w-5 text-sg-accent" aria-hidden />
             {t("schedulerQzone.title", { defaultValue: "QZone daily publishing" })}
           </h1>
           <p className="max-w-2xl text-sm text-muted-foreground">
@@ -268,12 +306,13 @@ export default function QzoneSchedulerPage() {
           <Button
             variant="secondary"
             size="sm"
-            onClick={() => enableGrantleyMutation.mutate()}
-            disabled={enableGrantleyMutation.isPending}
+            data-testid="qzone-enable-daily"
+            onClick={enableDailyForSelection}
+            disabled={enableDailyMutation.isPending}
           >
             <Sparkles className="mr-1 h-3.5 w-3.5" aria-hidden />
-            {t("schedulerQzone.enableGrantley", {
-              defaultValue: "Enable Grantley daily 说说",
+            {t("schedulerQzone.enableDaily", {
+              defaultValue: "Enable daily 说说",
             })}
           </Button>
         </div>
@@ -397,7 +436,7 @@ export default function QzoneSchedulerPage() {
               className={cn(
                 "text-xs",
                 nextFirePreview === null && form.cron.trim().length > 0
-                  ? "text-red-500"
+                  ? "text-sg-err"
                   : "text-muted-foreground",
               )}
             >
@@ -564,14 +603,14 @@ function QzoneJobRow({ job, onTrigger, triggering }: QzoneJobRowProps) {
                 href={job.last_qzone_url}
                 target="_blank"
                 rel="noreferrer"
-                className="inline-flex items-center gap-1 text-amber-600 hover:underline"
+                className="inline-flex items-center gap-1 text-sg-accent hover:underline"
               >
                 <ExternalLink className="h-3 w-3" aria-hidden />
                 {t("schedulerQzone.row.viewQzone", { defaultValue: "View on QZone" })}
               </a>
             ) : null}
             {!job.last_run_ok && job.last_error ? (
-              <p className="text-red-500">{job.last_error}</p>
+              <p className="text-sg-err">{job.last_error}</p>
             ) : null}
           </>
         )}

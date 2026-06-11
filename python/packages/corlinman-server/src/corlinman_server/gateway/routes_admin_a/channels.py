@@ -130,6 +130,7 @@ def router() -> APIRouter:
             ws_url=ws_url,
             self_ids=list(qq.get("self_ids", [])),
             group_keywords=dict(qq.get("group_keywords", {})),
+            config_keys=_non_secret_config_keys("qq", qq),
             health_online=health.get("online"),
             health_last_event_at_ms=health.get("last_event_at_ms"),
             health_seconds_since_event=health.get("seconds_since_event"),

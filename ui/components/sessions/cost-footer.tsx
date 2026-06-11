@@ -3,7 +3,7 @@
 /**
  * `CostFooter` — Phase 4 Wave 2 / W2.3 sticky cost footer.
  *
- * Renders a glass-card row of warm-amber pills at the bottom of the session
+ * Renders a glass-card row of accent-toned pills at the bottom of the session
  * detail scroll area summarising cumulative cost + turn timing for a single
  * session. Mirrors Claude Code's `cost-tracker.ts` sticky footer (`src/cost-tracker.ts:228-244`)
  * and hermes' `session_estimated_cost_usd` columns (`hermes_state.py:190-221`).
@@ -171,7 +171,9 @@ export function CostFooter({ sessionKey, fetcher }: CostFooterProps) {
       className={cn(
         // sticky inside the scroll container — the page wrapper handles positioning.
         "sticky bottom-0 z-20 mt-4",
-        "border-t border-tp-glass-edge bg-tp-glass/95 backdrop-blur",
+        // Opaque strong card fill (NO backdrop-filter — blur budget reserves
+        // it for shell/overlay tiers; rows must scroll cleanly beneath).
+        "border-t border-sg-border bg-sg-card-strong",
         "px-4 py-3",
       )}
       role="status"
@@ -186,7 +188,7 @@ export function CostFooter({ sessionKey, fetcher }: CostFooterProps) {
               {hasUnknown ? `~${totalLabel}` : totalLabel}
               {hasUnknown ? (
                 <Info
-                  className="h-3 w-3 text-amber-300/80"
+                  className="h-3 w-3 text-sg-accent"
                   aria-label={t("sessions.cost.unknownTooltip")}
                 />
               ) : null}
@@ -244,28 +246,24 @@ function Pill({ icon, label, value, tone = "default", title, testId }: PillProps
       data-testid={testId}
       title={title}
       className={cn(
-        // Warm-amber glass pill — primary tone for the headline cost figure.
+        // Accent glass pill — primary tone for the headline cost figure.
         "group inline-flex items-center gap-2 rounded-full",
         "border px-3 py-1 text-xs",
         "transition-all duration-150 ease-out",
-        "hover:-translate-y-px hover:shadow-[0_4px_14px_-6px_rgba(245,158,11,0.4)]",
+        "hover:-translate-y-px hover:shadow-sg-glow",
         tone === "primary"
-          ? "border-amber-400/40 bg-amber-500/10 text-amber-100"
-          : "border-tp-glass-edge bg-tp-glass-inner text-tp-ink-2",
+          ? "border-sg-accent/35 bg-sg-accent-soft text-sg-accent"
+          : "border-sg-border bg-sg-inset text-sg-ink-2",
       )}
     >
-      <span
-        className={cn(
-          tone === "primary" ? "text-amber-300" : "text-tp-ink-3",
-        )}
-      >
+      <span className={cn(tone === "primary" ? "text-sg-accent" : "text-sg-ink-4")}>
         {icon}
       </span>
-      <span className="text-tp-ink-3">{label}</span>
+      <span className="text-sg-ink-4">{label}</span>
       <span
         className={cn(
           "font-mono",
-          tone === "primary" ? "text-amber-50" : "text-tp-ink",
+          tone === "primary" ? "text-sg-accent" : "text-sg-ink",
         )}
       >
         {value}

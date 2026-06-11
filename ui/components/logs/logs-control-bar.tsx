@@ -71,10 +71,10 @@ export interface LogsControlBarProps {
 }
 
 const toneDot: Record<SeverityOption["tone"], string> = {
-  ok: "bg-tp-ok",
-  warn: "bg-tp-warn",
-  err: "bg-tp-err",
-  info: "bg-tp-ink-4",
+  ok: "bg-sg-ok",
+  warn: "bg-sg-warn",
+  err: "bg-sg-err",
+  info: "bg-sg-ink-4",
   neutral: "",
 };
 
@@ -145,7 +145,7 @@ export function LogsControlBar({
       <div
         role="tablist"
         aria-label={t("logs.tp.timeRangeAria")}
-        className="inline-flex gap-0.5 rounded-lg border border-tp-glass-edge bg-tp-glass-inner p-0.5"
+        className="inline-flex gap-0.5 rounded-lg border border-sg-border bg-sg-inset p-0.5"
       >
         {TIME_RANGES.map((r) => (
           <button
@@ -156,10 +156,10 @@ export function LogsControlBar({
             onClick={() => onTimeRangeChange(r)}
             className={cn(
               "min-h-8 rounded-md px-2.5 py-1 font-mono text-[11.5px] transition-colors",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/50",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/50",
               timeRange === r
-                ? "bg-tp-glass-inner-hover text-tp-ink"
-                : "text-tp-ink-3 hover:text-tp-ink-2 hover:bg-tp-glass-inner",
+                ? "bg-sg-inset-hover text-sg-ink"
+                : "text-sg-ink-3 hover:text-sg-ink-2 hover:bg-sg-inset",
             )}
           >
             {r}
@@ -172,10 +172,10 @@ export function LogsControlBar({
           onClick={() => onTimeRangeChange("custom")}
           className={cn(
             "inline-flex min-h-8 items-center gap-1 rounded-md px-2.5 py-1 font-mono text-[11.5px] transition-colors",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/50",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/50",
             timeRange === "custom"
-              ? "bg-tp-glass-inner-hover text-tp-ink"
-              : "text-tp-ink-3 hover:text-tp-ink-2 hover:bg-tp-glass-inner",
+              ? "bg-sg-inset-hover text-sg-ink"
+              : "text-sg-ink-3 hover:text-sg-ink-2 hover:bg-sg-inset",
           )}
         >
           <Calendar className="h-3 w-3" />
@@ -192,15 +192,15 @@ export function LogsControlBar({
           onClick={() => setSeverityOpen((v) => !v)}
           className={cn(
             "inline-flex min-h-8 items-center gap-2 rounded-lg border px-3 py-[5px]",
-            "bg-tp-glass-inner border-tp-glass-edge text-tp-ink-2 text-[12.5px]",
-            "hover:bg-tp-glass-inner-hover hover:text-tp-ink",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
+            "bg-sg-inset border-sg-border text-sg-ink-2 text-[12.5px]",
+            "hover:bg-sg-inset-hover hover:text-sg-ink",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
           )}
         >
-          <span className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-tp-ink-4">
+          <span className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-sg-ink-4">
             {t("logs.tp.severityLabel")}
           </span>
-          <span className="font-medium text-tp-ink">
+          <span className="font-medium text-sg-ink">
             {activeSeverity?.label ?? severity}
           </span>
           <svg
@@ -209,7 +209,7 @@ export function LogsControlBar({
             stroke="currentColor"
             strokeWidth="2"
             strokeLinecap="round"
-            className="h-2.5 w-2.5 text-tp-ink-4"
+            className="h-2.5 w-2.5 text-sg-ink-4"
             aria-hidden
           >
             <path d="M6 9l6 6 6-6" />
@@ -222,8 +222,8 @@ export function LogsControlBar({
             aria-label={t("logs.tp.severityAria")}
             className={cn(
               "absolute left-0 top-[calc(100%+6px)] z-20 min-w-[180px]",
-              "rounded-lg border border-tp-glass-edge bg-tp-glass-2 p-1 shadow-tp-panel",
-              "backdrop-blur-glass backdrop-saturate-glass",
+              "rounded-lg border border-sg-border bg-sg-card-strong p-1 shadow-sg-2",
+              "",
             )}
           >
             {severityOptions.map((opt) => (
@@ -239,8 +239,8 @@ export function LogsControlBar({
                   "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left",
                   "text-[12.5px] transition-colors",
                   severity === opt.value
-                    ? "bg-tp-glass-inner-hover text-tp-ink"
-                    : "text-tp-ink-2 hover:bg-tp-glass-inner hover:text-tp-ink",
+                    ? "bg-sg-inset-hover text-sg-ink"
+                    : "text-sg-ink-2 hover:bg-sg-inset hover:text-sg-ink",
                 )}
               >
                 {opt.tone !== "neutral" ? (
@@ -255,7 +255,7 @@ export function LogsControlBar({
                   <span aria-hidden className="h-[6px] w-[6px]" />
                 )}
                 <span className="flex-1 font-mono">{opt.label}</span>
-                <span className="font-mono text-[10.5px] tabular-nums text-tp-ink-4">
+                <span className="font-mono text-[10.5px] tabular-nums text-sg-ink-4">
                   {opt.count}
                 </span>
               </button>
@@ -273,22 +273,22 @@ export function LogsControlBar({
           onClick={() => setSubsysOpen((v) => !v)}
           className={cn(
             "inline-flex min-h-8 items-center gap-2 rounded-lg border px-3 py-[5px]",
-            "bg-tp-glass-inner border-tp-glass-edge text-tp-ink-2 text-[12.5px]",
-            "hover:bg-tp-glass-inner-hover hover:text-tp-ink",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
+            "bg-sg-inset border-sg-border text-sg-ink-2 text-[12.5px]",
+            "hover:bg-sg-inset-hover hover:text-sg-ink",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
           )}
         >
-          <span className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-tp-ink-4">
+          <span className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-sg-ink-4">
             {t("logs.tp.subsystemLabel")}
           </span>
-          <span className="font-medium text-tp-ink">{subsysSummary}</span>
+          <span className="font-medium text-sg-ink">{subsysSummary}</span>
           <svg
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
             strokeWidth="2"
             strokeLinecap="round"
-            className="h-2.5 w-2.5 text-tp-ink-4"
+            className="h-2.5 w-2.5 text-sg-ink-4"
             aria-hidden
           >
             <path d="M6 9l6 6 6-6" />
@@ -301,12 +301,12 @@ export function LogsControlBar({
             aria-label={t("logs.tp.subsystemAria")}
             className={cn(
               "absolute left-0 top-[calc(100%+6px)] z-20 min-w-[240px] max-h-[260px] overflow-y-auto",
-              "rounded-lg border border-tp-glass-edge bg-tp-glass-2 p-1 shadow-tp-panel",
-              "backdrop-blur-glass backdrop-saturate-glass",
+              "rounded-lg border border-sg-border bg-sg-card-strong p-1 shadow-sg-2",
+              "",
             )}
           >
             {subsystems.length === 0 ? (
-              <div className="px-2.5 py-2 font-mono text-[11.5px] text-tp-ink-4">
+              <div className="px-2.5 py-2 font-mono text-[11.5px] text-sg-ink-4">
                 {t("logs.tp.subsystemEmpty")}
               </div>
             ) : (
@@ -318,15 +318,15 @@ export function LogsControlBar({
                     "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left",
                     "text-[12px] transition-colors",
                     selectedSubsystems.length === 0
-                      ? "bg-tp-glass-inner-hover text-tp-ink"
-                      : "text-tp-ink-2 hover:bg-tp-glass-inner hover:text-tp-ink",
+                      ? "bg-sg-inset-hover text-sg-ink"
+                      : "text-sg-ink-2 hover:bg-sg-inset hover:text-sg-ink",
                   )}
                 >
                   <span className="flex-1 font-mono">
                     {t("logs.tp.subAll")}
                   </span>
                 </button>
-                <div className="my-1 h-px bg-tp-glass-edge" />
+                <div className="my-1 h-px bg-sg-border" />
                 {subsystems.map((s) => {
                   const picked = selectedSubsystems.includes(s.value);
                   return (
@@ -345,8 +345,8 @@ export function LogsControlBar({
                         "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left",
                         "text-[12px] transition-colors",
                         picked
-                          ? "bg-tp-glass-inner-hover text-tp-ink"
-                          : "text-tp-ink-2 hover:bg-tp-glass-inner hover:text-tp-ink",
+                          ? "bg-sg-inset-hover text-sg-ink"
+                          : "text-sg-ink-2 hover:bg-sg-inset hover:text-sg-ink",
                       )}
                     >
                       <span
@@ -354,12 +354,12 @@ export function LogsControlBar({
                         className={cn(
                           "h-3 w-3 rounded border",
                           picked
-                            ? "bg-tp-amber border-tp-amber"
-                            : "bg-tp-glass-inner border-tp-glass-edge",
+                            ? "bg-sg-accent border-sg-accent"
+                            : "bg-sg-inset border-sg-border",
                         )}
                       />
                       <span className="flex-1 truncate font-mono">{s.value}</span>
-                      <span className="font-mono text-[10.5px] tabular-nums text-tp-ink-4">
+                      <span className="font-mono text-[10.5px] tabular-nums text-sg-ink-4">
                         {s.count}
                       </span>
                     </button>
@@ -375,11 +375,11 @@ export function LogsControlBar({
       <div
         className={cn(
           "inline-flex min-h-8 flex-1 min-w-[220px] items-center gap-2 rounded-lg border px-2.5 py-[5px]",
-          "bg-tp-glass-inner border-tp-glass-edge",
-          "focus-within:border-tp-amber/40",
+          "bg-sg-inset border-sg-border",
+          "focus-within:border-sg-accent/40",
         )}
       >
-        <Search className="h-3 w-3 text-tp-ink-4" aria-hidden />
+        <Search className="h-3 w-3 text-sg-ink-4" aria-hidden />
         <input
           ref={searchInputRef}
           type="text"
@@ -388,14 +388,14 @@ export function LogsControlBar({
           placeholder={t("logs.tp.searchPlaceholder")}
           aria-label={t("logs.tp.searchAria")}
           className={cn(
-            "h-8 flex-1 border-0 bg-transparent text-[12.5px] text-tp-ink outline-none",
-            "placeholder:text-tp-ink-4",
+            "h-8 flex-1 border-0 bg-transparent text-[12.5px] text-sg-ink outline-none",
+            "placeholder:text-sg-ink-4",
           )}
         />
         <kbd
           className={cn(
-            "rounded border border-tp-glass-edge bg-tp-glass-inner-strong",
-            "px-1.5 py-px font-mono text-[10px] text-tp-ink-3",
+            "rounded border border-sg-border bg-sg-inset-strong",
+            "px-1.5 py-px font-mono text-[10px] text-sg-ink-3",
           )}
         >
           ⌘F
@@ -405,7 +405,7 @@ export function LogsControlBar({
       {/* Right actions */}
       <div className="ml-auto flex items-center gap-1.5">
         {rangeReadout ? (
-          <span className="font-mono text-[11px] tabular-nums text-tp-ink-4">
+          <span className="font-mono text-[11px] tabular-nums text-sg-ink-4">
             {rangeReadout}
           </span>
         ) : null}
@@ -450,10 +450,10 @@ function IconButton({
       type="button"
       className={cn(
         "inline-flex h-8 w-8 items-center justify-center rounded-lg border",
-        "bg-tp-glass-inner border-tp-glass-edge text-tp-ink-3",
-        "hover:bg-tp-glass-inner-hover hover:text-tp-ink-2",
+        "bg-sg-inset border-sg-border text-sg-ink-3",
+        "hover:bg-sg-inset-hover hover:text-sg-ink-2",
         "disabled:cursor-not-allowed disabled:opacity-40",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
         className,
       )}
       {...rest}

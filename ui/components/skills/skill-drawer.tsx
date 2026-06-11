@@ -80,7 +80,6 @@ export function SkillDrawer({
       // Block dismiss-while-saving so a mid-write outside-click can't
       // orphan the mutation; the footer Cancel still closes when idle.
       dismissable={!saving}
-      className="bg-tp-glass-2 backdrop-blur-glass-strong backdrop-saturate-glass-strong"
     >
       {skill ? (
         <SkillDrawerBody
@@ -163,10 +162,10 @@ function SkillDrawerBody({
   }, [onSave, dirty, saving, skill.name, patch]);
 
   const fieldCls = cn(
-    "w-full rounded-lg border border-tp-glass-edge bg-tp-glass-inner",
-    "px-3 py-2 text-[13px] text-tp-ink placeholder:text-tp-ink-4",
-    "transition-colors hover:bg-tp-glass-inner-hover",
-    "focus:outline-none focus:ring-2 focus:ring-tp-amber/40",
+    "w-full rounded-lg border border-sg-border bg-sg-inset",
+    "px-3 py-2 text-[13px] text-sg-ink placeholder:text-sg-ink-4",
+    "transition-colors hover:bg-sg-inset-hover",
+    "focus:outline-none focus:ring-2 focus:ring-sg-accent/40",
     "disabled:opacity-60",
   );
 
@@ -185,17 +184,17 @@ function SkillDrawerBody({
           <div
             className={cn(
               "flex h-11 w-11 shrink-0 items-center justify-center rounded-full",
-              "border border-tp-amber/25 bg-tp-amber-soft",
+              "border border-sg-accent/25 bg-sg-accent-soft",
             )}
             aria-hidden
           >
-            <CategoryIcon className="h-5 w-5 text-tp-amber" />
+            <CategoryIcon className="h-5 w-5 text-sg-accent" />
           </div>
           <div className="min-w-0 flex-1">
-            <h2 className="truncate text-[18px] font-medium leading-tight tracking-[-0.01em] text-tp-ink">
+            <h2 className="truncate text-[18px] font-medium leading-tight tracking-[-0.01em] text-sg-ink">
               {skill.name}
             </h2>
-            <div className="mt-0.5 flex flex-wrap items-center gap-2 font-mono text-[10.5px] uppercase tracking-[0.08em] text-tp-ink-4">
+            <div className="mt-0.5 flex flex-wrap items-center gap-2 font-mono text-[10.5px] uppercase tracking-[0.08em] text-sg-ink-4">
               <span className="inline-flex items-center gap-1">
                 <CategoryIcon className="h-3 w-3" aria-hidden />
                 {meta.label}
@@ -271,8 +270,8 @@ function SkillDrawerBody({
         <label
           htmlFor="skill-edit-disable-invocation"
           className={cn(
-            "flex items-start gap-3 rounded-lg border border-tp-glass-edge",
-            "bg-tp-glass-inner px-3 py-2.5",
+            "flex items-start gap-3 rounded-lg border border-sg-border",
+            "bg-sg-inset px-3 py-2.5",
             saving && "opacity-60",
           )}
         >
@@ -283,13 +282,13 @@ function SkillDrawerBody({
             checked={disableInvocation}
             onChange={(e) => setDisableInvocation(e.target.checked)}
             disabled={saving}
-            className="mt-0.5 h-4 w-4 shrink-0 accent-tp-amber"
+            className="mt-0.5 h-4 w-4 shrink-0 accent-sg-accent"
           />
           <span className="flex flex-col gap-0.5">
-            <span className="text-[13px] font-medium text-tp-ink">
+            <span className="text-[13px] font-medium text-sg-ink">
               {t("skills.drawer.disableInvocationLabel")}
             </span>
-            <span className="text-[11.5px] leading-[1.5] text-tp-ink-3">
+            <span className="text-[11.5px] leading-[1.5] text-sg-ink-3">
               {t("skills.drawer.disableInvocationHint")}
             </span>
           </span>
@@ -319,9 +318,9 @@ function SkillDrawerBody({
       </form>
 
       {/* Sticky footer actions */}
-      <div className="sticky bottom-0 flex items-center justify-between gap-2 border-t border-tp-glass-edge bg-tp-glass-2 px-5 py-3 backdrop-blur-glass-strong">
+      <div className="sticky bottom-0 flex items-center justify-between gap-2 border-t border-sg-border bg-sg-overlay px-5 py-3">
         <span
-          className="text-[11.5px] text-tp-ink-4"
+          className="text-[11.5px] text-sg-ink-4"
           data-testid="skill-edit-dirty"
           aria-live="polite"
         >
@@ -368,13 +367,13 @@ function Field({
     <div className="flex flex-col gap-1.5">
       <label
         htmlFor={htmlFor}
-        className="font-mono text-[10px] uppercase tracking-[0.12em] text-tp-ink-4"
+        className="font-mono text-[10px] uppercase tracking-[0.12em] text-sg-ink-4"
       >
         {label}
       </label>
       {children}
       {hint ? (
-        <p className="text-[11px] leading-[1.5] text-tp-ink-4">{hint}</p>
+        <p className="text-[11px] leading-[1.5] text-sg-ink-4">{hint}</p>
       ) : null}
     </div>
   );

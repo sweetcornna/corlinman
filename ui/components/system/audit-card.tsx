@@ -143,14 +143,14 @@ export function AuditCard() {
   return (
     <section
       data-testid="system-audit-card"
-      className="rounded-lg border border-tp-glass-edge bg-tp-glass p-4 sm:p-6"
+      className="rounded-lg border border-sg-border bg-sg-card p-4 sm:p-6"
     >
       <header className="mb-4 flex items-start justify-between gap-3">
         <div className="space-y-1">
           <h2 className="text-lg font-semibold tracking-tight">
             {t("system.audit.title")}
           </h2>
-          <p className="text-sm text-tp-ink-3">
+          <p className="text-sm text-sg-ink-3">
             {t("system.audit.subtitle")}
           </p>
         </div>
@@ -180,13 +180,13 @@ export function AuditCard() {
         </div>
       ) : entries.length === 0 ? (
         <p
-          className="text-sm text-tp-ink-3"
+          className="text-sm text-sg-ink-3"
           data-testid="system-audit-empty"
         >
           {t("system.audit.empty")}
         </p>
       ) : (
-        <div className="overflow-hidden rounded-md border border-tp-glass-edge">
+        <div className="overflow-hidden rounded-md border border-sg-border">
           <Table>
             <TableHeader>
               <TableRow>
@@ -207,10 +207,10 @@ export function AuditCard() {
                   <React.Fragment key={key}>
                     <TableRow
                       data-testid="system-audit-row"
-                      className="cursor-pointer hover:bg-tp-glass-inner"
+                      className="cursor-pointer hover:bg-sg-inset"
                       onClick={() => toggleExpanded(key)}
                     >
-                      <TableCell className="px-2 text-tp-ink-3">
+                      <TableCell className="px-2 text-sg-ink-3">
                         {isOpen ? (
                           <ChevronDown
                             className="h-3.5 w-3.5"
@@ -240,15 +240,15 @@ export function AuditCard() {
                       <TableCell className="font-mono text-xs">
                         {entry.tag ?? "—"}
                       </TableCell>
-                      <TableCell className="text-xs text-tp-ink-3">
+                      <TableCell className="text-xs text-sg-ink-3">
                         {entry.actor ?? "—"}
                       </TableCell>
                     </TableRow>
                     {isOpen ? (
                       <TableRow>
                         <TableCell />
-                        <TableCell colSpan={4} className="bg-tp-glass-inner">
-                          <pre className="overflow-x-auto whitespace-pre-wrap break-all rounded bg-tp-glass p-2 font-mono text-[11px]">
+                        <TableCell colSpan={4} className="bg-sg-inset">
+                          <pre className="overflow-x-auto whitespace-pre-wrap break-all rounded bg-sg-card p-2 font-mono text-[11px]">
                             {JSON.stringify(
                               {
                                 event: entry.event,
@@ -273,7 +273,7 @@ export function AuditCard() {
       {loadError ? (
         <p
           role="alert"
-          className="mt-3 text-xs text-red-500"
+          className="mt-3 text-xs text-sg-err"
           data-testid="system-audit-load-error"
         >
           {loadError}

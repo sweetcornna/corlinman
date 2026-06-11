@@ -24,11 +24,13 @@
 
 import * as React from "react";
 import { useTranslation } from "react-i18next";
+import { motion } from "framer-motion";
 import { Pin, PinOff, Trash2 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { GlassPanel } from "@/components/ui/glass-panel";
 import { useMotion } from "@/components/ui/motion-safe";
+import { useMotionVariants } from "@/lib/motion";
 import type { InstalledSkillRow } from "@/lib/api";
 
 // ---------- origin badge ---------------------------------------------------
@@ -75,20 +77,20 @@ export function parseOrigin(origin: string): OriginBadge {
 }
 
 const ORIGIN_TONE: Record<OriginBadgeKind, string> = {
-  // Blue-ish using ink tones — no dedicated blue token exists in the
-  // tp-* palette, so we use ink-3 + glass for the bundled badge.
+  // Neutral: bundled rows are immutable, so they read as ink + inset glass
+  // rather than a status color.
   bundled:
-    "border-tp-ink-3/30 bg-tp-glass-inner-strong text-tp-ink-2",
+    "border-sg-ink-3/30 bg-sg-inset-strong text-sg-ink-2",
   user:
-    "border-tp-amber/30 bg-tp-amber-soft text-tp-amber",
-  // Teal-ish via the OK tones — the closest accent in the palette.
-  hub: "border-tp-ok/30 bg-tp-ok-soft text-tp-ok",
+    "border-sg-accent/30 bg-sg-accent-soft text-sg-accent",
+  // Hub-sourced rows share the success/ok tone.
+  hub: "border-sg-ok/30 bg-sg-ok-soft text-sg-ok",
 };
 
 const ORIGIN_DOT: Record<OriginBadgeKind, string> = {
-  bundled: "bg-tp-ink-3",
-  user: "bg-tp-amber",
-  hub: "bg-tp-ok",
+  bundled: "bg-sg-ink-3",
+  user: "bg-sg-accent",
+  hub: "bg-sg-ok",
 };
 
 // ---------- filtering ------------------------------------------------------
@@ -153,6 +155,7 @@ export function InstalledList({
   deleteBusy,
 }: InstalledListProps) {
   const { t } = useTranslation();
+  const variants = useMotionVariants();
   const filtered = React.useMemo(
     () => filterRows(rows, search, filter),
     [rows, search, filter],
@@ -166,12 +169,12 @@ export function InstalledList({
         className="flex flex-col items-center gap-2 p-8 text-center"
         data-testid="installed-list-empty"
       >
-        <div className="text-[14px] font-medium text-tp-ink">
+        <div className="text-[14px] font-medium text-sg-ink">
           {hasAny
             ? t("skills.installed.emptyFilteredTitle")
             : t("skills.installed.emptyTitle")}
         </div>
-        <p className="text-[13px] text-tp-ink-3">
+        <p className="text-[13px] text-sg-ink-3">
           {hasAny
             ? t("skills.installed.emptyFilteredHint")
             : t("skills.installed.emptyHint")}
@@ -181,26 +184,30 @@ export function InstalledList({
   }
 
   return (
-    <section
+    <motion.section
       aria-label={t("skills.installed.gridAria")}
       className={cn(
         "grid gap-3",
         "grid-cols-[repeat(auto-fill,minmax(280px,1fr))]",
       )}
       data-testid="installed-list-grid"
+      variants={variants.liquidStagger}
+      initial="hidden"
+      animate="visible"
     >
       {filtered.map((row) => (
-        <InstalledCard
-          key={row.name}
-          row={row}
-          onPin={onPin}
-          onDelete={onDelete}
-          onOpen={onOpen}
-          pinBusy={pinBusy?.has(row.name) ?? false}
-          deleteBusy={deleteBusy?.has(row.name) ?? false}
-        />
+        <motion.div key={row.name} variants={variants.liquidRise}>
+          <InstalledCard
+            row={row}
+            onPin={onPin}
+            onDelete={onDelete}
+            onOpen={onOpen}
+            pinBusy={pinBusy?.has(row.name) ?? false}
+            deleteBusy={deleteBusy?.has(row.name) ?? false}
+          />
+        </motion.div>
       ))}
-    </section>
+    </motion.section>
   );
 }
 
@@ -241,14 +248,14 @@ function InstalledCard({
     <div
       className={cn(
         "group block focus-visible:outline-none",
-        !reduced &&
-          "transition-transform duration-200 ease-tp-ease-out hover:-translate-y-0.5",
+        !reduced && "lg-gel hover:-translate-y-0.5",
       )}
       data-testid={`installed-card-${row.name}`}
       data-origin={badge.kind}
     >
       <GlassPanel
         variant="soft"
+        lively
         role={onOpen ? "button" : undefined}
         tabIndex={onOpen ? 0 : undefined}
         aria-label={
@@ -270,20 +277,20 @@ function InstalledCard({
         className={cn(
           "flex h-full flex-col gap-3 p-4",
           onOpen && "cursor-pointer",
-          "transition-[box-shadow,border-color] duration-200 ease-tp-ease-out",
-          "group-hover:shadow-tp-primary",
-          "focus-visible:shadow-tp-primary focus-visible:ring-2 focus-visible:ring-tp-amber/50",
+          "transition-[box-shadow,border-color] duration-200 ease-sg-ease-out",
+          "group-hover:shadow-sg-primary",
+          "focus-visible:shadow-sg-primary focus-visible:ring-2 focus-visible:ring-sg-accent/50",
         )}
       >
         {/* Row 1 — name + origin badge */}
         <div className="flex items-start gap-2.5">
           <div className="min-w-0 flex-1">
-            <h3 className="truncate text-[15px] font-medium leading-tight text-tp-ink">
+            <h3 className="truncate text-[15px] font-medium leading-tight text-sg-ink">
               {row.name}
             </h3>
-            <div className="mt-1 flex items-center gap-1.5 font-mono text-[10.5px] uppercase tracking-[0.08em] text-tp-ink-4">
+            <div className="mt-1 flex items-center gap-1.5 font-mono text-[10.5px] uppercase tracking-[0.08em] text-sg-ink-4">
               {row.pinned ? (
-                <Pin className="h-3 w-3 text-tp-amber" aria-hidden />
+                <Pin className="h-3 w-3 text-sg-accent" aria-hidden />
               ) : null}
               <span>v{row.version}</span>
               <span aria-hidden>·</span>
@@ -294,9 +301,9 @@ function InstalledCard({
         </div>
 
         {/* Row 2 — description */}
-        <p className="line-clamp-2 text-[12.5px] leading-[1.5] text-tp-ink-2">
+        <p className="line-clamp-2 text-[12.5px] leading-[1.5] text-sg-ink-2">
           {row.description || (
-            <span className="text-tp-ink-4">
+            <span className="text-sg-ink-4">
               {t("skills.installed.noDescription")}
             </span>
           )}
@@ -320,11 +327,11 @@ function InstalledCard({
             }}
             className={cn(
               "inline-flex h-7 w-7 items-center justify-center rounded-md",
-              "border border-tp-glass-edge bg-tp-glass-inner",
-              "text-tp-ink-3 transition-colors",
-              "hover:bg-tp-glass-inner-hover hover:text-tp-amber",
+              "border border-sg-border bg-sg-inset",
+              "text-sg-ink-3 transition-colors",
+              "hover:bg-sg-inset-hover hover:text-sg-accent",
               "disabled:opacity-50",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-amber/40",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/40",
             )}
           >
             {row.pinned ? (
@@ -343,8 +350,8 @@ function InstalledCard({
               aria-label={t("skills.installed.bundledTooltip")}
               className={cn(
                 "inline-flex h-7 w-7 items-center justify-center rounded-md",
-                "border border-tp-glass-edge bg-tp-glass-inner",
-                "text-tp-ink-4 opacity-50 cursor-not-allowed",
+                "border border-sg-border bg-sg-inset",
+                "text-sg-ink-4 opacity-50 cursor-not-allowed",
               )}
             >
               <Trash2 className="h-3.5 w-3.5" aria-hidden />
@@ -362,11 +369,11 @@ function InstalledCard({
               }}
               className={cn(
                 "inline-flex h-7 w-7 items-center justify-center rounded-md",
-                "border border-tp-glass-edge bg-tp-glass-inner",
-                "text-tp-ink-3 transition-colors",
-                "hover:bg-tp-err-soft hover:text-tp-err",
+                "border border-sg-border bg-sg-inset",
+                "text-sg-ink-3 transition-colors",
+                "hover:bg-sg-err-soft hover:text-sg-err",
                 "disabled:opacity-50",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tp-err/40",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-err/40",
               )}
             >
               <Trash2 className="h-3.5 w-3.5" aria-hidden />
@@ -400,7 +407,7 @@ function OriginBadgePill({ badge }: { badge: OriginBadge }) {
       />
       <span>{badge.label}</span>
       {badge.version ? (
-        <span className="text-tp-ink-3">@{badge.version}</span>
+        <span className="text-sg-ink-3">@{badge.version}</span>
       ) : null}
     </span>
   );

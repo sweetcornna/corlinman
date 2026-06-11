@@ -156,14 +156,14 @@ function Hero({
         className="pointer-events-none absolute bottom-[-90px] right-[-40px] h-[240px] w-[360px] rounded-full opacity-60 blur-3xl"
         style={{
           background:
-            "radial-gradient(closest-side, var(--tp-amber-glow), transparent 70%)",
+            "radial-gradient(closest-side, var(--sg-accent-glow), transparent 70%)",
         }}
       />
       <div className="relative flex min-w-0 flex-col gap-4">
-        <span className="font-mono text-[11px] text-tp-ink-3">
+        <span className="font-mono text-[11px] text-sg-ink-3">
           {t(`${nsKey}.configOnlyNote`)}
         </span>
-        <p className="max-w-[72ch] text-[14.5px] leading-[1.6] text-tp-ink-2">
+        <p className="max-w-[72ch] text-[14.5px] leading-[1.6] text-sg-ink-2">
           {prose}
         </p>
         <div className="mt-1 flex flex-wrap items-center gap-2.5">
@@ -203,31 +203,31 @@ function ConfigPanel({
     >
       <header className="flex items-center justify-between">
         <div>
-          <h2 className="text-[14px] font-medium text-tp-ink">
+          <h2 className="text-[14px] font-medium text-sg-ink">
             {t(`${nsKey}.configTitle`)}
           </h2>
-          <p className="text-[12px] text-tp-ink-3">{t(`${nsKey}.configHint`)}</p>
+          <p className="text-[12px] text-sg-ink-3">{t(`${nsKey}.configHint`)}</p>
         </div>
-        <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-tp-ink-4">
+        <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-sg-ink-4">
           {t(`${nsKey}.configReadOnly`)}
         </span>
       </header>
 
       {entries.length === 0 ? (
-        <p className="rounded-lg border border-dashed border-tp-glass-edge bg-tp-glass-inner p-3 text-[12px] text-tp-ink-4">
+        <p className="rounded-lg border border-dashed border-sg-border bg-sg-inset p-3 text-[12px] text-sg-ink-4">
           {t(`${nsKey}.configEmpty`)}
         </p>
       ) : (
         <dl className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
           {entries.map(([key, value]) => (
             <div key={key} className="space-y-1">
-              <dt className="font-mono text-[10.5px] uppercase tracking-[0.1em] text-tp-ink-4">
+              <dt className="font-mono text-[10.5px] uppercase tracking-[0.1em] text-sg-ink-4">
                 {key}
               </dt>
               <dd>
                 {Array.isArray(value) ? (
                   value.length === 0 ? (
-                    <code className="block truncate rounded-md border border-tp-glass-edge bg-tp-glass-inner px-2 py-1 font-mono text-[11.5px] text-tp-ink-4">
+                    <code className="block truncate rounded-md border border-sg-border bg-sg-inset px-2 py-1 font-mono text-[11.5px] text-sg-ink-4">
                       []
                     </code>
                   ) : (
@@ -235,7 +235,7 @@ function ConfigPanel({
                       {value.map((v, i) => (
                         <code
                           key={`${v}-${i}`}
-                          className="rounded-md border border-tp-glass-edge bg-tp-glass-inner px-1.5 py-0.5 font-mono text-[11px] text-tp-ink-2"
+                          className="rounded-md border border-sg-border bg-sg-inset px-1.5 py-0.5 font-mono text-[11px] text-sg-ink-2"
                         >
                           {v}
                         </code>
@@ -245,8 +245,8 @@ function ConfigPanel({
                 ) : (
                   <code
                     className={cn(
-                      "block truncate rounded-md border border-tp-glass-edge",
-                      "bg-tp-glass-inner px-2 py-1 font-mono text-[11.5px] text-tp-ink-2",
+                      "block truncate rounded-md border border-sg-border",
+                      "bg-sg-inset px-2 py-1 font-mono text-[11.5px] text-sg-ink-2",
                     )}
                     title={value}
                   >
@@ -293,15 +293,15 @@ function OfflineBlock({
       className="flex flex-col items-center gap-2 p-8 text-center"
       data-testid={`${testIdPrefix}-offline-block`}
     >
-      <div className="font-mono text-[11px] uppercase tracking-[0.12em] text-tp-err">
+      <div className="font-mono text-[11px] uppercase tracking-[0.12em] text-sg-err">
         {t(`${nsKey}.offlineTitle`)}
       </div>
-      <p className="max-w-prose text-[13px] text-tp-ink-2">
+      <p className="max-w-prose text-[13px] text-sg-ink-2">
         {t(`${nsKey}.offlineHint`)}
       </p>
       {short ? (
         <p
-          className="max-w-full truncate font-mono text-[11px] text-tp-ink-4"
+          className="max-w-full truncate font-mono text-[11px] text-sg-ink-4"
           title={message}
         >
           {short}

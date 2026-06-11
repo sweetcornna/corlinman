@@ -35,6 +35,7 @@ class StatusOut(BaseModel):
     ws_url: str | None
     self_ids: list[int] = Field(default_factory=list)
     group_keywords: dict[str, list[str]] = Field(default_factory=dict)
+    config_keys: dict[str, str | list[str]] = Field(default_factory=dict)
     runtime: str = "unknown"
     recent_messages: list[Any] = Field(default_factory=list)
     # NapCat health (T4 follow-up): updated by the QQ health watcher
@@ -229,8 +230,8 @@ class ChannelConfigOut(BaseModel):
 # lives under ``url_keys`` (plain string), not ``secret_keys``.
 _CHANNEL_EDITABLE: dict[str, dict[str, list[str]]] = {
     "qq": {
-        "secret_keys": ["access_token"],
-        "url_keys": ["ws_url"],
+        "secret_keys": ["access_token", "napcat_access_token"],
+        "url_keys": ["ws_url", "napcat_url"],
         "int_list_keys": ["self_ids"],
         "str_list_keys": [],
         "filter_keys": [],
@@ -348,6 +349,11 @@ def _channel_config(state: AdminState, name: str) -> dict[str, Any] | None:
 # secrets (``bot_token`` / ``app_token`` / ``app_secret`` / ``token``).
 # ``id_keys`` are plain string ids; ``list_keys`` are list[str].
 _CHANNEL_CONFIG_KEYS: dict[str, dict[str, list[str]]] = {
+    "qq": {
+        "id_keys": [],
+        "list_keys": ["self_ids"],
+        "bool_keys": [],
+    },
     "discord": {
         "id_keys": [],
         "list_keys": ["allowed_channel_ids", "keyword_filter"],

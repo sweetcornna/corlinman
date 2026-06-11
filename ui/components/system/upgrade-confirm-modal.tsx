@@ -23,8 +23,8 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { AlertTriangle } from "lucide-react";
 
+import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -132,16 +132,10 @@ export function UpgradeConfirmModal({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex items-start gap-2 rounded-md border border-tp-amber/40 bg-tp-amber/10 p-3 text-sm text-tp-ink-2">
-          <AlertTriangle
-            className="mt-0.5 h-4 w-4 shrink-0 text-tp-amber"
-            aria-hidden="true"
-          />
-          <p>{t("system.upgrade.confirm.warning")}</p>
-        </div>
+        <Alert variant="warning">{t("system.upgrade.confirm.warning")}</Alert>
 
         {releaseNotesExcerpt ? (
-          <p className="line-clamp-2 text-xs text-tp-ink-3">
+          <p className="line-clamp-2 text-xs text-sg-ink-3">
             {releaseNotesExcerpt}
           </p>
         ) : null}
@@ -149,7 +143,7 @@ export function UpgradeConfirmModal({
         <div className="space-y-1.5">
           <label
             htmlFor="upgrade-confirm-input"
-            className="text-xs font-medium uppercase tracking-wide text-tp-ink-3"
+            className="text-xs font-medium uppercase tracking-wide text-sg-ink-3"
           >
             {t("system.upgrade.confirm.typeLabel", { tag })}
           </label>
@@ -167,15 +161,11 @@ export function UpgradeConfirmModal({
         </div>
 
         {inFlight ? (
-          <p
-            role="alert"
-            data-testid="upgrade-confirm-conflict"
-            className="text-xs text-red-500"
-          >
+          <Alert variant="danger" data-testid="upgrade-confirm-conflict">
             {t("system.upgrade.confirm.alreadyRunning", {
               tag: inFlight.tag ?? "?",
             })}
-          </p>
+          </Alert>
         ) : null}
 
         <DialogFooter>

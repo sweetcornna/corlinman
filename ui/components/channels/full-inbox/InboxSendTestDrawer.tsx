@@ -78,10 +78,10 @@ export function InboxSendTestDrawer({
   };
 
   const fieldClass = cn(
-    "w-full rounded-lg border border-tp-glass-edge bg-tp-glass-inner",
-    "px-3 py-2 text-[13px] text-tp-ink placeholder:text-tp-ink-4",
-    "transition-colors hover:bg-tp-glass-inner-hover",
-    "focus:outline-none focus:ring-2 focus:ring-tp-amber/40",
+    "w-full rounded-lg border border-sg-border bg-sg-inset",
+    "px-3 py-2 text-[13px] text-sg-ink placeholder:text-sg-ink-4",
+    "transition-colors hover:bg-sg-inset-hover",
+    "focus:outline-none focus:ring-2 focus:ring-sg-accent/40",
   );
 
   const formId = `${testIdPrefix}-send-test-form`;
@@ -126,7 +126,7 @@ export function InboxSendTestDrawer({
         <div className="space-y-1.5">
           <Label
             htmlFor={`${testIdPrefix}-send-target`}
-            className="text-tp-ink-2"
+            className="text-sg-ink-2"
           >
             {t(`${nsKey}.sendTestTarget`)}
           </Label>
@@ -141,13 +141,13 @@ export function InboxSendTestDrawer({
             required
             className={fieldClass}
           />
-          <p className="text-[11px] text-tp-ink-4">
+          <p className="text-[11px] text-sg-ink-4">
             {t(`${nsKey}.sendTestTargetHint`)}
           </p>
         </div>
 
         <div className="space-y-1.5">
-          <Label htmlFor={`${testIdPrefix}-send-text`} className="text-tp-ink-2">
+          <Label htmlFor={`${testIdPrefix}-send-text`} className="text-sg-ink-2">
             {t(`${nsKey}.sendTestMessage`)}
           </Label>
           <textarea

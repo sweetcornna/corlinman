@@ -31,11 +31,11 @@ export function DetailDrawerContent({ approval }: DetailDrawerContentProps) {
           "min-h-[320px] p-8 text-center",
         )}
       >
-        <Inbox className="h-7 w-7 text-tp-ink-4" aria-hidden />
-        <p className="text-[13.5px] font-medium text-tp-ink-2">
+        <Inbox className="h-7 w-7 text-sg-ink-4" aria-hidden />
+        <p className="text-[13.5px] font-medium text-sg-ink-2">
           {t("approvals.tp.drawerSelect")}
         </p>
-        <p className="max-w-[28ch] text-[12px] text-tp-ink-3">
+        <p className="max-w-[28ch] text-[12px] text-sg-ink-3">
           {t("approvals.tp.drawerSelectHint")}
         </p>
       </GlassPanel>
@@ -56,8 +56,8 @@ export function DetailDrawerContent({ approval }: DetailDrawerContentProps) {
     <DetailDrawer
       title={
         <span className="font-mono">
-          <span className="text-tp-amber">{approval.plugin}</span>
-          <span className="text-tp-ink-4">.</span>
+          <span className="text-sg-accent">{approval.plugin}</span>
+          <span className="text-sg-ink-4">.</span>
           {approval.tool}
         </span>
       }
@@ -65,7 +65,7 @@ export function DetailDrawerContent({ approval }: DetailDrawerContentProps) {
       meta={
         <>
           <StatusPill decision={approval.decision} label={decisionLabel} />
-          <span className="font-mono text-[11px] text-tp-ink-3">
+          <span className="font-mono text-[11px] text-sg-ink-3">
             {formatTime(approval.requested_at)}
           </span>
         </>
@@ -77,28 +77,28 @@ export function DetailDrawerContent({ approval }: DetailDrawerContentProps) {
       </DetailDrawer.Section>
       <DetailDrawer.Section label={t("approvals.tp.drawerSectionRequest")}>
         <dl className="grid grid-cols-[120px_1fr] gap-x-3 gap-y-1.5 font-mono text-[12px]">
-          <dt className="text-tp-ink-4">{t("approvals.tp.drawerSession")}</dt>
-          <dd className="text-tp-ink-2">
+          <dt className="text-sg-ink-4">{t("approvals.tp.drawerSession")}</dt>
+          <dd className="text-sg-ink-2">
             {approval.session_key || t("approvals.noneValue")}
           </dd>
-          <dt className="text-tp-ink-4">{t("approvals.tp.drawerRequestedAt")}</dt>
-          <dd className="text-tp-ink-2">{formatTime(approval.requested_at)}</dd>
+          <dt className="text-sg-ink-4">{t("approvals.tp.drawerRequestedAt")}</dt>
+          <dd className="text-sg-ink-2">{formatTime(approval.requested_at)}</dd>
           {approval.decided_at ? (
             <>
-              <dt className="text-tp-ink-4">
+              <dt className="text-sg-ink-4">
                 {t("approvals.tp.drawerDecidedAt")}
               </dt>
-              <dd className="text-tp-ink-2">
+              <dd className="text-sg-ink-2">
                 {formatTime(approval.decided_at)}
               </dd>
             </>
           ) : null}
-          <dt className="text-tp-ink-4">{t("approvals.tp.drawerStatus")}</dt>
-          <dd className="text-tp-ink-2">{decisionLabel}</dd>
+          <dt className="text-sg-ink-4">{t("approvals.tp.drawerStatus")}</dt>
+          <dd className="text-sg-ink-2">{decisionLabel}</dd>
         </dl>
       </DetailDrawer.Section>
       <DetailDrawer.Section label={t("approvals.tp.drawerSectionSafety")}>
-        <p className="text-[12.5px] leading-[1.6] text-tp-ink-3">
+        <p className="text-[12.5px] leading-[1.6] text-sg-ink-3">
           {t("approvals.tp.drawerSafetyReason")}
         </p>
       </DetailDrawer.Section>
@@ -117,10 +117,10 @@ function StatusPill({
 }) {
   const cls =
     decision === "approved"
-      ? "border-tp-ok/35 bg-tp-ok-soft text-tp-ok"
+      ? "border-sg-ok/35 bg-sg-ok-soft text-sg-ok"
       : decision === "denied"
-        ? "border-tp-err/40 bg-tp-err-soft text-tp-err"
-        : "border-tp-amber/30 bg-tp-amber-soft text-tp-amber";
+        ? "border-sg-err/40 bg-sg-err-soft text-sg-err"
+        : "border-sg-accent/30 bg-sg-accent-soft text-sg-accent";
   return (
     <span
       className={cn(

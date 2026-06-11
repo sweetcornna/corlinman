@@ -66,7 +66,7 @@ function StatusGlyph({ status }: { status: string }) {
   if (s === "completed" || s === "complete") {
     return (
       <CheckCircle2
-        className="h-3 w-3 text-ok"
+        className="h-3 w-3 text-sg-ok"
         aria-label={status}
       />
     );
@@ -74,7 +74,7 @@ function StatusGlyph({ status }: { status: string }) {
   if (s === "errored" || s === "failed" || s === "error") {
     return (
       <AlertTriangle
-        className="h-3 w-3 text-destructive"
+        className="h-3 w-3 text-sg-err"
         aria-label={status}
       />
     );
@@ -82,7 +82,7 @@ function StatusGlyph({ status }: { status: string }) {
   if (s === "running" || s === "in_progress" || s === "cancelling") {
     return (
       <Loader2
-        className="h-3 w-3 animate-spin text-amber-500"
+        className="h-3 w-3 animate-spin text-sg-accent"
         aria-label={status}
       />
     );
@@ -91,7 +91,7 @@ function StatusGlyph({ status }: { status: string }) {
   return (
     <span
       aria-label={status || "unknown"}
-      className="inline-block h-1.5 w-1.5 rounded-full bg-tp-ink-3/60"
+      className="inline-block h-1.5 w-1.5 rounded-full bg-sg-ink-4"
     />
   );
 }
@@ -100,10 +100,7 @@ function SkeletonPill() {
   return (
     <div
       aria-hidden="true"
-      className={cn(
-        "inline-flex h-7 w-32 shrink-0 animate-pulse rounded-full",
-        "border border-tp-glass-edge bg-tp-glass-inner",
-      )}
+      className="inline-flex h-7 w-32 shrink-0 animate-pulse rounded-full border border-sg-border bg-sg-inset"
     />
   );
 }
@@ -124,16 +121,16 @@ function TurnPill({ sessionKey, turn, active }: PillProps) {
       data-testid={`past-turn-pill-${turn.turn_id}`}
       data-active={active || undefined}
       className={cn(
-        "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full border px-3 text-[11px] font-mono transition-colors",
-        "border-tp-glass-edge bg-tp-glass text-tp-ink-3 hover:bg-tp-glass-inner-hover hover:text-tp-ink",
+        "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full border px-3 font-mono text-[11px] transition-colors",
+        "border-sg-border bg-sg-card-grad text-sg-ink-3 hover:bg-sg-accent-soft hover:text-sg-ink",
         active &&
-          "border-primary/60 bg-tp-amber-soft text-tp-ink shadow-[inset_0_0_0_1px_hsl(var(--primary)/0.35)]",
+          "border-sg-accent/40 bg-sg-accent-soft text-sg-ink shadow-[inset_0_0_0_1px_var(--sg-accent-glow)]",
       )}
       title={turn.user_text_preview ?? undefined}
     >
       <StatusGlyph status={turn.status} />
       <span>Turn {shortTurnId(turn.turn_id)}</span>
-      <span className="text-tp-ink-3/70">· {formatElapsed(turn.elapsed_ms)}</span>
+      <span className="text-sg-ink-4">· {formatElapsed(turn.elapsed_ms)}</span>
     </Link>
   );
 }
@@ -245,7 +242,7 @@ export function PastTurnsPills({
           disabled={loadingMore}
           className={cn(
             "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full border px-3 text-[11px] transition-colors",
-            "border-dashed border-tp-glass-edge bg-transparent text-tp-ink-3 hover:bg-tp-glass-inner-hover hover:text-tp-ink",
+            "border-dashed border-sg-border bg-transparent text-sg-ink-3 hover:bg-sg-accent-soft hover:text-sg-ink",
             "disabled:cursor-not-allowed disabled:opacity-60",
           )}
           aria-label={t("sessions.pastTurns.loadMore")}
@@ -258,7 +255,7 @@ export function PastTurnsPills({
       ) : null}
       {loadMoreError ? (
         <span
-          className="ml-2 truncate text-[11px] text-destructive"
+          className="ml-2 truncate text-[11px] text-sg-err"
           role="alert"
         >
           {loadMoreError}
