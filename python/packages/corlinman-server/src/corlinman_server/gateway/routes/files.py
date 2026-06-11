@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import json
 import logging
+import mimetypes
 import os
 import re
 import time
@@ -67,7 +68,7 @@ from fastapi.responses import FileResponse, JSONResponse
 
 _log = logging.getLogger(__name__)
 
-__all__ = ["load_stored_file", "router"]
+__all__ = ["load_stored_file", "register_local_file", "router"]
 
 
 # ─── Caps + id format ────────────────────────────────────────────────
@@ -247,6 +248,64 @@ def _rfc5987_quote(value: str) -> str:
         else:
             out.append(f"%{byte:02X}")
     return "".join(out)
+
+
+def register_local_file(path: Path | str) -> dict[str, Any] | None:
+    """Copy a local file into the store; return its public descriptor.
+
+    W4 — agent tools (``image_generate`` & co.) write their output to
+    the local filesystem, which a browser can't reach. Registering the
+    file here gives it a ``/v1/files/{id}`` url the web chat can fetch
+    (and the journal can reference). Returns ``{file_id, url, name,
+    mime, size}`` or ``None`` when the path is missing / unreadable /
+    over the cap — callers degrade to the original path string.
+    """
+    src = Path(path)
+    try:
+        if not src.is_file():
+            return None
+        size = src.stat().st_size
+    except OSError:
+        return None
+    if size <= 0 or size > _max_bytes():
+        return None
+    files_dir = _files_dir()
+    if files_dir is None:
+        return None
+    try:
+        body = src.read_bytes()
+    except OSError:
+        return None
+    mime = _normalise_mime(mimetypes.guess_type(src.name)[0])
+    file_id = _new_file_id()
+    file_name = src.name[:255]
+    try:
+        files_dir.mkdir(parents=True, exist_ok=True)
+        # Blob FIRST — same crash-safe ordering as the upload route.
+        _blob_path(files_dir, file_id).write_bytes(body)
+        _meta_path(files_dir, file_id).write_text(
+            json.dumps(
+                {
+                    "name": file_name,
+                    "mime": mime,
+                    "size": size,
+                    "created_at_ms": _now_ms(),
+                }
+            ),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        _log.warning("files register_local_file failed: %s", exc)
+        _blob_path(files_dir, file_id).unlink(missing_ok=True)
+        _meta_path(files_dir, file_id).unlink(missing_ok=True)
+        return None
+    return {
+        "file_id": file_id,
+        "url": f"/v1/files/{file_id}",
+        "name": file_name,
+        "mime": mime,
+        "size": size,
+    }
 
 
 def load_stored_file(file_id: str) -> tuple[bytes, str, str] | None:

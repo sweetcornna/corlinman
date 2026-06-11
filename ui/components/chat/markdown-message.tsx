@@ -8,6 +8,7 @@ import remarkGfm from "remark-gfm";
 import { useTranslation } from "react-i18next";
 import { Check, Copy, ExternalLink, X } from "lucide-react";
 
+import { GATEWAY_BASE_URL } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 // Grammar bundle stays out of the main chunk; while it loads (and while a
@@ -88,24 +89,36 @@ export function MarkdownMessage({
       td: ({ className: c, ...rest }) => (
         <td className={cn("border-b border-sg-border px-3 py-1.5 last:border-b-0", c)} {...rest} />
       ),
-      img: ({ className: c, src, alt, ...rest }) => (
-        <button
-          type="button"
-          className="my-2 block cursor-zoom-in"
-          onClick={() => src && setZoomSrc(String(src))}
-          aria-label={alt || "image"}
-        >
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={typeof src === "string" ? src : undefined}
-            alt={alt ?? ""}
-            loading="lazy"
-            data-testid="md-image"
-            className={cn("h-auto max-h-80 max-w-full rounded-sg-md border border-sg-border object-contain shadow-sg-1", c)}
-            {...rest}
-          />
-        </button>
-      ),
+      img: ({ className: c, src, alt, ...rest }) => {
+        // Gateway file-store references arrive as relative `/v1/files/…`
+        // urls (W4 generated media). Prefix the gateway base so dev
+        // (separate origins) resolves; prod (same origin, empty base)
+        // is unaffected.
+        const resolved =
+          typeof src === "string"
+            ? src.startsWith("/v1/files/")
+              ? `${GATEWAY_BASE_URL}${src}`
+              : src
+            : undefined;
+        return (
+          <button
+            type="button"
+            className="my-2 block cursor-zoom-in"
+            onClick={() => resolved && setZoomSrc(resolved)}
+            aria-label={alt || "image"}
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={resolved}
+              alt={alt ?? ""}
+              loading="lazy"
+              data-testid="md-image"
+              className={cn("h-auto max-h-80 max-w-full rounded-sg-md border border-sg-border object-contain shadow-sg-1", c)}
+              {...rest}
+            />
+          </button>
+        );
+      },
       code: ({ className: c, children, ...rest }) => {
         const isInline = !c?.startsWith("language-");
         if (isInline) {

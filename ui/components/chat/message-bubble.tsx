@@ -456,6 +456,11 @@ export const MessageBubble = React.memo(function MessageBubble({
               streaming={Boolean(message.pending && !message.toolCalls?.length)}
               onOpenArtifact={onOpenArtifact}
             />
+            {/* W4 — assistant-produced media (generated images etc.),
+              * journaled with the turn and rehydrated on replay. */}
+            {message.attachments && message.attachments.length > 0 ? (
+              <AttachmentGallery attachments={message.attachments} />
+            ) : null}
             {trace}
           </div>
         ) : isSystem ? (

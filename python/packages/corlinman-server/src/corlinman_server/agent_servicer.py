@@ -1576,6 +1576,10 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
 
         seq = 0
         reply_parts: list[str] = []
+        # W4 — media files produced by tools this turn (image_generate
+        # etc.), registered into the gateway file store so the web UI can
+        # fetch them. Journaled onto the final assistant message.
+        turn_media: list[dict[str, str]] = []
         try:
             # Register the active loop so a concurrent Chat RPC for the
             # same session_key can find it and inject its user text
@@ -1684,6 +1688,17 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                         _dispatch_dur_ms = int(
                             (time.monotonic() - _dispatch_started_at) * 1000
                         )
+                        # W4 — register any media files the tool produced
+                        # (local paths are useless to a browser) into the
+                        # gateway file store and rewrite the result JSON
+                        # with the web url. The model sees the url and can
+                        # embed it as markdown; the collected metadata is
+                        # journaled with the final assistant message so
+                        # session replay re-renders it.
+                        if isinstance(result_json, str):
+                            result_json = _register_tool_media(
+                                result_json, turn_media
+                            )
                         # Detect error envelope so the channel UI can
                         # render ❌ instead of ✅. Cheap parse — bail on
                         # malformed JSON (counts as success then).
@@ -1844,11 +1859,15 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                     if journal is not None and journal_turn_id is not None:
                         try:
                             final_text = "".join(reply_parts)
-                            if final_text.strip():
+                            # W4: media-only turns (image generated, no
+                            # prose) still journal an assistant row so
+                            # replay re-renders the attachment cards.
+                            if final_text.strip() or turn_media:
                                 await journal.append_message(
                                     journal_turn_id,
                                     role="assistant",
                                     content=final_text,
+                                    attachments=turn_media or None,
                                 )
                             await journal.complete_turn(journal_turn_id)
                             journal_turn_id = None  # consumed
@@ -4573,6 +4592,96 @@ def _prune_stale_tool_calls(
             )
         ]
     return out, dropped
+
+
+#: Media suffixes worth registering into the web file store. Anything
+#: else a tool writes (logs, json dumps) stays a local path.
+_MEDIA_SUFFIXES: frozenset[str] = frozenset(
+    {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".mp3", ".wav",
+     ".ogg", ".m4a", ".mp4", ".webm", ".mov"}
+)
+
+
+def _media_kind_for_mime(mime: str) -> str:
+    if mime.startswith("image/"):
+        return "image"
+    if mime.startswith("audio/"):
+        return "audio"
+    if mime.startswith("video/"):
+        return "video"
+    return "file"
+
+
+def _register_tool_media(
+    result_json: str, turn_media: list[dict[str, str]]
+) -> str:
+    """Rewrite local media paths in a tool result to web-fetchable urls.
+
+    W4 — tools like ``image_generate`` return ``{"path": "/.../x.png"}``;
+    a browser cannot fetch a server filesystem path, so pre-fix the web
+    chat could never display generated images. Each recognised media
+    path is registered into the gateway file store; the result dict
+    gains ``url`` (+ ``display_note`` telling the model how to embed
+    it) and the slim metadata is collected into ``turn_media`` for the
+    final assistant journal row. Best-effort at every step: any failure
+    returns the result unchanged.
+    """
+    try:
+        parsed = json.loads(result_json or "{}")
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return result_json
+    if not isinstance(parsed, dict):
+        return result_json
+
+    from corlinman_server.gateway.routes.files import register_local_file
+
+    def _try_register(raw_path: object) -> dict[str, str] | None:
+        if not isinstance(raw_path, str) or not raw_path:
+            return None
+        if Path(raw_path).suffix.lower() not in _MEDIA_SUFFIXES:
+            return None
+        try:
+            entry = register_local_file(raw_path)
+        except Exception as exc:  # noqa: BLE001 — never fail the tool
+            logger.warning("agent.media.register_failed", error=str(exc))
+            return None
+        if entry is None:
+            return None
+        meta = {
+            "kind": _media_kind_for_mime(str(entry.get("mime") or "")),
+            "url": str(entry.get("url") or ""),
+            "mime": str(entry.get("mime") or ""),
+            "name": str(entry.get("name") or ""),
+        }
+        turn_media.append(meta)
+        return meta
+
+    changed = False
+    main = _try_register(parsed.get("path"))
+    if main is not None:
+        parsed["url"] = main["url"]
+        parsed["display_note"] = (
+            "Image is viewable at the `url` — embed it in your reply as "
+            f"markdown: ![{main['name']}]({main['url']})"
+        )
+        changed = True
+    raw_paths = parsed.get("paths")
+    if isinstance(raw_paths, list):
+        urls = [m["url"] for p in raw_paths if (m := _try_register(p))]
+        if urls:
+            parsed["urls"] = urls
+            parsed.setdefault(
+                "display_note",
+                "Files are viewable at `urls` — embed images in your "
+                "reply as markdown: ![image](url)",
+            )
+            changed = True
+    if not changed:
+        return result_json
+    try:
+        return json.dumps(parsed, ensure_ascii=False)
+    except (TypeError, ValueError):  # pragma: no cover — defensive
+        return result_json
 
 
 def _attachment_meta_for_journal(
