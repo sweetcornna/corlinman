@@ -39,7 +39,7 @@ interface MessageBubbleProps {
     decision: ApprovalDecision,
     scope: ApprovalScope,
   ) => void;
-  onEdit?: (messageId: string, newContent: string) => void;
+  onEdit?: (messageId: string, newContent: string) => void | Promise<void>;
   onBranch?: (messageId: string) => void;
   onReply?: (messageId: string) => void;
   onOpenArtifact?: (language: string, source: string) => void;
@@ -107,6 +107,7 @@ export const MessageBubble = React.memo(function MessageBubble({
   const isSystem = message.role === "system";
   const [copied, setCopied] = React.useState(false);
   const [editing, setEditing] = React.useState(false);
+  const [savingEdit, setSavingEdit] = React.useState(false);
   const [draft, setDraft] = React.useState(message.content);
   const [toolsCollapsed, setToolsCollapsed] = React.useState(false);
 
@@ -146,7 +147,34 @@ export const MessageBubble = React.memo(function MessageBubble({
       setEditing(false);
       return;
     }
-    onEdit?.(message.id, next);
+    if (!onEdit) {
+      setEditing(false);
+      return;
+    }
+    // `onEdit` may be sync (void) or async (Promise). Only leave edit mode
+    // once it has actually succeeded — if the edit/re-run rejects we keep the
+    // bubble in edit mode with the draft intact so the user doesn't lose work.
+    let result: void | Promise<void>;
+    try {
+      result = onEdit(message.id, next);
+    } catch {
+      // Synchronous throw — stay in edit mode, preserve the draft.
+      return;
+    }
+    if (result && typeof (result as Promise<void>).then === "function") {
+      setSavingEdit(true);
+      (result as Promise<void>).then(
+        () => {
+          setSavingEdit(false);
+          setEditing(false);
+        },
+        () => {
+          // Rejected: keep editing so the draft survives for another attempt.
+          setSavingEdit(false);
+        },
+      );
+      return;
+    }
     setEditing(false);
   }, [draft, message.id, message.content, onEdit]);
 
@@ -198,6 +226,16 @@ export const MessageBubble = React.memo(function MessageBubble({
     </div>
   );
 
+  // Shared action-button chrome: ≥24px touch target (min-h-6/min-w-6 +
+  // centred icon), Tab-focusable (native <button>), and a focus-visible ring
+  // so keyboard users can see where they are. Padding stays modest so the bar
+  // keeps its compact look — the min-size guarantees the hit area, not padding.
+  const actionBtn = cn(
+    "inline-flex min-h-6 min-w-6 items-center justify-center gap-1 rounded-full px-1.5 py-0.5",
+    "hover:bg-sg-inset-hover hover:text-sg-ink",
+    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sg-accent/50",
+  );
+
   const actionBar =
     (isAssistant || isUser) && message.content && !editing ? (
       <motion.div
@@ -206,14 +244,18 @@ export const MessageBubble = React.memo(function MessageBubble({
         className={cn(
           "inline-flex items-center gap-0.5 rounded-full sg-inset px-1 py-0.5",
           "text-[11px] text-sg-ink-4",
-          "opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100",
+          // Reveal on pointer hover OR keyboard focus landing anywhere in the
+          // bubble (group-focus-within) OR focus inside the bar itself, so the
+          // controls are reachable for keyboard / screen-reader users — not
+          // hover-only. `focus-within` keeps it visible while Tabbing through.
+          "opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 focus-within:opacity-100",
           isUser ? "flex-row-reverse" : "flex-row",
         )}
       >
         <button
           type="button"
           onClick={handleCopy}
-          className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 hover:bg-sg-inset-hover hover:text-sg-ink"
+          className={actionBtn}
           aria-label={copied ? t("chat.copied") : t("chat.copy")}
         >
           {copied ? (
@@ -226,7 +268,7 @@ export const MessageBubble = React.memo(function MessageBubble({
           <button
             type="button"
             onClick={handleStartEdit}
-            className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 hover:bg-sg-inset-hover hover:text-sg-ink"
+            className={actionBtn}
             aria-label={t("chat.editAriaLabel")}
             data-testid="bubble-edit-trigger"
           >
@@ -237,7 +279,7 @@ export const MessageBubble = React.memo(function MessageBubble({
           <button
             type="button"
             onClick={onRegenerate}
-            className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 hover:bg-sg-inset-hover hover:text-sg-ink"
+            className={actionBtn}
             aria-label={t("chat.regenerateAriaLabel")}
           >
             <RefreshCcw className="h-3 w-3" aria-hidden="true" />
@@ -247,7 +289,7 @@ export const MessageBubble = React.memo(function MessageBubble({
           <button
             type="button"
             onClick={() => onBranch(message.id)}
-            className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 hover:bg-sg-inset-hover hover:text-sg-ink"
+            className={actionBtn}
             aria-label={t("chat.branchAriaLabel")}
             data-testid="bubble-branch"
           >
@@ -258,7 +300,7 @@ export const MessageBubble = React.memo(function MessageBubble({
           <button
             type="button"
             onClick={() => onReply(message.id)}
-            className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 hover:bg-sg-inset-hover hover:text-sg-ink"
+            className={actionBtn}
             aria-label={t("chat.replyAriaLabel")}
             data-testid="bubble-reply"
           >
@@ -499,7 +541,8 @@ export const MessageBubble = React.memo(function MessageBubble({
               <button
                 type="button"
                 onClick={() => setEditing(false)}
-                className="rounded-sg-sm px-2 py-0.5 text-sg-ink-4 hover:bg-sg-inset hover:text-sg-ink"
+                disabled={savingEdit}
+                className="rounded-sg-sm px-2 py-0.5 text-sg-ink-4 hover:bg-sg-inset hover:text-sg-ink disabled:opacity-40"
                 data-testid="bubble-edit-cancel"
               >
                 {t("chat.editCancel")}
@@ -507,10 +550,11 @@ export const MessageBubble = React.memo(function MessageBubble({
               <button
                 type="button"
                 onClick={handleSaveEdit}
-                className="rounded-sg-sm border border-sg-accent/40 bg-sg-accent px-2 py-0.5 text-white hover:bg-sg-accent/90"
+                disabled={savingEdit}
+                className="rounded-sg-sm border border-sg-accent/40 bg-sg-accent px-2 py-0.5 text-white hover:bg-sg-accent/90 disabled:opacity-60"
                 data-testid="bubble-edit-save"
               >
-                {t("chat.editSaveRerun")}
+                {savingEdit ? t("chat.editSaving") : t("chat.editSaveRerun")}
               </button>
             </div>
           </div>

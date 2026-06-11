@@ -80,6 +80,7 @@ export function Composer({
   const taRef = React.useRef<HTMLTextAreaElement | null>(null);
   const fileRef = React.useRef<HTMLInputElement | null>(null);
   const emojiWrapRef = React.useRef<HTMLDivElement | null>(null);
+  const emojiBtnRef = React.useRef<HTMLButtonElement | null>(null);
 
   React.useEffect(() => {
     const el = taRef.current;
@@ -318,9 +319,14 @@ export function Composer({
     });
   }, [text]);
 
+  // Dismiss the emoji popover and return focus to the trigger button so
+  // keyboard users land back where they opened it. Focus is moved
+  // synchronously after the React commit (flushed in a microtask via the
+  // state setter callback) rather than racing a rAF — the button is always
+  // mounted, so a plain `.focus()` is reliable.
   const closeEmoji = React.useCallback(() => {
     setEmojiOpen(false);
-    window.requestAnimationFrame(() => taRef.current?.focus());
+    emojiBtnRef.current?.focus();
   }, []);
 
   // Dismiss the emoji popover on outside click.
@@ -335,11 +341,69 @@ export function Composer({
     return () => window.removeEventListener("mousedown", onDown);
   }, [emojiOpen]);
 
+  // Cmd+/ (mac) / Ctrl+/ (win/linux) focuses the composer from anywhere.
+  // Cmd/Ctrl+K and `?` belong to the command palette; `/` is unclaimed,
+  // so there's no conflict with the existing global hotkeys.
+  React.useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === "/" && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
+        e.preventDefault();
+        taRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // iOS soft-keyboard avoidance. When the on-screen keyboard opens, the
+  // visualViewport shrinks; scroll the textarea back into view so it
+  // isn't hidden behind the keyboard. Debounced + SSR-guarded; relies on
+  // the visualViewport API (no-op where unsupported, e.g. older browsers
+  // and jsdom).
+  React.useEffect(() => {
+    if (typeof window === "undefined") return;
+    const vv = window.visualViewport;
+    if (!vv) return;
+    let prevHeight = vv.height;
+    let raf = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const onResize = (): void => {
+      const next = vv.height;
+      // Only react when the viewport *shrank* (keyboard came up) and the
+      // textarea is the focused element — avoids stealing scroll on every
+      // orientation / URL-bar change.
+      const shrank = next < prevHeight - 80;
+      prevHeight = next;
+      if (!shrank) return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (document.activeElement !== taRef.current) return;
+        raf = window.requestAnimationFrame(() => {
+          taRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        });
+      }, 120);
+    };
+    vv.addEventListener("resize", onResize);
+    return () => {
+      vv.removeEventListener("resize", onResize);
+      if (timer) clearTimeout(timer);
+      if (raf) window.cancelAnimationFrame(raf);
+    };
+  }, []);
+
   const canSend =
     (!!text.trim() || attachments.length > 0) && !isUploading;
 
   return (
-    <div className="mx-auto w-full max-w-3xl px-3 pb-3 pt-1">
+    <div
+      className="mx-auto w-full max-w-3xl px-3 pb-3 pt-1"
+      // Keep the composer clear of the iOS home indicator / gesture bar.
+      // env() resolves to 0 where unsupported, so this is a safe no-op
+      // on desktop and in jsdom.
+      style={{ paddingBottom: "calc(0.75rem + env(safe-area-inset-bottom, 0px))" }}
+      data-testid="composer-root"
+    >
       <div
         className={cn(
           "sg-card lg-edge lg-refract relative rounded-sg-xl border border-sg-border shadow-sg-3",
@@ -459,6 +523,8 @@ export function Composer({
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
               rows={1}
+              aria-keyshortcuts="Meta+/ Control+/"
+              aria-label={t("chat.composerFocusShortcut")}
               placeholder={placeholder ?? t("chat.composerPlaceholder")}
               className={cn(
                 "w-full resize-none bg-transparent text-[14px] leading-relaxed",
@@ -484,6 +550,7 @@ export function Composer({
 
             <div className="relative" ref={emojiWrapRef}>
               <button
+                ref={emojiBtnRef}
                 type="button"
                 onClick={() => setEmojiOpen((v) => !v)}
                 className={cn(
@@ -492,7 +559,7 @@ export function Composer({
                 )}
                 aria-label={t("chat.composerEmoji")}
                 aria-expanded={emojiOpen}
-                aria-haspopup="dialog"
+                aria-haspopup="listbox"
                 data-testid="composer-emoji"
               >
                 <Smile className="h-4 w-4" aria-hidden="true" />

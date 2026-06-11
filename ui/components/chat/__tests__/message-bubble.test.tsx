@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 
 import { MessageBubble } from "@/components/chat/message-bubble";
 import type { ChatMessage } from "@/lib/chat/types";
@@ -172,5 +172,56 @@ describe("MessageBubble", () => {
       "approved",
       "once",
     );
+  });
+
+  it("leaves edit mode when onEdit resolves", async () => {
+    const onEdit = vi.fn(() => Promise.resolve());
+    render(
+      ulWrap(
+        <MessageBubble
+          message={makeMsg({ role: "user", content: "original" })}
+          onEdit={onEdit}
+        />,
+      ),
+    );
+    fireEvent.click(screen.getByTestId("bubble-edit-trigger"));
+    fireEvent.change(screen.getByTestId("bubble-edit-input"), {
+      target: { value: "edited text" },
+    });
+    fireEvent.click(screen.getByTestId("bubble-edit-save"));
+    expect(onEdit).toHaveBeenCalledWith("m1", "edited text");
+    // After the promise resolves the edit form is gone.
+    await waitFor(() => {
+      expect(screen.queryByTestId("bubble-edit")).not.toBeInTheDocument();
+    });
+  });
+
+  it("stays in edit mode with the draft intact when onEdit rejects", async () => {
+    // A rejecting onEdit must NOT close the editor — the user's draft has to
+    // survive so they can retry without retyping.
+    const onEdit = vi.fn(() => Promise.reject(new Error("rerun failed")));
+    render(
+      ulWrap(
+        <MessageBubble
+          message={makeMsg({ role: "user", content: "original" })}
+          onEdit={onEdit}
+        />,
+      ),
+    );
+    fireEvent.click(screen.getByTestId("bubble-edit-trigger"));
+    fireEvent.change(screen.getByTestId("bubble-edit-input"), {
+      target: { value: "edited but doomed" },
+    });
+    fireEvent.click(screen.getByTestId("bubble-edit-save"));
+    expect(onEdit).toHaveBeenCalledWith("m1", "edited but doomed");
+
+    // Give the rejected promise a tick to settle, then assert we're still
+    // editing and the draft text is preserved.
+    await waitFor(() => {
+      expect(screen.getByTestId("bubble-edit")).toBeInTheDocument();
+    });
+    expect(
+      (screen.getByTestId("bubble-edit-input") as HTMLTextAreaElement).value,
+    ).toBe("edited but doomed");
   });
 });

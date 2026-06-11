@@ -385,11 +385,36 @@ export default function ChatPage() {
 
   const handleDelete = React.useCallback(
     (key: string) => {
-      let cancelled = false;
-      const timer = window.setTimeout(async () => {
-        if (cancelled) return;
+      // Per-key pending registry so rapid deletes don't race each other and
+      // an undo only ever cancels *its own* timer. Without this, undoing one
+      // conversation could refresh the list while another delete is still
+      // in flight (or, with repeated keys, leak a timer) — surfacing as a
+      // resurrected/half-deleted row. Stored on `window` so it survives
+      // re-renders without widening this callback's responsibilities.
+      type PendingDelete = { timer: number; cancelled: boolean };
+      const w = window as typeof window & {
+        __chatPendingDeletes?: Map<string, PendingDelete>;
+      };
+      const pending = (w.__chatPendingDeletes ??= new Map());
+
+      // Collapse a duplicate delete of an already-pending key: cancel the
+      // prior timer and start fresh so the 4.5s window restarts cleanly.
+      const prior = pending.get(key);
+      if (prior) {
+        prior.cancelled = true;
+        window.clearTimeout(prior.timer);
+        pending.delete(key);
+      }
+
+      const entry: PendingDelete = { timer: 0, cancelled: false };
+      entry.timer = window.setTimeout(async () => {
+        // Claim ownership: only proceed if this entry is still the live one
+        // for `key` and hasn't been undone.
+        if (entry.cancelled || pending.get(key) !== entry) return;
+        pending.delete(key);
         try {
           await deleteChatSession(key);
+          if (entry.cancelled) return; // undone while the request was in flight
           refreshList();
           if (key === sessionKey) router.push("/chat");
         } catch (err) {
@@ -398,12 +423,16 @@ export default function ChatPage() {
           );
         }
       }, 4500);
+      pending.set(key, entry);
+
       toast(t("chat.deletedToast"), {
         action: {
           label: t("chat.undo"),
           onClick: () => {
-            cancelled = true;
-            window.clearTimeout(timer);
+            entry.cancelled = true;
+            window.clearTimeout(entry.timer);
+            // Only clear the registry slot if we still own it.
+            if (pending.get(key) === entry) pending.delete(key);
             refreshList();
           },
         },

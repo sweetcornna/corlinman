@@ -205,6 +205,84 @@ describe("Composer", () => {
     );
   });
 
+  it("does not send on Enter while an IME composition is active (CJK)", () => {
+    const { onSend } = renderComposer();
+    const ta = screen.getByTestId("composer-textarea") as HTMLTextAreaElement;
+    fireEvent.change(ta, { target: { value: "ni hao" } });
+
+    // Enter that commits an IME candidate carries isComposing — must NOT send.
+    fireEvent.keyDown(ta, { key: "Enter", isComposing: true });
+    expect(onSend).not.toHaveBeenCalled();
+
+    // A subsequent plain Enter (composition finished) does send.
+    fireEvent.keyDown(ta, { key: "Enter" });
+    expect(onSend).toHaveBeenCalledOnce();
+  });
+
+  it("focuses the textarea on Cmd+/ and Ctrl+/", () => {
+    renderComposer();
+    const ta = screen.getByTestId("composer-textarea") as HTMLTextAreaElement;
+    // Start focus elsewhere.
+    (document.body as HTMLElement).focus();
+    expect(document.activeElement).not.toBe(ta);
+
+    fireEvent.keyDown(window, { key: "/", metaKey: true });
+    expect(document.activeElement).toBe(ta);
+
+    ta.blur();
+    expect(document.activeElement).not.toBe(ta);
+    fireEvent.keyDown(window, { key: "/", ctrlKey: true });
+    expect(document.activeElement).toBe(ta);
+  });
+
+  it("renders a 24px-class attachment remove button (touch target)", async () => {
+    uploadMock.mockReturnValue(new Promise(() => {}));
+    renderComposer();
+    const input = screen.getByTestId("composer-file-input") as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [makeFile()] } });
+
+    const btn = await screen.findByTestId("composer-attachment-remove");
+    // 24×24 minimum target: h-6 w-6 (1.5rem) plus an expanded ::before hit area.
+    expect(btn.className).toContain("h-6");
+    expect(btn.className).toContain("w-6");
+    expect(btn.className).toContain("before:-inset-1");
+    // No longer the old undersized 20px target.
+    expect(btn.className).not.toContain("h-5");
+  });
+
+  it("emoji picker uses roving tabindex (one cell focusable at a time)", () => {
+    renderComposer();
+    fireEvent.click(screen.getByTestId("composer-emoji"));
+    const picker = screen.getByTestId("emoji-picker");
+    expect(picker.getAttribute("role")).toBe("listbox");
+
+    const items = screen.getAllByTestId("emoji-item");
+    const focusable = items.filter((el) => el.getAttribute("tabindex") === "0");
+    // Exactly one cell is in the tab order (the active one).
+    expect(focusable).toHaveLength(1);
+    // Every other cell is removed from the tab order.
+    const removed = items.filter((el) => el.getAttribute("tabindex") === "-1");
+    expect(removed.length).toBe(items.length - 1);
+
+    // ArrowRight advances the roving focus to the next cell.
+    fireEvent.keyDown(picker, { key: "ArrowRight" });
+    const afterItems = screen.getAllByTestId("emoji-item");
+    expect(afterItems[0].getAttribute("tabindex")).toBe("-1");
+    expect(afterItems[1].getAttribute("tabindex")).toBe("0");
+    expect(afterItems[1].getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("returns focus to the emoji button when the picker closes via Escape", () => {
+    renderComposer();
+    const trigger = screen.getByTestId("composer-emoji");
+    fireEvent.click(trigger);
+    const picker = screen.getByTestId("emoji-picker");
+    fireEvent.keyDown(picker, { key: "Escape" });
+    expect(screen.queryByTestId("emoji-picker")).not.toBeInTheDocument();
+    // Focus lands back on the trigger, not lost to <body>.
+    expect(document.activeElement).toBe(trigger);
+  });
+
   it("blocks sending while an upload is still in flight", () => {
     // Never-resolving upload keeps the attachment in the uploading state.
     uploadMock.mockReturnValue(new Promise(() => {}));

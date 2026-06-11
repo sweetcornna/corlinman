@@ -156,14 +156,21 @@ export function ComposerAttachments({
               type="button"
               onClick={() => onRemove(att.id)}
               className={cn(
-                "absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full",
+                // 24×24 touch target (h-6 w-6). A transparent ::before
+                // (via `before:*`) widens the clickable hit area beyond
+                // the visible circle without disturbing the layout, while
+                // the visible chrome stays compact. The inner glyph keeps
+                // the small visual footprint.
+                "absolute -right-2 -top-2 flex h-6 w-6 items-center justify-center rounded-full",
                 "border border-sg-border bg-sg-card-strong text-sg-ink-3 shadow-sg-1",
                 "opacity-0 transition-opacity hover:text-sg-ink group-hover:opacity-100",
                 "focus-visible:opacity-100",
+                "before:absolute before:-inset-1 before:content-['']",
               )}
               aria-label={t("chat.removeAttachment", { name: att.name })}
+              data-testid="composer-attachment-remove"
             >
-              <X className="h-3 w-3" aria-hidden="true" />
+              <X className="h-3.5 w-3.5" aria-hidden="true" />
             </button>
           </motion.li>
         );

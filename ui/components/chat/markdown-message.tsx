@@ -3,13 +3,48 @@
 import * as React from "react";
 import dynamic from "next/dynamic";
 import ReactMarkdown, { type Components } from "react-markdown";
-import rehypeSanitize from "rehype-sanitize";
+import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
+import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
 import { useTranslation } from "react-i18next";
 import { Check, Copy, ExternalLink, X } from "lucide-react";
 
+// KaTeX font/layout styles. Imported at the component level (the layout-level
+// globals.css is owned elsewhere) so math renders correctly wherever this
+// component is used. Vite/Next both resolve the package CSS path.
+import "katex/dist/katex.min.css";
+
 import { GATEWAY_BASE_URL } from "@/lib/api";
 import { cn } from "@/lib/utils";
+
+// remark-math marks math nodes with `math-inline` / `math-display` classes on
+// `code` elements; rehype-katex consumes those AFTER sanitize runs. We keep the
+// GitHub-grade default schema (so untrusted user HTML is still stripped — e.g.
+// <script>, event handlers, javascript: urls) and only widen it to let those
+// two marker classes survive on `code`. Because rehype-katex runs *after*
+// rehype-sanitize, KaTeX's own (trusted) output is never re-sanitized away,
+// while every byte of user-authored HTML still passes through sanitize first.
+const MATH_SANITIZE_SCHEMA = {
+  ...defaultSchema,
+  attributes: {
+    ...defaultSchema.attributes,
+    code: [
+      // Preserve the default `language-*` allowance alongside the math markers.
+      ...(defaultSchema.attributes?.code ?? []),
+      ["className", /^language-./, "math-inline", "math-display"],
+    ],
+  },
+};
+
+// rehype-sanitize must precede rehype-katex (sanitize the untrusted tree first,
+// then let trusted KaTeX expand the marked nodes). Frozen module-level arrays so
+// react-markdown doesn't see a new plugin list every render.
+// `PluggableList` lives in `unified` (a transitive dep), so derive the plugin
+// list type straight from the component props instead of importing it.
+type PluginList = React.ComponentProps<typeof ReactMarkdown>["rehypePlugins"];
+const REMARK_PLUGINS: PluginList = [remarkGfm, remarkMath];
+const REHYPE_PLUGINS: PluginList = [[rehypeSanitize, MATH_SANITIZE_SCHEMA], rehypeKatex];
 
 // Grammar bundle stays out of the main chunk; while it loads (and while a
 // message is still streaming) code renders as a plain <pre> with identical
@@ -32,7 +67,18 @@ export function MarkdownMessage({
   className,
   onOpenArtifact,
 }: MarkdownMessageProps) {
+  const { t } = useTranslation();
   const [zoomSrc, setZoomSrc] = React.useState<string | null>(null);
+  // Element that opened the lightbox, so focus returns to it on close (a11y).
+  const lightboxTriggerRef = React.useRef<HTMLElement | null>(null);
+
+  const closeLightbox = React.useCallback(() => {
+    setZoomSrc(null);
+    // Return focus to the image button that opened the dialog.
+    const trigger = lightboxTriggerRef.current;
+    lightboxTriggerRef.current = null;
+    if (trigger && typeof trigger.focus === "function") trigger.focus();
+  }, []);
 
   const components: Components = React.useMemo(
     () => ({
@@ -57,7 +103,13 @@ export function MarkdownMessage({
       li: ({ className: c, ...rest }) => <li className={cn("leading-[1.7]", c)} {...rest} />,
       a: ({ className: c, ...rest }) => (
         <a
-          className={cn("font-medium text-sg-accent decoration-sg-accent/40 underline-offset-2 hover:underline", c)}
+          className={cn(
+            // Underlined in the base state (not only on hover) with a fully
+            // opaque decoration colour so links stay distinguishable for
+            // low-contrast / colour-blind readers.
+            "font-medium text-sg-accent underline decoration-sg-accent underline-offset-2 hover:decoration-2",
+            c,
+          )}
           target="_blank"
           rel="noreferrer"
           {...rest}
@@ -104,7 +156,13 @@ export function MarkdownMessage({
           <button
             type="button"
             className="my-2 block cursor-zoom-in"
-            onClick={() => resolved && setZoomSrc(resolved)}
+            onClick={(e) => {
+              if (resolved) {
+                // Remember the trigger so focus can return here on close.
+                lightboxTriggerRef.current = e.currentTarget;
+                setZoomSrc(resolved);
+              }
+            }}
             aria-label={alt || "image"}
           >
             {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -145,7 +203,7 @@ export function MarkdownMessage({
 
   return (
     <div className={cn("chat-md", className)}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]} components={components}>
+      <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={components}>
         {content}
       </ReactMarkdown>
       {streaming ? (
@@ -155,16 +213,43 @@ export function MarkdownMessage({
           data-testid="md-cursor"
         />
       ) : null}
-      {zoomSrc ? <ImageLightbox src={zoomSrc} onClose={() => setZoomSrc(null)} /> : null}
+      {zoomSrc ? (
+        <ImageLightbox src={zoomSrc} onClose={closeLightbox} closeLabel={t("chat.mdImageLightboxClose")} />
+      ) : null}
     </div>
   );
 }
 
-/** Fullscreen image zoom — closes on click, Esc, or the corner button. */
-function ImageLightbox({ src, onClose }: { src: string; onClose: () => void }) {
+/**
+ * Fullscreen image zoom. Closes on backdrop click, the corner button, or Esc —
+ * but NOT when the image itself is clicked. Focus moves to the close button on
+ * open and is trapped inside the dialog (the close button is the only tabbable
+ * control, so Tab/Shift+Tab simply keep it focused); the caller returns focus to
+ * the trigger image on close.
+ */
+function ImageLightbox({
+  src,
+  onClose,
+  closeLabel,
+}: {
+  src: string;
+  onClose: () => void;
+  closeLabel: string;
+}) {
+  const closeRef = React.useRef<HTMLButtonElement | null>(null);
+
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") {
+        onClose();
+        return;
+      }
+      // Minimal focus trap: the close button is the sole focusable control, so
+      // keep focus pinned to it instead of letting Tab escape behind the modal.
+      if (e.key === "Tab") {
+        e.preventDefault();
+        closeRef.current?.focus();
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -179,15 +264,25 @@ function ImageLightbox({ src, onClose }: { src: string; onClose: () => void }) {
       onClick={onClose}
     >
       <button
+        ref={closeRef}
         type="button"
+        autoFocus
         onClick={onClose}
-        aria-label="close"
-        className="absolute right-4 top-4 rounded-full bg-sg-inset p-2 text-sg-ink-2 hover:text-sg-ink"
+        aria-label={closeLabel}
+        className="absolute right-4 top-4 rounded-full bg-sg-inset p-2 text-sg-ink-2 outline-none ring-sg-accent transition hover:text-sg-ink focus-visible:ring-2"
       >
         <X className="h-4 w-4" aria-hidden="true" />
       </button>
       {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img src={src} alt="" className="max-h-full max-w-full rounded-sg-lg object-contain shadow-sg-4" />
+      <img
+        src={src}
+        alt=""
+        data-testid="md-image-lightbox-img"
+        // Clicking the image itself must not dismiss the dialog — only the
+        // backdrop / close button / Esc do.
+        onClick={(e) => e.stopPropagation()}
+        className="max-h-full max-w-full rounded-sg-lg object-contain shadow-sg-4"
+      />
     </div>
   );
 }
@@ -206,10 +301,22 @@ function CodeBlock({ language, children, streaming, onOpenArtifact }: CodeBlockP
   const { t } = useTranslation();
   const [copied, setCopied] = React.useState(false);
   const copy = React.useCallback(() => {
-    void navigator.clipboard?.writeText(children).then(() => {
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
-    });
+    // `writeText` rejects on insecure origins, denied permission, or absent
+    // clipboard support. Swallow the failure (warn, don't flash "Copied") so a
+    // blocked clipboard never throws an unhandled rejection.
+    const write = navigator.clipboard?.writeText(children);
+    if (!write) {
+      console.warn("Clipboard unavailable: cannot copy code block");
+      return;
+    }
+    write
+      .then(() => {
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1500);
+      })
+      .catch((err) => {
+        console.warn("Clipboard write failed:", err);
+      });
   }, [children]);
 
   const lineCount = React.useMemo(() => children.split("\n").length, [children]);
