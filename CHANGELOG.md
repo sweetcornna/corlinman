@@ -42,6 +42,24 @@ All notable changes to corlinman are documented here. Format follows
     json|stream-json` (claude-code result-envelope contract) + `--max-turns`.
   - **Live todo checklist** — `todo_write` tool calls render as a ☐/◐/☒
     checklist with the in-progress activeForm, deduped between updates.
+  - **`/rewind` workspace checkpoints** — every chat turn already snapshots the
+    agent workspace (git-backed); `/rewind` lists checkpoints and restores one,
+    truncating the console window when the checkpoint maps unambiguously.
+- **Multi-model adaptation (适配几乎所有模型)** — the provider layer now
+  handles nearly every model family correctly:
+  - OpenAI o1/o3/o4/gpt-5 reasoning models: `max_completion_tokens` instead of
+    `max_tokens`, `temperature` omitted (they reject it).
+  - DeepSeek R1 / QwQ reasoning streams: `reasoning_content` surfaces as
+    `is_reasoning` token chunks (rendered dim, hidden by default) and is
+    stripped on replay (R1 rejects echoed reasoning).
+  - Strict-alternation models (DeepSeek/Qwen/GLM): consecutive same-role
+    messages are merged instead of erroring.
+  - Tool-less models: `supports_tools()` on providers + per-provider/alias
+    `tools = false` param → the servicer skips builtin-tool injection and the
+    turn degrades to text-only reasoning instead of a 400.
+  - Vendor error mapping for DeepSeek/Qwen(GLM (billing vs rate-limit vs
+    auth vs context-length), Moonshot/Kimi + Mistral/Codestral + bare
+    `llama-*` (Groq) prefixes added to the auto-routing table.
 
 ## [1.19.1] — 2026-06-11 — Upgrade progress bar + clearer manual fallback
 

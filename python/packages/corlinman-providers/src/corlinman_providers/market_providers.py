@@ -20,11 +20,15 @@ AzureProvider`` / ``BedrockProvider`` import path keeps working.
 
 from __future__ import annotations
 
+import os
 from typing import ClassVar
 
 from corlinman_providers.azure_provider import AzureProvider
 from corlinman_providers.bedrock_provider import BedrockProvider
-from corlinman_providers.openai_compatible import OpenAICompatibleProvider
+from corlinman_providers.openai_compatible import (
+    OpenAICompatibleProvider,
+    tools_param_enabled,
+)
 from corlinman_providers.specs import ProviderKind, ProviderSpec
 
 
@@ -44,6 +48,7 @@ def _build_compat(
         instance_name=spec.name,
         image_model=spec.image_model,
         image_capable=spec.image_capable,
+        tools_enabled=tools_param_enabled(spec.params),
     )
     # Stamp the user-visible kind on the instance so admin listings report
     # `mistral` / `cohere` / etc. instead of generic `openai_compatible`.
@@ -57,6 +62,25 @@ class MistralProvider(OpenAICompatibleProvider):
     name: ClassVar[str] = "mistral"
     kind: ClassVar[ProviderKind] = ProviderKind.MISTRAL
     DEFAULT_BASE_URL: ClassVar[str] = "https://api.mistral.ai/v1"
+
+    def __init__(self, api_key: str | None = None, base_url: str | None = None) -> None:
+        """No-config constructor for the legacy ``MODEL_PREFIX_DEFAULTS`` path.
+
+        Mirrors the china-bucket adapters: a raw ``mistral-*`` /
+        ``codestral-*`` / ``ministral-*`` model id with no configured spec
+        builds a default adapter off the documented endpoint + the
+        ``MISTRAL_API_KEY`` env var.
+        """
+        super().__init__(
+            base_url=base_url or self.DEFAULT_BASE_URL,
+            api_key=api_key or os.environ.get("MISTRAL_API_KEY"),
+        )
+
+    @classmethod
+    def supports(cls, model: str) -> bool:
+        """Claim the Mistral family ids (``mistral-`` / ``codestral-`` /
+        ``ministral-``) so configured specs resolve raw model ids too."""
+        return model.startswith(("mistral-", "codestral-", "ministral-"))
 
     @classmethod
     def build(cls, spec: ProviderSpec) -> OpenAICompatibleProvider:
@@ -93,6 +117,18 @@ class GroqProvider(OpenAICompatibleProvider):
     name: ClassVar[str] = "groq"
     kind: ClassVar[ProviderKind] = ProviderKind.GROQ
     DEFAULT_BASE_URL: ClassVar[str] = "https://api.groq.com/openai/v1"
+
+    def __init__(self, api_key: str | None = None, base_url: str | None = None) -> None:
+        """No-config constructor for the legacy ``MODEL_PREFIX_DEFAULTS`` path.
+
+        A raw ``llama-*`` model id (Groq's hosted Llama catalogue uses the
+        bare ``llama-`` prefix) with no configured spec builds a default
+        adapter off the documented endpoint + the ``GROQ_API_KEY`` env var.
+        """
+        super().__init__(
+            base_url=base_url or self.DEFAULT_BASE_URL,
+            api_key=api_key or os.environ.get("GROQ_API_KEY"),
+        )
 
     @classmethod
     def build(cls, spec: ProviderSpec) -> OpenAICompatibleProvider:

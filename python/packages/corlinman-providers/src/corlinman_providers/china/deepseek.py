@@ -1,18 +1,22 @@
 """DeepSeek provider — OpenAI-compatible endpoint at ``api.deepseek.com``.
 
-Reuses :class:`corlinman_providers.openai_provider.OpenAIProvider` with a
-DeepSeek-specific ``base_url`` and ``DEEPSEEK_API_KEY`` env var.
+Reuses :class:`corlinman_providers.openai_provider.OpenAIProvider` (via the
+:class:`~corlinman_providers.china._errors.ChinaOpenAIProvider` error-mapping
+base) with a DeepSeek-specific ``base_url`` and ``DEEPSEEK_API_KEY`` env var.
+Covers the reasoning family too: ``deepseek-r1`` / ``deepseek-reasoner``
+match the ``deepseek-`` prefix, and the inherited stream loop surfaces
+their ``delta.reasoning_content`` as ``is_reasoning`` token chunks.
 """
 
 from __future__ import annotations
 
 from typing import ClassVar
 
-from corlinman_providers.openai_provider import OpenAIProvider
+from corlinman_providers.china._errors import ChinaOpenAIProvider
 from corlinman_providers.specs import ProviderKind, ProviderSpec
 
 
-class DeepSeekProvider(OpenAIProvider):
+class DeepSeekProvider(ChinaOpenAIProvider):
     """DeepSeek adapter — inherits OpenAI-standard tool_calls support."""
 
     name: ClassVar[str] = "deepseek"

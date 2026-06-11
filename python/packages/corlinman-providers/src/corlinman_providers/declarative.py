@@ -187,6 +187,20 @@ class DeclarativeProvider:
         prefix table — they're always addressed by explicit alias."""
         return False
 
+    def supports_tools(self, model: str) -> bool:
+        """Honour a provider-level ``[params] tools = false`` declaration.
+
+        Only the explicit ``false`` disables tool support — absent or
+        truthy keeps the historic always-on behaviour. The per-model
+        :attr:`ModelSpec.supports_tools` flag is deliberately *not*
+        consulted here: it defaults to ``False``, so honouring it would
+        silently strip tools from every existing TOML spec that never set
+        it (an explicit-vs-default distinction a frozen dataclass cannot
+        recover). Per-model gating therefore rides the alias-level
+        ``tools = false`` param instead.
+        """
+        return self._spec.params.get("tools") is not False
+
     # -- Declarative-only helpers ------------------------------------------
 
     def list_models(self) -> list[ModelSpec]:

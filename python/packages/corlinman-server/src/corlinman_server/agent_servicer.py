@@ -653,6 +653,31 @@ def _inject_builtin_tools(start: AgentChatStart) -> None:
     start.tools = merged
 
 
+def _provider_supports_tools(provider: Any, model: str) -> bool:
+    """Whether the resolved provider declares ``model`` as tool-capable.
+
+    Consults the optional :meth:`CorlinmanProvider.supports_tools` surface
+    (``openai_compatible`` / declarative adapters return ``False`` when the
+    operator set ``tools = false``). ``getattr``-degrades to ``True`` for
+    adapters predating the method and on any probe error — tool support is
+    the historic default and a capability probe must never take down a
+    chat turn.
+    """
+    probe = getattr(provider, "supports_tools", None)
+    if not callable(probe):
+        return True
+    try:
+        return bool(probe(model))
+    except Exception as exc:  # noqa: BLE001 — capability probe must not break chat
+        logger.warning(
+            "agent.supports_tools_probe_failed",
+            provider=getattr(provider, "name", None),
+            model=model,
+            error=str(exc),
+        )
+        return True
+
+
 #: Baseline coding-agent system prompt. Injected only when the assembled
 #: context carries no system message of its own (no agent card matched).
 #: Encodes behavioral rules C1–C12 from docs/RESEARCH_AGENT_PARITY.md §C,
@@ -1282,6 +1307,10 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # ``temperature`` and ``max_tokens`` have dedicated slots on
         # ``ChatStart``; everything else flows through as ``extra`` so the
         # provider adapter forwards it to the SDK call body.
+        # ``tools`` is a routing directive, not a vendor kwarg — pop it
+        # here (alias-level ``tools = false`` wins over the provider's
+        # ``supports_tools``) so it never reaches the SDK call body.
+        tools_param = merged_params.pop("tools", None)
         start.model = upstream_model
         _apply_merged_params(start, merged_params)
         # T3.5: surface the session key as the Responses API prompt-cache
@@ -1296,8 +1325,21 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # Advertise the builtin tools to the model so it can call them.
         # Without this the loop only ever sees gateway-supplied tools
         # (plugins / MCP) — the calculator + web tools would be
-        # dispatchable but invisible.
-        _inject_builtin_tools(start)
+        # dispatchable but invisible. Tool-less models (alias/provider
+        # ``tools = false``, or the resolved adapter's ``supports_tools``
+        # saying no) get NO tools at all — sending a ``tools`` array to a
+        # model that can't accept one 400s the whole turn.
+        if tools_param is False or not _provider_supports_tools(
+            provider, upstream_model
+        ):
+            logger.info(
+                "agent.tools_disabled_for_model",
+                model=start.model,
+                provider=getattr(provider, "name", None),
+            )
+            start.tools = []
+        else:
+            _inject_builtin_tools(start)
 
         # Give the model a coding-agent system prompt when no agent card
         # supplied one — otherwise it operates the tools blind.

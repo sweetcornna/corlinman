@@ -14,6 +14,7 @@ OpenAI-wire-format gateway".
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, ClassVar
 
 from corlinman_providers.openai_provider import OpenAIProvider
@@ -40,6 +41,7 @@ class OpenAICompatibleProvider(OpenAIProvider):
         instance_name: str | None = None,
         image_model: str | None = None,
         image_capable: bool = False,
+        tools_enabled: bool = True,
     ) -> None:
         if not base_url:
             raise ValueError("openai_compatible provider requires a base_url")
@@ -49,6 +51,11 @@ class OpenAICompatibleProvider(OpenAIProvider):
             image_model=image_model,
             image_capable=image_capable,
         )
+        # Operator-declared tool capability. ``tools = false`` on the
+        # ``[providers.<name>].params`` block marks every model behind
+        # this gateway as tool-less (e.g. a small local Ollama model that
+        # 400s on a ``tools`` array) — see :meth:`supports_tools`.
+        self._tools_enabled = tools_enabled
         # Shadow the class-level ``name`` so registry lookups (and the
         # logger attr below) report the user-chosen name. mypy complains
         # about re-assigning a ``ClassVar``, so we set it via __dict__.
@@ -67,6 +74,7 @@ class OpenAICompatibleProvider(OpenAIProvider):
             instance_name=spec.name,
             image_model=spec.image_model,
             image_capable=spec.image_capable,
+            tools_enabled=tools_param_enabled(spec.params),
         )
 
     @classmethod
@@ -79,3 +87,23 @@ class OpenAICompatibleProvider(OpenAIProvider):
         # openai_compatible never claims a model via the legacy prefix
         # fallback — it's always addressed explicitly via an alias.
         return False
+
+    def supports_tools(self, model: str) -> bool:
+        """Honour the operator's ``[providers.<name>].params tools = false``.
+
+        A per-alias ``tools = false`` override travels separately, via the
+        resolver's merged-params dict (popped by the servicer before the
+        params reach the vendor SDK) — this method only reflects the
+        provider-level declaration.
+        """
+        return self._tools_enabled
+
+
+def tools_param_enabled(params: Mapping[str, Any]) -> bool:
+    """Read the ``tools`` capability flag off a params mapping.
+
+    Only an explicit ``tools = false`` disables tool support; absent /
+    truthy / malformed values keep the historic always-on behaviour so
+    existing configs are unaffected.
+    """
+    return params.get("tools") is not False

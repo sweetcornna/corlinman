@@ -97,6 +97,53 @@ def _provider_kind_value(provider: Any) -> str:
     return str(value or "").lower()
 
 
+#: ``(provider_name, joined_keys)`` pairs already warned about by
+#: :func:`_warn_undeclared_extra_keys` — extra-key passthrough is decided
+#: per alias config, not per turn, so one warning per unique combination
+#: is signal and one per round is spam. Mirrors the ``_NEWAPI_WARNED``
+#: dedupe pattern in ``corlinman_providers.specs``.
+_UNDECLARED_EXTRA_WARNED: set[tuple[str, str]] = set()
+
+
+def _warn_undeclared_extra_keys(provider: Any, extra: dict[str, Any]) -> None:
+    """Warn (once per provider+key-set) about extra keys the provider
+    does not declare in its ``params_schema``.
+
+    Alias/provider params flow into the vendor SDK call body verbatim
+    (``kwargs.update(extra)``), so a typo'd knob (``temprature``) or a
+    knob from the wrong vendor family fails silently or 400s downstream.
+    The provider adapters publish their accepted surface as a JSON
+    Schema via the ``params_schema`` classmethod; adapters without one
+    (e.g. Codex) are skipped — no schema, no basis for a warning.
+    Best-effort by design: a malformed schema must never break a turn.
+    """
+    schema_fn = getattr(provider, "params_schema", None)
+    if not callable(schema_fn):
+        return
+    try:
+        schema = schema_fn()
+    except Exception:  # noqa: BLE001 — advisory probe must not break chat
+        return
+    if not isinstance(schema, dict):
+        return
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return
+    undeclared = sorted(key for key in extra if key not in properties)
+    if not undeclared:
+        return
+    provider_name = str(getattr(provider, "name", "") or "unknown")
+    dedupe_key = (provider_name, ",".join(undeclared))
+    if dedupe_key in _UNDECLARED_EXTRA_WARNED:
+        return
+    _UNDECLARED_EXTRA_WARNED.add(dedupe_key)
+    logger.warning(
+        "provider.extra_keys_undeclared",
+        provider=provider_name,
+        keys=undeclared,
+    )
+
+
 def _provider_chat_extra(
     provider: Any, extra: dict[str, Any] | None
 ) -> dict[str, Any] | None:
@@ -114,6 +161,8 @@ def _provider_chat_extra(
         blocked.update(_CODEX_ONLY_CHAT_EXTRA_KEYS)
 
     filtered = {key: value for key, value in extra.items() if key not in blocked}
+    if filtered:
+        _warn_undeclared_extra_keys(provider, filtered)
     return filtered or None
 
 

@@ -17,6 +17,7 @@ from typing import Any
 
 from corlinman_server.console.compaction import Compactor
 from corlinman_server.console.render import TOOL_PROGRESS_MODES
+from corlinman_server.console.rewind import cmd_rewind as _cmd_rewind
 
 __all__ = ["SlashCommand", "dispatch", "registry"]
 
@@ -204,6 +205,12 @@ _REGISTRY: tuple[SlashCommand, ...] = (
     SlashCommand("usage", "token usage for this console run", _cmd_usage),
     SlashCommand(
         "compact", "summarize older turns to shrink the context window", _cmd_compact
+    ),
+    SlashCommand(
+        "rewind",
+        "list workspace checkpoints or restore one",
+        _cmd_rewind,
+        usage="[n|sha]",
     ),
     SlashCommand("memory", "list loaded CORLINMAN.md project-memory files", _cmd_memory),
     SlashCommand("status", "brain / model / session overview", _cmd_status),

@@ -15,11 +15,11 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from corlinman_providers.openai_provider import OpenAIProvider
+from corlinman_providers.china._errors import ChinaOpenAIProvider
 from corlinman_providers.specs import ProviderKind, ProviderSpec
 
 
-class GLMProvider(OpenAIProvider):
+class GLMProvider(ChinaOpenAIProvider):
     """GLM / 智谱 BigModel adapter — reuses OpenAI-standard tool_calls support."""
 
     name: ClassVar[str] = "glm"
