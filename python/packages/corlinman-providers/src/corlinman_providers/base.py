@@ -44,7 +44,12 @@ class ProviderChunk:
     because each ``kind`` only populates a subset:
 
     ``token``
-        :attr:`text` is the incremental text delta.
+        :attr:`text` is the incremental text delta. :attr:`is_reasoning`
+        is ``True`` when the delta is a reasoning / thinking trace
+        (DeepSeek-R1 / QwQ ``delta.reasoning_content``, Anthropic
+        ``thinking`` blocks) rather than answer text — the reasoning
+        loop renders these as a separate ``reasoning`` block and they
+        are never echoed back to the provider on the next round.
     ``tool_call_start``
         :attr:`tool_call_id` and :attr:`tool_name` identify a newly-started
         call. :attr:`arguments_delta` is usually empty; arg JSON arrives in
@@ -74,6 +79,7 @@ class ProviderChunk:
     arguments_delta: str | None = None
     finish_reason: str | None = None
     usage: dict[str, int] | None = None
+    is_reasoning: bool = False
 
 
 class ChatMessage(Protocol):
@@ -151,3 +157,12 @@ class CorlinmanProvider(Protocol):
         ``ModelRedirect.json`` entries. Should be cheap and side-effect free.
         """
         ...
+
+    # NOTE: adapters MAY additionally implement
+    # ``supports_tools(model: str) -> bool`` (default assumption: True).
+    # It is deliberately NOT part of this @runtime_checkable Protocol —
+    # adding a method here would silently flip isinstance() checks to
+    # False for every adapter that has not implemented it. Callers must
+    # use the getattr-degrade pattern (see agent_servicer.
+    # _provider_supports_tools).
+

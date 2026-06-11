@@ -190,9 +190,12 @@ def test_resolve_raw_model_prefers_configured_provider() -> None:
 
 
 def test_resolve_raises_on_unknown_raw_id() -> None:
+    # NOTE: ``llama-*`` moved out of "unknown" when MODEL_PREFIX_DEFAULTS
+    # grew the Groq mapping (P5 broader-model-cover), so this uses a
+    # prefix no adapter claims.
     reg = ProviderRegistry([])
     with pytest.raises(KeyError):
-        reg.resolve(alias_or_model="llama-never-registered", aliases={})
+        reg.resolve(alias_or_model="frontier-never-registered", aliases={})
 
 
 def test_resolve_alias_pointing_to_disabled_provider_raises() -> None:

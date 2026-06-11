@@ -21,7 +21,12 @@ import structlog
 
 from corlinman_providers.anthropic_provider import AnthropicProvider
 from corlinman_providers.base import CorlinmanProvider
-from corlinman_providers.china import DeepSeekProvider, GLMProvider, QwenProvider
+from corlinman_providers.china import (
+    DeepSeekProvider,
+    GLMProvider,
+    MoonshotProvider,
+    QwenProvider,
+)
 from corlinman_providers.codex_provider import CodexProvider
 from corlinman_providers.declarative import (
     DeclarativeProvider,
@@ -84,16 +89,30 @@ _KIND_TO_CLASS: dict[ProviderKind, type[Any]] = {
 # that doesn't match any alias. The class matched here is built with its
 # default constructor so existing ``ANTHROPIC_API_KEY`` / ``OPENAI_API_KEY``
 # env vars keep working even when the config-driven path is active.
+# Ordered most-specific-first: longer / more discriminating prefixes sit
+# above shorter ones so a new overlapping entry can never shadow an
+# existing match (e.g. ``codestral-`` before ``mistral-``; ``deepseek-``
+# covers ``deepseek-r1`` / ``deepseek-reasoner`` by prefix).
 MODEL_PREFIX_DEFAULTS: list[tuple[str, type[Any]]] = [
     ("claude-", AnthropicProvider),
     ("gpt-", OpenAIProvider),
     ("o1-", OpenAIProvider),
     ("o3-", OpenAIProvider),
+    ("o4-", OpenAIProvider),
     ("gemini-", GoogleProvider),
     ("deepseek-", DeepSeekProvider),
     ("qwen", QwenProvider),
     ("qwq-", QwenProvider),
     ("glm-", GLMProvider),
+    ("codestral-", MistralProvider),
+    ("ministral-", MistralProvider),
+    ("mistral-", MistralProvider),
+    ("kimi-", MoonshotProvider),
+    ("moonshot-", MoonshotProvider),
+    # Groq hosts the bare ``llama-*`` catalogue (Together/Bedrock use
+    # vendor-scoped ids like ``meta-llama/...``), so it is the least
+    # surprising no-config default for a raw ``llama-`` id.
+    ("llama-", GroqProvider),
 ]
 
 

@@ -17,7 +17,7 @@ import asyncio
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from corlinman_server.console.events import (
     ConsoleEvent,
@@ -25,6 +25,9 @@ from corlinman_server.console.events import (
     TurnDone,
     TurnError,
 )
+
+if TYPE_CHECKING:
+    from corlinman_server.console.compaction import Compactor
 
 __all__ = ["Brain", "BrainSession", "TurnStats", "new_session_key"]
 
@@ -82,6 +85,14 @@ class BrainSession:
     window: list[dict[str, str]] = field(default_factory=list)
     stats: TurnStats = field(default_factory=TurnStats)
     system_prompt: str | None = None
+
+    #: Optional compaction policy (see :mod:`…console.compaction`),
+    #: attached by the app at construction. Kept *out* of ``send()`` on
+    #: purpose: auto-compact must run before the user turn starts so its
+    #: utility call never interleaves with the turn's event stream — the
+    #: app calls ``compaction.maybe_auto_compact()`` at the top of
+    #: ``run_turn`` instead.
+    compactor: Compactor | None = None
 
     #: Set while a turn is streaming; ``cancel_turn()`` fires it.
     _cancel: asyncio.Event | None = field(default=None, repr=False)

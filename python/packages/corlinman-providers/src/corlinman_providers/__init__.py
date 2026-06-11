@@ -15,7 +15,12 @@ from corlinman_providers.anthropic_provider import AnthropicProvider
 from corlinman_providers.azure_provider import AzureProvider
 from corlinman_providers.base import CorlinmanProvider, ProviderChunk
 from corlinman_providers.bedrock_provider import BedrockProvider
-from corlinman_providers.china import DeepSeekProvider, GLMProvider, QwenProvider
+from corlinman_providers.china import (
+    DeepSeekProvider,
+    GLMProvider,
+    MoonshotProvider,
+    QwenProvider,
+)
 from corlinman_providers.declarative import (
     DeclarativeProvider,
     DeclarativeProviderSpec,
@@ -65,6 +70,7 @@ __all__ = [
     "MockProvider",
     "ModelNotFoundError",
     "ModelSpec",
+    "MoonshotProvider",
     "OpenAICompatibleProvider",
     "OpenAIProvider",
     "OverloadedError",

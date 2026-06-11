@@ -121,8 +121,12 @@ def apply_command_substitution(content: str) -> str:
       wrap its reply in a synthetic prelude that asks the LLM to relay
       the canned text verbatim. This keeps the playground functional
       for handler-only commands without requiring a separate
-      direct-send path on the web surface. The handler runs sync; async
-      handlers fall back to a polite "(not supported here)" message.
+      direct-send path on the web surface. Sync handlers run inline;
+      async handlers (e.g. ``/usage``) are driven to completion via
+      ``asyncio.run`` when no event loop is running on this thread, and
+      only fall back to a polite "(requires an async surface)" message
+      when a loop IS running (blocking would deadlock it) — see
+      :func:`corlinman_channels.commands._run_command_handler_sync`.
 
     Thin wrapper around the channels-side helpers so the chat-route
     handler doesn't import the channels package directly (keeps the

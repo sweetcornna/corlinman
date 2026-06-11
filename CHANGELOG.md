@@ -23,6 +23,43 @@ All notable changes to corlinman are documented here. Format follows
     `/model` choice always wins.
   - Sessions persist in the same `agent_journal.sqlite` the gateway uses;
     `/resume <key>` replays a session's journaled turns into the window.
+- **claude-code parity wave 1** (`docs/PLAN_CLAUDECODE_PARITY.md`, matrix in
+  `docs/parity-matrix-2026-06-11.json`):
+  - **Cross-channel session commands** — `/new`(/新会话), `/model`(/模型) and
+    `/usage`(/用量) now work on EVERY surface (QQ/Telegram/Discord/Slack/
+    Feishu/web/console) via the shared channel command registry, backed by a
+    new per-binding prefs store (`binding_prefs.sqlite`: model override +
+    session epoch, honored at the two request-builder choke points). The
+    console additionally falls through to the shared registry, so `/persona`,
+    `/whoami`, `/status` etc. work in the terminal too.
+  - **CORLINMAN.md project memory** (CLAUDE.md analog): user-global + repo-root
+    → cwd discovery, `CORLINMAN.local.md`, `@include` directives with cycle
+    protection, `/memory` command.
+  - **Context compaction**: `/compact` + opt-out auto-compaction of the console
+    window (threshold/keep-recent configurable under `[console]`, summarizer
+    runs on the small-fast model, 3-failure circuit breaker).
+  - **Structured headless output**: `corlinman console -p --output-format
+    json|stream-json` (claude-code result-envelope contract) + `--max-turns`.
+  - **Live todo checklist** — `todo_write` tool calls render as a ☐/◐/☒
+    checklist with the in-progress activeForm, deduped between updates.
+  - **`/rewind` workspace checkpoints** — every chat turn already snapshots the
+    agent workspace (git-backed); `/rewind` lists checkpoints and restores one,
+    truncating the console window when the checkpoint maps unambiguously.
+- **Multi-model adaptation (适配几乎所有模型)** — the provider layer now
+  handles nearly every model family correctly:
+  - OpenAI o1/o3/o4/gpt-5 reasoning models: `max_completion_tokens` instead of
+    `max_tokens`, `temperature` omitted (they reject it).
+  - DeepSeek R1 / QwQ reasoning streams: `reasoning_content` surfaces as
+    `is_reasoning` token chunks (rendered dim, hidden by default) and is
+    stripped on replay (R1 rejects echoed reasoning).
+  - Strict-alternation models (DeepSeek/Qwen/GLM): consecutive same-role
+    messages are merged instead of erroring.
+  - Tool-less models: `supports_tools()` on providers + per-provider/alias
+    `tools = false` param → the servicer skips builtin-tool injection and the
+    turn degrades to text-only reasoning instead of a 400.
+  - Vendor error mapping for DeepSeek/Qwen(GLM (billing vs rate-limit vs
+    auth vs context-length), Moonshot/Kimi + Mistral/Codestral + bare
+    `llama-*` (Groq) prefixes added to the auto-routing table.
 
 ## [1.19.1] — 2026-06-11 — Upgrade progress bar + clearer manual fallback
 

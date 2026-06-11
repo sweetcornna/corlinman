@@ -56,6 +56,50 @@ logger = structlog.get_logger(__name__)
 # leaks the credential — see :meth:`OpenAIProvider._make_client`.
 _HEADER_AUTH_SENTINEL = "header-auth-no-bearer"
 
+# OpenAI reasoning-model family (o1 / o3 / o4 / gpt-5). These models reject
+# the classic sampling knobs: ``max_tokens`` must be sent as
+# ``max_completion_tokens`` and ``temperature`` must be omitted entirely
+# (only the default of 1 is accepted — sending any value 400s). Matched by
+# ``str.startswith`` so dated/sized variants (``o3-mini``, ``o4-mini``,
+# ``gpt-5-turbo``) are covered. Standard models are untouched.
+_REASONING_MODEL_PREFIXES: tuple[str, ...] = ("o1", "o3", "o4", "gpt-5")
+
+# Sampling knobs the o1/o3/o4/gpt-5 reasoning family rejects with a 400.
+# The positional ``temperature`` argument is already dropped in
+# :meth:`OpenAIProvider.chat_stream`, but alias/provider params merged via
+# ``extra`` can carry any of these too — they are stripped from the merged
+# ``extra`` for reasoning models (logged at debug) so an alias tuned for a
+# standard model doesn't 400 when pointed at a reasoning one.
+# ``temperature`` is included so an ``extra``-borne copy can't reintroduce
+# what the positional-arg path already drops; ``top_logprobs`` rides along
+# with ``logprobs`` (the API rejects both on reasoning models).
+_REASONING_UNSUPPORTED_PARAMS: tuple[str, ...] = (
+    "temperature",
+    "top_p",
+    "presence_penalty",
+    "frequency_penalty",
+    "logprobs",
+    "top_logprobs",
+    "logit_bias",
+)
+
+# Vendors whose chat APIs enforce strict user/assistant alternation and
+# reject two consecutive same-role messages (DeepSeek, Qwen / QwQ via
+# DashScope, GLM). For these we merge consecutive same-role ``user`` /
+# ``assistant`` messages pre-flight instead of letting the vendor 400 —
+# degrading gracefully beats erroring. See :func:`_merge_consecutive_roles`.
+_STRICT_ALTERNATION_MODEL_PREFIXES: tuple[str, ...] = ("deepseek", "qwen", "qwq", "glm")
+
+
+def _is_reasoning_model(model: str) -> bool:
+    """Return whether ``model`` belongs to the o1/o3/o4/gpt-5 reasoning family."""
+    return model.startswith(_REASONING_MODEL_PREFIXES)
+
+
+def _requires_strict_alternation(model: str) -> bool:
+    """Return whether ``model``'s vendor enforces strict role alternation."""
+    return model.startswith(_STRICT_ALTERNATION_MODEL_PREFIXES)
+
 
 @dataclass(slots=True)
 class _ToolCallState:
@@ -200,23 +244,54 @@ class OpenAIProvider:
     ) -> AsyncIterator[ProviderChunk]:
         # Custom-header auth carries the credential in ``_default_headers``
         # rather than ``_api_key``, so a missing ``_api_key`` is only an error
-        # when no header credential is configured either.
+        # when no header credential is configured either. Raised as an
+        # :class:`AuthError` (not a bare RuntimeError) so the failover layer
+        # classifies it like any other auth failure, and the message names
+        # the env var this adapter actually reads — for vendor wrappers
+        # (Mistral / Groq / Moonshot / …) that's their vendor key, never
+        # ``OPENAI_API_KEY``.
         if not self._api_key and not self._default_headers:
-            raise RuntimeError(f"API key missing for provider {self.name}")
+            raise AuthError(
+                f"API key missing for provider {self.name}: set {self._env_key}",
+                provider=self.name,
+                model=model,
+            )
+
+        normalised = [_normalise_message(m) for m in messages]
+        if _requires_strict_alternation(model):
+            normalised = _merge_consecutive_roles(normalised)
 
         kwargs: dict[str, Any] = {
             "model": model,
-            "messages": [_normalise_message(m) for m in messages],
+            "messages": normalised,
             "stream": True,
         }
-        if temperature is not None:
+        # Reasoning models (o1/o3/o4/gpt-5) accept only the default
+        # temperature and spell the completion budget
+        # ``max_completion_tokens`` — see _REASONING_MODEL_PREFIXES.
+        reasoning_model = _is_reasoning_model(model)
+        if temperature is not None and not reasoning_model:
             kwargs["temperature"] = temperature
         if max_tokens:
-            kwargs["max_tokens"] = max_tokens
+            kwargs["max_completion_tokens" if reasoning_model else "max_tokens"] = max_tokens
         if tools:
             kwargs["tools"] = list(tools)
         if extra:
-            kwargs.update(extra)
+            extra_params = dict(extra)
+            if reasoning_model:
+                # Alias/provider params merged via ``extra`` may carry the
+                # classic sampling knobs; reasoning models 400 on every one
+                # of them, so strip the whole family — not just temperature.
+                dropped = [k for k in _REASONING_UNSUPPORTED_PARAMS if k in extra_params]
+                for key in dropped:
+                    extra_params.pop(key)
+                if dropped:
+                    logger.debug(
+                        "openai.reasoning_params_dropped",
+                        model=model,
+                        params=dropped,
+                    )
+            kwargs.update(extra_params)
 
         # index → per-call streaming state. We emit `tool_call_start` at most
         # once per index (with the *real* id) and always close with
@@ -274,6 +349,17 @@ class OpenAIProvider:
                 finish = getattr(choice, "finish_reason", None)
 
                 if delta is not None:
+                    # Reasoning deltas (DeepSeek-R1, Qwen QwQ, and many
+                    # OpenAI-compatible gateways) arrive on the non-standard
+                    # ``delta.reasoning_content`` field, interleaved before
+                    # the answer's ``delta.content``. Surface them as token
+                    # chunks flagged ``is_reasoning=True`` so the reasoning
+                    # loop renders a separate block and never replays them.
+                    reasoning_text = getattr(delta, "reasoning_content", None)
+                    if reasoning_text:
+                        yield ProviderChunk(
+                            kind="token", text=reasoning_text, is_reasoning=True
+                        )
                     text = getattr(delta, "content", None)
                     if text:
                         yield ProviderChunk(kind="token", text=text)
@@ -395,13 +481,24 @@ class OpenAIProvider:
 
     @classmethod
     def supports(cls, model: str) -> bool:
-        """Claim ``gpt-*`` / ``o1-*`` / ``o3-*`` model ids."""
+        """Claim ``gpt-*`` / ``o1-*`` / ``o3-*`` / ``o4-*`` model ids."""
         return (
             model.startswith("gpt-")
             or model.startswith("o1-")
             or model.startswith("o3-")
+            or model.startswith("o4-")
             or model == "gpt-3.5-turbo"
         )
+
+    def supports_tools(self, model: str) -> bool:
+        """Whether ``model`` accepts OpenAI ``tools`` schemas — default yes.
+
+        The OpenAI first-party catalogue is tool-capable across the board;
+        subclasses fronting bring-your-own gateways
+        (:class:`~corlinman_providers.openai_compatible.OpenAICompatibleProvider`)
+        override this to honour an operator-declared ``tools = false``.
+        """
+        return True
 
 
 async def _safe_close(client: Any) -> None:
@@ -426,8 +523,17 @@ async def _safe_close(client: Any) -> None:
 
 
 def _normalise_message(m: Any) -> dict[str, Any]:
-    """Accept both dicts and objects with ``role``/``content`` attributes."""
+    """Accept both dicts and objects with ``role``/``content`` attributes.
+
+    CRITICAL replay rule: any ``reasoning_content`` carried on a dict
+    message (a prior assistant turn captured from a reasoning stream) is
+    stripped before the message goes back on the wire — DeepSeek-R1
+    rejects requests that echo reasoning back with a 400, and no
+    OpenAI-compatible vendor accepts it as an input field.
+    """
     if isinstance(m, dict):
+        if "reasoning_content" in m:
+            return {k: v for k, v in m.items() if k != "reasoning_content"}
         return m
     out: dict[str, Any] = {
         "role": getattr(m, "role", "user"),
@@ -440,6 +546,49 @@ def _normalise_message(m: Any) -> dict[str, Any]:
     if tool_call_id:
         out["tool_call_id"] = tool_call_id
     return out
+
+
+def _merge_consecutive_roles(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge consecutive same-role ``user`` / ``assistant`` messages.
+
+    Strict-alternation vendors (see _STRICT_ALTERNATION_MODEL_PREFIXES)
+    400 on two consecutive messages with the same role; joining their
+    contents with a blank line degrades gracefully instead. Scope is
+    deliberately narrow:
+
+    * ``system`` messages are exempt — they are alternation-legal and
+      merging them would reorder prompt-assembly semantics;
+    * ``tool`` messages are exempt — consecutive tool results are legal
+      (one per ``tool_call_id``) and merging would corrupt the call
+      protocol;
+    * assistant messages carrying ``tool_calls`` are exempt — their
+      content is structurally bound to the calls.
+
+    Pure: returns a new list; merged entries are fresh dicts, the
+    caller's messages are never mutated.
+    """
+    merged: list[dict[str, Any]] = []
+    for msg in messages:
+        role = msg.get("role")
+        prev = merged[-1] if merged else None
+        if (
+            prev is not None
+            and role in ("user", "assistant")
+            and prev.get("role") == role
+            and not prev.get("tool_calls")
+            and not msg.get("tool_calls")
+            and isinstance(prev.get("content"), str)
+            and isinstance(msg.get("content"), str)
+        ):
+            joined = "\n\n".join(
+                part for part in (prev["content"], msg["content"]) if part
+            )
+            combined = dict(prev)
+            combined["content"] = joined
+            merged[-1] = combined
+            continue
+        merged.append(msg)
+    return merged
 
 
 def _map_finish_reason(reason: str | None) -> str:

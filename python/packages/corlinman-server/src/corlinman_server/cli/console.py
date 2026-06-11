@@ -7,6 +7,9 @@ Examples::
     corlinman console                       # embedded full-agent REPL
     corlinman console "总结一下今天的日志"     # REPL, first turn pre-filled
     corlinman console -p "1+1等于几" | cat    # one-shot, stdout = answer only
+    corlinman console -p --output-format json "1+1" | jq .result   # result envelope
+    corlinman console -p --output-format stream-json "查个天气"     # event per line
+    corlinman console --max-turns 3         # REPL exits after 3 completed turns
     corlinman console --attach http://127.0.0.1:6005   # client of a gateway
     corlinman console --model gpt-4o-mini --session console:abc123
 """
@@ -28,6 +31,7 @@ except ModuleNotFoundError:  # pragma: no cover - older interpreters
     import tomli as tomllib  # type: ignore[no-redef]
 
 from corlinman_server.cli._common import default_config_path, resolve_data_dir
+from corlinman_server.console.app import OUTPUT_FORMATS
 from corlinman_server.console.render import TOOL_PROGRESS_MODES
 
 __all__ = ["console"]
@@ -109,6 +113,23 @@ def _load_config(data_dir: Path) -> dict[str, Any]:
     show_default=True,
     help="Tool-call progress display mode.",
 )
+@click.option(
+    "--output-format",
+    type=click.Choice(OUTPUT_FORMATS),
+    default="text",
+    show_default=True,
+    help=(
+        "With -p/--print: text = answer only, json = one result envelope, "
+        "stream-json = one JSON event per line ending with the envelope."
+    ),
+)
+@click.option(
+    "--max-turns",
+    type=click.IntRange(min=0),
+    default=0,
+    show_default=True,
+    help="Exit the REPL after N completed turns (0 = unlimited).",
+)
 def console(
     prompt: tuple[str, ...],
     attach: str | None,
@@ -118,6 +139,8 @@ def console(
     data_dir: str | None,
     print_mode: bool,
     tool_progress: str,
+    output_format: str,
+    max_turns: int,
 ) -> None:
     """Interactive agent console (REPL) — the CLI face of the corlinman brain.
 
@@ -152,6 +175,8 @@ def console(
                 prompt=prompt_text,
                 print_mode=print_mode,
                 tool_progress=tool_progress,
+                output_format=output_format,
+                max_turns=max_turns,
                 attach_token=attach_token,
             )
         )
