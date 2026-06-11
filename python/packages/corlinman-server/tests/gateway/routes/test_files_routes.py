@@ -128,3 +128,36 @@ def test_upload_without_data_dir_503(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     assert resp.status_code == 503
     assert resp.json()["error"]["code"] == "storage_unavailable"
+
+
+def test_configured_data_dir_wins_over_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The boot-resolved dir (``--data-dir`` / ``[server].data_dir``,
+    stamped via ``configure_data_dir``) must beat the env fallback so
+    chat files land in the same tree as the journal/session stores."""
+    env_dir = tmp_path / "env-tree"
+    boot_dir = tmp_path / "boot-tree"
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(env_dir))
+    files_route.configure_data_dir(boot_dir)
+    try:
+        app = FastAPI()
+        app.include_router(files_route.router())
+        client = TestClient(app)
+        meta = _upload(client)
+        assert (boot_dir / "files" / f"{meta['file_id']}.blob").is_file()
+        assert not (env_dir / "files").exists()
+        # Serve path resolves from the same configured tree.
+        assert client.get(str(meta["url"])).status_code == 200
+    finally:
+        files_route.configure_data_dir(None)
+
+
+def test_files_prefix_requires_chat_scope() -> None:
+    """SEC-09 parity: the attachment store carries the same required
+    scope as /v1/chat so a narrower key can't read/plant attachments."""
+    from corlinman_server.gateway.middleware.auth import (
+        DEFAULT_REQUIRED_SCOPES,
+    )
+
+    assert ("/v1/files", "chat") in DEFAULT_REQUIRED_SCOPES

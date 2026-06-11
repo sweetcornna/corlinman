@@ -2793,18 +2793,24 @@ def _attachment_to_content_part(att: Attachment) -> dict[str, Any] | None:
     # providers will skip with a warn.
     if not att.url and not att.bytes_:
         return None
-    return {
-        "type": "file",
-        "file": {
-            "kind": att.kind,
-            "url": att.url,
-            "mime": att.mime,
-            "file_name": att.file_name,
-            # bytes deliberately omitted from the part (providers
-            # download from url; in-memory bytes stay on the Attachment
-            # for providers that introspect).
-        },
+    part_file: dict[str, Any] = {
+        "kind": att.kind,
+        "url": att.url,
+        "mime": att.mime,
+        "file_name": att.file_name,
     }
+    if att.bytes_:
+        # A gateway-private url (``/v1/files/{id}`` — web-chat uploads)
+        # is unreachable from the provider, so when the payload itself
+        # was resolved ship it as an OpenAI-style ``file_data`` base64
+        # data URL. Providers that consume file parts read it directly;
+        # url-only attachments (channel CDNs) keep the slim form.
+        import base64
+
+        mime = att.mime or "application/octet-stream"
+        b64 = base64.b64encode(att.bytes_).decode("ascii")
+        part_file["file_data"] = f"data:{mime};base64,{b64}"
+    return {"type": "file", "file": part_file}
 
 
 def _is_awaiting_placeholder(content: str) -> bool:

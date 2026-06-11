@@ -72,7 +72,15 @@ DEFAULT_PROTECTED_PREFIXES: tuple[str, ...] = ("/v1/",)
 #: plugin webhook or a models listing is not 403'd for lacking ``"chat"``.
 #: Longest-prefix match wins so a future ``/v1/embeddings/`` entry can
 #: override a broader rule. Super-scopes (see :data:`SUPERSCOPES`) bypass.
-DEFAULT_REQUIRED_SCOPES: tuple[tuple[str, str], ...] = (("/v1/chat", "chat"),)
+#:
+#: ``/v1/files`` (the chat attachment store) carries the same ``chat``
+#: scope as ``/v1/chat``: it exists solely as a chat surface, so a key
+#: minted for a narrower scope must not be able to read or plant
+#: attachments (W3 review follow-up).
+DEFAULT_REQUIRED_SCOPES: tuple[tuple[str, str], ...] = (
+    ("/v1/chat", "chat"),
+    ("/v1/files", "chat"),
+)
 
 
 #: Path prefixes where a logged-in admin *browser session* may stand in for

@@ -68,18 +68,23 @@ from fastapi.responses import FileResponse, JSONResponse
 
 _log = logging.getLogger(__name__)
 
-__all__ = ["load_stored_file", "register_local_file", "router"]
+__all__ = [
+    "configure_data_dir",
+    "load_stored_file",
+    "register_local_file",
+    "router",
+]
 
 
 # ─── Caps + id format ────────────────────────────────────────────────
 
 
-#: Hard cap on a single uploaded file. 25 MiB comfortably covers the
-#: high-resolution screenshots / short documents a chat user pastes
-#: while keeping a single request from pinning memory (the upload is
-#: read fully into RAM before persistence). Override for an operator
-#: that needs bigger attachments with ``CORLINMAN_FILES_MAX_BYTES``.
-DEFAULT_MAX_BYTES: int = 25 * 1024 * 1024
+#: Hard cap on a single uploaded file. Matches the composer-side
+#: validator's advertised 50 MB limit (``ATTACHMENT_MAX_BYTES`` in
+#: ``ui/lib/api/chat.ts``) so the UI never accepts a file the server
+#: then rejects. The upload is read fully into RAM before persistence —
+#: bounded by this cap. Override with ``CORLINMAN_FILES_MAX_BYTES``.
+DEFAULT_MAX_BYTES: int = 50 * 1024 * 1024
 
 #: Env override for the per-file cap. Mirrors the persona asset store's
 #: ``CORLINMAN_PERSONA_MAX_ASSET_BYTES`` knob.
@@ -143,14 +148,34 @@ def _max_bytes() -> int:
     return val if val > 0 else DEFAULT_MAX_BYTES
 
 
+#: Boot-resolved data dir, stamped by the lifecycle entrypoint via
+#: :func:`configure_data_dir`. The full boot resolution is ``--data-dir``
+#: > ``$CORLINMAN_DATA_DIR`` > ``[server].data_dir`` > ``~/.corlinman``
+#: (``cli_helpers._resolve_data_dir``); without this stamp a gateway
+#: booted with the CLI flag / config key (env unset) would store chat
+#: files in a different tree from the journal & session stores.
+_CONFIGURED_DATA_DIR: Path | None = None
+
+
+def configure_data_dir(path: Path | None) -> None:
+    """Pin the boot-resolved gateway data dir (see comment above)."""
+    global _CONFIGURED_DATA_DIR
+    _CONFIGURED_DATA_DIR = path
+
+
 def _data_dir() -> Path | None:
     """Resolve the gateway data dir, or ``None`` when none exists.
 
-    Mirrors :func:`status._data_dir` verbatim so every ``<data_dir>``
-    consumer agrees on one resolution order: the ``CORLINMAN_DATA_DIR``
-    env override first, then ``~/.corlinman`` iff it already exists. The
-    upload path creates ``<data_dir>/files/`` on demand; the read path
-    treats a missing dir as a 404 (the file genuinely isn't there)."""
+    Prefers the boot-resolved directory stamped by
+    :func:`configure_data_dir` (kept in lock-step with the journal /
+    session stores), then falls back to the ``CORLINMAN_DATA_DIR`` env
+    override and ``~/.corlinman`` iff it already exists — the same
+    degraded-path order :func:`status._data_dir` uses for routers built
+    outside the entrypoint (tests, embedded apps). The upload path
+    creates ``<data_dir>/files/`` on demand; the read path treats a
+    missing dir as a 404 (the file genuinely isn't there)."""
+    if _CONFIGURED_DATA_DIR is not None:
+        return _CONFIGURED_DATA_DIR
     raw = os.environ.get("CORLINMAN_DATA_DIR")
     if raw:
         return Path(raw)

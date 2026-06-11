@@ -18,7 +18,11 @@ import { CorlinmanApiError, GATEWAY_BASE_URL } from "@/lib/api";
  *  snake_case `{file_id, url, name, mime, size}`). */
 export interface UploadedFile {
   fileId: string;
-  /** Server-relative serve URL, e.g. `/v1/files/<id>`. */
+  /** Browser-fetchable serve URL. The wire value is server-relative
+   *  (`/v1/files/<id>`); it is prefixed with `GATEWAY_BASE_URL` here so
+   *  `<img>`/download links resolve in split-origin dev setups too —
+   *  prod (same origin, empty base) is unaffected. Request building
+   *  strips the prefix back off (`content-parts.attachmentRef`). */
   url: string;
   name: string;
   mime: string;
@@ -76,7 +80,7 @@ export async function uploadChatFile(
 
   return {
     fileId: wire.file_id,
-    url: wire.url,
+    url: wire.url.startsWith("/") ? `${GATEWAY_BASE_URL}${wire.url}` : wire.url,
     name: wire.name,
     mime: wire.mime,
     size: wire.size,

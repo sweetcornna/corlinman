@@ -99,7 +99,7 @@ P2 backlog（不入本期）：语音输入、分享链接、内联 mermaid、fo
 | W5 历史分页 | before_turn_id 透传 + 加载更早 UI；500 上限处理 | _sessions_lib.py、sessions.py、page.tsx | W1 后 |
 | W6 对标增强（按文件簇分包并行派 opus） | ①markdown 簇：KaTeX、lightbox 修复（trap/stopPropagation/i18n）、链接对比度、剪贴板容错 ②列表簇：虚拟化（参照 logs/page.tsx useVirtualizer）、aria-live/log、搜索高亮 ③composer 簇：移动键盘避让、触控目标、emoji picker a11y、上传进度、Cmd+/ ④侧栏簇：响应式抽屉、rename 修复、空状态区分、对比度、撤销竞态、usage 展示 ⑤导出：markdown 导出 + model-picker focus trap | 每簇文件互斥 | 4-5 个 opus agents 并行 |
 | W7 验证收尾 | vitest + pytest + playwright e2e + build + ruff/mypy；汇总 PR | — | 主循环 |
-| W8 租户隔离（独立 PR） | turns 表 tenant_id 迁移 + journal 查询全链路过滤 + cookie 鉴权 tenant 解析 | agent_journal_backend.py、sessions.py、_sessions_lib.py、admin_auth.py | 本 PR 合并后单独立项 |
+| W8 租户隔离（独立 PR） | turns 表 tenant_id 迁移 + journal 查询全链路过滤 + cookie 鉴权 tenant 解析 + **/v1/files 文件存储按 tenant 分目录与读取校验**（Codex review 同样指出；与 journal 同一系统性缺口，一并修） | agent_journal_backend.py、sessions.py、_sessions_lib.py、admin_auth.py、routes/files.py | 本 PR 合并后单独立项 |
 
 > 约束：内容卡禁 `backdrop-filter`（vitest 强制）；新样式只用 `sg-*`/`lg-*`；channels 与 web 共用 chat_service 时注意 duck-typed SimpleNamespace 契约（勿加必填字段）；不破坏 admin-session cookie bridge。
 

@@ -206,6 +206,17 @@ def build_app(
     cfg = _load_config(config_path)
     resolved_data_dir = data_dir or _resolve_data_dir(None, cfg)
 
+    # Stamp the boot-resolved dir onto the (stateless) /v1/files route so
+    # the chat file store lives in the SAME tree as the journal / session
+    # stores even when the dir came from --data-dir / [server].data_dir
+    # rather than $CORLINMAN_DATA_DIR (W3 review follow-up).
+    try:
+        from corlinman_server.gateway.routes import files as files_route
+
+        files_route.configure_data_dir(resolved_data_dir)
+    except ImportError:  # pragma: no cover — routes are a runtime dep
+        pass
+
     # Phase 4 W1 4-1A Item 5: one-shot legacy data-file migration. Gated
     # on tenants config; default-off for back-compat.
     if _should_run_legacy_migration(cfg):
