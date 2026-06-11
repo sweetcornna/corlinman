@@ -25,6 +25,7 @@ import click
 
 from corlinman_server.cli._common import todo_stub
 from corlinman_server.cli.config import config as config_group
+from corlinman_server.cli.console import console as console_cmd
 from corlinman_server.cli.doctor import doctor as doctor_cmd
 from corlinman_server.cli.init import init as init_cmd
 from corlinman_server.cli.onboard import onboard as onboard_cmd
@@ -53,6 +54,7 @@ def cli() -> None:
 # --- FULL ports -----------------------------------------------------------
 
 cli.add_command(onboard_cmd)
+cli.add_command(console_cmd)
 cli.add_command(init_cmd)
 cli.add_command(doctor_cmd)
 cli.add_command(plugins_group)

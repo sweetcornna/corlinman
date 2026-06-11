@@ -4,6 +4,26 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`corlinman console` — interactive CLI agent console** (`docs/PLAN_CLI_CONSOLE.md`).
+  A terminal REPL that hosts the *full* agent brain in-process (builtin tools,
+  `subagent.spawn*` multi-agent fan-out, memory, journal — identical wiring to
+  production, served on a private per-process UDS), or attaches to a running
+  gateway with `--attach URL` (OpenAI-SSE client, opencode-style client/server
+  split). Design follows claude-code first (turn loop, `-p/--print` one-shot
+  pipe mode, small-fast-model routing) and hermes-agent for the console UX
+  (slash commands, Ctrl-C interrupts the running turn, tool-progress modes
+  `off|new|all|verbose`, session resume).
+  - Slash commands: `/help /new /clear /model /models /session /sessions
+    /resume /usage /status /progress /verbose /quit`.
+  - Model routing: `[console].small_fast_model` + opt-in `[console].auto_route`
+    sends classified-simple turns to the cheap model; an explicit `--model` or
+    `/model` choice always wins.
+  - Sessions persist in the same `agent_journal.sqlite` the gateway uses;
+    `/resume <key>` replays a session's journaled turns into the window.
+
 ## [1.19.1] — 2026-06-11 — Upgrade progress bar + clearer manual fallback
 
 > Patch release. Config-compatible — no migration required.
