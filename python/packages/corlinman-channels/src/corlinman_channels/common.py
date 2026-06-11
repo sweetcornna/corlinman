@@ -18,6 +18,7 @@ object regardless of transport.
 from __future__ import annotations
 
 import hashlib
+import re
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -287,6 +288,155 @@ def split_on_msg_break(text: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Outbound text normalization
+# ---------------------------------------------------------------------------
+
+# Asterisk emphasis (``*x*`` / ``**x**`` / ``***x***``) → inner text,
+# matched only at real boundaries (non-word char outside, non-space
+# inside) so operators/wildcards/intra-word stars (``2 * 3``, ``a*b*c``,
+# ``*.py``) survive while genuine ``**bold**`` flattens.
+_EMPHASIS_STAR_RE = re.compile(
+    r"(?<!\w)(\*\*\*|\*\*|\*)(?=\S)(?P<inner>.+?)(?<=\S)\1(?!\w)",
+    re.DOTALL,
+)
+# Underscore emphasis (``_x_`` / ``__x__`` / ``___x___``) → inner text,
+# but ONLY when whitespace/edge-flanked on both outer sides. Underscores
+# pervade identifiers and paths (``__init__.py``, ``/tmp/__pycache__/x``,
+# ``my_file.py``); a ``\w`` boundary alone still treats ``/``- or
+# ``.``-adjacent runs as emphasis, so we require actual whitespace (or a
+# string edge) outside — which those path tokens never have.
+_EMPHASIS_USCORE_RE = re.compile(
+    r"(?<!\S)(___|__|_)(?=\S)(?P<inner>.+?)(?<=\S)\1(?!\S)",
+    re.DOTALL,
+)
+# A live-notification token ANYWHERE in an inline-code span — matched
+# regardless of the preceding character (``\`(<@U123>)\```, ``\`cc<@U123>\```
+# count too). Keeping such a span wrapped in backticks preserves the
+# author's escaping so a render-and-parse transport (Slack/Discord)
+# can't turn it into a real ping. Covers the platform tokens that
+# actually notify: ``@everyone`` / ``@here`` / ``@channel`` and the
+# ``<@id>`` / ``<!cmd>`` / ``<#chan>`` / ``<&role>`` forms.
+_MENTION_RE = re.compile(r"@everyone|@here|@channel|<[@!#&]")
+# A fenced code block — preserved verbatim so real code keeps its shape.
+_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
+# An inline code span — stashed before the markdown passes so its
+# contents (e.g. ``__init__``) are never seen as emphasis, then either
+# unwrapped (backticks dropped for clean text) or kept verbatim (mention
+# spans) at restore time.
+_CODE_SPAN_RE = re.compile(r"`[^`\n]+?`")
+# Leading ATX heading hashes: ``## Title`` → ``Title``.
+_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+", re.MULTILINE)
+# Leading blockquote marker ``> quote`` → ``quote`` — but NOT a REPL
+# prompt / nested quote (``>>> print(1)``, ``>> x``): the ``>`` must not be
+# followed by another ``>``. Single-strip keeps the transform idempotent.
+_BLOCKQUOTE_RE = re.compile(r"^\s{0,3}>(?!>)\s?", re.MULTILINE)
+# Leading list bullet (- or *) → a clean middle-dot bullet. ``+`` is
+# deliberately excluded: it is a rare Markdown bullet but a common
+# unified-diff add marker, and rewriting ``+ new`` would corrupt patches.
+_BULLET_RE = re.compile(r"^(\s*)[-*]\s+", re.MULTILINE)
+# Unified-diff signature (hunk header or file headers). When present we
+# skip bullet normalization entirely so ``- old`` / ``+ new`` diff lines
+# survive even when the model didn't fence the patch.
+_DIFF_RE = re.compile(r"(?m)^(?:@@ .* @@|--- |\+\+\+ )")
+# An un-headered patch add line ``+ new``. The bullet pass never rewrites
+# ``+``, so a leading ``+ `` line beside ``-`` deletions marks an
+# abbreviated diff (``- old\n+ new``) the model didn't fence or header.
+# Treating it as a diff keeps the paired change lines intact instead of
+# turning the deletion ``- old`` into a bullet ``· old``.
+_DIFF_ADD_RE = re.compile(r"(?m)^\s{0,3}\+ ")
+# AI-tell Latin punctuation → plain ASCII. Chinese full-width punctuation
+# (，。、：；？！“”‘’（）) is correct typography and deliberately left intact.
+_AI_PUNCT = {
+    "—": "-",  # — em dash
+    "–": "-",  # – en dash
+    "…": "...",  # … ellipsis
+    " ": " ",  # non-breaking space
+}
+_AI_PUNCT_RE = re.compile("|".join(re.escape(k) for k in _AI_PUNCT))
+
+
+def normalize_outbound_text(text: str) -> str:
+    """Flatten LLM markdown/AI-tell punctuation for plain-text channels.
+
+    Channels send literal text (no markdown rendering), so ``**bold**``,
+    ``- bullets``, ``# headings`` and ``` `code` ``` arrive as visual
+    clutter. This collapses that scaffolding to clean plain text while
+    PRESERVING: fenced code blocks (verbatim), Chinese full-width
+    punctuation (correct typography), and URLs/paths. Idempotent.
+    """
+    if not text:
+        return text
+
+    # Stash fenced blocks AND inline-code spans before any markdown pass
+    # so their contents (``__init__``, ``@everyone``, ``2 * 3``) are never
+    # rewritten as emphasis/etc. Fences restore verbatim; code spans get
+    # an unwrap decision at restore time.
+    fences: list[str] = []
+    spans: list[str] = []
+
+    def _stash_fence(m: re.Match[str]) -> str:
+        fences.append(m.group(0))
+        return f"\x00FENCE{len(fences) - 1}\x00"
+
+    def _stash_span(m: re.Match[str]) -> str:
+        spans.append(m.group(0))
+        return f"\x00SPAN{len(spans) - 1}\x00"
+
+    work = _FENCE_RE.sub(_stash_fence, text)
+    work = _CODE_SPAN_RE.sub(_stash_span, work)
+
+    work = _HEADING_RE.sub("", work)
+    work = _BLOCKQUOTE_RE.sub("", work)
+    # Skip bullet normalization for diff/patch bodies so ``- old`` lines
+    # aren't turned into ``· old`` (diff markers must round-trip) — covers
+    # both headered hunks and un-headered ``- old``/``+ new`` change pairs.
+    if not (_DIFF_RE.search(work) or _DIFF_ADD_RE.search(work)):
+        work = _BULLET_RE.sub(r"\1· ", work)
+    # Emphasis can nest (``**_x_**``); run twice to unwrap both layers.
+    for _ in range(2):
+        work = _EMPHASIS_STAR_RE.sub(lambda m: m.group("inner"), work)
+        work = _EMPHASIS_USCORE_RE.sub(lambda m: m.group("inner"), work)
+    work = _AI_PUNCT_RE.sub(lambda m: _AI_PUNCT[m.group(0)], work)
+    # Collapse 3+ blank lines left behind by stripped scaffolding.
+    work = re.sub(r"\n{3,}", "\n\n", work)
+
+    # Restore inline code: drop the backticks for clean display, but keep
+    # them when the span contains a mention (preserves the escaping so it
+    # can't fire a live notification downstream).
+    for i, span in enumerate(spans):
+        inner = span[1:-1]
+        restored = span if _MENTION_RE.search(inner) else inner
+        work = work.replace(f"\x00SPAN{i}\x00", restored)
+    for i, fence in enumerate(fences):
+        work = work.replace(f"\x00FENCE{i}\x00", fence)
+    return work.strip()
+
+
+# Channels whose transport renders Markdown / mrkdwn natively. There the
+# assistant's markdown is INTENDED formatting: flattening it would strip
+# the bold/italic/code/lists the client would otherwise render, and could
+# even unescape a deliberately code-wrapped ``\`@everyone\``` into a live
+# ping. Outbound text for these channels is sent verbatim. Every other
+# channel (QQ, Telegram, WeChat, Feishu text, ...) sends literal text and
+# is normalized.
+MARKDOWN_RENDERING_CHANNELS: frozenset[str] = frozenset({"discord", "slack"})
+
+
+def normalize_outbound_for_channel(text: str, channel: str) -> str:
+    """Normalize outbound text, but only for plain-text channels.
+
+    Markdown-rendering transports (:data:`MARKDOWN_RENDERING_CHANNELS`)
+    keep their native formatting and any intentionally escaped mentions —
+    only outer whitespace is trimmed (so a whitespace-only reply is still
+    detected as empty, matching :func:`normalize_outbound_text`). All
+    other channels send literal text and get the full normalization.
+    """
+    if channel in MARKDOWN_RENDERING_CHANNELS:
+        return text.strip()
+    return normalize_outbound_text(text)
+
+
+# ---------------------------------------------------------------------------
 # Sticker → vision-description placeholder
 # ---------------------------------------------------------------------------
 
@@ -504,6 +654,7 @@ __all__ = [
     "UnsupportedError",
     "UserId",
     "format_attribution_prefix",
+    "normalize_outbound_text",
     "split_on_msg_break",
     "sticker_placeholder",
 ]

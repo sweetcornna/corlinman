@@ -118,10 +118,17 @@ class _FakeTelegramSender:
         #: didn't include a keyboard. Tests for the ``ask_user`` path
         #: assert on this to confirm the buttons threaded through.
         self.sent_keyboards: list[list[list[dict[str, str]]] | None] = []
+        #: Inline-keyboard payloads observed on ``edit_message_text`` —
+        #: the single-chunk ask_user path attaches the buttons to the
+        #: edited placeholder instead of a fresh send (no duplicate).
+        self.edit_keyboards: list[list[list[dict[str, str]]] | None] = []
         self._next_message_id = 0
         # Test knobs: flip to make the corresponding sender call raise.
         self.send_message_should_raise = False
         self.edit_message_text_should_raise = False
+        # Flip to simulate Telegram rejecting the edit (rate-limit / 4xx)
+        # so the ask_user single-chunk path takes its send fallback.
+        self.edit_message_text_returns_false = False
 
     async def send_message(
         self,
@@ -138,11 +145,19 @@ class _FakeTelegramSender:
         return self._next_message_id
 
     async def edit_message_text(
-        self, chat_id: int, message_id: int, text: str
-    ) -> None:
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        inline_keyboard: list[list[dict[str, str]]] | None = None,
+    ) -> bool:
         if self.edit_message_text_should_raise:
             raise RuntimeError("simulated edit_message_text failure")
         self.edits.append((chat_id, message_id, text))
+        self.edit_keyboards.append(inline_keyboard)
+        # Mirror the real sender's success signal so the ask_user
+        # single-chunk path can decide whether to fall back to a send.
+        return not self.edit_message_text_returns_false
 
     async def send_chat_action(
         self, chat_id: int, action: str = "typing"
@@ -1463,11 +1478,16 @@ class TestHandleOneTelegram:
             svc, inbound, "m", sender, asyncio.Event()  # type: ignore[arg-type]
         )
 
-        # At least one send_message call must carry an inline_keyboard.
-        keyboards = [kb for kb in sender.sent_keyboards if kb is not None]
-        assert keyboards, (
-            "expected a send_message with inline_keyboard; sent_keyboards="
-            f"{sender.sent_keyboards!r}"
+        # The keyboard must surface exactly once — on the edited
+        # placeholder (single-chunk path) or a send (multi-chunk path).
+        keyboards = [
+            kb
+            for kb in (sender.sent_keyboards + sender.edit_keyboards)
+            if kb is not None
+        ]
+        assert len(keyboards) == 1, (
+            "expected exactly one inline_keyboard; "
+            f"sent={sender.sent_keyboards!r} edits={sender.edit_keyboards!r}"
         )
         kb = keyboards[-1]
         # Each option becomes one row with a single button.
@@ -1478,6 +1498,57 @@ class TestHandleOneTelegram:
         # meaningful synthesized text on press).
         for row, label in zip(kb, labels, strict=False):
             assert row[0]["callback_data"] == label
+
+        # Regression: the final reply must be delivered exactly once. The
+        # single-chunk ask_user path used to edit the placeholder AND
+        # send the same chunk again (the "asked twice" bug). Count only
+        # frames whose text IS the bare reply — transient spinner frames
+        # (❓/✍️/🧠 prefixed) echo the question but aren't deliveries.
+        reply = "Overwrite README.md?"
+        final_deliveries = sum(
+            1 for _, _, txt in sender.edits if txt.strip() == reply
+        ) + sum(1 for _, txt, _ in sender.sent if txt.strip() == reply)
+        assert final_deliveries == 1, (
+            f"final reply delivered {final_deliveries}x (duplicate send); "
+            f"edits={sender.edits!r} sent={sender.sent!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_handle_one_telegram_ask_user_falls_back_when_edit_rejected(
+        self,
+    ) -> None:
+        """When the single-chunk ask_user edit is rejected by Telegram
+        (rate-limit / 4xx), the reply + keyboard must still arrive via a
+        fresh send — never silently dropped."""
+        import asyncio
+        import json
+
+        args = json.dumps(
+            {"question": "Pick one?", "options": ["a", "b"]}
+        ).encode()
+        svc = _ScriptedChatService([
+            _Ev(kind="tool_call", plugin="builtin", tool="ask_user", args_json=args),
+            _Ev(kind="tool_result", plugin="builtin", tool="ask_user", duration_ms=1),
+            _Ev(kind="token_delta", text="Pick one?"),
+            _Ev(kind="done"),
+        ])
+        binding = ChannelBinding.telegram(bot_id=999, chat_id=42, user_id=42)
+        inbound: InboundEvent[Any] = InboundEvent(
+            channel="telegram", binding=binding, text="hi",
+            message_id="1", timestamp=0, mentioned=True,
+        )
+        sender = _FakeTelegramSender()
+        sender.edit_message_text_returns_false = True  # Telegram rejects the edit
+        await handle_one_telegram(
+            svc, inbound, "m", sender, asyncio.Event()  # type: ignore[arg-type]
+        )
+
+        # The keyboard must arrive on a fresh send (edit was rejected).
+        send_kbs = [kb for kb in sender.sent_keyboards if kb is not None]
+        assert len(send_kbs) == 1
+        assert [row[0]["text"] for row in send_kbs[0]] == ["a", "b"]
+        # And the reply text rode that send exactly once.
+        assert sum(1 for _, txt, _ in sender.sent if txt.strip() == "Pick one?") == 1
 
     @pytest.mark.asyncio
     async def test_handle_one_telegram_no_buttons_when_ask_user_omits_options(
@@ -2110,6 +2181,20 @@ class TestHandleOneDiscord:
         assert req.messages[0].content == "ping"
 
     @pytest.mark.asyncio
+    async def test_markdown_is_preserved_verbatim(self) -> None:
+        """Discord renders markdown natively, so the handler must NOT
+        flatten it — bold/code/escaped mentions reach the client intact."""
+        import asyncio
+
+        svc = _ScriptedChatService([
+            _Ev(kind="token_delta", text="see **bold** and `code`, not `@everyone`"),
+            _Ev(kind="done"),
+        ])
+        sender = _FakeDiscordSender()
+        await handle_one_discord(svc, _inbound("discord"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
+        assert sender.edits[-1][2] == "see **bold** and `code`, not `@everyone`"
+
+    @pytest.mark.asyncio
     async def test_error_renders_short_reply(self) -> None:
         """error event renders as a final [corlinman error] edit."""
         import asyncio
@@ -2340,6 +2425,20 @@ class TestHandleOneSlack:
         req = svc.calls[0]
         assert not isinstance(req, dict)
         assert req.model == "m"
+
+    @pytest.mark.asyncio
+    async def test_markdown_is_preserved_verbatim(self) -> None:
+        """Slack renders mrkdwn natively, so the handler must NOT flatten
+        it — formatting and escaped mentions reach the client intact."""
+        import asyncio
+
+        svc = _ScriptedChatService([
+            _Ev(kind="token_delta", text="see **bold** and `code`, not `@here`"),
+            _Ev(kind="done"),
+        ])
+        sender = _FakeSlackSender()
+        await handle_one_slack(svc, _inbound("slack"), "m", sender, asyncio.Event())  # type: ignore[arg-type]
+        assert sender.updates[-1][2] == "see **bold** and `code`, not `@here`"
 
     @pytest.mark.asyncio
     async def test_error_renders_short_reply(self) -> None:

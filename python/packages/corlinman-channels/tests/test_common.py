@@ -18,7 +18,162 @@ from corlinman_channels.common import (
     InboundEvent,
     TransportError,
     UnsupportedError,
+    normalize_outbound_for_channel,
+    normalize_outbound_text,
 )
+
+
+class TestNormalizeOutboundText:
+    """Plain-text channels render no markdown — flatten the scaffolding
+    while keeping code blocks and Chinese typography intact."""
+
+    def test_strips_bold_and_italic_emphasis(self) -> None:
+        assert normalize_outbound_text("- **id**: `zhang`") == "· id: zhang"
+        assert normalize_outbound_text("a *b* c __d__ e") == "a b c d e"
+        assert normalize_outbound_text("***x***") == "x"
+
+    def test_strips_headings_and_blockquotes(self) -> None:
+        assert normalize_outbound_text("## Title\nbody") == "Title\nbody"
+        assert normalize_outbound_text("> quoted") == "quoted"
+
+    def test_bullets_become_clean_middot(self) -> None:
+        out = normalize_outbound_text("- one\n- two")
+        assert out == "· one\n· two"
+
+    def test_preserves_chinese_full_width_punctuation(self) -> None:
+        s = "你好，世界。这是“引号”、顿号；问号？"
+        assert normalize_outbound_text(s) == s
+
+    def test_normalizes_ai_tell_latin_punctuation(self) -> None:
+        assert normalize_outbound_text("a — b") == "a - b"
+        assert normalize_outbound_text("wait…") == "wait..."
+
+    def test_preserves_fenced_code_blocks_verbatim(self) -> None:
+        src = "see:\n```py\nx = **1**  # not bold\n```\ndone"
+        out = normalize_outbound_text(src)
+        assert "x = **1**  # not bold" in out
+        assert "```py" in out
+
+    def test_preserves_underscores_in_identifiers_and_paths(self) -> None:
+        # Intra-word underscores are NOT markdown emphasis — must survive.
+        assert normalize_outbound_text("id: zhang_xuefeng") == "id: zhang_xuefeng"
+        assert normalize_outbound_text("my_file.py") == "my_file.py"
+        assert (
+            normalize_outbound_text("/tmp/foo_bar/baz_qux.txt")
+            == "/tmp/foo_bar/baz_qux.txt"
+        )
+        # Real underscore emphasis at word boundaries still flattens.
+        assert normalize_outbound_text("a __b__ c") == "a b c"
+        assert normalize_outbound_text("_lead_ word") == "lead word"
+
+    def test_preserves_asterisks_in_math_and_globs(self) -> None:
+        # Asterisks that aren't real emphasis (operators, wildcards,
+        # intra-word) must survive — same boundary rule as underscores.
+        assert normalize_outbound_text("2 * 3 * 4") == "2 * 3 * 4"
+        assert normalize_outbound_text("a*b*c") == "a*b*c"
+        assert normalize_outbound_text("globs: *.py and *.txt") == (
+            "globs: *.py and *.txt"
+        )
+        # Genuine emphasis at word boundaries still flattens.
+        assert normalize_outbound_text("a **bold** b") == "a bold b"
+        assert normalize_outbound_text("*lead* word") == "lead word"
+
+    def test_keeps_backticks_around_mentions(self) -> None:
+        # Stripping backticks off a mention could turn it into a live ping
+        # on render-and-parse channels (Slack/Discord) — keep them, even
+        # when the mention is not at the start of the span.
+        assert normalize_outbound_text("`@everyone`") == "`@everyone`"
+        assert normalize_outbound_text("`<@U123>`") == "`<@U123>`"
+        assert normalize_outbound_text("`please @everyone`") == "`please @everyone`"
+        assert normalize_outbound_text("`cc <@U123>`") == "`cc <@U123>`"
+        # Mentions adjacent to punctuation / text (no whitespace before) too.
+        assert normalize_outbound_text("`(<@U123>)`") == "`(<@U123>)`"
+        assert normalize_outbound_text("`cc<@U123>`") == "`cc<@U123>`"
+        # Non-mention inline code still unwraps.
+        assert normalize_outbound_text("the `value` here") == "the value here"
+
+    def test_preserves_unfenced_diff_markers(self) -> None:
+        # A diff/patch (even unfenced) must keep its - / + line markers.
+        diff = "--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n- old\n+ new"
+        assert normalize_outbound_text(diff) == diff
+        # A lone diff-add line is never turned into a bullet.
+        assert normalize_outbound_text("+ new line") == "+ new line"
+        # An abbreviated, header-less patch (paired -/+ change lines) keeps
+        # its deletion marker — the '+' line marks it as a diff so '- old'
+        # isn't rewritten to '· old'.
+        assert normalize_outbound_text("- old\n+ new") == "- old\n+ new"
+        # Ordinary prose bullets still normalize when there's no diff.
+        assert normalize_outbound_text("- one\n- two") == "· one\n· two"
+
+    def test_code_span_contents_are_not_emphasis_stripped(self) -> None:
+        # A dunder in a code span must NOT be eaten by the emphasis pass.
+        assert normalize_outbound_text("`__init__`") == "__init__"
+        assert normalize_outbound_text("call `__init__` now") == "call __init__ now"
+
+    def test_preserves_dunder_and_pycache_paths(self) -> None:
+        # Path/identifier underscores next to '.' or '/' are not emphasis.
+        assert normalize_outbound_text("__init__.py") == "__init__.py"
+        assert (
+            normalize_outbound_text("/tmp/__pycache__/mod.py")
+            == "/tmp/__pycache__/mod.py"
+        )
+        # Whitespace-flanked underscore emphasis still flattens.
+        assert normalize_outbound_text("a __bold__ b") == "a bold b"
+
+    def test_does_not_strip_repl_prompts_and_is_idempotent(self) -> None:
+        # '>>>' / '>>' REPL prompts are not blockquotes.
+        assert normalize_outbound_text(">>> print(1)") == ">>> print(1)"
+        assert normalize_outbound_text(">> nested") == ">> nested"
+        # A real blockquote still flattens, and re-running is a no-op.
+        once = normalize_outbound_text("> quoted")
+        assert once == "quoted"
+        assert normalize_outbound_text(once) == once
+        repl = ">>> code"
+        assert normalize_outbound_text(normalize_outbound_text(repl)) == repl
+
+    def test_idempotent(self) -> None:
+        once = normalize_outbound_text("- **a** `b` — c")
+        assert normalize_outbound_text(once) == once
+
+    def test_empty_and_plain_passthrough(self) -> None:
+        assert normalize_outbound_text("") == ""
+        assert normalize_outbound_text("just text") == "just text"
+
+
+class TestNormalizeOutboundForChannel:
+    """Markdown-rendering transports (Discord/Slack) must keep their
+    native formatting; plain-text channels get the full normalization."""
+
+    @pytest.mark.parametrize("channel", ["discord", "slack"])
+    def test_markdown_channels_pass_through_verbatim(self, channel: str) -> None:
+        # Bold/italic/code/lists/headings are INTENDED formatting these
+        # clients render — flattening them would strip what the user sees.
+        src = "## Title\n- **bold** and `code`\n> quote"
+        assert normalize_outbound_for_channel(src, channel) == src
+
+    @pytest.mark.parametrize("channel", ["discord", "slack"])
+    def test_markdown_channels_keep_escaped_mentions(self, channel: str) -> None:
+        # A deliberately code-wrapped mention must NOT be unescaped into a
+        # live ping on channels that render markdown.
+        src = "do not ping `@everyone` please"
+        assert normalize_outbound_for_channel(src, channel) == src
+
+    @pytest.mark.parametrize("channel", ["discord", "slack"])
+    def test_markdown_channels_trim_outer_whitespace(self, channel: str) -> None:
+        # Outer whitespace is trimmed so a whitespace-only reply still reads
+        # as empty, but inner markdown is untouched.
+        assert normalize_outbound_for_channel("   ", channel) == ""
+        assert normalize_outbound_for_channel("  **x**  ", channel) == "**x**"
+
+    @pytest.mark.parametrize(
+        "channel", ["qq", "telegram", "qq_official", "wechat_official", "feishu"]
+    )
+    def test_plain_text_channels_are_normalized(self, channel: str) -> None:
+        assert normalize_outbound_for_channel("- **x**", channel) == "· x"
+
+    def test_unknown_channel_defaults_to_normalization(self) -> None:
+        # Anything not explicitly markdown-rendering is treated as plain.
+        assert normalize_outbound_for_channel("**x**", "some_new_channel") == "x"
 
 
 class TestChannelBinding:
