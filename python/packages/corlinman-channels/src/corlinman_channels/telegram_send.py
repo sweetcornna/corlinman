@@ -18,6 +18,7 @@ import secrets
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -401,10 +402,19 @@ class TelegramSender:
             return
 
     async def edit_message_text(
-        self, chat_id: int, message_id: int, text: str
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        inline_keyboard: list[list[dict[str, str]]] | None = None,
     ) -> None:
         """POST ``/editMessageText``. Mutates an earlier message in place
         — used as the "mutable spinner line" while tool calls land.
+
+        When ``inline_keyboard`` is provided the edit also attaches a
+        ``reply_markup.inline_keyboard`` payload, so an ask_user prompt
+        whose whole reply fits one chunk can put its buttons directly on
+        the edited placeholder instead of sending a duplicate message.
 
         Best-effort: Telegram rejects edits that produce identical text
         (``message is not modified``); we treat any non-2xx as a no-op
@@ -414,11 +424,13 @@ class TelegramSender:
         """
         if time.time() < self._edit_rate_limit_until:
             return
-        body = {
+        body: dict[str, Any] = {
             "chat_id": chat_id,
             "message_id": message_id,
             "text": text,
         }
+        if inline_keyboard:
+            body["reply_markup"] = {"inline_keyboard": inline_keyboard}
         try:
             resp = await self.client.post(
                 self._endpoint("editMessageText"), json=body

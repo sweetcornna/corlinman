@@ -18,6 +18,7 @@ object regardless of transport.
 from __future__ import annotations
 
 import hashlib
+import re
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -287,6 +288,74 @@ def split_on_msg_break(text: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Outbound text normalization
+# ---------------------------------------------------------------------------
+
+# Inline emphasis markers stripped to their inner text. Ordered longest-first
+# so ``***x***`` / ``___x___`` collapse before the 2- and 1-char forms.
+_EMPHASIS_RE = re.compile(
+    r"(\*\*\*|___|\*\*|__|\*|_)(?P<inner>.+?)\1",
+    re.DOTALL,
+)
+# ``inline code`` → inner text (drop the backticks; chat clients show them raw).
+_INLINE_CODE_RE = re.compile(r"`([^`\n]+?)`")
+# A fenced code block — preserved verbatim so real code keeps its shape.
+_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
+# Leading ATX heading hashes: ``## Title`` → ``Title``.
+_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+", re.MULTILINE)
+# Leading blockquote markers: ``> quote`` → ``quote``.
+_BLOCKQUOTE_RE = re.compile(r"^\s{0,3}>\s?", re.MULTILINE)
+# Leading list bullet (-, *, +) → a clean middle-dot bullet.
+_BULLET_RE = re.compile(r"^(\s*)[-*+]\s+", re.MULTILINE)
+# AI-tell Latin punctuation → plain ASCII. Chinese full-width punctuation
+# (，。、：；？！“”‘’（）) is correct typography and deliberately left intact.
+_AI_PUNCT = {
+    "—": "-",  # — em dash
+    "–": "-",  # – en dash
+    "…": "...",  # … ellipsis
+    " ": " ",  # non-breaking space
+}
+_AI_PUNCT_RE = re.compile("|".join(re.escape(k) for k in _AI_PUNCT))
+
+
+def normalize_outbound_text(text: str) -> str:
+    """Flatten LLM markdown/AI-tell punctuation for plain-text channels.
+
+    Channels send literal text (no markdown rendering), so ``**bold**``,
+    ``- bullets``, ``# headings`` and ``` `code` ``` arrive as visual
+    clutter. This collapses that scaffolding to clean plain text while
+    PRESERVING: fenced code blocks (verbatim), Chinese full-width
+    punctuation (correct typography), and URLs/paths. Idempotent.
+    """
+    if not text:
+        return text
+
+    # Carve out fenced code blocks so their contents are never rewritten.
+    fences: list[str] = []
+
+    def _stash(m: re.Match[str]) -> str:
+        fences.append(m.group(0))
+        return f"\x00FENCE{len(fences) - 1}\x00"
+
+    work = _FENCE_RE.sub(_stash, text)
+
+    work = _HEADING_RE.sub("", work)
+    work = _BLOCKQUOTE_RE.sub("", work)
+    work = _BULLET_RE.sub(r"\1· ", work)
+    work = _INLINE_CODE_RE.sub(r"\1", work)
+    # Emphasis can nest (``**_x_**``); run twice to unwrap both layers.
+    work = _EMPHASIS_RE.sub(lambda m: m.group("inner"), work)
+    work = _EMPHASIS_RE.sub(lambda m: m.group("inner"), work)
+    work = _AI_PUNCT_RE.sub(lambda m: _AI_PUNCT[m.group(0)], work)
+    # Collapse 3+ blank lines left behind by stripped scaffolding.
+    work = re.sub(r"\n{3,}", "\n\n", work)
+
+    for i, fence in enumerate(fences):
+        work = work.replace(f"\x00FENCE{i}\x00", fence)
+    return work.strip()
+
+
+# ---------------------------------------------------------------------------
 # Sticker → vision-description placeholder
 # ---------------------------------------------------------------------------
 
@@ -504,6 +573,7 @@ __all__ = [
     "UnsupportedError",
     "UserId",
     "format_attribution_prefix",
+    "normalize_outbound_text",
     "split_on_msg_break",
     "sticker_placeholder",
 ]

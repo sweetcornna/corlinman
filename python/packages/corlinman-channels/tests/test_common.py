@@ -18,7 +18,48 @@ from corlinman_channels.common import (
     InboundEvent,
     TransportError,
     UnsupportedError,
+    normalize_outbound_text,
 )
+
+
+class TestNormalizeOutboundText:
+    """Plain-text channels render no markdown — flatten the scaffolding
+    while keeping code blocks and Chinese typography intact."""
+
+    def test_strips_bold_and_italic_emphasis(self) -> None:
+        assert normalize_outbound_text("- **id**: `zhang`") == "· id: zhang"
+        assert normalize_outbound_text("a *b* c __d__ e") == "a b c d e"
+        assert normalize_outbound_text("***x***") == "x"
+
+    def test_strips_headings_and_blockquotes(self) -> None:
+        assert normalize_outbound_text("## Title\nbody") == "Title\nbody"
+        assert normalize_outbound_text("> quoted") == "quoted"
+
+    def test_bullets_become_clean_middot(self) -> None:
+        out = normalize_outbound_text("- one\n- two")
+        assert out == "· one\n· two"
+
+    def test_preserves_chinese_full_width_punctuation(self) -> None:
+        s = "你好，世界。这是“引号”、顿号；问号？"
+        assert normalize_outbound_text(s) == s
+
+    def test_normalizes_ai_tell_latin_punctuation(self) -> None:
+        assert normalize_outbound_text("a — b") == "a - b"
+        assert normalize_outbound_text("wait…") == "wait..."
+
+    def test_preserves_fenced_code_blocks_verbatim(self) -> None:
+        src = "see:\n```py\nx = **1**  # not bold\n```\ndone"
+        out = normalize_outbound_text(src)
+        assert "x = **1**  # not bold" in out
+        assert "```py" in out
+
+    def test_idempotent(self) -> None:
+        once = normalize_outbound_text("- **a** `b` — c")
+        assert normalize_outbound_text(once) == once
+
+    def test_empty_and_plain_passthrough(self) -> None:
+        assert normalize_outbound_text("") == ""
+        assert normalize_outbound_text("just text") == "just text"
 
 
 class TestChannelBinding:

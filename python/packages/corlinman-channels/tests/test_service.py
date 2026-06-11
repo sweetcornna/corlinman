@@ -118,6 +118,10 @@ class _FakeTelegramSender:
         #: didn't include a keyboard. Tests for the ``ask_user`` path
         #: assert on this to confirm the buttons threaded through.
         self.sent_keyboards: list[list[list[dict[str, str]]] | None] = []
+        #: Inline-keyboard payloads observed on ``edit_message_text`` —
+        #: the single-chunk ask_user path attaches the buttons to the
+        #: edited placeholder instead of a fresh send (no duplicate).
+        self.edit_keyboards: list[list[list[dict[str, str]]] | None] = []
         self._next_message_id = 0
         # Test knobs: flip to make the corresponding sender call raise.
         self.send_message_should_raise = False
@@ -138,11 +142,16 @@ class _FakeTelegramSender:
         return self._next_message_id
 
     async def edit_message_text(
-        self, chat_id: int, message_id: int, text: str
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        inline_keyboard: list[list[dict[str, str]]] | None = None,
     ) -> None:
         if self.edit_message_text_should_raise:
             raise RuntimeError("simulated edit_message_text failure")
         self.edits.append((chat_id, message_id, text))
+        self.edit_keyboards.append(inline_keyboard)
 
     async def send_chat_action(
         self, chat_id: int, action: str = "typing"
@@ -1463,11 +1472,16 @@ class TestHandleOneTelegram:
             svc, inbound, "m", sender, asyncio.Event()  # type: ignore[arg-type]
         )
 
-        # At least one send_message call must carry an inline_keyboard.
-        keyboards = [kb for kb in sender.sent_keyboards if kb is not None]
-        assert keyboards, (
-            "expected a send_message with inline_keyboard; sent_keyboards="
-            f"{sender.sent_keyboards!r}"
+        # The keyboard must surface exactly once — on the edited
+        # placeholder (single-chunk path) or a send (multi-chunk path).
+        keyboards = [
+            kb
+            for kb in (sender.sent_keyboards + sender.edit_keyboards)
+            if kb is not None
+        ]
+        assert len(keyboards) == 1, (
+            "expected exactly one inline_keyboard; "
+            f"sent={sender.sent_keyboards!r} edits={sender.edit_keyboards!r}"
         )
         kb = keyboards[-1]
         # Each option becomes one row with a single button.
@@ -1478,6 +1492,20 @@ class TestHandleOneTelegram:
         # meaningful synthesized text on press).
         for row, label in zip(kb, labels, strict=False):
             assert row[0]["callback_data"] == label
+
+        # Regression: the final reply must be delivered exactly once. The
+        # single-chunk ask_user path used to edit the placeholder AND
+        # send the same chunk again (the "asked twice" bug). Count only
+        # frames whose text IS the bare reply — transient spinner frames
+        # (❓/✍️/🧠 prefixed) echo the question but aren't deliveries.
+        reply = "Overwrite README.md?"
+        final_deliveries = sum(
+            1 for _, _, txt in sender.edits if txt.strip() == reply
+        ) + sum(1 for _, txt, _ in sender.sent if txt.strip() == reply)
+        assert final_deliveries == 1, (
+            f"final reply delivered {final_deliveries}x (duplicate send); "
+            f"edits={sender.edits!r} sent={sender.sent!r}"
+        )
 
     @pytest.mark.asyncio
     async def test_handle_one_telegram_no_buttons_when_ask_user_omits_options(

@@ -156,6 +156,7 @@ from corlinman_channels.commands import (
 )
 from corlinman_channels.common import AlbumDebouncer, InboundEvent, TransportError
 from corlinman_channels.common import format_attribution_prefix as _attribution
+from corlinman_channels.common import normalize_outbound_text as _normalize_outbound
 from corlinman_channels.common import split_on_msg_break as _split_on_msg_break
 from corlinman_channels.discord import (
     DEFAULT_GATEWAY_URL,
@@ -1404,7 +1405,7 @@ async def handle_one_qq(
             body = summary + "\n" + body
         _log.error("qq handle_one error user=%s error=%r", event.user_id, error_message)
     else:
-        body = "".join(text_parts)
+        body = _normalize_outbound("".join(text_parts))
         if not body.strip():
             # Empty assistant reply. If we ran tools this turn, the user
             # still deserves to see what happened — send just the
@@ -2715,7 +2716,7 @@ async def handle_one_telegram(
     if error_message is not None:
         body = f"[corlinman error] {error_message}"
     else:
-        body = "".join(spinner.text_parts).strip()
+        body = _normalize_outbound("".join(spinner.text_parts))
         if not body:
             # Empty reply — tidy the placeholder so the user knows the
             # turn ended rather than leaving "✍️ 生成回复中..." stuck.
@@ -2762,9 +2763,22 @@ async def handle_one_telegram(
                     # When this is also the last bubble, the keyboard goes on
                     # the very last chunk — which may be the same chunk-0 or
                     # a later follow-up.
-                    if is_last_bubble:
-                        # Single bubble: edit placeholder with all but last
-                        # chunk, then send last chunk with keyboard.
+                    if is_last_bubble and len(b_chunks) == 1:
+                        # Whole reply fits one chunk: edit the placeholder
+                        # with the text AND the keyboard in a single call.
+                        # (Previously this edited the placeholder, then
+                        # ALSO sent the same chunk fresh to carry the
+                        # keyboard — the duplicate "asked twice" message.)
+                        await sender.edit_message_text(
+                            chat_id,
+                            placeholder_id,
+                            b_chunks[0],
+                            inline_keyboard=keyboard,
+                        )
+                    elif is_last_bubble:
+                        # Single bubble, multiple chunks: edit placeholder
+                        # with chunk-0, send the middle chunks, then send
+                        # the genuinely-last chunk with the keyboard.
                         await sender.edit_message_text(
                             chat_id, placeholder_id, b_chunks[0]
                         )
@@ -2772,12 +2786,9 @@ async def handle_one_telegram(
                             await sender.send_message(
                                 chat_id, chunk, reply_to_message_id=reply_to
                             )
-                        # Send last chunk (may equal b_chunks[0] if only one
-                        # chunk) with the keyboard.
-                        final_chunk = b_chunks[-1] if len(b_chunks) > 1 else b_chunks[0]
                         await sender.send_message(
                             chat_id,
-                            final_chunk,
+                            b_chunks[-1],
                             reply_to_message_id=reply_to,
                             inline_keyboard=keyboard,
                         )
@@ -3531,7 +3542,7 @@ async def handle_one_discord(
     if error_message is not None:
         body = f"[corlinman error] {error_message}"
     else:
-        body = "".join(spinner.text_parts).strip()
+        body = _normalize_outbound("".join(spinner.text_parts))
         if not body:
             if placeholder_id is not None:
                 try:
@@ -3825,7 +3836,7 @@ async def handle_one_slack(
     if error_message is not None:
         body = f"[corlinman error] {error_message}"
     else:
-        body = "".join(spinner.text_parts).strip()
+        body = _normalize_outbound("".join(spinner.text_parts))
         if not body:
             if placeholder_ts is not None:
                 try:
@@ -4118,7 +4129,7 @@ async def handle_one_feishu(
     if error_message is not None:
         body = f"[corlinman error] {error_message}"
     else:
-        body = "".join(spinner.text_parts).strip()
+        body = _normalize_outbound("".join(spinner.text_parts))
         if not body:
             if placeholder_id is not None:
                 try:
@@ -4598,7 +4609,7 @@ async def handle_one_qq_official(
     if error_message is not None:
         body = f"[corlinman error] {error_message}"
     else:
-        body = "".join(text_parts).strip()
+        body = _normalize_outbound("".join(text_parts))
         if not body:
             # If the model said nothing but we DID do work (uploaded
             # an image, called a tool), still ship the status so the
@@ -4949,7 +4960,7 @@ async def handle_one_wechat_official(
     if error_message is not None:
         body = f"[corlinman error] {error_message}"
     else:
-        body = "".join(text_parts).strip()
+        body = _normalize_outbound("".join(text_parts))
         if not body:
             # Empty reply — release the webhook so it doesn't sit on
             # the passive deadline forever. (Previously we'd ship the
@@ -5185,7 +5196,7 @@ async def _collect_reply(
 
     if error_message is not None:
         return f"[corlinman error] {error_message}"
-    body = "".join(text_parts)
+    body = _normalize_outbound("".join(text_parts))
     if not body.strip():
         return None
     return body
