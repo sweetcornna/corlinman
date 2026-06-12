@@ -401,13 +401,18 @@ h1 em,.sec-head h2 em{background-size:220% 100%;animation:shimmer 8s ease-in-out
   opacity:0;transition:opacity .5s}
 .pillar:hover::before{opacity:1}
 
-/* ---------- the thread : one signal travels the page ---------- */
-#thread{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:1;overflow:visible;display:none}
-#thread path{fill:none;stroke:url(#threadGrad);stroke-linecap:round}
-#thread .th-core{stroke-width:1.4;opacity:.65}
-#thread .th-glow{stroke-width:7;opacity:.10}
-#thread .th-node{fill:#0a0e1c;stroke:rgba(233,237,249,.30);stroke-width:1;transition:fill .7s var(--ease-glide),stroke .7s,filter .7s}
-#thread .th-node.lit{fill:var(--tide);stroke:rgba(84,205,255,.9);filter:drop-shadow(0 0 7px rgba(84,205,255,.85))}
+/* ---------- chapter hud ---------- */
+#hud{position:fixed;left:26px;bottom:22px;z-index:40;display:flex;align-items:center;gap:16px;
+  font-family:var(--mono);font-size:11px;letter-spacing:.14em;color:var(--ink-4)}
+#hud .ticks{display:flex;gap:4px}
+#hud .ticks button{width:18px;height:16px;padding:7px 1px;background:none;border:none;cursor:pointer;position:relative}
+#hud .ticks button::after{content:"";position:absolute;left:1px;right:1px;top:7px;height:2px;
+  background:var(--glass-border-hi);transition:background .4s,box-shadow .4s}
+#hud .ticks button:hover::after{background:var(--ink-3)}
+#hud .ticks button.on::after{background:var(--tide);box-shadow:0 0 9px rgba(84,205,255,.85)}
+#hud .hud-label{text-transform:uppercase;white-space:nowrap}
+#hud .hud-label b{color:var(--current);font-weight:500;margin-right:9px}
+@media (max-width:860px){#hud{display:none}}
 
 /* ---------- hero orbits ---------- */
 .orbit{position:absolute;left:50%;top:50%;width:235%;height:235%;transform:translate(-50%,-50%);pointer-events:none;overflow:visible;z-index:-1}
@@ -415,16 +420,6 @@ h1 em,.sec-head h2 em{background-size:220% 100%;animation:shimmer 8s ease-in-out
 .orbit circle{fill:var(--tide);filter:drop-shadow(0 0 5px rgba(84,205,255,.95))}
 .orbit .sat2{fill:var(--plasma);filter:drop-shadow(0 0 5px rgba(164,123,255,.95))}
 .reduced .orbit circle{display:none}
-
-/* ---------- seal : 活 ---------- */
-.seal{display:inline-flex;align-items:center;justify-content:center;
-  width:1.16em;height:1.16em;border-radius:.12em;
-  background:linear-gradient(155deg,#cf4a32 0%,#9c2c1c 100%);
-  color:#f6efe3;font-family:var(--serif-cjk);font-weight:900;font-style:normal;line-height:1;
-  box-shadow:0 2px 18px rgba(170,45,22,.45),inset 0 0 0 1px rgba(246,239,227,.22),inset 0 0 10px rgba(60,10,4,.5);
-  transform:rotate(-4deg);user-select:none}
-h1 .seal{font-size:.34em;vertical-align:.22em;margin-left:.4em}
-.seal-ft{font-size:17px;margin-left:12px;vertical-align:-3px}
 
 /* ---------- chapter numerals ---------- */
 .eyebrow .chno{font-style:normal;color:var(--ink-4);margin-right:12px;padding-right:12px;border-right:1px solid var(--glass-border)}
@@ -448,6 +443,10 @@ footer{border-top:1px solid var(--glass-border);padding:64px 0 46px;background:r
 <div class="bg-static" aria-hidden="true"></div>
 <div class="grain" aria-hidden="true"></div>
 <div class="progress" aria-hidden="true"><i></i></div>
+<div id="hud" role="navigation" aria-label="chapters">
+  <div class="ticks"></div>
+  <p class="hud-label"></p>
+</div>
 
 <nav aria-label="main">
   <a class="nav-brand" href="#top" aria-label="corlinman home">
@@ -462,21 +461,6 @@ footer{border-top:1px solid var(--glass-border);padding:64px 0 46px;background:r
 </nav>
 
 <main id="top">
-
-  <!-- the thread : one luminous signal travelling the whole page -->
-  <svg id="thread" aria-hidden="true">
-    <defs>
-      <linearGradient id="threadGrad" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0" stop-color="#54cdff"/>
-        <stop offset=".42" stop-color="#5e9bff"/>
-        <stop offset=".78" stop-color="#a47bff"/>
-        <stop offset="1" stop-color="#ffae6e"/>
-      </linearGradient>
-    </defs>
-    <path class="th-glow" d=""/>
-    <path class="th-core" d=""/>
-    <g id="th-nodes"></g>
-  </svg>
 
   <!-- ================= hero ================= -->
   <section class="hero">
@@ -497,7 +481,6 @@ footer{border-top:1px solid var(--glass-border);padding:64px 0 46px;background:r
         <span class="wm"><span class="w">住在你</span></span><span class="wm"><span class="w"><em>机器里</em></span></span><span class="wm"><span class="w">的</span></span><br>
         <span class="wm"><span class="w">智能体。</span></span>
         </span>
-        <span class="seal" lang="zh" aria-hidden="true">活</span>
       </h1>
       <p class="hero-sub">
         <span class="i-en">corlinman hands a language model durable memory, real sandboxed tools, seven chat channels, and a human approval gate — one binary you run, audit, and own, end to end.
@@ -767,7 +750,7 @@ footer{border-top:1px solid var(--glass-border);padding:64px 0 46px;background:r
   <div class="wrap">
     <div class="foot-top">
       <div>
-        <p class="foot-brand"><img src="logo.png" alt="">corlinman<span class="seal seal-ft" lang="zh" aria-hidden="true">活</span></p>
+        <p class="foot-brand"><img src="logo.png" alt="">corlinman</p>
         <p class="foot-tag"><span class="i-en">Built for people who keep their own machines.
           <span class="zh" lang="zh">把智能体留在自己手里。</span></span>
           <span class="i-zh">为自己掌管机器的人而造。
@@ -787,6 +770,7 @@ footer{border-top:1px solid var(--glass-border);padding:64px 0 46px;background:r
   </div>
 </footer>
 
+<script src="https://cdn.jsdelivr.net/npm/three@0.149.0/build/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/gsap@3.13.0/dist/gsap.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/gsap@3.13.0/dist/ScrollTrigger.min.js"></script>
 <script>
@@ -813,24 +797,41 @@ if (REDUCED) document.body.classList.add("reduced");
 })();
 
 /* ============================================================
-   ink tide — procedural domain-warped ink veils. single pass, no
-   feedback buffers (immune to 8-bit quantization mosaic). no stars.
-   the palette is a narrative: deep night → violet thought → tide
-   cyan → a warm dawn rising from the bottom as you reach install.
-   pointerdown drops an ink ripple. webgl2 when available.
+   the current — a three.js journey behind the page. the ink-tide
+   nebula (single pass, no feedback buffers, static dither) sits on
+   the far plane; one luminous ribbon travels the whole document in
+   3d, weaving near and far between chapters, passing behind the
+   frosted-glass cards; wireframe stations ignite as it arrives;
+   light pulses ride the ribbon — ambient ones every few seconds,
+   a bright one on every click/tap. the camera glides with scroll
+   and leans toward the pointer.
    ============================================================ */
-function createInk(canvas){
-  var opts = {alpha:false,depth:false,stencil:false,antialias:false,powerPreference:"high-performance"};
-  var gl = canvas.getContext("webgl2",opts)
-        || canvas.getContext("webgl",opts)
-        || canvas.getContext("experimental-webgl",opts);
-  if(!gl) return null;
+function createScene(canvas){
+  if(typeof THREE === "undefined") return null;
+  var renderer;
+  try{
+    renderer = new THREE.WebGLRenderer({canvas:canvas,antialias:false,alpha:false,powerPreference:"high-performance"});
+  }catch(e){ return null; }
 
   var isMobile = window.matchMedia("(pointer:coarse)").matches || Math.min(screen.width,screen.height) < 700;
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,1.5)*(isMobile?0.5:0.66));
+  renderer.setClearColor(0x060912,1);
 
-  var VERT = "attribute vec2 aPos;varying vec2 vUv;void main(){vUv=aPos*0.5+0.5;gl_Position=vec4(aPos,0.,1.);}";
-  var FRAG = [
-  "precision highp float;",
+  var scene = new THREE.Scene();
+  var FOV = 50, CAMZ = 6;
+  var camera = new THREE.PerspectiveCamera(FOV,1,0.1,80);
+  camera.position.set(0,0,CAMZ);
+  var halfH = Math.tan(FOV*Math.PI/360)*CAMZ;  /* world half-height at z=0 */
+  var halfW = halfH;                            /* refined in resize()      */
+  var wpp = 1;                                  /* world units per px       */
+
+  /* ---- nebula ground : ink-tide shader on the far plane ---- */
+  var bgUniforms = {
+    uTime:{value:0},uAspect:{value:1},uShift:{value:0},uEnergy:{value:1},
+    uPtr:{value:0},uMouse:{value:new THREE.Vector2(.5,.5)},uGlow:{value:0},uChapter:{value:0},
+    uR0:{value:new THREE.Vector3(0,0,9)},uR1:{value:new THREE.Vector3(0,0,9)},uR2:{value:new THREE.Vector3(0,0,9)}
+  };
+  var BG_FRAG = [
   "varying vec2 vUv;",
   "uniform float uTime;uniform float uAspect;uniform float uShift;uniform float uEnergy;uniform float uPtr;uniform float uGlow;uniform float uChapter;",
   "uniform vec2 uMouse;",
@@ -902,165 +903,317 @@ function createInk(canvas){
   "  gl_FragColor=vec4(col+dith,1.0);",
   "}"
   ].join("\n").replace("OCT", isMobile ? "3" : "4");
+  var bgMat = new THREE.ShaderMaterial({
+    uniforms:bgUniforms, depthWrite:false, depthTest:false,
+    vertexShader:"varying vec2 vUv;void main(){vUv=uv;gl_Position=vec4(position.xy,1.0,1.0);}",
+    fragmentShader:BG_FRAG
+  });
+  var bg = new THREE.Mesh(new THREE.PlaneGeometry(2,2), bgMat);
+  bg.frustumCulled=false; bg.renderOrder=-1;
+  scene.add(bg);
 
-  function compile(type,src){
-    var s = gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
-    if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){ console.warn(gl.getShaderInfoLog(s)); return null; }
-    return s;
+  /* ---- the ribbon ---- */
+  var RIB_SEG = isMobile?420:800, RIB_RAD = 0.02;
+  function makeRibUniforms(a){
+    return {
+      uHead:{value:0},uTime:{value:0},uEnergy:{value:1},uAlpha:{value:a},
+      uCur:{value:new THREE.Vector2(99,99)},
+      uP0:{value:new THREE.Vector2(-1,0)},uP1:{value:new THREE.Vector2(-1,0)},
+      uP2:{value:new THREE.Vector2(-1,0)},uP3:{value:new THREE.Vector2(-1,0)}
+    };
   }
-  var prog = gl.createProgram();
-  var vs = compile(gl.VERTEX_SHADER,VERT), fs = compile(gl.FRAGMENT_SHADER,FRAG);
-  if(!vs||!fs) return null;
-  gl.attachShader(prog,vs); gl.attachShader(prog,fs); gl.linkProgram(prog);
-  if(!gl.getProgramParameter(prog,gl.LINK_STATUS)){ console.warn(gl.getProgramInfoLog(prog)); return null; }
-  gl.useProgram(prog);
-
-  var quad = gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER,quad);
-  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,3,-1,-1,3]),gl.STATIC_DRAW);
-  var loc = gl.getAttribLocation(prog,"aPos");
-  gl.enableVertexAttribArray(loc);
-  gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
-
-  var U = {};
-  ["uTime","uAspect","uShift","uEnergy","uPtr","uMouse","uGlow","uChapter","uR0","uR1","uR2"].forEach(function(n){ U[n]=gl.getUniformLocation(prog,n); });
-
-  var W,H,aspect;
-  function resize(){
-    var s = Math.min(window.devicePixelRatio||1,1.5)*(isMobile?0.5:0.66);
-    W = Math.max(2,Math.floor(canvas.clientWidth*s));
-    H = Math.max(2,Math.floor(canvas.clientHeight*s));
-    canvas.width = W; canvas.height = H;
-    aspect = W/H;
-    gl.viewport(0,0,W,H);
+  var RIB_VERT = [
+  "varying float vT;varying float vCur;varying vec3 vN;varying vec3 vV;",
+  "uniform vec2 uCur;",
+  "void main(){",
+  "  vT=uv.x;",
+  "  vec3 p=position;",
+  "  vec2 dxy=p.xy-uCur;",
+  "  float infl=exp(-dot(dxy,dxy)*1.6);",
+  "  vCur=infl;",
+  "  p.xy+=normalize(dxy+vec2(0.0001,0.0))*infl*0.22;",
+  "  p.z+=infl*0.25;",
+  "  vN=normalMatrix*normal;",
+  "  vec4 mv=modelViewMatrix*vec4(p,1.0);",
+  "  vV=-mv.xyz;",
+  "  gl_Position=projectionMatrix*mv;",
+  "}"].join("\n");
+  var RIB_FRAG = [
+  "varying float vT;varying float vCur;varying vec3 vN;varying vec3 vV;",
+  "uniform float uHead;uniform float uTime;uniform float uEnergy;uniform float uAlpha;",
+  "uniform vec2 uP0;uniform vec2 uP1;uniform vec2 uP2;uniform vec2 uP3;",
+  "void main(){",
+  "  float edge=smoothstep(uHead,uHead-0.02,vT);",
+  "  if(edge<=0.002) discard;",
+  "  vec3 cA=vec3(0.33,0.80,1.0);vec3 cB=vec3(0.37,0.61,1.0);vec3 cC=vec3(0.64,0.48,1.0);vec3 cD=vec3(1.0,0.66,0.40);",
+  "  vec3 col=mix(cA,cB,smoothstep(0.0,0.35,vT));",
+  "  col=mix(col,cC,smoothstep(0.35,0.75,vT));",
+  "  col=mix(col,cD,smoothstep(0.82,1.0,vT));",
+  "  float puls=uP0.y*exp(-pow((vT-uP0.x)*90.0,2.0));",
+  "  puls+=uP1.y*exp(-pow((vT-uP1.x)*90.0,2.0));",
+  "  puls+=uP2.y*exp(-pow((vT-uP2.x)*90.0,2.0));",
+  "  puls+=uP3.y*exp(-pow((vT-uP3.x)*90.0,2.0));",
+  "  float rim=pow(1.0-abs(dot(normalize(vN),normalize(vV))),1.5);",
+  "  float head=exp(-pow((uHead-vT)*160.0,2.0))*1.3;",
+  "  float b=0.5+0.35*rim+vCur*0.9+puls*2.4+head+0.15*clamp(uEnergy-1.0,0.0,1.5);",
+  "  float shimmer=0.92+0.08*sin(vT*42.0-uTime*1.1);",
+  "  gl_FragColor=vec4(col*b*shimmer,edge*0.9*uAlpha);",
+  "}"].join("\n");
+  function ribMat(u){
+    return new THREE.ShaderMaterial({uniforms:u,vertexShader:RIB_VERT,fragmentShader:RIB_FRAG,
+      transparent:true,blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide});
   }
-  resize();
-  var rt; window.addEventListener("resize",function(){ clearTimeout(rt); rt=setTimeout(resize,150); });
+  var ribUniformsCore=makeRibUniforms(isMobile?0.78:1.0), ribUniformsGlow=makeRibUniforms(isMobile?0.11:0.16);
+  var ribCore=new THREE.Mesh(new THREE.BufferGeometry(),ribMat(ribUniformsCore));
+  var ribGlow=new THREE.Mesh(new THREE.BufferGeometry(),ribMat(ribUniformsGlow));
+  ribCore.frustumCulled=false; ribGlow.frustumCulled=false;
+  scene.add(ribGlow); scene.add(ribCore);
 
-  // pointer: lerped position + strength that swells on movement and decays
-  var mx=0.5,my=0.5,tmx=0.5,tmy=0.5,ptr=0,tptr=0,tglow=0,glow=0,lastX=null,lastY=null;
-  window.addEventListener("pointermove",function(e){
-    var x=e.clientX/canvas.clientWidth, y=1-e.clientY/canvas.clientHeight;
-    if(lastX!==null){
-      var sp=Math.hypot(x-lastX,y-lastY);
-      tptr=Math.min(1.4, tptr + sp*26.0);
+  /* ---- stations : one wireframe beacon per chapter ----
+     fx multiplies edgeX (1.0 = just outside the content column);
+     the pinned loop chapter drifts FAR, behind its giant glyphs */
+  var SECTIONS=[
+    {sel:".loop",   fx: 0.55, dy:0.45, z:-1.9},
+    {sel:".demo",   fx:-1.00, dy:0.30, z: 0.6},
+    {sel:".pillars",fx: 1.00, dy:0.35, z: 0.5},
+    {sel:".ops",    fx:-1.00, dy:0.30, z: 0.6},
+    {sel:".install",fx: 1.00, dy:0.40, z: 0.4},
+    {sel:".wikis",  fx:-0.95, dy:0.30, z:-1.2}
+  ];
+  var stations=[];
+  var stGeo=new THREE.EdgesGeometry(new THREE.OctahedronGeometry(0.085,0));
+  for(var si=0;si<SECTIONS.length;si++){
+    var stM=new THREE.LineBasicMaterial({color:0x2e3a5c,transparent:true,opacity:0,blending:THREE.AdditiveBlending,depthWrite:false});
+    var stMesh=new THREE.LineSegments(stGeo,stM);
+    stMesh.visible=false; scene.add(stMesh);
+    stations.push({mesh:stMesh,mat:stM,lit:0,y:0});
+  }
+
+  /* ---- dust : depth bokeh, static brightness (not stars) ---- */
+  function dotTexture(){
+    var c=document.createElement("canvas"); c.width=c.height=64;
+    var g=c.getContext("2d");
+    var grd=g.createRadialGradient(32,32,0,32,32,32);
+    grd.addColorStop(0,"rgba(205,222,255,1)");
+    grd.addColorStop(.5,"rgba(160,190,255,.32)");
+    grd.addColorStop(1,"rgba(120,160,255,0)");
+    g.fillStyle=grd; g.fillRect(0,0,64,64);
+    return new THREE.CanvasTexture(c);
+  }
+  var dustMat=new THREE.PointsMaterial({map:dotTexture(),size:0.5,transparent:true,opacity:0.16,
+    depthWrite:false,blending:THREE.AdditiveBlending,sizeAttenuation:true,color:0x9db8ff});
+  var dust=null;
+  function buildDust(docWorldH){
+    if(dust){ scene.remove(dust); dust.geometry.dispose(); }
+    var N=isMobile?60:140;
+    var pos=new Float32Array(N*3);
+    for(var i=0;i<N;i++){
+      pos[i*3]=(Math.random()*2-1)*halfW*1.35;
+      pos[i*3+1]=-Math.random()*docWorldH;
+      pos[i*3+2]=-2.6+Math.random()*4.0;
     }
-    tglow=1.0;
-    lastX=x; lastY=y; tmx=x; tmy=y;
+    var g=new THREE.BufferGeometry();
+    g.setAttribute("position",new THREE.BufferAttribute(pos,3));
+    dust=new THREE.Points(g,dustMat);
+    scene.add(dust);
+  }
+
+  /* ---- geometry from the document ---- */
+  var curve=null, docH=1;
+  function rebuild(){
+    var vh=window.innerHeight;
+    wpp=(halfH*2)/Math.max(1,vh);
+    docH=Math.max(1,document.documentElement.scrollHeight);
+    function wy(y){ return -y*wpp; }
+    var pts=[];
+    var hero=document.querySelector(".hero");
+    var heroH=hero?hero.offsetHeight:vh;
+    /* usable lane just outside the 1180px content column */
+    var wrapHalfPx=Math.min(590,(window.innerWidth-48)/2);
+    var edgeX=Math.min(halfW*0.90,(wrapHalfPx+120)*wpp);
+    pts.push(new THREE.Vector3(0.52*halfW,wy(heroH*0.42),-1.0));
+    var prevBottom=heroH;
+    for(var i=0;i<SECTIONS.length;i++){
+      var cfg=SECTIONS[i];
+      var el=document.querySelector(cfg.sel); if(!el) continue;
+      var top=el.getBoundingClientRect().top+window.scrollY;
+      var h=el.offsetHeight;
+      var crossY=(prevBottom+top)/2;
+      pts.push(new THREE.Vector3(((i%2)?-0.12:0.08)*halfW,wy(crossY),-2.1));
+      var z=isMobile?Math.min(cfg.z,-1.4):cfg.z;
+      var sp=new THREE.Vector3(cfg.fx*edgeX,wy(top+h*cfg.dy),z);
+      pts.push(sp);
+      stations[i].mesh.position.copy(sp);
+      stations[i].mesh.visible=true;
+      stations[i].y=sp.y;
+      prevBottom=top+h;
+    }
+    pts.push(new THREE.Vector3(0.20*halfW,wy(docH-vh*0.5),-0.6));
+    pts.push(new THREE.Vector3(0,wy(docH-30),0.1));
+    curve=new THREE.CatmullRomCurve3(pts,false,"centripetal");
+    var tube=new THREE.TubeGeometry(curve,RIB_SEG,RIB_RAD,isMobile?5:6,false);
+    var tubeG=new THREE.TubeGeometry(curve,Math.floor(RIB_SEG*0.6),RIB_RAD*3.4,isMobile?5:6,false);
+    ribCore.geometry.dispose(); ribCore.geometry=tube;
+    ribGlow.geometry.dispose(); ribGlow.geometry=tubeG;
+    buildDust(docH*wpp);
+  }
+
+  /* ---- pointer ---- */
+  var W=2,H=2;
+  var mx=.5,my=.5,tmx=.5,tmy=.5,ptr=0,tptr=0,glow=0,tglow=0,lastX=null,lastY=null;
+  var ndcX=0,ndcY=0;
+  window.addEventListener("pointermove",function(e){
+    var x=e.clientX/W, y=1-e.clientY/H;
+    if(lastX!==null){ tptr=Math.min(1.4,tptr+Math.hypot(x-lastX,y-lastY)*26.0); }
+    tglow=1.0; lastX=x; lastY=y; tmx=x; tmy=y;
+    ndcX=x*2-1; ndcY=y*2-1;
   },{passive:true});
 
-  // ink ripples: pointerdown drops a ring (3 slots, round-robin)
-  var rip=[[0,0,9],[0,0,9],[0,0,9]], ripIdx=0;
+  /* ink ripples on the nebula + a bright pulse riding the ribbon */
+  var rip=[[0,0,9],[0,0,9],[0,0,9]],ripIdx=0;
+  var pulses=[];
+  function spawnPulse(t0,str,speed){
+    if(pulses.length>=4) pulses.shift();
+    pulses.push({t:t0,str:str,sp:speed});
+  }
   window.addEventListener("pointerdown",function(e){
-    var x=(e.clientX/canvas.clientWidth-0.5)*aspect;
-    var y=(0.5-e.clientY/canvas.clientHeight);
+    var x=(e.clientX/W-0.5)*camera.aspect;
+    var y=(0.5-e.clientY/H);
     rip[ripIdx]=[x,y,0.001]; ripIdx=(ripIdx+1)%3;
     tptr=Math.min(1.4,tptr+0.35); tglow=1.0;
+    spawnPulse(Math.max(0,headT-0.10),1.0,0.22);
   },{passive:true});
+  setInterval(function(){ if(!document.hidden) spawnPulse(0,0.45,0.15); },6500);
 
-  var time=0, last=performance.now();
-  var energy=1, targetEnergy=1, shift=0, chapter=0;
-  var visible=true, skip=false, mc=0, docH=1;
-  function measure(){ docH=Math.max(1,document.documentElement.scrollHeight-window.innerHeight); }
-  measure();
+  /* ---- resize ---- */
+  function resize(){
+    W=canvas.clientWidth||window.innerWidth; H=canvas.clientHeight||window.innerHeight;
+    renderer.setSize(W,H,false);
+    camera.aspect=W/H; camera.updateProjectionMatrix();
+    halfW=halfH*camera.aspect;
+    bgUniforms.uAspect.value=camera.aspect;
+    rebuild();
+  }
+  var rt; window.addEventListener("resize",function(){ clearTimeout(rt); rt=setTimeout(resize,160); });
+  window.addEventListener("load",function(){ setTimeout(resize,80); });
+  resize();
+
+  /* ---- frame ---- */
+  var time=0,last=performance.now(),energy=1,targetEnergy=1,shift=0,chapter=0,headT=0;
+  var visible=true,skip=false;
   document.addEventListener("visibilitychange",function(){ visible=!document.hidden; last=performance.now(); });
-
+  var dimC=new THREE.Color(0x2e3a5c), litC=new THREE.Color(0x54cdff);
   function frame(){
     requestAnimationFrame(frame);
     if(!visible) return;
-    if(isMobile){ skip=!skip; if(skip) return; }   // ~30fps on mobile
+    if(isMobile){ skip=!skip; if(skip) return; }   /* ~30fps on mobile */
     var now=performance.now();
     var dt=Math.min((now-last)/1000,1/30); last=now;
-    if((mc++%120)===0) measure();
-    energy += (targetEnergy-energy)*0.04;
-    targetEnergy += (1-targetEnergy)*0.02;
-    time += dt*(0.55+0.45*energy);
+    time+=dt*(0.55+0.45*energy);
+    energy+=(targetEnergy-energy)*0.04; targetEnergy+=(1-targetEnergy)*0.02;
     mx+=(tmx-mx)*0.06; my+=(tmy-my)*0.06;
     ptr+=(tptr-ptr)*0.08; tptr*=0.94;
     glow+=(tglow-glow)*0.05; tglow*=0.988;
-    var chT=(window.scrollY||0)/docH;
-    chapter+=(chT-chapter)*0.05;
+    var sy=window.scrollY||0, vh=window.innerHeight;
+    chapter+=((sy/Math.max(1,docH-vh))-chapter)*0.05;
+    camera.position.y=-(sy+vh*0.5)*wpp;
+    camera.position.x+=(ndcX*0.30-camera.position.x)*0.04;
+    camera.rotation.y+=((-ndcX*0.05)-camera.rotation.y)*0.04;
+    camera.rotation.x+=((ndcY*0.035)-camera.rotation.x)*0.04;
+    var hT=Math.min(1,(sy+vh*0.8)/docH);
+    headT+=(hT-headT)*0.08;
     for(var i=0;i<3;i++){ if(rip[i][2]>0&&rip[i][2]<9) rip[i][2]+=dt; }
-    gl.uniform1f(U.uTime,time);
-    gl.uniform1f(U.uAspect,aspect);
-    gl.uniform1f(U.uShift,shift);
-    gl.uniform1f(U.uEnergy,energy);
-    gl.uniform1f(U.uPtr,ptr);
-    gl.uniform2f(U.uMouse,mx,my);
-    gl.uniform1f(U.uGlow,glow);
-    gl.uniform1f(U.uChapter,Math.max(0,Math.min(1,chapter)));
-    gl.uniform3f(U.uR0,rip[0][0],rip[0][1],rip[0][2]);
-    gl.uniform3f(U.uR1,rip[1][0],rip[1][1],rip[1][2]);
-    gl.uniform3f(U.uR2,rip[2][0],rip[2][1],rip[2][2]);
-    gl.drawArrays(gl.TRIANGLES,0,3);
+    bgUniforms.uTime.value=time;
+    bgUniforms.uShift.value=shift;
+    bgUniforms.uEnergy.value=energy;
+    bgUniforms.uPtr.value=ptr;
+    bgUniforms.uGlow.value=glow;
+    bgUniforms.uChapter.value=Math.max(0,Math.min(1,chapter));
+    bgUniforms.uMouse.value.set(mx,my);
+    bgUniforms.uR0.value.set(rip[0][0],rip[0][1],rip[0][2]);
+    bgUniforms.uR1.value.set(rip[1][0],rip[1][1],rip[1][2]);
+    bgUniforms.uR2.value.set(rip[2][0],rip[2][1],rip[2][2]);
+    var cwx=camera.position.x+ndcX*halfW, cwy=camera.position.y+ndcY*halfH;
+    for(i=pulses.length-1;i>=0;i--){ pulses[i].t+=pulses[i].sp*dt; if(pulses[i].t>1.05) pulses.splice(i,1); }
+    var us=[ribUniformsCore,ribUniformsGlow];
+    for(i=0;i<2;i++){
+      var u=us[i];
+      u.uHead.value=headT; u.uTime.value=time; u.uEnergy.value=energy;
+      u.uCur.value.set(cwx,cwy);
+      var ps=[u.uP0,u.uP1,u.uP2,u.uP3];
+      for(var k=0;k<4;k++){ var pu=pulses[k]; ps[k].value.set(pu?pu.t:-1,pu?pu.str:0); }
+    }
+    var headY=curve?curve.getPointAt(Math.max(0,Math.min(1,headT))).y:0;
+    for(i=0;i<stations.length;i++){
+      var st=stations[i];
+      st.lit+=(((headY<=st.y)?1:0)-st.lit)*0.06;
+      st.mat.opacity=0.10+st.lit*0.75;
+      st.mat.color.copy(dimC).lerp(litC,st.lit);
+      st.mesh.rotation.y+=dt*(0.3+i*0.05);
+      st.mesh.rotation.x+=dt*0.18;
+      var sc=1+st.lit*0.25+0.04*Math.sin(time*1.4+i);
+      st.mesh.scale.set(sc,sc,sc);
+    }
+    if(dust) dust.position.x=Math.sin(time*0.05)*0.12;
+    renderer.render(scene,camera);
   }
   requestAnimationFrame(frame);
 
   return {
-    kick:function(v){ targetEnergy = Math.max(targetEnergy, 1+Math.min(v,2.2)); },
-    setShift:function(s){ shift = Math.max(0,Math.min(1,s)); }
+    kick:function(v){ targetEnergy=Math.max(targetEnergy,1+Math.min(v,2.2)); },
+    setShift:function(s){ shift=Math.max(0,Math.min(1,s)); },
+    rebuild:rebuild
   };
 }
 
 var fluid = null;
 if(!REDUCED){
-  try{ fluid = createInk(document.getElementById("fluid")); }catch(e){ fluid = null; }
+  try{ fluid = createScene(document.getElementById("fluid")); }catch(e){ fluid = null; }
 }
 if(!fluid) document.body.classList.add("no-webgl");
 
 /* ============================================================
-   the thread — one luminous signal travelling the whole page,
-   lighting a node at each chapter it passes. desktop only.
+   chapter hud — wayfinding for the journey, click to travel
    ============================================================ */
-var threadTween=null;
-function buildThread(){
-  var svg=document.getElementById("thread");
-  if(!svg) return;
-  var W=window.innerWidth, wrapLeft=(W-1180)/2;
-  if(W<1280){ svg.style.display="none"; return; }
-  svg.style.display="block";
-  var mainEl=document.querySelector("main");
-  var H=mainEl.offsetHeight;
-  svg.setAttribute("viewBox","0 0 "+W+" "+H);
-  var x0=wrapLeft*0.48, amp=Math.min(20,wrapLeft-x0-14);
-  function xAt(y){ return x0+Math.sin(y*0.0042+1.7)*amp; }
-  var pts=[],y;
-  for(y=40;y<=H-60;y+=230) pts.push([xAt(y),y]);
-  if(pts.length<3){ svg.style.display="none"; return; }
-  var d="M"+pts[0][0].toFixed(1)+","+pts[0][1];
-  for(var i=1;i<pts.length-1;i++){
-    var mx=((pts[i][0]+pts[i+1][0])/2).toFixed(1), my=((pts[i][1]+pts[i+1][1])/2).toFixed(1);
-    d+=" Q"+pts[i][0].toFixed(1)+","+pts[i][1]+" "+mx+","+my;
-  }
-  var core=svg.querySelector(".th-core"), glowP=svg.querySelector(".th-glow");
-  core.setAttribute("d",d); glowP.setAttribute("d",d);
-  var ng=document.getElementById("th-nodes"); ng.innerHTML="";
-  var nodes=[];
-  [".loop",".demo",".pillars",".ops",".install",".wikis"].forEach(function(sel){
-    var el=document.querySelector(sel); if(!el) return;
-    var ny=Math.min(el.offsetTop+150,H-40);
-    var c=document.createElementNS("http://www.w3.org/2000/svg","circle");
-    c.setAttribute("cx",xAt(ny).toFixed(1)); c.setAttribute("cy",ny); c.setAttribute("r",4);
-    c.setAttribute("class","th-node");
-    ng.appendChild(c); nodes.push({el:c,y:ny});
+(function(){
+  var hud=document.getElementById("hud"); if(!hud) return;
+  var CH=[
+    {sel:".hero",   no:"00",en:"signal",     zh:"信号"},
+    {sel:".loop",   no:"01",en:"the loop",   zh:"回路"},
+    {sel:".demo",   no:"02",en:"in practice",zh:"实战"},
+    {sel:".pillars",no:"03",en:"platform",   zh:"平台"},
+    {sel:".ops",    no:"04",en:"operations", zh:"运维"},
+    {sel:".install",no:"05",en:"install",    zh:"六十秒"},
+    {sel:".wikis",  no:"06",en:"manual",     zh:"手册"}
+  ];
+  var ticksBox=hud.querySelector(".ticks"), label=hud.querySelector(".hud-label");
+  var ticks=[], secEls=[];
+  CH.forEach(function(c){
+    var el=document.querySelector(c.sel); secEls.push(el);
+    var b=document.createElement("button");
+    b.setAttribute("aria-label","chapter "+c.no+" · "+c.en);
+    b.addEventListener("click",function(){
+      if(!el) return;
+      window.scrollTo({top:el.getBoundingClientRect().top+window.scrollY,behavior:REDUCED?"auto":"smooth"});
+    });
+    ticksBox.appendChild(b); ticks.push(b);
   });
-  var len=core.getTotalLength();
-  core.style.strokeDasharray=len+" "+len;
-  glowP.style.strokeDasharray=len+" "+len;
-  if(threadTween){ if(threadTween.scrollTrigger) threadTween.scrollTrigger.kill(); threadTween.kill(); threadTween=null; }
-  if(hasGsap && !REDUCED){
-    gsap.set([core,glowP],{strokeDashoffset:len});
-    threadTween=gsap.to([core,glowP],{strokeDashoffset:0,ease:"none",
-      scrollTrigger:{trigger:document.body,start:"top top",end:"bottom bottom",scrub:.4,
-        onUpdate:function(self){
-          var drawnY=self.progress*H;
-          for(var i=0;i<nodes.length;i++) nodes[i].el.classList.toggle("lit",nodes[i].y<=drawnY);
-        }}});
-  }else{
-    core.style.strokeDashoffset=0; glowP.style.strokeDashoffset=0;
-    for(var j=0;j<nodes.length;j++) nodes[j].el.classList.add("lit");
+  var cur=-1,pend=false;
+  function update(){
+    pend=false;
+    var y=window.scrollY+window.innerHeight*0.45, idx=0;
+    for(var i=0;i<CH.length;i++){
+      if(secEls[i] && secEls[i].getBoundingClientRect().top+window.scrollY<=y) idx=i;
+    }
+    if(idx===cur) return;
+    cur=idx;
+    for(i=0;i<ticks.length;i++) ticks[i].classList.toggle("on",i<=idx);
+    var c=CH[idx];
+    label.innerHTML='<b>'+c.no+'</b><span class="i-en">'+c.en+'</span><span class="i-zh">'+c.zh+'</span>';
   }
-}
+  window.addEventListener("scroll",function(){ if(!pend){ pend=true; requestAnimationFrame(update); } },{passive:true});
+  update();
+})();
 
 /* ============================================================
    scroll choreography
@@ -1079,7 +1232,6 @@ if(hasGsap && !REDUCED){
        .from(".hero-facts",{opacity:0,duration:.9},1.3)
        .from(".hero-cjk",{opacity:0,y:-34,duration:1.2,ease:"power2.out"},.85)
        .from(".hero-mascot",{opacity:0,scale:.84,duration:1,ease:"back.out(1.5)"},1.0)
-       .fromTo(".hero .seal",{opacity:0,scale:1.9,rotate:10},{opacity:1,scale:1,rotate:-4,duration:.4,ease:"power3.in"},1.55)
        .from(".scroll-hint",{opacity:0,duration:.8},1.5);
 
   // hero recedes
@@ -1186,16 +1338,12 @@ if(hasGsap && !REDUCED){
       onEnterBack:function(){ tl.play(); }, onLeaveBack:function(){ tl.pause(); }});
   })();
 
-  /* the thread rebuilds whenever ScrollTrigger re-measures (load, resize, lang toggle) */
-  ScrollTrigger.addEventListener("refresh", buildThread);
-  buildThread();
+  /* the 3d ribbon re-anchors whenever ScrollTrigger re-measures (load, resize, lang toggle) */
+  ScrollTrigger.addEventListener("refresh", function(){ if(fluid) fluid.rebuild(); });
+  if(fluid) fluid.rebuild();
 }else{
-  /* no gsap or reduced motion: draw the thread fully, statically */
-  buildThread();
-  window.addEventListener("load", buildThread);
-  var thRz; window.addEventListener("resize", function(){ clearTimeout(thRz); thRz=setTimeout(buildThread,200); });
-  var thLb=document.getElementById("lang-btn");
-  if(thLb) thLb.addEventListener("click", function(){ setTimeout(buildThread,60); });
+  var sceneLb=document.getElementById("lang-btn");
+  if(sceneLb) sceneLb.addEventListener("click", function(){ if(fluid) setTimeout(fluid.rebuild,80); });
 }
 
 /* ---- ops log stream (plain JS, runs when visible) ---- */
