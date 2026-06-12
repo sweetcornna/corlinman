@@ -4,6 +4,62 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.21.0] — 2026-06-12 — live agent attachments + chat stream reattach
+
+> Minor release. Config-compatible — no migration required. (PR #92)
+
+### Added
+- **Agent attachments render live in web `/chat`** — `send_attachment` used
+  to show only its tool-call trace; the file appeared only after reopening
+  the conversation from history. The file now registers into the gateway
+  store the moment the tool runs and streams to the client through BOTH
+  surfaces: a new `AttachmentAdded` journal event and a
+  `{"corlinman":{"attachment":{kind,url,name,mime}}}` extension chunk on
+  `/v1/chat/completions`. Any file type is supported (the media-suffix
+  allowlist is bypassed for explicit sends — PDFs, archives, anything);
+  workspace-relative paths resolve correctly; the same file sent twice in
+  one turn (e.g. `image_generate` + `send_attachment`) renders once.
+- **Reattach to an in-flight turn** — navigating away mid-generation and
+  back used to freeze the conversation at the committed history; new chunks
+  never streamed. Generation always continued server-side; the client just
+  had no way back in. Reopening a conversation now detects an
+  `in_progress` latest turn, rebuilds the pending bubble from the journal
+  event replay, tails the live SSE from the exact backlog cursor, and
+  finalizes on the journal terminal event (with a status-poll safety net).
+- **Cross-process observability bridge** — the standalone agent server
+  (`corlinman-agent.service` in the two-process native deploy) never wired
+  an event emitter, so production journaled **no** `turn_events` and every
+  live-events surface (`/admin/sessions/{key}/events/live`, session detail
+  timelines) sat silent for chat turns. The agent process now journals
+  envelopes into the shared sqlite, and the gateway's live SSE gains a 1 s
+  journal-polling fallback so subscribers see them without in-process
+  fan-out. One turn identity everywhere: the reasoning loop's envelope ids
+  are pinned to the journal turn id (`turns` and `turn_events` used to
+  carry two unrelated id namespaces, so session→events joins matched
+  nothing).
+
+### Fixed
+- **Thinking leaked into the visible reply** — the gateway ignored
+  `is_reasoning` and emitted chain-of-thought as `delta.content`. Reasoning
+  now rides the `delta.reasoning_content` extension (and
+  `message.reasoning_content` non-streaming); the web chat folds it into
+  the collapsible thinking block.
+- **History replay sprawled tool calls** — each tool call rendered as its
+  own assistant bubble. Consecutive assistant journal rows now merge into
+  one bubble per turn (matching live), and settled tool traces default to
+  the collapsed "N tool calls" summary chip.
+- **Double-delivery hardening for the new event bridge** — journal
+  text/reasoning/tool-input deltas are dropped client-side while the fetch
+  stream owns the turn (both carry the same tokens; applying both doubled
+  the reply and corrupted tool args), gateway tool chunks reuse the agent's
+  real `call_id` (synthesised ids would render duplicate tool cards), and
+  the chat event-merger's journal payload mappings were corrected to the
+  real wire field names (`tool_call_id`/`elapsed_ms`/`partial_json`).
+- **Fresh live streams no longer replay the previous turn** — a subscriber
+  without a `Last-Event-ID` now tails strictly forward (the poll cursor
+  seeds at the latest sequence); explicit resume keeps full delivery by
+  naming its turn with the composite `<turn>:<seq>` cursor.
+
 ## [1.20.1] — 2026-06-11 — one-click updater fixes
 
 > Patch release. Config-compatible — no migration required.
