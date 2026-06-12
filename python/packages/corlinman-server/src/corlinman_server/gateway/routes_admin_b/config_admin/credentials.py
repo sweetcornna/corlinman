@@ -61,6 +61,7 @@ from corlinman_server.gateway.routes_admin_b.config_admin._credentials_lib impor
 )
 from corlinman_server.gateway.routes_admin_b.config_admin._providers_lib import (
     _autobind_default_alias,
+    _remove_default_model_ref,
 )
 from corlinman_server.gateway.routes_admin_b.state import (
     config_snapshot,
@@ -232,6 +233,7 @@ def router() -> APIRouter:
                 # "field never existed" race.
                 return Response(status_code=204)
             block = dict(existing)
+            had_primary = _has_primary_set(provider, block)
             block.pop(key, None)
 
             # If the primary field went away, flip enabled to false but
@@ -241,6 +243,8 @@ def router() -> APIRouter:
 
             providers[provider] = block
             cfg["providers"] = providers
+            if had_primary and not _has_primary_set(provider, block):
+                cfg = _remove_default_model_ref(cfg, provider)
 
             err = _write_config_atomic(state.config_path, cfg)
             if err is not None:
@@ -274,6 +278,8 @@ def router() -> APIRouter:
             cfg["providers"] = providers
             if bool(body.enabled) and _has_primary_set(provider, block):
                 cfg = await _autobind_default_alias(cfg, provider, block)
+            elif not bool(body.enabled):
+                cfg = _remove_default_model_ref(cfg, provider)
 
             err = _write_config_atomic(state.config_path, cfg)
             if err is not None:

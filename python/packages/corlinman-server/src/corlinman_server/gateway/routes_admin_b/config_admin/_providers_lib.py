@@ -216,13 +216,32 @@ def _remove_model_refs(cfg: dict[str, Any], provider_name: str) -> dict[str, Any
     """Drop model defaults/aliases that point at a removed provider."""
     models_cfg = dict(cfg.get("models") or {})
     aliases = dict(models_cfg.get("aliases") or {})
+    removed_aliases: set[str] = set()
     for alias_name, alias_entry in list(aliases.items()):
         if _alias_provider(alias_entry) == provider_name:
+            removed_aliases.add(str(alias_name))
             aliases.pop(alias_name, None)
     models_cfg["aliases"] = aliases
-    if str(models_cfg.get("default") or "") == provider_name:
+    default_name = str(models_cfg.get("default") or "")
+    if default_name == provider_name or default_name in removed_aliases:
         models_cfg.pop("default", None)
     cfg["models"] = models_cfg
+    return cfg
+
+
+def _remove_default_model_ref(cfg: dict[str, Any], provider_name: str) -> dict[str, Any]:
+    """Drop only the active default alias for a disabled provider."""
+    models_cfg = dict(cfg.get("models") or {})
+    aliases = dict(models_cfg.get("aliases") or {})
+    default_name = str(models_cfg.get("default") or "")
+    if not default_name:
+        return cfg
+
+    if default_name == provider_name or _alias_provider(aliases.get(default_name)) == provider_name:
+        aliases.pop(default_name, None)
+        models_cfg["aliases"] = aliases
+        models_cfg.pop("default", None)
+        cfg["models"] = models_cfg
     return cfg
 
 
@@ -953,7 +972,23 @@ async def _autobind_default_alias(
         return cfg
 
     aliases = dict(models_cfg.get("aliases") or {})
-    if provider_name not in aliases:
+    existing_alias = aliases.get(provider_name)
+    if isinstance(existing_alias, dict) and existing_alias.get("provider"):
+        pass
+    elif isinstance(existing_alias, str) and existing_alias.strip():
+        aliases[provider_name] = {
+            "provider": provider_name,
+            "model": existing_alias.strip(),
+            "params": {},
+        }
+    elif isinstance(existing_alias, dict):
+        raw_params = existing_alias.get("params")
+        aliases[provider_name] = {
+            "provider": provider_name,
+            "model": str(existing_alias.get("model") or picked),
+            "params": dict(raw_params) if isinstance(raw_params, dict) else {},
+        }
+    else:
         aliases[provider_name] = {
             "provider": provider_name,
             "model": picked,

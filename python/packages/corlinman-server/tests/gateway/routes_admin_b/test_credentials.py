@@ -349,6 +349,35 @@ def test_put_primary_credential_preserves_existing_self_named_alias(
     }
 
 
+def test_put_primary_credential_converts_shorthand_self_named_alias(
+    client: TestClient,
+    admin_state: AdminState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A shorthand self-alias must become a runtime-resolvable full alias."""
+    _stub_probe(monkeypatch, ["gpt-4o-mini"])
+    snapshot: dict[str, Any] = admin_state.extras["snapshot"]
+    snapshot["models"] = {
+        "aliases": {
+            "openai": "gpt-4o",
+        }
+    }
+
+    resp = client.put(
+        "/admin/credentials/openai/api_key",
+        json={"value": "sk-rotated-secret"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    on_disk = _on_disk(admin_state)
+    assert on_disk["models"]["default"] == "openai"
+    assert on_disk["models"]["aliases"]["openai"] == {
+        "provider": "openai",
+        "model": "gpt-4o",
+        "params": {},
+    }
+
+
 # ---------------------------------------------------------------------------
 # DELETE — field removal + enabled fallthrough
 # ---------------------------------------------------------------------------
@@ -378,6 +407,29 @@ def test_delete_removes_field_and_disables_when_primary_gone(
     # The block stub stays (so the UI keeps showing the placeholder row)
     # but the field itself is gone from the TOML.
     assert "api_key" not in on_disk["providers"]["openai"]
+
+
+def test_delete_primary_credential_clears_autobound_model_refs(
+    client: TestClient,
+    admin_state: AdminState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Deleting the credential that made a provider usable clears defaults."""
+    _stub_probe(monkeypatch, ["gpt-4o-mini"])
+    resp = client.put(
+        "/admin/credentials/openai/api_key",
+        json={"value": "sk-chat-ready-secret"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    _reload(admin_state)
+    resp = client.delete("/admin/credentials/openai/api_key")
+
+    assert resp.status_code == 204, resp.text
+    on_disk = _on_disk(admin_state)
+    assert on_disk["providers"]["openai"]["enabled"] is False
+    assert "openai" not in (on_disk.get("models") or {}).get("aliases", {})
+    assert (on_disk.get("models") or {}).get("default") != "openai"
 
 
 def test_delete_unknown_field_returns_400(client: TestClient) -> None:
@@ -427,6 +479,82 @@ def test_enable_false_disables_but_leaves_field_intact(
     assert openai["enabled"] is False
     api_key = next(f for f in openai["fields"] if f["key"] == "api_key")
     assert api_key["set"] is True
+
+
+def test_enable_false_clears_autobound_model_refs(
+    client: TestClient,
+    admin_state: AdminState,
+) -> None:
+    """Disabling a provider should not leave chat pointing at it."""
+    snapshot: dict[str, Any] = admin_state.extras["snapshot"]
+    snapshot["providers"] = {
+        "openai": {
+            "kind": "openai",
+            "enabled": True,
+            "api_key": "sk-existing",
+        }
+    }
+    snapshot["models"] = {
+        "default": "openai",
+        "aliases": {
+            "openai": {
+                "provider": "openai",
+                "model": "gpt-4o-mini",
+                "params": {},
+            }
+        },
+    }
+
+    resp = client.post("/admin/credentials/openai/enable", json={"enabled": False})
+
+    assert resp.status_code == 200, resp.text
+    on_disk = _on_disk(admin_state)
+    assert on_disk["providers"]["openai"]["enabled"] is False
+    assert "openai" not in (on_disk.get("models") or {}).get("aliases", {})
+    assert (on_disk.get("models") or {}).get("default") != "openai"
+
+
+def test_enable_false_preserves_non_default_operator_alias(
+    client: TestClient,
+    admin_state: AdminState,
+) -> None:
+    """Disabling clears active routing without deleting unrelated aliases."""
+    snapshot: dict[str, Any] = admin_state.extras["snapshot"]
+    snapshot["providers"] = {
+        "openai": {
+            "kind": "openai",
+            "enabled": True,
+            "api_key": "sk-existing",
+        }
+    }
+    snapshot["models"] = {
+        "default": "chat",
+        "aliases": {
+            "chat": {
+                "provider": "openai",
+                "model": "gpt-4o-mini",
+                "params": {},
+            },
+            "fast": {
+                "provider": "openai",
+                "model": "gpt-4o-mini",
+                "params": {"temperature": 0.1},
+            },
+        },
+    }
+
+    resp = client.post("/admin/credentials/openai/enable", json={"enabled": False})
+
+    assert resp.status_code == 200, resp.text
+    on_disk = _on_disk(admin_state)
+    assert on_disk["providers"]["openai"]["enabled"] is False
+    aliases = (on_disk.get("models") or {}).get("aliases", {})
+    assert aliases["fast"] == {
+        "provider": "openai",
+        "model": "gpt-4o-mini",
+        "params": {"temperature": 0.1},
+    }
+    assert (on_disk.get("models") or {}).get("default") != "chat"
 
 
 def test_enable_true_on_empty_block_creates_kind_stub(

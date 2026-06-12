@@ -446,7 +446,8 @@ def router() -> APIRouter:
 
             providers[body.slug] = entry
             cfg["providers"] = providers
-            cfg = await _autobind_default_alias(cfg, body.slug, entry)
+            if _provider_tts_backend(entry) != "fish":
+                cfg = await _autobind_default_alias(cfg, body.slug, entry)
             err = _write_config_atomic(state.config_path, cfg)
             if err is not None:
                 return err
@@ -507,7 +508,9 @@ def router() -> APIRouter:
 
             providers[slug] = entry
             cfg["providers"] = providers
-            if bool(entry.get("enabled", True)):
+            if _provider_tts_backend(entry) == "fish":
+                cfg = _remove_model_refs(cfg, slug)
+            elif bool(entry.get("enabled", True)):
                 cfg = await _autobind_default_alias(cfg, slug, entry)
             err = _write_config_atomic(state.config_path, cfg)
             if err is not None:

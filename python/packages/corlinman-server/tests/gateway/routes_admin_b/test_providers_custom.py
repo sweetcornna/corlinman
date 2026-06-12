@@ -216,6 +216,31 @@ def test_create_list_delete_round_trip(
     assert (on_disk.get("models") or {}).get("default") != "my-vllm"
 
 
+def test_create_fish_tts_custom_provider_does_not_autobind_chat_default(
+    client: TestClient,
+    admin_state: AdminState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fish Audio custom providers are TTS-only, not chat defaults."""
+    _stub_probe(monkeypatch, ["gpt-4o-mini"])
+
+    resp = client.post(
+        "/admin/providers/custom",
+        json={
+            "slug": "fish_audio",
+            "kind": "openai_compatible",
+            "base_url": "https://api.fish.audio",
+            "api_key": {"value": "fish-key"},
+            "params": {"tts_backend": "fish", "reference_id": "voice-ref"},
+        },
+    )
+
+    assert resp.status_code == 201, resp.text
+    on_disk = _on_disk(admin_state)
+    assert on_disk["providers"]["fish_audio"]["params"]["custom"] is True
+    assert "models" not in on_disk or not on_disk.get("models", {}).get("default")
+
+
 def test_create_custom_provider_rewrites_py_config_for_sidecar(
     client: TestClient,
     admin_state: AdminState,
@@ -314,6 +339,111 @@ def test_patch_custom_provider_autobinds_when_default_is_missing(
         "model": "gpt-4o-mini",
         "params": {},
     }
+
+
+def test_patch_fish_tts_custom_provider_does_not_autobind_chat_default(
+    client: TestClient,
+    admin_state: AdminState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Editing a TTS-only custom provider should not make it the chat default."""
+    _stub_probe(monkeypatch, None)
+    snapshot: dict[str, Any] = admin_state.extras["snapshot"]
+    snapshot["providers"] = {
+        "fish_audio": {
+            "kind": "openai_compatible",
+            "enabled": True,
+            "base_url": "https://api.fish.audio",
+            "api_key": "fish-key",
+            "params": {"custom": True, "tts_backend": "fish"},
+        }
+    }
+
+    resp = client.patch(
+        "/admin/providers/custom/fish_audio",
+        json={"params": {"tts_backend": "fish", "reference_id": "voice-ref"}},
+    )
+
+    assert resp.status_code == 200, resp.text
+    on_disk = _on_disk(admin_state)
+    assert "models" not in on_disk or not on_disk.get("models", {}).get("default")
+
+
+def test_patch_chat_custom_provider_to_fish_clears_old_chat_default(
+    client: TestClient,
+    admin_state: AdminState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Changing an auto-bound chat provider to Fish TTS clears chat routing."""
+    _stub_probe(monkeypatch, None)
+    snapshot: dict[str, Any] = admin_state.extras["snapshot"]
+    snapshot["providers"] = {
+        "voice-relay": {
+            "kind": "openai_compatible",
+            "enabled": True,
+            "base_url": "https://relay.example/v1",
+            "api_key": "sk-relay",
+            "params": {"custom": True},
+        }
+    }
+    snapshot["models"] = {
+        "default": "voice-relay",
+        "aliases": {
+            "voice-relay": {
+                "provider": "voice-relay",
+                "model": "gpt-4o-mini",
+                "params": {},
+            }
+        },
+    }
+
+    resp = client.patch(
+        "/admin/providers/custom/voice-relay",
+        json={
+            "base_url": "https://api.fish.audio",
+            "params": {"tts_backend": "fish", "reference_id": "voice-ref"},
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    on_disk = _on_disk(admin_state)
+    assert "voice-relay" not in (on_disk.get("models") or {}).get("aliases", {})
+    assert (on_disk.get("models") or {}).get("default") != "voice-relay"
+
+
+def test_delete_custom_provider_clears_default_named_after_removed_alias(
+    client: TestClient,
+    admin_state: AdminState,
+) -> None:
+    """Deleting a provider removes aliases and any default pointing to them."""
+    snapshot: dict[str, Any] = admin_state.extras["snapshot"]
+    snapshot["providers"] = {
+        "relay": {
+            "kind": "openai_compatible",
+            "enabled": True,
+            "base_url": "https://relay.example/v1",
+            "api_key": "sk-relay",
+            "params": {"custom": True},
+        }
+    }
+    snapshot["models"] = {
+        "default": "chat",
+        "aliases": {
+            "chat": {
+                "provider": "relay",
+                "model": "gpt-4o-mini",
+                "params": {},
+            }
+        },
+    }
+
+    resp = client.delete("/admin/providers/custom/relay")
+
+    assert resp.status_code == 204, resp.text
+    on_disk = _on_disk(admin_state)
+    assert "relay" not in (on_disk.get("providers") or {})
+    assert "chat" not in (on_disk.get("models") or {}).get("aliases", {})
+    assert (on_disk.get("models") or {}).get("default") != "chat"
 
 
 def test_list_excludes_blocks_without_custom_marker(
