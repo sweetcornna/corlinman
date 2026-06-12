@@ -77,6 +77,7 @@ async def test_attachment_frame_maps_to_attachment_event() -> None:
         "url": "/v1/files/f-123",
         "name": "report.pdf",
         "mime": "application/pdf",
+        "size": 12345,
     }
     backend = _ScriptedBackend([_attachment_frame(meta), _DONE])
     executor = _RecordingExecutor()
@@ -90,6 +91,7 @@ async def test_attachment_frame_maps_to_attachment_event() -> None:
     assert att[0].url == "/v1/files/f-123"
     assert att[0].name == "report.pdf"
     assert att[0].mime == "application/pdf"
+    assert att[0].size == 12345
     assert att[0].call_id == "c1"
     # No executor round-trip — the servicer already resolved the call.
     assert executor.calls == []

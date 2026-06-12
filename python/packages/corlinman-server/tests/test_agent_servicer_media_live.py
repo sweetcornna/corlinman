@@ -49,7 +49,7 @@ def test_force_registers_non_media_suffix(tmp_path: Path) -> None:
     ``_MEDIA_SUFFIXES``."""
     p = tmp_path / "report.pdf"
     p.write_bytes(b"%PDF-fake")
-    media: list[dict[str, str]] = []
+    media: list[dict[str, object]] = []
     out = _register_tool_media(json.dumps({"path": str(p)}), media, force=True)
     parsed = json.loads(out)
     assert parsed["url"].startswith("/v1/files/")
@@ -57,6 +57,7 @@ def test_force_registers_non_media_suffix(tmp_path: Path) -> None:
     assert media[0]["kind"] == "file"
     assert media[0]["mime"] == "application/pdf"
     assert media[0]["name"] == "report.pdf"
+    assert media[0]["size"] == len(b"%PDF-fake")
 
 
 def test_default_still_gated_by_suffix(tmp_path: Path) -> None:
@@ -64,7 +65,7 @@ def test_default_still_gated_by_suffix(tmp_path: Path) -> None:
     keep default behavior)."""
     p = tmp_path / "report.pdf"
     p.write_bytes(b"%PDF-fake")
-    media: list[dict[str, str]] = []
+    media: list[dict[str, object]] = []
     raw = json.dumps({"path": str(p)})
     assert _register_tool_media(raw, media) == raw
     assert media == []
@@ -79,8 +80,8 @@ def test_registered_cache_dedups_same_path(tmp_path: Path) -> None:
     duplicate ``turn_media`` gallery entry is appended."""
     p = tmp_path / "gen.png"
     p.write_bytes(b"\x89PNG-fake")
-    media: list[dict[str, str]] = []
-    registered: dict[str, dict[str, str]] = {}
+    media: list[dict[str, object]] = []
+    registered: dict[str, dict[str, object]] = {}
 
     first = json.loads(
         _register_tool_media(
@@ -101,6 +102,7 @@ def test_registered_cache_dedups_same_path(tmp_path: Path) -> None:
     )
     assert len(media) == 1, "duplicate gallery entry appended"
     assert second["url"] == first["url"]
+    assert media[0]["size"] == len(b"\x89PNG-fake")
     assert "display_note" in second
 
 
@@ -109,8 +111,8 @@ def test_registered_cache_distinct_paths_both_register(tmp_path: Path) -> None:
     b = tmp_path / "b.png"
     a.write_bytes(b"\x89PNG-a")
     b.write_bytes(b"\x89PNG-b")
-    media: list[dict[str, str]] = []
-    registered: dict[str, dict[str, str]] = {}
+    media: list[dict[str, object]] = []
+    registered: dict[str, dict[str, object]] = {}
     _register_tool_media(json.dumps({"path": str(a)}), media, registered=registered)
     _register_tool_media(json.dumps({"path": str(b)}), media, registered=registered)
     assert len(media) == 2
@@ -120,7 +122,7 @@ def test_registered_cache_distinct_paths_both_register(tmp_path: Path) -> None:
 def test_force_missing_file_is_noop(tmp_path: Path) -> None:
     """Best-effort posture survives ``force``: a path that doesn't exist
     passes through verbatim (never raises)."""
-    media: list[dict[str, str]] = []
+    media: list[dict[str, object]] = []
     raw = json.dumps({"path": str(tmp_path / "missing.zip")})
     assert _register_tool_media(raw, media, force=True, registered={}) == raw
     assert media == []

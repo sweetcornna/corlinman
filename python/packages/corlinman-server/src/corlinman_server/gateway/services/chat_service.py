@@ -325,6 +325,7 @@ async def _run_chat(
                             url=str(meta.get("url") or ""),
                             name=str(meta.get("name") or ""),
                             mime=str(meta.get("mime") or ""),
+                            size=_attachment_size(meta),
                             call_id=tc.call_id,
                         )
                     continue
@@ -467,6 +468,16 @@ def _build_chat_start(req: InternalChatRequest) -> agent_pb2.ChatStart:
     if binding is not None:
         start.binding.CopyFrom(binding)
     return start
+
+
+def _attachment_size(meta: object) -> int | None:
+    if not isinstance(meta, dict):
+        return None
+    try:
+        size = int(meta.get("size") or meta.get("size_bytes") or 0)
+    except (TypeError, ValueError):
+        return None
+    return size if size > 0 else None
 
 
 def _provider_config_json(req: InternalChatRequest) -> bytes:

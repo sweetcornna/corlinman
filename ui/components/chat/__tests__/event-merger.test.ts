@@ -105,6 +105,37 @@ describe("chunkToChatEvents", () => {
     expect(events[0].turnId).toBe("real_turn");
   });
 
+  it("preserves streamed attachment size from the corlinman extension", () => {
+    const chunk: ChatCompletionChunk = {
+      corlinman: {
+        attachment: {
+          kind: "file",
+          url: "/v1/files/f-123",
+          name: "report.pdf",
+          mime: "application/pdf",
+          size: 12_345,
+        },
+      },
+      choices: [],
+    };
+    const events = chunkToChatEvents(chunk, TURN);
+
+    expect(events).toEqual([
+      {
+        kind: "attachment",
+        turnId: TURN,
+        sequence: -1,
+        attachment: {
+          kind: "file",
+          url: "/v1/files/f-123",
+          name: "report.pdf",
+          mime: "application/pdf",
+          size: 12_345,
+        },
+      },
+    ]);
+  });
+
   // W1 stream-contract regressions (PLAN_CHAT_PERFECT §3.1):
 
   it("folds a chunk.error payload into tools-settle + turn-errored", () => {
@@ -260,6 +291,31 @@ describe("liveEventToChatEvent", () => {
       kind: "cancelling",
       turnId: TURN,
       sequence: 1,
+    });
+  });
+
+  it("preserves live attachment size from AttachmentAdded events", () => {
+    const out = liveEventToChatEvent(
+      ev("AttachmentAdded", {
+        kind: "file",
+        url: "/v1/files/f-123",
+        name: "report.pdf",
+        mime: "application/pdf",
+        size: 12_345,
+      }),
+    );
+
+    expect(out).toEqual({
+      kind: "attachment",
+      turnId: TURN,
+      sequence: 1,
+      attachment: {
+        kind: "file",
+        url: "/v1/files/f-123",
+        name: "report.pdf",
+        mime: "application/pdf",
+        size: 12_345,
+      },
     });
   });
 });

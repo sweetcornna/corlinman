@@ -28,6 +28,7 @@ _ATTACHMENT = AttachmentEvent(
     url="/v1/files/f-123",
     name="report.pdf",
     mime="application/pdf",
+    size=12345,
     call_id="c1",
 )
 
@@ -87,6 +88,7 @@ async def test_sse_renders_attachment_chunk() -> None:
         "url": "/v1/files/f-123",
         "name": "report.pdf",
         "mime": "application/pdf",
+        "size": 12345,
     }
     # Terminal chunk still arrives after the attachment.
     assert chunks[-1]["choices"][0]["finish_reason"] == "stop"
@@ -114,6 +116,7 @@ async def test_nonstream_collects_attachments_on_message() -> None:
             "url": "/v1/files/f-123",
             "name": "report.pdf",
             "mime": "application/pdf",
+            "size": 12345,
         }
     ]
 

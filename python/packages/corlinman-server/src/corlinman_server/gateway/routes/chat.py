@@ -736,6 +736,7 @@ def _attachment_chunk(
                 "url": event.url,
                 "name": event.name,
                 "mime": event.mime,
+                **({"size": event.size} if event.size else {}),
             }
         },
     }
@@ -813,6 +814,7 @@ async def _run_nonstream(
                     "url": event.url,
                     "name": event.name,
                     "mime": event.mime,
+                    **({"size": event.size} if event.size else {}),
                 }
             )
         elif isinstance(event, ToolCallEvent):

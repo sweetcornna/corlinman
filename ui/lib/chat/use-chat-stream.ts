@@ -222,7 +222,7 @@ function applyEvent(draft: ChatMessage, ev: ChatEvent): void {
             : attachmentKindFromMime(ev.attachment.mime ?? ""),
         name: ev.attachment.name,
         mime: ev.attachment.mime,
-        sizeBytes: 0,
+        sizeBytes: ev.attachment.size ?? 0,
         remoteUrl,
       });
       break;

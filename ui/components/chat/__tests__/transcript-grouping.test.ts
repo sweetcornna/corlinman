@@ -134,4 +134,31 @@ describe("transcriptToChatMessages grouping", () => {
       before.map((m) => m.toolCalls?.map((tc) => tc.callId)),
     );
   });
+
+  it("maps transcript attachment sizes so file cards do not render as 0B", () => {
+    const out = transcriptToChatMessages(
+      [
+        row("user", "see attached", {
+          attachments: [
+            {
+              kind: "file",
+              url: "/v1/files/abc123",
+              name: "github_latest_projects.csv",
+              mime: "text/csv",
+              size: 12_345,
+            },
+          ],
+        }),
+      ],
+      SESSION,
+    );
+
+    expect(out[0].attachments?.[0]).toMatchObject({
+      kind: "document",
+      name: "github_latest_projects.csv",
+      mime: "text/csv",
+      sizeBytes: 12_345,
+      remoteUrl: "/v1/files/abc123",
+    });
+  });
 });

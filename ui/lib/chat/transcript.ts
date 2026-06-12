@@ -58,21 +58,24 @@ export function transcriptToChatMessages(
     // /v1/files urls get the gateway prefix so dev (separate origins)
     // and prod (same origin, empty prefix) both resolve.
     const attachments: ChatAttachment[] = (m.attachments ?? []).map(
-      (a, k) => ({
-        id: `hist_${sid}_r${rid}_att_${k}`,
-        kind:
-          a.kind === "image" || a.kind === "audio" || a.kind === "video"
-            ? a.kind
-            : "document",
-        name: a.name || a.url?.split("/").pop() || "attachment",
-        mime: a.mime,
-        sizeBytes: 0,
-        remoteUrl: a.url
-          ? a.url.startsWith("/")
-            ? `${GATEWAY_BASE_URL}${a.url}`
-            : a.url
-          : undefined,
-      }),
+      (a, k) => {
+        const size = Number(a.size ?? a.size_bytes ?? 0);
+        return {
+          id: `hist_${sid}_r${rid}_att_${k}`,
+          kind:
+            a.kind === "image" || a.kind === "audio" || a.kind === "video"
+              ? a.kind
+              : "document",
+          name: a.name || a.url?.split("/").pop() || "attachment",
+          mime: a.mime,
+          sizeBytes: Number.isFinite(size) && size > 0 ? size : 0,
+          remoteUrl: a.url
+            ? a.url.startsWith("/")
+              ? `${GATEWAY_BASE_URL}${a.url}`
+              : a.url
+            : undefined,
+        };
+      },
     );
     return {
       id: `hist_${sid}_r${rid}_${m.role}`,

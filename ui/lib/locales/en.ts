@@ -2853,6 +2853,7 @@ export const en = {
     composerSendWaitingUpload: "Waiting for uploads to finish…",
     composerFocusShortcut: "Focus the message box (⌘/ or Ctrl+/)",
     attachmentUploadFailed: "Upload failed",
+    attachmentEmptyFile: "File is empty",
     downloadAttachment: "Download {{name}}",
     emojiPickerAriaLabel: "Emoji picker",
     emojiRecent: "Recent",

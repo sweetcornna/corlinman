@@ -168,7 +168,12 @@ export function Composer({
       // Valid files we'll actually upload, paired with their attachment id.
       const toUpload: { id: string; file: File }[] = [];
       for (const file of items) {
-        const err = validateAttachment(file);
+        const errCode = validateAttachment(file);
+        const err = errCode
+          ? errCode === "attachment_empty_file"
+            ? t("chat.attachmentEmptyFile")
+            : errCode
+          : null;
         const id = `att_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
         const kind = attachmentKindFromMime(file.type);
         const att: ChatAttachment = {

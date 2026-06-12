@@ -81,6 +81,8 @@ export interface TranscriptAttachment {
   url?: string;
   mime?: string;
   name?: string;
+  size?: number;
+  size_bytes?: number;
 }
 
 /** Summary block on a replay response. */

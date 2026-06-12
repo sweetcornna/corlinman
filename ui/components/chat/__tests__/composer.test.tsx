@@ -213,6 +213,18 @@ describe("Composer", () => {
     );
   });
 
+  it("rejects empty files locally instead of starting an upload", async () => {
+    renderComposer();
+    const input = screen.getByTestId("composer-file-input") as HTMLInputElement;
+    const empty = new File([], "image.png", { type: "image/png" });
+
+    fireEvent.change(input, { target: { files: [empty] } });
+
+    expect(uploadMock).not.toHaveBeenCalled();
+    await screen.findByText("文件为空");
+    expect(screen.getByTestId("composer-send")).toBeDisabled();
+  });
+
   it("revokes blob previews when an attachment is removed", async () => {
     // jsdom ships neither object-URL API — install stubs to observe.
     const revokeSpy = vi.fn();
