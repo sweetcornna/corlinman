@@ -4,6 +4,28 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.21.4] — 2026-06-12 — credentials model autobind hardening
+
+> Patch release. Config-compatible — existing provider/model config is
+> preserved, with safer defaults when credentials or custom providers change.
+> (PR #96)
+
+### Fixed
+- **Saving a usable provider now fills missing chat model config** — writing or
+  enabling a provider with its primary credential auto-binds a sensible
+  `models.default` alias when no default exists, so chat can work immediately
+  after setup.
+- **Operator-authored aliases are preserved** — existing full aliases keep
+  their model/params, shorthand self-aliases are upgraded to the full
+  runtime-resolvable `{provider, model, params}` shape, and disabling a provider
+  only clears the active default that actually targets it.
+- **Unusable custom providers no longer become chat defaults** — Fish Audio TTS
+  providers and keyless credentialed cloud custom providers are skipped, while
+  keyless `openai_compatible` local relays remain supported.
+- **Removing custom credentials clears stale chat routing** — deleting a custom
+  provider slug's `api_key` now disables that provider and removes its active
+  default model reference.
+
 ## [1.21.3] — 2026-06-12 — channel persona persistence
 
 > Patch release. Config-compatible; existing binding preference DBs are
