@@ -76,6 +76,7 @@ from corlinman_server.gateway.routes_admin_b.config_admin._providers_lib import 
     _query_provider_models,
     _query_provider_models_with_retry,
     _redact,
+    _remove_default_model_ref,
     _remove_model_refs,
     _resolve_api_key,
     _view_from_entry,
@@ -196,8 +197,10 @@ def router() -> APIRouter:
                 existing["params"] = {}
             providers[body.name] = existing
             cfg["providers"] = providers
-            if bool(existing.get("enabled", True)):
+            if bool(existing.get("enabled", True)) and _can_autobind_default_alias(existing):
                 cfg = await _autobind_default_alias(cfg, body.name, existing)
+            elif not bool(existing.get("enabled", True)):
+                cfg = _remove_default_model_ref(cfg, body.name)
             err = await _persist(
                 state,
                 cfg,
@@ -301,8 +304,10 @@ def router() -> APIRouter:
                 entry["params"] = body.params
             providers[name] = entry
             cfg["providers"] = providers
-            if bool(entry.get("enabled", True)):
+            if bool(entry.get("enabled", True)) and _can_autobind_default_alias(entry):
                 cfg = await _autobind_default_alias(cfg, name, entry)
+            elif not bool(entry.get("enabled", True)):
+                cfg = _remove_default_model_ref(cfg, name)
             err = await _persist(
                 state,
                 cfg,

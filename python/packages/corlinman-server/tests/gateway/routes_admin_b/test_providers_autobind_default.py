@@ -126,6 +126,30 @@ def test_upsert_enable_autobinds_default_from_probed_models(
         }
 
 
+def test_upsert_credentialed_provider_without_key_does_not_autobind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("", encoding="utf-8")
+    _stub_probe(monkeypatch, None)
+
+    for _state, client in _with_state(config_path):
+        resp = client.post(
+            "/admin/providers",
+            json={
+                "name": "claude",
+                "kind": "anthropic",
+                "enabled": True,
+            },
+        )
+        assert resp.status_code == 200, resp.text
+
+        on_disk = _on_disk(config_path)
+        assert on_disk["providers"]["claude"]["enabled"] is True
+        assert "api_key" not in on_disk["providers"]["claude"]
+        assert "models" not in on_disk or not on_disk.get("models", {}).get("default")
+
+
 def test_upsert_does_not_clobber_existing_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -182,6 +206,7 @@ def test_upsert_probe_failure_falls_back_to_kind_default(
                 "name": "ds",
                 "kind": "deepseek",
                 "enabled": True,
+                "api_key": {"value": "sk-deepseek"},
             },
         )
         assert resp.status_code == 200, resp.text
@@ -218,6 +243,43 @@ base_url = "https://relay.example/v1"
         assert on_disk["models"]["default"] == "sleeper"
         assert on_disk["models"]["aliases"]["sleeper"]["provider"] == "sleeper"
         assert on_disk["models"]["aliases"]["sleeper"]["model"] == "gpt-4o-mini"
+
+
+def test_patch_disable_clears_active_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        """
+[models]
+default = "sleeper"
+
+[models.aliases.sleeper]
+provider = "sleeper"
+model = "gpt-4o-mini"
+
+[providers.sleeper]
+kind = "openai_compatible"
+enabled = true
+base_url = "https://relay.example/v1"
+api_key = "sk-relay"
+        """.strip(),
+        encoding="utf-8",
+    )
+    _stub_probe(monkeypatch, ["gpt-4o-mini"])
+
+    for state, client in _with_state(config_path):
+        _set_snapshot_from_disk(state)
+        resp = client.patch(
+            "/admin/providers/sleeper",
+            json={"enabled": False},
+        )
+        assert resp.status_code == 200, resp.text
+
+        on_disk = _on_disk(config_path)
+        assert on_disk["providers"]["sleeper"]["enabled"] is False
+        assert "sleeper" not in (on_disk.get("models") or {}).get("aliases", {})
+        assert (on_disk.get("models") or {}).get("default") != "sleeper"
 
 
 def test_upsert_disabled_does_not_autobind(

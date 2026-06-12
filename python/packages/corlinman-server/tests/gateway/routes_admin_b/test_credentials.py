@@ -316,6 +316,117 @@ def test_put_non_primary_credential_does_not_autobind_unusable_provider(
     assert "models" not in on_disk or not on_disk.get("models", {}).get("default")
 
 
+def test_put_fish_tts_custom_credential_does_not_autobind_default(
+    client: TestClient,
+    admin_state: AdminState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Saving a Fish Audio key should not make the TTS slot the chat default."""
+    _stub_probe(monkeypatch, ["gpt-4o-mini"])
+    snapshot: dict[str, Any] = admin_state.extras["snapshot"]
+    snapshot["providers"] = {
+        "fish_audio": {
+            "kind": "openai_compatible",
+            "enabled": False,
+            "base_url": "https://api.fish.audio",
+            "params": {
+                "custom": True,
+                "tts_backend": "fish",
+                "reference_id": "voice-ref",
+            },
+        }
+    }
+
+    resp = client.put(
+        "/admin/credentials/fish_audio/api_key",
+        json={"value": "fish-secret"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    on_disk = _on_disk(admin_state)
+    assert on_disk["providers"]["fish_audio"]["enabled"] is True
+    assert on_disk["providers"]["fish_audio"]["api_key"] == "fish-secret"
+    assert "models" not in on_disk or not on_disk.get("models", {}).get("default")
+
+
+def test_put_openrouter_api_key_without_base_url_does_not_autobind(
+    client: TestClient,
+    admin_state: AdminState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OpenAI-compatible well-known slots need a base_url before binding."""
+    _stub_probe(monkeypatch, ["gpt-4o-mini"])
+
+    resp = client.put(
+        "/admin/credentials/openrouter/api_key",
+        json={"value": "sk-openrouter"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    on_disk = _on_disk(admin_state)
+    assert on_disk["providers"]["openrouter"]["enabled"] is True
+    assert on_disk["providers"]["openrouter"]["kind"] == "openai_compatible"
+    assert "base_url" not in on_disk["providers"]["openrouter"]
+    assert "models" not in on_disk or not on_disk.get("models", {}).get("default")
+
+
+def test_put_openai_compatible_custom_api_key_without_base_url_does_not_autobind(
+    client: TestClient,
+    admin_state: AdminState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Custom OpenAI-compatible slots also require base_url before binding."""
+    _stub_probe(monkeypatch, ["gpt-4o-mini"])
+    snapshot: dict[str, Any] = admin_state.extras["snapshot"]
+    snapshot["providers"] = {
+        "relay": {
+            "kind": "openai_compatible",
+            "enabled": False,
+            "params": {"custom": True},
+        }
+    }
+
+    resp = client.put(
+        "/admin/credentials/relay/api_key",
+        json={"value": "sk-relay"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    on_disk = _on_disk(admin_state)
+    assert on_disk["providers"]["relay"]["enabled"] is True
+    assert on_disk["providers"]["relay"]["api_key"] == "sk-relay"
+    assert "base_url" not in on_disk["providers"]["relay"]
+    assert "models" not in on_disk or not on_disk.get("models", {}).get("default")
+
+
+def test_put_custom_openai_base_url_without_api_key_does_not_autobind(
+    client: TestClient,
+    admin_state: AdminState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Custom OpenAI cloud slots need an API key before binding."""
+    _stub_probe(monkeypatch, ["gpt-4o-mini"])
+    snapshot: dict[str, Any] = admin_state.extras["snapshot"]
+    snapshot["providers"] = {
+        "custom_openai": {
+            "kind": "openai",
+            "enabled": True,
+            "params": {"custom": True},
+        }
+    }
+
+    resp = client.put(
+        "/admin/credentials/custom_openai/base_url",
+        json={"value": "https://api.openai.com/v1"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    on_disk = _on_disk(admin_state)
+    assert on_disk["providers"]["custom_openai"]["enabled"] is True
+    assert "api_key" not in on_disk["providers"]["custom_openai"]
+    assert "models" not in on_disk or not on_disk.get("models", {}).get("default")
+
+
 def test_put_primary_credential_preserves_existing_self_named_alias(
     client: TestClient,
     admin_state: AdminState,

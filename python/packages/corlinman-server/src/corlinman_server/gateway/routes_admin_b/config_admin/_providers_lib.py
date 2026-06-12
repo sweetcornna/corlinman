@@ -266,9 +266,15 @@ def _has_api_key(entry: dict[str, Any]) -> bool:
     return False
 
 
+def _has_base_url(entry: dict[str, Any]) -> bool:
+    raw_base_url = entry.get("base_url")
+    return isinstance(raw_base_url, str) and bool(raw_base_url.strip())
+
+
 _AUTOBIND_REQUIRES_API_KEY_KINDS: frozenset[str] = frozenset(
     {
         "anthropic",
+        "openai",
         "google",
         "deepseek",
         "qwen",
@@ -287,6 +293,8 @@ _AUTOBIND_REQUIRES_API_KEY_KINDS: frozenset[str] = frozenset(
 def _can_autobind_default_alias(entry: dict[str, Any]) -> bool:
     kind = _normalize_kind(str(entry.get("kind") or "openai_compatible"))
     if _provider_tts_backend(entry) == "fish":
+        return False
+    if kind == "openai_compatible" and not _has_base_url(entry):
         return False
     return kind not in _AUTOBIND_REQUIRES_API_KEY_KINDS or _has_api_key(entry)
 

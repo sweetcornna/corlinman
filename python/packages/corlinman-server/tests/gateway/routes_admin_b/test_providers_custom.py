@@ -265,6 +265,33 @@ def test_create_credentialed_custom_provider_without_key_does_not_autobind(
     assert "models" not in on_disk or not on_disk.get("models", {}).get("default")
 
 
+def test_create_openai_custom_provider_without_key_does_not_autobind(
+    client: TestClient,
+    admin_state: AdminState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OpenAI custom providers need their own key before becoming default."""
+    _stub_probe(monkeypatch, None)
+
+    resp = client.post(
+        "/admin/providers/custom",
+        json={
+            "slug": "openai-clone",
+            "kind": "openai",
+            "base_url": "https://api.openai.com/v1",
+            "params": {"timeout_seconds": 30},
+        },
+    )
+
+    assert resp.status_code == 201, resp.text
+    on_disk = _on_disk(admin_state)
+    assert on_disk["providers"]["openai-clone"]["enabled"] is True
+    assert on_disk["providers"]["openai-clone"]["kind"] == "openai"
+    assert on_disk["providers"]["openai-clone"]["params"]["custom"] is True
+    assert "api_key" not in on_disk["providers"]["openai-clone"]
+    assert "models" not in on_disk or not on_disk.get("models", {}).get("default")
+
+
 def test_create_custom_provider_rewrites_py_config_for_sidecar(
     client: TestClient,
     admin_state: AdminState,
