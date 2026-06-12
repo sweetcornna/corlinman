@@ -111,7 +111,14 @@ export interface ChatCompletionChunk {
   corlinman?: {
     turn_id?: string;
     session_key?: string;
-    attachment?: { kind?: string; url?: string; name?: string; mime?: string };
+    attachment?: {
+      kind?: string;
+      url?: string;
+      name?: string;
+      mime?: string;
+      size?: number;
+      size_bytes?: number;
+    };
   };
   /** Mid-stream failure payload. The gateway emits it alongside a
    *  `finish_reason: "error"` choice (W1a contract); older gateways sent
@@ -338,6 +345,9 @@ const ATTACHMENT_MAX_BYTES = 50 * 1024 * 1024;
 const ATTACHMENT_ALLOWED_PREFIXES = ["image/", "audio/", "video/", "application/", "text/"];
 
 export function validateAttachment(file: File): string | null {
+  if (file.size <= 0) {
+    return "attachment_empty_file";
+  }
   if (file.size > ATTACHMENT_MAX_BYTES) {
     return `${file.name}: exceeds 50MB`;
   }

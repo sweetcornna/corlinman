@@ -66,6 +66,7 @@ export function chunkToChatEvents(
         url: att.url,
         name: att.name ?? att.url.split("/").pop() ?? "attachment",
         mime: att.mime,
+        size: normaliseAttachmentSize(att),
       },
     });
   }
@@ -327,6 +328,7 @@ export function liveEventToChatEvent(ev: LiveEvent): ChatEvent | null {
           url: p.url,
           name: p.name || p.url.split("/").pop() || "attachment",
           mime: p.mime,
+          size: normaliseAttachmentSize(p),
         },
       };
     }
@@ -422,6 +424,13 @@ export function liveEventToChatEvent(ev: LiveEvent): ChatEvent | null {
       }
       return null;
   }
+}
+
+function normaliseAttachmentSize(raw: unknown): number | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const r = raw as { size?: unknown; size_bytes?: unknown };
+  const n = Number(r.size ?? r.size_bytes);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
 /* --------------------------- de-dup tracker ---------------------------- */

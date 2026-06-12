@@ -380,6 +380,7 @@ class AttachmentEvent:
     url: str
     name: str
     mime: str
+    size: int | None = None
     call_id: str = ""
 
 

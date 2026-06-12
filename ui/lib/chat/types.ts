@@ -233,6 +233,7 @@ export type ChatEvent =
         url: string;
         name: string;
         mime?: string;
+        size?: number;
       };
     }
   | {

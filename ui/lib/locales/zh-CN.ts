@@ -2795,6 +2795,7 @@ export const zhCN = {
     composerSendWaitingUpload: "等待附件上传完成…",
     composerFocusShortcut: "聚焦输入框（⌘/ 或 Ctrl+/）",
     attachmentUploadFailed: "上传失败",
+    attachmentEmptyFile: "文件为空",
     downloadAttachment: "下载 {{name}}",
     emojiPickerAriaLabel: "表情选择器",
     emojiRecent: "最近",

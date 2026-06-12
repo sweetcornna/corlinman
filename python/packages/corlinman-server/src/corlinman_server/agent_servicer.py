@@ -1645,11 +1645,11 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # W4 — media files produced by tools this turn (image_generate
         # etc.), registered into the gateway file store so the web UI can
         # fetch them. Journaled onto the final assistant message.
-        turn_media: list[dict[str, str]] = []
+        turn_media: list[dict[str, object]] = []
         # Per-turn registration cache (resolved abs path → meta) so two
         # tools shipping the same file (image_generate + send_attachment)
         # produce ONE gallery entry / live frame, not two.
-        registered_media: dict[str, dict[str, str]] = {}
+        registered_media: dict[str, dict[str, object]] = {}
         try:
             # Register the active loop so a concurrent Chat RPC for the
             # same session_key can find it and inject its user text
@@ -1789,10 +1789,13 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                                         loop.turn_id,
                                         loop.session_key,
                                         AttachmentAdded(
-                                            kind=_media_meta["kind"],
-                                            url=_media_meta["url"],
-                                            name=_media_meta["name"],
-                                            mime=_media_meta["mime"],
+                                            kind=str(_media_meta["kind"]),
+                                            url=str(_media_meta["url"]),
+                                            name=str(_media_meta["name"]),
+                                            mime=str(_media_meta["mime"]),
+                                            size=_positive_int_or_none(
+                                                _media_meta.get("size")
+                                            ),
                                             tool_call_id=event.call_id,
                                         ),
                                     )
@@ -4751,10 +4754,10 @@ def _media_kind_for_mime(mime: str) -> str:
 
 def _register_tool_media(
     result_json: str,
-    turn_media: list[dict[str, str]],
+    turn_media: list[dict[str, object]],
     *,
     force: bool = False,
-    registered: dict[str, dict[str, str]] | None = None,
+    registered: dict[str, dict[str, object]] | None = None,
 ) -> str:
     """Rewrite local media paths in a tool result to web-fetchable urls.
 
@@ -4784,7 +4787,7 @@ def _register_tool_media(
 
     from corlinman_server.gateway.routes.files import register_local_file
 
-    def _try_register(raw_path: object) -> dict[str, str] | None:
+    def _try_register(raw_path: object) -> dict[str, object] | None:
         if not isinstance(raw_path, str) or not raw_path:
             return None
         if not force and Path(raw_path).suffix.lower() not in _MEDIA_SUFFIXES:
@@ -4802,11 +4805,13 @@ def _register_tool_media(
             return None
         if entry is None:
             return None
+        size = int(entry.get("size") or 0)
         meta = {
             "kind": _media_kind_for_mime(str(entry.get("mime") or "")),
             "url": str(entry.get("url") or ""),
             "mime": str(entry.get("mime") or ""),
             "name": str(entry.get("name") or ""),
+            **({"size": size} if size > 0 else {}),
         }
         turn_media.append(meta)
         if registered is not None:
@@ -4816,27 +4821,30 @@ def _register_tool_media(
     changed = False
     main = _try_register(parsed.get("path"))
     if main is not None:
-        parsed["url"] = main["url"]
+        url = str(main["url"])
+        name = str(main["name"])
+        kind = str(main["kind"])
+        parsed["url"] = url
         # The embed hint must match the medium: markdown image syntax on
         # an .mp3 renders a broken <img> in the reply. Non-images get a
         # plain link instruction instead.
-        if main["kind"] == "image":
+        if kind == "image":
             parsed["display_note"] = (
                 "Image is viewable at the `url` — embed it in your reply "
-                f"as markdown: ![{main['name']}]({main['url']})"
+                f"as markdown: ![{name}]({url})"
             )
         else:
             parsed["display_note"] = (
-                f"The {main['kind']} file is downloadable at the `url` — "
+                f"The {kind} file is downloadable at the `url` — "
                 f"share it in your reply as a markdown link: "
-                f"[{main['name']}]({main['url']})"
+                f"[{name}]({url})"
             )
         changed = True
     raw_paths = parsed.get("paths")
     if isinstance(raw_paths, list):
         batch = [m for p in raw_paths if (m := _try_register(p))]
         if batch:
-            parsed["urls"] = [m["url"] for m in batch]
+            parsed["urls"] = [str(m["url"]) for m in batch]
             # Same kind-awareness as the single-path note: image
             # markdown on an audio/video url renders a broken <img>.
             if all(m["kind"] == "image" for m in batch):
@@ -4861,8 +4869,8 @@ def _register_tool_media(
 
 def _attachment_meta_for_journal(
     attachments: Sequence[Any] | None,
-) -> list[dict[str, str]] | None:
-    """Slim ``{kind, url, mime, name}`` list for the journal (W3).
+) -> list[dict[str, object]] | None:
+    """Slim ``{kind, url, mime, name, size}`` list for the journal (W3).
 
     Raw bytes and oversized / ``data:`` urls are skipped so the replay
     metadata never bloats the journal — the web UI re-fetches stored
@@ -4871,13 +4879,13 @@ def _attachment_meta_for_journal(
     """
     if not attachments:
         return None
-    out: list[dict[str, str]] = []
+    out: list[dict[str, object]] = []
     for a in attachments:
         kind = str(getattr(a, "kind", "") or "file")
         url = str(getattr(a, "url", "") or "")
         if len(url) > 4096 or url.startswith("data:"):
             url = ""
-        entry: dict[str, str] = {"kind": kind}
+        entry: dict[str, object] = {"kind": kind}
         if url:
             entry["url"] = url
         mime = getattr(a, "mime", None)
@@ -4886,8 +4894,32 @@ def _attachment_meta_for_journal(
         name = getattr(a, "file_name", None)
         if name:
             entry["name"] = str(name)
+        size = _attachment_size_for_journal(a)
+        if size is not None:
+            entry["size"] = size
         out.append(entry)
     return out or None
+
+
+def _attachment_size_for_journal(a: Any) -> int | None:
+    raw_size = getattr(a, "size", None)
+    if raw_size is not None:
+        try:
+            size = int(raw_size)
+        except (TypeError, ValueError):
+            size = 0
+        if size > 0:
+            return size
+    raw_bytes = getattr(a, "bytes_", None)
+    if raw_bytes is None:
+        raw_bytes = getattr(a, "bytes", None)
+    if raw_bytes is None:
+        return None
+    try:
+        size = len(raw_bytes)
+    except TypeError:
+        return None
+    return size if size > 0 else None
 
 
 def _extract_user_id(start: AgentChatStart) -> str | None:
