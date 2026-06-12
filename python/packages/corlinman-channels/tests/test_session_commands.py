@@ -71,6 +71,27 @@ async def test_new_bumps_epoch_and_changes_session_key() -> None:
     assert binding_prefs.effective_session_key(BINDING, base) == f"{base}:e2"
 
 
+async def test_new_preserves_bound_persona() -> None:
+    binding_prefs.set_persona_id(BINDING, "alice")
+
+    result = await run_command_handler(_ctx("/new").spec, _ctx("/new"))
+
+    assert result.reply is not None and "新会话" in result.reply
+    assert binding_prefs.effective_persona_id(BINDING, "grantley") == "alice"
+
+
+async def test_use_default_persona_clears_bound_persona() -> None:
+    binding_prefs.set_persona_id(BINDING, "alice")
+
+    result = await run_command_handler(
+        _ctx("/use-default-persona").spec,
+        _ctx("/use-default-persona"),
+    )
+
+    assert result.reply is not None and "grantley" in result.reply
+    assert binding_prefs.effective_persona_id(BINDING, "grantley") == "grantley"
+
+
 # ── /model ─────────────────────────────────────────────────────────────
 
 

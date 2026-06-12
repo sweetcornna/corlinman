@@ -410,15 +410,24 @@ class TestMutableSpinner:
         assert "".join(spinner.text_parts) == "abc"
 
     @pytest.mark.asyncio
-    async def test_reasoning_delta_renders_thinking_line(self) -> None:
+    async def test_reasoning_delta_waits_for_sentence_boundary(self) -> None:
         edits: list[str] = []
 
         async def edit(text: str) -> None:
             edits.append(text)
 
         spinner = MutableSpinner(edit)
-        await spinner.on_token_delta("thinking...", is_reasoning=True)
-        assert edits == [f"{STATUS_REASONING_PREFIX}thinking..."]
+        await spinner.on_token_delta("Let ", is_reasoning=True)
+        await spinner.on_token_delta("me ", is_reasoning=True)
+        assert edits == []
+
+        await spinner.on_token_delta("think. ", is_reasoning=True)
+        assert edits == [f"{STATUS_REASONING_PREFIX}Let me think."]
+
+        await spinner.on_token_delta("Next ", is_reasoning=True)
+        assert edits == [f"{STATUS_REASONING_PREFIX}Let me think."]
+        await spinner.on_token_delta("sentence？", is_reasoning=True)
+        assert edits[-1] == f"{STATUS_REASONING_PREFIX}Next sentence？"
         # Reasoning text MUST NOT accumulate into the final reply buffer.
         assert spinner.text_parts == []
 
@@ -432,9 +441,28 @@ class TestMutableSpinner:
         spinner = MutableSpinner(edit)
         big = "x" * 200
         await spinner.on_token_delta(big, is_reasoning=True)
+        await spinner.flush_reasoning()
         # Just the prefix + ≤80 + "…"
         assert edits[0].startswith(STATUS_REASONING_PREFIX)
         assert "…" in edits[0]
+
+    @pytest.mark.asyncio
+    async def test_reasoning_delta_flushes_incomplete_before_answer(self) -> None:
+        edits: list[str] = []
+
+        async def edit(text: str) -> None:
+            edits.append(text)
+
+        spinner = MutableSpinner(edit)
+        await spinner.on_token_delta("unfinished thought", is_reasoning=True)
+        assert edits == []
+
+        await spinner.on_token_delta("answer", is_reasoning=False)
+        assert edits == [
+            f"{STATUS_REASONING_PREFIX}unfinished thought",
+            STATUS_GENERATING,
+        ]
+        assert spinner.text_parts == ["answer"]
 
     @pytest.mark.asyncio
     async def test_reasoning_delta_empty_skips(self) -> None:
@@ -953,7 +981,7 @@ class TestMutableSpinnerTodo:
         ])
         await spinner.on_tool_call(_Ev(tool="todo_write", args_json=args))
         await spinner.on_token_delta(
-            "I should search broader sources first",
+            "I should search broader sources first.",
             is_reasoning=True,
         )
         # The latest edit must combine the todo block with the

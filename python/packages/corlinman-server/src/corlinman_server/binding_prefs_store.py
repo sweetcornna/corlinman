@@ -14,6 +14,8 @@ One row per :class:`~corlinman_channels.common.ChannelBinding` four-tuple:
   session key (``{base}:e{epoch}``), which gives the user a fresh
   conversation context without deleting any journaled history — old
   epochs stay addressable for audit/resume.
+* ``persona_id`` — optional per-conversation persona override selected by
+  the ``/persona`` wizard. ``NULL`` means "use the channel default".
 
 The store is deliberately schema-minimal; per-binding settings that later
 waves need (permission mode, persona pin, …) are added as columns here so
@@ -27,6 +29,7 @@ import sqlite3
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 __all__ = [
     "BindingPrefs",
@@ -34,6 +37,7 @@ __all__ = [
     "default_db_path",
     "get_prefs",
     "set_model_override",
+    "set_persona_id",
 ]
 
 
@@ -45,6 +49,7 @@ CREATE TABLE IF NOT EXISTS binding_prefs (
     thread         TEXT NOT NULL,
     sender         TEXT NOT NULL,
     model_override TEXT,
+    persona_id     TEXT,
     session_epoch  INTEGER NOT NULL DEFAULT 0,
     updated_at_ms  INTEGER NOT NULL
 );
@@ -56,6 +61,7 @@ class BindingPrefs:
     """Current preferences for one conversation binding."""
 
     model_override: str | None = None
+    persona_id: str | None = None
     session_epoch: int = 0
 
 
@@ -80,7 +86,28 @@ def _connect(db_path: Path | None) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=5.0)
     conn.executescript(_SCHEMA)
+    _ensure_columns(conn)
     return conn
+
+
+def _ensure_columns(conn: sqlite3.Connection) -> None:
+    """Idempotent migrations for DBs created before newer prefs columns."""
+    rows = conn.execute("PRAGMA table_info(binding_prefs)").fetchall()
+    columns = {str(row[1]) for row in rows}
+    if "persona_id" not in columns:
+        conn.execute("ALTER TABLE binding_prefs ADD COLUMN persona_id TEXT")
+
+
+def _prefs_from_row(row: sqlite3.Row | tuple[Any, ...] | None) -> BindingPrefs:
+    if row is None:
+        return BindingPrefs()
+    model = row[0] if isinstance(row[0], str) and row[0] else None
+    persona = row[1] if isinstance(row[1], str) and row[1] else None
+    return BindingPrefs(
+        model_override=model,
+        persona_id=persona,
+        session_epoch=int(row[2] or 0),
+    )
 
 
 def get_prefs(
@@ -94,17 +121,11 @@ def get_prefs(
     """Read the prefs row for a binding; absent row ⇒ defaults."""
     with _connect(db_path) as conn:
         row = conn.execute(
-            "SELECT model_override, session_epoch FROM binding_prefs "
+            "SELECT model_override, persona_id, session_epoch FROM binding_prefs "
             "WHERE binding_key = ?",
             (_binding_key(channel, account, thread, sender),),
         ).fetchone()
-    if row is None:
-        return BindingPrefs()
-    model_override = row[0] if isinstance(row[0], str) and row[0] else None
-    return BindingPrefs(
-        model_override=model_override,
-        session_epoch=int(row[1] or 0),
-    )
+    return _prefs_from_row(row)
 
 
 def set_model_override(
@@ -130,22 +151,51 @@ def set_model_override(
         conn.execute(
             "INSERT INTO binding_prefs "
             "(binding_key, channel, account, thread, sender, "
-            " model_override, session_epoch, updated_at_ms) "
-            "VALUES (?, ?, ?, ?, ?, ?, 0, ?) "
+            " model_override, persona_id, session_epoch, updated_at_ms) "
+            "VALUES (?, ?, ?, ?, ?, ?, NULL, 0, ?) "
             "ON CONFLICT(binding_key) DO UPDATE SET "
             " model_override = excluded.model_override, "
             " updated_at_ms = excluded.updated_at_ms",
             (key, channel, account, thread, sender, clean, now_ms),
         )
         row = conn.execute(
-            "SELECT model_override, session_epoch FROM binding_prefs "
+            "SELECT model_override, persona_id, session_epoch FROM binding_prefs "
             "WHERE binding_key = ?",
             (key,),
         ).fetchone()
-    return BindingPrefs(
-        model_override=row[0] if row and isinstance(row[0], str) and row[0] else None,
-        session_epoch=int(row[1] or 0) if row else 0,
-    )
+    return _prefs_from_row(row)
+
+
+def set_persona_id(
+    channel: str,
+    account: str,
+    thread: str,
+    sender: str,
+    persona_id: str | None,
+    *,
+    db_path: Path | None = None,
+) -> BindingPrefs:
+    """Set (or clear) the per-binding persona override."""
+    key = _binding_key(channel, account, thread, sender)
+    now_ms = int(time.time() * 1000)
+    clean = persona_id if isinstance(persona_id, str) and persona_id else None
+    with _connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO binding_prefs "
+            "(binding_key, channel, account, thread, sender, "
+            " model_override, persona_id, session_epoch, updated_at_ms) "
+            "VALUES (?, ?, ?, ?, ?, NULL, ?, 0, ?) "
+            "ON CONFLICT(binding_key) DO UPDATE SET "
+            " persona_id = excluded.persona_id, "
+            " updated_at_ms = excluded.updated_at_ms",
+            (key, channel, account, thread, sender, clean, now_ms),
+        )
+        row = conn.execute(
+            "SELECT model_override, persona_id, session_epoch FROM binding_prefs "
+            "WHERE binding_key = ?",
+            (key,),
+        ).fetchone()
+    return _prefs_from_row(row)
 
 
 def bump_session_epoch(
@@ -169,21 +219,16 @@ def bump_session_epoch(
         conn.execute(
             "INSERT INTO binding_prefs "
             "(binding_key, channel, account, thread, sender, "
-            " model_override, session_epoch, updated_at_ms) "
-            "VALUES (?, ?, ?, ?, ?, NULL, 1, ?) "
+            " model_override, persona_id, session_epoch, updated_at_ms) "
+            "VALUES (?, ?, ?, ?, ?, NULL, NULL, 1, ?) "
             "ON CONFLICT(binding_key) DO UPDATE SET "
             " session_epoch = binding_prefs.session_epoch + 1, "
             " updated_at_ms = excluded.updated_at_ms",
             (key, channel, account, thread, sender, now_ms),
         )
         row = conn.execute(
-            "SELECT model_override, session_epoch FROM binding_prefs "
+            "SELECT model_override, persona_id, session_epoch FROM binding_prefs "
             "WHERE binding_key = ?",
             (key,),
         ).fetchone()
-    return BindingPrefs(
-        model_override=row[0] if row and isinstance(row[0], str) and row[0] else None,
-        session_epoch=int(row[1] or 0) if row else 0,
-    )
-
-
+    return _prefs_from_row(row)

@@ -247,6 +247,36 @@ __all__ = [
 ]
 
 
+def _binding_persona_resolver(
+    binding: Any,
+    *,
+    humanlike_enabled: bool,
+    persona_id: str | None,
+    humanlike_resolver: Any,
+) -> Callable[[], tuple[bool, str | None]]:
+    """Resolve channel humanlike config, then apply per-binding persona prefs."""
+    from corlinman_channels import binding_prefs as _binding_prefs
+
+    def _resolve() -> tuple[bool, str | None]:
+        enabled = bool(humanlike_enabled)
+        resolved_persona_id = persona_id
+        if callable(humanlike_resolver):
+            resolved = humanlike_resolver()
+            if isinstance(resolved, tuple) and len(resolved) == 2:
+                enabled = bool(resolved[0])
+                resolved_persona_id = (
+                    resolved[1] if isinstance(resolved[1], str) else None
+                )
+        return (
+            enabled,
+            _binding_prefs.effective_persona_id(
+                binding, resolved_persona_id
+            ),
+        )
+
+    return _resolve
+
+
 # ---------------------------------------------------------------------------
 # Chat-service protocol — structural, decouples this package from the
 # concrete corlinman-server types.
@@ -1510,7 +1540,12 @@ async def _qq_inject_persona_if_enabled(
         humanlike_enabled=params.humanlike_enabled,
         persona_id=params.persona_id,
         persona_store=params.persona_store,
-        humanlike_resolver=params.humanlike_resolver,
+        humanlike_resolver=_binding_persona_resolver(
+            getattr(request, "binding", None),
+            humanlike_enabled=params.humanlike_enabled,
+            persona_id=params.persona_id,
+            humanlike_resolver=params.humanlike_resolver,
+        ),
         asset_store=params.asset_store,
         channel_name="qq",
     )
@@ -2865,7 +2900,12 @@ async def handle_one_telegram(
             humanlike_enabled=params.humanlike_enabled,
             persona_id=params.persona_id,
             persona_store=params.persona_store,
-            humanlike_resolver=params.humanlike_resolver,
+            humanlike_resolver=_binding_persona_resolver(
+                inbound.binding,
+                humanlike_enabled=params.humanlike_enabled,
+                persona_id=params.persona_id,
+                humanlike_resolver=params.humanlike_resolver,
+            ),
             asset_store=params.asset_store,
             channel_name="telegram",
         )
@@ -3295,15 +3335,18 @@ async def _drive_spinner(
         elif kind == "tool_result":
             await spinner.on_tool_result(ev)
         elif kind == "done":
+            await spinner.flush_reasoning()
             if _is_supplemented_done(ev):
                 outcome.supplemented = True
                 return outcome
             return outcome
         elif kind == "error":
+            await spinner.flush_reasoning()
             outcome.error_message = (
                 getattr(ev, "error", "") or getattr(ev, "message", "")
             )
             return outcome
+    await spinner.flush_reasoning()
     return outcome
 
 
@@ -3739,7 +3782,12 @@ async def handle_one_discord(
             humanlike_enabled=params.humanlike_enabled,
             persona_id=params.persona_id,
             persona_store=params.persona_store,
-            humanlike_resolver=params.humanlike_resolver,
+            humanlike_resolver=_binding_persona_resolver(
+                inbound.binding,
+                humanlike_enabled=params.humanlike_enabled,
+                persona_id=params.persona_id,
+                humanlike_resolver=params.humanlike_resolver,
+            ),
             asset_store=params.asset_store,
             channel_name="discord",
         )
@@ -4051,7 +4099,12 @@ async def handle_one_slack(
             humanlike_enabled=params.humanlike_enabled,
             persona_id=params.persona_id,
             persona_store=params.persona_store,
-            humanlike_resolver=params.humanlike_resolver,
+            humanlike_resolver=_binding_persona_resolver(
+                inbound.binding,
+                humanlike_enabled=params.humanlike_enabled,
+                persona_id=params.persona_id,
+                humanlike_resolver=params.humanlike_resolver,
+            ),
             asset_store=params.asset_store,
             channel_name="slack",
         )
@@ -4355,7 +4408,12 @@ async def handle_one_feishu(
             humanlike_enabled=params.humanlike_enabled,
             persona_id=params.persona_id,
             persona_store=params.persona_store,
-            humanlike_resolver=params.humanlike_resolver,
+            humanlike_resolver=_binding_persona_resolver(
+                inbound.binding,
+                humanlike_enabled=params.humanlike_enabled,
+                persona_id=params.persona_id,
+                humanlike_resolver=params.humanlike_resolver,
+            ),
             asset_store=params.asset_store,
             channel_name="feishu",
         )
@@ -4783,7 +4841,12 @@ async def handle_one_qq_official(
             humanlike_enabled=params.humanlike_enabled,
             persona_id=params.persona_id,
             persona_store=params.persona_store,
-            humanlike_resolver=params.humanlike_resolver,
+            humanlike_resolver=_binding_persona_resolver(
+                inbound.binding,
+                humanlike_enabled=params.humanlike_enabled,
+                persona_id=params.persona_id,
+                humanlike_resolver=params.humanlike_resolver,
+            ),
             asset_store=params.asset_store,
             channel_name="qq_official",
         )
@@ -5170,7 +5233,12 @@ async def handle_one_wechat_official(
             humanlike_enabled=params.humanlike_enabled,
             persona_id=params.persona_id,
             persona_store=params.persona_store,
-            humanlike_resolver=params.humanlike_resolver,
+            humanlike_resolver=_binding_persona_resolver(
+                inbound.binding,
+                humanlike_enabled=params.humanlike_enabled,
+                persona_id=params.persona_id,
+                humanlike_resolver=params.humanlike_resolver,
+            ),
             asset_store=params.asset_store,
             channel_name="wechat_official",
         )

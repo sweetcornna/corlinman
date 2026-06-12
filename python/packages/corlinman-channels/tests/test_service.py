@@ -1409,12 +1409,14 @@ class TestHandleOneTelegram:
 
     @pytest.mark.asyncio
     async def test_reasoning_delta_shows_thinking_line(self) -> None:
-        """token_delta with is_reasoning=True must render as 💭 推理: …
-        and NOT be accumulated into the final reply."""
+        """Reasoning deltas render sentence-by-sentence and never enter
+        the final reply."""
         import asyncio
 
         svc = _ScriptedChatService([
-            _Ev(kind="token_delta", text="let me think about this",
+            _Ev(kind="token_delta", text="let me ",
+                is_reasoning=True),
+            _Ev(kind="token_delta", text="think about this.",
                 is_reasoning=True),
             _Ev(kind="token_delta", text="the answer is 42"),
             _Ev(kind="done"),
@@ -1427,8 +1429,10 @@ class TestHandleOneTelegram:
         sender = _FakeTelegramSender()
         await handle_one_telegram(svc, inbound, "m", sender, asyncio.Event())  # type: ignore[arg-type]
         edits = [e[2] for e in sender.edits]
-        # The reasoning text must appear on a 💭 line.
-        assert any(("💭" in t and "let me think" in t) for t in edits), edits
+        # The incomplete first chunk must not render by itself.
+        assert not any(("💭" in t and "let me " in t and "think" not in t) for t in edits), edits
+        # The completed sentence must appear on a 💭 line.
+        assert any(("💭" in t and "let me think about this." in t) for t in edits), edits
         # The final reply must NOT contain the reasoning text.
         assert sender.edits[-1][2] == "the answer is 42"
 
@@ -3554,6 +3558,23 @@ class _FakePersonaStoreW7:
         return None
 
 
+class _FakePersonaStoreMapW7:
+    def __init__(self, prompts: dict[str, str]) -> None:
+        self._prompts = prompts
+
+    async def get(self, persona_id: str):  # type: ignore[no-untyped-def]
+        prompt = self._prompts.get(persona_id)
+        if prompt is None:
+            return None
+        return SimpleNamespace(
+            id=persona_id,
+            display_name=persona_id.title(),
+            short_summary="",
+            system_prompt=prompt,
+            is_builtin=False,
+        )
+
+
 class _FakeAssetRecordW7:
     """Tiny duck-typed asset record — only ``label`` + ``path``."""
 
@@ -3646,6 +3667,82 @@ class TestPersonaInjectionMultiChannel:
         )
         assert svc.calls, "chat_service.run was never invoked"
         self._assert_persona_injected_with_emoji(svc.calls[0])
+
+    @pytest.mark.asyncio
+    async def test_telegram_bound_persona_overrides_default_after_new(
+        self,
+        tmp_path: Any,
+        monkeypatch: Any,
+    ) -> None:
+        import asyncio
+
+        monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+        from corlinman_channels import binding_prefs
+        from corlinman_channels.commands import (
+            CommandContext,
+            match_command_with_args,
+            run_command_handler,
+        )
+
+        binding = ChannelBinding.telegram(
+            bot_id=999, chat_id=42, user_id=42
+        )
+        binding_prefs.set_persona_id(binding, "alice")
+        match = match_command_with_args("/new")
+        assert match is not None
+        spec, args_text = match
+        await run_command_handler(
+            spec,
+            CommandContext(
+                spec=spec,
+                raw_text="/new",
+                args_text=args_text,
+                binding=binding,
+                is_admin=True,
+            ),
+        )
+        inbound: InboundEvent[Any] = InboundEvent(
+            channel="telegram",
+            binding=binding,
+            text="ping",
+            message_id="7",
+            timestamp=0,
+            mentioned=True,
+            attachments=[],
+            payload=None,
+        )
+        svc = _ScriptedChatService([
+            _Ev(kind="token_delta", text="ok"),
+            _Ev(kind="done"),
+        ])
+        params = TelegramChannelParams(
+            config={},
+            model="m",
+            chat_service=svc,
+            humanlike_enabled=True,
+            persona_id="grantley",
+            persona_store=_FakePersonaStoreMapW7(
+                {
+                    "grantley": "GRANTLEY-BODY-MARK",
+                    "alice": "ALICE-BODY-MARK",
+                }
+            ),
+        )
+
+        await handle_one_telegram(
+            svc,
+            inbound,
+            "m",
+            _FakeTelegramSender(),
+            asyncio.Event(),  # type: ignore[arg-type]
+            params=params,
+        )
+
+        assert svc.calls, "chat_service.run was never invoked"
+        req = svc.calls[0]
+        assert req.persona_id == "alice"
+        assert "ALICE-BODY-MARK" in req.messages[0].content
+        assert "GRANTLEY-BODY-MARK" not in req.messages[0].content
 
     @pytest.mark.asyncio
     async def test_discord_injects_persona_and_emoji_block(self) -> None:
