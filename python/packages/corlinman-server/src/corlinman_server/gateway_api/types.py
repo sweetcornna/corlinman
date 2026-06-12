@@ -36,6 +36,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 __all__ = [
     "Attachment",
+    "AttachmentEvent",
     "AttachmentKind",
     "ChannelBinding",
     "DoneEvent",
@@ -364,6 +365,25 @@ class ToolResultEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class AttachmentEvent:
+    """A tool-produced file registered into the gateway file store
+    mid-turn — surfaced live so the web chat renders the attachment
+    before the turn ends (history replay alone only covers reloads).
+
+    NOTE: unlike the sibling events, ``kind`` here is the *media* kind
+    (``"image" | "audio" | "video" | "file"``), not a variant
+    discriminator — discriminate via ``isinstance``. ``url`` is
+    gateway-relative (``/v1/files/{id}``).
+    """
+
+    kind: str
+    url: str
+    name: str
+    mime: str
+    call_id: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class DoneEvent:
     """Terminal sentinel emitted exactly once at the end of a successful run.
 
@@ -392,6 +412,7 @@ InternalChatEvent = (
     TokenDeltaEvent
     | ToolCallEvent
     | ToolResultEvent
+    | AttachmentEvent
     | DoneEvent
     | ErrorEvent
 )

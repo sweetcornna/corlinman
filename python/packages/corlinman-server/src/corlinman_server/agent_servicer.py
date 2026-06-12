@@ -132,6 +132,7 @@ except Exception:  # noqa: BLE001 — degrade if the submodule lacks the symbols
     dispatch_memory_write = None  # type: ignore[assignment]
     _MEMORY_RW_AVAILABLE = False
 from corlinman_agent.approval_gate import ApprovalGate, ApprovalOutcome
+from corlinman_agent.events import AttachmentAdded
 from corlinman_agent.permission import (
     ALLOW as _PERM_ALLOW,
 )
@@ -256,6 +257,7 @@ from corlinman_server.agent_journal import (
     ResumeData,
 )
 from corlinman_server.gateway.services.chat_service import (
+    _BUILTIN_ATTACHMENT_PREFIX,
     _BUILTIN_OBSERVATION_PREFIX,
 )
 from corlinman_server.runner_pool import (
@@ -1621,6 +1623,14 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             tool_result_timeout=30.0,
             event_emitter=self._event_emitter,
         )
+        if journal_turn_id is not None:
+            # One turn identity everywhere: the journal rows (turns /
+            # turn_messages) carry ``begin_turn()``'s id while the loop's
+            # event envelopes (turn_events / live SSE) used to carry an
+            # unrelated uuid4 — so "latest turn for session → its events"
+            # joins matched nothing and replay/catch-up/resume surfaces
+            # read empty. Pin the loop to the journal id before run().
+            loop.pin_turn_id(str(journal_turn_id))
 
         inbound_task = asyncio.create_task(
             _pump_inbound(request_iterator, loop),
@@ -1633,6 +1643,10 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # etc.), registered into the gateway file store so the web UI can
         # fetch them. Journaled onto the final assistant message.
         turn_media: list[dict[str, str]] = []
+        # Per-turn registration cache (resolved abs path → meta) so two
+        # tools shipping the same file (image_generate + send_attachment)
+        # produce ONE gallery entry / live frame, not two.
+        registered_media: dict[str, dict[str, str]] = {}
         try:
             # Register the active loop so a concurrent Chat RPC for the
             # same session_key can find it and inject its user text
@@ -1749,9 +1763,51 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                         # journaled with the final assistant message so
                         # session replay re-renders it.
                         if isinstance(result_json, str):
+                            _media_before = len(turn_media)
                             result_json = _register_tool_media(
-                                result_json, turn_media
+                                result_json,
+                                turn_media,
+                                force=(event.tool == SEND_ATTACHMENT_TOOL),
+                                registered=registered_media,
                             )
+                            # Live delivery — journaling attachments at
+                            # turn end only covers history replay; the
+                            # open stream would never show the file. Each
+                            # NEWLY registered file is (a) journaled as
+                            # AttachmentAdded for event-stream consumers
+                            # and (b) yielded as a ``_builtin_attachment:``
+                            # observation frame so the meta travels the
+                            # same gRPC stream the gateway chat route
+                            # consumes (the only path in the two-process
+                            # deploy, where ``_event_emitter`` is None).
+                            for _media_meta in turn_media[_media_before:]:
+                                if self._event_emitter is not None:
+                                    await self._event_emitter.emit_event(
+                                        loop.turn_id,
+                                        loop.session_key,
+                                        AttachmentAdded(
+                                            kind=_media_meta["kind"],
+                                            url=_media_meta["url"],
+                                            name=_media_meta["name"],
+                                            mime=_media_meta["mime"],
+                                            tool_call_id=event.call_id,
+                                        ),
+                                    )
+                                yield agent_pb2.ServerFrame(
+                                    tool_call=agent_pb2.ToolCall(
+                                        call_id=event.call_id,
+                                        plugin=(
+                                            f"{_BUILTIN_ATTACHMENT_PREFIX}"
+                                            f"{event.plugin}"
+                                        ),
+                                        tool=event.tool,
+                                        args_json=json.dumps(
+                                            _media_meta
+                                        ).encode("utf-8"),
+                                        seq=seq,
+                                    )
+                                )
+                                seq += 1
                         # Detect error envelope so the channel UI can
                         # render ❌ instead of ✅. Cheap parse — bail on
                         # malformed JSON (counts as success then).
@@ -3293,12 +3349,37 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                             "error": "send_attachment requires a `path`",
                         }
                     )
+                # Models routinely pass workspace-relative paths (the
+                # write-file tools hand them back that way). The media
+                # registration hook resolves against the process cwd, so
+                # normalise to the workspace here — otherwise relative
+                # sends silently skip web delivery. Channel handlers do
+                # their own workspace resolution off the FRAME args and
+                # never see this result.
+                if not Path(path).is_absolute():
+                    try:
+                        candidate = resolve_workspace() / path
+                        if candidate.is_file():
+                            path = str(candidate)
+                    except Exception:  # noqa: BLE001 — best-effort
+                        pass
+                # ``path`` rides along so the W4 media-registration hook
+                # at the call site can register the file into the gateway
+                # store and stream it live to web consumers; channel
+                # handlers keep intercepting the ToolCall frame (args),
+                # not this result.
                 return json.dumps(
                     {
                         "ok": True,
                         "deferred_to_channel": True,
+                        "path": path,
+                        "filename": (
+                            str(args.get("filename") or "").strip()
+                            or Path(path).name
+                        ),
+                        "caption": str(args.get("caption") or ""),
                         "note": (
-                            "The channel handler is uploading the file. "
+                            "The file is being delivered to the user. "
                             "Do not re-invoke send_attachment for the "
                             "same path; continue with the reply text."
                         ),
@@ -4666,7 +4747,11 @@ def _media_kind_for_mime(mime: str) -> str:
 
 
 def _register_tool_media(
-    result_json: str, turn_media: list[dict[str, str]]
+    result_json: str,
+    turn_media: list[dict[str, str]],
+    *,
+    force: bool = False,
+    registered: dict[str, dict[str, str]] | None = None,
 ) -> str:
     """Rewrite local media paths in a tool result to web-fetchable urls.
 
@@ -4678,6 +4763,14 @@ def _register_tool_media(
     it) and the slim metadata is collected into ``turn_media`` for the
     final assistant journal row. Best-effort at every step: any failure
     returns the result unchanged.
+
+    ``force=True`` skips the :data:`_MEDIA_SUFFIXES` gate —
+    ``send_attachment`` may ship a .pdf / .zip / anything. ``registered``
+    is a per-turn cache keyed by the resolved absolute path: a path
+    already registered this turn reuses its meta (the result still gains
+    ``url`` / ``display_note``) without appending a duplicate
+    ``turn_media`` gallery entry (e.g. image_generate followed by
+    send_attachment on the same file).
     """
     try:
         parsed = json.loads(result_json or "{}")
@@ -4691,8 +4784,14 @@ def _register_tool_media(
     def _try_register(raw_path: object) -> dict[str, str] | None:
         if not isinstance(raw_path, str) or not raw_path:
             return None
-        if Path(raw_path).suffix.lower() not in _MEDIA_SUFFIXES:
+        if not force and Path(raw_path).suffix.lower() not in _MEDIA_SUFFIXES:
             return None
+        try:
+            cache_key = str(Path(raw_path).resolve())
+        except OSError:  # pragma: no cover — pathological path string
+            cache_key = raw_path
+        if registered is not None and cache_key in registered:
+            return registered[cache_key]
         try:
             entry = register_local_file(raw_path)
         except Exception as exc:  # noqa: BLE001 — never fail the tool
@@ -4707,6 +4806,8 @@ def _register_tool_media(
             "name": str(entry.get("name") or ""),
         }
         turn_media.append(meta)
+        if registered is not None:
+            registered[cache_key] = meta
         return meta
 
     changed = False

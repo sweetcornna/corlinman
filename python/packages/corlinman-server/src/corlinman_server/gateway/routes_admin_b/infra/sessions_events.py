@@ -8,7 +8,12 @@ past-turns navigator:
   Each frame is one envelope. Supports ``Last-Event-ID`` /
   ``?last_event_id=`` for resumable catch-up (the source of truth being
   the per-turn journal). Ten-second SSE comment heartbeat to keep
-  intermediaries from idling the connection out.
+  intermediaries from idling the connection out. Live delivery has TWO
+  sources: the in-process emitter queue (single-process deploys) and a
+  ~1s journal-polling fallback (two-process production deploys, where
+  the agent process journals turn_events into the shared sqlite file
+  but its emitter fan-out never reaches this gateway process — see the
+  polling design notes inside :func:`_sse_stream`).
 
 * ``GET /admin/sessions/{key}/turns/{turn_id}/events`` — JSON replay.
   Paginates over ``turn_events`` for a single turn so the per-turn
@@ -48,6 +53,20 @@ from corlinman_server.gateway.routes_admin_b.state import (
 _log = logging.getLogger("corlinman.gateway.admin.sessions_events")
 
 SSE_HEARTBEAT_SECONDS: float = 10.0
+
+# Live-loop wake-up cadence (cross-process observability bridge). In the
+# two-process production deploy the agent server (corlinman-python-server)
+# journals turn_events into the shared sqlite file, but its
+# ``JournalBackedEmitter`` fan-out is in-process over THERE — this
+# gateway's subscriber queue never fires for chat turns. The live loop
+# therefore wakes every second instead of every heartbeat interval and
+# runs one read-only journal poll per idle wake-up; the ``: keepalive``
+# comment frame keeps its documented ``SSE_HEARTBEAT_SECONDS`` cadence
+# by counting consecutive idle (nothing-delivered) polls. 1s is the
+# latency floor for cross-process delivery — small enough to feel live
+# in the admin UI, large enough that an idle session costs two trivial
+# indexed SELECTs per second per subscriber.
+LIVE_POLL_SECONDS: float = 1.0
 
 # JSON replay default + cap. Default is the "show me the whole turn"
 # size most UIs need on first load; the cap protects against a
@@ -178,9 +197,11 @@ async def _sse_stream(
 
     Subscribes to the live emitter *first* (so any envelope emitted
     after this point lands in the queue), then drains a catch-up replay
-    from the journal, then loops on the queue. A 10s heartbeat ``:``
-    comment frame fires whenever no event has been seen for the
-    interval.
+    from the journal, then loops on the queue with a ~1s wake-up. Each
+    idle wake-up runs one journal poll (the cross-process delivery path
+    — see ``LIVE_POLL_SECONDS``); a ``:`` comment heartbeat frame fires
+    once ``SSE_HEARTBEAT_SECONDS`` of genuine silence (no queue event,
+    no polled event) has accumulated.
     """
     emitter = state.event_emitter
     journal = state.journal
@@ -230,6 +251,78 @@ async def _sse_stream(
         dedup_turn = resume_turn  # turn catch-up replays (composite or resolved)
         replayed_seqs: set[int] = set()  # recent sequences catch-up delivered
         _seen_order: deque[int] = deque(maxlen=DEDUP_WINDOW)  # FIFO eviction order
+
+        # ---------- journal-polling fallback state ----------
+        # Cross-process observability bridge: in the two-process
+        # production deploy the agent server journals turn_events into
+        # the shared sqlite file but its emitter fan-out is in-process
+        # over there — the ``queue`` above NEVER fires for chat turns.
+        # The live loop below therefore polls the journal (read-only,
+        # best-effort) on every idle ``LIVE_POLL_SECONDS`` wake-up and
+        # delivers whatever the agent process appended past this
+        # client's cursor.
+        #
+        # ``poll_cursors`` — turn_id -> highest sequence already
+        # DELIVERED to this client *from any source* (catch-up page,
+        # live queue, or a prior poll). Every yielded event frame
+        # advances it, so a poll never re-reads what another source
+        # already delivered (single-process deploys have both sources
+        # live) and successive polls page strictly forward. For poll
+        # purposes this subsumes ``replayed_seqs`` — but that set stays
+        # untouched above because it covers the *queue-side* catch-up
+        # overlap with its own documented exactness semantics. Bounded
+        # to ``DEDUP_WINDOW`` turn entries with oldest-insertion
+        # eviction (dicts preserve insertion order): the poll only ever
+        # reads the session's LATEST turn, so an evicted (long-finished)
+        # turn's cursor can only matter if it somehow becomes latest
+        # again — the cost then is one bounded re-delivery, never a
+        # stream teardown or unbounded memory.
+        poll_cursors: dict[str, int] = {}
+
+        # ``polled_seqs`` — turn_id -> exact sequences this client got
+        # FROM A POLL, mirrored by ``_polled_order`` for FIFO eviction
+        # (same bound rationale as ``replayed_seqs``: a poll/queue
+        # duplicate must still be sitting in the bounded subscriber
+        # queue, so it is always within the most-recent window). This
+        # is the queue-side dedup for poll deliveries: an envelope the
+        # poll read from the journal may ALSO be in flight in the
+        # in-process queue (single-process deploy — the emit raced the
+        # idle timeout); when that copy surfaces from the queue we drop
+        # it by membership here. Membership is exact, not a range, for
+        # the same reason documented on ``replayed_seqs``: a live-only
+        # event (never journaled, so never polled) must always survive.
+        polled_seqs: dict[str, set[int]] = {}
+        _polled_order: deque[tuple[str, int]] = deque(maxlen=DEDUP_WINDOW)
+
+        def _advance_cursor(turn_id: str, sequence: int) -> None:
+            """Record one DELIVERED ``(turn, sequence)`` into the poll
+            cursor map (monotonic per turn; bounded — see above)."""
+            if turn_id not in poll_cursors and len(poll_cursors) >= DEDUP_WINDOW:
+                # Evict the oldest-inserted turn's cursor. Overwhelmingly
+                # a long-finished turn — the active turn keeps its slot
+                # because updating a value does not reorder dict keys.
+                poll_cursors.pop(next(iter(poll_cursors)), None)
+            if sequence > poll_cursors.get(turn_id, -1):
+                poll_cursors[turn_id] = sequence
+
+        def _record_polled(turn_id: str, sequence: int) -> None:
+            """Track a POLL-delivered ``(turn, sequence)`` for queue-side
+            dedup, FIFO-bounded to ``DEDUP_WINDOW`` total entries."""
+            seqs = polled_seqs.setdefault(turn_id, set())
+            if sequence in seqs:
+                return
+            if len(_polled_order) == DEDUP_WINDOW:
+                # The deque drops its head on append below — mirror that
+                # eviction into the membership sets (and reap an emptied
+                # per-turn set so the dict stays bounded too).
+                old_turn, old_seq = _polled_order[0]
+                old_set = polled_seqs.get(old_turn)
+                if old_set is not None:
+                    old_set.discard(old_seq)
+                    if not old_set:
+                        polled_seqs.pop(old_turn, None)
+            _polled_order.append((turn_id, sequence))
+            seqs.add(sequence)
 
         if resume_turn is not None and catch_up_sequence >= 0:
             # Replay the catch-up backlog in bounded PAGES. Design points:
@@ -281,39 +374,116 @@ async def _sse_stream(
                             replayed_seqs.discard(_seen_order[0])
                         _seen_order.append(ev_seq)
                         replayed_seqs.add(ev_seq)
+                    if isinstance(ev_seq, int):
+                        # Polling fallback: a catch-up frame counts as
+                        # DELIVERED, so the first idle poll resumes past
+                        # it instead of replaying it (``poll_cursors``).
+                        _advance_cursor(resume_turn, ev_seq)
                 last_seq = page[-1].get("sequence")
                 if not isinstance(last_seq, int) or last_seq <= seq_cursor:
                     break  # defensive — no forward progress
                 seq_cursor = last_seq
 
         # ---------- live ----------
+        # The queue wait wakes every ``LIVE_POLL_SECONDS``, not every
+        # heartbeat interval. Each timeout wake-up runs one journal poll
+        # (the cross-process delivery path — see the fallback-state
+        # comment above); the ``: keepalive`` comment frame keeps its
+        # documented ``SSE_HEARTBEAT_SECONDS`` cadence by counting
+        # consecutive idle polls — a wake-up that delivered nothing from
+        # either source.
+        idle_polls = 0
         while True:
             try:
                 envelope = await asyncio.wait_for(
-                    queue.get(), timeout=SSE_HEARTBEAT_SECONDS
+                    queue.get(), timeout=LIVE_POLL_SECONDS
                 )
             except TimeoutError:
-                # SSE comment frame — standard keepalive. Comment lines
-                # are silently ignored by ``EventSource`` clients.
-                yield b": keepalive\n\n"
+                # ---------- journal-polling fallback ----------
+                # Read-only + best-effort: resolve the session's latest
+                # turn and page everything past this client's cursor.
+                # Same no-deadlock rule as the catch-up replay above
+                # (load-bearing — see the deadlock notes there and on
+                # the JSON replay route): the bounded ``LIMIT`` query is
+                # drained COMPLETELY into a list before any frame is
+                # yielded, so no aiosqlite cursor is ever live across a
+                # ``yield`` or abandoned by a disconnect mid-iteration.
+                poll_turn: str | None = None
+                poll_page: list[dict[str, Any]] = []
+                try:
+                    poll_turn = await _resolve_latest_turn_id(
+                        journal, session_key
+                    )
+                    if poll_turn is not None:
+                        poll_page = [
+                            ev
+                            async for ev in journal.iter_events(
+                                poll_turn,
+                                start_sequence=poll_cursors.get(poll_turn, -1),
+                                limit=CATCH_UP_PAGE_SIZE,
+                            )
+                        ]
+                except Exception:  # noqa: BLE001 — best-effort poll
+                    # Partial delivery beats tearing the stream down —
+                    # the next poll (or the queue) retries naturally.
+                    poll_page = []
+                if poll_turn is not None and poll_page:
+                    for ev in poll_page:
+                        yield _format_sse_frame(ev)
+                        ev_seq = ev.get("sequence")
+                        if isinstance(ev_seq, int):
+                            _advance_cursor(poll_turn, ev_seq)
+                            # The same envelope may still be in flight
+                            # in the in-process queue (single-process
+                            # deploy): remember the poll delivered it so
+                            # the queue copy is dropped below.
+                            _record_polled(poll_turn, ev_seq)
+                    idle_polls = 0
+                    continue
+                idle_polls += 1
+                if idle_polls * LIVE_POLL_SECONDS >= SSE_HEARTBEAT_SECONDS:
+                    # SSE comment frame — standard keepalive. Comment
+                    # lines are silently ignored by ``EventSource``
+                    # clients.
+                    yield b": keepalive\n\n"
+                    idle_polls = 0
                 continue
+            idle_polls = 0
+            ev_turn = getattr(envelope, "turn_id", None)
+            ev_seq = getattr(envelope, "sequence", None)
             # Drop an envelope the catch-up replay already delivered: an
             # event committed while we paged lands in both a journal page
             # AND this queue. Membership in ``replayed_seqs`` (exact, not a
             # range) suppresses only what catch-up genuinely re-sent, so a
             # live-only delta missing from the journal — or a fresh turn's
             # event (different turn id) — always survives.
-            if dedup_turn is not None and replayed_seqs:
-                ev_turn = getattr(envelope, "turn_id", None)
-                ev_seq = getattr(envelope, "sequence", None)
-                if (
-                    ev_turn is not None
-                    and str(ev_turn) == str(dedup_turn)
-                    and isinstance(ev_seq, int)
-                    and ev_seq in replayed_seqs
-                ):
-                    continue
+            if (
+                dedup_turn is not None
+                and replayed_seqs
+                and ev_turn is not None
+                and str(ev_turn) == str(dedup_turn)
+                and isinstance(ev_seq, int)
+                and ev_seq in replayed_seqs
+            ):
+                continue
+            # Drop an envelope the POLLING fallback already delivered: a
+            # poll that raced this queue put read the same row from the
+            # journal and yielded it above. Exact (turn, sequence)
+            # membership — same posture as the catch-up dedup, so a
+            # live-only event (never journaled, hence never polled)
+            # always survives.
+            if (
+                ev_turn is not None
+                and isinstance(ev_seq, int)
+                and ev_seq in polled_seqs.get(str(ev_turn), ())
+            ):
+                continue
             yield _format_sse_frame(envelope.to_json())
+            if ev_turn is not None and isinstance(ev_seq, int):
+                # A queue delivery advances the poll cursor too — an
+                # idle poll must never re-read from the journal what the
+                # queue already sent this client.
+                _advance_cursor(str(ev_turn), ev_seq)
     except asyncio.CancelledError:
         # Client disconnect — propagate after cleanup.
         raise
@@ -538,6 +708,7 @@ def router() -> APIRouter:
 
 
 __all__ = [
+    "LIVE_POLL_SECONDS",
     "REPLAY_DEFAULT_LIMIT",
     "REPLAY_MAX_LIMIT",
     "SSE_HEARTBEAT_SECONDS",

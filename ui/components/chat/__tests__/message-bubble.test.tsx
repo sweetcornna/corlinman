@@ -51,7 +51,10 @@ describe("MessageBubble", () => {
     expect(screen.getByTestId("md-codeblock")).toBeInTheDocument();
   });
 
-  it("renders tool-call cards from message.toolCalls", () => {
+  it("collapses settled tool calls behind the summary toggle by default", () => {
+    // Settled (non-pending) messages — i.e. history replay — must read as a
+    // single compact bubble: the trace hides behind the "N tool calls" chip
+    // until the user expands it.
     render(
       ulWrap(
         <MessageBubble
@@ -71,10 +74,42 @@ describe("MessageBubble", () => {
         />,
       ),
     );
+    const toggle = screen.getByTestId("bubble-tools-toggle");
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByTestId("tool-call-card")).not.toBeInTheDocument();
+
+    fireEvent.click(toggle);
     expect(screen.getByTestId("tool-call-card")).toBeInTheDocument();
     expect(
       screen.getByTestId("tool-call-card").getAttribute("data-tool-name"),
     ).toBe("read_file");
+
+    // Toggle back — the user's collapse choice must keep working.
+    fireEvent.click(toggle);
+    expect(screen.queryByTestId("tool-call-card")).not.toBeInTheDocument();
+  });
+
+  it("keeps the live streaming trace expanded while pending", () => {
+    render(
+      ulWrap(
+        <MessageBubble
+          message={makeMsg({
+            role: "assistant",
+            content: "",
+            pending: true,
+            toolCalls: [
+              {
+                callId: "c1",
+                toolName: "read_file",
+                argsJson: '{"path":"x"}',
+                status: "running",
+              },
+            ],
+          })}
+        />,
+      ),
+    );
+    expect(screen.getByTestId("tool-call-card")).toBeInTheDocument();
   });
 
   it("hides reasoning, tool calls, and subagents when action trace is disabled", () => {

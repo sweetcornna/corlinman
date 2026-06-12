@@ -16,8 +16,9 @@
 import * as React from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
-import { CorlinmanApiError } from "@/lib/api";
+import { CorlinmanApiError, GATEWAY_BASE_URL } from "@/lib/api";
 import {
+  attachmentKindFromMime,
   cancelChatSession,
   streamChatCompletions,
   submitApproval,
@@ -25,8 +26,12 @@ import {
   type ChatCompletionRequest,
   type ChatCompletionToolDef,
 } from "@/lib/api/chat";
+import { fetchTurnEvents, listSessionTurns } from "@/lib/api/sessions";
 import { buildMessageContent } from "@/lib/chat/content-parts";
-import { openLiveEventStream } from "@/lib/sessions/event-stream";
+import {
+  openLiveEventStream,
+  type LiveEvent,
+} from "@/lib/sessions/event-stream";
 import {
   EventDedupSet,
   chunkToChatEvents,
@@ -78,6 +83,14 @@ export interface UseChatStreamResult {
    * history. Does not mutate state.
    */
   sliceUntil: (messageId: string) => ChatMessage[];
+  /**
+   * Reattach to a turn that is still generating server-side (the user
+   * navigated away mid-turn and came back). Detects an `in_progress`
+   * latest turn, rebuilds the pending bubble from the journal event
+   * backlog, then tails the live SSE from where the backlog ended.
+   * No-op when nothing is in flight. Caller invokes it after hydrate.
+   */
+  resumeInFlight: () => Promise<void>;
   /**
    * Aggregated input/output tokens + estimated cost across all completed
    * assistant turns in this session.
@@ -191,6 +204,29 @@ function applyEvent(draft: ChatMessage, ev: ChatEvent): void {
       });
       break;
     }
+    case "attachment": {
+      // Same attachment can arrive twice (token-stream `corlinman`
+      // extension AND journal `AttachmentAdded`) — dedup on the resolved
+      // remote url so it renders exactly once.
+      const list = (draft.attachments ??= []);
+      const remoteUrl = ev.attachment.url.startsWith("/")
+        ? `${GATEWAY_BASE_URL}${ev.attachment.url}`
+        : ev.attachment.url;
+      if (list.some((a) => a.remoteUrl === remoteUrl)) break;
+      const k = ev.attachment.kind;
+      list.push({
+        id: `att_${ev.turnId}_${ev.sequence}_${list.length}`,
+        kind:
+          k === "image" || k === "audio" || k === "video"
+            ? k
+            : attachmentKindFromMime(ev.attachment.mime ?? ""),
+        name: ev.attachment.name,
+        mime: ev.attachment.mime,
+        sizeBytes: 0,
+        remoteUrl,
+      });
+      break;
+    }
     case "turn-complete":
       draft.usage = { ...(draft.usage ?? {}), ...ev.usage };
       draft.pending = false;
@@ -244,6 +280,19 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
   // is only available asynchronously inside updater callbacks).
   const pendingRef = React.useRef<ChatMessage | null>(null);
   const retiredTurnIdsRef = React.useRef<Set<string>>(new Set());
+  // True while the POST /v1/chat/completions fetch owns the turn. The
+  // journal live stream emits the SAME text tokens as the fetch (both
+  // tee off the reasoning loop); while the fetch is live it is the sole
+  // text authority and journal text deltas are dropped — otherwise the
+  // reply doubles. Tool/attachment/lifecycle journal events still apply.
+  const fetchActiveRef = React.useRef(false);
+  // Turn id adopted from the journal by `resumeInFlight` (no local
+  // fetch). Its terminal event — or the status-poll safety net —
+  // finalizes the pending bubble instead of `runTurn`'s `finally`.
+  const journalTurnRef = React.useRef<string | null>(null);
+  const statusPollRef = React.useRef<ReturnType<typeof setInterval> | null>(
+    null,
+  );
   const qc = useQueryClient();
 
   /** Retire every id the current pending draft is known under. */
@@ -266,6 +315,12 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
       closeLiveRef.current = null;
       activeDraftRef.current = null;
       pendingRef.current = null;
+      fetchActiveRef.current = false;
+      journalTurnRef.current = null;
+      if (statusPollRef.current) {
+        clearInterval(statusPollRef.current);
+        statusPollRef.current = null;
+      }
       setMessages(history);
       setPendingMessage(null);
       setIsStreaming(false);
@@ -274,12 +329,60 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
     [retirePending],
   );
 
+  /** Commit a journal-owned (resumed) turn: move the pending bubble into
+   *  history and refresh the canonical transcript. The transcript refetch
+   *  re-hydrates the thread with the authoritative journal rows, so a
+   *  partial reconstruction (e.g. the agent process journaled no events)
+   *  self-heals instead of freezing a half-empty bubble. */
+  const finalizeJournalTurn = React.useCallback(() => {
+    journalTurnRef.current = null;
+    if (statusPollRef.current) {
+      clearInterval(statusPollRef.current);
+      statusPollRef.current = null;
+    }
+    setIsStreaming(false);
+    activeDraftRef.current = null;
+    setPendingMessage((current) => {
+      if (current) {
+        setMessages((prev) => [
+          ...prev,
+          { ...current, pending: false, cancelling: false },
+        ]);
+      }
+      return null;
+    });
+    pendingRef.current = null;
+    void qc.invalidateQueries({ queryKey: ["chat", "sessions"] });
+    void qc.invalidateQueries({
+      queryKey: ["chat", "transcript", args.sessionKey],
+    });
+    // Same trailing-event grace the fetch path uses before closing.
+    const close = closeLiveRef.current;
+    closeLiveRef.current = null;
+    if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+    closeTimerRef.current = setTimeout(() => close?.(), 500);
+  }, [qc, args.sessionKey]);
+
   const reduceEvent = React.useCallback((ev: ChatEvent) => {
     // Events from a superseded turn (stopped, re-sent over, or left
     // behind on session switch) are dropped wholesale — applying them
     // to the *current* draft was the cross-turn pollution bug.
     if (retiredTurnIdsRef.current.has(ev.turnId)) return;
     if (!dedupRef.current.shouldEmit(ev.turnId, ev.sequence)) return;
+    // Journal deltas (seq >= 0) duplicate what the fetch stream already
+    // carries — text tokens AND tool-args fragments (appending both
+    // garbles argsJson) — so drop them while the fetch owns the turn.
+    // Journal tool STATE events still apply: they carry the real
+    // completion status the OpenAI-shaped stream has no frame for.
+    if (
+      fetchActiveRef.current &&
+      ev.sequence >= 0 &&
+      (ev.kind === "text-delta" ||
+        ev.kind === "reasoning-delta" ||
+        ev.kind === "tool-input-delta")
+    ) {
+      return;
+    }
     setPendingMessage((prev) => {
       if (!prev) return prev;
       // PERF-010: clone ONLY the sub-structure the incoming event actually
@@ -318,6 +421,11 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
             ? prev.approvals.map((a) => ({ ...a }))
             : undefined;
           break;
+        case "attachment":
+          next.attachments = prev.attachments
+            ? prev.attachments.map((a) => ({ ...a }))
+            : undefined;
+          break;
         case "turn-complete":
           next.usage = prev.usage ? { ...prev.usage } : undefined;
           break;
@@ -328,7 +436,17 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
       pendingRef.current = next;
       return next;
     });
-  }, []);
+    // A journal-owned (resumed) turn has no local fetch whose `finally`
+    // commits the bubble — its terminal event does it instead.
+    if (
+      (ev.kind === "turn-complete" || ev.kind === "turn-errored") &&
+      !fetchActiveRef.current &&
+      journalTurnRef.current !== null &&
+      ev.turnId === journalTurnRef.current
+    ) {
+      finalizeJournalTurn();
+    }
+  }, [finalizeJournalTurn]);
 
   /**
    * Run one turn end-to-end: open both streams, merge, settle.
@@ -350,6 +468,13 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
       retirePending();
       abortRef.current?.abort();
       abortRef.current = null;
+      // A journal-owned resumed turn (if any) is superseded too — its
+      // ids were just retired; drop its finalize hooks.
+      journalTurnRef.current = null;
+      if (statusPollRef.current) {
+        clearInterval(statusPollRef.current);
+        statusPollRef.current = null;
+      }
 
       // Open the assistant draft.
       const draft: ChatMessage = {
@@ -441,6 +566,7 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
       };
 
       abortRef.current = new AbortController();
+      fetchActiveRef.current = true;
       let finishReceived = false;
 
       try {
@@ -496,6 +622,7 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
         // this dying turn must not flip isStreaming, commit its draft
         // over the new pending message, or null the new AbortController.
         const superseded = activeDraftRef.current !== draft;
+        if (!superseded) fetchActiveRef.current = false;
         if (!superseded) {
           setIsStreaming(false);
           abortRef.current = null;
@@ -621,6 +748,74 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
     [messages],
   );
 
+  const resumeInFlight = React.useCallback(async () => {
+    const key = (args.sessionKey ?? "").trim();
+    if (!key) return;
+    // Something already owns the pending bubble — nothing to reattach.
+    if (fetchActiveRef.current || pendingRef.current || journalTurnRef.current)
+      return;
+
+    const turns = await listSessionTurns(key, 1);
+    const latest = turns[0];
+    if (!latest || latest.status !== "in_progress") return;
+    const turnId = latest.turn_id;
+    if (retiredTurnIdsRef.current.has(turnId)) return;
+    // Re-check after the await: a runTurn / second resume may have won.
+    if (fetchActiveRef.current || pendingRef.current || journalTurnRef.current)
+      return;
+
+    journalTurnRef.current = turnId;
+    const draft: ChatMessage = {
+      id: `resume_${turnId}`,
+      turnId,
+      role: "assistant",
+      content: "",
+      createdAt: Date.now(),
+      pending: true,
+    };
+    activeDraftRef.current = draft;
+    pendingRef.current = draft;
+    setPendingMessage(draft);
+    setIsStreaming(true);
+    dedupRef.current = new EventDedupSet();
+
+    // Backlog first (JSON replay returns sequence 0 onward — the live
+    // SSE catch-up can't deliver sequence 0), then tail the live stream
+    // from exactly where the backlog ended. The (turn, sequence) dedup
+    // absorbs any overlap.
+    const backlog = await fetchTurnEvents(key, turnId);
+    let lastSeq = -1;
+    for (const env of backlog) {
+      if (env.sequence > lastSeq) lastSeq = env.sequence;
+      const chatEvent = liveEventToChatEvent(env as LiveEvent);
+      if (chatEvent) reduceEvent(chatEvent);
+    }
+    // A terminal event in the backlog already finalized the turn.
+    if (journalTurnRef.current !== turnId) return;
+
+    closeLiveRef.current?.();
+    closeLiveRef.current = openLiveEventStream(key, {
+      initialLastEventId: lastSeq >= 0 ? `${turnId}:${lastSeq}` : undefined,
+      onEvent: (live) => {
+        const chatEvent = liveEventToChatEvent(live);
+        if (chatEvent) reduceEvent(chatEvent);
+      },
+    });
+
+    // Safety net: an agent process that journals no events (or a stalled
+    // tail) would otherwise leave the bubble pending forever. Poll the
+    // turn status; on a terminal flip, finalize — the transcript refetch
+    // inside finalize replaces the partial bubble with journal truth.
+    statusPollRef.current = setInterval(() => {
+      if (journalTurnRef.current !== turnId) return;
+      void listSessionTurns(key, 1).then((ts) => {
+        if (journalTurnRef.current !== turnId) return;
+        const t = ts.find((x) => x.turn_id === turnId);
+        if (t && t.status !== "in_progress") finalizeJournalTurn();
+      });
+    }, 5_000);
+  }, [args.sessionKey, reduceEvent, finalizeJournalTurn]);
+
   const totals = React.useMemo(() => {
     let inputTokens = 0;
     let outputTokens = 0;
@@ -680,6 +875,12 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
       abortRef.current?.abort();
       closeLiveRef.current?.();
       closeLiveRef.current = null;
+      fetchActiveRef.current = false;
+      journalTurnRef.current = null;
+      if (statusPollRef.current) {
+        clearInterval(statusPollRef.current);
+        statusPollRef.current = null;
+      }
     },
     [args.sessionKey, retirePending],
   );
@@ -689,6 +890,7 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
       abortRef.current?.abort();
       closeLiveRef.current?.();
       if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+      if (statusPollRef.current) clearInterval(statusPollRef.current);
     },
     [],
   );
@@ -704,6 +906,7 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
     approve,
     editAndRerun,
     sliceUntil,
+    resumeInFlight,
     totals,
   };
 }

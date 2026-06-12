@@ -253,6 +253,78 @@ export async function replaySession(
   }
 }
 
+/** One row of `GET /admin/sessions/:key/turns` — the W1.2 per-turn
+ *  aggregates. Only the fields the chat resume path reads are typed;
+ *  the route returns more (cost, token counts) for the sessions UI. */
+export interface SessionTurnSummary {
+  turn_id: string;
+  started_at_ms?: number | null;
+  ended_at_ms?: number | null;
+  /** "in_progress" | "completed" | "errored" */
+  status?: string | null;
+  elapsed_ms?: number | null;
+  user_text_preview?: string | null;
+}
+
+/**
+ * GET /admin/sessions/:key/turns — newest-first per-turn metadata.
+ * Used by the chat page to detect an in-flight turn worth reattaching
+ * to after a navigation away/back. Best-effort: any error → `[]`.
+ */
+export async function listSessionTurns(
+  sessionKey: string,
+  limit = 1,
+): Promise<SessionTurnSummary[]> {
+  try {
+    const res = await apiFetch<{ turns?: SessionTurnSummary[] }>(
+      `/admin/sessions/${encodeURIComponent(sessionKey)}/turns?limit=${limit}`,
+    );
+    return (res.turns ?? []).map((t) => ({
+      ...t,
+      turn_id: String(t.turn_id),
+    }));
+  } catch {
+    return [];
+  }
+}
+
+/** Envelope shape of `GET .../turns/:turn_id/events` rows — identical to
+ *  the live SSE wire shape (`LiveEvent` in lib/sessions/event-stream). */
+export interface TurnEventEnvelope {
+  turn_id: string;
+  sequence: number;
+  timestamp_ms: number;
+  event_type: string;
+  payload: unknown;
+}
+
+/**
+ * GET /admin/sessions/:key/turns/:turn_id/events — JSON replay of one
+ * turn's journal events. `afterSequence=-1` returns everything including
+ * sequence 0 (TurnStart). Best-effort: any error → `[]` so the resume
+ * path degrades to "no backlog" instead of breaking the page.
+ */
+export async function fetchTurnEvents(
+  sessionKey: string,
+  turnId: string,
+  afterSequence = -1,
+  limit = 5000,
+): Promise<TurnEventEnvelope[]> {
+  try {
+    const res = await apiFetch<{ events?: TurnEventEnvelope[] }>(
+      `/admin/sessions/${encodeURIComponent(sessionKey)}/turns/${encodeURIComponent(
+        turnId,
+      )}/events?after_sequence=${afterSequence}&limit=${limit}`,
+    );
+    return (res.events ?? []).map((ev) => ({
+      ...ev,
+      turn_id: String(ev.turn_id),
+    }));
+  } catch {
+    return [];
+  }
+}
+
 /**
  * DELETE /admin/sessions/:key — removes a single session from the journal.
  *

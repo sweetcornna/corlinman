@@ -142,6 +142,21 @@ class ToolStateCompleted:
 
 
 @dataclass(slots=True)
+class AttachmentAdded:
+    """A tool-produced file was registered into the gateway file store
+    mid-turn. Journaled promptly (not deferrable) so live consumers can
+    render the attachment before the final assistant message lands —
+    the turn-end ``attachments_json`` journal only covers replay."""
+
+    kind: str  # "image" | "audio" | "video" | "file"
+    url: str  # gateway-relative "/v1/files/{id}"
+    name: str
+    mime: str
+    size: int | None = None
+    tool_call_id: str | None = None
+
+
+@dataclass(slots=True)
 class SubagentSpawned:
     """Parent agent spawned a child subagent. Emitted by W3.2."""
 
@@ -214,6 +229,7 @@ Event = (
     | ToolStateRunning
     | ToolStateHeartbeat
     | ToolStateCompleted
+    | AttachmentAdded
     | SubagentSpawned
     | SubagentEvent
     | SubagentCompleted
@@ -412,6 +428,7 @@ class MockEventEmitter:
 
 
 __all__ = [
+    "AttachmentAdded",
     "BlockStart",
     "BlockStop",
     "BlockType",

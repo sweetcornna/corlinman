@@ -106,8 +106,13 @@ export interface ChatCompletionChunk {
     finish_reason?: string | null;
   }>;
   /** Hermes extension: surface the journal turn id so the UI can hook the
-   *  live event stream. */
-  corlinman?: { turn_id?: string; session_key?: string };
+   *  live event stream, and agent-produced attachments (send_attachment /
+   *  image_generate) registered into the gateway file store mid-turn. */
+  corlinman?: {
+    turn_id?: string;
+    session_key?: string;
+    attachment?: { kind?: string; url?: string; name?: string; mime?: string };
+  };
   /** Mid-stream failure payload. The gateway emits it alongside a
    *  `finish_reason: "error"` choice (W1a contract); older gateways sent
    *  it as a bare frame with no `choices` at all. Either way the merger

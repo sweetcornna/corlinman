@@ -622,6 +622,161 @@ async def test_heartbeat_keeps_connection_alive(
 
 
 # ---------------------------------------------------------------------------
+# Journal-polling fallback (cross-process observability bridge)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_polling_delivers_journal_appends_without_emitter_fanout(
+    state: AdminState,
+    journal: AgentJournal,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two-process deploy: the agent process journals turn_events into
+    the shared sqlite file, but its emitter fan-out is in-process over
+    there — this gateway's subscriber queue NEVER fires. Events appended
+    straight to the journal AFTER the stream opened must be delivered by
+    the live loop's polling fallback, in order."""
+    monkeypatch.setattr(sessions_events, "LIVE_POLL_SECONDS", 0.05)
+    tid = await journal.begin_turn("sess-1", "hello")
+    assert tid is not None
+
+    gen = _sse_stream(state, "sess-1", catch_up_turn_id=None, catch_up_sequence=-1)
+
+    async def _producer() -> None:
+        # Deliberately NOT via the emitter — simulating the OTHER
+        # process's writes landing only in the shared journal.
+        for seq in range(3):
+            await journal.append_event(
+                _make_envelope(turn_id=str(tid), sequence=seq, text=f"xp-{seq}")
+            )
+
+    producer = asyncio.create_task(_producer())
+    try:
+        body = await asyncio.wait_for(
+            _drain_frames(gen, until_count_of="xp-2", count=1), timeout=5.0
+        )
+    finally:
+        producer.cancel()
+        with contextlib_suppress():
+            await producer
+        await gen.aclose()
+
+    frames = _parse_sse_frames(body)
+    texts = [
+        json.loads(f["data"])["payload"]["text"]
+        for f in frames
+        if f.get("event") == "TextDelta"
+    ]
+    # Every appended event arrives exactly once, in sequence order, even
+    # though the appends raced the poll cadence across page boundaries.
+    assert texts == ["xp-0", "xp-1", "xp-2"]
+
+
+@pytest.mark.asyncio
+async def test_no_duplicates_when_event_arrives_via_queue_and_poll(
+    state: AdminState,
+    journal: AgentJournal,
+    emitter: JournalBackedEmitter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Single-process deploys have BOTH delivery sources live. Direction
+    one: an event the poll already read from the journal must be dropped
+    when its queue copy surfaces (``polled_seqs`` membership). Direction
+    two: an event the queue already delivered must never be re-read by a
+    later poll (the poll cursor advanced past it)."""
+    monkeypatch.setattr(sessions_events, "LIVE_POLL_SECONDS", 0.05)
+    tid = await journal.begin_turn("sess-1", "hello")
+    assert tid is not None
+
+    gen = _sse_stream(state, "sess-1", catch_up_turn_id=None, catch_up_sequence=-1)
+    try:
+        # --- direction one: poll first, queue copy second --------------
+        # Journal the event WITHOUT fanning it out; the poll delivers it.
+        env0 = _make_envelope(turn_id=str(tid), sequence=0, text="dup-0")
+        await journal.append_event(env0)
+        await asyncio.wait_for(
+            _drain_frames(gen, until_count_of="dup-0", count=1), timeout=5.0
+        )
+        # The SAME envelope now arrives on the in-process queue (the
+        # emit raced the idle poll), plus a genuinely new live event.
+        await emitter.emit(env0)
+        await emitter.emit(
+            _make_envelope(turn_id=str(tid), sequence=1, text="new-1")
+        )
+        body = await asyncio.wait_for(
+            _drain_frames(gen, until_count_of="new-1", count=1), timeout=5.0
+        )
+        texts = [
+            json.loads(f["data"])["payload"]["text"]
+            for f in _parse_sse_frames(body)
+            if f.get("event") == "TextDelta"
+        ]
+        assert "dup-0" not in texts, texts  # queue copy dropped
+        assert texts.count("new-1") == 1
+
+        # --- direction two: queue first, poll re-read second -----------
+        # A non-deferrable event persists to the journal immediately AND
+        # fans out to the queue; the queue wins. Later polls must not
+        # re-read it from the journal. Shrink the heartbeat so every
+        # idle poll emits a keepalive — draining three of them PROVES at
+        # least three polls ran over a journal that holds the event.
+        monkeypatch.setattr(sessions_events, "SSE_HEARTBEAT_SECONDS", 0.01)
+        await emitter.emit(
+            EventEnvelope(
+                turn_id=str(tid),
+                session_key="sess-1",
+                sequence=2,
+                timestamp_ms=1_700_000_000_002,
+                event=TurnComplete(
+                    finish_reason="stop",
+                    usage={"input_tokens": 1, "output_tokens": 1},
+                    elapsed_ms=1,
+                ),
+            )
+        )
+        body2 = await asyncio.wait_for(
+            _drain_frames(gen, until_count_of=": keepalive", count=3),
+            timeout=5.0,
+        )
+        frames2 = _parse_sse_frames(body2)
+        completes = [f for f in frames2 if f.get("event") == "TurnComplete"]
+        assert len(completes) == 1, frames2
+    finally:
+        await gen.aclose()
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_cadence_survives_polling(
+    state: AdminState,
+    journal: AgentJournal,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Full silence with a turn present (journal polled, nothing new,
+    queue silent): idle polls accumulate into the keepalive comment frame
+    on the SSE_HEARTBEAT_SECONDS cadence — polling must not starve it,
+    and empty polls must not fabricate event frames."""
+    monkeypatch.setattr(sessions_events, "LIVE_POLL_SECONDS", 0.05)
+    monkeypatch.setattr(sessions_events, "SSE_HEARTBEAT_SECONDS", 0.15)
+    tid = await journal.begin_turn("sess-1", "hello")
+    assert tid is not None
+
+    gen = _sse_stream(state, "sess-1", catch_up_turn_id=None, catch_up_sequence=-1)
+    try:
+        body = await asyncio.wait_for(
+            _drain_frames(gen, until_count_of=": keepalive", count=2),
+            timeout=5.0,
+        )
+    finally:
+        await gen.aclose()
+
+    frames = _parse_sse_frames(body)
+    assert [f for f in frames if f.get("event") == "comment"], frames
+    # No event frames — every poll found nothing past the cursor.
+    assert not [f for f in frames if f.get("event") == "TextDelta"]
+
+
+# ---------------------------------------------------------------------------
 # Last-Event-ID parser
 # ---------------------------------------------------------------------------
 

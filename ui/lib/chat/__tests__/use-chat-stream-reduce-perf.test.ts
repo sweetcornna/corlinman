@@ -185,7 +185,11 @@ describe("useChatStream — reduceEvent allocation (PERF-010)", () => {
     const beforeContent = before.content;
 
     // Now fire a pure content delta. It touches ONLY `content`.
-    fire({ kind: "text-delta", turnId: TURN, sequence: seq++, text: "hello" });
+    // `sequence: -1` = token-stream origin: while the fetch is active it
+    // is the sole text authority — journal text deltas (seq >= 0) are
+    // intentionally DROPPED by the reducer (they carry the same tokens
+    // and applying both doubled the reply).
+    fire({ kind: "text-delta", turnId: TURN, sequence: -1, text: "hello" });
 
     const after = result.current.pendingMessage!;
 

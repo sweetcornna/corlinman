@@ -335,6 +335,52 @@ async def _run_boot_auto_resume() -> None:
                 pass
 
 
+async def _build_event_emitter() -> tuple[Any | None, Any | None]:
+    """Construct the journal-backed event emitter for the Agent servicer.
+
+    Cross-process observability bridge (half A): production runs this
+    standalone agent server in a SEPARATE process from the gateway, so
+    the gateway-lifespan emitter wiring never reaches the servicer here
+    — without this, no ``turn_events`` were journaled in prod and the
+    admin ``/admin/sessions/{key}/events/live`` SSE stayed silent for
+    chat turns. We open the SAME journal the servicer's lazy
+    ``_get_journal`` resolves (``_resolve_data_dir() /
+    "agent_journal.sqlite"`` through ``AgentJournal.open_from_env``, so
+    ``CORLINMAN_JOURNAL_BACKEND`` overrides apply identically) and wrap
+    it in the gateway's :class:`JournalBackedEmitter`. The gateway
+    process serves live SSE for these rows via its journal-polling
+    fallback (``gateway/routes_admin_b/infra/sessions_events.py``).
+
+    Two handles onto one sqlite file (this emitter's + the servicer's
+    lazy one) are safe: the backend opens WAL mode with a 5s
+    ``busy_timeout``, the same posture as the gateway-vs-agent split
+    already in production.
+
+    The import is lazy and the whole construction is best-effort: any
+    failure logs a warning and returns ``(None, None)`` — boot must
+    never crash on observability wiring. (``gateway.observability``
+    only pulls ``corlinman_agent.events`` + structlog, so the import
+    itself is light; the try still guards a stripped-down build.)
+
+    Returns ``(emitter, journal)`` so :func:`_serve` can close the
+    journal handle — and reap its aiosqlite worker thread — at
+    shutdown.
+    """
+    try:
+        from corlinman_server.gateway.observability import (  # noqa: PLC0415
+            JournalBackedEmitter,
+        )
+
+        path = _resolve_data_dir() / "agent_journal.sqlite"
+        journal = await AgentJournal.open_from_env(path)
+        emitter = JournalBackedEmitter(journal)
+        logger.info("agent.event_emitter.ready", path=str(path))
+        return emitter, journal
+    except Exception as exc:  # noqa: BLE001 — boot must never crash here
+        logger.warning("agent.event_emitter.init_failed", error=str(exc))
+        return None, None
+
+
 async def _serve() -> int:
     """Run the server until SIGTERM / SIGINT is received.
 
@@ -385,6 +431,13 @@ async def _serve() -> int:
     # blocking PreToolDispatch gate is actually live (not just telemetry).
     hook_runner = _build_hook_runner()
 
+    # Cross-process observability bridge (half A): journal-backed event
+    # emitter over the shared agent journal, so THIS process journals
+    # turn_events and the gateway's live SSE can poll them. Best-effort
+    # — ``(None, None)`` on any failure and the servicer runs exactly as
+    # before. See :func:`_build_event_emitter`.
+    event_emitter, observability_journal = await _build_event_emitter()
+
     if os.environ.get("CORLINMAN_TEST_MOCK_PROVIDER") is not None:
         # Test smoke path: leave provider_resolver unset so the Agent
         # servicer activates its offline mock provider instead of falling
@@ -396,6 +449,7 @@ async def _serve() -> int:
             hook_bus=hook_bus,
             hook_runner=hook_runner,
             subagent_config=subagent_config,
+            event_emitter=event_emitter,
         )
     else:
         py_config_path = os.environ.get("CORLINMAN_PY_CONFIG")
@@ -410,6 +464,7 @@ async def _serve() -> int:
             hook_bus=hook_bus,
             hook_runner=hook_runner,
             subagent_config=resolver.subagent_config,
+            event_emitter=event_emitter,
         )
     agent_pb2_grpc.add_AgentServicer_to_server(agent_servicer, server)
 
@@ -440,6 +495,19 @@ async def _serve() -> int:
         await agent_servicer.aclose()
     except Exception as exc:  # noqa: BLE001 — never block shutdown
         logger.warning("server.shutdown.aclose_failed", error=str(exc))
+
+    # Close the observability emitter's journal handle. It is a SECOND
+    # handle onto the same WAL-mode sqlite file as the servicer's lazy
+    # one (closed by ``aclose`` above) — safe to hold concurrently, but
+    # it owns its own aiosqlite worker thread that must be reaped here.
+    if observability_journal is not None:
+        try:
+            await observability_journal.close()
+        except Exception as exc:  # noqa: BLE001 — never block shutdown
+            logger.warning(
+                "server.shutdown.observability_journal_close_failed",
+                error=str(exc),
+            )
 
     # 5s grace for in-flight RPCs, then force close.
     await server.stop(grace=5.0)
