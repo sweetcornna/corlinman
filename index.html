@@ -232,7 +232,9 @@ h1 em{
 .pillar p{margin-top:auto;padding-top:26px;color:var(--ink-3);font-size:14.5px;line-height:1.65}
 
 /* ---------- channels marquee ---------- */
-.channels{padding:100px 0 30px;overflow:hidden}
+.channels{padding:100px 0 30px;overflow:hidden;
+  -webkit-mask-image:linear-gradient(90deg,transparent,#000 12%,#000 88%,transparent);
+  mask-image:linear-gradient(90deg,transparent,#000 12%,#000 88%,transparent)}
 .marquee{display:flex;width:max-content;animation:slide 36s linear infinite;will-change:transform}
 .reduced .marquee{animation:none}
 .marquee-track{display:flex;align-items:baseline;gap:0;white-space:nowrap}
@@ -399,6 +401,34 @@ h1 em,.sec-head h2 em{background-size:220% 100%;animation:shimmer 8s ease-in-out
   opacity:0;transition:opacity .5s}
 .pillar:hover::before{opacity:1}
 
+/* ---------- the thread : one signal travels the page ---------- */
+#thread{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:1;overflow:visible;display:none}
+#thread path{fill:none;stroke:url(#threadGrad);stroke-linecap:round}
+#thread .th-core{stroke-width:1.4;opacity:.65}
+#thread .th-glow{stroke-width:7;opacity:.10}
+#thread .th-node{fill:#0a0e1c;stroke:rgba(233,237,249,.30);stroke-width:1;transition:fill .7s var(--ease-glide),stroke .7s,filter .7s}
+#thread .th-node.lit{fill:var(--tide);stroke:rgba(84,205,255,.9);filter:drop-shadow(0 0 7px rgba(84,205,255,.85))}
+
+/* ---------- hero orbits ---------- */
+.orbit{position:absolute;left:50%;top:50%;width:235%;height:235%;transform:translate(-50%,-50%);pointer-events:none;overflow:visible;z-index:-1}
+.orbit ellipse{fill:none;stroke:rgba(233,237,249,.14);stroke-width:.6}
+.orbit circle{fill:var(--tide);filter:drop-shadow(0 0 5px rgba(84,205,255,.95))}
+.orbit .sat2{fill:var(--plasma);filter:drop-shadow(0 0 5px rgba(164,123,255,.95))}
+.reduced .orbit circle{display:none}
+
+/* ---------- seal : 活 ---------- */
+.seal{display:inline-flex;align-items:center;justify-content:center;
+  width:1.16em;height:1.16em;border-radius:.12em;
+  background:linear-gradient(155deg,#cf4a32 0%,#9c2c1c 100%);
+  color:#f6efe3;font-family:var(--serif-cjk);font-weight:900;font-style:normal;line-height:1;
+  box-shadow:0 2px 18px rgba(170,45,22,.45),inset 0 0 0 1px rgba(246,239,227,.22),inset 0 0 10px rgba(60,10,4,.5);
+  transform:rotate(-4deg);user-select:none}
+h1 .seal{font-size:.34em;vertical-align:.22em;margin-left:.4em}
+.seal-ft{font-size:17px;margin-left:12px;vertical-align:-3px}
+
+/* ---------- chapter numerals ---------- */
+.eyebrow .chno{font-style:normal;color:var(--ink-4);margin-right:12px;padding-right:12px;border-right:1px solid var(--glass-border)}
+
 /* ---------- footer ---------- */
 footer{border-top:1px solid var(--glass-border);padding:64px 0 46px;background:rgba(6,9,18,.5)}
 .foot-top{display:flex;justify-content:space-between;gap:40px;flex-wrap:wrap;align-items:flex-start}
@@ -433,6 +463,21 @@ footer{border-top:1px solid var(--glass-border);padding:64px 0 46px;background:r
 
 <main id="top">
 
+  <!-- the thread : one luminous signal travelling the whole page -->
+  <svg id="thread" aria-hidden="true">
+    <defs>
+      <linearGradient id="threadGrad" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#54cdff"/>
+        <stop offset=".42" stop-color="#5e9bff"/>
+        <stop offset=".78" stop-color="#a47bff"/>
+        <stop offset="1" stop-color="#ffae6e"/>
+      </linearGradient>
+    </defs>
+    <path class="th-glow" d=""/>
+    <path class="th-core" d=""/>
+    <g id="th-nodes"></g>
+  </svg>
+
   <!-- ================= hero ================= -->
   <section class="hero">
     <div class="wrap hero-inner">
@@ -452,6 +497,7 @@ footer{border-top:1px solid var(--glass-border);padding:64px 0 46px;background:r
         <span class="wm"><span class="w">住在你</span></span><span class="wm"><span class="w"><em>机器里</em></span></span><span class="wm"><span class="w">的</span></span><br>
         <span class="wm"><span class="w">智能体。</span></span>
         </span>
+        <span class="seal" lang="zh" aria-hidden="true">活</span>
       </h1>
       <p class="hero-sub">
         <span class="i-en">corlinman hands a language model durable memory, real sandboxed tools, seven chat channels, and a human approval gate — one binary you run, audit, and own, end to end.
@@ -464,7 +510,19 @@ footer{border-top:1px solid var(--glass-border);padding:64px 0 46px;background:r
         <a class="btn" href="https://github.com/sweetcornna/corlinman">GitHub ↗</a>
       </div>
       <p class="hero-facts"><span class="i-en"><span>hybrid rag</span><i>·</i><span>sandboxed plugins</span><i>·</i><span>7 channels</span><i>·</i><span>human-in-the-loop</span><i>·</i><span>MIT</span></span><span class="i-zh"><span>混合检索</span><i>·</i><span>沙箱插件</span><i>·</i><span>7 个渠道</span><i>·</i><span>人在回路</span><i>·</i><span>MIT</span></span></p>
-      <div class="hero-mascot"><img src="logo.png" alt="corlinman pixel mascot"></div>
+      <div class="hero-mascot">
+        <svg class="orbit" viewBox="0 0 200 200" aria-hidden="true">
+          <g transform="rotate(-14 100 100)">
+            <ellipse cx="100" cy="100" rx="94" ry="30"/>
+            <circle r="2.2" cx="0" cy="0"><animateMotion dur="38s" repeatCount="indefinite" path="M194,100 A94,30 0 1,1 6,100 A94,30 0 1,1 194,100"/></circle>
+          </g>
+          <g transform="rotate(24 100 100)">
+            <ellipse cx="100" cy="100" rx="76" ry="46"/>
+            <circle class="sat2" r="1.6" cx="0" cy="0"><animateMotion dur="61s" repeatCount="indefinite" path="M176,100 A76,46 0 1,0 24,100 A76,46 0 1,0 176,100"/></circle>
+          </g>
+        </svg>
+        <img src="logo.png" alt="corlinman pixel mascot">
+      </div>
       <p class="hero-cjk"><span class="i-en" lang="zh"><b>住在你机器里</b>的智能体</span><span class="i-zh">an agent that <b>lives</b> on your own hardware</span></p>
       <p class="scroll-hint">scroll</p>
     </div>
@@ -474,7 +532,7 @@ footer{border-top:1px solid var(--glass-border);padding:64px 0 46px;background:r
   <section class="loop">
     <div class="wrap loop-stage">
       <div class="loop-head">
-        <p class="eyebrow"><b>the loop</b> &nbsp;/&nbsp; <span class="cjk">回路</span></p>
+        <p class="eyebrow"><i class="chno">01</i><b>the loop</b> &nbsp;/&nbsp; <span class="cjk">回路</span></p>
         <h2><span class="i-en">How a thought becomes an action.</span><span class="i-zh">一个念头如何变成一次行动。</span></h2>
       </div>
 
@@ -521,7 +579,7 @@ footer{border-top:1px solid var(--glass-border);padding:64px 0 46px;background:r
   <section class="demo">
     <div class="wrap">
       <div class="sec-head">
-        <p class="eyebrow"><b>in practice</b> &nbsp;/&nbsp; <span class="cjk">实战</span></p>
+        <p class="eyebrow"><i class="chno">02</i><b>in practice</b> &nbsp;/&nbsp; <span class="cjk">实战</span></p>
         <h2><span class="i-en">Watch one request <em>travel.</em></span><span class="i-zh">看一次请求<em>走完全程。</em></span></h2>
       </div>
       <div class="demo-grid">
@@ -555,7 +613,7 @@ footer{border-top:1px solid var(--glass-border);padding:64px 0 46px;background:r
   <section class="pillars">
     <div class="wrap">
       <div class="sec-head">
-        <p class="eyebrow"><b>the platform</b> &nbsp;/&nbsp; <span class="cjk">平台</span></p>
+        <p class="eyebrow"><i class="chno">03</i><b>the platform</b> &nbsp;/&nbsp; <span class="cjk">平台</span></p>
         <h2><span class="i-en">Everything an agent needs to <em>stay.</em></span><span class="i-zh">一个智能体<em>住下来</em>需要的一切。</span></h2>
       </div>
       <div class="pillars-grid">
@@ -597,7 +655,7 @@ footer{border-top:1px solid var(--glass-border);padding:64px 0 46px;background:r
   <section class="ops">
     <div class="wrap">
       <div class="sec-head">
-        <p class="eyebrow"><b>operations</b> &nbsp;/&nbsp; <span class="cjk">运维</span></p>
+        <p class="eyebrow"><i class="chno">04</i><b>operations</b> &nbsp;/&nbsp; <span class="cjk">运维</span></p>
         <h2><span class="i-en">Every thought, <em>auditable.</em></span><span class="i-zh">每一个念头，都<em>可审计。</em></span></h2>
       </div>
       <div class="console-frame" aria-label="admin console preview">
@@ -642,7 +700,7 @@ footer{border-top:1px solid var(--glass-border);padding:64px 0 46px;background:r
   <section class="install" id="install">
     <div class="wrap">
       <div class="sec-head">
-        <p class="eyebrow"><b>install</b> &nbsp;/&nbsp; <span class="cjk">六十秒</span></p>
+        <p class="eyebrow"><i class="chno">05</i><b>install</b> &nbsp;/&nbsp; <span class="cjk">六十秒</span></p>
         <h2><span class="i-en">Sixty seconds to a <em>living</em>&nbsp;agent.</span><span class="i-zh">六十秒，跑起来一个<em>活的</em>智能体。</span></h2>
       </div>
       <div class="terminal">
@@ -665,7 +723,7 @@ footer{border-top:1px solid var(--glass-border);padding:64px 0 46px;background:r
   <section class="wikis">
     <div class="wrap">
       <div class="sec-head">
-        <p class="eyebrow"><b>the manual</b> &nbsp;/&nbsp; <span class="cjk">手册</span></p>
+        <p class="eyebrow"><i class="chno">06</i><b>the manual</b> &nbsp;/&nbsp; <span class="cjk">手册</span></p>
         <h2><span class="i-en">Everything is <em>written down.</em></span><span class="i-zh">一切都<em>写在手册里。</em></span></h2>
       </div>
       <div class="wiki-grid">
@@ -709,7 +767,7 @@ footer{border-top:1px solid var(--glass-border);padding:64px 0 46px;background:r
   <div class="wrap">
     <div class="foot-top">
       <div>
-        <p class="foot-brand"><img src="logo.png" alt="">corlinman</p>
+        <p class="foot-brand"><img src="logo.png" alt="">corlinman<span class="seal seal-ft" lang="zh" aria-hidden="true">活</span></p>
         <p class="foot-tag"><span class="i-en">Built for people who keep their own machines.
           <span class="zh" lang="zh">把智能体留在自己手里。</span></span>
           <span class="i-zh">为自己掌管机器的人而造。
@@ -755,21 +813,28 @@ if (REDUCED) document.body.classList.add("reduced");
 })();
 
 /* ============================================================
-   silk — procedural domain-warped aurora veils. single pass, no
-   feedback buffers: resolution-independent, immune to the 8-bit
-   quantization mosaic some GPUs produced with the old dye sim
+   ink tide — procedural domain-warped ink veils. single pass, no
+   feedback buffers (immune to 8-bit quantization mosaic). no stars.
+   the palette is a narrative: deep night → violet thought → tide
+   cyan → a warm dawn rising from the bottom as you reach install.
+   pointerdown drops an ink ripple. webgl2 when available.
    ============================================================ */
-function createSilk(canvas){
-  var gl = canvas.getContext("webgl",{alpha:false,depth:false,stencil:false,antialias:false,powerPreference:"high-performance"})
-        || canvas.getContext("experimental-webgl",{alpha:false,depth:false,stencil:false,antialias:false});
+function createInk(canvas){
+  var opts = {alpha:false,depth:false,stencil:false,antialias:false,powerPreference:"high-performance"};
+  var gl = canvas.getContext("webgl2",opts)
+        || canvas.getContext("webgl",opts)
+        || canvas.getContext("experimental-webgl",opts);
   if(!gl) return null;
+
+  var isMobile = window.matchMedia("(pointer:coarse)").matches || Math.min(screen.width,screen.height) < 700;
 
   var VERT = "attribute vec2 aPos;varying vec2 vUv;void main(){vUv=aPos*0.5+0.5;gl_Position=vec4(aPos,0.,1.);}";
   var FRAG = [
   "precision highp float;",
   "varying vec2 vUv;",
-  "uniform float uTime;uniform float uAspect;uniform float uShift;uniform float uEnergy;uniform float uPtr;uniform float uScroll;uniform float uGlow;",
+  "uniform float uTime;uniform float uAspect;uniform float uShift;uniform float uEnergy;uniform float uPtr;uniform float uGlow;uniform float uChapter;",
   "uniform vec2 uMouse;",
+  "uniform vec3 uR0;uniform vec3 uR1;uniform vec3 uR2;",
   "float h21(vec2 p){ p=fract(p*vec2(123.34,456.21)); p+=dot(p,p+45.32); return fract(p.x*p.y); }",
   "float vnoise(vec2 p){",
   "  vec2 i=floor(p), f=fract(p);",
@@ -780,24 +845,14 @@ function createSilk(canvas){
   "float fbm(vec2 p){",
   "  float v=0.0, a=0.5;",
   "  mat2 m=mat2(1.6,1.2,-1.2,1.6);",
-  "  for(int i=0;i<4;i++){ v+=a*vnoise(p); p=m*p; a*=0.5; }",
+  "  for(int i=0;i<OCT;i++){ v+=a*vnoise(p); p=m*p; a*=0.5; }",
   "  return v;",
   "}",
-  "float star(vec2 g, float t, float sparse){",
-  "  vec2 id=floor(g), f=fract(g);",
-  "  float h=h21(id);",
-  "  float gate=smoothstep(sparse,sparse+0.025,h);",
-  "  if(gate<=0.0) return 0.0;",
-  "  vec2 sp=vec2(0.22)+0.56*vec2(h21(id+11.1),h21(id+27.7));",
-  "  vec2 dv=f-sp;",
-  "  float sz=mix(0.030,0.105,pow(h21(id+5.3),4.0));",
-  "  float core=exp(-dot(dv,dv)/(sz*sz));",
-  "  float big=smoothstep(0.055,0.10,sz);",
-  "  float cr=(exp(-abs(dv.x)*30.0-abs(dv.y)*9.0)+exp(-abs(dv.y)*30.0-abs(dv.x)*9.0))*big*0.5;",
-  "  float ph=h21(id+91.0)*6.2831;",
-  "  float tw=0.55+0.45*sin(t*(0.22+h21(id+3.3)*0.55)+ph);",
-  "  tw+=0.15*sin(t*2.1+ph*3.0)*big;",
-  "  return (core+cr)*tw*gate;",
+  "float ripple(vec2 p, vec3 rp){",
+  "  if(rp.z<=0.0||rp.z>=3.2) return 0.0;",
+  "  float d=length(p-rp.xy);",
+  "  float w=exp(-pow((d-rp.z*0.38)*10.0,2.0));",
+  "  return w*exp(-rp.z*1.4);",
   "}",
   "void main(){",
   "  vec2 p=(vUv-0.5)*vec2(uAspect,1.0);",
@@ -805,20 +860,22 @@ function createSilk(canvas){
   "  vec2 dm=p-m;",
   "  float pr=exp(-dot(dm,dm)*9.0)*uPtr;",
   "  vec2 swirl=vec2(-dm.y,dm.x)*pr*2.4;",
+  "  float rsum=ripple(p,uR0)+ripple(p,uR1)+ripple(p,uR2);",
   "  float t=uTime*0.05;",
   "  vec2 bp=p*1.25;",
   "  vec2 q=vec2(fbm(bp+vec2(0.0,t*0.8)), fbm(bp+vec2(5.2,1.3)-t*0.6));",
   "  vec2 r=vec2(fbm(bp+2.0*q+vec2(1.7,9.2)+t*0.5+swirl), fbm(bp+2.0*q+vec2(8.3,2.8)-t*0.4+swirl));",
   "  float f=fbm(bp+2.2*r+swirl);",
-  "  vec3 BLUE=vec3(0.30,0.55,1.0);vec3 VIOLET=vec3(0.62,0.42,1.0);vec3 TIDE=vec3(0.30,0.80,1.0);",
-  "  vec3 c1=mix(BLUE,VIOLET,uShift);vec3 c2=mix(VIOLET,TIDE,uShift);vec3 c3=mix(TIDE,BLUE,uShift);",
+  "  vec3 BLUE=vec3(0.30,0.55,1.0);vec3 VIOLET=vec3(0.62,0.42,1.0);vec3 TIDE=vec3(0.30,0.80,1.0);vec3 DAWN=vec3(1.0,0.60,0.34);",
+  "  float w1=smoothstep(0.12,0.48,uChapter);",
+  "  float w2=smoothstep(0.52,0.88,uChapter);",
+  "  vec3 c1=mix(mix(BLUE,VIOLET,w1),TIDE,w2);",
+  "  vec3 c2=mix(mix(VIOLET,TIDE,w1),BLUE,w2);",
+  "  vec3 c3=mix(mix(TIDE,BLUE,w1),VIOLET,w2);",
+  "  c1=mix(c1,c2,uShift*0.55);",
+  "  c2=mix(c2,c3,uShift*0.55);",
   "  float rad=length(p);",
   "  vec3 col=mix(vec3(0.050,0.063,0.115), vec3(0.016,0.021,0.045), smoothstep(0.1,1.0,rad));",
-  "  vec2 mo=uMouse-0.5;",
-  "  float bloom=exp(-dot(p-m,p-m)*5.5)*uGlow;",
-  "  float s1=star((p+mo*0.015+vec2(0.0,uScroll*0.030))*26.0, uTime, 0.952);",
-  "  float s2=star((p+mo*0.045+vec2(0.0,uScroll*0.065))*12.0, uTime, 0.962);",
-  "  col+=vec3(0.72,0.85,1.0)*(s1*0.30+s2*0.60)*(1.0+1.8*bloom);",
   "  float d=dot(p,normalize(vec2(0.55,0.85)));",
   "  float band=exp(-pow((d+0.10-0.15*sin(t*0.45))*1.5,2.0));",
   "  float band2=exp(-pow((dot(p,normalize(vec2(-0.80,0.60)))-0.28+0.18*cos(t*0.32))*2.1,2.0));",
@@ -830,14 +887,21 @@ function createSilk(canvas){
   "  col+=c3*smoothstep(0.45,0.85,r.x)*band2*0.25;",
   "  float ridge=1.0-abs(2.0*fract(f*3.0)-1.0);",
   "  ridge=pow(ridge,6.0);",
-  "  col+=mix(c3,c2,q.x)*ridge*max(band,band2*0.7)*v*(0.75+0.5*clamp(uEnergy-1.0,0.0,1.5));",
+  "  col+=mix(c3,c2,q.x)*ridge*max(band,band2*0.7)*v*(0.75+0.5*clamp(uEnergy-1.0,0.0,1.5)+rsum*1.2);",
+  "  float bloom=exp(-dot(dm,dm)*5.5)*uGlow;",
+  "  col+=c3*bloom*v*0.40;",
   "  col+=c3*pr*0.16;",
+  "  col+=(c3*0.6+vec3(0.5))*rsum*0.22;",
+  "  float dawn=smoothstep(0.60,0.92,uChapter);",
+  "  float horizon=exp(-pow((vUv.y-0.02)*3.4,2.0));",
+  "  col+=DAWN*horizon*dawn*(0.20+0.05*sin(t*1.3));",
+  "  col+=DAWN*band2*v*dawn*0.10;",
   "  col*=1.0-0.30*smoothstep(0.5,1.15,rad);",
   "  col=col/(1.0+col*0.35);",
   "  float dith=(h21(gl_FragCoord.xy)-0.5)/255.0;",
   "  gl_FragColor=vec4(col+dith,1.0);",
   "}"
-  ].join("\n");
+  ].join("\n").replace("OCT", isMobile ? "3" : "4");
 
   function compile(type,src){
     var s = gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
@@ -859,11 +923,11 @@ function createSilk(canvas){
   gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
 
   var U = {};
-  ["uTime","uAspect","uShift","uEnergy","uPtr","uMouse","uScroll","uGlow"].forEach(function(n){ U[n]=gl.getUniformLocation(prog,n); });
+  ["uTime","uAspect","uShift","uEnergy","uPtr","uMouse","uGlow","uChapter","uR0","uR1","uR2"].forEach(function(n){ U[n]=gl.getUniformLocation(prog,n); });
 
   var W,H,aspect;
   function resize(){
-    var s = Math.min(window.devicePixelRatio||1,1.5)*0.66;
+    var s = Math.min(window.devicePixelRatio||1,1.5)*(isMobile?0.5:0.66);
     W = Math.max(2,Math.floor(canvas.clientWidth*s));
     H = Math.max(2,Math.floor(canvas.clientHeight*s));
     canvas.width = W; canvas.height = H;
@@ -885,30 +949,49 @@ function createSilk(canvas){
     lastX=x; lastY=y; tmx=x; tmy=y;
   },{passive:true});
 
+  // ink ripples: pointerdown drops a ring (3 slots, round-robin)
+  var rip=[[0,0,9],[0,0,9],[0,0,9]], ripIdx=0;
+  window.addEventListener("pointerdown",function(e){
+    var x=(e.clientX/canvas.clientWidth-0.5)*aspect;
+    var y=(0.5-e.clientY/canvas.clientHeight);
+    rip[ripIdx]=[x,y,0.001]; ripIdx=(ripIdx+1)%3;
+    tptr=Math.min(1.4,tptr+0.35); tglow=1.0;
+  },{passive:true});
+
   var time=0, last=performance.now();
-  var energy=1, targetEnergy=1, shift=0;
-  var visible=true;
+  var energy=1, targetEnergy=1, shift=0, chapter=0;
+  var visible=true, skip=false, mc=0, docH=1;
+  function measure(){ docH=Math.max(1,document.documentElement.scrollHeight-window.innerHeight); }
+  measure();
   document.addEventListener("visibilitychange",function(){ visible=!document.hidden; last=performance.now(); });
 
   function frame(){
     requestAnimationFrame(frame);
     if(!visible) return;
+    if(isMobile){ skip=!skip; if(skip) return; }   // ~30fps on mobile
     var now=performance.now();
     var dt=Math.min((now-last)/1000,1/30); last=now;
+    if((mc++%120)===0) measure();
     energy += (targetEnergy-energy)*0.04;
     targetEnergy += (1-targetEnergy)*0.02;
     time += dt*(0.55+0.45*energy);
     mx+=(tmx-mx)*0.06; my+=(tmy-my)*0.06;
     ptr+=(tptr-ptr)*0.08; tptr*=0.94;
     glow+=(tglow-glow)*0.05; tglow*=0.988;
+    var chT=(window.scrollY||0)/docH;
+    chapter+=(chT-chapter)*0.05;
+    for(var i=0;i<3;i++){ if(rip[i][2]>0&&rip[i][2]<9) rip[i][2]+=dt; }
     gl.uniform1f(U.uTime,time);
     gl.uniform1f(U.uAspect,aspect);
     gl.uniform1f(U.uShift,shift);
     gl.uniform1f(U.uEnergy,energy);
     gl.uniform1f(U.uPtr,ptr);
     gl.uniform2f(U.uMouse,mx,my);
-    gl.uniform1f(U.uScroll,(window.scrollY||0)/Math.max(1,window.innerHeight));
     gl.uniform1f(U.uGlow,glow);
+    gl.uniform1f(U.uChapter,Math.max(0,Math.min(1,chapter)));
+    gl.uniform3f(U.uR0,rip[0][0],rip[0][1],rip[0][2]);
+    gl.uniform3f(U.uR1,rip[1][0],rip[1][1],rip[1][2]);
+    gl.uniform3f(U.uR2,rip[2][0],rip[2][1],rip[2][2]);
     gl.drawArrays(gl.TRIANGLES,0,3);
   }
   requestAnimationFrame(frame);
@@ -921,9 +1004,63 @@ function createSilk(canvas){
 
 var fluid = null;
 if(!REDUCED){
-  try{ fluid = createSilk(document.getElementById("fluid")); }catch(e){ fluid = null; }
+  try{ fluid = createInk(document.getElementById("fluid")); }catch(e){ fluid = null; }
 }
 if(!fluid) document.body.classList.add("no-webgl");
+
+/* ============================================================
+   the thread — one luminous signal travelling the whole page,
+   lighting a node at each chapter it passes. desktop only.
+   ============================================================ */
+var threadTween=null;
+function buildThread(){
+  var svg=document.getElementById("thread");
+  if(!svg) return;
+  var W=window.innerWidth, wrapLeft=(W-1180)/2;
+  if(W<1280){ svg.style.display="none"; return; }
+  svg.style.display="block";
+  var mainEl=document.querySelector("main");
+  var H=mainEl.offsetHeight;
+  svg.setAttribute("viewBox","0 0 "+W+" "+H);
+  var x0=wrapLeft*0.48, amp=Math.min(20,wrapLeft-x0-14);
+  function xAt(y){ return x0+Math.sin(y*0.0042+1.7)*amp; }
+  var pts=[],y;
+  for(y=40;y<=H-60;y+=230) pts.push([xAt(y),y]);
+  if(pts.length<3){ svg.style.display="none"; return; }
+  var d="M"+pts[0][0].toFixed(1)+","+pts[0][1];
+  for(var i=1;i<pts.length-1;i++){
+    var mx=((pts[i][0]+pts[i+1][0])/2).toFixed(1), my=((pts[i][1]+pts[i+1][1])/2).toFixed(1);
+    d+=" Q"+pts[i][0].toFixed(1)+","+pts[i][1]+" "+mx+","+my;
+  }
+  var core=svg.querySelector(".th-core"), glowP=svg.querySelector(".th-glow");
+  core.setAttribute("d",d); glowP.setAttribute("d",d);
+  var ng=document.getElementById("th-nodes"); ng.innerHTML="";
+  var nodes=[];
+  [".loop",".demo",".pillars",".ops",".install",".wikis"].forEach(function(sel){
+    var el=document.querySelector(sel); if(!el) return;
+    var ny=Math.min(el.offsetTop+150,H-40);
+    var c=document.createElementNS("http://www.w3.org/2000/svg","circle");
+    c.setAttribute("cx",xAt(ny).toFixed(1)); c.setAttribute("cy",ny); c.setAttribute("r",4);
+    c.setAttribute("class","th-node");
+    ng.appendChild(c); nodes.push({el:c,y:ny});
+  });
+  var len=core.getTotalLength();
+  core.style.strokeDasharray=len+" "+len;
+  glowP.style.strokeDasharray=len+" "+len;
+  if(threadTween){ if(threadTween.scrollTrigger) threadTween.scrollTrigger.kill(); threadTween.kill(); threadTween=null; }
+  if(hasGsap && !REDUCED){
+    gsap.set([core,glowP],{strokeDashoffset:len});
+    threadTween=gsap.to([core,glowP],{strokeDashoffset:0,ease:"none",
+      scrollTrigger:{trigger:document.body,start:"top top",end:"bottom bottom",scrub:.4,
+        onUpdate:function(self){
+          var drawnY=self.progress*H;
+          for(var i=0;i<nodes.length;i++) nodes[i].el.classList.toggle("lit",nodes[i].y<=drawnY);
+        }}});
+  }else{
+    core.style.strokeDashoffset=0; glowP.style.strokeDashoffset=0;
+    for(var j=0;j<nodes.length;j++) nodes[j].el.classList.add("lit");
+  }
+}
 
 /* ============================================================
    scroll choreography
@@ -942,6 +1079,7 @@ if(hasGsap && !REDUCED){
        .from(".hero-facts",{opacity:0,duration:.9},1.3)
        .from(".hero-cjk",{opacity:0,y:-34,duration:1.2,ease:"power2.out"},.85)
        .from(".hero-mascot",{opacity:0,scale:.84,duration:1,ease:"back.out(1.5)"},1.0)
+       .fromTo(".hero .seal",{opacity:0,scale:1.9,rotate:10},{opacity:1,scale:1,rotate:-4,duration:.4,ease:"power3.in"},1.55)
        .from(".scroll-hint",{opacity:0,duration:.8},1.5);
 
   // hero recedes
@@ -1047,6 +1185,17 @@ if(hasGsap && !REDUCED){
       onEnter:function(){ tl.play(); }, onLeave:function(){ tl.pause(); },
       onEnterBack:function(){ tl.play(); }, onLeaveBack:function(){ tl.pause(); }});
   })();
+
+  /* the thread rebuilds whenever ScrollTrigger re-measures (load, resize, lang toggle) */
+  ScrollTrigger.addEventListener("refresh", buildThread);
+  buildThread();
+}else{
+  /* no gsap or reduced motion: draw the thread fully, statically */
+  buildThread();
+  window.addEventListener("load", buildThread);
+  var thRz; window.addEventListener("resize", function(){ clearTimeout(thRz); thRz=setTimeout(buildThread,200); });
+  var thLb=document.getElementById("lang-btn");
+  if(thLb) thLb.addEventListener("click", function(){ setTimeout(buildThread,60); });
 }
 
 /* ---- ops log stream (plain JS, runs when visible) ---- */
