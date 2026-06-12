@@ -4,6 +4,17 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.21.2] — 2026-06-12 — login hydration fix
+
+> Patch release. Config-compatible — no migration required. (PR #94)
+
+### Fixed
+- **Login page no longer trips React hydration on English clients** —
+  exported static HTML still hydrates in the default `zh-CN` locale, then the
+  provider applies the persisted/browser language after mount. This preserves
+  the operator's language preference while avoiding the pre-hydration
+  Chinese/English text mismatch seen in production smoke testing.
+
 ## [1.21.1] — 2026-06-12 — attachment size + empty upload fixes
 
 > Patch release. Config-compatible — no migration required. (PR #93)
