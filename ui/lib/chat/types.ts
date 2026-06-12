@@ -220,6 +220,22 @@ export type ChatEvent =
       reason?: string;
     }
   | {
+      // Agent-produced file registered into the gateway store mid-turn
+      // (send_attachment / image_generate). Arrives via BOTH the
+      // /v1/chat/completions `corlinman.attachment` extension (seq -1)
+      // and the journal `AttachmentAdded` event (seq >= 0); the reducer
+      // dedups on `url` so either path alone — or both — renders once.
+      kind: "attachment";
+      turnId: string;
+      sequence: number;
+      attachment: {
+        kind: string;
+        url: string;
+        name: string;
+        mime?: string;
+      };
+    }
+  | {
       kind: "turn-start";
       turnId: string;
       sequence: number;

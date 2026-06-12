@@ -66,7 +66,7 @@ from corlinman_server.gateway_api import (
     TokenDeltaEvent,
     ToolCallEvent,
 )
-from corlinman_server.gateway_api.types import InternalChatEvent
+from corlinman_server.gateway_api.types import AttachmentEvent, InternalChatEvent
 
 _log = logging.getLogger(__name__)
 
@@ -691,7 +691,19 @@ def _tool_call_delta_chunk(
     }
 
 
-def _token_delta_chunk(chat_id: str, model: str, text: str) -> dict[str, object]:
+def _token_delta_chunk(
+    chat_id: str, model: str, text: str, *, reasoning: bool = False
+) -> dict[str, object]:
+    # Reasoning deltas ride the OpenAI-compatible ``reasoning_content``
+    # extension (DeepSeek/vLLM convention) — NEVER ``content``. Folding
+    # them into ``content`` rendered the model's chain-of-thought as the
+    # visible reply; the web chat already splits ``reasoning_content``
+    # into its collapsible thinking block.
+    delta: dict[str, object] = {"role": "assistant"}
+    if reasoning:
+        delta["reasoning_content"] = text
+    else:
+        delta["content"] = text
     return {
         "id": chat_id,
         "object": "chat.completion.chunk",
@@ -699,10 +711,33 @@ def _token_delta_chunk(chat_id: str, model: str, text: str) -> dict[str, object]
         "choices": [
             {
                 "index": 0,
-                "delta": {"role": "assistant", "content": text},
+                "delta": delta,
                 "finish_reason": None,
             }
         ],
+    }
+
+
+def _attachment_chunk(
+    chat_id: str, model: str, event: AttachmentEvent
+) -> dict[str, object]:
+    # Live attachment metadata rides a vendor extension (``corlinman``
+    # key) on an otherwise-empty delta chunk — OpenAI-compatible parsers
+    # that fold ``choices[].delta`` see a no-op frame, while the web chat
+    # renders the file card mid-turn.
+    return {
+        "id": chat_id,
+        "object": "chat.completion.chunk",
+        "model": model,
+        "choices": [{"index": 0, "delta": {}, "finish_reason": None}],
+        "corlinman": {
+            "attachment": {
+                "kind": event.kind,
+                "url": event.url,
+                "name": event.name,
+                "mime": event.mime,
+            }
+        },
     }
 
 
@@ -757,15 +792,36 @@ async def _run_nonstream(
     Mirrors the Rust ``chat_nonstream`` implementation.
     """
     content_parts: list[str] = []
+    reasoning_parts: list[str] = []
     tool_calls: list[dict[str, object]] = []
+    attachments: list[dict[str, object]] = []
     finish_reason = "stop"
 
     stream: AsyncIterator[InternalChatEvent] = service.run(internal_req, cancel)
     async for event in stream:
         if isinstance(event, TokenDeltaEvent):
-            content_parts.append(event.text)
+            # Keep chain-of-thought out of the visible reply — surfaced
+            # separately via the ``reasoning_content`` extension below.
+            if getattr(event, "is_reasoning", False):
+                reasoning_parts.append(event.text)
+            else:
+                content_parts.append(event.text)
+        elif isinstance(event, AttachmentEvent):
+            attachments.append(
+                {
+                    "kind": event.kind,
+                    "url": event.url,
+                    "name": event.name,
+                    "mime": event.mime,
+                }
+            )
         elif isinstance(event, ToolCallEvent):
-            call_id = f"call_{uuid.uuid4().hex[:16]}"
+            # Reuse the agent's own call id so this surface and the
+            # journal events (ToolState*, AwaitingApproval) describe one
+            # tool call under one identity — a synthesised id made the
+            # web chat render duplicate cards once journal events
+            # started reaching it. Fallback for backends that omit it.
+            call_id = event.call_id or f"call_{uuid.uuid4().hex[:16]}"
             tool_calls.append(_tool_call_envelope(event, call_id))
         elif isinstance(event, DoneEvent):
             finish_reason = _normalise_finish_reason(
@@ -789,7 +845,13 @@ async def _run_nonstream(
                 "message": {
                     "role": "assistant",
                     "content": "".join(content_parts),
+                    **(
+                        {"reasoning_content": "".join(reasoning_parts)}
+                        if reasoning_parts
+                        else {}
+                    ),
                     **({"tool_calls": tool_calls} if tool_calls else {}),
+                    **({"attachments": attachments} if attachments else {}),
                 },
                 "finish_reason": finish_reason,
             }
@@ -873,10 +935,22 @@ async def _sse_iter(
             if event is _STREAM_END:
                 break
             if isinstance(event, TokenDeltaEvent):
-                chunk = _token_delta_chunk(chat_id, model, event.text)
+                chunk = _token_delta_chunk(
+                    chat_id,
+                    model,
+                    event.text,
+                    reasoning=bool(getattr(event, "is_reasoning", False)),
+                )
+                yield f"data: {json.dumps(chunk)}\n\n".encode()
+            elif isinstance(event, AttachmentEvent):
+                chunk = _attachment_chunk(chat_id, model, event)
                 yield f"data: {json.dumps(chunk)}\n\n".encode()
             elif isinstance(event, ToolCallEvent):
-                call_id = f"call_{uuid.uuid4().hex[:16]}"
+                # The agent's call id, not a synthesised one — keeps this
+                # surface and the journal events (ToolState*) describing
+                # one tool call under one identity so the web chat can
+                # merge them instead of rendering duplicate cards.
+                call_id = event.call_id or f"call_{uuid.uuid4().hex[:16]}"
                 chunk = _tool_call_delta_chunk(
                     chat_id, model, next_index, event, call_id
                 )

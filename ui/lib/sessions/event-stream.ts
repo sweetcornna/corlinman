@@ -37,6 +37,7 @@ export type LiveEventType =
   | "SubagentSpawned"
   | "SubagentEvent"
   | "SubagentCompleted"
+  | "AttachmentAdded"
   | "Cancelling"
   | "TurnComplete"
   | "TurnErrored";

@@ -52,6 +52,23 @@ export function chunkToChatEvents(
     });
     return events;
   }
+  // Agent-produced attachment registered mid-turn (send_attachment /
+  // image_generate). Rides the `corlinman` extension on an otherwise
+  // empty chunk so OpenAI-compatible clients ignore it.
+  const att = chunk.corlinman?.attachment;
+  if (att?.url) {
+    events.push({
+      kind: "attachment",
+      turnId,
+      sequence: -1,
+      attachment: {
+        kind: att.kind ?? "file",
+        url: att.url,
+        name: att.name ?? att.url.split("/").pop() ?? "attachment",
+        mime: att.mime,
+      },
+    });
+  }
   for (const choice of chunk.choices ?? []) {
     const delta = choice.delta ?? {};
     if (delta.content) {
@@ -139,25 +156,47 @@ export function chunkToChatEvents(
 
 /* ----------------------- live-stream conversion ------------------------ */
 
+/** Journal envelope payloads. Field names mirror the dataclasses in
+ *  `corlinman_agent/events.py` VERBATIM (`EventEnvelope.to_json` does no
+ *  renaming) — `tool_call_id` / `elapsed_ms` / `partial_json`. The old
+ *  `call_id` / `duration_ms` / `delta` names never existed on the wire,
+ *  so journal-driven tool events silently produced unusable cards; the
+ *  legacy names are kept as optional fallbacks for safety only. */
 interface LivePayloads {
   TurnStart: { model: string; user_text_preview?: string };
-  TextDelta: { text: string; cumulative_len?: number; block_index?: number };
-  ReasoningDelta: { text: string; block_index?: number };
-  ToolInputDelta: { call_id: string; delta: string };
+  TextDelta: { text: string; cumulative_len?: number; index?: number };
+  ReasoningDelta: { text: string; index?: number };
+  ToolInputDelta: {
+    tool_call_id?: string;
+    partial_json?: string;
+    call_id?: string;
+    delta?: string;
+  };
   ToolStateRunning: {
-    call_id: string;
+    tool_call_id?: string;
+    call_id?: string;
     tool_name: string;
     plugin_name?: string;
     args_json: string;
     started_at_ms: number;
   };
   ToolStateCompleted: {
-    call_id: string;
+    tool_call_id?: string;
+    call_id?: string;
     result_summary: string;
-    duration_ms: number;
+    elapsed_ms?: number;
+    duration_ms?: number;
     is_error: boolean;
   };
-  ToolStateHeartbeat: { call_id: string; elapsed_ms: number };
+  ToolStateHeartbeat: { tool_call_id?: string; elapsed_ms: number };
+  AttachmentAdded: {
+    kind?: string;
+    url?: string;
+    name?: string;
+    mime?: string;
+    size?: number;
+    tool_call_id?: string;
+  };
   SubagentSpawned: {
     child_session_key: string;
     child_agent_id?: string;
@@ -247,8 +286,8 @@ export function liveEventToChatEvent(ev: LiveEvent): ChatEvent | null {
         kind: "tool-input-delta",
         turnId: baseTurnId,
         sequence: baseSeq,
-        callId: p.call_id,
-        delta: p.delta ?? "",
+        callId: p.tool_call_id ?? p.call_id ?? "",
+        delta: p.partial_json ?? p.delta ?? "",
       };
     }
     case "ToolStateRunning": {
@@ -257,7 +296,7 @@ export function liveEventToChatEvent(ev: LiveEvent): ChatEvent | null {
         kind: "tool-running",
         turnId: baseTurnId,
         sequence: baseSeq,
-        callId: p.call_id,
+        callId: p.tool_call_id ?? p.call_id ?? "",
         toolName: p.tool_name,
         pluginName: p.plugin_name,
         argsJson: p.args_json ?? "",
@@ -270,10 +309,25 @@ export function liveEventToChatEvent(ev: LiveEvent): ChatEvent | null {
         kind: "tool-completed",
         turnId: baseTurnId,
         sequence: baseSeq,
-        callId: p.call_id,
+        callId: p.tool_call_id ?? p.call_id ?? "",
         resultPreview: p.result_summary ?? "",
-        durationMs: p.duration_ms ?? 0,
+        durationMs: p.elapsed_ms ?? p.duration_ms ?? 0,
         isError: Boolean(p.is_error),
+      };
+    }
+    case "AttachmentAdded": {
+      const p = payload(ev, "AttachmentAdded");
+      if (!p.url) return null;
+      return {
+        kind: "attachment",
+        turnId: baseTurnId,
+        sequence: baseSeq,
+        attachment: {
+          kind: p.kind ?? "file",
+          url: p.url,
+          name: p.name || p.url.split("/").pop() || "attachment",
+          mime: p.mime,
+        },
       };
     }
     case "SubagentSpawned": {

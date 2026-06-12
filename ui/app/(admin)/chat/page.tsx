@@ -14,7 +14,6 @@
 import * as React from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useTranslation } from "react-i18next";
-import { i18next } from "@/lib/i18n";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
@@ -25,23 +24,18 @@ import {
 } from "@/lib/api/chat";
 import {
   CorlinmanApiError,
-  GATEWAY_BASE_URL,
   fetchModels,
   listAgentBindings,
   type AgentBinding,
   type AgentBindingsResponse,
 } from "@/lib/api";
 import { replaySession, type TranscriptMessage } from "@/lib/api/sessions";
+import { transcriptToChatMessages } from "@/lib/chat/transcript";
 import { ChatModelPicker, type ModelPickerKind } from "@/components/chat/chat-model-picker";
 import { ChatArea } from "@/components/chat/chat-area";
 import { ChatSidebar } from "@/components/chat/chat-sidebar";
 import { ChatEmptyState } from "@/components/chat/empty-state";
-import type {
-  ChatAttachment,
-  ChatConversation,
-  ChatMessage,
-  ToolCallState,
-} from "@/lib/chat/types";
+import type { ChatConversation, ChatMessage } from "@/lib/chat/types";
 
 const FALLBACK_MODEL = "gpt-4o"; // used only when /admin/models returns no global default
 
@@ -64,70 +58,6 @@ function pickBranchedHistory(sessionKey: string): ChatMessage[] | null {
   } catch {
     return null;
   }
-}
-
-/** Map journal TranscriptMessage[] → ChatMessage[] so existing sessions
- *  (telegram / qq / scheduled) resume cleanly in /chat. Assistant rows
- *  with `tool_calls` rehydrate into ToolCallState[] so the bubble can
- *  render the historical tool invocations + their results (paired by
- *  the replay endpoint) — without this, tool-only assistant turns
- *  render as empty bubbles. */
-function transcriptToChatMessages(
-  transcript: TranscriptMessage[],
-  sessionKey: string,
-): ChatMessage[] {
-  // Ids carry the session so two sessions with look-alike transcripts
-  // can't collide on React keys while <ChatArea> stays mounted across
-  // `sessionKey` changes (stale-DOM reuse on switch).
-  const sid = sessionKey.replace(/[^a-zA-Z0-9]/g, "").slice(-12) || "s";
-  return transcript.map((m, i) => {
-    // Identity must be deterministic across reloads AND stable when an
-    // older page is PREPENDED (W5 "load earlier"): index from the END
-    // of the list, so existing messages keep their ids as the list
-    // grows upward. (The old `hist_${i}_${Date.now()-fallback}` baked a
-    // load-time timestamp in, so every refetch re-keyed the whole list
-    // and React rebuilt the DOM, losing scroll position.)
-    const rid = transcript.length - i;
-    const created = Number.isFinite(Date.parse(m.ts))
-      ? Date.parse(m.ts)
-      : Date.now() - (transcript.length - i) * 1000;
-    const rawTcs = m.tool_calls ?? [];
-    const toolCalls: ToolCallState[] = rawTcs.map((tc, j) => ({
-      callId: tc.id?.trim() ? tc.id : `hist_${sid}_r${rid}_${j}`,
-      toolName: tc.function?.name ?? i18next.t("chat.unknownToolName"),
-      argsJson: tc.function?.arguments ?? "{}",
-      status: tc.result !== undefined ? "settled" : "ok",
-      resultPreview: tc.result,
-    }));
-    // W3 — journaled attachment metadata → renderable cards. Relative
-    // /v1/files urls get the gateway prefix so dev (separate origins)
-    // and prod (same origin, empty prefix) both resolve.
-    const attachments: ChatAttachment[] = (m.attachments ?? []).map(
-      (a, k) => ({
-        id: `hist_${sid}_r${rid}_att_${k}`,
-        kind:
-          a.kind === "image" || a.kind === "audio" || a.kind === "video"
-            ? a.kind
-            : "document",
-        name: a.name || a.url?.split("/").pop() || "attachment",
-        mime: a.mime,
-        sizeBytes: 0,
-        remoteUrl: a.url
-          ? a.url.startsWith("/")
-            ? `${GATEWAY_BASE_URL}${a.url}`
-            : a.url
-          : undefined,
-      }),
-    );
-    return {
-      id: `hist_${sid}_r${rid}_${m.role}`,
-      role: m.role,
-      content: m.content,
-      createdAt: created,
-      toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-      attachments: attachments.length > 0 ? attachments : undefined,
-    };
-  });
 }
 
 export default function ChatPage() {

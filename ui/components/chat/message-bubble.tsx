@@ -109,7 +109,16 @@ export const MessageBubble = React.memo(function MessageBubble({
   const [editing, setEditing] = React.useState(false);
   const [savingEdit, setSavingEdit] = React.useState(false);
   const [draft, setDraft] = React.useState(message.content);
-  const [toolsCollapsed, setToolsCollapsed] = React.useState(false);
+  // Settled messages (history replay, branch restore) start with the tool
+  // trace collapsed behind the summary chip — a resumed session reads as one
+  // compact bubble per turn instead of a wall of tool cards. Live pending
+  // bubbles keep the expanded streaming trace; lazy init means settling
+  // in-place never collapses a trace the user is watching.
+  const [toolsCollapsed, setToolsCollapsed] = React.useState(
+    () =>
+      !message.pending &&
+      (message.toolCalls?.length ?? 0) + (message.subagents?.length ?? 0) > 0,
+  );
 
   // Bulk collapse switches on automatically when the assistant fires
   // many tool calls — keeps the bubble compact during long agent loops.

@@ -74,12 +74,21 @@ from corlinman_server.gateway_api import (
 from corlinman_server.gateway_api import (
     Usage as ApiUsage,
 )
+from corlinman_server.gateway_api.types import AttachmentEvent
 
 __all__ = [
     "ChatBackend",
     "ChatService",
     "GrpcAgentChatBackend",
 ]
+
+#: Sentinel ``plugin`` prefix on a ToolCall frame carrying live
+#: attachment metadata: the agent servicer registered a tool-produced
+#: file into the gateway file store mid-turn and broadcast the slim
+#: ``{kind,url,name,mime}`` meta so UI consumers can render the file
+#: before the turn ends. Companion to ``_builtin:`` / ``_builtin_done:``
+#: (see :mod:`._frame_handlers`) — no execution, no round-trip.
+_BUILTIN_ATTACHMENT_PREFIX = "_builtin_attachment:"
 
 
 log = logging.getLogger(__name__)
@@ -295,6 +304,30 @@ async def _run_chat(
 
             if kind == "tool_call":
                 tc = frame.tool_call
+                # ``_builtin_attachment:`` prefix carries live attachment
+                # metadata (file already registered into the gateway file
+                # store). Best-effort parse — a malformed payload is
+                # dropped, never fatal. Yielded as AttachmentEvent so the
+                # web chat renders the file mid-turn.
+                if tc.plugin.startswith(_BUILTIN_ATTACHMENT_PREFIX):
+                    try:
+                        meta = (
+                            json.loads(bytes(tc.args_json).decode("utf-8"))
+                            if tc.args_json else {}
+                        )
+                    except (UnicodeDecodeError, json.JSONDecodeError):
+                        meta = {}
+                    if not isinstance(meta, dict):
+                        meta = {}
+                    if meta.get("url"):
+                        yield AttachmentEvent(
+                            kind=str(meta.get("kind") or "file"),
+                            url=str(meta.get("url") or ""),
+                            name=str(meta.get("name") or ""),
+                            mime=str(meta.get("mime") or ""),
+                            call_id=tc.call_id,
+                        )
+                    continue
                 # ``_builtin_done:`` prefix marks a tool-completion
                 # observation: the in-process dispatch returned, and the
                 # servicer broadcasts duration + error info so channel

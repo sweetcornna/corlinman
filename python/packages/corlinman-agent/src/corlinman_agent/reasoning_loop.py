@@ -1145,6 +1145,9 @@ class ReasoningLoop:
         # Per-turn correlation id + monotonic sequence counter. Reset at
         # the top of every :meth:`run` invocation.
         self._turn_id: str = ""
+        # One-shot caller-pinned id consumed by the next ``run()`` (see
+        # :meth:`pin_turn_id`).
+        self._pinned_turn_id: str = ""
         self._sequence: int = 0
         # ``time.monotonic_ns()`` reference for elapsed-ms math; the
         # wall-clock ``timestamp_ms`` on each envelope is sourced
@@ -1198,6 +1201,20 @@ class ReasoningLoop:
         reasoning loop's own ``BlockStart`` / ``BlockStop`` / etc.
         """
         return self._turn_id
+
+    def pin_turn_id(self, turn_id: str) -> None:
+        """Pre-assign the correlation id the NEXT :meth:`run` will use.
+
+        One identity per turn, everywhere: the agent servicer journals
+        the turn row (``turns`` / ``turn_messages``) under the journal's
+        own ``begin_turn()`` id, while the loop's envelopes
+        (``turn_events`` / live SSE) used to carry an unrelated
+        ``uuid4().hex`` — so "latest turn for this session → its events"
+        joins never matched and every replay/catch-up surface read
+        empty. Callers that own a journal turn id pin it here before
+        driving :meth:`run`; one-shot, consumed by the next run only.
+        """
+        self._pinned_turn_id = str(turn_id) if turn_id else ""
 
     @property
     def session_key(self) -> str:
@@ -1413,8 +1430,11 @@ class ReasoningLoop:
         # Stash session_key so ``inject_user_message`` can stamp it on
         # the hook log line without the caller threading it through.
         self._session_key = start.session_key or ""
-        # W1.1: reset per-turn correlation state before any emit.
-        self._turn_id = uuid.uuid4().hex
+        # W1.1: reset per-turn correlation state before any emit. A
+        # caller-pinned id (the journal turn id) wins so envelopes and
+        # journal rows share one identity; see :meth:`pin_turn_id`.
+        self._turn_id = self._pinned_turn_id or uuid.uuid4().hex
+        self._pinned_turn_id = ""
         self._sequence = 0
         self._turn_started_ns = time.monotonic_ns()
         # Reset per-turn auto-continue accounting (gated; see __init__).

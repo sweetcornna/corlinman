@@ -168,6 +168,11 @@ export function ChatArea({
     }
     chat.hydrate(initialHistory);
     hydratedRef.current = { key: sessionKey, len: desiredLen };
+    // The turn the user navigated away from may still be generating
+    // server-side (generation is not tied to the browser connection).
+    // Reattach: rebuild the pending bubble from the journal backlog and
+    // tail the live stream. No-op when nothing is in flight.
+    void chat.resumeInFlight();
   }, [sessionKey, initialHistory, chat]);
 
   const handlePickSuggestion = React.useCallback(
