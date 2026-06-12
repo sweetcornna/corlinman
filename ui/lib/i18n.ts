@@ -1,20 +1,19 @@
 /**
  * i18next bootstrap for the admin UI.
  *
- * Two locales: `zh-CN` (default, authoritative) and `en`. The detector
- * checks localStorage (`corlinman_lang`) first, then `navigator.language`
- * (anything starting with `zh` → `zh-CN`, otherwise `en`).
+ * Two locales: `zh-CN` (default, authoritative) and `en`.
+ * Two language phases:
+ *   - Initial hydration always uses `zh-CN`, because the exported static HTML
+ *     is rendered in that default language.
+ *   - After React mounts, the provider may switch to the persisted/browser
+ *     preference. Deferring that switch prevents text hydration mismatches.
  *
- * Two init paths:
- *   - Client (has `window`): plug `LanguageDetector` so user choice
- *     persists across visits.
- *   - Server (static export / SSG): init without the detector, forced to
- *     `zh-CN` so the server-rendered HTML matches the default language.
+ * Static export / SSG also uses `zh-CN` so the server-rendered HTML and the
+ * first client render agree.
  */
 
 import i18next from "i18next";
 import { initReactI18next } from "react-i18next";
-import LanguageDetector from "i18next-browser-languagedetector";
 
 import { zhCN } from "./locales/zh-CN";
 import { en } from "./locales/en";
@@ -24,12 +23,13 @@ export const SUPPORTED_LANGS = ["zh-CN", "en"] as const;
 export type SupportedLang = (typeof SUPPORTED_LANGS)[number];
 export const DEFAULT_LANG: SupportedLang = "zh-CN";
 
-/**
- * Resolve the initial language synchronously from localStorage /
- * navigator.language. Used by the inline boot script and by initI18n so
- * both agree on the starting locale (no FOUC).
- */
+/** Resolve the first-render language. Must match the exported static HTML. */
 export function resolveInitialLang(): SupportedLang {
+  return DEFAULT_LANG;
+}
+
+/** Resolve the operator's preferred language after hydration is complete. */
+export function resolvePreferredLang(): SupportedLang {
   if (typeof window === "undefined") return DEFAULT_LANG;
   try {
     const stored = window.localStorage.getItem(LANG_STORAGE_KEY);
@@ -50,14 +50,9 @@ export function initI18n(): typeof i18next {
   if (initialized) return i18next;
   initialized = true;
 
-  const isClient = typeof window !== "undefined";
   const initialLang = resolveInitialLang();
 
-  const builder = isClient
-    ? i18next.use(LanguageDetector).use(initReactI18next)
-    : i18next.use(initReactI18next);
-
-  builder.init({
+  i18next.use(initReactI18next).init({
     resources: {
       "zh-CN": { translation: zhCN },
       en: { translation: en },
@@ -66,13 +61,6 @@ export function initI18n(): typeof i18next {
     fallbackLng: DEFAULT_LANG,
     supportedLngs: SUPPORTED_LANGS as readonly string[] as string[],
     interpolation: { escapeValue: false },
-    detection: isClient
-      ? {
-          order: ["localStorage", "navigator"],
-          lookupLocalStorage: LANG_STORAGE_KEY,
-          caches: ["localStorage"],
-        }
-      : undefined,
     returnNull: false,
     // Synchronous init — we bundle resources inline, there's nothing
     // async to wait for. Matters for vitest/SSG: React tests / static

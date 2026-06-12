@@ -15,19 +15,15 @@ export const metadata: Metadata = {
     "corlinman admin UI — Rust gateway + Python AI layer + Next.js control plane.",
 };
 
-// Inline boot script. Runs before React hydrates so <html lang> matches
-// the persisted i18n choice (or the browser hint) — no FOUC when the user
-// previously picked English. Also hydrates the Tidepool theme (light/dark)
-// from localStorage so theme-sensitive surfaces (aurora, glass, palette
-// outline) paint in the correct mode on first paint, not after React.
+// Inline boot script. Runs before React hydrates to restore the Tidepool theme
+// (light/dark) from localStorage so theme-sensitive surfaces (aurora, glass,
+// palette outline) paint in the correct mode on first paint, not after React.
+// Do not mutate language here: exported static HTML is zh-CN and the client
+// must match it for the first render. The provider applies the user's
+// persisted/browser language after hydration.
 const BOOT = `
 (function(){try{
   var el = document.documentElement;
-  // Language
-  var k="corlinman_lang";
-  var s=localStorage.getItem(k);
-  var l=(s==="zh-CN"||s==="en")?s:((navigator.language||"").toLowerCase().indexOf("zh")===0?"zh-CN":"en");
-  el.setAttribute("lang",l);
   // Theme (Tidepool). URL ?theme=light|dark wins over storage (handy for
   // demos / screenshot testing) — and is persisted to localStorage so that
   // next-themes (initialised later inside React) sees the same value and
