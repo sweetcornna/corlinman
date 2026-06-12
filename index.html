@@ -414,13 +414,6 @@ h1 em,.sec-head h2 em{background-size:220% 100%;animation:shimmer 8s ease-in-out
 #hud .hud-label b{color:var(--current);font-weight:500;margin-right:9px}
 @media (max-width:860px){#hud{display:none}}
 
-/* ---------- hero orbits ---------- */
-.orbit{position:absolute;left:50%;top:50%;width:235%;height:235%;transform:translate(-50%,-50%);pointer-events:none;overflow:visible;z-index:-1}
-.orbit ellipse{fill:none;stroke:rgba(233,237,249,.14);stroke-width:.6}
-.orbit circle{fill:var(--tide);filter:drop-shadow(0 0 5px rgba(84,205,255,.95))}
-.orbit .sat2{fill:var(--plasma);filter:drop-shadow(0 0 5px rgba(164,123,255,.95))}
-.reduced .orbit circle{display:none}
-
 /* ---------- chapter numerals ---------- */
 .eyebrow .chno{font-style:normal;color:var(--ink-4);margin-right:12px;padding-right:12px;border-right:1px solid var(--glass-border)}
 
@@ -493,19 +486,7 @@ footer{border-top:1px solid var(--glass-border);padding:64px 0 46px;background:r
         <a class="btn" href="https://github.com/sweetcornna/corlinman">GitHub ↗</a>
       </div>
       <p class="hero-facts"><span class="i-en"><span>hybrid rag</span><i>·</i><span>sandboxed plugins</span><i>·</i><span>7 channels</span><i>·</i><span>human-in-the-loop</span><i>·</i><span>MIT</span></span><span class="i-zh"><span>混合检索</span><i>·</i><span>沙箱插件</span><i>·</i><span>7 个渠道</span><i>·</i><span>人在回路</span><i>·</i><span>MIT</span></span></p>
-      <div class="hero-mascot">
-        <svg class="orbit" viewBox="0 0 200 200" aria-hidden="true">
-          <g transform="rotate(-14 100 100)">
-            <ellipse cx="100" cy="100" rx="94" ry="30"/>
-            <circle r="2.2" cx="0" cy="0"><animateMotion dur="38s" repeatCount="indefinite" path="M194,100 A94,30 0 1,1 6,100 A94,30 0 1,1 194,100"/></circle>
-          </g>
-          <g transform="rotate(24 100 100)">
-            <ellipse cx="100" cy="100" rx="76" ry="46"/>
-            <circle class="sat2" r="1.6" cx="0" cy="0"><animateMotion dur="61s" repeatCount="indefinite" path="M176,100 A76,46 0 1,0 24,100 A76,46 0 1,0 176,100"/></circle>
-          </g>
-        </svg>
-        <img src="logo.png" alt="corlinman pixel mascot">
-      </div>
+      <div class="hero-mascot"><img src="logo.png" alt="corlinman pixel mascot"></div>
       <p class="hero-cjk"><span class="i-en" lang="zh"><b>住在你机器里</b>的智能体</span><span class="i-zh">an agent that <b>lives</b> on your own hardware</span></p>
       <p class="scroll-hint">scroll</p>
     </div>
@@ -913,7 +894,7 @@ function createScene(canvas){
   scene.add(bg);
 
   /* ---- the ribbon ---- */
-  var RIB_SEG = isMobile?420:800, RIB_RAD = 0.02;
+  var RIB_SEG = isMobile?420:800, RIB_RAD = 0.013;
   function makeRibUniforms(a){
     return {
       uHead:{value:0},uTime:{value:0},uEnergy:{value:1},uAlpha:{value:a},
@@ -931,8 +912,8 @@ function createScene(canvas){
   "  vec2 dxy=p.xy-uCur;",
   "  float infl=exp(-dot(dxy,dxy)*1.6);",
   "  vCur=infl;",
-  "  p.xy+=normalize(dxy+vec2(0.0001,0.0))*infl*0.22;",
-  "  p.z+=infl*0.25;",
+  "  p.xy+=normalize(dxy+vec2(0.0001,0.0))*infl*0.12;",
+  "  p.z+=infl*0.15;",
   "  vN=normalMatrix*normal;",
   "  vec4 mv=modelViewMatrix*vec4(p,1.0);",
   "  vV=-mv.xyz;",
@@ -943,7 +924,7 @@ function createScene(canvas){
   "uniform float uHead;uniform float uTime;uniform float uEnergy;uniform float uAlpha;",
   "uniform vec2 uP0;uniform vec2 uP1;uniform vec2 uP2;uniform vec2 uP3;",
   "void main(){",
-  "  float edge=smoothstep(uHead,uHead-0.02,vT);",
+  "  float edge=smoothstep(uHead,uHead-0.06,vT);",
   "  if(edge<=0.002) discard;",
   "  vec3 cA=vec3(0.33,0.80,1.0);vec3 cB=vec3(0.37,0.61,1.0);vec3 cC=vec3(0.64,0.48,1.0);vec3 cD=vec3(1.0,0.66,0.40);",
   "  vec3 col=mix(cA,cB,smoothstep(0.0,0.35,vT));",
@@ -954,10 +935,10 @@ function createScene(canvas){
   "  puls+=uP2.y*exp(-pow((vT-uP2.x)*90.0,2.0));",
   "  puls+=uP3.y*exp(-pow((vT-uP3.x)*90.0,2.0));",
   "  float rim=pow(1.0-abs(dot(normalize(vN),normalize(vV))),1.5);",
-  "  float head=exp(-pow((uHead-vT)*160.0,2.0))*1.3;",
-  "  float b=0.5+0.35*rim+vCur*0.9+puls*2.4+head+0.15*clamp(uEnergy-1.0,0.0,1.5);",
-  "  float shimmer=0.92+0.08*sin(vT*42.0-uTime*1.1);",
-  "  gl_FragColor=vec4(col*b*shimmer,edge*0.9*uAlpha);",
+  "  float head=exp(-pow((uHead-vT)*110.0,2.0))*0.9;",
+  "  float b=0.45+0.30*rim+vCur*0.6+puls*1.8+head+0.12*clamp(uEnergy-1.0,0.0,1.5);",
+  "  float shimmer=0.96+0.04*sin(vT*42.0-uTime*1.1);",
+  "  gl_FragColor=vec4(col*b*shimmer,edge*0.78*uAlpha);",
   "}"].join("\n");
   function ribMat(u){
     return new THREE.ShaderMaterial({uniforms:u,vertexShader:RIB_VERT,fragmentShader:RIB_FRAG,
@@ -973,11 +954,11 @@ function createScene(canvas){
      fx multiplies edgeX (1.0 = just outside the content column);
      the pinned loop chapter drifts FAR, behind its giant glyphs */
   var SECTIONS=[
-    {sel:".loop",   fx: 0.55, dy:0.45, z:-1.9},
-    {sel:".demo",   fx:-1.00, dy:0.30, z: 0.6},
-    {sel:".pillars",fx: 1.00, dy:0.35, z: 0.5},
-    {sel:".ops",    fx:-1.00, dy:0.30, z: 0.6},
-    {sel:".install",fx: 1.00, dy:0.40, z: 0.4},
+    {sel:".loop",   fx: 0.60, dy:0.45, z:-1.9},
+    {sel:".demo",   fx:-1.00, dy:0.45, z: 0.2},
+    {sel:".pillars",fx: 1.00, dy:0.35, z: 0.0},
+    {sel:".ops",    fx:-1.00, dy:0.30, z:-0.3},
+    {sel:".install",fx: 1.00, dy:0.30, z:-0.7},
     {sel:".wikis",  fx:-0.95, dy:0.30, z:-1.2}
   ];
   var stations=[];
@@ -1032,27 +1013,28 @@ function createScene(canvas){
     var wrapHalfPx=Math.min(590,(window.innerWidth-48)/2);
     var edgeX=Math.min(halfW*0.90,(wrapHalfPx+120)*wpp);
     pts.push(new THREE.Vector3(0.52*halfW,wy(heroH*0.42),-1.0));
-    var prevBottom=heroH;
     for(var i=0;i<SECTIONS.length;i++){
       var cfg=SECTIONS[i];
       var el=document.querySelector(cfg.sel); if(!el) continue;
-      var top=el.getBoundingClientRect().top+window.scrollY;
-      var h=el.offsetHeight;
-      var crossY=(prevBottom+top)/2;
-      pts.push(new THREE.Vector3(((i%2)?-0.12:0.08)*halfW,wy(crossY),-2.1));
+      /* gsap pinning moves the scroll distance into a .pin-spacer wrapper */
+      var box=(el.parentElement&&el.parentElement.classList.contains("pin-spacer"))?el.parentElement:el;
+      var top=box.getBoundingClientRect().top+window.scrollY;
+      var h=box.offsetHeight;
       var z=isMobile?Math.min(cfg.z,-1.4):cfg.z;
       var sp=new THREE.Vector3(cfg.fx*edgeX,wy(top+h*cfg.dy),z);
       pts.push(sp);
       stations[i].mesh.position.copy(sp);
       stations[i].mesh.visible=true;
       stations[i].y=sp.y;
-      prevBottom=top+h;
+      /* the pinned loop chapter is very tall: hold the right lane
+         all the way down so the line never cuts across its text */
+      if(cfg.sel===".loop") pts.push(new THREE.Vector3(0.85*edgeX,wy(top+h*0.92),-1.0));
     }
     pts.push(new THREE.Vector3(0.20*halfW,wy(docH-vh*0.5),-0.6));
     pts.push(new THREE.Vector3(0,wy(docH-30),0.1));
     curve=new THREE.CatmullRomCurve3(pts,false,"centripetal");
     var tube=new THREE.TubeGeometry(curve,RIB_SEG,RIB_RAD,isMobile?5:6,false);
-    var tubeG=new THREE.TubeGeometry(curve,Math.floor(RIB_SEG*0.6),RIB_RAD*3.4,isMobile?5:6,false);
+    var tubeG=new THREE.TubeGeometry(curve,Math.floor(RIB_SEG*0.6),RIB_RAD*2.6,isMobile?5:6,false);
     ribCore.geometry.dispose(); ribCore.geometry=tube;
     ribGlow.geometry.dispose(); ribGlow.geometry=tubeG;
     buildDust(docH*wpp);
