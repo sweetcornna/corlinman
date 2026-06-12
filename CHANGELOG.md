@@ -4,6 +4,19 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.21.1] — 2026-06-12 — attachment size + empty upload fixes
+
+> Patch release. Config-compatible — no migration required. (PR #93)
+
+### Fixed
+- **Attachment cards no longer show `0B` after replay or live delivery** —
+  transcript replay, live `AttachmentAdded` events, streamed
+  `corlinman.attachment` chunks, and assistant/user journal metadata now carry
+  positive file sizes through to the web UI.
+- **Empty uploads fail locally with a clear error** — the composer rejects
+  zero-byte files before calling `/v1/files`, showing `文件为空` / `File is
+  empty` instead of a generic upload-failed card.
+
 ## [1.21.0] — 2026-06-12 — live agent attachments + chat stream reattach
 
 > Minor release. Config-compatible — no migration required. (PR #92)
