@@ -732,7 +732,11 @@ export default function CredentialsPage() {
         same component).
       */}
       <div className="mt-6 border-t border-sg-border pt-6">
-        <ProvidersAdminContent />
+        <ProvidersAdminContent
+          onCustomProvidersChanged={() =>
+            qc.invalidateQueries({ queryKey: ["admin", "credentials"] })
+          }
+        />
       </div>
 
       <OAuthLoginModal

@@ -59,6 +59,9 @@ from corlinman_server.gateway.routes_admin_b.config_admin._credentials_lib impor
     _resolve_raw_literal,
     logger,
 )
+from corlinman_server.gateway.routes_admin_b.config_admin._providers_lib import (
+    _autobind_default_alias,
+)
 from corlinman_server.gateway.routes_admin_b.state import (
     config_snapshot,
     get_admin_state,
@@ -194,6 +197,8 @@ def router() -> APIRouter:
 
             providers[provider] = block
             cfg["providers"] = providers
+            if bool(block.get("enabled", False)):
+                cfg = await _autobind_default_alias(cfg, provider, block)
 
             err = _write_config_atomic(state.config_path, cfg)
             if err is not None:
@@ -267,6 +272,8 @@ def router() -> APIRouter:
 
             providers[provider] = block
             cfg["providers"] = providers
+            if bool(body.enabled) and _has_primary_set(provider, block):
+                cfg = await _autobind_default_alias(cfg, provider, block)
 
             err = _write_config_atomic(state.config_path, cfg)
             if err is not None:

@@ -33,7 +33,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from corlinman_server.gateway.routes_admin_b.config_admin import credentials
+from corlinman_server.gateway.routes_admin_b.config_admin import (
+    _providers_lib,
+    credentials,
+)
 from corlinman_server.gateway.routes_admin_b.state import (
     AdminState,
     set_admin_state,
@@ -77,7 +80,8 @@ def admin_state(temp_config_path: Path) -> Iterator[AdminState]:
 
 
 @pytest.fixture()
-def client(admin_state: AdminState) -> TestClient:
+def client(admin_state: AdminState, monkeypatch: pytest.MonkeyPatch) -> TestClient:
+    _stub_probe(monkeypatch, None)
     app = FastAPI()
     app.include_router(credentials.router())
     return authenticated_test_client(app)
@@ -99,6 +103,17 @@ def _on_disk(state: AdminState) -> dict[str, Any]:
     if not raw.strip():
         return {}
     return tomllib.loads(raw)
+
+
+def _stub_probe(monkeypatch: pytest.MonkeyPatch, models: list[str] | None) -> None:
+    """Stub provider model discovery so credential tests stay network-free."""
+
+    async def _fake(name: str, cfg: dict[str, Any]) -> dict[str, Any]:
+        if models is None:
+            return {"ok": False, "models": [], "latency_ms": 0, "error": "stubbed"}
+        return {"ok": True, "models": list(models), "latency_ms": 1, "error": None}
+
+    monkeypatch.setattr(_providers_lib, "_query_provider_models", _fake)
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +227,66 @@ def test_put_idempotent_keeps_file_byte_identical(
     second_text = admin_state.config_path.read_text(encoding="utf-8")  # type: ignore[union-attr]
 
     assert first_text == second_text
+
+
+def test_put_primary_credential_autobinds_default_model_alias(
+    client: TestClient,
+    admin_state: AdminState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Adding a basic API key should make the provider chat-ready.
+
+    ``/admin/providers`` already auto-binds the first enabled provider into
+    ``[models]``. The credentials surface is the simpler, more common path for
+    pasting a first API key, so it must produce the same model-config shape.
+    """
+    _stub_probe(monkeypatch, ["z-model", "gpt-4o-mini"])
+
+    resp = client.put(
+        "/admin/credentials/openai/api_key",
+        json={"value": "sk-chat-ready-secret"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    on_disk = _on_disk(admin_state)
+    assert on_disk["models"]["default"] == "openai"
+    assert on_disk["models"]["aliases"]["openai"] == {
+        "provider": "openai",
+        "model": "gpt-4o-mini",
+        "params": {},
+    }
+
+
+def test_enable_existing_credential_autobinds_without_overwriting_default(
+    client: TestClient,
+    admin_state: AdminState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Toggling an already-keyed provider on should bind only when needed."""
+    _stub_probe(monkeypatch, ["gpt-4o-mini"])
+    snapshot: dict[str, Any] = admin_state.extras["snapshot"]
+    snapshot["providers"] = {
+        "openai": {
+            "kind": "openai",
+            "enabled": False,
+            "api_key": "sk-existing",
+        }
+    }
+
+    resp = client.post("/admin/credentials/openai/enable", json={"enabled": True})
+
+    assert resp.status_code == 200, resp.text
+    on_disk = _on_disk(admin_state)
+    assert on_disk["providers"]["openai"]["enabled"] is True
+    assert on_disk["models"]["default"] == "openai"
+    assert on_disk["models"]["aliases"]["openai"]["provider"] == "openai"
+
+    _reload(admin_state)
+    resp = client.post("/admin/credentials/anthropic/enable", json={"enabled": True})
+    assert resp.status_code == 200, resp.text
+    on_disk = _on_disk(admin_state)
+    assert on_disk["models"]["default"] == "openai"
+    assert "anthropic" not in on_disk["models"]["aliases"]
 
 
 # ---------------------------------------------------------------------------

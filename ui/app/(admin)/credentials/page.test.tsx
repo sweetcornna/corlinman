@@ -49,6 +49,22 @@ vi.mock("@/lib/api", async () => {
   };
 });
 
+vi.mock("@/app/(admin)/providers/page", () => ({
+  ProvidersAdminContent: ({
+    onCustomProvidersChanged,
+  }: {
+    onCustomProvidersChanged?: () => void;
+  }) => (
+    <button
+      type="button"
+      data-testid="mock-custom-provider-created"
+      onClick={() => onCustomProvidersChanged?.()}
+    >
+      create custom provider
+    </button>
+  ),
+}));
+
 const { toastSuccess, toastError, toastMessage } = vi.hoisted(() => ({
   toastSuccess: vi.fn(),
   toastError: vi.fn(),
@@ -119,6 +135,37 @@ const LIST_PAYLOAD: CredentialsListResponse = {
           set: false,
           preview: null,
           env_ref: "ANTHROPIC_BASE_URL",
+        },
+      ],
+    },
+  ],
+};
+
+const CUSTOM_PROVIDER_PAYLOAD: CredentialsListResponse = {
+  providers: [
+    ...LIST_PAYLOAD.providers,
+    {
+      name: "fish_audio",
+      kind: "openai_compatible",
+      enabled: true,
+      fields: [
+        {
+          key: "api_key",
+          set: false,
+          preview: null,
+          env_ref: null,
+        },
+        {
+          key: "base_url",
+          set: true,
+          preview: "…udio",
+          env_ref: null,
+        },
+        {
+          key: "kind",
+          set: true,
+          preview: "…ible",
+          env_ref: null,
         },
       ],
     },
@@ -261,5 +308,25 @@ describe("CredentialsPage", () => {
     expect(
       screen.getByTestId("credentials-provider-openai"),
     ).toBeInTheDocument();
+  });
+
+  it("refreshes credential cards when the inline custom-provider section changes", async () => {
+    mockedList
+      .mockResolvedValueOnce(LIST_PAYLOAD)
+      .mockResolvedValueOnce(CUSTOM_PROVIDER_PAYLOAD);
+
+    renderPage();
+
+    await screen.findByTestId("credentials-provider-openai");
+    expect(
+      screen.queryByTestId("credentials-provider-fish_audio"),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("mock-custom-provider-created"));
+
+    expect(
+      await screen.findByTestId("credentials-provider-fish_audio"),
+    ).toBeInTheDocument();
+    expect(mockedList).toHaveBeenCalledTimes(2);
   });
 });

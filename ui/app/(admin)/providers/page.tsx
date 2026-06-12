@@ -203,7 +203,13 @@ type ModelDiscoveryRequest = {
  * single sidebar entry). The default export stays so `/admin/providers`
  * still works as a deep link.
  */
-export function ProvidersAdminContent() {
+export type ProvidersAdminContentProps = {
+  onCustomProvidersChanged?: () => void;
+};
+
+export function ProvidersAdminContent({
+  onCustomProvidersChanged,
+}: ProvidersAdminContentProps = {}) {
   const { t } = useTranslation();
   const qc = useQueryClient();
   const providers = useQuery<ProviderView[]>({
@@ -381,7 +387,9 @@ export function ProvidersAdminContent() {
         )}
       </section>
 
-      <CustomProvidersSection />
+      <CustomProvidersSection
+        onCustomProvidersChanged={onCustomProvidersChanged}
+      />
 
       <ProviderEditorDialog
         open={editorOpen}
@@ -897,7 +905,13 @@ function parseReferences(raw: string): string[] {
 // Backend pending (503) renders the same "feature pending" banner used
 // upstairs so a v0.1 gateway doesn't toast-spam the operator.
 
-function CustomProvidersSection() {
+type CustomProvidersSectionProps = {
+  onCustomProvidersChanged?: () => void;
+};
+
+function CustomProvidersSection({
+  onCustomProvidersChanged,
+}: CustomProvidersSectionProps) {
   const { t } = useTranslation();
   const qc = useQueryClient();
   const [addOpen, setAddOpen] = React.useState(false);
@@ -924,6 +938,7 @@ function CustomProvidersSection() {
       // Built-in section pulls from the same TOML — refresh both so the
       // operator doesn't see a stale ghost row.
       qc.invalidateQueries({ queryKey: ["admin", "providers"] });
+      onCustomProvidersChanged?.();
     },
     onError: (err) => {
       toast.error(
@@ -1036,6 +1051,7 @@ function CustomProvidersSection() {
             queryKey: ["admin", "providers", "custom"],
           });
           qc.invalidateQueries({ queryKey: ["admin", "providers"] });
+          onCustomProvidersChanged?.();
         }}
       />
 
