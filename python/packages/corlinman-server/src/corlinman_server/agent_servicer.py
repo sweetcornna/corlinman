@@ -1630,7 +1630,10 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             # unrelated uuid4 — so "latest turn for session → its events"
             # joins matched nothing and replay/catch-up/resume surfaces
             # read empty. Pin the loop to the journal id before run().
-            loop.pin_turn_id(str(journal_turn_id))
+            # ``getattr`` keeps duck-typed loop stand-ins (tests) working.
+            _pin = getattr(loop, "pin_turn_id", None)
+            if callable(_pin):
+                _pin(str(journal_turn_id))
 
         inbound_task = asyncio.create_task(
             _pump_inbound(request_iterator, loop),
