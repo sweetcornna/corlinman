@@ -778,14 +778,11 @@ if (REDUCED) document.body.classList.add("reduced");
 })();
 
 /* ============================================================
-   the current — a three.js journey behind the page. the ink-tide
+   the current — a three.js scene behind the page. the ink-tide
    nebula (single pass, no feedback buffers, static dither) sits on
-   the far plane; one luminous ribbon travels the whole document in
-   3d, weaving near and far between chapters, passing behind the
-   frosted-glass cards; wireframe stations ignite as it arrives;
-   light pulses ride the ribbon — ambient ones every few seconds,
-   a bright one on every click/tap. the camera glides with scroll
-   and leans toward the pointer.
+   the far plane; depth-bokeh dust drifts in 3d; the camera glides
+   with scroll and leans toward the pointer; click/tap drops an ink
+   ripple on the nebula.
    ============================================================ */
 function createScene(canvas){
   if(typeof THREE === "undefined") return null;
@@ -893,83 +890,6 @@ function createScene(canvas){
   bg.frustumCulled=false; bg.renderOrder=-1;
   scene.add(bg);
 
-  /* ---- the ribbon ---- */
-  var RIB_SEG = isMobile?420:800, RIB_RAD = 0.013;
-  function makeRibUniforms(a){
-    return {
-      uHead:{value:0},uTime:{value:0},uEnergy:{value:1},uAlpha:{value:a},
-      uCur:{value:new THREE.Vector2(99,99)},
-      uP0:{value:new THREE.Vector2(-1,0)},uP1:{value:new THREE.Vector2(-1,0)},
-      uP2:{value:new THREE.Vector2(-1,0)},uP3:{value:new THREE.Vector2(-1,0)}
-    };
-  }
-  var RIB_VERT = [
-  "varying float vT;varying float vCur;varying vec3 vN;varying vec3 vV;",
-  "uniform vec2 uCur;",
-  "void main(){",
-  "  vT=uv.x;",
-  "  vec3 p=position;",
-  "  vec2 dxy=p.xy-uCur;",
-  "  float infl=exp(-dot(dxy,dxy)*1.6);",
-  "  vCur=infl;",
-  "  p.xy+=normalize(dxy+vec2(0.0001,0.0))*infl*0.12;",
-  "  p.z+=infl*0.15;",
-  "  vN=normalMatrix*normal;",
-  "  vec4 mv=modelViewMatrix*vec4(p,1.0);",
-  "  vV=-mv.xyz;",
-  "  gl_Position=projectionMatrix*mv;",
-  "}"].join("\n");
-  var RIB_FRAG = [
-  "varying float vT;varying float vCur;varying vec3 vN;varying vec3 vV;",
-  "uniform float uHead;uniform float uTime;uniform float uEnergy;uniform float uAlpha;",
-  "uniform vec2 uP0;uniform vec2 uP1;uniform vec2 uP2;uniform vec2 uP3;",
-  "void main(){",
-  "  float edge=smoothstep(uHead,uHead-0.06,vT);",
-  "  if(edge<=0.002) discard;",
-  "  vec3 cA=vec3(0.33,0.80,1.0);vec3 cB=vec3(0.37,0.61,1.0);vec3 cC=vec3(0.64,0.48,1.0);vec3 cD=vec3(1.0,0.66,0.40);",
-  "  vec3 col=mix(cA,cB,smoothstep(0.0,0.35,vT));",
-  "  col=mix(col,cC,smoothstep(0.35,0.75,vT));",
-  "  col=mix(col,cD,smoothstep(0.82,1.0,vT));",
-  "  float puls=uP0.y*exp(-pow((vT-uP0.x)*90.0,2.0));",
-  "  puls+=uP1.y*exp(-pow((vT-uP1.x)*90.0,2.0));",
-  "  puls+=uP2.y*exp(-pow((vT-uP2.x)*90.0,2.0));",
-  "  puls+=uP3.y*exp(-pow((vT-uP3.x)*90.0,2.0));",
-  "  float rim=pow(1.0-abs(dot(normalize(vN),normalize(vV))),1.5);",
-  "  float head=exp(-pow((uHead-vT)*110.0,2.0))*0.9;",
-  "  float b=0.45+0.30*rim+vCur*0.6+puls*1.8+head+0.12*clamp(uEnergy-1.0,0.0,1.5);",
-  "  float shimmer=0.96+0.04*sin(vT*42.0-uTime*1.1);",
-  "  gl_FragColor=vec4(col*b*shimmer,edge*0.78*uAlpha);",
-  "}"].join("\n");
-  function ribMat(u){
-    return new THREE.ShaderMaterial({uniforms:u,vertexShader:RIB_VERT,fragmentShader:RIB_FRAG,
-      transparent:true,blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide});
-  }
-  var ribUniformsCore=makeRibUniforms(isMobile?0.78:1.0), ribUniformsGlow=makeRibUniforms(isMobile?0.11:0.16);
-  var ribCore=new THREE.Mesh(new THREE.BufferGeometry(),ribMat(ribUniformsCore));
-  var ribGlow=new THREE.Mesh(new THREE.BufferGeometry(),ribMat(ribUniformsGlow));
-  ribCore.frustumCulled=false; ribGlow.frustumCulled=false;
-  scene.add(ribGlow); scene.add(ribCore);
-
-  /* ---- stations : one wireframe beacon per chapter ----
-     fx multiplies edgeX (1.0 = just outside the content column);
-     the pinned loop chapter drifts FAR, behind its giant glyphs */
-  var SECTIONS=[
-    {sel:".loop",   fx: 0.60, dy:0.45, z:-1.9},
-    {sel:".demo",   fx:-1.00, dy:0.45, z: 0.2},
-    {sel:".pillars",fx: 1.00, dy:0.35, z: 0.0},
-    {sel:".ops",    fx:-1.00, dy:0.30, z:-0.3},
-    {sel:".install",fx: 1.00, dy:0.30, z:-0.7},
-    {sel:".wikis",  fx:-0.95, dy:0.30, z:-1.2}
-  ];
-  var stations=[];
-  var stGeo=new THREE.EdgesGeometry(new THREE.OctahedronGeometry(0.085,0));
-  for(var si=0;si<SECTIONS.length;si++){
-    var stM=new THREE.LineBasicMaterial({color:0x2e3a5c,transparent:true,opacity:0,blending:THREE.AdditiveBlending,depthWrite:false});
-    var stMesh=new THREE.LineSegments(stGeo,stM);
-    stMesh.visible=false; scene.add(stMesh);
-    stations.push({mesh:stMesh,mat:stM,lit:0,y:0});
-  }
-
   /* ---- dust : depth bokeh, static brightness (not stars) ---- */
   function dotTexture(){
     var c=document.createElement("canvas"); c.width=c.height=64;
@@ -999,44 +919,12 @@ function createScene(canvas){
     scene.add(dust);
   }
 
-  /* ---- geometry from the document ---- */
-  var curve=null, docH=1;
+  /* ---- world extent from the document ---- */
+  var docH=1;
   function rebuild(){
     var vh=window.innerHeight;
     wpp=(halfH*2)/Math.max(1,vh);
     docH=Math.max(1,document.documentElement.scrollHeight);
-    function wy(y){ return -y*wpp; }
-    var pts=[];
-    var hero=document.querySelector(".hero");
-    var heroH=hero?hero.offsetHeight:vh;
-    /* usable lane just outside the 1180px content column */
-    var wrapHalfPx=Math.min(590,(window.innerWidth-48)/2);
-    var edgeX=Math.min(halfW*0.90,(wrapHalfPx+120)*wpp);
-    pts.push(new THREE.Vector3(0.52*halfW,wy(heroH*0.42),-1.0));
-    for(var i=0;i<SECTIONS.length;i++){
-      var cfg=SECTIONS[i];
-      var el=document.querySelector(cfg.sel); if(!el) continue;
-      /* gsap pinning moves the scroll distance into a .pin-spacer wrapper */
-      var box=(el.parentElement&&el.parentElement.classList.contains("pin-spacer"))?el.parentElement:el;
-      var top=box.getBoundingClientRect().top+window.scrollY;
-      var h=box.offsetHeight;
-      var z=isMobile?Math.min(cfg.z,-1.4):cfg.z;
-      var sp=new THREE.Vector3(cfg.fx*edgeX,wy(top+h*cfg.dy),z);
-      pts.push(sp);
-      stations[i].mesh.position.copy(sp);
-      stations[i].mesh.visible=true;
-      stations[i].y=sp.y;
-      /* the pinned loop chapter is very tall: hold the right lane
-         all the way down so the line never cuts across its text */
-      if(cfg.sel===".loop") pts.push(new THREE.Vector3(0.85*edgeX,wy(top+h*0.92),-1.0));
-    }
-    pts.push(new THREE.Vector3(0.20*halfW,wy(docH-vh*0.5),-0.6));
-    pts.push(new THREE.Vector3(0,wy(docH-30),0.1));
-    curve=new THREE.CatmullRomCurve3(pts,false,"centripetal");
-    var tube=new THREE.TubeGeometry(curve,RIB_SEG,RIB_RAD,isMobile?5:6,false);
-    var tubeG=new THREE.TubeGeometry(curve,Math.floor(RIB_SEG*0.6),RIB_RAD*2.6,isMobile?5:6,false);
-    ribCore.geometry.dispose(); ribCore.geometry=tube;
-    ribGlow.geometry.dispose(); ribGlow.geometry=tubeG;
     buildDust(docH*wpp);
   }
 
@@ -1051,21 +939,14 @@ function createScene(canvas){
     ndcX=x*2-1; ndcY=y*2-1;
   },{passive:true});
 
-  /* ink ripples on the nebula + a bright pulse riding the ribbon */
+  /* ink ripples on the nebula */
   var rip=[[0,0,9],[0,0,9],[0,0,9]],ripIdx=0;
-  var pulses=[];
-  function spawnPulse(t0,str,speed){
-    if(pulses.length>=4) pulses.shift();
-    pulses.push({t:t0,str:str,sp:speed});
-  }
   window.addEventListener("pointerdown",function(e){
     var x=(e.clientX/W-0.5)*camera.aspect;
     var y=(0.5-e.clientY/H);
     rip[ripIdx]=[x,y,0.001]; ripIdx=(ripIdx+1)%3;
     tptr=Math.min(1.4,tptr+0.35); tglow=1.0;
-    spawnPulse(Math.max(0,headT-0.10),1.0,0.22);
   },{passive:true});
-  setInterval(function(){ if(!document.hidden) spawnPulse(0,0.45,0.15); },6500);
 
   /* ---- resize ---- */
   function resize(){
@@ -1081,10 +962,9 @@ function createScene(canvas){
   resize();
 
   /* ---- frame ---- */
-  var time=0,last=performance.now(),energy=1,targetEnergy=1,shift=0,chapter=0,headT=0;
+  var time=0,last=performance.now(),energy=1,targetEnergy=1,shift=0,chapter=0;
   var visible=true,skip=false;
   document.addEventListener("visibilitychange",function(){ visible=!document.hidden; last=performance.now(); });
-  var dimC=new THREE.Color(0x2e3a5c), litC=new THREE.Color(0x54cdff);
   function frame(){
     requestAnimationFrame(frame);
     if(!visible) return;
@@ -1102,8 +982,6 @@ function createScene(canvas){
     camera.position.x+=(ndcX*0.30-camera.position.x)*0.04;
     camera.rotation.y+=((-ndcX*0.05)-camera.rotation.y)*0.04;
     camera.rotation.x+=((ndcY*0.035)-camera.rotation.x)*0.04;
-    var hT=Math.min(1,(sy+vh*0.8)/docH);
-    headT+=(hT-headT)*0.08;
     for(var i=0;i<3;i++){ if(rip[i][2]>0&&rip[i][2]<9) rip[i][2]+=dt; }
     bgUniforms.uTime.value=time;
     bgUniforms.uShift.value=shift;
@@ -1115,27 +993,6 @@ function createScene(canvas){
     bgUniforms.uR0.value.set(rip[0][0],rip[0][1],rip[0][2]);
     bgUniforms.uR1.value.set(rip[1][0],rip[1][1],rip[1][2]);
     bgUniforms.uR2.value.set(rip[2][0],rip[2][1],rip[2][2]);
-    var cwx=camera.position.x+ndcX*halfW, cwy=camera.position.y+ndcY*halfH;
-    for(i=pulses.length-1;i>=0;i--){ pulses[i].t+=pulses[i].sp*dt; if(pulses[i].t>1.05) pulses.splice(i,1); }
-    var us=[ribUniformsCore,ribUniformsGlow];
-    for(i=0;i<2;i++){
-      var u=us[i];
-      u.uHead.value=headT; u.uTime.value=time; u.uEnergy.value=energy;
-      u.uCur.value.set(cwx,cwy);
-      var ps=[u.uP0,u.uP1,u.uP2,u.uP3];
-      for(var k=0;k<4;k++){ var pu=pulses[k]; ps[k].value.set(pu?pu.t:-1,pu?pu.str:0); }
-    }
-    var headY=curve?curve.getPointAt(Math.max(0,Math.min(1,headT))).y:0;
-    for(i=0;i<stations.length;i++){
-      var st=stations[i];
-      st.lit+=(((headY<=st.y)?1:0)-st.lit)*0.06;
-      st.mat.opacity=0.10+st.lit*0.75;
-      st.mat.color.copy(dimC).lerp(litC,st.lit);
-      st.mesh.rotation.y+=dt*(0.3+i*0.05);
-      st.mesh.rotation.x+=dt*0.18;
-      var sc=1+st.lit*0.25+0.04*Math.sin(time*1.4+i);
-      st.mesh.scale.set(sc,sc,sc);
-    }
     if(dust) dust.position.x=Math.sin(time*0.05)*0.12;
     renderer.render(scene,camera);
   }
@@ -1320,7 +1177,7 @@ if(hasGsap && !REDUCED){
       onEnterBack:function(){ tl.play(); }, onLeaveBack:function(){ tl.pause(); }});
   })();
 
-  /* the 3d ribbon re-anchors whenever ScrollTrigger re-measures (load, resize, lang toggle) */
+  /* the scene re-measures whenever ScrollTrigger refreshes (load, resize, lang toggle) */
   ScrollTrigger.addEventListener("refresh", function(){ if(fluid) fluid.rebuild(); });
   if(fluid) fluid.rebuild();
 }else{
