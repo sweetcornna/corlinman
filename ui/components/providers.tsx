@@ -6,7 +6,7 @@ import { ThemeProvider, useTheme } from "next-themes";
 import { Toaster } from "sonner";
 import { I18nextProvider } from "react-i18next";
 
-import { i18next, initI18n } from "@/lib/i18n";
+import { i18next, initI18n, resolvePreferredLang } from "@/lib/i18n";
 import { CommandPaletteProvider } from "./cmdk-palette";
 import { CursorLight } from "@/components/ui/cursor-light";
 
@@ -62,6 +62,10 @@ export function Providers({ children }: ProvidersProps) {
   // Safety net for SSR/test paths where the module-scope init didn't run.
   React.useEffect(() => {
     initI18n();
+    const preferred = resolvePreferredLang();
+    if (i18next.language !== preferred) {
+      void i18next.changeLanguage(preferred);
+    }
   }, []);
 
   return (
