@@ -4,6 +4,23 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.21.3] — 2026-06-12 — channel persona persistence
+
+> Patch release. Config-compatible; existing binding preference DBs are
+> migrated in place to add nullable per-binding persona selection. (PR #95)
+
+### Fixed
+- **Telegram reasoning previews no longer stutter token-by-token** — reasoning
+  chunks are buffered until sentence punctuation or newline, then flushed
+  before answer text, tool activity, completion, or errors. The final reply
+  still excludes reasoning text.
+- **Persona Studio selections now stick per channel conversation** — personas
+  created from channel chats persist to that binding, survive `/new`, and can
+  be cleared with `/use-default-persona`.
+- **Existing binding preference databases migrate safely** — the new
+  `persona_id` column is added idempotently while preserving model overrides
+  and session epochs.
+
 ## [1.21.2] — 2026-06-12 — login hydration fix
 
 > Patch release. Config-compatible — no migration required. (PR #94)
