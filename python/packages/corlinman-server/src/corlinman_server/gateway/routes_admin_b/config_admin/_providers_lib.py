@@ -237,12 +237,58 @@ def _remove_default_model_ref(cfg: dict[str, Any], provider_name: str) -> dict[s
     if not default_name:
         return cfg
 
-    if default_name == provider_name or _alias_provider(aliases.get(default_name)) == provider_name:
-        aliases.pop(default_name, None)
+    default_alias = aliases.get(default_name)
+    default_alias_provider = _alias_provider(default_alias)
+    if default_alias_provider is not None:
+        points_to_provider = default_alias_provider == provider_name
+    else:
+        points_to_provider = default_name == provider_name
+
+    if points_to_provider:
+        if default_alias_provider == provider_name:
+            aliases.pop(default_name, None)
         models_cfg["aliases"] = aliases
         models_cfg.pop("default", None)
         cfg["models"] = models_cfg
     return cfg
+
+
+def _has_api_key(entry: dict[str, Any]) -> bool:
+    raw_key = entry.get("api_key")
+    if isinstance(raw_key, str):
+        return bool(raw_key)
+    if isinstance(raw_key, dict):
+        if "env" in raw_key:
+            return bool(raw_key.get("env"))
+        if "value" in raw_key:
+            return bool(raw_key.get("value"))
+        return bool(raw_key)
+    return False
+
+
+_AUTOBIND_REQUIRES_API_KEY_KINDS: frozenset[str] = frozenset(
+    {
+        "anthropic",
+        "google",
+        "deepseek",
+        "qwen",
+        "glm",
+        "mistral",
+        "cohere",
+        "together",
+        "groq",
+        "replicate",
+        "azure",
+        "bedrock",
+    }
+)
+
+
+def _can_autobind_default_alias(entry: dict[str, Any]) -> bool:
+    kind = _normalize_kind(str(entry.get("kind") or "openai_compatible"))
+    if _provider_tts_backend(entry) == "fish":
+        return False
+    return kind not in _AUTOBIND_REQUIRES_API_KEY_KINDS or _has_api_key(entry)
 
 
 def _bad(code: str, message: str) -> JSONResponse:

@@ -62,6 +62,7 @@ from corlinman_server.gateway.routes_admin_b.config_admin._providers_lib import 
     ProviderView,
     _autobind_default_alias,
     _bad,
+    _can_autobind_default_alias,
     _clear_models_cache,
     _custom_view_from_entry,
     _find_alias_refs,
@@ -446,7 +447,7 @@ def router() -> APIRouter:
 
             providers[body.slug] = entry
             cfg["providers"] = providers
-            if _provider_tts_backend(entry) != "fish":
+            if _can_autobind_default_alias(entry):
                 cfg = await _autobind_default_alias(cfg, body.slug, entry)
             err = _write_config_atomic(state.config_path, cfg)
             if err is not None:
@@ -510,7 +511,7 @@ def router() -> APIRouter:
             cfg["providers"] = providers
             if _provider_tts_backend(entry) == "fish":
                 cfg = _remove_model_refs(cfg, slug)
-            elif bool(entry.get("enabled", True)):
+            elif bool(entry.get("enabled", True)) and _can_autobind_default_alias(entry):
                 cfg = await _autobind_default_alias(cfg, slug, entry)
             err = _write_config_atomic(state.config_path, cfg)
             if err is not None:

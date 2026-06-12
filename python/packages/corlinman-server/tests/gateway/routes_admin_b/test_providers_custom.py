@@ -241,6 +241,30 @@ def test_create_fish_tts_custom_provider_does_not_autobind_chat_default(
     assert "models" not in on_disk or not on_disk.get("models", {}).get("default")
 
 
+def test_create_credentialed_custom_provider_without_key_does_not_autobind(
+    client: TestClient,
+    admin_state: AdminState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Credentialed cloud kinds need a key before becoming chat default."""
+    _stub_probe(monkeypatch, None)
+
+    resp = client.post(
+        "/admin/providers/custom",
+        json={
+            "slug": "claude-relay",
+            "kind": "anthropic",
+            "params": {"timeout_seconds": 30},
+        },
+    )
+
+    assert resp.status_code == 201, resp.text
+    on_disk = _on_disk(admin_state)
+    assert on_disk["providers"]["claude-relay"]["enabled"] is True
+    assert on_disk["providers"]["claude-relay"]["params"]["custom"] is True
+    assert "models" not in on_disk or not on_disk.get("models", {}).get("default")
+
+
 def test_create_custom_provider_rewrites_py_config_for_sidecar(
     client: TestClient,
     admin_state: AdminState,

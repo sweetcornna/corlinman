@@ -557,6 +557,86 @@ def test_enable_false_preserves_non_default_operator_alias(
     assert (on_disk.get("models") or {}).get("default") != "chat"
 
 
+def test_enable_false_preserves_default_alias_for_other_provider(
+    client: TestClient,
+    admin_state: AdminState,
+) -> None:
+    """A default alias named like the disabled provider can point elsewhere."""
+    snapshot: dict[str, Any] = admin_state.extras["snapshot"]
+    snapshot["providers"] = {
+        "openai": {
+            "kind": "openai",
+            "enabled": True,
+            "api_key": "sk-existing",
+        },
+        "relay": {
+            "kind": "openai_compatible",
+            "enabled": True,
+            "base_url": "https://relay.example/v1",
+            "api_key": "sk-relay",
+            "params": {"custom": True},
+        },
+    }
+    snapshot["models"] = {
+        "default": "openai",
+        "aliases": {
+            "openai": {
+                "provider": "relay",
+                "model": "gpt-4o-mini",
+                "params": {},
+            }
+        },
+    }
+
+    resp = client.post("/admin/credentials/openai/enable", json={"enabled": False})
+
+    assert resp.status_code == 200, resp.text
+    on_disk = _on_disk(admin_state)
+    assert on_disk["providers"]["openai"]["enabled"] is False
+    assert on_disk["models"]["default"] == "openai"
+    assert on_disk["models"]["aliases"]["openai"] == {
+        "provider": "relay",
+        "model": "gpt-4o-mini",
+        "params": {},
+    }
+
+
+def test_delete_custom_slug_api_key_disables_and_clears_default(
+    client: TestClient,
+    admin_state: AdminState,
+) -> None:
+    """Custom provider slugs use api_key as their primary credential."""
+    snapshot: dict[str, Any] = admin_state.extras["snapshot"]
+    snapshot["providers"] = {
+        "relay": {
+            "kind": "openai_compatible",
+            "enabled": True,
+            "base_url": "https://relay.example/v1",
+            "api_key": "sk-relay",
+            "params": {"custom": True},
+        }
+    }
+    snapshot["models"] = {
+        "default": "relay",
+        "aliases": {
+            "relay": {
+                "provider": "relay",
+                "model": "gpt-4o-mini",
+                "params": {},
+            }
+        },
+    }
+
+    resp = client.delete("/admin/credentials/relay/api_key")
+
+    assert resp.status_code == 204, resp.text
+    on_disk = _on_disk(admin_state)
+    assert on_disk["providers"]["relay"]["enabled"] is False
+    assert "api_key" not in on_disk["providers"]["relay"]
+    assert "relay" not in (on_disk.get("models") or {}).get("aliases", {})
+    assert (on_disk.get("models") or {}).get("default") != "relay"
+
+
 def test_enable_true_on_empty_block_creates_kind_stub(
     client: TestClient, admin_state: AdminState
 ) -> None:
