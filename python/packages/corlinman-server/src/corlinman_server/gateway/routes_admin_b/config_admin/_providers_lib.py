@@ -212,6 +212,85 @@ def _find_alias_refs(cfg: dict[str, Any], slot: str) -> list[str]:
     return out
 
 
+def _remove_model_refs(cfg: dict[str, Any], provider_name: str) -> dict[str, Any]:
+    """Drop model defaults/aliases that point at a removed provider."""
+    models_cfg = dict(cfg.get("models") or {})
+    aliases = dict(models_cfg.get("aliases") or {})
+    removed_aliases: set[str] = set()
+    for alias_name, alias_entry in list(aliases.items()):
+        if _alias_provider(alias_entry) == provider_name:
+            removed_aliases.add(str(alias_name))
+            aliases.pop(alias_name, None)
+    models_cfg["aliases"] = aliases
+    default_name = str(models_cfg.get("default") or "")
+    if default_name == provider_name or default_name in removed_aliases:
+        models_cfg.pop("default", None)
+    cfg["models"] = models_cfg
+    return cfg
+
+
+def _remove_default_model_ref(cfg: dict[str, Any], provider_name: str) -> dict[str, Any]:
+    """Drop only the active default alias for a disabled provider."""
+    models_cfg = dict(cfg.get("models") or {})
+    aliases = dict(models_cfg.get("aliases") or {})
+    default_name = str(models_cfg.get("default") or "")
+    if not default_name:
+        return cfg
+
+    default_alias = aliases.get(default_name)
+    default_alias_provider = _alias_provider(default_alias)
+    if default_alias_provider is not None:
+        points_to_provider = default_alias_provider == provider_name
+    else:
+        points_to_provider = default_name == provider_name
+
+    if points_to_provider:
+        if default_alias_provider == provider_name:
+            aliases.pop(default_name, None)
+        models_cfg["aliases"] = aliases
+        models_cfg.pop("default", None)
+        cfg["models"] = models_cfg
+    return cfg
+
+
+def _has_api_key(entry: dict[str, Any]) -> bool:
+    raw_key = entry.get("api_key")
+    if isinstance(raw_key, str):
+        return bool(raw_key)
+    if isinstance(raw_key, dict):
+        if "env" in raw_key:
+            return bool(raw_key.get("env"))
+        if "value" in raw_key:
+            return bool(raw_key.get("value"))
+        return bool(raw_key)
+    return False
+
+
+_AUTOBIND_REQUIRES_API_KEY_KINDS: frozenset[str] = frozenset(
+    {
+        "anthropic",
+        "google",
+        "deepseek",
+        "qwen",
+        "glm",
+        "mistral",
+        "cohere",
+        "together",
+        "groq",
+        "replicate",
+        "azure",
+        "bedrock",
+    }
+)
+
+
+def _can_autobind_default_alias(entry: dict[str, Any]) -> bool:
+    kind = _normalize_kind(str(entry.get("kind") or "openai_compatible"))
+    if _provider_tts_backend(entry) == "fish":
+        return False
+    return kind not in _AUTOBIND_REQUIRES_API_KEY_KINDS or _has_api_key(entry)
+
+
 def _bad(code: str, message: str) -> JSONResponse:
     return JSONResponse(status_code=400, content={"error": code, "message": message})
 
@@ -939,11 +1018,28 @@ async def _autobind_default_alias(
         return cfg
 
     aliases = dict(models_cfg.get("aliases") or {})
-    aliases[provider_name] = {
-        "provider": provider_name,
-        "model": picked,
-        "params": {},
-    }
+    existing_alias = aliases.get(provider_name)
+    if isinstance(existing_alias, dict) and existing_alias.get("provider"):
+        pass
+    elif isinstance(existing_alias, str) and existing_alias.strip():
+        aliases[provider_name] = {
+            "provider": provider_name,
+            "model": existing_alias.strip(),
+            "params": {},
+        }
+    elif isinstance(existing_alias, dict):
+        raw_params = existing_alias.get("params")
+        aliases[provider_name] = {
+            "provider": provider_name,
+            "model": str(existing_alias.get("model") or picked),
+            "params": dict(raw_params) if isinstance(raw_params, dict) else {},
+        }
+    else:
+        aliases[provider_name] = {
+            "provider": provider_name,
+            "model": picked,
+            "params": {},
+        }
     models_cfg["aliases"] = aliases
     models_cfg["default"] = provider_name
     cfg["models"] = models_cfg

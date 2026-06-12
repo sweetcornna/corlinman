@@ -247,7 +247,11 @@ def _has_primary_set(provider: str, block: dict[str, Any]) -> bool:
     off (but the rest of the block stays, so the UI keeps showing the
     placeholder row).
     """
+    params = block.get("params")
+    is_custom = isinstance(params, dict) and params.get("custom") is True
     primary = _PRIMARY_FIELD.get(provider)
+    if primary is None and is_custom:
+        primary = _PRIMARY_FIELD["custom"]
     if primary is None:
         # Providers without a primary field (e.g. mock) are always
         # "primed" once the block exists at all.

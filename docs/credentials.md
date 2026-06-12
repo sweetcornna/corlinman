@@ -59,6 +59,12 @@ Three semantics worth knowing:
   the provider is wired on the next config reload. The "primary field"
   is `api_key` for keyed providers and `base_url` for keyless ones
   (Ollama).
+- **First enabled provider becomes chat-ready.** If `[models].default`
+  is still empty, the same write also creates a self-named model alias
+  for that provider. For example, saving `openai.api_key` writes
+  `models.default = "openai"` plus `models.aliases.openai`, so the chat
+  and agent runtimes use the newly configured service without a second
+  trip to the Models page.
 - **Deleting the last required field flips `enabled = false`.** The
   block itself stays as a stub for UX continuity (so the row keeps
   rendering with empty fields) — only the `enabled` flag changes.
