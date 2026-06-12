@@ -126,6 +126,10 @@ ASK_USER_TOOL: str = "ask_user"
 #: boundary's ``ErrorEvent(reason="cancelled")``.
 STATUS_CANCELLING: str = "⏹ 正在取消…"
 
+_REASONING_SENTENCE_TERMINATORS: frozenset[str] = frozenset(
+    ".?!。？！\n\r"
+)
+
 
 # ---------------------------------------------------------------------------
 # Pure helpers — no I/O, share behavior across all channels.
@@ -820,6 +824,7 @@ class MutableSpinner:
         "_last_op_status",
         "_last_status",
         "_last_todo_args",
+        "_reasoning_buffer",
         "_send_attachment_handler",
         "_text_parts",
     )
@@ -855,6 +860,7 @@ class MutableSpinner:
         #: ignore it (the bulleted options already render via the
         #: spinner / summary path).
         self._last_ask_user_args: bytes | None = None
+        self._reasoning_buffer: str = ""
 
     @property
     def last_status(self) -> str:
@@ -962,6 +968,36 @@ class MutableSpinner:
             return
         await self._maybe_edit(text)
 
+    async def _emit_reasoning_preview(self, raw: str) -> None:
+        snippet = " ".join(raw.strip().split())
+        if not snippet:
+            return
+        if len(snippet) > REASONING_PREVIEW_CHARS:
+            snippet = snippet[: REASONING_PREVIEW_CHARS - 1] + "…"
+        self._last_op_status = f"{STATUS_REASONING_PREFIX}{snippet}"
+        await self._render_combined()
+
+    async def _emit_complete_reasoning_sentences(self) -> None:
+        if not self._reasoning_buffer:
+            return
+        last_boundary = -1
+        for idx, ch in enumerate(self._reasoning_buffer):
+            if ch in _REASONING_SENTENCE_TERMINATORS:
+                last_boundary = idx
+        if last_boundary < 0:
+            return
+        complete = self._reasoning_buffer[: last_boundary + 1]
+        self._reasoning_buffer = self._reasoning_buffer[last_boundary + 1 :]
+        await self._emit_reasoning_preview(complete)
+
+    async def flush_reasoning(self) -> None:
+        """Emit any buffered reasoning that never reached sentence punctuation."""
+        if not self._reasoning_buffer:
+            return
+        leftover = self._reasoning_buffer
+        self._reasoning_buffer = ""
+        await self._emit_reasoning_preview(leftover)
+
     async def on_token_delta(self, text: str, is_reasoning: bool) -> None:
         """Handle one ``token_delta`` event.
 
@@ -979,15 +1015,12 @@ class MutableSpinner:
           the user wants the answer, not a stale "what's planned" view.
         """
         if is_reasoning:
-            stripped = text.strip()
-            if not stripped:
+            if not text or (not text.strip() and not self._reasoning_buffer):
                 return
-            snippet = stripped.replace("\n", " ")
-            if len(snippet) > REASONING_PREVIEW_CHARS:
-                snippet = snippet[: REASONING_PREVIEW_CHARS - 1] + "…"
-            self._last_op_status = f"{STATUS_REASONING_PREFIX}{snippet}"
-            await self._render_combined()
+            self._reasoning_buffer += text
+            await self._emit_complete_reasoning_sentences()
             return
+        await self.flush_reasoning()
         self._text_parts.append(text)
         # First real token: clear the op flow and switch to GENERATING.
         # The transition is emitted bare (no todo overlay) because the
@@ -1018,6 +1051,7 @@ class MutableSpinner:
         line as the current op flow and emit the combined view via
         :meth:`_render_combined`. Returns ``None``.
         """
+        await self.flush_reasoning()
         tool = getattr(ev, "tool", "") or ""
         if tool == SEND_ATTACHMENT_TOOL and self._send_attachment_handler is not None:
             status = await self._send_attachment_handler(ev)
@@ -1116,6 +1150,7 @@ class MutableSpinner:
         status. The next ``tool_call`` for a different tool will
         naturally overwrite it.
         """
+        await self.flush_reasoning()
         tool = getattr(ev, "tool", "") or ""
         if tool == SEND_ATTACHMENT_TOOL:
             return

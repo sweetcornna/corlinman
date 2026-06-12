@@ -116,6 +116,12 @@ async def test_internal_chat_extra_is_not_forwarded_to_provider() -> None:
             messages=[{"role": "user", "content": "hi"}],
             extra={
                 "persona_id": "grantley",
+                "binding": {
+                    "channel": "telegram",
+                    "account": "999",
+                    "thread": "42",
+                    "sender": "7",
+                },
                 "provider_hint": "persona-provider",
                 "prompt_cache_key": "session-1",
                 "top_p": 0.8,

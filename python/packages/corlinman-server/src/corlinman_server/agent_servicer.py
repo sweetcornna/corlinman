@@ -3045,11 +3045,13 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                         asset_store=persona_asset_store,
                     )
                 if event.tool == PERSONA_CREATE_TOOL:
-                    return await dispatch_persona_create(
+                    result = await dispatch_persona_create(
                         args_json=event.args_json,
                         persona_store=persona_store,
                         asset_store=persona_asset_store,
                     )
+                    self._bind_created_persona_to_channel(start, result)
+                    return result
                 if event.tool == PERSONA_UPDATE_TOOL:
                     return await dispatch_persona_update(
                         args_json=event.args_json,
@@ -4186,6 +4188,43 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             self._persona_asset_store = persona_asset_store
             self._persona_asset_store_init_done = True
 
+    def _bind_created_persona_to_channel(
+        self, start: AgentChatStart, result_json: str | list[dict[str, Any]]
+    ) -> None:
+        """Persist a successful persona_create as this channel binding's persona."""
+        if not isinstance(result_json, str):
+            return
+        binding = _channel_binding_from_start(start)
+        if binding is None:
+            return
+        try:
+            payload = json.loads(result_json)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return
+        if not isinstance(payload, Mapping) or payload.get("ok") is not True:
+            return
+        persona = payload.get("persona")
+        if not isinstance(persona, Mapping):
+            return
+        raw_persona_id = persona.get("id")
+        if not isinstance(raw_persona_id, str) or not raw_persona_id.strip():
+            return
+        try:
+            from corlinman_server import binding_prefs_store  # noqa: PLC0415
+
+            binding_prefs_store.set_persona_id(
+                binding["channel"],
+                binding["account"],
+                binding["thread"],
+                binding["sender"],
+                raw_persona_id.strip(),
+            )
+        except Exception as exc:  # noqa: BLE001 — persona row was already created
+            logger.warning(
+                "agent.persona_create.binding_prefs_failed",
+                error=str(exc),
+            )
+
     def _peek_agent_binding(self, start: AgentChatStart) -> AgentCard | None:
         """W-D1 / W2.3: detect which agent the request references so we
         can apply its model / provider binding before the resolver runs.
@@ -4925,14 +4964,13 @@ def _attachment_size_for_journal(a: Any) -> int | None:
 def _extract_user_id(start: AgentChatStart) -> str | None:
     """Peek the channel-level sender id off the chat start frame.
 
-    The agent's :class:`AgentChatStart` dataclass currently doesn't
-    carry the binding (the proto does, the gateway-side translator
-    drops it). We read it defensively via ``getattr`` so the helper
-    keeps working once the binding is plumbed through, and degrades to
-    :data:`None` today. An empty ``sender`` also returns :data:`None`
-    so a permission rule keyed on ``user_pattern="*"`` doesn't
-    accidentally fire on anonymous calls.
+    Binding metadata lives in ``start.extra["binding"]`` after proto
+    conversion. Keep the legacy ``start.binding`` fallback for older
+    in-process callers.
     """
+    extra_binding = _channel_binding_from_start(start)
+    if extra_binding is not None:
+        return extra_binding["sender"]
     binding = getattr(start, "binding", None)
     if binding is None:
         return None
@@ -5020,6 +5058,16 @@ def _to_agent_start(pb_start: agent_pb2.ChatStart) -> AgentChatStart:
     extra: dict[str, Any] = {}
     if pb_start.persona_id:
         extra["persona_id"] = pb_start.persona_id
+    binding = getattr(pb_start, "binding", None)
+    if binding is not None:
+        binding_payload = {
+            "channel": (getattr(binding, "channel", "") or "").strip(),
+            "account": (getattr(binding, "account", "") or "").strip(),
+            "thread": (getattr(binding, "thread", "") or "").strip(),
+            "sender": (getattr(binding, "sender", "") or "").strip(),
+        }
+        if any(binding_payload.values()):
+            extra["binding"] = binding_payload
     provider_hint = _provider_hint_from_provider_config(
         getattr(pb_start, "provider_config_json", b"") or b""
     )
@@ -5066,6 +5114,26 @@ def _bound_persona_id_from_start(start: AgentChatStart) -> str | None:
     if isinstance(raw, str) and raw.strip():
         return raw.strip()
     return None
+
+
+def _channel_binding_from_start(
+    start: AgentChatStart,
+) -> dict[str, str] | None:
+    extra = getattr(start, "extra", None) or {}
+    if not isinstance(extra, Mapping):
+        return None
+    raw = extra.get("binding")
+    if not isinstance(raw, Mapping):
+        return None
+    binding = {
+        "channel": str(raw.get("channel") or "").strip(),
+        "account": str(raw.get("account") or "").strip(),
+        "thread": str(raw.get("thread") or "").strip(),
+        "sender": str(raw.get("sender") or "").strip(),
+    }
+    if not all(binding.values()):
+        return None
+    return binding
 
 
 def _persona_model_binding_for(

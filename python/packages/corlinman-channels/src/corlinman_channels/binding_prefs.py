@@ -27,9 +27,11 @@ if TYPE_CHECKING:
 __all__ = [
     "bump_session_epoch",
     "effective_model",
+    "effective_persona_id",
     "effective_session_key",
     "get_prefs",
     "set_model_override",
+    "set_persona_id",
 ]
 
 log = logging.getLogger(__name__)
@@ -75,6 +77,24 @@ def set_model_override(binding: ChannelBinding, model: str | None) -> Any | None
         return None
 
 
+def set_persona_id(binding: ChannelBinding, persona_id: str | None) -> Any | None:
+    """Set/clear the persona override; ``None`` result = store unavailable."""
+    store = _store()
+    if store is None:
+        return None
+    try:
+        return store.set_persona_id(
+            binding.channel,
+            binding.account,
+            binding.thread,
+            binding.sender,
+            persona_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("binding_prefs.persona_write_failed err=%s", exc)
+        return None
+
+
 def bump_session_epoch(binding: ChannelBinding) -> Any | None:
     """``/new`` — returns the new prefs, or ``None`` when unavailable."""
     store = _store()
@@ -98,6 +118,17 @@ def effective_model(binding: ChannelBinding | None, default: str) -> str:
         return default
     prefs = get_prefs(binding)
     override = getattr(prefs, "model_override", None) if prefs else None
+    return override if isinstance(override, str) and override else default
+
+
+def effective_persona_id(
+    binding: ChannelBinding | None, default: str | None
+) -> str | None:
+    """The persona this binding should speak as: override or ``default``."""
+    if binding is None:
+        return default
+    prefs = get_prefs(binding)
+    override = getattr(prefs, "persona_id", None) if prefs else None
     return override if isinstance(override, str) and override else default
 
 

@@ -454,6 +454,31 @@ def test_proto_chat_start_provider_config_maps_provider_hint_to_extra() -> None:
     assert start.extra == {"provider_hint": "persona-provider"}
 
 
+def test_proto_chat_start_binding_maps_to_extra() -> None:
+    from corlinman_grpc import agent_pb2
+    from corlinman_server.agent_servicer import _to_agent_start
+
+    start = _to_agent_start(
+        agent_pb2.ChatStart(
+            model="gpt-4o-mini",
+            session_key="sess-life",
+            binding=common_pb2.ChannelBinding(
+                channel="telegram",
+                account="999",
+                thread="42",
+                sender="7",
+            ),
+        )
+    )
+
+    assert start.extra["binding"] == {
+        "channel": "telegram",
+        "account": "999",
+        "thread": "42",
+        "sender": "7",
+    }
+
+
 class _PersonaBindingStore:
     def __init__(self, model_bindings: dict[str, dict[str, str | None]]) -> None:
         self._model_bindings = model_bindings
@@ -464,6 +489,60 @@ class _PersonaBindingStore:
             id=persona_id,
             model_bindings=self._model_bindings,
         )
+
+
+class _CreatePersonaStore:
+    async def create(self, persona: Any) -> Any:
+        return persona
+
+
+@pytest.mark.asyncio
+async def test_persona_create_binds_created_persona_to_channel(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from corlinman_agent.persona import PERSONA_CREATE_TOOL
+    from corlinman_agent.reasoning_loop import ChatStart, ToolCallEvent
+    from corlinman_server.binding_prefs_store import get_prefs
+
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+    servicer = CorlinmanAgentServicer(
+        provider_resolver=lambda _m: _FakeProvider([])
+    )
+    servicer.set_persona_stores(persona_store=_CreatePersonaStore())
+    result = await servicer._dispatch_builtin(
+        ToolCallEvent(
+            call_id="persona-create",
+            plugin="",
+            tool=PERSONA_CREATE_TOOL,
+            args_json=json.dumps(
+                {
+                    "id": "alice",
+                    "display_name": "Alice",
+                    "short_summary": "friendly",
+                    "system_prompt": "Speak as Alice.",
+                }
+            ).encode("utf-8"),
+        ),
+        ChatStart(
+            model="text-model",
+            messages=[],
+            session_key="sess",
+            extra={
+                "binding": {
+                    "channel": "telegram",
+                    "account": "999",
+                    "thread": "42",
+                    "sender": "7",
+                }
+            },
+        ),
+        _FakeProvider([]),
+    )
+
+    assert json.loads(result)["ok"] is True
+    prefs = get_prefs("telegram", "999", "42", "7")
+    assert prefs.persona_id == "alice"
 
 
 @pytest.mark.asyncio

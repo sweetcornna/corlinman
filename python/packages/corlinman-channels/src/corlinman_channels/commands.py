@@ -696,14 +696,10 @@ async def _render_use_default_persona(ctx: CommandContext) -> CommandResult:
     active so the user can chat immediately without going through
     the Stage 0–6 custom-persona flow.
 
-    The persona store lives in corlinman-server and the active-
-    persona surface today is the "is row present + ``is_builtin=True``"
-    flag set by :func:`seed_builtin_personas` (see Agent B's owned
-    ``personas.py`` route for the use-default endpoint). Calling the
-    seeder directly is idempotent and matches what the HTTP endpoint
-    does internally — so we go through the in-process path rather
-    than spinning a localhost HTTP call (no auth complications, no
-    extra socket).
+    The persona store lives in corlinman-server. Calling the seeder
+    directly is idempotent and matches what the HTTP endpoint does
+    internally; once the row exists, clearing this binding's persona
+    override lets the channel fall back to its configured default.
 
     Async because the persona store's ``open`` / ``seed`` are
     coroutines; the slash-command dispatcher
@@ -716,7 +712,6 @@ async def _render_use_default_persona(ctx: CommandContext) -> CommandResult:
     Falls back to a polite "(not wired)" reply when corlinman-server
     isn't importable (standalone channel tests).
     """
-    del ctx  # binding not needed — persona selection is global today
     try:
         from corlinman_server.persona import (  # noqa: PLC0415
             DEFAULT_GRANTLEY_DISPLAY_NAME,
@@ -759,6 +754,13 @@ async def _render_use_default_persona(ctx: CommandContext) -> CommandResult:
         return CommandResult(
             reply=f"❌ 默认人格切换失败：{exc}",
         )
+
+    try:
+        from corlinman_channels import binding_prefs  # noqa: PLC0415
+
+        binding_prefs.set_persona_id(ctx.binding, None)
+    except Exception as exc:  # noqa: BLE001 — selection is best-effort
+        return CommandResult(reply=f"❌ 默认人格切换失败：{exc}")
 
     return CommandResult(
         reply=(
