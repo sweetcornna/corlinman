@@ -197,7 +197,7 @@ def router() -> APIRouter:
 
             providers[provider] = block
             cfg["providers"] = providers
-            if bool(block.get("enabled", False)):
+            if bool(block.get("enabled", False)) and _has_primary_set(provider, block):
                 cfg = await _autobind_default_alias(cfg, provider, block)
 
             err = _write_config_atomic(state.config_path, cfg)

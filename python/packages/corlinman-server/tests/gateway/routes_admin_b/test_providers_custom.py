@@ -212,6 +212,8 @@ def test_create_list_delete_round_trip(
     assert listed == {"providers": []}
     on_disk = _on_disk(admin_state)
     assert "my-vllm" not in (on_disk.get("providers") or {})
+    assert "my-vllm" not in (on_disk.get("models") or {}).get("aliases", {})
+    assert (on_disk.get("models") or {}).get("default") != "my-vllm"
 
 
 def test_create_custom_provider_rewrites_py_config_for_sidecar(

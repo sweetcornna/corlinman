@@ -212,6 +212,20 @@ def _find_alias_refs(cfg: dict[str, Any], slot: str) -> list[str]:
     return out
 
 
+def _remove_model_refs(cfg: dict[str, Any], provider_name: str) -> dict[str, Any]:
+    """Drop model defaults/aliases that point at a removed provider."""
+    models_cfg = dict(cfg.get("models") or {})
+    aliases = dict(models_cfg.get("aliases") or {})
+    for alias_name, alias_entry in list(aliases.items()):
+        if _alias_provider(alias_entry) == provider_name:
+            aliases.pop(alias_name, None)
+    models_cfg["aliases"] = aliases
+    if str(models_cfg.get("default") or "") == provider_name:
+        models_cfg.pop("default", None)
+    cfg["models"] = models_cfg
+    return cfg
+
+
 def _bad(code: str, message: str) -> JSONResponse:
     return JSONResponse(status_code=400, content={"error": code, "message": message})
 
@@ -939,11 +953,12 @@ async def _autobind_default_alias(
         return cfg
 
     aliases = dict(models_cfg.get("aliases") or {})
-    aliases[provider_name] = {
-        "provider": provider_name,
-        "model": picked,
-        "params": {},
-    }
+    if provider_name not in aliases:
+        aliases[provider_name] = {
+            "provider": provider_name,
+            "model": picked,
+            "params": {},
+        }
     models_cfg["aliases"] = aliases
     models_cfg["default"] = provider_name
     cfg["models"] = models_cfg

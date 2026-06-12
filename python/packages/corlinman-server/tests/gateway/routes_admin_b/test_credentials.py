@@ -289,6 +289,66 @@ def test_enable_existing_credential_autobinds_without_overwriting_default(
     assert "anthropic" not in on_disk["models"]["aliases"]
 
 
+def test_put_non_primary_credential_does_not_autobind_unusable_provider(
+    client: TestClient,
+    admin_state: AdminState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An enabled provider stub still needs its primary credential to bind."""
+    _stub_probe(monkeypatch, None)
+    snapshot: dict[str, Any] = admin_state.extras["snapshot"]
+    snapshot["providers"] = {
+        "openai": {
+            "kind": "openai",
+            "enabled": True,
+        }
+    }
+
+    resp = client.put(
+        "/admin/credentials/openai/base_url",
+        json={"value": "https://api.openai.com/v1"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    on_disk = _on_disk(admin_state)
+    assert on_disk["providers"]["openai"]["enabled"] is True
+    assert "api_key" not in on_disk["providers"]["openai"]
+    assert "models" not in on_disk or not on_disk.get("models", {}).get("default")
+
+
+def test_put_primary_credential_preserves_existing_self_named_alias(
+    client: TestClient,
+    admin_state: AdminState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Filling an empty default should not clobber an operator's alias."""
+    _stub_probe(monkeypatch, ["gpt-4o-mini"])
+    snapshot: dict[str, Any] = admin_state.extras["snapshot"]
+    snapshot["models"] = {
+        "aliases": {
+            "openai": {
+                "provider": "openai",
+                "model": "gpt-4o",
+                "params": {"temperature": 0.2},
+            }
+        }
+    }
+
+    resp = client.put(
+        "/admin/credentials/openai/api_key",
+        json={"value": "sk-rotated-secret"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    on_disk = _on_disk(admin_state)
+    assert on_disk["models"]["default"] == "openai"
+    assert on_disk["models"]["aliases"]["openai"] == {
+        "provider": "openai",
+        "model": "gpt-4o",
+        "params": {"temperature": 0.2},
+    }
+
+
 # ---------------------------------------------------------------------------
 # DELETE — field removal + enabled fallthrough
 # ---------------------------------------------------------------------------

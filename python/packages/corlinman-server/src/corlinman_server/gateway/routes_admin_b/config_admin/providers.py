@@ -75,6 +75,7 @@ from corlinman_server.gateway.routes_admin_b.config_admin._providers_lib import 
     _query_provider_models,
     _query_provider_models_with_retry,
     _redact,
+    _remove_model_refs,
     _resolve_api_key,
     _view_from_entry,
     _zero_cost_probe_kind,
@@ -335,6 +336,7 @@ def router() -> APIRouter:
                 )
             providers.pop(name)
             cfg["providers"] = providers
+            cfg = _remove_model_refs(cfg, name)
             err = await _persist(
                 state,
                 cfg,
@@ -542,6 +544,7 @@ def router() -> APIRouter:
                 )
             providers.pop(slug)
             cfg["providers"] = providers
+            cfg = _remove_model_refs(cfg, slug)
             err = _write_config_atomic(state.config_path, cfg)
             if err is not None:
                 return err
