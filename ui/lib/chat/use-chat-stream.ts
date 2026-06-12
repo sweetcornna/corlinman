@@ -795,7 +795,11 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
 
     closeLiveRef.current?.();
     closeLiveRef.current = openLiveEventStream(key, {
-      initialLastEventId: lastSeq >= 0 ? `${turnId}:${lastSeq}` : undefined,
+      // Always the composite id — `turn:-1` when the backlog was empty.
+      // A bare fresh stream (no id) gets live-only semantics server-side
+      // (the poll cursor seeds at the latest sequence); naming the turn
+      // keeps full delivery for the in-flight turn we are reattaching to.
+      initialLastEventId: `${turnId}:${lastSeq}`,
       onEvent: (live) => {
         const chatEvent = liveEventToChatEvent(live);
         if (chatEvent) reduceEvent(chatEvent);

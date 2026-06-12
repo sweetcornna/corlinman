@@ -324,6 +324,29 @@ async def _sse_stream(
             _polled_order.append((turn_id, sequence))
             seqs.add(sequence)
 
+        # Fresh stream (no Last-Event-ID at all): live-only semantics.
+        # Seed the poll cursor of the CURRENT latest turn at its CURRENT
+        # latest sequence so the first idle poll tails strictly forward
+        # instead of replaying a finished turn's backlog into a brand-new
+        # connection — the chat page opens this stream right before
+        # POSTing a new turn, and replaying the PREVIOUS turn's
+        # tool/attachment events polluted the fresh pending bubble
+        # (Codex P2, PR #92). A turn that BEGINS after this point has no
+        # cursor entry and still polls from ``-1`` (full delivery) —
+        # that new turn is exactly what the subscriber is here for.
+        # Clients that want a specific turn's backlog say so with a
+        # composite ``<turn_id>:<sequence>`` id (``:-1`` for "all of
+        # it"), which skips this branch via ``catch_up_turn_id``.
+        if catch_up_turn_id is None and catch_up_sequence < 0:
+            try:
+                fresh_turn = await _resolve_latest_turn_id(journal, session_key)
+                if fresh_turn is not None:
+                    seeded = await journal.latest_sequence(fresh_turn)
+                    if isinstance(seeded, int) and seeded >= 0:
+                        poll_cursors[fresh_turn] = seeded
+            except Exception:  # noqa: BLE001 — best-effort seeding
+                pass
+
         if resume_turn is not None and catch_up_sequence >= 0:
             # Replay the catch-up backlog in bounded PAGES. Design points:
             #
