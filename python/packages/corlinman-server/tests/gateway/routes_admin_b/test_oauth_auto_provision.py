@@ -13,7 +13,7 @@ import tomllib
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from corlinman_server.gateway.oauth import sessions
@@ -63,12 +63,39 @@ def _on_disk(path: Path) -> dict[str, Any]:
     return tomllib.loads(raw)
 
 
+def _mock_httpx_client(resp: MagicMock) -> AsyncMock:
+    client = AsyncMock()
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=False)
+    client.get = AsyncMock(return_value=resp)
+    return client
+
+
 _FAKE_TOKENS = {
     "access_token": "oauth-access-token",
     "refresh_token": "oauth-refresh-token",
     "expires_at_ms": 9_999_999_999_999,
     "scope": "scope",
 }
+
+
+def test_anthropic_model_discovery_sends_anthropic_api_version() -> None:
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.json.return_value = {"data": [{"id": "claude-opus-4-8"}]}
+    http_client = _mock_httpx_client(resp)
+
+    with patch("httpx.AsyncClient", return_value=http_client) as async_client_cls:
+        models = __import__("asyncio").run(
+            oauth_routes._query_anthropic_oauth_models("oauth-access-token")
+        )
+
+    assert models == ["claude-opus-4-8"]
+    async_client_cls.assert_called_once_with(timeout=10.0)
+    headers = http_client.get.await_args.kwargs["headers"]
+    assert headers["Authorization"] == "Bearer oauth-access-token"
+    assert headers["anthropic-beta"] == "oauth-2025-04-20"
+    assert headers["anthropic-version"] == "2023-06-01"
 
 
 def test_anthropic_pkce_submit_discovers_models_and_configures_aliases(
@@ -178,6 +205,53 @@ def test_codex_pkce_submit_discovers_models_and_configures_aliases(
         "params": {},
     }
     assert on_disk["models"]["aliases"]["gpt-4o"]["provider"] == "codex"
+
+
+def test_oauth_provisioning_creates_provider_named_alias_when_model_ids_conflict(
+    oauth_state_client: tuple[AdminState, TestClient, Path],
+) -> None:
+    state, client, config_path = oauth_state_client
+    snapshot: dict[str, Any] = state.extras["snapshot"]
+    snapshot.update(
+        {
+            "models": {
+                "aliases": {
+                    "claude-opus-4-8": {
+                        "provider": "relay",
+                        "model": "claude-opus-4-8",
+                        "params": {},
+                    }
+                },
+            }
+        }
+    )
+    credential = OAuthCredential.new(
+        provider="anthropic",
+        access_token="claude-code-access-token",
+        refresh_token="claude-code-refresh-token",
+        expires_at_ms=9_999_999_999_999,
+        scope="user:inference",
+        obtained_at_ms=1_000,
+    )
+
+    with patch(
+        "corlinman_server.gateway.oauth.claude_code_import.read_claude_code_credentials",
+        return_value=credential,
+    ), patch(
+        "corlinman_server.gateway.routes_admin_b.oauth._query_anthropic_oauth_models",
+        new=AsyncMock(return_value=["claude-opus-4-8"]),
+    ):
+        resp = client.post("/admin/oauth/claude-code/import")
+
+    assert resp.status_code == 200, resp.text
+    on_disk = _on_disk(config_path)
+    assert on_disk["models"]["default"] == "anthropic"
+    assert on_disk["models"]["aliases"]["claude-opus-4-8"]["provider"] == "relay"
+    assert on_disk["models"]["aliases"]["anthropic"] == {
+        "provider": "anthropic",
+        "model": "claude-opus-4-8",
+        "params": {},
+    }
 
 
 def test_oauth_provisioning_preserves_existing_default(

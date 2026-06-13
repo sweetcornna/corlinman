@@ -41,6 +41,12 @@ from typing import Any
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse, Response
 
+from corlinman_server.gateway.core.config_mutation import (
+    publish_config_mutation as _publish_config_mutation_core,
+)
+from corlinman_server.gateway.core.config_mutation import (
+    write_config_atomic as _write_config_atomic,
+)
 from corlinman_server.gateway.oauth import (
     OAuthCredential,
     anthropic_pkce,
@@ -74,10 +80,6 @@ from corlinman_server.gateway.routes_admin_b._oauth_lib import (
     _gemini_status_row,
     _require_data_dir,
     _xai_status_row,
-)
-from corlinman_server.gateway.core.config_mutation import (
-    publish_config_mutation as _publish_config_mutation_core,
-    write_config_atomic as _write_config_atomic,
 )
 from corlinman_server.gateway.routes_admin_b.state import (
     get_admin_state,
@@ -150,6 +152,7 @@ async def _query_anthropic_oauth_models(access_token: str) -> list[str]:
     headers = {
         "Authorization": f"Bearer {access_token}",
         "anthropic-beta": "oauth-2025-04-20",
+        "anthropic-version": "2023-06-01",
         "x-app": "cli",
         "user-agent": "claude-cli/2.1.88 (claude-code)",
     }
@@ -221,6 +224,12 @@ def _upsert_oauth_provider_and_aliases(
             continue
         aliases[model_id] = {"provider": provider, "model": model_id, "params": {}}
         bindable_aliases.append(model_id)
+
+    if selected and not bindable_aliases:
+        provider_alias = aliases.get(provider)
+        if not (isinstance(provider_alias, dict) and provider_alias.get("provider")):
+            aliases[provider] = {"provider": provider, "model": selected[0], "params": {}}
+        bindable_aliases.append(provider)
 
     if bindable_aliases and not str(models_cfg.get("default") or "").strip():
         models_cfg["default"] = bindable_aliases[0]
