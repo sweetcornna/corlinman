@@ -130,6 +130,13 @@ _FALLBACK_OAUTH_MODELS: dict[str, list[str]] = {
     "codex": ["gpt-5.5", "gpt-4o"],
 }
 
+# Bookkeeping flag written onto a ``[providers.<name>]`` slot that this OAuth
+# flow created itself (vs. an operator-configured slot). Disconnect only cleans
+# up slots carrying this marker, so manually configured / env-var-backed
+# providers are never disabled or repointed. ``ProviderSpec`` accepts unknown
+# keys (``extra="allow"``), so the flag round-trips through config harmlessly.
+_OAUTH_PROVISIONED_KEY = "oauth_provisioned"
+
 
 def _ordered_unique_model_ids(models: list[str], preference: tuple[str, ...]) -> list[str]:
     clean: list[str] = []
@@ -202,6 +209,7 @@ def _upsert_oauth_provider_and_aliases(
     preference: tuple[str, ...],
 ) -> dict[str, Any]:
     providers_cfg = dict(cfg.get("providers") or {})
+    slot_is_new = provider not in providers_cfg
     existing_provider = dict(providers_cfg.get(provider) or {})
     existing_kind = existing_provider.get("kind")
     if existing_kind and existing_kind != kind:
@@ -212,11 +220,18 @@ def _upsert_oauth_provider_and_aliases(
         return cfg
     existing_provider["kind"] = kind
     existing_provider["enabled"] = True
+    if slot_is_new:
+        # Tag slots we create so a later disconnect can clean them up without
+        # touching operator-configured slots (e.g. an env-var-backed provider
+        # that stays valid without the OAuth token). Pre-existing slots are left
+        # unmarked and therefore treated as manual config on disconnect.
+        existing_provider[_OAUTH_PROVISIONED_KEY] = True
     providers_cfg[provider] = existing_provider
     cfg["providers"] = providers_cfg
 
     models_cfg = dict(cfg.get("models") or {})
     aliases = dict(models_cfg.get("aliases") or {})
+    raw_default = str(models_cfg.get("default") or "")
     selected = _ordered_unique_model_ids(models, preference)
     if not selected:
         selected = list(_FALLBACK_OAUTH_MODELS.get(kind, []))
@@ -232,6 +247,12 @@ def _upsert_oauth_provider_and_aliases(
             # login must not silently overwrite or reroute it.
             if isinstance(existing, dict) and existing.get("provider") == provider:
                 bindable_aliases.append(model_id)
+            continue
+        if model_id == raw_default:
+            # The operator's default is this exact model id with no alias entry,
+            # so it resolves as a raw upstream id through their existing setup.
+            # resolve() checks aliases before raw ids, so minting one here would
+            # silently reroute that default to this OAuth provider; leave it.
             continue
         aliases[model_id] = {"provider": provider, "model": model_id, "params": {}}
         bindable_aliases.append(model_id)
@@ -281,57 +302,55 @@ def _alias_provider(entry: Any) -> str | None:
     return provider if isinstance(provider, str) and provider else None
 
 
-def _has_config_api_key(entry: dict[str, Any]) -> bool:
-    raw_key = entry.get("api_key")
-    if isinstance(raw_key, str):
-        return bool(raw_key.strip())
-    if isinstance(raw_key, dict):
-        if "env" in raw_key:
-            return bool(str(raw_key.get("env") or "").strip())
-        if "value" in raw_key:
-            return bool(str(raw_key.get("value") or "").strip())
-        return bool(raw_key)
-    return False
-
-
 def _remove_oauth_provider_config(
     cfg: dict[str, Any], provider: str
 ) -> tuple[dict[str, Any], bool]:
-    # An OAuth disconnect only removes the token. Be conservative with config:
-    # never disable providers (the slot may still be valid via a config api_key
-    # or the adapter's documented env-var fallback) and never delete aliases (a
-    # disconnect is often transient, and the provider's aliases — including any
-    # user-created ones pointing at it — revive on reconnect). The single safe
-    # cleanup is clearing a default that would now dangle, mirroring the
-    # credential-delete path.
+    # Only clean up a slot that THIS flow provisioned (carries the marker). A
+    # slot the operator configured themselves — including one with no config
+    # api_key that authenticates via the adapter's env-var fallback — is left
+    # completely untouched: disconnecting the OAuth token must not disable it or
+    # clear a default that is not actually dangling.
     providers_cfg = cfg.get("providers") or {}
     provider_entry = providers_cfg.get(provider)
-    if isinstance(provider_entry, dict) and _has_config_api_key(provider_entry):
-        # Still usable without the OAuth token; leave its default alone too.
+    if not (
+        isinstance(provider_entry, dict)
+        and provider_entry.get(_OAUTH_PROVISIONED_KEY) is True
+    ):
         return cfg, False
+
+    changed = False
+
+    # Disable the slot: the OAuth token was its only credential, so leaving it
+    # enabled would point chat at deleted credentials. Aliases are kept (inert
+    # while disabled, revived on reconnect), mirroring the credential-delete
+    # path which only clears the active default.
+    next_providers = dict(providers_cfg)
+    next_entry = dict(provider_entry)
+    if next_entry.get("enabled") is not False:
+        next_entry["enabled"] = False
+        changed = True
+    next_providers[provider] = next_entry
+    cfg["providers"] = next_providers
 
     models_cfg = dict(cfg.get("models") or {})
     aliases = models_cfg.get("aliases") or {}
     default_name = str(models_cfg.get("default") or "")
-    if not default_name:
-        return cfg, False
+    if default_name:
+        default_entry = aliases.get(default_name)
+        if default_entry is None:
+            # No alias entry: the default only dangles if it names this
+            # provider's shorthand slot directly.
+            default_dangling = default_name == provider
+        else:
+            # A real alias entry dangles only when it is owned by this provider;
+            # a shorthand or another provider's alias is unrelated and kept.
+            default_dangling = _alias_provider(default_entry) == provider
+        if default_dangling:
+            models_cfg.pop("default", None)
+            cfg["models"] = models_cfg
+            changed = True
 
-    default_entry = aliases.get(default_name)
-    if default_entry is None:
-        # No alias entry: the default only dangles if it names this provider's
-        # shorthand slot directly.
-        default_dangling = default_name == provider
-    else:
-        # A real alias entry dangles only when it is owned by this provider; a
-        # shorthand or another provider's alias is unrelated and must be kept.
-        default_dangling = _alias_provider(default_entry) == provider
-
-    if not default_dangling:
-        return cfg, False
-
-    models_cfg.pop("default", None)
-    cfg["models"] = models_cfg
-    return cfg, True
+    return cfg, changed
 
 
 async def _cleanup_oauth_provider_config(

@@ -145,6 +145,7 @@ def test_anthropic_pkce_submit_discovers_models_and_configures_aliases(
     assert on_disk["providers"]["anthropic"] == {
         "kind": "anthropic",
         "enabled": True,
+        "oauth_provisioned": True,
     }
     assert on_disk["models"]["default"] == "claude-opus-4-8"
     assert on_disk["models"]["aliases"]["claude-opus-4-8"] == {
@@ -186,6 +187,7 @@ def test_claude_code_import_discovers_models_and_configures_anthropic(
     assert on_disk["providers"]["anthropic"] == {
         "kind": "anthropic",
         "enabled": True,
+        "oauth_provisioned": True,
     }
     assert on_disk["models"]["default"] == "claude-fable-5"
     assert on_disk["models"]["aliases"]["claude-fable-5"]["provider"] == "anthropic"
@@ -219,7 +221,11 @@ def test_codex_pkce_submit_discovers_models_and_configures_aliases(
 
     assert resp.status_code == 200, resp.text
     on_disk = _on_disk(config_path)
-    assert on_disk["providers"]["codex"] == {"kind": "codex", "enabled": True}
+    assert on_disk["providers"]["codex"] == {
+        "kind": "codex",
+        "enabled": True,
+        "oauth_provisioned": True,
+    }
     assert on_disk["models"]["default"] == "gpt-5.5"
     assert on_disk["models"]["aliases"]["gpt-5.5"] == {
         "provider": "codex",
@@ -329,14 +335,21 @@ def test_oauth_provisioning_uses_non_conflicting_alias_when_provider_alias_is_ow
     }
 
 
-def test_anthropic_disconnect_clears_dangling_default_without_disabling(
+def test_anthropic_disconnect_disables_provisioned_slot_and_clears_default(
     oauth_state_client: tuple[AdminState, TestClient, Path],
 ) -> None:
     state, client, config_path = oauth_state_client
     snapshot: dict[str, Any] = state.extras["snapshot"]
     snapshot.update(
         {
-            "providers": {"anthropic": {"kind": "anthropic", "enabled": True}},
+            # Marked slot: this flow provisioned it, so disconnect may clean up.
+            "providers": {
+                "anthropic": {
+                    "kind": "anthropic",
+                    "enabled": True,
+                    "oauth_provisioned": True,
+                }
+            },
             "models": {
                 "default": "claude-opus-4-8",
                 "aliases": {
@@ -366,13 +379,47 @@ def test_anthropic_disconnect_clears_dangling_default_without_disabling(
 
     assert resp.status_code == 204, resp.text
     on_disk = _on_disk(config_path)
-    # The dangling default is cleared, but the provider is NOT disabled (it may
-    # still be valid via an env-var key) and no alias is removed.
-    assert on_disk["providers"]["anthropic"]["enabled"] is True
+    # The provisioned slot is disabled and the dangling default cleared, but no
+    # alias is removed (they revive on reconnect).
+    assert on_disk["providers"]["anthropic"]["enabled"] is False
     assert "default" not in on_disk["models"]
     assert on_disk["models"]["aliases"]["claude-opus-4-8"]["provider"] == "anthropic"
     assert on_disk["models"]["aliases"]["fast"]["params"] == {"max_tokens": 256}
     assert on_disk["models"]["aliases"]["relay"]["provider"] == "relay"
+
+
+def test_disconnect_leaves_unmarked_env_backed_provider_untouched(
+    oauth_state_client: tuple[AdminState, TestClient, Path],
+) -> None:
+    state, client, config_path = oauth_state_client
+    snapshot: dict[str, Any] = state.extras["snapshot"]
+    # Operator-configured Anthropic slot with no api_key (authenticates via the
+    # adapter's env-var fallback) and no provisioning marker. Disconnecting OAuth
+    # must not disable it or clear its still-valid default.
+    snapshot.update(
+        {
+            "providers": {"anthropic": {"kind": "anthropic", "enabled": True}},
+            "models": {
+                "default": "claude-opus-4-8",
+                "aliases": {
+                    "claude-opus-4-8": {
+                        "provider": "anthropic",
+                        "model": "claude-opus-4-8",
+                        "params": {},
+                    },
+                },
+            },
+        }
+    )
+    oauth_routes._write_config_atomic(config_path, dict(snapshot))
+
+    resp = client.delete("/admin/oauth/anthropic")
+
+    assert resp.status_code == 204, resp.text
+    on_disk = _on_disk(config_path)
+    assert on_disk["providers"]["anthropic"]["enabled"] is True
+    assert on_disk["models"]["default"] == "claude-opus-4-8"
+    assert on_disk["models"]["aliases"]["claude-opus-4-8"]["provider"] == "anthropic"
 
 
 def test_anthropic_disconnect_preserves_api_key_backed_provider(
@@ -415,14 +462,20 @@ def test_anthropic_disconnect_preserves_api_key_backed_provider(
     assert on_disk["models"]["aliases"]["claude-opus-4-8"]["provider"] == "anthropic"
 
 
-def test_codex_disconnect_clears_dangling_default_without_disabling(
+def test_codex_disconnect_disables_provisioned_slot_and_clears_default(
     oauth_state_client: tuple[AdminState, TestClient, Path],
 ) -> None:
     state, client, config_path = oauth_state_client
     snapshot: dict[str, Any] = state.extras["snapshot"]
     snapshot.update(
         {
-            "providers": {"codex": {"kind": "codex", "enabled": True}},
+            "providers": {
+                "codex": {
+                    "kind": "codex",
+                    "enabled": True,
+                    "oauth_provisioned": True,
+                }
+            },
             "models": {
                 "default": "gpt-5.5",
                 "aliases": {
@@ -446,9 +499,8 @@ def test_codex_disconnect_clears_dangling_default_without_disabling(
 
     assert resp.status_code == 204, resp.text
     on_disk = _on_disk(config_path)
-    # Provider left enabled; only the dangling default is cleared and aliases
-    # are preserved (they revive on reconnect).
-    assert on_disk["providers"]["codex"]["enabled"] is True
+    # Provisioned slot disabled, dangling default cleared, aliases preserved.
+    assert on_disk["providers"]["codex"]["enabled"] is False
     assert "default" not in on_disk["models"]
     assert on_disk["models"]["aliases"]["gpt-5.5"]["provider"] == "codex"
     assert on_disk["models"]["aliases"]["openai"]["provider"] == "openai"
@@ -644,12 +696,18 @@ def test_anthropic_disconnect_keeps_default_naming_unrelated_alias(
 ) -> None:
     state, client, config_path = oauth_state_client
     snapshot: dict[str, Any] = state.extras["snapshot"]
-    # The default is literally "anthropic", but that alias is a user-created
-    # shorthand owned by another provider. Disconnecting Anthropic OAuth must not
-    # clear a default that isn't actually dangling.
+    # The Anthropic slot IS provisioned (marked), so disconnect disables it and
+    # reaches the default-clearing branch. But the default "anthropic" resolves
+    # to an alias owned by another provider, so it is not dangling and is kept.
     snapshot.update(
         {
-            "providers": {"anthropic": {"kind": "anthropic", "enabled": True}},
+            "providers": {
+                "anthropic": {
+                    "kind": "anthropic",
+                    "enabled": True,
+                    "oauth_provisioned": True,
+                }
+            },
             "models": {
                 "default": "anthropic",
                 "aliases": {
@@ -668,5 +726,40 @@ def test_anthropic_disconnect_keeps_default_naming_unrelated_alias(
 
     assert resp.status_code == 204, resp.text
     on_disk = _on_disk(config_path)
+    assert on_disk["providers"]["anthropic"]["enabled"] is False
     assert on_disk["models"]["default"] == "anthropic"
     assert on_disk["models"]["aliases"]["anthropic"]["provider"] == "relay"
+
+
+@pytest.mark.asyncio
+async def test_oauth_provisioning_does_not_shadow_raw_default_model(
+    oauth_state_client: tuple[AdminState, TestClient, Path],
+) -> None:
+    state, _client, config_path = oauth_state_client
+    snapshot: dict[str, Any] = state.extras["snapshot"]
+    # The operator's default is a raw model id with no alias entry, resolving
+    # through their existing setup. A Codex login that discovers the same id must
+    # not mint an alias for it (resolve() checks aliases first, which would
+    # silently reroute the default to the OAuth provider).
+    snapshot.update({"models": {"default": "gpt-5.5"}})
+    oauth_routes._write_config_atomic(config_path, dict(snapshot))
+
+    with patch(
+        "corlinman_server.gateway.routes_admin_b.oauth._query_codex_oauth_models",
+        new=AsyncMock(return_value=["gpt-5.5"]),
+    ):
+        err = await oauth_routes._provision_oauth_models(
+            state,
+            provider="codex",
+            kind="codex",
+            access_token="codex-access-token",
+        )
+
+    assert err is None
+    on_disk = _on_disk(config_path)
+    aliases = on_disk["models"].get("aliases") or {}
+    # The raw default is preserved and NOT shadowed by a "gpt-5.5" alias...
+    assert on_disk["models"]["default"] == "gpt-5.5"
+    assert "gpt-5.5" not in aliases
+    # ...but the provider is still bindable via its provider-named alias.
+    assert aliases["codex"]["provider"] == "codex"
