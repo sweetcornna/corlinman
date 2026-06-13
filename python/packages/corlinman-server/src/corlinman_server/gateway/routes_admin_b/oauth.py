@@ -260,6 +260,81 @@ def _upsert_oauth_provider_and_aliases(
     return cfg
 
 
+def _alias_provider(entry: Any) -> str | None:
+    if not isinstance(entry, dict):
+        return None
+    provider = entry.get("provider")
+    return provider if isinstance(provider, str) and provider else None
+
+
+def _has_config_api_key(entry: dict[str, Any]) -> bool:
+    raw_key = entry.get("api_key")
+    if isinstance(raw_key, str):
+        return bool(raw_key.strip())
+    if isinstance(raw_key, dict):
+        if "env" in raw_key:
+            return bool(str(raw_key.get("env") or "").strip())
+        if "value" in raw_key:
+            return bool(str(raw_key.get("value") or "").strip())
+        return bool(raw_key)
+    return False
+
+
+def _remove_oauth_provider_config(
+    cfg: dict[str, Any], provider: str
+) -> tuple[dict[str, Any], bool]:
+    changed = False
+
+    providers_cfg = dict(cfg.get("providers") or {})
+    provider_entry = providers_cfg.get(provider)
+    if isinstance(provider_entry, dict) and _has_config_api_key(provider_entry):
+        return cfg, False
+    if isinstance(provider_entry, dict):
+        next_entry = dict(provider_entry)
+        if next_entry.get("enabled") is not False:
+            next_entry["enabled"] = False
+            changed = True
+        providers_cfg[provider] = next_entry
+        cfg["providers"] = providers_cfg
+
+    models_cfg = dict(cfg.get("models") or {})
+    aliases = dict(models_cfg.get("aliases") or {})
+    removed_aliases: set[str] = set()
+    for alias_name, alias_entry in list(aliases.items()):
+        if _alias_provider(alias_entry) == provider:
+            removed_aliases.add(str(alias_name))
+            aliases.pop(alias_name, None)
+            changed = True
+
+    default_name = str(models_cfg.get("default") or "")
+    if default_name == provider or default_name in removed_aliases:
+        models_cfg.pop("default", None)
+        changed = True
+
+    if changed:
+        models_cfg["aliases"] = aliases
+        cfg["models"] = models_cfg
+    return cfg, changed
+
+
+async def _cleanup_oauth_provider_config(
+    state: Any, *, provider: str
+) -> JSONResponse | None:
+    if state.config_path is None:
+        return None
+
+    async with state.admin_write_lock:
+        cfg = dict(getattr(state, "config_loader", lambda: {})() or {})
+        cfg, changed = _remove_oauth_provider_config(cfg, provider)
+        if not changed:
+            return None
+        err = _write_config_atomic(state.config_path, cfg)
+        if err is not None:
+            return err
+        await _publish_config_mutation(state, cfg)
+    return None
+
+
 async def _provision_oauth_models(
     state: Any,
     *,
@@ -268,7 +343,7 @@ async def _provision_oauth_models(
     access_token: str,
 ) -> JSONResponse | None:
     if state.config_path is None:
-        return JSONResponse(status_code=503, content={"error": "config_path_unset"})
+        return None
 
     if kind == "codex":
         preference = _CODEX_MODEL_PREFERENCE
@@ -571,8 +646,12 @@ def router() -> APIRouter:
         )
 
     @r.delete("/admin/oauth/codex", response_model=None)
-    async def codex_disconnect() -> Response:
+    async def codex_disconnect() -> Response | JSONResponse:
+        state = get_admin_state()
         codex_pkce.delete_auth_json()
+        cleanup_err = await _cleanup_oauth_provider_config(state, provider="codex")
+        if cleanup_err is not None:
+            return cleanup_err
         return Response(status_code=204)
 
     # -- Gemini PKCE: start / submit / refresh / disconnect ----------------
@@ -775,6 +854,9 @@ def router() -> APIRouter:
         if isinstance(data_dir, JSONResponse):
             return data_dir
         delete_credential(data_dir, "anthropic")
+        cleanup_err = await _cleanup_oauth_provider_config(state, provider="anthropic")
+        if cleanup_err is not None:
+            return cleanup_err
         return Response(status_code=204)
 
     @r.post(

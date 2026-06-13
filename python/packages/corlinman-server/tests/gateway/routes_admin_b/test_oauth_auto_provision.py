@@ -98,6 +98,28 @@ def test_anthropic_model_discovery_sends_anthropic_api_version() -> None:
     assert headers["anthropic-version"] == "2023-06-01"
 
 
+@pytest.mark.asyncio
+async def test_oauth_provisioning_skips_when_config_path_unset() -> None:
+    state = AdminState(config_loader=lambda: {}, config_path=None)
+
+    with patch(
+        "corlinman_server.gateway.routes_admin_b.oauth._query_anthropic_oauth_models",
+        new=AsyncMock(),
+    ) as query, patch(
+        "corlinman_server.gateway.routes_admin_b.oauth._write_config_atomic"
+    ) as write_config:
+        err = await oauth_routes._provision_oauth_models(
+            state,
+            provider="anthropic",
+            kind="anthropic",
+            access_token="oauth-access-token",
+        )
+
+    assert err is None
+    query.assert_not_awaited()
+    write_config.assert_not_called()
+
+
 def test_anthropic_pkce_submit_discovers_models_and_configures_aliases(
     oauth_state_client: tuple[AdminState, TestClient, Path],
 ) -> None:
@@ -305,6 +327,119 @@ def test_oauth_provisioning_uses_non_conflicting_alias_when_provider_alias_is_ow
         "model": "claude-opus-4-8",
         "params": {},
     }
+
+
+def test_anthropic_disconnect_removes_auto_provisioned_alias_default(
+    oauth_state_client: tuple[AdminState, TestClient, Path],
+) -> None:
+    state, client, config_path = oauth_state_client
+    snapshot: dict[str, Any] = state.extras["snapshot"]
+    snapshot.update(
+        {
+            "providers": {"anthropic": {"kind": "anthropic", "enabled": True}},
+            "models": {
+                "default": "claude-opus-4-8",
+                "aliases": {
+                    "claude-opus-4-8": {
+                        "provider": "anthropic",
+                        "model": "claude-opus-4-8",
+                        "params": {},
+                    },
+                    "relay": {
+                        "provider": "relay",
+                        "model": "claude-opus-4-8",
+                        "params": {},
+                    },
+                },
+            },
+        }
+    )
+
+    resp = client.delete("/admin/oauth/anthropic")
+
+    assert resp.status_code == 204, resp.text
+    on_disk = _on_disk(config_path)
+    assert on_disk["providers"]["anthropic"]["enabled"] is False
+    assert "default" not in on_disk["models"]
+    assert "claude-opus-4-8" not in on_disk["models"]["aliases"]
+    assert on_disk["models"]["aliases"]["relay"]["provider"] == "relay"
+
+
+def test_anthropic_disconnect_preserves_api_key_backed_provider(
+    oauth_state_client: tuple[AdminState, TestClient, Path],
+) -> None:
+    state, client, config_path = oauth_state_client
+    snapshot: dict[str, Any] = state.extras["snapshot"]
+    snapshot.update(
+        {
+            "providers": {
+                "anthropic": {
+                    "kind": "anthropic",
+                    "enabled": True,
+                    "api_key": "sk-configured",
+                }
+            },
+            "models": {
+                "default": "claude-opus-4-8",
+                "aliases": {
+                    "claude-opus-4-8": {
+                        "provider": "anthropic",
+                        "model": "claude-opus-4-8",
+                        "params": {},
+                    },
+                },
+            },
+        }
+    )
+    # Seed disk to match the loader snapshot so the assertions below verify the
+    # on-disk TOML survives the disconnect — a no-op cleanup writes nothing, so
+    # without this seed the file would stay empty and these reads would KeyError.
+    oauth_routes._write_config_atomic(config_path, dict(snapshot))
+
+    resp = client.delete("/admin/oauth/anthropic")
+
+    assert resp.status_code == 204, resp.text
+    on_disk = _on_disk(config_path)
+    assert on_disk["providers"]["anthropic"]["enabled"] is True
+    assert on_disk["models"]["default"] == "claude-opus-4-8"
+    assert on_disk["models"]["aliases"]["claude-opus-4-8"]["provider"] == "anthropic"
+
+
+def test_codex_disconnect_removes_auto_provisioned_alias_default(
+    oauth_state_client: tuple[AdminState, TestClient, Path],
+) -> None:
+    state, client, config_path = oauth_state_client
+    snapshot: dict[str, Any] = state.extras["snapshot"]
+    snapshot.update(
+        {
+            "providers": {"codex": {"kind": "codex", "enabled": True}},
+            "models": {
+                "default": "gpt-5.5",
+                "aliases": {
+                    "gpt-5.5": {
+                        "provider": "codex",
+                        "model": "gpt-5.5",
+                        "params": {},
+                    },
+                    "openai": {
+                        "provider": "openai",
+                        "model": "gpt-4o",
+                        "params": {},
+                    },
+                },
+            },
+        }
+    )
+
+    with patch("corlinman_server.gateway.oauth.codex_pkce.delete_auth_json"):
+        resp = client.delete("/admin/oauth/codex")
+
+    assert resp.status_code == 204, resp.text
+    on_disk = _on_disk(config_path)
+    assert on_disk["providers"]["codex"]["enabled"] is False
+    assert "default" not in on_disk["models"]
+    assert "gpt-5.5" not in on_disk["models"]["aliases"]
+    assert on_disk["models"]["aliases"]["openai"]["provider"] == "openai"
 
 
 def test_oauth_provisioning_preserves_existing_default(
