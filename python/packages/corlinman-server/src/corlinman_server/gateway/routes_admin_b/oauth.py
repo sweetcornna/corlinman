@@ -227,9 +227,31 @@ def _upsert_oauth_provider_and_aliases(
 
     if selected and not bindable_aliases:
         provider_alias = aliases.get(provider)
-        if not (isinstance(provider_alias, dict) and provider_alias.get("provider")):
+        if isinstance(provider_alias, dict) and provider_alias.get("provider"):
+            if provider_alias.get("provider") == provider:
+                bindable_aliases.append(provider)
+            else:
+                alias_base = f"{provider}-{selected[0]}"
+                alias_name = alias_base
+                suffix = 2
+                while True:
+                    existing = aliases.get(alias_name)
+                    if isinstance(existing, dict) and existing.get("provider") == provider:
+                        bindable_aliases.append(alias_name)
+                        break
+                    if alias_name not in aliases:
+                        aliases[alias_name] = {
+                            "provider": provider,
+                            "model": selected[0],
+                            "params": {},
+                        }
+                        bindable_aliases.append(alias_name)
+                        break
+                    alias_name = f"{alias_base}-{suffix}"
+                    suffix += 1
+        else:
             aliases[provider] = {"provider": provider, "model": selected[0], "params": {}}
-        bindable_aliases.append(provider)
+            bindable_aliases.append(provider)
 
     if bindable_aliases and not str(models_cfg.get("default") or "").strip():
         models_cfg["default"] = bindable_aliases[0]

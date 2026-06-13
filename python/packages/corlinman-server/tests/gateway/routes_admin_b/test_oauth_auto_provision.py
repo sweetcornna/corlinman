@@ -254,6 +254,59 @@ def test_oauth_provisioning_creates_provider_named_alias_when_model_ids_conflict
     }
 
 
+def test_oauth_provisioning_uses_non_conflicting_alias_when_provider_alias_is_owned(
+    oauth_state_client: tuple[AdminState, TestClient, Path],
+) -> None:
+    state, client, config_path = oauth_state_client
+    snapshot: dict[str, Any] = state.extras["snapshot"]
+    snapshot.update(
+        {
+            "models": {
+                "aliases": {
+                    "claude-opus-4-8": {
+                        "provider": "relay",
+                        "model": "claude-opus-4-8",
+                        "params": {},
+                    },
+                    "anthropic": {
+                        "provider": "legacy-anthropic",
+                        "model": "claude-3-5-sonnet-latest",
+                        "params": {},
+                    },
+                },
+            }
+        }
+    )
+    credential = OAuthCredential.new(
+        provider="anthropic",
+        access_token="claude-code-access-token",
+        refresh_token="claude-code-refresh-token",
+        expires_at_ms=9_999_999_999_999,
+        scope="user:inference",
+        obtained_at_ms=1_000,
+    )
+
+    with patch(
+        "corlinman_server.gateway.oauth.claude_code_import.read_claude_code_credentials",
+        return_value=credential,
+    ), patch(
+        "corlinman_server.gateway.routes_admin_b.oauth._query_anthropic_oauth_models",
+        new=AsyncMock(return_value=["claude-opus-4-8"]),
+    ):
+        resp = client.post("/admin/oauth/claude-code/import")
+
+    assert resp.status_code == 200, resp.text
+    on_disk = _on_disk(config_path)
+    assert on_disk["models"]["default"] == "anthropic-claude-opus-4-8"
+    assert on_disk["models"]["aliases"]["claude-opus-4-8"]["provider"] == "relay"
+    assert on_disk["models"]["aliases"]["anthropic"]["provider"] == "legacy-anthropic"
+    assert on_disk["models"]["aliases"]["anthropic-claude-opus-4-8"] == {
+        "provider": "anthropic",
+        "model": "claude-opus-4-8",
+        "params": {},
+    }
+
+
 def test_oauth_provisioning_preserves_existing_default(
     oauth_state_client: tuple[AdminState, TestClient, Path],
 ) -> None:
