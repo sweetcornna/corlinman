@@ -329,7 +329,7 @@ def test_oauth_provisioning_uses_non_conflicting_alias_when_provider_alias_is_ow
     }
 
 
-def test_anthropic_disconnect_disables_provider_and_clears_dangling_default(
+def test_anthropic_disconnect_clears_dangling_default_without_disabling(
     oauth_state_client: tuple[AdminState, TestClient, Path],
 ) -> None:
     state, client, config_path = oauth_state_client
@@ -366,8 +366,9 @@ def test_anthropic_disconnect_disables_provider_and_clears_dangling_default(
 
     assert resp.status_code == 204, resp.text
     on_disk = _on_disk(config_path)
-    # Provider disabled and the dangling default cleared, but no alias removed.
-    assert on_disk["providers"]["anthropic"]["enabled"] is False
+    # The dangling default is cleared, but the provider is NOT disabled (it may
+    # still be valid via an env-var key) and no alias is removed.
+    assert on_disk["providers"]["anthropic"]["enabled"] is True
     assert "default" not in on_disk["models"]
     assert on_disk["models"]["aliases"]["claude-opus-4-8"]["provider"] == "anthropic"
     assert on_disk["models"]["aliases"]["fast"]["params"] == {"max_tokens": 256}
@@ -414,7 +415,7 @@ def test_anthropic_disconnect_preserves_api_key_backed_provider(
     assert on_disk["models"]["aliases"]["claude-opus-4-8"]["provider"] == "anthropic"
 
 
-def test_codex_disconnect_disables_provider_and_clears_dangling_default(
+def test_codex_disconnect_clears_dangling_default_without_disabling(
     oauth_state_client: tuple[AdminState, TestClient, Path],
 ) -> None:
     state, client, config_path = oauth_state_client
@@ -445,9 +446,10 @@ def test_codex_disconnect_disables_provider_and_clears_dangling_default(
 
     assert resp.status_code == 204, resp.text
     on_disk = _on_disk(config_path)
-    assert on_disk["providers"]["codex"]["enabled"] is False
+    # Provider left enabled; only the dangling default is cleared and aliases
+    # are preserved (they revive on reconnect).
+    assert on_disk["providers"]["codex"]["enabled"] is True
     assert "default" not in on_disk["models"]
-    # Aliases are preserved (inert while disabled); they revive on reconnect.
     assert on_disk["models"]["aliases"]["gpt-5.5"]["provider"] == "codex"
     assert on_disk["models"]["aliases"]["openai"]["provider"] == "openai"
 
@@ -541,3 +543,130 @@ def test_oauth_provisioning_preserves_existing_shorthand_alias(
     # ...while the genuinely-new model gets a fresh provider-backed alias.
     assert aliases["claude-sonnet-4-6"]["provider"] == "anthropic"
     assert on_disk["models"]["default"] == "claude-sonnet-4-6"
+
+
+def test_oauth_provisioning_preserves_provider_named_shorthand_alias(
+    oauth_state_client: tuple[AdminState, TestClient, Path],
+) -> None:
+    state, client, config_path = oauth_state_client
+    snapshot: dict[str, Any] = state.extras["snapshot"]
+    # Every discovered id already collides AND the provider name itself is taken
+    # by a providerless shorthand. The fallback must mint a suffixed alias rather
+    # than overwrite the user's `anthropic` shorthand.
+    snapshot.update(
+        {
+            "models": {
+                "aliases": {
+                    "claude-opus-4-8": {
+                        "provider": "relay",
+                        "model": "claude-opus-4-8",
+                        "params": {},
+                    },
+                    "anthropic": "claude-opus-4-8",
+                },
+            }
+        }
+    )
+    credential = OAuthCredential.new(
+        provider="anthropic",
+        access_token="claude-code-access-token",
+        refresh_token="claude-code-refresh-token",
+        expires_at_ms=9_999_999_999_999,
+        scope="user:inference",
+        obtained_at_ms=1_000,
+    )
+
+    with patch(
+        "corlinman_server.gateway.oauth.claude_code_import.read_claude_code_credentials",
+        return_value=credential,
+    ), patch(
+        "corlinman_server.gateway.routes_admin_b.oauth._query_anthropic_oauth_models",
+        new=AsyncMock(return_value=["claude-opus-4-8"]),
+    ):
+        resp = client.post("/admin/oauth/claude-code/import")
+
+    assert resp.status_code == 200, resp.text
+    on_disk = _on_disk(config_path)
+    aliases = on_disk["models"]["aliases"]
+    # The user's shorthand and the relay alias are untouched...
+    assert aliases["anthropic"] == "claude-opus-4-8"
+    assert aliases["claude-opus-4-8"]["provider"] == "relay"
+    # ...and a suffixed alias carries the OAuth provider + becomes the default.
+    assert aliases["anthropic-claude-opus-4-8"]["provider"] == "anthropic"
+    assert on_disk["models"]["default"] == "anthropic-claude-opus-4-8"
+
+
+@pytest.mark.asyncio
+async def test_oauth_provisioning_respects_manual_slot_of_different_kind(
+    oauth_state_client: tuple[AdminState, TestClient, Path],
+) -> None:
+    state, _client, config_path = oauth_state_client
+    snapshot: dict[str, Any] = state.extras["snapshot"]
+    # Operator manually pointed `[providers.codex]` at a relay of a different
+    # kind. A Codex OAuth login must not repurpose that slot to the codex adapter
+    # (manual config wins, cf. _auto_inject_codex).
+    snapshot.update(
+        {
+            "providers": {
+                "codex": {
+                    "kind": "openai_compatible",
+                    "enabled": True,
+                    "base_url": "https://relay.internal/v1",
+                }
+            },
+        }
+    )
+    # Seed disk so the assertions read real on-disk TOML even if provisioning
+    # leaves the config untouched (manual-config-wins early return).
+    oauth_routes._write_config_atomic(config_path, dict(snapshot))
+
+    with patch(
+        "corlinman_server.gateway.routes_admin_b.oauth._query_codex_oauth_models",
+        new=AsyncMock(return_value=["gpt-5.5"]),
+    ):
+        err = await oauth_routes._provision_oauth_models(
+            state,
+            provider="codex",
+            kind="codex",
+            access_token="codex-access-token",
+        )
+
+    assert err is None
+    on_disk = _on_disk(config_path)
+    # The manual slot's kind/base_url are preserved and no codex aliases minted.
+    assert on_disk["providers"]["codex"]["kind"] == "openai_compatible"
+    assert on_disk["providers"]["codex"]["base_url"] == "https://relay.internal/v1"
+    assert "gpt-5.5" not in (on_disk.get("models", {}).get("aliases") or {})
+
+
+def test_anthropic_disconnect_keeps_default_naming_unrelated_alias(
+    oauth_state_client: tuple[AdminState, TestClient, Path],
+) -> None:
+    state, client, config_path = oauth_state_client
+    snapshot: dict[str, Any] = state.extras["snapshot"]
+    # The default is literally "anthropic", but that alias is a user-created
+    # shorthand owned by another provider. Disconnecting Anthropic OAuth must not
+    # clear a default that isn't actually dangling.
+    snapshot.update(
+        {
+            "providers": {"anthropic": {"kind": "anthropic", "enabled": True}},
+            "models": {
+                "default": "anthropic",
+                "aliases": {
+                    "anthropic": {
+                        "provider": "relay",
+                        "model": "claude-opus-4-8",
+                        "params": {},
+                    },
+                },
+            },
+        }
+    )
+    oauth_routes._write_config_atomic(config_path, dict(snapshot))
+
+    resp = client.delete("/admin/oauth/anthropic")
+
+    assert resp.status_code == 204, resp.text
+    on_disk = _on_disk(config_path)
+    assert on_disk["models"]["default"] == "anthropic"
+    assert on_disk["models"]["aliases"]["anthropic"]["provider"] == "relay"
