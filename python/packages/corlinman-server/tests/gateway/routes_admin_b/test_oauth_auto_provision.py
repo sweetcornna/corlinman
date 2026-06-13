@@ -894,3 +894,18 @@ def test_provisioning_does_not_claim_enabled_keyless_provider() -> None:
         preference=(),
     )
     assert "oauth_provisioned" not in out["providers"]["anthropic"]
+
+
+def test_provisioning_does_not_claim_provider_with_omitted_enabled() -> None:
+    # `enabled` omitted means active (ProviderSpec defaults it to True), so a
+    # keyless `[providers.anthropic] kind = "anthropic"` relying on an env-var
+    # key is active manual config and must NOT be claimed/marked.
+    cfg = {"providers": {"anthropic": {"kind": "anthropic"}}}
+    out = oauth_routes._upsert_oauth_provider_and_aliases(
+        cfg,
+        provider="anthropic",
+        kind="anthropic",
+        models=["claude-opus-4-8"],
+        preference=(),
+    )
+    assert "oauth_provisioned" not in out["providers"]["anthropic"]

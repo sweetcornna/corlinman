@@ -222,17 +222,20 @@ def _upsert_oauth_provider_and_aliases(
         # logging in must not repurpose it to the OAuth adapter or reroute its
         # aliases through it. Leave the config untouched.
         return cfg
-    was_enabled = bool(existing_provider.get("enabled"))
+    # ``ProviderSpec.enabled`` defaults to True, so only an EXPLICIT
+    # ``enabled = false`` marks an inactive credential stub. A missing field is
+    # active manual config (e.g. an env-var-backed slot) and must not be claimed.
+    was_explicitly_disabled = existing_provider.get("enabled") is False
     had_config_key = _has_config_api_key(existing_provider)
     existing_provider["kind"] = kind
     existing_provider["enabled"] = True
-    if slot_is_new or (not was_enabled and not had_config_key):
+    if slot_is_new or (was_explicitly_disabled and not had_config_key):
         # Take ownership of slots we create, and of same-kind credential stubs
-        # the operator is NOT actively using (disabled with no configured key —
-        # e.g. what's left after deleting an api_key on the credentials page), so
-        # a later disconnect can clean them up. An already-enabled keyless slot
-        # is treated as operator config (it may authenticate via an env-var
-        # fallback) and left unmarked so disconnect never disables it.
+        # the operator is NOT actively using (explicitly disabled with no
+        # configured key — e.g. what's left after deleting an api_key on the
+        # credentials page), so a later disconnect can clean them up. An active
+        # keyless slot is treated as operator config (it may authenticate via an
+        # env-var fallback) and left unmarked so disconnect never disables it.
         existing_provider[_OAUTH_PROVISIONED_KEY] = True
     providers_cfg[provider] = existing_provider
     cfg["providers"] = providers_cfg
