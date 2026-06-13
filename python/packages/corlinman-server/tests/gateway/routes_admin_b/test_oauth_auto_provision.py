@@ -495,10 +495,14 @@ def test_codex_disconnect_disables_provisioned_slot_and_clears_default(
         }
     )
 
-    with patch("corlinman_server.gateway.oauth.codex_pkce.delete_auth_json"):
+    with patch(
+        "corlinman_server.gateway.oauth.codex_pkce.delete_auth_json"
+    ) as delete_token:
         resp = client.delete("/admin/oauth/codex")
 
     assert resp.status_code == 204, resp.text
+    # The token deletion ran (as the cleanup's on_success, inside the lock).
+    delete_token.assert_called_once()
     on_disk = _on_disk(config_path)
     # Provisioned slot disabled, dangling default cleared, aliases preserved.
     assert on_disk["providers"]["codex"]["enabled"] is False
@@ -836,3 +840,57 @@ def test_codex_disconnect_keeps_token_when_config_cleanup_fails(
 
     assert resp.status_code == 500, resp.text
     delete_token.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_provisioning_write_failure_does_not_fail_login() -> None:
+    # The OAuth token is already persisted by the time provisioning runs, so a
+    # config-write failure must not surface as a failed login (best-effort).
+    state = AdminState(config_loader=lambda: {}, config_path=Path("/x/config.toml"))
+    write_error = JSONResponse(status_code=500, content={"error": "write_failed"})
+
+    with patch(
+        "corlinman_server.gateway.routes_admin_b.oauth._query_codex_oauth_models",
+        new=AsyncMock(return_value=["gpt-5.5"]),
+    ), patch(
+        "corlinman_server.gateway.routes_admin_b.oauth._write_config_atomic",
+        return_value=write_error,
+    ), patch(
+        "corlinman_server.gateway.routes_admin_b.oauth._publish_config_mutation",
+        new=AsyncMock(),
+    ):
+        result = await oauth_routes._provision_oauth_models(
+            state, provider="codex", kind="codex", access_token="codex-access-token"
+        )
+
+    assert result is None
+
+
+def test_provisioning_claims_disabled_keyless_stub() -> None:
+    # A leftover credentials-page stub (disabled, no key) is adopted and marked,
+    # so a later disconnect can clean it up.
+    cfg = {"providers": {"anthropic": {"kind": "anthropic", "enabled": False}}}
+    out = oauth_routes._upsert_oauth_provider_and_aliases(
+        cfg,
+        provider="anthropic",
+        kind="anthropic",
+        models=["claude-opus-4-8"],
+        preference=(),
+    )
+    assert out["providers"]["anthropic"]["enabled"] is True
+    assert out["providers"]["anthropic"]["oauth_provisioned"] is True
+
+
+def test_provisioning_does_not_claim_enabled_keyless_provider() -> None:
+    # An already-enabled keyless slot may authenticate via an env-var fallback;
+    # it is operator config, so login must not mark it (disconnect would then
+    # wrongly disable it).
+    cfg = {"providers": {"anthropic": {"kind": "anthropic", "enabled": True}}}
+    out = oauth_routes._upsert_oauth_provider_and_aliases(
+        cfg,
+        provider="anthropic",
+        kind="anthropic",
+        models=["claude-opus-4-8"],
+        preference=(),
+    )
+    assert "oauth_provisioned" not in out["providers"]["anthropic"]

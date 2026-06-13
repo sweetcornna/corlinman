@@ -36,8 +36,10 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 from typing import Any
 
+import structlog
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse, Response
 
@@ -137,6 +139,8 @@ _FALLBACK_OAUTH_MODELS: dict[str, list[str]] = {
 # keys (``extra="allow"``), so the flag round-trips through config harmlessly.
 _OAUTH_PROVISIONED_KEY = "oauth_provisioned"
 
+logger = structlog.get_logger(__name__)
+
 
 def _ordered_unique_model_ids(models: list[str], preference: tuple[str, ...]) -> list[str]:
     clean: list[str] = []
@@ -218,13 +222,17 @@ def _upsert_oauth_provider_and_aliases(
         # logging in must not repurpose it to the OAuth adapter or reroute its
         # aliases through it. Leave the config untouched.
         return cfg
+    was_enabled = bool(existing_provider.get("enabled"))
+    had_config_key = _has_config_api_key(existing_provider)
     existing_provider["kind"] = kind
     existing_provider["enabled"] = True
-    if slot_is_new:
-        # Tag slots we create so a later disconnect can clean them up without
-        # touching operator-configured slots (e.g. an env-var-backed provider
-        # that stays valid without the OAuth token). Pre-existing slots are left
-        # unmarked and therefore treated as manual config on disconnect.
+    if slot_is_new or (not was_enabled and not had_config_key):
+        # Take ownership of slots we create, and of same-kind credential stubs
+        # the operator is NOT actively using (disabled with no configured key —
+        # e.g. what's left after deleting an api_key on the credentials page), so
+        # a later disconnect can clean them up. An already-enabled keyless slot
+        # is treated as operator config (it may authenticate via an env-var
+        # fallback) and left unmarked so disconnect never disables it.
         existing_provider[_OAUTH_PROVISIONED_KEY] = True
     providers_cfg[provider] = existing_provider
     cfg["providers"] = providers_cfg
@@ -370,20 +378,28 @@ def _remove_oauth_provider_config(
 
 
 async def _cleanup_oauth_provider_config(
-    state: Any, *, provider: str
+    state: Any, *, provider: str, on_success: Callable[[], object] | None = None
 ) -> JSONResponse | None:
+    # ``on_success`` (the token deletion) runs INSIDE the write lock, once the
+    # config update is committed, so the credential and config mutations are
+    # serialized against a concurrent login's provisioning (which takes the same
+    # lock). A config-write failure returns the error WITHOUT running it, leaving
+    # the credential in place — a consistent no-op.
     if state.config_path is None:
+        if on_success is not None:
+            on_success()
         return None
 
     async with state.admin_write_lock:
         cfg = dict(getattr(state, "config_loader", lambda: {})() or {})
         cfg, changed = _remove_oauth_provider_config(cfg, provider)
-        if not changed:
-            return None
-        err = _write_config_atomic(state.config_path, cfg)
-        if err is not None:
-            return err
-        await _publish_config_mutation(state, cfg)
+        if changed:
+            err = _write_config_atomic(state.config_path, cfg)
+            if err is not None:
+                return err
+            await _publish_config_mutation(state, cfg)
+        if on_success is not None:
+            on_success()
     return None
 
 
@@ -420,7 +436,17 @@ async def _provision_oauth_models(
         )
         err = _write_config_atomic(state.config_path, cfg)
         if err is not None:
-            return err
+            # Provisioning is best-effort: the OAuth token is already saved, so
+            # the login itself succeeded. Surfacing a config-write failure here
+            # would report the login as failed even though the credential is
+            # committed (and the single-use PKCE code can't be retried). Log and
+            # move on; the operator can wire up models via the Models page.
+            logger.warning(
+                "gateway.oauth.provision_write_failed",
+                provider=provider,
+                kind=kind,
+            )
+            return None
         await _publish_config_mutation(state, cfg)
     return None
 
@@ -700,13 +726,15 @@ def router() -> APIRouter:
     @r.delete("/admin/oauth/codex", response_model=None)
     async def codex_disconnect() -> Response | JSONResponse:
         state = get_admin_state()
-        # Update config before deleting the token: if the config write fails we
-        # return the error with the credential still in place (a consistent
-        # no-op) rather than leaving an enabled slot pointed at a deleted token.
-        cleanup_err = await _cleanup_oauth_provider_config(state, provider="codex")
+        # The token deletion runs inside the cleanup write lock (see
+        # _cleanup_oauth_provider_config): config + token are mutated atomically,
+        # and a config-write failure leaves the credential in place rather than
+        # stranding an enabled slot pointed at a deleted token.
+        cleanup_err = await _cleanup_oauth_provider_config(
+            state, provider="codex", on_success=codex_pkce.delete_auth_json
+        )
         if cleanup_err is not None:
             return cleanup_err
-        codex_pkce.delete_auth_json()
         return Response(status_code=204)
 
     # -- Gemini PKCE: start / submit / refresh / disconnect ----------------
@@ -908,13 +936,17 @@ def router() -> APIRouter:
         data_dir = _require_data_dir(state)
         if isinstance(data_dir, JSONResponse):
             return data_dir
-        # Update config before deleting the token: if the config write fails we
-        # return the error with the credential still in place (a consistent
-        # no-op) rather than leaving an enabled slot pointed at a deleted token.
-        cleanup_err = await _cleanup_oauth_provider_config(state, provider="anthropic")
+        # The token deletion runs inside the cleanup write lock (see
+        # _cleanup_oauth_provider_config): config + token are mutated atomically,
+        # and a config-write failure leaves the credential in place rather than
+        # stranding an enabled slot pointed at a deleted token.
+        cleanup_err = await _cleanup_oauth_provider_config(
+            state,
+            provider="anthropic",
+            on_success=lambda: delete_credential(data_dir, "anthropic"),
+        )
         if cleanup_err is not None:
             return cleanup_err
-        delete_credential(data_dir, "anthropic")
         return Response(status_code=204)
 
     @r.post(
