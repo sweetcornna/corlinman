@@ -302,19 +302,35 @@ def _alias_provider(entry: Any) -> str | None:
     return provider if isinstance(provider, str) and provider else None
 
 
+def _has_config_api_key(entry: dict[str, Any]) -> bool:
+    raw_key = entry.get("api_key")
+    if isinstance(raw_key, str):
+        return bool(raw_key.strip())
+    if isinstance(raw_key, dict):
+        if "env" in raw_key:
+            return bool(str(raw_key.get("env") or "").strip())
+        if "value" in raw_key:
+            return bool(str(raw_key.get("value") or "").strip())
+        return bool(raw_key)
+    return False
+
+
 def _remove_oauth_provider_config(
     cfg: dict[str, Any], provider: str
 ) -> tuple[dict[str, Any], bool]:
-    # Only clean up a slot that THIS flow provisioned (carries the marker). A
-    # slot the operator configured themselves — including one with no config
-    # api_key that authenticates via the adapter's env-var fallback — is left
-    # completely untouched: disconnecting the OAuth token must not disable it or
-    # clear a default that is not actually dangling.
+    # Only clean up a slot that THIS flow provisioned (carries the marker) AND
+    # that the operator has not since adopted by adding a config api_key. A
+    # manually configured slot — including one with no api_key that authenticates
+    # via the adapter's env-var fallback — is left completely untouched:
+    # disconnecting the OAuth token must not disable it or clear a default that
+    # is not actually dangling. The api_key check also covers a provisioned slot
+    # later given a key through /admin/credentials, where the marker lingers.
     providers_cfg = cfg.get("providers") or {}
     provider_entry = providers_cfg.get(provider)
     if not (
         isinstance(provider_entry, dict)
         and provider_entry.get(_OAUTH_PROVISIONED_KEY) is True
+        and not _has_config_api_key(provider_entry)
     ):
         return cfg, False
 
@@ -684,10 +700,13 @@ def router() -> APIRouter:
     @r.delete("/admin/oauth/codex", response_model=None)
     async def codex_disconnect() -> Response | JSONResponse:
         state = get_admin_state()
-        codex_pkce.delete_auth_json()
+        # Update config before deleting the token: if the config write fails we
+        # return the error with the credential still in place (a consistent
+        # no-op) rather than leaving an enabled slot pointed at a deleted token.
         cleanup_err = await _cleanup_oauth_provider_config(state, provider="codex")
         if cleanup_err is not None:
             return cleanup_err
+        codex_pkce.delete_auth_json()
         return Response(status_code=204)
 
     # -- Gemini PKCE: start / submit / refresh / disconnect ----------------
@@ -889,10 +908,13 @@ def router() -> APIRouter:
         data_dir = _require_data_dir(state)
         if isinstance(data_dir, JSONResponse):
             return data_dir
-        delete_credential(data_dir, "anthropic")
+        # Update config before deleting the token: if the config write fails we
+        # return the error with the credential still in place (a consistent
+        # no-op) rather than leaving an enabled slot pointed at a deleted token.
         cleanup_err = await _cleanup_oauth_provider_config(state, provider="anthropic")
         if cleanup_err is not None:
             return cleanup_err
+        delete_credential(data_dir, "anthropic")
         return Response(status_code=204)
 
     @r.post(

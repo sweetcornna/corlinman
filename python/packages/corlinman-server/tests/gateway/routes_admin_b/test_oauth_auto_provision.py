@@ -21,6 +21,7 @@ from corlinman_server.gateway.oauth.storage import OAuthCredential
 from corlinman_server.gateway.routes_admin_b import oauth as oauth_routes
 from corlinman_server.gateway.routes_admin_b.state import AdminState, set_admin_state
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 from ._admin_auth import authenticated_test_client, configure_admin_auth
@@ -763,3 +764,75 @@ async def test_oauth_provisioning_does_not_shadow_raw_default_model(
     assert "gpt-5.5" not in aliases
     # ...but the provider is still bindable via its provider-named alias.
     assert aliases["codex"]["provider"] == "codex"
+
+
+def test_disconnect_spares_provisioned_slot_adopted_via_api_key(
+    oauth_state_client: tuple[AdminState, TestClient, Path],
+) -> None:
+    state, client, config_path = oauth_state_client
+    snapshot: dict[str, Any] = state.extras["snapshot"]
+    # Slot was provisioned (marked) but the operator later adopted it by adding
+    # an api_key via /admin/credentials. The marker lingers, but disconnect must
+    # treat the now manually-credentialed slot as off-limits.
+    snapshot.update(
+        {
+            "providers": {
+                "anthropic": {
+                    "kind": "anthropic",
+                    "enabled": True,
+                    "oauth_provisioned": True,
+                    "api_key": "sk-adopted",
+                }
+            },
+            "models": {
+                "default": "claude-opus-4-8",
+                "aliases": {
+                    "claude-opus-4-8": {
+                        "provider": "anthropic",
+                        "model": "claude-opus-4-8",
+                        "params": {},
+                    },
+                },
+            },
+        }
+    )
+    oauth_routes._write_config_atomic(config_path, dict(snapshot))
+
+    resp = client.delete("/admin/oauth/anthropic")
+
+    assert resp.status_code == 204, resp.text
+    on_disk = _on_disk(config_path)
+    assert on_disk["providers"]["anthropic"]["enabled"] is True
+    assert on_disk["models"]["default"] == "claude-opus-4-8"
+
+
+def test_codex_disconnect_keeps_token_when_config_cleanup_fails(
+    oauth_state_client: tuple[AdminState, TestClient, Path],
+) -> None:
+    state, client, _config_path = oauth_state_client
+    snapshot: dict[str, Any] = state.extras["snapshot"]
+    snapshot.update(
+        {
+            "providers": {
+                "codex": {
+                    "kind": "codex",
+                    "enabled": True,
+                    "oauth_provisioned": True,
+                }
+            },
+        }
+    )
+
+    # Simulate the config write failing during cleanup. The token deletion must
+    # NOT run, so we never strand an enabled slot pointed at a deleted token.
+    cleanup_error = JSONResponse(status_code=500, content={"error": "write_failed"})
+    with patch(
+        "corlinman_server.gateway.routes_admin_b.oauth._cleanup_oauth_provider_config",
+        new=AsyncMock(return_value=cleanup_error),
+    ), patch(
+        "corlinman_server.gateway.oauth.codex_pkce.delete_auth_json"
+    ) as delete_token:
+        resp = client.delete("/admin/oauth/codex")
+
+    assert resp.status_code == 500, resp.text
+    delete_token.assert_not_called()
