@@ -15,6 +15,7 @@ import {
 } from "@/components/layout/mobile-drawer-context";
 import { AuroraBackground } from "@/components/ui/aurora-background";
 import { DefaultPasswordBanner } from "@/components/admin/default-password-banner";
+import { AdminSessionProvider } from "@/components/admin/admin-session-context";
 import {
   MustChangePasswordProvider,
 } from "@/components/admin/must-change-password-context";
@@ -84,13 +85,15 @@ export default function AdminLayout({
 
   return (
     <MobileDrawerProvider>
-      <MustChangePasswordProvider session={state.session}>
-        <ActiveProfileProvider>
-          <AdminShell user={state.session.user} pathname={pathname ?? "/"}>
-            <MustChangePasswordGuard>{children}</MustChangePasswordGuard>
-          </AdminShell>
-        </ActiveProfileProvider>
-      </MustChangePasswordProvider>
+      <AdminSessionProvider session={state.session}>
+        <MustChangePasswordProvider session={state.session}>
+          <ActiveProfileProvider>
+            <AdminShell user={state.session.user} pathname={pathname ?? "/"}>
+              <MustChangePasswordGuard>{children}</MustChangePasswordGuard>
+            </AdminShell>
+          </ActiveProfileProvider>
+        </MustChangePasswordProvider>
+      </AdminSessionProvider>
     </MobileDrawerProvider>
   );
 }

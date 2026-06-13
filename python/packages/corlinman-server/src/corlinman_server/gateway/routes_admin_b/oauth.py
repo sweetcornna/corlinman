@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import time
+from typing import Any
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse, Response
@@ -74,10 +75,197 @@ from corlinman_server.gateway.routes_admin_b._oauth_lib import (
     _require_data_dir,
     _xai_status_row,
 )
+from corlinman_server.gateway.core.config_mutation import (
+    publish_config_mutation as _publish_config_mutation_core,
+    write_config_atomic as _write_config_atomic,
+)
 from corlinman_server.gateway.routes_admin_b.state import (
     get_admin_state,
     require_admin,
 )
+
+
+def _py_config_writer():
+    from corlinman_server.gateway.lifecycle import write_py_config  # noqa: PLC0415
+
+    return write_py_config
+
+
+async def _publish_config_mutation(state: Any, cfg: dict[str, Any]) -> None:
+    await _publish_config_mutation_core(
+        state,
+        cfg,
+        py_config_writer=_py_config_writer(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# OAuth model provisioning helpers
+# ---------------------------------------------------------------------------
+
+_ANTHROPIC_MODEL_PREFERENCE: tuple[str, ...] = (
+    "claude-fable-5",
+    "claude-opus-4-8",
+    "claude-opus-4-7",
+    "claude-opus-4-6",
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5",
+    "claude-3-5-sonnet-latest",
+    "claude-3-5-haiku-latest",
+)
+_CODEX_MODEL_PREFERENCE: tuple[str, ...] = (
+    "gpt-5.5",
+    "gpt-5",
+    "gpt-4.5-turbo",
+    "gpt-4.5",
+    "chatgpt-4o-latest",
+    "gpt-4o",
+    "gpt-4o-mini",
+    "o4-mini",
+)
+_FALLBACK_OAUTH_MODELS: dict[str, list[str]] = {
+    "anthropic": ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"],
+    "codex": ["gpt-5.5", "gpt-4o"],
+}
+
+
+def _ordered_unique_model_ids(models: list[str], preference: tuple[str, ...]) -> list[str]:
+    clean: list[str] = []
+    seen: set[str] = set()
+    for model in models:
+        mid = str(model).strip()
+        if not mid or mid in seen:
+            continue
+        clean.append(mid)
+        seen.add(mid)
+    preferred = [mid for mid in preference if mid in seen]
+    rest = [mid for mid in clean if mid not in set(preferred)]
+    return preferred + rest
+
+
+async def _query_anthropic_oauth_models(access_token: str) -> list[str]:
+    """Best-effort live model discovery for Anthropic OAuth tokens."""
+    import httpx
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "anthropic-beta": "oauth-2025-04-20",
+        "x-app": "cli",
+        "user-agent": "claude-cli/2.1.88 (claude-code)",
+    }
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get("https://api.anthropic.com/v1/models", headers=headers)
+    if resp.status_code >= 400:
+        raise RuntimeError(f"HTTP {resp.status_code}")
+    data = resp.json()
+    out: list[str] = []
+    for item in data.get("data") or []:
+        if isinstance(item, dict) and isinstance(item.get("id"), str):
+            out.append(item["id"])
+    return out
+
+
+async def _query_codex_oauth_models(access_token: str) -> list[str]:
+    """Best-effort live model discovery for ChatGPT Codex OAuth tokens."""
+    import httpx
+    from corlinman_providers._codex_oauth import codex_cloudflare_headers
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        **codex_cloudflare_headers(access_token),
+    }
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get(
+            "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
+            headers=headers,
+        )
+    if resp.status_code >= 400:
+        raise RuntimeError(f"HTTP {resp.status_code}")
+    data = resp.json()
+    out: list[str] = []
+    for item in data.get("models") or []:
+        slug = item.get("slug") if isinstance(item, dict) else None
+        if isinstance(slug, str) and slug:
+            out.append(slug)
+    return out
+
+
+def _upsert_oauth_provider_and_aliases(
+    cfg: dict[str, Any],
+    *,
+    provider: str,
+    kind: str,
+    models: list[str],
+    preference: tuple[str, ...],
+) -> dict[str, Any]:
+    providers_cfg = dict(cfg.get("providers") or {})
+    existing_provider = dict(providers_cfg.get(provider) or {})
+    existing_provider["kind"] = kind
+    existing_provider["enabled"] = True
+    providers_cfg[provider] = existing_provider
+    cfg["providers"] = providers_cfg
+
+    models_cfg = dict(cfg.get("models") or {})
+    aliases = dict(models_cfg.get("aliases") or {})
+    selected = _ordered_unique_model_ids(models, preference)
+    if not selected:
+        selected = list(_FALLBACK_OAUTH_MODELS.get(kind, []))
+    selected = _ordered_unique_model_ids(selected, preference)
+
+    bindable_aliases: list[str] = []
+    for model_id in selected:
+        existing = aliases.get(model_id)
+        if isinstance(existing, dict) and existing.get("provider"):
+            if existing.get("provider") == provider:
+                bindable_aliases.append(model_id)
+            continue
+        aliases[model_id] = {"provider": provider, "model": model_id, "params": {}}
+        bindable_aliases.append(model_id)
+
+    if bindable_aliases and not str(models_cfg.get("default") or "").strip():
+        models_cfg["default"] = bindable_aliases[0]
+    models_cfg["aliases"] = aliases
+    cfg["models"] = models_cfg
+    return cfg
+
+
+async def _provision_oauth_models(
+    state: Any,
+    *,
+    provider: str,
+    kind: str,
+    access_token: str,
+) -> JSONResponse | None:
+    if state.config_path is None:
+        return JSONResponse(status_code=503, content={"error": "config_path_unset"})
+
+    if kind == "codex":
+        preference = _CODEX_MODEL_PREFERENCE
+        query = _query_codex_oauth_models
+    else:
+        preference = _ANTHROPIC_MODEL_PREFERENCE
+        query = _query_anthropic_oauth_models
+
+    try:
+        discovered = await query(access_token)
+    except Exception:
+        discovered = []
+
+    async with state.admin_write_lock:
+        cfg = dict(getattr(state, "config_loader", lambda: {})() or {})
+        cfg = _upsert_oauth_provider_and_aliases(
+            cfg,
+            provider=provider,
+            kind=kind,
+            models=discovered,
+            preference=preference,
+        )
+        err = _write_config_atomic(state.config_path, cfg)
+        if err is not None:
+            return err
+        await _publish_config_mutation(state, cfg)
+    return None
+
 
 # ---------------------------------------------------------------------------
 # Router
@@ -307,6 +495,16 @@ def router() -> APIRouter:
         except OSError as exc:
             return _bad("save_failed", status=500, message=str(exc))
 
+        state = get_admin_state()
+        provision_err = await _provision_oauth_models(
+            state,
+            provider="codex",
+            kind="codex",
+            access_token=str(tokens.get("access_token") or ""),
+        )
+        if provision_err is not None:
+            return provision_err
+
         sessions.update_session(body.session_id, status="approved")
         return SubmitPkceResponse(
             ok=True,
@@ -492,6 +690,15 @@ def router() -> APIRouter:
         except OSError as exc:
             return _bad("save_failed", status=500, message=str(exc))
 
+        provision_err = await _provision_oauth_models(
+            state,
+            provider="anthropic",
+            kind="anthropic",
+            access_token=cred.access_token,
+        )
+        if provision_err is not None:
+            return provision_err
+
         sessions.update_session(body.session_id, status="approved")
         return SubmitPkceResponse(
             ok=True,
@@ -568,6 +775,15 @@ def router() -> APIRouter:
             save_credential(data_dir, persisted)
         except OSError as exc:
             return _bad("save_failed", status=500, message=str(exc))
+
+        provision_err = await _provision_oauth_models(
+            state,
+            provider="anthropic",
+            kind="anthropic",
+            access_token=persisted.access_token,
+        )
+        if provision_err is not None:
+            return provision_err
 
         return ImportClaudeCodeResponse(
             imported=True,
@@ -658,6 +874,14 @@ def router() -> APIRouter:
             save_credential(data_dir, persisted)
         except OSError as exc:
             return _bad("save_failed", status=500, message=str(exc))
+        provision_err = await _provision_oauth_models(
+            state,
+            provider="anthropic",
+            kind="anthropic",
+            access_token=persisted.access_token,
+        )
+        if provision_err is not None:
+            return provision_err
         return ImportClaudeCodeResponse(
             imported=True, expires_at_ms=persisted.expires_at_ms
         )
