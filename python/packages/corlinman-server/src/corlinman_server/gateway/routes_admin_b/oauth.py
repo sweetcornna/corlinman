@@ -218,8 +218,12 @@ def _upsert_oauth_provider_and_aliases(
     bindable_aliases: list[str] = []
     for model_id in selected:
         existing = aliases.get(model_id)
-        if isinstance(existing, dict) and existing.get("provider"):
-            if existing.get("provider") == provider:
+        if existing is not None:
+            # An alias with this name already exists. Bind to it only when it is
+            # already owned by this provider; otherwise it belongs to the user
+            # (e.g. a providerless shorthand alias) or another provider, and a
+            # login must not silently overwrite or reroute it.
+            if isinstance(existing, dict) and existing.get("provider") == provider:
                 bindable_aliases.append(model_id)
             continue
         aliases[model_id] = {"provider": provider, "model": model_id, "params": {}}
@@ -297,23 +301,24 @@ def _remove_oauth_provider_config(
         providers_cfg[provider] = next_entry
         cfg["providers"] = providers_cfg
 
+    # Clear only a dangling default; never delete aliases. A disconnect is often
+    # transient, and removing every alias owned by the provider would also drop
+    # user-created ones (e.g. a custom "fast" alias pointing at it). The
+    # provider's aliases are inert while it is disabled and come back on
+    # reconnect — this mirrors the credential-delete path, which only resets the
+    # active default.
     models_cfg = dict(cfg.get("models") or {})
-    aliases = dict(models_cfg.get("aliases") or {})
-    removed_aliases: set[str] = set()
-    for alias_name, alias_entry in list(aliases.items()):
-        if _alias_provider(alias_entry) == provider:
-            removed_aliases.add(str(alias_name))
-            aliases.pop(alias_name, None)
-            changed = True
-
+    aliases = models_cfg.get("aliases") or {}
     default_name = str(models_cfg.get("default") or "")
-    if default_name == provider or default_name in removed_aliases:
+    default_owned = (
+        default_name == provider
+        or _alias_provider(aliases.get(default_name)) == provider
+    )
+    if default_name and default_owned:
         models_cfg.pop("default", None)
+        cfg["models"] = models_cfg
         changed = True
 
-    if changed:
-        models_cfg["aliases"] = aliases
-        cfg["models"] = models_cfg
     return cfg, changed
 
 
