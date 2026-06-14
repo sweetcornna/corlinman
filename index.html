@@ -630,7 +630,7 @@ function stampCreature(nm,cx,cy,hpx,flip,rot,acc,warp,wmul){ // ONE silhouette; 
 
 const ACT_KIND={bird:'fly',butterfly:'flutter',dog:'run',cat:'walk',deer:'leap',rabbit:'hop',fish:'swim'};
 const ACT_SIZE={bird:0.115,butterfly:0.066,dog:0.165,cat:0.130,deer:0.185,rabbit:0.118,fish:0.110};
-const ACT_FACE={bird:1,butterfly:1,dog:-1,cat:1,deer:-1,rabbit:1,fish:1};   // -1 = sprite art faces left (dog/deer drawn facing left)
+const ACT_FACE={bird:1,butterfly:1,dog:1,cat:1,deer:1,rabbit:1,fish:1};   // all sprite art faces RIGHT (verified) → flip only when traveling left
 const SCENE_ACTORS={                                   // which creatures inhabit each narrative scene
   0:[{n:'butterfly'},{n:'butterfly',ph:0.55}],
   1:[{n:'bird'},{n:'butterfly',ph:0.30}],
