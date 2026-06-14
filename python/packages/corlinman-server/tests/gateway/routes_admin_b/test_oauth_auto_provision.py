@@ -909,3 +909,31 @@ def test_provisioning_does_not_claim_provider_with_omitted_enabled() -> None:
         preference=(),
     )
     assert "oauth_provisioned" not in out["providers"]["anthropic"]
+
+
+@pytest.mark.asyncio
+async def test_provisioning_skips_when_credential_deleted_concurrently() -> None:
+    # Simulates a disconnect deleting the token during the discovery await: the
+    # under-lock recheck sees the credential gone and skips the config write, so
+    # we never re-enable a provider whose token was just removed.
+    state = AdminState(config_loader=lambda: {}, config_path=Path("/x/config.toml"))
+
+    with patch(
+        "corlinman_server.gateway.routes_admin_b.oauth._query_codex_oauth_models",
+        new=AsyncMock(return_value=["gpt-5.5"]),
+    ), patch(
+        "corlinman_server.gateway.routes_admin_b.oauth._write_config_atomic"
+    ) as write_config, patch(
+        "corlinman_server.gateway.routes_admin_b.oauth._publish_config_mutation",
+        new=AsyncMock(),
+    ):
+        result = await oauth_routes._provision_oauth_models(
+            state,
+            provider="codex",
+            kind="codex",
+            access_token="codex-access-token",
+            credential_present=lambda: False,
+        )
+
+    assert result is None
+    write_config.assert_not_called()

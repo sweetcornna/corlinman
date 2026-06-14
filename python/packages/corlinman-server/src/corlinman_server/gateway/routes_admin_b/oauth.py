@@ -412,6 +412,7 @@ async def _provision_oauth_models(
     provider: str,
     kind: str,
     access_token: str,
+    credential_present: Callable[[], bool] | None = None,
 ) -> JSONResponse | None:
     if state.config_path is None:
         return None
@@ -429,6 +430,14 @@ async def _provision_oauth_models(
         discovered = []
 
     async with state.admin_write_lock:
+        # Re-check, under the write lock, that the credential still exists. The
+        # slow model-discovery await above runs outside the lock, so a
+        # concurrent disconnect (which deletes the token inside this same lock,
+        # see _cleanup_oauth_provider_config) could have landed in the meantime.
+        # If the token is gone, skip provisioning rather than re-enable a
+        # provider whose credential was just removed.
+        if credential_present is not None and not credential_present():
+            return None
         cfg = dict(getattr(state, "config_loader", lambda: {})() or {})
         cfg = _upsert_oauth_provider_and_aliases(
             cfg,
@@ -688,6 +697,7 @@ def router() -> APIRouter:
             provider="codex",
             kind="codex",
             access_token=str(tokens.get("access_token") or ""),
+            credential_present=lambda: codex_external.read_codex_status() is not None,
         )
         if provision_err is not None:
             return provision_err
@@ -891,6 +901,7 @@ def router() -> APIRouter:
             provider="anthropic",
             kind="anthropic",
             access_token=cred.access_token,
+            credential_present=lambda: load_credential(data_dir, "anthropic") is not None,
         )
         if provision_err is not None:
             return provision_err
@@ -987,6 +998,7 @@ def router() -> APIRouter:
             provider="anthropic",
             kind="anthropic",
             access_token=persisted.access_token,
+            credential_present=lambda: load_credential(data_dir, "anthropic") is not None,
         )
         if provision_err is not None:
             return provision_err
@@ -1085,6 +1097,7 @@ def router() -> APIRouter:
             provider="anthropic",
             kind="anthropic",
             access_token=persisted.access_token,
+            credential_present=lambda: load_credential(data_dir, "anthropic") is not None,
         )
         if provision_err is not None:
             return provision_err

@@ -217,9 +217,25 @@ class RegistryModelSource:
 
         seen: set[str] = set()
         entries: list[Any] = []
+        registry = self._registry
+
+        def _alias_resolvable(owner: str) -> bool:
+            # A dict alias targets a provider slot; only advertise it when that
+            # provider actually built (i.e. is enabled). Otherwise ``resolve()``
+            # raises for it, so listing it offers a model every chat would fail
+            # to use (e.g. after an OAuth provider is disconnected/disabled).
+            # Shorthand aliases (owner == the default "corlinman") carry no
+            # concrete provider target and resolve via the raw-model-id / legacy
+            # fallback, so they are always kept.
+            if owner == "corlinman" or registry is None:
+                return True
+            try:
+                return registry.get(owner) is not None
+            except Exception:  # noqa: BLE001 — defensive; never crash the route
+                return True
 
         for alias, owner in _alias_entries(self._config):
-            if alias in seen:
+            if alias in seen or not _alias_resolvable(owner):
                 continue
             seen.add(alias)
             entries.append(ModelEntry(id=alias, owned_by=owner))
@@ -228,7 +244,6 @@ class RegistryModelSource:
         # specs that actually built (``get(name) is not None``) are
         # listed so a disabled / failed provider doesn't masquerade as a
         # usable model.
-        registry = self._registry
         if registry is not None:
             try:
                 specs = registry.list_specs()

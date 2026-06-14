@@ -158,6 +158,31 @@ def test_model_source_no_aliases_lists_provider_slots() -> None:
     assert [e.id for e in source.list_models()] == ["openai"]
 
 
+def test_model_source_hides_disabled_provider_aliases() -> None:
+    """An alias targeting a disabled provider is not advertised (it would fail
+    to resolve), while enabled-provider and shorthand aliases remain."""
+    cfg = {
+        "providers": {
+            "openai": {"kind": "openai", "api_key": "sk-test"},
+            "anthropic": {"kind": "anthropic", "enabled": False},
+        },
+        "models": {
+            "aliases": {
+                "gpt-4o": {"provider": "openai", "model": "gpt-4o"},
+                "claude": {"provider": "anthropic", "model": "claude-opus-4-8"},
+                "shorthand": "some-model",
+            }
+        },
+    }
+    registry = build_registry(cfg)
+    source = RegistryModelSource(registry, cfg)
+    ids = [e.id for e in source.list_models()]
+    assert "gpt-4o" in ids  # enabled-provider alias kept
+    assert "shorthand" in ids  # shorthand resolves via raw/legacy fallback, kept
+    assert "claude" not in ids  # disabled-provider alias hidden
+    assert "anthropic" not in ids  # the disabled provider slot is not listed either
+
+
 # ---------------------------------------------------------------------------
 # /v1/models would return 200 once the source is wired in
 # ---------------------------------------------------------------------------
