@@ -147,7 +147,6 @@ footer .wrap{width:min(1180px,calc(100% - 56px));margin-inline:auto;display:flex
 <div class="scrollhint" id="hint"></div>
 <div id="status"><span id="stL">corlinman://film</span><span id="stR"></span></div>
 
-
 <script>
 (()=>{
 'use strict';
@@ -166,27 +165,27 @@ const FRAMES=[
   en:{eye:'corlinman', h:'So we built one that <em>stays.</em>', sub:'An agent that lives on your own hardware.'},
   zh:{eye:'corlinman', h:'所以我们做了一个，<em>会留下来</em>的。', sub:'一个住在你自己机器里的智能体。'}},
 
- {focus:.64,pos:'at-l',shEn:'word:HEAR',shZh:'glyph:收',
+ {focus:.64,pos:'at-l',shEn:'creature:rabbit',shZh:'creature:rabbit',
   en:{eye:'<b>02</b> &nbsp; receive', h:'It hears you where you <em>already talk.</em>', sub:'QQ · Telegram · Discord · Slack · Feishu · WeChat · web'},
   zh:{eye:'<b>收</b> &nbsp; 接收', h:'在你<em>早已习惯</em>的地方，听见你。', sub:'QQ · Telegram · Discord · Slack · 飞书 · 微信 · 网页'}},
 
- {focus:.36,pos:'at-r',shEn:'word:RECALL',shZh:'glyph:忆',
+ {focus:.36,pos:'at-r',shEn:'creature:mouse',shZh:'creature:mouse',
   en:{eye:'<b>03</b> &nbsp; remember', h:'It wakes a memory it has been <em>keeping.</em>', sub:'Vectors, keywords, and a diary it writes about you.'},
   zh:{eye:'<b>忆</b> &nbsp; 记忆', h:'唤醒一份它一直<em>为你保存</em>的记忆。', sub:'向量、关键词，和一本它为你写的日记。'}},
 
- {focus:.64,pos:'at-l',shEn:'word:THINK',shZh:'glyph:思',
+ {focus:.64,pos:'at-l',shEn:'creature:owl',shZh:'creature:owl',
   en:{eye:'<b>04</b> &nbsp; reason', h:'It thinks on a model <em>you trust.</em>', sub:'Anthropic, OpenAI-compatible, or your own — bound per agent.'},
   zh:{eye:'<b>思</b> &nbsp; 推理', h:'用<em>你信任</em>的模型来思考。', sub:'Anthropic、OpenAI 兼容，或你自建的 —— 按 agent 绑定。'}},
 
- {focus:.36,pos:'at-r',shEn:'word:ACT',shZh:'glyph:行',
+ {focus:.36,pos:'at-r',shEn:'creature:frog',shZh:'creature:frog',
   en:{eye:'<b>05</b> &nbsp; act', h:'It acts with <em>real tools,</em> sandboxed.', sub:'Not prompts pretending to be tools.'},
   zh:{eye:'<b>行</b> &nbsp; 行动', h:'用沙箱里的<em>真实工具</em>去行动。', sub:'不是假装成工具的提示词。'}},
 
- {focus:.64,pos:'at-l',shEn:'word:ASK',shZh:'glyph:问',
+ {focus:.64,pos:'at-l',shEn:'creature:cat',shZh:'creature:cat',
   en:{eye:'<b>06</b> &nbsp; ask', h:'It asks before the <em>irreversible.</em>', sub:"Anything it can't take back waits for your key."},
   zh:{eye:'<b>问</b> &nbsp; 求证', h:'面对<em>不可逆</em>的事，它先来问你。', sub:'任何收不回的操作，都在等你的那把钥匙。'}},
 
- {focus:.36,pos:'at-r',shEn:'word:REPLY',shZh:'glyph:答',
+ {focus:.36,pos:'at-r',shEn:'creature:bird',shZh:'creature:bird',
   en:{eye:'<b>07</b> &nbsp; reply', h:'It answers — and <em>remembers</em> it did.', sub:'Back to the channel it came from. The diary keeps.'},
   zh:{eye:'<b>答</b> &nbsp; 回应', h:'它答复 —— 并<em>记得</em>自己答过。', sub:'回到它来的那个渠道。日记，会记得。'}},
 
@@ -236,6 +235,12 @@ const BAYER=[[0,8,2,10],[12,4,14,6],[3,11,1,9],[15,7,13,5]];
 let active=-1, progress=0, morphT=0;
 let pYaw=0,pPitch=0,yaw=0,pitch=0, kick=0,lastY=0, stepAcc=0,lastT=0;
 let mascotImg=null, mascotReady=false;
+let creaturePose=0.5;
+let activeCre=null, creFrame=0, creTickAcc=0;
+const creaturePoseCache=new Map();
+function sampleCreatureModel(nm,pose){const R=Math.min(W,H);const p2=sample(c=>{c.save();c.translate(0,-H*0.06);creatures[nm](c,W,H,pose);c.restore();},2);return toModel(p2,R*0.05);}
+function crePoses(nm){if(!creaturePoseCache.has(nm))creaturePoseCache.set(nm,[sampleCreatureModel(nm,0.0),sampleCreatureModel(nm,0.5)]);return creaturePoseCache.get(nm);}
+function retargetCreature(m){const n=m.length/3;if(!n)return;for(let i=0;i<N;i++){const p=parts[i];if(p.amb)continue;const k=(i%n)*3;p.tx=m[k];p.ty=m[k+1];p.tz=m[k+2];}}
 let LANG=(localStorage.getItem('corlinman-lang')||((navigator.language||'').toLowerCase().startsWith('zh')?'zh':'en'));
 const lerp=(a,b,t)=>a+(b-a)*t, clamp=(v,a,b)=>v<a?a:v>b?b:v, smooth=t=>t*t*(3-2*t);
 
@@ -255,10 +260,79 @@ function toModel(p2,depth){const n=p2.length/2;if(!n)return new Float32Array(0);
     const dome=Math.sqrt(Math.max(0,1-rr*rr)),wob=Math.sin(sx*0.018)*Math.cos(sy*0.02);
     out[i*3]=sx-FX;out[i*3+1]=sy-FY;out[i*3+2]=(dome*0.55+wob*0.18)*depth+(Math.random()-.5)*depth*0.16;}
   return out;}
-function buildShape(name){const R=Math.min(W,H);let p2, depth=R*0.30;
+/* ===== custom dot-creatures — bold front/compact silhouettes (pose animates one part) ===== */
+const creatures={
+  rabbit:(c,W,H,pose)=>{const S=Math.min(W,H),cx=W/2,cy=H/2,r=S*0.22;c.fillStyle='#fff';
+    c.beginPath();c.ellipse(cx,cy+r*0.55,r*0.72,r*0.92,0,0,6.283);c.fill();
+    c.beginPath();c.ellipse(cx,cy-r*0.4,r*0.58,r*0.6,0,0,6.283);c.fill();
+    const et=Math.sin(pose*Math.PI)*0.32;
+    c.save();c.translate(cx-r*0.26,cy-r*0.85);c.rotate(-0.12-et);c.beginPath();c.ellipse(0,-r*0.6,r*0.18,r*0.72,0,0,6.283);c.fill();c.restore();
+    c.save();c.translate(cx+r*0.26,cy-r*0.85);c.rotate(0.12+et);c.beginPath();c.ellipse(0,-r*0.6,r*0.18,r*0.72,0,0,6.283);c.fill();c.restore();
+    c.beginPath();c.ellipse(cx-r*0.28,cy+r*1.2,r*0.2,r*0.26,0,0,6.283);c.fill();
+    c.beginPath();c.ellipse(cx+r*0.28,cy+r*1.2,r*0.2,r*0.26,0,0,6.283);c.fill();
+    c.clearRect(cx-r*0.34,cy-r*0.46,r*0.15,r*0.15);c.clearRect(cx+r*0.19,cy-r*0.46,r*0.15,r*0.15);
+    c.fillStyle='rgba(176,118,72,1)';c.fillRect(cx-r*0.06,cy-r*0.18,r*0.12,r*0.09);},
+  mouse:(c,W,H,pose)=>{const S=Math.min(W,H),cx=W/2,cy=H/2,r=S*0.22;c.fillStyle='#fff';
+    const ew=Math.sin(pose*Math.PI)*0.1;                                                 // ears perk
+    c.beginPath();c.arc(cx-r*0.62,cy-r*0.62,r*0.5+ew*r,0,6.283);c.fill();
+    c.beginPath();c.arc(cx+r*0.62,cy-r*0.62,r*0.5+ew*r,0,6.283);c.fill();
+    c.beginPath();c.ellipse(cx,cy+r*0.05,r*0.74,r*0.96,0,0,6.283);c.fill();              // head/body
+    c.beginPath();c.ellipse(cx,cy+r*0.62,r*0.4,r*0.46,0,0,6.283);c.fill();               // snout
+    const tc=Math.sin(pose*Math.PI)*r*0.45;                                              // tail
+    c.strokeStyle='#fff';c.lineWidth=r*0.1;c.lineCap='round';
+    c.beginPath();c.moveTo(cx+r*0.6,cy+r*0.85);c.quadraticCurveTo(cx+r*1.35,cy+r*0.55,cx+r*1.1-tc,cy-r*0.25);c.stroke();
+    c.clearRect(cx-r*0.34,cy-r*0.22,r*0.15,r*0.15);c.clearRect(cx+r*0.19,cy-r*0.22,r*0.15,r*0.15);  // eyes
+    c.fillStyle='rgba(176,118,72,1)';c.beginPath();c.arc(cx,cy+r*0.82,r*0.11,0,6.283);c.fill();},  // nose
+  owl:(c,W,H,pose)=>{const S=Math.min(W,H),cx=W/2,cy=H/2,r=S*0.22;c.fillStyle='#fff';
+    c.beginPath();c.ellipse(cx,cy+r*0.15,r*0.98,r*1.18,0,0,6.283);c.fill();
+    c.beginPath();c.moveTo(cx-r*0.78,cy-r*0.95);c.lineTo(cx-r*0.5,cy-r*0.35);c.lineTo(cx-r*0.18,cy-r*0.9);c.closePath();c.fill();
+    c.beginPath();c.moveTo(cx+r*0.78,cy-r*0.95);c.lineTo(cx+r*0.5,cy-r*0.35);c.lineTo(cx+r*0.18,cy-r*0.9);c.closePath();c.fill();
+    c.fillStyle='rgba(176,118,72,1)';
+    c.beginPath();c.arc(cx-r*0.42,cy-r*0.3,r*0.42,0,6.283);c.fill();
+    c.beginPath();c.arc(cx+r*0.42,cy-r*0.3,r*0.42,0,6.283);c.fill();
+    const eb=0.12+Math.sin(pose*Math.PI)*0.88;
+    c.clearRect(cx-r*0.6,cy-r*0.48,r*0.36,r*0.36*eb);c.clearRect(cx+r*0.24,cy-r*0.48,r*0.36,r*0.36*eb);
+    c.fillStyle='rgba(176,118,72,1)';c.beginPath();c.moveTo(cx,cy-r*0.12);c.lineTo(cx-r*0.11,cy+r*0.12);c.lineTo(cx+r*0.11,cy+r*0.12);c.closePath();c.fill();
+    c.fillStyle='#fff';c.fillRect(cx-r*0.32,cy+r*1.2,r*0.2,r*0.16);c.fillRect(cx+r*0.12,cy+r*1.2,r*0.2,r*0.16);},
+  frog:(c,W,H,pose)=>{const S=Math.min(W,H),cx=W/2,cy=H/2,r=S*0.22;c.fillStyle='#fff';
+    c.beginPath();c.ellipse(cx,cy+r*0.3,r*1.15,r*0.82,0,0,6.283);c.fill();
+    const lp=Math.sin(pose*Math.PI)*0.28;
+    c.beginPath();c.ellipse(cx-r*0.98,cy+r*0.65,r*0.36,r*0.5+lp*r,0.45,0,6.283);c.fill();
+    c.beginPath();c.ellipse(cx+r*0.98,cy+r*0.65,r*0.36,r*0.5+lp*r,-0.45,0,6.283);c.fill();
+    c.beginPath();c.arc(cx-r*0.5,cy-r*0.5,r*0.4,0,6.283);c.fill();
+    c.beginPath();c.arc(cx+r*0.5,cy-r*0.5,r*0.4,0,6.283);c.fill();
+    const blink=0.08+Math.sin(pose*Math.PI)*0.92;
+    c.clearRect(cx-r*0.66,cy-r*0.68,r*0.32,r*0.34*blink);c.clearRect(cx+r*0.34,cy-r*0.68,r*0.32,r*0.34*blink);
+    c.beginPath();c.ellipse(cx-r*0.28,cy+r*1.05,r*0.22,r*0.16,0,0,6.283);c.fill();
+    c.beginPath();c.ellipse(cx+r*0.28,cy+r*1.05,r*0.22,r*0.16,0,0,6.283);c.fill();
+    c.strokeStyle='rgba(176,118,72,1)';c.lineWidth=r*0.07;c.lineCap='round';c.beginPath();c.arc(cx,cy+r*0.15,r*0.45,0.25,Math.PI-0.25);c.stroke();},
+  cat:(c,W,H,pose)=>{const S=Math.min(W,H),cx=W/2,cy=H/2,r=S*0.22;c.fillStyle='#fff';
+    c.beginPath();c.ellipse(cx+r*0.1,cy+r*0.5,r*0.72,r*0.92,0,0,6.283);c.fill();
+    c.beginPath();c.ellipse(cx-r*0.32,cy-r*0.45,r*0.56,r*0.54,0,0,6.283);c.fill();
+    c.beginPath();c.moveTo(cx-r*0.66,cy-r*0.82);c.lineTo(cx-r*0.78,cy-r*1.28);c.lineTo(cx-r*0.42,cy-r*0.98);c.closePath();c.fill();
+    c.beginPath();c.moveTo(cx-r*0.04,cy-r*0.86);c.lineTo(cx+r*0.04,cy-r*1.3);c.lineTo(cx-r*0.3,cy-r*1.02);c.closePath();c.fill();
+    const tc=Math.sin(pose*Math.PI)*r*0.55;
+    c.strokeStyle='#fff';c.lineWidth=r*0.17;c.lineCap='round';
+    c.beginPath();c.moveTo(cx+r*0.7,cy+r*0.9);c.quadraticCurveTo(cx+r*1.25,cy+r*0.2,cx+r*0.95-tc,cy-r*0.55);c.stroke();
+    c.fillStyle='#fff';c.fillRect(cx-r*0.45,cy+r*0.95,r*0.2,r*0.5);c.fillRect(cx-r*0.05,cy+r*0.95,r*0.2,r*0.5);
+    c.clearRect(cx-r*0.52,cy-r*0.5,r*0.14,r*0.16);c.clearRect(cx-r*0.22,cy-r*0.5,r*0.14,r*0.16);
+    c.fillStyle='rgba(176,118,72,1)';c.beginPath();c.moveTo(cx-r*0.34,cy-r*0.22);c.lineTo(cx-r*0.42,cy-r*0.1);c.lineTo(cx-r*0.26,cy-r*0.1);c.closePath();c.fill();},
+  bird:(c,W,H,pose)=>{const S=Math.min(W,H),cx=W/2,cy=H/2,r=S*0.22;c.fillStyle='#fff';
+    c.beginPath();c.ellipse(cx,cy+r*0.15,r*0.72,r*0.9,-0.35,0,6.283);c.fill();
+    c.beginPath();c.ellipse(cx-r*0.55,cy-r*0.62,r*0.5,r*0.5,0,0,6.283);c.fill();
+    c.fillStyle='rgba(176,118,72,1)';c.beginPath();c.moveTo(cx-r*0.95,cy-r*0.64);c.lineTo(cx-r*1.45,cy-r*0.5);c.lineTo(cx-r*0.92,cy-r*0.36);c.closePath();c.fill();
+    const wo=Math.sin(pose*Math.PI)*1.15;c.fillStyle='#fff';
+    c.save();c.translate(cx-r*0.05,cy-r*0.05);c.rotate(0.15-wo);c.beginPath();c.ellipse(0,0,r*0.32,r*0.7,0.3,0,6.283);c.fill();c.restore();
+    c.save();c.translate(cx+r*0.6,cy+r*0.55);c.rotate(0.6);c.beginPath();c.ellipse(0,r*0.45,r*0.22,r*0.72,0,0,6.283);c.fill();c.restore();
+    c.strokeStyle='rgba(176,118,72,1)';c.lineWidth=r*0.07;c.lineCap='round';
+    c.beginPath();c.moveTo(cx-r*0.12,cy+r*0.9);c.lineTo(cx-r*0.12,cy+r*1.25);c.stroke();
+    c.beginPath();c.moveTo(cx+r*0.14,cy+r*0.9);c.lineTo(cx+r*0.14,cy+r*1.25);c.stroke();
+    c.clearRect(cx-r*0.64,cy-r*0.7,r*0.12,r*0.12);},
+};function buildShape(name){const R=Math.min(W,H);let p2, depth=R*0.30;
   if(name==='scatter')return new Float32Array(0);
   else if(name==='mascot'||name==='dissolve') p2=mascotReady?sample(shapeImg(mascotImg,0.6,0.5,0.40),3):sample(shapeText('●',{start:300,frac:0.4}),4);
   else if(name==='wordmark'){ p2=sample(shapeText('corlinman',{font:"'Instrument Serif',serif",weight:400,cy:0.44,frac:0.86,start:360}),3); depth=R*0.04; }
+  else if(name.startsWith('creature:')){ const nm=name.slice(9); p2=sample(c=>{c.save();c.translate(0,-H*0.06);creatures[nm](c,W,H,creaturePose);c.restore();},2); depth=R*0.05; }
   else if(name.startsWith('glyph:')){ p2=sample(shapeText(name.slice(6),{font:"'Noto Serif SC',serif",weight:700,cy:0.44,frac:0.56,start:430}),2); depth=R*0.05; }
   else if(name.startsWith('word:')){ p2=sample(shapeText(name.slice(5),{font:"'Geist Mono',monospace",weight:700,cy:0.44,frac:0.6,start:300}),2); depth=R*0.04; }
   else p2=sample(shapeText(name,{start:420}),4);
@@ -298,7 +372,7 @@ function build(){
   GRIDCELL=Math.max(5,Math.round(W/(mob?150:240))); GCOLS=Math.ceil(W/GRIDCELL)+1; GROWS=Math.ceil(H/GRIDCELL)+1; invCell=1/GRIDCELL;
   gCnt=new Float32Array(GCOLS*GROWS); gAcc=new Uint8Array(GCOLS*GROWS); gDep=new Float32Array(GCOLS*GROWS);
   buildLife();
-  shapeCache.clear();
+  shapeCache.clear(); creaturePoseCache.clear();
   const RX=W*0.62,RY=H*0.62,RZ=420,old=parts;parts=new Array(N);
   for(let i=0;i<N;i++){const o=old[i];parts[i]={
     x:o?o.x:(Math.random()-.5)*RX*2,y:o?o.y:(Math.random()-.5)*RY*2,z:o?o.z:(Math.random()-.5)*RZ*2,
@@ -334,7 +408,9 @@ function onScroll(){
 }
 function setFrame(idx){
   active=idx;const f=FRAMES[idx], L=f[LANG];
-  assign(LANG==='zh'?f.shZh:f.shEn);
+  const sh=LANG==='zh'?f.shZh:f.shEn;
+  assign(sh);
+  activeCre=sh.indexOf('creature:')===0?sh.slice(9):null; creFrame=0; creTickAcc=0;
   capEl.className='cap '+f.pos+(f.kind==='quote'?' quote':'');
   capEl.innerHTML=(L.eye?`<p class="eye">${L.eye}</p>`:'')+`<h2>${L.h}<span class="cur"></span></h2>`+(L.extra?`<div class="extra">${L.extra}</div>`:'');
   document.getElementById('stR').innerHTML=`${String(idx+1).padStart(2,'0')} / ${String(FRAMES.length).padStart(2,'0')} <span class="blink">_</span>`;
@@ -441,7 +517,8 @@ function frame(t){
 
   let act=true, dec=0.965;
   if(FILM&&!REDUCE){stepAcc+=dt; if(stepAcc>=70){stepAcc-=70; act=true; dec=0.80;} else act=false;}
-  if(act){morphT*=dec; if(disHold>0&&morphT<0.06)disHold--;} kick*=0.93;
+  if(act){morphT*=dec; if(disHold>0&&morphT<0.06)disHold--;
+    if(activeCre&&morphT<0.2){if(++creTickAcc>=7){creTickAcc=0;creFrame^=1;retargetCreature(crePoses(activeCre)[creFrame]);}}} kick*=0.93;
 
   // clear — crisp dot-matrix with a touch of motion ghost
   ctx.globalCompositeOperation='source-over';
