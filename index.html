@@ -345,7 +345,7 @@ function setFrame(idx){
 }
 
 /* ===== ambient life: code-grown plants + drifting butterflies (rendered into the dot lattice) ===== */
-let flora=[], ferns=[], vines=[], grasses=[], lifeT=0, envGrow=0;
+let flora=[], ferns=[], vines=[], grasses=[], flies=[], glows=[], lifeT=0, envGrow=0;
 /* each plant is a SEGMENT tree (x0,y0→x1,y1, growT stagger, sway phase) — precomputed once, animated by a shared wind field */
 function makePlant(bx,flip,seed){
   const h=H*(0.24+seed*0.10), lean=(0.10+seed*0.10)*flip, G=GRIDCELL, segs=[];
@@ -360,7 +360,7 @@ function makePlant(bx,flip,seed){
     segs.push({x0:fx,y0:fy,x1:fx+Math.cos(a)*G*1.2,y1:fy+Math.sin(a)*G*1.0,growT:0.40,phase:1,w:0.85,acc:0});
     segs.push({x0:fx,y0:fy,x1:fx+Math.cos(a+0.2)*G*2.1,y1:fy+Math.sin(a+0.2)*G*1.8,growT:0.42,phase:1,w:0.66,acc:0});}
   segs.push({x0:fx,y0:fy,x1:fx,y1:fy,growT:0.39,phase:1,w:1,acc:1},{x0:fx+G*0.7,y0:fy,x1:fx+G*0.7,y1:fy,growT:0.39,phase:1,w:0.9,acc:1},{x0:fx-G*0.7,y0:fy,x1:fx-G*0.7,y1:fy,growT:0.39,phase:1,w:0.9,acc:1});
-  return {h,seed,ph:seed*6.28,segs,ba:1};
+  return {h,seed,ph:seed*6.28,segs,ba:1,fx,fy};
 }
 function makeFern(x,flip,seed){
   const h=H*0.13,G=GRIDCELL,segs=[],RA=Math.max(8,Math.floor(h/(G*0.8)));
@@ -383,6 +383,8 @@ function buildLife(){
   ferns=[ makeFern(W*0.23,1,Math.random()), makeFern(W*0.77,-1,Math.random()) ];
   vines=[ makeVine(W*0.05,1,Math.random()), makeVine(W*0.95,-1,Math.random()) ];
   grasses=[{x:W*0.055,s:0.30,n:4},{x:W*0.945,s:0.72,n:4}];   // corners only — no centre tuft (it read as a floating Y)
+  flies=flora.map(p=>({plant:p,flap:Math.random()*6,ph:Math.random()*6.28}));   // butterflies perch on the blooms
+  glows=[{x:W*0.10,y:H*0.85,ph:Math.random()*6.28},{x:W*0.90,y:H*0.86,ph:Math.random()*6.28}]; // fireflies low in the grass
 }
 function addDot(X,Y,w,acc,dep){
   if(X<0||X>=W||Y<0||Y>=H)return;
@@ -410,6 +412,18 @@ function lifeStep(time){
     const h=H*(0.08+t.s*0.04), steps=Math.ceil(h/(GRIDCELL*0.8));
     for(let k=0;k<t.n;k++){const lean=(t.s+k*0.13)*0.12*W*((k&1)?-1:1);
       for(let j=0;j<=steps;j++){const u=j/steps; addDot(t.x+(lean*0.4+gb*S*0.8)*u*u, H*0.94-h*u*grow, 0.4,0,0.34);}}}
+  // grounded fauna: butterflies perched on the blooms (sway with the plant), fireflies low in the grass
+  const UP=[[1,-1.1],[2,-1.5],[2.7,-1.0],[2.3,-0.2],[1.5,-0.5]], LO=[[0.9,0.5],[1.6,1.1],[1.0,1.4]];
+  for(const bf of flies){ const p=bf.plant; if(envGrow<0.44)continue; const fade=clamp((envGrow-0.44)/0.12,0,1), ba=p.ba;
+    const swayX=(gb+Math.sin(time*0.71+p.ph)*0.4)*16*ba + Math.sin(time*0.45+p.ph)*5*ba;   // matches the flower's wind sway
+    bf.flap+=0.12; const lift=Math.max(0,Math.sin(time*0.35+bf.ph)), fl=lift*lift;
+    const cx=p.fx+swayX+Math.sin(time*0.6+bf.ph)*S*0.8, cy=p.fy-S*1.6-fl*S*3.4, open=0.3+0.55*Math.abs(Math.sin(bf.flap));
+    addDot(cx,cy-S*0.4,0.9*fade,1,0.66); addDot(cx,cy,fade,1,0.7); addDot(cx,cy+S*0.5,0.85*fade,1,0.62);
+    for(let w=-1;w<=1;w+=2){ for(const o of UP) addDot(cx+w*o[0]*S*open,cy+o[1]*S,0.92*fade,1,0.66); for(const o of LO) addDot(cx+w*o[0]*S*open,cy+o[1]*S,0.85*fade,1,0.6); }
+  }
+  for(const g of glows){ if(envGrow<0.32)continue; const fade=clamp((envGrow-0.32)/0.12,0,1);
+    const cx=g.x+Math.sin(time*0.12+g.ph)*S*3, cy=g.y+Math.sin(time*0.17+g.ph*1.3)*S*2, pul=(0.8+0.2*Math.sin(time*0.5+g.ph))*fade;
+    addDot(cx,cy,pul,1,0.5); addDot(cx+GRIDCELL*0.5,cy,pul*0.55,1,0.48); }
 }
 
 function frame(t){
