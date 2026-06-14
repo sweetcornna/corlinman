@@ -340,7 +340,7 @@ const icons={
     c.beginPath();c.moveTo(cx,cy-r*0.72);c.quadraticCurveTo(cx-r*0.7,cy-r*0.98,cx-r*1.32,cy-r*0.62);c.lineTo(cx-r*1.32,cy+r*0.82);c.quadraticCurveTo(cx-r*0.7,cy+r*0.56,cx,cy+r*0.86);
     c.quadraticCurveTo(cx+r*0.7,cy+r*0.56,cx+r*1.32,cy+r*0.82);c.lineTo(cx+r*1.32,cy-r*0.62);c.quadraticCurveTo(cx+r*0.7,cy-r*0.98,cx,cy-r*0.72);c.closePath();c.stroke();
     c.beginPath();c.moveTo(cx,cy-r*0.72);c.lineTo(cx,cy+r*0.86);c.stroke();
-    for(const sg of [-1,1])for(let i=1;i<=3;i++){c.beginPath();c.moveTo(cx+sg*r*0.28,cy-r*0.42+i*r*0.34);c.lineTo(cx+sg*r*1.02,cy-r*0.42+i*r*0.34);c.stroke();}},
+    for(const sg of [-1,1])for(let i=0;i<4;i++){const yy=cy-r*0.46+i*r*0.36;c.beginPath();c.moveTo(cx+sg*r*0.26,yy);c.lineTo(cx+sg*r*(i===3?0.86:1.05),yy);c.stroke();}},  // 4 evenly-spaced lines filling the page (last shorter, like a paragraph end)
   brain:(c,W,H)=>{const S=Math.min(W,H),cx=W/2,cy=H/2,r=S*0.22;c.strokeStyle='#fff';c.lineWidth=r*0.17;c.lineJoin='round';c.lineCap='round';
     c.beginPath();c.moveTo(cx,cy-r*0.92);
     c.bezierCurveTo(cx-r*0.55,cy-r*1.18,cx-r*1.2,cy-r*0.78,cx-r*1.02,cy-r*0.22);
@@ -632,18 +632,18 @@ function stampCreature(nm,cx,cy,hpx,flip,rot,acc,warp,wmul){ // ONE silhouette; 
 const ACT_KIND={bird:'fly',butterfly:'flutter',dog:'run',cat:'walk',deer:'leap',rabbit:'hop',fish:'swim'};
 const ACT_SIZE={bird:0.115,butterfly:0.066,dog:0.165,cat:0.130,deer:0.185,rabbit:0.118,fish:0.110};
 const ACT_FACE={bird:1,butterfly:1,dog:1,cat:1,deer:1,rabbit:1,fish:1};   // all sprite art faces RIGHT (verified) → flip only when traveling left
-const SCENE_ACTORS={                                   // which creatures inhabit each narrative scene
+const SCENE_ACTORS={                                   // butterflies only (per user) — they wander, never the focus
   0:[{n:'butterfly'},{n:'butterfly',ph:0.55}],
-  1:[{n:'bird'},{n:'butterfly',ph:0.30}],
-  2:[{n:'bird'},{n:'butterfly',ph:0.60}],
-  3:[{n:'rabbit'},{n:'butterfly',ph:0.20}],
-  4:[{n:'cat'},{n:'butterfly',ph:0.50}],
-  5:[{n:'dog'}],
-  6:[{n:'rabbit'},{n:'butterfly',ph:0.40}],
-  7:[{n:'bird',dir:-1},{n:'butterfly',ph:0.70}],
-  8:[{n:'fish'},{n:'butterfly',ph:0.35}],
-  9:[{n:'bird'},{n:'butterfly',ph:0.15},{n:'butterfly',ph:0.80}],
-  10:[{n:'dog'},{n:'bird',ph:0.50}],
+  1:[{n:'butterfly'},{n:'butterfly',ph:0.40}],
+  2:[{n:'butterfly'},{n:'butterfly',ph:0.60}],
+  3:[{n:'butterfly'},{n:'butterfly',ph:0.25}],
+  4:[{n:'butterfly'},{n:'butterfly',ph:0.50}],
+  5:[{n:'butterfly'},{n:'butterfly',ph:0.30}],
+  6:[{n:'butterfly'},{n:'butterfly',ph:0.45}],
+  7:[{n:'butterfly'},{n:'butterfly',ph:0.70}],
+  8:[{n:'butterfly'},{n:'butterfly',ph:0.35}],
+  9:[{n:'butterfly'},{n:'butterfly',ph:0.15},{n:'butterfly',ph:0.80}],
+  10:[{n:'butterfly'},{n:'butterfly',ph:0.50}],
 };
 function drawActors(time){                              // creatures PACE back and forth (sine ping-pong, turn off-screen) — never wrap, so NO teleport; + procedural body animation
   if(REDUCE)return; const list=SCENE_ACTORS[active]; if(!list)return;
