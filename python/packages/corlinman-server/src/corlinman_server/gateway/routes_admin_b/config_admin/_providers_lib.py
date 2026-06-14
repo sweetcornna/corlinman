@@ -308,7 +308,7 @@ def _env_api_key_available(kind: str) -> bool:
     )
 
 
-def _can_autobind_default_alias(entry: dict[str, Any]) -> bool:
+def _can_autobind_default_alias(entry: dict[str, Any], name: str) -> bool:
     kind = _normalize_kind(str(entry.get("kind") or "openai_compatible"))
     if _provider_tts_backend(entry) == "fish":
         return False
@@ -316,8 +316,12 @@ def _can_autobind_default_alias(entry: dict[str, Any]) -> bool:
         return False
     if kind not in _AUTOBIND_REQUIRES_API_KEY_KINDS or _has_api_key(entry):
         return True
-    # No config key — still bindable if the adapter has a usable env-var key.
-    return _env_api_key_available(kind)
+    # No config key: bindable only for the BUILT-IN slot of a kind whose adapter
+    # has a documented env-var key fallback (``name == kind`` — e.g. the
+    # canonical ``openai`` slot served by OPENAI_API_KEY). A custom slot of the
+    # same kind (e.g. ``openai-clone``) is not covered by the env fallback and
+    # must still carry an explicit key to autobind.
+    return name == kind and _env_api_key_available(kind)
 
 
 def _bad(code: str, message: str) -> JSONResponse:

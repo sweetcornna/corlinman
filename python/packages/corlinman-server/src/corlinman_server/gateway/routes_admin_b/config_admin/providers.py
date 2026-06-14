@@ -197,7 +197,9 @@ def router() -> APIRouter:
                 existing["params"] = {}
             providers[body.name] = existing
             cfg["providers"] = providers
-            if bool(existing.get("enabled", True)) and _can_autobind_default_alias(existing):
+            if bool(existing.get("enabled", True)) and _can_autobind_default_alias(
+                existing, body.name
+            ):
                 cfg = await _autobind_default_alias(cfg, body.name, existing)
             elif not bool(existing.get("enabled", True)):
                 cfg = _remove_default_model_ref(cfg, body.name)
@@ -304,7 +306,9 @@ def router() -> APIRouter:
                 entry["params"] = body.params
             providers[name] = entry
             cfg["providers"] = providers
-            if bool(entry.get("enabled", True)) and _can_autobind_default_alias(entry):
+            if bool(entry.get("enabled", True)) and _can_autobind_default_alias(
+                entry, name
+            ):
                 cfg = await _autobind_default_alias(cfg, name, entry)
             elif not bool(entry.get("enabled", True)):
                 cfg = _remove_default_model_ref(cfg, name)
@@ -452,7 +456,7 @@ def router() -> APIRouter:
 
             providers[body.slug] = entry
             cfg["providers"] = providers
-            if _can_autobind_default_alias(entry):
+            if _can_autobind_default_alias(entry, body.slug):
                 cfg = await _autobind_default_alias(cfg, body.slug, entry)
             err = _write_config_atomic(state.config_path, cfg)
             if err is not None:
@@ -516,7 +520,9 @@ def router() -> APIRouter:
             cfg["providers"] = providers
             if _provider_tts_backend(entry) == "fish":
                 cfg = _remove_model_refs(cfg, slug)
-            elif bool(entry.get("enabled", True)) and _can_autobind_default_alias(entry):
+            elif bool(entry.get("enabled", True)) and _can_autobind_default_alias(
+                entry, slug
+            ):
                 cfg = await _autobind_default_alias(cfg, slug, entry)
             err = _write_config_atomic(state.config_path, cfg)
             if err is not None:

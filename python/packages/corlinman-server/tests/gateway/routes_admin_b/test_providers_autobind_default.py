@@ -194,6 +194,28 @@ def test_upsert_openai_without_key_or_env_does_not_autobind(
         assert "models" not in on_disk or not on_disk.get("models", {}).get("default")
 
 
+def test_upsert_custom_named_openai_kind_does_not_autobind_via_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("", encoding="utf-8")
+    _stub_probe(monkeypatch, ["gpt-4o-mini"])
+    # OPENAI_API_KEY is set, but the env fallback is scoped to the built-in
+    # `openai` slot (name == kind). A custom-named openai-kind slot must still
+    # carry an explicit key, so a keyless `openai-clone` does not autobind.
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-env")
+
+    for _state, client in _with_state(config_path):
+        resp = client.post(
+            "/admin/providers",
+            json={"name": "openai-clone", "kind": "openai", "enabled": True},
+        )
+        assert resp.status_code == 200, resp.text
+
+        on_disk = _on_disk(config_path)
+        assert "models" not in on_disk or not on_disk.get("models", {}).get("default")
+
+
 def test_upsert_does_not_clobber_existing_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

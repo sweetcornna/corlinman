@@ -202,7 +202,7 @@ def router() -> APIRouter:
             if (
                 bool(block.get("enabled", False))
                 and _has_primary_set(provider, block)
-                and _can_autobind_default_alias(block)
+                and _can_autobind_default_alias(block, provider)
             ):
                 cfg = await _autobind_default_alias(cfg, provider, block)
 
@@ -284,7 +284,7 @@ def router() -> APIRouter:
             if (
                 bool(body.enabled)
                 and _has_primary_set(provider, block)
-                and _can_autobind_default_alias(block)
+                and _can_autobind_default_alias(block, provider)
             ):
                 cfg = await _autobind_default_alias(cfg, provider, block)
             elif not bool(body.enabled):
