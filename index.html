@@ -122,6 +122,20 @@ footer .wrap{width:min(1180px,calc(100% - 56px));margin-inline:auto;display:flex
 .navright{display:flex;align-items:center;gap:24px}
 #langtog{font-family:var(--mono);font-size:12px;letter-spacing:.06em;color:#fff;background:transparent;border:1px solid rgba(255,255,255,.45);border-radius:999px;padding:5px 13px;cursor:pointer;transition:opacity .2s}
 #langtog:hover{opacity:.55}
+
+/* ---- responsive / mobile ---- */
+@media(max-width:700px){
+  nav{padding:14px 18px}
+  .cap{width:calc(100% - 36px)!important}
+  .cap.at-l,.cap.at-r,.cap.at-c,.cap.at-bl,.cap.at-cb,.cap.at-low{top:auto!important;bottom:9vh!important;align-items:center!important;text-align:center!important;transform:translateX(-50%) translateY(14px)!important}
+  .cap.show{transform:translateX(-50%) translateY(0)!important}
+  .cap h2,.cap.quote h2{max-width:20ch!important;font-size:clamp(1.6rem,7.6vw,2.5rem)!important;text-align:center!important;margin-left:auto!important;margin-right:auto!important}
+  .cap .eye{margin-bottom:12px;letter-spacing:.2em}
+  .cap .sub,.cap .extra{margin-left:auto;margin-right:auto;text-align:center}
+  #rail{display:none}
+  .scrollhint{bottom:14px}
+}
+@media(max-width:700px) and (orientation:portrait){ #status{font-size:9px;padding:10px 14px} }
 </style>
 </head>
 <body>
@@ -365,9 +379,9 @@ const creatures={
 };function buildShape(name){const R=Math.min(W,H);let p2, depth=R*0.30;
   if(name==='scatter')return new Float32Array(0);
   else if(name==='mascot'||name==='dissolve') p2=mascotReady?sample(shapeImg(mascotImg,0.6,0.5,0.40),3):sample(shapeText('●',{start:300,frac:0.4}),4);
-  else if(name==='wordmark'){ p2=sample(shapeText('corlinman',{font:"'Instrument Serif',serif",weight:400,cy:0.44,frac:0.86,start:360}),3); depth=R*0.04; }
+  else if(name==='wordmark'){ p2=sample(shapeText('corlinman',{font:"'Instrument Serif',serif",weight:400,cy:0.44,frac:W<700?0.92:0.86,start:360}),3); depth=R*0.04; }
   else if(name.startsWith('creature:')){ const nm=name.slice(9); p2=sample(c=>{c.save();c.translate(0,-H*0.06);creatures[nm](c,W,H,creaturePose);c.restore();},2); depth=R*0.05; }
-  else if(name.startsWith('icon:')){ const nm=name.slice(5); p2=(iconReady[nm])?sample(shapeImg(iconImg[nm],0.46,0.5,0.42),2):sample(c=>{c.save();c.translate(0,-H*0.04);icons[nm](c,W,H);c.restore();},2); depth=R*0.04; }
+  else if(name.startsWith('icon:')){ const nm=name.slice(5); const isc=W<700?0.30:0.40; p2=(iconReady[nm])?sample(shapeImg(iconImg[nm],isc,0.5,0.42),2):sample(c=>{c.save();c.translate(0,-H*0.04);icons[nm](c,W,H);c.restore();},2); depth=R*0.04; }
   else if(name.startsWith('glyph:')){ p2=sample(shapeText(name.slice(6),{font:"'Noto Serif SC',serif",weight:700,cy:0.44,frac:0.56,start:430}),2); depth=R*0.05; }
   else if(name.startsWith('word:')){ p2=sample(shapeText(name.slice(5),{font:"'Geist Mono',monospace",weight:700,cy:0.44,frac:0.6,start:300}),2); depth=R*0.04; }
   else p2=sample(shapeText(name,{start:420}),4);
@@ -402,9 +416,9 @@ function assign(name){
 function build(){
   W=innerWidth;H=innerHeight;FX=W/2;FY=H*0.42;panX=W/2;panY=H*0.42;
   canvas.width=W*DPR;canvas.height=H*DPR;canvas.style.width=W+'px';canvas.style.height=H+'px';ctx.setTransform(DPR,0,0,DPR,0,0);
-  const mob=W<760;
-  N=Math.round(Math.min(mob?9000:20000,(W*H)/(mob?150:110))*DENS);
-  GRIDCELL=Math.max(5,Math.round(W/(mob?150:240))); GCOLS=Math.ceil(W/GRIDCELL)+1; GROWS=Math.ceil(H/GRIDCELL)+1; invCell=1/GRIDCELL;
+  const mob=W<700;
+  N=Math.round(Math.min(mob?9000:24000,(W*H)/(mob?150:100))*DENS);
+  GRIDCELL=Math.max(4,Math.round(W/(mob?170:285))); GCOLS=Math.ceil(W/GRIDCELL)+1; GROWS=Math.ceil(H/GRIDCELL)+1; invCell=1/GRIDCELL;
   gCnt=new Float32Array(GCOLS*GROWS); gAcc=new Uint8Array(GCOLS*GROWS); gDep=new Float32Array(GCOLS*GROWS);
   buildLife();
   shapeCache.clear(); creaturePoseCache.clear(); for(const k in animalPts)animalPts[k]=null;
@@ -446,7 +460,7 @@ function setFrame(idx){
   const sh=LANG==='zh'?f.shZh:f.shEn;
   assign(sh);
   activeCre=sh.indexOf('creature:')===0?sh.slice(9):null; creFrame=0; creTickAcc=0;
-  activeAnimal=SCENE_ANIMAL[sh]||null;
+  activeAnimal=SCENE_ANIMAL[sh]||null; animMix=0;
   capEl.className='cap '+f.pos+(f.kind==='quote'?' quote':'');
   capEl.innerHTML=(L.eye?`<p class="eye">${L.eye}</p>`:'')+`<h2>${L.h}<span class="cur"></span></h2>`+(L.extra?`<div class="extra">${L.extra}</div>`:'');
   document.getElementById('stR').innerHTML=`${String(idx+1).padStart(2,'0')} / ${String(FRAMES.length).padStart(2,'0')} <span class="blink">_</span>`;
@@ -524,8 +538,12 @@ function lifeStep(time){
     const h=H*(0.08+t.s*0.04), steps=Math.ceil(h/(GRIDCELL*0.8));
     for(let k=0;k<t.n;k++){const lean=(t.s+k*0.13)*0.12*W*((k&1)?-1:1);
       for(let j=0;j<=steps;j++){const u=j/steps; addDot(t.x+(lean*0.4+gb*S*0.8)*u*u, H*0.94-h*u*grow, 0.4,0,0.34);}}}
-  if(activeAnimal&&envGrow>0.2){const pts=getAnimalPts(activeAnimal);if(pts){const fc=(FRAMES[active]||{focus:0.5}).focus,ax=W*(1-fc),ay=H*0.80,bob=Math.sin(time*1.4+1)*GRIDCELL*0.5,sw=gb*GRIDCELL*1.4;
-    for(let i=0;i<pts.length;i+=2)addDot(ax+pts[i]+sw,ay+pts[i+1]+bob,0.6,0,0.4);}}
+  if(activeAnimal&&envGrow>0.2){const pts=getAnimalPts(activeAnimal);if(pts){
+    const fc=(FRAMES[active]||{focus:0.5}).focus, ax=(W<700?W*0.72:W*(1-fc));
+    const hopP=Math.max(0,Math.sin(time*0.95+1)), hop=Math.pow(hopP,4)*GRIDCELL*7;   // lively periodic hop
+    const scurry=Math.sin(time*0.45+2)*GRIDCELL*4, bob=Math.sin(time*3.0)*GRIDCELL*0.5;
+    const sw=gb*GRIDCELL*1.3, lean=hop*0.18, w=0.64*Math.min(1,animMix);
+    for(let i=0;i<pts.length;i+=2)addDot(ax+pts[i]+sw+scurry+lean,H*0.82+pts[i+1]+bob-hop,w,0,0.4);}}
   // grounded fauna: butterflies perched on the blooms (sway with the plant), fireflies low in the grass
   const UP=[[1,-1.1],[2,-1.5],[2.7,-1.0],[2.3,-0.2],[1.5,-0.5]], LO=[[0.9,0.5],[1.6,1.1],[1.0,1.4]];
   for(const bf of flies){ const p=bf.plant; if(envGrow<0.44)continue; const fade=clamp((envGrow-0.44)/0.12,0,1), ba=p.ba;
@@ -544,11 +562,11 @@ function frame(t){
   requestAnimationFrame(frame);
   const dt=lastT?Math.min(60,t-lastT):16;lastT=t;
   lifeT=Math.min(1,lifeT+dt*0.0005);
-  envGrow+=((0.14+progress*0.96)-envGrow)*0.06;          // the garden grows as you scroll the film
+  envGrow+=((0.14+progress*0.96)-envGrow)*0.06; animMix=Math.min(1,animMix+dt*0.0028);          // the garden grows as you scroll the film
   const time=t*0.001, pal=curPalette();applyCss(pal);
   const onLight=pal.light;
   const f=FRAMES[active]||FRAMES[0];
-  panX+=(((0.5+(f.focus-0.5)*0.5)*W)-panX)*0.045; panY+=(H*0.42-panY)*0.045;  // compress pan so wide words never clip
+  const _pf=W<700?0.5:(0.5+(f.focus-0.5)*0.5); panX+=((_pf*W)-panX)*0.045; panY+=(H*0.42-panY)*0.045;  // compress pan; center on mobile
   const tYaw=pYaw*0.42+Math.sin(time*0.16)*0.055, tPitch=pPitch*0.26+Math.cos(time*0.13)*0.03;
   yaw+=(tYaw-yaw)*0.05; pitch+=(tPitch-pitch)*0.05;
   const cy=Math.cos(yaw),sy=Math.sin(yaw),cx=Math.cos(pitch),sx=Math.sin(pitch);
@@ -630,11 +648,11 @@ mascotImg.onload=()=>{mascotReady=true;shapeCache.clear();if(active>=0){const f=
 mascotImg.src='logo.png';
 const iconImg={}, iconReady={};
 ['envelope','book','brain','gear','key','speech'].forEach(k=>{const im=new Image();im.onload=()=>{iconReady[k]=true;shapeCache.delete('icon:'+k+'@'+W+'x'+H);if(active>=0){const f=FRAMES[active],sh=(LANG==='zh'?f.shZh:f.shEn);if(sh==='icon:'+k)assign(sh);}};im.src='ic_'+k+'.png';iconImg[k]=im;});
-let activeAnimal=null; const animalImg={}, animalPts={};
+let activeAnimal=null, animMix=0; const animalImg={}, animalPts={};
 const SCENE_ANIMAL={'icon:envelope':'bird','icon:book':'deer','icon:brain':'owl','icon:gear':'fox','icon:ask':'cat','icon:reply':'rabbit'};
 ['bird','deer','owl','fox','cat','rabbit'].forEach(k=>{const im=new Image();im.onload=()=>{animalImg[k]=im;animalPts[k]=null;};im.src='an_'+k+'.png';});
 function getAnimalPts(nm){if(!animalImg[nm])return null;if(animalPts[nm])return animalPts[nm];
-  const im=animalImg[nm],sz=Math.min(W,H)*0.14,ar=im.width/im.height,h=sz,w=h*ar;
+  const im=animalImg[nm],sz=Math.min(W,H)*0.16,ar=im.width/im.height,h=sz,w=h*ar;
   sctx.setTransform(1,0,0,1,0,0);sc.width=W;sc.height=H;sctx.clearRect(0,0,W,H);sctx.drawImage(im,W/2-w/2,H/2-h/2,w,h);
   const d=sctx.getImageData(0,0,W,H).data,pts=[];for(let y=0;y<H;y+=3)for(let x=0;x<W;x+=3)if(d[(y*W+x)*4+3]>120)pts.push(x-W/2,y-H/2);
   animalPts[nm]=pts;return pts;}
