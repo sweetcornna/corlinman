@@ -483,7 +483,7 @@ function build(){
   GRIDCELL=Math.max(4,Math.round(W/(mob?170:285))); GCOLS=Math.ceil(W/GRIDCELL)+1; GROWS=Math.ceil(H/GRIDCELL)+1; invCell=1/GRIDCELL;
   gCnt=new Float32Array(GCOLS*GROWS); gAcc=new Uint8Array(GCOLS*GROWS); gDep=new Float32Array(GCOLS*GROWS);
   buildLife();
-  shapeCache.clear(); creaturePoseCache.clear();
+  shapeCache.clear(); creaturePoseCache.clear(); sprPtCache.clear();
   const RX=W*0.62,RY=H*0.62,RZ=420,old=parts;parts=new Array(N);
   for(let i=0;i<N;i++){const o=old[i];parts[i]={
     x:o?o.x:(Math.random()-.5)*RX*2,y:o?o.y:(Math.random()-.5)*RY*2,z:o?o.z:(Math.random()-.5)*RZ*2,
@@ -568,8 +568,12 @@ function makeVine(x,flip,seed){
       for(let l=1;l<=3;l++) segs.push({x0:bx0,y0:by0,x1:bx0+dir*l*G*0.9,y1:by0-l*G*0.4,growT:0.52+a*0.30,phase:a*1.6,w:0.5,acc:(l===2?1:0)});}}
   return {h,seed,ph:seed*6.28,segs,ba:0.5};
 }
+let plants=[];
 function buildLife(){
   glows=[{x:W*0.10,y:H*0.88,ph:Math.random()*6.28},{x:W*0.90,y:H*0.89,ph:Math.random()*6.28}]; // fireflies low in the grass
+  const D=[['fern',0.05,1],['flower',0.11,1],['vine',0.16,1],['flower',0.95,-1],['fern',0.90,-1],['vine',0.84,-1]];
+  const Ml=[['flower',0.08,1],['fern',0.93,-1]];
+  plants=(MOB?Ml:D).map((p,i)=>{const fn=p[0]==='fern'?makeFern:(p[0]==='vine'?makeVine:makePlant);return fn(W*p[1],p[2],(i*0.173)%1);});
 }
 function addDot(X,Y,w,acc,dep){
   if(X<0||X>=W||Y<0||Y>=H)return;
@@ -581,20 +585,22 @@ function drawSegs(p,time,bend,dep){                    // sample each segment li
   for(let i=0;i<segs.length;i++){const s=segs[i];
     const gp=(envGrow-s.growT)/0.10; if(gp<=0)continue; const g=gp<1?gp:1;
     const dx=s.x1-s.x0, dy=s.y1-s.y0, dist=Math.hypot(dx,dy), steps=dist>1?Math.round(dist/gc):0;
-    for(let j=0;j<=steps;j++){const u=steps?j/steps:0, x=s.x0+dx*u, y=s.y0+dy*u;
+    for(let j=0;j<=steps;j++){const u=(steps?j/steps:0)*g, x=s.x0+dx*u, y=s.y0+dy*u;   // grow each segment by LENGTH as envGrow rises (scroll = growth)
       let hf=(H-y)/p.h; if(hf<0)hf=0; const h2=hf*hf;
       const swayX=bend*h2*16*ba + Math.sin(time*(0.30+0.15*hf)+s.phase+p.ph)*h2*5*ba;
-      addDot(x+swayX,y,s.w*g,s.acc,dep);}
+      addDot(x+swayX,y,s.w,s.acc,dep);}
   }
 }
-function lifeStep(time){           // fireflies twinkle in the dot lattice; plants + fauna are illustrated (drawn after the dots)
-  if(REDUCE||MOB)return;
+function lifeStep(time){           // fireflies + scroll-growing dot plants, stamped into the lattice
+  if(REDUCE)return;
   const S=GRIDCELL*0.85;
-  for(const g of glows){ if(envGrow<0.32)continue; const fade=clamp((envGrow-0.32)/0.12,0,1);
+  if(!MOB)for(const g of glows){ if(envGrow<0.32)continue; const fade=clamp((envGrow-0.32)/0.12,0,1);
     const cx=g.x+Math.sin(time*0.12+g.ph)*S*3, cy=g.y+Math.sin(time*0.17+g.ph*1.3)*S*2, pul=(0.8+0.2*Math.sin(time*0.5+g.ph))*fade;
     addDot(cx,cy,pul,1,0.5); addDot(cx+GRIDCELL*0.5,cy,pul*0.55,1,0.48); }
+  const gust=Math.sin(time*0.5)+Math.sin(time*2.3)*Math.min(kick*0.10,1.0);
+  for(const p of plants)drawSegs(p,time,gust,0.42);   // plants grow with envGrow (scroll)
 }
-/* ===== illustrated ink menagerie — hand-drawn sprites, stop-motion, moving across the dot film ===== */
+/* ===== dot-matrix menagerie — creatures sampled into the SAME 1-bit lattice, smooth cross-faded stop-motion, traveling across ===== */
 let featureObj=null, animMix=0;
 const SPR={};                                          // name -> {imgs:[Image], n}
 fetch('assets/cr/manifest.json').then(r=>r.json()).then(man=>{
@@ -602,23 +608,30 @@ fetch('assets/cr/manifest.json').then(r=>r.json()).then(man=>{
     list.forEach((fr,i)=>{const im=new Image();im.src='assets/cr/'+fr.f;o.imgs[i]=im;});
     SPR[nm]=o;}
 }).catch(()=>{});
-const tintCache=new Map();
-function inkSrc(im,dark){                               // light palette -> original sepia ink; dark palette -> luminance-inverted (light ink)
-  if(!dark)return im; const k=im.src; let cv=tintCache.get(k); if(cv)return cv;
-  const w=im.naturalWidth,h=im.naturalHeight; if(!w)return im;
-  cv=document.createElement('canvas');cv.width=w;cv.height=h;const c=cv.getContext('2d');
-  c.drawImage(im,0,0); const d=c.getImageData(0,0,w,h),p=d.data;
-  for(let i=0;i<p.length;i+=4){p[i]=255-p[i];p[i+1]=255-p[i+1];p[i+2]=255-p[i+2];}
-  c.putImageData(d,0,0); tintCache.set(k,cv); return cv;}
-function drawSpr(nm,frame,x,y,hpx,flip,rot,alpha,dark){
-  const o=SPR[nm]; if(!o)return; const idx=((frame%o.n)+o.n)%o.n, im=o.imgs[idx];
-  if(!im||!im.naturalWidth)return; const ar=im.naturalWidth/im.naturalHeight, dh=hpx, dw=dh*ar;
-  ctx.save(); ctx.globalAlpha=clamp(alpha,0,1); ctx.translate(x,y); if(rot)ctx.rotate(rot); if(flip)ctx.scale(-1,1);
-  ctx.imageSmoothingEnabled=true; ctx.drawImage(inkSrc(im,dark),-dw/2,-dh/2,dw,dh); ctx.restore();}
+const sprPtCache=new Map();                            // (name@frame@height) -> Float32Array silhouette points sampled at LATTICE resolution (so they read as dots)
+function sprPts(nm,frameIdx,hpx){
+  const o=SPR[nm]; if(!o)return null; const idx=((frameIdx%o.n)+o.n)%o.n, im=o.imgs[idx];
+  if(!im||!im.naturalWidth)return null;
+  const hh=Math.max(8,Math.round(hpx)), key=nm+'@'+idx+'@'+hh; let pts=sprPtCache.get(key); if(pts!==undefined)return pts;
+  const ar=im.naturalWidth/im.naturalHeight, dh=hh, dw=Math.max(1,Math.round(dh*ar));
+  sc.width=dw;sc.height=dh;sctx.setTransform(1,0,0,1,0,0);sctx.clearRect(0,0,dw,dh);sctx.imageSmoothingEnabled=true;sctx.drawImage(im,0,0,dw,dh);
+  const d=sctx.getImageData(0,0,dw,dh).data, arr=[], step=Math.max(2,Math.round(GRIDCELL*0.6)), jit=step*0.35;
+  for(let y=0;y<dh;y+=step)for(let x=0;x<dw;x+=step)if(d[(y*dw+x)*4+3]>110)arr.push(x-dw/2+(Math.random()-.5)*jit, y-dh/2+(Math.random()-.5)*jit);
+  pts=new Float32Array(arr); sprPtCache.set(key,pts); return pts;}
+function stampPts(nm,frameIdx,cx,cy,hpx,flip,rot,w,acc,scl){
+  const pts=sprPts(nm,frameIdx,hpx); if(!pts||!pts.length)return; scl=scl||1;
+  const ca=Math.cos(rot)*scl,sa=Math.sin(rot)*scl,sg=flip?-1:1;
+  for(let i=0;i<pts.length;i+=2){const x=pts[i]*sg,y=pts[i+1];addDot(cx+(x*ca-y*sa),cy+(x*sa+y*ca),w,acc,0.5);}}
+function stampCreature(nm,fIdx,cx,cy,hpx,flip,rot,acc){ // smooth stop-motion: hold the pose, then quick cross-fade to the next pose (no jerky snaps)
+  const o=SPR[nm]; if(!o)return; const f0=(((fIdx|0)%o.n)+o.n)%o.n, t=fIdx-Math.floor(fIdx);
+  const HOLD=0.5, w1=t<HOLD?0:smooth((t-HOLD)/(1-HOLD)), w0=1-w1;
+  stampPts(nm,f0,cx,cy,hpx,flip,rot,0.95*w0,acc);
+  if(w1>0.01)stampPts(nm,(f0+1)%o.n,cx,cy,hpx,flip,rot,0.95*w1,acc);}
 
 const ACT_KIND={bird:'fly',butterfly:'flutter',dog:'run',cat:'walk',deer:'leap',rabbit:'hop',fish:'swim'};
 const ACT_SIZE={bird:0.115,butterfly:0.066,dog:0.165,cat:0.130,deer:0.185,rabbit:0.118,fish:0.110};
 const ACT_FACE={bird:1,butterfly:1,dog:-1,cat:1,deer:-1,rabbit:1,fish:1};   // -1 = sprite art faces left (dog/deer drawn facing left)
+const ACT_FPS={fly:6,flutter:7,run:7,walk:4.5,swim:4};                       // stop-motion cadence (low = deliberate); leap/hop sync frames to the bound
 const SCENE_ACTORS={                                   // which creatures inhabit each narrative scene
   0:[{n:'butterfly'},{n:'butterfly',ph:0.55}],
   1:[{n:'bird'},{n:'butterfly',ph:0.30}],
@@ -632,54 +645,36 @@ const SCENE_ACTORS={                                   // which creatures inhabi
   9:[{n:'bird'},{n:'butterfly',ph:0.15},{n:'butterfly',ph:0.80}],
   10:[{n:'dog'},{n:'bird',ph:0.50}],
 };
-function drawActors(time){
+function drawActors(time){                              // stamp the scene's creatures into the lattice as dots (smooth travel + cross-faded poses)
   if(REDUCE)return; const list=SCENE_ACTORS[active]; if(!list)return;
-  const M=Math.min(W,H), dark=!curPalette().light, mar=M*0.22;
-  const vis=clamp(animMix,0,1)*clamp((envGrow-0.10)/0.22,0,1); if(vis<0.02)return;
-  for(let ai=0;ai<list.length;ai++){const a=list[ai],nm=a.n,kind=ACT_KIND[nm];
-    if(!SPR[nm])continue; const hpx=M*ACT_SIZE[nm]*(a.s||1), dir=a.dir||1, ph=(a.ph!==undefined?a.ph:ai*0.41);
-    let x,y,frame,flip,rot=0;
+  const M=Math.min(W,H), mar=M*0.22, vis=clamp(animMix,0,1)*clamp((envGrow-0.10)/0.22,0,1); if(vis<0.05)return;
+  for(let ai=0;ai<list.length;ai++){const a=list[ai],nm=a.n,kind=ACT_KIND[nm]; if(!SPR[nm])continue;
+    const hpx=M*ACT_SIZE[nm]*(a.s||1), dir=a.dir||1, ph=(a.ph!==undefined?a.ph:ai*0.41);
+    let x,y,fIdx,flip=dir<0,rot=0;
     if(kind==='fly'){const dur=13,t=((time/dur)+ph)%1,fr=dir>0?t:1-t;
-      x=lerp(-mar,W+mar,fr); y=H*(MOB?0.32:0.27)+Math.sin(t*9.42+ph*4)*M*0.05;
-      frame=Math.floor(time*8); rot=Math.sin(t*9.42+ph*4)*0.13*dir; flip=dir<0;}
-    else if(kind==='flutter'){const dur=19,t=((time/dur)+ph)%1,dx=Math.cos(time*0.9+ph*6);
-      x=W*(0.10+0.80*t)+Math.sin(time*0.9+ph*6)*M*0.06; y=H*(0.16+0.46*((ai*0.27+ph)%1))+Math.sin(time*0.7+ph*5)*M*0.045;
-      frame=Math.floor(time*9); flip=dx<0;}
+      x=lerp(-mar,W+mar,fr); y=H*(MOB?0.32:0.27)+Math.sin(t*9.42+ph*4)*M*0.05; rot=Math.sin(t*9.42+ph*4)*0.13*dir; fIdx=time*ACT_FPS.fly;}
+    else if(kind==='flutter'){const dur=19,t=((time/dur)+ph)%1;
+      x=W*(0.10+0.80*t)+Math.sin(time*0.9+ph*6)*M*0.06; y=H*(0.16+0.46*((ai*0.27+ph)%1))+Math.sin(time*0.7+ph*5)*M*0.045; flip=Math.cos(time*0.9+ph*6)<0; fIdx=time*ACT_FPS.flutter;}
     else if(kind==='run'){const dur=6.5,t=((time/dur)+ph)%1,fr=dir>0?t:1-t;
-      x=lerp(-mar,W+mar,fr); y=H*(MOB?0.80:0.84)+Math.sin(time*12)*M*0.008; frame=Math.floor(time*11); flip=dir<0;}
+      x=lerp(-mar,W+mar,fr); y=H*(MOB?0.80:0.84)+Math.sin(time*9)*M*0.006; fIdx=time*ACT_FPS.run;}
     else if(kind==='walk'){const dur=17,t=((time/dur)+ph)%1,fr=dir>0?t:1-t;
-      x=lerp(-mar,W+mar,fr); y=H*0.845+Math.sin(time*5)*M*0.005; frame=Math.floor(time*5); flip=dir<0;}
+      x=lerp(-mar,W+mar,fr); y=H*0.845+Math.sin(time*4)*M*0.004; fIdx=time*ACT_FPS.walk;}
     else if(kind==='swim'){const dur=15,t=((time/dur)+ph)%1,fr=dir>0?t:1-t;
-      x=lerp(-mar,W+mar,fr); y=H*0.50+Math.sin(t*12.57+ph*5)*M*0.12; frame=Math.floor(time*5); rot=Math.cos(t*12.57+ph*5)*0.16*dir; flip=dir<0;}
-    else{const isLeap=kind==='leap',hopDur=isLeap?1.4:0.95,span=W+2*mar,stride=M*(isLeap?0.6:0.42),hops=Math.max(3,Math.ceil(span/stride));
+      x=lerp(-mar,W+mar,fr); y=H*0.50+Math.sin(t*12.57+ph*5)*M*0.12; rot=Math.cos(t*12.57+ph*5)*0.16*dir; fIdx=time*ACT_FPS.swim;}
+    else{const isLeap=kind==='leap',hopDur=isLeap?1.5:1.05,span=W+2*mar,stride=M*(isLeap?0.6:0.42),hops=Math.max(3,Math.ceil(span/stride));
       const totalDur=hopDur*hops,k=(((time/totalDur)+ph)%1)*hops,hi=Math.floor(k),local=k-hi;
       x=dir>0?(-mar+(span/hops)*(hi+local)):(W+mar-(span/hops)*(hi+local));
-      const par=Math.sin(local*Math.PI); y=H*0.845-par*M*(isLeap?0.20:0.12); frame=Math.floor(local*4)%4;
-      rot=Math.cos(local*Math.PI)*0.10*dir; flip=dir<0;}
+      const par=Math.sin(local*Math.PI); y=H*0.845-par*M*(isLeap?0.20:0.12); rot=Math.cos(local*Math.PI)*0.10*dir; fIdx=local*SPR[nm].n;}  // hop/leap: frames synced to the bounce
     if(ACT_FACE[nm]<0)flip=!flip;
-    drawSpr(nm,frame,x,y,hpx,flip,rot,vis*0.97,dark);
+    stampCreature(nm,fIdx,x,y,hpx,flip,rot,0);
   }
 }
-const PLANTS_D=[{n:'fern',x:0.05,h:0.19,fl:1},{n:'flower',x:0.11,h:0.24,fl:1},{n:'grass',x:0.16,h:0.13,fl:1},
-                {n:'vine',x:0.96,h:0.33,fl:-1},{n:'grass',x:0.89,h:0.14,fl:-1},{n:'flower',x:0.93,h:0.20,fl:-1}];
-const PLANTS_M=[{n:'flower',x:0.10,h:0.21,fl:1},{n:'grass',x:0.92,h:0.16,fl:-1}];
-function drawPlants(time){
-  if(REDUCE)return; const M=Math.min(W,H),dark=!curPalette().light,layout=MOB?PLANTS_M:PLANTS_D;
-  const gust=Math.sin(time*0.5)+Math.sin(time*2.3)*Math.min(kick*0.10,1.0);
-  for(let i=0;i<layout.length;i++){const pl=layout[i],o=SPR[pl.n]; if(!o)continue; const im=o.imgs[0];
-    if(!im||!im.naturalWidth)continue; const grow=clamp((envGrow-0.08-i*0.02)/0.26,0,1); if(grow<0.02)continue;
-    const ar=im.naturalWidth/im.naturalHeight,dh=M*pl.h*grow,dw=dh*ar,bx=W*pl.x,by=H*0.99;
-    const sway=(gust*0.05+Math.sin(time*0.7+i)*0.025)*pl.fl;
-    ctx.save();ctx.globalAlpha=0.92*grow;ctx.translate(bx,by);ctx.rotate(sway);if(pl.fl<0)ctx.scale(-1,1);
-    ctx.imageSmoothingEnabled=true;ctx.drawImage(inkSrc(im,dark),-dw/2,-dh,dw,dh);ctx.restore();}}
-function drawFeature(time){                             // reason -> brain pulses · act -> gear spins (the illustrated centerpiece)
-  if(!featureObj||REDUCE)return; const o=SPR[featureObj]; if(!o)return; const im=o.imgs[0];
-  if(!im||!im.naturalWidth)return; const M=Math.min(W,H),dark=!curPalette().light,vis=clamp(animMix,0,1);
-  const ar=im.naturalWidth/im.naturalHeight; let rot=0,sc=1;
-  if(featureObj==='gear')rot=time*0.45; else sc=1+Math.sin(time*1.7)*0.035;
-  const dh=M*(MOB?0.34:0.42)*sc,dw=dh*ar,cx=panX,cy=H*0.40;
-  ctx.save();ctx.globalAlpha=vis;ctx.translate(cx,cy);if(rot)ctx.rotate(rot);
-  ctx.imageSmoothingEnabled=true;ctx.drawImage(inkSrc(im,dark),-dw/2,-dh/2,dw,dh);ctx.restore();}
+function drawFeature(time){                             // reason -> brain pulses · act -> gear spins, rendered as DOTS in the lattice
+  if(!featureObj||REDUCE)return; const o=SPR[featureObj]; if(!o)return;
+  const M=Math.min(W,H),vis=clamp(animMix,0,1); if(vis<0.05)return;
+  const cx=panX,cy=H*0.40, hpx=M*(MOB?0.34:0.42); let rot=0,scl=1;
+  if(featureObj==='gear')rot=time*0.4; else scl=1+Math.sin(time*1.7)*0.04;
+  stampPts(featureObj,0,cx,cy,hpx,false,rot,1,1,scl);}
 
 function frame(t){
   requestAnimationFrame(frame);
@@ -747,7 +742,8 @@ function frame(t){
     if(p.seed<0.06)gAcc[gi]=1;
     if(depth>gDep[gi])gDep[gi]=depth;
   }
-  lifeStep(time);
+  lifeStep(time);                                    // fireflies + scroll-growing plants into the lattice
+  drawActors(time); drawFeature(time);               // creatures + featured object stamped into the lattice (all dots)
 
   // render the dot-matrix lattice
   ctx.globalCompositeOperation='source-over';
@@ -764,7 +760,6 @@ function frame(t){
       ctx.fillRect(px+off,py+off,dot,dot);
     }
   }
-  drawPlants(time); drawFeature(time); drawActors(time);   // illustrated ink layer on top of the dot film
 }
 
 mascotImg=new Image();
