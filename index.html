@@ -47,7 +47,7 @@ nav .links a:hover{opacity:.45}
 .cap.show{opacity:1;transform:translateX(-50%) translateY(0)}
 .cap .eye{font-family:var(--mono);font-size:11px;letter-spacing:.34em;text-transform:uppercase;color:rgba(var(--muted),1);margin-bottom:22px}
 .cap .eye b{color:rgba(var(--accent),1);font-weight:500}
-.cap h2{font-family:var(--serif);font-weight:400;font-size:clamp(2.2rem,5.2vw,4.6rem);line-height:1.0;letter-spacing:-.015em;max-width:17ch}
+.cap h2{font-family:var(--serif);font-weight:400;font-size:clamp(2rem,4.8vw,4.2rem);line-height:1.0;letter-spacing:-.015em;max-width:17ch;overflow-wrap:break-word}
 .cap h2 em{font-style:italic;color:rgba(var(--accent),1)}
 .cap .sub{font-family:var(--mono);font-size:clamp(12.5px,1.25vw,15px);color:rgba(var(--muted),1);max-width:44ch;margin-top:22px;line-height:1.65;letter-spacing:.02em}
 .cap.quote h2{font-style:italic;font-size:clamp(2rem,4vw,3.4rem);line-height:1.18;max-width:15ch}
@@ -66,7 +66,7 @@ nav .links a:hover{opacity:.45}
 .cap.at-home.show{transform:translateX(-50%) translateY(-50%)}
 .cap.at-home h2{max-width:18ch}
 .cap.at-home .sub{max-width:44ch}
-.cap.at-home h2,.cap.at-home .sub{text-shadow:0 1px 24px rgba(var(--bg),.85)}
+.cap.at-home h2,.cap.at-home .sub{text-shadow:0 0 18px rgb(var(--bg)),0 0 9px rgb(var(--bg)),0 1px 3px rgb(var(--bg))}
 .cap.at-home .extra{align-items:center;width:min(760px,100%)}
 .cap.at-low{align-items:center;text-align:center;top:69%;transform:translateX(-50%) translateY(16px)}
 .cap.at-low.show{transform:translateX(-50%) translateY(0)}
@@ -196,7 +196,6 @@ footer .wrap{width:min(1180px,calc(100% - 56px));margin-inline:auto;display:flex
 
 <footer><div class="wrap"><span id="foot1"></span><span id="foot2"></span></div></footer>
 
-<div class="scrollhint" id="hint"></div>
 <div class="guide" id="guide"><span class="guideDot"></span><span id="guideText"></span></div>
 <div id="status"><span id="stL">corlinman://film</span><span id="stR"></span></div>
 
@@ -328,7 +327,7 @@ function toModel(p2,depth){const n=p2.length/2;if(!n)return new Float32Array(0);
   else{                                                 // desktop: clamp oversized figures into the viewport (keep position), so nothing is ever cut off
     let nx=1e9,xx=-1e9,ny=1e9,xy=-1e9;
     for(let i=0;i<n;i++){const x=out[i*3],y=out[i*3+1];if(x<nx)nx=x;if(x>xx)xx=x;if(y<ny)ny=y;if(y>xy)xy=y;}
-    const bw=(xx-nx)||1,bh=(xy-ny)||1,bcx=(nx+xx)/2,bcy=(ny+xy)/2,fit=Math.min(1,W*0.66/bw,H*0.56/bh);
+    const bw=(xx-nx)||1,bh=(xy-ny)||1,bcx=(nx+xx)/2,bcy=(ny+xy)/2,fit=Math.min(1,W*0.50/bw,H*0.56/bh);
     if(fit<1)for(let i=0;i<n;i++){out[i*3]=(out[i*3]-bcx)*fit+bcx;out[i*3+1]=(out[i*3+1]-bcy)*fit+bcy;out[i*3+2]*=fit;}}
   return out;}
 /* ===== concept icons — bold symbol silhouettes (the scene's idea, concretized) ===== */
@@ -435,7 +434,8 @@ const creatures={
     c.clearRect(cx-r*0.64,cy-r*0.7,r*0.12,r*0.12);},
 };function buildShape(name){const R=Math.min(W,H);let p2, depth=R*0.30;
   if(name==='scatter'||name.startsWith('object:'))return new Float32Array(0);  // object:* = illustrated centerpiece; dots become a soft aura
-  else if(name==='mascot'||name==='dissolve'){ p2=mascotReady?sample(shapeImg(mascotImg,0.6,0.5,0.40),3):sample(shapeText('●',{start:300,frac:0.4}),4); depth=R*(MOB?0.018:0.045); }
+  else if(name==='mascot'){ p2=mascotReady?sample(shapeImg(mascotImg,0.6,0.5,0.40),3):sample(shapeText('●',{start:300,frac:0.4}),4); depth=R*(MOB?0.018:0.045); }
+  else if(name==='dissolve'){ p2=mascotReady?sample(shapeImg(mascotImg,0.50,0.5,0.38),5):sample(shapeText('●',{start:300,frac:0.3}),5); depth=R*(MOB?0.012:0.022); }  // home: smaller + airier so it doesn't clutter the headline
   else if(name==='wordmark'){ p2=sample(shapeText('corlinman',{font:"'Instrument Serif',serif",weight:400,cy:0.44,frac:MOB?0.78:0.86,start:360}),3); depth=R*0.04; }
   else if(name.startsWith('creature:')){ const nm=name.slice(9); p2=sample(c=>{c.save();c.translate(0,-H*0.06);creatures[nm](c,W,H,creaturePose);c.restore();},2); depth=R*0.05; }
   else if(name.startsWith('icon:')){ const nm=name.slice(5); p2=sample(c=>{c.save();c.translate(0,-H*0.04);icons[nm](c,W,H);c.restore();},2); depth=R*0.04; }
@@ -502,12 +502,9 @@ function buildRail(){railEl.innerHTML='';FRAMES.forEach(()=>railEl.appendChild(d
 function applyUiLang(){
   document.documentElement.dataset.lang=LANG; document.documentElement.lang=(LANG==='zh'?'zh-CN':'en');
   const u=UI[LANG];
-  const HREF=['#','#','wiki.html','https://github.com/sweetcornna/corlinman'];
-  document.getElementById('navlinks').innerHTML=u.nav.map((t,i)=>`<a href="${HREF[i]}"${i===3?' target="_blank" rel="noopener"':''}>${t}</a>`).join('');
-  document.getElementById('hint').textContent=u.hint;
+  document.getElementById('navlinks').innerHTML=u.nav.map(t=>`<a>${t}</a>`).join('');
   document.getElementById('guideText').textContent=u.guide;
   document.getElementById('foot1').textContent=u.f1; document.getElementById('foot2').textContent=u.f2;
-  document.getElementById('langtog').textContent=(LANG==='zh'?'EN':'中文');
 }
 
 function onScroll(){
@@ -618,20 +615,18 @@ function sprPts(nm,frameIdx,hpx){
   const d=sctx.getImageData(0,0,dw,dh).data, arr=[], step=Math.max(2,Math.round(GRIDCELL*0.6)), jit=step*0.35;
   for(let y=0;y<dh;y+=step)for(let x=0;x<dw;x+=step)if(d[(y*dw+x)*4+3]>110)arr.push(x-dw/2+(Math.random()-.5)*jit, y-dh/2+(Math.random()-.5)*jit);
   pts=new Float32Array(arr); sprPtCache.set(key,pts); return pts;}
-function stampPts(nm,frameIdx,cx,cy,hpx,flip,rot,w,acc,scl){
+function stampPts(nm,frameIdx,cx,cy,hpx,flip,rot,w,acc,scl,warp){
   const pts=sprPts(nm,frameIdx,hpx); if(!pts||!pts.length)return; scl=scl||1;
   const ca=Math.cos(rot)*scl,sa=Math.sin(rot)*scl,sg=flip?-1:1;
-  for(let i=0;i<pts.length;i+=2){const x=pts[i]*sg,y=pts[i+1];addDot(cx+(x*ca-y*sa),cy+(x*sa+y*ca),w,acc,0.5);}}
-function stampCreature(nm,fIdx,cx,cy,hpx,flip,rot,acc){ // smooth stop-motion: hold the pose, then quick cross-fade to the next pose (no jerky snaps)
-  const o=SPR[nm]; if(!o)return; const f0=(((fIdx|0)%o.n)+o.n)%o.n, t=fIdx-Math.floor(fIdx);
-  const HOLD=0.5, w1=t<HOLD?0:smooth((t-HOLD)/(1-HOLD)), w0=1-w1;
-  stampPts(nm,f0,cx,cy,hpx,flip,rot,0.95*w0,acc);
-  if(w1>0.01)stampPts(nm,(f0+1)%o.n,cx,cy,hpx,flip,rot,0.95*w1,acc);}
+  for(let i=0;i<pts.length;i+=2){let x=pts[i],y=pts[i+1];
+    if(warp)y+=warp(x,y);                              // gentle per-point flex (wings/tail) in local space — continuous, so no twitch
+    x*=sg;addDot(cx+(x*ca-y*sa),cy+(x*sa+y*ca),w,acc,0.5);}}
+function stampCreature(nm,cx,cy,hpx,flip,rot,acc,warp){ // ONE silhouette (no pose-swap) — life comes from smooth travel + procedural warp
+  stampPts(nm,0,cx,cy,hpx,flip,rot,0.95,acc,1,warp);}
 
 const ACT_KIND={bird:'fly',butterfly:'flutter',dog:'run',cat:'walk',deer:'leap',rabbit:'hop',fish:'swim'};
 const ACT_SIZE={bird:0.115,butterfly:0.066,dog:0.165,cat:0.130,deer:0.185,rabbit:0.118,fish:0.110};
 const ACT_FACE={bird:1,butterfly:1,dog:-1,cat:1,deer:-1,rabbit:1,fish:1};   // -1 = sprite art faces left (dog/deer drawn facing left)
-const ACT_FPS={fly:6,flutter:7,run:7,walk:4.5,swim:4};                       // stop-motion cadence (low = deliberate); leap/hop sync frames to the bound
 const SCENE_ACTORS={                                   // which creatures inhabit each narrative scene
   0:[{n:'butterfly'},{n:'butterfly',ph:0.55}],
   1:[{n:'bird'},{n:'butterfly',ph:0.30}],
@@ -645,28 +640,31 @@ const SCENE_ACTORS={                                   // which creatures inhabi
   9:[{n:'bird'},{n:'butterfly',ph:0.15},{n:'butterfly',ph:0.80}],
   10:[{n:'dog'},{n:'bird',ph:0.50}],
 };
-function drawActors(time){                              // stamp the scene's creatures into the lattice as dots (smooth travel + cross-faded poses)
+function drawActors(time){                              // creatures as dots — smooth CONTINUOUS travel + gentle procedural life (no pose-swap → zero twitch)
   if(REDUCE)return; const list=SCENE_ACTORS[active]; if(!list)return;
   const M=Math.min(W,H), mar=M*0.22, vis=clamp(animMix,0,1)*clamp((envGrow-0.10)/0.22,0,1); if(vis<0.05)return;
   for(let ai=0;ai<list.length;ai++){const a=list[ai],nm=a.n,kind=ACT_KIND[nm]; if(!SPR[nm])continue;
     const hpx=M*ACT_SIZE[nm]*(a.s||1), dir=a.dir||1, ph=(a.ph!==undefined?a.ph:ai*0.41);
-    let x,y,fIdx,flip=dir<0,rot=0;
+    let x,y,flip=dir<0,rot=0,warp=null;
     if(kind==='fly'){const dur=13,t=((time/dur)+ph)%1,fr=dir>0?t:1-t;
-      x=lerp(-mar,W+mar,fr); y=H*(MOB?0.32:0.27)+Math.sin(t*9.42+ph*4)*M*0.05; rot=Math.sin(t*9.42+ph*4)*0.13*dir; fIdx=time*ACT_FPS.fly;}
+      x=lerp(-mar,W+mar,fr); y=H*(MOB?0.32:0.27)+Math.sin(time*0.8+ph*4)*M*0.03; rot=Math.sin(time*0.7+ph*3)*0.06*dir;
+      const flap=0.5+0.5*Math.sin(time*4.2+ph*5);      // smooth continuous wing-beat
+      warp=(lx,ly)=>{const up=clamp((-ly-hpx*0.03)/(hpx*0.42),0,1), out=clamp((Math.abs(lx)-hpx*0.14)/(hpx*0.45),0,1); return -up*out*hpx*0.18*flap;};}
     else if(kind==='flutter'){const dur=19,t=((time/dur)+ph)%1;
-      x=W*(0.10+0.80*t)+Math.sin(time*0.9+ph*6)*M*0.06; y=H*(0.16+0.46*((ai*0.27+ph)%1))+Math.sin(time*0.7+ph*5)*M*0.045; flip=Math.cos(time*0.9+ph*6)<0; fIdx=time*ACT_FPS.flutter;}
+      x=W*(0.10+0.80*t)+Math.sin(time*0.9+ph*6)*M*0.06; y=H*(0.16+0.46*((ai*0.27+ph)%1))+Math.sin(time*0.7+ph*5)*M*0.045; flip=Math.cos(time*0.9+ph*6)<0; rot=Math.sin(time*1.1+ph)*0.10;}
     else if(kind==='run'){const dur=6.5,t=((time/dur)+ph)%1,fr=dir>0?t:1-t;
-      x=lerp(-mar,W+mar,fr); y=H*(MOB?0.80:0.84)+Math.sin(time*9)*M*0.006; fIdx=time*ACT_FPS.run;}
+      x=lerp(-mar,W+mar,fr); y=H*(MOB?0.80:0.84)+Math.sin(time*2.4+ph)*M*0.012;}
     else if(kind==='walk'){const dur=17,t=((time/dur)+ph)%1,fr=dir>0?t:1-t;
-      x=lerp(-mar,W+mar,fr); y=H*0.845+Math.sin(time*4)*M*0.004; fIdx=time*ACT_FPS.walk;}
+      x=lerp(-mar,W+mar,fr); y=H*0.845+Math.sin(time*1.7+ph)*M*0.008;}
     else if(kind==='swim'){const dur=15,t=((time/dur)+ph)%1,fr=dir>0?t:1-t;
-      x=lerp(-mar,W+mar,fr); y=H*0.50+Math.sin(t*12.57+ph*5)*M*0.12; rot=Math.cos(t*12.57+ph*5)*0.16*dir; fIdx=time*ACT_FPS.swim;}
+      x=lerp(-mar,W+mar,fr); y=H*0.50+Math.sin(t*12.57+ph*5)*M*0.12; rot=Math.cos(t*12.57+ph*5)*0.14*dir;
+      const sw=Math.sin(time*3+ph*4); warp=(lx,ly)=>{const tail=clamp((-lx-hpx*0.05)/(hpx*0.55),0,1); return tail*sw*hpx*0.12;};}  // tail sways (rear = local -x)
     else{const isLeap=kind==='leap',hopDur=isLeap?1.5:1.05,span=W+2*mar,stride=M*(isLeap?0.6:0.42),hops=Math.max(3,Math.ceil(span/stride));
       const totalDur=hopDur*hops,k=(((time/totalDur)+ph)%1)*hops,hi=Math.floor(k),local=k-hi;
       x=dir>0?(-mar+(span/hops)*(hi+local)):(W+mar-(span/hops)*(hi+local));
-      const par=Math.sin(local*Math.PI); y=H*0.845-par*M*(isLeap?0.20:0.12); rot=Math.cos(local*Math.PI)*0.10*dir; fIdx=local*SPR[nm].n;}  // hop/leap: frames synced to the bounce
+      const par=Math.sin(local*Math.PI); y=H*0.845-par*M*(isLeap?0.20:0.12); rot=Math.cos(local*Math.PI)*0.10*dir;}  // the bound itself carries the motion (smooth parabola)
     if(ACT_FACE[nm]<0)flip=!flip;
-    stampCreature(nm,fIdx,x,y,hpx,flip,rot,0);
+    stampCreature(nm,x,y,hpx,flip,rot,0,warp);
   }
 }
 function drawFeature(time){                             // reason -> brain pulses · act -> gear spins, rendered as DOTS in the lattice
@@ -684,7 +682,7 @@ function frame(t){
   const time=t*0.001, pal=curPalette();applyCss(pal);
   const onLight=pal.light;
   const f=FRAMES[active]||FRAMES[0];
-  const _pf=MOB?0.5:(0.5+(f.focus-0.5)*0.5); panX+=((_pf*W)-panX)*0.045; panY+=(((MOB?0.42:0.42)*H)-panY)*0.045;  // compress pan; center on mobile
+  const _pf=MOB?0.5:(0.5+(f.focus-0.5)*0.85); panX+=((_pf*W)-panX)*0.045; panY+=(((MOB?0.42:0.42)*H)-panY)*0.045;  // push figures further to their side so captions get a clear half
   const tYaw=MOB?0:(pYaw*0.42+Math.sin(time*0.16)*0.055), tPitch=MOB?0:(pPitch*0.26+Math.cos(time*0.13)*0.03);
   yaw+=(tYaw-yaw)*0.05; pitch+=(tPitch-pitch)*0.05;
   const cy=Math.cos(yaw),sy=Math.sin(yaw),cx=Math.cos(pitch),sx=Math.sin(pitch);
