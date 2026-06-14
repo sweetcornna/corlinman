@@ -51,7 +51,7 @@
   /* RGB variants for transparency */
   --bone-rgb: 240, 237, 229;
   --ink-rgb: 58, 48, 40;
-  --muted-rgb: 140, 128, 114;
+  --muted-rgb: 104, 93, 80;
   --accent-rgb: 176, 118, 72;
   
   /* Type stack */
@@ -267,7 +267,7 @@ nav {
 /* ---- Status line (fixed top-right, mono, subtle) ---- */
 .status-line {
   position: fixed;
-  top: 18px;
+  bottom: 14px;
   right: clamp(20px, 4vw, 52px);
   z-index: 49;
   font-family: var(--mono);
@@ -277,6 +277,7 @@ nav {
   color: rgba(var(--muted-rgb), 0.45);
   pointer-events: none;
 }
+@media(max-width:760px){ .status-line{ display:none } }
 
 /* ---- Main container (two-column: sidebar + article) ---- */
 .shell {
