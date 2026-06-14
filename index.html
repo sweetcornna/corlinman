@@ -127,7 +127,7 @@ footer .wrap{width:min(1180px,calc(100% - 56px));margin-inline:auto;display:flex
 @media(max-width:700px),(max-height:560px){
   nav{padding:14px 18px}
   .cap{width:calc(100% - 40px)!important}
-  .cap.at-l,.cap.at-r,.cap.at-c,.cap.at-bl,.cap.at-cb,.cap.at-low{top:57%!important;bottom:auto!important;align-items:center!important;text-align:center!important;transform:translateX(-50%) translateY(14px)!important}
+  .cap.at-l,.cap.at-r,.cap.at-c,.cap.at-bl,.cap.at-cb,.cap.at-low{top:62%!important;bottom:auto!important;align-items:center!important;text-align:center!important;transform:translateX(-50%) translateY(14px)!important}
   .cap.show{transform:translateX(-50%) translateY(0)!important}
   .cap h2,.cap.quote h2{max-width:18ch!important;font-size:clamp(1.45rem,6.6vw,2.2rem)!important;line-height:1.12!important;text-align:center!important;margin:0 auto!important}
   .cap .eye{margin-bottom:10px;letter-spacing:.2em}
@@ -275,7 +275,7 @@ function toModel(p2,depth){const n=p2.length/2;if(!n)return new Float32Array(0);
   if(MOB){                                            // GUARANTEED fit: recenter + scale every figure into the viewport
     let nx=1e9,xx=-1e9,ny=1e9,xy=-1e9;
     for(let i=0;i<n;i++){const x=out[i*3],y=out[i*3+1];if(x<nx)nx=x;if(x>xx)xx=x;if(y<ny)ny=y;if(y>xy)xy=y;}
-    const bw=(xx-nx)||1,bh=(xy-ny)||1,bcx=(nx+xx)/2,bcy=(ny+xy)/2,fit=Math.min(W*0.80/bw,H*0.44/bh);
+    const bw=(xx-nx)||1,bh=(xy-ny)||1,bcx=(nx+xx)/2,bcy=(ny+xy)/2,fit=Math.min(W*0.78/bw,H*0.36/bh);
     for(let i=0;i<n;i++){out[i*3]=(out[i*3]-bcx)*fit;out[i*3+1]=(out[i*3+1]-bcy)*fit;out[i*3+2]*=fit;}}
   return out;}
 /* ===== concept icons — bold symbol silhouettes (the scene's idea, concretized) ===== */
@@ -571,7 +571,7 @@ function frame(t){
   const time=t*0.001, pal=curPalette();applyCss(pal);
   const onLight=pal.light;
   const f=FRAMES[active]||FRAMES[0];
-  const _pf=MOB?0.5:(0.5+(f.focus-0.5)*0.5); panX+=((_pf*W)-panX)*0.045; panY+=(((MOB?0.30:0.42)*H)-panY)*0.045;  // compress pan; center on mobile
+  const _pf=MOB?0.5:(0.5+(f.focus-0.5)*0.5); panX+=((_pf*W)-panX)*0.045; panY+=(((MOB?0.42:0.42)*H)-panY)*0.045;  // compress pan; center on mobile
   const tYaw=MOB?0:(pYaw*0.42+Math.sin(time*0.16)*0.055), tPitch=MOB?0:(pPitch*0.26+Math.cos(time*0.13)*0.03);
   yaw+=(tYaw-yaw)*0.05; pitch+=(tPitch-pitch)*0.05;
   const cy=Math.cos(yaw),sy=Math.sin(yaw),cx=Math.cos(pitch),sx=Math.sin(pitch);
