@@ -216,6 +216,38 @@ def test_upsert_custom_named_openai_kind_does_not_autobind_via_env(
         assert "models" not in on_disk or not on_disk.get("models", {}).get("default")
 
 
+def test_upsert_anthropic_builtin_autobinds_with_env_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("", encoding="utf-8")
+    _stub_probe(monkeypatch, ["claude-opus-4-8"])
+    # AnthropicProvider falls back to ANTHROPIC_API_KEY, so the built-in
+    # anthropic slot is usable env-only and must autobind.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant")
+
+    for _state, client in _with_state(config_path):
+        resp = client.post(
+            "/admin/providers",
+            json={"name": "anthropic", "kind": "anthropic", "enabled": True},
+        )
+        assert resp.status_code == 200, resp.text
+
+        on_disk = _on_disk(config_path)
+        assert "api_key" not in on_disk["providers"]["anthropic"]
+        assert on_disk["models"]["default"] == "anthropic"
+
+
+def test_autobind_env_fallback_map_is_consistent() -> None:
+    # Drift guard: every env-fallback kind must actually require an api key,
+    # and the ONLY api-key-required kind without an env fallback is bedrock
+    # (AWS SigV4). Adding a new api-key kind forces a deliberate choice here.
+    fallback = set(_providers_lib._AUTOBIND_API_KEY_ENV_FALLBACK)
+    required = set(_providers_lib._AUTOBIND_REQUIRES_API_KEY_KINDS)
+    assert fallback.issubset(required)
+    assert required - fallback == {"bedrock"}
+
+
 def test_upsert_does_not_clobber_existing_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

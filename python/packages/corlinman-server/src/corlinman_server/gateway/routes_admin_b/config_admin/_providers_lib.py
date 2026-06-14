@@ -290,14 +290,32 @@ _AUTOBIND_REQUIRES_API_KEY_KINDS: frozenset[str] = frozenset(
 )
 
 
-# Kinds whose built-in adapter authenticates via a documented env-var key when
-# the provider entry omits one (``OpenAIProvider.build()`` falls back to
-# ``OPENAI_API_KEY``). Such a slot is usable without a config key, so the
-# api-key autobind guard must treat the env-var as satisfying the requirement —
-# otherwise env-only deployments enable a working provider but never get a
-# ``models.default``.
+# Built-in adapters that authenticate via a documented env-var key when the
+# provider entry omits one (e.g. ``OpenAIProvider`` falls back to
+# ``OPENAI_API_KEY``, ``DeepSeekProvider`` to ``DEEPSEEK_API_KEY``). Such a slot
+# is usable without a config key, so the api-key autobind guard treats the
+# env-var as satisfying the requirement — otherwise env-only deployments enable
+# a working provider but never get a ``models.default``.
+#
+# These MUST mirror each adapter's own env fallback (see the provider classes in
+# ``corlinman_providers``); ``test_autobind_env_fallback_map_is_consistent``
+# pins that every api-key-required kind except ``bedrock`` is covered. ``bedrock``
+# is intentionally excluded: it authenticates via AWS SigV4 (``api_key`` as
+# ``"access:secret"`` or the ``AWS_*`` credential chain), not a single api-key
+# env, so it stays gated on explicit config.
 _AUTOBIND_API_KEY_ENV_FALLBACK: dict[str, tuple[str, ...]] = {
     "openai": ("OPENAI_API_KEY",),
+    "anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN"),
+    "google": ("GOOGLE_API_KEY",),
+    "deepseek": ("DEEPSEEK_API_KEY",),
+    "qwen": ("DASHSCOPE_API_KEY",),
+    "glm": ("ZHIPU_API_KEY",),
+    "mistral": ("MISTRAL_API_KEY",),
+    "cohere": ("COHERE_API_KEY",),
+    "together": ("TOGETHER_API_KEY",),
+    "groq": ("GROQ_API_KEY",),
+    "replicate": ("REPLICATE_API_TOKEN",),
+    "azure": ("AZURE_OPENAI_API_KEY",),
 }
 
 
