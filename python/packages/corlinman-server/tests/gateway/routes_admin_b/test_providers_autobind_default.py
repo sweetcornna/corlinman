@@ -150,6 +150,50 @@ def test_upsert_credentialed_provider_without_key_does_not_autobind(
         assert "models" not in on_disk or not on_disk.get("models", {}).get("default")
 
 
+def test_upsert_openai_without_key_autobinds_when_env_key_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("", encoding="utf-8")
+    _stub_probe(monkeypatch, ["gpt-4o-mini"])
+    # OpenAIProvider.build() falls back to OPENAI_API_KEY, so a keyless openai
+    # slot is usable and must still autobind a default.
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-env")
+
+    for _state, client in _with_state(config_path):
+        resp = client.post(
+            "/admin/providers",
+            json={"name": "openai", "kind": "openai", "enabled": True},
+        )
+        assert resp.status_code == 200, resp.text
+
+        on_disk = _on_disk(config_path)
+        assert "api_key" not in on_disk["providers"]["openai"]
+        assert on_disk["models"]["default"] == "openai"
+        assert on_disk["models"]["aliases"]["openai"]["provider"] == "openai"
+
+
+def test_upsert_openai_without_key_or_env_does_not_autobind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("", encoding="utf-8")
+    _stub_probe(monkeypatch, ["gpt-4o-mini"])
+    # No config key AND no env key → the slot can't authenticate, so no default
+    # is bound (the env-var fallback is what makes the keyless case usable).
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    for _state, client in _with_state(config_path):
+        resp = client.post(
+            "/admin/providers",
+            json={"name": "openai", "kind": "openai", "enabled": True},
+        )
+        assert resp.status_code == 200, resp.text
+
+        on_disk = _on_disk(config_path)
+        assert "models" not in on_disk or not on_disk.get("models", {}).get("default")
+
+
 def test_upsert_does_not_clobber_existing_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

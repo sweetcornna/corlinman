@@ -290,13 +290,34 @@ _AUTOBIND_REQUIRES_API_KEY_KINDS: frozenset[str] = frozenset(
 )
 
 
+# Kinds whose built-in adapter authenticates via a documented env-var key when
+# the provider entry omits one (``OpenAIProvider.build()`` falls back to
+# ``OPENAI_API_KEY``). Such a slot is usable without a config key, so the
+# api-key autobind guard must treat the env-var as satisfying the requirement —
+# otherwise env-only deployments enable a working provider but never get a
+# ``models.default``.
+_AUTOBIND_API_KEY_ENV_FALLBACK: dict[str, tuple[str, ...]] = {
+    "openai": ("OPENAI_API_KEY",),
+}
+
+
+def _env_api_key_available(kind: str) -> bool:
+    return any(
+        (os.environ.get(var) or "").strip()
+        for var in _AUTOBIND_API_KEY_ENV_FALLBACK.get(kind, ())
+    )
+
+
 def _can_autobind_default_alias(entry: dict[str, Any]) -> bool:
     kind = _normalize_kind(str(entry.get("kind") or "openai_compatible"))
     if _provider_tts_backend(entry) == "fish":
         return False
     if kind == "openai_compatible" and not _has_base_url(entry):
         return False
-    return kind not in _AUTOBIND_REQUIRES_API_KEY_KINDS or _has_api_key(entry)
+    if kind not in _AUTOBIND_REQUIRES_API_KEY_KINDS or _has_api_key(entry):
+        return True
+    # No config key — still bindable if the adapter has a usable env-var key.
+    return _env_api_key_available(kind)
 
 
 def _bad(code: str, message: str) -> JSONResponse:
