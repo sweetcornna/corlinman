@@ -433,7 +433,9 @@ const creatures={
     c.beginPath();c.moveTo(cx+r*0.14,cy+r*0.9);c.lineTo(cx+r*0.14,cy+r*1.25);c.stroke();
     c.clearRect(cx-r*0.64,cy-r*0.7,r*0.12,r*0.12);},
 };function buildShape(name){const R=Math.min(W,H);let p2, depth=R*0.30;
-  if(name==='scatter'||name.startsWith('object:'))return new Float32Array(0);  // object:* = illustrated centerpiece; dots become a soft aura
+  if(name==='scatter')return new Float32Array(0);
+  else if(name.startsWith('object:')){ const nm=name.slice(7), im=heroImg[nm];   // gear/brain = particle figure sampled from the ink PNG → morphs in smoothly like the other figures
+    p2=(im&&im.naturalWidth)?sample(shapeImg(im,MOB?0.40:0.50,0.5,0.40),3):sample(c=>{c.save();c.translate(0,-H*0.04);icons[nm]&&icons[nm](c,W,H);c.restore();},2); depth=R*0.045; }
   else if(name==='mascot'){ p2=mascotReady?sample(shapeImg(mascotImg,0.6,0.5,0.40),3):sample(shapeText('●',{start:300,frac:0.4}),4); depth=R*(MOB?0.018:0.045); }
   else if(name==='dissolve'){ p2=mascotReady?sample(shapeImg(mascotImg,0.50,0.5,0.38),5):sample(shapeText('●',{start:300,frac:0.3}),5); depth=R*(MOB?0.012:0.022); }  // home: smaller + airier so it doesn't clutter the headline
   else if(name==='wordmark'){ p2=sample(shapeText('corlinman',{font:"'Instrument Serif',serif",weight:400,cy:0.44,frac:MOB?0.78:0.86,start:360}),3); depth=R*0.04; }
@@ -502,9 +504,11 @@ function buildRail(){railEl.innerHTML='';FRAMES.forEach(()=>railEl.appendChild(d
 function applyUiLang(){
   document.documentElement.dataset.lang=LANG; document.documentElement.lang=(LANG==='zh'?'zh-CN':'en');
   const u=UI[LANG];
-  document.getElementById('navlinks').innerHTML=u.nav.map(t=>`<a>${t}</a>`).join('');
+  const HREF=['#','#','wiki.html','https://github.com/sweetcornna/corlinman'];
+  document.getElementById('navlinks').innerHTML=u.nav.map((t,i)=>`<a href="${HREF[i]}"${i===3?' target="_blank" rel="noopener"':''}>${t}</a>`).join('');
   document.getElementById('guideText').textContent=u.guide;
   document.getElementById('foot1').textContent=u.f1; document.getElementById('foot2').textContent=u.f2;
+  document.getElementById('langtog').textContent=(LANG==='zh'?'EN':'中文');
 }
 
 function onScroll(){
@@ -619,10 +623,10 @@ function stampPts(nm,frameIdx,cx,cy,hpx,flip,rot,w,acc,scl,warp){
   const pts=sprPts(nm,frameIdx,hpx); if(!pts||!pts.length)return; scl=scl||1;
   const ca=Math.cos(rot)*scl,sa=Math.sin(rot)*scl,sg=flip?-1:1;
   for(let i=0;i<pts.length;i+=2){let x=pts[i],y=pts[i+1];
-    if(warp)y+=warp(x,y);                              // gentle per-point flex (wings/tail) in local space — continuous, so no twitch
+    if(warp){const d=warp(x,y);x+=d[0];y+=d[1];}       // per-point body flex (legs/wings/tail) in local space — continuous sine, so smooth
     x*=sg;addDot(cx+(x*ca-y*sa),cy+(x*sa+y*ca),w,acc,0.5);}}
-function stampCreature(nm,cx,cy,hpx,flip,rot,acc,warp){ // ONE silhouette (no pose-swap) — life comes from smooth travel + procedural warp
-  stampPts(nm,0,cx,cy,hpx,flip,rot,0.95,acc,1,warp);}
+function stampCreature(nm,cx,cy,hpx,flip,rot,acc,warp,wmul){ // ONE silhouette; life = smooth travel + procedural body animation; wmul fades it at the screen edges
+  stampPts(nm,0,cx,cy,hpx,flip,rot,0.95*(wmul===undefined?1:wmul),acc,1,warp);}
 
 const ACT_KIND={bird:'fly',butterfly:'flutter',dog:'run',cat:'walk',deer:'leap',rabbit:'hop',fish:'swim'};
 const ACT_SIZE={bird:0.115,butterfly:0.066,dog:0.165,cat:0.130,deer:0.185,rabbit:0.118,fish:0.110};
@@ -640,39 +644,36 @@ const SCENE_ACTORS={                                   // which creatures inhabi
   9:[{n:'bird'},{n:'butterfly',ph:0.15},{n:'butterfly',ph:0.80}],
   10:[{n:'dog'},{n:'bird',ph:0.50}],
 };
-function drawActors(time){                              // creatures as dots — smooth CONTINUOUS travel + gentle procedural life (no pose-swap → zero twitch)
+function drawActors(time){                              // creatures as dots — smooth CONTINUOUS travel + REAL procedural body animation (legs/wings/tail); edge-fade so no teleport
   if(REDUCE)return; const list=SCENE_ACTORS[active]; if(!list)return;
-  const M=Math.min(W,H), mar=M*0.22, vis=clamp(animMix,0,1)*clamp((envGrow-0.10)/0.22,0,1); if(vis<0.05)return;
+  const M=Math.min(W,H), mar=M*0.14, vis=clamp(animMix,0,1)*clamp((envGrow-0.10)/0.22,0,1); if(vis<0.05)return;
   for(let ai=0;ai<list.length;ai++){const a=list[ai],nm=a.n,kind=ACT_KIND[nm]; if(!SPR[nm])continue;
     const hpx=M*ACT_SIZE[nm]*(a.s||1), dir=a.dir||1, ph=(a.ph!==undefined?a.ph:ai*0.41);
     let x,y,flip=dir<0,rot=0,warp=null;
-    if(kind==='fly'){const dur=13,t=((time/dur)+ph)%1,fr=dir>0?t:1-t;
-      x=lerp(-mar,W+mar,fr); y=H*(MOB?0.32:0.27)+Math.sin(time*0.8+ph*4)*M*0.03; rot=Math.sin(time*0.7+ph*3)*0.06*dir;
-      const flap=0.5+0.5*Math.sin(time*4.2+ph*5);      // smooth continuous wing-beat
-      warp=(lx,ly)=>{const up=clamp((-ly-hpx*0.03)/(hpx*0.42),0,1), out=clamp((Math.abs(lx)-hpx*0.14)/(hpx*0.45),0,1); return -up*out*hpx*0.18*flap;};}
-    else if(kind==='flutter'){const dur=19,t=((time/dur)+ph)%1;
-      x=W*(0.10+0.80*t)+Math.sin(time*0.9+ph*6)*M*0.06; y=H*(0.16+0.46*((ai*0.27+ph)%1))+Math.sin(time*0.7+ph*5)*M*0.045; flip=Math.cos(time*0.9+ph*6)<0; rot=Math.sin(time*1.1+ph)*0.10;}
-    else if(kind==='run'){const dur=6.5,t=((time/dur)+ph)%1,fr=dir>0?t:1-t;
-      x=lerp(-mar,W+mar,fr); y=H*(MOB?0.80:0.84)+Math.sin(time*2.4+ph)*M*0.012;}
-    else if(kind==='walk'){const dur=17,t=((time/dur)+ph)%1,fr=dir>0?t:1-t;
-      x=lerp(-mar,W+mar,fr); y=H*0.845+Math.sin(time*1.7+ph)*M*0.008;}
-    else if(kind==='swim'){const dur=15,t=((time/dur)+ph)%1,fr=dir>0?t:1-t;
-      x=lerp(-mar,W+mar,fr); y=H*0.50+Math.sin(t*12.57+ph*5)*M*0.12; rot=Math.cos(t*12.57+ph*5)*0.14*dir;
-      const sw=Math.sin(time*3+ph*4); warp=(lx,ly)=>{const tail=clamp((-lx-hpx*0.05)/(hpx*0.55),0,1); return tail*sw*hpx*0.12;};}  // tail sways (rear = local -x)
-    else{const isLeap=kind==='leap',hopDur=isLeap?1.5:1.05,span=W+2*mar,stride=M*(isLeap?0.6:0.42),hops=Math.max(3,Math.ceil(span/stride));
+    if(kind==='fly'){const dur=15,t=((time/dur)+ph)%1,fr=dir>0?t:1-t;
+      x=lerp(-mar,W+mar,fr); y=H*(MOB?0.32:0.27)+Math.sin(time*0.8+ph*4)*M*0.025; rot=Math.sin(time*0.7+ph*3)*0.05*dir;
+      const fl=0.5+0.5*Math.sin(time*5+ph*5);          // wing-beat (continuous → smooth)
+      warp=(lx,ly)=>{const up=clamp((-ly)/(hpx*0.42),0,1), out=clamp((Math.abs(lx)-hpx*0.10)/(hpx*0.4),0,1); return [0,-up*out*hpx*0.30*fl];};}  // wings beat
+    else if(kind==='flutter'){const dur=22,t=((time/dur)+ph)%1; const fl=Math.sin(time*6+ph*4);
+      x=W*(0.10+0.80*t)+Math.sin(time*0.9+ph*6)*M*0.05; y=H*(0.16+0.46*((ai*0.27+ph)%1))+Math.sin(time*0.7+ph*5)*M*0.04; flip=Math.cos(time*0.9+ph*6)<0;
+      warp=(lx,ly)=>{const o=clamp((Math.abs(lx)-hpx*0.05)/(hpx*0.4),0,1); return [-Math.sign(lx)*o*hpx*0.18*(0.45+0.55*Math.abs(fl)),0];};}  // wings open/close
+    else if(kind==='run'||kind==='walk'){const fast=kind==='run',dur=fast?7:18,t=((time/dur)+ph)%1,fr=dir>0?t:1-t;
+      x=lerp(-mar,W+mar,fr); y=H*(MOB&&fast?0.80:0.845)+Math.abs(Math.sin(time*(fast?6:3)+ph))*M*(fast?0.012:0.005);
+      const gp=time*(fast?9:4.5)+ph, amp=hpx*(fast?0.16:0.10);
+      warp=(lx,ly)=>{const leg=clamp((ly-hpx*0.06)/(hpx*0.42),0,1); if(leg<=0)return [0,0]; const phase=lx<0?gp:gp+Math.PI; return [Math.cos(phase)*amp*leg, -Math.max(0,Math.sin(phase))*amp*0.45*leg];};}  // legs swing from the hip (front/back opposite)
+    else if(kind==='swim'){const dur=16,t=((time/dur)+ph)%1,fr=dir>0?t:1-t; const sw=Math.sin(time*3.5+ph*4);
+      x=lerp(-mar,W+mar,fr); y=H*0.50+Math.sin(t*12.57+ph*5)*M*0.11; rot=Math.cos(t*12.57+ph*5)*0.12*dir;
+      warp=(lx,ly)=>{const tail=clamp((-lx-hpx*0.02)/(hpx*0.6),0,1); return [0,tail*sw*hpx*0.20];};}  // tail sweeps
+    else{const isLeap=kind==='leap',hopDur=isLeap?1.6:1.1,span=W+2*mar,stride=M*(isLeap?0.55:0.40),hops=Math.max(3,Math.ceil(span/stride));
       const totalDur=hopDur*hops,k=(((time/totalDur)+ph)%1)*hops,hi=Math.floor(k),local=k-hi;
       x=dir>0?(-mar+(span/hops)*(hi+local)):(W+mar-(span/hops)*(hi+local));
-      const par=Math.sin(local*Math.PI); y=H*0.845-par*M*(isLeap?0.20:0.12); rot=Math.cos(local*Math.PI)*0.10*dir;}  // the bound itself carries the motion (smooth parabola)
+      const par=Math.sin(local*Math.PI); y=H*0.845-par*M*(isLeap?0.20:0.13); rot=Math.cos(local*Math.PI)*0.09*dir;
+      warp=(lx,ly)=>{const leg=clamp((ly-hpx*0.05)/(hpx*0.45),0,1); return [0,-leg*par*hpx*0.16];};}  // legs tuck up at the apex of the bound
     if(ACT_FACE[nm]<0)flip=!flip;
-    stampCreature(nm,x,y,hpx,flip,rot,0,warp);
+    const ef=clamp(Math.min(x,W-x)/(M*0.15),0,1);       // fade in/out at the screen edges → the loop wrap is invisible (no teleport)
+    stampCreature(nm,x,y,hpx,flip,rot,0,warp,vis*ef);
   }
 }
-function drawFeature(time){                             // reason -> brain pulses · act -> gear spins, rendered as DOTS in the lattice
-  if(!featureObj||REDUCE)return; const o=SPR[featureObj]; if(!o)return;
-  const M=Math.min(W,H),vis=clamp(animMix,0,1); if(vis<0.05)return;
-  const cx=panX,cy=H*0.40, hpx=M*(MOB?0.34:0.42); let rot=0,scl=1;
-  if(featureObj==='gear')rot=time*0.4; else scl=1+Math.sin(time*1.7)*0.04;
-  stampPts(featureObj,0,cx,cy,hpx,false,rot,1,1,scl);}
 
 function frame(t){
   requestAnimationFrame(frame);
@@ -704,6 +705,11 @@ function frame(t){
   const ir=ink[0],ig=ink[1],ib=ink[2],arc=acc[0],agc=acc[1],abc=acc[2];
   const aprog=1-morphT;
   gCnt.fill(0); gAcc.fill(0); gDep.fill(0);
+
+  if(featureObj&&!REDUCE){                            // gear slowly spins · brain gently pulses — by rotating/scaling the particle TARGETS (keeps the morph-in smooth)
+    const base=shapeFor('object:'+featureObj),n=base.length/3;
+    if(n){const rot=(featureObj==='gear')?time*0.32:0, scl=(featureObj==='brain')?1+Math.sin(time*1.5)*0.03:1, ca=Math.cos(rot)*scl,sa=Math.sin(rot)*scl;
+      for(let i=0;i<N;i++){const p=parts[i]; if(p.amb)continue; const k=(i%n)*3, bx=base[k],by=base[k+1]; p.tx=bx*ca-by*sa; p.ty=bx*sa+by*ca; p.tz=base[k+2]*scl;}}}
 
   // physics + accumulate particles into the dot lattice
   for(let i=0;i<N;i++){
@@ -741,7 +747,7 @@ function frame(t){
     if(depth>gDep[gi])gDep[gi]=depth;
   }
   lifeStep(time);                                    // fireflies + scroll-growing plants into the lattice
-  drawActors(time); drawFeature(time);               // creatures + featured object stamped into the lattice (all dots)
+  drawActors(time);                                  // ambient creatures stamped into the lattice (gear/brain are particle figures now)
 
   // render the dot-matrix lattice
   ctx.globalCompositeOperation='source-over';
@@ -763,6 +769,8 @@ function frame(t){
 mascotImg=new Image();
 mascotImg.onload=()=>{mascotReady=true;shapeCache.clear();if(active>=0){const f=FRAMES[active];assign(LANG==='zh'?f.shZh:f.shEn);}};
 mascotImg.src='logo.png';
+const heroImg={};                                       // gear/brain hero figures (sampled into the particle morph)
+['gear','brain'].forEach(k=>{const im=new Image();im.onload=()=>{shapeCache.delete('object:'+k+'@'+W+'x'+H);if(active>=0){const f=FRAMES[active],sh=(LANG==='zh'?f.shZh:f.shEn);if(sh==='object:'+k)assign(sh);}};im.src='assets/cr/'+k+'_0.png';heroImg[k]=im;});
 // concept icons (envelope/book/ask/reply) are drawn by the canvas icons{} table — no external ic_*.png needed
 // (illustrated menagerie replaces the old dot-sampled animals; sprites load from assets/cr/manifest.json above)
 
