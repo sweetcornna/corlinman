@@ -126,6 +126,128 @@ def test_upsert_enable_autobinds_default_from_probed_models(
         }
 
 
+def test_upsert_credentialed_provider_without_key_does_not_autobind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("", encoding="utf-8")
+    _stub_probe(monkeypatch, None)
+
+    for _state, client in _with_state(config_path):
+        resp = client.post(
+            "/admin/providers",
+            json={
+                "name": "claude",
+                "kind": "anthropic",
+                "enabled": True,
+            },
+        )
+        assert resp.status_code == 200, resp.text
+
+        on_disk = _on_disk(config_path)
+        assert on_disk["providers"]["claude"]["enabled"] is True
+        assert "api_key" not in on_disk["providers"]["claude"]
+        assert "models" not in on_disk or not on_disk.get("models", {}).get("default")
+
+
+def test_upsert_openai_without_key_autobinds_when_env_key_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("", encoding="utf-8")
+    _stub_probe(monkeypatch, ["gpt-4o-mini"])
+    # OpenAIProvider.build() falls back to OPENAI_API_KEY, so a keyless openai
+    # slot is usable and must still autobind a default.
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-env")
+
+    for _state, client in _with_state(config_path):
+        resp = client.post(
+            "/admin/providers",
+            json={"name": "openai", "kind": "openai", "enabled": True},
+        )
+        assert resp.status_code == 200, resp.text
+
+        on_disk = _on_disk(config_path)
+        assert "api_key" not in on_disk["providers"]["openai"]
+        assert on_disk["models"]["default"] == "openai"
+        assert on_disk["models"]["aliases"]["openai"]["provider"] == "openai"
+
+
+def test_upsert_openai_without_key_or_env_does_not_autobind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("", encoding="utf-8")
+    _stub_probe(monkeypatch, ["gpt-4o-mini"])
+    # No config key AND no env key → the slot can't authenticate, so no default
+    # is bound (the env-var fallback is what makes the keyless case usable).
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    for _state, client in _with_state(config_path):
+        resp = client.post(
+            "/admin/providers",
+            json={"name": "openai", "kind": "openai", "enabled": True},
+        )
+        assert resp.status_code == 200, resp.text
+
+        on_disk = _on_disk(config_path)
+        assert "models" not in on_disk or not on_disk.get("models", {}).get("default")
+
+
+def test_upsert_custom_named_openai_kind_does_not_autobind_via_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("", encoding="utf-8")
+    _stub_probe(monkeypatch, ["gpt-4o-mini"])
+    # OPENAI_API_KEY is set, but the env fallback is scoped to the built-in
+    # `openai` slot (name == kind). A custom-named openai-kind slot must still
+    # carry an explicit key, so a keyless `openai-clone` does not autobind.
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-env")
+
+    for _state, client in _with_state(config_path):
+        resp = client.post(
+            "/admin/providers",
+            json={"name": "openai-clone", "kind": "openai", "enabled": True},
+        )
+        assert resp.status_code == 200, resp.text
+
+        on_disk = _on_disk(config_path)
+        assert "models" not in on_disk or not on_disk.get("models", {}).get("default")
+
+
+def test_upsert_anthropic_builtin_autobinds_with_env_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("", encoding="utf-8")
+    _stub_probe(monkeypatch, ["claude-opus-4-8"])
+    # AnthropicProvider falls back to ANTHROPIC_API_KEY, so the built-in
+    # anthropic slot is usable env-only and must autobind.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant")
+
+    for _state, client in _with_state(config_path):
+        resp = client.post(
+            "/admin/providers",
+            json={"name": "anthropic", "kind": "anthropic", "enabled": True},
+        )
+        assert resp.status_code == 200, resp.text
+
+        on_disk = _on_disk(config_path)
+        assert "api_key" not in on_disk["providers"]["anthropic"]
+        assert on_disk["models"]["default"] == "anthropic"
+
+
+def test_autobind_env_fallback_map_is_consistent() -> None:
+    # Drift guard: every env-fallback kind must actually require an api key,
+    # and the ONLY api-key-required kind without an env fallback is bedrock
+    # (AWS SigV4). Adding a new api-key kind forces a deliberate choice here.
+    fallback = set(_providers_lib._AUTOBIND_API_KEY_ENV_FALLBACK)
+    required = set(_providers_lib._AUTOBIND_REQUIRES_API_KEY_KINDS)
+    assert fallback.issubset(required)
+    assert required - fallback == {"bedrock"}
+
+
 def test_upsert_does_not_clobber_existing_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -182,6 +304,7 @@ def test_upsert_probe_failure_falls_back_to_kind_default(
                 "name": "ds",
                 "kind": "deepseek",
                 "enabled": True,
+                "api_key": {"value": "sk-deepseek"},
             },
         )
         assert resp.status_code == 200, resp.text
@@ -218,6 +341,43 @@ base_url = "https://relay.example/v1"
         assert on_disk["models"]["default"] == "sleeper"
         assert on_disk["models"]["aliases"]["sleeper"]["provider"] == "sleeper"
         assert on_disk["models"]["aliases"]["sleeper"]["model"] == "gpt-4o-mini"
+
+
+def test_patch_disable_clears_active_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        """
+[models]
+default = "sleeper"
+
+[models.aliases.sleeper]
+provider = "sleeper"
+model = "gpt-4o-mini"
+
+[providers.sleeper]
+kind = "openai_compatible"
+enabled = true
+base_url = "https://relay.example/v1"
+api_key = "sk-relay"
+        """.strip(),
+        encoding="utf-8",
+    )
+    _stub_probe(monkeypatch, ["gpt-4o-mini"])
+
+    for state, client in _with_state(config_path):
+        _set_snapshot_from_disk(state)
+        resp = client.patch(
+            "/admin/providers/sleeper",
+            json={"enabled": False},
+        )
+        assert resp.status_code == 200, resp.text
+
+        on_disk = _on_disk(config_path)
+        assert on_disk["providers"]["sleeper"]["enabled"] is False
+        assert "sleeper" not in (on_disk.get("models") or {}).get("aliases", {})
+        assert (on_disk.get("models") or {}).get("default") != "sleeper"
 
 
 def test_upsert_disabled_does_not_autobind(

@@ -61,6 +61,7 @@ from corlinman_server.gateway.routes_admin_b.config_admin._credentials_lib impor
 )
 from corlinman_server.gateway.routes_admin_b.config_admin._providers_lib import (
     _autobind_default_alias,
+    _can_autobind_default_alias,
     _remove_default_model_ref,
 )
 from corlinman_server.gateway.routes_admin_b.state import (
@@ -198,7 +199,13 @@ def router() -> APIRouter:
 
             providers[provider] = block
             cfg["providers"] = providers
-            if bool(block.get("enabled", False)) and _has_primary_set(provider, block):
+            # Same single gate as the /admin/providers path: a provider is
+            # autobindable when its adapter is usable — which includes a
+            # built-in slot served by a vendor env-var key, even without a
+            # config primary credential.
+            if bool(block.get("enabled", False)) and _can_autobind_default_alias(
+                block, provider
+            ):
                 cfg = await _autobind_default_alias(cfg, provider, block)
 
             err = _write_config_atomic(state.config_path, cfg)
@@ -276,7 +283,10 @@ def router() -> APIRouter:
 
             providers[provider] = block
             cfg["providers"] = providers
-            if bool(body.enabled) and _has_primary_set(provider, block):
+            # Mirror /admin/providers: usable-adapter check only (no extra
+            # primary-credential gate), so enabling a built-in env-backed slot
+            # also autobinds a default.
+            if bool(body.enabled) and _can_autobind_default_alias(block, provider):
                 cfg = await _autobind_default_alias(cfg, provider, block)
             elif not bool(body.enabled):
                 cfg = _remove_default_model_ref(cfg, provider)
