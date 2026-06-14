@@ -89,7 +89,7 @@ nav .links a:hover{opacity:.45}
 html[data-lang="zh"] .cap h2{font-family:var(--serif-cjk);font-weight:600;letter-spacing:.02em;line-height:1.2;max-width:11ch;word-break:break-word}
 html[data-lang="zh"] .cap h2 em{font-style:normal}
 html[data-lang="zh"] .cap.quote h2{font-style:normal;font-weight:600;line-height:1.32}
-html[data-lang="zh"] .cap .eye{font-family:var(--serif-cjk);font-weight:600;text-transform:none;letter-spacing:.24em}
+html[data-lang="zh"] .cap .eye{font-family:var(--serif-cjk);font-weight:700;text-transform:none;letter-spacing:.14em}
 html[data-lang="zh"] .cap .eye b{font-family:var(--serif-cjk);font-weight:700}
 html[data-lang="zh"] .cap .sub{font-family:var(--sans);letter-spacing:.04em;line-height:1.7;max-width:32ch}
 
@@ -323,7 +323,7 @@ function toModel(p2,depth){const n=p2.length/2;if(!n)return new Float32Array(0);
   if(MOB){                                            // guaranteed fit: recenter + scale every main figure into a safe mobile box
     let nx=1e9,xx=-1e9,ny=1e9,xy=-1e9;
     for(let i=0;i<n;i++){const x=out[i*3],y=out[i*3+1];if(x<nx)nx=x;if(x>xx)xx=x;if(y<ny)ny=y;if(y>xy)xy=y;}
-    const bw=(xx-nx)||1,bh=(xy-ny)||1,bcx=(nx+xx)/2,bcy=(ny+xy)/2,fit=Math.min(W*0.68/bw,H*0.28/bh);
+    const bw=(xx-nx)||1,bh=(xy-ny)||1,bcx=(nx+xx)/2,bcy=(ny+xy)/2,fit=Math.min(W*0.74/bw,H*0.30/bh);
     for(let i=0;i<n;i++){out[i*3]=(out[i*3]-bcx)*fit;out[i*3+1]=(out[i*3+1]-bcy)*fit;out[i*3+2]*=fit;}}
   else{                                                 // desktop: clamp oversized figures into the viewport (keep position), so nothing is ever cut off
     let nx=1e9,xx=-1e9,ny=1e9,xy=-1e9;
@@ -354,7 +354,7 @@ const icons={
   gear:(c,W,H)=>{const S=Math.min(W,H),cx=W/2,cy=H/2,r=S*0.22,teeth=9,ro=r*1.1,ri=r*0.82;c.fillStyle='#fff';
     c.beginPath();for(let i=0;i<teeth*2;i++){const a=(i/(teeth*2))*6.283,rad=(i%2?ri:ro);const x=cx+Math.cos(a)*rad,y=cy+Math.sin(a)*rad;i?c.lineTo(x,y):c.moveTo(x,y);}c.closePath();c.fill();
     c.globalCompositeOperation='destination-out';c.beginPath();c.arc(cx,cy,r*0.34,0,6.283);c.fill();c.globalCompositeOperation='source-over';},
-  ask:(c,W,H)=>{const S=Math.min(W,H),cx=W/2,cy=H/2,r=S*0.22;c.strokeStyle='#fff';c.lineWidth=r*0.34;c.lineJoin='round';c.lineCap='round';
+  ask:(c,W,H)=>{const S=Math.min(W,H),cx=W/2,cy=H/2,r=S*0.22;c.strokeStyle='#fff';c.lineWidth=r*0.20;c.lineJoin='round';c.lineCap='round';
     c.beginPath();c.arc(cx,cy-r*0.45,r*0.62,Math.PI*1.08,Math.PI*0.12,false);c.stroke();
     c.beginPath();c.moveTo(cx+r*0.58,cy-r*0.1);c.quadraticCurveTo(cx+r*0.3,cy+r*0.15,cx,cy+r*0.32);c.lineTo(cx,cy+r*0.55);c.stroke();
     c.fillStyle='#fff';c.beginPath();c.arc(cx,cy+r*1.0,r*0.24,0,6.283);c.fill();},
@@ -363,7 +363,7 @@ const icons={
     c.beginPath();c.moveTo(x+rad,y);c.lineTo(x+w-rad,y);c.arcTo(x+w,y,x+w,y+rad,rad);c.lineTo(x+w,y+h-rad);c.arcTo(x+w,y+h,x+w-rad,y+h,rad);
     c.lineTo(cx+r*0.15,y+h);c.lineTo(cx-r*0.2,y+h+r*0.55);c.lineTo(cx-r*0.55,y+h);
     c.lineTo(x+rad,y+h);c.arcTo(x,y+h,x,y+h-rad,rad);c.lineTo(x,y+rad);c.arcTo(x,y,x+rad,y,rad);c.closePath();c.stroke();
-    for(let i=-1;i<=1;i++){c.fillStyle='#fff';c.beginPath();c.arc(cx+i*r*0.5,cy-r*0.12,r*0.14,0,6.283);c.fill();}},
+    for(let i=-1;i<=1;i++){c.fillStyle='#fff';c.beginPath();c.arc(cx+i*r*0.5,cy-r*0.12,r*0.18,0,6.283);c.fill();}},
 };
 /* ===== custom dot-creatures — bold front/compact silhouettes (pose animates one part) ===== */
 const creatures={
@@ -596,8 +596,9 @@ function drawSegs(p,time,bend,dep){                    // sample each segment li
 function lifeStep(time){           // fireflies + scroll-growing dot plants, stamped into the lattice
   if(REDUCE)return;
   const S=GRIDCELL*0.85;
-  if(!MOB)for(const g of glows){ if(envGrow<0.32)continue; const fade=clamp((envGrow-0.32)/0.12,0,1);
-    const cx=g.x+Math.sin(time*0.12+g.ph)*S*3, cy=g.y+Math.sin(time*0.17+g.ph*1.3)*S*2, pul=(0.85+0.55*Math.sin(time*0.6+g.ph))*fade;
+  const lit=curPalette().light?1.3:1;                  // fireflies pop a touch more on light palettes (and now show on mobile too)
+  for(const g of glows){ if(envGrow<0.32)continue; const fade=clamp((envGrow-0.32)/0.12,0,1);
+    const cx=g.x+Math.sin(time*0.12+g.ph)*S*3, cy=g.y+Math.sin(time*0.17+g.ph*1.3)*S*2, pul=(0.85+0.55*Math.sin(time*0.6+g.ph))*fade*lit;
     addDot(cx,cy,pul,1,0.5); addDot(cx+GRIDCELL*0.5,cy,pul*0.55,1,0.48); }
   const gust=Math.sin(time*0.5)+Math.sin(time*2.3)*Math.min(kick*0.10,1.0);
   for(const p of plants)drawSegs(p,time,gust,0.42);   // plants grow with envGrow (scroll)
