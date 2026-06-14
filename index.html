@@ -28,7 +28,7 @@ body{background:rgb(var(--bg));color:rgb(var(--fg));font-family:var(--sans);-web
 a{color:inherit;text-decoration:none}
 ::selection{background:rgba(var(--accent),.4)}
 
-#field{position:fixed;top:0;left:0;z-index:0;display:block}
+#field{position:fixed;top:0;left:0;width:100vw;height:100vh;height:100dvh;z-index:0;display:block}
 .grain{position:fixed;inset:-50%;width:200%;height:200%;z-index:1;pointer-events:none;opacity:.035;mix-blend-mode:overlay;
   background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
 
@@ -418,11 +418,12 @@ function assign(name){
   }
 }
 
-function vpRect(){const V=window.visualViewport;return V?{w:Math.round(V.width),h:Math.round(V.height),t:V.offsetTop||0,l:V.offsetLeft||0}:{w:innerWidth,h:innerHeight,t:0,l:0};}
-function syncVP(){const r=vpRect();canvas.style.top=r.t+'px';canvas.style.left=r.l+'px';}
+function vpRect(){            // actual painted size (CSS dvh), never larger than the currently-visible viewport
+  let w=canvas.clientWidth||0,h=canvas.clientHeight||0;const V=window.visualViewport;
+  if(V&&V.height){const vw=Math.round(V.width),vh=Math.round(V.height);if(!w)w=vw;if(!h||vh<h)h=vh;}
+  if(!w)w=innerWidth;if(!h)h=innerHeight;return {w:Math.round(w),h:Math.round(h)};}
 function build(){
   const r=vpRect();W=r.w;H=r.h;FX=W/2;FY=H*0.42;panX=W/2;panY=H*0.42;
-  canvas.style.top=r.t+'px';canvas.style.left=r.l+'px';
   canvas.width=W*DPR;canvas.height=H*DPR;canvas.style.width=W+'px';canvas.style.height=H+'px';ctx.setTransform(DPR,0,0,DPR,0,0);
   MOB=W<760||H<620; const mob=MOB;
   N=Math.round(Math.min(mob?9000:24000,(W*H)/(mob?150:100))*DENS);
@@ -668,13 +669,14 @@ function getAnimalPts(nm){if(!animalImg[nm])return null;if(animalPts[nm])return 
 document.getElementById('langtog').addEventListener('click',()=>{LANG=(LANG==='zh'?'en':'zh');localStorage.setItem('corlinman-lang',LANG);applyUiLang();if(active>=0)setFrame(active);});
 addEventListener('scroll',onScroll,{passive:true});
 addEventListener('resize',()=>{DPR=Math.min(devicePixelRatio||1,2);build();});
-if(window.visualViewport){let vpt=0;const VV=window.visualViewport;
-  VV.addEventListener('resize',()=>{clearTimeout(vpt);vpt=setTimeout(()=>{DPR=Math.min(devicePixelRatio||1,2);build();},120);});
-  VV.addEventListener('scroll',syncVP,{passive:true});}
+let _rbT=0;function maybeRebuild(){clearTimeout(_rbT);_rbT=setTimeout(()=>{const r=vpRect();if(Math.abs(r.w-W)>6||Math.abs(r.h-H)>6){DPR=Math.min(devicePixelRatio||1,2);build();}},150);}
+if(window.visualViewport){window.visualViewport.addEventListener('resize',maybeRebuild);}
 addEventListener('pointermove',e=>{pYaw=(e.clientX/innerWidth-0.5)*2;pPitch=(e.clientY/innerHeight-0.5)*2;});
 addEventListener('pointerleave',()=>{pYaw=0;pPitch=0;});
 
-applyUiLang(); build(); requestAnimationFrame(frame);
+applyUiLang(); build();
+if(/diag/.test(location.hash)){const dbg=document.createElement('div');dbg.style.cssText='position:fixed;top:0;left:0;z-index:99999;background:rgba(176,118,72,.94);color:#fff;font:11px/1.45 monospace;padding:7px 9px;white-space:pre;pointer-events:none;border-bottom-right-radius:7px';document.body.appendChild(dbg);const u=()=>{const V=window.visualViewport;dbg.textContent='BUILD vp-dvh-2\nwin '+innerWidth+'x'+innerHeight+' dpr'+(devicePixelRatio||1).toFixed(2)+'\nvv  '+(V?Math.round(V.width)+'x'+Math.round(V.height)+' offT'+Math.round(V.offsetTop):'-')+'\ncvs '+canvas.clientWidth+'x'+canvas.clientHeight+' back '+canvas.width+'x'+canvas.height+'\nW/H '+W+'x'+H+' panY'+Math.round(panY)+' MOB'+MOB;};u();setInterval(u,350);}
+requestAnimationFrame(frame);
 })();
 </script>
 </body>
