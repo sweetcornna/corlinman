@@ -208,6 +208,11 @@ def test_codex_pkce_submit_discovers_models_and_configures_aliases(
         "corlinman_server.gateway.oauth.codex_pkce.exchange_code",
         new=AsyncMock(return_value=_FAKE_TOKENS),
     ), patch("corlinman_server.gateway.oauth.codex_pkce.write_auth_json"), patch(
+        # write_auth_json is mocked, so the provisioning token-match recheck has
+        # no real auth.json to read — stub the stored token to the one we wrote.
+        "corlinman_server.gateway.routes_admin_b.oauth._stored_codex_token",
+        return_value=_FAKE_TOKENS["access_token"],
+    ), patch(
         "corlinman_server.gateway.routes_admin_b.oauth._query_codex_oauth_models",
         new=AsyncMock(return_value=["gpt-4o", "gpt-5.5"]),
     ):
@@ -911,11 +916,46 @@ def test_provisioning_does_not_claim_provider_with_omitted_enabled() -> None:
     assert "oauth_provisioned" not in out["providers"]["anthropic"]
 
 
+def test_provisioning_leaves_disabled_manual_provider_untouched() -> None:
+    # An explicitly-disabled slot backed by a config api_key is a manual provider
+    # the operator turned off; login must not resurrect it (enable it) nor mark
+    # it, so a later disconnect leaves the operator's disabled provider alone.
+    cfg = {
+        "providers": {
+            "anthropic": {
+                "kind": "anthropic",
+                "enabled": False,
+                "api_key": "sk-manual",
+            }
+        }
+    }
+    out = oauth_routes._upsert_oauth_provider_and_aliases(
+        cfg,
+        provider="anthropic",
+        kind="anthropic",
+        models=["claude-opus-4-8"],
+        preference=(),
+    )
+    assert out["providers"]["anthropic"]["enabled"] is False
+    assert "oauth_provisioned" not in out["providers"]["anthropic"]
+    assert not (out.get("models", {}).get("aliases"))
+
+
 @pytest.mark.asyncio
-async def test_provisioning_skips_when_credential_deleted_concurrently() -> None:
-    # Simulates a disconnect deleting the token during the discovery await: the
-    # under-lock recheck sees the credential gone and skips the config write, so
-    # we never re-enable a provider whose token was just removed.
+@pytest.mark.parametrize(
+    "stored_token",
+    [
+        None,  # a concurrent disconnect deleted the token during discovery
+        "other-token",  # an overlapping login replaced it with a different token
+    ],
+)
+async def test_provisioning_skips_when_stored_token_does_not_match(
+    stored_token: str | None,
+) -> None:
+    # The under-lock recheck only provisions when the stored credential still
+    # matches the token discovery ran with: a deleted token (None) or a
+    # different-entitlement token (overlapping login) both skip the config write,
+    # so we never write aliases for a stale token.
     state = AdminState(config_loader=lambda: {}, config_path=Path("/x/config.toml"))
 
     with patch(
@@ -932,7 +972,7 @@ async def test_provisioning_skips_when_credential_deleted_concurrently() -> None
             provider="codex",
             kind="codex",
             access_token="codex-access-token",
-            credential_present=lambda: False,
+            current_token=lambda: stored_token,
         )
 
     assert result is None

@@ -183,6 +183,28 @@ def test_model_source_hides_disabled_provider_aliases() -> None:
     assert "anthropic" not in ids  # the disabled provider slot is not listed either
 
 
+def test_model_source_shorthand_detection_does_not_collide_with_provider_name() -> None:
+    """A dict alias targeting a real provider literally named ``corlinman`` is
+    registry-checked (not mistaken for a providerless shorthand), so it is
+    hidden when that provider is disabled."""
+    cfg = {
+        "providers": {"corlinman": {"kind": "anthropic", "enabled": False}},
+        "models": {
+            "aliases": {
+                "via-corlinman": {"provider": "corlinman", "model": "claude-opus-4-8"},
+                "bare": "raw-model-id",
+            }
+        },
+    }
+    registry = build_registry(cfg)
+    source = RegistryModelSource(registry, cfg)
+    ids = [e.id for e in source.list_models()]
+    # The dict alias owned by the disabled "corlinman" provider is hidden...
+    assert "via-corlinman" not in ids
+    # ...while a genuine providerless shorthand is still kept.
+    assert "bare" in ids
+
+
 # ---------------------------------------------------------------------------
 # /v1/models would return 200 once the source is wired in
 # ---------------------------------------------------------------------------

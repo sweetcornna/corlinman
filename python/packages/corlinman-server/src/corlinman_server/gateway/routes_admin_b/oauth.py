@@ -222,6 +222,12 @@ def _upsert_oauth_provider_and_aliases(
         # logging in must not repurpose it to the OAuth adapter or reroute its
         # aliases through it. Leave the config untouched.
         return cfg
+    if existing_provider.get("enabled") is False and _has_config_api_key(existing_provider):
+        # An explicitly-disabled slot backed by a config api_key is a manual
+        # provider the operator deliberately turned off. Logging in must not
+        # resurrect it — a later disconnect is unmarked and wouldn't restore the
+        # disabled state, so leave the config (and its disabled flag) untouched.
+        return cfg
     # ``ProviderSpec.enabled`` defaults to True, so only an EXPLICIT
     # ``enabled = false`` marks an inactive credential stub. A missing field is
     # active manual config (e.g. an env-var-backed slot) and must not be claimed.
@@ -406,13 +412,25 @@ async def _cleanup_oauth_provider_config(
     return None
 
 
+def _stored_anthropic_token(data_dir: Any) -> str | None:
+    cred = load_credential(data_dir, "anthropic")
+    return cred.access_token if cred is not None else None
+
+
+def _stored_codex_token() -> str | None:
+    from corlinman_providers._codex_oauth import load_codex_credential  # noqa: PLC0415
+
+    cred = load_codex_credential()
+    return cred.access_token if cred is not None else None
+
+
 async def _provision_oauth_models(
     state: Any,
     *,
     provider: str,
     kind: str,
     access_token: str,
-    credential_present: Callable[[], bool] | None = None,
+    current_token: Callable[[], str | None] | None = None,
 ) -> JSONResponse | None:
     if state.config_path is None:
         return None
@@ -430,13 +448,15 @@ async def _provision_oauth_models(
         discovered = []
 
     async with state.admin_write_lock:
-        # Re-check, under the write lock, that the credential still exists. The
-        # slow model-discovery await above runs outside the lock, so a
-        # concurrent disconnect (which deletes the token inside this same lock,
-        # see _cleanup_oauth_provider_config) could have landed in the meantime.
-        # If the token is gone, skip provisioning rather than re-enable a
-        # provider whose credential was just removed.
-        if credential_present is not None and not credential_present():
+        # Re-check, under the write lock, that the credential STILL MATCHES the
+        # token we discovered models for. The slow discovery await above runs
+        # outside the lock, so in the meantime a concurrent disconnect could have
+        # deleted the token (current_token() -> None), or an overlapping login
+        # for the same provider could have replaced it with a different-
+        # entitlement token (current_token() != access_token). Either way these
+        # discovered models may not be usable by the active credential, so skip
+        # provisioning rather than write aliases for a stale token.
+        if current_token is not None and current_token() != access_token:
             return None
         cfg = dict(getattr(state, "config_loader", lambda: {})() or {})
         cfg = _upsert_oauth_provider_and_aliases(
@@ -697,7 +717,7 @@ def router() -> APIRouter:
             provider="codex",
             kind="codex",
             access_token=str(tokens.get("access_token") or ""),
-            credential_present=lambda: codex_external.read_codex_status() is not None,
+            current_token=_stored_codex_token,
         )
         if provision_err is not None:
             return provision_err
@@ -901,7 +921,7 @@ def router() -> APIRouter:
             provider="anthropic",
             kind="anthropic",
             access_token=cred.access_token,
-            credential_present=lambda: load_credential(data_dir, "anthropic") is not None,
+            current_token=lambda: _stored_anthropic_token(data_dir),
         )
         if provision_err is not None:
             return provision_err
@@ -998,7 +1018,7 @@ def router() -> APIRouter:
             provider="anthropic",
             kind="anthropic",
             access_token=persisted.access_token,
-            credential_present=lambda: load_credential(data_dir, "anthropic") is not None,
+            current_token=lambda: _stored_anthropic_token(data_dir),
         )
         if provision_err is not None:
             return provision_err
@@ -1097,7 +1117,7 @@ def router() -> APIRouter:
             provider="anthropic",
             kind="anthropic",
             access_token=persisted.access_token,
-            credential_present=lambda: load_credential(data_dir, "anthropic") is not None,
+            current_token=lambda: _stored_anthropic_token(data_dir),
         )
         if provision_err is not None:
             return provision_err
