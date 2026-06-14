@@ -86,7 +86,7 @@ nav .links a:hover{opacity:.45}
 .btn.s:hover{border-color:rgba(var(--fg),.6)}
 .btn:focus-visible,.copyInstall:focus-visible{outline:2px solid rgba(var(--accent),.85);outline-offset:3px}
 
-html[data-lang="zh"] .cap h2{font-family:var(--serif-cjk);font-weight:600;letter-spacing:.02em;line-height:1.18;max-width:15ch}
+html[data-lang="zh"] .cap h2{font-family:var(--serif-cjk);font-weight:600;letter-spacing:.02em;line-height:1.2;max-width:11ch;word-break:break-word}
 html[data-lang="zh"] .cap h2 em{font-style:normal}
 html[data-lang="zh"] .cap.quote h2{font-style:normal;font-weight:600;line-height:1.32}
 html[data-lang="zh"] .cap .eye{font-family:var(--serif-cjk);font-weight:600;text-transform:none;letter-spacing:.24em}
@@ -327,7 +327,7 @@ function toModel(p2,depth){const n=p2.length/2;if(!n)return new Float32Array(0);
   else{                                                 // desktop: clamp oversized figures into the viewport (keep position), so nothing is ever cut off
     let nx=1e9,xx=-1e9,ny=1e9,xy=-1e9;
     for(let i=0;i<n;i++){const x=out[i*3],y=out[i*3+1];if(x<nx)nx=x;if(x>xx)xx=x;if(y<ny)ny=y;if(y>xy)xy=y;}
-    const bw=(xx-nx)||1,bh=(xy-ny)||1,bcx=(nx+xx)/2,bcy=(ny+xy)/2,fit=Math.min(1,W*0.50/bw,H*0.56/bh);
+    const bw=(xx-nx)||1,bh=(xy-ny)||1,bcx=(nx+xx)/2,bcy=(ny+xy)/2,fit=Math.min(1,W*0.42/bw,H*0.56/bh);
     if(fit<1)for(let i=0;i<n;i++){out[i*3]=(out[i*3]-bcx)*fit+bcx;out[i*3+1]=(out[i*3+1]-bcy)*fit+bcy;out[i*3+2]*=fit;}}
   return out;}
 /* ===== concept icons — bold symbol silhouettes (the scene's idea, concretized) ===== */
@@ -635,7 +635,7 @@ const SCENE_ACTORS={                                   // which creatures inhabi
   0:[{n:'butterfly'},{n:'butterfly',ph:0.55}],
   1:[{n:'bird'},{n:'butterfly',ph:0.30}],
   2:[{n:'bird'},{n:'butterfly',ph:0.60}],
-  3:[{n:'deer'},{n:'butterfly',ph:0.20}],
+  3:[{n:'rabbit'},{n:'butterfly',ph:0.20}],
   4:[{n:'cat'},{n:'butterfly',ph:0.50}],
   5:[{n:'dog'}],
   6:[{n:'rabbit'},{n:'butterfly',ph:0.40}],
@@ -644,33 +644,34 @@ const SCENE_ACTORS={                                   // which creatures inhabi
   9:[{n:'bird'},{n:'butterfly',ph:0.15},{n:'butterfly',ph:0.80}],
   10:[{n:'dog'},{n:'bird',ph:0.50}],
 };
-function drawActors(time){                              // creatures as dots — smooth CONTINUOUS travel + REAL procedural body animation (legs/wings/tail); edge-fade so no teleport
+function drawActors(time){                              // creatures PACE back and forth (sine ping-pong, turn off-screen) — never wrap, so NO teleport; + procedural body animation
   if(REDUCE)return; const list=SCENE_ACTORS[active]; if(!list)return;
-  const M=Math.min(W,H), mar=M*0.14, vis=clamp(animMix,0,1)*clamp((envGrow-0.10)/0.22,0,1); if(vis<0.05)return;
+  const M=Math.min(W,H), mar=M*0.16, L=-mar, R=W+mar, vis=clamp(animMix,0,1)*clamp((envGrow-0.10)/0.22,0,1); if(vis<0.05)return;
+  const szMul=MOB?1.45:1;
   for(let ai=0;ai<list.length;ai++){const a=list[ai],nm=a.n,kind=ACT_KIND[nm]; if(!SPR[nm])continue;
-    const hpx=M*ACT_SIZE[nm]*(a.s||1), dir=a.dir||1, ph=(a.ph!==undefined?a.ph:ai*0.41);
-    let x,y,flip=dir<0,rot=0,warp=null;
-    if(kind==='fly'){const dur=15,t=((time/dur)+ph)%1,fr=dir>0?t:1-t;
-      x=lerp(-mar,W+mar,fr); y=H*(MOB?0.32:0.27)+Math.sin(time*0.8+ph*4)*M*0.025; rot=Math.sin(time*0.7+ph*3)*0.05*dir;
-      const fl=0.5+0.5*Math.sin(time*5+ph*5);          // wing-beat (continuous → smooth)
-      warp=(lx,ly)=>{const up=clamp((-ly)/(hpx*0.42),0,1), out=clamp((Math.abs(lx)-hpx*0.10)/(hpx*0.4),0,1); return [0,-up*out*hpx*0.30*fl];};}  // wings beat
-    else if(kind==='flutter'){const dur=22,t=((time/dur)+ph)%1; const fl=Math.sin(time*6+ph*4);
-      x=W*(0.10+0.80*t)+Math.sin(time*0.9+ph*6)*M*0.05; y=H*(0.16+0.46*((ai*0.27+ph)%1))+Math.sin(time*0.7+ph*5)*M*0.04; flip=Math.cos(time*0.9+ph*6)<0;
-      warp=(lx,ly)=>{const o=clamp((Math.abs(lx)-hpx*0.05)/(hpx*0.4),0,1); return [-Math.sign(lx)*o*hpx*0.18*(0.45+0.55*Math.abs(fl)),0];};}  // wings open/close
-    else if(kind==='run'||kind==='walk'){const fast=kind==='run',dur=fast?7:18,t=((time/dur)+ph)%1,fr=dir>0?t:1-t;
-      x=lerp(-mar,W+mar,fr); y=H*(MOB&&fast?0.80:0.845)+Math.abs(Math.sin(time*(fast?6:3)+ph))*M*(fast?0.012:0.005);
-      const gp=time*(fast?9:4.5)+ph, amp=hpx*(fast?0.16:0.10);
-      warp=(lx,ly)=>{const leg=clamp((ly-hpx*0.06)/(hpx*0.42),0,1); if(leg<=0)return [0,0]; const phase=lx<0?gp:gp+Math.PI; return [Math.cos(phase)*amp*leg, -Math.max(0,Math.sin(phase))*amp*0.45*leg];};}  // legs swing from the hip (front/back opposite)
-    else if(kind==='swim'){const dur=16,t=((time/dur)+ph)%1,fr=dir>0?t:1-t; const sw=Math.sin(time*3.5+ph*4);
-      x=lerp(-mar,W+mar,fr); y=H*0.50+Math.sin(t*12.57+ph*5)*M*0.11; rot=Math.cos(t*12.57+ph*5)*0.12*dir;
-      warp=(lx,ly)=>{const tail=clamp((-lx-hpx*0.02)/(hpx*0.6),0,1); return [0,tail*sw*hpx*0.20];};}  // tail sweeps
-    else{const isLeap=kind==='leap',hopDur=isLeap?1.6:1.1,span=W+2*mar,stride=M*(isLeap?0.55:0.40),hops=Math.max(3,Math.ceil(span/stride));
-      const totalDur=hopDur*hops,k=(((time/totalDur)+ph)%1)*hops,hi=Math.floor(k),local=k-hi;
-      x=dir>0?(-mar+(span/hops)*(hi+local)):(W+mar-(span/hops)*(hi+local));
-      const par=Math.sin(local*Math.PI); y=H*0.845-par*M*(isLeap?0.20:0.13); rot=Math.cos(local*Math.PI)*0.09*dir;
-      warp=(lx,ly)=>{const leg=clamp((ly-hpx*0.05)/(hpx*0.45),0,1); return [0,-leg*par*hpx*0.16];};}  // legs tuck up at the apex of the bound
+    const hpx=M*ACT_SIZE[nm]*(a.s||1)*szMul, ph=(a.ph!==undefined?a.ph:ai*0.41);
+    let x,y,flip=false,rot=0,warp=null;
+    if(kind==='flutter'){                              // bounded wander — never reaches an edge
+      const dx=Math.cos(time*0.13+ph*6);
+      x=W*0.5+Math.sin(time*0.13+ph*6)*W*0.34; y=H*(0.17+0.30*((ai*0.27+ph)%1))+Math.sin(time*0.16+ph*5)*H*0.10; flip=dx<0;
+      const fl=Math.sin(time*6+ph*4); warp=(lx,ly)=>{const o=clamp((Math.abs(lx)-hpx*0.05)/(hpx*0.4),0,1); return [-Math.sign(lx)*o*hpx*0.20*(0.4+0.6*Math.abs(fl)),0];};}
+    else{                                              // PACE: x = sine ping-pong L<->R; velocity sign sets facing; turns happen off-screen (faded)
+      const dur=(kind==='run')?13:(kind==='walk')?22:(kind==='swim')?24:(kind==='fly')?19:16;
+      const cyc=((time/dur)+ph)%1, u=0.5-0.5*Math.cos(6.2832*cyc), vel=Math.sin(6.2832*cyc), dir=vel>=0?1:-1;
+      x=lerp(L,R,u); flip=dir<0;
+      if(kind==='fly'){ y=H*(MOB?0.30:0.26)+Math.sin(time*0.8+ph*4)*M*0.028; rot=vel*0.10;
+        const fl=0.5+0.5*Math.sin(time*5+ph*5);
+        warp=(lx,ly)=>{const up=clamp((-ly)/(hpx*0.42),0,1), out=clamp((Math.abs(lx)-hpx*0.08)/(hpx*0.4),0,1), wf=0.82+0.18*fl; return [lx*(wf-1)*out, -up*out*hpx*0.34*fl];};}  // wings beat + open/close
+      else if(kind==='swim'){ y=H*0.50+Math.sin(time*0.6+ph*5)*M*0.10; const sw=Math.sin(time*3.5+ph*4); rot=vel*0.05;
+        warp=(lx,ly)=>{const tail=clamp((-lx-hpx*0.02)/(hpx*0.6),0,1); return [0,tail*sw*hpx*0.20];};}
+      else if(kind==='hop'){ const par=Math.abs(Math.sin(time*4.2+ph)); y=H*0.845-par*M*0.11; rot=vel*0.05;
+        warp=(lx,ly)=>{const leg=clamp((ly-hpx*0.05)/(hpx*0.45),0,1); return [0,-leg*par*hpx*0.16];};}  // legs tuck at apex
+      else{ const fast=kind==='run', gp=time*(fast?9:4.6)+ph, amp=hpx*(fast?0.17:0.11);  // run / walk
+        y=H*(MOB&&fast?0.80:0.845)+Math.abs(Math.sin(gp))*M*(fast?0.012:0.006); const spine=Math.sin(gp)*hpx*0.035;
+        warp=(lx,ly)=>{const leg=clamp((ly-hpx*0.06)/(hpx*0.42),0,1), phase=lx<0?gp:gp+Math.PI, dx=Math.cos(phase)*amp*leg, dy=-Math.max(0,Math.sin(phase))*amp*0.45*leg, sp=ly<0?spine*(-ly/(hpx*0.5)):0; return [dx, dy+sp];};}  // legs swing from the hip + spine flex
+    }
     if(ACT_FACE[nm]<0)flip=!flip;
-    const ef=clamp(Math.min(x,W-x)/(M*0.15),0,1);       // fade in/out at the screen edges → the loop wrap is invisible (no teleport)
+    const ef=clamp(Math.min(x,W-x)/(M*0.16),0,1);       // fade fully out before the off-screen turn → nothing ever pops/teleports
     stampCreature(nm,x,y,hpx,flip,rot,0,warp,vis*ef);
   }
 }
@@ -683,7 +684,7 @@ function frame(t){
   const time=t*0.001, pal=curPalette();applyCss(pal);
   const onLight=pal.light;
   const f=FRAMES[active]||FRAMES[0];
-  const _pf=MOB?0.5:(0.5+(f.focus-0.5)*0.85); panX+=((_pf*W)-panX)*0.045; panY+=(((MOB?0.42:0.42)*H)-panY)*0.045;  // push figures further to their side so captions get a clear half
+  const _pf=MOB?0.5:(0.5+(f.focus-0.5)*0.98); panX+=((_pf*W)-panX)*0.045; panY+=(((MOB?0.42:0.42)*H)-panY)*0.045;  // push figures hard to their side so captions get a clear, non-overlapping half
   const tYaw=MOB?0:(pYaw*0.42+Math.sin(time*0.16)*0.055), tPitch=MOB?0:(pPitch*0.26+Math.cos(time*0.13)*0.03);
   yaw+=(tYaw-yaw)*0.05; pitch+=(tPitch-pitch)*0.05;
   const cy=Math.cos(yaw),sy=Math.sin(yaw),cx=Math.cos(pitch),sx=Math.sin(pitch);
