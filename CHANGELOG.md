@@ -4,6 +4,39 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.21.5] — 2026-06-14 — OAuth model provisioning + env-backed autobind
+
+> Patch release. Config-compatible — existing provider/model config is
+> preserved; OAuth login now provisions usable model config, and autobind
+> respects manually configured and env-var-backed providers. (PR #97, #98)
+
+### Added
+- **OAuth login provisions a usable model list** — after Anthropic / Claude Code
+  / Codex OAuth completion, the gateway discovers the account's upstream models
+  and writes a provider slot plus `models.aliases` (and a `models.default` when
+  none exists), so chat works immediately without a manual trip through
+  Providers/Models.
+
+### Changed
+- **Dashboard greeting uses the signed-in admin** instead of hard-coded copy,
+  and the hero/status wording was tightened in English and 简体中文.
+
+### Fixed
+- **Disconnect only cleans up what OAuth provisioned** — a marker distinguishes
+  flow-provisioned slots from operator config, so disconnecting an OAuth account
+  disables/clears only its own slot and dangling default while leaving manually
+  configured (including env-var-backed) providers and user-created aliases
+  untouched; provisioning likewise never repurposes a manual slot, shadows a raw
+  default, or resurrects an explicitly disabled manual provider.
+- **`/v1/models` no longer advertises dead models** — aliases pointing at a
+  disabled/unbuilt provider are hidden until the provider is re-enabled, so model
+  pickers don't offer ids every chat would fail to resolve.
+- **Autobind honors env-var-backed built-in providers** — enabling a built-in
+  slot (e.g. `[providers.openai]`) with only its documented vendor env key
+  (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, …) set now binds a
+  `models.default`, consistently across `/admin/providers` and
+  `/admin/credentials`; custom-named slots still require an explicit key.
+
 ## [1.21.4] — 2026-06-12 — credentials model autobind hardening
 
 > Patch release. Config-compatible — existing provider/model config is
