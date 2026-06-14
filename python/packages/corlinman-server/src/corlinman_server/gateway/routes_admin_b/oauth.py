@@ -142,6 +142,23 @@ _OAUTH_PROVISIONED_KEY = "oauth_provisioned"
 logger = structlog.get_logger(__name__)
 
 
+def _model_version_key(model_id: str) -> tuple[int, int, int]:
+    """Newest-first sort key for ``gpt-<major>[.<minor>[.<patch>]]`` ids.
+
+    Tolerates a trailing suffix (``gpt-5.5-codex``). Non-gpt / unparseable
+    ids return ``(-1, -1, -1)`` so they sort *after* every versioned id while
+    a stable sort preserves their original discovery order. This is what lets
+    a freshly-released model the curated preference list hasn't caught up to
+    (e.g. a brand-new ``gpt-5.6``) still win over older unlisted versions.
+    """
+    import re
+
+    m = re.match(r"^gpt-(\d+)(?:\.(\d+))?(?:\.(\d+))?", model_id)
+    if m is None:
+        return (-1, -1, -1)
+    return (int(m.group(1)), int(m.group(2) or 0), int(m.group(3) or 0))
+
+
 def _ordered_unique_model_ids(models: list[str], preference: tuple[str, ...]) -> list[str]:
     clean: list[str] = []
     seen: set[str] = set()
@@ -152,7 +169,17 @@ def _ordered_unique_model_ids(models: list[str], preference: tuple[str, ...]) ->
         clean.append(mid)
         seen.add(mid)
     preferred = [mid for mid in preference if mid in seen]
-    rest = [mid for mid in clean if mid not in set(preferred)]
+    preferred_set = set(preferred)
+    # Models the curated preference list does not mention are ordered
+    # newest-version-first so the latest release the upstream actually offers
+    # becomes the best candidate (the previous insertion-order kept whatever
+    # the API happened to list first — e.g. an older ``gpt-5.4`` ahead of a
+    # newer sibling). Curated preference still wins overall (it sits ahead).
+    rest = sorted(
+        (mid for mid in clean if mid not in preferred_set),
+        key=_model_version_key,
+        reverse=True,
+    )
     return preferred + rest
 
 
@@ -211,6 +238,7 @@ def _upsert_oauth_provider_and_aliases(
     kind: str,
     models: list[str],
     preference: tuple[str, ...],
+    take_over_default: bool = True,
 ) -> dict[str, Any]:
     providers_cfg = dict(cfg.get("providers") or {})
     slot_is_new = provider not in providers_cfg
@@ -250,6 +278,13 @@ def _upsert_oauth_provider_and_aliases(
     aliases = dict(models_cfg.get("aliases") or {})
     raw_default = str(models_cfg.get("default") or "")
     selected = _ordered_unique_model_ids(models, preference)
+    # Track whether we actually discovered the account's models. A transient
+    # upstream model-list outage during login surfaces here as ``models=[]`` and
+    # we fall back to a hard-coded guess — which the account may not even
+    # support. In that case we must NOT take over an already-working default
+    # (see the default-repoint block below): preserve it rather than move chat
+    # onto a fallback id on the strength of a failed probe.
+    discovery_succeeded = bool(selected)
     if not selected:
         selected = list(_FALLBACK_OAUTH_MODELS.get(kind, []))
     selected = _ordered_unique_model_ids(selected, preference)
@@ -305,7 +340,24 @@ def _upsert_oauth_provider_and_aliases(
                 alias_name = f"{alias_base}-{suffix}"
                 suffix += 1
 
-    if bindable_aliases and not str(models_cfg.get("default") or "").strip():
+    # Make the just-provisioned account's best model the active default.
+    # ``take_over_default`` is set for explicit OAuth *logins* — an unambiguous
+    # "use this account now" signal — so we repoint the default to this
+    # provider's best alias even when the operator already had a different
+    # (possibly stale) provider as default. Without this, ``codex login`` would
+    # create a working codex slot yet leave chat pinned to the old default, so
+    # requests keep hitting the previous provider (the reported 401). The
+    # repoint is NON-DESTRUCTIVE: ``bindable_aliases`` only ever contains
+    # aliases owned by THIS provider (the loop above leaves other providers'
+    # aliases untouched), so we never reroute someone else's alias to do it.
+    # We only take over when discovery actually returned the account's models —
+    # never on the strength of the hard-coded fallback (a failed probe must not
+    # move a working default onto a guessed id). When this is not a takeover we
+    # keep the historical only-if-empty rule.
+    if bindable_aliases and (
+        (take_over_default and discovery_succeeded)
+        or not str(models_cfg.get("default") or "").strip()
+    ):
         models_cfg["default"] = bindable_aliases[0]
     models_cfg["aliases"] = aliases
     cfg["models"] = models_cfg

@@ -91,6 +91,11 @@ vi.mock("@/lib/api", async () => {
   return {
     ...actual,
     fetchModels: vi.fn(async () => ({ default: "", aliases: {} })),
+    fetchModelsV2: vi.fn(async () => ({
+      default: "",
+      aliases: [],
+      providers: [],
+    })),
     fetchProviders: vi.fn(async () => []),
     getProviderModels: vi.fn(async () => ({ models: [] })),
   };

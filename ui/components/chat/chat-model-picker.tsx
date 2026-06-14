@@ -25,7 +25,7 @@ import { Loader2, Search, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import {
-  fetchModels,
+  fetchModelsV2,
   fetchProviders,
   getProviderModels,
   type ProviderView,
@@ -45,6 +45,12 @@ interface ModelOption {
   id: string;
   source: string; // "alias" | "probed:<provider>" | "default" | "fallback"
   hint?: string;
+}
+
+interface ModelGroup {
+  key: string;
+  label: string;
+  options: ModelOption[];
 }
 
 export function ChatModelPicker({
@@ -141,7 +147,11 @@ export function ChatModelPicker({
   // ── data ────────────────────────────────────────────────────────────
   const modelsQ = useQuery({
     queryKey: ["chat-picker", "models"],
-    queryFn: fetchModels,
+    // V2 endpoint: aliases come back as an array carrying provider/model, which
+    // is what lets us group + label per provider. The legacy fetchModels typed
+    // aliases as a Record, so iterating it with Object.entries() turned an
+    // array into numeric-index "0","1","2" alias names — the reported bug.
+    queryFn: fetchModelsV2,
     staleTime: 60_000,
     enabled: open,
   });
@@ -192,58 +202,82 @@ export function ChatModelPicker({
     setProbeCursor((c) => Math.min(c + 1, enabledProviders.length));
   }, [open, probeCursor, enabledProviders.length, lastProbeSettled]);
 
-  // ── option list ─────────────────────────────────────────────────────
-  const options: ModelOption[] = React.useMemo(() => {
+  // ── option groups ───────────────────────────────────────────────────
+  // Per-provider grouping: a top "default & aliases" group, then one group per
+  // enabled provider listing that provider's probed upstream models, so the
+  // operator can scan/select within a provider. De-dup is global (first-seen
+  // wins) so an id never shows twice across groups.
+  const groups: ModelGroup[] = React.useMemo(() => {
     const seen = new Set<string>();
-    const out: ModelOption[] = [];
-    const push = (id: string, source: string, hint?: string) => {
+    const out: ModelGroup[] = [];
+    const make = (key: string, label: string): ModelGroup => {
+      const g: ModelGroup = { key, label, options: [] };
+      out.push(g);
+      return g;
+    };
+    const push = (g: ModelGroup, id: string, source: string, hint?: string) => {
       const trimmed = (id ?? "").trim();
       if (!trimmed || seen.has(trimmed)) return;
       seen.add(trimmed);
-      out.push({ id: trimmed, source, hint });
+      g.options.push({ id: trimmed, source, hint });
     };
 
     if (kind === "llm") {
+      const head = make("aliases", t("chat.modelPicker.groupAliases"));
       const def = modelsQ.data?.default ?? "";
-      if (def) push(def, "default", t("chat.modelPicker.defaultBadge"));
-      // Aliases from /admin/models
-      const aliases = modelsQ.data?.aliases ?? {};
-      for (const [name, model] of Object.entries(aliases)) {
-        push(name, "alias", t("chat.modelPicker.aliasBadge"));
-        // Also surface the underlying model id
-        if (typeof model === "string") push(model, "alias-target");
+      if (def) push(head, def, "default", t("chat.modelPicker.defaultBadge"));
+      // Aliases from /admin/models. A v0.2 gateway returns an array (name +
+      // routed provider); a legacy v0.1 gateway still returns a Record<string,
+      // string>, which `for...of` would throw on — normalize both shapes.
+      const rawAliases = modelsQ.data?.aliases;
+      const aliasRows: Array<{ name: string; provider?: string }> =
+        Array.isArray(rawAliases)
+          ? rawAliases
+          : Object.keys((rawAliases ?? {}) as Record<string, string>).map(
+              (name) => ({ name }),
+            );
+      for (const a of aliasRows) {
+        push(head, a.name, "alias", a.provider || t("chat.modelPicker.aliasBadge"));
       }
     } else {
-      // image — start with the operator-supplied default + each provider's image_model
-      push("gpt-image-2", "fallback", t("chat.modelPicker.defaultBadge"));
+      // image — operator-supplied default + each provider's image_model.
+      const head = make("image", t("chat.modelPicker.defaultBadge"));
+      push(head, "gpt-image-2", "fallback", t("chat.modelPicker.defaultBadge"));
       for (const p of enabledProviders) {
         const im = p.params?.image_model;
         if (typeof im === "string" && im.trim())
-          push(im, `provider:${p.name}`, p.name);
+          push(head, im, `provider:${p.name}`, p.name);
       }
     }
 
-    // Probed upstream models
-    probeQueries.forEach((q, i) => {
-      const provider = enabledProviders[i];
-      if (!provider) return;
-      const list = q.data?.models ?? [];
-      for (const m of list) {
-        push(m.id, `probed:${provider.name}`, provider.name);
-      }
+    // One group per enabled provider with its probed upstream models.
+    enabledProviders.forEach((p, i) => {
+      const list = probeQueries[i]?.data?.models ?? [];
+      if (list.length === 0) return;
+      const g = make(`prov:${p.name}`, p.name);
+      for (const m of list) push(g, m.id, `probed:${p.name}`, p.kind);
     });
 
-    return out;
+    return out.filter((g) => g.options.length > 0);
   }, [kind, modelsQ.data, enabledProviders, probeQueries, t]);
 
-  const filtered = React.useMemo(() => {
+  const filteredGroups = React.useMemo(() => {
     const f = filter.trim().toLowerCase();
-    if (!f) return options;
-    return options.filter((o) =>
-      o.id.toLowerCase().includes(f) ||
-      (o.hint ?? "").toLowerCase().includes(f),
-    );
-  }, [options, filter]);
+    if (!f) return groups;
+    return groups
+      .map((g) => ({
+        ...g,
+        options: g.options.filter(
+          (o) =>
+            o.id.toLowerCase().includes(f) ||
+            (o.hint ?? "").toLowerCase().includes(f) ||
+            g.label.toLowerCase().includes(f),
+        ),
+      }))
+      .filter((g) => g.options.length > 0);
+  }, [groups, filter]);
+
+  const hasOptions = filteredGroups.length > 0;
 
   // ── handlers ────────────────────────────────────────────────────────
   const submitCustom = React.useCallback(() => {
@@ -354,37 +388,50 @@ export function ChatModelPicker({
           aria-label={t("chat.modelPicker.listAriaLabel")}
           data-testid="chat-model-picker-list"
         >
-          {filtered.length === 0 ? (
+          {!hasOptions ? (
             <li className="px-3 py-6 text-center text-[12px] text-sg-ink-3">
               {modelsQ.isLoading || providersQ.isLoading
                 ? t("common.loading")
                 : t("chat.modelPicker.emptyList")}
             </li>
           ) : (
-            filtered.map((o) => (
-              <li key={`${o.id}:${o.source}`}>
-                <button
-                  type="button"
-                  onClick={() => {
-                    onPick(o.id);
-                    onClose();
-                  }}
-                  className={cn(
-                    "flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px]",
-                    o.id === current
-                      ? "bg-sg-accent/20 text-sg-ink"
-                      : "text-sg-ink hover:bg-sg-inset",
-                  )}
-                  data-testid="chat-model-picker-option"
-                  data-model-id={o.id}
+            filteredGroups.map((g) => (
+              <li key={g.key}>
+                <div
+                  className="sticky top-0 z-[1] bg-sg-inset px-3 py-1 font-mono text-[10px] font-medium uppercase tracking-wider text-sg-ink-3"
+                  data-testid="chat-model-picker-group"
+                  data-group={g.key}
                 >
-                  <span className="font-mono">{o.id}</span>
-                  {o.hint ? (
-                    <span className="ml-auto rounded border border-sg-border px-1 py-0 font-mono text-[10px] text-sg-ink-3">
-                      {o.hint}
-                    </span>
-                  ) : null}
-                </button>
+                  {g.label}
+                </div>
+                <ul>
+                  {g.options.map((o) => (
+                    <li key={`${g.key}:${o.id}:${o.source}`}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onPick(o.id);
+                          onClose();
+                        }}
+                        className={cn(
+                          "flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px]",
+                          o.id === current
+                            ? "bg-sg-accent/20 text-sg-ink"
+                            : "text-sg-ink hover:bg-sg-inset",
+                        )}
+                        data-testid="chat-model-picker-option"
+                        data-model-id={o.id}
+                      >
+                        <span className="font-mono">{o.id}</span>
+                        {o.hint ? (
+                          <span className="ml-auto rounded border border-sg-border px-1 py-0 font-mono text-[10px] text-sg-ink-3">
+                            {o.hint}
+                          </span>
+                        ) : null}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
               </li>
             ))
           )}

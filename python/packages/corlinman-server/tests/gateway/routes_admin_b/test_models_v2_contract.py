@@ -142,3 +142,67 @@ def test_single_alias_upsert_returns_alias_v2_view(tmp_path: Path) -> None:
     assert body["model"] == "gpt-5.5"
     assert body["params"] == {"temperature": 0.2}
     assert body["effective_params_schema"]["type"] == "object"
+
+
+def test_bulk_alias_save_preserves_provider_and_params(tmp_path: Path) -> None:
+    # Regression: the Models page "Save all" button posts a flat {name: target}
+    # string map. That shape cannot carry an alias's provider/params, so the old
+    # wholesale replace stripped the provider binding off every alias (e.g. the
+    # ones OAuth login provisioned) and the resolver then silently dropped them —
+    # chat fell through to the wrong upstream (the reported 401 + "—" provider).
+    # The bulk save must MERGE: keep the existing provider+params for any alias
+    # name still present, update only its target model, drop omitted names, and
+    # store genuinely-new names as plain shorthands.
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("", encoding="utf-8")
+
+    for _state, snapshot, client in _with_models_client(config_path):
+        snapshot.update(
+            {
+                "providers": {
+                    "relay": {
+                        "kind": "openai_compatible",
+                        "enabled": True,
+                        "api_key": {"value": "sk-test"},
+                    },
+                },
+                "models": {
+                    "default": "chat",
+                    "aliases": {
+                        "chat": {
+                            "provider": "relay",
+                            "model": "gpt-5.5",
+                            "params": {"reasoning_effort": "high"},
+                        },
+                        "stale": {
+                            "provider": "relay",
+                            "model": "gpt-4o",
+                            "params": {},
+                        },
+                    },
+                },
+            }
+        )
+
+        resp = client.post(
+            "/admin/models/aliases",
+            json={
+                # Flat string map exactly as the toolbar Save sends. "chat" keeps
+                # its target, "newone" is brand new, "stale" is omitted (deleted).
+                "aliases": {"chat": "gpt-5.5", "newone": "gpt-4o"},
+                "default": "chat",
+            },
+        )
+
+    assert resp.status_code == 200, resp.text
+    aliases = resp.json()["aliases"]
+    # Existing alias keeps its provider binding AND params through the bulk save.
+    assert aliases["chat"] == {
+        "provider": "relay",
+        "model": "gpt-5.5",
+        "params": {"reasoning_effort": "high"},
+    }
+    # Genuinely-new name is stored as a plain shorthand.
+    assert aliases["newone"] == "gpt-4o"
+    # Omitted alias is dropped (row deletion is honoured, not silently restored).
+    assert "stale" not in aliases

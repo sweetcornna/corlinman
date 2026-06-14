@@ -241,6 +241,148 @@ def test_codex_pkce_submit_discovers_models_and_configures_aliases(
     assert on_disk["models"]["aliases"]["gpt-4o"]["provider"] == "codex"
 
 
+def test_codex_login_repoints_stale_relay_default(
+    oauth_state_client: tuple[AdminState, TestClient, Path],
+) -> None:
+    # Regression for the reported bug: operator already has a default routed to a
+    # relay whose key has gone stale (chat 401s), then runs `codex login`. The
+    # login must (a) create a usable codex slot, (b) repoint the default to a
+    # codex-owned alias so chat stops hitting the dead relay, and (c) leave the
+    # relay's own alias intact (non-destructive — the operator may fix the key
+    # later). The relay holds the "gpt-5.5" alias name, so codex's default lands
+    # on its next free best model (gpt-4o); the relay alias is untouched.
+    start = oauth_state_client[1].post("/admin/oauth/codex/start")
+    assert start.status_code == 200, start.text
+    body = start.json()
+    record = sessions.get_session(body["session_id"])
+    assert record is not None
+
+    state, client, config_path = oauth_state_client
+    snapshot: dict[str, Any] = state.extras["snapshot"]
+    snapshot.update(
+        {
+            "providers": {
+                "cornna": {
+                    "kind": "openai_compatible",
+                    "enabled": True,
+                    "base_url": "https://api.cornna.xyz/v1",
+                    "api_key": "sk-stale",
+                }
+            },
+            "models": {
+                "default": "gpt-5.5",
+                "aliases": {
+                    "gpt-5.5": {
+                        "provider": "cornna",
+                        "model": "gpt-5.5",
+                        "params": {"reasoning_effort": "high"},
+                    }
+                },
+            },
+        }
+    )
+
+    with patch(
+        "corlinman_server.gateway.oauth.codex_pkce.exchange_code",
+        new=AsyncMock(return_value=_FAKE_TOKENS),
+    ), patch("corlinman_server.gateway.oauth.codex_pkce.write_auth_json"), patch(
+        "corlinman_server.gateway.routes_admin_b.oauth._stored_codex_token",
+        return_value=_FAKE_TOKENS["access_token"],
+    ), patch(
+        "corlinman_server.gateway.routes_admin_b.oauth._query_codex_oauth_models",
+        new=AsyncMock(return_value=["gpt-5.5", "gpt-4o"]),
+    ):
+        resp = client.post(
+            "/admin/oauth/codex/submit",
+            json={
+                "session_id": body["session_id"],
+                "code": "thecode",
+                "state": record["state"],
+            },
+        )
+
+    assert resp.status_code == 200, resp.text
+    on_disk = _on_disk(config_path)
+    # Codex slot created + enabled.
+    assert on_disk["providers"]["codex"]["kind"] == "codex"
+    assert on_disk["providers"]["codex"]["enabled"] is True
+    # Default repointed off the stale relay onto a codex-owned alias.
+    default = on_disk["models"]["default"]
+    assert default != "gpt-5.5"
+    assert on_disk["models"]["aliases"][default]["provider"] == "codex"
+    # The relay's own alias is preserved (non-destructive).
+    assert on_disk["models"]["aliases"]["gpt-5.5"]["provider"] == "cornna"
+    assert on_disk["models"]["aliases"]["gpt-5.5"]["params"] == {
+        "reasoning_effort": "high"
+    }
+
+
+@pytest.mark.asyncio
+async def test_oauth_login_does_not_take_over_default_on_discovery_failure(
+    oauth_state_client: tuple[AdminState, TestClient, Path],
+) -> None:
+    # A transient model-list outage during login surfaces as empty discovery, so
+    # provisioning falls back to a hard-coded guess. The takeover must NOT fire
+    # off that fallback — moving a working default onto a guessed id the account
+    # may not support would *break* a previously-fine setup. The existing default
+    # is preserved; the fallback aliases are still minted for manual selection.
+    state, _client, config_path = oauth_state_client
+    snapshot: dict[str, Any] = state.extras["snapshot"]
+    snapshot.update(
+        {
+            "models": {
+                "default": "operator-pick",
+                "aliases": {
+                    "operator-pick": {
+                        "provider": "openai",
+                        "model": "gpt-4o-mini",
+                        "params": {},
+                    }
+                },
+            }
+        }
+    )
+    oauth_routes._write_config_atomic(config_path, dict(snapshot))
+
+    with patch(
+        "corlinman_server.gateway.routes_admin_b.oauth._query_codex_oauth_models",
+        new=AsyncMock(return_value=[]),
+    ):
+        err = await oauth_routes._provision_oauth_models(
+            state,
+            provider="codex",
+            kind="codex",
+            access_token="codex-access-token",
+        )
+
+    assert err is None
+    on_disk = _on_disk(config_path)
+    # Codex slot is still created/enabled and fallback aliases minted...
+    assert on_disk["providers"]["codex"]["enabled"] is True
+    # ...but the working default is preserved (no takeover off a failed probe).
+    assert on_disk["models"]["default"] == "operator-pick"
+    assert on_disk["models"]["aliases"]["operator-pick"]["provider"] == "openai"
+
+
+def test_ordered_unique_model_ids_prefers_newest_unlisted_version() -> None:
+    # Curated preference wins overall; among models the list does NOT mention,
+    # the newest version comes first (so a just-released id beats an older one,
+    # even when the upstream lists the older one first). Non-versioned ids keep
+    # their discovery order behind the versioned ones.
+    out = oauth_routes._ordered_unique_model_ids(
+        ["gpt-5.4", "gpt-5.10", "gpt-5.5", "o4-mini"],
+        preference=("does-not-exist",),
+    )
+    assert out == ["gpt-5.10", "gpt-5.5", "gpt-5.4", "o4-mini"]
+
+    # Preference-listed ids stay ahead of unlisted ones regardless of version.
+    out2 = oauth_routes._ordered_unique_model_ids(
+        ["gpt-5.4", "gpt-5.5", "gpt-5.6"],
+        preference=("gpt-5.5",),
+    )
+    assert out2 == ["gpt-5.5", "gpt-5.6", "gpt-5.4"]
+
+
 def test_oauth_provisioning_creates_provider_named_alias_when_model_ids_conflict(
     oauth_state_client: tuple[AdminState, TestClient, Path],
 ) -> None:
@@ -516,9 +658,16 @@ def test_codex_disconnect_disables_provisioned_slot_and_clears_default(
     assert on_disk["models"]["aliases"]["openai"]["provider"] == "openai"
 
 
-def test_oauth_provisioning_preserves_existing_default(
+def test_oauth_login_takes_over_existing_default(
     oauth_state_client: tuple[AdminState, TestClient, Path],
 ) -> None:
+    # An explicit OAuth login is an unambiguous "use this account now" signal, so
+    # it repoints models.default to the freshly-provisioned provider's best model
+    # even when a *different* provider owned the prior default. This is what makes
+    # `codex login` (or claude-code import) immediately usable instead of leaving
+    # chat pinned to the old — possibly stale — default. The takeover is
+    # non-destructive: the prior default's alias entry is left intact (only the
+    # `default` pointer moves), so the operator can switch back at will.
     state, client, config_path = oauth_state_client
     snapshot: dict[str, Any] = state.extras["snapshot"]
     snapshot.update(
@@ -556,9 +705,11 @@ def test_oauth_provisioning_preserves_existing_default(
 
     assert resp.status_code == 200, resp.text
     on_disk = _on_disk(config_path)
-    assert on_disk["models"]["default"] == "operator-pick"
-    assert on_disk["models"]["aliases"]["operator-pick"]["provider"] == "openai"
+    # Default repointed to the just-provisioned provider's best model...
+    assert on_disk["models"]["default"] == "claude-opus-4-8"
     assert on_disk["models"]["aliases"]["claude-opus-4-8"]["provider"] == "anthropic"
+    # ...while the operator's prior alias is preserved (non-destructive).
+    assert on_disk["models"]["aliases"]["operator-pick"]["provider"] == "openai"
 
 
 def test_oauth_provisioning_preserves_existing_shorthand_alias(
@@ -748,9 +899,12 @@ async def test_oauth_provisioning_does_not_shadow_raw_default_model(
     state, _client, config_path = oauth_state_client
     snapshot: dict[str, Any] = state.extras["snapshot"]
     # The operator's default is a raw model id with no alias entry, resolving
-    # through their existing setup. A Codex login that discovers the same id must
-    # not mint an alias for it (resolve() checks aliases first, which would
-    # silently reroute the default to the OAuth provider).
+    # through their existing setup. A Codex login must NOT mint a "gpt-5.5" alias
+    # for it (resolve() checks aliases first, which would silently reroute that
+    # raw id to the OAuth provider). The login still takes over the *default*
+    # pointer (an explicit "use this account now" signal) via the provider's own
+    # alias, leaving the raw id free to keep routing through the operator's setup
+    # if they switch back.
     snapshot.update({"models": {"default": "gpt-5.5"}})
     oauth_routes._write_config_atomic(config_path, dict(snapshot))
 
@@ -768,10 +922,11 @@ async def test_oauth_provisioning_does_not_shadow_raw_default_model(
     assert err is None
     on_disk = _on_disk(config_path)
     aliases = on_disk["models"].get("aliases") or {}
-    # The raw default is preserved and NOT shadowed by a "gpt-5.5" alias...
-    assert on_disk["models"]["default"] == "gpt-5.5"
+    # No "gpt-5.5" alias is minted, so the raw id is NOT shadowed/rerouted...
     assert "gpt-5.5" not in aliases
-    # ...but the provider is still bindable via its provider-named alias.
+    # ...but the login takes over the default via the provider-named alias, which
+    # routes to codex.
+    assert on_disk["models"]["default"] == "codex"
     assert aliases["codex"]["provider"] == "codex"
 
 
