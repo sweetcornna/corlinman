@@ -28,7 +28,7 @@ body{background:rgb(var(--bg));color:rgb(var(--fg));font-family:var(--sans);-web
 a{color:inherit;text-decoration:none}
 ::selection{background:rgba(var(--accent),.4)}
 
-#field{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:block}
+#field{position:fixed;top:0;left:0;z-index:0;display:block}
 .grain{position:fixed;inset:-50%;width:200%;height:200%;z-index:1;pointer-events:none;opacity:.035;mix-blend-mode:overlay;
   background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
 
@@ -418,8 +418,11 @@ function assign(name){
   }
 }
 
+function vpRect(){const V=window.visualViewport;return V?{w:Math.round(V.width),h:Math.round(V.height),t:V.offsetTop||0,l:V.offsetLeft||0}:{w:innerWidth,h:innerHeight,t:0,l:0};}
+function syncVP(){const r=vpRect();canvas.style.top=r.t+'px';canvas.style.left=r.l+'px';}
 function build(){
-  W=innerWidth;H=innerHeight;FX=W/2;FY=H*0.42;panX=W/2;panY=H*0.42;
+  const r=vpRect();W=r.w;H=r.h;FX=W/2;FY=H*0.42;panX=W/2;panY=H*0.42;
+  canvas.style.top=r.t+'px';canvas.style.left=r.l+'px';
   canvas.width=W*DPR;canvas.height=H*DPR;canvas.style.width=W+'px';canvas.style.height=H+'px';ctx.setTransform(DPR,0,0,DPR,0,0);
   MOB=W<760||H<620; const mob=MOB;
   N=Math.round(Math.min(mob?9000:24000,(W*H)/(mob?150:100))*DENS);
@@ -665,6 +668,9 @@ function getAnimalPts(nm){if(!animalImg[nm])return null;if(animalPts[nm])return 
 document.getElementById('langtog').addEventListener('click',()=>{LANG=(LANG==='zh'?'en':'zh');localStorage.setItem('corlinman-lang',LANG);applyUiLang();if(active>=0)setFrame(active);});
 addEventListener('scroll',onScroll,{passive:true});
 addEventListener('resize',()=>{DPR=Math.min(devicePixelRatio||1,2);build();});
+if(window.visualViewport){let vpt=0;const VV=window.visualViewport;
+  VV.addEventListener('resize',()=>{clearTimeout(vpt);vpt=setTimeout(()=>{DPR=Math.min(devicePixelRatio||1,2);build();},120);});
+  VV.addEventListener('scroll',syncVP,{passive:true});}
 addEventListener('pointermove',e=>{pYaw=(e.clientX/innerWidth-0.5)*2;pPitch=(e.clientY/innerHeight-0.5)*2;});
 addEventListener('pointerleave',()=>{pYaw=0;pPitch=0;});
 
