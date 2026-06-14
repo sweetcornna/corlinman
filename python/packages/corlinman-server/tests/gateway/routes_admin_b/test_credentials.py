@@ -264,6 +264,10 @@ def test_enable_existing_credential_autobinds_without_overwriting_default(
 ) -> None:
     """Toggling an already-keyed provider on should bind only when needed."""
     _stub_probe(monkeypatch, ["gpt-4o-mini"])
+    # The second toggle enables a keyless anthropic slot; clear its env keys so
+    # it stays unbound (the no-overwrite assertion is about the openai default).
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
     snapshot: dict[str, Any] = admin_state.extras["snapshot"]
     snapshot["providers"] = {
         "openai": {
@@ -294,8 +298,10 @@ def test_put_non_primary_credential_does_not_autobind_unusable_provider(
     admin_state: AdminState,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An enabled provider stub still needs its primary credential to bind."""
+    """An enabled stub with no config key AND no env key stays unbound."""
     _stub_probe(monkeypatch, None)
+    # No env-var key either, so the built-in slot is genuinely unusable.
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     snapshot: dict[str, Any] = admin_state.extras["snapshot"]
     snapshot["providers"] = {
         "openai": {
@@ -314,6 +320,27 @@ def test_put_non_primary_credential_does_not_autobind_unusable_provider(
     assert on_disk["providers"]["openai"]["enabled"] is True
     assert "api_key" not in on_disk["providers"]["openai"]
     assert "models" not in on_disk or not on_disk.get("models", {}).get("default")
+
+
+def test_enable_builtin_openai_autobinds_from_env_key(
+    client: TestClient,
+    admin_state: AdminState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Enabling the built-in openai slot via credentials autobinds when only
+    OPENAI_API_KEY is set — consistent with the /admin/providers path."""
+    _stub_probe(monkeypatch, ["gpt-4o-mini"])
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-env")
+    snapshot: dict[str, Any] = admin_state.extras["snapshot"]
+    snapshot["providers"] = {"openai": {"kind": "openai", "enabled": False}}
+
+    resp = client.post("/admin/credentials/openai/enable", json={"enabled": True})
+
+    assert resp.status_code == 200, resp.text
+    on_disk = _on_disk(admin_state)
+    assert on_disk["providers"]["openai"]["enabled"] is True
+    assert "api_key" not in on_disk["providers"]["openai"]
+    assert on_disk["models"]["default"] == "openai"
 
 
 def test_put_fish_tts_custom_credential_does_not_autobind_default(
