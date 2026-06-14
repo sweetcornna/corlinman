@@ -4,6 +4,39 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.21.6] — 2026-06-14 — OAuth login makes the new account the active model
+
+> Patch release. After `codex login` (and the other OAuth flows) the freshly
+> provisioned account now actually becomes the active default and chat works
+> immediately, instead of staying pinned to a prior — possibly stale —
+> provider. Config-compatible. (PR #99)
+
+### Fixed
+- **OAuth login takes over `models.default`** — an explicit login now repoints
+  the default to the just-provisioned account's best model even when a different
+  provider was already the default, so `codex login` is immediately usable
+  instead of leaving chat on the previous (often stale) provider and 401-ing.
+  The takeover is non-destructive (other providers' aliases are left intact —
+  only the `default` pointer moves) and is gated on successful model discovery,
+  so a transient upstream model-list outage during login never moves a working
+  default onto a guessed fallback id.
+- **Saving the alias table no longer drops provider bindings** — the Models page
+  "Save all" posts a flat `{name: target}` map; the bulk endpoint now MERGES,
+  preserving each existing alias's `provider` + `params` instead of replacing the
+  table wholesale. Previously this stripped the provider off every alias (e.g.
+  the ones OAuth login provisioned); the resolver then dropped the provider-less
+  aliases and chat fell through to the wrong upstream (the `401` + "—" provider
+  column).
+- **Chat model picker no longer lists `0`, `1`, `2`…** — it read the
+  `/admin/models` alias *array* with `Object.entries` (which yields numeric
+  indices as names). It now consumes the v0.2 array shape (and tolerates the
+  legacy record shape), and **groups models per provider** so you can pick a
+  provider then one of its available models.
+- **Latest-model detection prefers the newest version** — discovered model ids
+  not in the curated preference list are now ordered newest-version-first
+  (tolerating suffixes like `gpt-5.5-codex`), so a fresh release wins over an
+  older sibling the upstream happened to list first.
+
 ## [1.21.5] — 2026-06-14 — OAuth model provisioning + env-backed autobind
 
 > Patch release. Config-compatible — existing provider/model config is
