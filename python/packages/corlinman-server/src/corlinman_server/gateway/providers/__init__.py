@@ -158,13 +158,17 @@ def build_registry(
 # ---------------------------------------------------------------------------
 
 
-def _alias_entries(config: Mapping[str, Any] | None) -> list[tuple[str, str]]:
-    """Extract ``(alias, owned_by)`` rows from ``config["models"]``.
+def _alias_entries(config: Mapping[str, Any] | None) -> list[tuple[str, str, bool]]:
+    """Extract ``(alias, owned_by, is_shorthand)`` rows from ``config["models"]``.
 
     ``owned_by`` is the alias's target provider slot name — the closest
-    OpenAI-``Model``-compatible "owner" we can surface. ``[models]`` may
-    carry ``default`` plus an ``aliases`` table; only ``aliases`` rows
-    become model ids.
+    OpenAI-``Model``-compatible "owner" we can surface. ``is_shorthand`` is
+    True for a providerless string alias (it resolves via the raw-model-id /
+    legacy fallback, not a concrete provider slot); it is carried explicitly so
+    callers don't have to infer shorthand from the display ``owned_by`` (which
+    would misfire if an operator literally named a provider ``corlinman``).
+    ``[models]`` may carry ``default`` plus an ``aliases`` table; only
+    ``aliases`` rows become model ids.
     """
     cfg = config or {}
     models_cfg = cfg.get("models") or {}
@@ -173,12 +177,13 @@ def _alias_entries(config: Mapping[str, Any] | None) -> list[tuple[str, str]]:
     aliases = models_cfg.get("aliases") or {}
     if not isinstance(aliases, Mapping):
         return []
-    rows: list[tuple[str, str]] = []
+    rows: list[tuple[str, str, bool]] = []
     for alias, entry in aliases.items():
+        is_shorthand = not isinstance(entry, Mapping)
         owner = "corlinman"
         if isinstance(entry, Mapping):
             owner = str(entry.get("provider") or owner)
-        rows.append((str(alias), owner))
+        rows.append((str(alias), owner, is_shorthand))
     return rows
 
 
@@ -217,9 +222,27 @@ class RegistryModelSource:
 
         seen: set[str] = set()
         entries: list[Any] = []
+        registry = self._registry
 
-        for alias, owner in _alias_entries(self._config):
-            if alias in seen:
+        def _alias_resolvable(owner: str, is_shorthand: bool) -> bool:
+            # A dict alias targets a provider slot; only advertise it when that
+            # provider actually built (i.e. is enabled). Otherwise ``resolve()``
+            # raises for it, so listing it offers a model every chat would fail
+            # to use (e.g. after an OAuth provider is disconnected/disabled).
+            # Shorthand aliases carry no concrete provider target and resolve via
+            # the raw-model-id / legacy fallback, so they are always kept — this
+            # is keyed off the explicit ``is_shorthand`` flag, not the display
+            # owner, so a real provider literally named "corlinman" is still
+            # registry-checked rather than treated as shorthand.
+            if is_shorthand or registry is None:
+                return True
+            try:
+                return registry.get(owner) is not None
+            except Exception:  # noqa: BLE001 — defensive; never crash the route
+                return True
+
+        for alias, owner, is_shorthand in _alias_entries(self._config):
+            if alias in seen or not _alias_resolvable(owner, is_shorthand):
                 continue
             seen.add(alias)
             entries.append(ModelEntry(id=alias, owned_by=owner))
@@ -228,7 +251,6 @@ class RegistryModelSource:
         # specs that actually built (``get(name) is not None``) are
         # listed so a disabled / failed provider doesn't masquerade as a
         # usable model.
-        registry = self._registry
         if registry is not None:
             try:
                 specs = registry.list_specs()

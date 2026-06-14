@@ -36,10 +36,19 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
+from typing import Any
 
+import structlog
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse, Response
 
+from corlinman_server.gateway.core.config_mutation import (
+    publish_config_mutation as _publish_config_mutation_core,
+)
+from corlinman_server.gateway.core.config_mutation import (
+    write_config_atomic as _write_config_atomic,
+)
 from corlinman_server.gateway.oauth import (
     OAuthCredential,
     anthropic_pkce,
@@ -78,6 +87,401 @@ from corlinman_server.gateway.routes_admin_b.state import (
     get_admin_state,
     require_admin,
 )
+
+
+def _py_config_writer():
+    from corlinman_server.gateway.lifecycle import write_py_config  # noqa: PLC0415
+
+    return write_py_config
+
+
+async def _publish_config_mutation(state: Any, cfg: dict[str, Any]) -> None:
+    await _publish_config_mutation_core(
+        state,
+        cfg,
+        py_config_writer=_py_config_writer(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# OAuth model provisioning helpers
+# ---------------------------------------------------------------------------
+
+_ANTHROPIC_MODEL_PREFERENCE: tuple[str, ...] = (
+    "claude-fable-5",
+    "claude-opus-4-8",
+    "claude-opus-4-7",
+    "claude-opus-4-6",
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5",
+    "claude-3-5-sonnet-latest",
+    "claude-3-5-haiku-latest",
+)
+_CODEX_MODEL_PREFERENCE: tuple[str, ...] = (
+    "gpt-5.5",
+    "gpt-5",
+    "gpt-4.5-turbo",
+    "gpt-4.5",
+    "chatgpt-4o-latest",
+    "gpt-4o",
+    "gpt-4o-mini",
+    "o4-mini",
+)
+_FALLBACK_OAUTH_MODELS: dict[str, list[str]] = {
+    "anthropic": ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"],
+    "codex": ["gpt-5.5", "gpt-4o"],
+}
+
+# Bookkeeping flag written onto a ``[providers.<name>]`` slot that this OAuth
+# flow created itself (vs. an operator-configured slot). Disconnect only cleans
+# up slots carrying this marker, so manually configured / env-var-backed
+# providers are never disabled or repointed. ``ProviderSpec`` accepts unknown
+# keys (``extra="allow"``), so the flag round-trips through config harmlessly.
+_OAUTH_PROVISIONED_KEY = "oauth_provisioned"
+
+logger = structlog.get_logger(__name__)
+
+
+def _ordered_unique_model_ids(models: list[str], preference: tuple[str, ...]) -> list[str]:
+    clean: list[str] = []
+    seen: set[str] = set()
+    for model in models:
+        mid = str(model).strip()
+        if not mid or mid in seen:
+            continue
+        clean.append(mid)
+        seen.add(mid)
+    preferred = [mid for mid in preference if mid in seen]
+    rest = [mid for mid in clean if mid not in set(preferred)]
+    return preferred + rest
+
+
+async def _query_anthropic_oauth_models(access_token: str) -> list[str]:
+    """Best-effort live model discovery for Anthropic OAuth tokens."""
+    import httpx
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "anthropic-beta": "oauth-2025-04-20",
+        "anthropic-version": "2023-06-01",
+        "x-app": "cli",
+        "user-agent": "claude-cli/2.1.88 (claude-code)",
+    }
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get("https://api.anthropic.com/v1/models", headers=headers)
+    if resp.status_code >= 400:
+        raise RuntimeError(f"HTTP {resp.status_code}")
+    data = resp.json()
+    out: list[str] = []
+    for item in data.get("data") or []:
+        if isinstance(item, dict) and isinstance(item.get("id"), str):
+            out.append(item["id"])
+    return out
+
+
+async def _query_codex_oauth_models(access_token: str) -> list[str]:
+    """Best-effort live model discovery for ChatGPT Codex OAuth tokens."""
+    import httpx
+    from corlinman_providers._codex_oauth import codex_cloudflare_headers
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        **codex_cloudflare_headers(access_token),
+    }
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get(
+            "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
+            headers=headers,
+        )
+    if resp.status_code >= 400:
+        raise RuntimeError(f"HTTP {resp.status_code}")
+    data = resp.json()
+    out: list[str] = []
+    for item in data.get("models") or []:
+        slug = item.get("slug") if isinstance(item, dict) else None
+        if isinstance(slug, str) and slug:
+            out.append(slug)
+    return out
+
+
+def _upsert_oauth_provider_and_aliases(
+    cfg: dict[str, Any],
+    *,
+    provider: str,
+    kind: str,
+    models: list[str],
+    preference: tuple[str, ...],
+) -> dict[str, Any]:
+    providers_cfg = dict(cfg.get("providers") or {})
+    slot_is_new = provider not in providers_cfg
+    existing_provider = dict(providers_cfg.get(provider) or {})
+    existing_kind = existing_provider.get("kind")
+    if existing_kind and existing_kind != kind:
+        # Manual config wins (cf. _auto_inject_codex's "codex already exists"
+        # no-op): a pre-existing slot of a different kind is operator-owned, so
+        # logging in must not repurpose it to the OAuth adapter or reroute its
+        # aliases through it. Leave the config untouched.
+        return cfg
+    if existing_provider.get("enabled") is False and _has_config_api_key(existing_provider):
+        # An explicitly-disabled slot backed by a config api_key is a manual
+        # provider the operator deliberately turned off. Logging in must not
+        # resurrect it — a later disconnect is unmarked and wouldn't restore the
+        # disabled state, so leave the config (and its disabled flag) untouched.
+        return cfg
+    # ``ProviderSpec.enabled`` defaults to True, so only an EXPLICIT
+    # ``enabled = false`` marks an inactive credential stub. A missing field is
+    # active manual config (e.g. an env-var-backed slot) and must not be claimed.
+    was_explicitly_disabled = existing_provider.get("enabled") is False
+    had_config_key = _has_config_api_key(existing_provider)
+    existing_provider["kind"] = kind
+    existing_provider["enabled"] = True
+    if slot_is_new or (was_explicitly_disabled and not had_config_key):
+        # Take ownership of slots we create, and of same-kind credential stubs
+        # the operator is NOT actively using (explicitly disabled with no
+        # configured key — e.g. what's left after deleting an api_key on the
+        # credentials page), so a later disconnect can clean them up. An active
+        # keyless slot is treated as operator config (it may authenticate via an
+        # env-var fallback) and left unmarked so disconnect never disables it.
+        existing_provider[_OAUTH_PROVISIONED_KEY] = True
+    providers_cfg[provider] = existing_provider
+    cfg["providers"] = providers_cfg
+
+    models_cfg = dict(cfg.get("models") or {})
+    aliases = dict(models_cfg.get("aliases") or {})
+    raw_default = str(models_cfg.get("default") or "")
+    selected = _ordered_unique_model_ids(models, preference)
+    if not selected:
+        selected = list(_FALLBACK_OAUTH_MODELS.get(kind, []))
+    selected = _ordered_unique_model_ids(selected, preference)
+
+    bindable_aliases: list[str] = []
+    for model_id in selected:
+        existing = aliases.get(model_id)
+        if existing is not None:
+            # An alias with this name already exists. Bind to it only when it is
+            # already owned by this provider; otherwise it belongs to the user
+            # (e.g. a providerless shorthand alias) or another provider, and a
+            # login must not silently overwrite or reroute it.
+            if isinstance(existing, dict) and existing.get("provider") == provider:
+                bindable_aliases.append(model_id)
+            continue
+        if model_id == raw_default:
+            # The operator's default is this exact model id with no alias entry,
+            # so it resolves as a raw upstream id through their existing setup.
+            # resolve() checks aliases before raw ids, so minting one here would
+            # silently reroute that default to this OAuth provider; leave it.
+            continue
+        aliases[model_id] = {"provider": provider, "model": model_id, "params": {}}
+        bindable_aliases.append(model_id)
+
+    if selected and not bindable_aliases:
+        provider_alias = aliases.get(provider)
+        if provider_alias is None:
+            # No alias named after the provider yet — safe to mint the shorthand.
+            aliases[provider] = {"provider": provider, "model": selected[0], "params": {}}
+            bindable_aliases.append(provider)
+        elif isinstance(provider_alias, dict) and provider_alias.get("provider") == provider:
+            bindable_aliases.append(provider)
+        else:
+            # The provider name is already taken by a user/other-provider alias
+            # (a shorthand string or a dict owned elsewhere); mint a
+            # non-conflicting suffixed alias instead of overwriting it.
+            alias_base = f"{provider}-{selected[0]}"
+            alias_name = alias_base
+            suffix = 2
+            while True:
+                existing = aliases.get(alias_name)
+                if isinstance(existing, dict) and existing.get("provider") == provider:
+                    bindable_aliases.append(alias_name)
+                    break
+                if alias_name not in aliases:
+                    aliases[alias_name] = {
+                        "provider": provider,
+                        "model": selected[0],
+                        "params": {},
+                    }
+                    bindable_aliases.append(alias_name)
+                    break
+                alias_name = f"{alias_base}-{suffix}"
+                suffix += 1
+
+    if bindable_aliases and not str(models_cfg.get("default") or "").strip():
+        models_cfg["default"] = bindable_aliases[0]
+    models_cfg["aliases"] = aliases
+    cfg["models"] = models_cfg
+    return cfg
+
+
+def _alias_provider(entry: Any) -> str | None:
+    if not isinstance(entry, dict):
+        return None
+    provider = entry.get("provider")
+    return provider if isinstance(provider, str) and provider else None
+
+
+def _has_config_api_key(entry: dict[str, Any]) -> bool:
+    raw_key = entry.get("api_key")
+    if isinstance(raw_key, str):
+        return bool(raw_key.strip())
+    if isinstance(raw_key, dict):
+        if "env" in raw_key:
+            return bool(str(raw_key.get("env") or "").strip())
+        if "value" in raw_key:
+            return bool(str(raw_key.get("value") or "").strip())
+        return bool(raw_key)
+    return False
+
+
+def _remove_oauth_provider_config(
+    cfg: dict[str, Any], provider: str
+) -> tuple[dict[str, Any], bool]:
+    # Only clean up a slot that THIS flow provisioned (carries the marker) AND
+    # that the operator has not since adopted by adding a config api_key. A
+    # manually configured slot — including one with no api_key that authenticates
+    # via the adapter's env-var fallback — is left completely untouched:
+    # disconnecting the OAuth token must not disable it or clear a default that
+    # is not actually dangling. The api_key check also covers a provisioned slot
+    # later given a key through /admin/credentials, where the marker lingers.
+    providers_cfg = cfg.get("providers") or {}
+    provider_entry = providers_cfg.get(provider)
+    if not (
+        isinstance(provider_entry, dict)
+        and provider_entry.get(_OAUTH_PROVISIONED_KEY) is True
+        and not _has_config_api_key(provider_entry)
+    ):
+        return cfg, False
+
+    changed = False
+
+    # Disable the slot: the OAuth token was its only credential, so leaving it
+    # enabled would point chat at deleted credentials. Aliases are kept (inert
+    # while disabled, revived on reconnect), mirroring the credential-delete
+    # path which only clears the active default.
+    next_providers = dict(providers_cfg)
+    next_entry = dict(provider_entry)
+    if next_entry.get("enabled") is not False:
+        next_entry["enabled"] = False
+        changed = True
+    next_providers[provider] = next_entry
+    cfg["providers"] = next_providers
+
+    models_cfg = dict(cfg.get("models") or {})
+    aliases = models_cfg.get("aliases") or {}
+    default_name = str(models_cfg.get("default") or "")
+    if default_name:
+        default_entry = aliases.get(default_name)
+        if default_entry is None:
+            # No alias entry: the default only dangles if it names this
+            # provider's shorthand slot directly.
+            default_dangling = default_name == provider
+        else:
+            # A real alias entry dangles only when it is owned by this provider;
+            # a shorthand or another provider's alias is unrelated and kept.
+            default_dangling = _alias_provider(default_entry) == provider
+        if default_dangling:
+            models_cfg.pop("default", None)
+            cfg["models"] = models_cfg
+            changed = True
+
+    return cfg, changed
+
+
+async def _cleanup_oauth_provider_config(
+    state: Any, *, provider: str, on_success: Callable[[], object] | None = None
+) -> JSONResponse | None:
+    # ``on_success`` (the token deletion) runs INSIDE the write lock, once the
+    # config update is committed, so the credential and config mutations are
+    # serialized against a concurrent login's provisioning (which takes the same
+    # lock). A config-write failure returns the error WITHOUT running it, leaving
+    # the credential in place — a consistent no-op.
+    if state.config_path is None:
+        if on_success is not None:
+            on_success()
+        return None
+
+    async with state.admin_write_lock:
+        cfg = dict(getattr(state, "config_loader", lambda: {})() or {})
+        cfg, changed = _remove_oauth_provider_config(cfg, provider)
+        if changed:
+            err = _write_config_atomic(state.config_path, cfg)
+            if err is not None:
+                return err
+            await _publish_config_mutation(state, cfg)
+        if on_success is not None:
+            on_success()
+    return None
+
+
+def _stored_anthropic_token(data_dir: Any) -> str | None:
+    cred = load_credential(data_dir, "anthropic")
+    return cred.access_token if cred is not None else None
+
+
+def _stored_codex_token() -> str | None:
+    from corlinman_providers._codex_oauth import load_codex_credential  # noqa: PLC0415
+
+    cred = load_codex_credential()
+    return cred.access_token if cred is not None else None
+
+
+async def _provision_oauth_models(
+    state: Any,
+    *,
+    provider: str,
+    kind: str,
+    access_token: str,
+    current_token: Callable[[], str | None] | None = None,
+) -> JSONResponse | None:
+    if state.config_path is None:
+        return None
+
+    if kind == "codex":
+        preference = _CODEX_MODEL_PREFERENCE
+        query = _query_codex_oauth_models
+    else:
+        preference = _ANTHROPIC_MODEL_PREFERENCE
+        query = _query_anthropic_oauth_models
+
+    try:
+        discovered = await query(access_token)
+    except Exception:
+        discovered = []
+
+    async with state.admin_write_lock:
+        # Re-check, under the write lock, that the credential STILL MATCHES the
+        # token we discovered models for. The slow discovery await above runs
+        # outside the lock, so in the meantime a concurrent disconnect could have
+        # deleted the token (current_token() -> None), or an overlapping login
+        # for the same provider could have replaced it with a different-
+        # entitlement token (current_token() != access_token). Either way these
+        # discovered models may not be usable by the active credential, so skip
+        # provisioning rather than write aliases for a stale token.
+        if current_token is not None and current_token() != access_token:
+            return None
+        cfg = dict(getattr(state, "config_loader", lambda: {})() or {})
+        cfg = _upsert_oauth_provider_and_aliases(
+            cfg,
+            provider=provider,
+            kind=kind,
+            models=discovered,
+            preference=preference,
+        )
+        err = _write_config_atomic(state.config_path, cfg)
+        if err is not None:
+            # Provisioning is best-effort: the OAuth token is already saved, so
+            # the login itself succeeded. Surfacing a config-write failure here
+            # would report the login as failed even though the credential is
+            # committed (and the single-use PKCE code can't be retried). Log and
+            # move on; the operator can wire up models via the Models page.
+            logger.warning(
+                "gateway.oauth.provision_write_failed",
+                provider=provider,
+                kind=kind,
+            )
+            return None
+        await _publish_config_mutation(state, cfg)
+    return None
+
 
 # ---------------------------------------------------------------------------
 # Router
@@ -307,6 +711,17 @@ def router() -> APIRouter:
         except OSError as exc:
             return _bad("save_failed", status=500, message=str(exc))
 
+        state = get_admin_state()
+        provision_err = await _provision_oauth_models(
+            state,
+            provider="codex",
+            kind="codex",
+            access_token=str(tokens.get("access_token") or ""),
+            current_token=_stored_codex_token,
+        )
+        if provision_err is not None:
+            return provision_err
+
         sessions.update_session(body.session_id, status="approved")
         return SubmitPkceResponse(
             ok=True,
@@ -342,8 +757,17 @@ def router() -> APIRouter:
         )
 
     @r.delete("/admin/oauth/codex", response_model=None)
-    async def codex_disconnect() -> Response:
-        codex_pkce.delete_auth_json()
+    async def codex_disconnect() -> Response | JSONResponse:
+        state = get_admin_state()
+        # The token deletion runs inside the cleanup write lock (see
+        # _cleanup_oauth_provider_config): config + token are mutated atomically,
+        # and a config-write failure leaves the credential in place rather than
+        # stranding an enabled slot pointed at a deleted token.
+        cleanup_err = await _cleanup_oauth_provider_config(
+            state, provider="codex", on_success=codex_pkce.delete_auth_json
+        )
+        if cleanup_err is not None:
+            return cleanup_err
         return Response(status_code=204)
 
     # -- Gemini PKCE: start / submit / refresh / disconnect ----------------
@@ -492,6 +916,16 @@ def router() -> APIRouter:
         except OSError as exc:
             return _bad("save_failed", status=500, message=str(exc))
 
+        provision_err = await _provision_oauth_models(
+            state,
+            provider="anthropic",
+            kind="anthropic",
+            access_token=cred.access_token,
+            current_token=lambda: _stored_anthropic_token(data_dir),
+        )
+        if provision_err is not None:
+            return provision_err
+
         sessions.update_session(body.session_id, status="approved")
         return SubmitPkceResponse(
             ok=True,
@@ -536,7 +970,17 @@ def router() -> APIRouter:
         data_dir = _require_data_dir(state)
         if isinstance(data_dir, JSONResponse):
             return data_dir
-        delete_credential(data_dir, "anthropic")
+        # The token deletion runs inside the cleanup write lock (see
+        # _cleanup_oauth_provider_config): config + token are mutated atomically,
+        # and a config-write failure leaves the credential in place rather than
+        # stranding an enabled slot pointed at a deleted token.
+        cleanup_err = await _cleanup_oauth_provider_config(
+            state,
+            provider="anthropic",
+            on_success=lambda: delete_credential(data_dir, "anthropic"),
+        )
+        if cleanup_err is not None:
+            return cleanup_err
         return Response(status_code=204)
 
     @r.post(
@@ -568,6 +1012,16 @@ def router() -> APIRouter:
             save_credential(data_dir, persisted)
         except OSError as exc:
             return _bad("save_failed", status=500, message=str(exc))
+
+        provision_err = await _provision_oauth_models(
+            state,
+            provider="anthropic",
+            kind="anthropic",
+            access_token=persisted.access_token,
+            current_token=lambda: _stored_anthropic_token(data_dir),
+        )
+        if provision_err is not None:
+            return provision_err
 
         return ImportClaudeCodeResponse(
             imported=True,
@@ -658,6 +1112,15 @@ def router() -> APIRouter:
             save_credential(data_dir, persisted)
         except OSError as exc:
             return _bad("save_failed", status=500, message=str(exc))
+        provision_err = await _provision_oauth_models(
+            state,
+            provider="anthropic",
+            kind="anthropic",
+            access_token=persisted.access_token,
+            current_token=lambda: _stored_anthropic_token(data_dir),
+        )
+        if provision_err is not None:
+            return provision_err
         return ImportClaudeCodeResponse(
             imported=True, expires_at_ms=persisted.expires_at_ms
         )

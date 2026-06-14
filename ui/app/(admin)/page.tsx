@@ -31,6 +31,7 @@ import { LogRow, type LogSeverity } from "@/components/ui/log-row";
 import { MiniSparkline, type SparkBar } from "@/components/ui/mini-sparkline";
 import { UptimeStreak, type DayBar } from "@/components/admin/uptime-streak";
 import { useCommandPalette } from "@/components/cmdk-palette";
+import { useAdminSession } from "@/components/admin/admin-session-context";
 
 /**
  * Dashboard — Tidepool cutover.
@@ -86,6 +87,8 @@ export default function DashboardPage() {
   const { t } = useTranslation();
   const variants = useMotionVariants();
   const palette = useCommandPalette();
+  const session = useAdminSession();
+  const displayName = session?.user?.trim() || t("dashboard.tp.operatorFallback");
 
   // Core queries. Every one wraps with `.catch` via retry:false + isError.
   const plugins = useQuery<PluginSummary[]>({
@@ -208,7 +211,7 @@ export default function DashboardPage() {
           <div className="flex min-w-0 flex-col gap-4">
             <HeroLead systemsOk={`${okChecks}/${totalChecks || 7}`} />
             <h1 className="sg-grad-text text-balance font-sans text-[34px] font-semibold leading-[1.12] tracking-[-0.028em] sm:text-[38px]">
-              {t("dashboard.tp.greeting")}
+              {t("dashboard.tp.greeting", { name: displayName })}
               <br />
               {t("dashboard.tp.agentsAre")} {statusWord}.
             </h1>
