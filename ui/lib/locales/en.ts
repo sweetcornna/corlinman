@@ -2960,6 +2960,7 @@ export const en = {
       currentBadge: "current",
       defaultBadge: "default",
       aliasBadge: "alias",
+      groupAliases: "Default & aliases",
       customLabel: "Custom model name (type any name not in the list)",
       customPlaceholder: "e.g. gpt-5o, claude-opus-4-7, gemini-2.5-pro…",
       useCustom: "Use",

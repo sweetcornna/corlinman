@@ -275,7 +275,29 @@ def router() -> APIRouter:
         state = get_admin_state()
         cfg = dict(config_snapshot())
         models_cfg = dict(cfg.get("models") or {})
-        models_cfg["aliases"] = dict(bulk.aliases)
+        # Non-destructive merge. The bulk wire shape is a flat ``{name: target}``
+        # string map (the Models page "Save all" button) which cannot carry an
+        # alias's ``provider`` / ``params``. Replacing the table wholesale with
+        # bare strings would strip the provider binding off every alias — e.g.
+        # the ones OAuth login just provisioned — and the resolver then silently
+        # drops provider-less aliases (``AliasEntry`` requires a provider), so
+        # chat falls through to the wrong upstream (the reported 401 + "—"
+        # provider column). So for each incoming entry we PRESERVE the existing
+        # alias's provider + params when its name still maps to a dict alias,
+        # updating only the target model. Names omitted from the payload are
+        # dropped (honours row deletions); brand-new names become plain-string
+        # shorthands exactly as before.
+        existing_aliases = dict(models_cfg.get("aliases") or {})
+        merged_aliases: dict[str, Any] = {}
+        for name, target in bulk.aliases.items():
+            prev = existing_aliases.get(name)
+            if isinstance(prev, dict) and prev.get("provider"):
+                next_entry = dict(prev)
+                next_entry["model"] = target
+                merged_aliases[name] = next_entry
+            else:
+                merged_aliases[name] = target
+        models_cfg["aliases"] = merged_aliases
         if bulk.default is not None:
             models_cfg["default"] = bulk.default
         err = await _persist_alias_swap(state, models_cfg)

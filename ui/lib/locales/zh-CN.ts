@@ -2902,6 +2902,7 @@ export const zhCN = {
       currentBadge: "当前",
       defaultBadge: "默认",
       aliasBadge: "别名",
+      groupAliases: "默认与别名",
       customLabel: "自定义模型名（列表里没有的也能直接输入）",
       customPlaceholder: "例如 gpt-5o、claude-opus-4-7、gemini-2.5-pro…",
       useCustom: "使用",
