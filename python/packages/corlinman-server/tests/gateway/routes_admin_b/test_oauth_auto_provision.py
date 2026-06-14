@@ -317,6 +317,53 @@ def test_codex_login_repoints_stale_relay_default(
     }
 
 
+@pytest.mark.asyncio
+async def test_oauth_login_does_not_take_over_default_on_discovery_failure(
+    oauth_state_client: tuple[AdminState, TestClient, Path],
+) -> None:
+    # A transient model-list outage during login surfaces as empty discovery, so
+    # provisioning falls back to a hard-coded guess. The takeover must NOT fire
+    # off that fallback — moving a working default onto a guessed id the account
+    # may not support would *break* a previously-fine setup. The existing default
+    # is preserved; the fallback aliases are still minted for manual selection.
+    state, _client, config_path = oauth_state_client
+    snapshot: dict[str, Any] = state.extras["snapshot"]
+    snapshot.update(
+        {
+            "models": {
+                "default": "operator-pick",
+                "aliases": {
+                    "operator-pick": {
+                        "provider": "openai",
+                        "model": "gpt-4o-mini",
+                        "params": {},
+                    }
+                },
+            }
+        }
+    )
+    oauth_routes._write_config_atomic(config_path, dict(snapshot))
+
+    with patch(
+        "corlinman_server.gateway.routes_admin_b.oauth._query_codex_oauth_models",
+        new=AsyncMock(return_value=[]),
+    ):
+        err = await oauth_routes._provision_oauth_models(
+            state,
+            provider="codex",
+            kind="codex",
+            access_token="codex-access-token",
+        )
+
+    assert err is None
+    on_disk = _on_disk(config_path)
+    # Codex slot is still created/enabled and fallback aliases minted...
+    assert on_disk["providers"]["codex"]["enabled"] is True
+    # ...but the working default is preserved (no takeover off a failed probe).
+    assert on_disk["models"]["default"] == "operator-pick"
+    assert on_disk["models"]["aliases"]["operator-pick"]["provider"] == "openai"
+
+
 def test_ordered_unique_model_ids_prefers_newest_unlisted_version() -> None:
     # Curated preference wins overall; among models the list does NOT mention,
     # the newest version comes first (so a just-released id beats an older one,

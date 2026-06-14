@@ -226,8 +226,17 @@ export function ChatModelPicker({
       const head = make("aliases", t("chat.modelPicker.groupAliases"));
       const def = modelsQ.data?.default ?? "";
       if (def) push(head, def, "default", t("chat.modelPicker.defaultBadge"));
-      // Aliases from /admin/models (V2 array shape): name + routed provider.
-      for (const a of modelsQ.data?.aliases ?? []) {
+      // Aliases from /admin/models. A v0.2 gateway returns an array (name +
+      // routed provider); a legacy v0.1 gateway still returns a Record<string,
+      // string>, which `for...of` would throw on — normalize both shapes.
+      const rawAliases = modelsQ.data?.aliases;
+      const aliasRows: Array<{ name: string; provider?: string }> =
+        Array.isArray(rawAliases)
+          ? rawAliases
+          : Object.keys((rawAliases ?? {}) as Record<string, string>).map(
+              (name) => ({ name }),
+            );
+      for (const a of aliasRows) {
         push(head, a.name, "alias", a.provider || t("chat.modelPicker.aliasBadge"));
       }
     } else {

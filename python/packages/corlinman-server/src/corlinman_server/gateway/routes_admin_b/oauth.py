@@ -278,6 +278,13 @@ def _upsert_oauth_provider_and_aliases(
     aliases = dict(models_cfg.get("aliases") or {})
     raw_default = str(models_cfg.get("default") or "")
     selected = _ordered_unique_model_ids(models, preference)
+    # Track whether we actually discovered the account's models. A transient
+    # upstream model-list outage during login surfaces here as ``models=[]`` and
+    # we fall back to a hard-coded guess — which the account may not even
+    # support. In that case we must NOT take over an already-working default
+    # (see the default-repoint block below): preserve it rather than move chat
+    # onto a fallback id on the strength of a failed probe.
+    discovery_succeeded = bool(selected)
     if not selected:
         selected = list(_FALLBACK_OAUTH_MODELS.get(kind, []))
     selected = _ordered_unique_model_ids(selected, preference)
@@ -343,9 +350,13 @@ def _upsert_oauth_provider_and_aliases(
     # repoint is NON-DESTRUCTIVE: ``bindable_aliases`` only ever contains
     # aliases owned by THIS provider (the loop above leaves other providers'
     # aliases untouched), so we never reroute someone else's alias to do it.
-    # When this is not a takeover we keep the historical only-if-empty rule.
+    # We only take over when discovery actually returned the account's models —
+    # never on the strength of the hard-coded fallback (a failed probe must not
+    # move a working default onto a guessed id). When this is not a takeover we
+    # keep the historical only-if-empty rule.
     if bindable_aliases and (
-        take_over_default or not str(models_cfg.get("default") or "").strip()
+        (take_over_default and discovery_succeeded)
+        or not str(models_cfg.get("default") or "").strip()
     ):
         models_cfg["default"] = bindable_aliases[0]
     models_cfg["aliases"] = aliases
