@@ -272,6 +272,11 @@ function toModel(p2,depth){const n=p2.length/2;if(!n)return new Float32Array(0);
   for(let i=0;i<n;i++){const sx=p2[i*2],sy=p2[i*2+1];const rr=Math.hypot(sx-cx,sy-cy)/R;
     const dome=Math.sqrt(Math.max(0,1-rr*rr)),wob=Math.sin(sx*0.018)*Math.cos(sy*0.02);
     out[i*3]=sx-FX;out[i*3+1]=sy-FY;out[i*3+2]=(dome*0.55+wob*0.18)*depth+(Math.random()-.5)*depth*0.16;}
+  if(MOB){                                            // GUARANTEED fit: recenter + scale every figure into the viewport
+    let nx=1e9,xx=-1e9,ny=1e9,xy=-1e9;
+    for(let i=0;i<n;i++){const x=out[i*3],y=out[i*3+1];if(x<nx)nx=x;if(x>xx)xx=x;if(y<ny)ny=y;if(y>xy)xy=y;}
+    const bw=(xx-nx)||1,bh=(xy-ny)||1,bcx=(nx+xx)/2,bcy=(ny+xy)/2,fit=Math.min(W*0.80/bw,H*0.44/bh);
+    for(let i=0;i<n;i++){out[i*3]=(out[i*3]-bcx)*fit;out[i*3+1]=(out[i*3+1]-bcy)*fit;out[i*3+2]*=fit;}}
   return out;}
 /* ===== concept icons — bold symbol silhouettes (the scene's idea, concretized) ===== */
 const icons={
@@ -389,6 +394,7 @@ function shapeFor(name){const k=name+'@'+W+'x'+H;if(!shapeCache.has(k))shapeCach
 
 /* dust settles into a soft mound along the bottom — "forgotten to dust" */
 function pilePos(){
+  if(MOB){const u=Math.random()*2-1,m=Math.min(W,H); return [u*m*0.20, m*0.16+Math.random()*m*0.1, (Math.random()-.5)*60];}  // local crumble (figure is recentred to origin)
   const u=Math.random()*2-1;
   const x=W/2 + u*W*0.34;                          // centred band
   const mound=Math.exp(-u*u*2.2)*H*0.08;           // gentle central rise
@@ -565,7 +571,7 @@ function frame(t){
   const time=t*0.001, pal=curPalette();applyCss(pal);
   const onLight=pal.light;
   const f=FRAMES[active]||FRAMES[0];
-  const _pf=MOB?0.5:(0.5+(f.focus-0.5)*0.5); panX+=((_pf*W)-panX)*0.045; panY+=(((MOB?0.34:0.42)*H)-panY)*0.045;  // compress pan; center on mobile
+  const _pf=MOB?0.5:(0.5+(f.focus-0.5)*0.5); panX+=((_pf*W)-panX)*0.045; panY+=(((MOB?0.30:0.42)*H)-panY)*0.045;  // compress pan; center on mobile
   const tYaw=MOB?0:(pYaw*0.42+Math.sin(time*0.16)*0.055), tPitch=MOB?0:(pPitch*0.26+Math.cos(time*0.13)*0.03);
   yaw+=(tYaw-yaw)*0.05; pitch+=(tPitch-pitch)*0.05;
   const cy=Math.cos(yaw),sy=Math.sin(yaw),cx=Math.cos(pitch),sx=Math.sin(pitch);
