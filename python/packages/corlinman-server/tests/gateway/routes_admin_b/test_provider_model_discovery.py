@@ -463,6 +463,63 @@ class TestProviderTest:
         assert headers["Authorization"] == f"Bearer {fresh_token}"
         assert headers["ChatGPT-Account-ID"] == "acct_fresh"
 
+    @pytest.mark.asyncio
+    async def test_codex_provider_probe_cli_fallback_refreshes_cli_path(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from corlinman_providers._codex_oauth import CodexOAuthCredential
+        from corlinman_server.gateway.routes_admin_b.config_admin._providers_lib import (
+            _query_provider_models,
+        )
+
+        old_token = _codex_jwt_with_account("acct_cli_old")
+        fresh_token = _codex_jwt_with_account("acct_cli_fresh")
+        fresh_credential = CodexOAuthCredential(
+            access_token=fresh_token,
+            refresh_token="new-refresh",
+            expires_at_ms=None,
+        )
+        cli_credential = CodexOAuthCredential(
+            access_token=old_token,
+            refresh_token="old-refresh",
+            expires_at_ms=1,
+        )
+        mock_resp = _mock_httpx_response(
+            status_code=200,
+            json_body={"models": [{"slug": "gpt-5.5"}]},
+        )
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        refresh = AsyncMock(return_value=fresh_credential)
+
+        with patch(
+            "corlinman_providers._codex_oauth.load_codex_credential",
+            side_effect=[None, cli_credential],
+        ) as load_credential, patch(
+            "corlinman_providers._codex_oauth.refresh_codex_token",
+            new=refresh,
+        ), patch(
+            "corlinman_providers._codex_oauth.persist_codex_credential",
+            return_value=True,
+        ) as persist, patch("httpx.AsyncClient", return_value=mock_client):
+            result = await _query_provider_models(
+                "codex",
+                {"providers": {}},
+                data_dir=tmp_path,
+            )
+
+        assert result["ok"] is True
+        credential_path = tmp_path / ".codex" / "auth.json"
+        assert load_credential.call_args_list[0].args == (credential_path,)
+        assert load_credential.call_args_list[1].args == ()
+        refresh.assert_awaited_once_with(refresh_token="old-refresh")
+        persist.assert_called_once_with(fresh_credential, path=None)
+        headers = mock_client.get.await_args.kwargs["headers"]
+        assert headers["Authorization"] == f"Bearer {fresh_token}"
+
 
 # ---------------------------------------------------------------------------
 # Tests: GET /admin/providers/{name}/models
@@ -485,6 +542,42 @@ class TestProviderModels:
         assert "models" in body
         assert "error" in body
         assert isinstance(body["models"], list)
+
+    def test_codex_models_endpoint_passes_data_dir(
+        self,
+        providers_client: TestClient,
+        providers_state: tuple[AdminState, dict[str, Any]],
+        tmp_path: Path,
+    ) -> None:
+        state, snapshot = providers_state
+        state.data_dir = tmp_path
+        snapshot.clear()
+        snapshot.update({"providers": {}})
+
+        async_probe = AsyncMock(
+            return_value={
+                "ok": True,
+                "models": ["gpt-5.5"],
+                "latency_ms": 1,
+                "error": None,
+            }
+        )
+        with patch(
+            "corlinman_server.gateway.routes_admin_b.config_admin.providers"
+            "._query_provider_models_with_retry",
+            async_probe,
+        ):
+            resp = providers_client.get("/admin/providers/codex/models")
+
+        assert resp.status_code == 200
+        assert resp.json()["models"] == [
+            {"id": "gpt-5.5", "display_name": "gpt-5.5"}
+        ]
+        async_probe.assert_awaited_once_with(
+            "codex",
+            {"providers": {}},
+            data_dir=tmp_path,
+        )
 
     @pytest.mark.asyncio
     async def test_models_returned_on_success(

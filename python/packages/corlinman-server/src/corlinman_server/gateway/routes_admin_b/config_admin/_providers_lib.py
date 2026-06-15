@@ -948,6 +948,7 @@ async def _query_provider_models(
             )
             if cred is None:
                 cred = load_codex_credential()
+                credential_path = None
         except Exception as exc:
             return {"ok": False, "models": [], "latency_ms": 0, "error": str(exc)}
         if cred is None:

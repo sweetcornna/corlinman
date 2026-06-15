@@ -51,6 +51,28 @@ function genSessionKey(): string {
   return `corlinman:${Date.now().toString(36)}:${r}`;
 }
 
+const RAW_NON_REASONING_MODEL_RE =
+  /(?:^|[./_-])(?:anthropic|bedrock|claude|command|deepseek|gemini|glm|google|gpt-(?!5)[a-z0-9.-]*|kimi|llama|meta|mistral|moonshot|qwen)(?:[./_-]|$)/;
+
+export function modelAllowsXHighReasoningEffort(model: string): boolean {
+  return model.trim().toLowerCase().includes("codex");
+}
+
+export function effectiveReasoningEffortForModel(
+  model: string,
+  reasoningEffort: ReasoningEffort,
+): ReasoningEffort | undefined {
+  const id = model.trim().toLowerCase();
+  if (!id) return undefined;
+  const normalized =
+    !modelAllowsXHighReasoningEffort(id) && reasoningEffort === "xhigh"
+      ? "high"
+      : reasoningEffort;
+  if (modelSupportsReasoningEffort(id)) return normalized;
+  if (RAW_NON_REASONING_MODEL_RE.test(id)) return undefined;
+  return normalized;
+}
+
 /** Role → human-readable Markdown heading label. */
 function exportRoleLabel(
   role: ChatMessage["role"],
@@ -132,9 +154,15 @@ export function ChatArea({
 }: ChatAreaProps) {
   const router = useRouter();
   const { t } = useTranslation();
-  const effectiveReasoningEffort = modelSupportsReasoningEffort(model)
-    ? reasoningEffort
-    : undefined;
+  const allowsCodexReasoning = modelAllowsXHighReasoningEffort(model);
+  const effectiveReasoningEffort = effectiveReasoningEffortForModel(
+    model,
+    reasoningEffort,
+  );
+  const normalizedReasoningEffort =
+    !allowsCodexReasoning && reasoningEffort === "xhigh"
+      ? "high"
+      : reasoningEffort;
   const chat = useChatStream({
     sessionKey,
     model,
@@ -389,8 +417,9 @@ export function ChatArea({
           mentionCandidates={mentionCandidates}
           imageModelLabel={imageModelLabel}
           onOpenImageModelPicker={onOpenImageModelPicker}
-          reasoningEffort={reasoningEffort}
+          reasoningEffort={normalizedReasoningEffort}
           onReasoningEffortChange={onReasoningEffortChange}
+          allowXHighReasoningEffort={allowsCodexReasoning}
           replyContext={reply}
           onClearReply={() => setReply(null)}
           onSend={(text, attachments) => {

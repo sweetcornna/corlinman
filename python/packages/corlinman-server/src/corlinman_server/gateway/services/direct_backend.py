@@ -195,8 +195,6 @@ class DirectProviderBackend:
                     start.model,
                     provider_hint=_provider_hint_from_start(start),
                 )
-                if params:
-                    params = _filter_request_params_for_provider(provider, params)
                 request_params = _provider_params_from_start(start)
                 if request_params:
                     request_params = _filter_request_params_for_provider(
@@ -216,6 +214,9 @@ class DirectProviderBackend:
 
             messages = _messages_from_proto(start.messages)
             temperature, max_tokens = _sampling_from_proto(start, params)
+            extra = _extra_params(params)
+            if extra:
+                extra = _filter_request_params_for_provider(provider, extra) or None
 
             stream = provider.chat_stream(
                 model=upstream_model,
@@ -223,7 +224,7 @@ class DirectProviderBackend:
                 tools=None,
                 temperature=temperature,
                 max_tokens=max_tokens,
-                extra=_extra_params(params),
+                extra=extra,
             )
 
             stream_task = asyncio.ensure_future(

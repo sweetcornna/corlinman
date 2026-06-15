@@ -718,6 +718,7 @@ def router() -> APIRouter:
         retry and then fall back to the most recent cached success for
         that provider (if any), marked with ``stale=true``.
         """
+        state = get_admin_state()
         cfg = dict(config_snapshot())
         providers_cfg = cfg.get("providers") or {}
         entry = providers_cfg.get(name)
@@ -752,7 +753,11 @@ def router() -> APIRouter:
         if cached is not None and cached[0] > now:
             return dict(cached[1])
 
-        result = await _query_provider_models_with_retry(name, cfg)
+        result = await _query_provider_models_with_retry(
+            name,
+            cfg,
+            data_dir=getattr(state, "data_dir", None),
+        )
         api_key = _resolve_api_key(entry or {})
         if not result.get("ok"):
             err = _redact(str(result.get("error") or "upstream_error"), api_key)

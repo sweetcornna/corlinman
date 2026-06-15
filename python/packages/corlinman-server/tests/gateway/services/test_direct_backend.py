@@ -408,6 +408,29 @@ async def test_direct_backend_drops_request_params_rejected_by_provider_enum() -
 
 
 @pytest.mark.asyncio
+async def test_direct_backend_keeps_schema_less_sampling_defaults() -> None:
+    provider = _RecordingProvider([_Chunk(kind="done", finish_reason="stop")])
+    registry = _StubRegistry(
+        provider,
+        "x",
+        params={
+            "temperature": 0.4,
+            "max_tokens": 128,
+            "reasoning_effort": "high",
+        },
+    )
+    backend = DirectProviderBackend(registry)
+
+    _tx, rx = await backend.start(_start("x"))
+    frames = [f async for f in rx]
+
+    assert frames[-1].WhichOneof("kind") == "done"
+    assert provider.calls[0]["temperature"] == 0.4
+    assert provider.calls[0]["max_tokens"] == 128
+    assert provider.calls[0]["extra"] is None
+
+
+@pytest.mark.asyncio
 async def test_chat_service_surfaces_tool_calls() -> None:
     provider = _ScriptedProvider(
         [

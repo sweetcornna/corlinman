@@ -48,6 +48,7 @@ interface ComposerProps {
   onOpenImageModelPicker?: () => void;
   reasoningEffort?: ReasoningEffort;
   onReasoningEffortChange?: (effort: ReasoningEffort) => void;
+  allowXHighReasoningEffort?: boolean;
   extraSlashCommands?: SlashCommand[];
   onSlashClear?: () => void;
   placeholder?: string;
@@ -79,6 +80,7 @@ export function Composer({
   onOpenImageModelPicker,
   reasoningEffort = "medium",
   onReasoningEffortChange,
+  allowXHighReasoningEffort = false,
   extraSlashCommands,
   onSlashClear,
   placeholder,
@@ -96,7 +98,17 @@ export function Composer({
   const fileRef = React.useRef<HTMLInputElement | null>(null);
   const emojiWrapRef = React.useRef<HTMLDivElement | null>(null);
   const emojiBtnRef = React.useRef<HTMLButtonElement | null>(null);
-  const activeReasoningEffort = reasoningEffort;
+  const reasoningEffortOptions = React.useMemo(
+    () =>
+      allowXHighReasoningEffort
+        ? REASONING_EFFORT_OPTIONS
+        : REASONING_EFFORT_OPTIONS.filter((option) => option.value !== "xhigh"),
+    [allowXHighReasoningEffort],
+  );
+  const activeReasoningEffort =
+    !allowXHighReasoningEffort && reasoningEffort === "xhigh"
+      ? "high"
+      : reasoningEffort;
 
   React.useEffect(() => {
     const el = taRef.current;
@@ -655,7 +667,7 @@ export function Composer({
                   <Brain className="h-3 w-3" aria-hidden="true" />
                   {t("chat.reasoningEffortLabel")}
                 </span>
-                {REASONING_EFFORT_OPTIONS.map((option) => {
+                {reasoningEffortOptions.map((option) => {
                   const selected = option.value === activeReasoningEffort;
                   return (
                     <button

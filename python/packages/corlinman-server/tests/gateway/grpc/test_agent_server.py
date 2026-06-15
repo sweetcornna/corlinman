@@ -407,6 +407,61 @@ async def test_serve_agent_uses_py_config_reloading_resolver(
     assert "gpt-5.5" in servicer._aliases  # type: ignore[attr-defined]
 
 
+@pytest.mark.asyncio
+async def test_serve_agent_uses_default_py_config_path_when_env_unset(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import grpc
+    from corlinman_grpc import agent_pb2_grpc
+
+    server_main = importlib.import_module("corlinman_server.main")
+
+    captured: dict[str, object] = {}
+
+    class _FakeResolver:
+        def __init__(self, path: str | None) -> None:
+            self.aliases = {}
+            self.subagent_config = {}
+            captured["path"] = path
+
+        def __call__(self, *args: object, **kwargs: object) -> object:
+            raise AssertionError("resolver should not be called during boot")
+
+    class _FakeServer:
+        def add_insecure_port(self, bind: str) -> int:
+            return 1
+
+        async def start(self) -> None:
+            pass
+
+        async def stop(self, grace: float) -> None:
+            captured["stopped"] = grace
+
+    monkeypatch.delenv("CORLINMAN_PY_CONFIG", raising=False)
+    monkeypatch.delenv("CORLINMAN_TEST_MOCK_PROVIDER", raising=False)
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(server_main, "_ReloadingProviderResolver", _FakeResolver)
+    monkeypatch.setattr(server_main, "_build_hook_runner", lambda: object())
+
+    async def _noop_resume() -> None:
+        pass
+
+    monkeypatch.setattr(server_main, "_run_boot_auto_resume", _noop_resume)
+    monkeypatch.setattr(grpc.aio, "server", lambda options=None: _FakeServer())
+    monkeypatch.setattr(
+        agent_pb2_grpc,
+        "add_AgentServicer_to_server",
+        lambda servicer, server: None,
+    )
+
+    shutdown = asyncio.Event()
+    shutdown.set()
+    await agent_server.serve_agent("127.0.0.1:0", shutdown)
+
+    assert captured["path"] == str(tmp_path / "py-config.json")
+
+
 # ─── end-to-end: co-hosted server + GrpcAgentChatBackend ─────────────
 
 

@@ -288,16 +288,19 @@ async def serve_agent(
     aliases: dict[str, Any] = {}
     if os.environ.get("CORLINMAN_TEST_MOCK_PROVIDER") is None:
         try:
+            from corlinman_server.gateway.lifecycle.py_config import (
+                default_py_config_path,
+            )
             from corlinman_server.main import _ReloadingProviderResolver
 
-            py_config_path = os.environ.get("CORLINMAN_PY_CONFIG")
+            py_config_path = os.environ.get("CORLINMAN_PY_CONFIG") or str(
+                default_py_config_path()
+            )
             resolver = _ReloadingProviderResolver(py_config_path)
             provider_resolver = resolver
             aliases = resolver.aliases
             if subagent_config is None:
                 subagent_config = resolver.subagent_config
-            if py_config_path is None:
-                log.info("providers.registered", count=0, enabled=0, aliases=0)
         except Exception as exc:  # noqa: BLE001 — legacy resolver still works
             log.warning(
                 "gateway.grpc.agent.provider_resolver_failed",
