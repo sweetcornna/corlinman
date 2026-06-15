@@ -212,12 +212,14 @@ def _expires_in_from_ms(expires_at_ms: int | None) -> int | None:
 
 
 def _codex_status_row(state: AdminState | None = None) -> ProviderStatus:
-    """Read-only Codex CLI detection (``~/.codex/auth.json``)."""
-    path = None
+    """Read-only Codex detection for app-scoped and CLI auth files."""
+    status = None
     data_dir = getattr(state, "data_dir", None) if state is not None else None
     if data_dir is not None:
         path = Path(data_dir) / ".codex" / "auth.json"
-    status = codex_external.read_codex_status(path)
+        status = codex_external.read_codex_status(path)
+    if status is None:
+        status = codex_external.read_codex_status()
     if status is None or not status.detected:
         return ProviderStatus(id="codex", source="none", expires_in_seconds=None)
     return ProviderStatus(

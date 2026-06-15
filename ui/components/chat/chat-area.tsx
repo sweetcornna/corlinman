@@ -39,6 +39,7 @@ interface ChatAreaProps {
   reasoningEffort?: ReasoningEffort;
   onReasoningEffortChange?: (effort: ReasoningEffort) => void;
   modelProvider?: string | null;
+  modelTarget?: string | null;
   onAgentChange?: (agentId: string | null) => void;
   showActionTrace?: boolean;
   /** W5 — an older history page exists; show the "load earlier" pill. */
@@ -52,32 +53,38 @@ function genSessionKey(): string {
   return `corlinman:${Date.now().toString(36)}:${r}`;
 }
 
-const RAW_NON_REASONING_MODEL_RE =
-  /(?:^|[./_-])(?:anthropic|bedrock|claude|command|deepseek|gemini|glm|google|gpt-(?!5)[a-z0-9.-]*|kimi|llama|meta|mistral|moonshot|qwen)(?:[./_-]|$)/;
-
 export function modelAllowsXHighReasoningEffort(
   model: string,
   provider?: string | null,
+  targetModel?: string | null,
 ): boolean {
   const normalizedProvider = provider?.trim().toLowerCase() ?? "";
   if (normalizedProvider.includes("codex")) return true;
-  return model.trim().toLowerCase().includes("codex");
+  return (
+    model.trim().toLowerCase().includes("codex") ||
+    (targetModel?.trim().toLowerCase().includes("codex") ?? false)
+  );
 }
 
 export function effectiveReasoningEffortForModel(
   model: string,
   reasoningEffort: ReasoningEffort,
   provider?: string | null,
+  targetModel?: string | null,
 ): ReasoningEffort | undefined {
   const id = model.trim().toLowerCase();
   if (!id) return undefined;
+  const targetId = targetModel?.trim().toLowerCase() ?? "";
   const normalized =
-    !modelAllowsXHighReasoningEffort(id, provider) && reasoningEffort === "xhigh"
+    !modelAllowsXHighReasoningEffort(id, provider, targetId) &&
+    reasoningEffort === "xhigh"
       ? "high"
       : reasoningEffort;
   if (modelSupportsReasoningEffort(id)) return normalized;
-  if (RAW_NON_REASONING_MODEL_RE.test(id)) return undefined;
-  return normalized;
+  if (targetId && modelSupportsReasoningEffort(targetId)) return normalized;
+  const normalizedProvider = provider?.trim().toLowerCase() ?? "";
+  if (normalizedProvider.includes("codex")) return normalized;
+  return undefined;
 }
 
 /** Role → human-readable Markdown heading label. */
@@ -154,6 +161,7 @@ export function ChatArea({
   reasoningEffort = "medium",
   onReasoningEffortChange,
   modelProvider,
+  modelTarget,
   onAgentChange,
   showActionTrace = true,
   hasEarlier,
@@ -165,11 +173,13 @@ export function ChatArea({
   const allowsCodexReasoning = modelAllowsXHighReasoningEffort(
     model,
     modelProvider,
+    modelTarget,
   );
   const effectiveReasoningEffort = effectiveReasoningEffortForModel(
     model,
     reasoningEffort,
     modelProvider,
+    modelTarget,
   );
   const normalizedReasoningEffort =
     !allowsCodexReasoning && reasoningEffort === "xhigh"
