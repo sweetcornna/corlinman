@@ -108,7 +108,7 @@ def _on_disk(state: AdminState) -> dict[str, Any]:
 def _stub_probe(monkeypatch: pytest.MonkeyPatch, models: list[str] | None) -> None:
     """Stub provider model discovery so credential tests stay network-free."""
 
-    async def _fake(name: str, cfg: dict[str, Any]) -> dict[str, Any]:
+    async def _fake(name: str, cfg: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
         if models is None:
             return {"ok": False, "models": [], "latency_ms": 0, "error": "stubbed"}
         return {"ok": True, "models": list(models), "latency_ms": 1, "error": None}

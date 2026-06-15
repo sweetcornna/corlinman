@@ -77,18 +77,29 @@ __all__ = [
 log = logging.getLogger(__name__)
 
 
-def _provider_supports_param(provider: Any, key: str) -> bool:
+def _provider_param_property(provider: Any, key: str) -> dict[str, Any] | None:
     schema_fn = getattr(provider, "params_schema", None)
     if not callable(schema_fn):
-        return False
+        return None
     try:
         schema = schema_fn()
     except Exception:  # noqa: BLE001
-        return False
+        return None
     if not isinstance(schema, dict):
-        return False
+        return None
     properties = schema.get("properties")
-    return isinstance(properties, dict) and key in properties
+    if not isinstance(properties, dict):
+        return None
+    prop = properties.get(key)
+    return prop if isinstance(prop, dict) else {}
+
+
+def _provider_accepts_param(provider: Any, key: str, value: Any) -> bool:
+    prop = _provider_param_property(provider, key)
+    if prop is None:
+        return False
+    enum = prop.get("enum")
+    return not isinstance(enum, list) or value in enum
 
 
 def _filter_request_params_for_provider(
@@ -98,7 +109,7 @@ def _filter_request_params_for_provider(
     return {
         key: value
         for key, value in params.items()
-        if _provider_supports_param(provider, key)
+        if _provider_accepts_param(provider, key, value)
     }
 
 
@@ -184,6 +195,8 @@ class DirectProviderBackend:
                     start.model,
                     provider_hint=_provider_hint_from_start(start),
                 )
+                if params:
+                    params = _filter_request_params_for_provider(provider, params)
                 request_params = _provider_params_from_start(start)
                 if request_params:
                     request_params = _filter_request_params_for_provider(

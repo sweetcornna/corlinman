@@ -86,7 +86,11 @@ def _stub_probe(monkeypatch: pytest.MonkeyPatch, models: list[str] | None) -> No
     means the probe succeeds and returns those ids in sorted order.
     """
 
-    async def _fake(name: str, cfg: dict[str, Any]) -> dict[str, Any]:
+    async def _fake(
+        name: str,
+        cfg: dict[str, Any],
+        **_kwargs: Any,
+    ) -> dict[str, Any]:
         if models is None:
             return {"ok": False, "models": [], "latency_ms": 0, "error": "stubbed"}
         return {"ok": True, "models": list(models), "latency_ms": 1, "error": None}
@@ -100,7 +104,10 @@ def _stub_probe(monkeypatch: pytest.MonkeyPatch, models: list[str] | None) -> No
     ("kind", "models", "expected"),
     [
         ("openai", ["gpt-4o-mini", "gpt-5.4", "gpt-5.5"], "gpt-5.5"),
+        ("openai", ["openai/gpt-oss-120b", "gpt-5.5"], "gpt-5.5"),
+        ("openai_compatible", ["openai/gpt-oss-120b", "gpt-5.4"], "gpt-5.4"),
         ("codex", ["gpt-5.4", "gpt-5.5"], "gpt-5.5"),
+        ("codex", ["openai/gpt-oss-120b", "gpt-5.5"], "gpt-5.5"),
         (
             "anthropic",
             ["claude-3-5-haiku-latest", "claude-opus-4-8", "claude-fable-5"],

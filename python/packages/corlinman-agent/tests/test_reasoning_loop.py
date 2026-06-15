@@ -75,6 +75,25 @@ class _SchemaRecordingProvider(_RecordingProvider):
         }
 
 
+class _CodexSchemaRecordingProvider(_RecordingProvider):
+    def __init__(self) -> None:
+        super().__init__(name="codex", kind=ProviderKind.CODEX)
+
+    @classmethod
+    def params_schema(cls) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "prompt_cache_key": {"type": "string"},
+                "reasoning_effort": {
+                    "type": "string",
+                    "enum": ["low", "medium", "high", "xhigh"],
+                },
+            },
+        }
+
+
 class _MultiRoundProvider:
     """Yields a different chunk list per call — used to test tool-result feedback."""
 
@@ -151,7 +170,7 @@ async def test_internal_chat_extra_is_not_forwarded_to_provider() -> None:
 
 @pytest.mark.asyncio
 async def test_codex_prompt_cache_extra_is_still_forwarded() -> None:
-    prov = _RecordingProvider(name="codex", kind=ProviderKind.CODEX)
+    prov = _CodexSchemaRecordingProvider()
 
     await _collect(
         ReasoningLoop(prov),
@@ -169,7 +188,6 @@ async def test_codex_prompt_cache_extra_is_still_forwarded() -> None:
     assert prov.calls
     assert prov.calls[0]["extra"] == {
         "prompt_cache_key": "session-1",
-        "top_p": 0.8,
     }
 
 
@@ -215,6 +233,26 @@ async def test_undeclared_provider_extra_is_not_forwarded() -> None:
 
     assert prov.calls
     assert prov.calls[0]["extra"] == {"top_p": 0.8}
+
+
+@pytest.mark.asyncio
+async def test_provider_extra_rejected_by_schema_enum_is_not_forwarded() -> None:
+    prov = _CodexSchemaRecordingProvider()
+
+    await _collect(
+        ReasoningLoop(prov),
+        ChatStart(
+            model="x",
+            messages=[{"role": "user", "content": "hi"}],
+            extra={
+                "prompt_cache_key": "session-1",
+                "reasoning_effort": "minimal",
+            },
+        ),
+    )
+
+    assert prov.calls
+    assert prov.calls[0]["extra"] == {"prompt_cache_key": "session-1"}
 
 
 @pytest.mark.asyncio

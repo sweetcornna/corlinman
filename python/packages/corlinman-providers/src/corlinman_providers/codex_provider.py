@@ -121,6 +121,10 @@ _CODEX_PARAMS_SCHEMA: dict[str, Any] = {
             "enum": sorted(_CODEX_REASONING_EFFORTS),
             "description": "Codex Responses-API reasoning effort hint.",
         },
+        "prompt_cache_key": {
+            "type": "string",
+            "description": "Responses prompt-cache key used by the Codex adapter.",
+        },
     },
 }
 

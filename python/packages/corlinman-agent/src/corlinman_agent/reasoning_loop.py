@@ -106,7 +106,9 @@ def _provider_kind_value(provider: Any) -> str:
 _UNDECLARED_EXTRA_WARNED: set[tuple[str, str]] = set()
 
 
-def _declared_provider_param_keys(provider: Any) -> set[str] | None:
+def _declared_provider_param_properties(
+    provider: Any,
+) -> dict[str, Any] | None:
     schema_fn = getattr(provider, "params_schema", None)
     if not callable(schema_fn):
         return None
@@ -119,7 +121,19 @@ def _declared_provider_param_keys(provider: Any) -> set[str] | None:
     properties = schema.get("properties")
     if not isinstance(properties, dict):
         return None
-    return set(properties)
+    return properties
+
+
+def _provider_accepts_extra_value(
+    properties: dict[str, Any],
+    key: str,
+    value: Any,
+) -> bool:
+    prop = properties.get(key)
+    if prop is None:
+        return False
+    enum = prop.get("enum") if isinstance(prop, dict) else None
+    return not isinstance(enum, list) or value in enum
 
 
 def _warn_undeclared_extra_keys(
@@ -168,13 +182,19 @@ def _provider_chat_extra(
 
     filtered = {key: value for key, value in extra.items() if key not in blocked}
     if filtered:
-        declared = _declared_provider_param_keys(provider)
-        if declared is not None:
-            undeclared = sorted(key for key in filtered if key not in declared)
-            if undeclared:
-                _warn_undeclared_extra_keys(provider, undeclared)
+        properties = _declared_provider_param_properties(provider)
+        if properties is not None:
+            dropped = sorted(
+                key
+                for key, value in filtered.items()
+                if not _provider_accepts_extra_value(properties, key, value)
+            )
+            if dropped:
+                _warn_undeclared_extra_keys(provider, dropped)
                 filtered = {
-                    key: value for key, value in filtered.items() if key in declared
+                    key: value
+                    for key, value in filtered.items()
+                    if _provider_accepts_extra_value(properties, key, value)
                 }
     return filtered or None
 

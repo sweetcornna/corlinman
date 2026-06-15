@@ -200,7 +200,12 @@ def router() -> APIRouter:
             if bool(existing.get("enabled", True)) and _can_autobind_default_alias(
                 existing, body.name
             ):
-                cfg = await _autobind_default_alias(cfg, body.name, existing)
+                cfg = await _autobind_default_alias(
+                    cfg,
+                    body.name,
+                    existing,
+                    data_dir=getattr(state, "data_dir", None),
+                )
             elif not bool(existing.get("enabled", True)):
                 cfg = _remove_default_model_ref(cfg, body.name)
             err = await _persist(
@@ -311,7 +316,12 @@ def router() -> APIRouter:
             if bool(entry.get("enabled", True)) and _can_autobind_default_alias(
                 entry, name
             ):
-                cfg = await _autobind_default_alias(cfg, name, entry)
+                cfg = await _autobind_default_alias(
+                    cfg,
+                    name,
+                    entry,
+                    data_dir=getattr(state, "data_dir", None),
+                )
             elif not bool(entry.get("enabled", True)):
                 cfg = _remove_default_model_ref(cfg, name)
             err = await _persist(
@@ -459,7 +469,12 @@ def router() -> APIRouter:
             providers[body.slug] = entry
             cfg["providers"] = providers
             if _can_autobind_default_alias(entry, body.slug):
-                cfg = await _autobind_default_alias(cfg, body.slug, entry)
+                cfg = await _autobind_default_alias(
+                    cfg,
+                    body.slug,
+                    entry,
+                    data_dir=getattr(state, "data_dir", None),
+                )
             err = _write_config_atomic(state.config_path, cfg)
             if err is not None:
                 return err
@@ -525,7 +540,12 @@ def router() -> APIRouter:
             elif bool(entry.get("enabled", True)) and _can_autobind_default_alias(
                 entry, slug
             ):
-                cfg = await _autobind_default_alias(cfg, slug, entry)
+                cfg = await _autobind_default_alias(
+                    cfg,
+                    slug,
+                    entry,
+                    data_dir=getattr(state, "data_dir", None),
+                )
             err = _write_config_atomic(state.config_path, cfg)
             if err is not None:
                 return err
@@ -590,6 +610,7 @@ def router() -> APIRouter:
         never leaks into the response (or, by extension, the access log).
         Caps total latency at 5s via httpx timeout.
         """
+        state = get_admin_state()
         cfg = dict(config_snapshot())
         providers_cfg = cfg.get("providers") or {}
         entry = providers_cfg.get(name)
@@ -648,7 +669,12 @@ def router() -> APIRouter:
             t0 = time.monotonic()
             try:
                 result = await _asyncio.wait_for(
-                    _query_provider_models(name, cfg), timeout=5.0
+                    _query_provider_models(
+                        name,
+                        cfg,
+                        data_dir=getattr(state, "data_dir", None),
+                    ),
+                    timeout=5.0,
                 )
             except TimeoutError:
                 latency_ms = int((time.monotonic() - t0) * 1000)

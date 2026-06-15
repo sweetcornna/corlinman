@@ -368,14 +368,16 @@ class TestProviderTest:
         assert headers["ChatGPT-Account-ID"] == "acct_test_123"
 
     @pytest.mark.asyncio
-    async def test_codex_provider_probe_refreshes_expired_credential(self) -> None:
+    async def test_codex_provider_probe_prefers_data_dir_credential(
+        self,
+        tmp_path: Path,
+    ) -> None:
         from corlinman_providers._codex_oauth import CodexOAuthCredential
         from corlinman_server.gateway.routes_admin_b.config_admin._providers_lib import (
             _query_provider_models,
         )
 
-        old_token = _codex_jwt_with_account("acct_old")
-        fresh_token = _codex_jwt_with_account("acct_fresh")
+        access_token = _codex_jwt_with_account("acct_data_dir")
         mock_resp = _mock_httpx_response(
             status_code=200,
             json_body={"models": [{"slug": "gpt-5.5"}]},
@@ -384,13 +386,55 @@ class TestProviderTest:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_client.get = AsyncMock(return_value=mock_resp)
-        refresh = AsyncMock(
+        credential_path = tmp_path / ".codex" / "auth.json"
+
+        with patch(
+            "corlinman_providers._codex_oauth.load_codex_credential",
             return_value=CodexOAuthCredential(
-                access_token=fresh_token,
-                refresh_token="new-refresh",
+                access_token=access_token,
+                refresh_token="refresh-token",
                 expires_at_ms=None,
+            ),
+        ) as load_credential, patch("httpx.AsyncClient", return_value=mock_client):
+            result = await _query_provider_models(
+                "codex",
+                {"providers": {}},
+                data_dir=tmp_path,
             )
+
+        assert result["ok"] is True
+        load_credential.assert_called_once_with(credential_path)
+        headers = mock_client.get.await_args.kwargs["headers"]
+        assert headers["Authorization"] == f"Bearer {access_token}"
+        assert headers["ChatGPT-Account-ID"] == "acct_data_dir"
+
+    @pytest.mark.asyncio
+    async def test_codex_provider_probe_refreshes_expired_credential(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from corlinman_providers._codex_oauth import CodexOAuthCredential
+        from corlinman_server.gateway.routes_admin_b.config_admin._providers_lib import (
+            _query_provider_models,
         )
+
+        old_token = _codex_jwt_with_account("acct_old")
+        fresh_token = _codex_jwt_with_account("acct_fresh")
+        fresh_credential = CodexOAuthCredential(
+            access_token=fresh_token,
+            refresh_token="new-refresh",
+            expires_at_ms=None,
+        )
+        mock_resp = _mock_httpx_response(
+            status_code=200,
+            json_body={"models": [{"slug": "gpt-5.5"}]},
+        )
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        refresh = AsyncMock(return_value=fresh_credential)
+        credential_path = tmp_path / ".codex" / "auth.json"
 
         with patch(
             "corlinman_providers._codex_oauth.load_codex_credential",
@@ -406,11 +450,15 @@ class TestProviderTest:
             "corlinman_providers._codex_oauth.persist_codex_credential",
             return_value=True,
         ) as persist, patch("httpx.AsyncClient", return_value=mock_client):
-            result = await _query_provider_models("codex", {"providers": {}})
+            result = await _query_provider_models(
+                "codex",
+                {"providers": {}},
+                data_dir=tmp_path,
+            )
 
         assert result["ok"] is True
         refresh.assert_awaited_once_with(refresh_token="old-refresh")
-        persist.assert_called_once()
+        persist.assert_called_once_with(fresh_credential, path=credential_path)
         headers = mock_client.get.await_args.kwargs["headers"]
         assert headers["Authorization"] == f"Bearer {fresh_token}"
         assert headers["ChatGPT-Account-ID"] == "acct_fresh"

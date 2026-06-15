@@ -206,7 +206,12 @@ def router() -> APIRouter:
             if bool(block.get("enabled", False)) and _can_autobind_default_alias(
                 block, provider
             ):
-                cfg = await _autobind_default_alias(cfg, provider, block)
+                cfg = await _autobind_default_alias(
+                    cfg,
+                    provider,
+                    block,
+                    data_dir=getattr(state, "data_dir", None),
+                )
 
             err = _write_config_atomic(state.config_path, cfg)
             if err is not None:
@@ -287,7 +292,12 @@ def router() -> APIRouter:
             # primary-credential gate), so enabling a built-in env-backed slot
             # also autobinds a default.
             if bool(body.enabled) and _can_autobind_default_alias(block, provider):
-                cfg = await _autobind_default_alias(cfg, provider, block)
+                cfg = await _autobind_default_alias(
+                    cfg,
+                    provider,
+                    block,
+                    data_dir=getattr(state, "data_dir", None),
+                )
             elif not bool(body.enabled):
                 cfg = _remove_default_model_ref(cfg, provider)
 

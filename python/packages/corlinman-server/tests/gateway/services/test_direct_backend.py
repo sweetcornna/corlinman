@@ -83,6 +83,20 @@ class _ReasoningRecordingProvider(_RecordingProvider):
         }
 
 
+class _OpenAIReasoningRecordingProvider(_RecordingProvider):
+    @classmethod
+    def params_schema(cls) -> dict[str, object]:
+        return {
+            "type": "object",
+            "properties": {
+                "reasoning_effort": {
+                    "type": "string",
+                    "enum": ["minimal", "low", "medium", "high"],
+                }
+            },
+        }
+
+
 class _RaisingProvider:
     name = "raising"
 
@@ -364,6 +378,26 @@ async def test_direct_backend_drops_request_params_unsupported_by_provider() -> 
         model="x",
         messages=[common_pb2.Message(role=common_pb2.USER, content="hi")],
         provider_config_json=b'{"params":{"reasoning_effort":"high"}}',
+    )
+
+    _tx, rx = await backend.start(start)
+    frames = [f async for f in rx]
+
+    assert frames[-1].WhichOneof("kind") == "done"
+    assert provider.calls[0]["extra"] is None
+
+
+@pytest.mark.asyncio
+async def test_direct_backend_drops_request_params_rejected_by_provider_enum() -> None:
+    provider = _OpenAIReasoningRecordingProvider([
+        _Chunk(kind="done", finish_reason="stop")
+    ])
+    registry = _StubRegistry(provider, "x")
+    backend = DirectProviderBackend(registry)
+    start = agent_pb2.ChatStart(
+        model="x",
+        messages=[common_pb2.Message(role=common_pb2.USER, content="hi")],
+        provider_config_json=b'{"params":{"reasoning_effort":"xhigh"}}',
     )
 
     _tx, rx = await backend.start(start)

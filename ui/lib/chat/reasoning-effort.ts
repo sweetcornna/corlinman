@@ -7,6 +7,6 @@ export function modelSupportsReasoningEffort(model: string): boolean {
     id === "o3" ||
     id === "o4" ||
     /^o[134](?:-|$)/.test(id) ||
-    /(?:^|[/_-])gpt(?:-|$)/.test(id)
+    /(?:^|[/_-])gpt-5(?:[.-]|$)/.test(id)
   );
 }

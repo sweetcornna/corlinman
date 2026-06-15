@@ -517,7 +517,22 @@ def _default_base_url_for_kind(kind: str) -> str | None:
     return _OPENAI_COMPATIBLE_DEFAULT_BASE_URLS.get(_normalize_kind(kind))
 
 
-async def _refresh_codex_probe_credential(cred: Any) -> Any | None:
+def _codex_auth_path_for_data_dir(data_dir: Any | None) -> Any | None:
+    if data_dir is None:
+        return None
+    try:
+        from pathlib import Path
+
+        return Path(data_dir) / ".codex" / "auth.json"
+    except TypeError:
+        return None
+
+
+async def _refresh_codex_probe_credential(
+    cred: Any,
+    *,
+    credential_path: Any | None = None,
+) -> Any | None:
     """Refresh a Codex OAuth credential for admin model discovery."""
     refresh_token = getattr(cred, "refresh_token", None)
     if not refresh_token:
@@ -529,7 +544,7 @@ async def _refresh_codex_probe_credential(cred: Any) -> Any | None:
         )
 
         refreshed = await refresh_codex_token(refresh_token=refresh_token)
-        persist_codex_credential(refreshed)
+        persist_codex_credential(refreshed, path=credential_path)
         return refreshed
     except Exception as exc:  # noqa: BLE001
         logger.warning("gateway.providers.codex_probe_refresh_failed", error=str(exc))
@@ -769,11 +784,16 @@ def _is_retryable_models_error(error: str) -> bool:
     )
 
 
-async def _query_provider_models_with_retry(name: str, cfg: dict[str, Any]) -> dict[str, Any]:
+async def _query_provider_models_with_retry(
+    name: str,
+    cfg: dict[str, Any],
+    *,
+    data_dir: Any | None = None,
+) -> dict[str, Any]:
     """Probe models with bounded retries for transient upstream failures."""
     last_result: dict[str, Any] = {"ok": False, "models": [], "latency_ms": 0, "error": "unknown"}
     for attempt in range(_MODELS_MAX_RETRIES + 1):
-        result = await _query_provider_models(name, cfg)
+        result = await _query_provider_models(name, cfg, data_dir=data_dir)
         if result.get("ok"):
             return result
         last_result = result
@@ -888,7 +908,10 @@ def _provider_models_url(base_url: str) -> str:
 
 
 async def _query_provider_models(
-    name: str, cfg: dict[str, Any]
+    name: str,
+    cfg: dict[str, Any],
+    *,
+    data_dir: Any | None = None,
 ) -> dict[str, Any]:
     """Query ``/v1/models`` for a provider and return a result dict.
 
@@ -912,11 +935,19 @@ async def _query_provider_models(
         return {"ok": False, "models": [], "latency_ms": 0, "error": "provider_not_found"}
 
     if is_codex:
-        # Read token from ~/.codex/auth.json
+        credential_path = _codex_auth_path_for_data_dir(data_dir)
+        # Prefer the gateway data dir credential, then fall back to the
+        # Codex CLI location for legacy single-user deployments.
         try:
             from corlinman_providers._codex_oauth import load_codex_credential
 
-            cred = load_codex_credential()
+            cred = (
+                load_codex_credential(credential_path)
+                if credential_path is not None
+                else None
+            )
+            if cred is None:
+                cred = load_codex_credential()
         except Exception as exc:
             return {"ok": False, "models": [], "latency_ms": 0, "error": str(exc)}
         if cred is None:
@@ -928,7 +959,10 @@ async def _query_provider_models(
             }
         is_expired = getattr(cred, "is_expired", None)
         if callable(is_expired) and is_expired():
-            refreshed = await _refresh_codex_probe_credential(cred)
+            refreshed = await _refresh_codex_probe_credential(
+                cred,
+                credential_path=credential_path,
+            )
             if refreshed is not None:
                 cred = refreshed
         api_key = cred.access_token
@@ -1001,7 +1035,10 @@ async def _query_provider_models(
         async with _httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(url, headers=headers, params=params)
             if is_codex and resp.status_code == 401:
-                refreshed = await _refresh_codex_probe_credential(cred)
+                refreshed = await _refresh_codex_probe_credential(
+                    cred,
+                    credential_path=credential_path,
+                )
                 if refreshed is not None and refreshed.access_token != api_key:
                     api_key = refreshed.access_token
                     headers = _codex_models_headers(api_key)
@@ -1149,7 +1186,6 @@ _PREFERRED_DEFAULT_MODELS: tuple[str, ...] = (
     "deepseek-v4-pro",
     "qwen3.7-max",
     "glm-5.1",
-    "openai/gpt-oss-120b",
 )
 
 
@@ -1209,7 +1245,9 @@ def _flagship_candidate_score(kind: str, model_id: str) -> tuple[int, ...] | Non
 
     version = _numeric_score(lowered)
     if kind in {"openai", "openai_compatible", "codex"}:
-        if "gpt-" not in lowered:
+        if "gpt-oss" in lowered:
+            return None
+        if re.search(r"(^|/)gpt-\d", lowered) is None:
             return None
         if _has_any_model_marker(lowered, ("mini", "nano")):
             return None
@@ -1331,6 +1369,8 @@ async def _autobind_default_alias(
     cfg: dict[str, Any],
     provider_name: str,
     entry: dict[str, Any],
+    *,
+    data_dir: Any | None = None,
 ) -> dict[str, Any]:
     """Populate ``models.default`` so /chat can reach a freshly-enabled provider.
 
@@ -1347,7 +1387,11 @@ async def _autobind_default_alias(
     kind = str(entry.get("kind") or "openai_compatible").lower()
     probed_ids: list[str] = []
     try:
-        result = await _query_provider_models(provider_name, cfg)
+        result = await _query_provider_models(
+            provider_name,
+            cfg,
+            data_dir=data_dir,
+        )
         if result.get("ok"):
             raw = result.get("models")
             if isinstance(raw, list):

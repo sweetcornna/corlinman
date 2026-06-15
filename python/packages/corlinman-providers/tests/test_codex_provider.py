@@ -674,6 +674,7 @@ def test_codex_params_schema_declares_reasoning_effort() -> None:
     schema = CodexProvider.params_schema()
 
     assert "reasoning_effort" in schema["properties"]
+    assert "prompt_cache_key" in schema["properties"]
     assert set(schema["properties"]["reasoning_effort"]["enum"]) == {
         "low",
         "medium",
