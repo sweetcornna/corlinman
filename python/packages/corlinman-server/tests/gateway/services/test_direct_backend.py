@@ -416,7 +416,8 @@ async def test_direct_backend_keeps_schema_less_sampling_defaults() -> None:
         params={
             "temperature": 0.4,
             "max_tokens": 128,
-            "reasoning_effort": "high",
+            "top_p": 0.8,
+            "stop_sequences": ["\n\n"],
         },
     )
     backend = DirectProviderBackend(registry)
@@ -427,7 +428,10 @@ async def test_direct_backend_keeps_schema_less_sampling_defaults() -> None:
     assert frames[-1].WhichOneof("kind") == "done"
     assert provider.calls[0]["temperature"] == 0.4
     assert provider.calls[0]["max_tokens"] == 128
-    assert provider.calls[0]["extra"] is None
+    assert provider.calls[0]["extra"] == {
+        "top_p": 0.8,
+        "stop_sequences": ["\n\n"],
+    }
 
 
 @pytest.mark.asyncio

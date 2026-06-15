@@ -77,7 +77,7 @@ __all__ = [
 log = logging.getLogger(__name__)
 
 
-def _provider_param_property(provider: Any, key: str) -> dict[str, Any] | None:
+def _provider_param_properties(provider: Any) -> dict[str, Any] | None:
     schema_fn = getattr(provider, "params_schema", None)
     if not callable(schema_fn):
         return None
@@ -89,6 +89,13 @@ def _provider_param_property(provider: Any, key: str) -> dict[str, Any] | None:
         return None
     properties = schema.get("properties")
     if not isinstance(properties, dict):
+        return None
+    return properties
+
+
+def _provider_param_property(provider: Any, key: str) -> dict[str, Any] | None:
+    properties = _provider_param_properties(provider)
+    if properties is None:
         return None
     prop = properties.get(key)
     return prop if isinstance(prop, dict) else {}
@@ -111,6 +118,15 @@ def _filter_request_params_for_provider(
         for key, value in params.items()
         if _provider_accepts_param(provider, key, value)
     }
+
+
+def _filter_configured_extra_for_provider(
+    provider: Any,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    if _provider_param_properties(provider) is None:
+        return dict(params)
+    return _filter_request_params_for_provider(provider, params)
 
 
 # ─── Backend ──────────────────────────────────────────────────────────
@@ -216,7 +232,7 @@ class DirectProviderBackend:
             temperature, max_tokens = _sampling_from_proto(start, params)
             extra = _extra_params(params)
             if extra:
-                extra = _filter_request_params_for_provider(provider, extra) or None
+                extra = _filter_configured_extra_for_provider(provider, extra) or None
 
             stream = provider.chat_stream(
                 model=upstream_model,

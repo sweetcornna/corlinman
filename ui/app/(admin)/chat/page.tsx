@@ -54,6 +54,18 @@ function chatHref(sessionKey: string): string {
   return `/chat?session=${encodeURIComponent(sessionKey)}`;
 }
 
+function modelProviderFromAliases(data: unknown, model: string): string | null {
+  const aliases = (data as { aliases?: unknown } | null | undefined)?.aliases;
+  if (!Array.isArray(aliases)) return null;
+  const match = aliases.find((row) => {
+    const alias = row as { name?: unknown };
+    return typeof alias.name === "string" && alias.name === model;
+  }) as { provider?: unknown } | undefined;
+  return typeof match?.provider === "string" && match.provider.trim()
+    ? match.provider
+    : null;
+}
+
 function pickBranchedHistory(sessionKey: string): ChatMessage[] | null {
   if (typeof window === "undefined") return null;
   try {
@@ -151,6 +163,7 @@ export default function ChatPage() {
 
   const activeModel: string =
     (llmOverride && llmOverride.trim()) || globalDefault;
+  const activeModelProvider = modelProviderFromAliases(modelsData, activeModel);
   const activeImageModel: string =
     (imageOverride && imageOverride.trim()) || "gpt-image-2";
 
@@ -425,6 +438,7 @@ export default function ChatPage() {
           onAgentChange={persistAgent}
           reasoningEffort={reasoningEffort}
           onReasoningEffortChange={persistReasoningEffort}
+          modelProvider={activeModelProvider}
           showActionTrace={showActionTrace}
           onOpenModelPicker={() => setPickerOpen("llm")}
           hasEarlier={effectiveHasEarlier}

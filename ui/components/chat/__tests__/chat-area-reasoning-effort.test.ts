@@ -23,11 +23,19 @@ describe("ChatArea reasoning effort gating", () => {
 
   it("normalizes xhigh away from non-Codex OpenAI models and aliases", () => {
     expect(effectiveReasoningEffortForModel("gpt-5.5", "xhigh")).toBe("high");
+    expect(effectiveReasoningEffortForModel("gpt-5.5", "xhigh", "openai")).toBe(
+      "high",
+    );
     expect(effectiveReasoningEffortForModel("work", "xhigh")).toBe("high");
   });
 
-  it("only allows the xhigh control for Codex-labeled models", () => {
+  it("allows xhigh for Codex models and Codex-provisioned aliases", () => {
     expect(modelAllowsXHighReasoningEffort("codex-mini-latest")).toBe(true);
+    expect(modelAllowsXHighReasoningEffort("gpt-5.5", "codex")).toBe(true);
     expect(modelAllowsXHighReasoningEffort("gpt-5.5")).toBe(false);
+    expect(modelAllowsXHighReasoningEffort("gpt-5.5", "openai")).toBe(false);
+    expect(effectiveReasoningEffortForModel("gpt-5.5", "xhigh", "codex")).toBe(
+      "xhigh",
+    );
   });
 });

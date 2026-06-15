@@ -38,6 +38,7 @@ interface ChatAreaProps {
   onOpenImageModelPicker?: () => void;
   reasoningEffort?: ReasoningEffort;
   onReasoningEffortChange?: (effort: ReasoningEffort) => void;
+  modelProvider?: string | null;
   onAgentChange?: (agentId: string | null) => void;
   showActionTrace?: boolean;
   /** W5 — an older history page exists; show the "load earlier" pill. */
@@ -54,18 +55,24 @@ function genSessionKey(): string {
 const RAW_NON_REASONING_MODEL_RE =
   /(?:^|[./_-])(?:anthropic|bedrock|claude|command|deepseek|gemini|glm|google|gpt-(?!5)[a-z0-9.-]*|kimi|llama|meta|mistral|moonshot|qwen)(?:[./_-]|$)/;
 
-export function modelAllowsXHighReasoningEffort(model: string): boolean {
+export function modelAllowsXHighReasoningEffort(
+  model: string,
+  provider?: string | null,
+): boolean {
+  const normalizedProvider = provider?.trim().toLowerCase() ?? "";
+  if (normalizedProvider.includes("codex")) return true;
   return model.trim().toLowerCase().includes("codex");
 }
 
 export function effectiveReasoningEffortForModel(
   model: string,
   reasoningEffort: ReasoningEffort,
+  provider?: string | null,
 ): ReasoningEffort | undefined {
   const id = model.trim().toLowerCase();
   if (!id) return undefined;
   const normalized =
-    !modelAllowsXHighReasoningEffort(id) && reasoningEffort === "xhigh"
+    !modelAllowsXHighReasoningEffort(id, provider) && reasoningEffort === "xhigh"
       ? "high"
       : reasoningEffort;
   if (modelSupportsReasoningEffort(id)) return normalized;
@@ -146,6 +153,7 @@ export function ChatArea({
   onOpenImageModelPicker,
   reasoningEffort = "medium",
   onReasoningEffortChange,
+  modelProvider,
   onAgentChange,
   showActionTrace = true,
   hasEarlier,
@@ -154,10 +162,14 @@ export function ChatArea({
 }: ChatAreaProps) {
   const router = useRouter();
   const { t } = useTranslation();
-  const allowsCodexReasoning = modelAllowsXHighReasoningEffort(model);
+  const allowsCodexReasoning = modelAllowsXHighReasoningEffort(
+    model,
+    modelProvider,
+  );
   const effectiveReasoningEffort = effectiveReasoningEffortForModel(
     model,
     reasoningEffort,
+    modelProvider,
   );
   const normalizedReasoningEffort =
     !allowsCodexReasoning && reasoningEffort === "xhigh"
