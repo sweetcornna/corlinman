@@ -207,7 +207,9 @@ def test_codex_pkce_submit_discovers_models_and_configures_aliases(
     with patch(
         "corlinman_server.gateway.oauth.codex_pkce.exchange_code",
         new=AsyncMock(return_value=_FAKE_TOKENS),
-    ), patch("corlinman_server.gateway.oauth.codex_pkce.write_auth_json"), patch(
+    ), patch(
+        "corlinman_server.gateway.oauth.codex_pkce.write_auth_json"
+    ) as write_auth_json, patch(
         # write_auth_json is mocked, so the provisioning token-match recheck has
         # no real auth.json to read — stub the stored token to the one we wrote.
         "corlinman_server.gateway.routes_admin_b.oauth._stored_codex_token",
@@ -226,6 +228,10 @@ def test_codex_pkce_submit_discovers_models_and_configures_aliases(
         )
 
     assert resp.status_code == 200, resp.text
+    write_auth_json.assert_called_once_with(
+        _FAKE_TOKENS,
+        path=_state.data_dir / ".codex" / "auth.json",
+    )
     on_disk = _on_disk(config_path)
     assert on_disk["providers"]["codex"] == {
         "kind": "codex",
@@ -381,6 +387,44 @@ def test_ordered_unique_model_ids_prefers_newest_unlisted_version() -> None:
         preference=("gpt-5.5",),
     )
     assert out2 == ["gpt-5.5", "gpt-5.6", "gpt-5.4"]
+
+
+@pytest.mark.parametrize(
+    ("kind", "provider", "models", "preference", "expected"),
+    [
+        (
+            "codex",
+            "codex",
+            ["gpt-5.5", "gpt-5.6-mini", "gpt-5.6"],
+            oauth_routes._CODEX_MODEL_PREFERENCE,
+            "gpt-5.6",
+        ),
+        (
+            "anthropic",
+            "anthropic",
+            ["claude-fable-5", "claude-opus-6", "claude-haiku-7"],
+            oauth_routes._ANTHROPIC_MODEL_PREFERENCE,
+            "claude-opus-6",
+        ),
+    ],
+)
+def test_oauth_provisioning_follows_future_flagship_model(
+    kind: str,
+    provider: str,
+    models: list[str],
+    preference: tuple[str, ...],
+    expected: str,
+) -> None:
+    out = oauth_routes._upsert_oauth_provider_and_aliases(
+        {},
+        provider=provider,
+        kind=kind,
+        models=models,
+        preference=preference,
+    )
+
+    assert out["models"]["default"] == expected
+    assert out["models"]["aliases"][expected]["provider"] == provider
 
 
 def test_oauth_provisioning_creates_provider_named_alias_when_model_ids_conflict(

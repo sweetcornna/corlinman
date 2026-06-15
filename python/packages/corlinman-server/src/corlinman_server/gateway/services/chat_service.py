@@ -481,10 +481,16 @@ def _attachment_size(meta: object) -> int | None:
 
 
 def _provider_config_json(req: InternalChatRequest) -> bytes:
+    payload: dict[str, Any] = {}
     provider_hint = getattr(req, "provider_hint", None)
-    if not isinstance(provider_hint, str) or not provider_hint.strip():
+    if isinstance(provider_hint, str) and provider_hint.strip():
+        payload["provider_hint"] = provider_hint.strip()
+    provider_params = getattr(req, "provider_params", None)
+    if isinstance(provider_params, dict) and provider_params:
+        payload["params"] = provider_params
+    if not payload:
         return b""
     return json.dumps(
-        {"provider_hint": provider_hint.strip()},
+        payload,
         separators=(",", ":"),
     ).encode("utf-8")

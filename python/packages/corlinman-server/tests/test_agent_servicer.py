@@ -454,6 +454,33 @@ def test_proto_chat_start_provider_config_maps_provider_hint_to_extra() -> None:
     assert start.extra == {"provider_hint": "persona-provider"}
 
 
+def test_proto_chat_start_provider_config_maps_params_to_extra() -> None:
+    from corlinman_agent.reasoning_loop import ChatStart
+    from corlinman_grpc import agent_pb2
+    from corlinman_server.agent_servicer import _apply_merged_params, _to_agent_start
+
+    start = _to_agent_start(
+        agent_pb2.ChatStart(
+            model="gpt-4o-mini",
+            provider_config_json=json.dumps(
+                {
+                    "params": {
+                        "reasoning_effort": "high",
+                        "temperature": 0.2,
+                    }
+                }
+            ).encode("utf-8"),
+        )
+    )
+
+    assert isinstance(start, ChatStart)
+    assert start.temperature == pytest.approx(0.2)
+    assert start.extra == {"reasoning_effort": "high"}
+
+    _apply_merged_params(start, {"reasoning_effort": "low", "top_p": 0.9})
+    assert start.extra == {"reasoning_effort": "high", "top_p": 0.9}
+
+
 def test_proto_chat_start_binding_maps_to_extra() -> None:
     from corlinman_grpc import agent_pb2
     from corlinman_server.agent_servicer import _to_agent_start

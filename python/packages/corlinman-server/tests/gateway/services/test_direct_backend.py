@@ -56,6 +56,60 @@ class _ScriptedProvider:
             yield c
 
 
+class _RecordingProvider(_ScriptedProvider):
+    """Scripted provider that records the kwargs used for the call."""
+
+    def __init__(self, chunks: list[_Chunk]) -> None:
+        super().__init__(chunks)
+        self.calls: list[dict[str, object]] = []
+
+    async def chat_stream(self, **kw: object) -> AsyncIterator[_Chunk]:
+        self.calls.append(dict(kw))
+        async for c in super().chat_stream(**kw):
+            yield c
+
+
+class _ReasoningRecordingProvider(_RecordingProvider):
+    @classmethod
+    def params_schema(cls) -> dict[str, object]:
+        return {
+            "type": "object",
+            "properties": {
+                "reasoning_effort": {
+                    "type": "string",
+                    "enum": ["minimal", "low", "medium", "high", "xhigh"],
+                }
+            },
+        }
+
+
+class _OpenAIReasoningRecordingProvider(_RecordingProvider):
+    @classmethod
+    def params_schema(cls) -> dict[str, object]:
+        return {
+            "type": "object",
+            "properties": {
+                "reasoning_effort": {
+                    "type": "string",
+                    "enum": ["minimal", "low", "medium", "high"],
+                }
+            },
+        }
+
+
+class _TopPRecordingProvider(_RecordingProvider):
+    @classmethod
+    def params_schema(cls) -> dict[str, object]:
+        return {
+            "type": "object",
+            "properties": {
+                "top_p": {
+                    "type": "number",
+                }
+            },
+        }
+
+
 class _RaisingProvider:
     name = "raising"
 
@@ -71,15 +125,22 @@ class _RaisingProvider:
 class _StubRegistry:
     """Minimal ProviderRegistry: maps model id → provider."""
 
-    def __init__(self, provider: object, model: str = "x") -> None:
+    def __init__(
+        self,
+        provider: object,
+        model: str = "x",
+        *,
+        params: dict[str, object] | None = None,
+    ) -> None:
         self._provider = provider
         self._model = model
+        self._params = dict(params or {})
         self.calls: list[tuple[str, str | None]] = []
 
     def resolve(self, alias_or_model: str, *, aliases=None, provider_hint=None):
         self.calls.append((alias_or_model, provider_hint))
         if alias_or_model in (self._model, "scripted", "raising"):
-            return self._provider, alias_or_model, {}
+            return self._provider, alias_or_model, dict(self._params)
         raise KeyError(f"no provider for {alias_or_model!r}")
 
 
@@ -296,6 +357,116 @@ async def test_chat_service_forwards_provider_hint_to_direct_backend() -> None:
 
     assert isinstance(events[-1], DoneEvent)
     assert registry.calls[0] == ("x", "persona-provider")
+
+
+@pytest.mark.asyncio
+async def test_direct_backend_merges_per_request_provider_params() -> None:
+    provider = _ReasoningRecordingProvider([_Chunk(kind="done", finish_reason="stop")])
+    registry = _StubRegistry(
+        provider,
+        "x",
+        params={"reasoning_effort": "low", "temperature": 0.2},
+    )
+    backend = DirectProviderBackend(registry)
+    start = agent_pb2.ChatStart(
+        model="x",
+        messages=[common_pb2.Message(role=common_pb2.USER, content="hi")],
+        provider_config_json=b'{"params":{"reasoning_effort":"high"}}',
+    )
+
+    _tx, rx = await backend.start(start)
+    frames = [f async for f in rx]
+
+    assert frames[-1].WhichOneof("kind") == "done"
+    assert provider.calls[0]["extra"] == {"reasoning_effort": "high"}
+    assert provider.calls[0]["temperature"] == 0.2
+
+
+@pytest.mark.asyncio
+async def test_direct_backend_drops_request_params_unsupported_by_provider() -> None:
+    provider = _RecordingProvider([_Chunk(kind="done", finish_reason="stop")])
+    registry = _StubRegistry(provider, "x")
+    backend = DirectProviderBackend(registry)
+    start = agent_pb2.ChatStart(
+        model="x",
+        messages=[common_pb2.Message(role=common_pb2.USER, content="hi")],
+        provider_config_json=b'{"params":{"reasoning_effort":"high"}}',
+    )
+
+    _tx, rx = await backend.start(start)
+    frames = [f async for f in rx]
+
+    assert frames[-1].WhichOneof("kind") == "done"
+    assert provider.calls[0]["extra"] is None
+
+
+@pytest.mark.asyncio
+async def test_direct_backend_drops_request_params_rejected_by_provider_enum() -> None:
+    provider = _OpenAIReasoningRecordingProvider([
+        _Chunk(kind="done", finish_reason="stop")
+    ])
+    registry = _StubRegistry(provider, "x")
+    backend = DirectProviderBackend(registry)
+    start = agent_pb2.ChatStart(
+        model="x",
+        messages=[common_pb2.Message(role=common_pb2.USER, content="hi")],
+        provider_config_json=b'{"params":{"reasoning_effort":"xhigh"}}',
+    )
+
+    _tx, rx = await backend.start(start)
+    frames = [f async for f in rx]
+
+    assert frames[-1].WhichOneof("kind") == "done"
+    assert provider.calls[0]["extra"] is None
+
+
+@pytest.mark.asyncio
+async def test_direct_backend_drops_params_missing_from_provider_schema() -> None:
+    provider = _TopPRecordingProvider([_Chunk(kind="done", finish_reason="stop")])
+    registry = _StubRegistry(
+        provider,
+        "x",
+        params={"top_p": 0.7, "reasoning_effort": "high"},
+    )
+    backend = DirectProviderBackend(registry)
+    start = agent_pb2.ChatStart(
+        model="x",
+        messages=[common_pb2.Message(role=common_pb2.USER, content="hi")],
+        provider_config_json=b'{"params":{"stop_sequences":["\\n\\n"]}}',
+    )
+
+    _tx, rx = await backend.start(start)
+    frames = [f async for f in rx]
+
+    assert frames[-1].WhichOneof("kind") == "done"
+    assert provider.calls[0]["extra"] == {"top_p": 0.7}
+
+
+@pytest.mark.asyncio
+async def test_direct_backend_keeps_schema_less_sampling_defaults() -> None:
+    provider = _RecordingProvider([_Chunk(kind="done", finish_reason="stop")])
+    registry = _StubRegistry(
+        provider,
+        "x",
+        params={
+            "temperature": 0.4,
+            "max_tokens": 128,
+            "top_p": 0.8,
+            "stop_sequences": ["\n\n"],
+        },
+    )
+    backend = DirectProviderBackend(registry)
+
+    _tx, rx = await backend.start(_start("x"))
+    frames = [f async for f in rx]
+
+    assert frames[-1].WhichOneof("kind") == "done"
+    assert provider.calls[0]["temperature"] == 0.4
+    assert provider.calls[0]["max_tokens"] == 128
+    assert provider.calls[0]["extra"] == {
+        "top_p": 0.8,
+        "stop_sequences": ["\n\n"],
+    }
 
 
 @pytest.mark.asyncio

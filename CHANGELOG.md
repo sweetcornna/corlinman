@@ -4,6 +4,46 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.21.7] — 2026-06-15 — Codex login, flagship defaults, and reasoning effort
+
+> Patch release. Config-compatible. Fixes Codex OAuth on native VPS deployments,
+> makes newly configured providers usable immediately with current flagship
+> defaults, and exposes per-request reasoning effort in the web chat UI.
+
+### Added
+- **Chat reasoning effort control** — `/chat` now persists a composer-level
+  low / medium / high / xhigh setting and forwards it through the gateway to
+  provider runtime params. The Codex adapter maps it to the Responses API
+  `reasoning.effort` field.
+- **Future flagship selection** — provider autobind and OAuth provisioning now
+  score the live model catalog by provider family, generation, and tier. When a
+  future flagship appears in discovery (for example a newer GPT, Claude Opus,
+  Gemini Pro, Qwen Max, or Groq GPT-OSS size), it becomes the default without a
+  code change; curated static defaults remain as the safe fallback.
+
+### Changed
+- **Anthropic and Google model discovery can use live APIs** — API-key-backed
+  Anthropic and Gemini providers query their native model-list endpoints when a
+  key is configured, while still falling back to the built-in catalog if the key
+  is unavailable or the upstream list fails.
+- **Current provider defaults are flagship-oriented** — OpenAI/Codex,
+  Anthropic, Google, Mistral, Cohere, DeepSeek, Qwen, GLM, Together, Groq, and
+  Replicate defaults were refreshed to the current flagship choices used by the
+  admin autobind flow.
+
+### Fixed
+- **Codex OAuth works after login on split native deployments** — the agent
+  process now resolves live provider aliases from the persisted Python config,
+  and the Codex provider reads/refreshed credentials from the configured
+  `data_dir` instead of assuming the service user's home directory. This fixes
+  the post-login 403/ unusable-chat path seen on the VPS.
+- **Config changes refresh provider state immediately** — provider registry and
+  model-source state are refreshed after admin/OAuth config mutations, so login
+  and provider edits take effect without stale in-process routing.
+- **Codex model discovery uses the ChatGPT Codex backend** — admin probing and
+  OAuth provisioning query the Codex models endpoint with the same Cloudflare
+  headers used by the runtime adapter, including token refresh handling.
+
 ## [1.21.6] — 2026-06-14 — OAuth login makes the new account the active model
 
 > Patch release. After `codex login` (and the other OAuth flows) the freshly

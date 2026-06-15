@@ -137,7 +137,7 @@ class _ReloadingProviderResolver:
     compatibility).
     """
 
-    def __init__(self, path: str | None) -> None:
+    def __init__(self, path: str | None, *, data_dir: Path | None = None) -> None:
         self._path = path
         self._mtime: float | None = None
         # Resolve the data dir once at construction so OAuth-aware
@@ -146,7 +146,7 @@ class _ReloadingProviderResolver:
         # every rebuild after a config-file write picks the same dir
         # up — env changes mid-run would be picked up only on next
         # restart, which is the same model as the rest of the gateway.
-        self._data_dir = _resolve_data_dir()
+        self._data_dir = data_dir or _resolve_data_dir()
         self._registry = ProviderRegistry([], data_dir=self._data_dir)
         self._aliases: dict[str, AliasEntry] = {}
         self._subagent_config: dict[str, Any] = {}
@@ -168,7 +168,7 @@ class _ReloadingProviderResolver:
         if self._mtime is not None and mtime == self._mtime:
             return
         is_first_load = self._mtime is None
-        specs, aliases, subagent_config = _load_config()
+        specs, aliases, subagent_config = _load_config(self._path)
         self._registry = ProviderRegistry(specs, data_dir=self._data_dir)
         self._aliases = aliases
         self._subagent_config = subagent_config
@@ -206,7 +206,9 @@ class _ReloadingProviderResolver:
         )
 
 
-def _load_config() -> tuple[list[ProviderSpec], dict[str, AliasEntry], dict[str, Any]]:
+def _load_config(
+    path: str | None = None,
+) -> tuple[list[ProviderSpec], dict[str, AliasEntry], dict[str, Any]]:
     """Read the Python-side config from ``CORLINMAN_PY_CONFIG`` if set.
 
     The Rust gateway writes a JSON file with ``providers`` + ``aliases``
@@ -239,13 +241,13 @@ def _load_config() -> tuple[list[ProviderSpec], dict[str, AliasEntry], dict[str,
     same channel is the surgical path that doesn't introduce a new
     circular bootstrap problem between the two processes.
     """
-    path = os.environ.get("CORLINMAN_PY_CONFIG")
-    if not path:
+    config_path = path or os.environ.get("CORLINMAN_PY_CONFIG")
+    if not config_path:
         return [], {}, {}
     try:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        data = json.loads(Path(config_path).read_text(encoding="utf-8"))
     except Exception as exc:
-        logger.warning("py_config.load_failed", path=path, error=str(exc))
+        logger.warning("py_config.load_failed", path=config_path, error=str(exc))
         return [], {}, {}
 
     specs: list[ProviderSpec] = []

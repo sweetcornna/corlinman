@@ -14,6 +14,8 @@ import { ConversationSearch } from "@/components/chat/conversation-search";
 import { MessageList } from "@/components/chat/message-list";
 import { AgentPicker } from "@/components/playground/agent-picker";
 import { useChatStream } from "@/lib/chat/use-chat-stream";
+import { modelSupportsReasoningEffort } from "@/lib/chat/reasoning-effort";
+import type { ReasoningEffort } from "@/lib/api/chat";
 import {
   deriveArtifactKind,
   deriveArtifactTitle,
@@ -34,6 +36,10 @@ interface ChatAreaProps {
   onOpenPersonaPicker?: () => void;
   imageModelLabel?: string;
   onOpenImageModelPicker?: () => void;
+  reasoningEffort?: ReasoningEffort;
+  onReasoningEffortChange?: (effort: ReasoningEffort) => void;
+  modelProvider?: string | null;
+  modelTarget?: string | null;
   onAgentChange?: (agentId: string | null) => void;
   showActionTrace?: boolean;
   /** W5 — an older history page exists; show the "load earlier" pill. */
@@ -45,6 +51,40 @@ interface ChatAreaProps {
 function genSessionKey(): string {
   const r = Math.random().toString(36).slice(2, 10);
   return `corlinman:${Date.now().toString(36)}:${r}`;
+}
+
+export function modelAllowsXHighReasoningEffort(
+  model: string,
+  provider?: string | null,
+  targetModel?: string | null,
+): boolean {
+  const normalizedProvider = provider?.trim().toLowerCase() ?? "";
+  if (normalizedProvider.includes("codex")) return true;
+  return (
+    model.trim().toLowerCase().includes("codex") ||
+    (targetModel?.trim().toLowerCase().includes("codex") ?? false)
+  );
+}
+
+export function effectiveReasoningEffortForModel(
+  model: string,
+  reasoningEffort: ReasoningEffort,
+  provider?: string | null,
+  targetModel?: string | null,
+): ReasoningEffort | undefined {
+  const id = model.trim().toLowerCase();
+  if (!id) return undefined;
+  const targetId = targetModel?.trim().toLowerCase() ?? "";
+  const normalized =
+    !modelAllowsXHighReasoningEffort(id, provider, targetId) &&
+    reasoningEffort === "xhigh"
+      ? "high"
+      : reasoningEffort;
+  if (modelSupportsReasoningEffort(id)) return normalized;
+  if (targetId && modelSupportsReasoningEffort(targetId)) return normalized;
+  const normalizedProvider = provider?.trim().toLowerCase() ?? "";
+  if (normalizedProvider.includes("codex")) return normalized;
+  return undefined;
 }
 
 /** Role → human-readable Markdown heading label. */
@@ -118,6 +158,10 @@ export function ChatArea({
   onOpenPersonaPicker,
   imageModelLabel,
   onOpenImageModelPicker,
+  reasoningEffort = "medium",
+  onReasoningEffortChange,
+  modelProvider,
+  modelTarget,
   onAgentChange,
   showActionTrace = true,
   hasEarlier,
@@ -126,9 +170,25 @@ export function ChatArea({
 }: ChatAreaProps) {
   const router = useRouter();
   const { t } = useTranslation();
+  const allowsCodexReasoning = modelAllowsXHighReasoningEffort(
+    model,
+    modelProvider,
+    modelTarget,
+  );
+  const effectiveReasoningEffort = effectiveReasoningEffortForModel(
+    model,
+    reasoningEffort,
+    modelProvider,
+    modelTarget,
+  );
+  const normalizedReasoningEffort =
+    !allowsCodexReasoning && reasoningEffort === "xhigh"
+      ? "high"
+      : reasoningEffort;
   const chat = useChatStream({
     sessionKey,
     model,
+    reasoningEffort: effectiveReasoningEffort,
     agentId,
     personaId,
   });
@@ -379,6 +439,9 @@ export function ChatArea({
           mentionCandidates={mentionCandidates}
           imageModelLabel={imageModelLabel}
           onOpenImageModelPicker={onOpenImageModelPicker}
+          reasoningEffort={normalizedReasoningEffort}
+          onReasoningEffortChange={onReasoningEffortChange}
+          allowXHighReasoningEffort={allowsCodexReasoning}
           replyContext={reply}
           onClearReply={() => setReply(null)}
           onSend={(text, attachments) => {

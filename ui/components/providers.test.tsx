@@ -10,6 +10,8 @@ import { Providers } from "./providers";
 import { i18next, LANG_STORAGE_KEY } from "@/lib/i18n";
 
 describe("Providers", () => {
+  let getItemSpy: { mockRestore: () => void } | undefined;
+
   beforeEach(() => {
     window.matchMedia = vi.fn().mockImplementation((query: string) => ({
       matches: false,
@@ -24,12 +26,20 @@ describe("Providers", () => {
   });
 
   afterEach(async () => {
+    getItemSpy?.mockRestore();
+    getItemSpy = undefined;
     window.localStorage.clear();
     await i18next.changeLanguage("zh-CN");
   });
 
   it("applies persisted language after hydration", async () => {
     window.localStorage.setItem(LANG_STORAGE_KEY, "en");
+    const originalGetItem = window.localStorage.getItem.bind(window.localStorage);
+    getItemSpy = vi.spyOn(Object.getPrototypeOf(window.localStorage), "getItem").mockImplementation((...args: unknown[]) => {
+      const key = String(args[0]);
+      if (key === LANG_STORAGE_KEY) return "en";
+      return originalGetItem(key);
+    });
 
     await act(async () => {
       render(

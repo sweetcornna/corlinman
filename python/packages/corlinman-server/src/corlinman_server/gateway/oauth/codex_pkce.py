@@ -236,10 +236,10 @@ def _codex_auth_path() -> Path:
     return Path(codex_home).expanduser() / "auth.json"
 
 
-def write_auth_json(tokens: dict[str, Any]) -> Path:
+def write_auth_json(tokens: dict[str, Any], *, path: Path | None = None) -> Path:
     """Persist tokens to ``~/.codex/auth.json`` in the CLI's canonical shape."""
-    path = _codex_auth_path()
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    target = path or _codex_auth_path()
+    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     payload: dict[str, Any] = {
         "tokens": {
             "access_token": tokens["access_token"],
@@ -251,21 +251,21 @@ def write_auth_json(tokens: dict[str, Any]) -> Path:
         payload["tokens"]["refresh_token"] = tokens["refresh_token"]
     if tokens.get("id_token"):
         payload["tokens"]["id_token"] = tokens["id_token"]
-    tmp = path.with_suffix(".json.tmp")
+    tmp = target.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     try:
         tmp.chmod(0o600)
     except OSError:
         pass
-    tmp.replace(path)
-    return path
+    tmp.replace(target)
+    return target
 
 
-def delete_auth_json() -> bool:
+def delete_auth_json(*, path: Path | None = None) -> bool:
     """Remove ``~/.codex/auth.json``. Returns True iff a file was deleted."""
-    path = _codex_auth_path()
+    target = path or _codex_auth_path()
     try:
-        path.unlink()
+        target.unlink()
         return True
     except FileNotFoundError:
         return False

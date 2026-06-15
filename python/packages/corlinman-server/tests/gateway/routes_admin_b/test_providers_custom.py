@@ -105,7 +105,7 @@ def _py_config(state: AdminState) -> dict[str, Any]:
 def _stub_probe(monkeypatch: pytest.MonkeyPatch, models: list[str] | None) -> None:
     """Stub provider model discovery so custom-provider tests stay network-free."""
 
-    async def _fake(name: str, cfg: dict[str, Any]) -> dict[str, Any]:
+    async def _fake(name: str, cfg: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
         if models is None:
             return {"ok": False, "models": [], "latency_ms": 0, "error": "stubbed"}
         return {"ok": True, "models": list(models), "latency_ms": 1, "error": None}
@@ -387,7 +387,7 @@ def test_patch_custom_provider_autobinds_when_default_is_missing(
     assert on_disk["models"]["default"] == "legacy-relay"
     assert on_disk["models"]["aliases"]["legacy-relay"] == {
         "provider": "legacy-relay",
-        "model": "gpt-4o-mini",
+        "model": "gpt-5.5",
         "params": {},
     }
 
