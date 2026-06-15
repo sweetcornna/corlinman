@@ -21,6 +21,7 @@ import {
   deleteChatSession,
   listChatSessions,
   patchChatSession,
+  type ReasoningEffort,
 } from "@/lib/api/chat";
 import {
   CorlinmanApiError,
@@ -38,6 +39,11 @@ import { ChatEmptyState } from "@/components/chat/empty-state";
 import type { ChatConversation, ChatMessage } from "@/lib/chat/types";
 
 const FALLBACK_MODEL = "gpt-4o"; // used only when /admin/models returns no global default
+const DEFAULT_REASONING_EFFORT: ReasoningEffort = "medium";
+
+function isReasoningEffort(value: string | null): value is ReasoningEffort {
+  return value === "low" || value === "medium" || value === "high" || value === "xhigh";
+}
 
 function genSessionKey(): string {
   const r = Math.random().toString(36).slice(2, 10);
@@ -94,12 +100,20 @@ export default function ChatPage() {
   const [llmOverride, setLlmOverride] = React.useState<string | null>(null);
   const [imageOverride, setImageOverride] = React.useState<string | null>(null);
   const [activeAgent, setActiveAgent] = React.useState<string | null>(null);
+  const [reasoningEffort, setReasoningEffort] =
+    React.useState<ReasoningEffort>(DEFAULT_REASONING_EFFORT);
   React.useEffect(() => {
     if (typeof window === "undefined") return;
     try {
       setLlmOverride(localStorage.getItem("corlinman:chat:llm-model"));
       setImageOverride(localStorage.getItem("corlinman:chat:image-model"));
       setActiveAgent(localStorage.getItem("corlinman:chat:agent-id"));
+      const savedReasoning = localStorage.getItem(
+        "corlinman:chat:reasoning-effort",
+      );
+      if (isReasoningEffort(savedReasoning)) {
+        setReasoningEffort(savedReasoning);
+      }
     } catch {
       /* ignore */
     }
@@ -122,6 +136,14 @@ export default function ChatPage() {
       } else {
         localStorage.removeItem("corlinman:chat:agent-id");
       }
+    } catch {
+      /* ignore */
+    }
+  }, []);
+  const persistReasoningEffort = React.useCallback((effort: ReasoningEffort) => {
+    setReasoningEffort(effort);
+    try {
+      localStorage.setItem("corlinman:chat:reasoning-effort", effort);
     } catch {
       /* ignore */
     }
@@ -401,6 +423,8 @@ export default function ChatPage() {
           initialHistory={initialHistory}
           agentId={activeAgent ?? undefined}
           onAgentChange={persistAgent}
+          reasoningEffort={reasoningEffort}
+          onReasoningEffortChange={persistReasoningEffort}
           showActionTrace={showActionTrace}
           onOpenModelPicker={() => setPickerOpen("llm")}
           hasEarlier={effectiveHasEarlier}

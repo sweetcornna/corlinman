@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -251,6 +251,14 @@ class InternalChatRequest(BaseModel):
     protobuf ``ChatStart`` has no dedicated provider-hint field, so the
     chat service serialises this into ``provider_config_json`` for the
     direct backend and gRPC agent path.
+    """
+
+    provider_params: dict[str, Any] = Field(default_factory=dict)
+    """Per-request provider options merged over alias params.
+
+    The public OpenAI-compatible route uses this for vendor-specific knobs
+    such as GPT/Codex ``reasoning_effort`` without widening the protobuf
+    schema for every provider option.
     """
 
 

@@ -14,6 +14,7 @@ import { ConversationSearch } from "@/components/chat/conversation-search";
 import { MessageList } from "@/components/chat/message-list";
 import { AgentPicker } from "@/components/playground/agent-picker";
 import { useChatStream } from "@/lib/chat/use-chat-stream";
+import type { ReasoningEffort } from "@/lib/api/chat";
 import {
   deriveArtifactKind,
   deriveArtifactTitle,
@@ -34,6 +35,8 @@ interface ChatAreaProps {
   onOpenPersonaPicker?: () => void;
   imageModelLabel?: string;
   onOpenImageModelPicker?: () => void;
+  reasoningEffort?: ReasoningEffort;
+  onReasoningEffortChange?: (effort: ReasoningEffort) => void;
   onAgentChange?: (agentId: string | null) => void;
   showActionTrace?: boolean;
   /** W5 — an older history page exists; show the "load earlier" pill. */
@@ -118,6 +121,8 @@ export function ChatArea({
   onOpenPersonaPicker,
   imageModelLabel,
   onOpenImageModelPicker,
+  reasoningEffort = "medium",
+  onReasoningEffortChange,
   onAgentChange,
   showActionTrace = true,
   hasEarlier,
@@ -129,6 +134,7 @@ export function ChatArea({
   const chat = useChatStream({
     sessionKey,
     model,
+    reasoningEffort,
     agentId,
     personaId,
   });
@@ -379,6 +385,8 @@ export function ChatArea({
           mentionCandidates={mentionCandidates}
           imageModelLabel={imageModelLabel}
           onOpenImageModelPicker={onOpenImageModelPicker}
+          reasoningEffort={reasoningEffort}
+          onReasoningEffortChange={onReasoningEffortChange}
           replyContext={reply}
           onClearReply={() => setReply(null)}
           onSend={(text, attachments) => {

@@ -50,6 +50,8 @@ export interface ChatCompletionToolCall {
   function: { name: string; arguments: string };
 }
 
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
+
 export interface ChatCompletionRequest {
   model: string;
   messages: ChatCompletionMessage[];
@@ -68,6 +70,7 @@ export interface ChatCompletionRequest {
   metadata?: Record<string, string>;
   temperature?: number;
   max_tokens?: number;
+  reasoning_effort?: ReasoningEffort;
   tools?: ChatCompletionToolDef[];
 }
 

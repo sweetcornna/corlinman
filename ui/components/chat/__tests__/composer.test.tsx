@@ -101,6 +101,18 @@ describe("Composer", () => {
     expect(onOpenModelPicker).toHaveBeenCalledOnce();
   });
 
+  it("lets the operator pick reasoning effort", () => {
+    const onReasoningEffortChange = vi.fn();
+    renderComposer({
+      reasoningEffort: "medium",
+      onReasoningEffortChange,
+    });
+
+    fireEvent.click(screen.getByTestId("composer-reasoning-high"));
+
+    expect(onReasoningEffortChange).toHaveBeenCalledWith("high");
+  });
+
   it("toggles the emoji picker and inserts a glyph at the caret", () => {
     const { onSend } = renderComposer();
     const ta = screen.getByTestId("composer-textarea") as HTMLTextAreaElement;

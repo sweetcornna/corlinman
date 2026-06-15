@@ -83,6 +83,9 @@ from corlinman_server.gateway.routes_admin_b._oauth_lib import (
     _require_data_dir,
     _xai_status_row,
 )
+from corlinman_server.gateway.routes_admin_b.config_admin._providers_lib import (
+    _pick_default_model,
+)
 from corlinman_server.gateway.routes_admin_b.state import (
     get_admin_state,
     require_admin,
@@ -183,6 +186,20 @@ def _ordered_unique_model_ids(models: list[str], preference: tuple[str, ...]) ->
     return preferred + rest
 
 
+def _ordered_oauth_model_ids(
+    kind: str,
+    models: list[str],
+    preference: tuple[str, ...],
+) -> list[str]:
+    ordered = _ordered_unique_model_ids(models, preference)
+    if not ordered:
+        return []
+    picked = _pick_default_model(kind, ordered)
+    if picked is None:
+        return ordered
+    return [picked, *(mid for mid in ordered if mid != picked)]
+
+
 async def _query_anthropic_oauth_models(access_token: str) -> list[str]:
     """Best-effort live model discovery for Anthropic OAuth tokens."""
     import httpx
@@ -277,7 +294,7 @@ def _upsert_oauth_provider_and_aliases(
     models_cfg = dict(cfg.get("models") or {})
     aliases = dict(models_cfg.get("aliases") or {})
     raw_default = str(models_cfg.get("default") or "")
-    selected = _ordered_unique_model_ids(models, preference)
+    selected = _ordered_oauth_model_ids(kind, models, preference)
     # Track whether we actually discovered the account's models. A transient
     # upstream model-list outage during login surfaces here as ``models=[]`` and
     # we fall back to a hard-coded guess — which the account may not even
@@ -287,7 +304,7 @@ def _upsert_oauth_provider_and_aliases(
     discovery_succeeded = bool(selected)
     if not selected:
         selected = list(_FALLBACK_OAUTH_MODELS.get(kind, []))
-    selected = _ordered_unique_model_ids(selected, preference)
+    selected = _ordered_oauth_model_ids(kind, selected, preference)
 
     bindable_aliases: list[str] = []
     for model_id in selected:

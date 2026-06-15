@@ -254,9 +254,11 @@ def router() -> APIRouter:
                 entry["api_key"] = {"value": existing_api_key}
 
         probe_strategy = _zero_cost_probe_kind(normalized_kind)
-        if probe_strategy in ("mock", "hardcoded"):
+        if probe_strategy in ("mock", "hardcoded") or (
+            probe_strategy == "native_models" and not _resolve_api_key(entry)
+        ):
             return {"models": list(_HARDCODED_MODELS.get(normalized_kind, []))}
-        if probe_strategy != "openai_models":
+        if probe_strategy not in ("openai_models", "native_models"):
             return {
                 "models": [],
                 "error": f"kind {normalized_kind!r} has no model-discovery endpoint",
@@ -576,13 +578,11 @@ def router() -> APIRouter:
 
         * ``mock``                     — instant ok, ``models_count=1``.
         * openai / openai-compatible   — ``GET <base>/v1/models``.
-        * anthropic / google / etc.    — no free upstream probe; return
-                                         ``ok=True`` with a hardcoded
-                                         catalog count to signal "config
-                                         shape is valid" without burning
-                                         tokens. The UI can label this
-                                         as "configured" rather than
-                                         "verified live".
+        * anthropic / google           — use native model-list endpoints when
+                                         an api key is configured; otherwise
+                                         return the hardcoded catalog count.
+        * other non-probeable kinds     — return ``ok=True`` with a hardcoded
+                                         catalog count where available.
         * unknown                      — ``ok=False`` with diagnostic
                                          error.
 
@@ -633,7 +633,15 @@ def router() -> APIRouter:
         if probe_strategy == "mock":
             return {"ok": True, "latency_ms": 0, "models_count": 1}
 
-        if probe_strategy == "openai_models":
+        if probe_strategy == "native_models" and not api_key:
+            return {
+                "ok": True,
+                "latency_ms": 0,
+                "models_count": len(_HARDCODED_MODELS.get(kind, [])),
+                "note": "api key unavailable; using built-in catalog",
+            }
+
+        if probe_strategy in ("openai_models", "native_models"):
             # Reuse the legacy helper, then reshape with a 5s cap.
             import asyncio as _asyncio
 
@@ -701,10 +709,12 @@ def router() -> APIRouter:
 
         probe_strategy = _zero_cost_probe_kind(kind)
 
-        if probe_strategy in ("mock", "hardcoded"):
+        if probe_strategy in ("mock", "hardcoded") or (
+            probe_strategy == "native_models" and not _resolve_api_key(entry or {})
+        ):
             return {"models": list(_HARDCODED_MODELS.get(kind, []))}
 
-        if probe_strategy != "openai_models":
+        if probe_strategy not in ("openai_models", "native_models"):
             return {
                 "models": [],
                 "error": f"kind {kind!r} has no model-discovery endpoint",
@@ -725,6 +735,12 @@ def router() -> APIRouter:
                 stale_payload["stale"] = True
                 stale_payload["warning"] = err
                 return stale_payload
+            if probe_strategy == "native_models":
+                return {
+                    "models": list(_HARDCODED_MODELS.get(kind, [])),
+                    "stale": True,
+                    "warning": err,
+                }
             # Don't cache failures — operator likely just fixed the key.
             return {"models": [], "error": err}
 

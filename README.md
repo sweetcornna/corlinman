@@ -6,7 +6,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/sweetcornna/corlinman/ci.yml?branch=main&label=CI)](https://github.com/sweetcornna/corlinman/actions)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.20.0-brightgreen)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.21.7-brightgreen)](CHANGELOG.md)
 [![Docs](https://img.shields.io/badge/docs-architecture-informational)](docs/architecture.md)
 
 **A self-hosted intelligent-agent platform.** Give a language model durable
@@ -19,23 +19,14 @@ govern with human-in-the-loop approvals.
 > _Live deployment reference: <https://corlinman.cornna.xyz>._
 > _中文介绍章节见文末 ["中文速览"](#中文速览)。_
 >
-> **What's new in 1.20.0** — **`corlinman console`**, a terminal REPL that hosts
-> the full agent brain in-process (tools, sub-agents, memory, journal) or
-> attaches to a running gateway; **claude-code parity wave 1** (CORLINMAN.md
-> project memory, `/compact`, `/rewind` checkpoints, `--output-format
-> json|stream-json`, live todo checklist); **session commands on every
-> channel** (`/new` `/model` `/usage` across QQ/Telegram/Discord/Slack/Feishu/
-> web/console); **multi-model adaptation** (OpenAI o-series & gpt-5 params,
-> DeepSeek R1 reasoning streams, strict-alternation merge, tool-less model
-> degradation, vendor key isolation); an **enterprise-grade web chat** (file
-> upload/download, assistant images, SSE heartbeats, clean error/cancel
-> states); and the **CI 6-hour py-test hang root-caused + fixed**. See
+> **What's new in 1.21.7** — Codex OAuth login now works end-to-end on the
+> native VPS split gateway/agent deployment; provider defaults follow the
+> latest discovered flagship models; the chat composer can send per-request
+> reasoning effort; and Anthropic/Google model discovery uses native live
+> model APIs when credentials are configured. See
 > [`CHANGELOG.md`](CHANGELOG.md).
-> _1.20.0 新增 `corlinman console` 终端控制台（进程内完整 agent 大脑 / 附着网关
-> 双模式）、claude-code 对齐第一波（项目记忆 CORLINMAN.md、/compact、/rewind、
-> 结构化输出、todo 清单）、全渠道会话指令（/new /model /usage）、几乎全模型适配
-> （o 系列/R1/严格交替/无工具模型降级/厂商密钥隔离）、企业级网页聊天（文件全链路、
-> 助手发图、SSE 心跳、错误与中断态修复），并根治 CI 6 小时挂死。_
+> _1.21.7 修复 Codex 登录后 403/不可用链路，默认模型会跟随实际发现到的最新旗舰，
+> 前端聊天支持按请求调整思考强度，并为 Anthropic / Google 接入实时模型发现。_
 
 ---
 

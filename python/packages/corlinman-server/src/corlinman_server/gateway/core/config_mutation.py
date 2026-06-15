@@ -7,9 +7,11 @@ and the error-code shape callers short-circuit on). Modularization roadmap
 Phase 1 — see ``docs/modularization-plan.md`` §3.2.
 
 This is a leaf in the gateway ``core`` layer: it imports only the TOML writer
-and Starlette's ``JSONResponse`` — never any ``routes_admin_*`` module — so the
-``boundary-check`` (import-linter) contract stays satisfied and the config
-modules depend on this neutral seam rather than on ``onboard``.
+and Starlette's ``JSONResponse`` at module import time — never any
+``routes_admin_*`` module — so the ``boundary-check`` (import-linter) contract
+stays satisfied and the config modules depend on this neutral seam rather than
+on ``onboard``. Provider-registry refresh is loaded lazily after a mutation is
+published so OAuth/provider edits become immediately usable without a restart.
 """
 
 from __future__ import annotations
@@ -22,6 +24,33 @@ from fastapi.responses import JSONResponse
 
 __all__ = ["publish_config_mutation", "write_config_atomic"]
 logger = logging.getLogger(__name__)
+
+
+def _refresh_provider_runtime(state: Any, cfg: dict[str, Any]) -> None:
+    """Best-effort rebuild of provider registry + model source for ``cfg``."""
+    try:
+        from corlinman_server.gateway.providers import (  # noqa: PLC0415
+            RegistryModelSource,
+            build_registry,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "config_mutation.provider_refresh_import_failed",
+            extra={"error": str(exc)},
+        )
+        return
+
+    try:
+        registry = build_registry(cfg, data_dir=getattr(state, "data_dir", None))
+        state.provider_registry = registry
+        extras = getattr(state, "extras", None)
+        if isinstance(extras, dict):
+            extras["models_source"] = RegistryModelSource(registry, cfg)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "config_mutation.provider_refresh_failed",
+            extra={"error": str(exc)},
+        )
 
 
 def write_config_atomic(path: Any, cfg: dict[str, Any]) -> JSONResponse | None:
@@ -72,10 +101,13 @@ async def publish_config_mutation(
     extras = getattr(state, "extras", None)
     get_extra = getattr(extras, "get", None)
     swap_fn = get_extra("config_swap_fn") if callable(get_extra) else None
+    before_registry = getattr(state, "provider_registry", None)
     if swap_fn is not None:
         res = swap_fn(cfg)
         if inspect.isawaitable(res):
             await res
+    if getattr(state, "provider_registry", None) is before_registry:
+        _refresh_provider_runtime(state, cfg)
 
     py_config_path = getattr(state, "py_config_path", None)
     if py_config_path is None or py_config_writer is None:

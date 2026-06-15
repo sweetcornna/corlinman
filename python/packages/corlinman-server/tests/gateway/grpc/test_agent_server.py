@@ -18,6 +18,7 @@ agent path is wired and runnable.
 from __future__ import annotations
 
 import asyncio
+import importlib
 import os
 import tempfile
 from pathlib import Path
@@ -336,6 +337,74 @@ async def test_serve_in_background_threads_subagent_config(
         "max_depth": 3,
         "max_wall_seconds_ceiling": 120,
     }
+
+
+@pytest.mark.asyncio
+async def test_serve_agent_uses_py_config_reloading_resolver(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import grpc
+    from corlinman_grpc import agent_pb2_grpc
+    from corlinman_providers import AliasEntry
+
+    server_main = importlib.import_module("corlinman_server.main")
+
+    captured: dict[str, object] = {}
+
+    class _FakeResolver:
+        def __init__(self, path: str | None) -> None:
+            self.aliases = {
+                "gpt-5.5": AliasEntry(provider="codex", model="gpt-5.5")
+            }
+            self.subagent_config = {"max_depth": 2}
+            captured["resolver"] = self
+            captured["path"] = path
+
+        def __call__(self, *args: object, **kwargs: object) -> object:
+            raise AssertionError("resolver should not be called during boot")
+
+    class _FakeServer:
+        def add_insecure_port(self, bind: str) -> int:
+            captured["bind"] = bind
+            return 1
+
+        async def start(self) -> None:
+            captured["started"] = True
+
+        async def stop(self, grace: float) -> None:
+            captured["stopped"] = grace
+
+    py_config = tmp_path / "py-config.json"
+    py_config.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("CORLINMAN_PY_CONFIG", str(py_config))
+    monkeypatch.delenv("CORLINMAN_TEST_MOCK_PROVIDER", raising=False)
+    monkeypatch.setattr(
+        server_main, "_ReloadingProviderResolver", _FakeResolver
+    )
+    monkeypatch.setattr(server_main, "_build_hook_runner", lambda: object())
+
+    async def _noop_resume() -> None:
+        captured["resume"] = True
+
+    monkeypatch.setattr(server_main, "_run_boot_auto_resume", _noop_resume)
+    monkeypatch.setattr(grpc.aio, "server", lambda options=None: _FakeServer())
+
+    def _capture_servicer(servicer: object, server: object) -> None:
+        captured["servicer"] = servicer
+        captured["server"] = server
+
+    monkeypatch.setattr(
+        agent_pb2_grpc, "add_AgentServicer_to_server", _capture_servicer
+    )
+
+    shutdown = asyncio.Event()
+    shutdown.set()
+    await agent_server.serve_agent("127.0.0.1:0", shutdown)
+
+    servicer = captured["servicer"]
+    assert captured["path"] == str(py_config)
+    assert servicer._resolve is captured["resolver"]  # type: ignore[attr-defined]
+    assert "gpt-5.5" in servicer._aliases  # type: ignore[attr-defined]
 
 
 # ─── end-to-end: co-hosted server + GrpcAgentChatBackend ─────────────

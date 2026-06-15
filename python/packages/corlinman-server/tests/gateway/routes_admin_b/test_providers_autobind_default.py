@@ -96,6 +96,94 @@ def _stub_probe(monkeypatch: pytest.MonkeyPatch, models: list[str] | None) -> No
     monkeypatch.setattr(_providers_lib, "_query_provider_models", _fake)
 
 
+@pytest.mark.parametrize(
+    ("kind", "models", "expected"),
+    [
+        ("openai", ["gpt-4o-mini", "gpt-5.4", "gpt-5.5"], "gpt-5.5"),
+        ("codex", ["gpt-5.4", "gpt-5.5"], "gpt-5.5"),
+        (
+            "anthropic",
+            ["claude-3-5-haiku-latest", "claude-opus-4-8", "claude-fable-5"],
+            "claude-fable-5",
+        ),
+        ("google", ["gemini-2.5-pro", "gemini-3.5-flash"], "gemini-3.5-flash"),
+        ("mistral", ["mistral-small-latest", "mistral-medium-latest"], "mistral-medium-latest"),
+        ("cohere", ["command-a-03-2025", "command-a-plus-05-2026"], "command-a-plus-05-2026"),
+        ("deepseek", ["deepseek-chat", "deepseek-v4-pro"], "deepseek-v4-pro"),
+        ("qwen", ["qwen-plus", "qwen3.7-max"], "qwen3.7-max"),
+        ("glm", ["glm-4-flash", "glm-5.1"], "glm-5.1"),
+        (
+            "together",
+            [
+                "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+                "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
+            ],
+            "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
+        ),
+        ("groq", ["llama-3.3-70b-versatile", "openai/gpt-oss-120b"], "openai/gpt-oss-120b"),
+        (
+            "replicate",
+            ["meta/meta-llama-3-70b-instruct", "meta/llama-4-maverick-instruct"],
+            "meta/llama-4-maverick-instruct",
+        ),
+    ],
+)
+def test_pick_default_model_prefers_current_flagship_models(
+    kind: str,
+    models: list[str],
+    expected: str,
+) -> None:
+    assert _providers_lib._pick_default_model(kind, models) == expected
+
+
+@pytest.mark.parametrize(
+    ("kind", "models", "expected"),
+    [
+        (
+            "openai",
+            ["gpt-5.5", "gpt-5.6-mini", "gpt-5.6", "text-embedding-4-large"],
+            "gpt-5.6",
+        ),
+        (
+            "codex",
+            ["codex-auto-review", "gpt-5.5", "gpt-5.6"],
+            "gpt-5.6",
+        ),
+        (
+            "anthropic",
+            ["claude-fable-5", "claude-opus-6", "claude-haiku-7"],
+            "claude-opus-6",
+        ),
+        (
+            "google",
+            ["gemini-3.5-flash", "gemini-4.0-flash-lite", "gemini-4.0-pro-preview"],
+            "gemini-4.0-pro-preview",
+        ),
+        (
+            "qwen",
+            ["qwen3.7-max", "qwen3.8-plus", "qwen3.8-max"],
+            "qwen3.8-max",
+        ),
+        (
+            "cohere",
+            ["command-a-plus-05-2026", "command-a-plus-06-2026"],
+            "command-a-plus-06-2026",
+        ),
+        (
+            "groq",
+            ["openai/gpt-oss-120b", "openai/gpt-oss-130b", "llama-5-70b-versatile"],
+            "openai/gpt-oss-130b",
+        ),
+    ],
+)
+def test_pick_default_model_follows_future_flagship_models(
+    kind: str,
+    models: list[str],
+    expected: str,
+) -> None:
+    assert _providers_lib._pick_default_model(kind, models) == expected
+
+
 def test_upsert_enable_autobinds_default_from_probed_models(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -311,7 +399,7 @@ def test_upsert_probe_failure_falls_back_to_kind_default(
 
         on_disk = _on_disk(config_path)
         assert on_disk["models"]["default"] == "ds"
-        assert on_disk["models"]["aliases"]["ds"]["model"] == "deepseek-chat"
+        assert on_disk["models"]["aliases"]["ds"]["model"] == "deepseek-v4-pro"
 
 
 def test_patch_enable_triggers_autobind(
@@ -340,7 +428,7 @@ base_url = "https://relay.example/v1"
         on_disk = _on_disk(config_path)
         assert on_disk["models"]["default"] == "sleeper"
         assert on_disk["models"]["aliases"]["sleeper"]["provider"] == "sleeper"
-        assert on_disk["models"]["aliases"]["sleeper"]["model"] == "gpt-4o-mini"
+        assert on_disk["models"]["aliases"]["sleeper"]["model"] == "gpt-4o"
 
 
 def test_patch_disable_clears_active_default(

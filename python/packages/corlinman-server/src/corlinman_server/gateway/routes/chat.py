@@ -121,6 +121,7 @@ class ChatRequest(BaseModel):
     temperature: float | None = None
     max_tokens: int | None = None
     tools: object | None = None
+    reasoning_effort: str | None = None
     session_key: str | None = None
     persona_id: str | None = None
     """Optional explicit persona binding for the web ``/chat`` path.
@@ -411,6 +412,21 @@ def _decode_b64_payload(data: str) -> bytes | None:
         return None
 
 
+_REASONING_EFFORTS: frozenset[str] = frozenset(
+    {"low", "medium", "high", "xhigh"}
+)
+
+
+def _provider_params_from_chat_request(req: ChatRequest) -> dict[str, Any]:
+    params: dict[str, Any] = {}
+    raw_effort = req.reasoning_effort
+    if isinstance(raw_effort, str):
+        effort = raw_effort.strip().lower()
+        if effort in _REASONING_EFFORTS:
+            params["reasoning_effort"] = effort
+    return params
+
+
 def _build_internal_request(req: ChatRequest, session_key: str | None) -> InternalChatRequest:
     """Translate the OpenAI body into the internal protocol shape.
 
@@ -460,6 +476,7 @@ def _build_internal_request(req: ChatRequest, session_key: str | None) -> Intern
         max_tokens=req.max_tokens,
         temperature=req.temperature,
         attachments=attachments,
+        provider_params=_provider_params_from_chat_request(req),
     )
 
 

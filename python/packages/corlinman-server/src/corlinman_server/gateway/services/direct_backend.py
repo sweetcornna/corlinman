@@ -159,6 +159,9 @@ class DirectProviderBackend:
                     start.model,
                     provider_hint=_provider_hint_from_start(start),
                 )
+                request_params = _provider_params_from_start(start)
+                if request_params:
+                    params = {**params, **request_params}
             except Exception as exc:  # noqa: BLE001 — surface as error frame
                 log.info(
                     "direct_backend.resolve_failed model=%s err=%s",
@@ -380,6 +383,24 @@ class DirectProviderBackend:
 
 
 def _provider_hint_from_start(start: agent_pb2.ChatStart) -> str | None:
+    obj = _provider_config_from_start(start)
+    if obj is None:
+        return None
+    hint = obj.get("provider_hint")
+    if isinstance(hint, str) and hint.strip():
+        return hint.strip()
+    return None
+
+
+def _provider_params_from_start(start: agent_pb2.ChatStart) -> dict[str, Any]:
+    obj = _provider_config_from_start(start)
+    if obj is None:
+        return {}
+    params = obj.get("params")
+    return dict(params) if isinstance(params, dict) else {}
+
+
+def _provider_config_from_start(start: agent_pb2.ChatStart) -> dict[str, Any] | None:
     raw = getattr(start, "provider_config_json", b"") or b""
     if not raw:
         return None
@@ -389,10 +410,7 @@ def _provider_hint_from_start(start: agent_pb2.ChatStart) -> str | None:
         return None
     if not isinstance(obj, dict):
         return None
-    hint = obj.get("provider_hint")
-    if isinstance(hint, str) and hint.strip():
-        return hint.strip()
-    return None
+    return obj
 
 
 def _alias_entries(models_config: dict[str, Any]) -> dict[str, Any]:

@@ -7,6 +7,8 @@ All network calls are mocked — tests remain fully offline.
 
 from __future__ import annotations
 
+import base64
+import json
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -87,6 +89,16 @@ def _mock_httpx_response(*, status_code: int = 200, json_body: Any = None) -> Ma
     return resp
 
 
+def _codex_jwt_with_account(account_id: str) -> str:
+    payload = {
+        "https://api.openai.com/auth": {
+            "chatgpt_account_id": account_id,
+        }
+    }
+    encoded = base64.urlsafe_b64encode(json.dumps(payload).encode()).rstrip(b"=")
+    return f"header.{encoded.decode('ascii')}.signature"
+
+
 # ---------------------------------------------------------------------------
 # Tests: POST /admin/providers/{name}/test
 # ---------------------------------------------------------------------------
@@ -113,20 +125,17 @@ class TestProviderTest:
         providers_client: TestClient,
         providers_state: tuple[AdminState, dict[str, Any]],
     ) -> None:
-        """anthropic has no free upstream probe; W1.1 surfaces as ok with note.
+        """anthropic without a resolvable key falls back to the built-in catalog.
 
-        Previously the route propagated the legacy helper's
-        "kind does not support /v1/models probe" error verbatim. After
-        W1.1 the test endpoint upgrades that case to ``ok=True`` with a
-        ``note`` flag (config-shape is valid, just not live-verified)
-        and a ``models_count`` from the hardcoded catalog so the UI
-        button shows green without burning a real chat call.
+        A configured API key now enables native live model discovery. Without
+        one, the endpoint keeps the previous green "configured" behavior and
+        reports the hardcoded catalog size.
         """
         _, snapshot = providers_state
         snapshot.clear()
         snapshot.update({
             "providers": {
-                "myanthropic": {"kind": "anthropic", "api_key": "sk-ant-xxx", "enabled": True}
+                "myanthropic": {"kind": "anthropic", "enabled": True}
             }
         })
 
@@ -195,6 +204,96 @@ class TestProviderTest:
         assert "gpt-4o" in result["models"]
         assert result["error"] is None
 
+    @pytest.mark.asyncio
+    async def test_anthropic_provider_uses_native_models_api(
+        self,
+        providers_state: tuple[AdminState, dict[str, Any]],
+    ) -> None:
+        _, _snapshot = providers_state
+        cfg = {
+            "providers": {
+                "claude": {
+                    "kind": "anthropic",
+                    "api_key": "sk-ant-test",
+                    "enabled": True,
+                }
+            }
+        }
+        mock_resp = _mock_httpx_response(
+            status_code=200,
+            json_body={"data": [{"id": "claude-fable-5"}, {"id": "claude-opus-6"}]},
+        )
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.get = AsyncMock(return_value=mock_resp)
+
+        from corlinman_server.gateway.routes_admin_b.config_admin._providers_lib import (
+            _query_provider_models,
+        )
+
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            result = await _query_provider_models("claude", cfg)
+
+        assert result["ok"] is True
+        assert result["models"] == ["claude-fable-5", "claude-opus-6"]
+        mock_client.get.assert_awaited_once()
+        assert mock_client.get.await_args.args[0] == "https://api.anthropic.com/v1/models"
+        headers = mock_client.get.await_args.kwargs["headers"]
+        assert headers["x-api-key"] == "sk-ant-test"
+        assert headers["anthropic-version"] == "2023-06-01"
+
+    @pytest.mark.asyncio
+    async def test_google_provider_uses_native_models_api(
+        self,
+        providers_state: tuple[AdminState, dict[str, Any]],
+    ) -> None:
+        _, _snapshot = providers_state
+        cfg = {
+            "providers": {
+                "gemini": {
+                    "kind": "google",
+                    "api_key": "google-key",
+                    "enabled": True,
+                }
+            }
+        }
+        mock_resp = _mock_httpx_response(
+            status_code=200,
+            json_body={
+                "models": [
+                    {
+                        "name": "models/gemini-4.0-pro-preview",
+                        "supportedGenerationMethods": ["generateContent"],
+                    },
+                    {
+                        "name": "models/text-embedding-004",
+                        "supportedGenerationMethods": ["embedContent"],
+                    },
+                ]
+            },
+        )
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.get = AsyncMock(return_value=mock_resp)
+
+        from corlinman_server.gateway.routes_admin_b.config_admin._providers_lib import (
+            _query_provider_models,
+        )
+
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            result = await _query_provider_models("gemini", cfg)
+
+        assert result["ok"] is True
+        assert result["models"] == ["gemini-4.0-pro-preview"]
+        mock_client.get.assert_awaited_once()
+        assert (
+            mock_client.get.await_args.args[0]
+            == "https://generativelanguage.googleapis.com/v1beta/models"
+        )
+        assert mock_client.get.await_args.kwargs["params"] == {"key": "google-key"}
+
     def test_codex_provider_no_cred_returns_error(
         self,
         providers_client: TestClient,
@@ -219,6 +318,102 @@ class TestProviderTest:
         body = resp.json()
         assert body["ok"] is False
         assert "codex_auth_not_found" in (body.get("error") or "")
+
+    @pytest.mark.asyncio
+    async def test_codex_provider_probe_uses_chatgpt_codex_backend(self) -> None:
+        """Codex OAuth tokens are ChatGPT subscription tokens, not API keys."""
+        from corlinman_providers._codex_oauth import CodexOAuthCredential
+        from corlinman_server.gateway.routes_admin_b.config_admin._providers_lib import (
+            _query_provider_models,
+        )
+
+        access_token = _codex_jwt_with_account("acct_test_123")
+        mock_resp = _mock_httpx_response(
+            status_code=200,
+            json_body={
+                "models": [
+                    {"slug": "gpt-5.4-mini"},
+                    {"slug": "gpt-5.5"},
+                    {"name": "ignored"},
+                ]
+            },
+        )
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.get = AsyncMock(return_value=mock_resp)
+
+        with patch(
+            "corlinman_providers._codex_oauth.load_codex_credential",
+            return_value=CodexOAuthCredential(
+                access_token=access_token,
+                refresh_token="refresh-token",
+                expires_at_ms=None,
+            ),
+        ), patch("httpx.AsyncClient", return_value=mock_client):
+            result = await _query_provider_models("codex", {"providers": {}})
+
+        assert result["ok"] is True
+        assert result["models"] == ["gpt-5.4-mini", "gpt-5.5"]
+        mock_client.get.assert_awaited_once()
+        url = mock_client.get.await_args.args[0]
+        headers = mock_client.get.await_args.kwargs["headers"]
+        assert (
+            url
+            == "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0"
+        )
+        assert headers["Authorization"] == f"Bearer {access_token}"
+        assert headers["originator"] == "codex_cli_rs"
+        assert headers["User-Agent"].startswith("codex_cli_rs/")
+        assert headers["ChatGPT-Account-ID"] == "acct_test_123"
+
+    @pytest.mark.asyncio
+    async def test_codex_provider_probe_refreshes_expired_credential(self) -> None:
+        from corlinman_providers._codex_oauth import CodexOAuthCredential
+        from corlinman_server.gateway.routes_admin_b.config_admin._providers_lib import (
+            _query_provider_models,
+        )
+
+        old_token = _codex_jwt_with_account("acct_old")
+        fresh_token = _codex_jwt_with_account("acct_fresh")
+        mock_resp = _mock_httpx_response(
+            status_code=200,
+            json_body={"models": [{"slug": "gpt-5.5"}]},
+        )
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        refresh = AsyncMock(
+            return_value=CodexOAuthCredential(
+                access_token=fresh_token,
+                refresh_token="new-refresh",
+                expires_at_ms=None,
+            )
+        )
+
+        with patch(
+            "corlinman_providers._codex_oauth.load_codex_credential",
+            return_value=CodexOAuthCredential(
+                access_token=old_token,
+                refresh_token="old-refresh",
+                expires_at_ms=1,
+            ),
+        ), patch(
+            "corlinman_providers._codex_oauth.refresh_codex_token",
+            new=refresh,
+        ), patch(
+            "corlinman_providers._codex_oauth.persist_codex_credential",
+            return_value=True,
+        ) as persist, patch("httpx.AsyncClient", return_value=mock_client):
+            result = await _query_provider_models("codex", {"providers": {}})
+
+        assert result["ok"] is True
+        refresh.assert_awaited_once_with(refresh_token="old-refresh")
+        persist.assert_called_once()
+        headers = mock_client.get.await_args.kwargs["headers"]
+        assert headers["Authorization"] == f"Bearer {fresh_token}"
+        assert headers["ChatGPT-Account-ID"] == "acct_fresh"
 
 
 # ---------------------------------------------------------------------------

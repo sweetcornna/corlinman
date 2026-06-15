@@ -5,6 +5,7 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from corlinman_server.gateway.core.config_mutation import (
@@ -64,3 +65,48 @@ async def test_publish_config_mutation_treats_py_config_write_as_best_effort(
     )
 
     assert swapped == [cfg]
+
+
+@pytest.mark.asyncio
+async def test_publish_config_mutation_refreshes_provider_registry(
+    tmp_path: Path,
+) -> None:
+    from corlinman_providers.registry import ProviderRegistry
+    from corlinman_server.gateway.providers import (
+        RegistryModelSource,
+        build_registry,
+    )
+
+    original_cfg: dict[str, Any] = {"providers": {}}
+    next_cfg: dict[str, Any] = {
+        "providers": {"mock": {"kind": "mock", "enabled": True}},
+        "models": {
+            "aliases": {
+                "mock-chat": {
+                    "provider": "mock",
+                    "model": "mock",
+                    "params": {},
+                }
+            }
+        },
+    }
+
+    def swap_fn(next_config: dict[str, Any]) -> None:
+        state.config = next_config
+
+    state = SimpleNamespace(
+        config=original_cfg,
+        data_dir=tmp_path,
+        extras={"config_swap_fn": swap_fn},
+        provider_registry=build_registry(original_cfg, data_dir=tmp_path),
+    )
+    old_registry = state.provider_registry
+
+    await publish_config_mutation(state, next_cfg)
+
+    assert isinstance(state.provider_registry, ProviderRegistry)
+    assert state.provider_registry is not old_registry
+    assert {spec.name for spec in state.provider_registry.list_specs()} == {"mock"}
+    source = state.extras.get("models_source")
+    assert isinstance(source, RegistryModelSource)
+    assert [entry.id for entry in source.list_models()] == ["mock-chat", "mock"]
