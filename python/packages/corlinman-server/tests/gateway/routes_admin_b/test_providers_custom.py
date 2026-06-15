@@ -387,7 +387,7 @@ def test_patch_custom_provider_autobinds_when_default_is_missing(
     assert on_disk["models"]["default"] == "legacy-relay"
     assert on_disk["models"]["aliases"]["legacy-relay"] == {
         "provider": "legacy-relay",
-        "model": "gpt-4o-mini",
+        "model": "gpt-5.5",
         "params": {},
     }
 
