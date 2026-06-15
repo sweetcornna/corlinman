@@ -207,7 +207,9 @@ def test_codex_pkce_submit_discovers_models_and_configures_aliases(
     with patch(
         "corlinman_server.gateway.oauth.codex_pkce.exchange_code",
         new=AsyncMock(return_value=_FAKE_TOKENS),
-    ), patch("corlinman_server.gateway.oauth.codex_pkce.write_auth_json"), patch(
+    ), patch(
+        "corlinman_server.gateway.oauth.codex_pkce.write_auth_json"
+    ) as write_auth_json, patch(
         # write_auth_json is mocked, so the provisioning token-match recheck has
         # no real auth.json to read — stub the stored token to the one we wrote.
         "corlinman_server.gateway.routes_admin_b.oauth._stored_codex_token",
@@ -226,6 +228,10 @@ def test_codex_pkce_submit_discovers_models_and_configures_aliases(
         )
 
     assert resp.status_code == 200, resp.text
+    write_auth_json.assert_called_once_with(
+        _FAKE_TOKENS,
+        path=_state.data_dir / ".codex" / "auth.json",
+    )
     on_disk = _on_disk(config_path)
     assert on_disk["providers"]["codex"] == {
         "kind": "codex",

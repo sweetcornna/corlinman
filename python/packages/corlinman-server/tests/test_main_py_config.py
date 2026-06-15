@@ -38,6 +38,24 @@ def test_load_config_returns_subagent_section(
     }
 
 
+def test_load_config_reads_explicit_path_over_env(tmp_path, monkeypatch) -> None:
+    env_path = tmp_path / "env-py-config.json"
+    explicit_path = tmp_path / "explicit-py-config.json"
+    env_path.write_text(
+        json.dumps({"providers": [], "aliases": {}, "subagent": {"max_depth": 1}}),
+        encoding="utf-8",
+    )
+    explicit_path.write_text(
+        json.dumps({"providers": [], "aliases": {}, "subagent": {"max_depth": 4}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CORLINMAN_PY_CONFIG", str(env_path))
+
+    _specs, _aliases, subagent = server_main._load_config(str(explicit_path))
+
+    assert subagent == {"max_depth": 4}
+
+
 def test_reloading_provider_resolver_forwards_provider_hint() -> None:
     class _Registry:
         def __init__(self) -> None:

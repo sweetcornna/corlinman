@@ -177,6 +177,7 @@ class TestCodexProviderBuild:
         prov = CodexProvider.build(spec, data_dir=data_dir)
 
         assert prov._credential.access_token == "at-data-dir"
+        assert prov._credential_path == codex_dir / "auth.json"
 
     def test_provider_not_openai_subclass(self) -> None:
         """CodexProvider must NOT extend OpenAIProvider — it uses a different API."""

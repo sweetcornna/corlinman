@@ -98,7 +98,7 @@ def _provider_param_property(provider: Any, key: str) -> dict[str, Any] | None:
     if properties is None:
         return None
     prop = properties.get(key)
-    return prop if isinstance(prop, dict) else {}
+    return prop if isinstance(prop, dict) else None
 
 
 def _provider_accepts_param(provider: Any, key: str, value: Any) -> bool:

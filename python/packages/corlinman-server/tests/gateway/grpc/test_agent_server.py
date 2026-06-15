@@ -294,6 +294,7 @@ def test_serve_in_background_returns_none_when_disabled(
 async def test_serve_in_background_threads_subagent_config(
     monkeypatch: pytest.MonkeyPatch,
     _clear_bind_env: None,
+    tmp_path: Path,
 ) -> None:
     monkeypatch.delenv("CORLINMAN_GRPC_AGENT_INPROC", raising=False)
     monkeypatch.setenv("CORLINMAN_PY_PORT", "55556")
@@ -306,11 +307,15 @@ async def test_serve_in_background_threads_subagent_config(
         event_emitter: object | None = None,
         subagent_dispatcher: object | None = None,
         subagent_config: dict | None = None,
+        data_dir: Path | None = None,
+        py_config_path: Path | str | None = None,
     ) -> None:
         seen["bind"] = bind
         seen["event_emitter"] = event_emitter
         seen["subagent_dispatcher"] = subagent_dispatcher
         seen["subagent_config"] = subagent_config
+        seen["data_dir"] = data_dir
+        seen["py_config_path"] = py_config_path
 
     monkeypatch.setattr(agent_server, "serve_agent", _fake_serve_agent)
     cancel = asyncio.Event()
@@ -325,6 +330,8 @@ async def test_serve_in_background_threads_subagent_config(
             },
         }
     )
+    state.data_dir = tmp_path  # type: ignore[attr-defined]
+    state.py_config_path = tmp_path / "custom-py-config.json"  # type: ignore[attr-defined]
 
     task = agent_server.serve_agent_in_background(state, cancel)
     assert task is not None
@@ -337,6 +344,8 @@ async def test_serve_in_background_threads_subagent_config(
         "max_depth": 3,
         "max_wall_seconds_ceiling": 120,
     }
+    assert seen["data_dir"] == tmp_path
+    assert seen["py_config_path"] == tmp_path / "custom-py-config.json"
 
 
 @pytest.mark.asyncio
@@ -352,13 +361,14 @@ async def test_serve_agent_uses_py_config_reloading_resolver(
     captured: dict[str, object] = {}
 
     class _FakeResolver:
-        def __init__(self, path: str | None) -> None:
+        def __init__(self, path: str | None, *, data_dir: Path | None = None) -> None:
             self.aliases = {
                 "gpt-5.5": AliasEntry(provider="codex", model="gpt-5.5")
             }
             self.subagent_config = {"max_depth": 2}
             captured["resolver"] = self
             captured["path"] = path
+            captured["data_dir"] = data_dir
 
         def __call__(self, *args: object, **kwargs: object) -> object:
             raise AssertionError("resolver should not be called during boot")
@@ -420,10 +430,11 @@ async def test_serve_agent_uses_default_py_config_path_when_env_unset(
     captured: dict[str, object] = {}
 
     class _FakeResolver:
-        def __init__(self, path: str | None) -> None:
+        def __init__(self, path: str | None, *, data_dir: Path | None = None) -> None:
             self.aliases = {}
             self.subagent_config = {}
             captured["path"] = path
+            captured["data_dir"] = data_dir
 
         def __call__(self, *args: object, **kwargs: object) -> object:
             raise AssertionError("resolver should not be called during boot")
@@ -440,7 +451,7 @@ async def test_serve_agent_uses_default_py_config_path_when_env_unset(
 
     monkeypatch.delenv("CORLINMAN_PY_CONFIG", raising=False)
     monkeypatch.delenv("CORLINMAN_TEST_MOCK_PROVIDER", raising=False)
-    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("CORLINMAN_DATA_DIR", raising=False)
     monkeypatch.setattr(server_main, "_ReloadingProviderResolver", _FakeResolver)
     monkeypatch.setattr(server_main, "_build_hook_runner", lambda: object())
 
@@ -457,9 +468,10 @@ async def test_serve_agent_uses_default_py_config_path_when_env_unset(
 
     shutdown = asyncio.Event()
     shutdown.set()
-    await agent_server.serve_agent("127.0.0.1:0", shutdown)
+    await agent_server.serve_agent("127.0.0.1:0", shutdown, data_dir=tmp_path)
 
     assert captured["path"] == str(tmp_path / "py-config.json")
+    assert captured["data_dir"] == tmp_path
 
 
 # ─── end-to-end: co-hosted server + GrpcAgentChatBackend ─────────────

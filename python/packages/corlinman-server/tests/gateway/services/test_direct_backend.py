@@ -97,6 +97,19 @@ class _OpenAIReasoningRecordingProvider(_RecordingProvider):
         }
 
 
+class _TopPRecordingProvider(_RecordingProvider):
+    @classmethod
+    def params_schema(cls) -> dict[str, object]:
+        return {
+            "type": "object",
+            "properties": {
+                "top_p": {
+                    "type": "number",
+                }
+            },
+        }
+
+
 class _RaisingProvider:
     name = "raising"
 
@@ -405,6 +418,28 @@ async def test_direct_backend_drops_request_params_rejected_by_provider_enum() -
 
     assert frames[-1].WhichOneof("kind") == "done"
     assert provider.calls[0]["extra"] is None
+
+
+@pytest.mark.asyncio
+async def test_direct_backend_drops_params_missing_from_provider_schema() -> None:
+    provider = _TopPRecordingProvider([_Chunk(kind="done", finish_reason="stop")])
+    registry = _StubRegistry(
+        provider,
+        "x",
+        params={"top_p": 0.7, "reasoning_effort": "high"},
+    )
+    backend = DirectProviderBackend(registry)
+    start = agent_pb2.ChatStart(
+        model="x",
+        messages=[common_pb2.Message(role=common_pb2.USER, content="hi")],
+        provider_config_json=b'{"params":{"stop_sequences":["\\n\\n"]}}',
+    )
+
+    _tx, rx = await backend.start(start)
+    frames = [f async for f in rx]
+
+    assert frames[-1].WhichOneof("kind") == "done"
+    assert provider.calls[0]["extra"] == {"top_p": 0.7}
 
 
 @pytest.mark.asyncio

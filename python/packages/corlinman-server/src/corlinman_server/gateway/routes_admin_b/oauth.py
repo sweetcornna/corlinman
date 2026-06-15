@@ -37,6 +37,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import structlog
@@ -486,10 +487,17 @@ def _stored_anthropic_token(data_dir: Any) -> str | None:
     return cred.access_token if cred is not None else None
 
 
-def _stored_codex_token() -> str | None:
+def _codex_auth_path_for_state(state: Any) -> Path:
+    data_dir = getattr(state, "data_dir", None)
+    if data_dir is not None:
+        return Path(data_dir) / ".codex" / "auth.json"
+    return codex_pkce._codex_auth_path()  # noqa: SLF001
+
+
+def _stored_codex_token(path: Path | None = None) -> str | None:
     from corlinman_providers._codex_oauth import load_codex_credential  # noqa: PLC0415
 
-    cred = load_codex_credential()
+    cred = load_codex_credential(path)
     return cred.access_token if cred is not None else None
 
 
@@ -566,7 +574,7 @@ def router() -> APIRouter:
         return StatusResponse(
             providers=[
                 _anthropic_status_row(state),
-                _codex_status_row(),
+                _codex_status_row(state),
                 _gemini_status_row(),
                 _xai_status_row(state),
             ]
@@ -775,18 +783,19 @@ def router() -> APIRouter:
             )
             return _bad("exchange_failed", status=400, message=str(exc))
 
+        state = get_admin_state()
+        auth_path = _codex_auth_path_for_state(state)
         try:
-            codex_pkce.write_auth_json(tokens)
+            codex_pkce.write_auth_json(tokens, path=auth_path)
         except OSError as exc:
             return _bad("save_failed", status=500, message=str(exc))
 
-        state = get_admin_state()
         provision_err = await _provision_oauth_models(
             state,
             provider="codex",
             kind="codex",
             access_token=str(tokens.get("access_token") or ""),
-            current_token=_stored_codex_token,
+            current_token=lambda: _stored_codex_token(auth_path),
         )
         if provision_err is not None:
             return provision_err
@@ -802,7 +811,8 @@ def router() -> APIRouter:
     async def codex_refresh() -> RefreshResponse | JSONResponse:
         # Reach into the on-disk auth.json directly — the codex format
         # is what we just wrote in codex_pkce.write_auth_json().
-        path = codex_pkce._codex_auth_path()  # noqa: SLF001
+        state = get_admin_state()
+        path = _codex_auth_path_for_state(state)
         if not path.is_file():
             return _bad("no_credential", status=404)
         try:
@@ -817,7 +827,7 @@ def router() -> APIRouter:
         except codex_pkce.CodexOAuthError as exc:
             return _bad("refresh_failed", status=502, message=str(exc))
         try:
-            codex_pkce.write_auth_json(refreshed)
+            codex_pkce.write_auth_json(refreshed, path=path)
         except OSError as exc:
             return _bad("save_failed", status=500, message=str(exc))
         return RefreshResponse(
@@ -833,7 +843,11 @@ def router() -> APIRouter:
         # and a config-write failure leaves the credential in place rather than
         # stranding an enabled slot pointed at a deleted token.
         cleanup_err = await _cleanup_oauth_provider_config(
-            state, provider="codex", on_success=codex_pkce.delete_auth_json
+            state,
+            provider="codex",
+            on_success=lambda: codex_pkce.delete_auth_json(
+                path=_codex_auth_path_for_state(state)
+            ),
         )
         if cleanup_err is not None:
             return cleanup_err
