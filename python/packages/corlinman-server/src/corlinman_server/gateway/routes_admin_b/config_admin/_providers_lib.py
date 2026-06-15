@@ -1031,9 +1031,9 @@ async def _query_provider_models(
                     method in methods for method in ("generateContent", "streamGenerateContent")
                 ):
                     continue
-                name = item.get("name")
-                if isinstance(name, str) and name.startswith("models/"):
-                    model_ids.append(name.removeprefix("models/"))
+                model_name = item.get("name")
+                if isinstance(model_name, str) and model_name.startswith("models/"):
+                    model_ids.append(model_name.removeprefix("models/"))
         elif kind == "anthropic":
             model_ids = [
                 str(item["id"])
