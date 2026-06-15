@@ -14,6 +14,7 @@ import { ConversationSearch } from "@/components/chat/conversation-search";
 import { MessageList } from "@/components/chat/message-list";
 import { AgentPicker } from "@/components/playground/agent-picker";
 import { useChatStream } from "@/lib/chat/use-chat-stream";
+import { modelSupportsReasoningEffort } from "@/lib/chat/reasoning-effort";
 import type { ReasoningEffort } from "@/lib/api/chat";
 import {
   deriveArtifactKind,
@@ -131,10 +132,13 @@ export function ChatArea({
 }: ChatAreaProps) {
   const router = useRouter();
   const { t } = useTranslation();
+  const effectiveReasoningEffort = modelSupportsReasoningEffort(model)
+    ? reasoningEffort
+    : undefined;
   const chat = useChatStream({
     sessionKey,
     model,
-    reasoningEffort,
+    reasoningEffort: effectiveReasoningEffort,
     agentId,
     personaId,
   });

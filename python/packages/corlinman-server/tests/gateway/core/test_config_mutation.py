@@ -70,12 +70,16 @@ async def test_publish_config_mutation_treats_py_config_write_as_best_effort(
 @pytest.mark.asyncio
 async def test_publish_config_mutation_refreshes_provider_registry(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from corlinman_providers.registry import ProviderRegistry
     from corlinman_server.gateway.providers import (
         RegistryModelSource,
         build_registry,
     )
+    from corlinman_server.gateway.services import ChatService, DirectProviderBackend
+
+    monkeypatch.delenv("CORLINMAN_CHAT_BACKEND", raising=False)
 
     original_cfg: dict[str, Any] = {"providers": {}}
     next_cfg: dict[str, Any] = {
@@ -94,18 +98,27 @@ async def test_publish_config_mutation_refreshes_provider_registry(
     def swap_fn(next_config: dict[str, Any]) -> None:
         state.config = next_config
 
+    def refresh_chat() -> None:
+        state.chat = ChatService(
+            DirectProviderBackend(state.provider_registry, models_config={})
+        )
+
+    old_registry = build_registry(original_cfg, data_dir=tmp_path)
     state = SimpleNamespace(
         config=original_cfg,
         data_dir=tmp_path,
-        extras={"config_swap_fn": swap_fn},
-        provider_registry=build_registry(original_cfg, data_dir=tmp_path),
+        extras={"config_swap_fn": swap_fn, "chat_refresh_fn": refresh_chat},
+        provider_registry=old_registry,
+        chat=ChatService(DirectProviderBackend(old_registry, models_config={})),
     )
-    old_registry = state.provider_registry
+    old_chat = state.chat
 
     await publish_config_mutation(state, next_cfg)
 
     assert isinstance(state.provider_registry, ProviderRegistry)
     assert state.provider_registry is not old_registry
+    assert state.chat is not old_chat
+    assert state.chat._backend._registry is state.provider_registry
     assert {spec.name for spec in state.provider_registry.list_specs()} == {"mock"}
     source = state.extras.get("models_source")
     assert isinstance(source, RegistryModelSource)

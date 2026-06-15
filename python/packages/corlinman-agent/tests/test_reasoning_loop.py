@@ -63,6 +63,18 @@ class _RecordingProvider:
         yield ProviderChunk(kind="done", finish_reason="stop")
 
 
+class _SchemaRecordingProvider(_RecordingProvider):
+    @classmethod
+    def params_schema(cls) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "top_p": {"type": "number"},
+            },
+        }
+
+
 class _MultiRoundProvider:
     """Yields a different chunk list per call — used to test tool-result feedback."""
 
@@ -177,6 +189,26 @@ async def test_openai_compatible_provider_named_codex_drops_codex_only_extra() -
                 "persona_id": "grantley",
                 "prompt_cache_key": "session-1",
                 "top_p": 0.8,
+            },
+        ),
+    )
+
+    assert prov.calls
+    assert prov.calls[0]["extra"] == {"top_p": 0.8}
+
+
+@pytest.mark.asyncio
+async def test_undeclared_provider_extra_is_not_forwarded() -> None:
+    prov = _SchemaRecordingProvider()
+
+    await _collect(
+        ReasoningLoop(prov),
+        ChatStart(
+            model="x",
+            messages=[{"role": "user", "content": "hi"}],
+            extra={
+                "top_p": 0.8,
+                "reasoning_effort": "high",
             },
         ),
     )

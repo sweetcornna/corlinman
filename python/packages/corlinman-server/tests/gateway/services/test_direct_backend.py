@@ -69,6 +69,20 @@ class _RecordingProvider(_ScriptedProvider):
             yield c
 
 
+class _ReasoningRecordingProvider(_RecordingProvider):
+    @classmethod
+    def params_schema(cls) -> dict[str, object]:
+        return {
+            "type": "object",
+            "properties": {
+                "reasoning_effort": {
+                    "type": "string",
+                    "enum": ["minimal", "low", "medium", "high", "xhigh"],
+                }
+            },
+        }
+
+
 class _RaisingProvider:
     name = "raising"
 
@@ -320,7 +334,7 @@ async def test_chat_service_forwards_provider_hint_to_direct_backend() -> None:
 
 @pytest.mark.asyncio
 async def test_direct_backend_merges_per_request_provider_params() -> None:
-    provider = _RecordingProvider([_Chunk(kind="done", finish_reason="stop")])
+    provider = _ReasoningRecordingProvider([_Chunk(kind="done", finish_reason="stop")])
     registry = _StubRegistry(
         provider,
         "x",
@@ -339,6 +353,24 @@ async def test_direct_backend_merges_per_request_provider_params() -> None:
     assert frames[-1].WhichOneof("kind") == "done"
     assert provider.calls[0]["extra"] == {"reasoning_effort": "high"}
     assert provider.calls[0]["temperature"] == 0.2
+
+
+@pytest.mark.asyncio
+async def test_direct_backend_drops_request_params_unsupported_by_provider() -> None:
+    provider = _RecordingProvider([_Chunk(kind="done", finish_reason="stop")])
+    registry = _StubRegistry(provider, "x")
+    backend = DirectProviderBackend(registry)
+    start = agent_pb2.ChatStart(
+        model="x",
+        messages=[common_pb2.Message(role=common_pb2.USER, content="hi")],
+        provider_config_json=b'{"params":{"reasoning_effort":"high"}}',
+    )
+
+    _tx, rx = await backend.start(start)
+    frames = [f async for f in rx]
+
+    assert frames[-1].WhichOneof("kind") == "done"
+    assert provider.calls[0]["extra"] is None
 
 
 @pytest.mark.asyncio

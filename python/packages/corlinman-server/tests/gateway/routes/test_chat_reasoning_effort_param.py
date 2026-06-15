@@ -53,3 +53,43 @@ def test_chat_request_reasoning_effort_becomes_provider_param() -> None:
     assert resp.status_code == 200, resp.text
     assert service.seen is not None
     assert service.seen.provider_params == {"reasoning_effort": "high"}
+
+
+def test_chat_request_preserves_openai_minimal_reasoning_effort() -> None:
+    service = _RecordingService()
+    app = FastAPI()
+    app.include_router(router(ChatState(service=service)))
+
+    resp = TestClient(app).post(
+        "/v1/chat/completions",
+        json={
+            "model": "gpt-5.5",
+            "messages": [{"role": "user", "content": "hi"}],
+            "reasoning_effort": "minimal",
+            "stream": False,
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert service.seen is not None
+    assert service.seen.provider_params == {"reasoning_effort": "minimal"}
+
+
+def test_chat_request_drops_unknown_reasoning_effort() -> None:
+    service = _RecordingService()
+    app = FastAPI()
+    app.include_router(router(ChatState(service=service)))
+
+    resp = TestClient(app).post(
+        "/v1/chat/completions",
+        json={
+            "model": "gpt-5.5",
+            "messages": [{"role": "user", "content": "hi"}],
+            "reasoning_effort": "turbo",
+            "stream": False,
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert service.seen is not None
+    assert service.seen.provider_params == {}

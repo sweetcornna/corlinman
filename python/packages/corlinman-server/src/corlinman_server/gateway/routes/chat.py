@@ -413,7 +413,7 @@ def _decode_b64_payload(data: str) -> bytes | None:
 
 
 _REASONING_EFFORTS: frozenset[str] = frozenset(
-    {"low", "medium", "high", "xhigh"}
+    {"minimal", "low", "medium", "high", "xhigh"}
 )
 
 

@@ -42,6 +42,7 @@ def _refresh_provider_runtime(state: Any, cfg: dict[str, Any]) -> None:
 
     try:
         registry = build_registry(cfg, data_dir=getattr(state, "data_dir", None))
+        state.config = cfg
         state.provider_registry = registry
         extras = getattr(state, "extras", None)
         if isinstance(extras, dict):
@@ -49,6 +50,33 @@ def _refresh_provider_runtime(state: Any, cfg: dict[str, Any]) -> None:
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "config_mutation.provider_refresh_failed",
+            extra={"error": str(exc)},
+        )
+
+
+def _refresh_chat_runtime(state: Any) -> None:
+    """Ask the owning runtime to rebuild chat after provider config changes."""
+    extras = getattr(state, "extras", None)
+    if not isinstance(extras, dict):
+        return
+    refresh = extras.get("chat_refresh_fn")
+    if refresh is None:
+        return
+    try:
+        res = refresh()
+        if inspect.isawaitable(res):
+            logger.warning(
+                "config_mutation.chat_refresh_async_ignored",
+                extra={
+                    "detail": (
+                        "chat_refresh_fn must be synchronous because "
+                        "provider refresh runs in a sync hot-reload seam"
+                    )
+                },
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "config_mutation.chat_refresh_failed",
             extra={"error": str(exc)},
         )
 
@@ -108,6 +136,7 @@ async def publish_config_mutation(
             await res
     if getattr(state, "provider_registry", None) is before_registry:
         _refresh_provider_runtime(state, cfg)
+    _refresh_chat_runtime(state)
 
     py_config_path = getattr(state, "py_config_path", None)
     if py_config_path is None or py_config_writer is None:

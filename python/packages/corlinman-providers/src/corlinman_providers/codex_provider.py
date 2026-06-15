@@ -111,6 +111,18 @@ _USAGE_INT_KEYS = (
     "reasoning_tokens",
 )
 _CODEX_REASONING_EFFORTS = frozenset({"low", "medium", "high", "xhigh"})
+_CODEX_PARAMS_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "reasoning_effort": {
+            "type": "string",
+            "enum": sorted(_CODEX_REASONING_EFFORTS),
+            "description": "Codex Responses-API reasoning effort hint.",
+        },
+    },
+}
 
 
 def _reasoning_effort_from_extra(extra: dict[str, Any] | None) -> str:
@@ -345,6 +357,10 @@ class CodexProvider:
     def supports(cls, model: str) -> bool:
         """Claim OpenAI / Codex model families."""
         return model.startswith(("gpt-5", "gpt-4", "o1-", "o3-", "o4-", "codex-", "chatgpt-"))
+
+    @classmethod
+    def params_schema(cls) -> dict[str, Any]:
+        return _CODEX_PARAMS_SCHEMA
 
     def _make_client(self) -> Any:
         from openai import AsyncOpenAI

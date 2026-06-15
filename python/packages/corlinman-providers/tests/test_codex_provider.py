@@ -670,6 +670,18 @@ async def test_chat_stream_uses_extra_reasoning_effort() -> None:
     assert chunks[-1].kind == "done"
 
 
+def test_codex_params_schema_declares_reasoning_effort() -> None:
+    schema = CodexProvider.params_schema()
+
+    assert "reasoning_effort" in schema["properties"]
+    assert set(schema["properties"]["reasoning_effort"]["enum"]) == {
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+    }
+
+
 @pytest.mark.asyncio
 async def test_chat_stream_handles_stream_error() -> None:
     """Exceptions during streaming result in a done/error chunk, not a crash."""
@@ -693,7 +705,7 @@ async def test_chat_stream_handles_stream_error() -> None:
 
         async def _gen(self):
             raise RuntimeError("network error")
-            yield  # noqa: unreachable — makes this a generator
+            yield  # makes this an async generator
 
     class _FakeResponses:
         def stream(self, **_kwargs):

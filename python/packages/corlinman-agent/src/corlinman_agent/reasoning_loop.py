@@ -106,31 +106,36 @@ def _provider_kind_value(provider: Any) -> str:
 _UNDECLARED_EXTRA_WARNED: set[tuple[str, str]] = set()
 
 
-def _warn_undeclared_extra_keys(provider: Any, extra: dict[str, Any]) -> None:
-    """Warn (once per provider+key-set) about extra keys the provider
-    does not declare in its ``params_schema``.
+def _declared_provider_param_keys(provider: Any) -> set[str] | None:
+    schema_fn = getattr(provider, "params_schema", None)
+    if not callable(schema_fn):
+        return None
+    try:
+        schema = schema_fn()
+    except Exception:  # noqa: BLE001 — advisory probe must not break chat
+        return None
+    if not isinstance(schema, dict):
+        return None
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return None
+    return set(properties)
+
+
+def _warn_undeclared_extra_keys(
+    provider: Any,
+    undeclared: list[str],
+) -> None:
+    """Warn once per provider+key-set about dropped undeclared extra keys.
 
     Alias/provider params flow into the vendor SDK call body verbatim
     (``kwargs.update(extra)``), so a typo'd knob (``temprature``) or a
     knob from the wrong vendor family fails silently or 400s downstream.
     The provider adapters publish their accepted surface as a JSON
-    Schema via the ``params_schema`` classmethod; adapters without one
-    (e.g. Codex) are skipped — no schema, no basis for a warning.
-    Best-effort by design: a malformed schema must never break a turn.
+    Schema via the ``params_schema`` classmethod; adapters without one are
+    skipped — no schema, no basis for filtering. Best-effort by design: a
+    malformed schema must never break a turn.
     """
-    schema_fn = getattr(provider, "params_schema", None)
-    if not callable(schema_fn):
-        return
-    try:
-        schema = schema_fn()
-    except Exception:  # noqa: BLE001 — advisory probe must not break chat
-        return
-    if not isinstance(schema, dict):
-        return
-    properties = schema.get("properties")
-    if not isinstance(properties, dict):
-        return
-    undeclared = sorted(key for key in extra if key not in properties)
     if not undeclared:
         return
     provider_name = str(getattr(provider, "name", "") or "unknown")
@@ -163,7 +168,14 @@ def _provider_chat_extra(
 
     filtered = {key: value for key, value in extra.items() if key not in blocked}
     if filtered:
-        _warn_undeclared_extra_keys(provider, filtered)
+        declared = _declared_provider_param_keys(provider)
+        if declared is not None:
+            undeclared = sorted(key for key in filtered if key not in declared)
+            if undeclared:
+                _warn_undeclared_extra_keys(provider, undeclared)
+                filtered = {
+                    key: value for key, value in filtered.items() if key in declared
+                }
     return filtered or None
 
 

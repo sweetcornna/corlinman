@@ -77,6 +77,31 @@ __all__ = [
 log = logging.getLogger(__name__)
 
 
+def _provider_supports_param(provider: Any, key: str) -> bool:
+    schema_fn = getattr(provider, "params_schema", None)
+    if not callable(schema_fn):
+        return False
+    try:
+        schema = schema_fn()
+    except Exception:  # noqa: BLE001
+        return False
+    if not isinstance(schema, dict):
+        return False
+    properties = schema.get("properties")
+    return isinstance(properties, dict) and key in properties
+
+
+def _filter_request_params_for_provider(
+    provider: Any,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in params.items()
+        if _provider_supports_param(provider, key)
+    }
+
+
 # ─── Backend ──────────────────────────────────────────────────────────
 
 
@@ -160,6 +185,11 @@ class DirectProviderBackend:
                     provider_hint=_provider_hint_from_start(start),
                 )
                 request_params = _provider_params_from_start(start)
+                if request_params:
+                    request_params = _filter_request_params_for_provider(
+                        provider,
+                        request_params,
+                    )
                 if request_params:
                     params = {**params, **request_params}
             except Exception as exc:  # noqa: BLE001 — surface as error frame
