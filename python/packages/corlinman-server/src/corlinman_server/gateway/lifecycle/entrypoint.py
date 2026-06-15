@@ -89,6 +89,7 @@ from corlinman_server.gateway.lifecycle.app_factory import (
     _install_origin_learning_middleware,
     _install_security_middleware,
     _make_channels_writer,  # noqa: F401 — re-export for test importers
+    _make_chat_refresh_fn,
     _make_config_swap_fn,
     _mount_routes,
     _mount_ui_static,
@@ -1174,6 +1175,10 @@ def build_app(
                 with suppress(AttributeError, TypeError):
                     admin_b_state.extras["config_swap_fn"] = _make_config_swap_fn(
                         app, state
+                    )
+                with suppress(AttributeError, TypeError):
+                    admin_b_state.extras["chat_refresh_fn"] = _make_chat_refresh_fn(
+                        state
                     )
                 logger.debug(
                     "gateway.config_reload.swap_fn_wired",

@@ -36,6 +36,7 @@ _ADMIN_EXTRAS_KEYS: frozenset[str] = frozenset(
         "app_state",
         "models_source",
         "config_swap_fn",
+        "chat_refresh_fn",
         "scheduler_runtime_jobs",
         "scheduler_runtime_jobs_loaded",
         "scheduler_job_metadata",

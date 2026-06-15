@@ -284,8 +284,32 @@ async def serve_agent(
         hook_runner = _build_hook_runner()
     except Exception as exc:  # noqa: BLE001 — no hooks degrades fine
         log.warning("gateway.grpc.agent.hook_runner_failed", error=str(exc))
+    provider_resolver: Any | None = None
+    aliases: dict[str, Any] = {}
+    if os.environ.get("CORLINMAN_TEST_MOCK_PROVIDER") is None:
+        try:
+            from corlinman_server.gateway.lifecycle.py_config import (
+                default_py_config_path,
+            )
+            from corlinman_server.main import _ReloadingProviderResolver
+
+            py_config_path = os.environ.get("CORLINMAN_PY_CONFIG") or str(
+                default_py_config_path()
+            )
+            resolver = _ReloadingProviderResolver(py_config_path)
+            provider_resolver = resolver
+            aliases = resolver.aliases
+            if subagent_config is None:
+                subagent_config = resolver.subagent_config
+        except Exception as exc:  # noqa: BLE001 — legacy resolver still works
+            log.warning(
+                "gateway.grpc.agent.provider_resolver_failed",
+                error=str(exc),
+            )
     agent_pb2_grpc.add_AgentServicer_to_server(
         CorlinmanAgentServicer(
+            provider_resolver=provider_resolver,
+            aliases=aliases,
             event_emitter=event_emitter,
             hook_runner=hook_runner,
             subagent_dispatcher=subagent_dispatcher,

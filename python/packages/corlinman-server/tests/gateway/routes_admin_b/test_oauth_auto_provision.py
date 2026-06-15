@@ -383,6 +383,44 @@ def test_ordered_unique_model_ids_prefers_newest_unlisted_version() -> None:
     assert out2 == ["gpt-5.5", "gpt-5.6", "gpt-5.4"]
 
 
+@pytest.mark.parametrize(
+    ("kind", "provider", "models", "preference", "expected"),
+    [
+        (
+            "codex",
+            "codex",
+            ["gpt-5.5", "gpt-5.6-mini", "gpt-5.6"],
+            oauth_routes._CODEX_MODEL_PREFERENCE,
+            "gpt-5.6",
+        ),
+        (
+            "anthropic",
+            "anthropic",
+            ["claude-fable-5", "claude-opus-6", "claude-haiku-7"],
+            oauth_routes._ANTHROPIC_MODEL_PREFERENCE,
+            "claude-opus-6",
+        ),
+    ],
+)
+def test_oauth_provisioning_follows_future_flagship_model(
+    kind: str,
+    provider: str,
+    models: list[str],
+    preference: tuple[str, ...],
+    expected: str,
+) -> None:
+    out = oauth_routes._upsert_oauth_provider_and_aliases(
+        {},
+        provider=provider,
+        kind=kind,
+        models=models,
+        preference=preference,
+    )
+
+    assert out["models"]["default"] == expected
+    assert out["models"]["aliases"][expected]["provider"] == provider
+
+
 def test_oauth_provisioning_creates_provider_named_alias_when_model_ids_conflict(
     oauth_state_client: tuple[AdminState, TestClient, Path],
 ) -> None:

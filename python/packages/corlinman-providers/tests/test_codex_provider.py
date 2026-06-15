@@ -164,6 +164,20 @@ class TestCodexProviderBuild:
         prov = CodexProvider.build(spec)
         assert prov._credential.access_token == "at-ok"
 
+    def test_build_uses_data_dir_auth_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        data_dir = tmp_path / "data"
+        codex_dir = data_dir / ".codex"
+        codex_dir.mkdir(parents=True)
+        _write_auth_json(codex_dir, access_token="at-data-dir")
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-codex-home"))
+        spec = ProviderSpec(name="codex", kind=ProviderKind.CODEX)
+
+        prov = CodexProvider.build(spec, data_dir=data_dir)
+
+        assert prov._credential.access_token == "at-data-dir"
+
     def test_provider_not_openai_subclass(self) -> None:
         """CodexProvider must NOT extend OpenAIProvider — it uses a different API."""
         from corlinman_providers.openai_provider import OpenAIProvider
@@ -606,6 +620,70 @@ async def test_chat_stream_emits_token_deltas() -> None:
 
 
 @pytest.mark.asyncio
+async def test_chat_stream_uses_extra_reasoning_effort() -> None:
+    """Per-turn reasoning_effort should override Codex's balanced default."""
+    future_ms = int(time.time() * 1000) + 3_600_000
+    cred = CodexOAuthCredential(
+        access_token="good-token",
+        refresh_token=None,
+        expires_at_ms=future_ms,
+    )
+    prov = CodexProvider(credential=cred)
+
+    from types import SimpleNamespace
+
+    captured: dict[str, Any] = {}
+    events = [SimpleNamespace(type="response.output_text.delta", delta="ok")]
+
+    class _FakeStream:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return False
+
+        def __aiter__(self):
+            return self._gen()
+
+        async def _gen(self):
+            for e in events:
+                yield e
+
+    class _FakeResponses:
+        def stream(self, **kwargs):
+            captured.update(kwargs)
+            return _FakeStream()
+
+    class _FakeClient:
+        responses = _FakeResponses()
+
+    with patch.object(prov, "_make_client", return_value=_FakeClient()):
+        chunks = []
+        async for chunk in prov.chat_stream(
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "hi"}],
+            extra={"reasoning_effort": "high"},
+        ):
+            chunks.append(chunk)
+
+    assert captured["reasoning"]["effort"] == "high"
+    assert chunks[-1].kind == "done"
+
+
+def test_codex_params_schema_declares_reasoning_effort() -> None:
+    schema = CodexProvider.params_schema()
+
+    assert "reasoning_effort" in schema["properties"]
+    assert "prompt_cache_key" in schema["properties"]
+    assert set(schema["properties"]["reasoning_effort"]["enum"]) == {
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+    }
+
+
+@pytest.mark.asyncio
 async def test_chat_stream_handles_stream_error() -> None:
     """Exceptions during streaming result in a done/error chunk, not a crash."""
     future_ms = int(time.time() * 1000) + 3_600_000
@@ -628,7 +706,7 @@ async def test_chat_stream_handles_stream_error() -> None:
 
         async def _gen(self):
             raise RuntimeError("network error")
-            yield  # noqa: unreachable — makes this a generator
+            yield  # makes this an async generator
 
     class _FakeResponses:
         def stream(self, **_kwargs):

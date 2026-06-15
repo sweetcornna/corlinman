@@ -15,6 +15,7 @@ import asyncio
 import os
 from collections.abc import AsyncIterator, Sequence
 from functools import partial
+from pathlib import Path
 from typing import Any, ClassVar
 
 import structlog
@@ -109,6 +110,34 @@ _USAGE_INT_KEYS = (
     "cached_output_tokens",
     "reasoning_tokens",
 )
+_CODEX_REASONING_EFFORTS = frozenset({"low", "medium", "high", "xhigh"})
+_CODEX_PARAMS_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "reasoning_effort": {
+            "type": "string",
+            "enum": sorted(_CODEX_REASONING_EFFORTS),
+            "description": "Codex Responses-API reasoning effort hint.",
+        },
+        "prompt_cache_key": {
+            "type": "string",
+            "description": "Responses prompt-cache key used by the Codex adapter.",
+        },
+    },
+}
+
+
+def _reasoning_effort_from_extra(extra: dict[str, Any] | None) -> str:
+    if not isinstance(extra, dict):
+        return "medium"
+    raw = extra.get("reasoning_effort")
+    if isinstance(raw, str):
+        value = raw.strip().lower()
+        if value in _CODEX_REASONING_EFFORTS:
+            return value
+    return "medium"
 
 
 def _extract_usage(event: Any) -> dict[str, int] | None:
@@ -282,8 +311,14 @@ class CodexProvider:
     #: is not set in config and Codex is auto-detected.
     DEFAULT_MODEL: ClassVar[str] = _DEFAULT_MODEL
 
-    def __init__(self, *, credential: CodexOAuthCredential) -> None:
+    def __init__(
+        self,
+        *,
+        credential: CodexOAuthCredential,
+        credential_path: Path | None = None,
+    ) -> None:
         self._credential = credential
+        self._credential_path = credential_path
         # Single-flight gate for token refresh. Both ``_ensure_fresh``
         # (the proactive JWT-exp path) and ``_attempt_token_recovery``
         # (the reactive 401 ``token_invalidated`` path) acquire this
@@ -297,24 +332,39 @@ class CodexProvider:
         self._refresh_lock = asyncio.Lock()
 
     @classmethod
-    def build(cls, spec: ProviderSpec, **_kwargs: Any) -> CodexProvider:
-        """Load the Codex credential from ``~/.codex/auth.json`` and build.
+    def build(
+        cls,
+        spec: ProviderSpec,
+        *,
+        data_dir: Path | None = None,
+        **_kwargs: Any,
+    ) -> CodexProvider:
+        """Load the Codex credential from the operator data dir and build.
 
         Raises :class:`RuntimeError` when the file is missing or has no
         ``access_token`` — the operator must run ``codex login`` first.
         """
-        cred = load_codex_credential()
+        credential_path = Path(data_dir) / ".codex" / "auth.json" if data_dir else None
+        cred = load_codex_credential(credential_path) if credential_path else None
+        if cred is None:
+            cred = load_codex_credential()
+            if cred is not None:
+                credential_path = None
         if cred is None:
             raise RuntimeError(
-                "Codex provider: ~/.codex/auth.json not found or missing tokens. "
+                "Codex provider: .codex/auth.json not found or missing tokens. "
                 "Run `codex login` to authenticate."
             )
-        return cls(credential=cred)
+        return cls(credential=cred, credential_path=credential_path)
 
     @classmethod
     def supports(cls, model: str) -> bool:
         """Claim OpenAI / Codex model families."""
         return model.startswith(("gpt-5", "gpt-4", "o1-", "o3-", "o4-", "codex-", "chatgpt-"))
+
+    @classmethod
+    def params_schema(cls) -> dict[str, Any]:
+        return _CODEX_PARAMS_SCHEMA
 
     def _make_client(self) -> Any:
         from openai import AsyncOpenAI
@@ -349,6 +399,7 @@ class CodexProvider:
         """
         await self._ensure_fresh()
         client = self._make_client()
+        reasoning_effort = _reasoning_effort_from_extra(extra)
         # Hand ownership of the httpx pool to a try/finally so EVERY exit
         # path — success, early return, mid-stream error, generator
         # ``aclose()`` from a cancelled caller — closes the client. The
@@ -380,7 +431,7 @@ class CodexProvider:
                 "instructions": instructions,
                 "input": _messages_to_responses_input(payload_messages),
                 "store": False,
-                "reasoning": {"effort": "medium", "summary": "auto"},
+                "reasoning": {"effort": reasoning_effort, "summary": "auto"},
                 "include": ["reasoning.encrypted_content"],
             }
             # NOTE: Codex backend rejects temperature and max_output_tokens — omit.
@@ -665,7 +716,7 @@ class CodexProvider:
                     refresh_token=self._credential.refresh_token,
                 )
                 self._credential = refreshed
-                persist_codex_credential(refreshed)
+                persist_codex_credential(refreshed, path=self._credential_path)
                 logger.debug("codex.token_refreshed")
             except CodexOAuthRefreshError as exc:
                 logger.warning("codex.token_refresh_failed", error=str(exc))
@@ -720,7 +771,10 @@ class CodexProvider:
                 logger.warning("codex.token_recovery_failed", error=str(exc))
                 return False
             self._credential = refreshed
-            persisted = persist_codex_credential(refreshed)
+            persisted = persist_codex_credential(
+                refreshed,
+                path=self._credential_path,
+            )
             logger.info("codex.token_recovered", persisted=persisted)
             return True
 

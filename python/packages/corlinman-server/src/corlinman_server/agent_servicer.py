@@ -5068,12 +5068,11 @@ def _to_agent_start(pb_start: agent_pb2.ChatStart) -> AgentChatStart:
         }
         if any(binding_payload.values()):
             extra["binding"] = binding_payload
-    provider_hint = _provider_hint_from_provider_config(
-        getattr(pb_start, "provider_config_json", b"") or b""
-    )
+    provider_config_json = getattr(pb_start, "provider_config_json", b"") or b""
+    provider_hint = _provider_hint_from_provider_config(provider_config_json)
     if provider_hint is not None:
         extra["provider_hint"] = provider_hint
-    return AgentChatStart(
+    start = AgentChatStart(
         model=pb_start.model,
         messages=messages,
         tools=_decode_tools_json(pb_start.tools_json),
@@ -5083,9 +5082,11 @@ def _to_agent_start(pb_start: agent_pb2.ChatStart) -> AgentChatStart:
         attachments=attachments,
         extra=extra,
     )
+    _apply_merged_params(start, _provider_params_from_provider_config(provider_config_json))
+    return start
 
 
-def _provider_hint_from_provider_config(raw: bytes) -> str | None:
+def _provider_config_from_json(raw: bytes) -> dict[str, Any] | None:
     if not raw:
         return None
     try:
@@ -5094,7 +5095,22 @@ def _provider_hint_from_provider_config(raw: bytes) -> str | None:
         return None
     if not isinstance(obj, dict):
         return None
+    return obj
+
+
+def _provider_hint_from_provider_config(raw: bytes) -> str | None:
+    obj = _provider_config_from_json(raw)
+    if obj is None:
+        return None
     return _provider_hint_from_extra(obj)
+
+
+def _provider_params_from_provider_config(raw: bytes) -> dict[str, Any]:
+    obj = _provider_config_from_json(raw)
+    if obj is None:
+        return {}
+    params = obj.get("params")
+    return dict(params) if isinstance(params, Mapping) else {}
 
 
 def _provider_hint_from_extra(extra: Mapping[str, Any] | None) -> str | None:
@@ -5274,7 +5290,7 @@ def _apply_merged_params(start: AgentChatStart, params: Mapping[str, Any]) -> No
             if start.max_tokens is None:
                 start.max_tokens = int(value)
             continue
-        extra[key] = value
+        extra.setdefault(key, value)
     start.extra = extra
 
 

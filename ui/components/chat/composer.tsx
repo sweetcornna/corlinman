@@ -4,6 +4,7 @@ import * as React from "react";
 import { useTranslation } from "react-i18next";
 import {
   Bot,
+  Brain,
   Image as ImageIcon,
   Paperclip,
   Send,
@@ -13,6 +14,7 @@ import {
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import type { ReasoningEffort } from "@/lib/api/chat";
 import type { ChatAttachment } from "@/lib/chat/types";
 import {
   attachmentKindFromMime,
@@ -44,6 +46,9 @@ interface ComposerProps {
    *  to the LLM model pill. */
   imageModelLabel?: string;
   onOpenImageModelPicker?: () => void;
+  reasoningEffort?: ReasoningEffort;
+  onReasoningEffortChange?: (effort: ReasoningEffort) => void;
+  allowXHighReasoningEffort?: boolean;
   extraSlashCommands?: SlashCommand[];
   onSlashClear?: () => void;
   placeholder?: string;
@@ -53,6 +58,15 @@ interface ComposerProps {
 }
 
 const MAX_TEXTAREA_PX = 220;
+const REASONING_EFFORT_OPTIONS: Array<{
+  value: ReasoningEffort;
+  labelKey: string;
+}> = [
+  { value: "low", labelKey: "chat.reasoningEffortLow" },
+  { value: "medium", labelKey: "chat.reasoningEffortMedium" },
+  { value: "high", labelKey: "chat.reasoningEffortHigh" },
+  { value: "xhigh", labelKey: "chat.reasoningEffortXHigh" },
+];
 
 export function Composer({
   isStreaming,
@@ -64,6 +78,9 @@ export function Composer({
   onOpenPersonaPicker,
   imageModelLabel,
   onOpenImageModelPicker,
+  reasoningEffort = "medium",
+  onReasoningEffortChange,
+  allowXHighReasoningEffort = false,
   extraSlashCommands,
   onSlashClear,
   placeholder,
@@ -81,6 +98,17 @@ export function Composer({
   const fileRef = React.useRef<HTMLInputElement | null>(null);
   const emojiWrapRef = React.useRef<HTMLDivElement | null>(null);
   const emojiBtnRef = React.useRef<HTMLButtonElement | null>(null);
+  const reasoningEffortOptions = React.useMemo(
+    () =>
+      allowXHighReasoningEffort
+        ? REASONING_EFFORT_OPTIONS
+        : REASONING_EFFORT_OPTIONS.filter((option) => option.value !== "xhigh"),
+    [allowXHighReasoningEffort],
+  );
+  const activeReasoningEffort =
+    !allowXHighReasoningEffort && reasoningEffort === "xhigh"
+      ? "high"
+      : reasoningEffort;
 
   React.useEffect(() => {
     const el = taRef.current;
@@ -590,7 +618,7 @@ export function Composer({
 
         <div className="flex items-center justify-between gap-2 px-3 pb-2.5 pt-1">
           {/* Left cluster — attach + emoji. */}
-          <div className="flex items-center gap-0.5">
+          <div className="flex min-w-0 items-center gap-0.5">
             <button
               type="button"
               onClick={() => fileRef.current?.click()}
@@ -628,6 +656,42 @@ export function Composer({
                 />
               ) : null}
             </div>
+            {onReasoningEffortChange ? (
+              <div
+                role="radiogroup"
+                aria-label={t("chat.reasoningEffortAriaLabel")}
+                className="ml-1 flex h-7 shrink-0 items-center overflow-hidden rounded-full border border-sg-border bg-sg-inset"
+                data-testid="composer-reasoning"
+              >
+                <span className="hidden h-full items-center gap-1 border-r border-sg-border px-1.5 text-[10px] font-medium text-sg-ink-3 sm:inline-flex">
+                  <Brain className="h-3 w-3" aria-hidden="true" />
+                  {t("chat.reasoningEffortLabel")}
+                </span>
+                {reasoningEffortOptions.map((option) => {
+                  const selected = option.value === activeReasoningEffort;
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      role="radio"
+                      aria-checked={selected}
+                      aria-label={t(option.labelKey)}
+                      title={t(option.labelKey)}
+                      onClick={() => onReasoningEffortChange(option.value)}
+                      className={cn(
+                        "h-full min-w-[1.75rem] px-1.5 text-[10px] font-medium transition-colors",
+                        selected
+                          ? "bg-sg-accent text-white"
+                          : "text-sg-ink-3 hover:bg-sg-inset-hover hover:text-sg-ink",
+                      )}
+                      data-testid={`composer-reasoning-${option.value}`}
+                    >
+                      {t(option.labelKey)}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
           </div>
 
           {/* Right cluster — model pills + send/stop. */}

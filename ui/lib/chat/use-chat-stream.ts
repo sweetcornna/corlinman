@@ -25,6 +25,7 @@ import {
   type ChatCompletionMessage,
   type ChatCompletionRequest,
   type ChatCompletionToolDef,
+  type ReasoningEffort,
 } from "@/lib/api/chat";
 import { fetchTurnEvents, listSessionTurns } from "@/lib/api/sessions";
 import { buildMessageContent } from "@/lib/chat/content-parts";
@@ -52,6 +53,8 @@ interface UseChatStreamArgs {
   systemPrompt?: string;
   /** Tools enabled this turn (forwarded to /v1/chat/completions). */
   tools?: ChatCompletionToolDef[];
+  /** Provider reasoning budget for models that expose one. */
+  reasoningEffort?: ReasoningEffort;
   /** Persona / agent id to bind this conversation to. Goes in metadata. */
   agentId?: string;
   personaId?: string;
@@ -562,6 +565,9 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
             ...(args.personaId ? { persona_id: args.personaId } : {}),
           },
         }),
+        ...(args.reasoningEffort
+          ? { reasoning_effort: args.reasoningEffort }
+          : {}),
         ...(args.tools ? { tools: args.tools } : {}),
       };
 

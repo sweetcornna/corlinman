@@ -84,6 +84,11 @@ vi.mock("@/lib/api", async () => {
   return {
     ...actual,
     fetchModels: () => fetchModelsMock(),
+    fetchModelsV2: vi.fn(async () => ({
+      default: "",
+      aliases: [],
+      providers: [],
+    })),
     fetchProviders: () => fetchProvidersMock(),
     listAgents: vi.fn(async () => []),
     listAgentBindings: vi.fn(async () => ({ agents: [] })),
@@ -206,6 +211,35 @@ describe("ChatPage model picker wiring", () => {
     await waitFor(() => {
       expect(screen.getByTestId("chat-model-picker")).toBeInTheDocument();
     });
+  });
+
+  it("enables max reasoning for a Codex-provisioned GPT alias", async () => {
+    fetchModelsMock.mockResolvedValueOnce({
+      default: "gpt-5.5",
+      aliases: [
+        {
+          name: "gpt-5.5",
+          provider: "codex",
+          model: "gpt-5.5",
+          params: {},
+          effective_params_schema: {},
+        },
+      ],
+      providers: [],
+    } as unknown as ModelsResponse);
+    try {
+      localStorage.setItem("corlinman:chat:reasoning-effort", "xhigh");
+    } catch {
+      /* ignore */
+    }
+
+    render(
+      <Harness>
+        <ChatPage />
+      </Harness>,
+    );
+
+    expect(await screen.findByTestId("composer-reasoning-xhigh")).toBeInTheDocument();
   });
 
   it("closes the picker again via the close control", async () => {

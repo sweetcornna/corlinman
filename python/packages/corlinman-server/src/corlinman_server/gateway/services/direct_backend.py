@@ -77,6 +77,58 @@ __all__ = [
 log = logging.getLogger(__name__)
 
 
+def _provider_param_properties(provider: Any) -> dict[str, Any] | None:
+    schema_fn = getattr(provider, "params_schema", None)
+    if not callable(schema_fn):
+        return None
+    try:
+        schema = schema_fn()
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(schema, dict):
+        return None
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return None
+    return properties
+
+
+def _provider_param_property(provider: Any, key: str) -> dict[str, Any] | None:
+    properties = _provider_param_properties(provider)
+    if properties is None:
+        return None
+    prop = properties.get(key)
+    return prop if isinstance(prop, dict) else {}
+
+
+def _provider_accepts_param(provider: Any, key: str, value: Any) -> bool:
+    prop = _provider_param_property(provider, key)
+    if prop is None:
+        return False
+    enum = prop.get("enum")
+    return not isinstance(enum, list) or value in enum
+
+
+def _filter_request_params_for_provider(
+    provider: Any,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in params.items()
+        if _provider_accepts_param(provider, key, value)
+    }
+
+
+def _filter_configured_extra_for_provider(
+    provider: Any,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    if _provider_param_properties(provider) is None:
+        return dict(params)
+    return _filter_request_params_for_provider(provider, params)
+
+
 # ─── Backend ──────────────────────────────────────────────────────────
 
 
@@ -159,6 +211,14 @@ class DirectProviderBackend:
                     start.model,
                     provider_hint=_provider_hint_from_start(start),
                 )
+                request_params = _provider_params_from_start(start)
+                if request_params:
+                    request_params = _filter_request_params_for_provider(
+                        provider,
+                        request_params,
+                    )
+                if request_params:
+                    params = {**params, **request_params}
             except Exception as exc:  # noqa: BLE001 — surface as error frame
                 log.info(
                     "direct_backend.resolve_failed model=%s err=%s",
@@ -170,6 +230,9 @@ class DirectProviderBackend:
 
             messages = _messages_from_proto(start.messages)
             temperature, max_tokens = _sampling_from_proto(start, params)
+            extra = _extra_params(params)
+            if extra:
+                extra = _filter_configured_extra_for_provider(provider, extra) or None
 
             stream = provider.chat_stream(
                 model=upstream_model,
@@ -177,7 +240,7 @@ class DirectProviderBackend:
                 tools=None,
                 temperature=temperature,
                 max_tokens=max_tokens,
-                extra=_extra_params(params),
+                extra=extra,
             )
 
             stream_task = asyncio.ensure_future(
@@ -380,6 +443,24 @@ class DirectProviderBackend:
 
 
 def _provider_hint_from_start(start: agent_pb2.ChatStart) -> str | None:
+    obj = _provider_config_from_start(start)
+    if obj is None:
+        return None
+    hint = obj.get("provider_hint")
+    if isinstance(hint, str) and hint.strip():
+        return hint.strip()
+    return None
+
+
+def _provider_params_from_start(start: agent_pb2.ChatStart) -> dict[str, Any]:
+    obj = _provider_config_from_start(start)
+    if obj is None:
+        return {}
+    params = obj.get("params")
+    return dict(params) if isinstance(params, dict) else {}
+
+
+def _provider_config_from_start(start: agent_pb2.ChatStart) -> dict[str, Any] | None:
     raw = getattr(start, "provider_config_json", b"") or b""
     if not raw:
         return None
@@ -389,10 +470,7 @@ def _provider_hint_from_start(start: agent_pb2.ChatStart) -> str | None:
         return None
     if not isinstance(obj, dict):
         return None
-    hint = obj.get("provider_hint")
-    if isinstance(hint, str) and hint.strip():
-        return hint.strip()
-    return None
+    return obj
 
 
 def _alias_entries(models_config: dict[str, Any]) -> dict[str, Any]:

@@ -370,6 +370,34 @@ def _make_config_swap_fn(app: Any, state: Any) -> Any:
     return _config_swap_fn
 
 
+def _make_chat_refresh_fn(state: Any) -> Any:
+    """Build the callback config mutations use to refresh ``state.chat``.
+
+    ``gateway.core.config_mutation`` is a neutral leaf and cannot import the
+    service layer directly. The lifecycle owns those runtime handles, so it
+    provides this narrow callback instead.
+    """
+
+    def _chat_refresh_fn() -> None:
+        try:
+            from corlinman_server.gateway.services.grpc_backend import (
+                build_chat_service,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("gateway.chat_refresh.import_failed", error=str(exc))
+            return
+        try:
+            service = build_chat_service(state)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("gateway.chat_refresh.build_failed", error=str(exc))
+            return
+        if service is not None:
+            state.chat = service
+            logger.info("gateway.chat_refresh.applied")
+
+    return _chat_refresh_fn
+
+
 def _build_agent_registry_stack(
     data_dir: Path | None,
 ) -> tuple[Any | None, Any | None]:

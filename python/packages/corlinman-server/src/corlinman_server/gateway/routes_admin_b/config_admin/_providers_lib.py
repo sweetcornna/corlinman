@@ -499,6 +499,7 @@ _OPENAI_COMPATIBLE_KINDS: frozenset[str] = frozenset(
         "deepseek",
     }
 )
+_NATIVE_MODEL_PROBE_KINDS: frozenset[str] = frozenset({"anthropic", "google"})
 
 _OPENAI_COMPATIBLE_DEFAULT_BASE_URLS: dict[str, str] = {
     "mistral": MistralProvider.DEFAULT_BASE_URL,
@@ -514,6 +515,49 @@ _OPENAI_COMPATIBLE_DEFAULT_BASE_URLS: dict[str, str] = {
 
 def _default_base_url_for_kind(kind: str) -> str | None:
     return _OPENAI_COMPATIBLE_DEFAULT_BASE_URLS.get(_normalize_kind(kind))
+
+
+def _codex_auth_path_for_data_dir(data_dir: Any | None) -> Any | None:
+    if data_dir is None:
+        return None
+    try:
+        from pathlib import Path
+
+        return Path(data_dir) / ".codex" / "auth.json"
+    except TypeError:
+        return None
+
+
+async def _refresh_codex_probe_credential(
+    cred: Any,
+    *,
+    credential_path: Any | None = None,
+) -> Any | None:
+    """Refresh a Codex OAuth credential for admin model discovery."""
+    refresh_token = getattr(cred, "refresh_token", None)
+    if not refresh_token:
+        return None
+    try:
+        from corlinman_providers._codex_oauth import (  # noqa: PLC0415
+            persist_codex_credential,
+            refresh_codex_token,
+        )
+
+        refreshed = await refresh_codex_token(refresh_token=refresh_token)
+        persist_codex_credential(refreshed, path=credential_path)
+        return refreshed
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("gateway.providers.codex_probe_refresh_failed", error=str(exc))
+        return None
+
+
+def _codex_models_headers(access_token: str) -> dict[str, str]:
+    from corlinman_providers._codex_oauth import codex_cloudflare_headers  # noqa: PLC0415
+
+    return {
+        "Authorization": f"Bearer {access_token}",
+        **codex_cloudflare_headers(access_token),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -618,6 +662,9 @@ def _assert_safe_probe_host(base_url: str) -> None:
 # hardcoded data; the wire shape allows the field to be absent).
 _HARDCODED_MODELS: dict[str, list[dict[str, Any]]] = {
     "anthropic": [
+        {"id": "claude-fable-5", "display_name": "Claude Fable 5"},
+        {"id": "claude-opus-4-8", "display_name": "Claude Opus 4.8"},
+        {"id": "claude-sonnet-4-6", "display_name": "Claude Sonnet 4.6"},
         {"id": "claude-opus-4-5", "display_name": "Claude Opus 4.5"},
         {"id": "claude-sonnet-4-5", "display_name": "Claude Sonnet 4.5"},
         {"id": "claude-haiku-4-5", "display_name": "Claude Haiku 4.5"},
@@ -626,6 +673,8 @@ _HARDCODED_MODELS: dict[str, list[dict[str, Any]]] = {
         {"id": "claude-3-5-haiku-latest", "display_name": "Claude 3.5 Haiku"},
     ],
     "google": [
+        {"id": "gemini-3.5-flash", "display_name": "Gemini 3.5 Flash"},
+        {"id": "gemini-3.1-pro-preview", "display_name": "Gemini 3.1 Pro Preview"},
         {"id": "gemini-2.5-pro", "display_name": "Gemini 2.5 Pro"},
         {"id": "gemini-2.5-flash", "display_name": "Gemini 2.5 Flash"},
         {"id": "gemini-2.0-flash", "display_name": "Gemini 2.0 Flash"},
@@ -735,11 +784,16 @@ def _is_retryable_models_error(error: str) -> bool:
     )
 
 
-async def _query_provider_models_with_retry(name: str, cfg: dict[str, Any]) -> dict[str, Any]:
+async def _query_provider_models_with_retry(
+    name: str,
+    cfg: dict[str, Any],
+    *,
+    data_dir: Any | None = None,
+) -> dict[str, Any]:
     """Probe models with bounded retries for transient upstream failures."""
     last_result: dict[str, Any] = {"ok": False, "models": [], "latency_ms": 0, "error": "unknown"}
     for attempt in range(_MODELS_MAX_RETRIES + 1):
-        result = await _query_provider_models(name, cfg)
+        result = await _query_provider_models(name, cfg, data_dir=data_dir)
         if result.get("ok"):
             return result
         last_result = result
@@ -770,6 +824,8 @@ def _zero_cost_probe_kind(kind: str) -> str:
         return "mock"
     if k in _OPENAI_COMPATIBLE_KINDS:
         return "openai_models"
+    if k in _NATIVE_MODEL_PROBE_KINDS:
+        return "native_models"
     if k in _HARDCODED_MODELS:
         return "hardcoded"
     return "none"
@@ -852,16 +908,20 @@ def _provider_models_url(base_url: str) -> str:
 
 
 async def _query_provider_models(
-    name: str, cfg: dict[str, Any]
+    name: str,
+    cfg: dict[str, Any],
+    *,
+    data_dir: Any | None = None,
 ) -> dict[str, Any]:
     """Query ``/v1/models`` for a provider and return a result dict.
 
     Returns ``{"ok": bool, "models": list[str], "latency_ms": int, "error": str|null}``.
     For OpenAI-compatible providers, calls ``<base_url>/v1/models`` with the
-    configured API key. For the ``codex`` provider, reads the token from
-    ``~/.codex/auth.json`` and queries ``https://api.openai.com/v1/models``.
+    configured API key. For the ``codex`` provider, reads the ChatGPT
+    subscription token from ``~/.codex/auth.json`` and queries the Codex
+    backend on ``chatgpt.com/backend-api/codex`` with the same Cloudflare
+    headers used by the runtime adapter.
     """
-    import os
     import time as _time
 
     import httpx as _httpx
@@ -875,13 +935,20 @@ async def _query_provider_models(
         return {"ok": False, "models": [], "latency_ms": 0, "error": "provider_not_found"}
 
     if is_codex:
-        # Read token from ~/.codex/auth.json
+        credential_path = _codex_auth_path_for_data_dir(data_dir)
+        # Prefer the gateway data dir credential, then fall back to the
+        # Codex CLI location for legacy single-user deployments.
         try:
-            from corlinman_providers._codex_oauth import (
-                load_codex_credential,
-            )
+            from corlinman_providers._codex_oauth import load_codex_credential
 
-            cred = load_codex_credential()
+            cred = (
+                load_codex_credential(credential_path)
+                if credential_path is not None
+                else None
+            )
+            if cred is None:
+                cred = load_codex_credential()
+                credential_path = None
         except Exception as exc:
             return {"ok": False, "models": [], "latency_ms": 0, "error": str(exc)}
         if cred is None:
@@ -891,59 +958,92 @@ async def _query_provider_models(
                 "latency_ms": 0,
                 "error": "codex_auth_not_found",
             }
+        is_expired = getattr(cred, "is_expired", None)
+        if callable(is_expired) and is_expired():
+            refreshed = await _refresh_codex_probe_credential(
+                cred,
+                credential_path=credential_path,
+            )
+            if refreshed is not None:
+                cred = refreshed
         api_key = cred.access_token
-        base_url = "https://api.openai.com"
+        url = "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0"
+        headers = _codex_models_headers(api_key)
+        params: dict[str, str] = {}
     else:
         entry_dict = dict(entry) if isinstance(entry, dict) else {}
         kind = _normalize_kind(str(entry_dict.get("kind") or "openai_compatible"))
-        if kind not in _OPENAI_COMPATIBLE_KINDS:
-            return {
-                "ok": False,
-                "models": [],
-                "latency_ms": 0,
-                "error": f"kind '{kind}' does not support /v1/models probe",
+        api_key = _resolve_api_key(entry_dict)
+        params = {}
+        if kind == "anthropic":
+            if not api_key:
+                return {
+                    "ok": False,
+                    "models": [],
+                    "latency_ms": 0,
+                    "error": "api_key_missing",
+                }
+            url = "https://api.anthropic.com/v1/models"
+            headers = {
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
             }
-        raw_key = entry_dict.get("api_key")
-        if isinstance(raw_key, dict):
-            if "value" in raw_key:
-                api_key = str(raw_key["value"])
-            elif "env" in raw_key:
-                api_key = os.environ.get(str(raw_key["env"]), "")
-            else:
-                api_key = ""
-        elif isinstance(raw_key, str):
-            api_key = raw_key
+        elif kind == "google":
+            if not api_key:
+                return {
+                    "ok": False,
+                    "models": [],
+                    "latency_ms": 0,
+                    "error": "api_key_missing",
+                }
+            url = "https://generativelanguage.googleapis.com/v1beta/models"
+            headers = {}
+            params = {"key": api_key}
         else:
-            api_key = ""
-        raw_base = (
-            entry_dict.get("base_url")
-            or _default_base_url_for_kind(kind)
-            or "https://api.openai.com"
-        )
-        base_url = str(raw_base).rstrip("/")
+            if kind not in _OPENAI_COMPATIBLE_KINDS:
+                return {
+                    "ok": False,
+                    "models": [],
+                    "latency_ms": 0,
+                    "error": f"kind '{kind}' does not support model discovery",
+                }
+            raw_base = (
+                entry_dict.get("base_url")
+                or _default_base_url_for_kind(kind)
+                or "https://api.openai.com"
+            )
+            base_url = str(raw_base).rstrip("/")
+            # SEC-008: refuse to dial cloud-metadata / link-local targets with the
+            # api key attached. Loopback/private are intentionally allowed (local
+            # relays). Rejected before any outbound request is made.
+            try:
+                _assert_safe_probe_host(base_url)
+            except _UnsafeHost as exc:
+                return {
+                    "ok": False,
+                    "models": [],
+                    "latency_ms": 0,
+                    "error": f"unsafe_host: {exc}",
+                }
 
-    # SEC-008: refuse to dial cloud-metadata / link-local targets with the
-    # api key attached. Loopback/private are intentionally allowed (local
-    # relays). Rejected before any outbound request is made.
-    try:
-        _assert_safe_probe_host(base_url)
-    except _UnsafeHost as exc:
-        return {
-            "ok": False,
-            "models": [],
-            "latency_ms": 0,
-            "error": f"unsafe_host: {exc}",
-        }
-
-    url = _provider_models_url(base_url)
-    headers: dict[str, str] = {}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+            url = _provider_models_url(base_url)
+            headers = {}
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
 
     t0 = _time.monotonic()
     try:
         async with _httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(url, headers=headers)
+            resp = await client.get(url, headers=headers, params=params)
+            if is_codex and resp.status_code == 401:
+                refreshed = await _refresh_codex_probe_credential(
+                    cred,
+                    credential_path=credential_path,
+                )
+                if refreshed is not None and refreshed.access_token != api_key:
+                    api_key = refreshed.access_token
+                    headers = _codex_models_headers(api_key)
+                    resp = await client.get(url, headers=headers, params=params)
         latency_ms = int((_time.monotonic() - t0) * 1000)
         if resp.status_code >= 400:
             return {
@@ -953,11 +1053,37 @@ async def _query_provider_models(
                 "error": f"HTTP {resp.status_code}",
             }
         data = resp.json()
-        model_ids = [
-            str(item["id"])
-            for item in (data.get("data") or [])
-            if isinstance(item, dict) and isinstance(item.get("id"), str)
-        ]
+        if is_codex:
+            model_ids = [
+                str(item["slug"])
+                for item in (data.get("models") or [])
+                if isinstance(item, dict) and isinstance(item.get("slug"), str)
+            ]
+        elif kind == "google":
+            model_ids = []
+            for item in data.get("models") or []:
+                if not isinstance(item, dict):
+                    continue
+                methods = item.get("supportedGenerationMethods")
+                if isinstance(methods, list) and not any(
+                    method in methods for method in ("generateContent", "streamGenerateContent")
+                ):
+                    continue
+                model_name = item.get("name")
+                if isinstance(model_name, str) and model_name.startswith("models/"):
+                    model_ids.append(model_name.removeprefix("models/"))
+        elif kind == "anthropic":
+            model_ids = [
+                str(item["id"])
+                for item in (data.get("data") or [])
+                if isinstance(item, dict) and isinstance(item.get("id"), str)
+            ]
+        else:
+            model_ids = [
+                str(item["id"])
+                for item in (data.get("data") or [])
+                if isinstance(item, dict) and isinstance(item.get("id"), str)
+            ]
         return {
             "ok": True,
             "models": sorted(model_ids),
@@ -982,19 +1108,19 @@ async def _query_provider_models(
 
 
 _KIND_DEFAULT_MODEL: dict[str, str] = {
-    "openai": "gpt-4o-mini",
-    "openai_compatible": "gpt-4o-mini",
-    "mistral": "mistral-small-latest",
-    "cohere": "command-r-08-2024",
-    "together": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
-    "groq": "llama-3.3-70b-versatile",
-    "replicate": "meta/meta-llama-3-70b-instruct",
-    "qwen": "qwen-plus",
-    "glm": "glm-4-flash",
-    "deepseek": "deepseek-chat",
-    "anthropic": "claude-3-5-haiku-latest",
-    "google": "gemini-2.0-flash",
-    "codex": "gpt-4o",
+    "openai": "gpt-5.5",
+    "openai_compatible": "gpt-5.5",
+    "mistral": "mistral-medium-latest",
+    "cohere": "command-a-plus-05-2026",
+    "together": "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
+    "groq": "openai/gpt-oss-120b",
+    "replicate": "meta/llama-4-maverick-instruct",
+    "qwen": "qwen3.7-max",
+    "glm": "glm-5.1",
+    "deepseek": "deepseek-v4-pro",
+    "anthropic": "claude-fable-5",
+    "google": "gemini-3.5-flash",
+    "codex": "gpt-5.5",
     "mock": "mock",
 }
 
@@ -1002,21 +1128,234 @@ _KIND_DEFAULT_MODEL: dict[str, str] = {
 # When a probe returns a giant catalog (relays often surface 100+ ids),
 # prefer a well-known model over the alphabetically-first one so the
 # default isn't something obscure like ``ada-001``.
+_KIND_PREFERRED_DEFAULT_MODELS: dict[str, tuple[str, ...]] = {
+    "openai": ("gpt-5.5", "gpt-5.4", "gpt-5.3", "gpt-4o"),
+    "openai_compatible": ("gpt-5.5", "gpt-5.4", "gpt-4o"),
+    "codex": ("gpt-5.5", "gpt-5.4", "gpt-5.3-codex", "gpt-4o"),
+    "anthropic": (
+        "claude-fable-5",
+        "claude-opus-4-8",
+        "claude-opus-4-5",
+        "claude-sonnet-4-6",
+        "claude-sonnet-4-5",
+        "claude-3-7-sonnet-latest",
+        "claude-3-5-sonnet-latest",
+    ),
+    "google": (
+        "gemini-3.5-flash",
+        "gemini-3.1-pro-preview",
+        "gemini-2.5-pro",
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+    ),
+    "mistral": (
+        "mistral-medium-latest",
+        "mistral-medium-3.5",
+        "mistral-large-latest",
+        "mistral-small-latest",
+    ),
+    "cohere": (
+        "command-a-plus-05-2026",
+        "command-a-03-2025",
+        "command-r-plus-08-2024",
+        "command-r-08-2024",
+    ),
+    "deepseek": ("deepseek-v4-pro", "deepseek-v4-flash", "deepseek-reasoner"),
+    "qwen": ("qwen3.7-max", "qwen3.7-max-2026-06-08", "qwen-max", "qwen-plus"),
+    "glm": ("glm-5.1", "glm-5", "glm-4-plus", "glm-4-flash"),
+    "together": (
+        "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
+        "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+    ),
+    "groq": (
+        "openai/gpt-oss-120b",
+        "llama-3.3-70b-versatile",
+    ),
+    "replicate": (
+        "meta/llama-4-maverick-instruct",
+        "meta/meta-llama-3-70b-instruct",
+    ),
+}
 _PREFERRED_DEFAULT_MODELS: tuple[str, ...] = (
-    "gpt-4o-mini",
+    "gpt-5.5",
+    "gpt-5.4",
     "gpt-4o",
-    "claude-3-5-sonnet-latest",
-    "claude-3-5-haiku-latest",
-    "deepseek-chat",
-    "qwen-plus",
-    "glm-4-flash",
-    "gemini-2.0-flash",
-    "gemini-1.5-flash",
+    "claude-fable-5",
+    "gemini-3.5-flash",
+    "mistral-medium-latest",
+    "command-a-plus-05-2026",
+    "deepseek-v4-pro",
+    "qwen3.7-max",
+    "glm-5.1",
 )
 
 
+_NON_CHAT_MODEL_MARKERS: tuple[str, ...] = (
+    "audio",
+    "dall-e",
+    "embed",
+    "embedding",
+    "image",
+    "moderation",
+    "rerank",
+    "review",
+    "transcribe",
+    "tts",
+    "whisper",
+)
+
+
+def _has_model_marker(lowered: str, marker: str) -> bool:
+    return re.search(rf"(^|[^a-z0-9]){re.escape(marker)}([^a-z0-9]|$)", lowered) is not None
+
+
+def _has_any_model_marker(lowered: str, markers: tuple[str, ...]) -> bool:
+    return any(_has_model_marker(lowered, marker) for marker in markers)
+
+
+def _numeric_score(lowered: str, *, width: int = 4) -> tuple[int, ...]:
+    parts = tuple(int(part) for part in re.findall(r"\d+", lowered))
+    return (*parts[:width], *((0,) * max(0, width - len(parts))))
+
+
+def _cohere_release_score(lowered: str) -> tuple[int, int]:
+    match = re.search(r"(?:^|[^0-9])(\d{2})-(\d{4})(?:$|[^0-9])", lowered)
+    if not match:
+        return (0, 0)
+    month = int(match.group(1))
+    year = int(match.group(2))
+    return (year, month)
+
+
+def _llama_score(lowered: str) -> tuple[int, ...] | None:
+    match = re.search(r"llama-?(\d+(?:\.\d+)*)", lowered)
+    if not match:
+        return None
+    version = tuple(int(part) for part in match.group(1).split("."))
+    version = (*version[:3], *((0,) * max(0, 3 - len(version))))
+    tier = 80 if "maverick" in lowered else 50 if "scout" in lowered else 20
+    params_match = re.search(r"(\d+)b", lowered)
+    params = int(params_match.group(1)) if params_match else 0
+    return (*version, tier, params)
+
+
+def _flagship_candidate_score(kind: str, model_id: str) -> tuple[int, ...] | None:
+    lowered = model_id.lower()
+    if _has_any_model_marker(lowered, _NON_CHAT_MODEL_MARKERS):
+        return None
+
+    version = _numeric_score(lowered)
+    if kind in {"openai", "openai_compatible", "codex"}:
+        if "gpt-oss" in lowered:
+            return None
+        if re.search(r"(^|/)gpt-\d", lowered) is None:
+            return None
+        if _has_any_model_marker(lowered, ("mini", "nano")):
+            return None
+        tier = 50 if "codex" not in lowered else 45
+        return (100, *version, tier)
+
+    if kind == "anthropic":
+        if not lowered.startswith("claude-"):
+            return None
+        if _has_model_marker(lowered, "haiku"):
+            return None
+        tier = 90 if "fable" in lowered else 80 if "opus" in lowered else 60
+        return (100, *version, tier)
+
+    if kind == "google":
+        if not lowered.startswith("gemini-"):
+            return None
+        if _has_model_marker(lowered, "lite"):
+            return None
+        tier = 90 if "pro" in lowered else 60 if "flash" in lowered else 50
+        preview = 5 if "preview" in lowered else 10
+        return (100, *version, tier, preview)
+
+    if kind == "mistral":
+        if not lowered.startswith("mistral-"):
+            return None
+        latest = 50 if "latest" in lowered else 0
+        tier = 90 if "medium" in lowered else 70 if "large" in lowered else 20
+        return (100, latest, tier, *version)
+
+    if kind == "cohere":
+        if not lowered.startswith("command-a"):
+            return None
+        year, month = _cohere_release_score(lowered)
+        tier = 80 if "plus" in lowered else 50
+        return (100, year, month, tier, *version)
+
+    if kind == "deepseek":
+        if not lowered.startswith("deepseek-"):
+            return None
+        tier = (
+            90
+            if "pro" in lowered
+            else 50
+            if "flash" in lowered
+            else 40
+            if "reasoner" in lowered
+            else 30
+        )
+        return (100, *version, tier)
+
+    if kind == "qwen":
+        if not lowered.startswith("qwen"):
+            return None
+        tier = 90 if "max" in lowered else 60 if "plus" in lowered else 40
+        return (100, *version, tier)
+
+    if kind == "glm":
+        if not lowered.startswith("glm-"):
+            return None
+        tier = 80 if "plus" in lowered else 20 if "flash" in lowered else 60
+        return (100, *version, tier)
+
+    if kind in {"together", "replicate"}:
+        score = _llama_score(lowered)
+        if score is None:
+            return None
+        return (100, *score)
+
+    if kind == "groq":
+        gpt_oss = re.search(r"gpt-oss-(\d+)b", lowered)
+        if gpt_oss is not None:
+            return (120, int(gpt_oss.group(1)))
+        score = _llama_score(lowered)
+        if score is None:
+            return None
+        return (80, *score)
+
+    return None
+
+
+def _pick_dynamic_flagship_model(kind: str, probed_ids: list[str]) -> str | None:
+    candidates: list[tuple[tuple[int, ...], int, str]] = []
+    for index, model_id in enumerate(probed_ids):
+        score = _flagship_candidate_score(kind, model_id)
+        if score is not None:
+            candidates.append((score, -index, model_id))
+    if not candidates:
+        return None
+    return max(candidates)[2]
+
+
 def _pick_default_model(kind: str, probed_ids: list[str]) -> str | None:
-    for pref in _PREFERRED_DEFAULT_MODELS:
+    normalized_kind = _normalize_kind(kind)
+    dynamic = _pick_dynamic_flagship_model(normalized_kind, probed_ids)
+    if dynamic is not None:
+        return dynamic
+
+    preferences = (
+        *_KIND_PREFERRED_DEFAULT_MODELS.get(normalized_kind, ()),
+        *_PREFERRED_DEFAULT_MODELS,
+    )
+    seen: set[str] = set()
+    for pref in preferences:
+        if pref in seen:
+            continue
+        seen.add(pref)
         if pref in probed_ids:
             return pref
         for mid in probed_ids:
@@ -1024,13 +1363,15 @@ def _pick_default_model(kind: str, probed_ids: list[str]) -> str | None:
                 return mid
     if probed_ids:
         return probed_ids[0]
-    return _KIND_DEFAULT_MODEL.get(kind)
+    return _KIND_DEFAULT_MODEL.get(normalized_kind)
 
 
 async def _autobind_default_alias(
     cfg: dict[str, Any],
     provider_name: str,
     entry: dict[str, Any],
+    *,
+    data_dir: Any | None = None,
 ) -> dict[str, Any]:
     """Populate ``models.default`` so /chat can reach a freshly-enabled provider.
 
@@ -1047,7 +1388,11 @@ async def _autobind_default_alias(
     kind = str(entry.get("kind") or "openai_compatible").lower()
     probed_ids: list[str] = []
     try:
-        result = await _query_provider_models(provider_name, cfg)
+        result = await _query_provider_models(
+            provider_name,
+            cfg,
+            data_dir=data_dir,
+        )
         if result.get("ok"):
             raw = result.get("models")
             if isinstance(raw, list):
