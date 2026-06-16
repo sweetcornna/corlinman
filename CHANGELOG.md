@@ -4,6 +4,21 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.21.8] — 2026-06-16 — Codex provider test no longer false-fails after OAuth login
+
+> Patch release. Config-compatible. Fixes the admin provider "Test" button for
+> Codex OAuth accounts when the ChatGPT Codex model catalog endpoint returns a
+> transient HTTP 400 even though the stored OAuth credential is usable.
+
+### Fixed
+- **Codex provider test follows OAuth readiness instead of the live catalog** —
+  `/admin/providers/codex/test` now validates that the gateway can read the
+  stored Codex OAuth credential (and refreshes it when expired) without using
+  the ChatGPT Codex model catalog as a hard liveness check. This removes the
+  false `codex: HTTP 400` toast seen immediately after a successful Codex
+  login, while leaving `/admin/providers/codex/models` live discovery intact
+  for the model dropdown.
+
 ## [1.21.7] — 2026-06-15 — Codex login, flagship defaults, and reasoning effort
 
 > Patch release. Config-compatible. Fixes Codex OAuth on native VPS deployments,

@@ -6,7 +6,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/sweetcornna/corlinman/ci.yml?branch=main&label=CI)](https://github.com/sweetcornna/corlinman/actions)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.21.7-brightgreen)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.21.8-brightgreen)](CHANGELOG.md)
 [![Docs](https://img.shields.io/badge/docs-architecture-informational)](docs/architecture.md)
 
 **A self-hosted intelligent-agent platform.** Give a language model durable
@@ -19,14 +19,12 @@ govern with human-in-the-loop approvals.
 > _Live deployment reference: <https://corlinman.cornna.xyz>._
 > _中文介绍章节见文末 ["中文速览"](#中文速览)。_
 >
-> **What's new in 1.21.7** — Codex OAuth login now works end-to-end on the
-> native VPS split gateway/agent deployment; provider defaults follow the
-> latest discovered flagship models; the chat composer can send per-request
-> reasoning effort; and Anthropic/Google model discovery uses native live
-> model APIs when credentials are configured. See
+> **What's new in 1.21.8** — the Codex provider Test button no longer false
+> fails with `codex: HTTP 400` after a successful OAuth login when the live
+> ChatGPT Codex model catalog probe is unavailable. See
 > [`CHANGELOG.md`](CHANGELOG.md).
-> _1.21.7 修复 Codex 登录后 403/不可用链路，默认模型会跟随实际发现到的最新旗舰，
-> 前端聊天支持按请求调整思考强度，并为 Anthropic / Google 接入实时模型发现。_
+> _1.21.8 修复 Codex OAuth 登录成功后点击提供商测试仍弹出 `codex: HTTP 400`
+> 的误报；测试按钮现在验证 OAuth 凭据可用性，不再把模型目录探测 400 当作登录失败。_
 
 ---
 

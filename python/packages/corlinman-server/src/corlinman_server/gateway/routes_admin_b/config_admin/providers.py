@@ -72,6 +72,7 @@ from corlinman_server.gateway.routes_admin_b.config_admin._providers_lib import 
     _normalize_kind,
     _params_schema_for,
     _persist,
+    _probe_codex_oauth_status,
     _provider_tts_backend,
     _query_provider_models,
     _query_provider_models_with_retry,
@@ -135,6 +136,7 @@ __all__ = [
     "_normalize_kind",
     "_params_schema_for",
     "_persist",
+    "_probe_codex_oauth_status",
     "_query_provider_models",
     "_query_provider_models_with_retry",
     "_redact",
@@ -627,6 +629,11 @@ def router() -> APIRouter:
             kind = "codex"
         else:
             kind = _normalize_kind(str((entry or {}).get("kind") or "openai_compatible"))
+
+        if name == "codex":
+            return await _probe_codex_oauth_status(
+                data_dir=getattr(state, "data_dir", None)
+            )
 
         probe_strategy = _zero_cost_probe_kind(kind)
         api_key = _resolve_api_key(entry or {})
