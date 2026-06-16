@@ -551,6 +551,74 @@ async def _refresh_codex_probe_credential(
         return None
 
 
+def _codex_test_models_count() -> int:
+    preferred = globals().get("_KIND_PREFERRED_DEFAULT_MODELS", {}).get("codex", ())
+    if preferred:
+        return len(preferred)
+    default = globals().get("_KIND_DEFAULT_MODEL", {}).get("codex")
+    return 1 if default else 0
+
+
+async def _probe_codex_oauth_status(*, data_dir: Any | None = None) -> dict[str, Any]:
+    """Validate Codex OAuth readiness without relying on the live model catalog."""
+    import time as _time
+
+    t0 = _time.monotonic()
+    credential_path = _codex_auth_path_for_data_dir(data_dir)
+    try:
+        from corlinman_providers._codex_oauth import load_codex_credential  # noqa: PLC0415
+
+        cred = (
+            load_codex_credential(credential_path)
+            if credential_path is not None
+            else None
+        )
+        if cred is None:
+            cred = load_codex_credential()
+            credential_path = None
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False,
+            "latency_ms": int((_time.monotonic() - t0) * 1000),
+            "error": str(exc),
+        }
+
+    if cred is None:
+        return {
+            "ok": False,
+            "latency_ms": int((_time.monotonic() - t0) * 1000),
+            "error": "codex_auth_not_found",
+        }
+
+    access_token = getattr(cred, "access_token", None)
+    if not isinstance(access_token, str) or not access_token:
+        return {
+            "ok": False,
+            "latency_ms": int((_time.monotonic() - t0) * 1000),
+            "error": "codex_auth_not_found",
+        }
+
+    is_expired = getattr(cred, "is_expired", None)
+    if callable(is_expired) and is_expired():
+        refreshed = await _refresh_codex_probe_credential(
+            cred,
+            credential_path=credential_path,
+        )
+        if refreshed is None:
+            return {
+                "ok": False,
+                "latency_ms": int((_time.monotonic() - t0) * 1000),
+                "error": "codex_auth_refresh_failed",
+            }
+
+    return {
+        "ok": True,
+        "latency_ms": int((_time.monotonic() - t0) * 1000),
+        "models_count": _codex_test_models_count(),
+        "note": "Codex OAuth credential detected; live model catalog probe skipped",
+    }
+
+
 def _codex_models_headers(access_token: str) -> dict[str, str]:
     from corlinman_providers._codex_oauth import codex_cloudflare_headers  # noqa: PLC0415
 

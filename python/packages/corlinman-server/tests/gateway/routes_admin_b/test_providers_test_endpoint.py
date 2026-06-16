@@ -166,6 +166,45 @@ class TestTestEndpoint:
         assert body["models_count"] == 2
         assert "error" not in body or body.get("error") is None
 
+    def test_test_endpoint_codex_uses_oauth_credential_not_live_catalog(
+        self,
+        client: TestClient,
+        state_and_snapshot: tuple[AdminState, dict[str, Any]],
+        tmp_path: Path,
+    ) -> None:
+        """Codex login success should not depend on the flaky live catalog probe."""
+        from corlinman_providers._codex_oauth import CodexOAuthCredential
+
+        state, snapshot = state_and_snapshot
+        state.data_dir = tmp_path
+        snapshot.clear()
+        snapshot.update({"providers": {}})
+        credential_path = tmp_path / ".codex" / "auth.json"
+        credential = CodexOAuthCredential(
+            access_token="access-token",
+            refresh_token="refresh-token",
+            expires_at_ms=None,
+        )
+        upstream_400 = _mock_httpx_response(status_code=400, json_body={"error": "bad"})
+        async_client = _mock_async_client(upstream_400)
+
+        with patch(
+            "corlinman_providers._codex_oauth.load_codex_credential",
+            return_value=credential,
+        ) as load_credential, patch(
+            "httpx.AsyncClient",
+            return_value=async_client,
+        ) as async_client_cls:
+            resp = client.post("/admin/providers/codex/test")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["models_count"] >= 1
+        assert "codex" in body["note"].lower()
+        load_credential.assert_called_once_with(credential_path)
+        async_client_cls.assert_not_called()
+
     def test_test_endpoint_fish_tts_skips_openai_models_probe(
         self,
         client: TestClient,
