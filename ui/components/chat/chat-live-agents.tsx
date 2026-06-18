@@ -18,7 +18,6 @@
  */
 
 import * as React from "react";
-import { useRouter } from "next/navigation";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { Bot, PanelRightClose, PanelRightOpen } from "lucide-react";
@@ -55,7 +54,6 @@ export interface ChatLiveAgentsProps {
 
 export function ChatLiveAgents({ sessionKey }: ChatLiveAgentsProps): React.JSX.Element {
   const { t } = useTranslation();
-  const router = useRouter();
   const [rows, setRows] = React.useState<Map<string, SubagentStatusResponse>>(
     () => new Map(),
   );
@@ -137,9 +135,9 @@ export function ChatLiveAgents({ sessionKey }: ChatLiveAgentsProps): React.JSX.E
     [],
   );
 
-  const handleSelect = React.useCallback(() => {
-    router.push(`/sessions/detail?key=${encodeURIComponent(sessionKey)}`);
-  }, [router, sessionKey]);
+  // Cards expand inline (expandable below) to show the agent's current
+  // status — no navigation needed, so onSelect is a no-op here.
+  const noopSelect = React.useCallback(() => {}, []);
 
   if (collapsed) {
     return (
@@ -202,9 +200,10 @@ export function ChatLiveAgents({ sessionKey }: ChatLiveAgentsProps): React.JSX.E
         ) : (
           <LiveAgentsPanel
             rows={allRows}
-            onSelect={handleSelect}
+            onSelect={noopSelect}
             onKill={handleKill}
             dense
+            expandable
           />
         )}
       </div>

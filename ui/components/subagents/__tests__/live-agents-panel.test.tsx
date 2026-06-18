@@ -83,10 +83,43 @@ describe("LiveAgentsPanel", () => {
     expect(kills).toHaveLength(1);
   });
 
-  it("fires onSelect when a card is activated", () => {
+  it("fires onSelect when a card is activated (non-expandable)", () => {
     const onSelect = vi.fn();
     renderPanel([row({ request_id: "sess::child::2", source: "inline" })], vi.fn(), onSelect);
     fireEvent.click(screen.getByTestId("live-agent-card"));
     expect(onSelect).toHaveBeenCalledWith("sess::child::2");
+  });
+
+  it("expands inline detail on click when expandable (no onSelect)", () => {
+    const onSelect = vi.fn();
+    render(
+      <I18nextProvider i18n={i18next}>
+        <LiveAgentsPanel
+          rows={[
+            row({
+              request_id: "sess::child::3",
+              source: "inline",
+              state: "running",
+              description: "investigate GitHub Actions",
+              activity: "运行工具 web_search",
+            }),
+          ]}
+          onSelect={onSelect}
+          onKill={vi.fn()}
+          expandable
+        />
+      </I18nextProvider>,
+    );
+    // Collapsed: no detail panel, and clicking does NOT navigate (onSelect).
+    expect(screen.queryByTestId("live-agent-detail")).toBeNull();
+    fireEvent.click(screen.getByTestId("live-agent-card"));
+    expect(onSelect).not.toHaveBeenCalled();
+    const detail = screen.getByTestId("live-agent-detail");
+    expect(detail).toBeInTheDocument();
+    expect(detail).toHaveTextContent("investigate GitHub Actions");
+    expect(detail).toHaveTextContent("web_search");
+    // Toggle closed again.
+    fireEvent.click(screen.getByTestId("live-agent-card"));
+    expect(screen.queryByTestId("live-agent-detail")).toBeNull();
   });
 });

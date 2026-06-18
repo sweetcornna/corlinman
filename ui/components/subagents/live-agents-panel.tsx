@@ -35,6 +35,11 @@ export interface LiveAgentsPanelProps {
   onKill: (requestId: string) => void;
   /** Tighter padding for the narrow chat-side variant. */
   dense?: boolean;
+  /** When true, clicking a card toggles an inline detail panel (prompt,
+   * activity, tools, elapsed, finish reason, summary) instead of calling
+   * `onSelect`. Used by the chat rail so an inline child's current status is
+   * visible without navigating away. */
+  expandable?: boolean;
   className?: string;
 }
 
@@ -84,6 +89,7 @@ export function LiveAgentsPanel({
   onSelect,
   onKill,
   dense = false,
+  expandable = false,
   className,
 }: LiveAgentsPanelProps): React.JSX.Element {
   const forest = React.useMemo(() => buildForest(rows), [rows]);
@@ -100,6 +106,7 @@ export function LiveAgentsPanel({
           onSelect={onSelect}
           onKill={onKill}
           dense={dense}
+          expandable={expandable}
         />
       ))}
     </div>
@@ -112,12 +119,14 @@ function AgentCardTree({
   onSelect,
   onKill,
   dense,
+  expandable,
 }: {
   node: TreeNode;
   depth: number;
   onSelect: (requestId: string) => void;
   onKill: (requestId: string) => void;
   dense: boolean;
+  expandable: boolean;
 }): React.JSX.Element {
   return (
     <>
@@ -127,6 +136,7 @@ function AgentCardTree({
         onSelect={onSelect}
         onKill={onKill}
         dense={dense}
+        expandable={expandable}
       />
       {node.children.length > 0 ? (
         <div
@@ -141,6 +151,7 @@ function AgentCardTree({
               onSelect={onSelect}
               onKill={onKill}
               dense={dense}
+              expandable={expandable}
             />
           ))}
         </div>
@@ -158,14 +169,17 @@ function AgentCard({
   onSelect,
   onKill,
   dense,
+  expandable,
 }: {
   data: SubagentStatusResponse;
   depth: number;
   onSelect: (requestId: string) => void;
   onKill: (requestId: string) => void;
   dense: boolean;
+  expandable: boolean;
 }): React.JSX.Element {
   const { t } = useTranslation();
+  const [expanded, setExpanded] = React.useState(false);
   const elapsed = useElapsed(data);
   const { Icon, className: stateClass } = statePresentation(data.state);
   const inFlight = IN_FLIGHT_STATES.has(data.state);
@@ -185,19 +199,25 @@ function AgentCard({
     onKill(data.request_id);
   }
 
+  const activate = () => {
+    if (expandable) setExpanded((v) => !v);
+    else onSelect(data.request_id);
+  };
+
   return (
     <div
       role="button"
       tabIndex={0}
+      aria-expanded={expandable ? expanded : undefined}
       data-testid="live-agent-card"
       data-state={data.state}
       data-request-id={data.request_id}
       data-source={data.source ?? "background"}
-      onClick={() => onSelect(data.request_id)}
+      onClick={activate}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
-          onSelect(data.request_id);
+          activate();
         }
       }}
       className={cn(
@@ -256,6 +276,39 @@ function AgentCard({
           <span className="truncate font-mono">{data.finish_reason}</span>
         ) : null}
       </div>
+      {expandable && expanded ? (
+        <div
+          className="mt-2 space-y-1.5 border-t border-sg-border pl-7 pt-2 text-[11px]"
+          data-testid="live-agent-detail"
+        >
+          {data.description ? (
+            <div>
+              <span className="text-sg-ink-4">{t("subagents.column.description")}: </span>
+              <span className="text-sg-ink-2">{data.description}</span>
+            </div>
+          ) : null}
+          {inFlight && activity ? (
+            <div className="text-sg-warn">{activity}</div>
+          ) : null}
+          {data.summary ? (
+            <div className="whitespace-pre-wrap text-sg-ink-2">{data.summary}</div>
+          ) : null}
+          {data.error ? (
+            <div className="whitespace-pre-wrap text-sg-err">{data.error}</div>
+          ) : null}
+          <div className="flex flex-wrap gap-x-3 gap-y-0.5 font-mono text-[10px] text-sg-ink-4">
+            <span>{t("subagents.state." + data.state)}</span>
+            <span>{t("subagents.column.tools")}: {data.tool_calls_made}</span>
+            <span>{formatElapsed(elapsed)}</span>
+            {data.finish_reason ? <span>{data.finish_reason}</span> : null}
+            {data.child_session_key ? (
+              <span className="truncate" title={data.child_session_key}>
+                {data.child_session_key.slice(-18)}
+              </span>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

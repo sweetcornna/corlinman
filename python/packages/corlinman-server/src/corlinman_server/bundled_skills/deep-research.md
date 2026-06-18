@@ -7,12 +7,14 @@ metadata:
     requires:
       bins: []
       anyBins: []
-      config:
-        - "providers.brave.api_key"
+      config: []
       env: []
     install: |
-      1. Configure a web-search provider — see the `web_search` skill's
-         install steps for the Brave API key setup.
+      1. Works out of the box — `web.search` defaults to the keyless
+         DuckDuckGo backend, so no API key is required. For higher
+         volume / quality, optionally configure Brave (see the
+         `web_search` skill) or set `CORLINMAN_WEB_SEARCH_BACKEND` /
+         `CORLINMAN_WEB_SEARCH_API_KEY` (SerpApi).
       2. The skill works without `subagent.*` access (single-threaded
          fallback), but quality is dramatically higher when the agent
          can fan out via `subagent_spawn_many`.
