@@ -205,6 +205,17 @@ async def _sse_stream(
     """
     emitter = state.event_emitter
     journal = state.journal
+    # W2.x — feed the live multi-agent registry from journal-read frames. In
+    # grpc_agent mode subagents run in the agent process, so their lifecycle
+    # events reach the gateway ONLY via this journal poll — the gateway
+    # emitter's observer never fires for them. ``observe_journal_event`` is a
+    # no-op for non-subagent frames and never raises.
+    live_registry = getattr(state, "live_subagent_registry", None)
+
+    def _feed_registry(ev: dict[str, Any]) -> None:
+        if live_registry is not None:
+            live_registry.observe_journal_event(ev)
+
     if emitter is None or journal is None:
         # Shouldn't happen — the route checked before entering. Yield a
         # terminal SSE error frame so the client sees *something* rather
@@ -389,6 +400,7 @@ async def _sse_stream(
                     break
                 for ev in page:
                     yield _format_sse_frame(ev)
+                    _feed_registry(ev)
                     ev_seq = ev.get("sequence")
                     if isinstance(ev_seq, int) and ev_seq not in replayed_seqs:
                         # Bounded insert: evict the oldest tracked seq once
@@ -453,6 +465,7 @@ async def _sse_stream(
                 if poll_turn is not None and poll_page:
                     for ev in poll_page:
                         yield _format_sse_frame(ev)
+                        _feed_registry(ev)
                         ev_seq = ev.get("sequence")
                         if isinstance(ev_seq, int):
                             _advance_cursor(poll_turn, ev_seq)

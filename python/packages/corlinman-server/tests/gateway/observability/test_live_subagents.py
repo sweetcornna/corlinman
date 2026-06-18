@@ -143,3 +143,94 @@ def test_observe_never_raises_on_garbage() -> None:
     reg.observe(object())
     reg.observe(_env("p", BlockStart(index=0, block_type="text")))
     assert reg.list_all() == []
+
+
+# --------------------------------------------------------------------- #
+# Cross-process journal-dict path (grpc_agent mode): the gateway feeds   #
+# the registry from journal rows the agent process wrote.                #
+# --------------------------------------------------------------------- #
+
+
+def test_observe_journal_event_lifecycle() -> None:
+    reg = LiveSubagentRegistry()
+    reg.observe_journal_event({
+        "event_type": "SubagentSpawned",
+        "timestamp_ms": 1000,
+        "payload": {
+            "parent_session_key": "sess",
+            "child_session_key": "sess::child::0",
+            "child_agent_id": "researcher",
+            "depth": 1,
+            "prompt_preview": "find the answer",
+        },
+    })
+    rows = reg.list_active()
+    assert len(rows) == 1
+    assert rows[0].subagent_type == "researcher"
+    assert rows[0].source == "inline"
+    assert rows[0].depth == 1
+    assert rows[0].state == "running"
+
+    reg.observe_journal_event({
+        "event_type": "SubagentEvent",
+        "timestamp_ms": 1100,
+        "payload": {
+            "child_session_key": "sess::child::0",
+            "envelope": {
+                "event_type": "ToolStateRunning",
+                "payload": {"tool_name": "web_search"},
+            },
+        },
+    })
+    assert "web_search" in reg.list_active()[0].activity
+    assert reg.list_active()[0].tool_calls_made == 1
+
+    reg.observe_journal_event({
+        "event_type": "SubagentCompleted",
+        "timestamp_ms": 5200,
+        "payload": {
+            "child_session_key": "sess::child::0",
+            "finish_reason": "completed",
+            "tool_calls_made": 3,
+            "elapsed_ms": 4200,
+            "summary": "done: 42",
+        },
+    })
+    assert reg.list_active() == []
+    row = reg.list_all()[0]
+    assert row.state == "succeeded"
+    assert row.summary == "done: 42"
+    assert row.elapsed_ms == 4200
+
+
+def test_observe_journal_event_idempotent_respawn() -> None:
+    """Poll re-delivery of the same spawn must not reset an advancing row."""
+    reg = LiveSubagentRegistry()
+    spawn = {
+        "event_type": "SubagentSpawned",
+        "timestamp_ms": 1000,
+        "payload": {
+            "parent_session_key": "sess",
+            "child_session_key": "c1",
+            "child_agent_id": "w",
+            "depth": 0,
+            "prompt_preview": "",
+        },
+    }
+    reg.observe_journal_event(spawn)
+    reg.observe_journal_event({
+        "event_type": "SubagentEvent",
+        "payload": {
+            "child_session_key": "c1",
+            "envelope": {"event_type": "ToolStateRunning", "payload": {"tool_name": "x"}},
+        },
+    })
+    reg.observe_journal_event(spawn)  # re-delivered by the poll
+    assert reg.list_active()[0].tool_calls_made == 1  # not reset
+
+
+def test_observe_journal_event_ignores_non_subagent() -> None:
+    reg = LiveSubagentRegistry()
+    reg.observe_journal_event({"event_type": "TextDelta", "payload": {"text": "hi"}})
+    reg.observe_journal_event({"event_type": "SubagentSpawned", "payload": {}})
+    assert reg.list_all() == []

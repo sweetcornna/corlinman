@@ -26,7 +26,8 @@ gateway can't leak memory under heavy fan-out.
 from __future__ import annotations
 
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 import structlog
@@ -131,88 +132,177 @@ class LiveSubagentRegistry:
 
     def observe(self, envelope: Any) -> None:
         """Update the registry from one ``SubagentSpawned/Event/Completed``
-        envelope. Best-effort: never raises (the emitter calls this on the
-        hot path)."""
+        dataclass envelope (single-process / in-gateway emit path). Best-effort:
+        never raises (the emitter calls this on the hot path)."""
         try:
             event = getattr(envelope, "event", None)
             name = type(event).__name__ if event is not None else ""
+            ts = _now_ms(envelope)
             if name == "SubagentSpawned":
-                self._on_spawned(envelope, event)
+                self._apply_spawned(
+                    child_key=str(getattr(event, "child_session_key", "") or ""),
+                    parent_key=str(getattr(event, "parent_session_key", "") or ""),
+                    agent_id=str(getattr(event, "child_agent_id", "") or ""),
+                    depth=int(getattr(event, "depth", 0) or 0),
+                    prompt=str(getattr(event, "prompt_preview", "") or ""),
+                    ts=ts,
+                )
             elif name == "SubagentCompleted":
-                self._on_completed(envelope, event)
+                self._apply_completed(
+                    child_key=str(getattr(event, "child_session_key", "") or ""),
+                    finish_reason=str(getattr(event, "finish_reason", "") or ""),
+                    tool_calls=int(getattr(event, "tool_calls_made", 0) or 0),
+                    elapsed_ms=int(getattr(event, "elapsed_ms", 0) or 0),
+                    summary=str(getattr(event, "summary", "") or ""),
+                    ts=ts,
+                )
             elif name == "SubagentEvent":
-                self._on_child_event(event)
+                inner = getattr(getattr(event, "envelope", None), "event", None)
+                self._apply_child_event(
+                    child_key=str(getattr(event, "child_session_key", "") or ""),
+                    inner_type=type(inner).__name__ if inner is not None else "",
+                    tool_name=str(getattr(inner, "tool_name", "") or ""),
+                    block_type=str(getattr(inner, "block_type", "") or ""),
+                )
         except Exception:  # noqa: BLE001 — bookkeeping must not break emit
             logger.debug("live_subagents.observe_failed", exc_info=True)
 
-    def _on_spawned(self, envelope: Any, event: Any) -> None:
-        key = str(getattr(event, "child_session_key", "") or "")
-        if not key:
+    def observe_journal_event(self, ev: Mapping[str, Any]) -> None:
+        """Update the registry from one journal-row dict
+        (``{event_type, payload, timestamp_ms, ...}``) — the CROSS-PROCESS
+        path. In ``grpc_agent`` mode subagents run in the agent process, so
+        their lifecycle events never hit the gateway emitter; the gateway's
+        session-SSE journal poll feeds them here instead. Best-effort."""
+        try:
+            name = str(ev.get("event_type") or "")
+            if name not in (
+                "SubagentSpawned",
+                "SubagentCompleted",
+                "SubagentEvent",
+            ):
+                return
+            payload = ev.get("payload")
+            payload = payload if isinstance(payload, Mapping) else {}
+            ts = int(ev.get("timestamp_ms") or 0)
+            if name == "SubagentSpawned":
+                self._apply_spawned(
+                    child_key=str(payload.get("child_session_key") or ""),
+                    parent_key=str(payload.get("parent_session_key") or ""),
+                    agent_id=str(payload.get("child_agent_id") or ""),
+                    depth=int(payload.get("depth") or 0),
+                    prompt=str(payload.get("prompt_preview") or ""),
+                    ts=ts,
+                )
+            elif name == "SubagentCompleted":
+                self._apply_completed(
+                    child_key=str(payload.get("child_session_key") or ""),
+                    finish_reason=str(payload.get("finish_reason") or ""),
+                    tool_calls=int(payload.get("tool_calls_made") or 0),
+                    elapsed_ms=int(payload.get("elapsed_ms") or 0),
+                    summary=str(payload.get("summary") or ""),
+                    ts=ts,
+                )
+            elif name == "SubagentEvent":
+                inner_env = payload.get("envelope")
+                inner_env = inner_env if isinstance(inner_env, Mapping) else {}
+                inner_payload = inner_env.get("payload")
+                inner_payload = (
+                    inner_payload if isinstance(inner_payload, Mapping) else {}
+                )
+                self._apply_child_event(
+                    child_key=str(payload.get("child_session_key") or ""),
+                    inner_type=str(inner_env.get("event_type") or ""),
+                    tool_name=str(inner_payload.get("tool_name") or ""),
+                    block_type=str(inner_payload.get("block_type") or ""),
+                )
+        except Exception:  # noqa: BLE001 — bookkeeping must not break SSE
+            logger.debug("live_subagents.observe_journal_failed", exc_info=True)
+
+    # ------------------------------------------------------------------
+    # Shared row updates (source-agnostic)
+    # ------------------------------------------------------------------
+
+    def _apply_spawned(
+        self,
+        *,
+        child_key: str,
+        parent_key: str,
+        agent_id: str,
+        depth: int,
+        prompt: str,
+        ts: int,
+    ) -> None:
+        if not child_key:
             return
-        prompt = str(getattr(event, "prompt_preview", "") or "")
-        row = LiveSubagentRow(
-            request_id=key,
-            parent_session_key=str(getattr(event, "parent_session_key", "") or ""),
-            subagent_type=str(getattr(event, "child_agent_id", "") or "subagent"),
+        # Idempotent: a re-observed spawn (poll re-delivery) must not reset a
+        # row that has already advanced to a terminal/active state with more
+        # info. Only (re)create when absent.
+        if child_key in self._rows:
+            return
+        self._rows[child_key] = LiveSubagentRow(
+            request_id=child_key,
+            parent_session_key=parent_key,
+            subagent_type=agent_id or "subagent",
             state="running",
             description=prompt or None,
-            started_at=_now_ms(envelope),
-            child_session_key=key,
-            depth=int(getattr(event, "depth", 0) or 0),
+            started_at=ts or None,
+            child_session_key=child_key,
+            depth=depth,
             source="inline",
         )
-        # Re-spawn under the same key (shouldn't happen) replaces the row and
-        # moves it to the end so it counts as freshly active.
-        self._rows.pop(key, None)
-        self._rows[key] = row
 
-    def _on_child_event(self, event: Any) -> None:
-        key = str(getattr(event, "child_session_key", "") or "")
-        row = self._rows.get(key)
+    def _apply_child_event(
+        self, *, child_key: str, inner_type: str, tool_name: str, block_type: str
+    ) -> None:
+        row = self._rows.get(child_key)
         if row is None or row.state in _TERMINAL_STATES:
             return
-        inner = getattr(event, "envelope", None)
-        inner_event = getattr(inner, "event", None)
-        iname = type(inner_event).__name__ if inner_event is not None else ""
         # Codex-style current-activity line, derived only from coarse,
-        # low-churn inner events (tool starts/stops, block/turn boundaries) —
-        # never per-token deltas.
-        if iname == "ToolStateRunning":
-            tool = str(getattr(inner_event, "tool_name", "") or "")
+        # low-churn inner events (tool starts/stops, block boundaries) — never
+        # per-token deltas.
+        if inner_type == "ToolStateRunning":
             row.tool_calls_made += 1
-            row.activity = f"运行工具 {tool}" if tool else "运行工具"
-        elif iname == "ToolStateCompleted":
+            row.activity = f"运行工具 {tool_name}" if tool_name else "运行工具"
+        elif inner_type == "ToolStateCompleted":
             row.activity = ""
-        elif iname == "BlockStart":
-            block = str(getattr(inner_event, "block_type", "") or "")
-            if block == "reasoning":
+        elif inner_type == "BlockStart":
+            if block_type == "reasoning":
                 row.activity = "思考中…"
-            elif block == "text":
+            elif block_type == "text":
                 row.activity = "撰写回复…"
 
-    def _on_completed(self, envelope: Any, event: Any) -> None:
-        key = str(getattr(event, "child_session_key", "") or "")
-        row = self._rows.get(key)
+    def _apply_completed(
+        self,
+        *,
+        child_key: str,
+        finish_reason: str,
+        tool_calls: int,
+        elapsed_ms: int,
+        summary: str,
+        ts: int,
+    ) -> None:
+        if not child_key:
+            return
+        row = self._rows.get(child_key)
         if row is None:
-            # Completed without a spawn we saw (e.g. registry started mid-run);
+            # Completed without a spawn we saw (registry started mid-run):
             # synthesize a minimal terminal row so the panel still shows it.
             row = LiveSubagentRow(
-                request_id=key or "unknown",
+                request_id=child_key,
                 parent_session_key="",
                 subagent_type="subagent",
                 state="running",
-                child_session_key=key or None,
+                child_session_key=child_key,
                 source="inline",
             )
-            if key:
-                self._rows[key] = row
-        summary = str(getattr(event, "summary", "") or "")
-        row.finish_reason = str(getattr(event, "finish_reason", "") or "") or None
-        row.error = None
-        row.state = _map_finish_reason(row.finish_reason, row.error)
-        row.finished_at = _now_ms(envelope)
-        row.tool_calls_made = int(getattr(event, "tool_calls_made", row.tool_calls_made) or 0)
-        row.elapsed_ms = int(getattr(event, "elapsed_ms", row.elapsed_ms) or 0)
+            self._rows[child_key] = row
+        elif row.state in _TERMINAL_STATES:
+            return  # already terminal — ignore poll re-delivery
+        row.finish_reason = finish_reason or None
+        row.state = _map_finish_reason(row.finish_reason, None)
+        row.finished_at = ts or None
+        row.tool_calls_made = tool_calls or row.tool_calls_made
+        row.elapsed_ms = elapsed_ms or row.elapsed_ms
         row.summary = summary
         row.activity = ""
         self._prune_terminal()
