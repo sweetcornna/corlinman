@@ -408,13 +408,20 @@ def build_app(
                 from corlinman_server.agent_journal import AgentJournal
                 from corlinman_server.gateway.observability import (
                     JournalBackedEmitter,
+                    LiveSubagentRegistry,
                 )
 
                 observability_journal = await AgentJournal.open_from_env(
                     resolved_data_dir / "agent_journal.sqlite"
                 )
+                # W2.x — live registry of INLINE subagents, fed off the
+                # emitter's subagent-lifecycle envelopes so the
+                # /admin/subagents overview shows turn-spawned children too
+                # (background children already get durable store rows).
+                live_subagent_registry = LiveSubagentRegistry()
                 observability_emitter = JournalBackedEmitter(
-                    observability_journal
+                    observability_journal,
+                    subagent_observer=live_subagent_registry.observe,
                 )
 
                 # Publish onto AdminState so the W1.3 admin routes can
@@ -422,6 +429,9 @@ def build_app(
                 if admin_b_state is not None:
                     admin_b_state.journal = observability_journal
                     admin_b_state.event_emitter = observability_emitter
+                    admin_b_state.live_subagent_registry = (
+                        live_subagent_registry
+                    )
                     # Bridge the AppState log broadcaster onto the
                     # admin-B state under the field name the
                     # /admin/logs/stream route reads (``log_broadcast``,

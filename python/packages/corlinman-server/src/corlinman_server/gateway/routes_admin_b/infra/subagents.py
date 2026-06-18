@@ -38,9 +38,11 @@ from corlinman_server.gateway.routes_admin_b.infra._subagents_lib import (
     SubagentListResponse,
     SubagentStatusResponse,
     _error,
+    _merged_rows,
     _resolve_actor,
     _resolve_dispatcher,
     _resolve_event_emitter,
+    _resolve_live_registry,
     _resolve_store,
     _status_to_response,
 )
@@ -81,20 +83,24 @@ def router() -> APIRouter:
     ) -> SubagentListResponse | JSONResponse:
         state = get_admin_state()
         store = _resolve_store(state)
-        if store is None:
+        registry = _resolve_live_registry(state)
+        if store is None and registry is None:
             return _error(
                 503,
                 "subagent_dispatcher_unavailable",
                 "background subagent dispatch is not wired on this gateway",
             )
-        rows = (
-            await store.list_all()
-            if include_terminal
-            else await store.list_active()
+        store_rows: list[Any] = []
+        if store is not None:
+            store_rows = (
+                await store.list_all()
+                if include_terminal
+                else await store.list_active()
+            )
+        rows = _merged_rows(
+            store_rows, registry, active_only=not include_terminal
         )
-        return SubagentListResponse(
-            rows=[_status_to_response(row) for row in rows]
-        )
+        return SubagentListResponse(rows=rows)
 
     # ------------------------------------------------------------------
     # GET /admin/subagents/{id}/status
@@ -354,49 +360,66 @@ def router() -> APIRouter:
         """
         state = get_admin_state()
         store = _resolve_store(state)
-        if store is None:
+        registry = _resolve_live_registry(state)
+        if store is None and registry is None:
             return _error(
                 503,
                 "subagent_dispatcher_unavailable",
                 "background subagent dispatch is not wired on this gateway",
             )
 
+        async def _combined() -> list[SubagentStatusResponse]:
+            store_rows: list[Any] = []
+            if store is not None:
+                store_rows = await store.list_all()
+            # ``active_only=False`` — the overview shows terminal rows too
+            # (it diffs state transitions, incl. running→succeeded).
+            return _merged_rows(store_rows, registry, active_only=False)
+
         async def _generate() -> AsyncIterator[bytes]:
-            last: dict[str, tuple[str, int | None]] = {}
+            # The activity line is part of the diff key so a child switching
+            # tools (running→running but new activity) still pushes a frame.
+            last: dict[str, tuple[str, int | None, str]] = {}
             seq = 0
             try:
                 # Emit a snapshot frame on connect so the UI primes
                 # without waiting a full heartbeat tick.
-                rows = await store.list_all()
-                for row in rows:
-                    payload = json.dumps(
-                        _status_to_response(row).model_dump(),
-                        default=str,
-                    )
+                for row in await _combined():
+                    payload = json.dumps(row.model_dump(), default=str)
                     yield (
                         f"id: live:{seq}\n"
                         f"event: subagent\n"
                         f"data: {payload}\n\n"
                     ).encode()
                     seq += 1
-                    last[row.request_id] = (row.state, row.finished_at)
+                    last[row.request_id] = (
+                        row.state,
+                        row.finished_at,
+                        row.activity,
+                    )
 
+                # Poll faster than the keepalive so the panel feels live
+                # (Codex-Desktop-style): a child switching tools surfaces in
+                # ~2s instead of waiting a full 10s heartbeat. The keepalive
+                # comment still rides the slower cadence so idle proxies see
+                # the same byte rhythm as the other SSE routes.
+                _poll = 2.0
+                ticks = 0
                 while True:
-                    await asyncio.sleep(_SUBAGENT_SSE_HEARTBEAT_SECONDS)
-                    yield b": keepalive\n\n"
-                    rows = await store.list_all()
+                    await asyncio.sleep(_poll)
+                    ticks += 1
+                    if ticks * _poll >= _SUBAGENT_SSE_HEARTBEAT_SECONDS:
+                        yield b": keepalive\n\n"
+                        ticks = 0
                     seen_ids: set[str] = set()
-                    for row in rows:
+                    for row in await _combined():
                         seen_ids.add(row.request_id)
-                        snapshot = (row.state, row.finished_at)
+                        snapshot = (row.state, row.finished_at, row.activity)
                         prev = last.get(row.request_id)
                         if prev == snapshot:
                             continue
                         last[row.request_id] = snapshot
-                        payload = json.dumps(
-                            _status_to_response(row).model_dump(),
-                            default=str,
-                        )
+                        payload = json.dumps(row.model_dump(), default=str)
                         yield (
                             f"id: live:{seq}\n"
                             f"event: subagent\n"

@@ -689,6 +689,12 @@ export const zhCN = {
     subtitle: "后台子代理派发与实时活动。",
     empty: "暂无活跃子代理。",
     loadFailed: "加载失败：{{msg}}",
+    chatPanel: {
+      title: "Agents",
+      empty: "本轮还没有子代理。",
+      collapse: "收起 Agent 面板",
+      expand: "展开 Agent 面板",
+    },
     column: {
       subagentType: "类型",
       description: "任务",

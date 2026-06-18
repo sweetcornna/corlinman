@@ -19,6 +19,8 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from corlinman_agent.events import EventEnvelope, SubagentSpawned
+from corlinman_server.gateway.observability import LiveSubagentRegistry
 from corlinman_server.gateway.routes_admin_b.infra import subagents as subagent_routes
 from corlinman_server.gateway.routes_admin_b.state import (
     AdminState,
@@ -109,6 +111,30 @@ def _make_req(
 # ---------------------------------------------------------------------------
 
 
+def _wire_inline_registry(
+    admin_state: AdminState, child: str = "sess-A::child::0", depth: int = 1
+) -> LiveSubagentRegistry:
+    """Attach a live registry holding one running INLINE subagent row."""
+    reg = LiveSubagentRegistry()
+    reg.observe(
+        EventEnvelope(
+            turn_id="t1",
+            session_key="sess-A",
+            sequence=0,
+            timestamp_ms=1000,
+            event=SubagentSpawned(
+                parent_session_key="sess-A",
+                child_session_key=child,
+                child_agent_id="inline-worker",
+                depth=depth,
+                prompt_preview="inline task",
+            ),
+        )
+    )
+    admin_state.live_subagent_registry = reg
+    return reg
+
+
 def test_list_returns_503_without_dispatcher(
     client: TestClient, admin_state: AdminState
 ) -> None:
@@ -116,6 +142,68 @@ def test_list_returns_503_without_dispatcher(
     assert resp.status_code == 503
     body = resp.json()
     assert body["error"] == "subagent_dispatcher_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_list_merges_inline_registry_rows(
+    client: TestClient, admin_state: AdminState, tmp_path: Path
+) -> None:
+    """Inline subagents (live registry) appear in the overview alongside
+    background-store rows, tagged with their source."""
+    store, _ = _wire_dispatcher(admin_state, tmp_path)
+    await store.begin(_make_req(request_id="bg-A"))
+    _wire_inline_registry(admin_state, child="sess-A::child::0")
+
+    resp = client.get("/admin/subagents")
+    assert resp.status_code == 200, resp.text
+    rows = {r["request_id"]: r for r in resp.json()["rows"]}
+    assert "bg-A" in rows and "sess-A::child::0" in rows
+    assert rows["bg-A"]["source"] == "background"
+    assert rows["sess-A::child::0"]["source"] == "inline"
+    assert rows["sess-A::child::0"]["depth"] == 1
+    assert rows["sess-A::child::0"]["state"] == "running"
+
+
+def test_list_registry_only_not_503(
+    client: TestClient, admin_state: AdminState
+) -> None:
+    """With no background dispatcher but a live registry, the overview
+    serves the inline rows instead of 503."""
+    _wire_inline_registry(admin_state)
+    resp = client.get("/admin/subagents")
+    assert resp.status_code == 200, resp.text
+    ids = {r["request_id"] for r in resp.json()["rows"]}
+    assert ids == {"sess-A::child::0"}
+
+
+@pytest.mark.asyncio
+async def test_live_overview_includes_inline_rows(
+    client: TestClient, admin_state: AdminState, tmp_path: Path
+) -> None:
+    """The global live SSE snapshot includes inline registry rows."""
+    store, _ = _wire_dispatcher(admin_state, tmp_path)
+    await store.begin(_make_req(request_id="bg-A"))
+    _wire_inline_registry(admin_state, child="sess-A::child::0")
+
+    r = subagent_routes.router()
+    handler = next(
+        route.endpoint  # type: ignore[attr-defined]
+        for route in r.routes
+        if getattr(route, "path", "") == "/admin/subagents/events/live"
+    )
+    streaming = await handler()
+    chunks: list[bytes] = []
+    async for chunk in streaming.body_iterator:
+        if isinstance(chunk, str):
+            chunk = chunk.encode("utf-8")
+        chunks.append(chunk)
+        if b"".join(chunks).decode("utf-8").count("event: subagent") >= 2:
+            break
+    body = b"".join(chunks).decode("utf-8")
+    assert "bg-A" in body and "sess-A::child::0" in body
+    assert '"source": "inline"' in body
+    if hasattr(streaming.body_iterator, "aclose"):
+        await streaming.body_iterator.aclose()
 
 
 @pytest.mark.asyncio

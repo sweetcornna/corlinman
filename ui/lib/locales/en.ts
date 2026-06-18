@@ -709,6 +709,12 @@ export const en = {
       "Background sub-agent dispatches and their live activity.",
     empty: "No active sub-agents.",
     loadFailed: "Load failed: {{msg}}",
+    chatPanel: {
+      title: "Agents",
+      empty: "No sub-agents this run yet.",
+      collapse: "Collapse agents panel",
+      expand: "Show agents panel",
+    },
     column: {
       subagentType: "Type",
       description: "Task",

@@ -65,7 +65,9 @@ from corlinman_agent.events import (
     EventEmitter,
     EventEnvelope,
     ReasoningDelta,
+    SubagentCompleted,
     SubagentEvent,
+    SubagentSpawned,
     TextDelta,
     ToolInputDelta,
 )
@@ -101,6 +103,15 @@ _DEFERRABLE_EVENT_TYPES: tuple[type, ...] = (
     ToolInputDelta,
 )
 
+# Subagent-lifecycle events tee'd to an optional live registry (the
+# ``/admin/subagents`` overview merges inline subagents from it). Observed
+# read-only; the agent's event delivery is never gated on this bookkeeping.
+_SUBAGENT_LIFECYCLE_EVENT_TYPES: tuple[type, ...] = (
+    SubagentSpawned,
+    SubagentEvent,
+    SubagentCompleted,
+)
+
 # Flush a turn's delta buffer once it reaches this many events even if no
 # important/terminal event has arrived yet. Bounds both the unflushed
 # (crash-window) event count and per-batch memory; small enough that a
@@ -123,6 +134,7 @@ class JournalBackedEmitter:
         journal: Any,
         *,
         flush_threshold: int = DEFAULT_FLUSH_THRESHOLD,
+        subagent_observer: Callable[[EventEnvelope], None] | None = None,
     ) -> None:
         """Wrap ``journal`` (typically an
         :class:`corlinman_server.agent_journal.AgentJournal`).
@@ -140,6 +152,11 @@ class JournalBackedEmitter:
         crash window and per-batch memory.
         """
         self._journal = journal
+        # Optional live-subagent observer (W2.x — multi-agent panel). Called
+        # on the hot path for subagent-lifecycle envelopes ONLY; wrapped in a
+        # try/except at the call site so a buggy observer can never deny the
+        # agent its event delivery.
+        self._subagent_observer = subagent_observer
         # Whether the journal supports the batch write API. Cached at
         # construction so the hot path doesn't re-probe every emit.
         self._has_batch_api: bool = callable(
@@ -195,6 +212,22 @@ class JournalBackedEmitter:
         # (1) durable write — batched for deltas, prompt for everything
         # that gates correctness (turn lifecycle, tool frames, ...).
         await self._persist(envelope)
+
+        # (1b) tee subagent-lifecycle envelopes to the live registry so the
+        # /admin/subagents overview reflects inline subagents too. Best-effort
+        # and synchronous (the registry is in-memory + non-blocking); a slip
+        # must never deny the agent its event.
+        if self._subagent_observer is not None and isinstance(
+            envelope.event, _SUBAGENT_LIFECYCLE_EVENT_TYPES
+        ):
+            try:
+                self._subagent_observer(envelope)
+            except Exception:  # noqa: BLE001 — bookkeeping must not break emit
+                logger.warning(
+                    "emitter.subagent_observer_failed",
+                    turn_id=envelope.turn_id,
+                    exc_info=True,
+                )
 
         # (2) snapshot subscribers under the lock; deliver outside it
         # so a slow consumer can't stall the producer holding the lock.

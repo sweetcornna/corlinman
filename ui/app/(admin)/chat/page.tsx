@@ -34,6 +34,7 @@ import { replaySession, type TranscriptMessage } from "@/lib/api/sessions";
 import { transcriptToChatMessages } from "@/lib/chat/transcript";
 import { ChatModelPicker, type ModelPickerKind } from "@/components/chat/chat-model-picker";
 import { ChatArea } from "@/components/chat/chat-area";
+import { ChatLiveAgents } from "@/components/chat/chat-live-agents";
 import { ChatSidebar } from "@/components/chat/chat-sidebar";
 import { ChatEmptyState } from "@/components/chat/empty-state";
 import type { ChatConversation, ChatMessage } from "@/lib/chat/types";
@@ -475,14 +476,16 @@ export default function ChatPage() {
             void handleLoadEarlier();
           }}
         />
-      ) : (
+      ) : null}
+      {sessionKey ? <ChatLiveAgents sessionKey={sessionKey} /> : null}
+      {!sessionKey ? (
         <section
           className="flex flex-1 items-center justify-center overflow-hidden rounded-xl border border-sg-border bg-sg-card p-6 shadow-sg-2"
           data-testid="chat-empty-pane"
         >
           <ChatEmptyState onPick={handlePickSuggestion} />
         </section>
-      )}
+      ) : null}
       <ChatModelPicker
         open={pickerOpen !== null}
         onClose={() => setPickerOpen(null)}
