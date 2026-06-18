@@ -1568,6 +1568,16 @@ export const en = {
     modelsCopied: "Model id copied",
     modelsCopyFailed: "Copy failed: {{msg}}",
     modelsCopyAria: "Copy model {{id}}",
+    modelsHintAdd:
+      "Fetch the catalog, then add models with “+” (or “Add all”) to register them as aliases routed to this provider.",
+    modelsAdd: "Add",
+    modelsAddAria: "Add model {{id}} to corlinman",
+    modelsAddAll: "Add all",
+    modelsAdded: "Added",
+    modelsAddedAria: "Model {{id}} already added",
+    modelsAddedToast: "Added {{count}} model(s) to corlinman",
+    modelsAddFailed: "Add failed: {{msg}}",
+    modelsAddNeedsName: "Enter a provider name first",
     fieldParams: "Default params",
     fieldParamsHint:
       "Provider-level defaults, overridden by alias.params at call time.",

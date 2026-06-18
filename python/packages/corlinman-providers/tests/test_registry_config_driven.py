@@ -189,6 +189,55 @@ def test_resolve_raw_model_prefers_configured_provider() -> None:
     assert merged["timeout_ms"] == 60_000
 
 
+def test_resolve_raw_openai_id_prefers_configured_compat_relay() -> None:
+    """A configured generic ``openai_compatible`` relay must capture a raw
+    OpenAI-family id (gpt-*/o*-*) instead of falling through to the public
+    OpenAI default.
+
+    Regression for the "custom provider configured, but the chat hits
+    OpenAI" bug: ``OpenAICompatibleProvider.supports()`` returns ``False``
+    so the configured-provider scan skips the relay; without the legacy
+    fallback preferring it, ``gpt-*`` would resolve to a fresh
+    ``OpenAIProvider()`` pointed at ``api.openai.com`` (the relay's
+    ``base_url`` silently lost).
+    """
+    relay = _spec(
+        "byo-relay",
+        ProviderKind.OPENAI_COMPATIBLE,
+        base_url="https://relay.example/v1",
+        params={"timeout_ms": 45_000},
+    )
+    reg = ProviderRegistry([relay])
+
+    provider, model, merged = reg.resolve(alias_or_model="gpt-5.5", aliases={})
+
+    assert provider is reg.get("byo-relay")
+    assert provider._base_url == "https://relay.example/v1"
+    assert model == "gpt-5.5"
+    assert merged["timeout_ms"] == 45_000
+
+
+def test_resolve_compat_relay_does_not_capture_non_openai_family_id() -> None:
+    """The relay rescue is scoped to OpenAI-family ids. A ``claude-*`` id
+    with only an ``openai_compatible`` relay configured must still fall to
+    the Anthropic legacy default, not the relay — the relay only speaks the
+    OpenAI wire and never declared it serves Anthropic ids."""
+    relay = _spec(
+        "byo-relay",
+        ProviderKind.OPENAI_COMPATIBLE,
+        base_url="https://relay.example/v1",
+    )
+    reg = ProviderRegistry([relay])
+
+    provider, model, _ = reg.resolve(
+        alias_or_model="claude-sonnet-4-5", aliases={}
+    )
+
+    assert isinstance(provider, AnthropicProvider)
+    assert provider is not reg.get("byo-relay")
+    assert model == "claude-sonnet-4-5"
+
+
 def test_resolve_raises_on_unknown_raw_id() -> None:
     # NOTE: ``llama-*`` moved out of "unknown" when MODEL_PREFIX_DEFAULTS
     # grew the Groq mapping (P5 broader-model-cover), so this uses a

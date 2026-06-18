@@ -1765,3 +1765,93 @@ def test_resolve_context_budget_bad_accessor_value_falls_back(
 
     assert rl._resolve_context_budget(_Zero(), "m") == rl._CONTEXT_BUDGET_DEFAULT
     assert rl._resolve_context_budget(_Raises(), "m") == rl._CONTEXT_BUDGET_DEFAULT
+
+
+# --------------------------------------------------------------------- #
+# gap empty-answer-recovery: reasoning-only turn → one-shot final-answer  #
+# nudge (the "agent replied blank" bug).                                 #
+# --------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_reasoning_only_turn_nudges_once_for_final_answer() -> None:
+    """A turn that streams only reasoning (no visible text, no tool calls)
+    must be nudged exactly once for the visible final answer, instead of
+    surfacing an empty reply."""
+    from corlinman_agent.reasoning_loop import _EMPTY_ANSWER_NUDGE
+
+    prov = _MultiRoundProvider(
+        [
+            # Round 0: chain-of-thought only — no visible content.
+            [
+                ProviderChunk(kind="token", text="thinking…", is_reasoning=True),
+                ProviderChunk(kind="done", finish_reason="stop"),
+            ],
+            # Round 1 (after the nudge): the visible answer.
+            [
+                ProviderChunk(kind="token", text="42"),
+                ProviderChunk(kind="done", finish_reason="stop"),
+            ],
+        ]
+    )
+    events = await _collect(ReasoningLoop(prov), ChatStart(model="x", messages=[]))
+
+    # The provider was re-invoked once (the nudge round).
+    assert len(prov.calls_seen) == 2
+    # The injected nudge rode a user turn into the second call.
+    assert prov.calls_seen[1][-1] == {
+        "role": "user",
+        "content": _EMPTY_ANSWER_NUDGE,
+    }
+    # The visible reply is the second round's answer (reasoning excluded).
+    visible = [e.text for e in events if isinstance(e, TokenEvent) and not e.is_reasoning]
+    assert visible == ["42"]
+    assert isinstance(events[-1], DoneEvent)
+
+
+@pytest.mark.asyncio
+async def test_reasoning_only_nudge_is_one_shot() -> None:
+    """If the model stays reasoning-only even after the nudge, the loop
+    terminates (one-shot latch) rather than nudging forever."""
+    prov = _MultiRoundProvider(
+        [
+            [
+                ProviderChunk(kind="token", text="thinking…", is_reasoning=True),
+                ProviderChunk(kind="done", finish_reason="stop"),
+            ],
+            # Still reasoning-only after the nudge.
+            [
+                ProviderChunk(kind="token", text="still thinking…", is_reasoning=True),
+                ProviderChunk(kind="done", finish_reason="stop"),
+            ],
+        ]
+    )
+    events = await _collect(ReasoningLoop(prov), ChatStart(model="x", messages=[]))
+
+    # Exactly one nudge: round 0 + one retry, then it gives up.
+    assert len(prov.calls_seen) == 2
+    visible = [e.text for e in events if isinstance(e, TokenEvent) and not e.is_reasoning]
+    assert visible == []
+    assert isinstance(events[-1], DoneEvent)
+
+
+@pytest.mark.asyncio
+async def test_reasoning_plus_visible_text_does_not_nudge() -> None:
+    """A normal turn that emits reasoning AND a visible answer in the same
+    round must NOT trigger the recovery nudge."""
+    prov = _MultiRoundProvider(
+        [
+            [
+                ProviderChunk(kind="token", text="thinking…", is_reasoning=True),
+                ProviderChunk(kind="token", text="the answer"),
+                ProviderChunk(kind="done", finish_reason="stop"),
+            ],
+        ]
+    )
+    events = await _collect(ReasoningLoop(prov), ChatStart(model="x", messages=[]))
+
+    # Single provider call — no nudge round.
+    assert len(prov.calls_seen) == 1
+    visible = [e.text for e in events if isinstance(e, TokenEvent) and not e.is_reasoning]
+    assert visible == ["the answer"]
+    assert isinstance(events[-1], DoneEvent)

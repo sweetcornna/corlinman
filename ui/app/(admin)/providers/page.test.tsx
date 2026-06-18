@@ -28,6 +28,14 @@ const probeProviderModelsMock = vi.fn(async (body: unknown) => {
     ],
   };
 });
+const upsertProviderMock = vi.fn(async (body: unknown) => {
+  void body;
+  return {};
+});
+const upsertAliasMock = vi.fn(async (body: unknown) => {
+  void body;
+  return {};
+});
 
 vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
@@ -35,7 +43,8 @@ vi.mock("@/lib/api", async () => {
     ...actual,
     fetchProviders: () => fetchProvidersMock(),
     listCustomProviders: () => listCustomProvidersMock(),
-    upsertProvider: vi.fn(),
+    upsertProvider: (body: unknown) => upsertProviderMock(body),
+    upsertAlias: (body: unknown) => upsertAliasMock(body),
     deleteProvider: vi.fn(),
     deleteCustomProvider: vi.fn(),
     getProviderModels: (name: string) => getProviderModelsMock(name),
@@ -92,6 +101,8 @@ describe("ProvidersAdminContent model discovery", () => {
     listCustomProvidersMock.mockClear();
     getProviderModelsMock.mockClear();
     probeProviderModelsMock.mockClear();
+    upsertProviderMock.mockClear();
+    upsertAliasMock.mockClear();
   });
 
   afterEach(() => {
@@ -180,5 +191,81 @@ describe("ProvidersAdminContent model discovery", () => {
 
     expect(screen.queryByText("stale-model")).not.toBeInTheDocument();
     expect(screen.getByText("尚未获取模型。")).toBeInTheDocument();
+  });
+
+  it("adds a fetched model as an alias bound to the draft provider", async () => {
+    renderPage();
+
+    fireEvent.click(await screen.findByTestId("providers-add-btn"));
+    fireEvent.change(screen.getByLabelText("名称"), {
+      target: { value: "relay" },
+    });
+    fireEvent.change(screen.getByLabelText("Base URL"), {
+      target: { value: "https://relay.example/v1" },
+    });
+    fireEvent.click(screen.getByTestId("provider-fetch-models-btn"));
+    await screen.findByText("relay-model-a");
+
+    fireEvent.click(screen.getByTestId("provider-model-add-relay-model-a"));
+
+    await waitFor(() => {
+      // The brand-new draft is persisted exactly once so the alias has a
+      // real provider to reference.
+      expect(upsertProviderMock).toHaveBeenCalledTimes(1);
+      expect(upsertAliasMock).toHaveBeenCalledWith({
+        name: "relay-model-a",
+        provider: "relay",
+        model: "relay-model-a",
+      });
+    });
+    // The row flips to the "added" affordance.
+    expect(
+      await screen.findByTestId("provider-model-added-relay-model-a"),
+    ).toBeInTheDocument();
+  });
+
+  it("adds every fetched model with a single provider upsert via Add all", async () => {
+    renderPage();
+
+    fireEvent.click(await screen.findByTestId("providers-add-btn"));
+    fireEvent.change(screen.getByLabelText("名称"), {
+      target: { value: "relay" },
+    });
+    fireEvent.change(screen.getByLabelText("Base URL"), {
+      target: { value: "https://relay.example/v1" },
+    });
+    fireEvent.click(screen.getByTestId("provider-fetch-models-btn"));
+    await screen.findByText("relay-model-a");
+
+    fireEvent.click(screen.getByTestId("provider-add-all-models-btn"));
+
+    await waitFor(() => {
+      expect(upsertProviderMock).toHaveBeenCalledTimes(1);
+      expect(upsertAliasMock).toHaveBeenCalledWith({
+        name: "relay-model-a",
+        provider: "relay",
+        model: "relay-model-a",
+      });
+      expect(upsertAliasMock).toHaveBeenCalledWith({
+        name: "relay-model-b",
+        provider: "relay",
+        model: "relay-model-b",
+      });
+    });
+  });
+
+  it("disables the add control until the provider has a name", async () => {
+    renderPage();
+
+    fireEvent.click(await screen.findByTestId("providers-add-btn"));
+    // Base URL set but no name yet → cannot bind an alias.
+    fireEvent.change(screen.getByLabelText("Base URL"), {
+      target: { value: "https://relay.example/v1" },
+    });
+    fireEvent.click(screen.getByTestId("provider-fetch-models-btn"));
+    await screen.findByText("relay-model-a");
+
+    expect(screen.getByTestId("provider-model-add-relay-model-a")).toBeDisabled();
+    expect(screen.getByTestId("provider-add-all-models-btn")).toBeDisabled();
   });
 });

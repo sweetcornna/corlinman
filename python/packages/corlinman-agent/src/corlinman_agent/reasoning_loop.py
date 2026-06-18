@@ -427,6 +427,19 @@ except ValueError:
     _MAX_ROUNDS = 60
 
 
+# gap empty-answer-recovery: injected (once) when a turn finishes with no
+# tool calls but emitted only reasoning / no visible text — a reasoning model
+# that streamed only its chain-of-thought, or an OpenAI-compatible relay that
+# mislabelled the answer as ``reasoning_content``. Both leave the user with a
+# blank reply. Asking the model for its final answer (rather than fabricating
+# one) recovers the turn without polluting the transcript with fake content.
+_EMPTY_ANSWER_NUDGE = (
+    "(system) Your previous turn contained only internal reasoning and no "
+    "visible reply to the user. Provide your final answer now — directly to "
+    "the user, in the user's language. Do not repeat your reasoning."
+)
+
+
 # Per-tool-result character cap for messages re-fed to the provider on
 # the next round. A few unbounded ``run_shell`` / ``read_file`` results
 # can blow the model's context window mid-task; the loop keeps every
@@ -1507,6 +1520,14 @@ class ReasoningLoop:
         # Crossing ``_TURN_OUTPUT_BUDGET`` flips subsequent oversized
         # results to spill-to-disk (see ``_extend_with_tool_round``).
         turn_output_spent: int = 0
+        # gap empty-answer-recovery: did THIS turn ever stream visible
+        # (non-reasoning) text, and did it stream any reasoning? Used at the
+        # no-tool-calls terminal to detect a reasoning-only / blank reply and
+        # nudge once for the visible final answer. ``empty_answer_nudged``
+        # latches the one-shot so a silent model still terminates.
+        turn_saw_visible_text = False
+        turn_saw_reasoning = False
+        empty_answer_nudged = False
 
         while rounds < _MAX_ROUNDS:
             if self._cancelled.is_set():
@@ -1610,6 +1631,14 @@ class ReasoningLoop:
                         _streaming_started = True
                         if isinstance(event, ToolCallEvent):
                             tool_calls_this_round.append(event)
+                            yield event
+                        elif isinstance(event, TokenEvent):
+                            # Track visible vs reasoning output so the
+                            # no-tool-calls terminal can detect a blank reply.
+                            if event.is_reasoning:
+                                turn_saw_reasoning = True
+                            elif event.text:
+                                turn_saw_visible_text = True
                             yield event
                         elif isinstance(event, DoneEvent):
                             finish_reason = event.finish_reason
@@ -1826,6 +1855,24 @@ class ReasoningLoop:
                     messages = _append_user_turn(messages, _nudge)
                     self._invalidate_token_cache()
                     continue  # re-run with the auto-continue nudge
+
+                # gap empty-answer-recovery: the turn produced reasoning but no
+                # visible text (reasoning model that streamed only its
+                # chain-of-thought, or a relay that mislabelled the answer as
+                # ``reasoning_content``) — the user would see a blank reply.
+                # Nudge ONCE for the visible final answer instead of emitting
+                # the empty turn. The ``empty_answer_nudged`` latch keeps it
+                # one-shot so a model that stays silent still terminates here.
+                if (
+                    not empty_answer_nudged
+                    and turn_saw_reasoning
+                    and not turn_saw_visible_text
+                    and finish_reason != "error"
+                ):
+                    empty_answer_nudged = True
+                    messages = _append_user_turn(messages, _EMPTY_ANSWER_NUDGE)
+                    self._invalidate_token_cache()
+                    continue  # re-run for the visible final answer
 
                 await self._emit(
                     TurnComplete(

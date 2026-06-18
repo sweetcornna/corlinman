@@ -319,11 +319,54 @@ class ProviderRegistry:
         # Legacy fallback — raw model id.
         for prefix, cls in MODEL_PREFIX_DEFAULTS:
             if alias_or_model.startswith(prefix):
+                # Before spinning up a fresh vendor-default adapter (which
+                # points at the vendor's *public* endpoint, e.g.
+                # ``api.openai.com``), prefer a configured generic
+                # ``openai_compatible`` relay for an OpenAI-family id
+                # (``gpt-*`` / ``o1-*`` / ``o3-*`` / ``o4-*``). Such a relay
+                # declares ``supports() == False`` — it is meant to be
+                # addressed via an alias — so the configured-provider scan
+                # above skipped it. Silently routing a user's ``gpt-*`` id to
+                # the *real* OpenAI when they only configured a bring-your-own
+                # relay is the "custom provider but the chat hits OpenAI" bug.
+                # The vendor market kinds (Mistral / Groq / …) keep their own
+                # ``supports()`` and are already matched by the scan, so this
+                # only rescues the generic relay kind.
+                if cls is OpenAIProvider:
+                    relay = self._first_openai_compatible()
+                    if relay is not None:
+                        relay_provider, relay_spec = relay
+                        return (
+                            relay_provider,
+                            alias_or_model,
+                            _runtime_params(relay_spec.params),
+                        )
                 if cls not in self._legacy_cache:
                     self._legacy_cache[cls] = cls()
                 return self._legacy_cache[cls], alias_or_model, {}
 
         raise KeyError(f"no provider registered for {alias_or_model!r}")
+
+    def _first_openai_compatible(
+        self,
+    ) -> tuple[CorlinmanProvider, ProviderSpec] | None:
+        """Return the first enabled+built generic ``openai_compatible`` relay
+        paired with its spec, or ``None`` when none is configured.
+
+        Used by :meth:`resolve` to keep a raw OpenAI-family model id on a
+        configured relay's declared ``base_url`` instead of falling through to
+        the public OpenAI default. The generic relay kind is the only
+        OpenAI-wire kind whose ``supports()`` returns ``False`` (the vendor
+        market kinds claim their own model patterns), so it is the only one the
+        configured-provider scan misses.
+        """
+        for spec in self._specs.values():
+            if spec.kind != ProviderKind.OPENAI_COMPATIBLE:
+                continue
+            provider = self._providers.get(spec.name)
+            if provider is not None:
+                return provider, spec
+        return None
 
 
 def _merge_params(

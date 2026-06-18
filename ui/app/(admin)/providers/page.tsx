@@ -18,7 +18,17 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { motion } from "framer-motion";
-import { Copy, Loader2, Pencil, Plug, Plus, RefreshCw, Trash2 } from "lucide-react";
+import {
+  Check,
+  Copy,
+  Loader2,
+  Pencil,
+  Plug,
+  Plus,
+  PlusCircle,
+  RefreshCw,
+  Trash2,
+} from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -49,6 +59,7 @@ import {
   getProviderModels,
   listCustomProviders,
   probeProviderModels,
+  upsertAlias,
   upsertProvider,
   type CustomProviderRow,
   type ProviderKind,
@@ -484,6 +495,18 @@ function ProviderEditorDialog({ open, onOpenChange, editing }: EditorProps) {
   const [paramErrors, setParamErrors] = React.useState<
     Record<string, string>
   >({});
+  // Per-model "add to corlinman" state: ids registered as aliases (bound to
+  // this provider) during this dialog session, plus the in-flight set for
+  // spinner / disabled affordances.
+  const [addedModels, setAddedModels] = React.useState<Set<string>>(
+    () => new Set(),
+  );
+  const [pendingAdds, setPendingAdds] = React.useState<Set<string>>(
+    () => new Set(),
+  );
+  // Once the provider behind the aliases is persisted (existing edit, or the
+  // first add on a brand-new draft) we don't re-upsert it on later adds.
+  const providerPersistedRef = React.useRef(false);
 
   React.useEffect(() => {
     modelDiscoveryGeneration.current += 1;
@@ -491,6 +514,11 @@ function ProviderEditorDialog({ open, onOpenChange, editing }: EditorProps) {
       setDraft(editing ? toDraft(editing) : { ...BLANK_DRAFT });
       setModelDiscovery({ models: [] });
       setParamErrors({});
+      setAddedModels(new Set());
+      setPendingAdds(new Set());
+      // An existing provider already has its ``[providers.<name>]`` block;
+      // a brand-new draft is persisted lazily on the first add.
+      providerPersistedRef.current = !!editing;
     }
   }, [open, editing]);
 
@@ -498,6 +526,13 @@ function ProviderEditorDialog({ open, onOpenChange, editing }: EditorProps) {
     modelDiscoveryGeneration.current += 1;
     setDraft((prev) => ({ ...prev, ...patch }));
     setModelDiscovery({ models: [] });
+    if (patch.name !== undefined) {
+      // Provider identity changed — aliases would bind to the new name, so
+      // drop the per-model added markers and force a fresh provider upsert.
+      setAddedModels(new Set());
+      setPendingAdds(new Set());
+      providerPersistedRef.current = false;
+    }
   }, []);
 
   const schema = editing?.params_schema ?? { type: "object", properties: {} };
@@ -554,6 +589,58 @@ function ProviderEditorDialog({ open, onOpenChange, editing }: EditorProps) {
     },
   });
 
+  const addModelsMutation = useMutation({
+    mutationFn: async (ids: string[]) => {
+      const providerName = draft.name.trim();
+      if (!providerName) {
+        throw new Error(t("providers.modelsAddNeedsName"));
+      }
+      // Persist the provider once so each alias references a real
+      // ``[providers.<name>]`` block. An alias may be written before its
+      // provider exists, but chat resolution would then fail — so for a
+      // brand-new draft we upsert the provider on the first add. Existing
+      // (editing) providers are already persisted; skip to avoid clobbering
+      // a stored literal api_key the operator didn't re-enter this session.
+      if (!providerPersistedRef.current) {
+        await upsertProvider(toUpsert(draft));
+        providerPersistedRef.current = true;
+      }
+      // Alias name == upstream model id, bound to this provider. This is the
+      // mechanism that makes the model routable: chat resolves the alias to
+      // (provider, model), so a custom provider's models stop falling through
+      // to the public OpenAI default.
+      for (const id of ids) {
+        await upsertAlias({ name: id, provider: providerName, model: id });
+      }
+      return ids;
+    },
+    onMutate: (ids) => {
+      setPendingAdds((prev) => new Set([...prev, ...ids]));
+    },
+    onSuccess: (ids) => {
+      setAddedModels((prev) => new Set([...prev, ...ids]));
+      toast.success(t("providers.modelsAddedToast", { count: ids.length }));
+      // Surface the new aliases on the Models page + chat picker, and refresh
+      // the provider table (a brand-new draft may have just been persisted).
+      qc.invalidateQueries({ queryKey: ["admin", "models"] });
+      qc.invalidateQueries({ queryKey: ["admin", "providers"] });
+    },
+    onError: (err) => {
+      toast.error(
+        t("providers.modelsAddFailed", {
+          msg: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    },
+    onSettled: (_data, _err, ids) => {
+      setPendingAdds((prev) => {
+        const next = new Set(prev);
+        for (const id of ids ?? []) next.delete(id);
+        return next;
+      });
+    },
+  });
+
   async function copyModelId(id: string) {
     try {
       await navigator.clipboard.writeText(id);
@@ -566,6 +653,14 @@ function ProviderEditorDialog({ open, onOpenChange, editing }: EditorProps) {
       );
     }
   }
+
+  // A valid provider identity is required before a model can be bound to it
+  // as an alias (name + — for openai_compatible — a base_url, and no param
+  // errors). Mirrors the save-button gating.
+  const canAddModels = nameOk && baseUrlOk && !hasErrors;
+  const remainingModelIds = modelDiscovery.models
+    .map((m) => m.id)
+    .filter((id) => !addedModels.has(id) && !pendingAdds.has(id));
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -704,34 +799,64 @@ function ProviderEditorDialog({ open, onOpenChange, editing }: EditorProps) {
                     {t("providers.modelsTitle")}
                   </h3>
                   <p className="text-[11px] text-sg-ink-3">
-                    {t("providers.modelsHint")}
+                    {t("providers.modelsHintAdd")}
                   </p>
                 </div>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={() =>
-                    modelDiscoveryMutation.mutate({
-                      generation: modelDiscoveryGeneration.current,
-                      draft,
-                      editing,
-                    })
-                  }
-                  disabled={
-                    !baseUrlOk || hasErrors || modelDiscoveryMutation.isPending
-                  }
-                  data-testid="provider-fetch-models-btn"
-                >
-                  {modelDiscoveryMutation.isPending ? (
-                    <Loader2 className="h-3 w-3 animate-spin" />
-                  ) : (
-                    <RefreshCw className="h-3 w-3" />
-                  )}
-                  {modelDiscoveryMutation.isPending
-                    ? t("providers.modelsFetching")
-                    : t("providers.modelsFetch")}
-                </Button>
+                <div className="flex shrink-0 items-center gap-2">
+                  {modelDiscovery.models.length > 0 ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() =>
+                        addModelsMutation.mutate(remainingModelIds)
+                      }
+                      disabled={
+                        !canAddModels ||
+                        remainingModelIds.length === 0 ||
+                        addModelsMutation.isPending
+                      }
+                      title={
+                        !canAddModels
+                          ? t("providers.modelsAddNeedsName")
+                          : undefined
+                      }
+                      data-testid="provider-add-all-models-btn"
+                    >
+                      {addModelsMutation.isPending ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <PlusCircle className="h-3 w-3" />
+                      )}
+                      {t("providers.modelsAddAll")}
+                    </Button>
+                  ) : null}
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      modelDiscoveryMutation.mutate({
+                        generation: modelDiscoveryGeneration.current,
+                        draft,
+                        editing,
+                      })
+                    }
+                    disabled={
+                      !baseUrlOk || hasErrors || modelDiscoveryMutation.isPending
+                    }
+                    data-testid="provider-fetch-models-btn"
+                  >
+                    {modelDiscoveryMutation.isPending ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <RefreshCw className="h-3 w-3" />
+                    )}
+                    {modelDiscoveryMutation.isPending
+                      ? t("providers.modelsFetching")
+                      : t("providers.modelsFetch")}
+                  </Button>
+                </div>
               </div>
               {modelDiscovery.error ? (
                 <p
@@ -746,31 +871,78 @@ function ProviderEditorDialog({ open, onOpenChange, editing }: EditorProps) {
                   className="grid max-h-40 gap-1 overflow-y-auto pr-1"
                   data-testid="provider-models-list"
                 >
-                  {modelDiscovery.models.map((m) => (
-                    <div
-                      key={m.id}
-                      className="flex min-h-9 items-center justify-between gap-2 rounded-md border border-sg-border bg-sg-inset px-2"
-                    >
-                      <span
-                        className="min-w-0 truncate font-mono text-[11px]"
-                        title={m.id}
+                  {modelDiscovery.models.map((m) => {
+                    const added = addedModels.has(m.id);
+                    const pending = pendingAdds.has(m.id);
+                    return (
+                      <div
+                        key={m.id}
+                        className="flex min-h-9 items-center justify-between gap-2 rounded-md border border-sg-border bg-sg-inset px-2"
+                        data-testid={`provider-model-row-${m.id}`}
                       >
-                        {m.id}
-                      </span>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 shrink-0 px-2"
-                        aria-label={t("providers.modelsCopyAria", {
-                          id: m.id,
-                        })}
-                        onClick={() => copyModelId(m.id)}
-                      >
-                        <Copy className="h-3 w-3" />
-                      </Button>
-                    </div>
-                  ))}
+                        <span
+                          className="min-w-0 truncate font-mono text-[11px]"
+                          title={m.id}
+                        >
+                          {m.id}
+                        </span>
+                        <div className="flex shrink-0 items-center gap-1">
+                          {added ? (
+                            <span
+                              className="inline-flex items-center gap-1 px-1.5 text-[10px] text-sg-ok"
+                              aria-label={t("providers.modelsAddedAria", {
+                                id: m.id,
+                              })}
+                              data-testid={`provider-model-added-${m.id}`}
+                            >
+                              <Check className="h-3 w-3" />
+                              {t("providers.modelsAdded")}
+                            </span>
+                          ) : (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 px-2"
+                              aria-label={t("providers.modelsAddAria", {
+                                id: m.id,
+                              })}
+                              title={
+                                !canAddModels
+                                  ? t("providers.modelsAddNeedsName")
+                                  : undefined
+                              }
+                              disabled={
+                                !canAddModels ||
+                                pending ||
+                                addModelsMutation.isPending
+                              }
+                              onClick={() => addModelsMutation.mutate([m.id])}
+                              data-testid={`provider-model-add-${m.id}`}
+                            >
+                              {pending ? (
+                                <Loader2 className="h-3 w-3 animate-spin" />
+                              ) : (
+                                <Plus className="h-3 w-3" />
+                              )}
+                            </Button>
+                          )}
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 px-2"
+                            aria-label={t("providers.modelsCopyAria", {
+                              id: m.id,
+                            })}
+                            onClick={() => copyModelId(m.id)}
+                          >
+                            <Copy className="h-3 w-3" />
+                          </Button>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               ) : (
                 <p className="text-[11px] text-sg-ink-3">
