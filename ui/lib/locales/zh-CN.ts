@@ -1514,7 +1514,8 @@ export const zhCN = {
     fieldNameHint: "标识用；alias.provider 引用此值。",
     fieldKind: "类型",
     fieldBaseUrl: "Base URL",
-    fieldBaseUrlHint: "openai_compatible 必填；第一方可留空以使用 SDK 默认。",
+    fieldBaseUrlHint:
+      "openai_compatible 必填；第一方可留空以使用 SDK 默认。可填根地址、/api、/v1 或完整的 /chat/completions 链接，会自动补全（结尾加 # 则原样使用）。",
     fieldApiKeySource: "API key 来源",
     fieldApiKeyEnv: "环境变量",
     fieldApiKeyValue: "字面量",

@@ -1550,7 +1550,7 @@ export const en = {
     fieldKind: "Kind",
     fieldBaseUrl: "Base URL",
     fieldBaseUrlHint:
-      "Required for openai_compatible; optional for first-party (SDK default).",
+      "Required for openai_compatible; optional for first-party (SDK default). Paste any form — host, /api, /v1, or a full /chat/completions URL; it's auto-completed (append # to use verbatim).",
     fieldApiKeySource: "API key source",
     fieldApiKeyEnv: "Env var",
     fieldApiKeyValue: "Literal",
