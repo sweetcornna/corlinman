@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from corlinman_server.console.brain import Brain, BrainSession
-from corlinman_server.console.commands import TurnRequest, dispatch
+from corlinman_server.console.commands import TurnRequest, dispatch, registry
 from corlinman_server.console.compaction import Compactor, maybe_auto_compact
 from corlinman_server.console.events import (
     ConsoleEvent,
@@ -47,6 +47,33 @@ from corlinman_server.console.router import ModelRouter
 __all__ = ["OUTPUT_FORMATS", "ConsoleApp", "run_console"]
 
 _BANNER = "corlinman console — /help for commands, Ctrl-C interrupts a running turn"
+
+
+def _build_slash_completer() -> Any:
+    """A prompt_toolkit completer that suggests ``/slash`` commands at the
+    start of a line — claude-code's command palette. Inert once the line
+    has a space or doesn't open with ``/``. Built lazily so prompt_toolkit
+    stays a soft dependency (the module imports without it)."""
+    from prompt_toolkit.completion import Completer, Completion  # noqa: PLC0415
+
+    class _SlashCompleter(Completer):
+        def get_completions(self, document: Any, complete_event: Any) -> Any:
+            text = document.text_before_cursor
+            if not text.startswith("/") or " " in text:
+                return
+            word = text[1:].lower()
+            for cmd in registry():
+                for name in (cmd.name, *cmd.aliases):
+                    if name.startswith(word):
+                        yield Completion(
+                            name,
+                            start_position=-len(word),
+                            display=f"/{name}",
+                            display_meta=cmd.description,
+                        )
+                        break
+
+    return _SlashCompleter()
 
 #: ``--print`` stdout contracts (claude-code's ``--output-format``):
 #: ``text`` streams the answer, ``json`` prints one ``result`` envelope,
@@ -299,23 +326,63 @@ class ConsoleApp:
 
     # ── interactive loop ──────────────────────────────────────────────
 
+    def _print_welcome(self) -> None:
+        """A boxed welcome panel (model / session / data / brain + key
+        commands) — claude-code's intro card, in place of the old one-line
+        banner. Degrades to the plain banner if rich's panel is missing."""
+        try:
+            from rich.panel import Panel  # noqa: PLC0415
+            from rich.table import Table  # noqa: PLC0415
+            from rich.text import Text  # noqa: PLC0415
+        except Exception:  # noqa: BLE001 — never let the banner crash the REPL
+            self.renderer.console.print(_BANNER, style="bold")
+            return
+
+        meta = Table.grid(padding=(0, 2))
+        meta.add_column(style="dim", justify="right")
+        meta.add_column(style="bold", overflow="fold")
+        meta.add_row("model", self.session.model)
+        meta.add_row("session", self.session.session_key)
+        meta.add_row("data", str(self.data_dir))
+        meta.add_row("brain", self.session.brain.descriptor)
+
+        hint = Text()
+        for key, label, sep in (
+            ("/help", " commands", "   "),
+            ("/model", " switch", "   "),
+            ("Ctrl-C", " interrupt", "   "),
+            ("/quit", " exit", ""),
+        ):
+            hint.append(key, style="cyan")
+            hint.append(label + sep, style="dim")
+
+        body = Table.grid()
+        body.add_row(meta)
+        body.add_row("")
+        body.add_row(hint)
+        self.renderer.console.print(
+            Panel.fit(
+                body,
+                title="corlinman console",
+                title_align="left",
+                border_style="cyan",
+            )
+        )
+
     async def run_repl(self) -> None:
         from prompt_toolkit import PromptSession  # noqa: PLC0415
         from prompt_toolkit.history import FileHistory  # noqa: PLC0415
         from prompt_toolkit.patch_stdout import patch_stdout  # noqa: PLC0415
 
-        self.renderer.console.print(_BANNER, style="bold")
-        self.renderer.console.print(
-            f"brain: {self.session.brain.descriptor}   model: {self.session.model}",
-            style="dim",
-            highlight=False,
-        )
+        self._print_welcome()
 
         history_path = self.data_dir / "console_history"
         with contextlib.suppress(OSError):
             history_path.parent.mkdir(parents=True, exist_ok=True)
         prompt: PromptSession[str] = PromptSession(
             history=FileHistory(str(history_path)),
+            completer=_build_slash_completer(),
+            complete_while_typing=True,
         )
 
         while self.running:
