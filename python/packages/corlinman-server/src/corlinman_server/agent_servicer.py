@@ -235,6 +235,10 @@ from corlinman_agent.subagent.blackboard import (
     dispatch_blackboard_read,
     dispatch_blackboard_write,
 )
+from corlinman_agent.tool_aliases import (
+    canonicalize_tool_name,
+    canonicalize_tool_names,
+)
 from corlinman_agent.variables import VariableCascade
 from corlinman_agent.web import (
     CALCULATOR_TOOL,
@@ -4005,19 +4009,25 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         bucket = active.get(session_key)
         if not bucket:
             return None
+        # Canonicalize both sides: a skill's ``allowed-tools`` may use the
+        # dotted logical namespace (``web.search``, ``file.read``) while the
+        # model calls the underscore wire name (``web_search``,
+        # ``read_file``). Without this the gate blocked every real tool the
+        # moment a scoped skill (deep-research / web_search / note-taking)
+        # was pulled. See ``corlinman_agent.tool_aliases``.
         union: set[str] = set()
         any_restriction = False
         for allowed in bucket.values():
             if allowed:
                 any_restriction = True
-                union.update(allowed)
+                union.update(canonicalize_tool_names(allowed))
         if not any_restriction:
             return None
         # Control tools always pass — never let an active skill strand the
         # model with no way to load another skill or stop the turn.
         if tool in (SKILL_TOOL, SUBAGENT_STOP_TOOL):
             return None
-        if tool in union:
+        if canonicalize_tool_name(tool) in union:
             return None
         return sorted(union)
 

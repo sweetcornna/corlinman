@@ -89,6 +89,33 @@ async def test_sec01_active_skills_isolated_per_session() -> None:
 
 
 @pytest.mark.asyncio
+async def test_skill_dotted_allowed_tools_match_wire_tool_names() -> None:
+    """Regression: a skill whose ``allowed-tools`` uses the dotted logical
+    namespace (``web.search``, ``file.read``) must NOT block the real wire
+    tools (``web_search``, ``read_file``). Pre-fix, pulling deep-research /
+    web_search silently denied every web + file tool on the session."""
+    servicer = CorlinmanAgentServicer(provider_resolver=lambda _m: _FakeProvider([]))
+    # deep-research's real allowed-tools (dotted form).
+    servicer._record_active_skill(
+        "t::sess",
+        "deep-research",
+        ["web.search", "web.fetch", "file.read", "file.write", "memory.search"],
+    )
+
+    # The model calls the wire names — all must pass.
+    for wire in ("web_search", "web_fetch", "read_file", "write_file", "memory_search"):
+        assert (
+            servicer._skill_allowed_tools_block(wire, "t::sess") is None
+        ), f"{wire} should be allowed by its dotted skill entry"
+
+    # A tool genuinely outside the skill's scope is still blocked, and the
+    # reported allow-list is the canonical (wire) union.
+    blocked = servicer._skill_allowed_tools_block("run_shell", "t::sess")
+    assert blocked is not None
+    assert "web_search" in blocked and "read_file" in blocked
+
+
+@pytest.mark.asyncio
 async def test_sec01_active_skills_cleared_at_turn_end() -> None:
     """The per-session active-skill entry is cleared at turn/session end so
     it cannot narrow a later turn forever."""

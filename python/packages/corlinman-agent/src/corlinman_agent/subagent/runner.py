@@ -59,6 +59,7 @@ from corlinman_agent.reasoning_loop import (
     ToolCallEvent,
     ToolResult,
 )
+from corlinman_agent.tool_aliases import canonicalize_tool_name
 
 #: Async callback the child loop uses to actually EXECUTE a tool call and
 #: return its JSON result envelope (the same string the parent feeds back as
@@ -848,6 +849,16 @@ def _filter_tools_for_child(
     payload may capture this set verbatim, and we don't want callers
     accidentally mutating that record.
     """
+    # The card's ``tools_allowed`` and the caller's ``requested_allowlist``
+    # may use the dotted logical namespace (``web.search``, ``file.read``)
+    # while ``parent_tool_names`` holds underscore wire names
+    # (``web_search``, ``read_file``). Match in canonical space so a dotted
+    # request isn't mis-flagged as an unknown tool (privilege escalation),
+    # but keep the parent's REAL wire name in the effective set so the
+    # child's advertised schema + execution-boundary check still use
+    # dispatchable names. See ``corlinman_agent.tool_aliases``.
+    parent_by_canon = {canonicalize_tool_name(t): t for t in parent_tool_names}
+
     # ── Layer 1: card narrowing (W1.1). ──────────────────────────────
     if not card_tools_allowed:
         # Legacy / empty card list — inherit verbatim. Matches
@@ -861,10 +872,14 @@ def _filter_tools_for_child(
         # the wildcard alone is the canonical form).
         card_effective = set(parent_tool_names)
     else:
-        # Explicit narrowing — intersect with parent's set so a card
-        # advertising a tool the parent doesn't hold is silently
-        # dropped (the parent's set is the hard ceiling).
-        card_effective = set(card_tools_allowed) & set(parent_tool_names)
+        # Explicit narrowing — intersect (in canonical space) with the
+        # parent's set so a card advertising a tool the parent doesn't
+        # hold is silently dropped (the parent's set is the hard ceiling).
+        card_effective = {
+            parent_by_canon[c]
+            for t in card_tools_allowed
+            if (c := canonicalize_tool_name(t)) in parent_by_canon
+        }
 
     # ── Layer 2: caller's per-spawn allowlist (existing). ────────────
     if requested_allowlist is None:
@@ -872,13 +887,21 @@ def _filter_tools_for_child(
         # caller's view.
         effective = set(card_effective)
     else:
-        requested = set(requested_allowlist)
-        # Escalation check first — empty list is a legal subset of every
-        # set so it falls straight through to the prune step.
-        offending = requested - card_effective
+        card_by_canon = {canonicalize_tool_name(t): t for t in card_effective}
+        # Escalation check in canonical space — empty list is a legal
+        # subset of every set so it falls straight through to the prune.
+        # ``offending`` keeps the caller's ORIGINAL names for the error.
+        offending = {
+            t for t in requested_allowlist
+            if canonicalize_tool_name(t) not in card_by_canon
+        }
         if offending:
             raise _ToolAllowlistEscalationError(offending)
-        effective = requested
+        # Resolve each requested (possibly dotted) name to the matching
+        # parent wire name so the child gets real, dispatchable tools.
+        effective = {
+            card_by_canon[canonicalize_tool_name(t)] for t in requested_allowlist
+        }
 
     # D7 — single-level nesting (parent → child). EVERY spawned child
     # (``child_depth >= 1``) loses the spawn tools, regardless of the
