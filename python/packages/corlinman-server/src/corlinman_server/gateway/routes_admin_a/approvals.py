@@ -61,6 +61,14 @@ def router() -> APIRouter:
         state: Annotated[AdminState, Depends(get_admin_state)],
         include_decided: Annotated[bool, Query()] = False,
     ) -> list[ApprovalOut]:
+        # When the approval gate isn't wired, an EMPTY queue is the correct
+        # operator view — there are no approvals to act on. Returning 200 []
+        # (rather than 503) keeps the admin dashboard's periodic poll quiet
+        # instead of spamming the browser console with a 503 on every tick.
+        # The mutating routes (decide/decide-all) still 503: you can't act on
+        # a gate that doesn't exist.
+        if state.approval_store is None:
+            return []
         store = _require_store(state)
         try:
             if include_decided:

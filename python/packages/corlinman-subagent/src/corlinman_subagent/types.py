@@ -39,7 +39,12 @@ __all__ = [
 #: Default per-child wall-clock budget when a ``TaskSpec`` does not set its
 #: own ``max_wall_seconds``. A child may request *less* than this; it may
 #: request more only up to :data:`DEFAULT_MAX_WALL_SECONDS_CEILING`.
-DEFAULT_MAX_WALL_SECONDS: int = 60
+#: Raised 60s → 180s: a general-purpose research child routinely makes 6+ web
+#: search/fetch calls (each several seconds against the public internet), which
+#: 60s could not finish — spawns were dying with ``finish_reason=timeout``
+#: mid-research. 180s covers a typical fan-out leg; the 300s ceiling still
+#: bounds a runaway child.
+DEFAULT_MAX_WALL_SECONDS: int = 180
 
 #: Hard upper bound the supervisor clamps ``task.max_wall_seconds`` to (D9).
 #: Decoupled from :data:`DEFAULT_MAX_WALL_SECONDS` so the *default* budget

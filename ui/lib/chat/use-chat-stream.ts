@@ -758,12 +758,12 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
     const key = (args.sessionKey ?? "").trim();
     // [resume-debug] TEMP — remove after the in-progress-resume fix lands.
     if (!key) {
-      console.debug("[resume-debug] bail: no sessionKey");
+      console.log("[resume-debug] bail: no sessionKey");
       return;
     }
     // Something already owns the pending bubble — nothing to reattach.
     if (fetchActiveRef.current || pendingRef.current || journalTurnRef.current) {
-      console.debug("[resume-debug] bail: owned", {
+      console.log("[resume-debug] bail: owned", {
         fetchActive: fetchActiveRef.current,
         pending: !!pendingRef.current,
         journalTurn: journalTurnRef.current,
@@ -773,23 +773,23 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
 
     const turns = await listSessionTurns(key, 1);
     const latest = turns[0];
-    console.debug("[resume-debug] latest turn", {
+    console.log("[resume-debug] latest turn", {
       key,
       turn_id: latest?.turn_id,
       status: latest?.status,
     });
     if (!latest || latest.status !== "in_progress") {
-      console.debug("[resume-debug] bail: latest not in_progress", latest?.status);
+      console.log("[resume-debug] bail: latest not in_progress", latest?.status);
       return;
     }
     const turnId = latest.turn_id;
     if (retiredTurnIdsRef.current.has(turnId)) {
-      console.debug("[resume-debug] bail: turn retired", turnId);
+      console.log("[resume-debug] bail: turn retired", turnId);
       return;
     }
     // Re-check after the await: a runTurn / second resume may have won.
     if (fetchActiveRef.current || pendingRef.current || journalTurnRef.current) {
-      console.debug("[resume-debug] bail: owned after await");
+      console.log("[resume-debug] bail: owned after await");
       return;
     }
 
@@ -819,18 +819,18 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
       const chatEvent = liveEventToChatEvent(env as LiveEvent);
       if (chatEvent) reduceEvent(chatEvent);
     }
-    console.debug("[resume-debug] backlog replayed", {
+    console.log("[resume-debug] backlog replayed", {
       turnId,
       backlogLen: backlog.length,
       lastSeq,
     });
     // A terminal event in the backlog already finalized the turn.
     if (journalTurnRef.current !== turnId) {
-      console.debug("[resume-debug] bail: turn finalized during backlog");
+      console.log("[resume-debug] bail: turn finalized during backlog");
       return;
     }
 
-    console.debug("[resume-debug] opening live tail", `${turnId}:${lastSeq}`);
+    console.log("[resume-debug] opening live tail", `${turnId}:${lastSeq}`);
     let liveCount = 0;
     closeLiveRef.current?.();
     closeLiveRef.current = openLiveEventStream(key, {
@@ -842,7 +842,7 @@ export function useChatStream(args: UseChatStreamArgs): UseChatStreamResult {
       onEvent: (live) => {
         liveCount += 1;
         if (liveCount <= 8 || liveCount % 20 === 0) {
-          console.debug("[resume-debug] live event", {
+          console.log("[resume-debug] live event", {
             n: liveCount,
             type: (live as { event_type?: string }).event_type,
             seq: (live as { sequence?: number }).sequence,
