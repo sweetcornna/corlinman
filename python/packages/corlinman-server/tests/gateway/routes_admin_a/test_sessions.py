@@ -260,3 +260,52 @@ def test_delete_session_503_when_sessions_disabled(
             assert resp.json()["detail"]["error"] == "sessions_disabled"
     finally:
         set_admin_state(None)
+
+
+# ---------------------------------------------------------------------------
+# POST /replay — in-progress (turns but no replayable messages) → empty, not 404
+# ---------------------------------------------------------------------------
+
+
+def _seed_journal_turn_no_messages(data_dir: Path, session_key: str) -> None:
+    """Seed a journal turn row WITHOUT any messages — mimics an in-progress
+    turn whose assistant/tool rows aren't journaled until it completes."""
+
+    async def _run() -> None:
+        data_dir.mkdir(parents=True, exist_ok=True)
+        j = await AgentJournal.open(data_dir / "agent_journal.sqlite")
+        try:
+            await j.begin_turn(session_key, "in-progress prompt")  # no append_message
+        finally:
+            await j.close()
+
+    asyncio.run(_run())
+
+
+def test_replay_in_progress_session_returns_empty_not_404(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """A journaled session with turns but no replayable messages yet (an
+    in-progress turn) replays to an EMPTY transcript (200), not 404 — so the
+    /chat page renders a clean empty thread + reattaches the live stream
+    instead of 404'ing on every in-progress conversation."""
+    _seed_journal_turn_no_messages(tmp_path, "sess-inflight")
+    resp = client.post(
+        "/admin/sessions/sess-inflight/replay", json={"mode": "transcript"}
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["session_key"] == "sess-inflight"
+    assert body["transcript"] == []
+
+
+def test_replay_unknown_session_with_journal_still_404(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """A key with NO journal turns at all is genuinely unknown → still 404
+    (the empty-transcript fix must not swallow real not-found errors)."""
+    _seed_journal(tmp_path, {"sess-known": ["hi"]})
+    resp = client.post(
+        "/admin/sessions/never-existed/replay", json={"mode": "transcript"}
+    )
+    assert resp.status_code == 404, resp.text

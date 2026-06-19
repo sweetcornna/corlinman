@@ -685,9 +685,15 @@ async def _replay_from_journal(
             except Exception:  # noqa: BLE001
                 pass
 
-    if not transcript:
-        return None
-
+    # NOTE: we deliberately DO NOT early-return ``None`` for an empty
+    # transcript here. ``turn_rows`` was non-empty (checked above), so the
+    # session EXISTS in the journal — it just has no replayable messages yet
+    # (an in-progress turn whose assistant/tool rows aren't journaled until it
+    # completes). Returning the empty dump (per this function's docstring) lets
+    # the /chat page render a clean empty thread + reattach the live stream,
+    # instead of falling through to the write-dead legacy store and 404'ing on
+    # every in-progress conversation. A genuinely unknown session has no turn
+    # rows at all and still 404s via the ``not turn_rows`` path above.
     return {
         "session_key": session_key,
         "mode": ("rerun" if mode == ReplayMode.RERUN else "transcript"),

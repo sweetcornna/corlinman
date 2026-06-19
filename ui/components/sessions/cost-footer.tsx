@@ -129,6 +129,10 @@ export function CostFooter({ sessionKey, fetcher }: CostFooterProps) {
   }, []);
 
   const load = React.useCallback(async () => {
+    // Guard: a blank session key would hit `/admin/sessions//cost` (empty
+    // path segment → 404). The footer mounts before a session resolves on
+    // some routes, so skip the fetch until we have a real key.
+    if (!sessionKey || !sessionKey.trim()) return;
     try {
       const next = await fetch_(sessionKey);
       setData(next);
