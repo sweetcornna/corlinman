@@ -319,6 +319,10 @@ class ConsoleApp:
             self.session.cancel_turn()
             self.renderer.console.print("⏹ interrupted", style="yellow")
         finally:
+            # Safety net: stop any rich Live the turn left running (an event
+            # stream that raised before TurnDone/TurnError) so it can never
+            # bleed into the next prompt and corrupt the terminal.
+            self.renderer.finish_turn()
             if installed:
                 with contextlib.suppress(Exception):
                     loop.remove_signal_handler(signal.SIGINT)
@@ -593,7 +597,13 @@ async def run_console(
         )
 
     console = Console(file=sys.stderr) if print_mode else Console()
-    renderer = Renderer(console, tool_progress=tool_progress)
+    # Rich UI (spinner + live markdown + tool blocks) only on an interactive
+    # REPL terminal; --print / piped / JSON output stays on the raw path.
+    renderer = Renderer(
+        console,
+        tool_progress=tool_progress,
+        rich_ui=(not print_mode and bool(console.is_terminal)),
+    )
 
     app = ConsoleApp(
         session=session,
