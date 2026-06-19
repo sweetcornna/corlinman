@@ -270,10 +270,37 @@ class EmbeddedBrain:
 
             hook_runner = _build_hook_runner()
 
-        servicer = CorlinmanAgentServicer(
-            hook_runner=hook_runner,
-            subagent_config=_load_subagent_config(),
-        )
+        # Provider resolver: WITHOUT this the servicer falls back to the
+        # offline-mock / legacy prefix table and a custom provider configured
+        # in the TOML (e.g. an ``openai_compatible`` relay named ``cornna``)
+        # is never registered — so the console died with
+        # ``no provider registered for 'cornna'`` while the gateway, which
+        # builds this same resolver, worked fine. Mirror the agent server's
+        # construction (``main._main`` ``else`` branch): a reloading resolver
+        # over the ``CORLINMAN_PY_CONFIG`` drop, plus its alias table +
+        # subagent policy, so the embedded brain sees the exact provider/model
+        # catalog the admin UI manages. ``_ensure_py_config_env`` (run in
+        # ``start`` before this) has already pointed CORLINMAN_PY_CONFIG at the
+        # drop; ``None`` path keeps the legacy fallback (no worse than before).
+        servicer_kwargs: dict[str, Any] = {
+            "hook_runner": hook_runner,
+            "subagent_config": _load_subagent_config(),
+        }
+        try:
+            from corlinman_server.main import (  # noqa: PLC0415
+                _ReloadingProviderResolver,
+            )
+
+            resolver = _ReloadingProviderResolver(
+                os.environ.get("CORLINMAN_PY_CONFIG")
+            )
+            servicer_kwargs["provider_resolver"] = resolver
+            servicer_kwargs["aliases"] = resolver.aliases
+            servicer_kwargs["subagent_config"] = resolver.subagent_config
+        except Exception as exc:  # noqa: BLE001 — degrade to mock/legacy resolver
+            log.warning("console.embedded.provider_resolver_unavailable err=%s", exc)
+
+        servicer = CorlinmanAgentServicer(**servicer_kwargs)
         agent_pb2_grpc.add_AgentServicer_to_server(servicer, server)
         server.add_insecure_port(bind)
         await server.start()
