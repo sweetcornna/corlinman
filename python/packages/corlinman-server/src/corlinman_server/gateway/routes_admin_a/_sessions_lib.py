@@ -604,6 +604,18 @@ async def _replay_from_journal(
                 tid = int(raw_turn_id)
             except (TypeError, ValueError):
                 continue
+            # Skip a still-in-progress turn: the /chat page renders it LIVE
+            # via ``resumeInFlight`` (a separate pending bubble that tails
+            # the journal). A multi-step agentic turn journals its
+            # intermediate assistant/tool message rows AS IT RUNS, so
+            # including them in the settled transcript too double-renders
+            # the turn — a frozen "已隐藏 N 个工具调用" bubble stacked above
+            # the live one. ``finalizeJournalTurn`` invalidates this
+            # transcript query when the turn ends, so the completed turn
+            # lands here naturally on the refetch. (Only the latest turn is
+            # ever in_progress; older turns are always terminal.)
+            if str(turn_row.get("status") or "") == "in_progress":
+                continue
             started_at_ms = int(turn_row.get("started_at_ms") or 0)
             ts_iso = (
                 datetime.fromtimestamp(started_at_ms / 1000.0, tz=UTC)
