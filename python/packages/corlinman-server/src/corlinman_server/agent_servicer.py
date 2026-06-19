@@ -3530,27 +3530,10 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             resolve_signing_key,
         )
 
-        public_url = os.environ.get("CORLINMAN_PUBLIC_URL", "").strip().rstrip("/")
-        if not public_url:
-            # Fall back to the gateway config's ``[server].public_url`` when
-            # the env var is unset. The servicer has no config object in
-            # scope, so read it from the Rust→Python config-handshake JSON
-            # drop the gateway writes at boot (``$CORLINMAN_PY_CONFIG`` /
-            # ``~/.corlinman/py_config.json``). Best-effort: any read/parse
-            # failure leaves ``public_url`` empty and the typed error below
-            # fires, exactly as before.
-            cfg_public_url = _read_public_url_from_py_config()
-            if cfg_public_url:
-                public_url = cfg_public_url.strip().rstrip("/")
-        if not public_url:
-            # Zero-config fallback: the gateway learns the public origin from
-            # real inbound requests and persists it to
-            # ``<data_dir>/public_origin`` (see gateway.origin_learn). Read it
-            # so the tool can use the restricted auto-learning fallback once
-            # a request has arrived through an explicitly allowed public origin.
-            learned = _read_learned_public_origin()
-            if learned:
-                public_url = learned.strip().rstrip("/")
+        # ``CORLINMAN_PUBLIC_URL`` env > ``[server].public_url`` (py-config
+        # drop) > gateway-learned origin (``<data_dir>/public_origin``). Same
+        # resolver the media-download links use; empty → typed error below.
+        public_url = _resolve_public_base_url()
         if not public_url:
             return json.dumps(
                 {
@@ -4590,6 +4573,27 @@ def _read_learned_public_origin() -> str:
     return load_remembered_origin(_resolve_data_dir())
 
 
+def _resolve_public_base_url() -> str:
+    """Resolve the gateway's public base URL (no trailing slash), or ``""``.
+
+    Resolution order — same precedence the status-card tool uses:
+    ``CORLINMAN_PUBLIC_URL`` env > ``[server].public_url`` (from the
+    ``$CORLINMAN_PY_CONFIG`` drop) > the gateway-learned origin written to
+    ``<data_dir>/public_origin``. Used to turn a relative ``/v1/files/{id}``
+    media url into an absolute, clickable download link so a server-deployed
+    agent hands the user a real link instead of a host-less path.
+    """
+    for candidate in (
+        os.environ.get("CORLINMAN_PUBLIC_URL", ""),
+        _read_public_url_from_py_config(),
+        _read_learned_public_origin(),
+    ):
+        base = (candidate or "").strip().rstrip("/")
+        if base:
+            return base
+    return ""
+
+
 def _resolve_data_dir() -> Path:
     raw = os.environ.get("CORLINMAN_DATA_DIR")
     if raw:
@@ -4836,6 +4840,18 @@ def _register_tool_media(
 
     from corlinman_server.gateway.routes.files import register_local_file
 
+    # Absolutize the relative ``/v1/files/{id}`` url against the gateway's
+    # public base URL when one is resolvable, so a server-deployed agent
+    # embeds a real clickable download link (not a host-less path the user
+    # can't reach). Resolved ONCE per result — empty base keeps the relative
+    # url (the web UI still prepends its own origin; only the CLI / text
+    # surfaces lose the host, exactly as before). The /v1/files endpoint is
+    # auth-gated, so the link opens for a logged-in admin (cookie bridge).
+    _base = _resolve_public_base_url()
+
+    def _abs_url(rel: str) -> str:
+        return f"{_base}{rel}" if _base and rel.startswith("/") else rel
+
     def _try_register(raw_path: object) -> dict[str, object] | None:
         if not isinstance(raw_path, str) or not raw_path:
             return None
@@ -4857,7 +4873,7 @@ def _register_tool_media(
         size = int(entry.get("size") or 0)
         meta = {
             "kind": _media_kind_for_mime(str(entry.get("mime") or "")),
-            "url": str(entry.get("url") or ""),
+            "url": _abs_url(str(entry.get("url") or "")),
             "mime": str(entry.get("mime") or ""),
             "name": str(entry.get("name") or ""),
             **({"size": size} if size > 0 else {}),

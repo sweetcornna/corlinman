@@ -36,6 +36,54 @@ def _make_png(tmp_path: Path, name: str = "gen.png") -> Path:
     return p
 
 
+def test_url_absolutized_with_public_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On a server deployment (CORLINMAN_PUBLIC_URL set) the media url is an
+    absolute, clickable link — the model embeds a real download link, not a
+    host-less ``/v1/files/...`` path."""
+    monkeypatch.setenv("CORLINMAN_PUBLIC_URL", "https://corlinman.example.com/")
+    img = _make_png(tmp_path)
+    media: list[dict[str, object]] = []
+    out = _register_tool_media(json.dumps({"path": str(img)}), media)
+
+    parsed = json.loads(out)
+    assert parsed["url"].startswith("https://corlinman.example.com/v1/files/")
+    assert "/v1/files//" not in parsed["url"]  # trailing slash trimmed
+    assert "https://corlinman.example.com/v1/files/" in parsed["display_note"]
+    assert media[0]["url"] == parsed["url"]
+
+
+def test_pdf_send_attachment_absolute_download_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-image file (send_attachment, force=True) gets an absolute
+    download link + a plain-link embed note (not image markdown)."""
+    monkeypatch.setenv("CORLINMAN_PUBLIC_URL", "https://corlinman.example.com")
+    pdf = tmp_path / "report.pdf"
+    pdf.write_bytes(b"%PDF-1.7 fake")
+    media: list[dict[str, object]] = []
+    out = _register_tool_media(
+        json.dumps({"path": str(pdf)}), media, force=True
+    )
+
+    parsed = json.loads(out)
+    assert parsed["url"].startswith("https://corlinman.example.com/v1/files/")
+    assert "![" not in parsed["display_note"]  # plain link, not image md
+    assert "[report.pdf](https://corlinman.example.com/v1/files/" in parsed[
+        "display_note"
+    ]
+
+
+def test_no_public_url_keeps_relative(tmp_path: Path) -> None:
+    """Without a resolvable public base, the url stays relative (web UI
+    prepends its own origin; unchanged pre-fix behaviour)."""
+    img = _make_png(tmp_path)
+    media: list[dict[str, object]] = []
+    out = _register_tool_media(json.dumps({"path": str(img)}), media)
+    assert json.loads(out)["url"].startswith("/v1/files/")
+
+
 def test_image_path_rewritten_to_url(tmp_path: Path) -> None:
     img = _make_png(tmp_path)
     media: list[dict[str, object]] = []
