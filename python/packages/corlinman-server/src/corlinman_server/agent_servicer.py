@@ -4899,8 +4899,10 @@ def _register_tool_media(
                 f"as markdown: ![{name}]({url})"
             )
         else:
+            # ``kind`` is already "file" for a generic blob — avoid "file file".
+            noun = "file" if kind == "file" else f"{kind} file"
             parsed["display_note"] = (
-                f"The {kind} file is downloadable at the `url` — "
+                f"The {noun} is downloadable at the `url` — "
                 f"share it in your reply as a markdown link: "
                 f"[{name}]({url})"
             )
