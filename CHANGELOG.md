@@ -4,6 +4,21 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.22.5] — 2026-07-02 — Console `/init` bootstraps CORLINMAN.md
+
+> Patch release. Config-compatible. ABSORB_MATRIX Dim 8 — the claude-code
+> `/init` analog (project-memory discovery/@include was already shipped; this
+> was the one missing piece).
+
+### Added
+- **`/init` console command** — analyzes the codebase and writes a concise
+  `CORLINMAN.md` project-memory file at the repo root. Resolves to a one-shot
+  brain turn (via `TurnRequest`) that inspects the project with the agent's file
+  tools (build/lint/test commands, architecture, conventions) and writes the
+  file, improving an existing `CORLINMAN.md` rather than discarding it. The
+  existing discovery/@include pipeline then folds it into every subsequent
+  session's system prompt.
+
 ## [1.22.4] — 2026-07-02 — Tunable context-compaction reserve
 
 > Patch release. Config-compatible (defaults unchanged). ABSORB_MATRIX Dim 2 —
