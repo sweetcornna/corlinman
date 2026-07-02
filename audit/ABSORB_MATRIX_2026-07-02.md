@@ -29,13 +29,13 @@
 
 ## Landing plan (value/cost ranked)
 
-**Batch 1 — cheap high-value (S-cost, land now, TDD + `make ci` each):**
-1. **Dim 2** compaction hardening — `window − buffer` threshold + env/pct overrides + per-user disable + saved-token feedback + informative elision (H/S).
-2. **Dim 4-core** — atomic `Write` (tmp→fsync→replace + cap), shell `run_in_background`, `NotebookEdit` (H/S).
-3. **Dim 5-slices** — `{server}_{tool}` namespacing (fixes the v1.22.0 collision drop) + `deniedMcpServers`/allow policy (H/S).
-4. **Dim 8** — `/init` codebase-analysis → `CORLINMAN.md` (M/S).
-5. **Dim 1-slice** — jittered backoff in `_loop_retryable` (M/S).
-6. **Dim 12-console** — `/cost` + live token/context/cost status bar on the existing `sessions_cost` aggregate (M/S).
+**Batch 1 — cheap high-value (S-cost, TDD + `make ci` each):**
+1. ✅ **Dim 1** jittered backoff (`_retry_backoff_seconds`) — **LANDED v1.22.2**.
+2. ✅ **Dim 5-slices** `{server}_{tool}` namespacing (fixes the v1.22.0 collision drop + builtin-shadow) + `deniedMcpServers`/allow policy — **LANDED v1.22.3**.
+3. ✅ **Dim 2** compaction reserve made env-tunable incl. claude-code `window − buffer` — **LANDED v1.22.4**. _(Deferred sub-parts: saved-token feedback + informative elision — the exact `_ELIDED_TOOL_CONTENT` sentinel is pinned by 3 tests.)_
+4. ✅ **Dim 8** `/init` codebase-analysis → `CORLINMAN.md` — **LANDED v1.22.5**.
+5. ✅ **Dim 12-console** `/cost` estimated session spend — **LANDED v1.22.6**. _(Live token/context/cost status bar deferred.)_
+6. ⏳ **Dim 4-core** atomic `Write` (safety-critical TOCTOU — deliberate, not rushed), shell `run_in_background`, `NotebookEdit` (H/S) — **not yet landed**.
 
 **Batch 2+ — larger, own PRs (M–L cost):** Dim 3 permission console surface (`/permissions`,`/plan`, interactive resolver, `Enter/ExitPlanMode`, settings persistence) H/M; Dim 11 message-id soft-delete rewind + `--continue`/fuzzy resume H/M; Dim 6 provider-fan-out `MemoryManager` + background prefetch M/M; Dim 9 declarative `hooks` settings + `/hooks` M/L; Dim 4 sandbox-backend abstraction H/L; Dim 12 per-tool OTel spans M.
 

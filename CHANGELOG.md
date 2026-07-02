@@ -4,6 +4,19 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.22.6] — 2026-07-02 — Console `/cost` (estimated session spend)
+
+> Patch release. Config-compatible. ABSORB_MATRIX Dim 12 — surfaces the
+> per-model USD cost the agent loop already computes but the console never
+> showed (`/usage` was tokens-only).
+
+### Added
+- **`/cost` console command** — shows the estimated USD spend for the current
+  session (model, turns, in/out tokens, cost), reusing the reasoning loop's
+  per-model pricing coefficients. An unknown/unpriced model reports
+  "unavailable" rather than a misleading $0. (A live cost/token status bar
+  remains a follow-up.)
+
 ## [1.22.5] — 2026-07-02 — Console `/init` bootstraps CORLINMAN.md
 
 > Patch release. Config-compatible. ABSORB_MATRIX Dim 8 — the claude-code
