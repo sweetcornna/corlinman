@@ -83,14 +83,18 @@ _MODEL_COSTS: dict[str, tuple[float, float, float, float]] = {
     "claude-haiku-4-5": (0.8, 4.0, 0.08, 1.0),
 }
 
-_INTERNAL_CHAT_EXTRA_KEYS: frozenset[str] = frozenset({
-    "persona_id",
-    "binding",
-    "provider_hint",
-})
-_CODEX_ONLY_CHAT_EXTRA_KEYS: frozenset[str] = frozenset({
-    "prompt_cache_key",
-})
+_INTERNAL_CHAT_EXTRA_KEYS: frozenset[str] = frozenset(
+    {
+        "persona_id",
+        "binding",
+        "provider_hint",
+    }
+)
+_CODEX_ONLY_CHAT_EXTRA_KEYS: frozenset[str] = frozenset(
+    {
+        "prompt_cache_key",
+    }
+)
 
 
 def _provider_kind_value(provider: Any) -> str:
@@ -165,9 +169,7 @@ def _warn_undeclared_extra_keys(
     )
 
 
-def _provider_chat_extra(
-    provider: Any, extra: dict[str, Any] | None
-) -> dict[str, Any] | None:
+def _provider_chat_extra(provider: Any, extra: dict[str, Any] | None) -> dict[str, Any] | None:
     """Return the provider-visible subset of ``ChatStart.extra``.
 
     ``ChatStart.extra`` also carries turn metadata used by the servicer for
@@ -223,9 +225,7 @@ def _estimate_turn_cost_usd(model: str, usage: dict[str, int]) -> float:
     # Anthropic reports the cache-write count under
     # ``cache_creation_input_tokens``; some shims fold it into a
     # ``cache_creation`` key — honour both.
-    cache_create_tok = usage.get(
-        "cache_creation_input_tokens", usage.get("cache_creation", 0)
-    )
+    cache_create_tok = usage.get("cache_creation_input_tokens", usage.get("cache_creation", 0))
     return (
         input_tok * in_rate / 1_000_000
         + output_tok * out_rate / 1_000_000
@@ -487,8 +487,8 @@ _TOOL_RESULT_TAIL_CHARS = 5_000
 
 # T2.3: cap on total estimated context tokens fed into the provider on
 # each round. Once exceeded, ``_compact_history`` elides older
-# ``role="tool"`` payloads to the literal ``_ELIDED_TOOL_CONTENT``
-# sentinel (kept under-budget for natural idempotence). The most-recent
+# ``role="tool"`` payloads to a ``_ELIDED_TOOL_PREFIX`` one-liner
+# (kept under-budget for natural idempotence). The most-recent
 # 3 assistant rounds plus the seed system/user messages stay verbatim.
 # Override with ``$CORLINMAN_CONTEXT_BUDGET``; floor mirrors
 # ``_TOOL_RESULT_CAP``'s pattern.
@@ -503,9 +503,7 @@ _CONTEXT_BUDGET_DEFAULT = 120_000
 _CONTEXT_BUDGET_ENV_RAW = os.environ.get("CORLINMAN_CONTEXT_BUDGET")
 try:
     _CONTEXT_BUDGET_OVERRIDE: int | None = (
-        max(8_000, int(_CONTEXT_BUDGET_ENV_RAW))
-        if _CONTEXT_BUDGET_ENV_RAW is not None
-        else None
+        max(8_000, int(_CONTEXT_BUDGET_ENV_RAW)) if _CONTEXT_BUDGET_ENV_RAW is not None else None
     )
 except ValueError:
     _CONTEXT_BUDGET_OVERRIDE = None
@@ -514,6 +512,7 @@ except ValueError:
 # default). Kept because tests and other modules import this symbol; the
 # live loop now sizes per-model via :func:`_resolve_context_budget`.
 _CONTEXT_BUDGET = _CONTEXT_BUDGET_OVERRIDE or _CONTEXT_BUDGET_DEFAULT
+
 
 # When deriving the budget from a model's full context window, reserve a
 # slice for the response + safety margin. Default: a fraction, capped in
@@ -531,12 +530,8 @@ def _env_positive_float(name: str, default: float) -> float:
     return value if value > 0 else default
 
 
-_CONTEXT_OUTPUT_RESERVE_FRACTION = _env_positive_float(
-    "CORLINMAN_CONTEXT_RESERVE_FRACTION", 0.15
-)
-_CONTEXT_OUTPUT_RESERVE_CAP = int(
-    _env_positive_float("CORLINMAN_CONTEXT_RESERVE_CAP", 48_000)
-)
+_CONTEXT_OUTPUT_RESERVE_FRACTION = _env_positive_float("CORLINMAN_CONTEXT_RESERVE_FRACTION", 0.15)
+_CONTEXT_OUTPUT_RESERVE_CAP = int(_env_positive_float("CORLINMAN_CONTEXT_RESERVE_CAP", 48_000))
 # When set, reserve a FIXED number of tokens (claude-code ``AUTOCOMPACT_BUFFER``
 # semantics: ``window - buffer``) instead of the proportional fraction/cap.
 _CONTEXT_RESERVE_TOKENS_RAW = os.environ.get("CORLINMAN_CONTEXT_RESERVE_TOKENS")
@@ -589,10 +584,22 @@ def _resolve_context_budget(provider: Any, model: str | None) -> int:
             return max(8_000, window - _context_output_reserve(window))
     return _CONTEXT_BUDGET_DEFAULT
 
-# Sentinel string written into elided ``role="tool"`` messages. Keep
-# short — it's sub-budget by construction so subsequent
-# ``_compact_history`` passes are no-ops.
-_ELIDED_TOOL_CONTENT = "[older tool output elided]"
+
+# Stable prefix for elided ``role="tool"`` payloads. Elision writes an
+# informative one-liner — ``[older tool output elided — read_file({"path":
+# "x"}) · 4213 chars]`` — derived ONLY from the message + its assistant
+# shell, so it is deterministic across rounds (prompt-cache stable) and
+# recognizable by prefix on the next pass (idempotence). Keep short —
+# sub-budget by construction so subsequent passes are no-ops.
+_ELIDED_TOOL_PREFIX = "[older tool output elided"
+
+# Legacy flat sentinel: the fallback when a tool message has no matching
+# assistant ``tool_calls`` shell to name it (and the exact value older
+# transcripts already carry — its prefix keeps it recognized).
+_ELIDED_TOOL_CONTENT = _ELIDED_TOOL_PREFIX + "]"
+
+# Cap on the arguments hint embedded in the informative sentinel.
+_ELIDE_ARGS_HINT_MAX = 80
 
 # How many trailing assistant rounds stay verbatim through compaction.
 _COMPACT_RECENT_ROUNDS = 3
@@ -793,21 +800,25 @@ async def _compact_history(
 
     Two strategies, picked by token pressure:
 
-    1. **Fast path — naive tool-result elision.** Below the summary
-       threshold (``budget * _COMPACT_SUMMARY_THRESHOLD``, default 95%
-       of budget) we replace older ``role="tool"`` payloads with the
-       literal ``_ELIDED_TOOL_CONTENT`` sentinel and keep the seed
-       system / first-user / recent-3 rounds verbatim. Cheap, sync, and
-       idempotent — once a tool message has been replaced with the
-       short sentinel a re-run yields an equal result.
+    1. **Fast path — informative tool-result elision.** Below the
+       summary threshold (``budget * _COMPACT_SUMMARY_THRESHOLD``,
+       default 95% of budget) we replace older ``role="tool"`` payloads
+       with the :func:`_elided_tool_summary` one-liner (tool name +
+       args hint + original size behind the stable
+       ``_ELIDED_TOOL_PREFIX``) and keep the seed system / first-user /
+       recent-3 rounds verbatim. Cheap, sync, and idempotent — once a
+       tool message carries the prefix a re-run preserves it.
 
     2. **Slow path — Claude-Code-style summarization.** When pressure
-       crosses the threshold we issue a dedicated provider call that
-       compresses everything from the seed through the third-from-last
-       assistant turn into one dense paragraph. The summary replaces
-       the older messages as a synthetic ``role="system"`` block. On
-       any provider failure we fall back to the fast path so context
-       overflow never bricks the chat.
+       crosses the threshold we first measure what the fast path alone
+       saves (saved-token feedback — if it pulls the estimate back
+       under the threshold the sub-call is skipped), then issue a
+       dedicated provider call that compresses everything from the seed
+       through the third-from-last assistant turn into one dense
+       paragraph. The summary replaces the older messages as a
+       synthetic ``role="system"`` block. On any provider failure we
+       fall back to the fast path so context overflow never bricks the
+       chat.
 
     Passthrough when ``_estimate_tokens(messages) <= budget`` — returns
     the input list unchanged (callers may rely on identity).
@@ -835,9 +846,7 @@ async def _compact_history(
         return messages
 
     # Locate every assistant index — the recency anchor lives here.
-    assistant_indices = [
-        i for i, m in enumerate(messages) if m.get("role") == "assistant"
-    ]
+    assistant_indices = [i for i, m in enumerate(messages) if m.get("role") == "assistant"]
     if len(assistant_indices) <= _COMPACT_RECENT_ROUNDS:
         # Not enough history to safely elide — nothing in the "older"
         # zone. Return the input unchanged so we don't accidentally
@@ -851,12 +860,28 @@ async def _compact_history(
     # under pressure (>= threshold * budget) AND we have a provider to
     # call AND the caller hasn't forced fast-only.
     summary_threshold = int(budget * _COMPACT_SUMMARY_THRESHOLD)
-    if (
-        not fast_path_only
-        and provider is not None
-        and model
-        and before >= summary_threshold
-    ):
+    if not fast_path_only and provider is not None and model and before >= summary_threshold:
+        # Saved-token feedback (ABSORB_MATRIX Dim 2 b — claude-code's
+        # microcompact feeds saved tokens back into the auto-compact
+        # threshold): measure what the cheap elide pass alone saves
+        # BEFORE escalating. When it pulls the estimate back under the
+        # summary threshold, skip the sub-provider call entirely.
+        elided = _compact_history_elide(
+            messages=messages,
+            recent_cutoff=recent_cutoff,
+            before=before,
+            emit_log=False,
+        )
+        after_elide = before if elided is messages else _estimate_tokens(elided)
+        if after_elide < summary_threshold:
+            logger.info(
+                "agent.context.elide_sufficed",
+                before=before,
+                after=after_elide,
+                saved=before - after_elide,
+                budget=budget,
+            )
+            return elided
         try:
             summarized = await _summarize_old_messages(
                 messages=messages,
@@ -882,6 +907,14 @@ async def _compact_history(
                 summary_chars=_summary_chars(summarized),
             )
             return summarized
+        # Degraded: reuse the already-measured elide result rather than
+        # running the pass a second time.
+        logger.info(
+            "agent.context.compacted",
+            before=before,
+            after=after_elide,
+        )
+        return elided
 
     return _compact_history_elide(
         messages=messages,
@@ -890,11 +923,65 @@ async def _compact_history(
     )
 
 
+def _elided_tool_summary(msg: dict[str, Any], shells: dict[str, tuple[str, str]]) -> str:
+    """One-line informative replacement for an elided tool payload.
+
+    ABSORB_MATRIX Dim 2 (c): name the tool, hint its arguments, record
+    the original size — enough shape for the model to know WHAT was
+    dropped (and ask for it again) without paying for the payload.
+    Derived only from the message and its assistant ``tool_calls``
+    shell, so the output is deterministic across passes (prompt-cache
+    stable). Falls back to the flat :data:`_ELIDED_TOOL_CONTENT` when
+    no shell names the call.
+    """
+    name = str(msg.get("name") or "")
+    args = ""
+    call_id = msg.get("tool_call_id")
+    if isinstance(call_id, str) and call_id in shells:
+        shell_name, shell_args = shells[call_id]
+        name = name or shell_name
+        args = shell_args
+    if not name:
+        return _ELIDED_TOOL_CONTENT
+    hint = " ".join(args.split())
+    if len(hint) > _ELIDE_ARGS_HINT_MAX:
+        hint = hint[: _ELIDE_ARGS_HINT_MAX - 1] + "…"
+    content = msg.get("content")
+    size = len(content) if isinstance(content, str) else 0
+    return f"{_ELIDED_TOOL_PREFIX} — {name}({hint}) · {size} chars]"
+
+
+def _tool_call_shells(
+    messages: Sequence[dict[str, Any]],
+) -> dict[str, tuple[str, str]]:
+    """Map ``tool_call_id`` → ``(function name, raw arguments)`` across
+    every assistant ``tool_calls`` shell in ``messages``."""
+    shells: dict[str, tuple[str, str]] = {}
+    for m in messages:
+        if m.get("role") != "assistant":
+            continue
+        tool_calls = m.get("tool_calls")
+        if not isinstance(tool_calls, list):
+            continue
+        for tc in tool_calls:
+            if not isinstance(tc, dict):
+                continue
+            cid = tc.get("id")
+            fn = tc.get("function")
+            if isinstance(cid, str) and isinstance(fn, dict):
+                shells[cid] = (
+                    str(fn.get("name") or ""),
+                    str(fn.get("arguments") or ""),
+                )
+    return shells
+
+
 def _compact_history_elide(
     *,
     messages: list[dict[str, Any]],
     recent_cutoff: int,
     before: int,
+    emit_log: bool = True,
 ) -> list[dict[str, Any]]:
     """Naive tool-result elision — the fast path of :func:`_compact_history`.
 
@@ -906,20 +993,25 @@ def _compact_history_elide(
       keep everything physically at-or-after the third-from-last
       assistant message;
     * for every other ``role="tool"`` message in the older zone,
-      REPLACES its ``content`` with ``_ELIDED_TOOL_CONTENT`` while
-      keeping the matching ``tool_call_id``. Removing the tool message
-      would orphan the matching assistant ``tool_calls`` entry and
-      break the transcript;
+      REPLACES its ``content`` with the informative
+      :func:`_elided_tool_summary` one-liner while keeping the matching
+      ``tool_call_id``. Removing the tool message would orphan the
+      matching assistant ``tool_calls`` entry and break the transcript;
     * leaves older ``role="assistant"`` messages alone (their
       ``tool_calls`` shells must remain to match the elided tool
       messages).
 
-    Returns a NEW list of NEW message dicts — callers can mutate the
-    result safely without affecting the input.
+    Returns a NEW list of NEW message dicts when anything was elided —
+    callers can mutate the result safely without affecting the input.
+    When NOTHING new could be elided, returns ``messages`` itself
+    (identity): the reasoning loop keys its incremental token-cache
+    invalidation on identity change, so a saturated-but-unshrinkable
+    history (heavy recent rounds) must not churn a fresh copy + full
+    cache re-walk every round (ABSORB_MATRIX Dim 2 b).
 
-    Idempotent: once a tool message has been replaced with
-    ``_ELIDED_TOOL_CONTENT`` (short, sub-budget by construction),
-    re-running this helper yields an equal result.
+    Idempotent: once a tool message carries the ``_ELIDED_TOOL_PREFIX``
+    one-liner (short, sub-budget by construction), re-running this
+    helper preserves it as-is.
     """
     # Identify the first role="user" index (the task seed).
     first_user_idx: int | None = None
@@ -928,6 +1020,7 @@ def _compact_history_elide(
             first_user_idx = i
             break
 
+    shells = _tool_call_shells(messages)
     out: list[dict[str, Any]] = []
     elided_count = 0
     for i, msg in enumerate(messages):
@@ -944,12 +1037,12 @@ def _compact_history_elide(
             continue
         if role == "tool":
             existing = msg.get("content")
-            if existing == _ELIDED_TOOL_CONTENT:
+            if isinstance(existing, str) and existing.startswith(_ELIDED_TOOL_PREFIX):
                 # Already elided — preserve as-is (idempotence path).
                 out.append(dict(msg))
                 continue
             new_msg = dict(msg)
-            new_msg["content"] = _ELIDED_TOOL_CONTENT
+            new_msg["content"] = _elided_tool_summary(msg, shells)
             out.append(new_msg)
             elided_count += 1
             continue
@@ -957,7 +1050,9 @@ def _compact_history_elide(
         # so the elided tool messages still match.
         out.append(dict(msg))
 
-    if elided_count:
+    if not elided_count:
+        return messages
+    if emit_log:
         after = _estimate_tokens(out)
         logger.info(
             "agent.context.compacted",
@@ -981,9 +1076,7 @@ def _summary_chars(messages: list[dict[str, Any]]) -> int:
         if m.get("role") != "system":
             continue
         content = m.get("content")
-        if isinstance(content, str) and content.startswith(
-            "PRIOR CONVERSATION SUMMARY:"
-        ):
+        if isinstance(content, str) and content.startswith("PRIOR CONVERSATION SUMMARY:"):
             return len(content)
     return 0
 
@@ -1031,9 +1124,7 @@ async def _summarize_old_messages(
     # messages, no tools, capped output. We re-use the SAME provider
     # the parent loop holds so SDK auth / billing / rate-limit accounting
     # stay scoped to the same context.
-    summary_messages: list[dict[str, Any]] = [
-        {"role": "system", "content": _SUMMARY_PROMPT}
-    ]
+    summary_messages: list[dict[str, Any]] = [{"role": "system", "content": _SUMMARY_PROMPT}]
     # Append the old messages as-is. We coerce ``content`` to a string
     # so multimodal blocks (image_url parts) don't confuse a vendor
     # that doesn't expect them in a tool-less summarization call.
@@ -1103,9 +1194,7 @@ except ValueError:
 # results that each clear the per-result truncate cap but sum to a
 # context blowout. Override with ``$CORLINMAN_TURN_OUTPUT_BUDGET``.
 try:
-    _TURN_OUTPUT_BUDGET = max(
-        50_000, int(os.environ.get("CORLINMAN_TURN_OUTPUT_BUDGET", "400000"))
-    )
+    _TURN_OUTPUT_BUDGET = max(50_000, int(os.environ.get("CORLINMAN_TURN_OUTPUT_BUDGET", "400000")))
 except ValueError:
     _TURN_OUTPUT_BUDGET = 400_000
 
@@ -1127,15 +1216,11 @@ def _spill_tool_result(content: str, call_id: str) -> str:
     try:
         import tempfile
 
-        fd, path = tempfile.mkstemp(
-            prefix=f"corlinman-tool-{call_id[:16]}-", suffix=".txt"
-        )
+        fd, path = tempfile.mkstemp(prefix=f"corlinman-tool-{call_id[:16]}-", suffix=".txt")
         with os.fdopen(fd, "w", encoding="utf-8", errors="replace") as fh:
             fh.write(content)
     except OSError as exc:
-        logger.warning(
-            "reasoning_loop.tool_spill_failed", call_id=call_id, error=str(exc)
-        )
+        logger.warning("reasoning_loop.tool_spill_failed", call_id=call_id, error=str(exc))
         return _truncate_tool_result(content)
     head = content[:_SPILL_PREVIEW_HEAD]
     tail = content[-_SPILL_PREVIEW_TAIL:]
@@ -1223,10 +1308,14 @@ class ReasoningLoop:
         self._event_emitter = event_emitter
         # WP11: fallback model chain. Tried in order when the primary model
         # returns ModelNotFoundError or BillingError on the first attempt.
-        self._fallback_models: list[str] = fallback_models if fallback_models is not None else [
-            "claude-sonnet-4-6",
-            "claude-haiku-4-5",
-        ]
+        self._fallback_models: list[str] = (
+            fallback_models
+            if fallback_models is not None
+            else [
+                "claude-sonnet-4-6",
+                "claude-haiku-4-5",
+            ]
+        )
         # C3: optional hook runner (corlinman_hooks.HookRunner). When
         # present the loop calls ``run_stop(ctx)`` at the no-tool-calls
         # turn-end and honours a returned veto / inject_message. None →
@@ -1483,9 +1572,7 @@ class ReasoningLoop:
         self._messages_token_seen = 0
         self._messages_token_head_hash = 0
 
-    def messages_total_token_estimate(
-        self, messages: Sequence[dict[str, Any]]
-    ) -> int:
+    def messages_total_token_estimate(self, messages: Sequence[dict[str, Any]]) -> int:
         """Return the cached running-total token estimate for ``messages``.
 
         On the steady-state hot path (round N+1 appended new tool
@@ -1526,7 +1613,7 @@ class ReasoningLoop:
         # Cache hit: walk only the new tail (char count, not tokens —
         # avoids accumulating ``//4`` rounding error across rounds).
         if n > self._messages_token_seen:
-            tail = messages[self._messages_token_seen:]
+            tail = messages[self._messages_token_seen :]
             self._messages_char_total += _estimate_chars(tail)
             self._messages_token_seen = n
         return self._messages_char_total // 4
@@ -1609,9 +1696,7 @@ class ReasoningLoop:
             # are supplemental instructions, not the original task — so
             # the agent treats them as additional context rather than
             # restarting from scratch.
-            messages = _drain_injected_user_messages(
-                messages, self._pending_user_messages
-            )
+            messages = _drain_injected_user_messages(messages, self._pending_user_messages)
             # gap no-history-dedup: collapse consecutive verbatim
             # user/assistant turns (double-sent prompts, echoed turns)
             # before the budget check, preserving tool_call/tool_result
@@ -1672,16 +1757,20 @@ class ReasoningLoop:
             while True:
                 # WP11: rebuild ChatStart with the effective model (may have
                 # changed via fallback on a prior pass of this inner while).
-                _round_start = start if effective_model == start.model else (
-                    ChatStart(
-                        model=effective_model,
-                        messages=start.messages,
-                        tools=start.tools,
-                        session_key=start.session_key,
-                        temperature=start.temperature,
-                        max_tokens=start.max_tokens,
-                        attachments=start.attachments,
-                        extra=start.extra,
+                _round_start = (
+                    start
+                    if effective_model == start.model
+                    else (
+                        ChatStart(
+                            model=effective_model,
+                            messages=start.messages,
+                            tools=start.tools,
+                            session_key=start.session_key,
+                            temperature=start.temperature,
+                            max_tokens=start.max_tokens,
+                            attachments=start.attachments,
+                            extra=start.extra,
+                        )
                     )
                 )
                 try:
@@ -1705,9 +1794,7 @@ class ReasoningLoop:
                             if event.usage is not None:
                                 last_usage = event.usage
                                 # WP9: accumulate cost on every round with usage.
-                                _round_cost = _estimate_turn_cost_usd(
-                                    effective_model, event.usage
-                                )
+                                _round_cost = _estimate_turn_cost_usd(effective_model, event.usage)
                                 turn_cost_usd += _round_cost
                                 self._session_cost_usd += _round_cost
                         elif isinstance(event, ErrorEvent):
@@ -1759,9 +1846,7 @@ class ReasoningLoop:
                             # Guard against a limit that's already below our
                             # estimate doing nothing — also apply the 20%
                             # haircut floor so we always shrink.
-                            tighter_budget = min(
-                                tighter_budget, int(context_budget * 0.80)
-                            )
+                            tighter_budget = min(tighter_budget, int(context_budget * 0.80))
                         else:
                             tighter_budget = int(context_budget * 0.80)
                         logger.warning(
@@ -1787,8 +1872,7 @@ class ReasoningLoop:
                     # WP11: model not found / quota → try next fallback model
                     # (only safe before streaming started).
                     _model_fail = isinstance(exc, (ModelNotFoundError, BillingError)) or (
-                        "model_not_found" in str(exc)
-                        or "insufficient_quota" in str(exc)
+                        "model_not_found" in str(exc) or "insufficient_quota" in str(exc)
                     )
                     if (
                         _model_fail
@@ -2009,7 +2093,7 @@ class ReasoningLoop:
                 summary = result.content
                 if isinstance(summary, str) and len(summary) > _RESULT_SUMMARY_CAP:
                     head = summary[: _RESULT_SUMMARY_CAP // 2]
-                    tail = summary[-(_RESULT_SUMMARY_CAP // 2):]
+                    tail = summary[-(_RESULT_SUMMARY_CAP // 2) :]
                     summary = f"{head}\n…[truncated]…\n{tail}"
                 await self._emit(
                     ToolStateCompleted(
@@ -2032,12 +2116,9 @@ class ReasoningLoop:
             )
             # Track the per-turn cumulative tool-output chars (string
             # results only — multimodal lists are forwarded verbatim).
-            turn_output_spent += sum(
-                len(r.content) for r in results if isinstance(r.content, str)
-            )
+            turn_output_spent += sum(len(r.content) for r in results if isinstance(r.content, str))
             if any(
-                isinstance(r.content, str) and _is_awaiting_placeholder(r.content)
-                for r in results
+                isinstance(r.content, str) and _is_awaiting_placeholder(r.content) for r in results
             ):
                 # Prevent a doom loop: if every result is a placeholder, the
                 # next round will ask for the same tool again.
@@ -2125,9 +2206,7 @@ class ReasoningLoop:
             nonlocal open_text_index, open_text_started_ns, open_text_cumulative
             if open_text_index is None:
                 return
-            elapsed_ms = (
-                time.monotonic_ns() - open_text_started_ns
-            ) // 1_000_000
+            elapsed_ms = (time.monotonic_ns() - open_text_started_ns) // 1_000_000
             await self._emit(BlockStop(index=open_text_index, elapsed_ms=elapsed_ms))
             open_text_index = None
             open_text_started_ns = 0
@@ -2137,12 +2216,8 @@ class ReasoningLoop:
             nonlocal open_reasoning_index, open_reasoning_started_ns
             if open_reasoning_index is None:
                 return
-            elapsed_ms = (
-                time.monotonic_ns() - open_reasoning_started_ns
-            ) // 1_000_000
-            await self._emit(
-                BlockStop(index=open_reasoning_index, elapsed_ms=elapsed_ms)
-            )
+            elapsed_ms = (time.monotonic_ns() - open_reasoning_started_ns) // 1_000_000
+            await self._emit(BlockStop(index=open_reasoning_index, elapsed_ms=elapsed_ms))
             open_reasoning_index = None
             open_reasoning_started_ns = 0
 
@@ -2240,9 +2315,7 @@ class ReasoningLoop:
                     open_calls[call_id].append(frag)
                     delta_idx: int | None = tool_block_index.get(call_id)
                     if delta_idx is not None:
-                        await self._emit(
-                            ToolInputDelta(index=delta_idx, partial_json=frag)
-                        )
+                        await self._emit(ToolInputDelta(index=delta_idx, partial_json=frag))
             elif kind == "tool_call_end":
                 call_id = chunk.tool_call_id or ""
                 ev = _finalise_tool_call(call_id, open_calls, open_names)
@@ -2250,12 +2323,8 @@ class ReasoningLoop:
                     end_idx: int | None = tool_block_index.pop(call_id, None)
                     end_started: int = tool_block_started_ns.pop(call_id, 0)
                     if end_idx is not None:
-                        elapsed_ms = (
-                            time.monotonic_ns() - end_started
-                        ) // 1_000_000
-                        await self._emit(
-                            BlockStop(index=end_idx, elapsed_ms=elapsed_ms)
-                        )
+                        elapsed_ms = (time.monotonic_ns() - end_started) // 1_000_000
+                        await self._emit(BlockStop(index=end_idx, elapsed_ms=elapsed_ms))
                     yield ev
             elif kind == "done":
                 finish_reason = chunk.finish_reason or "stop"
@@ -2269,21 +2338,11 @@ class ReasoningLoop:
                 for call_id in list(open_calls.keys()):
                     ev = _finalise_tool_call(call_id, open_calls, open_names)
                     if ev is not None:
-                        done_idx: int | None = tool_block_index.pop(
-                            call_id, None
-                        )
-                        done_started: int = tool_block_started_ns.pop(
-                            call_id, 0
-                        )
+                        done_idx: int | None = tool_block_index.pop(call_id, None)
+                        done_started: int = tool_block_started_ns.pop(call_id, 0)
                         if done_idx is not None:
-                            elapsed_ms = (
-                                time.monotonic_ns() - done_started
-                            ) // 1_000_000
-                            await self._emit(
-                                BlockStop(
-                                    index=done_idx, elapsed_ms=elapsed_ms
-                                )
-                            )
+                            elapsed_ms = (time.monotonic_ns() - done_started) // 1_000_000
+                            await self._emit(BlockStop(index=done_idx, elapsed_ms=elapsed_ms))
                         yield ev
                 # T1.4: forward provider-reported token usage onto the
                 # per-round DoneEvent. ``run()`` then bubbles the LAST
@@ -2301,18 +2360,12 @@ class ReasoningLoop:
                 tail_idx: int | None = tool_block_index.pop(call_id, None)
                 tail_started: int = tool_block_started_ns.pop(call_id, 0)
                 if tail_idx is not None:
-                    elapsed_ms = (
-                        time.monotonic_ns() - tail_started
-                    ) // 1_000_000
-                    await self._emit(
-                        BlockStop(index=tail_idx, elapsed_ms=elapsed_ms)
-                    )
+                    elapsed_ms = (time.monotonic_ns() - tail_started) // 1_000_000
+                    await self._emit(BlockStop(index=tail_idx, elapsed_ms=elapsed_ms))
                 yield ev
         yield DoneEvent(finish_reason="stop")
 
-    async def _collect_results(
-        self, calls: list[ToolCallEvent]
-    ) -> list[ToolResult] | None:
+    async def _collect_results(self, calls: list[ToolCallEvent]) -> list[ToolResult] | None:
         """Wait for one :class:`ToolResult` per emitted call.
 
         Returns ``None`` if no result arrives within
@@ -2464,9 +2517,7 @@ class ReasoningLoop:
         # The hook vetoed stop (allow=False) but gave no message — nudge
         # the model to keep going with a minimal continuation prompt.
         if not allow:
-            logger.info(
-                "reasoning_loop.stop_hook_veto", session=self._session_key
-            )
+            logger.info("reasoning_loop.stop_hook_veto", session=self._session_key)
             return "Please continue."
         return None
 
@@ -2549,9 +2600,7 @@ def _finalise_tool_call(
     try:
         json.loads(joined)
     except json.JSONDecodeError:
-        logger.warning(
-            "reasoning_loop.bad_tool_args", call_id=call_id, raw=joined[:200]
-        )
+        logger.warning("reasoning_loop.bad_tool_args", call_id=call_id, raw=joined[:200])
     return ToolCallEvent(
         call_id=call_id,
         # OpenAI tool_calls don't distinguish plugin vs tool — the name is
@@ -2625,8 +2674,7 @@ def _dedup_tool_results(
 
     # Build the call map for the CURRENT batch.
     current_call_map: dict[str, tuple[str, str]] = {
-        c.call_id: (c.tool, c.args_json.decode("utf-8", errors="replace"))
-        for c in calls
+        c.call_id: (c.tool, c.args_json.decode("utf-8", errors="replace")) for c in calls
     }
 
     deduped: list[ToolResult] = []
@@ -2792,8 +2840,7 @@ def _extend_with_tool_round(
             # cumulative tool output has crossed the budget and this
             # result is itself non-trivial.
             if len(r.content) >= _TOOL_RESULT_SPILL_CAP or (
-                _running_spent >= _TURN_OUTPUT_BUDGET
-                and len(r.content) > _TOOL_RESULT_CAP
+                _running_spent >= _TURN_OUTPUT_BUDGET and len(r.content) > _TOOL_RESULT_CAP
             ):
                 tool_content = _spill_tool_result(r.content, r.call_id)
             else:
@@ -2814,9 +2861,7 @@ def _extend_with_tool_round(
     return extended
 
 
-def _append_user_turn(
-    messages: Sequence[dict[str, Any]], text: str
-) -> list[dict[str, Any]]:
+def _append_user_turn(messages: Sequence[dict[str, Any]], text: str) -> list[dict[str, Any]]:
     """Return a NEW list with one ``{"role": "user", "content": text}`` turn
     appended. Used by the C3 Stop-hook continue path and the gated
     auto-continue nudge to re-open the loop with a follow-up instruction.
@@ -2984,6 +3029,7 @@ def _attachment_to_content_part(att: Attachment) -> dict[str, Any] | None:
         if att.bytes_:
             # base64 data URL; providers that prefer raw bytes unwrap.
             import base64
+
             mime = att.mime or "image/*"
             b64 = base64.b64encode(att.bytes_).decode("ascii")
             return {
