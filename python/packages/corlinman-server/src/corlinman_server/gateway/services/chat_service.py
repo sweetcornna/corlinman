@@ -152,9 +152,14 @@ grpc_backend.build_grpc_chat_service`) injects a
         backend: ChatBackend,
         *,
         tool_executor: ToolExecutor | None = None,
+        advertised_tools_json: bytes = b"",
     ) -> None:
         self._backend = backend
         self._tool_executor: ToolExecutor = tool_executor or PlaceholderExecutor()
+        # Extra gateway-supplied tool schemas (currently discovered external
+        # MCP tools) injected into every ChatStart.tools_json so the agent
+        # servicer advertises them to the model. ``b""`` = none (default).
+        self._advertised_tools_json = advertised_tools_json
 
     def with_tool_executor(self, executor: ToolExecutor) -> ChatService:
         """Customise the tool executor — used by tests and by the
@@ -179,7 +184,13 @@ grpc_backend.build_grpc_chat_service`) injects a
         exactly one terminal :class:`DoneEvent` or :class:`ErrorEvent`.
         Honours ``cancel`` between every yield.
         """
-        return _run_chat_traced(self._backend, self._tool_executor, req, cancel)
+        return _run_chat_traced(
+            self._backend,
+            self._tool_executor,
+            req,
+            cancel,
+            advertised_tools_json=self._advertised_tools_json,
+        )
 
 
 async def _run_chat_traced(
@@ -187,6 +198,8 @@ async def _run_chat_traced(
     executor: ToolExecutor,
     req: InternalChatRequest,
     cancel: asyncio.Event,
+    *,
+    advertised_tools_json: bytes = b"",
 ) -> AsyncIterator[Any]:
     """Thin span-aware wrapper around :func:`_run_chat`.
 
@@ -206,7 +219,9 @@ async def _run_chat_traced(
     ) as svc_span:
         token_count = 0
         chunk_count = 0
-        async for event in _run_chat(backend, executor, req, cancel):
+        async for event in _run_chat(
+            backend, executor, req, cancel, advertised_tools_json=advertised_tools_json
+        ):
             if isinstance(event, TokenDeltaEvent):
                 token_count += len(event.text)
                 chunk_count += 1
@@ -235,6 +250,8 @@ async def _run_chat(
     executor: ToolExecutor,
     req: InternalChatRequest,
     cancel: asyncio.Event,
+    *,
+    advertised_tools_json: bytes = b"",
 ) -> AsyncIterator[Any]:
     """Async generator implementing the Rust ``into_event_stream`` loop.
 
@@ -247,7 +264,7 @@ async def _run_chat(
         # field) degrades to a terminal ErrorEvent the caller can surface
         # as "[corlinman error] ..." instead of escaping as a raw
         # exception that silently kills the turn with no reply.
-        start = _build_chat_start(req)
+        start = _build_chat_start(req, advertised_tools_json=advertised_tools_json)
         tx, rx = await backend.start(start)
     except Exception as err:  # noqa: BLE001 — surface as terminal error
         yield ErrorEvent(error=_internal_error_from_exception(err))
@@ -433,9 +450,16 @@ async def _run_chat(
 # ─── Helpers (proto translation) ──────────────────────────────────────
 
 
-def _build_chat_start(req: InternalChatRequest) -> agent_pb2.ChatStart:
+def _build_chat_start(
+    req: InternalChatRequest, *, advertised_tools_json: bytes = b""
+) -> agent_pb2.ChatStart:
     """Build the protobuf ``ChatStart`` from an
-    :class:`InternalChatRequest`. Mirrors :rust:`build_chat_start`."""
+    :class:`InternalChatRequest`. Mirrors :rust:`build_chat_start`.
+
+    ``advertised_tools_json`` is a gateway-supplied ``tools`` array (currently
+    discovered external MCP tools) surfaced to the model; the servicer merges
+    builtins *after* it, so these pre-supplied tools survive. ``b""`` = none.
+    """
     messages = [
         common_pb2.Message(
             role=_role_to_proto(m.role),
@@ -452,7 +476,7 @@ def _build_chat_start(req: InternalChatRequest) -> agent_pb2.ChatStart:
     start = agent_pb2.ChatStart(
         model=req.model,
         messages=messages,
-        tools_json=b"",
+        tools_json=advertised_tools_json,
         session_key=req.session_key,
         temperature=float(req.temperature or 0.0),
         max_tokens=int(req.max_tokens or 0),

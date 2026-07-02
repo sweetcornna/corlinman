@@ -117,6 +117,40 @@ def test_build_chat_start_tolerates_request_without_persona_id() -> None:
     assert start.persona_id == ""
 
 
+def test_build_chat_start_defaults_to_empty_tools_json() -> None:
+    start = _build_chat_start(InternalChatRequest(model="x", messages=[]))
+
+    assert start.tools_json == b""
+
+
+def test_build_chat_start_injects_advertised_tools_json() -> None:
+    """Gateway-supplied MCP tool schemas ride into ChatStart.tools_json so the
+    servicer advertises them to the model (L-003: discovered MCP tools)."""
+    advertised = b'[{"type":"function","function":{"name":"echo"}}]'
+
+    start = _build_chat_start(
+        InternalChatRequest(model="x", messages=[]),
+        advertised_tools_json=advertised,
+    )
+
+    assert start.tools_json == advertised
+
+
+def test_advertised_tools_come_from_gateway_not_the_channel_request() -> None:
+    """The duck-typed channel request is untouched: advertised MCP tools are
+    threaded from gateway state, so a channel ``SimpleNamespace`` (no new field)
+    still builds and gets the tools — the contract that once killed all channels
+    stays safe."""
+    advertised = b'[{"type":"function","function":{"name":"echo"}}]'
+
+    start = _build_chat_start(
+        _channel_style_request(), advertised_tools_json=advertised
+    )
+
+    assert start.tools_json == advertised
+    assert start.persona_id == ""  # channel request needed no new attribute
+
+
 @pytest.mark.asyncio
 async def test_run_chat_with_channel_request_missing_persona_id_streams_to_done() -> None:
     """End-to-end guard: a channel-style request (no ``persona_id``) must

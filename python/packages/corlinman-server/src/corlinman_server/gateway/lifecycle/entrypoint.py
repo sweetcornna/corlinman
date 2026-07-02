@@ -1056,6 +1056,30 @@ def build_app(
             state.extras["mcp_manager"] = _mcp_manager
             logger.info("gateway.mcp.manager_connected")
 
+            # Surface the connected servers' tools to the agent. Synthesize one
+            # ``mcp``-kind registry entry per ready server (so the tool executor
+            # routes a bare tool call to the MCP bridge — no new dispatch code)
+            # and stash the advertised ``tools_json`` the gateway injects into
+            # ``ChatStart.tools_json``. Without this the tools are connected but
+            # invisible to the model. Best-effort: never break boot.
+            try:
+                from corlinman_server.gateway.mcp.advertise import (
+                    register_mcp_tools,
+                )
+
+                _mcp_added, _mcp_tools_json = await register_mcp_tools(
+                    getattr(state, "plugin_registry", None),
+                    _mcp_manager.discovered_tools(),
+                )
+                state.extras["mcp_tools_json"] = _mcp_tools_json
+                logger.info(
+                    "gateway.mcp.tools_wired",
+                    entries=_mcp_added,
+                    advertised=bool(_mcp_tools_json),
+                )
+            except Exception as exc:  # pragma: no cover — best-effort
+                logger.warning("gateway.mcp.tools_wire_failed", error=str(exc))
+
             # Light up the marketplace admin routes: the McpAdapter is the
             # seam the EXISTING /admin/plugins/{name}/{enable,disable,
             # restart} routes already call via extras["mcp_adapter"], and
