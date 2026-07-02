@@ -136,7 +136,13 @@ class _Working:
 
         elapsed = time.monotonic() - self._start
         line = Text()
-        line.append_text(self._spinner.render(time.monotonic()))
+        # ``Spinner("dots")`` with no sub-text always renders to a ``Text``
+        # frame, but ``Spinner.render`` is typed ``RenderableType``. Narrow for
+        # the type checker (``Text.append_text`` requires ``Text``) and degrade
+        # gracefully to just the label if a future config makes it non-Text.
+        frame = self._spinner.render(time.monotonic())
+        if isinstance(frame, Text):
+            line.append_text(frame)
         line.append(f" {self._label} ", style="cyan")
         line.append(f"{elapsed:.0f}s · Ctrl-C 中断", style="dim")
         yield line

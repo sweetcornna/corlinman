@@ -213,6 +213,24 @@ def test_long_reply_caps_reparse_but_renders_at_end() -> None:
     assert "word" in out  # final flush renders the whole block
 
 
+def test_working_spinner_renders_frame_label_and_elapsed() -> None:
+    """The live spinner renderable appends the spinner frame (a ``Text``), the
+    label, and the elapsed/interrupt hint without crashing — regression guard
+    for the ``Spinner.render() -> RenderableType`` vs ``Text.append_text``
+    (expects ``Text``) mismatch on ``render.py``. mypy is the primary gate;
+    this locks the runtime render path too."""
+    from corlinman_server.console.render import _Working
+
+    buf = io.StringIO()
+    console = rich_console.Console(
+        force_terminal=True, color_system="truecolor", file=buf, width=80
+    )
+    console.print(_Working("正在思考", start=0.0))
+    out = buf.getvalue()
+    assert "正在思考" in out  # label rendered → __rich_console__ ran to completion
+    assert "中断" in out  # elapsed + Ctrl-C hint line appended after the frame
+
+
 def test_non_terminal_defaults_to_raw() -> None:
     buf = io.StringIO()
     console = rich_console.Console(file=buf, width=80)  # not a terminal
