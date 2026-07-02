@@ -1067,9 +1067,25 @@ def build_app(
                     register_mcp_tools,
                 )
 
+                # Server allow/deny policy from ``[mcp]`` config (claude-code
+                # ``allowedMcpServers`` / ``deniedMcpServers``): deny wins; a
+                # non-empty allow-list is exclusive.
+                _mcp_cfg = state.config.get("mcp") if isinstance(state.config, dict) else None
+                _mcp_cfg = _mcp_cfg if isinstance(_mcp_cfg, dict) else {}
+                _denied = frozenset(
+                    str(s) for s in (_mcp_cfg.get("deniedMcpServers") or _mcp_cfg.get("denied") or [])
+                )
+                _allowed_raw = _mcp_cfg.get("allowedMcpServers") or _mcp_cfg.get("allowed")
+                _allowed = (
+                    frozenset(str(s) for s in _allowed_raw)
+                    if isinstance(_allowed_raw, (list, tuple, set)) and _allowed_raw
+                    else None
+                )
                 _mcp_added, _mcp_tools_json = await register_mcp_tools(
                     getattr(state, "plugin_registry", None),
                     _mcp_manager.discovered_tools(),
+                    allowed=_allowed,
+                    denied=_denied,
                 )
                 state.extras["mcp_tools_json"] = _mcp_tools_json
                 logger.info(

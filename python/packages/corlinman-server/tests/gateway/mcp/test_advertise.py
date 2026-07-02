@@ -1,9 +1,10 @@
 """Advertise + route discovered external-MCP tools into the agent tool plane.
 
-Covers the pure converters (discovered tools -> OpenAI schemas / tools_json)
-and the load-bearing integration: a synthesized ``mcp``-kind registry entry
-makes a bare tool call route through the real ``build_registry_invoker`` ->
-``mcp`` branch -> ``McpToolBridge`` with no new dispatch code.
+Covers the pure converters (discovered tools -> namespaced OpenAI schemas /
+tools_json), the server allow/deny policy, and the load-bearing integration: a
+synthesized ``mcp``-kind registry entry makes a namespaced tool call route
+through the real ``build_registry_invoker`` -> ``mcp`` branch -> ``McpToolBridge``
+(which strips the ``{server}_`` prefix) with no new dispatch code.
 """
 
 from __future__ import annotations
@@ -14,7 +15,9 @@ from typing import Any, ClassVar
 from corlinman_server.gateway.mcp.advertise import (
     build_mcp_registry_entries,
     discovered_openai_schemas,
+    filter_servers_by_policy,
     mcp_advertised_tools_json,
+    namespaced_tool_name,
 )
 
 
@@ -32,7 +35,7 @@ class _FakeTool:
 _ECHO_SCHEMA = {"type": "object", "properties": {"msg": {"type": "string"}}}
 
 
-def test_discovered_openai_schemas_shape() -> None:
+def test_discovered_openai_schemas_namespaced_shape() -> None:
     schemas = discovered_openai_schemas(
         {"srv": [_FakeTool("echo", "Echo back", _ECHO_SCHEMA)]}
     )
@@ -40,7 +43,7 @@ def test_discovered_openai_schemas_shape() -> None:
         {
             "type": "function",
             "function": {
-                "name": "echo",
+                "name": "srv_echo",  # namespaced {server}_{tool}
                 "description": "Echo back",
                 "parameters": _ECHO_SCHEMA,
             },
@@ -48,21 +51,22 @@ def test_discovered_openai_schemas_shape() -> None:
     ]
 
 
-def test_schemas_dedupe_by_name_first_server_wins() -> None:
+def test_cross_server_same_tool_not_dropped() -> None:
+    """Namespacing keeps a same-named tool on two servers distinct — the old
+    bare-name first-wins dedup silently dropped the second."""
     schemas = discovered_openai_schemas(
         {
             "a": [_FakeTool("dup", "from a"), _FakeTool("only_a")],
             "b": [_FakeTool("dup", "from b")],
         }
     )
-    names = [s["function"]["name"] for s in schemas]
-    assert names == ["dup", "only_a"]
-    dup = next(s for s in schemas if s["function"]["name"] == "dup")
-    assert dup["function"]["description"] == "from a"  # first server wins
+    names = sorted(s["function"]["name"] for s in schemas)
+    assert names == ["a_dup", "a_only_a", "b_dup"]  # both dups survive
 
 
 def test_bad_input_schema_degrades_not_crashes() -> None:
     schemas = discovered_openai_schemas({"srv": [_FakeTool("t", input_schema="not-a-dict")]})
+    assert schemas[0]["function"]["name"] == "srv_t"
     assert schemas[0]["function"]["parameters"] == {"type": "object", "properties": {}}
 
 
@@ -74,7 +78,21 @@ def test_tools_json_empty_when_no_tools() -> None:
 
 def test_tools_json_roundtrips() -> None:
     raw = mcp_advertised_tools_json({"srv": [_FakeTool("echo", "e", _ECHO_SCHEMA)]})
-    assert json.loads(raw)[0]["function"]["name"] == "echo"
+    assert json.loads(raw)[0]["function"]["name"] == "srv_echo"
+
+
+def test_filter_servers_by_policy() -> None:
+    disc = {"a": [_FakeTool("t")], "b": [_FakeTool("t")], "c": [_FakeTool("t")]}
+    # deny wins
+    assert set(filter_servers_by_policy(disc, denied=frozenset({"b"}))) == {"a", "c"}
+    # non-empty allow-list is exclusive
+    assert set(filter_servers_by_policy(disc, allowed=frozenset({"a", "b"}))) == {"a", "b"}
+    # deny overrides allow
+    assert set(
+        filter_servers_by_policy(disc, allowed=frozenset({"a", "b"}), denied=frozenset({"b"}))
+    ) == {"a"}
+    # None allow-list = everything not denied
+    assert set(filter_servers_by_policy(disc)) == {"a", "b", "c"}
 
 
 def test_build_entries_skips_empty_and_existing() -> None:
@@ -90,13 +108,14 @@ def test_build_entries_skips_empty_and_existing() -> None:
     assert [e.manifest.name for e in entries] == ["fresh"]
     (entry,) = entries
     assert entry.manifest.plugin_type.value == "mcp"
-    assert [t.name for t in entry.manifest.capabilities.tools] == ["z"]
+    assert [t.name for t in entry.manifest.capabilities.tools] == ["fresh_z"]  # namespaced
     entry.manifest.validate_all()  # a synthesized MCP manifest is valid
 
 
-async def test_synthesized_entry_routes_bare_tool_call_to_mcp_bridge() -> None:
-    """The core proof: with a synthesized entry, the real invoker routes a bare
-    tool call all the way to ``McpClientManager.call_tool`` — no dispatch code."""
+async def test_namespaced_call_routes_and_strips_prefix() -> None:
+    """The core proof: a namespaced tool call routes through the real invoker to
+    ``McpClientManager.call_tool`` with the bridge stripping ``{server}_`` back
+    to the bare tool — no new dispatch code."""
     from corlinman_providers.plugins.registry import PluginRegistry
     from corlinman_server.gateway.grpc.plugin_invoker import build_registry_invoker
 
@@ -112,14 +131,18 @@ async def test_synthesized_entry_routes_bare_tool_call_to_mcp_bridge() -> None:
         is_error: ClassVar[bool] = False
 
     class _FakeManager:
+        def has_tool(self, server: str, tool: str) -> bool:
+            return server == "echo-server" and tool == "echo"
+
         async def call_tool(self, server: str, tool: str, args: Any) -> _Outcome:
             calls.append((server, tool, args))
             return _Outcome()
 
     invoker = build_registry_invoker(registry, mcp_manager=_FakeManager())
-    # The model emits a bare function name; the agent collapses plugin == tool.
-    result = await invoker("echo", "echo", b'{"msg": "hi"}')
+    # The model calls the advertised namespaced name (plugin == tool).
+    result = await invoker("echo-server_echo", "echo-server_echo", b'{"msg": "hi"}')
 
+    # Bridge stripped the prefix → the MCP server sees the bare tool.
     assert calls == [("echo-server", "echo", {"msg": "hi"})]
     assert getattr(result, "is_error", None) is False
 
@@ -134,7 +157,23 @@ async def test_register_mcp_tools_upserts_and_advertises() -> None:
     )
     assert added == 1
     assert registry.get("srv") is not None
-    assert json.loads(tools_json)[0]["function"]["name"] == "echo"
+    assert json.loads(tools_json)[0]["function"]["name"] == "srv_echo"
+
+
+async def test_register_mcp_tools_applies_deny_policy() -> None:
+    from corlinman_providers.plugins.registry import PluginRegistry
+    from corlinman_server.gateway.mcp.advertise import register_mcp_tools
+
+    registry = PluginRegistry.from_roots([])
+    added, tools_json = await register_mcp_tools(
+        registry,
+        {"good": [_FakeTool("echo")], "blocked": [_FakeTool("rm")]},
+        denied=frozenset({"blocked"}),
+    )
+    assert added == 1
+    assert registry.get("good") is not None and registry.get("blocked") is None
+    names = [s["function"]["name"] for s in json.loads(tools_json)]
+    assert names == ["good_echo"]  # blocked server's tools never advertised
 
 
 async def test_register_mcp_tools_none_registry_still_advertises() -> None:
@@ -144,11 +183,11 @@ async def test_register_mcp_tools_none_registry_still_advertises() -> None:
         None, {"srv": [_FakeTool("echo", "e", _ECHO_SCHEMA)]}
     )
     assert added == 0  # nothing upserted…
-    assert json.loads(tools_json)[0]["function"]["name"] == "echo"  # …but still advertised
+    assert json.loads(tools_json)[0]["function"]["name"] == "srv_echo"  # …still advertised
 
 
 async def test_unknown_tool_still_unresolved_without_entry() -> None:
-    """Guard: without a synthesized entry, a bare MCP tool name does not route
+    """Guard: without a synthesized entry, an MCP tool name does not route
     (proves the entry is what enables execution, not an accidental catch-all)."""
     from corlinman_providers.plugins.registry import PluginRegistry
     from corlinman_server.gateway.grpc.plugin_invoker import build_registry_invoker
@@ -160,5 +199,9 @@ async def test_unknown_tool_still_unresolved_without_entry() -> None:
             raise AssertionError("must not be called without a registry entry")
 
     invoker = build_registry_invoker(registry, mcp_manager=_FakeManager())
-    result = await invoker("echo", "echo", b"{}")
+    result = await invoker("srv_echo", "srv_echo", b"{}")
     assert getattr(result, "is_error", None) is True
+
+
+def test_namespaced_tool_name_helper() -> None:
+    assert namespaced_tool_name("srv", "echo") == "srv_echo"

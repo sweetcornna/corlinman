@@ -62,7 +62,8 @@ class McpToolBridge:
         # server name diverge. The manager itself falls back to a bare
         # tool-name scan when the server name does not resolve.
         server = _mcp_server_name(manifest) or manifest.name
-        outcome = await self._manager.call_tool(server, tool, args)
+        target_tool = _strip_server_namespace(self._manager, server, tool)
+        outcome = await self._manager.call_tool(server, target_tool, args)
         return ToolInvocation(
             content=outcome.content,
             is_error=outcome.is_error,
@@ -91,6 +92,31 @@ def _mcp_server_name(manifest: Any) -> str | None:
     if isinstance(value, str) and value:
         return value
     return None
+
+
+def _strip_server_namespace(manager: Any, server: str, tool: str) -> str:
+    """Map a namespaced ``{server}_{tool}`` call back to the bare tool name.
+
+    The gateway advertises discovered MCP tools as ``{server}_{tool}`` (see
+    ``gateway/mcp/advertise.namespaced_tool_name``) so cross-server names cannot
+    collide; the MCP server itself only knows the bare tool. Strip the prefix,
+    but only when the bare form is a real tool on the server AND the namespaced
+    form is not — so a real on-disk manifest advertising a literal
+    ``{server}_x`` tool is left untouched. ``has_tool`` missing/raising → no-op.
+    """
+    prefix = f"{server}_"
+    if not tool.startswith(prefix):
+        return tool
+    has = getattr(manager, "has_tool", None)
+    if not callable(has):
+        return tool
+    bare = tool[len(prefix):]
+    try:
+        if bare and has(server, bare) and not has(server, tool):
+            return bare
+    except Exception:  # noqa: BLE001 — resolution must never break dispatch
+        return tool
+    return tool
 
 
 async def invoke_mcp_plugin(

@@ -32,7 +32,19 @@ from typing import Any
 DiscoveredTools = dict[str, list[Any]]
 
 
-def _tool_openai_schema(tool: Any) -> dict[str, Any]:
+def namespaced_tool_name(server: str, tool_name: str) -> str:
+    """The model-facing name for an MCP tool: ``{server}_{tool}``.
+
+    Namespacing keeps tools from different servers distinct (so a same-named
+    tool on two servers is not silently dropped) and stops an MCP tool from
+    shadowing a bare builtin (e.g. ``calculator``). Execution strips the
+    ``{server}_`` prefix back to the bare tool the MCP server knows (guarded by
+    ``has_tool`` in :class:`McpToolBridge`).
+    """
+    return f"{server}_{tool_name}"
+
+
+def _tool_openai_schema(server: str, tool: Any) -> dict[str, Any]:
     """One discovered MCP tool (``ToolDescriptor``-shaped) -> OpenAI function."""
     params = getattr(tool, "input_schema", None)
     if not isinstance(params, dict):
@@ -42,7 +54,7 @@ def _tool_openai_schema(tool: Any) -> dict[str, Any]:
     return {
         "type": "function",
         "function": {
-            "name": str(getattr(tool, "name", "") or ""),
+            "name": namespaced_tool_name(server, str(getattr(tool, "name", "") or "")),
             "description": str(getattr(tool, "description", "") or ""),
             "parameters": params,
         },
@@ -52,19 +64,24 @@ def _tool_openai_schema(tool: Any) -> dict[str, Any]:
 def discovered_openai_schemas(discovered: DiscoveredTools | None) -> list[dict[str, Any]]:
     """OpenAI function schemas for every discovered MCP tool.
 
-    De-duplicated by tool name (first ready server wins) because the agent
-    addresses a tool by bare name and execution resolves the server via
-    ``find_tool``.
+    Tool names are namespaced ``{server}_{tool}`` (see
+    :func:`namespaced_tool_name`), so cross-server collisions cannot occur;
+    de-dup is retained only as a defensive guard.
     """
     seen: set[str] = set()
     out: list[dict[str, Any]] = []
-    for _server, tools in (discovered or {}).items():
+    for server, tools in (discovered or {}).items():
+        if not server:
+            continue
         for tool in tools or []:
-            name = str(getattr(tool, "name", "") or "")
-            if not name or name in seen:
+            bare = str(getattr(tool, "name", "") or "")
+            if not bare:
+                continue
+            name = namespaced_tool_name(server, bare)
+            if name in seen:
                 continue
             seen.add(name)
-            out.append(_tool_openai_schema(tool))
+            out.append(_tool_openai_schema(server, tool))
     return out
 
 
@@ -105,13 +122,16 @@ def build_mcp_registry_entries(
             continue
         manifest_tools: list[Any] = []
         for tool in tools or []:
-            name = str(getattr(tool, "name", "") or "")
-            if not name:
+            bare = str(getattr(tool, "name", "") or "")
+            if not bare:
                 continue
             params = getattr(tool, "input_schema", None)
             manifest_tools.append(
                 Tool(
-                    name=name,
+                    # Namespaced so it matches the advertised name the model
+                    # calls; the bridge strips the ``{server}_`` prefix back to
+                    # the bare tool for ``call_tool``.
+                    name=namespaced_tool_name(server, bare),
                     description=str(getattr(tool, "description", "") or ""),
                     parameters=params if isinstance(params, dict) else {"type": "object"},
                 )
@@ -141,19 +161,47 @@ def build_mcp_registry_entries(
     return entries
 
 
+def filter_servers_by_policy(
+    discovered: DiscoveredTools | None,
+    *,
+    allowed: frozenset[str] | None = None,
+    denied: frozenset[str] = frozenset(),
+) -> DiscoveredTools:
+    """Apply a server allow/deny policy to the discovered map.
+
+    ``denied`` wins over ``allowed`` (deny-by-name is absolute). When
+    ``allowed`` is a non-empty set, only listed servers survive; ``None`` means
+    "no allow-list — everything not denied". Mirrors claude-code's
+    ``deniedMcpServers`` / ``allowedMcpServers``.
+    """
+    out: DiscoveredTools = {}
+    for server, tools in (discovered or {}).items():
+        if not server or server in denied:
+            continue
+        if allowed is not None and server not in allowed:
+            continue
+        out[server] = tools
+    return out
+
+
 async def register_mcp_tools(
     registry: Any | None,
     discovered: DiscoveredTools | None,
+    *,
+    allowed: frozenset[str] | None = None,
+    denied: frozenset[str] = frozenset(),
 ) -> tuple[int, bytes]:
     """Wire discovered MCP tools into the agent tool plane at gateway boot.
 
-    Upserts one synthesized ``mcp``-kind entry per ready server into
-    ``registry`` (execution routing) and returns
-    ``(entries_added, advertised_tools_json)`` — the second being the
-    ``tools_json`` bytes the gateway injects into ``ChatStart.tools_json``
-    (advertisement). No-op-safe on a ``None`` registry (advertisement bytes are
-    still returned). Never clobbers a real on-disk manifest of the same name.
+    Applies the server allow/deny policy, then upserts one synthesized
+    ``mcp``-kind entry per surviving ready server into ``registry`` (execution
+    routing) and returns ``(entries_added, advertised_tools_json)`` — the second
+    being the ``tools_json`` bytes the gateway injects into
+    ``ChatStart.tools_json`` (advertisement). No-op-safe on a ``None`` registry
+    (advertisement bytes are still returned). Never clobbers a real on-disk
+    manifest of the same name.
     """
+    discovered = filter_servers_by_policy(discovered, allowed=allowed, denied=denied)
     tools_json = mcp_advertised_tools_json(discovered)
     if registry is None:
         return 0, tools_json
@@ -167,6 +215,8 @@ async def register_mcp_tools(
 __all__ = [
     "build_mcp_registry_entries",
     "discovered_openai_schemas",
+    "filter_servers_by_policy",
     "mcp_advertised_tools_json",
+    "namespaced_tool_name",
     "register_mcp_tools",
 ]
