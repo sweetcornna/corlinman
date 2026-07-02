@@ -4,6 +4,20 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.24.1] — 2026-07-02 — Background memory-recall prefetch
+
+> Patch release. Config-compatible. ABSORB_MATRIX Dim 6 (mechanism absorbed
+> from hermes' background next-turn prefetch).
+
+### Changed
+- **Recency memory recall is prefetched off the hot path** — the start-of-turn
+  `host.recent(...)` await is now precomputed in the background right after the
+  previous turn's memory store (the moment its result changes), and consumed
+  one-shot at the next turn; a cache miss falls back to the inline recall.
+  Cuts start-of-turn latency, most visibly on remote memory-host backends. The
+  relevance (BM25) recall depends on the incoming user text and deliberately
+  stays inline.
+
 ## [1.24.0] — 2026-07-02 — Session management: --continue, fuzzy /resume, turn-keyed /rewind
 
 > Minor release. Config-compatible. ABSORB_MATRIX Dim 11 (会话管理:一键续聊、
