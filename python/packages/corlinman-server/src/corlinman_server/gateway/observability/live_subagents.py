@@ -125,6 +125,10 @@ class LiveSubagentRegistry:
         # finished rows drop first).
         self._rows: OrderedDict[str, LiveSubagentRow] = OrderedDict()
         self._terminal_cap = max(1, terminal_cap)
+        # Per-child set of tool_call_ids already counted, so re-delivery of a
+        # ``ToolStateRunning`` frame (fed once per open SSE client poll AND via
+        # the emitter observer) increments ``tool_calls_made`` only once.
+        self._counted_tool_calls: dict[str, set[str]] = {}
 
     # ------------------------------------------------------------------
     # Emitter hot-path hook
@@ -163,6 +167,7 @@ class LiveSubagentRegistry:
                     inner_type=type(inner).__name__ if inner is not None else "",
                     tool_name=str(getattr(inner, "tool_name", "") or ""),
                     block_type=str(getattr(inner, "block_type", "") or ""),
+                    tool_call_id=str(getattr(inner, "tool_call_id", "") or ""),
                 )
         except Exception:  # noqa: BLE001 — bookkeeping must not break emit
             logger.debug("live_subagents.observe_failed", exc_info=True)
@@ -214,6 +219,7 @@ class LiveSubagentRegistry:
                     inner_type=str(inner_env.get("event_type") or ""),
                     tool_name=str(inner_payload.get("tool_name") or ""),
                     block_type=str(inner_payload.get("block_type") or ""),
+                    tool_call_id=str(inner_payload.get("tool_call_id") or ""),
                 )
         except Exception:  # noqa: BLE001 — bookkeeping must not break SSE
             logger.debug("live_subagents.observe_journal_failed", exc_info=True)
@@ -252,7 +258,13 @@ class LiveSubagentRegistry:
         )
 
     def _apply_child_event(
-        self, *, child_key: str, inner_type: str, tool_name: str, block_type: str
+        self,
+        *,
+        child_key: str,
+        inner_type: str,
+        tool_name: str,
+        block_type: str,
+        tool_call_id: str = "",
     ) -> None:
         row = self._rows.get(child_key)
         if row is None or row.state in _TERMINAL_STATES:
@@ -261,7 +273,17 @@ class LiveSubagentRegistry:
         # low-churn inner events (tool starts/stops, block boundaries) — never
         # per-token deltas.
         if inner_type == "ToolStateRunning":
-            row.tool_calls_made += 1
+            # Idempotent per tool call: the same frame is re-delivered by every
+            # SSE-client poll (and the emitter), so count each ``tool_call_id``
+            # once. A frame without an id (shouldn't happen) still counts, to
+            # avoid under-reporting.
+            if tool_call_id:
+                counted = self._counted_tool_calls.setdefault(child_key, set())
+                if tool_call_id not in counted:
+                    counted.add(tool_call_id)
+                    row.tool_calls_made += 1
+            else:
+                row.tool_calls_made += 1
             row.activity = f"运行工具 {tool_name}" if tool_name else "运行工具"
         elif inner_type == "ToolStateCompleted":
             row.activity = ""
@@ -328,6 +350,7 @@ class LiveSubagentRegistry:
         excess = len(terminal_keys) - self._terminal_cap
         for k in terminal_keys[:excess] if excess > 0 else []:
             self._rows.pop(k, None)
+            self._counted_tool_calls.pop(k, None)
 
 
 __all__ = ["LiveSubagentRegistry", "LiveSubagentRow"]

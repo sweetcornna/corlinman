@@ -83,6 +83,47 @@ def test_child_tool_event_sets_activity_and_counts() -> None:
     assert reg.list_active()[0].activity == "思考中…"
 
 
+def test_tool_calls_deduped_by_tool_call_id_across_paths() -> None:
+    """Regression (L-102): the shared registry is fed once per open SSE client
+    (poll) AND via the emitter observer, so the same ``ToolStateRunning`` frame
+    arrives many times. Counting must be idempotent by ``tool_call_id`` — not
+    ``+= 1`` per delivery — or the live panel shows an inflated tool count."""
+    reg = LiveSubagentRegistry()
+    reg.observe(_spawn("c1"))
+
+    def _running_env(tc: str) -> object:
+        inner = _env(
+            "c1",
+            ToolStateRunning(
+                tool_call_id=tc, tool_name="web_search", args_json="{}", started_at_ms=1100
+            ),
+        )
+        return _env("p", SubagentEvent(child_session_key="c1", envelope=inner))
+
+    # Emitter + several SSE-client poll re-deliveries of the SAME tool call.
+    for _ in range(3):
+        reg.observe(_running_env("tc1"))
+    # The cross-process journal poll re-delivers the very same tool call too.
+    reg.observe_journal_event(
+        {
+            "event_type": "SubagentEvent",
+            "timestamp_ms": 1100,
+            "payload": {
+                "child_session_key": "c1",
+                "envelope": {
+                    "event_type": "ToolStateRunning",
+                    "payload": {"tool_name": "web_search", "tool_call_id": "tc1"},
+                },
+            },
+        }
+    )
+    assert reg.list_active()[0].tool_calls_made == 1  # deduped, not 4
+
+    # A genuinely new tool call advances the count.
+    reg.observe(_running_env("tc2"))
+    assert reg.list_active()[0].tool_calls_made == 2
+
+
 def test_completed_marks_terminal_and_clears_activity() -> None:
     reg = LiveSubagentRegistry()
     reg.observe(_spawn("c1", ts=1000))
