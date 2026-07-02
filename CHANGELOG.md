@@ -4,6 +4,22 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.22.4] — 2026-07-02 — Tunable context-compaction reserve
+
+> Patch release. Config-compatible (defaults unchanged). ABSORB_MATRIX Dim 2 —
+> makes the model-aware compaction budget's output reserve operator-tunable,
+> including claude-code's fixed-buffer (`window − buffer`) semantics.
+
+### Added
+- **Operator-tunable compaction reserve** — when the compaction budget is
+  derived from a model's declared context window, the reserved output margin is
+  now overridable: `CORLINMAN_CONTEXT_RESERVE_TOKENS` pins a **fixed** buffer
+  (`window − buffer`, matching claude-code's `AUTOCOMPACT_BUFFER`), else the
+  proportional reserve's fraction and cap are tunable via
+  `CORLINMAN_CONTEXT_RESERVE_FRACTION` / `CORLINMAN_CONTEXT_RESERVE_CAP`. All
+  three default to the previous behaviour (0.15 fraction, 48k cap), so existing
+  deployments are unchanged. The reserve is clamped to never exceed the window.
+
 ## [1.22.3] — 2026-07-02 — MCP tool namespacing + server allow/deny policy
 
 > Patch release. Config-compatible. Hardens the v1.22.0 MCP tool-face
