@@ -4,6 +4,17 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.22.9] — 2026-07-02 — Live token + cost in the console status bar
+
+> Patch release. Config-compatible. ABSORB_MATRIX Dim 12 — the console bottom
+> bar now surfaces session spend.
+
+### Added
+- **Live token + cost in the bottom status bar** — the console's prompt bar
+  showed only `model · session`; it now appends the running session token count
+  and estimated USD cost once a turn produces usage, a glanceable session-spend
+  readout (hidden while idle).
+
 ## [1.22.8] — 2026-07-02 — `notebook_edit` tool (.ipynb cells)
 
 > Patch release. Config-compatible. ABSORB_MATRIX Dim 4 — the claude-code

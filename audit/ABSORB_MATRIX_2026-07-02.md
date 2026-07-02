@@ -29,15 +29,26 @@
 
 ## Landing plan (value/cost ranked)
 
-**Batch 1 — cheap high-value (S-cost, TDD + `make ci` each):**
-1. ✅ **Dim 1** jittered backoff (`_retry_backoff_seconds`) — **LANDED v1.22.2**.
-2. ✅ **Dim 5-slices** `{server}_{tool}` namespacing (fixes the v1.22.0 collision drop + builtin-shadow) + `deniedMcpServers`/allow policy — **LANDED v1.22.3**.
-3. ✅ **Dim 2** compaction reserve made env-tunable incl. claude-code `window − buffer` — **LANDED v1.22.4**. _(Deferred sub-parts: saved-token feedback + informative elision — the exact `_ELIDED_TOOL_CONTENT` sentinel is pinned by 3 tests.)_
-4. ✅ **Dim 8** `/init` codebase-analysis → `CORLINMAN.md` — **LANDED v1.22.5**.
-5. ✅ **Dim 12-console** `/cost` estimated session spend — **LANDED v1.22.6**. _(Live token/context/cost status bar deferred.)_
-6. ⏳ **Dim 4-core** atomic `Write` (safety-critical TOCTOU — deliberate, not rushed), shell `run_in_background`, `NotebookEdit` (H/S) — **not yet landed**.
+**LANDED (all TDD + full `make ci` green; each its own commit + release):**
+1. ✅ **Dim 1** jittered backoff — v1.22.2
+2. ✅ **Dim 5** MCP `{server}_{tool}` namespacing + `allowed`/`deniedMcpServers` — v1.22.3
+3. ✅ **Dim 2** env-tunable compaction reserve (incl. `window − buffer`) — v1.22.4
+4. ✅ **Dim 8** `/init` → `CORLINMAN.md` — v1.22.5
+5. ✅ **Dim 12** `/cost` console command — v1.22.6
+6. ✅ **Dim 4** atomic `Write` + `Edit` (tmp→fsync→replace) — v1.22.7
+7. ✅ **Dim 12** per-tool `tool.execute` OTel span — v1.22.7
+8. ✅ **Dim 4** `notebook_edit` tool (.ipynb cells) — v1.22.8
+9. ✅ **Dim 12** live token+cost in the console status bar — v1.22.9
 
-**Batch 2+ — larger, own PRs (M–L cost):** Dim 3 permission console surface (`/permissions`,`/plan`, interactive resolver, `Enter/ExitPlanMode`, settings persistence) H/M; Dim 11 message-id soft-delete rewind + `--continue`/fuzzy resume H/M; Dim 6 provider-fan-out `MemoryManager` + background prefetch M/M; Dim 9 declarative `hooks` settings + `/hooks` M/L; Dim 4 sandbox-backend abstraction H/L; Dim 12 per-tool OTel spans M.
+**REMAINING — each is own-PR-scale with real integration risk (not rushed):**
+- **Dim 3** permission *console surface* — the interactive allow/deny/always-allow resolver needs an **approval-request-over-gRPC-stream protocol** (the embedded servicer and REPL are decoupled by the in-process UDS boundary); plus `/permissions`,`/plan`,`--permission-mode` (mode-plumbing through the request), settings persistence, `Enter/ExitPlanMode` tools. H/M-L. Security-sensitive.
+- **Dim 11** message-id soft-delete rewind + `--continue`/fuzzy resume — changes journal replay semantics (a path just stabilized). H/M.
+- **Dim 6** provider-fan-out `MemoryManager` + background next-turn prefetch. M/M.
+- **Dim 9** declarative `hooks` settings (matcher arrays + command/prompt/agent/http kinds) + `/hooks`. M/L.
+- **Dim 4** shell `run_in_background` (bg-process lifecycle + output spill + offset polling). M. **Sandbox-backend abstraction** (hermes' 7 backends). **XL** — genuinely multi-session.
+- **Dim 5** MCP `sampling` responder + `tools/list_changed` client listener + dynamic (non-boot-snapshot) advertisement. M.
+- **Dim 10** optional `--system-prompt`/`--append-system-prompt` flags. S, low value.
+- **Dim 2** informative elision summaries + saved-token feedback (the exact `_ELIDED_TOOL_CONTENT` sentinel is pinned by 3 tests). S.
 
 **REJECT:** Dim 7 (subagents — corlinman ≥ both baselines); Dim 10 (structured output — already ahead of both).
 
