@@ -4,6 +4,29 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.24.0] — 2026-07-02 — Session management: --continue, fuzzy /resume, turn-keyed /rewind
+
+> Minor release. Config-compatible. ABSORB_MATRIX Dim 11 (会话管理:一键续聊、
+> 模糊恢复、精确回退).
+
+### Added
+- **`corlinman console -c/--continue`** — resume the most recent journal
+  session (the summaries are newest-first, so this is a zero-cost lookup); an
+  explicit `--session` wins; attach mode / empty journal degrade with a note.
+- **Fuzzy `/resume <fragment>`** — an exact key wins alone; a unique substring
+  match resumes; multiple matches print a disambiguation list instead of
+  guessing; zero matches keep today's semantics (start a fresh named session).
+
+### Changed
+- **`/rewind` window truncation is now turn-keyed** — the workspace snapshot
+  taken at each turn's start now embeds the journal turn id in its commit
+  subject (`snapshot: [turn:<id>] <label>`), and rewinding to a tagged
+  checkpoint rebuilds the conversation window **exactly** from journal turns
+  strictly before that id, instead of matching the sanitized user-text label
+  (which degraded to "window unchanged" on duplicate text or cross-surface
+  interleave). Legacy untagged checkpoints keep the label-match fallback;
+  a missing journal degrades honestly.
+
 ## [1.23.0] — 2026-07-02 — Console permission surface (mode control + interactive approval)
 
 > Minor release. Config-compatible. ABSORB_MATRIX Dim 3 — the permission engine
