@@ -4,6 +4,29 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.22.0] — 2026-07-02 — External MCP tools reach the model (advertise + route)
+
+> Minor release. Config-compatible. Connected external MCP servers' tools are
+> now advertised to the model and executable end-to-end — closing the gap where
+> `McpClientManager.discovered_tools()` had no consumer, so the agent could
+> never see or call an external MCP tool (让 agent 真正看得见并调用外部 MCP 工具).
+> See `audit/BUG_LEDGER_2026-07-02.md` §3 (L-003).
+
+### Added
+- **MCP tools in the agent tool plane** — at gateway boot, after the MCP client
+  manager connects its servers, the gateway now (1) synthesizes one `mcp`-kind
+  plugin-registry entry per ready server so the existing tool executor routes a
+  bare tool call through the `mcp` branch → `McpToolBridge` → `call_tool` with
+  no new dispatch code, and (2) injects the discovered tools' OpenAI function
+  schemas into every `ChatStart.tools_json`, so the agent servicer advertises
+  them to the model. Both halves run gateway-side (the only process where the
+  live manager and plugin registry exist) from a single pass over
+  `discovered_tools()`; the schemas are threaded from gateway state, not the
+  chat request, so the channel request contract is untouched. Tool names are
+  advertised bare (server resolved at execution via `find_tool`), de-duplicated
+  across servers, and a synthesized entry never clobbers a real on-disk
+  manifest. Boot-time snapshot; hot-plug refresh is a follow-up.
+
 ## [1.21.9] — 2026-07-02 — openai_compatible `/openai` mounts serve chat again + green gate
 
 > Patch release. Config-compatible. Fixes a silent chat-404 regression for

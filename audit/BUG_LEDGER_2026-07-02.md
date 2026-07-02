@@ -58,7 +58,25 @@ tree is far healthier than the work-order framing implies; the real work is
 
 ## 3. Open findings
 
-### L-003 — MCP tools never advertised to the model (P1, actionable)
+### L-003 — MCP tools never advertised to the model (P1) — **FIXED** (v1.22.0)
+> Implemented after a 4-agent research pass nailed the topology: `mcp_manager`
+> lives only in the gateway process; the servicer never receives it; the default
+> `direct` backend runs no tools; `tools_json` was hard-coded `b""`. So BOTH
+> halves land gateway-side, from one boot pass over `discovered_tools()`:
+> - **Execution:** `register_mcp_tools` synthesizes one `mcp`-kind `PluginEntry`
+>   per ready server into `state.plugin_registry` (entrypoint, after
+>   `connect_all`). The existing `_resolve_by_tool` → `plugin_type=="mcp"` →
+>   `McpToolBridge` → `call_tool` chain then routes a bare tool call with **zero
+>   new dispatch code** (proven by `test_synthesized_entry_routes_bare_tool_call_to_mcp_bridge`).
+> - **Advertisement:** the same pass builds a `tools_json` array, stashed on
+>   `state.extras["mcp_tools_json"]`, injected into every `ChatStart.tools_json`
+>   at the gateway build point (`build_grpc_chat_service` → `ChatService` →
+>   `_build_chat_start`). Threaded from gateway **state**, NOT the request, so
+>   the duck-typed channel contract is untouched (regression test added).
+> Guards: no-op-safe on absent registry/manager; never clobbers a real on-disk
+> manifest; names de-duped across servers. Boot-time snapshot (hot-plug refresh
+> is a follow-up). Original analysis retained below.
+
 - **Repro (static, confirmed):** `grep -rn discovered_tools python/packages --include=*.py | grep -v /tests/` → only the definition (`client_manager.py:281`). `agent_servicer.py` has **zero** `mcp_manager`/`discovered_tools` refs. `_inject_builtin_tools` (`agent_servicer.py:659`) merges only `_CACHED_BUILTIN_TOOL_SCHEMAS`.
 - **Root cause:** external MCP servers are connected at boot (`entrypoint.py:1021,1055`) and are *executable* if a call is routed to an `mcp`-kind plugin (`plugin_invoker.py:206`), but their live-discovered tools are never merged into the model-facing catalog. The model can only emit calls for advertised tools → it never calls any external MCP tool. The end-to-end "agent discovers + uses an external MCP tool" loop is dead.
 - **Impact:** MCP-as-primary-extension-path (the #1 parity priority) is non-functional despite all supporting plumbing existing. High value, but a **feature-grade, cross-process, hot-path** change.
