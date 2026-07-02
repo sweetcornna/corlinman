@@ -4,6 +4,34 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.23.0] — 2026-07-02 — Console permission surface (mode control + interactive approval)
+
+> Minor release. Config-compatible. ABSORB_MATRIX Dim 3 — the permission engine
+> (modes + `Bash(cmd:*)`-style rules) existed but had no console surface: the
+> mode was a boot-time env default and every `ask` verdict fail-closed to deny
+> because nothing ever wired an approval resolver (控制台权限面板 + 交互式工具审批).
+
+### Added
+- **`/permissions [mode]` + `/plan [off]`** — show or switch the runtime
+  permission mode (`default` / `acceptEdits` / `plan` / `bypass`); the gate
+  re-reads its mode on every tool call, so the switch applies immediately. A
+  typo **never** changes the mode (silently coercing `plan`→`default` would
+  re-enable mutations); `bypass` prints a warning. `/plan` is the plan-mode
+  toggle. `/permissions` also lists the session's always-allowed tools.
+- **`corlinman console --permission-mode <mode>`** — seeds the embedded agent's
+  gate at boot (via `CORLINMAN_AGENT_PERMISSION_MODE`).
+- **Interactive tool approval** — an `ask` permission verdict now pauses the
+  live spinner and prompts **y**es / **a**lways-this-session / **N**o instead of
+  fail-closing to deny. "Always" caches the tool for the session; anything
+  unexpected (empty input, EOF, prompt failure) denies — fail-closed. Wired for
+  the embedded interactive REPL only: `--print` has no user to ask and attach
+  mode has no in-process servicer, so both keep the fail-closed posture.
+
+### Fixed
+- **`notebook_edit` classified as an edit + mutating tool** — it was absent
+  from both permission sets, so plan mode did not deny it (a mutating tool
+  escaping the no-side-effects guard) and `acceptEdits` did not auto-allow it.
+
 ## [1.22.9] — 2026-07-02 — Live token + cost in the console status bar
 
 > Patch release. Config-compatible. ABSORB_MATRIX Dim 12 — the console bottom
