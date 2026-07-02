@@ -32,9 +32,10 @@ import asyncio
 import contextlib
 import json
 import os
+import random
 import time
 import uuid
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -282,6 +283,29 @@ def _loop_retryable(exc: BaseException) -> float | None:
         if code in msg:
             return 0.0
     return None
+
+
+def _retry_backoff_seconds(
+    attempt: int,
+    delay_hint: float,
+    *,
+    rand: Callable[[], float] = random.random,
+) -> float:
+    """Sleep (seconds) before a transient-retry ``attempt`` (1-based).
+
+    A positive ``delay_hint`` (provider ``retry-after`` / rate-limit reset from
+    :func:`_loop_retryable`) is honoured verbatim. Otherwise: exponential
+    ``0.5 * 2**(attempt-1)`` capped at 16s, with **equal jitter** — half fixed
+    plus a random half over ``[0, half]`` — so a fleet of workers retrying the
+    same 429/529 does not resynchronise into a thundering herd (absorbed from
+    hermes' jittered backoff, ABSORB_MATRIX Dim 1). ``rand`` is injectable so
+    tests stay deterministic.
+    """
+    if delay_hint > 0:
+        return delay_hint
+    base = min(0.5 * float(2 ** (max(attempt, 1) - 1)), 16.0)
+    half = base / 2.0
+    return half + half * rand()
 
 
 # Cap on `result_summary` in :class:`ToolStateCompleted`. Plan §1.1
@@ -1756,10 +1780,7 @@ class ReasoningLoop:
                         and _retry_attempt < _max_retry_attempts - 1
                     ):
                         _retry_attempt += 1
-                        _backoff = (
-                            _delay if _delay > 0
-                            else min(0.5 * float(2 ** (_retry_attempt - 1)), 16.0)
-                        )
+                        _backoff = _retry_backoff_seconds(_retry_attempt, _delay)
                         logger.warning(
                             "reasoning_loop.retry",
                             attempt=_retry_attempt,

@@ -1855,3 +1855,27 @@ async def test_reasoning_plus_visible_text_does_not_nudge() -> None:
     visible = [e.text for e in events if isinstance(e, TokenEvent) and not e.is_reasoning]
     assert visible == ["the answer"]
     assert isinstance(events[-1], DoneEvent)
+
+
+def test_retry_backoff_honors_provider_hint() -> None:
+    """A positive delay hint (provider retry-after / reset) is returned
+    verbatim — no jitter applied on top."""
+    from corlinman_agent.reasoning_loop import _retry_backoff_seconds
+
+    assert _retry_backoff_seconds(1, 5.0) == 5.0
+    assert _retry_backoff_seconds(3, 12.5, rand=lambda: 0.9) == 12.5
+
+
+def test_retry_backoff_equal_jitter_range() -> None:
+    """No hint (0.0) → exponential 0.5*2^(n-1) cap 16 with equal jitter over
+    [base/2, base]; deterministic via injected rand (ABSORB_MATRIX Dim 1)."""
+    from corlinman_agent.reasoning_loop import _retry_backoff_seconds
+
+    # attempt 1: base 0.5 → [0.25, 0.5]
+    assert _retry_backoff_seconds(1, 0.0, rand=lambda: 0.0) == 0.25
+    assert _retry_backoff_seconds(1, 0.0, rand=lambda: 1.0) == 0.5
+    # attempt 6: base capped at 16 → [8, 16]
+    assert _retry_backoff_seconds(6, 0.0, rand=lambda: 0.0) == 8.0
+    assert _retry_backoff_seconds(6, 0.0, rand=lambda: 1.0) == 16.0
+    # a mid-jitter value spreads off the fixed base (thundering-herd defence)
+    assert _retry_backoff_seconds(4, 0.0, rand=lambda: 0.5) == 3.0  # base 4 → 2+2*0.5
