@@ -4,6 +4,29 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.24.2] — 2026-07-03 — System-prompt flags + informative elision
+
+> Patch release. Config-compatible. ABSORB_MATRIX Dim 10 residual +
+> Dim 2 (b)/(c) — the last two small-slice items on the landing list.
+
+### Added
+- **`corlinman console --system-prompt TEXT`** — replace the default coding
+  prompt + project memory wholesale for the run; **`--append-system-prompt
+  TEXT`** — append after whatever prompt is in effect (default composition or
+  an override). Append alone keeps the default coding prompt intact.
+
+### Changed
+- **Elided tool payloads are now informative one-liners** — compaction writes
+  `[older tool output elided — tool(args…) · N chars]` (stable prefix, fully
+  deterministic → prompt-cache safe) instead of the flat generic sentinel, so
+  the model knows what was dropped and can re-fetch it.
+- **Saved-token feedback in compaction** (claude-code microcompact semantics):
+  at ≥ summary-threshold pressure the cheap elide pass is measured first and
+  the LLM summarize sub-call is skipped when elision alone pulls the estimate
+  back under threshold; no-op elide passes preserve list identity so a
+  saturated history no longer invalidates the incremental token cache (and
+  re-walks the full message list) every round.
+
 ## [1.24.1] — 2026-07-02 — Background memory-recall prefetch
 
 > Patch release. Config-compatible. ABSORB_MATRIX Dim 6 (mechanism absorbed

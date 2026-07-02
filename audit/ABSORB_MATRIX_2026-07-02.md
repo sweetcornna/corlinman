@@ -47,8 +47,8 @@
 - **Dim 9** declarative `hooks` settings (matcher arrays + command/prompt/agent/http kinds) + `/hooks`. M/L.
 - **Dim 4** shell `run_in_background` (bg-process lifecycle + output spill + offset polling). M. **Sandbox-backend abstraction** (hermes' 7 backends). **XL** — genuinely multi-session.
 - **Dim 5** MCP `sampling` responder + `tools/list_changed` client listener + dynamic (non-boot-snapshot) advertisement. M.
-- **Dim 10** optional `--system-prompt`/`--append-system-prompt` flags. S, low value.
-- **Dim 2** informative elision summaries + saved-token feedback (the exact `_ELIDED_TOOL_CONTENT` sentinel is pinned by 3 tests). S.
+- ✅ **Dim 10** optional `--system-prompt`/`--append-system-prompt` flags — v1.24.2
+- ✅ **Dim 2** informative elision summaries + saved-token feedback (+ no-op-elide identity return; the 3 sentinel-pinning tests moved to a stable-prefix contract) — v1.24.2
 
 **REJECT:** Dim 7 (subagents — corlinman ≥ both baselines); Dim 10 (structured output — already ahead of both).
 
