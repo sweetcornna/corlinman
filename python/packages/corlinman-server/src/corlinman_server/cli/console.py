@@ -141,10 +141,25 @@ def _load_config(data_dir: Path) -> dict[str, Any]:
     ),
 )
 @click.option(
-    "--permission-mode",
-    type=click.Choice(
-        ["default", "acceptEdits", "plan", "bypass"], case_sensitive=False
+    "--system-prompt",
+    "system_prompt",
+    default=None,
+    metavar="TEXT",
+    help=("Replace the default system prompt (and project memory) wholesale for this run."),
+)
+@click.option(
+    "--append-system-prompt",
+    "append_system_prompt",
+    default=None,
+    metavar="TEXT",
+    help=(
+        "Append TEXT after the system prompt in effect (the default "
+        "composition or a --system-prompt override)."
     ),
+)
+@click.option(
+    "--permission-mode",
+    type=click.Choice(["default", "acceptEdits", "plan", "bypass"], case_sensitive=False),
     default=None,
     help=(
         "Initial permission mode for the embedded agent's tool gate "
@@ -164,6 +179,8 @@ def console(
     output_format: str,
     max_turns: int,
     continue_latest: bool,
+    system_prompt: str | None,
+    append_system_prompt: str | None,
     permission_mode: str | None,
 ) -> None:
     """Interactive agent console (REPL) — the CLI face of the corlinman brain.
@@ -216,6 +233,8 @@ def console(
                 max_turns=max_turns,
                 attach_token=attach_token,
                 continue_latest=continue_latest,
+                system_prompt=system_prompt,
+                append_system_prompt=append_system_prompt,
             )
         )
     except KeyboardInterrupt:

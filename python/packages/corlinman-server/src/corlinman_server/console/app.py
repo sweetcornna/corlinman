@@ -80,6 +80,7 @@ def _build_slash_completer() -> Any:
 
     return _SlashCompleter()
 
+
 #: ``--print`` stdout contracts (claude-code's ``--output-format``):
 #: ``text`` streams the answer, ``json`` prints one ``result`` envelope,
 #: ``stream-json`` prints one JSON event per line closed by the envelope.
@@ -131,6 +132,36 @@ def _stream_payload(ev: ConsoleEvent) -> dict[str, Any] | None:
     return None
 
 
+def compose_system_prompt(
+    *,
+    base_prompt: str,
+    memory_text: str | None,
+    override: str | None,
+    append: str | None,
+) -> str | None:
+    """Resolve the session system prompt from CLI flags + project memory.
+
+    ``override`` (``--system-prompt``) replaces the default coding prompt
+    AND project memory wholesale; ``append`` (``--append-system-prompt``)
+    rides after whatever prompt is in effect — including an override.
+    Returns ``None`` when there is nothing to send, so the servicer's
+    default-prompt path stays untouched. The servicer preserves a
+    caller-supplied system message verbatim (env block aside), which is
+    why the non-override compositions must carry ``base_prompt``
+    themselves — sending memory/append alone would silently drop the
+    default coding prompt.
+    """
+    if override:
+        parts = [override]
+    elif memory_text or append:
+        parts = [p for p in (base_prompt, memory_text) if p]
+    else:
+        return None
+    if append:
+        parts.append(append)
+    return "\n\n".join(parts) or None
+
+
 def _result_envelope(
     *,
     result: str,
@@ -160,9 +191,7 @@ def _result_envelope(
         "num_turns": num_turns,
         "is_error": error is not None,
         "error": (
-            {"reason": error.reason, "message": error.message}
-            if error is not None
-            else None
+            {"reason": error.reason, "message": error.message} if error is not None else None
         ),
     }
 
@@ -376,9 +405,7 @@ class ConsoleApp:
             explicit_model=self.session.model if self.model_explicit else None,
         )
         if decision.reason == "auto:simple":
-            self.renderer.console.print(
-                f"→ routed to {decision.model} (simple task)", style="dim"
-            )
+            self.renderer.console.print(f"→ routed to {decision.model} (simple task)", style="dim")
         self.renderer.start_turn()
 
         loop = asyncio.get_running_loop()
@@ -633,6 +660,8 @@ async def run_console(
     max_turns: int = 0,
     attach_token: str | None = None,
     continue_latest: bool = False,
+    system_prompt: str | None = None,
+    append_system_prompt: str | None = None,
 ) -> int:
     """Build the app (embedded or attach brain) and run it.
 
@@ -674,14 +703,13 @@ async def run_console(
     session.compactor = Compactor.from_config(config)
 
     # Project memory (CORLINMAN.md) — loaded in every mode, including
-    # --print (claude-code loads CLAUDE.md for one-shot runs too).
-    # The servicer's _ensure_system_prompt PRESERVES a caller-supplied
-    # system message verbatim (appending only the env block), so sending
-    # memory alone would silently drop the default coding prompt — prefix
-    # it explicitly to keep tool/coding behavior intact.
+    # --print (claude-code loads CLAUDE.md for one-shot runs too) — then
+    # composed with the Dim 10 flags (--system-prompt replaces, --append-
+    # system-prompt rides after). See compose_system_prompt for why the
+    # non-override compositions must carry the default coding prompt.
     memory_text, memory_files = load_project_memory(Path.cwd(), data_dir)
-    if memory_text:
-        base_prompt = ""
+    base_prompt = ""
+    if not system_prompt and (memory_text or append_system_prompt):
         try:
             from corlinman_server.agent_servicer import (  # noqa: PLC0415
                 _CODING_SYSTEM_PROMPT,
@@ -690,9 +718,14 @@ async def run_console(
             base_prompt = _CODING_SYSTEM_PROMPT
         except Exception:  # noqa: BLE001 — attach-only/stripped installs
             pass
-        session.system_prompt = (
-            f"{base_prompt}\n\n{memory_text}" if base_prompt else memory_text
-        )
+    composed = compose_system_prompt(
+        base_prompt=base_prompt,
+        memory_text=memory_text,
+        override=system_prompt,
+        append=append_system_prompt,
+    )
+    if composed:
+        session.system_prompt = composed
 
     console = Console(file=sys.stderr) if print_mode else Console()
     # Rich UI (spinner + live markdown + tool blocks) only on an interactive
@@ -728,9 +761,7 @@ async def run_console(
 
         wire = getattr(brain, "set_approval_resolver", None)
         if callable(wire):
-            app.approval_resolver = ConsoleApprovalResolver(
-                build_console_prompter(renderer)
-            )
+            app.approval_resolver = ConsoleApprovalResolver(build_console_prompter(renderer))
             wire(app.approval_resolver)
 
     # ``--continue`` (Dim 11): resume the most recent journal session. An
@@ -747,8 +778,7 @@ async def run_console(
                 )
         else:
             console.print(
-                "--continue is unavailable in attach mode (journal lives in "
-                "the remote gateway)",
+                "--continue is unavailable in attach mode (journal lives in the remote gateway)",
                 style="yellow",
             )
 
