@@ -30,6 +30,7 @@ otherwise we restore files only and say so honestly in the output
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -79,6 +80,22 @@ class Checkpoint:
     #: ISO-8601 committer date; empty string when the decoration pass
     #: failed (the checkpoint is still fully usable without it).
     timestamp: str
+    #: Journal turn this snapshot precedes (parsed from the ``[turn:<id>]``
+    #: subject tag stamped since v1.23.x); ``None`` for legacy snapshots —
+    #: those fall back to the user-text label match for window truncation.
+    turn_id: int | None = None
+
+
+#: ``[turn:<id>] `` tag the servicer stamps into the snapshot subject.
+_TURN_TAG_RE = re.compile(r"^\[turn:(\d+)\]\s*")
+
+
+def _parse_turn_tag(label: str) -> tuple[int | None, str]:
+    """Split ``"[turn:42] fix the bug"`` → ``(42, "fix the bug")``."""
+    m = _TURN_TAG_RE.match(label)
+    if m is None:
+        return None, label
+    return int(m.group(1)), label[m.end() :]
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,14 +153,18 @@ def list_checkpoints(
     if not snaps:
         return []
     times = _timestamps_by_sha(ws, limit=limit)
-    return [
-        Checkpoint(
-            sha=row["sha"],
-            label=_strip_subject(row["label"]),
-            timestamp=times.get(row["sha"], ""),
+    out: list[Checkpoint] = []
+    for row in snaps:
+        turn_id, label = _parse_turn_tag(_strip_subject(row["label"]))
+        out.append(
+            Checkpoint(
+                sha=row["sha"],
+                label=label,
+                timestamp=times.get(row["sha"], ""),
+                turn_id=turn_id,
+            )
         )
-        for row in snaps
-    ]
+    return out
 
 
 def format_checkpoints(checkpoints: list[Checkpoint]) -> str:
@@ -217,6 +238,7 @@ def rewind_to(
     session: BrainSession | None = None,
     workspace: Path | str | None = None,
     limit: int = _DEFAULT_LIMIT,
+    skip_window: bool = False,
 ) -> RewindResult:
     """Restore the workspace to the checkpoint named by ``target``.
 
@@ -255,13 +277,14 @@ def rewind_to(
         # untracked at HEAD) — sweep them too, or the "restore" is partial.
         _run_git(ws, "clean", "-fd")
         truncated, dropped, reason = (False, 0, "no console session attached")
-        if session is not None:
+        if not skip_window and session is not None:
             truncated, dropped, reason = _truncate_window(session, chosen.label)
-        window_note = (
-            f"; {dropped} window message(s) dropped"
-            if truncated
-            else f"; conversation window unchanged ({reason})"
-        )
+        if skip_window:
+            window_note = ""  # caller owns window handling (turn-keyed rebuild)
+        elif truncated:
+            window_note = f"; {dropped} window message(s) dropped"
+        else:
+            window_note = f"; conversation window unchanged ({reason})"
         return RewindResult(
             ok=True,
             sha=chosen.sha,
@@ -307,9 +330,11 @@ def rewind_to(
     logger.info("console.rewind.restored", sha=chosen.sha, label=chosen.label)
 
     truncated, dropped, reason = (False, 0, "no console session attached")
-    if session is not None:
+    if not skip_window and session is not None:
         truncated, dropped, reason = _truncate_window(session, chosen.label)
-    if truncated:
+    if skip_window:
+        tail = "files restored"  # caller appends the turn-keyed window note
+    elif truncated:
         tail = f"files restored; conversation window: dropped {dropped} message(s)"
     else:
         tail = f"files restored; conversation window unchanged ({reason})"
@@ -340,7 +365,35 @@ async def cmd_rewind(app: Any, args: str) -> str:
     try:
         if not arg:
             return format_checkpoints(list_checkpoints())
-        result = rewind_to(arg, session=getattr(app, "session", None))
+        # Turn-keyed window rebuild (Dim 11): when the chosen checkpoint
+        # carries the journal turn id it precedes AND the app can replay the
+        # journal, restore files with rewind_to and rebuild the window from
+        # turns strictly before that id — exact, no label heuristics. Legacy
+        # snapshots (no tag) keep the label-match fallback inside rewind_to.
+        checkpoints = list_checkpoints()
+        idx, _err = _resolve_target(arg, checkpoints)
+        chosen = checkpoints[idx] if idx is not None else None
+        rebuild = getattr(app, "replay_window_before", None)
+        turn_keyed = (
+            chosen is not None
+            and chosen.turn_id is not None
+            and callable(rebuild)
+        )
+        result = rewind_to(
+            arg,
+            session=getattr(app, "session", None),
+            skip_window=turn_keyed,
+        )
+        if result.ok and turn_keyed and chosen is not None and rebuild is not None:
+            replayed = await rebuild(chosen.turn_id)
+            if replayed is None:
+                note = "conversation window unchanged (journal unavailable)"
+            else:
+                note = (
+                    f"conversation window rebuilt from the journal: "
+                    f"{replayed} message(s) (turns before turn {chosen.turn_id})"
+                )
+            return f"{result.message}; {note}"
     except Exception as exc:  # noqa: BLE001 — typos must not stack-trace the REPL
         logger.warning("console.rewind.failed", error=str(exc))
         return f"rewind failed: {exc}"

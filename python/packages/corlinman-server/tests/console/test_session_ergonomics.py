@@ -76,3 +76,47 @@ async def test_match_session_keys_substring_recency_ordered() -> None:
     app = _app(_FakeJournal(["console:b-new", "console:b-old", "tg:1"]))
     assert await app.match_session_keys("b-") == ["console:b-new", "console:b-old"]
     assert await app.match_session_keys("nope") == []
+
+
+class _TurnJournal(_FakeJournal):
+    """Fake journal with turns for the turn-keyed rewind rebuild."""
+
+    def __init__(self) -> None:
+        super().__init__([])
+        self.cursor_seen: list[str] = []
+
+    async def list_session_turns(
+        self, session_key: str, *, limit: int = 50, before_turn_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        self.cursor_seen.append(str(before_turn_id))
+        # Deliberately newest-first (the backend contract) to prove the
+        # rebuild re-sorts oldest-first.
+        return [
+            {"turn_id": 20, "started_at_ms": 2000},
+            {"turn_id": 10, "started_at_ms": 1000},
+        ]
+
+    async def _load_messages(self, turn_id: Any) -> list[dict[str, Any]]:
+        return [
+            {"role": "user", "content": f"u{turn_id}"},
+            {"role": "assistant", "content": f"a{turn_id}"},
+            {"role": "tool", "content": "ignored"},
+        ]
+
+
+async def test_replay_window_before_rebuilds_oldest_first() -> None:
+    journal = _TurnJournal()
+    app = _app(journal)
+    app.session.window.extend([{"role": "user", "content": "stale"}])
+
+    replayed = await app.replay_window_before(30)
+
+    assert journal.cursor_seen == ["30"]  # strictly-before cursor forwarded
+    assert replayed == 4  # 2 turns × (user + assistant); tool msg filtered
+    assert [m["content"] for m in app.session.window] == ["u10", "a10", "u20", "a20"]
+    assert journal.closed is True
+
+
+async def test_replay_window_before_none_paths() -> None:
+    assert await _app(None).replay_window_before(5) is None  # no journal
+    assert await _app(_TurnJournal(), embedded=False).replay_window_before(5) is None

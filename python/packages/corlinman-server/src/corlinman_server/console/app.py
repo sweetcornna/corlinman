@@ -269,6 +269,42 @@ class ConsoleApp:
             with contextlib.suppress(Exception):
                 await journal.close()
 
+    async def replay_window_before(self, turn_id: int) -> int | None:
+        """Rebuild the window from journal turns STRICTLY BEFORE ``turn_id``
+        — the turn-keyed ``/rewind`` truncation (the checkpoint was taken at
+        the start of that turn, so the window must show everything before
+        it). Returns the replayed message count; ``None`` in attach mode or
+        without a journal (the caller reports "window unchanged")."""
+        if not self.embedded:
+            return None
+        journal = await self._open_journal()
+        if journal is None:
+            return None
+        try:
+            rows = await journal.list_session_turns(
+                self.session.session_key, limit=50, before_turn_id=str(turn_id)
+            )
+            ordered = sorted(
+                (r for r in rows if r.get("turn_id") is not None),
+                key=lambda r: (r.get("started_at_ms") or 0, str(r.get("turn_id"))),
+            )
+            self.session.window.clear()
+            replayed = 0
+            for row in ordered:
+                messages = await journal._load_messages(row["turn_id"])  # noqa: SLF001 — stable shim
+                for msg in messages:
+                    role = str(msg.get("role", ""))
+                    content = str(msg.get("content", "") or "")
+                    if role in ("user", "assistant") and content.strip():
+                        self.session.window.append({"role": role, "content": content})
+                        replayed += 1
+            return replayed
+        except Exception:  # noqa: BLE001 — window rebuild is best-effort
+            return None
+        finally:
+            with contextlib.suppress(Exception):
+                await journal.close()
+
     async def latest_session_key(self) -> str | None:
         """Most-recent journal session key (``--continue``); ``None`` in
         attach mode or with no journal. ``list_session_summaries`` is ordered

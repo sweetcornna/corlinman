@@ -225,13 +225,18 @@ def ensure_repo(workspace: Path) -> bool:
     return True
 
 
-def snapshot(workspace: Path, label: str) -> str | None:
+def snapshot(workspace: Path, label: str, *, turn_id: int | None = None) -> str | None:
     """Take a snapshot of ``workspace``; return the new short SHA.
 
     Calls :func:`ensure_repo` first so the first snapshot triggers the
     init. Always uses ``--allow-empty`` — a turn that made no file
     changes still gets a checkpoint so ``revert_changes`` semantics stay
     uniform (one turn = one snapshot).
+
+    ``turn_id`` (the journal turn this snapshot precedes) is embedded in the
+    commit subject as ``snapshot: [turn:<id>] <label>`` so /rewind can key the
+    conversation-window truncation on the exact turn instead of the fragile
+    user-text label match. Omitted → the legacy ``snapshot: <label>`` subject.
 
     Returns ``None`` on any failure (git missing, init failed, commit
     failed). Failures are logged but never raised.
@@ -250,13 +255,18 @@ def snapshot(workspace: Path, label: str) -> str | None:
             "agent.snapshot.git_add_failed", stderr=add.stderr.strip()
         )
         return None
+    subject = (
+        f"snapshot: [turn:{int(turn_id)}] {safe_label}"
+        if turn_id is not None
+        else f"snapshot: {safe_label}"
+    )
     commit = _run_git(
         workspace,
         "commit",
         "--allow-empty",
         "--quiet",
         "-m",
-        f"snapshot: {safe_label}",
+        subject,
     )
     if commit.returncode != 0:
         logger.warning(

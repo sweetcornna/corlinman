@@ -1600,7 +1600,14 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # labelled with it would be meaningless in /rewind.
         if not start.session_key.endswith(_INTERNAL_SESSION_SUFFIXES):
             try:
-                _snapshot_workspace(resolve_workspace(), user_text or "turn")
+                # Stamp the journal turn id into the snapshot subject so
+                # /rewind can key window truncation on the exact turn (Dim
+                # 11) instead of matching the user-text label.
+                _snapshot_workspace(
+                    resolve_workspace(),
+                    user_text or "turn",
+                    turn_id=journal_turn_id,
+                )
             except Exception as exc:  # noqa: BLE001 — never fail the chat
                 logger.warning("agent.chat.snapshot_failed", error=str(exc))
 
