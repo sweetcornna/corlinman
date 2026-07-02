@@ -29,7 +29,12 @@ from pathlib import Path
 from typing import Any
 
 from corlinman_server.console.brain import Brain, BrainSession
-from corlinman_server.console.commands import TurnRequest, dispatch, registry
+from corlinman_server.console.commands import (
+    TurnRequest,
+    _estimate_session_cost_usd,
+    dispatch,
+    registry,
+)
 from corlinman_server.console.compaction import Compactor, maybe_auto_compact
 from corlinman_server.console.events import (
     ConsoleEvent,
@@ -373,6 +378,21 @@ class ConsoleApp:
             )
         )
 
+    def _bottom_toolbar(self) -> str:
+        """prompt_toolkit bottom bar: model · session · live token count · cost
+        (ABSORB_MATRIX Dim 12 — surfaces the session tokens/cost the loop already
+        tracks; the raw model·session bar showed neither)."""
+        s = self.session.stats
+        parts = [f" {self.session.model}", self.session.session_key]
+        if s.total_tokens:
+            parts.append(f"{s.total_tokens:,} tok")
+            cost = _estimate_session_cost_usd(
+                self.session.model, s.prompt_tokens, s.completion_tokens
+            )
+            if cost is not None:
+                parts.append(f"${cost:.4f}")
+        return " · ".join(parts)
+
     async def run_repl(self) -> None:
         from prompt_toolkit import PromptSession  # noqa: PLC0415
         from prompt_toolkit.history import FileHistory  # noqa: PLC0415
@@ -401,9 +421,7 @@ class ConsoleApp:
                 with patch_stdout():
                     line = await prompt.prompt_async(
                         "> ",
-                        bottom_toolbar=lambda: (
-                            f" {self.session.model} · {self.session.session_key}"
-                        ),
+                        bottom_toolbar=self._bottom_toolbar,
                     )
             except KeyboardInterrupt:
                 self.renderer.console.print("(/quit to exit)", style="dim")

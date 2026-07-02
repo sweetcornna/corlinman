@@ -128,3 +128,38 @@ async def test_cancel_turn_only_when_busy() -> None:
     assert session.cancel_turn() is False  # idle — nothing to cancel
     _ = [ev async for ev in session.send("q")]
     assert session.busy is False
+
+
+def test_bottom_toolbar_shows_live_tokens_and_cost() -> None:
+    """The console bottom bar surfaces session tokens + estimated cost
+    (ABSORB_MATRIX Dim 12), not just model · session."""
+    from types import SimpleNamespace
+
+    from corlinman_server.console.app import ConsoleApp
+    from corlinman_server.console.brain import TurnStats
+
+    stats = TurnStats(
+        turns=2, prompt_tokens=1_000_000, completion_tokens=1_000_000, total_tokens=2_000_000
+    )
+    app = SimpleNamespace(
+        session=SimpleNamespace(
+            model="claude-sonnet-4-6", session_key="console:abc", stats=stats
+        )
+    )
+    bar = ConsoleApp._bottom_toolbar(app)  # unbound: only reads self.session.*
+    assert "claude-sonnet-4-6" in bar and "console:abc" in bar
+    assert "tok" in bar and "$" in bar
+
+
+def test_bottom_toolbar_hides_tokens_cost_when_idle() -> None:
+    from types import SimpleNamespace
+
+    from corlinman_server.console.app import ConsoleApp
+    from corlinman_server.console.brain import TurnStats
+
+    app = SimpleNamespace(
+        session=SimpleNamespace(model="x", session_key="console:z", stats=TurnStats())
+    )
+    bar = ConsoleApp._bottom_toolbar(app)
+    assert "tok" not in bar and "$" not in bar
+    assert "x" in bar and "console:z" in bar
