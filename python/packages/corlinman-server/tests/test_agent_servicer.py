@@ -2998,3 +2998,98 @@ def test_peek_agent_binding_no_hint_uses_heuristic_unchanged() -> None:
             extra=dict(sentinel),
         )
         assert servicer._peek_agent_binding(start_v) is None
+
+
+# ---------------------------------------------------------------------------
+# Dim 6 — background next-turn recall prefetch
+# ---------------------------------------------------------------------------
+
+
+class _RecallHost:
+    """Memory-host fake: recency recall + upsert (no ``query`` → the
+    relevance-recall lane no-ops)."""
+
+    def __init__(self) -> None:
+        self.recent_calls: list[tuple[str, int]] = []
+        self.docs: list[Any] = []
+
+    async def recent(self, session_key: str, limit: int) -> list[Any]:
+        from types import SimpleNamespace
+
+        self.recent_calls.append((session_key, limit))
+        return [SimpleNamespace(content="remembered fact")]
+
+    async def upsert(self, doc: Any) -> None:
+        self.docs.append(doc)
+
+
+async def test_store_memory_prefetches_next_turn_recall(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After a turn's memory store, the recency recall for the NEXT turn is
+    precomputed off the hot path (hermes-style background prefetch)."""
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+    servicer = CorlinmanAgentServicer(
+        provider_resolver=lambda _m: _FakeProvider([]),
+    )
+    host = _RecallHost()
+    # ``_get_memory_host`` lazily opens a REAL sqlite host unless init is
+    # marked done — inject the fake through the same seam, and aclose so no
+    # real resource can outlive the test.
+    servicer._memory_host = host
+    servicer._memory_init_done = True
+    try:
+        await servicer._store_memory("s1", "hello", "world")
+        for _ in range(50):  # let the fire-and-forget task run
+            if "s1" in servicer._recall_prefetch:
+                break
+            await asyncio.sleep(0.01)
+
+        assert host.docs, "turn must still be stored"
+        assert servicer._recall_prefetch.get("s1"), "recall prefetched post-store"
+        assert host.recent_calls == [("s1", 8)]
+    finally:
+        await servicer.aclose()
+
+
+async def test_recall_memory_consumes_prefetch_one_shot(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A prefetched recall is used WITHOUT awaiting the host, then discarded —
+    the next turn without a prefetch falls back to inline recall."""
+    from types import SimpleNamespace
+
+    from corlinman_agent.reasoning_loop import ChatStart as _AgentChatStart
+
+    monkeypatch.setenv("CORLINMAN_DATA_DIR", str(tmp_path))
+    servicer = CorlinmanAgentServicer(
+        provider_resolver=lambda _m: _FakeProvider([]),
+    )
+    host = _RecallHost()
+    servicer._memory_host = host
+    servicer._memory_init_done = True  # see _get_memory_host lazy-open guard
+    servicer._recall_prefetch["s1"] = [SimpleNamespace(content="cached fact")]
+    try:
+        start = _AgentChatStart(
+            model="m",
+            messages=[{"role": "user", "content": "hi"}],
+            session_key="s1",
+        )
+        await servicer._recall_memory(start)
+
+        assert host.recent_calls == []  # served from the prefetch, no host await
+        assert any(
+            "cached fact" in str(m.get("content", "")) for m in start.messages
+        ), "prefetched recall folded into the prompt"
+        assert "s1" not in servicer._recall_prefetch  # one-shot
+
+        # No prefetch available → inline recall as before.
+        start2 = _AgentChatStart(
+            model="m",
+            messages=[{"role": "user", "content": "again"}],
+            session_key="s1",
+        )
+        await servicer._recall_memory(start2)
+        assert host.recent_calls == [("s1", 8)]  # inline fallback hit the host
+    finally:
+        await servicer.aclose()

@@ -1258,6 +1258,16 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         # folded into ``_active_skills`` this turn — so we compute it at most
         # once per session rather than on every tool dispatch.
         self._injected_skills_computed: set[str] = set()
+        # Dim 6 (absorbed from hermes' background next-turn prefetch): recency
+        # recall hits precomputed AFTER a turn's memory store, consumed
+        # one-shot by the NEXT turn's ``_recall_memory`` — cuts the inline
+        # recall await (real latency on remote memory-host backends). LRU
+        # capped like ``_active_skills``. The bm25 relevance recall depends on
+        # the incoming user text, so it is deliberately NOT prefetchable.
+        self._recall_prefetch: OrderedDict[str, list[Any]] = OrderedDict()
+        # Strong refs to in-flight prefetch tasks (fire-and-forget otherwise
+        # gets GC'd mid-flight); done-callback discards.
+        self._prefetch_tasks: set[Any] = set()
 
     async def Chat(  # noqa: N802 — gRPC method name
         self,
@@ -4407,17 +4417,26 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
         """
         if not start.session_key:
             return
-        host = await self._get_memory_host()
-        if host is None:
-            return
-        recent_fn = getattr(host, "recent", None)
-        if recent_fn is None:
-            return
-        try:
-            hits = await recent_fn(start.session_key, 8)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("agent.memory.recall_failed", error=str(exc))
-            return
+        # Consume the background-prefetched hits when present (one-shot pop:
+        # a rare cross-surface write between turns costs at most one slightly
+        # stale recall, and the next post-turn prefetch repopulates).
+        hits = self._recall_prefetch.pop(start.session_key, None)
+        if hits is None:
+            host = await self._get_memory_host()
+            if host is None:
+                return
+            recent_fn = getattr(host, "recent", None)
+            if recent_fn is None:
+                return
+            try:
+                hits = await recent_fn(start.session_key, 8)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("agent.memory.recall_failed", error=str(exc))
+                return
+        else:
+            logger.info(
+                "agent.memory.recall_prefetch_hit", session=start.session_key
+            )
         if not hits:
             return
         # ``recent`` returns newest-first; present oldest-first so the
@@ -4516,6 +4535,38 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
             logger.info("agent.memory.stored", session=session_key)
         except Exception as exc:  # noqa: BLE001
             logger.warning("agent.memory.store_failed", error=str(exc))
+            return
+        # Background next-turn prefetch (Dim 6): the store just changed what
+        # recency recall would return, so recompute it OFF the hot path — the
+        # next turn's _recall_memory pops the result instead of awaiting the
+        # host inline. Fire-and-forget; failures degrade to inline recall.
+        try:
+            task = asyncio.get_running_loop().create_task(
+                self._prefetch_recent_recall(session_key)
+            )
+            self._prefetch_tasks.add(task)
+            task.add_done_callback(self._prefetch_tasks.discard)
+        except RuntimeError:  # pragma: no cover — no running loop (sync tests)
+            pass
+
+    async def _prefetch_recent_recall(self, session_key: str) -> None:
+        """Precompute the next turn's recency recall (see ``_recall_prefetch``)."""
+        try:
+            host = await self._get_memory_host()
+            if host is None:
+                return
+            recent_fn = getattr(host, "recent", None)
+            if recent_fn is None:
+                return
+            hits = await recent_fn(session_key, 8)
+        except Exception as exc:  # noqa: BLE001 — prefetch is best-effort
+            logger.debug("agent.memory.prefetch_failed", error=str(exc))
+            return
+        self._recall_prefetch[session_key] = list(hits or [])
+        self._recall_prefetch.move_to_end(session_key)
+        cap = _session_cache_cap()
+        while len(self._recall_prefetch) > cap:
+            self._recall_prefetch.popitem(last=False)
 
 
 def _build_default_context_assembler() -> ContextAssembler | None:
