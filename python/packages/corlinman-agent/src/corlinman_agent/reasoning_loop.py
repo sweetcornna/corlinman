@@ -601,6 +601,25 @@ _ELIDED_TOOL_CONTENT = _ELIDED_TOOL_PREFIX + "]"
 # Cap on the arguments hint embedded in the informative sentinel.
 _ELIDE_ARGS_HINT_MAX = 80
 
+# Upper bound on a *generated* sentinel's length (prefix + tool name +
+# capped args hint + size suffix lands well under this). The
+# already-elided check requires the full sentinel shape — prefix AND
+# closing ``]`` AND sub-cap length — so real tool output that merely
+# STARTS with the prefix (tool-controlled text + a large payload) is
+# still elided instead of silently bypassing compaction.
+_ELIDED_SENTINEL_MAX = 256
+
+
+def _is_elided_sentinel(content: Any) -> bool:
+    """True only for content matching the full generated-sentinel shape."""
+    return (
+        isinstance(content, str)
+        and content.startswith(_ELIDED_TOOL_PREFIX)
+        and content.endswith("]")
+        and len(content) <= _ELIDED_SENTINEL_MAX
+    )
+
+
 # How many trailing assistant rounds stay verbatim through compaction.
 _COMPACT_RECENT_ROUNDS = 3
 
@@ -951,29 +970,28 @@ def _elided_tool_summary(msg: dict[str, Any], shells: dict[str, tuple[str, str]]
     return f"{_ELIDED_TOOL_PREFIX} — {name}({hint}) · {size} chars]"
 
 
-def _tool_call_shells(
-    messages: Sequence[dict[str, Any]],
-) -> dict[str, tuple[str, str]]:
-    """Map ``tool_call_id`` → ``(function name, raw arguments)`` across
-    every assistant ``tool_calls`` shell in ``messages``."""
-    shells: dict[str, tuple[str, str]] = {}
-    for m in messages:
-        if m.get("role") != "assistant":
+def _update_tool_call_shells(shells: dict[str, tuple[str, str]], msg: dict[str, Any]) -> None:
+    """Fold ``msg``'s assistant ``tool_calls`` into the running shell map.
+
+    Called in transcript order so a tool result always resolves against
+    the NEAREST PRECEDING shell for its id. This matters because
+    providers that omit tool-call ids get per-response synthesized ids
+    (``call_0``, …) — a transcript-wide last-wins map would label an
+    older round's result with a later round's tool.
+    """
+    tool_calls = msg.get("tool_calls")
+    if not isinstance(tool_calls, list):
+        return
+    for tc in tool_calls:
+        if not isinstance(tc, dict):
             continue
-        tool_calls = m.get("tool_calls")
-        if not isinstance(tool_calls, list):
-            continue
-        for tc in tool_calls:
-            if not isinstance(tc, dict):
-                continue
-            cid = tc.get("id")
-            fn = tc.get("function")
-            if isinstance(cid, str) and isinstance(fn, dict):
-                shells[cid] = (
-                    str(fn.get("name") or ""),
-                    str(fn.get("arguments") or ""),
-                )
-    return shells
+        cid = tc.get("id")
+        fn = tc.get("function")
+        if isinstance(cid, str) and isinstance(fn, dict):
+            shells[cid] = (
+                str(fn.get("name") or ""),
+                str(fn.get("arguments") or ""),
+            )
 
 
 def _compact_history_elide(
@@ -1020,14 +1038,20 @@ def _compact_history_elide(
             first_user_idx = i
             break
 
-    shells = _tool_call_shells(messages)
+    shells: dict[str, tuple[str, str]] = {}
     out: list[dict[str, Any]] = []
     elided_count = 0
     for i, msg in enumerate(messages):
+        role = msg.get("role")
+        if role == "assistant":
+            # Fold shells in transcript order — nearest-preceding
+            # semantics so synthesized duplicate ids (``call_0`` per
+            # response) resolve to their OWN round's tool, not a later
+            # round's.
+            _update_tool_call_shells(shells, msg)
         if i >= recent_cutoff:
             out.append(dict(msg))
             continue
-        role = msg.get("role")
         # Preserve seed system + first user message verbatim.
         if role == "system":
             out.append(dict(msg))
@@ -1037,7 +1061,7 @@ def _compact_history_elide(
             continue
         if role == "tool":
             existing = msg.get("content")
-            if isinstance(existing, str) and existing.startswith(_ELIDED_TOOL_PREFIX):
+            if _is_elided_sentinel(existing):
                 # Already elided — preserve as-is (idempotence path).
                 out.append(dict(msg))
                 continue

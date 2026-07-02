@@ -1380,6 +1380,103 @@ async def test_summary_pressure_prefers_elide_when_it_saves_enough() -> None:
     assert any(m["content"].startswith(_ELIDED_TOOL_PREFIX) for m in tool_msgs)
 
 
+@pytest.mark.asyncio
+async def test_real_output_starting_with_prefix_is_still_elided() -> None:
+    """Tool output that happens to START with the sentinel prefix is not
+    mistaken for an already-elided message (Codex PR#107 P2).
+
+    The already-elided check must match the full sentinel shape (short,
+    closed with ``]``), not any tool-controlled content sharing the
+    prefix — otherwise a payload like ``[older tool output elided ...``
+    + 100k chars silently bypasses compaction forever.
+    """
+    from corlinman_agent.reasoning_loop import (
+        _ELIDED_TOOL_PREFIX,
+        _compact_history,
+    )
+
+    adversarial = _ELIDED_TOOL_PREFIX + " …not really] " + "X" * 5_000
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "task"},
+    ]
+    for i in range(6):
+        cid = f"c{i}"
+        messages.append(
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": cid,
+                        "type": "function",
+                        "function": {"name": "t", "arguments": "{}"},
+                    }
+                ],
+            }
+        )
+        messages.append({"role": "tool", "tool_call_id": cid, "content": adversarial})
+
+    out = await _compact_history(messages, budget=200, fast_path_only=True)
+    older_tools = [m for m in out if m.get("role") == "tool"][:3]
+    for tm in older_tools:
+        assert len(tm["content"]) < 300, "adversarial payload must be elided"
+        assert tm["content"].startswith(_ELIDED_TOOL_PREFIX)
+
+
+@pytest.mark.asyncio
+async def test_duplicate_synthesized_call_ids_use_nearest_shell() -> None:
+    """Elision labels a tool result with its OWN round's shell, not a
+    later round's reusing the same synthesized id (Codex PR#107 P2).
+
+    Providers that omit tool-call ids get per-response synthesized ids
+    like ``call_0`` — multi-round histories then repeat the id across
+    different tools. A transcript-wide last-wins map would label the old
+    result with the WRONG tool; the lookup must be nearest-preceding.
+    """
+    from corlinman_agent.reasoning_loop import (
+        _ELIDED_TOOL_PREFIX,
+        _compact_history,
+    )
+
+    huge = "X" * 2_000
+
+    def _round(name: str) -> list[dict[str, Any]]:
+        return [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_0",  # synthesized, reused every round
+                        "type": "function",
+                        "function": {"name": name, "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_0", "content": huge},
+        ]
+
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "task"},
+        *_round("first_tool"),
+        *_round("second_tool"),
+        *_round("r3"),
+        *_round("r4"),
+        *_round("r5"),
+        *_round("r6"),
+    ]
+
+    out = await _compact_history(messages, budget=200, fast_path_only=True)
+    elided = [
+        m for m in out if m.get("role") == "tool" and m["content"].startswith(_ELIDED_TOOL_PREFIX)
+    ]
+    assert len(elided) == 3
+    assert "first_tool" in elided[0]["content"], elided[0]["content"]
+    assert "second_tool" in elided[1]["content"], elided[1]["content"]
+
+
 # ---------------------------------------------------------------------------
 # Fix 2 — Mid-task user message injection
 # ---------------------------------------------------------------------------
