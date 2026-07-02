@@ -64,6 +64,7 @@ logger = structlog.get_logger(__name__)
 READ_FILE_TOOL: str = "read_file"
 WRITE_FILE_TOOL: str = "write_file"
 EDIT_FILE_TOOL: str = "edit_file"
+NOTEBOOK_EDIT_TOOL: str = "notebook_edit"
 LIST_FILES_TOOL: str = "list_files"
 
 #: Directory entries never surfaced by ``list_files`` — noise / unsafe.
@@ -730,6 +731,177 @@ def dispatch_write_file(
     return json.dumps(payload, ensure_ascii=False)
 
 
+def _atomic_replace_write(
+    path: Path, text: str, *, mode: int = 0o644, encoding: str = "utf-8"
+) -> None:
+    """Stage ``text`` into a unique temp sibling, fsync, then ``os.replace`` onto
+    ``path`` (atomic). The caller must have refused symlinks + resolved the path
+    for-write. Raises ``OSError`` on failure (temp cleaned up)."""
+    tmp_fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(tmp_fd, "w", encoding=encoding) as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp_path, mode)
+        os.replace(tmp_path, path)
+    except OSError:
+        with contextlib.suppress(OSError):
+            tmp_path.unlink()
+        raise
+
+
+def notebook_edit_tool_schema() -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": NOTEBOOK_EDIT_TOOL,
+            "description": (
+                "Edit a Jupyter notebook (.ipynb): replace a cell's source, "
+                "insert a new cell before an index, or delete a cell. Cells are "
+                "addressed by 0-based index; the notebook is rewritten atomically."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Workspace-relative .ipynb path.",
+                    },
+                    "cell_number": {
+                        "type": "integer",
+                        "description": "0-based cell index.",
+                    },
+                    "new_source": {
+                        "type": "string",
+                        "description": "New cell source (required for replace / insert).",
+                    },
+                    "edit_mode": {
+                        "type": "string",
+                        "enum": ["replace", "insert", "delete"],
+                        "description": "replace (default) / insert before cell_number / delete.",
+                    },
+                    "cell_type": {
+                        "type": "string",
+                        "enum": ["code", "markdown"],
+                        "description": "Cell type for insert (default code).",
+                    },
+                },
+                "required": ["path", "cell_number"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def _nb_source_lines(text: str) -> list[str]:
+    """Split ``text`` into the line-list nbformat stores as a cell ``source``."""
+    return text.splitlines(keepends=True)
+
+
+def dispatch_notebook_edit(
+    *,
+    args_json: bytes | str,
+    workspace: Path | None = None,
+    state: FileState | None = None,
+) -> str:
+    """Edit a ``.ipynb`` cell (replace / insert / delete). JSON envelope; never raises."""
+    try:
+        raw = decode_args(args_json)
+        ws = resolve_workspace(workspace)
+        path = resolve_in_workspace(ws, raw.get("path"), for_write=True)
+    except CodingArgsInvalidError as exc:
+        return _err({"error": f"args_invalid: {exc.message}"})
+    except WorkspaceEscapeError as exc:
+        return _err({"error": f"workspace_escape: {exc}"})
+
+    edit_mode = str(raw.get("edit_mode") or "replace")
+    if edit_mode not in ("replace", "insert", "delete"):
+        return _err({"error": "args_invalid: edit_mode must be replace|insert|delete"})
+    idx = raw.get("cell_number")
+    if not isinstance(idx, int) or isinstance(idx, bool) or idx < 0:
+        return _err({"error": "args_invalid: 'cell_number' must be a non-negative integer"})
+    if path.is_symlink():
+        return _err({"error": "workspace_escape: refusing to write through a symlink"})
+    if not path.exists():
+        return _err({"error": f"not_found: {raw.get('path')}"})
+
+    try:
+        nb = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return _err({"error": f"notebook_read_failed: {exc}"})
+    if not isinstance(nb, dict) or not isinstance(nb.get("cells"), list):
+        return _err({"error": "invalid_notebook: missing 'cells' array"})
+    cells = nb["cells"]
+
+    if edit_mode == "insert":
+        if idx > len(cells):
+            return _err({"error": f"cell_index_out_of_range: {idx} > {len(cells)}"})
+        ct = str(raw.get("cell_type") or "code")
+        if ct not in ("code", "markdown"):
+            return _err({"error": "args_invalid: cell_type must be code|markdown"})
+        src = raw.get("new_source")
+        if not isinstance(src, str):
+            return _err({"error": "args_invalid: 'new_source' must be a string for insert"})
+        new_cell: dict[str, Any] = {
+            "cell_type": ct,
+            "metadata": {},
+            "source": _nb_source_lines(src),
+        }
+        if ct == "code":
+            new_cell["outputs"] = []
+            new_cell["execution_count"] = None
+        cells.insert(idx, new_cell)
+        action = "inserted"
+    else:
+        if idx >= len(cells):
+            return _err({"error": f"cell_index_out_of_range: {idx} >= {len(cells)}"})
+        if edit_mode == "delete":
+            cells.pop(idx)
+            action = "deleted"
+        else:  # replace
+            src = raw.get("new_source")
+            if not isinstance(src, str):
+                return _err({"error": "args_invalid: 'new_source' must be a string for replace"})
+            cell = cells[idx]
+            if not isinstance(cell, dict):
+                return _err({"error": "invalid_notebook: cell is not an object"})
+            cell["source"] = _nb_source_lines(src)
+            # A code cell whose source changed has stale outputs — clear them.
+            if cell.get("cell_type") == "code":
+                cell["outputs"] = []
+                cell["execution_count"] = None
+            action = "replaced"
+
+    out_text = json.dumps(nb, indent=1, ensure_ascii=False) + "\n"
+    if len(out_text.encode("utf-8")) > MAX_WRITE_BYTES:
+        return _err({"error": f"content_too_large: cap is {MAX_WRITE_BYTES} bytes"})
+    try:
+        file_mode = stat.S_IMODE(os.stat(path).st_mode)
+    except OSError:
+        file_mode = 0o644
+    try:
+        _atomic_replace_write(path, out_text, mode=file_mode)
+    except OSError as exc:
+        return _err({"error": f"write_failed: {exc}"})
+
+    if state is not None:
+        state.forget(path)
+        state.mark_seen(path)
+    return json.dumps(
+        {
+            "path": workspace_rel(ws, path),
+            "action": action,
+            "cell_number": idx,
+            "cells_total": len(cells),
+        },
+        ensure_ascii=False,
+    )
+
+
 def _line_span_offsets(text: str) -> list[tuple[int, int]]:
     """Return ``[(line_start, line_end_exclusive_of_newline)]`` per line.
 
@@ -1208,14 +1380,17 @@ __all__ = [
     "EDIT_FILE_TOOL",
     "IMAGE_EXTENSIONS",
     "LIST_FILES_TOOL",
+    "NOTEBOOK_EDIT_TOOL",
     "READ_FILE_TOOL",
     "WRITE_FILE_TOOL",
     "dispatch_edit_file",
     "dispatch_list_files",
+    "dispatch_notebook_edit",
     "dispatch_read_file",
     "dispatch_write_file",
     "edit_file_tool_schema",
     "list_files_tool_schema",
+    "notebook_edit_tool_schema",
     "read_file_tool_schema",
     "write_file_tool_schema",
 ]

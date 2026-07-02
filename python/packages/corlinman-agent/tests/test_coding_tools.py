@@ -16,6 +16,7 @@ from corlinman_agent.coding import (
     coding_tool_schemas,
     dispatch_edit_file,
     dispatch_list_files,
+    dispatch_notebook_edit,
     dispatch_read_file,
     dispatch_run_shell,
     dispatch_search_files,
@@ -34,7 +35,7 @@ def _args(**kw: object) -> bytes:
 
 def test_coding_tools_set_and_schemas_align() -> None:
     schemas = coding_tool_schemas()
-    assert len(schemas) == len(CODING_TOOLS) == 9
+    assert len(schemas) == len(CODING_TOOLS) == 10
     names = {s["function"]["name"] for s in schemas}
     assert names == set(CODING_TOOLS)
 
@@ -1080,7 +1081,7 @@ def test_coding_tools_set_includes_revert_changes() -> None:
     schemas = coding_tool_schemas()
     names = {s["function"]["name"] for s in schemas}
     assert "revert_changes" in names
-    assert len(schemas) == len(CODING_TOOLS) == 9
+    assert len(schemas) == len(CODING_TOOLS) == 10
 
 
 # ---------------------------------------------------------------------------
@@ -1507,3 +1508,90 @@ def test_write_leaves_no_staging_temp_file(tmp_path: Path) -> None:
     leftovers = [p.name for p in tmp_path.iterdir() if p.name.endswith(".tmp")]
     assert leftovers == []
     assert (tmp_path / "a.txt").read_text() == "hello"
+
+
+# ---------------------------------------------------------------------------
+# notebook_edit (.ipynb cell replace / insert / delete) — ABSORB_MATRIX Dim 4
+# ---------------------------------------------------------------------------
+
+
+def _code_cell(src: str) -> dict:
+    return {
+        "cell_type": "code",
+        "metadata": {},
+        "source": src,
+        "outputs": [{"output_type": "stream", "text": "old"}],
+        "execution_count": 3,
+    }
+
+
+def _write_nb(tmp_path: Path, cells: list) -> None:
+    nb = {"cells": cells, "metadata": {}, "nbformat": 4, "nbformat_minor": 5}
+    (tmp_path / "nb.ipynb").write_text(json.dumps(nb))
+
+
+def test_notebook_edit_replace_clears_stale_outputs(tmp_path: Path) -> None:
+    _write_nb(tmp_path, [_code_cell("print(1)\n"), _code_cell("print(2)\n")])
+    res = json.loads(
+        dispatch_notebook_edit(
+            args_json=_args(path="nb.ipynb", cell_number=0, new_source="print('hi')\n"),
+            workspace=tmp_path,
+        )
+    )
+    assert res["action"] == "replaced" and res["cells_total"] == 2
+    nb = json.loads((tmp_path / "nb.ipynb").read_text())
+    assert nb["cells"][0]["source"] == ["print('hi')\n"]
+    assert nb["cells"][0]["outputs"] == []  # stale outputs cleared
+    assert nb["cells"][0]["execution_count"] is None
+
+
+def test_notebook_edit_insert_markdown(tmp_path: Path) -> None:
+    _write_nb(tmp_path, [_code_cell("a\n")])
+    res = json.loads(
+        dispatch_notebook_edit(
+            args_json=_args(
+                path="nb.ipynb", cell_number=0, new_source="# title\n",
+                edit_mode="insert", cell_type="markdown",
+            ),
+            workspace=tmp_path,
+        )
+    )
+    assert res["action"] == "inserted"
+    nb = json.loads((tmp_path / "nb.ipynb").read_text())
+    assert len(nb["cells"]) == 2
+    assert nb["cells"][0]["cell_type"] == "markdown"
+    assert nb["cells"][0]["source"] == ["# title\n"]
+
+
+def test_notebook_edit_delete(tmp_path: Path) -> None:
+    _write_nb(tmp_path, [_code_cell("a\n"), _code_cell("b\n")])
+    res = json.loads(
+        dispatch_notebook_edit(
+            args_json=_args(path="nb.ipynb", cell_number=0, edit_mode="delete"),
+            workspace=tmp_path,
+        )
+    )
+    assert res["action"] == "deleted"
+    nb = json.loads((tmp_path / "nb.ipynb").read_text())
+    assert len(nb["cells"]) == 1 and nb["cells"][0]["source"] == "b\n"
+
+
+def test_notebook_edit_out_of_range(tmp_path: Path) -> None:
+    _write_nb(tmp_path, [_code_cell("a\n")])
+    res = json.loads(
+        dispatch_notebook_edit(
+            args_json=_args(path="nb.ipynb", cell_number=5, new_source="x"),
+            workspace=tmp_path,
+        )
+    )
+    assert "cell_index_out_of_range" in res["error"]
+
+
+def test_notebook_edit_missing_file(tmp_path: Path) -> None:
+    res = json.loads(
+        dispatch_notebook_edit(
+            args_json=_args(path="nope.ipynb", cell_number=0, new_source="x"),
+            workspace=tmp_path,
+        )
+    )
+    assert "not_found" in res["error"]

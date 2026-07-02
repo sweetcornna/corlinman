@@ -39,6 +39,7 @@ from corlinman_agent.coding import (
     EDIT_FILE_TOOL,
     EXECUTE_CODE_TOOL,
     LIST_FILES_TOOL,
+    NOTEBOOK_EDIT_TOOL,
     READ_FILE_TOOL,
     REVERT_CHANGES_TOOL,
     RUN_SHELL_TOOL,
@@ -52,6 +53,7 @@ from corlinman_agent.coding import (
     dispatch_edit_file,
     dispatch_execute_code,
     dispatch_list_files,
+    dispatch_notebook_edit,
     dispatch_read_file,
     dispatch_revert_changes,
     dispatch_run_shell,
@@ -2972,6 +2974,10 @@ class CorlinmanAgentServicer(agent_pb2_grpc.AgentServicer):
                 return dispatch_write_file(args_json=event.args_json, state=file_state)
             if event.tool == EDIT_FILE_TOOL:
                 return dispatch_edit_file(args_json=event.args_json, state=file_state)
+            if event.tool == NOTEBOOK_EDIT_TOOL:
+                return dispatch_notebook_edit(
+                    args_json=event.args_json, state=file_state
+                )
             if event.tool == LIST_FILES_TOOL:
                 return dispatch_list_files(args_json=event.args_json)
             if event.tool == SEARCH_FILES_TOOL:
