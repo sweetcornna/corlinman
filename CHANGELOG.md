@@ -4,6 +4,21 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.22.1] — 2026-07-02 — Live multi-agent panel: accurate tool-call count
+
+> Patch release. Config-compatible. Fixes an inflated tool-call number on the
+> live multi-agent panel (实时多智能体面板的工具调用计数虚高).
+
+### Fixed
+- **Live subagent tool-call count no longer inflates** — the shared
+  `LiveSubagentRegistry` is fed the same `ToolStateRunning` frame once per open
+  SSE client (the session poll) and again via the emitter observer, and each
+  delivery did `tool_calls_made += 1`, so the panel showed 2×–N× the real count
+  during a run. Counting is now idempotent by the frame's `tool_call_id` (a
+  per-child seen-set, pruned with the terminal row), so a re-delivered tool
+  start is counted exactly once regardless of how many clients are watching or
+  which feed path (emitter vs cross-process journal poll) delivers it.
+
 ## [1.22.0] — 2026-07-02 — External MCP tools reach the model (advertise + route)
 
 > Minor release. Config-compatible. Connected external MCP servers' tools are

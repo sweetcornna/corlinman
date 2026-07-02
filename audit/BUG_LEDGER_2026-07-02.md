@@ -104,7 +104,16 @@ added a hard field access) — verified clean.
 - See §3 root cause. Confirmed regression from adaptive base-url completion (`b3f60428`).
 - **Fix:** both mirror normalizers treat a `/openai`-ending path as an API root. Regression tests added (chat + probe). `make ci`-affected slices green.
 
-### L-102 — live subagent `tool_calls_made` inflated by cross-process poll feed (P3) — LEDGERED, deferred
+### L-102 — live subagent `tool_calls_made` inflated by cross-process poll feed (P3) — **FIXED** (v1.22.1)
+> `ToolStateRunning` carries a stable `tool_call_id` (present in both the emitter
+> envelope and the journal payload), so the fix is a clean idempotent dedup:
+> `LiveSubagentRegistry` now tracks a per-child set of counted `tool_call_id`s and
+> increments `tool_calls_made` only on a first-seen id (frames without an id still
+> count, to avoid under-reporting); the set is pruned with the terminal row.
+> Regression: `test_tool_calls_deduped_by_tool_call_id_across_paths` re-delivers
+> the same call 3× via the envelope path + 1× via the journal path and asserts a
+> count of 1. Original analysis below.
+
 - **Confirmed:** `_apply_child_event` (`live_subagents.py:264`) does a non-idempotent `row.tool_calls_made += 1` on `ToolStateRunning`, while `_apply_spawned`/`_apply_completed` are idempotent. The shared registry is fed once per open SSE client (`sessions_events.py:403/468`) **and** (single-process) also via the emitter observer, so each tool-start is counted `(1+N_clients)×`.
 - **Impact:** the live multi-agent panel shows an inflated tool count **during** a run. `_apply_completed` (`:304`) reconciles the final count from the authoritative `SubagentCompleted.tool_calls_made`, so the number self-corrects on completion **unless** the completed child reports 0. No crash, no race (all mutators await-free).
 - **Why deferred:** a correct idempotent fix needs a stable per-event identity present in **both** the envelope and journal-poll paths (the envelope path has no journal seq/id; `timestamp_ms` isn't a reliable dedup key), or feeding the registry from a single authoritative pump instead of per-client replay — an architectural change disproportionate to a self-healing cosmetic P3.
