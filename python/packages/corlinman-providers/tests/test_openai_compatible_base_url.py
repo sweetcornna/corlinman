@@ -26,6 +26,21 @@ from corlinman_providers.openai_provider import complete_openai_base_url
         ("https://relay.example/v1/", "https://relay.example/v1"),
         ("https://relay.example/openai/v1", "https://relay.example/openai/v1"),
         ("https://relay.example/api/v4", "https://relay.example/api/v4"),
+        # a path ending in a bare ``/openai`` mount IS already an API root
+        # (Google Gemini's documented OpenAI-compat endpoint; relays mounted
+        # at /openai) — must NOT get /v1 appended. Regression: previously
+        # became ``.../v1beta/openai/v1`` → 404 on every chat message.
+        (
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+        ),
+        ("https://relay.example/openai", "https://relay.example/openai"),
+        ("https://relay.example/openai/", "https://relay.example/openai"),
+        # …but a full endpoint pasted under /openai still trims to that root
+        (
+            "https://relay.example/v1beta/openai/chat/completions",
+            "https://relay.example/v1beta/openai",
+        ),
         # non-versioned sub-path → /v1 appended (matches the probe)
         ("https://relay.example/api", "https://relay.example/api/v1"),
         # full endpoint pasted → trimmed back to the root

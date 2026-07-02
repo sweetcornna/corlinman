@@ -110,7 +110,12 @@ def complete_openai_base_url(base_url: str) -> str:
         if lowered.endswith(suffix):
             path = path[: -len(suffix)]
             break
-    if re.search(r"/v\d+$", path):
+    # A path already ending in ``/v<digits>`` (``/v1``, ``/api/v4``) OR in a
+    # bare ``/openai`` mount (Google Gemini's ``/v1beta/openai`` compat
+    # endpoint; relays served at ``/openai``) is already the API root the SDK
+    # appends ``/chat/completions`` onto — never append ``/v1`` (doing so
+    # yields ``.../openai/v1`` → 404 on every request).
+    if re.search(r"/v\d+$", path) or path.lower().endswith("/openai"):
         root_path = path
     elif path:
         root_path = f"{path}/v1"

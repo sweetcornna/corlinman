@@ -795,3 +795,35 @@ class TestCodexCredentialStatus:
         assert body["detected"] is True
         assert body["expired"] is False
         assert body["expires_at_ms"] is None
+
+
+@pytest.mark.parametrize(
+    "base_url, expected",
+    [
+        # bare host / non-versioned root → /v1/models appended
+        ("https://relay.example", "https://relay.example/v1/models"),
+        ("https://relay.example/api", "https://relay.example/api/v1/models"),
+        # already versioned → only /models
+        ("https://relay.example/v1", "https://relay.example/v1/models"),
+        ("https://relay.example/api/v4", "https://relay.example/api/v4/models"),
+        # full /models pasted → unchanged
+        ("https://relay.example/v1/models", "https://relay.example/v1/models"),
+        # a bare /openai mount is already an API root → only /models, never
+        # /v1/models. Mirrors complete_openai_base_url so the probe and the
+        # chat client hit the same root (regression: Gemini's /v1beta/openai
+        # probed /v1beta/openai/v1/models → 404).
+        (
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+            "https://generativelanguage.googleapis.com/v1beta/openai/models",
+        ),
+        ("https://relay.example/openai", "https://relay.example/openai/models"),
+    ],
+)
+def test_provider_models_url_mirrors_base_url_completion(
+    base_url: str, expected: str
+) -> None:
+    from corlinman_server.gateway.routes_admin_b.config_admin._providers_lib import (
+        _provider_models_url,
+    )
+
+    assert _provider_models_url(base_url) == expected
