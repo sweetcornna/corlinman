@@ -10,7 +10,6 @@ underscore wire tool names.
 from __future__ import annotations
 
 import pytest
-
 from corlinman_agent.subagent.runner import (
     _filter_tools_for_child,
     _ToolAllowlistEscalationError,
