@@ -516,10 +516,50 @@ except ValueError:
 _CONTEXT_BUDGET = _CONTEXT_BUDGET_OVERRIDE or _CONTEXT_BUDGET_DEFAULT
 
 # When deriving the budget from a model's full context window, reserve a
-# slice for the response + safety margin (a fraction, capped in absolute
-# terms so a 1M window doesn't reserve an absurd amount).
-_CONTEXT_OUTPUT_RESERVE_FRACTION = 0.15
-_CONTEXT_OUTPUT_RESERVE_CAP = 48_000
+# slice for the response + safety margin. Default: a fraction, capped in
+# absolute terms so a 1M window doesn't reserve an absurd amount. All three
+# knobs are operator-overridable (ABSORB_MATRIX Dim 2 — claude-code exposes a
+# tunable auto-compact buffer). Read at import so they pin per process.
+def _env_positive_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+_CONTEXT_OUTPUT_RESERVE_FRACTION = _env_positive_float(
+    "CORLINMAN_CONTEXT_RESERVE_FRACTION", 0.15
+)
+_CONTEXT_OUTPUT_RESERVE_CAP = int(
+    _env_positive_float("CORLINMAN_CONTEXT_RESERVE_CAP", 48_000)
+)
+# When set, reserve a FIXED number of tokens (claude-code ``AUTOCOMPACT_BUFFER``
+# semantics: ``window - buffer``) instead of the proportional fraction/cap.
+_CONTEXT_RESERVE_TOKENS_RAW = os.environ.get("CORLINMAN_CONTEXT_RESERVE_TOKENS")
+try:
+    _CONTEXT_RESERVE_TOKENS: int | None = (
+        max(0, int(_CONTEXT_RESERVE_TOKENS_RAW))
+        if _CONTEXT_RESERVE_TOKENS_RAW is not None
+        else None
+    )
+except ValueError:
+    _CONTEXT_RESERVE_TOKENS = None
+
+
+def _context_output_reserve(window: int) -> int:
+    """Tokens to reserve out of a model's ``window`` for the response margin.
+
+    A fixed ``$CORLINMAN_CONTEXT_RESERVE_TOKENS`` (claude-code-style buffer)
+    wins; otherwise the proportional ``min(window*fraction, cap)``. Clamped so
+    the reserve can never exceed the window.
+    """
+    if _CONTEXT_RESERVE_TOKENS is not None:
+        return min(_CONTEXT_RESERVE_TOKENS, window)
+    return min(int(window * _CONTEXT_OUTPUT_RESERVE_FRACTION), _CONTEXT_OUTPUT_RESERVE_CAP)
 
 
 def _resolve_context_budget(provider: Any, model: str | None) -> int:
@@ -546,11 +586,7 @@ def _resolve_context_budget(provider: Any, model: str | None) -> int:
         except Exception:  # noqa: BLE001 — best-effort; never break the loop
             window = None
         if isinstance(window, int) and window > 0:
-            reserve = min(
-                int(window * _CONTEXT_OUTPUT_RESERVE_FRACTION),
-                _CONTEXT_OUTPUT_RESERVE_CAP,
-            )
-            return max(8_000, window - reserve)
+            return max(8_000, window - _context_output_reserve(window))
     return _CONTEXT_BUDGET_DEFAULT
 
 # Sentinel string written into elided ``role="tool"`` messages. Keep

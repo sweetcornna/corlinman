@@ -1718,6 +1718,51 @@ def test_resolve_context_budget_reserve_is_capped(
     assert budget == 1_000_000 - rl._CONTEXT_OUTPUT_RESERVE_CAP
 
 
+def test_resolve_context_budget_fixed_reserve_buffer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fixed reserve (claude-code ``AUTOCOMPACT_BUFFER`` semantics:
+    ``window - buffer``) wins over the proportional fraction (ABSORB_MATRIX
+    Dim 2)."""
+    from corlinman_agent import reasoning_loop as rl
+
+    monkeypatch.delenv("CORLINMAN_CONTEXT_BUDGET", raising=False)
+    monkeypatch.setattr(rl, "_CONTEXT_BUDGET_OVERRIDE", None)
+    monkeypatch.setattr(rl, "_CONTEXT_RESERVE_TOKENS", 13_000)
+
+    class _P:
+        def context_window(self, model: str) -> int | None:
+            return 200_000
+
+    assert rl._resolve_context_budget(_P(), "big") == 200_000 - 13_000
+
+
+def test_resolve_context_budget_reserve_fraction_and_cap_overridable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reserve fraction + cap are operator-tunable (default-preserving)."""
+    from corlinman_agent import reasoning_loop as rl
+
+    monkeypatch.delenv("CORLINMAN_CONTEXT_BUDGET", raising=False)
+    monkeypatch.setattr(rl, "_CONTEXT_BUDGET_OVERRIDE", None)
+    monkeypatch.setattr(rl, "_CONTEXT_RESERVE_TOKENS", None)
+    monkeypatch.setattr(rl, "_CONTEXT_OUTPUT_RESERVE_FRACTION", 0.25)
+    monkeypatch.setattr(rl, "_CONTEXT_OUTPUT_RESERVE_CAP", 100_000)
+
+    class _P:
+        def context_window(self, model: str) -> int | None:
+            return 200_000
+
+    # 200k - min(0.25*200k=50k, cap 100k) = 150k
+    assert rl._resolve_context_budget(_P(), "big") == 200_000 - 50_000
+
+
+def test_env_positive_float_rejects_bad_values() -> None:
+    from corlinman_agent import reasoning_loop as rl
+
+    assert rl._env_positive_float("CORLINMAN_NO_SUCH_ENV_XYZ", 0.15) == 0.15
+
+
 def test_resolve_context_budget_falls_back_without_accessor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
