@@ -259,11 +259,16 @@ async def _cmd_permissions(app: Any, args: str) -> str:
         current = get()
         if current is None:
             return "permission control unavailable (direct fallback — no tool gate)"
-        return (
-            f"permission mode: {current}\n"
-            f"modes: {' | '.join(_PERMISSION_MODES)}\n"
-            "usage: /permissions <mode>   (/plan toggles plan mode)"
-        )
+        lines = [
+            f"permission mode: {current}",
+            f"modes: {' | '.join(_PERMISSION_MODES)}",
+            "usage: /permissions <mode>   (/plan toggles plan mode)",
+        ]
+        resolver = getattr(app, "approval_resolver", None)
+        always = sorted(getattr(resolver, "always_allow", ()) or ())
+        if always:
+            lines.append(f"always-allowed this session: {', '.join(always)}")
+        return "\n".join(lines)
     matched = next(
         (m for m in _PERMISSION_MODES if m.lower() == requested.lower()), None
     )

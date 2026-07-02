@@ -200,6 +200,9 @@ class ConsoleApp:
         #: True when the active model came from --model / /model — see
         #: run_turn's routing rule.
         self.model_explicit = False
+        #: Interactive ask-approval resolver (embedded interactive REPL only;
+        #: None in --print / attach). /permissions reads its always_allow set.
+        self.approval_resolver: Any | None = None
 
     def max_turns_reached(self) -> bool:
         """``--max-turns`` budget exhausted (0 = unlimited)."""
@@ -634,6 +637,24 @@ async def run_console(
     )
     app.project_memory_files = memory_files
     app.model_explicit = model is not None
+
+    # Interactive tool approval (Dim 3): wire the ask-resolver so a permission
+    # rule's ``ask`` verdict prompts y/always/No instead of fail-closing to
+    # deny. Interactive REPL only — in --print there is no user to ask, so
+    # asks stay fail-closed (the correct non-interactive posture); attach mode
+    # has no in-process servicer to wire.
+    if embedded and not print_mode:
+        from corlinman_server.console.approval import (  # noqa: PLC0415
+            ConsoleApprovalResolver,
+            build_console_prompter,
+        )
+
+        wire = getattr(brain, "set_approval_resolver", None)
+        if callable(wire):
+            app.approval_resolver = ConsoleApprovalResolver(
+                build_console_prompter(renderer)
+            )
+            wire(app.approval_resolver)
 
     if session_key:
         if embedded:
