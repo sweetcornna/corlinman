@@ -4,6 +4,18 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.22.8] — 2026-07-02 — `notebook_edit` tool (.ipynb cells)
+
+> Patch release. Config-compatible. ABSORB_MATRIX Dim 4 — the claude-code
+> NotebookEdit analog (Jupyter notebooks were previously read-only).
+
+### Added
+- **`notebook_edit` builtin tool** — edit a Jupyter notebook by 0-based cell
+  index: **replace** a cell's source (clearing a code cell's stale
+  outputs/execution_count), **insert** a new code/markdown cell, or **delete** a
+  cell. Workspace-confined and rewritten atomically. Advertised alongside the
+  other coding tools.
+
 ## [1.22.7] — 2026-07-02 — Atomic file writes + per-tool tracing
 
 > Patch release. Config-compatible. ABSORB_MATRIX Dim 4 (atomic Write/Edit) +
