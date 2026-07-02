@@ -4,6 +4,31 @@ All notable changes to corlinman are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.21.9] — 2026-07-02 — openai_compatible `/openai` mounts serve chat again + green gate
+
+> Patch release. Config-compatible. Fixes a silent chat-404 regression for
+> openai_compatible providers whose base URL is a bare `/openai` API root
+> (裸 `/openai` 根地址的中转/网关), and restores the green local CI gate. Part of
+> the zero-bug sweep — see `audit/BUG_LEDGER_2026-07-02.md`.
+
+### Fixed
+- **`/openai`-mounted base URLs no longer 404 every chat message** — the
+  adaptive base-url normalizer only recognised a path ending in `/v<digits>`
+  as an already-complete API root, so a base URL ending in a bare `/openai`
+  mount (Google Gemini's documented OpenAI-compat endpoint
+  `…/v1beta/openai`, or a relay served at `…/openai`) got `/v1` appended and
+  the OpenAI SDK hit `…/openai/v1/chat/completions` → 401/404 on every turn
+  (裸 `/openai` 根地址每条消息都 404). Both mirror normalizers —
+  `complete_openai_base_url` (chat client) and `_provider_models_url` (admin
+  model probe) — now treat a `/openai`-ending path as an API root, so chat and
+  the "fetch models" probe resolve to the same root. Regression tests added on
+  both sides.
+- **Local CI gate green again** — fixed the two latent gate failures on the
+  branch: a ruff `I001` import-order error in `test_tool_aliases`, and a mypy
+  `arg-type` where the console spinner frame (`Spinner.render()` typed
+  `RenderableType`) was passed into `Text.append_text` (needs `Text`); the
+  frame is now `isinstance`-narrowed, with a render-path regression test.
+
 ## [1.21.8] — 2026-06-16 — Codex provider test no longer false-fails after OAuth login
 
 > Patch release. Config-compatible. Fixes the admin provider "Test" button for
