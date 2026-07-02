@@ -135,6 +135,46 @@ async def _cmd_usage(app: Any, args: str) -> str:
     )
 
 
+def _estimate_session_cost_usd(model: str, prompt_tokens: int, completion_tokens: int) -> float | None:
+    """Estimated USD cost for the session's tokens, or ``None`` if the pricing
+    estimator is unavailable / the model is unknown. Reuses the agent loop's
+    per-model coefficients (ABSORB_MATRIX Dim 12: cost is computed deep but was
+    never surfaced in the console)."""
+    try:
+        from corlinman_agent.reasoning_loop import (  # noqa: PLC0415
+            _estimate_turn_cost_usd,
+        )
+    except ImportError:
+        return None
+    # TurnStats uses OpenAI-style names; the estimator wants input/output. The
+    # console does not track cache-token classes, so those are omitted (0).
+    cost = _estimate_turn_cost_usd(
+        model, {"input_tokens": prompt_tokens, "output_tokens": completion_tokens}
+    )
+    return cost if cost > 0 else None
+
+
+async def _cmd_cost(app: Any, args: str) -> str:
+    _ = args
+    s = app.session.stats
+    cost = _estimate_session_cost_usd(
+        app.session.model, s.prompt_tokens, s.completion_tokens
+    )
+    cost_line = (
+        f"${cost:.4f} (estimated)"
+        if cost is not None
+        else "unavailable (model not in the pricing table)"
+    )
+    return (
+        "session cost\n"
+        f"  model:  {app.session.model}\n"
+        f"  turns:  {s.turns}\n"
+        f"  tokens: {s.prompt_tokens} in + {s.completion_tokens} out "
+        f"= {s.total_tokens}\n"
+        f"  cost:   {cost_line}"
+    )
+
+
 async def _cmd_memory(app: Any, args: str) -> str:
     _ = args
     files = getattr(app, "project_memory_files", None) or []
@@ -240,6 +280,7 @@ _REGISTRY: tuple[SlashCommand, ...] = (
         "resume", "switch to a session and replay its turns", _cmd_resume, usage="<key>"
     ),
     SlashCommand("usage", "token usage for this console run", _cmd_usage),
+    SlashCommand("cost", "estimated USD cost for this session", _cmd_cost),
     SlashCommand(
         "compact", "summarize older turns to shrink the context window", _cmd_compact
     ),

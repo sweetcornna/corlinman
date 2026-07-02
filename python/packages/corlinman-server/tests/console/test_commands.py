@@ -142,3 +142,20 @@ async def test_init_returns_turn_request_with_codebase_analysis_prompt() -> None
     assert isinstance(reply, TurnRequest)
     assert "CORLINMAN.md" in reply.content
     assert "build" in reply.content.lower() and "test" in reply.content.lower()
+
+
+async def test_cost_command_renders_breakdown() -> None:
+    app = StubApp()
+    text = await dispatch(app, "/cost") or ""
+    assert "session cost" in text
+    assert "model:" in text and "tokens:" in text and "cost:" in text
+
+
+def test_estimate_session_cost_known_vs_unknown() -> None:
+    from corlinman_server.console.commands import _estimate_session_cost_usd
+
+    # An unknown model has no pricing → None (surfaced as "unavailable").
+    assert _estimate_session_cost_usd("totally-unknown-model-xyz", 1000, 1000) is None
+    # A known model + tokens → a positive USD estimate.
+    cost = _estimate_session_cost_usd("claude-sonnet-4-6", 1_000_000, 1_000_000)
+    assert cost is not None and cost > 0
